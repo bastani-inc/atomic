@@ -322,7 +322,9 @@ export async function run<
     resumable: true,
     ...(opts.persistence !== undefined ? { sessionFile: undefined } : {}),
   };
-  if (opts.continuation === undefined && opts.parentRun === undefined) {
+  const shouldRegisterDurableRoot = opts.parentRun === undefined
+    && (opts.continuation === undefined || opts.continuation.source.id !== runId);
+  if (shouldRegisterDurableRoot) {
     durableBackend.registerWorkflow({ ...durableRootWorkflowRegistration, invocationCwd: workflowInvocationCwd });
   } else if (opts.parentRun === undefined) {
     durableBackend.setWorkflowStatus(runId, "running");
@@ -399,6 +401,7 @@ export async function run<
   try {
     if (opts.deferWorkflowStart === true) {
       await nextEventLoopTurn();
+      opts.onWorkflowStartReady?.(); // run.start persisted; signal startup
       if (ownController.signal.aborted) {
         const selectedExit = findWorkflowExitSignal(ownController.signal.reason, exitScope);
         if (selectedExit !== undefined) return await finalizers.finalizeWorkflowExit(selectedExit);
@@ -408,10 +411,9 @@ export async function run<
       }
     }
 
-    if (opts.continuation === undefined && opts.parentRun === undefined) {
+    if (shouldRegisterDurableRoot) {
       durableBackend.registerWorkflow({ ...durableRootWorkflowRegistration, ...workflowInvocationMetadata(inputRuntimeDefaults, workflowInvocationCwd, gitWorktreeSetupCache) });
     }
-
     const rawResult = await runWorkflowDefinitionCallback(def.name, runId, () => def.run(ctx));
     if (ownController.signal.aborted) {
       const selectedExit = findWorkflowExitSignal(ownController.signal.reason, exitScope);

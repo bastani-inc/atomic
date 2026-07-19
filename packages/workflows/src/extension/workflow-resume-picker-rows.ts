@@ -23,6 +23,12 @@ export interface ResumePickerLiveSource {
   readonly activeLiveIds: ReadonlySet<string>;
 }
 
+function isActiveRecoverableBlock(run: RunSnapshot): boolean {
+  return run.endedAt === undefined
+    && run.resumable === true
+    && run.failureRecoverability === "recoverable";
+}
+
 export function collectResumePickerLiveRuns(runStore: Store): ResumePickerLiveSource {
   const durableResumeShadows = new Set(
     topLevelWorkflowRuns(runStore.runs())
@@ -31,7 +37,7 @@ export function collectResumePickerLiveRuns(runStore: Store): ResumePickerLiveSo
   );
   const liveRuns = topLevelWorkflowRuns(runStore.runs()).filter((run) =>
     !durableResumeShadows.has(run.id) &&
-    (run.status === "paused" || (run.status === "failed" && run.resumable !== false)) &&
+    (run.status === "paused" || (run.status === "failed" && run.resumable !== false) || isActiveRecoverableBlock(run)) &&
     getDurableBackend().isWorkflowLoadable(run.id),
   );
   const activeLiveIds = new Set(
@@ -40,6 +46,7 @@ export function collectResumePickerLiveRuns(runStore: Store): ResumePickerLiveSo
         !durableResumeShadows.has(run.id) &&
         run.endedAt === undefined &&
         run.status === "running" &&
+        !isActiveRecoverableBlock(run) &&
         run.exitReason !== "quit")
       .map((run) => run.id),
   );

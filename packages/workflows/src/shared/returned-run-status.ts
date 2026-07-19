@@ -73,8 +73,9 @@ export function structuredRecoverableWorkflowFailureText(
 }
 
 export function effectiveRunStatus(run: RunSnapshot): RunStatus {
+  if ((run.status === "running" || run.status === "completed")
+    && structuredRecoverableWorkflowFailure(run) !== undefined) return "blocked";
   if (run.status !== "completed") return run.status;
-  if (structuredRecoverableWorkflowFailure(run) !== undefined) return "blocked";
   const returnedStatus = normalizeReturnedWorkflowStatus(run.result?.["status"]);
   if (returnedStatus === "failed") return "failed";
   if (returnedStatus !== undefined && isReturnedBlockedWorkflowStatus(returnedStatus)) return "blocked";

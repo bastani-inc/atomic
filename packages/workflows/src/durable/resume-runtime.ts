@@ -24,6 +24,7 @@ import type { RunOpts } from "../runs/foreground/executor-types.js";
 import { runDetached, type DetachedAccepted } from "../runs/background/runner.js";
 import { resolveAndValidateInputs } from "../runs/foreground/executor-inputs.js";
 import { getDurableBackend } from "./factory.js";
+
 import { resumableEntryFromHandle, type DurableWorkflowBackend } from "./backend.js";
 import type { ResumableWorkflowEntry } from "./types.js";
 import { isDurableWorkflowResumable, isForeignLiveWorkflow } from "./resume-eligibility.js";
@@ -129,6 +130,7 @@ export async function resumeDurableWorkflow(
       message: `Workflow ${resolved.workflowId.slice(0, 8)} has no current DBOS checkpoint state; re-run the workflow to start fresh.`,
     };
   }
+
   if (handle.status === "running") {
     if (hasActiveLiveRun(deps.baseRunOpts.store, resolved.workflowId)) {
       return alreadyRunningResult(handle.name, resolved.workflowId, deps.baseRunOpts.store);

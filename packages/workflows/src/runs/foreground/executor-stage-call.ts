@@ -237,14 +237,18 @@ export function createTrackedStageCaller(input: {
       // so the concurrency semaphore is not leaked.
       // cross-ref: issue #1498 — durable finalization failures must not leak the stage limiter.
       runtime.mcpScope.clear();
-      await runtime.innerCtx.__closeGeneration();
-      runtime.captureStageSessionMeta();
       let finalizationError: { readonly thrown: true; readonly error: unknown } | undefined;
+      try {
+        await runtime.innerCtx.__closeGeneration();
+        runtime.captureStageSessionMeta();
+      } catch (err) {
+        finalizationError = { thrown: true, error: err };
+      }
       if (trackStageLifecycle) {
         try {
           await runtime.finalizeStageSnapshot();
         } catch (err) {
-          finalizationError = { thrown: true, error: err };
+          finalizationError ??= { thrown: true, error: err };
         }
         try {
           if (runtime.state.stageClosedByWorkflowExit || runtime.exit.currentWorkflowExitAbortReason() !== undefined) {

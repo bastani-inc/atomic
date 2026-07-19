@@ -162,6 +162,28 @@ describe("renderWidgetLines — standard form", () => {
     assert.ok(metaLine.includes("chain"), "multi-stage run reads as chain");
     assert.ok(metaLine.includes("1/3"), "progress count includes done/total");
   });
+  test("active recoverable block renders as blocked and resumable, not running", () => {
+    const run: RunSnapshot = {
+      ...makeRun("blocked1", "recoverable-auth", "running", [makeStage("s1", "provider", "failed")]),
+      blockedAt: Date.now(),
+      error: "Configure credentials and resume.",
+      failureKind: "auth",
+      failureRecoverability: "recoverable",
+      failureDisposition: "active_blocked",
+      failureMessage: "No API key for provider",
+      resumable: true,
+    };
+    const snapshot = makeSnap([run]);
+    const lines = renderWidgetLines(snapshot, 120).map(stripAnsi);
+    const text = lines.join("\n");
+
+    assert.match(lines[0] ?? "", /↑ 1 blocked/u);
+    assert.doesNotMatch(lines[0] ?? "", /running/u);
+    assert.match(text, /↑  blocke  recoverable-auth/u);
+    assert.match(text, /blocked · resumable via \/workflow resume/u);
+    assert.equal(nextWidgetRefreshDelayMs(snapshot), undefined);
+  });
+
 
   test("multiple active runs → header subtitle pluralises, entries stacked with blank separators", () => {
     const t = Date.now();
@@ -258,7 +280,7 @@ describe("renderWidgetLines — standard form", () => {
     assert.ok(header.includes("✗ 1 failed"), "failed badge");
   });
 
-  test("ctx.exit terminal statuses count as complete in the widget header", () => {
+  test("ctx.exit blocked remains distinct from completed exit statuses", () => {
     const t = Date.now();
     const skipped = makeRun("s1xxxxxx", "wf-s", "skipped", [], t - 5000, t - 3000);
     const cancelled = makeRun("c1xxxxxx", "wf-c", "cancelled", [], t - 4000, t - 2000);
@@ -267,7 +289,8 @@ describe("renderWidgetLines — standard form", () => {
     const header = lines[0]!;
 
     assert.ok(header.includes("3 runs"), `expected exited runs in header total, got: ${header}`);
-    assert.ok(header.includes("✓ 3 complete"), `expected exited runs in complete badge, got: ${header}`);
+    assert.ok(header.includes("✓ 2 complete"), `expected completed exit badge, got: ${header}`);
+    assert.ok(header.includes("↑ 1 blocked"), `expected blocked exit badge, got: ${header}`);
     assert.ok(lines.join("\n").includes("skipped · 2s"), "skipped row remains visible");
     assert.ok(lines.join("\n").includes("cancelled · 2s"), "cancelled row remains visible");
     assert.ok(lines.join("\n").includes("blocked · 2s"), "blocked row remains visible");

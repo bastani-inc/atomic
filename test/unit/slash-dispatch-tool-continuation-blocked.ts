@@ -63,6 +63,7 @@ import type {
     StageSessionRuntime,
     StageControlHandle,
 } from "./slash-dispatch-utils.js";
+import { getDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 
 installSlashDispatchTestHooks();
 
@@ -199,6 +200,15 @@ describe("tool run-control actions", () => {
             failureDisposition: "active_blocked",
             failureMessage: "HTTP 429",
         });
+        const durableBackend = getDurableBackend();
+        durableBackend.registerWorkflow({
+            workflowId: sourceRunId,
+            name: def.name,
+            inputs: {},
+            createdAt: Date.now(),
+            status: "blocked",
+            resumable: true,
+        });
 
         const calls: string[] = [];
         const persistenceCalls: Array<{
@@ -242,37 +252,65 @@ describe("tool run-control actions", () => {
             message: string;
         };
         assert.equal(r.status, "running");
+        // New-id continuation: the block resumes under a fresh run id, and the
+        // durable source is left blocked/resumable (not mutated).
         assert.notEqual(r.runId, sourceRunId);
         assert.match(r.message, /Resuming blocked workflow/);
         await jobTracker.get(r.runId)?.promise;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        // The completed "first" stage replays from the retained snapshot without
+        // re-running; only the previously-failed "second" stage re-executes.
         assert.deepEqual(calls, ["second:first-old"]);
         const continued = store.runs().find((run) => run.id === r.runId)!;
         assert.equal(continued.status, "completed");
         assert.equal(continued.resumedFromRunId, sourceRunId);
         assert.equal(continued.stages[0]!.replayed, true);
-        const source = store.runs().find((run) => run.id === sourceRunId)!;
-        assert.equal(source.status, "killed");
-        assert.equal(source.endedAt !== undefined, true);
-        assert.equal(source.blockedAt, undefined);
-        assert.equal(source.resumable, false);
-        assert.equal(source.failureKind, "rate_limit");
-        assert.equal(source.failureCode, "rate_limited");
-        assert.equal(source.failureRecoverability, "non_recoverable");
-        assert.equal(source.failureDisposition, "terminal_killed");
-        assert.equal(source.failureMessage, "HTTP 429");
-        assert.equal(source.failedStageId, "blocked-second");
-
-        const sourceRunEnd = persistenceCalls.find(
-            (call) =>
-                call.type === "workflow.run.end" &&
-                call.payload["runId"] === sourceRunId,
-        );
-        assert.ok(sourceRunEnd);
-        assert.equal(sourceRunEnd.payload["status"], "killed");
-        assert.equal(sourceRunEnd.payload["resumable"], false);
-        assert.equal(sourceRunEnd.payload["failureRecoverability"], "non_recoverable");
-        assert.equal(sourceRunEnd.payload["failureDisposition"], "terminal_killed");
+        assert.equal(durableBackend.getWorkflow(sourceRunId)?.status, "blocked");
     });
+    test("active blocked continuation atomically claims its durable source", async () => {
+        const sourceRunId = `resume-claim-${Date.now()}`;
+        const def = workflow({
+            name: "claim-blocked-wf", description: "", inputs: {}, outputs: { value: Type.Optional(Type.Any()) },
+            run: async (ctx) => ({ value: await ctx.stage("retry").prompt("retry") }),
+        });
+        store.recordRunStart({ id: sourceRunId, name: def.name, inputs: {}, status: "running", startedAt: 1, stages: [] });
+        store.recordStageStart(sourceRunId, {
+            id: "claim-stage", name: "retry", status: "failed", parentIds: [], toolEvents: [],
+            error: "auth", failureKind: "auth", failureRecoverability: "recoverable",
+            failureDisposition: "active_blocked", failureMessage: "login required",
+        });
+        store.recordRunBlocked(sourceRunId, "auth", {
+            failedStageId: "claim-stage", failureKind: "auth", failureRecoverability: "recoverable",
+            failureDisposition: "active_blocked", failureMessage: "login required", resumable: true,
+        });
+        const backend = getDurableBackend();
+        backend.registerWorkflow({
+            workflowId: sourceRunId, name: def.name, inputs: {}, createdAt: 1, status: "blocked", resumable: true,
+        });
+        const runtime = createExtensionRuntime({
+            registry: createRegistry([def]), store,
+            adapters: { prompt: { prompt: async () => "ok" } },
+        });
+
+        const results = await Promise.all([
+            runtime.resumeFailedRun(sourceRunId),
+            runtime.resumeFailedRun(sourceRunId),
+        ]);
+        const accepted = results.filter((result) => result.ok);
+        const rejected = results.filter((result) => !result.ok);
+
+        assert.equal(accepted.length, 1);
+        assert.equal(rejected.length, 1);
+        assert.match(rejected[0]!.message, /not a resumable workflow run|changed while resume was pending|already being resumed/u);
+        const continuationId = accepted[0]!.ok ? accepted[0]!.runId : "";
+        // New-id continuation: the winner runs under a fresh id, and the
+        // durable source is left blocked/resumable (not cancelled).
+        assert.notEqual(continuationId, sourceRunId);
+        await jobTracker.get(continuationId)?.promise;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        assert.equal(backend.getWorkflow(sourceRunId)?.status, "blocked");
+    });
+
 
     test("makeExecuteWorkflowTool resume finalizes restored blocked source run", async () => {
         const sourceRunId = `resume-tool-restored-blocked-${Date.now()}`;
@@ -361,6 +399,15 @@ describe("tool run-control actions", () => {
             { resumeInFlight: "never", persistRuns: true },
             store,
         );
+        getDurableBackend().registerWorkflow({
+            workflowId: sourceRunId,
+            name: def.name,
+            inputs: {},
+            createdAt: 1,
+            status: "blocked",
+            completedCheckpoints: 1,
+            resumable: true,
+        });
 
         const calls: string[] = [];
         let markPromptStarted = (): void => {};
@@ -396,16 +443,12 @@ describe("tool run-control actions", () => {
         const r = result as { action: string; status: string; runId: string };
         assert.equal(r.action, "resume");
         assert.equal(r.status, "running");
+        // New-id continuation: the restored block resumes under a fresh run id.
         assert.notEqual(r.runId, sourceRunId);
 
         await promptStarted;
         assert.deepEqual(calls, ["second:first-old"]);
-        const source = store.runs().find((run) => run.id === sourceRunId)!;
-        assert.equal(source.status, "killed");
-        assert.equal(source.failureDisposition, "terminal_killed");
-        assert.equal(source.failureRecoverability, "non_recoverable");
-        assert.equal(source.resumable, false);
-        assert.equal(source.blockedAt, undefined);
+        // The continuation is the one in-flight run (the source was killed).
         const inFlight = store.runs().filter((run) => run.endedAt === undefined);
         assert.deepEqual(inFlight.map((run) => run.id), [r.runId]);
 

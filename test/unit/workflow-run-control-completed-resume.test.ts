@@ -7,6 +7,7 @@ import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/bac
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { createExtensionRuntime, type ExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { handleRunControlCommand, type WorkflowRunControlDeps } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
+import { collectResumePickerLiveRuns } from "../../packages/workflows/src/extension/workflow-resume-picker-rows.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
 
 let tempDir = "";
@@ -246,26 +247,71 @@ describe("/workflow resume completed target", () => {
     assert.equal(completedCatalogReads, 0, "an exact live run must bypass durable completed-catalog enumeration");
   });
 
+  test("includes active recoverable blocks in the no-argument resume picker", () => {
+    const backend = new InMemoryDurableBackend();
+    setDurableBackend(backend);
+    backend.registerWorkflow({
+      workflowId: "picker-active-block",
+      name: "picker-flow",
+      inputs: {},
+      createdAt: 1,
+      status: "blocked",
+      resumable: true,
+    });
+    store.recordRunStart({
+      id: "picker-active-block",
+      name: "picker-flow",
+      inputs: {},
+      status: "running",
+      stages: [],
+      startedAt: 1,
+      blockedAt: 2,
+      resumable: true,
+      failureRecoverability: "recoverable",
+      failureDisposition: "active_blocked",
+    });
+
+    const source = collectResumePickerLiveRuns(store);
+
+    assert.deepEqual(source.liveRuns.map((run) => run.id), ["picker-active-block"]);
+    assert.equal(source.activeLiveIds.has("picker-active-block"), false);
+  });
+
   test("keeps recoverable failed and active-running explicit behavior unchanged", async () => {
     const backend = new InMemoryDurableBackend();
     setDurableBackend(backend);
     store.recordRunStart({ id: "failed-live", name: "failed-flow", inputs: {}, status: "failed", stages: [], startedAt: 1, endedAt: 2, resumable: true });
     store.recordRunStart({ id: "running-live", name: "running-flow", inputs: {}, status: "running", stages: [], startedAt: 1 });
+    store.recordRunStart({
+      id: "active-blocked-live",
+      name: "blocked-flow",
+      inputs: {},
+      status: "running",
+      stages: [],
+      startedAt: 1,
+      blockedAt: 2,
+      resumable: true,
+      failureRecoverability: "recoverable",
+      failureDisposition: "active_blocked",
+    });
     const baseRuntime = createExtensionRuntime({ store });
     let failedResumeCalls = 0;
     const runtime: ExtensionRuntime = {
       ...baseRuntime,
-      resumeFailedRun() {
+      async resumeFailedRun() {
         failedResumeCalls += 1;
         return { ok: true, runId: "continued-run", sourceRunId: "failed-live", resumeFromStageId: "failed-stage", message: "continued failed workflow" };
       },
     };
 
     const failedResult = await resume("failed-live", runtime);
+    const blockedResult = await resume("active-blocked-live", runtime);
     const runningResult = await resume("running-live", runtime);
 
-    assert.equal(failedResumeCalls, 1);
+    assert.equal(failedResumeCalls, 2);
     assert.match(failedResult.messages.join("\n"), /continued failed workflow/);
+    assert.match(blockedResult.messages.join("\n"), /continued failed workflow/);
+    assert.equal(blockedResult.errors.length, 0);
     assert.match(runningResult.errors.join("\n"), /already running.*connect/i);
   });
 });

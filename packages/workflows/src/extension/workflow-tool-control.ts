@@ -302,7 +302,7 @@ export async function workflowResumeAction(
     } catch (error) {
       warning = formatWorkflowResourceLoadWarning(error);
     }
-    const continuation = deps.getRuntime().resumeFailedRun(stageRunId, stage.stageId, { policy: deps.policy });
+    const continuation = await deps.getRuntime().resumeFailedRun(stageRunId, stage.stageId, { policy: deps.policy });
     const message = warning === undefined ? continuation.message : `${warning}\n\n${continuation.message}`;
     return {
       action: "resume",

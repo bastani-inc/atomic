@@ -42,6 +42,10 @@ export async function transitionDbosWorkflowStatus(input: DbosStatusTransitionIn
     await input.write();
   } catch (error) {
     const persisted = await input.read();
+    if (persisted.kind === "current" && persisted.metadata.status === input.status) {
+      input.reconcile(persisted.metadata);
+      return true;
+    }
     if (persisted.kind === "current"
       && isAbsorbingDurableStatus(persisted.metadata.status, persisted.metadata.resumable)) {
       input.reconcile(persisted.metadata);

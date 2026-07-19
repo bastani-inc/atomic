@@ -15,16 +15,9 @@ export function metadataStepName(ts: number): string {
   return `${METADATA_STEP_PREFIX}:${ts}:${crypto.randomUUID()}`;
 }
 
-/**
- * Deterministic step name for a claimed status transition. Every process that
- * observed the same metadata generation derives the same name, so DBOS's
- * unique workflow ids make the transition write itself a first-writer-wins
- * claim: the stored record's `ownerExecutorId` identifies the winner, and a
- * crash after the claim leaves valid current metadata that the heartbeat
- * staleness path recovers, never a wedged generation.
- */
-export function claimMetadataStepName(generation: number, status: DurableWorkflowStatus): string {
-  return `${METADATA_STEP_PREFIX}:${generation + 1}:claim-${status}`;
+/** Deterministic first-writer-wins claim id for one observed generation. */
+export function claimMetadataStepName(generation: number): string {
+  return `${METADATA_STEP_PREFIX}:${generation + 1}:claim`;
 }
 
 export function isMetadataStep(stepName: string): boolean {
@@ -54,6 +47,7 @@ export function encodeMetadata(metadata: DurableWorkflowMetadata): WorkflowSeria
       pendingPrompts: metadata.pendingPrompts,
       promptReservationEpoch: metadata.promptReservationEpoch,
       ...(metadata.ownerExecutorId !== undefined ? { ownerExecutorId: metadata.ownerExecutorId } : {}),
+      ...(metadata.transitionClaimId !== undefined ? { transitionClaimId: metadata.transitionClaimId } : {}),
       ...(metadata.sessionFile !== undefined ? { sessionFile: metadata.sessionFile } : {}),
       ...(metadata.label !== undefined ? { label: metadata.label } : {}),
       ...(metadata.rootWorkflowId !== undefined ? { rootWorkflowId: metadata.rootWorkflowId } : {}),
@@ -133,6 +127,7 @@ function parseDurableWorkflowMetadata(
     || typeof metadata.promptReservationEpoch !== "string"
     || typeof metadata.updatedAt !== "number"
     || (metadata.ownerExecutorId !== undefined && typeof metadata.ownerExecutorId !== "string")
+    || (metadata.transitionClaimId !== undefined && typeof metadata.transitionClaimId !== "string")
     || (metadata.sessionFile !== undefined && typeof metadata.sessionFile !== "string")
     || (metadata.label !== undefined && typeof metadata.label !== "string")
     || (metadata.rootWorkflowId !== undefined && typeof metadata.rootWorkflowId !== "string")

@@ -263,7 +263,7 @@ export async function handleRunControlCommand(
           const isResumableContinuation = run !== undefined && !isPaused && ((run.status === "failed" && run.endedAt !== undefined && run.resumable !== false) || (run.endedAt === undefined && run.resumable === true && run.failureRecoverability === "recoverable"));
           if (isResumableContinuation) {
             await ensureWorkflowResourcesVisible();
-            const continuation = deps.runtimeForContext(ctx).resumeFailedRun(resolved.runId, undefined, { policy });
+            const continuation = await deps.runtimeForContext(ctx).resumeFailedRun(resolved.runId, undefined, { policy });
             continuation.ok ? print(continuation.message) : fail(continuation.message);
           } else {
             try {
@@ -305,11 +305,16 @@ export async function handleRunControlCommand(
       }
       const exactHasPausedState = exactBeforePreparation !== undefined
         && workflowHasPausedState(store, exactBeforePreparation.id);
+      const exactIsRecoverableBlock = exactBeforePreparation !== undefined
+        && exactBeforePreparation.endedAt === undefined
+        && exactBeforePreparation.resumable === true
+        && exactBeforePreparation.failureRecoverability === "recoverable";
       const exactIsActivelyRunning = exactBeforePreparation !== undefined
         && exactBeforePreparation.endedAt === undefined
         && exactBeforePreparation.status === "running"
         && !exactHasPausedState
         && exactBeforePreparation.exitReason !== "quit"
+        && !exactIsRecoverableBlock
         && !hasPendingDurableResumeTransition(exactBeforePreparation.id);
       if (exactIsActivelyRunning) {
         fail(`Workflow ${exactBeforePreparation.id.slice(0, 8)} is already running in this session. Attach with \`/workflow connect ${exactBeforePreparation.id.slice(0, 8)}\` instead of resuming.`);
@@ -413,13 +418,13 @@ export async function handleRunControlCommand(
     const isPaused = run !== undefined && workflowHasPausedState(store, stageRunId);
     const isResumableContinuation = run !== undefined && !isPaused && ((run.status === "failed" && run.endedAt !== undefined && run.resumable !== false) || (run.endedAt === undefined && run.resumable === true && run.failureRecoverability === "recoverable"));
     const isActivelyRunning = run !== undefined && run.endedAt === undefined && run.status === "running" && !isPaused && run.exitReason !== "quit";
-    if (isActivelyRunning && action === "resume" && !hasPendingDurableResumeTransition(stageRunId)) {
+    if (isActivelyRunning && !isResumableContinuation && action === "resume" && !hasPendingDurableResumeTransition(stageRunId)) {
       fail(`Workflow ${stageRunId.slice(0, 8)} is already running in this session. Attach with \`/workflow connect ${stageRunId.slice(0, 8)}\` instead of resuming.`);
       return true;
     }
     if (isResumableContinuation) {
       await ensureWorkflowResourcesVisible();
-      const continuation = deps.runtimeForContext(ctx).resumeFailedRun(stageRunId, stageId, { policy });
+      const continuation = await deps.runtimeForContext(ctx).resumeFailedRun(stageRunId, stageId, { policy });
       continuation.ok ? print(continuation.message) : fail(continuation.message);
       return true;
     }

@@ -98,6 +98,34 @@ describe("InMemoryDurableBackend", () => {
     assert.ok(!ids.includes("child-run"));
   });
 
+  test("finalizes an active recoverable block as durable blocked and resumable", async () => {
+    const runSnapshot: RunSnapshot = {
+      id: WORKFLOW_ID,
+      name: "test-workflow",
+      inputs: {},
+      status: "running",
+      stages: [],
+      startedAt: 1,
+      blockedAt: 2,
+      error: "Configure credentials and resume.",
+      failureKind: "auth",
+      failureRecoverability: "recoverable",
+      failureDisposition: "active_blocked",
+      failureMessage: "No API key for provider",
+      resumable: true,
+    };
+
+    await finalizeDurableTerminalStatus({
+      runId: WORKFLOW_ID,
+      runSnapshot,
+      isRoot: true,
+      durableBackend: backend,
+    });
+
+    assert.equal(backend.getWorkflow(WORKFLOW_ID)?.status, "blocked");
+    assert.equal(backend.getWorkflow(WORKFLOW_ID)?.resumable, true);
+  });
+
   test("non-resumable terminal finalization hides failed durable workflow", async () => {
     const runSnapshot: RunSnapshot = {
       id: WORKFLOW_ID,

@@ -251,6 +251,36 @@ describe("cross-process resume claim", () => {
 
     assert.deepEqual([...outcomes].sort(), [false, true]);
   });
+  test("exactly one same-executor caller wins a generation claim", async () => {
+    const state = await pausedWorkflowState();
+    const sessionA = new DbosDurableBackend(createSharedSdk(state), { executorId: "atomic-shared" });
+    const sessionB = new DbosDurableBackend(createSharedSdk(state), { executorId: "atomic-shared" });
+    await sessionA.hydrateWorkflow("wf-contended");
+    await sessionB.hydrateWorkflow("wf-contended");
+
+    const outcomes = await Promise.all([
+      sessionA.transitionWorkflowStatus("wf-contended", ["paused"], "running"),
+      sessionB.transitionWorkflowStatus("wf-contended", ["paused"], "running"),
+    ]);
+
+    assert.deepEqual([...outcomes].sort(), [false, true]);
+  });
+  test("different target statuses still compete for one generation claim", async () => {
+    const state = await pausedWorkflowState();
+    const runner = new DbosDurableBackend(createSharedSdk(state), { executorId: "atomic-runner" });
+    const blocker = new DbosDurableBackend(createSharedSdk(state), { executorId: "atomic-blocker" });
+    await runner.hydrateWorkflow("wf-contended");
+    await blocker.hydrateWorkflow("wf-contended");
+
+    const outcomes = await Promise.all([
+      runner.transitionWorkflowStatus("wf-contended", ["paused"], "running"),
+      blocker.transitionWorkflowStatus("wf-contended", ["paused"], "blocked"),
+    ]);
+
+    assert.deepEqual([...outcomes].sort(), [false, true]);
+  });
+
+
 
   test("the losing session reconciles to the authoritative running state", async () => {
     const state = await pausedWorkflowState();
@@ -280,4 +310,36 @@ describe("cross-process resume claim", () => {
     assert.equal(fresh.getWorkflow("wf-contended")?.ownerExecutorId, "atomic-session-a");
     assert.equal(fresh.isWorkflowLoadable("wf-contended"), true);
   });
+  test("a non-resumable paused reservation rolls back to blocked across hydration", async () => {
+    const state: SharedDbosState = { workflows: new Map(), steps: new Map() };
+    const seeder = new DbosDurableBackend(createSharedSdk(state), { executorId: "atomic-seeder" });
+    seeder.registerWorkflow({
+      workflowId: "wf-reservation",
+      name: "multi-session-flow",
+      inputs: {},
+      createdAt: 1,
+      status: "blocked",
+      completedCheckpoints: 2,
+      resumable: true,
+    });
+    await seeder.flush();
+    const claimant = new DbosDurableBackend(createSharedSdk(state), { executorId: "atomic-claimant" });
+    await claimant.hydrateWorkflow("wf-reservation");
+
+    assert.equal(await claimant.transitionWorkflowStatus("wf-reservation", ["blocked"], "paused", undefined, false), true);
+    assert.equal(claimant.listResumableWorkflows().length, 0);
+    const reserved = new DbosDurableBackend(createSharedSdk(state), { executorId: "atomic-observer" });
+    await reserved.hydrateWorkflow("wf-reservation");
+    assert.equal(reserved.getWorkflow("wf-reservation")?.status, "paused");
+    assert.equal(reserved.getWorkflow("wf-reservation")?.resumable, false);
+    assert.equal(reserved.listResumableWorkflows().length, 0);
+    assert.equal(await claimant.transitionWorkflowStatus("wf-reservation", ["paused"], "blocked", undefined, true), true);
+
+    const fresh = new DbosDurableBackend(createSharedSdk(state), { executorId: "atomic-fresh" });
+    await fresh.hydrateWorkflow("wf-reservation");
+    assert.equal(fresh.getWorkflow("wf-reservation")?.status, "blocked");
+    assert.equal(fresh.getWorkflow("wf-reservation")?.resumable, true);
+    assert.deepEqual(fresh.listResumableWorkflows().map((run) => run.workflowId), ["wf-reservation"]);
+  });
+
 });

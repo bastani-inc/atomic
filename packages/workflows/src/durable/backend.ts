@@ -130,7 +130,6 @@ export interface DurableWorkflowBackend {
   hydrateWorkflow(workflowId: string): Promise<void>;
   /** Hydrate all catalog candidates from persistent storage. */
   hydrateResumableWorkflows(): Promise<void>;
-
   promptReservationScope(workflowId: string): { readonly rootWorkflowId: string; readonly scope: string };
   pendingPromptToken(workflowId: string, reservationId: string): PromptReservationToken | undefined;
   reservePendingPrompt(workflowId: string, reservationId: string): PromptReservationToken;

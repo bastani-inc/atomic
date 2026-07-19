@@ -173,6 +173,8 @@ export interface DurableWorkflowMetadata {
   readonly promptReservationEpoch: string;
   /** Executor id of the Atomic process that wrote this metadata generation. */
   readonly ownerExecutorId?: string;
+  /** Unique winner token for a first-writer-wins status-transition generation. */
+  readonly transitionClaimId?: string;
   readonly sessionFile?: string;
   readonly label?: string;
   readonly rootWorkflowId?: string;

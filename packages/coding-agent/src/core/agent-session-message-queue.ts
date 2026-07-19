@@ -98,11 +98,27 @@ export async function sendCustomMessage<T = unknown>(this: AgentSession,
 			void interrupt.catch(() => {});
 		} else if (this.isStreaming && options?.excludeFromContext === true && options.triggerTurn !== true && options.deliverAs === undefined) {
 			this._appendCustomMessage(appMessage);
+		} else if (this.isStreaming && options?.persistWhenStreaming === true) {
+			// Persist the notice to the transcript so a streaming parent's cleared
+			// steer queue or aborted turn cannot silently drop it; it stays visible
+			// and in-context for the model's next step.
+			this._appendCustomMessage(appMessage);
 		} else if (this.isStreaming) {
 			this._queueAgentMessage(appMessage, options?.deliverAs === "followUp" ? "followUp" : "steer");
 		} else if (options?.triggerTurn) {
-			const turn = this._runAgentPrompt(appMessage);
-			void turn.catch(() => {});
+			// ES2022 build target: use a manually constructed deferred instead of
+			// Promise.withResolvers (ES2024). Resolve on prompt-start so a later
+			// model-turn rejection cannot un-admit an already-delivered notice;
+			// reject only when the turn fails before that start signal fires.
+			let resolveAdmission!: () => void;
+			let rejectAdmission!: (error: unknown) => void;
+			const admission = new Promise<void>((resolve, reject) => {
+				resolveAdmission = resolve;
+				rejectAdmission = reject;
+			});
+			const turn = this._runAgentPrompt(appMessage, resolveAdmission);
+			void turn.then(resolveAdmission, rejectAdmission);
+			await admission;
 		} else {
 			this._appendCustomMessage(appMessage);
 		}

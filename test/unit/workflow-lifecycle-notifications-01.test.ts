@@ -111,7 +111,7 @@ describe("installWorkflowLifecycleNotifications", () => {
     store.recordNotice({ id: "nudge", level: "info", message: "force notify", createdAt: 3 });
 
     assert.equal(sent.length, 1);
-    assert.deepEqual(options, [{ triggerTurn: true, deliverAs: "steer" }]);
+    assert.deepEqual(options, [{ triggerTurn: true, deliverAs: "steer", persistWhenStreaming: true }]);
     assert.equal(sent[0]?.customType, LIFECYCLE_NOTICE_CUSTOM_TYPE);
     assert.equal(sent[0]?.display, true);
     assert.equal(sent[0]?.details?.kind, "completed");
@@ -225,7 +225,7 @@ describe("installWorkflowLifecycleNotifications", () => {
     assert.equal(store.recordRunEnd("run-2", "failed", undefined, longError, { failedStageId: "stage-2" }), true);
 
     assert.equal(sent.length, 1);
-    assert.deepEqual(options, [{ triggerTurn: true, deliverAs: "steer" }]);
+    assert.deepEqual(options, [{ triggerTurn: true, deliverAs: "steer", persistWhenStreaming: true }]);
     assert.equal(sent[0]?.details?.kind, "failed");
     assert.equal(sent[0]?.details?.stageName, "publish");
     assert.equal(sent[0]?.details?.error?.length, LIFECYCLE_NOTICE_SNIPPET_LIMIT);

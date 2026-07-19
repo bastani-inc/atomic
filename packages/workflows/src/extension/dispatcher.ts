@@ -16,6 +16,7 @@ import { resolveAndValidateInputs } from "../runs/foreground/executor.js";
 import { runDetached } from "../runs/background/runner.js";
 import type { WorkflowToolResult, WorkflowInputEntry } from "./render-result.js";
 import { deriveInputFields, schemaIsRequired } from "../shared/schema-introspection.js";
+import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { WorkflowToolArgs } from "./index.js";
 import {
   INTERACTIVE_WORKFLOW_POLICY,
@@ -201,7 +202,7 @@ export async function dispatch(
           action: "run",
           name: snapshot.name,
           runId: snapshot.id,
-          status: snapshot.status,
+          status: effectiveRunStatus(snapshot),
           result: snapshot.result,
           error: snapshot.error,
           exited: snapshot.exited,

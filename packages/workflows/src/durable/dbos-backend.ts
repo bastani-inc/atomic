@@ -228,36 +228,44 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
       expectedStatuses: expected, status, flush: () => this.flush(), local: () => this.getLoadableWorkflow(workflowId),
       read: async () => classifyLatestMetadata(await this.sdk.listStepRecords(workflowId), workflowId),
       reconcile: (entry) => this.mem.setWorkflowStatus(workflowId, entry.status, undefined, entry.resumable),
-      claim: (authoritative, generation) => this.claimStatusTransition(workflowId, authoritative, generation, status),
+      claim: (authoritative, generation) => this.claimStatusTransition(
+        workflowId, authoritative, generation, status, pendingPrompts, resumable,
+      ),
       write: async () => { this.setWorkflowStatus(workflowId, status, pendingPrompts, resumable); await this.flush(); },
     });
   }
 
   /**
    * The transition's metadata write IS the claim: every racer that observed
-   * the same generation writes the same deterministic step id, DBOS keeps the
-   * first record, and `ownerExecutorId` identifies the winner. A crash after a
-   * won claim leaves valid `running` metadata whose stale heartbeat makes the
-   * workflow resumable again — a generation can never wedge.
+   * first record, and a unique transition claim id identifies the winner even
+   * for concurrent callers sharing one executor. The claim itself carries the
+   * requested status metadata, so a crash cannot expose an intermediate state
+   * with stale resumability.
    */
   private async claimStatusTransition(
     workflowId: string,
     authoritative: import("./types.js").DurableWorkflowMetadata,
     generation: number,
     status: DurableWorkflowStatus,
+    pendingPrompts?: number,
+    resumable?: boolean,
   ): Promise<boolean> {
-    const stepName = claimMetadataStepName(generation, status);
+    const stepName = claimMetadataStepName(generation);
+    const transitionClaimId = crypto.randomUUID();
     const claim: import("./types.js").DurableWorkflowMetadata = {
       ...authoritative,
       status,
+      ...(pendingPrompts !== undefined ? { pendingPrompts } : {}),
+      ...(resumable !== undefined ? { resumable } : {}),
       ownerExecutorId: this.executorId,
+      transitionClaimId,
       updatedAt: Date.now(),
     };
     await this.sdk.recordStepOutput(workflowId, stepName, encodeMetadata(claim));
     const records = await this.sdk.listStepRecords(workflowId);
     const record = records.find((candidate) => candidate.stepName === stepName);
     if (record === undefined) return false;
-    return parseCurrentMetadataRecord(record, workflowId)?.ownerExecutorId === this.executorId;
+    return parseCurrentMetadataRecord(record, workflowId)?.transitionClaimId === transitionClaimId;
   }
 
   adjustPendingPrompts(workflowId: string, delta: number): void {
@@ -359,7 +367,6 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
     const deletion = classifyDbosDeletionTombstone(records, workflowId);
     if (deletion !== "absent") await this.suppressWorkflow(workflowId);
   }
-
   async hydrateResumableWorkflows(): Promise<void> {
     const all = await this.sdk.listAllWorkflows();
     for (const info of all) {

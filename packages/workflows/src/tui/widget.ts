@@ -28,6 +28,7 @@ import type {
 } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
+import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { PiTheme } from "./store-widget-installer.js";
 import { renderRoundedBoxLines } from "./chat-surface.js";
 import type { FlatBandBadge } from "./chat-surface.js";
@@ -81,6 +82,7 @@ interface RunCounts {
   paused: number;
   quit: number;
   done: number;
+  blocked: number;
   failed: number;
   /** Runs with a pending HIL prompt — surfaced as a separate badge so the
    *  user knows to attach via F2 before more progress is possible. */
@@ -110,16 +112,16 @@ function countRuns(
   runs: readonly RunSnapshot[],
   allRuns: readonly RunSnapshot[] = runs,
 ): RunCounts {
-  const counts: RunCounts = { active: 0, paused: 0, quit: 0, done: 0, failed: 0, awaiting: 0 };
+  const counts: RunCounts = { active: 0, paused: 0, quit: 0, done: 0, blocked: 0, failed: 0, awaiting: 0 };
   for (const r of runs) {
+    const status = effectiveRunStatus(r);
     if (isQuitRun(r)) counts.quit++;
-    else if (r.endedAt === undefined && r.status === "paused") counts.paused++;
+    else if (status === "blocked") counts.blocked++;
+    else if (r.endedAt === undefined && status === "paused") counts.paused++;
     else if (r.endedAt === undefined) counts.active++;
-    else if (r.status === "completed" || r.status === "skipped" || r.status === "cancelled" || r.status === "blocked") counts.done++;
-    else if (r.status === "failed" || r.status === "killed") counts.failed++;
-    if (r.endedAt === undefined && subtreeAwaitsInput(r, allRuns)) {
-      counts.awaiting++;
-    }
+    else if (status === "completed" || status === "skipped" || status === "cancelled") counts.done++;
+    else if (status === "failed" || status === "killed") counts.failed++;
+    if (r.endedAt === undefined && subtreeAwaitsInput(r, allRuns)) counts.awaiting++;
   }
   return counts;
 }
@@ -142,7 +144,7 @@ export function nextWidgetRefreshDelayMs(
     .filter((run) => run.endedAt !== undefined)
     .map((run) => Math.max(1, run.endedAt! + RECENT_ENDED_WINDOW_MS - now + 1));
   for (const run of display) {
-    if (run.endedAt !== undefined || run.status === "paused" || run.pausedAt !== undefined) continue;
+    if (run.endedAt !== undefined || effectiveRunStatus(run) !== "running" || run.pausedAt !== undefined) continue;
     const remainder = elapsedRunMs(run, now) % 1_000;
     delays.push(remainder === 0 ? 1_000 : 1_000 - remainder);
   }
@@ -175,7 +177,7 @@ function shortId(run: RunSnapshot): string {
 
 function statusGlyph(run: RunSnapshot): string {
   if (isQuitRun(run)) return "○";
-  switch (run.status) {
+  switch (effectiveRunStatus(run)) {
     case "running":
       return "●";
     case "paused":
@@ -199,7 +201,7 @@ function statusGlyph(run: RunSnapshot): string {
 
 function statusFg(run: RunSnapshot, theme: GraphTheme): string {
   if (isQuitRun(run)) return theme.warning;
-  switch (run.status) {
+  switch (effectiveRunStatus(run)) {
     case "running":
     case "paused":
       return theme.warning;
@@ -235,10 +237,11 @@ function progressLabel(run: RunSnapshot): string | undefined {
 function elapsedLabel(run: RunSnapshot, now: number): string {
   if (run.endedAt !== undefined) {
     const elapsed = formatDuration(elapsedRunMs(run, run.endedAt));
-    if (run.status === "completed") return `complete · ${elapsed}`;
-    if (run.status === "failed") return `failed · ${elapsed}`;
-    if (run.status === "killed") return `killed · ${elapsed}`;
-    return `${run.status} · ${elapsed}`;
+    const status = effectiveRunStatus(run);
+    if (status === "completed") return `complete · ${elapsed}`;
+    if (status === "failed") return `failed · ${elapsed}`;
+    if (status === "killed") return `killed · ${elapsed}`;
+    return `${status} · ${elapsed}`;
   }
   if (run.startedAt != null) return formatDuration(elapsedRunMs(run, now));
   return "";
@@ -249,6 +252,7 @@ function metaLine(run: RunSnapshot, now: number): string {
     return elapsedLabel(run, now);
   }
   if (isQuitRun(run)) return "quit · resumable via /workflow resume";
+  if (effectiveRunStatus(run) === "blocked") return "blocked · resumable via /workflow resume";
   const parts: string[] = [modeLabel(run)];
   const prog = progressLabel(run);
   if (prog) parts.push(prog);
@@ -277,6 +281,9 @@ function countBadges(counts: RunCounts, theme: GraphTheme): FlatBandBadge[] {
   // question-mark status glyph, then keep ↵ as the attach/respond action hint.
   if (counts.awaiting > 0) {
     badges.push({ text: `${statusIcon("awaiting_input")} ↵ ${counts.awaiting} needs attention (attach to workflow with \`/workflow connect\`)`, fg: theme.info });
+  }
+  if (counts.blocked > 0) {
+    badges.push({ text: `↑ ${counts.blocked} blocked`, fg: theme.warning });
   }
   if (counts.done > 0) {
     badges.push({ text: `✓ ${counts.done} complete`, fg: theme.success });
@@ -324,7 +331,7 @@ function themedRunLines(
   const meta = metaLine(run, now);
   // Render the meta line in muted while running so the elapsed-time
   // gradient stays readable; dim it once the run has terminated.
-  const metaFg = run.status === "running" ? muted : dim;
+  const metaFg = effectiveRunStatus(run) === "running" ? muted : dim;
   const line2 = `     ${metaFg}${meta}${RESET}`;
   return [line1, line2];
 }
@@ -347,18 +354,20 @@ function themedCollapsed(
   const dim = hexToAnsi(theme.dim);
   const muted = hexToAnsi(theme.textMuted);
   const warning = hexToAnsi(theme.warning);
-  const total = counts.active + counts.paused + counts.quit + counts.done + counts.failed;
+  const total = counts.active + counts.paused + counts.quit + counts.done + counts.blocked + counts.failed;
   const active = counts.active;
   const paused = counts.paused > 0 ? `${dim} · ${RESET}${warning}${counts.paused} ❚❚${RESET}` : "";
   const quit = counts.quit > 0 ? `${dim} · ${RESET}${warning}${counts.quit} quit${RESET}` : "";
-  return ` ${mauve}▾${RESET}  ${muted}${total} background${RESET}${dim} · ${RESET}${warning}${active} ●${RESET}${paused}${quit}`;
+  const blocked = counts.blocked > 0 ? `${dim} · ${RESET}${warning}${counts.blocked} ↑${RESET}` : "";
+  return ` ${mauve}▾${RESET}  ${muted}${total} background${RESET}${dim} · ${RESET}${warning}${active} ●${RESET}${paused}${quit}${blocked}`;
 }
 
 function plainCollapsed(counts: RunCounts): string {
-  const total = counts.active + counts.paused + counts.quit + counts.done + counts.failed;
+  const total = counts.active + counts.paused + counts.quit + counts.done + counts.blocked + counts.failed;
   const paused = counts.paused > 0 ? ` · ${counts.paused} ❚❚` : "";
   const quit = counts.quit > 0 ? ` · ${counts.quit} quit` : "";
-  return ` ▾  ${total} background · ${counts.active} ●${paused}${quit}`;
+  const blocked = counts.blocked > 0 ? ` · ${counts.blocked} ↑` : "";
+  return ` ▾  ${total} background · ${counts.active} ●${paused}${quit}${blocked}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -388,11 +397,12 @@ export function buildThemedWidgetLines(
   // Active + recently-ended dominate the badge counts so a finished run
   // visually persists for a beat before dropping off.
   const visibleCounts: RunCounts = {
-    active: display.filter((r) => r.endedAt === undefined && r.status !== "paused").length,
-    paused: display.filter((r) => r.endedAt === undefined && r.status === "paused" && !isQuitRun(r)).length,
+    active: display.filter((r) => r.endedAt === undefined && effectiveRunStatus(r) === "running").length,
+    paused: display.filter((r) => r.endedAt === undefined && effectiveRunStatus(r) === "paused" && !isQuitRun(r)).length,
     quit: display.filter(isQuitRun).length,
-    done: display.filter((r) => r.endedAt !== undefined && (r.status === "completed" || r.status === "skipped" || r.status === "cancelled" || r.status === "blocked")).length,
-    failed: display.filter((r) => r.endedAt !== undefined && (r.status === "failed" || r.status === "killed")).length,
+    done: display.filter((r) => r.endedAt !== undefined && ["completed", "skipped", "cancelled"].includes(effectiveRunStatus(r))).length,
+    blocked: display.filter((r) => effectiveRunStatus(r) === "blocked").length,
+    failed: display.filter((r) => r.endedAt !== undefined && ["failed", "killed"].includes(effectiveRunStatus(r))).length,
     awaiting: counts.awaiting,
   };
 
@@ -404,7 +414,7 @@ export function buildThemedWidgetLines(
     return [themed ? themedCollapsed(visibleCounts, graphTheme) : plainCollapsed(visibleCounts)];
   }
 
-  const total = counts.active + counts.paused + counts.quit + counts.done + counts.failed;
+  const total = counts.active + counts.paused + counts.quit + counts.done + counts.blocked + counts.failed;
   const subtitle = `${total} run${total === 1 ? "" : "s"}`;
 
   const badgeList = countBadges(visibleCounts, graphTheme);

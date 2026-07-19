@@ -16,7 +16,9 @@ export function isDurableWorkflowResumable(candidate: DurableResumeCandidate): b
   if (!isRoot) return false;
   if (candidate.status === "failed" || candidate.status === "blocked") return candidate.resumable !== false;
   const hasResumeProgress = candidate.completedCheckpoints > 0 || candidate.pendingPrompts > 0;
-  return (candidate.status === "running" || candidate.status === "paused") && hasResumeProgress;
+  return candidate.resumable !== false
+    && (candidate.status === "running" || candidate.status === "paused")
+    && hasResumeProgress;
 }
 
 /**
