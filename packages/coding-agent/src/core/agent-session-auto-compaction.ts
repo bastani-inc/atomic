@@ -388,7 +388,7 @@ export async function _runAutoCompaction(this: AgentSession, reason: "overflow" 
 				if (!authResult.ok || !authResult.apiKey) {
 					return undefined;
 				}
-				return { apiKey: authResult.apiKey, headers: authResult.headers };
+				return { apiKey: authResult.apiKey, headers: authResult.headers, baseUrl: authResult.baseUrl };
 			},
 			abortController: this._autoCompactionAbortController,
 			backupLabel: reason === "overflow" ? "overflow-auto-compact" : "auto-compact",

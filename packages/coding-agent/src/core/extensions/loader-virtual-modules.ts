@@ -25,7 +25,7 @@ async function loadVirtualModules(): Promise<Record<string, object>> {
     // "@earendil-works/pi-ai"`, so we load the compat module here and key it
     // under the root specifier below to keep every extension working unchanged.
     import("@earendil-works/pi-ai/compat"),
-    import("@earendil-works/pi-ai/oauth"),
+    import("../oauth-compat.ts"),
     // NOTE: This import works because loader.ts exports are NOT re-exported from index.ts,
     // avoiding a circular dependency while preserving the package-name extension import path.
     import("../../index.ts"),
@@ -193,7 +193,7 @@ function getAliases(): Record<string, string> {
   // upstream layout change moves these files, this join needs updating to
   // match the package's real dist paths.
   const piAiEntry = resolveWorkspaceOrImport("ai/dist/compat.js", "@earendil-works/pi-ai");
-  const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@earendil-works/pi-ai");
+  const piAiOauthEntry = path.resolve(__dirname, "../oauth-compat.js");
 
   _aliases = {
     "@bastani/atomic": piCodingAgentEntry,

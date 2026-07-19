@@ -45,7 +45,8 @@
         "group": "Reference",
         "pages": [
           "tools",
-          "session-format"
+          "session-format",
+          "pi-0.80.10-port-matrix"
         ]
       },
       {

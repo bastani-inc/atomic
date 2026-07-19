@@ -124,6 +124,8 @@ export async function createAgentSession(
   const modelRegistry =
     options.modelRegistry ??
     ModelRegistry.create(options.authStorage ?? AuthStorage.create(authPath), modelsPath);
+  // Restore persisted provider-owned catalogs before any synchronous model reads.
+  await modelRegistry.refresh({ allowNetwork: false });
 
   const settingsManager =
     options.settingsManager ?? SettingsManager.create(cwd, agentDir);
@@ -339,6 +341,7 @@ export async function createAgentSession(
       if (!auth.ok) {
         throw new Error(auth.error);
       }
+      const requestModel = auth.baseUrl && auth.baseUrl !== model.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
       const providerRetrySettings = settingsManager.getProviderRetrySettings();
       const httpIdleTimeoutMs = settingsManager.getHttpIdleTimeoutMs();
       // SDKs treat timeout=0 as 0ms (immediate timeout), not "no timeout".
@@ -368,10 +371,10 @@ export async function createAgentSession(
         },
         fastModeEnabled,
       );
-      if (modelRegistry.hasRegisteredStreamSimpleForApi(model.api)) {
-        return streamSimple(model, context, codexFastModeStreamOptions);
+      if (modelRegistry.hasRegisteredStreamSimpleForApi(requestModel.api)) {
+        return streamSimple(requestModel, context, codexFastModeStreamOptions);
       }
-      return streamWithCodexFastMode(model, context, codexFastModeStreamOptions);
+      return streamWithCodexFastMode(requestModel, context, codexFastModeStreamOptions);
     },
     onPayload: async (payload, model) => {
       const fastModeEnabled = isCodexFastModeEnabled(model);

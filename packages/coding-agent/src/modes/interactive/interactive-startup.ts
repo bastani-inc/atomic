@@ -3,6 +3,7 @@ import { type Container, type MarkdownTheme, os, path, Markdown, Spacer, Text, s
 import { ExpandableText } from "./interactive-mode-helpers.ts";
 import { ONBOARDING_COPY } from "./interactive-onboarding.ts";
 import { onInteractiveEngineRemoteCommandsChanged, waitForInteractiveEngineBound } from "../interactive-engine/extension-ui-bridge.ts";
+import { restoreTerminalTitleAfterPackageCheck } from "./interactive-terminal-title.ts";
 
 function prepareStartupNotices(mode: InteractiveModeBase): void {
     if (mode.startupNoticesPrepared) return;
@@ -224,7 +225,10 @@ InteractiveModeBase.prototype.run = async function(this: InteractiveModeBase): P
 		checkForNewPiVersion(this.version).then((newVersion) => {
 			if (newVersion) this.showNewVersionNotification(newVersion, startupNoticesContainer);
 		});
-		this.checkForPackageUpdates().then((updates) => {
+		restoreTerminalTitleAfterPackageCheck(this.checkForPackageUpdates(), {
+			initialized: () => this.isInitialized,
+			restore: () => this.updateTerminalTitle(),
+		}).then((updates) => {
 			if (updates.length > 0) this.showPackageUpdateNotification(updates, startupNoticesContainer);
 		});
 		this.checkTmuxKeyboardSetup().then((warning) => {

@@ -107,7 +107,7 @@ export async function _applyVerbatimCompaction(
 		if (!auth) throw new Error("Compaction provider authentication is unavailable");
 		compacted = await runVerbatimCompaction(
 			preparation,
-			model,
+			auth.baseUrl === undefined ? model : { ...model, baseUrl: auth.baseUrl },
 			auth.apiKey,
 			auth.headers,
 			options.abortController.signal,

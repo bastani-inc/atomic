@@ -313,6 +313,28 @@ pi.registerProvider("corporate-ai", {
 
 After registration, users can authenticate via `/login corporate-ai`.
 
+Atomic bridges this legacy extension OAuth shape to Pi's provider-owned `OAuthAuth` runtime. Existing extensions keep their `login`, `refreshToken`, `getApiKey`, and optional `modifyModels` methods; built-in providers use Pi's canonical login/refresh/auth implementation. OAuth refresh remains serialized through Atomic's credential-store lock.
+
+## Dynamic model catalog refresh
+
+Providers whose catalogs change at runtime can add `refreshModels`. Atomic calls it during the asynchronous model refresh used by the model picker and authentication flows:
+
+```typescript
+pi.registerProvider("corporate-ai", {
+  baseUrl: "https://ai.corp.com/v1",
+  api: "openai-responses",
+  apiKey: "$CORPORATE_AI_KEY",
+  models: cachedModels,
+  async refreshModels({ signal, force, credential, store }) {
+    const models = await fetchCorporateModels({ signal, force, credential });
+    await store.write({ models, checkedAt: Date.now() });
+    return models;
+  }
+});
+```
+
+The current catalog stays readable while refresh is pending. Successful provider results are applied independently; a provider that fails, times out, or observes an aborted `signal` retains its previous list. Use the provider-scoped `store` only when the catalog should persist across sessions.
+
 ### OAuthLoginCallbacks
 
 The `callbacks` object provides three ways to authenticate:
@@ -346,7 +368,7 @@ interface OAuthCredentials {
 
 For providers with non-standard APIs, implement `streamSimple`. Study the existing provider implementations before writing your own:
 
-> **Compatibility note (Pi 0.80.2 sync):** Upstream Pi 0.80.2 made the `@earendil-works/pi-ai` root entrypoint core-only and moved the legacy global provider/model API (`stream`, `complete`, `registerApiProvider`, `getEnvApiKey`, `streamSimple`, and the `Model`/`Api`/`SimpleStreamOptions`/`AssistantMessageEventStream` types shown below) onto the `@earendil-works/pi-ai/compat` entrypoint. Atomic's extension loader aliases the `@earendil-works/pi-ai` root to `/compat` at runtime, so extensions that import these symbols from the root keep working unchanged. For new TypeScript code that needs this legacy surface, prefer importing from `@earendil-works/pi-ai/compat` for accurate type resolution. The `/oauth` subpath is unaffected.
+> **Compatibility note (Pi 0.80.10 sync):** Upstream Pi keeps the legacy global provider/model API (`stream`, `complete`, `registerApiProvider`, `getEnvApiKey`, `streamSimple`, and the `Model`/`Api`/`SimpleStreamOptions`/`AssistantMessageEventStream` types shown below) on the `@earendil-works/pi-ai/compat` entrypoint. Atomic's extension loader aliases the `@earendil-works/pi-ai` root to `/compat` at runtime, so existing extensions keep working unchanged. For new TypeScript code that needs this legacy surface, prefer importing from `@earendil-works/pi-ai/compat` for accurate type resolution. The `/oauth` entrypoint is now type-only; Atomic bridges legacy extension OAuth at registration time and uses provider-owned authentication for built-ins.
 
 **Reference implementations:**
 

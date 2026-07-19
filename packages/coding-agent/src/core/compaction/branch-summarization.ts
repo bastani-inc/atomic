@@ -6,6 +6,7 @@
  */
 
 import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
+import type { ProviderHeaders } from "@earendil-works/pi-ai";
 import type { Api, Model, SimpleStreamOptions } from "@earendil-works/pi-ai/compat";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
 import { formatCopilotProviderError } from "../copilot-errors.ts";
@@ -64,7 +65,7 @@ export interface GenerateBranchSummaryOptions {
 	/** API key for the model */
 	apiKey: string;
 	/** Request headers for the model */
-	headers?: Record<string, string>;
+	headers?: ProviderHeaders;
 	/** Abort signal for cancellation */
 	signal: AbortSignal;
 	/** Optional custom instructions for summarization */

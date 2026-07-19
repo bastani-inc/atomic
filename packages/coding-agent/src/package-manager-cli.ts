@@ -1,3 +1,6 @@
+import { join } from "node:path";
+import { createModels } from "@earendil-works/pi-ai";
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import chalk from "chalk";
 import { selectConfig } from "./cli/config-selector.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
@@ -12,10 +15,13 @@ import {
 	type SelfUpdateCommand,
 	VERSION,
 } from "./config.ts";
+import { AuthStorage } from "./core/auth-storage.ts";
 import type { ExtensionFactory } from "./core/extensions/types.ts";
 import { DefaultPackageManager } from "./core/package-manager.ts";
 import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
 import { DefaultResourceLoader } from "./core/resource-loader.ts";
+import { FileModelsStore } from "./core/models-store.ts";
+import { withRemoteCatalog } from "./core/remote-catalog-provider.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { hasProjectTrustInputs, ProjectTrustStore } from "./core/trust-manager.ts";
 import { spawnProcess } from "./utils/child-process.ts";
@@ -42,6 +48,32 @@ function updateTargetIncludesSelf(target: UpdateTarget): boolean {
 
 function updateTargetIncludesExtensions(target: UpdateTarget): boolean {
 	return target.type === "all" || target.type === "extensions";
+}
+
+export async function refreshModelCatalogs(agentDir: string): Promise<void> {
+	const models = createModels({
+		credentials: AuthStorage.create(join(agentDir, "auth.json")).asCredentialStore(),
+		modelsStore: new FileModelsStore(join(agentDir, "models-store.json")),
+	});
+	for (const provider of builtinProviders()) {
+		models.setProvider(provider.id === "radius" ? provider : withRemoteCatalog(provider));
+	}
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), 15_000);
+	try {
+		const refresh = models.refresh({ allowNetwork: true, force: true, signal: controller.signal });
+		const aborted = new Promise<null>((resolve) => {
+			controller.signal.addEventListener("abort", () => resolve(null), { once: true });
+		});
+		const result = await Promise.race([refresh, aborted]);
+		if (!result || result.aborted) throw new Error("Model catalog refresh timed out.");
+		if (result.errors.size > 0) {
+			const details = [...result.errors].map(([provider, error]) => `${provider}: ${error.message}`).join("; ");
+			throw new Error(`Could not refresh model catalogs: ${details}`);
+		}
+	} finally {
+		clearTimeout(timeout);
+	}
 }
 
 function printSelfUpdateUnavailable(npmCommand?: string[], updatePackageName = PACKAGE_NAME): void {
@@ -130,6 +162,7 @@ function parseProjectTrustOverride(args: readonly string[]): boolean | undefined
 
 export interface PackageCommandRuntimeOptions {
 	extensionFactories?: ExtensionFactory[];
+	refreshModelCatalogs?: (agentDir: string) => Promise<void>;
 }
 
 interface CommandSettingsResult {
@@ -350,6 +383,11 @@ export async function handlePackageCommand(
 
 			case "update": {
 				const target = options.updateTarget ?? { type: "self" };
+				if (target.type === "models") {
+					await (runtimeOptions.refreshModelCatalogs ?? refreshModelCatalogs)(agentDir);
+					console.log(chalk.green("Model catalogs refreshed"));
+					return true;
+				}
 				if (options.showExtensionsSkippedNote) {
 					console.log(
 						chalk.dim(`Extensions are skipped. Run ${APP_NAME} update --extensions to update extensions.`),

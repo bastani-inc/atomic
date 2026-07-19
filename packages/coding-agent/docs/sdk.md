@@ -432,6 +432,8 @@ const { session } = await createAgentSession({
 });
 ```
 
+`ModelRegistry` keeps synchronous reads for SDK and extension compatibility, while catalog refresh is asynchronous. Await `modelRegistry.refresh()` before reading `getAll()`, `find()`, or `getAvailable()` when a provider may update its catalog. The refresh result reports `aborted` and per-provider `errors`; successful providers publish their new catalogs even if another provider fails, and failed or timed-out providers retain their last-known models.
+
 If no model is provided:
 1. Tries to restore from session (if continuing)
 2. Uses default from settings
@@ -447,11 +449,15 @@ The package root exports the same context-window helpers and types used by the r
 
 ### API Keys and OAuth
 
+Atomic preserves the public synchronous `AuthStorage` and `ModelRegistry` SDK entry points. Internally, credentials are exposed through a private asynchronous Pi `CredentialStore` adapter so provider-owned authentication can refresh tokens under Atomic's existing cross-process lock without changing `AuthStorage.list(): string[]` or the `authStorage`/`modelRegistry` session options.
+
 API key resolution priority (handled by AuthStorage):
 1. Runtime overrides (via `setRuntimeApiKey`, not persisted)
 2. Stored credentials in `auth.json` (API keys or OAuth tokens)
 3. Environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.)
 4. Fallback resolver (for custom provider keys from `models.json`)
+
+Provider-owned OAuth may resolve complete request auth: `apiKey`, request `headers`, and a credential-specific `baseUrl`. Atomic merges all three into the existing request path. In particular, GitHub Copilot enterprise and token-specific endpoints replace the static model URL for that request without dropping Atomic's retries, attribution headers, fast mode, or extension request hooks.
 
 ```typescript
 import { AuthStorage, ModelRegistry } from "@bastani/atomic";

@@ -66,6 +66,16 @@ export {
 	InMemoryAuthStorageBackend,
 	type OAuthCredential,
 } from "./core/auth-storage.ts";
+import "./core/oauth-compat.js";
+export {
+	getOAuthApiKey,
+	getOAuthProvider,
+	getOAuthProviders,
+	type LegacyOAuthProvider,
+	type OAuthProviderDescriptor,
+	registerOAuthProvider,
+	resetOAuthProviders,
+} from "./core/oauth-provider-bridge.ts";
 // Compaction
 export {
 	type BranchPreparation,

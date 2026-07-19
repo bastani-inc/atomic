@@ -1,4 +1,5 @@
 import type { Agent, AgentEvent, AgentMessage, AgentState, AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ProviderHeaders } from "@earendil-works/pi-ai";
 import type { Api, AssistantMessage, ImageContent, Message, Model, TextContent } from "@earendil-works/pi-ai/compat";
 import type { PendingPostToolCompactionGuard } from "./agent-session-post-tool-compaction.ts";
 import type { BashResult } from "./bash-executor.ts";
@@ -42,7 +43,7 @@ import type {
 import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.ts";
 
 export interface VerbatimCompactionApplyOptions {
-	resolvePlannerAuth: () => Promise<{ apiKey: string; headers?: Record<string, string> } | undefined>;
+	resolvePlannerAuth: () => Promise<{ apiKey: string; headers?: ProviderHeaders; baseUrl?: string } | undefined>;
 	abortController: AbortController;
 	backupLabel: string;
 	compression_ratio?: number;
@@ -101,7 +102,7 @@ export interface AgentSessionMethodSurface {
 	readonly extensionRunner: ExtensionRunner;
 
 	_handleAgentEvent(event: AgentEvent): void;
-	_getRequiredRequestAuth(model: Model<Api>): Promise<{ apiKey: string; headers?: Record<string, string> }>;
+	_getRequiredRequestAuth(model: Model<Api>): Promise<{ apiKey: string; headers?: ProviderHeaders }>;
 	_installAgentToolHooks(): void;
 	_installAgentNextTurnRefresh(): void;
 	_emit(event: AgentSessionEvent): void;

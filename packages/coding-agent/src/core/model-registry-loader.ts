@@ -9,6 +9,7 @@ const OPENAI_COMPATIBLE_APIS = new Set<Api>(["openai-completions", "openai-respo
 export function loadModelRegistryModels(
 	authStorage: AuthStorage,
 	modelsJsonPaths: string[],
+	baseModels?: readonly Model<Api>[],
 ): ModelRegistryLoadResult {
 	const {
 		models: customModels,
@@ -19,7 +20,7 @@ export function loadModelRegistryModels(
 		error,
 	} = loadCustomModelsFromPaths(modelsJsonPaths);
 
-	const builtInModels = loadBuiltInModels(overrides, modelOverrides);
+	const builtInModels = loadBuiltInModels(overrides, modelOverrides, baseModels);
 	const builtInProviders = new Set(builtInModels.map((model) => model.provider));
 	const customOpenAICompatibleProviders = new Set(
 		customModels

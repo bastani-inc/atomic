@@ -87,6 +87,45 @@ describe("AssistantMessageComponent", () => {
 		expect(rendered).not.toContain(theme.getFgAnsi("thinkingText"));
 	});
 
+	test("coalesces only adjacent thinking blocks into one rendered section", () => {
+		initTheme("dark");
+		const component = new AssistantMessageComponent(
+			createAssistantMessage([
+				{ type: "thinking", thinking: "first thought" },
+				{ type: "thinking", thinking: "second thought" },
+				{ type: "text", text: "answer" },
+				{ type: "thinking", thinking: "third thought" },
+				{ type: "toolCall", id: "tool-1", name: "read", arguments: {} },
+				{ type: "thinking", thinking: "fourth thought" },
+			]),
+		);
+
+		const markdownChildren = (
+			component as unknown as { contentContainer: { children: Array<{ text?: string }> } }
+		).contentContainer.children.filter((child) => child.constructor.name === "Markdown");
+		expect(markdownChildren.map((child) => child.text)).toEqual([
+			"first thought\n\nsecond thought",
+			"answer",
+			"third thought",
+			"fourth thought",
+		]);
+	});
+
+	test("renders one hidden label for each adjacent thinking run", () => {
+		initTheme("dark");
+		const component = new AssistantMessageComponent(
+			createAssistantMessage([
+				{ type: "thinking", thinking: "first" },
+				{ type: "thinking", thinking: "second" },
+				{ type: "text", text: "boundary" },
+				{ type: "thinking", thinking: "third" },
+			]),
+			true,
+		);
+		const rendered = component.render(80).join("\n");
+		expect(rendered.match(/Thinking\.\.\./g)).toHaveLength(2);
+	});
+
 	test("wraps long aborted assistant messages to the render width", () => {
 		initTheme("dark");
 		const width = 48;

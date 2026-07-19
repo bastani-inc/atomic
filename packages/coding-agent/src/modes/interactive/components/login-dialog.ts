@@ -1,4 +1,5 @@
-import { getOAuthProviders, type OAuthDeviceCodeInfo } from "@earendil-works/pi-ai/oauth";
+import type { OAuthDeviceCodeInfo } from "@earendil-works/pi-ai";
+import { getOAuthProviderDescriptors } from "../../../core/oauth-provider-bridge.ts";
 import { Container, type Focusable, getKeybindings, Input, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
 import { openBrowser } from "../../../utils/open-browser.ts";
 import { theme } from "../theme/theme.ts";
@@ -40,7 +41,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 		this.onComplete = onComplete;
 		this.tui = tui;
 
-		const providerInfo = getOAuthProviders().find((p) => p.id === providerId);
+		const providerInfo = getOAuthProviderDescriptors().find((p) => p.id === providerId);
 		const providerName = providerNameOverride || providerInfo?.name || providerId;
 		const title = titleOverride ?? `Login to ${providerName}`;
 
@@ -171,6 +172,13 @@ export class LoginDialogComponent extends Container implements Focusable {
 			this.inputResolver = resolve;
 			this.inputRejecter = reject;
 		});
+	}
+
+	/** Resolve and release a manual input prompt after an out-of-band callback succeeds. */
+	dismissPendingInput(): void {
+		this.inputResolver?.("");
+		this.inputResolver = undefined;
+		this.inputRejecter = undefined;
 	}
 
 	/**

@@ -11,6 +11,7 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 
 - Fixed collapsed web-search results hardcoding `CTRL+O`; the line-count hint now uses the effective `app.tools.expand` binding and keeps its factual counts when expansion is unbound.
+- Preserved provider-owned null header suppression and credential-specific `baseUrl` overrides for search-query rewriting and summary generation ([#1875](https://github.com/bastani-inc/atomic/issues/1875)).
 
 ## [0.9.10-alpha.1] - 2026-07-15
 

@@ -1,0 +1,87 @@
+import type { Api, Model, Provider } from "@earendil-works/pi-ai";
+import { VERSION } from "../config.ts";
+import { getPiUserAgent } from "../utils/pi-user-agent.ts";
+
+const DEFAULT_CATALOG_BASE_URL = "https://pi.dev";
+export const REMOTE_CATALOG_REFRESH_INTERVAL_MS = 4 * 60 * 60 * 1000;
+
+function mergeModels(baseline: readonly Model<Api>[], dynamic: readonly Model<Api>[]): Model<Api>[] {
+	const merged = [...baseline];
+	for (const model of dynamic) {
+		const index = merged.findIndex((entry) => entry.id === model.id);
+		if (index >= 0) merged[index] = model;
+		else merged.push(model);
+	}
+	return merged;
+}
+
+function parseCatalog(providerId: string, value: object): Model<Api>[] {
+	const entries = Array.isArray(value)
+		? value
+		: "models" in value && Array.isArray(value.models)
+			? value.models
+			: Object.values(value);
+	return entries
+		.filter((entry): entry is Model<Api> => typeof entry === "object" && entry !== null && "id" in entry)
+		.map((model) => ({ ...model, provider: providerId }));
+}
+
+function settleOnAbort(operation: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
+	if (!signal) return operation;
+	if (signal.aborted) return Promise.resolve();
+	return new Promise<void>((resolve, reject) => {
+		const abort = () => resolve();
+		signal.addEventListener("abort", abort, { once: true });
+		operation.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+	});
+}
+
+/** Add a persisted pi.dev catalog overlay to a static built-in provider. */
+export function withRemoteCatalog(provider: Provider, catalogBaseUrl: string = DEFAULT_CATALOG_BASE_URL): Provider {
+	let dynamicModels: readonly Model<Api>[] = [];
+	let inflightRefresh: Promise<void> | undefined;
+
+	return {
+		...provider,
+		getModels: () => mergeModels(provider.getModels(), dynamicModels),
+		refreshModels: (context) => {
+			if (inflightRefresh) return inflightRefresh;
+			const operation = (async () => {
+				const stored = await context.store.read();
+				if (stored) dynamicModels = stored.models.filter((model) => model.provider === provider.id);
+				if (!context.allowNetwork || context.signal?.aborted) return;
+				if (
+					!context.force &&
+					stored?.checkedAt !== undefined &&
+					Date.now() - stored.checkedAt < REMOTE_CATALOG_REFRESH_INTERVAL_MS
+				) return;
+
+				const url = new URL(`/api/models/providers/${encodeURIComponent(provider.id)}`, catalogBaseUrl);
+				const response = await fetch(url, {
+					headers: { accept: "application/json", "User-Agent": getPiUserAgent(VERSION) },
+					signal: context.signal,
+				});
+				if (context.signal?.aborted) return;
+				const checkedAt = Date.now();
+				if (response.status === 404 || response.status === 501) {
+					await context.store.write({ models: dynamicModels, checkedAt });
+					return;
+				}
+				if (!response.ok) {
+					throw new Error(`Model catalog request failed for ${provider.id}: ${response.status}`);
+				}
+				const body: object = await response.json();
+				const refreshed = parseCatalog(provider.id, body);
+				if (context.signal?.aborted) return;
+				await context.store.write({ models: refreshed, checkedAt });
+				dynamicModels = refreshed;
+			})();
+			const refresh = settleOnAbort(operation, context.signal);
+			const published = refresh.finally(() => {
+				if (inflightRefresh === published) inflightRefresh = undefined;
+			});
+			inflightRefresh = published;
+			return published;
+		},
+	};
+}

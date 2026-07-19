@@ -139,6 +139,7 @@ atomic uninstall <source> [-l]     # Alias for remove
 atomic update [source|self|atomic] # Update Atomic only, or one package source
 atomic update --all                # Update Atomic and packages; reconcile pinned git refs
 atomic update --extensions         # Update packages only; reconcile pinned git refs
+atomic update --models             # Force-refresh authenticated provider model catalogs
 atomic update --self               # Update Atomic only
 atomic update --extension <src>    # Update one package
 atomic list                        # List installed packages

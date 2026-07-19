@@ -37,7 +37,7 @@ InteractiveModeBase.prototype.getModelCandidates = async function(this: Interact
     }
 
     await this.refreshCopilotModelCatalog();
-    this.session.modelRegistry.refresh();
+    await this.session.modelRegistry.refresh();
     try {
       return await this.session.modelRegistry.getAvailable();
     } catch {
@@ -71,7 +71,7 @@ InteractiveModeBase.prototype.loadCopilotModelCatalog = async function(this: Int
         writeCopilotCatalogCache(cachePath, baseUrl, catalog);
       }
       setActiveCopilotModelCatalog(catalog);
-      registry.refresh();
+      await registry.refresh();
       this.session.refreshCurrentModelFromRegistry();
       this.copilotCatalogApplied = true;
     } catch {
@@ -195,7 +195,7 @@ InteractiveModeBase.prototype.showContextWindowSelector = function(this: Interac
 
 InteractiveModeBase.prototype.showModelsSelector = async function(this: InteractiveModeBase): Promise<void> {
     // Get all available models
-    this.session.modelRegistry.refresh();
+    await this.session.modelRegistry.refresh();
     const allModels = this.session.modelRegistry.getAvailable();
 
     if (allModels.length === 0) {

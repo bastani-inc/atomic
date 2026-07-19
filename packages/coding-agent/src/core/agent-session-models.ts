@@ -1,4 +1,5 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ProviderHeaders } from "@earendil-works/pi-ai";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { clampThinkingLevel, getSupportedThinkingLevels, modelsAreEqual } from "@earendil-works/pi-ai/compat";
 import { getModelDefaultContextWindow, getSupportedContextWindows, selectContextWindow } from "./context-window.ts";
@@ -9,7 +10,8 @@ import { COPILOT_CONTEXT_WINDOW_SELECTION_OPTIONS, THINKING_LEVELS, type Context
 
 export async function _getRequiredRequestAuth(this: AgentSession, model: Model<Api>): Promise<{
 	apiKey: string;
-	headers?: Record<string, string>;
+	headers?: ProviderHeaders;
+	baseUrl?: string;
 }> {
 	const result = await this._modelRegistry.getApiKeyAndHeaders(model);
 	if (!result.ok) {
@@ -19,7 +21,7 @@ export async function _getRequiredRequestAuth(this: AgentSession, model: Model<A
 		throw new Error(result.error);
 	}
 	if (result.apiKey) {
-		return { apiKey: result.apiKey, headers: result.headers };
+		return { apiKey: result.apiKey, headers: result.headers, baseUrl: result.baseUrl };
 	}
 
 	const isOAuth = this._modelRegistry.isUsingOAuth(model);

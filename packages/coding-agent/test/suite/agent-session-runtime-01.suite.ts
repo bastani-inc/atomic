@@ -433,6 +433,21 @@ describe("AgentSessionRuntime characterization", () => {
 			})),
 		).toEqual(beforeMessages);
 	});
+	it("explains why an unsaved session cannot be cloned or forked", async () => {
+		const { runtime } = await createRuntimeForTest(() => {});
+		const entryId = runtime.session.sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "not answered yet" }],
+			timestamp: Date.now(),
+		});
+		expect(runtime.session.sessionFile).toBeTruthy();
+		expect(existsSync(runtime.session.sessionFile!)).toBe(false);
+
+		await expect(runtime.fork(entryId, { position: "at" })).rejects.toThrow(
+			"This session has not been saved yet. Wait for the first assistant response before cloning or forking it.",
+		);
+	});
+
 	it("throws when forking with an invalid entry id", async () => {
 		const { runtime } = await createRuntimeForTest(() => {});
 		await expect(runtime.fork("missing-entry")).rejects.toThrow("Invalid entry ID for forking");

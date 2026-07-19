@@ -10,6 +10,14 @@ type PiAiExports = {
 	StringEnum?: object;
 };
 
+type OAuthCompatExports = {
+	getOAuthApiKey?: object;
+	getOAuthProvider?: object;
+	getOAuthProviders?: object;
+	registerOAuthProvider?: object;
+	resetOAuthProviders?: object;
+};
+
 describe("extension loader pi-ai compat aliases", () => {
 	it("keys root and compat specifiers to the same virtual module object", async () => {
 		const modules = await extensionLoaderTestHooks.loadVirtualModules();
@@ -24,12 +32,35 @@ describe("extension loader pi-ai compat aliases", () => {
 		expect(typeof compat.StringEnum).toBe("function");
 	});
 
+	it("provides legacy OAuth runtime helpers through both extension aliases", async () => {
+		const modules = await extensionLoaderTestHooks.loadVirtualModules();
+		const earendil = modules["@earendil-works/pi-ai/oauth"] as OAuthCompatExports;
+		const mario = modules["@mariozechner/pi-ai/oauth"] as OAuthCompatExports;
+
+		expect(mario).toBe(earendil);
+		for (const name of [
+			"getOAuthApiKey",
+			"getOAuthProvider",
+			"getOAuthProviders",
+			"registerOAuthProvider",
+			"resetOAuthProviders",
+		] as const) {
+			expect(typeof earendil[name]).toBe("function");
+		}
+	});
+
 	it("maps root and compat specifiers to the same jiti alias path", () => {
 		const aliases = extensionLoaderTestHooks.getAliases();
 
 		expect(aliases["@earendil-works/pi-ai"]).toBe(aliases["@earendil-works/pi-ai/compat"]);
 		expect(aliases["@mariozechner/pi-ai"]).toBe(aliases["@mariozechner/pi-ai/compat"]);
 		expect(aliases["@mariozechner/pi-ai"]).toBe(aliases["@earendil-works/pi-ai/compat"]);
+	});
+
+	it("maps both OAuth specifiers to Atomic's populated compatibility entry", () => {
+		const aliases = extensionLoaderTestHooks.getAliases();
+		expect(aliases["@mariozechner/pi-ai/oauth"]).toBe(aliases["@earendil-works/pi-ai/oauth"]);
+		expect(aliases["@earendil-works/pi-ai/oauth"]).toMatch(/oauth-compat\.js$/);
 	});
 
 	it("confirms compat is the legacy API surface while root stays core-only", async () => {

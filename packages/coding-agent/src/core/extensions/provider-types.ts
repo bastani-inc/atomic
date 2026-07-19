@@ -7,6 +7,7 @@ import type {
 	OAuthLoginCallbacks,
 	SimpleStreamOptions,
 } from "@earendil-works/pi-ai/compat";
+import type { RefreshModelsContext } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "./api-types.ts";
 
 /** Configuration for registering a provider via pi.registerProvider(). */
@@ -27,6 +28,8 @@ export interface ProviderConfig {
 	authHeader?: boolean;
 	/** Models to register. If provided, replaces all existing models for this provider. */
 	models?: ProviderModelConfig[];
+	/** Refresh this provider's catalog. Successful results replace its extension-provided models. */
+	refreshModels?(context: RefreshModelsContext): Promise<ProviderModelConfig[]>;
 	/** OAuth provider for /login support. The `id` is set automatically from the provider name. */
 	oauth?: {
 		/** Display name for the provider in login UI. */

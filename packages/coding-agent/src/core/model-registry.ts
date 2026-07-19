@@ -2,23 +2,27 @@
  * Model registry - manages built-in and custom models, provides API key resolution.
  */
 
-import { type Api, type Model, resetApiProviders } from "@earendil-works/pi-ai/compat";
-import { resetOAuthProviders } from "@earendil-works/pi-ai/oauth";
-import { dirname } from "node:path";
+import { createModels, type Credential, type ModelsRefreshResult, type ModelsStore, type MutableModels } from "@earendil-works/pi-ai";
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import { type Api, type Model } from "@earendil-works/pi-ai/compat";
+import { dirname, join } from "node:path";
 import { getAgentConfigPaths } from "../config.ts";
 import { normalizePath } from "../utils/paths.ts";
 import type { AuthStatus, AuthStorage } from "./auth-storage.ts";
 import { copilotCatalogCachePath, copilotTokenFromEnvironment, seedActiveCopilotModelCatalogFromCache } from "./copilot-model-catalog.ts";
 import { getModelRequestAuth, getApiKeyForProviderFromConfig, getProviderAuthStatusFromConfig } from "./model-registry-auth.ts";
-import { applyProviderConfigToModels, migrateLegacyRegisterProviderConfigValues, validateProviderConfig } from "./model-registry-dynamic.ts";
+import { applyProviderConfigToModels, migrateLegacyRegisterProviderConfigValues, unregisterProviderRuntime, validateProviderConfig } from "./model-registry-dynamic.ts";
 import { loadModelRegistryModels } from "./model-registry-loader.ts";
 import type { ProviderConfigInput, ProviderRequestConfig, ResolvedRequestAuth } from "./model-registry-types.ts";
 import type { ModelOverride } from "./model-registry-schemas.ts";
 import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "./provider-display-names.ts";
+import { FileModelsStore, InMemoryCodingAgentModelsStore } from "./models-store.ts";
+import { withRemoteCatalog } from "./remote-catalog-provider.ts";
 import { clearConfigValueCache, isConfigValueConfigured } from "./resolve-config-value.ts";
 
 const REMOTE_CATALOG_PROVIDERS = new Set(["cursor", "github-copilot", "openrouter", "vercel-ai-gateway"]);
 const OPENAI_COMPATIBLE_APIS = new Set<Api>(["openai-completions", "openai-responses"]);
+let nextRegistryRegistrationId = 0;
 
 export type { ProviderConfigInput, ResolvedRequestAuth } from "./model-registry-types.ts";
 
@@ -37,6 +41,10 @@ export class ModelRegistry {
 	private builtInProviders: Set<string> = new Set();
 	private customOpenAICompatibleProviders: Set<string> = new Set();
 	private loadError: string | undefined = undefined;
+	private refreshGeneration = 0;
+	private readonly registrationSource = `atomic:model-registry:${++nextRegistryRegistrationId}`;
+	declare private readonly modelsStore: ModelsStore;
+	declare private readonly providerModels: MutableModels;
 
 	declare readonly authStorage: AuthStorage;
 	declare private modelsJsonPaths: string[];
@@ -47,6 +55,13 @@ export class ModelRegistry {
 	) {
 		this.authStorage = authStorage;
 		this.modelsJsonPaths = modelsJsonPaths.map((path) => normalizePath(path));
+		this.modelsStore = this.modelsJsonPaths.length > 0
+			? new FileModelsStore(join(dirname(this.modelsJsonPaths[0]), "models-store.json"))
+			: new InMemoryCodingAgentModelsStore();
+		this.providerModels = createModels({ credentials: authStorage.asCredentialStore(), modelsStore: this.modelsStore });
+		for (const provider of builtinProviders()) {
+			this.providerModels.setProvider(provider.id === "radius" ? provider : withRemoteCatalog(provider));
+		}
 		this.seedCopilotModelCatalogFromCache();
 		this.loadModels();
 	}
@@ -73,19 +88,91 @@ export class ModelRegistry {
 	/**
 	 * Reload models from disk (built-in + custom from models.json).
 	 */
-	refresh(): void {
-		this.providerRequestConfigs.clear();
-		this.modelRequestHeaders.clear();
+	async refresh(options: { signal?: AbortSignal; timeoutMs?: number; force?: boolean; allowNetwork?: boolean } = {}): Promise<ModelsRefreshResult> {
+		const generation = ++this.refreshGeneration;
 		this.loadError = undefined;
+		this.rebuildProviderModels();
 
-		resetApiProviders();
-		resetOAuthProviders();
+		const controller = new AbortController();
+		const abort = () => controller.abort();
+		options.signal?.addEventListener("abort", abort, { once: true });
+		if (options.signal?.aborted) controller.abort(options.signal.reason);
+		const timeout = setTimeout(abort, options.timeoutMs ?? 15_000);
+		const errors = new Map<string, Error>();
+		const aborted = new Promise<void>((resolve) => {
+			if (controller.signal.aborted) resolve();
+			else controller.signal.addEventListener("abort", () => resolve(), { once: true });
+		});
+		try {
+			const restore = this.providerModels
+				.refresh({ allowNetwork: false, signal: controller.signal })
+				.then((result) => {
+					if (controller.signal.aborted || generation !== this.refreshGeneration) return;
+					for (const [provider, error] of result.errors) errors.set(provider, error);
+					this.publishProviderModels();
+				});
+			await Promise.race([restore, aborted]);
 
-		this.loadModels();
+			const extensionRefreshes = controller.signal.aborted ? [] : [...this.registeredProviders].map(async ([providerName, config]) => {
+				if (!config.refreshModels) return;
+				const store = {
+					read: () => this.modelsStore.read(providerName),
+					write: (entry: Parameters<typeof this.modelsStore.write>[1]) => this.modelsStore.write(providerName, entry),
+					delete: () => this.modelsStore.delete(providerName),
+				};
+				try {
+					const models = await config.refreshModels({
+						credential: this.authStorage.get(providerName),
+						store,
+						allowNetwork: options.allowNetwork ?? true,
+						force: options.force,
+						signal: controller.signal,
+					});
+					if (
+						controller.signal.aborted ||
+						generation !== this.refreshGeneration ||
+						this.registeredProviders.get(providerName) !== config
+					) return;
+					const refreshed = { ...config, models };
+					this.registeredProviders.set(providerName, refreshed);
+					this.rebuildProviderModels();
+				} catch (error) {
+					if (generation === this.refreshGeneration && !controller.signal.aborted) {
+						errors.set(providerName, error instanceof Error ? error : new Error(String(error)));
+					}
+				}
+			});
+			const builtinRefresh = controller.signal.aborted
+				? Promise.resolve()
+				: this.providerModels
+					.refresh({ allowNetwork: options.allowNetwork ?? true, force: options.force, signal: controller.signal })
+					.then((result) => {
+						if (controller.signal.aborted || generation !== this.refreshGeneration) return;
+						for (const [provider, error] of result.errors) errors.set(provider, error);
+						this.publishProviderModels();
+					});
+			await Promise.race([Promise.all(extensionRefreshes), aborted]);
+			await Promise.race([builtinRefresh, aborted]);
+		} finally {
+			clearTimeout(timeout);
+			options.signal?.removeEventListener("abort", abort);
+		}
+		return { aborted: controller.signal.aborted, errors };
+	}
 
-		for (const [providerName, config] of this.registeredProviders.entries()) {
+	private publishProviderModels(): void {
+		this.rebuildProviderModels();
+	}
+
+	private rebuildProviderModels(): void {
+		this.loadModels(this.providerModels.getModels());
+		for (const [providerName, config] of this.registeredProviders) {
 			this.applyProviderConfig(providerName, config);
 		}
+	}
+
+	private providerRegistrationSource(providerName: string): string {
+		return `${this.registrationSource}:${providerName}`;
 	}
 
 	/**
@@ -95,8 +182,8 @@ export class ModelRegistry {
 		return this.loadError;
 	}
 
-	private loadModels(): void {
-		const loaded = loadModelRegistryModels(this.authStorage, this.modelsJsonPaths);
+	private loadModels(baseModels?: readonly Model<Api>[]): void {
+		const loaded = loadModelRegistryModels(this.authStorage, this.modelsJsonPaths, baseModels);
 		this.modelOverrides = loaded.modelOverrides;
 		this.models = loaded.models;
 		this.providerRequestConfigs = loaded.providerRequestConfigs;
@@ -119,7 +206,19 @@ export class ModelRegistry {
 	 * This is a fast check that doesn't refresh OAuth tokens.
 	 */
 	getAvailable(): Model<Api>[] {
-		return this.models.filter((m) => this.hasConfiguredAuth(m));
+		const configured = this.models.filter((model) => this.hasConfiguredAuth(model));
+		const allowedByProvider = new Map<string, ReadonlySet<string>>();
+		for (const provider of this.providerModels.getProviders()) {
+			const extension = this.registeredProviders.get(provider.id);
+			if (!provider.filterModels || extension?.models || extension?.oauth) continue;
+			const providerModels = configured.filter((model) => model.provider === provider.id);
+			const credential = this.authStorage.get(provider.id) as Credential | undefined;
+			allowedByProvider.set(
+				provider.id,
+				new Set(provider.filterModels(providerModels, credential).map((model) => model.id)),
+			);
+		}
+		return configured.filter((model) => allowedByProvider.get(model.provider)?.has(model.id) ?? true);
 	}
 
 	/**
@@ -191,7 +290,25 @@ export class ModelRegistry {
 	 * Get API key and request headers for a model.
 	 */
 	async getApiKeyAndHeaders(model: Model<Api>): Promise<ResolvedRequestAuth> {
-		return getModelRequestAuth(model, this.authStorage, this.providerRequestConfigs, this.modelRequestHeaders);
+		try {
+			const runtimeApiKey = this.authStorage.getRuntimeApiKey(model.provider);
+			const extensionReplacesOAuth = this.registeredProviders.get(model.provider)?.oauth !== undefined;
+			const providerAuth = this.providerModels.getProvider(model.provider) && !extensionReplacesOAuth
+				? (await this.providerModels.getAuth(
+					model,
+					runtimeApiKey === undefined ? undefined : { apiKey: runtimeApiKey },
+				))?.auth
+				: undefined;
+			return getModelRequestAuth(
+				model,
+				this.authStorage,
+				this.providerRequestConfigs,
+				this.modelRequestHeaders,
+				providerAuth,
+			);
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
 	}
 
 	/**
@@ -239,8 +356,10 @@ export class ModelRegistry {
 	registerProvider(providerName: string, config: ProviderConfigInput): void {
 		const migratedConfig = migrateLegacyRegisterProviderConfigValues(providerName, config);
 		validateProviderConfig(providerName, migratedConfig);
-		this.applyProviderConfig(providerName, migratedConfig);
-		this.upsertRegisteredProvider(providerName, migratedConfig);
+		const mergedConfig = this.upsertRegisteredProvider(providerName, migratedConfig);
+		unregisterProviderRuntime(this.providerRegistrationSource(providerName));
+		this.rebuildProviderModels();
+		this.applyProviderConfig(providerName, mergedConfig, true);
 	}
 
 	/**
@@ -261,24 +380,20 @@ export class ModelRegistry {
 	unregisterProvider(providerName: string): void {
 		if (!this.registeredProviders.has(providerName)) return;
 		this.registeredProviders.delete(providerName);
-		this.refresh();
+		unregisterProviderRuntime(this.providerRegistrationSource(providerName));
+		this.rebuildProviderModels();
 	}
 
-	private upsertRegisteredProvider(providerName: string, config: ProviderConfigInput): void {
-		const existing = this.registeredProviders.get(providerName);
-		if (!existing) {
-			this.registeredProviders.set(providerName, config);
-			return;
-		}
-		for (const k of Object.keys(config) as (keyof ProviderConfigInput)[]) {
-			if (config[k] !== undefined) {
-				(existing as Record<string, unknown>)[k] = config[k];
-			}
-		}
+	private upsertRegisteredProvider(providerName: string, config: ProviderConfigInput): ProviderConfigInput {
+		const merged = { ...this.registeredProviders.get(providerName), ...config };
+		this.registeredProviders.set(providerName, merged);
+		return merged;
 	}
 
-	private applyProviderConfig(providerName: string, config: ProviderConfigInput): void {
+	private applyProviderConfig(providerName: string, config: ProviderConfigInput, registerRuntime = false): void {
 		this.models = applyProviderConfigToModels({
+			registrationSource: this.providerRegistrationSource(providerName),
+			registerRuntime,
 			providerName,
 			config,
 			models: this.models,
