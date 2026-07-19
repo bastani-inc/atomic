@@ -3909,16 +3909,6 @@ Prepare a `[release kind]` release for `[version]`. Do not publish unless valida
 
 **Validation:** Require changelog review, tests, build/package checks, and a clear publish/no-publish decision.
 
-**Atomic repository `publish-release` workflow.** The repository-local workflow is intentionally a thin, prompt-led sequence over the existing Git, GitHub CLI, `cut-release.ts`, and protected `publish.yml` release path:
-
-1. create `release/<version>` or `prerelease/<version>` from the selected versionless base and update relevant changelogs only;
-2. validate, commit, push, and open or reuse the exact release PR;
-3. inspect required CI once and, when it is pending or failed, pause at a durable **Reinspect after external state changes / Stop this release** choice;
-4. merge the exact verified PR head, switch to the selected base, and fast-forward it from origin;
-5. run `scripts/cut-release.ts <version> --base <base_ref> --push --yes` to stamp the detached release commit and push its tag; and
-6. inspect the automatically triggered `Publish <version>` action once, using the same reinspect-or-stop choice until it succeeds or the user stops.
-
-The workflow never bumps package versions on the release branch, dispatches `publish.yml`, watches Actions, sleeps, polls, force-pushes, or moves a tag. The base remains at `0.0.0`; the detached release commit records the immutable base trailers; and the existing tag-created GitHub workflow retains responsibility for integrity checks, npm OIDC provenance, and GitHub Release creation.
 
 ---
 
