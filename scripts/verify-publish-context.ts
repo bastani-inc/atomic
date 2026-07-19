@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-/** Validate the complete trust boundary for the protected workflow_run publisher. */
+/** Validate the complete trust boundary for the protected publisher. */
 
 const SHA_PATTERN = /^[0-9a-f]{40}$/u;
 const POSITIVE_INTEGER_PATTERN = /^[1-9][0-9]*$/u;
@@ -9,14 +9,6 @@ export const EXPECTED_REPOSITORY_ID = "1081638046";
 export const SIGNAL_WORKFLOW_ID = "314699971";
 export const SIGNAL_WORKFLOW_PATH = ".github/workflows/publish-tag-created.yml";
 export const PROTECTED_PUBLISH_WORKFLOW_PATH = ".github/workflows/publish-release.yml";
-export const LEGACY_WORKFLOW_PATH = ".github/workflows/publish.yml";
-
-// Recovery is intentionally narrower than the normal signal route. It admits
-// only a rerun of the already-failed immutable tag run named in the incident.
-export const RECOVERY_RUN_ID = "29529182569";
-export const RECOVERY_TAG = "0.9.10-alpha.1";
-export const RECOVERY_SHA = "88c11adcdddcf5245b7b04dd3d2912c7531906fe";
-export const RECOVERY_WORKFLOW_ID = "224908587";
 
 export interface PublishContext {
   eventName: string | undefined;
@@ -45,56 +37,47 @@ function requireExact(actual: string | undefined, expected: string, label: strin
   if (actual !== expected) throw new Error(`${label} must be ${expected}; received: ${actual ?? "missing"}`);
 }
 
-function validateCommonContext(context: PublishContext): void {
-  requireExact(context.eventName, "workflow_run", "Publisher event");
-  requireExact(context.eventAction, "completed", "Publisher event action");
+function requireSha(value: string | undefined, label: string): string {
+  if (!value || !SHA_PATTERN.test(value)) throw new Error(`${label} must be a full lowercase commit SHA; received: ${value ?? "missing"}`);
+  return value;
+}
+
+function validateProtectedPublisher(context: PublishContext): void {
   requireExact(context.repository, EXPECTED_REPOSITORY, "Publisher repository");
   requireExact(context.repositoryId, EXPECTED_REPOSITORY_ID, "Publisher repository ID");
+  if (!context.defaultBranch) throw new Error("Missing default branch context");
+  const expectedWorkflowRef = `${EXPECTED_REPOSITORY}/${PROTECTED_PUBLISH_WORKFLOW_PATH}@refs/heads/${context.defaultBranch}`;
+  requireExact(context.workflowRef, expectedWorkflowRef, "Protected publisher workflow ref");
+  requireSha(context.workflowSha, "Protected publisher workflow SHA");
+  requireSha(context.triggerSha, "Release SHA");
+  if (!context.releaseTag) throw new Error("Missing release tag");
+}
+
+function validateSignalContext(context: PublishContext): "signal" {
+  requireExact(context.eventAction, "completed", "Publisher event action");
   requireExact(context.signalRepository, EXPECTED_REPOSITORY, "Signal repository");
   requireExact(context.signalRepositoryId, EXPECTED_REPOSITORY_ID, "Signal repository ID");
   requireExact(context.signalHeadRepository, EXPECTED_REPOSITORY, "Signal head repository");
   requireExact(context.signalHeadRepositoryId, EXPECTED_REPOSITORY_ID, "Signal head repository ID");
   requireExact(context.signalEvent, "create", "Signal event");
   requireExact(context.signalStatus, "completed", "Signal status");
-
-  if (!context.defaultBranch) throw new Error("Missing default branch context");
-  const expectedWorkflowRef = `${EXPECTED_REPOSITORY}/${PROTECTED_PUBLISH_WORKFLOW_PATH}@refs/heads/${context.defaultBranch}`;
-  requireExact(context.workflowRef, expectedWorkflowRef, "Protected publisher workflow ref");
-  if (!context.workflowSha || !SHA_PATTERN.test(context.workflowSha)) {
-    throw new Error(`Invalid protected publisher workflow SHA: ${context.workflowSha ?? "missing"}`);
-  }
-  if (!context.triggerSha || !SHA_PATTERN.test(context.triggerSha)) {
-    throw new Error(`Invalid signal head SHA: ${context.triggerSha ?? "missing"}`);
-  }
-  if (!context.releaseTag) throw new Error("Missing signal tag");
+  requireExact(context.signalConclusion, "success", "Signal conclusion");
+  requireExact(context.signalWorkflowId, SIGNAL_WORKFLOW_ID, "Signal workflow ID");
+  requireExact(context.signalPath, SIGNAL_WORKFLOW_PATH, "Signal workflow path");
   if (!context.signalRunId || !POSITIVE_INTEGER_PATTERN.test(context.signalRunId)) {
     throw new Error(`Invalid signal run ID: ${context.signalRunId ?? "missing"}`);
   }
   if (!context.signalRunAttempt || !POSITIVE_INTEGER_PATTERN.test(context.signalRunAttempt)) {
     throw new Error(`Invalid signal run attempt: ${context.signalRunAttempt ?? "missing"}`);
   }
+  return "signal";
 }
 
-export function validatePublishContext(context: PublishContext): "signal" | "recovery" {
-  validateCommonContext(context);
 
-  const isNormalSignal = context.signalWorkflowId === SIGNAL_WORKFLOW_ID
-    && context.signalPath === SIGNAL_WORKFLOW_PATH
-    && context.signalConclusion === "success";
-  if (isNormalSignal) return "signal";
-
-  const isRecovery = context.signalWorkflowId === RECOVERY_WORKFLOW_ID
-    && context.signalPath === LEGACY_WORKFLOW_PATH
-    && context.signalRunId === RECOVERY_RUN_ID
-    && context.signalRunAttempt === "2"
-    && context.signalConclusion === "failure"
-    && context.releaseTag === RECOVERY_TAG
-    && context.triggerSha === RECOVERY_SHA;
-  if (isRecovery) return "recovery";
-
-  throw new Error(
-    `Untrusted workflow_run source: workflow=${context.signalWorkflowId ?? "missing"} path=${context.signalPath ?? "missing"} run=${context.signalRunId ?? "missing"} attempt=${context.signalRunAttempt ?? "missing"} conclusion=${context.signalConclusion ?? "missing"}`,
-  );
+export function validatePublishContext(context: PublishContext): "signal" {
+  validateProtectedPublisher(context);
+  requireExact(context.eventName, "workflow_run", "Publisher event");
+  return validateSignalContext(context);
 }
 
 export function verifyProtectedWorkflowAncestry(
@@ -115,6 +98,7 @@ export function verifyProtectedWorkflowAncestry(
     throw new Error(`Workflow SHA ${workflowSha} is not contained in protected default-branch history`);
   }
 }
+
 
 if (import.meta.main) {
   const context: PublishContext = {
@@ -139,7 +123,7 @@ if (import.meta.main) {
     releaseTag: process.env.RELEASE_TAG,
     triggerSha: process.env.TRIGGER_SHA,
   };
-  const route = validatePublishContext(context);
+  validatePublishContext(context);
   verifyProtectedWorkflowAncestry(context.workflowSha, process.env.PROTECTED_DEFAULT_REF);
-  console.log(`Accepted protected publisher ${route} handoff for ${context.releaseTag} at ${context.triggerSha}.`);
+  console.log(`Accepted protected publisher signal handoff for ${context.releaseTag} at ${context.triggerSha}.`);
 }
