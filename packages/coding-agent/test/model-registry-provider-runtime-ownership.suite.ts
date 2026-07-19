@@ -1,5 +1,12 @@
 import type { Credential } from "@earendil-works/pi-ai";
-import { type Api, getApiProvider, registerApiProvider, unregisterApiProviders } from "@earendil-works/pi-ai/compat";
+import {
+	type Api,
+	getApiProvider,
+	getModel,
+	registerApiProvider,
+	streamSimple,
+	unregisterApiProviders,
+} from "@earendil-works/pi-ai/compat";
 import { getOAuthProvider } from "../src/core/oauth-provider-bridge.ts";
 import { describe, expect, test } from "vitest";
 import { ModelRegistry } from "../src/core/model-registry.ts";
@@ -80,6 +87,31 @@ describeModelRegistry((context) => {
 				expect(() => getApiProvider(api)?.streamSimple({ ...openAiModel, api }, emptyContext)).toThrow("external-owner");
 				unregisterApiProviders(`atomic:restored-api:${api}`);
 				unregisterApiProviders("external-owner");
+			});
+
+			test("unregistering an unrelated API does not reclassify an active override", () => {
+				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const externalSource = "active-openai-override";
+				let customDispatches = 0;
+				registerApiProvider({
+					api: "openai-completions",
+					stream: () => { customDispatches += 1; throw new Error("active-override"); },
+					streamSimple: () => { customDispatches += 1; throw new Error("active-override"); },
+				}, externalSource);
+				const unrelatedApi = "unrelated-runtime-api" as Api;
+				try {
+					registry.registerProvider("unrelated-runtime", {
+						api: unrelatedApi,
+						streamSimple: () => { throw new Error("unrelated"); },
+					});
+					registry.unregisterProvider("unrelated-runtime");
+
+					const builtInModel = getModel("ant-ling", "Ling-2.6-1T");
+					expect(() => streamSimple(builtInModel, emptyContext)).toThrow("active-override");
+					expect(customDispatches).toBe(1);
+				} finally {
+					unregisterApiProviders(externalSource);
+				}
 			});
 
 			test("passes runtime-only credentials to extension catalog refresh", async () => {

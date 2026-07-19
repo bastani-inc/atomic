@@ -3,7 +3,6 @@ import {
 	getApiProvider,
 	type Model,
 	registerApiProvider,
-	registerBuiltInApiProviders,
 	type SimpleStreamOptions,
 	unregisterApiProviders,
 } from "@earendil-works/pi-ai/compat";
@@ -41,7 +40,6 @@ function unregisterRuntimeApiProvider(sourceId: string): void {
 			} else {
 				const fallback = runtimeApiFallbacks.get(api);
 				if (fallback) registerApiProvider(fallback, `atomic:restored-api:${api}`);
-				else registerBuiltInApiProviders();
 			}
 		}
 		if (registrations.length === 0) {

@@ -25,7 +25,7 @@ import type { ProviderConfigInput, ProviderRequestConfig, ResolvedRequestAuth } 
 import type { ModelOverride } from "./model-registry-schemas.ts";
 import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "./provider-display-names.ts";
 import { FileModelsStore, InMemoryCodingAgentModelsStore } from "./models-store.ts";
-import { oauthCredentialToAuth } from "./oauth-provider-bridge.ts";
+import { getLegacyOAuthProvider, oauthCredentialToAuth } from "./oauth-provider-bridge.ts";
 import { withRemoteCatalog } from "./remote-catalog-provider.ts";
 import { clearConfigValueCache, isConfigValueConfigured } from "./resolve-config-value.ts";
 
@@ -331,7 +331,8 @@ export class ModelRegistry {
 	async getApiKeyAndHeaders(model: Model<Api>): Promise<ResolvedRequestAuth> {
 		try {
 			const runtimeApiKey = this.authStorage.getRuntimeApiKey(model.provider);
-			const extensionReplacesOAuth = this.registeredProviders.get(model.provider)?.oauth !== undefined;
+			const extensionReplacesOAuth = this.registeredProviders.get(model.provider)?.oauth !== undefined
+				|| getLegacyOAuthProvider(model.provider) !== undefined;
 			const resolvedProviderAuth = this.providerModels.getProvider(model.provider) && !extensionReplacesOAuth
 				? (await this.providerModels.getAuth(
 					model,

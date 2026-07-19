@@ -124,6 +124,31 @@ describe("Pi 0.80.10 model auth compatibility", () => {
 		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 
+	test("global legacy OAuth registration replaces built-in provider auth", async () => {
+		const storage = AuthStorage.inMemory({
+			anthropic: { type: "oauth", refresh: "expired", access: "expired", expires: 0 },
+		});
+		const refreshToken = vi.fn(async () => ({
+			refresh: "global-refresh",
+			access: "global-access",
+			expires: Date.now() + 60_000,
+		}));
+		registerOAuthProvider({
+			id: "anthropic",
+			name: "Global Anthropic",
+			login: async () => ({ refresh: "r", access: "a", expires: 1 }),
+			refreshToken,
+			getApiKey: (credential) => `global:${credential.access}`,
+		});
+		const fetchSpy = vi.spyOn(globalThis, "fetch");
+		const registry = ModelRegistry.inMemory(storage);
+		const model = registry.getAll().find((candidate) => candidate.provider === "anthropic")!;
+
+		expect(await registry.getApiKeyAndHeaders(model)).toMatchObject({ ok: true, apiKey: "global:global-access" });
+		expect(refreshToken).toHaveBeenCalledOnce();
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
 	test("runtime-only credentials authorize provider-owned catalog refresh", async () => {
 		const storage = AuthStorage.inMemory();
 		storage.setRuntimeApiKey("anthropic", "runtime-only");

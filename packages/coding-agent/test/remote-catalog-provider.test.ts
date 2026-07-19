@@ -224,12 +224,91 @@ describe("remote catalog provider", () => {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(staleSettled).toBe(false);
 		const overlappingRetry = provider.refreshModels?.(context);
-		expect(overlappingRetry).toBe(staleRefresh);
+		expect(overlappingRetry).not.toBe(staleRefresh);
+		expect(writeCount).toBe(1);
 
 		resolveFirstWrite();
-		await staleRefresh;
-		await provider.refreshModels?.(context);
+		await overlappingRetry;
 		expect(persisted?.models.map((entry) => entry.id)).toEqual(["fresh"]);
+		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static", "fresh"]);
+	});
+
+	it("escalates a forced network refresh over an in-flight cache restore", async () => {
+		let resolveCacheRead!: () => void;
+		const cacheReadGate = new Promise<void>((resolve) => { resolveCacheRead = resolve; });
+		const backingStore = new InMemoryModelsStore();
+		await backingStore.write("test-provider", { models: [model("cached")], checkedAt: Date.now() });
+		let readCount = 0;
+		const store = {
+			read: async () => {
+				readCount += 1;
+				if (readCount === 1) await cacheReadGate;
+				return backingStore.read("test-provider");
+			},
+			write: (entry: Parameters<InMemoryModelsStore["write"]>[1]) => backingStore.write("test-provider", entry),
+			delete: () => backingStore.delete("test-provider"),
+		};
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(JSON.stringify([model("fresh")]), { status: 200 }),
+		);
+		const provider = withRemoteCatalog(createProvider({
+			id: "test-provider",
+			auth: { apiKey: { name: "Test", resolve: async () => ({ auth: {} }) } },
+			models: [model("static")],
+			api: {
+				stream: () => { throw new Error("not used"); },
+				streamSimple: () => { throw new Error("not used"); },
+			},
+		}));
+		const credential = { type: "api_key" as const };
+		const cacheRestore = provider.refreshModels?.({ credential, store, allowNetwork: false });
+		await vi.waitFor(() => expect(readCount).toBe(1));
+		const forcedRefresh = provider.refreshModels?.({ credential, store, allowNetwork: true, force: true });
+
+		resolveCacheRead();
+		await cacheRestore;
+		await forcedRefresh;
+		expect(fetchSpy).toHaveBeenCalledOnce();
+		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static", "fresh"]);
+	});
+
+	it("runs a forced escalation after the weaker cache restore rejects", async () => {
+		let resolveCacheRead!: () => void;
+		const cacheReadGate = new Promise<void>((resolve) => { resolveCacheRead = resolve; });
+		let readCount = 0;
+		const store = {
+			read: async () => {
+				readCount += 1;
+				if (readCount === 1) {
+					await cacheReadGate;
+					throw new Error("transient cache read");
+				}
+				return undefined;
+			},
+			write: async () => {},
+			delete: async () => {},
+		};
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(JSON.stringify([model("fresh")]), { status: 200 }),
+		);
+		const provider = withRemoteCatalog(createProvider({
+			id: "test-provider",
+			auth: { apiKey: { name: "Test", resolve: async () => ({ auth: {} }) } },
+			models: [model("static")],
+			api: {
+				stream: () => { throw new Error("not used"); },
+				streamSimple: () => { throw new Error("not used"); },
+			},
+		}));
+		const credential = { type: "api_key" as const };
+		const cacheRestore = provider.refreshModels?.({ credential, store, allowNetwork: false });
+		await vi.waitFor(() => expect(readCount).toBe(1));
+		const forcedRefresh = provider.refreshModels?.({ credential, store, allowNetwork: true, force: true });
+
+		resolveCacheRead();
+		await expect(cacheRestore).rejects.toThrow("transient cache read");
+		await expect(forcedRefresh).resolves.toBeUndefined();
+		expect(fetchSpy).toHaveBeenCalledOnce();
 		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static", "fresh"]);
 	});
 });
