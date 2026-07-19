@@ -129,6 +129,24 @@ describe("Pi 0.80.10 model auth compatibility", () => {
 		});
 	});
 
+	test("derives a credential-specific Copilot baseUrl from a runtime token", async () => {
+		const token = "tid=example;proxy-ep=proxy.enterprise.example.com;";
+		const storage = AuthStorage.inMemory();
+		storage.setRuntimeApiKey("github-copilot", token);
+		const registry = ModelRegistry.inMemory(storage);
+		const model = registry.getAll().find((candidate) => candidate.provider === "github-copilot");
+		expect(model).toBeDefined();
+
+		const auth = await registry.getApiKeyAndHeaders(model!);
+
+		expect(auth).toMatchObject({
+			ok: true,
+			apiKey: token,
+			baseUrl: "https://api.enterprise.example.com",
+			headers: { "X-GitHub-Api-Version": "2026-06-01" },
+		});
+	});
+
 	test("preserves provider-owned auth headers and null removals", async () => {
 		const storage = AuthStorage.inMemory();
 		const registry = ModelRegistry.inMemory(storage);

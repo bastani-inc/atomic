@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 import { getAgentConfigPaths } from "../config.ts";
 import { normalizePath } from "../utils/paths.ts";
 import type { AuthStatus, AuthStorage } from "./auth-storage.ts";
-import { copilotCatalogCachePath, copilotTokenFromEnvironment, seedActiveCopilotModelCatalogFromCache } from "./copilot-model-catalog.ts";
+import { copilotApiBaseUrlFromToken, copilotCatalogCachePath, copilotTokenFromEnvironment, seedActiveCopilotModelCatalogFromCache } from "./copilot-model-catalog.ts";
 import { getModelRequestAuth, getApiKeyForProviderFromConfig, getProviderAuthStatusFromConfig } from "./model-registry-auth.ts";
 import { applyProviderConfigToModels, migrateLegacyRegisterProviderConfigValues, unregisterProviderRuntime, validateProviderConfig } from "./model-registry-dynamic.ts";
 import { loadModelRegistryModels } from "./model-registry-loader.ts";
@@ -293,12 +293,15 @@ export class ModelRegistry {
 		try {
 			const runtimeApiKey = this.authStorage.getRuntimeApiKey(model.provider);
 			const extensionReplacesOAuth = this.registeredProviders.get(model.provider)?.oauth !== undefined;
-			const providerAuth = this.providerModels.getProvider(model.provider) && !extensionReplacesOAuth
+			const resolvedProviderAuth = this.providerModels.getProvider(model.provider) && !extensionReplacesOAuth
 				? (await this.providerModels.getAuth(
 					model,
 					runtimeApiKey === undefined ? undefined : { apiKey: runtimeApiKey },
 				))?.auth
 				: undefined;
+			const providerAuth = runtimeApiKey !== undefined && model.provider === "github-copilot" && resolvedProviderAuth
+				? { ...resolvedProviderAuth, baseUrl: copilotApiBaseUrlFromToken(runtimeApiKey) }
+				: resolvedProviderAuth;
 			return getModelRequestAuth(
 				model,
 				this.authStorage,
