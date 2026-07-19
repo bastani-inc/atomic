@@ -172,7 +172,7 @@ describe("Pi 0.80.10 model auth compatibility", () => {
 
 		expect(result.errors.has("anthropic")).toBe(false);
 		expect(refreshToken).toHaveBeenCalledOnce();
-		expect(fetchSpy.mock.calls.some(([url]) => String(url).includes("platform.claude.com"))).toBe(false);
+		expect(fetchSpy.mock.calls.some(([url]) => new URL(String(url)).hostname === "platform.claude.com")).toBe(false);
 		expect(storage.get("anthropic")).toMatchObject({ type: "oauth", access: "catalog-access" });
 	});
 
