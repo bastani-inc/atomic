@@ -33,6 +33,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 
 ### Fixed
+- Fixed Ctrl+O (`app.tools.expand`) being consumed without expanding tool and workflow-node detail in attached workflow stage chats under Atomic's isolated interactive engine. Repeated expand/collapse toggles now match main chat across active and completed runs, single/parallel/chain views, and narrow terminals while prompts, custom questions, and unrelated keybindings retain input ownership.
 
 - Fixed authored `ctx.parallel(...)` calls treating string auto-group sentinels such as `group: "auto"` as literal group names. The engine now normalizes trimmed, case-insensitive `"auto"`/`"true"` values at both set and per-step levels before deciding whether to mint one shared UUID for the parallel set. Separate sets still receive distinct UUIDs, boolean `true` remains supported, named groups stay literal, and the direct workflow-tool path remains unchanged.
 - Fixed `/workflow <name>` forms hanging under Atomic's isolated interactive engine when required inputs were missing. The command now prefers the host-native input-form capability, so the form is mounted and focused in the terminal host and Tab/Shift+Tab, arrows, text editing, configured keybindings, Enter, Escape, and Ctrl+C remain responsive without per-keypress engine traffic. Escape/Ctrl+C cancel without dispatch, supplied/default values and typed coercion are preserved, and the existing inline-editor and remote-custom paths remain compatibility fallbacks for older hosts.
