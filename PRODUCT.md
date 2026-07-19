@@ -1,3 +1,13 @@
+## Register
+
+product
+
+## Platform
+
+web
+
+Atomic is a terminal (TUI) application. It has no native iOS/Android target, so it takes the `web`/default rulebook; there is no HIG or Material rulebook to apply. All "screens" are terminal frames rendered in a monospace grid.
+
 ## Design Context
 
 ### Users
@@ -69,3 +79,23 @@ Stick to the established Unicode icon set for consistency:
 - Standard gap: 1 unit
 - Border style: rounded
 - Scroll behavior: sticky-bottom (follow latest output)
+
+## Gaps / Assumptions
+
+Captured during the `shape` interview for the Atomic terminal-branding exploration (design exploration only; no production code changed).
+
+Confirmed by the user:
+- Restraint dial = **one earned gesture**. The default everyday UI stays as quiet as today. Exactly one signature startup moment plus one whisper-quiet recurring micro-symbol; the milestone easter egg is the only rare surprise.
+- Emotional target = early-Apple **"Crazy Ones" / "Think Different"** energy: outliers, misfits, the round peg in the square hole, pirate-hearted defiance — conveyed for principled reasons, never performatively.
+
+Assumed (pending explicit override; user moved to open chat mid-interview):
+- Banned imagery is honored despite the user naming it as a vibe: **no Guy Fawkes mask, no Anonymous imagery, no skull/Jolly-Roger, no cyberpunk/glitch/Matrix.** The spirit is carried instead by authentic, insider signals — the real 1983 Apple Macintosh-team **pirate flag** ("better to be a pirate than join the navy") rendered as a *raised pennant with no skull*, the **round peg / square hole** outlier, and the existing **∀** ("for all" + a subverted A) as the anchor gesture.
+- Prototype form = one self-contained HTML file with **navigable simulated-TUI scenes** (startup -> working -> workflow spinner -> earned 5th-workflow egg) plus a small **A/B/C contact sheet** comparing three directions.
+- Existing identity to preserve verbatim: Catppuccin Mocha palette, Restrained one-accent strategy, status-is-truth color semantics, the ∀ block banner with its `░` offset shadow, and the Braille spinner (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` @ 80ms). Augment minimally; never destabilize the quiet default.
+
+Reconciled during the recurring-brand revision interview (2026-07-18; artifact `specs/design/2026-07-17T18-22-03-452Z-pznh1f/`):
+- **Startup decision is locked.** The `A · Settle` startup proposal (banner character-swap reveal, any-key settle, reduced-motion instant settle, narrow-stack meta) is approved and immutable; revisions must preserve it exactly.
+- **Recurring voice = "assured rebel."** The prior artifact thesis "whimsy is not Atomic's voice" is rejected. Atomic's recurring brand may carry a sharp, fun, developer-native, quietly insurgent voice — confident, never corporate or generic — anchored in README positioning: developers who want assurance; build in the open; question the defaults; keep control; inspect/adapt/own the process; plausible output is not enough.
+- **Scope of recurrence = copy + cheap behavioral changes only.** Small compact product moments (working/loading label + spinner glyph, status text, tool/activity transitions, workflow dispatch/progress, waiting/approval, empty states, cancellation, retry/recovery, completion/receipts, help/hints). No large new system, no decorative status semantics, no expensive animation.
+- **Working state uses a phase-derived label set** (confirmed): a small coherent family of labels mapped deterministically to what the agent is actually doing (lane examples: "Building assurance", "Questioning the defaults", "Checking the machinery", "Demanding receipts") — not random rotation. Every state stays truthful and useful; personality never obscures errors, destructive actions, blockers, or required user action.
+- The earlier "one earned gesture" restraint entry above is superseded on the recurrence axis only: recurring microcopy voice is now approved; the startup gesture remains singular and everything else about the quiet default holds.

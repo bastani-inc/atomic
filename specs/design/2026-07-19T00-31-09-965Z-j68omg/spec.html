@@ -1,0 +1,1611 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spec · Atomic assembly startup + manifesto + working-mark study · run j68omg</title>
+<!--
+  ============================================================================
+  IMPLEMENTATION SPEC — design-review handoff document. REVISION 3.
+  Run id: 2026-07-19T00-31-09-965Z-j68omg
+  Pairs with: preview.html in the same directory (embedded below via srcdoc).
+  The embedded srcdoc is generated from preview.html and is content-identical;
+  the parity command in "Validation commands" proves it. Any change to
+  preview.html must be re-escaped into the iframe below.
+
+  Scope of this revision:
+    SCOPE 1 — A · Assemble: two-half banner assembly (choreography-only
+              supersession of the rev-2 outside-in density reveal).
+    SCOPE 2 — Manifesto beat 2 (+240ms dim, +400ms muted, first-landing only).
+    SCOPE 3 — Working-mark candidate study (6 paired concepts + 1 Atomic challenger,
+              illumination sweeps, 9-axis matrix, mechanics split).
+  Everything from revision 2 (kh4lmu) carries forward verbatim, including the
+  "Demanding evidence" verification-lane label.
+
+  Token references: Catppuccin Mocha roles per DESIGN.md frontmatter.
+  Copy-to-clipboard hints: every swatch shows its raw hex; every code block is
+  plain selectable text — triple-click a line to copy it.
+  ============================================================================
+-->
+<style>
+/* ------- tokens (Catppuccin Mocha, role-mapped; identical to preview) ------- */
+:root{
+  --crust:#11111b;--mantle:#181825;--base:#1e1e2e;--surface0:#313244;
+  --surface1:#45475a;--surface2:#585b70;--overlay0:#6c7086;--overlay1:#7f849c;
+  --text:#cdd6f4;--muted:#a6adc8;--accent:#89b4fa;--green:#a6e3a1;
+  --yellow:#f9e2af;--red:#f38ba8;--mauve:#cba6f7;--sky:#89dceb;
+  --nc-dim:#9399b2;--nc-muted:#bac2de;
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,*::before{animation:none!important;transition:none!important}}
+body{background:var(--base);color:var(--text);font:14px/1.62 var(--mono);padding-bottom:6rem}
+.wrap{max-width:1160px;margin:0 auto;padding-inline:clamp(14px,3vw,32px)}
+a{color:var(--accent);text-underline-offset:3px;text-decoration-color:var(--surface2)}
+a:hover{text-decoration-color:var(--accent)}
+a:focus-visible,summary:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:4px}
+code{font:inherit;font-size:.92em;color:var(--text);background:var(--mantle);border:1px solid var(--surface0);border-radius:4px;padding:0 .26em}
+pre.block{font:12.5px/1.55 var(--mono);background:var(--crust);border:1px solid var(--surface2);border-radius:10px;padding:.85rem 1rem;overflow-x:auto;color:var(--text);margin-top:.6rem}
+pre.block .c{color:var(--overlay1)}
+pre.block .k{color:var(--mauve)}
+pre.block .s{color:var(--green)}
+pre.block .f{color:var(--accent)}
+
+/* ------- sticky header ------- */
+#top{position:sticky;top:0;z-index:10;background:var(--base);border-bottom:1px solid var(--surface0);padding:.6rem 0}
+.toprow{display:flex;align-items:center;gap:.7rem;flex-wrap:wrap}
+.toprow .mark{color:var(--accent);font-weight:700;font-size:1.1rem}
+.toprow h1{font-size:.98rem;font-weight:700;line-height:1.3}
+.status{background:var(--green);color:var(--surface0);font-weight:700;border-radius:6px;padding:.06rem .5rem;font-size:.72rem;white-space:nowrap}
+.runid{color:var(--muted);font-size:.74rem;white-space:nowrap}
+.toc{display:flex;gap:.15rem;flex-wrap:wrap;margin-left:auto}
+.toc a{font-size:.74rem;color:var(--muted);text-decoration:none;padding:.15rem .42rem;border-radius:6px}
+.toc a:hover{color:var(--text);background:var(--mantle)}
+
+/* ------- section scaffolding ------- */
+main section{padding:2.5rem 0 .4rem;scroll-margin-top:4.2rem}
+.kicker{font-size:.75rem;color:var(--muted);margin-bottom:.3rem}
+h2{font-size:1.16rem;margin-bottom:.5rem;text-wrap:balance}
+h3{font-size:.95rem;margin-top:1.3rem;margin-bottom:.35rem}
+h4{font-size:.85rem;margin-top:1rem;margin-bottom:.25rem;color:var(--text)}
+p{max-width:82ch;text-wrap:pretty}
+.lede{color:var(--muted);margin-bottom:1rem}
+ul.plain,ol.plain{padding-left:1.25rem;color:var(--muted);max-width:82ch}
+ul.plain li,ol.plain li{margin:.34rem 0}
+ul.plain li b,ol.plain li b{color:var(--text)}
+.panel{border:1px solid var(--surface0);border-radius:12px;background:var(--mantle);padding:1rem 1.15rem;margin-top:.7rem}
+.panel.accent{border-color:var(--accent)}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:.7rem;margin-top:.7rem}
+.callout{border:1px solid var(--surface2);border-radius:10px;background:var(--mantle);padding:.75rem 1rem;color:var(--muted);font-size:.84rem;max-width:88ch;margin-top:.8rem}
+.callout b{color:var(--text)}
+.pathbox{background:var(--crust);border:1px solid var(--accent);border-radius:10px;padding:.8rem 1rem;margin-top:.7rem;overflow-x:auto}
+.pathbox .lbl{color:var(--muted);font-size:.74rem;display:block}
+.pathbox code{background:none;border:none;padding:0;white-space:nowrap;font-size:.86rem}
+
+/* ------- tables ------- */
+.tbl-wrap{overflow-x:auto;max-width:100%;border:1px solid var(--surface0);border-radius:10px;margin-top:.7rem}
+table.tbl{width:100%;border-collapse:collapse;min-width:680px;font-size:.79rem}
+table.tbl th{text-align:left;color:var(--muted);font-weight:400;background:var(--mantle);padding:.48rem .6rem;border-bottom:1px solid var(--surface0)}
+table.tbl td{padding:.48rem .6rem;border-bottom:1px solid var(--surface0);vertical-align:top;color:var(--muted)}
+table.tbl tr:last-child td{border-bottom:none}
+table.tbl td:first-child{color:var(--text)}
+td.good{color:var(--green)!important}
+td.bad{color:var(--red)!important}
+
+/* ------- swatches ------- */
+.swatches{display:grid;grid-template-columns:repeat(auto-fill,minmax(158px,1fr));gap:.55rem;margin-top:.7rem}
+.sw{border:1px solid var(--surface0);border-radius:10px;overflow:hidden;background:var(--mantle)}
+.sw .chipc{height:44px}
+.sw .meta{padding:.4rem .55rem;font-size:.72rem}
+.sw .meta b{display:block;color:var(--text);font-weight:700}
+.sw .meta span{color:var(--muted)}
+.sw .meta code{background:none;border:none;padding:0;color:var(--muted);font-size:.72rem}
+
+/* ------- preview embed ------- */
+.preview-frame{border:1px solid var(--accent);border-radius:12px;overflow:hidden;background:var(--crust);margin-top:.8rem}
+.preview-bar{display:flex;align-items:center;gap:.6rem;padding:.45rem .8rem;background:var(--mantle);border-bottom:1px solid var(--surface0);flex-wrap:wrap}
+.preview-bar .t{color:var(--muted);font-size:.74rem;flex:1;min-width:0}
+.preview-bar kbd{font:inherit;font-size:.68rem;border:1px solid var(--surface2);border-radius:4px;padding:0 .28rem;color:var(--muted)}
+iframe#previewFrame{display:block;width:100%;height:78vh;min-height:560px;border:0;background:var(--base)}
+
+/* ------- do / don't ------- */
+.dd{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:.7rem;margin-top:.7rem}
+.dd .panel h3{margin-top:0}
+.dd ul{padding-left:1.2rem;font-size:.82rem;color:var(--muted)}
+.dd li{margin:.35rem 0}
+.dd .do h3{color:var(--green)}
+.dd .dont h3{color:var(--red)}
+
+/* ------- checklist ------- */
+ul.check{list-style:none;padding:0;max-width:86ch}
+ul.check li{border-top:1px solid var(--surface0);padding:.44rem 0;color:var(--muted);font-size:.83rem}
+ul.check li:last-child{border-bottom:1px solid var(--surface0)}
+ul.check li::before{content:"✓  ";color:var(--green)}
+ul.check li b{color:var(--text)}
+
+footer{margin-top:3rem;padding:1rem 0;border-top:1px solid var(--surface0);color:var(--muted);font-size:.72rem}
+
+@media(max-width:760px){.toc{margin-left:0}}
+@media(max-width:430px){body{font-size:13px}.wrap{padding-inline:10px}iframe#previewFrame{height:70vh}}
+</style>
+</head>
+<body>
+
+<!-- =========================== (a) STICKY HEADER =========================== -->
+<header id="top">
+  <div class="wrap toprow">
+    <span class="mark">∀</span>
+    <h1>Atomic · assembly startup + manifesto + working-mark study — implementation spec</h1>
+    <span class="status">APPROVED · REV 3</span>
+    <span class="runid">run 2026-07-19T00-31-09-965Z-j68omg</span>
+    <nav class="toc" aria-label="Spec sections">
+      <a href="#summary">summary</a><a href="#preview">preview</a><a href="#design">design system</a><a href="#handoff">handoff</a><a href="#appendix">appendix</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+
+<!-- ========================= (b) EXECUTIVE SUMMARY ========================= -->
+<section id="summary" aria-labelledby="summary-h">
+  <p class="kicker">Executive summary</p>
+  <h2 id="summary-h">Three additions, one carried-forward system, zero production code</h2>
+  <p class="lede">Revision 3 carries the entire approved revision-2 artifact forward verbatim — the phase-derived label family (with <b>Demanding evidence</b> as the verification lane everywhere), the opportunity map, the before/after scenes, the microcopy law, and the "keep Braille" spinner verdict — and adds three scoped pieces of work. Two are decisions; one is a candidate study that renders its own honest defeat conditions.</p>
+
+  <div class="grid2">
+    <article class="panel accent">
+      <h3 style="margin-top:0">New in this revision</h3>
+      <ul class="plain">
+        <li><b>SCOPE 1 · A · Assemble (LOCKED, choreography-only supersession).</b> The <code>∀</code> banner now assembles from two separated halves: the left <code>▙</code>-wedge and right <code>▟</code>-wedge travel inward in <em>whole-column steps</em> on the fixed 36×10 grid (<code>components/atomic-banner.ts:5–34</code>) and meet at the row-5 crossbar. Gap eases 10→0 columns over <b>640ms</b> (inside the 500–800ms envelope), 8 discrete 80ms frames — no pixel tweening, directly implementable as Ink frames. The rev-2 outside-in density ramp is archived in a <code>&lt;details&gt;</code>, not deleted. Every other startup contract is untouched.</li>
+        <li><b>SCOPE 2 · Manifesto beat.</b> <q>We question, we break away from what is accepted. Engineering matters.</q> now lands as a second restrained beat after the meet: <b>+240ms dim → +400ms muted, permanent</b>. Punctuation A/B verdict: keep the user's exact comma splice (rendering A); the em-dash tightening is retained as the one tested alternative, not adopted. Placement verdict: <b>first-landing element only</b> — never repeated status copy.</li>
+        <li><b>SCOPE 3 · Working-mark candidate study.</b> Six paired concepts plus one Atomic-native challenger = thirteen live marks. G1 now uses a cumulative build rather than an illumination sweep: a thin ASCII reduction of the production <code>∀</code> banner appears cluster by cluster, then extends one refusal point beyond the completed logo.</li>
+      </ul>
+    </article>
+    <article class="panel">
+      <h3 style="margin-top:0">The verdicts, with receipts</h3>
+      <ul class="plain">
+        <li><b>One-line working status: keep the Braille spinner.</b> Nothing in the study fits one cell; the <code>#glyph</code> evaluation stands and the Defer tier already priced a glyph change as not worth it.</li>
+        <li><b>If a mark is ever adopted for already-multi-line surfaces</b> (dispatch panel, long-run workflow views): <b>B1 · Knowledge-eye compact</b> is the evidence-backed candidate — smallest honest footprint (5×3, +2 rows), an inside→out pupil sweep that literally performs <code>Demanding evidence</code>, stroke construction that survives NO_COLOR, calmest cycle.</li>
+        <li><b>G1 · Subverted ∀ is the strongest identity-owned challenger:</b> no borrowed mythology; its 20×7 ASCII geometry mirrors Atomic's production banner and builds cumulatively before crossing the boundary. The footprint makes it banner-tier, not a one-cell replacement.</li>
+        <li><b>A2 · Arms detailed is banner-tier</b> (7×7, +6 rows) — the strongest identity image in the set, an identity moment, not a status mark.</li>
+        <li><b>E fails its own question:</b> the caduceus reads medical even ruptured at cell size — the ambiguity disqualifies.</li>
+        <li><b>F earned its study and lost it honestly:</b> highest raw distinctiveness, worst register fit and worst long-session calm. Evaluated, not auto-condemned; not recommended.</li>
+        <li><b>All thirteen marks stay rendered</b> above the recommendation — evidence before preference.</li>
+      </ul>
+    </article>
+  </div>
+
+  <div class="callout"><b>What did not change:</b> any-key settle with pass-through to the editor seed input, reduced-motion instant final state, quiet-startup suppression (<code>interactive-startup.ts:147</code>), the <code>░</code> offset shadow and identity meta on the final beat, &lt;80-col meta stacking, the deterministic phase-label family, and the hard never-list — errors, blockers, destructive actions, approvals, retries, cancellation, and compaction stay plain. This artifact implements zero production behavior.</div>
+</section>
+
+<!-- =========================== (c) LIVE PREVIEW ============================ -->
+<section id="preview" aria-labelledby="preview-h">
+  <p class="kicker">Live preview · content-identical embed</p>
+  <h2 id="preview-h">The approved artifact, running inline</h2>
+  <p class="lede">The iframe below embeds the full approved <code>preview.html</code> via <code>srcdoc</code> — generated from the source file and verified content-identical (see the parity command in the handoff). Click into the frame first, then drive it: <kbd>M</kbd> motion · <kbd>C</kbd> NO_COLOR · <kbd>W</kbd> 64-col · <kbd>T</kbd> thinking level · <kbd>R</kbd> replay assembly · <kbd>D</kbd> sweep direction · arrow keys / <kbd>Home</kbd> / <kbd>End</kbd> browse the mark gallery. Any key while the assembly or manifesto beat runs settles everything.</p>
+
+  <div class="pathbox">
+    <span class="lbl">absolute path (open separately for full-window review)</span>
+    <code>/Users/norinlavaee/atomic/specs/design/2026-07-19T00-31-09-965Z-j68omg/preview.html</code>
+    <span class="lbl" style="margin-top:.5rem">file URL</span>
+    <code><a href="file:///Users/norinlavaee/atomic/specs/design/2026-07-19T00-31-09-965Z-j68omg/preview.html">file:///Users/norinlavaee/atomic/specs/design/2026-07-19T00-31-09-965Z-j68omg/preview.html</a></code>
+  </div>
+
+  <article class="preview-frame">
+    <div class="preview-bar">
+      <span class="t">preview.html · embedded srcdoc · zero network requests · keyboard: M C W T R D + arrows in the gallery</span>
+    </div>
+    <!-- srcdoc injected from preview.html; content-identical by generation -->
+    <iframe id="previewFrame" title="Approved Atomic design artifact: two-half assembly startup, manifesto beat, assured-rebel recurring brand, and the working-mark candidate study" srcdoc="<!DOCTYPE html>
+<html lang=&quot;en&quot; data-motion=&quot;on&quot; data-color=&quot;on&quot; data-cols=&quot;wide&quot; data-think=&quot;medium&quot; data-dir=&quot;fwd&quot;>
+<head>
+<meta charset=&quot;utf-8&quot;>
+<meta name=&quot;viewport&quot; content=&quot;width=device-width, initial-scale=1&quot;>
+<title>Atomic · assembly startup + manifesto beat + working-mark study</title>
+<!--
+  Design-review artifact only. No production behavior is implemented here.
+
+  REVISION 3 — assured rebel · two-half assembly + manifesto beat + working marks.
+  · IMMUTABLE CARRY-FORWARD from specs/design/2026-07-18T22-43-33-028Z-kh4lmu/:
+    every revision-2 section survives — #startup card grammar, contact sheet,
+    state proofs, archived B/C note, #direction (phase-derived label family,
+    live working-status rig, lane chips), #map, #scenes, #system, #glyph
+    (spinner verdict: keep), the M/C/W/T/R control deck, the shared 80ms clock,
+    NO_COLOR simulation, and the sr status mirror. &quot;Demanding evidence&quot; is the
+    verification-lane label everywhere; the retired &quot;…receipts&quot; wording is gone.
+  · SCOPE 1 (surgical supersession, choreography only): the outside-in
+    ░→▒→▓ density ramp of A · Settle is replaced by A · Assemble — the two
+    mirrored banner halves (cols 0–17 ▙-family / 18–35 ▛▜-family, the grid in
+    components/atomic-banner.ts:5–34) travel inward in whole-column steps
+    (gap 10→0, eased, no fractional tweening) and meet decisively at the
+    row-5 crossbar. 640ms, inside the 500–800ms envelope. PRESERVED VERBATIM:
+    any-key settle + pass-through to the editor seed input, prefers-reduced-
+    motion instant final state, quiet-startup suppression
+    (interactive-startup.ts:147), ░ offset shadow + identity meta on the final
+    beat, <80-col meta stacking, contact sheet, proofs, archived B/C. The
+    revision-2 choreography is archived in a <details>, not deleted.
+  · SCOPE 2: the manifesto is now a second, restrained beat AFTER the meet:
+    +240ms dim → +400ms muted, permanent. Words fixed verbatim:
+    &quot;We question, we break away from what is accepted. Engineering matters.&quot;
+    One typographically tightened rendering is A/B'd (punctuation only).
+    Any key mid-beat completes the line instantly and passes through.
+    Verdict below: first-landing element only — never repeated status copy.
+  · SCOPE 3 (additive candidate study, alongside the #glyph &quot;keep&quot; verdict):
+    six paired working-mark concepts plus one Atomic-native challenger,
+    thirteen live marks on the shared clock (240ms illumination step), four
+    distinct sweep directions across the set, keyboard radiogroup selection,
+    enlarged preview, direction toggle (D), incumbent comparison with honest
+    row/column footprint, 9-axis scoring matrix, evidence-backed
+    recommendation, and production mechanics split one-line vs multi-line.
+    Illumination = Catppuccin role change + bold weight + character density
+    (│→┃, ░→▒, 0↔1). Never CSS blur/glow — Ink cannot render it.
+  · Tokens: Catppuccin Mocha roles only (:root). One accent per frame.
+    Status-is-truth. Unicode-only glyphs. Rounded-or-nothing boxes.
+    Zero runtime dependencies, zero network requests.
+  · A11y: all revision-3 captions/kickers use --muted (≥4.5:1 on base);
+    generated frames get role=&quot;img&quot; + aria-label; gallery selection is a
+    roving-tabindex radiogroup; selection mirrors into a visually-hidden
+    role=&quot;status&quot; region; the shared clock pauses on document.hidden;
+    the global key handler ignores form fields.
+-->
+<style>
+:root{
+  --crust:#11111b;--mantle:#181825;--base:#1e1e2e;--surface0:#313244;
+  --surface1:#45475a;--surface2:#585b70;--overlay0:#6c7086;--overlay1:#7f849c;
+  --text:#cdd6f4;--muted:#a6adc8;--accent:#89b4fa;--green:#a6e3a1;
+  --yellow:#f9e2af;--red:#f38ba8;--mauve:#cba6f7;--sky:#89dceb;
+  --nc-dim:#9399b2;--nc-muted:#bac2de;
+  --mono:ui-monospace,&quot;SF Mono&quot;,SFMono-Regular,Menlo,Consolas,&quot;Liberation Mono&quot;,monospace;
+  --banner-hue:var(--accent);--ease:cubic-bezier(.22,1,.36,1);
+}
+html[data-think=&quot;off&quot;]{--banner-hue:var(--overlay0)}
+html[data-think=&quot;medium&quot;]{--banner-hue:var(--accent)}
+html[data-think=&quot;high&quot;]{--banner-hue:var(--mauve)}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{background:var(--base);color:var(--text);font:14px/1.58 var(--mono);padding-bottom:5rem}
+::selection{background:var(--surface1)}
+a{color:var(--accent);text-underline-offset:3px;text-decoration-color:var(--surface2)}
+a:hover{text-decoration-color:var(--accent)}
+button{font:inherit}
+a:focus-visible,button:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:4px}
+.wrap{max-width:1160px;margin:0 auto;padding-inline:clamp(14px,3vw,32px)}
+header{padding:2.4rem 0 1.4rem;border-bottom:1px solid var(--surface0)}
+.brandline{display:flex;gap:.7rem;align-items:center;flex-wrap:wrap}
+.brandline .mark{font-size:1.25rem;color:var(--banner-hue);font-weight:700}
+h1{font-size:1.35rem;line-height:1.25;text-wrap:balance}
+.rev{color:var(--muted);font-weight:400}
+.sub{color:var(--muted);max-width:74ch;margin-top:.55rem;text-wrap:pretty}
+.chips{display:flex;gap:.4rem;flex-wrap:wrap;margin-top:1rem}
+.chip,.badge{border:1px solid var(--surface2);border-radius:999px;padding:.1rem .62rem;color:var(--muted);font-size:.74rem;background:var(--mantle)}
+.chip b{color:var(--text)}
+#deck{position:sticky;top:0;z-index:5;background:var(--base);border-bottom:1px solid var(--surface0);padding:.52rem 0}
+.deckrow{display:flex;gap:.38rem;align-items:center;flex-wrap:wrap}
+.decklabel{font-size:.72rem;color:var(--muted)}
+.spacer{flex:1}
+.control,.replay{
+  color:var(--muted);background:var(--mantle);border:1px solid var(--surface2);
+  border-radius:8px;padding:.25rem .62rem;cursor:pointer;display:inline-flex;gap:.4rem;align-items:center;
+}
+.control:hover,.replay:hover{color:var(--text);border-color:var(--overlay0)}
+.control[aria-pressed=&quot;true&quot;]{color:var(--text);border-color:var(--accent)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--surface2)}
+[aria-pressed=&quot;true&quot;] .dot{background:var(--accent)}
+kbd{font:inherit;font-size:.68rem;border:1px solid var(--surface2);border-radius:4px;padding:0 .28rem;color:var(--overlay1)}
+.jump{font-size:.76rem;color:var(--muted);text-decoration:none;padding:.2rem .4rem}
+main section{padding:2.6rem 0 .5rem;scroll-margin-top:4rem}
+.kicker{font-size:.75rem;color:var(--overlay1);margin-bottom:.35rem}
+h2{font-size:1.13rem;margin-bottom:.45rem;text-wrap:balance}
+h3{font-size:.96rem;text-wrap:balance}
+.lede{color:var(--muted);max-width:78ch;margin-bottom:1.2rem;text-wrap:pretty}
+code{font:inherit;font-size:.92em;color:var(--text);background:var(--mantle);border:1px solid var(--surface0);border-radius:4px;padding:0 .26em}
+.decision,.panel{border:1px solid var(--surface0);border-radius:12px;background:var(--mantle)}
+.decision{padding:1.1rem 1.2rem 1.3rem}
+.decision.locked{border-color:var(--accent)}
+.decision-head{display:flex;align-items:center;gap:.55rem;flex-wrap:wrap;margin-bottom:.35rem}
+.lock{color:var(--base);background:var(--accent);font-weight:700;border-radius:6px;padding:.08rem .52rem;font-size:.74rem}
+.decision-head .replay{margin-left:auto;color:var(--text)}
+.decision-copy{color:var(--muted);max-width:82ch;margin-bottom:.9rem}
+.fact-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:.5rem;margin-bottom:.9rem}
+.fact{background:var(--base);border:1px solid var(--surface0);border-radius:8px;padding:.43rem .6rem}
+.fact small{display:block;color:var(--overlay1)}
+.fact span{font-size:.8rem;color:var(--text)}
+.term{background:var(--crust);border:1px solid var(--surface2);border-radius:10px;overflow:hidden;min-width:0;max-width:100%}
+.termbar{display:flex;align-items:center;gap:.5rem;padding:.4rem .65rem;background:var(--mantle);border-bottom:1px solid var(--surface0)}
+.termbar .dots{display:flex;gap:.3rem}.termbar i{display:block;width:8px;height:8px;border-radius:50%;background:var(--surface1)}
+.termbar .title{color:var(--overlay1);font-size:.71rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+.termbar .state{color:var(--muted);font-size:.68rem;white-space:nowrap;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.termbody{padding:.75rem .85rem;overflow-x:auto;min-width:0;max-width:100%}
+pre.screen{font:12px/1.42 var(--mono);white-space:pre;color:var(--text);width:max-content;min-width:100%}
+.startup-live .termbody{min-height:15.5em}
+.g-solid{color:var(--banner-hue);font-weight:700}.g-shadow,.g-ramp,.dim{color:var(--overlay1)}
+.titletext{color:var(--text);font-weight:700}.mut{color:var(--muted)}.acc{color:var(--accent)}
+.ok{color:var(--green)}.run{color:var(--yellow)}.err{color:var(--red)}.wait{color:var(--sky)}
+html[data-color=&quot;off&quot;] .screen :is(.g-solid,.acc,.ok,.run,.err,.wait),.no-color .screen :is(.g-solid,.acc,.ok,.run,.err,.wait){color:var(--text)}
+html[data-color=&quot;off&quot;] .screen .mut,.no-color .screen .mut{color:var(--nc-muted)}
+html[data-color=&quot;off&quot;] .screen :is(.dim,.g-shadow,.g-ramp),.no-color .screen :is(.dim,.g-shadow,.g-ramp){color:var(--nc-dim)}
+.caption{color:var(--overlay1);font-size:.75rem;margin-top:.48rem;max-width:92ch}
+.caption b{color:var(--muted);font-weight:400}
+.frames{display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:.55rem;margin-top:1rem}
+.frames .termbody{padding:.45rem}.frames pre{font-size:6.2px;line-height:1.42}
+.framecap{border-top:1px solid var(--surface0);padding:.3rem .48rem;color:var(--overlay1);font-size:.67rem}
+.proofs{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:.55rem;margin-top:.65rem}
+.proofs>div,.frames>div{min-width:0}
+.proofs pre{font-size:7px;line-height:1.42}.proofs .framecap{color:var(--muted)}
+.archive{margin-top:.85rem;color:var(--overlay1);font-size:.76rem}
+.archive summary{cursor:pointer;width:max-content}.archive p{max-width:82ch;margin-top:.35rem}
+.matrix-wrap{overflow-x:auto;max-width:100%;border:1px solid var(--surface0);border-radius:10px}
+main,section,article,.panel{min-width:0}
+.matrix{width:100%;border-collapse:collapse;min-width:740px;font-size:.78rem}
+.matrix th{text-align:left;color:var(--overlay1);font-weight:400;background:var(--mantle)}
+.matrix th,.matrix td{padding:.46rem .58rem;border-bottom:1px solid var(--surface0);vertical-align:top}
+.matrix td:first-child{color:var(--text);font-weight:700}.matrix td{color:var(--muted)}
+.forbidden{color:var(--red)!important}.known{color:var(--green)!important}
+.tiers{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:.65rem;margin-top:1rem}
+.tier{padding:.85rem 1rem}.tier h3{margin-bottom:.35rem}.tier ul{padding-left:1.1rem;color:var(--muted);font-size:.8rem}.tier li{margin:.28rem 0}
+footer{margin-top:3rem;padding:1rem 0;border-top:1px solid var(--surface0);color:var(--muted);font-size:.72rem}
+html[data-cols=&quot;narrow&quot;] .startup-live{max-width:64ch}
+html[data-cols=&quot;narrow&quot;] .frames{grid-template-columns:1fr 1fr}
+@media(max-width:760px){.spacer{display:none}.decision-head .replay{margin-left:0}.frames{grid-template-columns:1fr 1fr}}
+@media(max-width:430px){body{font-size:13px}.wrap{padding-inline:10px}html[data-cols=&quot;narrow&quot;] .frames,.frames{grid-template-columns:1fr}.control,.jump{font-size:.7rem}.proofs,.tiers,.pair,.evalrow,.gallery{grid-template-columns:1fr}.termbody{padding:.6rem;overflow-x:auto}}
+html[data-motion=&quot;off&quot;] *,html[data-motion=&quot;off&quot;] *::before{animation:none!important;transition:none!important;scroll-behavior:auto!important}
+@media(prefers-reduced-motion:reduce){*,*::before{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+
+/* ===== REVISION 2 ADDITIONS — carried forward verbatim; these rules serve
+       the confirmed-direction, map, scenes, system and glyph sections. ===== */
+/* contrast-fix tier: --muted (≈7.4:1 on base) for new kickers/captions/smalls  */
+.kk,small.kk{color:var(--muted)}
+.mutcap{color:var(--muted)}
+.decision.confirmed{border-color:var(--accent)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap}
+.demo-live .termbody{min-height:10.5em}
+.lanes{display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.65rem}
+.lanes span{border:1px solid var(--surface2);border-radius:999px;padding:.08rem .55rem;font-size:.72rem;color:var(--muted);background:var(--mantle)}
+.lanes span[data-active=&quot;true&quot;]{border-color:var(--accent);color:var(--text)}
+.lanes .mk{display:none;font-style:normal;color:var(--accent)}
+.lanes span[data-active=&quot;true&quot;] .mk{display:inline}
+html[data-color=&quot;off&quot;] .lanes span[data-active=&quot;true&quot;]{border-color:var(--nc-muted)}
+html[data-color=&quot;off&quot;] .lanes .mk{color:var(--text)}
+.pair{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:.65rem;margin-top:.6rem}
+.scene{margin-top:1.6rem}
+.scene h3{margin-bottom:.15rem}
+.scene .caption{margin-top:.55rem}
+.thk{font-style:italic}
+.evalrow{display:grid;grid-template-columns:repeat(auto-fit,minmax(225px,1fr));gap:.55rem;margin-top:.6rem}
+.verdict{border:1px solid var(--surface2);border-radius:10px;background:var(--mantle);padding:.85rem 1rem;margin-top:.8rem;max-width:88ch;color:var(--muted);font-size:.82rem}
+.verdict b{color:var(--text)}
+.rules{padding-left:1.2rem;color:var(--muted);font-size:.82rem;max-width:82ch;margin-top:.5rem}
+.rules li{margin:.36rem 0}
+.never{list-style:none;padding:0;max-width:84ch;margin-top:.5rem}
+.never li{border-top:1px solid var(--surface0);padding:.44rem 0;color:var(--muted);font-size:.82rem}
+.never li:last-child{border-bottom:1px solid var(--surface0)}
+.never li b{color:var(--text)}
+html[data-cols=&quot;narrow&quot;] .pair,html[data-cols=&quot;narrow&quot;] .evalrow{grid-template-columns:1fr}
+
+/* ===== REVISION 3 ADDITIONS — assembly beat, manifesto beat, working-mark
+       gallery. Illumination classes carry role + weight only; density change
+       lives in the glyphs themselves (│→┃, ░→▒, 0↔1) so activity survives
+       NO_COLOR. No filter / text-shadow / box-shadow anywhere in a screen. */
+.m-lit{color:var(--accent);font-weight:700}
+.m-mid{color:var(--muted)}
+.m-dim{color:var(--overlay1)}
+html[data-color=&quot;off&quot;] .screen .m-lit,.no-color .screen .m-lit{color:var(--text);font-weight:700}
+html[data-color=&quot;off&quot;] .screen .m-mid,.no-color .screen .m-mid{color:var(--nc-muted)}
+html[data-color=&quot;off&quot;] .screen .m-dim,.no-color .screen .m-dim{color:var(--nc-dim)}
+.gallery{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:.55rem;margin-top:.9rem}
+.tile{display:flex;flex-direction:column;gap:.4rem;align-items:flex-start;text-align:left;
+  background:var(--crust);border:1px solid var(--surface2);border-radius:10px;
+  padding:.55rem .65rem;cursor:pointer;color:var(--muted)}
+.tile:hover{border-color:var(--overlay0);color:var(--text)}
+.tile[aria-checked=&quot;true&quot;]{border-color:var(--accent);color:var(--text)}
+.tile .tname{font-size:.74rem}
+.tile .tname .mk2{display:none;color:var(--accent)}
+.tile[aria-checked=&quot;true&quot;] .tname .mk2{display:inline}
+html[data-color=&quot;off&quot;] .tile[aria-checked=&quot;true&quot;]{border-color:var(--nc-muted)}
+html[data-color=&quot;off&quot;] .tile .tname .mk2{color:var(--text)}
+.tile .screen{font:10px/1.32 var(--mono);min-width:0;width:auto}
+.tile .tmeta{font-size:.68rem;color:var(--muted)}
+.bigmark{font:15px/1.34 var(--mono)}
+.pvrow{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:.6rem}
+/* rev-3 hygiene: long archive summaries must never widen the document on
+   narrow viewports (the carried-forward width:max-content stays for short
+   labels; this caps it). */
+.archive summary{max-width:100%}
+</style>
+</head>
+<body>
+<!-- ============================= HEADER ============================== -->
+<header>
+  <div class=&quot;wrap&quot;>
+    <div class=&quot;brandline&quot;><span class=&quot;mark&quot;>∀</span><h1>Atomic brand behavior <span class=&quot;rev&quot;>· revision 3 · assured rebel</span></h1></div>
+    <p class=&quot;sub&quot;>Startup now assembles: the two halves of the ∀ travel inward and meet at the crossbar, then the manifesto lands as its own restrained beat. The recurring voice — the phase-derived label family with <q>Demanding evidence</q> — carries forward untouched, and a thirteen-construction working-mark study now includes the Atomic-native Subverted ∀ challenger.</p>
+    <div class=&quot;chips&quot; role=&quot;list&quot; aria-label=&quot;Review constraints&quot;>
+      <span class=&quot;chip&quot; role=&quot;listitem&quot;><b>A · Assemble</b> · contracts locked</span>
+      <span class=&quot;chip&quot; role=&quot;listitem&quot;><b>manifesto · beat 2</b></span>
+      <span class=&quot;chip&quot; role=&quot;listitem&quot;><b>working marks · candidate study</b></span>
+      <span class=&quot;chip&quot; role=&quot;listitem&quot;>phase-derived labels · no rotation</span>
+      <span class=&quot;chip&quot; role=&quot;listitem&quot;>Catppuccin role semantics</span>
+      <span class=&quot;chip&quot; role=&quot;listitem&quot;>zero runtime assets or requests</span>
+      <span class=&quot;chip&quot; role=&quot;listitem&quot;>keyboard-first</span>
+      <span class=&quot;chip&quot; role=&quot;listitem&quot;>design artifact only</span>
+    </div>
+  </div>
+</header>
+<!-- ==================== CONTROL DECK (M/C/W/T/R/D) ===================
+     Shared state machine: data-motion / data-color / data-cols / data-think
+     / data-dir on <html>. One deck drives the assembly reveal, the phase
+     demo, and all thirteen working marks. No second control idiom. -->
+<nav id=&quot;deck&quot; aria-label=&quot;Artifact controls&quot;>
+  <div class=&quot;wrap deckrow&quot;>
+    <span class=&quot;decklabel&quot;>simulate</span>
+    <button class=&quot;control&quot; id=&quot;motion&quot; aria-pressed=&quot;true&quot;><span class=&quot;dot&quot;></span> motion <kbd>M</kbd></button>
+    <button class=&quot;control&quot; id=&quot;color&quot; aria-pressed=&quot;true&quot;><span class=&quot;dot&quot;></span> color <kbd>C</kbd></button>
+    <button class=&quot;control&quot; id=&quot;cols&quot; aria-pressed=&quot;false&quot;><span class=&quot;dot&quot;></span> 64-col <kbd>W</kbd></button>
+    <button class=&quot;control&quot; id=&quot;think&quot; aria-pressed=&quot;false&quot;><span class=&quot;dot&quot;></span> thinking: <b id=&quot;thinkLabel&quot;>medium</b> <kbd>T</kbd></button>
+    <span class=&quot;spacer&quot;></span>
+    <a class=&quot;jump&quot; href=&quot;#startup&quot;>startup</a><a class=&quot;jump&quot; href=&quot;#manifesto&quot;>manifesto</a><a class=&quot;jump&quot; href=&quot;#direction&quot;>direction</a><a class=&quot;jump&quot; href=&quot;#map&quot;>map</a><a class=&quot;jump&quot; href=&quot;#scenes&quot;>scenes</a><a class=&quot;jump&quot; href=&quot;#system&quot;>system</a><a class=&quot;jump&quot; href=&quot;#glyph&quot;>spinner</a><a class=&quot;jump&quot; href=&quot;#marks&quot;>marks</a><a class=&quot;jump&quot; href=&quot;#markmatrix&quot;>matrix</a>
+  </div>
+</nav>
+<main class=&quot;wrap&quot;>
+<!-- ==================== STARTUP — A · ASSEMBLE ======================
+     SCOPE 1. The locked A · Settle card carries forward with ONE surgical
+     supersession: the reveal choreography. Outside-in density ramp
+     (░→▒→▓, rev 2) → two-half inward assembly (rev 3). Both halves move
+     in whole-column steps on the fixed 36×10 grid; the seam is the row-5
+     crossbar. Everything else — any-key settle + pass-through, PRM
+     instant settle, quiet-startup suppression, ░ shadow + meta on final
+     beat, <80-col stacking, contact sheet, proofs, archived B/C — is
+     preserved verbatim. The rev-2 choreography is archived below. -->
+<section id=&quot;startup&quot; aria-labelledby=&quot;startup-h&quot;>
+  <p class=&quot;kicker kk&quot;>Locked decision · revision 3 supersedes the reveal choreography only — every other contract preserved</p>
+  <article class=&quot;decision locked&quot;>
+    <div class=&quot;decision-head&quot;>
+      <span class=&quot;lock&quot;>LOCKED</span><h2 id=&quot;startup-h&quot;>A · Assemble</h2>
+      <button class=&quot;replay&quot; id=&quot;replay&quot; type=&quot;button&quot;>Replay reveal <kbd>R</kbd></button>
+    </div>
+    <p class=&quot;decision-copy&quot;>The <code>∀</code> banner assembles from two separated halves: the left <code>▙</code>-wedge and right <code>▟</code>-wedge travel inward in whole-column steps on the fixed 36×10 grid and meet decisively at the center crossbar — physical assembly, not character-density replacement. The <code>░</code> offset shadow and identity meta land on the final beat; the manifesto follows as a second, restrained beat (below). No launcher rail, gloss, or additional startup prose.</p>
+    <div class=&quot;fact-grid&quot;>
+      <div class=&quot;fact&quot;><small class=&quot;kk&quot;>motion</small><span>two halves · gap 10→0 cols · 640ms</span></div>
+      <div class=&quot;fact&quot;><small class=&quot;kk&quot;>control</small><span>any key settles; input passes through</span></div>
+      <div class=&quot;fact&quot;><small class=&quot;kk&quot;>reduced motion</small><span>assembled final state instantly</span></div>
+      <div class=&quot;fact&quot;><small class=&quot;kk&quot;>narrow</small><span>meta stacks below at &amp;lt;80 cols</span></div>
+    </div>
+    <div class=&quot;term startup-live&quot;>
+      <div class=&quot;termbar&quot;><span class=&quot;dots&quot;><i></i><i></i><i></i></span><span class=&quot;title&quot;>atomic — A · Assemble</span><span class=&quot;state&quot; id=&quot;revealState&quot;>live</span></div>
+      <div class=&quot;termbody&quot;><pre class=&quot;screen&quot; id=&quot;startupScreen&quot; role=&quot;img&quot; aria-label=&quot;Atomic forall banner assembling from two halves into identity information, followed by the manifesto line&quot;></pre></div>
+    </div>
+    <p class=&quot;caption kk&quot;><b>Any-key contract:</b> while the assembly or the manifesto beat is running, any key settles everything immediately. Production must forward that same keystroke to the editor seed input. Quiet startup (<code>interactive-startup.ts:147</code>) suppresses the header, so no reveal and no manifesto run.</p>
+    <p class=&quot;kicker kk&quot; style=&quot;margin-top:1rem&quot;>Assembly sequence · whole-column steps, no tweening</p>
+    <div class=&quot;frames&quot; id=&quot;frames&quot;></div>
+    <p class=&quot;kicker kk&quot; style=&quot;margin-top:1rem&quot;>Required state proofs</p>
+    <div class=&quot;proofs&quot; id=&quot;proofs&quot;></div>
+    <details class=&quot;archive&quot;><summary>Archived choreography · A · Settle outside-in density reveal (revision 2)</summary><p>The approved revision-2 reveal resolved the banner in place by character-density swap — <code>░ → ▒ → ▓ → final</code> at 660ms, ordered outside-in per column. Revision 3 supersedes that choreography with the two-half assembly above; the density ramp is a record, not a candidate. Every other contract — any-key settle with pass-through, reduced-motion instant settle, quiet-startup suppression, shadow and meta on the final beat, sub-80-column stacking — carries forward unchanged.</p></details>
+    <details class=&quot;archive&quot;><summary>Archived startup directions B/C</summary><p>B · Launch and C · For-all are superseded explorations, not candidates. Their rails, gloss, and flourish are intentionally absent from the current startup decision.</p></details>
+  </article>
+</section>
+
+<!-- ===================== MANIFESTO — BEAT 2 =========================
+     SCOPE 2. The statement previously landed on the same beat as the
+     settled banner (rev 2); revision 3 gives it its own restrained beat:
+     +240ms after the meet it renders dim, +400ms it settles muted,
+     permanently. Words are fixed verbatim; one typographically tightened
+     rendering is A/B'd on punctuation only. Any key mid-beat completes
+     the line and passes through. No additional startup prose. -->
+<section id=&quot;manifesto&quot; aria-labelledby=&quot;manifesto-h&quot;>
+  <p class=&quot;kicker kk&quot;>Beat 2 · the statement — words fixed, timing and placement evaluated</p>
+  <article class=&quot;decision confirmed&quot;>
+    <div class=&quot;decision-head&quot;>
+      <span class=&quot;lock&quot;>BEAT 2</span><h2 id=&quot;manifesto-h&quot;>One statement, one restrained beat</h2>
+    </div>
+    <p class=&quot;decision-copy&quot;>After the halves meet and the meta lands, one line follows: <q>We question, we break away from what is accepted. Engineering matters.</q> It arrives dim, settles muted, and never animates again. It is the only sentence the startup screen speaks — the banner is the gesture, this is the reason, and everything after it is status.</p>
+    <div class=&quot;fact-grid&quot;>
+      <div class=&quot;fact&quot;><small class=&quot;kk&quot;>timing</small><span>+240ms dim · +400ms muted · done</span></div>
+      <div class=&quot;fact&quot;><small class=&quot;kk&quot;>interruption</small><span>any key completes the line; input passes through</span></div>
+      <div class=&quot;fact&quot;><small class=&quot;kk&quot;>narrow</small><span>wraps to two lines at &amp;lt;80 cols</span></div>
+      <div class=&quot;fact&quot;><small class=&quot;kk&quot;>quiet startup</small><span>no banner, no manifesto</span></div>
+    </div>
+    <!-- Punctuation A/B — words and meaning frozen; only the comma splice
+         is tested against one em-dash rendering. -->
+    <div class=&quot;pair&quot;>
+      <div class=&quot;term&quot;><div class=&quot;termbar&quot;><span class=&quot;dots&quot;><i></i><i></i><i></i></span><span class=&quot;title&quot;>rendering A — user's exact punctuation</span><span class=&quot;state&quot;>as written</span></div><div class=&quot;termbody&quot;><pre class=&quot;screen&quot; role=&quot;img&quot; aria-label=&quot;Rendering A, the user's exact punctuation: We question, we break away from what is accepted. Engineering matters.&quot;>
+ <span class=&quot;mut&quot;>We question, we break away from what is accepted.</span>
+ <span class=&quot;mut&quot;>Engineering matters.</span>
+
+ <span class=&quot;dim&quot;>comma splice kept · reads as spoken cadence</span></pre></div></div>
+      <div class=&quot;term&quot;><div class=&quot;termbar&quot;><span class=&quot;dots&quot;><i></i><i></i><i></i></span><span class=&quot;title&quot;>rendering B — typographically tightened</span><span class=&quot;state&quot;>tested alternative</span></div><div class=&quot;termbody&quot;><pre class=&quot;screen&quot; role=&quot;img&quot; aria-label=&quot;Rendering B, typographically tightened with an em dash: We question — we break away from what is accepted. Engineering matters.&quot;>
+ <span class=&quot;mut&quot;>We question — we break away from what is accepted.</span>
+ <span class=&quot;mut&quot;>Engineering matters.</span>
+
+ <span class=&quot;dim&quot;>em dash replaces the splice · same words, same meaning</span></pre></div></div>
+    </div>
+    <div class=&quot;verdict&quot;><b>Punctuation verdict: keep rendering A.</b> The comma splice reads as spoken cadence — assured and unhurried, the register of someone stating a position rather than punctuating a document. Rendering B trades that warmth for typographic strictness; it is retained here as the one tested alternative, not adopted. Words and meaning are frozen either way.</div>
+    <p class=&quot;kicker kk&quot; style=&quot;margin-top:1rem&quot;>Required state proofs</p>
+    <div class=&quot;proofs&quot; id=&quot;mfProofs&quot;></div>
+    <div class=&quot;verdict&quot;><b>Placement verdict: first-landing element only.</b> The manifesto renders exactly once per session, on the startup screen, and never again — not in the working line (that slot carries the phase family: <code>Demanding evidence</code> et al.), not in the footer (controls), not in receipts (facts). Repeating it as status copy would be decoration-by-schedule — the exact pattern this review already deleted with <code>whimsical-messages.ts</code> — and PRODUCT.md holds the startup gesture to be singular. One landing, then silence.</div>
+  </article>
+</section>
+
+<!-- ================== CONFIRMED RECURRING DIRECTION ==================
+     Carried forward from revision 2 unchanged. Reuses the locked card's
+     grammar (badge + facts + live term) for the one confirmed direction.
+     States: live (motion on), settled (motion off / prefers-reduced-motion),
+     NO_COLOR (C), 64-col (W). -->
+<section id=&quot;direction&quot; aria-labelledby=&quot;direction-h&quot;>
+  <p class=&quot;kicker kk&quot;>Confirmed direction · replaces the three-proposal competition</p>
+  <article class=&quot;decision confirmed&quot;>
+    <div class=&quot;decision-head&quot;>
+      <span class=&quot;lock&quot;>CONFIRMED</span><h2 id=&quot;direction-h&quot;>Assured rebel, in the product's own components</h2>
+    </div>
+    <p class=&quot;decision-copy&quot;>Atomic already speaks. README.md signs off with <q>Build in the open. Question the defaults. Keep control of the process. ☠︎</q> — this revision extends that voice into the seconds users actually watch: the working line. One deterministic label family replaces both the generic <code>Working...</code> default and the ~450-entry random rotation shipping today in <code>whimsical-messages.ts</code>. Every label is a truthful receipt of the phase the agent is in — inspectable, changeable, and owned. Facts stay in the status lines and receipts; voice lives only where deleting it loses nothing.</p>
+    <div class=&quot;fact-grid&quot;>
+      <div class=&quot;fact&quot;><small class=&quot;kk&quot;>voice</small><span>assured rebel · README register</span></div>
+      <div class=&quot;fact&quot;><small class=&quot;kk&quot;>mechanic</small><span>phase-derived labels · deterministic</span></div>
+      <div class=&quot;fact&quot;><small class=&quot;kk&quot;>cost</small><span>one diff · net −466 lines</span></div>
+      <div class=&quot;fact&quot;><small class=&quot;kk&quot;>constraint</small><span>errors, blockers, approvals stay plain</span></div>
+    </div>
+    <!-- LIVE EVALUATION RIG — real working-status geometry
+         (working-status.ts:29–41): one blank row, 1-cell gutter, spinner in
+         accent, message in muted. Driven by the shared 80ms clock; phase
+         advances every 2.4s along a deterministic timeline of real events.
+         Motion off / PRM: spinner freezes, one settled label renders. -->
+    <div class=&quot;term demo-live&quot;>
+      <div class=&quot;termbar&quot;><span class=&quot;dots&quot;><i></i><i></i><i></i></span><span class=&quot;title&quot;>atomic — working status · phase-derived labels</span><span class=&quot;state&quot; id=&quot;demoState&quot;>live</span></div>
+      <div class=&quot;termbody&quot;><pre class=&quot;screen&quot;>
+ <span class=&quot;acc&quot; id=&quot;spinner&quot; aria-hidden=&quot;true&quot;>⠋</span> <span class=&quot;mut&quot; id=&quot;laneLabel&quot;>Questioning the defaults</span>
+
+ <span class=&quot;dim&quot; id=&quot;laneEvt&quot;>event: thinking_delta · reasoning stream</span>
+ <span class=&quot;dim&quot; id=&quot;laneMap&quot;>map: reasoning → “Questioning the defaults”</span>
+
+ <span class=&quot;dim&quot;>esc interrupt · same event, same label — every run</span></pre></div>
+    </div>
+    <p class=&quot;sr&quot; role=&quot;status&quot; id=&quot;laneStatus&quot;>Working status: Questioning the defaults</p>
+    <!-- Lane family chips: one selected state follows the live demo
+         (port80 pattern — one focal set, exactly one active choice).
+         Active lane keeps a ▸ marker so selection survives NO_COLOR. -->
+    <div class=&quot;lanes&quot; aria-label=&quot;Phase label family; the active lane follows the live demo&quot;>
+      <span data-lane=&quot;0&quot;><i class=&quot;mk&quot;>▸ </i>Questioning the defaults</span>
+      <span data-lane=&quot;1&quot;><i class=&quot;mk&quot;>▸ </i>Checking the machinery</span>
+      <span data-lane=&quot;2&quot;><i class=&quot;mk&quot;>▸ </i>Building assurance</span>
+      <span data-lane=&quot;3&quot;><i class=&quot;mk&quot;>▸ </i>Demanding evidence</span>
+      <span data-lane=&quot;4&quot;><i class=&quot;mk&quot;>▸ </i>Proving the path</span>
+      <span data-lane=&quot;5&quot;><i class=&quot;mk&quot;>▸ </i>Making it inspectable</span>
+      <span data-lane=&quot;f&quot;><i class=&quot;mk&quot;>▸ </i>On it · fallback</span>
+    </div>
+    <p class=&quot;caption kk&quot;><b>Reads like the product because it is the product:</b> accent spinner + muted label, one blank row, 1-cell gutter — the exact geometry of <code>working-status.ts:29–41</code>. Toggle <kbd>M</kbd> <kbd>C</kbd> <kbd>W</kbd> to judge the voice under motion-off, NO_COLOR, and 64 columns. The label changes only when the underlying event changes — no clock-driven rotation.</p>
+    <p class=&quot;kicker kk&quot; style=&quot;margin-top:1rem&quot;>Required state proofs</p>
+    <div class=&quot;proofs&quot; id=&quot;demoProofs&quot;></div>
+    <details class=&quot;archive&quot;><summary>Archived recurring directions · Proofmark / Navigator / Singular Gesture</summary><p>The three-way competition is superseded by this confirmed direction, the same way startup B/C were superseded by A · Settle. Their truthfulness contracts — event-backed language, conditional evidence receipts, semantic status colors — survive below as constraints of the microcopy system. Their framing as competing identities does not. Records, not candidates.</p></details>
+  </article>
+</section>
+
+<!-- ==================== PRIORITIZED OPPORTUNITY MAP ==================
+     Carried forward from revision 2 unchanged. Every compact moment in the
+     TUI, with shipped copy, proposed EXACT copy, mechanic, cost tier, and
+     file-level anchor. Green = proposed copy; red = moments where revoicing
+     is forbidden by constraint. -->
+<section id=&quot;map&quot; aria-labelledby=&quot;map-h&quot;>
+  <p class=&quot;kicker kk&quot;>Opportunity map · every compact moment, priced</p>
+  <h2 id=&quot;map-h&quot;>Where the voice goes — and where it never goes</h2>
+  <p class=&quot;lede&quot;>Ordered by leverage. Tier 1 is one diff: replace the random pick with a pure function and delete the rotation file. Constraint rows are part of the proposal — the moments that stay plain are what make the voiced moments trustworthy.</p>
+  <div class=&quot;matrix-wrap&quot;><table class=&quot;matrix&quot;>
+    <thead><tr><th scope=&quot;col&quot;>Priority · moment</th><th scope=&quot;col&quot;>Anchor</th><th scope=&quot;col&quot;>Shipped today</th><th scope=&quot;col&quot;>Proposed exact copy</th><th scope=&quot;col&quot;>Mechanic · tier</th></tr></thead>
+    <tbody>
+      <tr><td>P0 · working label + spinner</td><td><code>interactive-mode-base.ts:159</code> · swap at <code>interactive-agent-events.ts:70</code>, <code>chat-session-host-events.ts:165</code></td><td><code>Working...</code> default; random whimsy per turn (<code>whimsical-messages.ts</code>, ~450 entries)</td><td class=&quot;known&quot;><code>Checking the machinery</code> · <code>Building assurance</code> · <code>Demanding evidence</code> — one label per phase (family below)</td><td>replace <code>pickWhimsicalWorkingMessage()</code> with <code>phaseLabel(event)</code>; delete the rotation file · <b>T1</b></td></tr>
+      <tr><td>P0 · hidden thinking</td><td><code>interactive-mode-base.ts:162</code> + 4 consumers</td><td><code>Thinking...</code></td><td class=&quot;known&quot;><code>Questioning the defaults...</code></td><td>one default string; italic-muted treatment unchanged · <b>T1</b></td></tr>
+      <tr><td>P0 · working + interrupt hint</td><td><code>interactive-extension-runtime.ts:225</code></td><td><code>Working... (esc Interrupt)</code></td><td class=&quot;known&quot;><code>&amp;lt;phase label&amp;gt; (esc Interrupt)</code> — the hint text stays literal</td><td>compose from the same label family · <b>T1</b></td></tr>
+      <tr><td>P1 · empty state / first prompt</td><td><code>chat-session-host-rendering.ts:127</code></td><td><code>❯</code> alone</td><td class=&quot;known&quot;><code>Nothing runs until you say so.</code> — one dim line above the prompt</td><td>one hint line; editor untouched · <b>T2</b></td></tr>
+      <tr><td>P1 · workflow dispatch</td><td><code>packages/workflows/src/tui/dispatch-confirm.ts</code></td><td><code>DISPATCHED</code> panel + <code>/workflow connect</code> hint</td><td class=&quot;known&quot;><code>Dispatched. It runs whether you watch or not.</code> + existing connect hint</td><td>one added hint row; badge and status glyphs untouched · <b>T2</b></td></tr>
+      <tr><td>P1 · help / idle hints</td><td><code>footer.ts:238</code>, <code>keybinding-hints.ts</code></td><td><code>esc to interrupt</code> (busy); generic idle hints</td><td class=&quot;known&quot;>idle only: <code>/help · inspect everything</code> — busy hints unchanged</td><td>hint grammar <code>&amp;lt;key&amp;gt; &amp;lt;label&amp;gt;</code> kept · <b>T2</b></td></tr>
+      <tr><td>P2 · status text / tool transitions</td><td><code>chat-session-host-rendering.ts:45–48</code></td><td><code>Reading packages/…/working-status.ts</code></td><td class=&quot;known&quot;>keep exact facts — path, query, count. The facts are the brand.</td><td>no change · constraint</td></tr>
+      <tr><td>P2 · completion / receipts</td><td>receipt rows (<code>Changed:/Passed:/Not run:</code>)</td><td>conditional evidence receipt</td><td class=&quot;known&quot;>unchanged — <q>plausible output is not enough</q> already ships here</td><td>no change · already the voice</td></tr>
+      <tr><td>waiting / approval</td><td><code>node-card.ts:153</code>, <code>status-helpers.ts:45</code></td><td><code>？ awaiting input</code> · <code>↵ enter to respond</code></td><td class=&quot;forbidden&quot;>never revoiced — a blocker names itself and the control, plainly</td><td>constraint</td></tr>
+      <tr><td>cancellation</td><td><code>chat-session-host-actions.ts:128,143</code>, <code>bash-execution.ts:187</code></td><td><code>Compaction cancelled</code> · <code>(cancelled)</code></td><td class=&quot;forbidden&quot;>never revoiced — cancellation is a fact, not commentary</td><td>constraint</td></tr>
+      <tr><td>retry / recovery</td><td><code>interactive-agent-events.ts:357</code></td><td><code>Retrying (2/5) in 8s... (esc Cancel)</code></td><td class=&quot;forbidden&quot;>never revoiced — count, countdown, control, nothing else</td><td>constraint</td></tr>
+      <tr><td>compaction</td><td><code>chat-session-host-rendering.ts:83–85</code></td><td><code>Compacting context...</code></td><td class=&quot;forbidden&quot;>never revoiced — and it outranks any label by render precedence</td><td>constraint</td></tr>
+    </tbody>
+  </table></div>
+  <!-- Cost tiers — provable against the anchors above. -->
+  <div class=&quot;tiers&quot;>
+    <article class=&quot;panel tier&quot;><h3>Tier 1 · one diff</h3><ul><li>swap <code>pickWhimsicalWorkingMessage()</code> → <code>phaseLabel(event)</code> at both call sites</li><li>revoice <code>defaultWorkingMessage</code> / <code>defaultHiddenThinkingLabel</code></li><li>delete <code>whimsical-messages.ts</code> · net −466 lines</li></ul></article>
+    <article class=&quot;panel tier&quot;><h3>Tier 2 · isolated strings</h3><ul><li>interrupt-hint composition</li><li>dispatch hint row</li><li>empty-state hint line</li><li>idle footer hint</li></ul></article>
+    <article class=&quot;panel tier&quot;><h3>Defer</h3><ul><li>anything requiring new runtime events</li><li>milestone persistence semantics</li><li>spinner glyph change — evaluation below says keep</li></ul></article>
+  </div>
+</section>
+
+<!-- ===================== BEFORE / AFTER SCENES =======================
+     Carried forward from revision 2 unchanged. Simulated terminal frames in
+     the artifact's .term/.screen vocabulary. Left = shipped today, right =
+     proposed. One accented element per frame. Frames marked &quot;identical by
+     design&quot; carry the constraint. -->
+<section id=&quot;scenes&quot; aria-labelledby=&quot;scenes-h&quot;>
+  <p class=&quot;kicker kk&quot;>Product scenes · shipped vs proposed</p>
+  <h2 id=&quot;scenes-h&quot;>The same components, with the copy they deserve</h2>
+  <p class=&quot;lede&quot;>Every scene is the real surface with only copy changed — no new layout, no new colors, no new glyph semantics. Scenes rendered once are unchanged on purpose: that restraint is part of the proposal.</p>
+
+  <article class=&quot;scene&quot;>
+    <h3>Working line — the confirmed mechanic</h3>
+    <div class=&quot;pair&quot;>
+      <div class=&quot;term&quot;><div class=&quot;termbar&quot;><span class=&quot;dots&quot;><i></i><i></i><i></i></span><span class=&quot;title&quot;>working status</span><span class=&quot;state&quot;>before · shipped</span></div><div class=&quot;termbody&quot;><pre class=&quot;screen&quot; role=&quot;img&quot; aria-label=&quot;Before: spinner with the random whimsical label Schlepping, unrelated to the actual work&quot;>
+ <span class=&quot;acc&quot;>⠸</span> <span class=&quot;mut&quot;>Schlepping...</span>
+
+ <span class=&quot;dim&quot;>whimsical-messages.ts · one of ~450 · Math.random()</span>
+ <span class=&quot;dim&quot;>same edit, another run: “Spelunking...” · “Bamboozling...”</span></pre></div></div>
+      <div class=&quot;term&quot;><div class=&quot;termbar&quot;><span class=&quot;dots&quot;><i></i><i></i><i></i></span><span class=&quot;title&quot;>working status</span><span class=&quot;state&quot;>after · proposed</span></div><div class=&quot;termbody&quot;><pre class=&quot;screen&quot; role=&quot;img&quot; aria-label=&quot;After: spinner with the phase-derived label Checking the machinery, mapped from a read tool call&quot;>
+ <span class=&quot;acc&quot;>⠸</span> <span class=&quot;mut&quot;>Checking the machinery</span>
+
+ <span class=&quot;dim&quot;>event: tool_call · read · working-status.ts</span>
+ <span class=&quot;dim&quot;>same event, every run: “Checking the machinery”</span></pre></div></div>
+    </div>
+    <p class=&quot;caption kk&quot;><b>The rotation already ships.</b> Today's spinner says <code>Noodling...</code> while editing auth code — cute-for-cuteness, unrelated to the work. The replacement is a receipt of the phase itself. Determinism is the personality: the label means something because it cannot lie.</p>
+  </article>
+
+  <article class=&quot;scene&quot;>
+    <h3>Hidden thinking</h3>
+    <div class=&quot;pair&quot;>
+      <div class=&quot;term&quot;><div class=&quot;termbar&quot;><span class=&quot;dots&quot;><i></i><i></i><i></i></span><span class=&quot;title&quot;>assistant message · reasoning hidden</span><span class=&quot;state&quot;>before · shipped</span></div><div class=&quot;termbody&quot;><pre class=&quot;screen&quot; role=&quot;img&quot; aria-label=&quot;Before: the italic muted label Thinking&quot;>
+ <span class=&quot;dim thk&quot;>Thinking...</span></pre></div></div>
+      <div class=&quot;term&quot;><div class=&quot;termbar&quot;><span class=&quot;dots&quot;><i></i><i></i><i></i></span><span class=&quot;title&quot;>assistant message · reasoning hidden</span><span class=&quot;state&quot;>after · proposed</span></div><div class=&quot;termbody&quot;><pre class=&quot;screen&quot; role=&quot;img&quot; aria-label=&quot;After: the italic muted label Questioning the defaults&quot;>
+ <span class=&quot;dim thk&quot;>Questioning the defaults...</span></pre></div></div>
+    </div>
+    <p class=&quot;caption kk&quot;>Same italic-muted treatment as <code>assistant-message.ts</code>, same single line, same slot. The shipped ellipsis stays — this surface has no spinner to carry progress.</p>
+  </article>
+
+  <article class=&quot;scene&quot;>
+    <h3>Workflow dispatch</h3>
+    <div class=&quot;pair&quot;>
+      <div class=&quot;term&quot;><div class=&quot;termbar&quot;><span class=&quot;dots&quot;><i></i><i></i><i></i></span><span class=&quot;title&quot;>workflow — dispatch</span><span class=&quot;state&quot;>before · shipped</span></div><div class=&quot;termbody&quot;><pre class=&quot;screen&quot; role=&quot;img&quot; aria-label=&quot;Before: dispatched panel with running badge and connect hint&quot;>
+ <span class=&quot;dim&quot;>╭────────────────────────────────────────────╮</span>
+ <span class=&quot;dim&quot;>│</span> <span class=&quot;titletext&quot;>DISPATCHED</span>   <span class=&quot;mut&quot;>release-check · run 7f2</span>       <span class=&quot;dim&quot;>│</span>
+ <span class=&quot;dim&quot;>│</span> <span class=&quot;run&quot;>● running</span>    <span class=&quot;mut&quot;>5 stages · 0 complete</span>         <span class=&quot;dim&quot;>│</span>
+ <span class=&quot;dim&quot;>╰────────────────────────────────────────────╯</span>
+ <span class=&quot;dim&quot;>↳ /workflow connect to attach</span></pre></div></div>
+      <div class=&quot;term&quot;><div class=&quot;termbar&quot;><span class=&quot;dots&quot;><i></i><i></i><i></i></span><span class=&quot;title&quot;>workflow — dispatch</span><span class=&quot;state&quot;>after · proposed</span></div><div class=&quot;termbody&quot;><pre class=&quot;screen&quot; role=&quot;img&quot; aria-label=&quot;After: same dispatched panel plus the line Dispatched, it runs whether you watch or not&quot;>
+ <span class=&quot;dim&quot;>╭────────────────────────────────────────────╮</span>
+ <span class=&quot;dim&quot;>│</span> <span class=&quot;titletext&quot;>DISPATCHED</span>   <span class=&quot;mut&quot;>release-check · run 7f2</span>       <span class=&quot;dim&quot;>│</span>
+ <span class=&quot;dim&quot;>│</span> <span class=&quot;run&quot;>● running</span>    <span class=&quot;mut&quot;>5 stages · 0 complete</span>         <span class=&quot;dim&quot;>│</span>
+ <span class=&quot;dim&quot;>╰────────────────────────────────────────────╯</span>
+ <span class=&quot;mut&quot;>Dispatched. It runs whether you watch or not.</span>
+ <span class=&quot;dim&quot;>↳ </span><span class=&quot;acc&quot;>/workflow connect</span><span class=&quot;dim&quot;> to attach</span></pre></div></div>
+    </div>
+    <p class=&quot;caption kk&quot;>The badge, run id, stage count, and <code>●</code> status glyph are untouched — status is truth. The added line states a fact about autonomy in the README's register, then gets out of the way.</p>
+  </article>
+
+  <article class=&quot;scene&quot;>
+    <h3>Empty state — first prompt</h3>
+    <div class=&quot;pair&quot;>
+      <div class=&quot;term&quot;><div class=&quot;termbar&quot;><span class=&quot;dots&quot;><i></i><i></i><i></i></span><span class=&quot;title&quot;>editor — new session</span><span class=&quot;state&quot;>before · shipped</span></div><div class=&quot;termbody&quot;><pre class=&quot;screen&quot; role=&quot;img&quot; aria-label=&quot;Before: bare prompt with a help hint&quot;>
+ <span class=&quot;acc&quot;>❯</span>
+
+ <span class=&quot;dim&quot;>/help commands</span></pre></div></div>
+      <div class=&quot;term&quot;><div class=&quot;termbar&quot;><span class=&quot;dots&quot;><i></i><i></i><i></i></span><span class=&quot;title&quot;>editor — new session</span><span class=&quot;state&quot;>after · proposed</span></div><div class=&quot;termbody&quot;><pre class=&quot;screen&quot; role=&quot;img&quot; aria-label=&quot;After: the line Nothing runs until you say so above the prompt&quot;>
+ <span class=&quot;mut&quot;>Nothing runs until you say so.</span>
+
+ <span class=&quot;acc&quot;>❯</span>
+
+ <span class=&quot;dim&quot;>/help commands</span></pre></div></div>
+    </div>
+    <p class=&quot;caption kk&quot;>One line, literally true — Atomic is keyboard-first and consent-first. It teaches the control model instead of decorating the silence.</p>
+  </article>
+
+  <article class=&quot;scene&quot;>
+    <h3>Compaction · retry · cancellation · error</h3>
+    <div class=&quot;term&quot;><div class=&quot;termbar&quot;><span class=&quot;dots&quot;><i></i><i></i><i></i></span><span class=&quot;title&quot;>recovery surfaces</span><span class=&quot;state&quot;>before = after · identical by design</span></div><div class=&quot;termbody&quot;><pre class=&quot;screen&quot; role=&quot;img&quot; aria-label=&quot;Compaction, retry countdown, cancelled command, and typecheck failure lines, all plain and unchanged&quot;>
+ <span class=&quot;acc&quot;>⠸</span> <span class=&quot;mut&quot;>Compacting context... (esc Cancel)</span>
+
+ <span class=&quot;run&quot;>Retrying (2/5) in 8s... (esc Cancel)</span>
+ <span class=&quot;run&quot;>(cancelled)</span> <span class=&quot;mut&quot;>bun test test/unit</span>
+ <span class=&quot;err&quot;>✗ bun run typecheck · exit 2</span></pre></div></div>
+    <p class=&quot;caption kk&quot;><b>This frame is the constraint, rendered.</b> No voice on anything yellow or red: compaction outranks every label by code (<code>chat-session-host-rendering.ts:83–85</code>), retries state count + countdown + control, cancellation is a fact, errors name the command and the exit. The previous review's truthfulness contracts survive here — as law, not thesis.</p>
+  </article>
+
+  <article class=&quot;scene&quot;>
+    <h3>Completion — the receipt</h3>
+    <div class=&quot;term&quot;><div class=&quot;termbar&quot;><span class=&quot;dots&quot;><i></i><i></i><i></i></span><span class=&quot;title&quot;>turn complete</span><span class=&quot;state&quot;>unchanged · already the voice</span></div><div class=&quot;termbody&quot;><pre class=&quot;screen&quot; role=&quot;img&quot; aria-label=&quot;Receipt rows: changed three files, passed 42 tests, integration tests not run&quot;>
+ <span class=&quot;ok&quot;>Changed:</span> <span class=&quot;mut&quot;>3 files (+42/-11)</span>
+ <span class=&quot;ok&quot;>Passed:</span>  <span class=&quot;mut&quot;>bun test test/unit/session.test.ts (42 tests)</span>
+ <span class=&quot;dim&quot;>Not run: integration tests</span></pre></div></div>
+    <p class=&quot;caption kk&quot;>Untouched. <q>Plausible output was not enough</q> is already shipped here — the explicit <code>Not run</code> line is the most assured-rebel copy in the product. The label family exists to make the seconds before this receipt sound like the receipt.</p>
+  </article>
+</section>
+
+<!-- ===================== MICROCOPY SYSTEM SPEC =======================
+     Carried forward from revision 2 unchanged. The label family, the
+     deterministic mapping, and the never-list. This is the implementable
+     spec behind the scenes above. -->
+<section id=&quot;system&quot; aria-labelledby=&quot;system-h&quot;>
+  <p class=&quot;kicker kk&quot;>Microcopy system · family, mapping, law</p>
+  <h2 id=&quot;system-h&quot;>Six lanes, one pure function, a hard never-list</h2>
+  <p class=&quot;lede&quot;>Each lane traces to a line of README.md positioning. The mapping is a total, pure function of the latest runtime event — publishable, testable, and boring to maintain. That is the point.</p>
+  <div class=&quot;matrix-wrap&quot;><table class=&quot;matrix&quot;>
+    <thead><tr><th scope=&quot;col&quot;>Lane</th><th scope=&quot;col&quot;>Trigger events</th><th scope=&quot;col&quot;>Label</th><th scope=&quot;col&quot;>Chars</th><th scope=&quot;col&quot;>README trace</th></tr></thead>
+    <tbody>
+      <tr><td>reasoning</td><td><code>thinking_delta</code></td><td class=&quot;known&quot;><code>Questioning the defaults</code></td><td>24</td><td>“Question the defaults.”</td></tr>
+      <tr><td>inspection</td><td><code>tool_call</code> · read / search / find / fetch</td><td class=&quot;known&quot;><code>Checking the machinery</code></td><td>22</td><td>“inspectable, changeable, and owned”</td></tr>
+      <tr><td>mutation</td><td><code>tool_call</code> · edit / write (source)</td><td class=&quot;known&quot;><code>Building assurance</code></td><td>18</td><td>“developers who want assurance”</td></tr>
+      <tr><td>verification</td><td><code>tool_call</code> · bash test / typecheck / lint; <code>tool_result</code> burst</td><td class=&quot;known&quot;><code>Demanding evidence</code></td><td>18</td><td>“plausible output was not enough”</td></tr>
+      <tr><td>workflow</td><td>stage dispatch / progress</td><td class=&quot;known&quot;><code>Proving the path</code></td><td>16</td><td>“the process you define and enforce”</td></tr>
+      <tr><td>artifact</td><td><code>tool_call</code> · write docs / spec / report</td><td class=&quot;known&quot;><code>Making it inspectable</code></td><td>21</td><td>“inspect it, adapt it, and own it”</td></tr>
+      <tr><td>fallback</td><td><code>turn_start</code>, unmapped events</td><td class=&quot;known&quot;><code>On it</code></td><td>5</td><td>“Direct, precise, confident. No filler.”</td></tr>
+    </tbody>
+  </table></div>
+  <h3 style=&quot;margin-top:1.4rem&quot;>Mapping rules</h3>
+  <ol class=&quot;rules&quot;>
+    <li><b style=&quot;color:var(--text)&quot;>Precedence.</b> Compaction and <code>statusMessage</code> outrank any lane label (<code>chat-session-host-rendering.ts:83–85</code>). A lane label never renders while compacting.</li>
+    <li><b style=&quot;color:var(--text)&quot;>Purity.</b> <code>label = phaseLabel(latestEvent, toolClass)</code>. Same event, same label, every run. No <code>Math.random()</code>, no timers, no rotation while a phase persists.</li>
+    <li><b style=&quot;color:var(--text)&quot;>Totality.</b> Any unmapped event falls back to <code>On it</code>. The function can never throw or go blank.</li>
+    <li><b style=&quot;color:var(--text)&quot;>Length.</b> ≤24 characters, ASCII plus narrow Unicode only. Spinner + gutter + longest label = 27 columns — fits the 64-col working line with room to spare.</li>
+    <li><b style=&quot;color:var(--text)&quot;>Punctuation.</b> No ellipsis on the spinner line — the spinner is the progress mark. The hidden-thinking slot keeps its shipped ellipsis; it has no spinner.</li>
+    <li><b style=&quot;color:var(--text)&quot;>Deletability.</b> Every label must be removable without information loss. Facts live in status lines and receipts; the label carries voice only.</li>
+  </ol>
+  <h3 style=&quot;margin-top:1.4rem&quot;>What never gets personality</h3>
+  <ul class=&quot;never&quot;>
+    <li><b>Not on errors.</b> <code>✗</code> lines state the command and the exit code, nothing else.</li>
+    <li><b>Not on destructive actions.</b> Approvals name the risk in plain words and wait.</li>
+    <li><b>Not on blockers.</b> <code>⊘ blocked by unit tests</code> names the dependency, full stop.</li>
+    <li><b>Not on cancellation.</b> <code>Compaction cancelled</code>. A fact, not commentary.</li>
+    <li><b>Not on retries.</b> <code>Retrying (2/5) in 8s... (esc Cancel)</code> — count, countdown, control.</li>
+    <li><b>Not on compaction.</b> <code>Compacting context...</code> outranks every label — by code, not by policy.</li>
+  </ul>
+</section>
+
+<!-- ==================== SPINNER GLYPH EVALUATION =====================
+     Carried forward from revision 2 unchanged. Proposal evaluated against
+     the incumbent Braille set @80ms (components/chat-session-host-utils.ts:9–13).
+     All three run on the shared clock; motion off freezes all of them.
+     Verdict: keep. The working-mark study below is a candidate study
+     ALONGSIDE this verdict, not a reversal of it. -->
+<section id=&quot;glyph&quot; aria-labelledby=&quot;glyph-h&quot;>
+  <p class=&quot;kicker kk&quot;>Spinner glyph · evaluation, not a decree</p>
+  <h2 id=&quot;glyph-h&quot;>Candidates against the incumbent, live</h2>
+  <p class=&quot;lede&quot;>Same 80ms clock, same accent role, same single-cell budget. Judge them running; toggle <kbd>C</kbd> for NO_COLOR and <kbd>M</kbd> to freeze.</p>
+  <div class=&quot;evalrow&quot;>
+    <div class=&quot;term&quot;><div class=&quot;termbar&quot;><span class=&quot;dots&quot;><i></i><i></i><i></i></span><span class=&quot;title&quot;>incumbent — Braille dots</span><span class=&quot;state&quot;>keep</span></div><div class=&quot;termbody&quot;><pre class=&quot;screen&quot; role=&quot;img&quot; aria-label=&quot;Incumbent Braille spinner: ten frames at 80 milliseconds, one cell wide&quot;>
+ <span class=&quot;acc&quot; id=&quot;evalBr&quot; aria-hidden=&quot;true&quot;>⠋</span> <span class=&quot;mut&quot;>Building assurance</span>
+
+ <span class=&quot;dim&quot;>⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ · 10 frames · 80ms</span>
+ <span class=&quot;dim&quot;>1 cell · dense · everywhere in terminals</span></pre></div></div>
+    <div class=&quot;term&quot;><div class=&quot;termbar&quot;><span class=&quot;dots&quot;><i></i><i></i><i></i></span><span class=&quot;title&quot;>candidate — quadrant blocks</span><span class=&quot;state&quot;>evaluated</span></div><div class=&quot;termbody&quot;><pre class=&quot;screen&quot; role=&quot;img&quot; aria-label=&quot;Candidate quadrant block spinner: four frames, heavy ink, jumpy at 80 milliseconds&quot;>
+ <span class=&quot;acc&quot; id=&quot;evalQuad&quot; aria-hidden=&quot;true&quot;>▖</span> <span class=&quot;mut&quot;>Building assurance</span>
+
+ <span class=&quot;dim&quot;>▖▘▝▗ · 4 frames · 80ms</span>
+ <span class=&quot;dim&quot;>1 cell · heavy ink · jumpy at this cadence</span></pre></div></div>
+    <div class=&quot;term&quot;><div class=&quot;termbar&quot;><span class=&quot;dots&quot;><i></i><i></i><i></i></span><span class=&quot;title&quot;>candidate — corner arcs</span><span class=&quot;state&quot;>evaluated</span></div><div class=&quot;termbody&quot;><pre class=&quot;screen&quot; role=&quot;img&quot; aria-label=&quot;Candidate corner arc spinner: six frames, width varies by font, thin at small sizes&quot;>
+ <span class=&quot;acc&quot; id=&quot;evalArc&quot; aria-hidden=&quot;true&quot;>◜</span> <span class=&quot;mut&quot;>Building assurance</span>
+
+ <span class=&quot;dim&quot;>◜◠◝◞◡◟ · 6 frames · 80ms</span>
+ <span class=&quot;dim&quot;>width varies by font · thin at 12px</span></pre></div></div>
+  </div>
+  <div class=&quot;verdict&quot;><b>Verdict: keep the Braille set.</b> It is single-cell everywhere, reads smoothly at 80ms, survives NO_COLOR, and already means exactly one thing — indeterminate activity. The quadrants strobe at this cadence; the arcs fail the TR11 width audit that already flagged <code>？</code> and <code>❚❚</code>. The prior contract holds: never morph into <code>∀</code>, never a percentage, never an ETA, never a branded finish. The brand lives in the label, not the glyph.</div>
+</section>
+
+<!-- ================= WORKING-MARK EXPLORATION (SCOPE 3) ==============
+     Additive candidate study alongside the #glyph verdict. Six paired concepts
+     plus one Atomic-native challenger = thirteen live marks, all on
+     the shared 80ms clock stepping every 240ms. Activity = internal
+     illumination sweep through Catppuccin roles + bold weight + character
+     density (│→┃, ░→▒, ♕→♛, 0↔1) — never rotation, never CSS blur/glow.
+     Reduced motion settles every mark to a static muted state. NO_COLOR
+     keeps the sweep readable through the density/shape swap. Selection is
+     a roving-tabindex radiogroup (arrow keys); D reverses the sweep
+     direction. Reference authority: concept A composition follows the
+     user-supplied Joan-arms images (crowned vertical sword + twin
+     fleurs-de-lis; the line engraving proves monochrome legibility);
+     concept B abstracts the user-supplied eye-in-double-orbit grammar
+     into an original Atomic construction. -->
+<section id=&quot;marks&quot; aria-labelledby=&quot;marks-h&quot;>
+  <p class=&quot;kicker kk&quot;>Working-mark exploration · candidate study — the spinner verdict above still stands unless this matrix beats it</p>
+  <h2 id=&quot;marks-h&quot;>Illumination, not rotation: six concept families + one Atomic challenger</h2>
+  <p class=&quot;lede&quot;>Every mark below animates by lighting its own cells in sequence — role change, bold weight, and denser glyphs — so activity reads as light moving <em>through</em> the mark, not the mark spinning. Arrow keys browse the sheet; <kbd>D</kbd> reverses the sweep; <kbd>M</kbd> settles everything static; <kbd>C</kbd> proves the sweep survives NO_COLOR. Footprints are stated against the incumbent's 2-row geometry — honestly.</p>
+
+  <!-- Contact sheet — keyboard-reachable radiogroup, roving tabindex.
+       Tiles are built by script from the MARKS table below; each tile is a
+       real button (role=radio) with a live mini frame. Tile heights vary
+       with the construction — a 7×7 is visibly bigger than a 5×3. -->
+  <div class=&quot;gallery&quot; role=&quot;radiogroup&quot; aria-label=&quot;Working-mark candidates. Use arrow keys to move selection.&quot; id=&quot;gallery&quot;></div>
+  <p class=&quot;sr&quot; role=&quot;status&quot; id=&quot;markStatus&quot;>Working mark selected: A1, Arms, compact.</p>
+
+  <!-- Concept legend — historical / legal / cliché framing required by the
+       brief. Rendered as review law, adjacent to the marks it governs. -->
+  <ul class=&quot;never&quot;>
+    <li><b>A · Arms associated with Joan of Arc.</b> Crowned vertical sword between twin fleurs-de-lis — all three elements are mandatory in every construction; a bare shield is forbidden (it reads generic-security). Historically accurate label: these arms were granted to the d'Arc / du Lys family in 1429 — <em>associated with</em> Joan; she testified she did not personally bear them.</li>
+    <li><b>B · Knowledge-eye.</b> An eye seated in an enclosing orbital form — an original Atomic abstraction of the eye-in-overlapping-circles grammar from the supplied references. The grammar may rhyme; the copyrighted Divergent faction silhouette is never traced.</li>
+    <li><b>C · Prometheus spark.</b> The spark is taken from above and carried down into a held vessel — the descent <em>is</em> the story (intellect defying authority). Without the spark-and-vessel narrative this collapses into generic app-flame branding.</li>
+    <li><b>D · Owl, unchained.</b> The owl and the visibly broken chain links are both mandatory. Drop the rupture and it drifts into mascot territory.</li>
+    <li><b>E · Ruptured caduceus.</b> Staff with paired serpents that break (<code>╳</code>) and turn outward instead of completing the twine. Open question, answered in the matrix: does the medical reading survive the rupture?</li>
+    <li><b>F · Binary skull.</b> Explicit candidate study — the archived no-skull / no-glitch anti-reference is overridden for this exploration only. It is evaluated honestly below and neither auto-recommended nor auto-condemned.</li>
+    <li><b>G · Subverted ∀.</b> A thin ASCII reduction of Atomic's production banner builds cumulatively from its opposing top halves into the complete <code>∀</code>. Only after the logo is whole does its rule extend beyond the boundary to a final proof point.</li>
+  </ul>
+
+  <!-- Enlarged active preview + direction toggle. One accent per frame:
+       the sweep is the accent; the phase label stays muted. -->
+  <p class=&quot;kicker kk&quot; style=&quot;margin-top:1.2rem&quot;>Active preview · live on the shared clock</p>
+  <div class=&quot;term&quot;>
+    <div class=&quot;termbar&quot;><span class=&quot;dots&quot;><i></i><i></i><i></i></span><span class=&quot;title&quot; id=&quot;pvTitle&quot;>working mark — A1 · Arms · compact</span><span class=&quot;state&quot; id=&quot;pvState&quot;>live · 240ms step</span></div>
+    <div class=&quot;termbody&quot;><pre class=&quot;screen bigmark&quot; id=&quot;pvScreen&quot; role=&quot;img&quot; aria-label=&quot;Working-mark preview&quot;></pre></div>
+  </div>
+  <div class=&quot;pvrow&quot;>
+    <button class=&quot;control&quot; id=&quot;dirBtn&quot; aria-pressed=&quot;false&quot;><span class=&quot;dot&quot;></span> direction: <b id=&quot;dirLabel&quot;>hilt→crown · inside→out</b> <kbd>D</kbd></button>
+    <span class=&quot;decklabel&quot; id=&quot;dirNote&quot;>reverse where the sweep has a meaningful opposite</span>
+  </div>
+  <p class=&quot;caption kk&quot;><b>Calm is a requirement, not a style:</b> one illumination pass, two rest beats, 240ms per step — a 2–3s breathing cycle built for multi-hour sessions. The sweep never blocks input, never accelerates, and settles to a static mark the moment motion is off.</p>
+
+  <!-- Side-by-side vs incumbent — honest footprint at 64 cols, composer
+       displacement rendered, not described. Regenerated per selection. -->
+  <p class=&quot;kicker kk&quot; style=&quot;margin-top:1.4rem&quot;>Against the incumbent · 64-col status-line reflow</p>
+  <div class=&quot;pair&quot; id=&quot;compare&quot;></div>
+  <p class=&quot;caption kk&quot;><b>The rows are the price.</b> <code>working-status.ts:29–41</code> returns <code>[&quot;&quot;, spinner + &quot; &quot; + message]</code> — two rows, total. Every mark row beyond that grows the returned array and reflows the scrollback above the composer on every render. The frames above draw that displacement instead of asserting it.</p>
+
+  <!-- Per-selection state proofs: reduced motion, NO_COLOR, 64-col. -->
+  <p class=&quot;kicker kk&quot; style=&quot;margin-top:1.4rem&quot;>Required state proofs · selected mark</p>
+  <div class=&quot;proofs&quot; id=&quot;markProofs&quot;></div>
+</section>
+
+<!-- ==================== WORKING-MARK SCORING MATRIX ================== -->
+<section id=&quot;markmatrix&quot; aria-labelledby=&quot;markmatrix-h&quot;>
+  <p class=&quot;kicker kk&quot;>Scoring matrix · nine axes, incumbent included, nothing hidden</p>
+  <h2 id=&quot;markmatrix-h&quot;>Evidence before preference</h2>
+  <p class=&quot;lede&quot;>Both constructions of each concept are scored together; where they diverge the cell says so. Green marks a defensible strength, red a disqualifying finding. The incumbent row is the bar every candidate has to clear.</p>
+  <div class=&quot;matrix-wrap&quot;><table class=&quot;matrix&quot; style=&quot;min-width:980px&quot;>
+    <thead><tr><th scope=&quot;col&quot;>Mark</th><th scope=&quot;col&quot;>Distinctiveness</th><th scope=&quot;col&quot;>Assured-rebel fit</th><th scope=&quot;col&quot;>Legibility @12px</th><th scope=&quot;col&quot;>Long-session calm</th><th scope=&quot;col&quot;>Implementation cost</th><th scope=&quot;col&quot;>64-col</th><th scope=&quot;col&quot;>NO_COLOR</th><th scope=&quot;col&quot;>Reduced motion</th><th scope=&quot;col&quot;>Cultural / legal / cliché</th></tr></thead>
+    <tbody>
+      <tr><td>Incumbent · ⠋ Braille 1×1</td><td>none — deliberately anonymous</td><td>neutral — voice lives in the label</td><td class=&quot;known&quot;>best in class</td><td class=&quot;known&quot;>proven over multi-hour sessions</td><td class=&quot;known&quot;>zero — ships today</td><td class=&quot;known&quot;>best · 1 cell</td><td>good — shape carries</td><td>freezes at frame 0</td><td class=&quot;known&quot;>none</td></tr>
+      <tr><td>A · Arms 5×4 / 7×7</td><td class=&quot;known&quot;>high — heraldic, ownable</td><td>strong — verdict and conviction</td><td>compact fair · detailed good</td><td>calm — one axis sweep</td><td>high — +3 / +6 rows · redesign</td><td>5×4 fits · 7×7 crowds the composer</td><td class=&quot;known&quot;>strong — the engraving reference proves monochrome</td><td>static shield reads</td><td>medium — must stay accurately labeled; national / religious association travels with it</td></tr>
+      <tr><td>B · Eye 5×3 / 21×7</td><td class=&quot;known&quot;>high — examination made visible</td><td class=&quot;known&quot;>strong — performs “Demanding evidence”</td><td class=&quot;known&quot;>compact schematic · full horizontal eye-in-orbit image strong</td><td class=&quot;known&quot;>calmest sweep of the set</td><td>medium/high — +2 / +6 rows</td><td class=&quot;known&quot;>5×3 best fit · 21×7 is banner-tier</td><td class=&quot;known&quot;>strong — stroke or block density carries</td><td>static eye and enclosing oval read</td><td>low–medium — abstraction only, never the faction silhouette; watch the surveillance reading</td></tr>
+      <tr><td>C · Spark 5×4 / 7×5</td><td>medium — flames are crowded space</td><td>medium — the story carries it or nothing does</td><td>good</td><td>calm descent</td><td>medium — +3 / +4 rows</td><td>fits</td><td>good</td><td>static ok</td><td>medium-high — generic app-flame the moment the spark-and-vessel story blurs</td></tr>
+      <tr><td>D · Owl 5×3 / 7×5</td><td>medium-high — image variant has a distinct silhouette</td><td>medium — wisdom freed reads on-brand</td><td>compact schematic · image variant strong</td><td>calm</td><td>medium — +2 / +4 rows</td><td>fits</td><td>image variant strong — block density + broken chain carry</td><td>static owl and rupture read</td><td>medium — mascot drift</td></tr>
+      <tr><td>E · Caduceus 5×4 / 7×6</td><td>medium</td><td>medium — rupture story on-register</td><td>serpent curves muddy at cell size</td><td>calm</td><td>medium — +3 / +5 rows</td><td>fits</td><td>fair</td><td>static ok</td><td class=&quot;forbidden&quot;>high — reads medical even ruptured at cell size; the ambiguity disqualifies</td></tr>
+      <tr><td>F · Skull 5×4 / 7×5</td><td class=&quot;known&quot;>highest raw distinctiveness</td><td class=&quot;forbidden&quot;>conflict — aggression vs quiet professional assurance</td><td>good — block and binary both read</td><td class=&quot;forbidden&quot;>worst — the bit-flip flicker is the busiest surface here</td><td>medium — +3 / +4 rows</td><td>fits</td><td class=&quot;known&quot;>strong — 0↔1 is pure shape change</td><td>a static skull, in your status area, for hours</td><td>high — hacker-skull cliché; explicit study override, not a recommendation</td></tr>
+      <tr><td>G · Subverted ∀ 20×7</td><td class=&quot;known&quot;>highest ownability — production-logo geometry</td><td class=&quot;known&quot;>strongest — disciplined construction + deliberate departure</td><td class=&quot;known&quot;>good — unmistakable ASCII ∀ silhouette</td><td class=&quot;known&quot;>calm cumulative build, then one refusal beat</td><td>high — +6 rows · banner-tier</td><td class=&quot;known&quot;>fits · 20 cells</td><td class=&quot;known&quot;>strong — active pixels alternate 0/1 before settling to #</td><td>complete ASCII logo + escaped point</td><td class=&quot;known&quot;>low — original brand system, no borrowed mythology</td></tr>
+    </tbody>
+  </table></div>
+  <div class=&quot;verdict&quot;><b>Recommendation, with receipts — all thirteen stay rendered above.</b> The one-line working status keeps the Braille spinner. For identity-bearing multi-line surfaces, <b>G1 · Subverted ∀</b> is the strongest owned challenger: it now reproduces the production banner's geometry in ASCII, visibly builds the complete logo, and only then crosses the boundary. Its 20×7 footprint makes it a banner-tier identity motion, not a compact spinner. <b>B1 · Knowledge-eye compact</b> remains the smallest evidence-oriented candidate. <b>E</b> remains disqualified by medical ambiguity; <b>F</b> loses on register fit.</div>
+</section>
+
+<!-- ==================== PRODUCTION MECHANICS SPLIT ==================
+     What stays a one-line status vs what requires a multi-line
+     WorkingStatusComponent redesign. A 5×7 mark is never &quot;low-cost&quot;. -->
+<section id=&quot;markmech&quot; aria-labelledby=&quot;markmech-h&quot;>
+  <p class=&quot;kicker kk&quot;>Production mechanics · one-line status vs component redesign</p>
+  <h2 id=&quot;markmech-h&quot;>What each tier actually costs</h2>
+  <div class=&quot;tiers&quot;>
+    <article class=&quot;panel tier&quot;><h3>One-line status · stays as shipped</h3><ul>
+      <li>geometry: <code>[&quot;&quot;, &quot; &quot; + spinner + &quot; &quot; + message]</code> — <code>working-status.ts:29–41</code></li>
+      <li>only 1-cell glyphs qualify; the <a href=&quot;#glyph&quot;>Braille verdict</a> is binding here</li>
+      <li>frames derive from the wall clock (<code>components/chat-session-host-utils.ts:9–13</code>) — stateless, resumable</li>
+      <li>none of the thirteen marks is a drop-in for this slot</li>
+    </ul></article>
+    <article class=&quot;panel tier&quot;><h3>Multi-line redesign · compact marks (+2–3 rows)</h3><ul>
+      <li><code>render()</code> grows from 2 rows to 4–5; every extra row reflows scrollback above the composer</li>
+      <li>label sits beside the mark's middle row — no extra width beyond mark + gutter + 24 chars</li>
+      <li>must settle to a static frame on motion-off and clear on interrupt without orphan rows</li>
+      <li>keep frames precomputed and wall-clock indexed — no per-mark timers</li>
+      <li>price: a new <code>WorkingStatusComponent</code> variant + 64-col layout QA · <b>T2 at best, never T1</b></li>
+    </ul></article>
+    <article class=&quot;panel tier&quot;><h3>Banner-tier only · detailed marks</h3><ul>
+      <li>A2 / B2 / D2 / E2 / F2 / G1 are identity moments — startup and dispatch headers — not status marks</li>
+      <li>G1's 20×7 build costs +6 rows on every render; presenting that as a low-cost spinner would be dishonest</li>
+      <li>if ever adopted, it is its own component with its own budget review · <b>Defer</b></li>
+    </ul></article>
+  </div>
+</section>
+</main>
+<footer><div class=&quot;wrap&quot;>∀ Atomic · assembly startup + manifesto beat + assured-rebel recurring brand + working-mark study · design artifact only · keyboard: M C W T R D · arrows in the mark gallery · no runtime dependencies or network requests</div></footer>
+<script>
+/* ================= STARTUP ENGINE — A · ASSEMBLE (revision 3) =============
+   Banner grid, shadow derivation, meta, settled path, contact sheet, proofs,
+   deck controls, any-key settle, prefers-reduced-motion instant settle are
+   preserved from the locked A · Settle engine. ONLY the in-flight branch is
+   superseded: outside-in ░→▒→▓ density ramp → two-half inward travel in
+   whole-column steps (gap 10→0, eased). The manifesto is now a second beat
+   (mt: 0 none → 1 dim → 2 muted/permanent). */
+const BANNER=[
+&quot;  ██████▙                  ▟██████  &quot;,
+&quot;   ██████▙                ▟██████   &quot;,
+&quot;    ██████▙              ▟██████    &quot;,
+&quot;     ██████▙            ▟██████     &quot;,
+&quot;      ████████████████████████      &quot;,
+&quot;       ██████▛        ▜██████       &quot;,
+&quot;        ██████▛      ▜██████        &quot;,
+&quot;         ██████▛    ▜██████         &quot;,
+&quot;          ██████▛  ▜██████          &quot;,
+&quot;            ████████████            &quot;
+];
+const BW=36,ROWS=BANNER.length;
+function shadowGrid(){const blank=&quot; &quot;.repeat(BW);return[...BANNER,blank].map((line,row)=>{const chars=[...line],prev=BANNER[row-1];if(prev!==undefined)[...prev].forEach((ch,col)=>{const sc=col+1;if(ch!==&quot; &quot;&amp;&amp;chars[sc]===&quot; &quot;)chars[sc]=&quot;░&quot;});return chars})}
+const GRID=shadowGrid();
+/* Column gap per side while assembling — whole columns only, eased out
+   (no bounce, no fractional travel; Ink renders exactly these frames). */
+function asmGap(t){return Math.max(1,Math.round(10*Math.pow(1-t,1.7)))}
+function meta(){const level=document.documentElement.dataset.think;return['<span class=&quot;titletext&quot;>Atomic</span> <span class=&quot;mut&quot;>v0.8.31</span>','<span class=&quot;dim&quot;>(anthropic)</span> <span class=&quot;mut&quot;>claude-opus-4.8 '+level+'</span>','<span class=&quot;mut&quot;>~/atomic</span>']}
+const MF_WIDE=[&quot;We question, we break away from what is accepted. Engineering matters.&quot;];
+const MF_NARROW=[&quot;We question, we break away from what is accepted.&quot;,&quot;Engineering matters.&quot;];
+function compose(t,cols=84,mt=2){
+ const settled=t>=1,lines=[];
+ if(settled){
+  for(let r=0;r<GRID.length;r++){let line=&quot;&quot;;for(let c=0;c<BW;c++){const ch=GRID[r][c];if(ch===&quot; &quot;){line+=&quot; &quot;;continue}if(ch===&quot;░&quot;){line+='<span class=&quot;g-shadow&quot;>░</span>';continue}line+='<span class=&quot;g-solid&quot;>'+ch+'</span>'}lines.push(line)}
+ }else{
+  const g=asmGap(t);
+  for(let r=0;r<ROWS;r++){
+   const cells=new Array(BW).fill(&quot; &quot;);
+   for(let c=0;c<BW;c++){const ch=BANNER[r][c];if(ch===&quot; &quot;)continue;const nc=c<18?c-g:c+g;if(nc>=0&amp;&amp;nc<BW)cells[nc]=ch}
+   lines.push(cells.map(ch=>ch===&quot; &quot;?&quot; &quot;:'<span class=&quot;g-solid&quot;>'+ch+'</span>').join(&quot;&quot;));
+  }
+  lines.push(&quot;&quot;);/* height parity with the settled grid's shadow row */
+ }
+ const out=[];const wide=cols>=80,m=meta();
+ lines.forEach((line,row)=>out.push(line+(settled&amp;&amp;wide&amp;&amp;row<3?&quot;  &quot;+m[row]:&quot;&quot;)));
+ if(settled&amp;&amp;!wide){m.forEach(x=>out.push(&quot;  &quot;+x))}
+ const MF=wide?MF_WIDE:MF_NARROW;
+ out.push(&quot;&quot;);
+ if(settled&amp;&amp;mt===1)MF.forEach(x=>out.push('<span class=&quot;dim&quot;>'+x+'</span>'));
+ else if(settled&amp;&amp;mt>=2)MF.forEach(x=>out.push('<span class=&quot;mut&quot;>'+x+'</span>'));
+ else MF.forEach(()=>out.push(&quot;&quot;));
+ return out.join(&quot;\n&quot;);
+}
+function shell(title,state,body,extra=&quot;&quot;){return '<div class=&quot;term '+extra+'&quot;><div class=&quot;termbar&quot;><span class=&quot;dots&quot;><i></i><i></i><i></i></span><span class=&quot;title&quot;>'+title+'</span><span class=&quot;state&quot;>'+state+'</span></div><div class=&quot;termbody&quot;><pre class=&quot;screen&quot;>'+body+'</pre></div></div>'}
+/* Contact sheet — assembly gap samples plus the meet and the manifesto beat. */
+const frames=document.getElementById(&quot;frames&quot;);
+[[.12,0],[.3,0],[.5,0],[.72,0],[1,0],[1,2]].forEach(([t,mt])=>{
+ const ms=Math.round(t*640);let state,cap;
+ if(t<1){state=ms+&quot;ms&quot;;cap=&quot;assembling · gap &quot;+asmGap(t)+&quot; cols each side&quot;}
+ else if(mt===0){state=&quot;640ms&quot;;cap=&quot;meet · shadow + meta land&quot;}
+ else{state=&quot;+400ms&quot;;cap=&quot;beat 2 · manifesto settles muted&quot;}
+ const el=document.createElement(&quot;div&quot;);
+ el.innerHTML=shell(&quot;t=&quot;+t.toFixed(2),state,compose(t,84,mt))+'<p class=&quot;framecap&quot;>'+cap+'</p>';
+ frames.appendChild(el);
+});
+const proofs=document.getElementById(&quot;proofs&quot;);[
+ [&quot;reduced motion&quot;,&quot;assembled instantly&quot;,84,false,&quot;No travel; assembled final state plus manifesto, immediately.&quot;],
+ [&quot;narrow · 64 cols&quot;,&quot;meta stacks&quot;,64,false,&quot;No clipping; collapse threshold is <80 cols. Manifesto wraps to two lines.&quot;],
+ [&quot;NO_COLOR&quot;,&quot;glyph + weight&quot;,84,true,&quot;Hue collapses; structure and text remain.&quot;]
+].forEach(([title,state,cols,nc,cap])=>{const el=document.createElement(&quot;div&quot;);el.className=nc?&quot;no-color&quot;:&quot;&quot;;el.innerHTML=shell(title,state,compose(1,cols,2))+('<p class=&quot;framecap&quot;>'+cap+'</p>');proofs.appendChild(el)});
+const root=document.documentElement,screen=document.getElementById(&quot;startupScreen&quot;),revealState=document.getElementById(&quot;revealState&quot;);
+let timer=null,start=0;const motionOn=()=>root.dataset.motion===&quot;on&quot;;const liveCols=()=>root.dataset.cols===&quot;narrow&quot;?64:84;
+function draw(t,mt=2){screen.innerHTML=compose(t,liveCols(),mt)}
+function settle(){if(timer){clearInterval(timer);timer=null}draw(1,2);revealState.textContent=&quot;settled&quot;}
+function replay(){
+ if(timer)clearInterval(timer);
+ if(!motionOn()){settle();return}
+ start=performance.now();revealState.textContent=&quot;assembling · any key settles&quot;;draw(0,0);
+ timer=setInterval(()=>{
+  const el=performance.now()-start;
+  const t=Math.min(el/640,1);
+  const mt=el<880?0:el<1040?1:2;
+  draw(t,mt);
+  if(t>=1)revealState.textContent=mt>=2?&quot;settled · manifesto landed&quot;:&quot;settled · manifesto beat&quot;;
+  if(el>=1040)settle();
+ },80);
+}
+document.getElementById(&quot;replay&quot;).addEventListener(&quot;click&quot;,replay);
+const motion=document.getElementById(&quot;motion&quot;),color=document.getElementById(&quot;color&quot;),cols=document.getElementById(&quot;cols&quot;),think=document.getElementById(&quot;think&quot;);
+function pressed(el,on){el.setAttribute(&quot;aria-pressed&quot;,String(on))}
+function toggleMotion(){const on=root.dataset.motion!==&quot;on&quot;;root.dataset.motion=on?&quot;on&quot;:&quot;off&quot;;pressed(motion,on);on?replay():settle()}
+function toggleColor(){const on=root.dataset.color!==&quot;on&quot;;root.dataset.color=on?&quot;on&quot;:&quot;off&quot;;pressed(color,on)}
+function toggleCols(){const narrow=root.dataset.cols!==&quot;narrow&quot;;root.dataset.cols=narrow?&quot;narrow&quot;:&quot;wide&quot;;pressed(cols,narrow);draw(1,2)}
+const levels=[&quot;off&quot;,&quot;medium&quot;,&quot;high&quot;];
+function toggleThink(){const next=levels[(levels.indexOf(root.dataset.think)+1)%levels.length];root.dataset.think=next;document.getElementById(&quot;thinkLabel&quot;).textContent=next;pressed(think,next!==&quot;medium&quot;);draw(1,2)}
+motion.addEventListener(&quot;click&quot;,toggleMotion);color.addEventListener(&quot;click&quot;,toggleColor);cols.addEventListener(&quot;click&quot;,toggleCols);think.addEventListener(&quot;click&quot;,toggleThink);
+/* ================== END STARTUP ENGINE ================== */
+
+/* ============== MANIFESTO BEAT PROOFS (SCOPE 2) ==============
+   Static proof frames: interruption, narrow wrap, NO_COLOR, reduced motion.
+   Each labeled for AT. The live beat itself runs inside the startup rig. */
+const mfProofs=document.getElementById(&quot;mfProofs&quot;);
+const MF_LINE='<span class=&quot;mut&quot;>We question, we break away from what is accepted. Engineering matters.</span>';
+[
+ [&quot;interruption&quot;,&quot;completes + passes through&quot;,false,
+  ' '+MF_LINE+'\n\n <span class=&quot;dim&quot;>keypress mid-beat · line completes instantly · key reaches the editor</span>',
+  &quot;Any key during the beat completes the line and passes through to the seed input.&quot;],
+ [&quot;narrow · 64 cols&quot;,&quot;two lines&quot;,false,
+  ' <span class=&quot;mut&quot;>We question, we break away from what is accepted.</span>\n <span class=&quot;mut&quot;>Engineering matters.</span>\n\n <span class=&quot;dim&quot;>64 cols · wraps at the sentence break · no truncation</span>',
+  &quot;Below 80 columns the statement wraps to two lines at its own sentence break.&quot;],
+ [&quot;NO_COLOR&quot;,&quot;text role carries&quot;,true,
+  ' '+MF_LINE+'\n\n <span class=&quot;dim&quot;>hue collapsed · the line rides on the text role, not on color</span>',
+  &quot;NO_COLOR: the statement never depended on hue.&quot;],
+ [&quot;reduced motion&quot;,&quot;no beat&quot;,false,
+  ' '+MF_LINE+'\n\n <span class=&quot;dim&quot;>prefers-reduced-motion · line renders with the settled banner, instantly</span>',
+  &quot;Reduced motion: the full line renders with the assembled banner — no dim stage.&quot;]
+].forEach(([title,state,nc,body,cap])=>{const el=document.createElement(&quot;div&quot;);el.className=nc?&quot;no-color&quot;:&quot;&quot;;el.innerHTML=shell(title,state,body)+'<p class=&quot;framecap mutcap&quot;>'+cap+'</p>';const pre=el.querySelector(&quot;pre&quot;);pre.setAttribute(&quot;role&quot;,&quot;img&quot;);pre.setAttribute(&quot;aria-label&quot;,&quot;Manifesto proof — &quot;+title+&quot;: &quot;+cap);mfProofs.appendChild(el)});
+/* ============== END MANIFESTO PROOFS ============== */
+
+/* ============ REVISION 2 RIG — assured-rebel live evaluation (kept) ========
+   One shared 80ms clock drives: the demo working-status spinner, both
+   candidate spinners, the phase timeline (2.4s deterministic steps), and —
+   new in revision 3 — all thirteen working marks at a 240ms illumination step.
+   The clock pauses while the document is hidden. Motion off /
+   prefers-reduced-motion: everything settles within one tick. */
+const spinnerFrames=[&quot;⠋&quot;,&quot;⠙&quot;,&quot;⠹&quot;,&quot;⠸&quot;,&quot;⠼&quot;,&quot;⠴&quot;,&quot;⠦&quot;,&quot;⠧&quot;,&quot;⠇&quot;,&quot;⠏&quot;];
+const quadFrames=[&quot;▖&quot;,&quot;▘&quot;,&quot;▝&quot;,&quot;▗&quot;],arcFrames=[&quot;◜&quot;,&quot;◠&quot;,&quot;◝&quot;,&quot;◞&quot;,&quot;◡&quot;,&quot;◟&quot;];
+const LANES=[&quot;Questioning the defaults&quot;,&quot;Checking the machinery&quot;,&quot;Building assurance&quot;,&quot;Demanding evidence&quot;,&quot;Proving the path&quot;,&quot;Making it inspectable&quot;];
+const TIMELINE=[
+ {lane:0,key:&quot;reasoning&quot;,evt:&quot;thinking_delta&quot;,detail:&quot;reasoning stream&quot;},
+ {lane:1,key:&quot;inspection&quot;,evt:&quot;tool_call · read&quot;,detail:&quot;working-status.ts&quot;},
+ {lane:2,key:&quot;mutation&quot;,evt:&quot;tool_call · edit&quot;,detail:&quot;interactive-mode-base.ts:159&quot;},
+ {lane:3,key:&quot;verification&quot;,evt:&quot;tool_call · bash&quot;,detail:&quot;bun test test/unit&quot;},
+ {lane:4,key:&quot;workflow&quot;,evt:&quot;stage dispatch&quot;,detail:&quot;release-check · stage 2/5&quot;},
+ {lane:5,key:&quot;artifact&quot;,evt:&quot;tool_call · write&quot;,detail:&quot;specs/design/spec.html&quot;}
+];
+const PHASE_MS=2400;
+const laneLabel=document.getElementById(&quot;laneLabel&quot;),laneEvt=document.getElementById(&quot;laneEvt&quot;),laneMap=document.getElementById(&quot;laneMap&quot;),laneStatus=document.getElementById(&quot;laneStatus&quot;),demoState=document.getElementById(&quot;demoState&quot;);
+const spinEls=[[&quot;spinner&quot;,spinnerFrames],[&quot;evalBr&quot;,spinnerFrames],[&quot;evalQuad&quot;,quadFrames],[&quot;evalArc&quot;,arcFrames]].map(([id,f])=>[document.getElementById(id),f]);
+let lastStep=-1;
+function renderStep(i){const s=TIMELINE[i];
+ laneLabel.textContent=LANES[s.lane];
+ laneEvt.textContent=&quot;event: &quot;+s.evt+&quot; · &quot;+s.detail;
+ laneMap.textContent=&quot;map: &quot;+s.key+&quot; → \u201C&quot;+LANES[s.lane]+&quot;\u201D&quot;;
+ laneStatus.textContent=&quot;Working status: &quot;+LANES[s.lane];
+ document.querySelectorAll(&quot;.lanes [data-lane]&quot;).forEach(el=>el.dataset.active=String(el.dataset.lane===String(s.lane)))}
+function settleDemo(){spinEls.forEach(([el,f])=>{if(el)el.textContent=f[0]});renderStep(2);demoState.textContent=&quot;settled · label still phase-derived, just not animated&quot;}
+/* Proof triple for the live working-status demo. */
+const demoProofs=document.getElementById(&quot;demoProofs&quot;);
+const dBody=' <span class=&quot;acc&quot;>⠋</span> <span class=&quot;mut&quot;>Building assurance</span>\n\n <span class=&quot;dim&quot;>event: tool_call · edit · interactive-mode-base.ts:159</span>\n <span class=&quot;dim&quot;>map: mutation \u2192 \u201CBuilding assurance\u201D</span>';
+[
+ [&quot;reduced motion&quot;,&quot;settled instantly&quot;,false,&quot;No animation. The label is still phase-derived — it comes from the event, not the clock.&quot;],
+ [&quot;narrow · 64 cols&quot;,&quot;fits&quot;,false,&quot;Longest lane label is 24 chars; spinner + gutter + label = 27 columns.&quot;],
+ [&quot;NO_COLOR&quot;,&quot;glyph + weight&quot;,true,&quot;Accent collapses to text. Meaning never rode on hue.&quot;]
+].forEach(([title,state,nc,cap])=>{const el=document.createElement(&quot;div&quot;);el.className=nc?&quot;no-color&quot;:&quot;&quot;;el.innerHTML=shell(title,state,dBody)+'<p class=&quot;framecap mutcap&quot;>'+cap+'</p>';const pre=el.querySelector(&quot;pre&quot;);pre.setAttribute(&quot;role&quot;,&quot;img&quot;);pre.setAttribute(&quot;aria-label&quot;,&quot;Working status proof — &quot;+title+&quot;: &quot;+cap);demoProofs.appendChild(el)});
+/* A11y repair for startup thumbnails: role=&quot;img&quot; + labels after generation. */
+document.querySelectorAll(&quot;#frames > div, #proofs > div&quot;).forEach(d=>{const pre=d.querySelector(&quot;pre&quot;),cap=d.querySelector(&quot;.framecap&quot;),title=d.querySelector(&quot;.title&quot;);if(pre){pre.setAttribute(&quot;role&quot;,&quot;img&quot;);pre.setAttribute(&quot;aria-label&quot;,&quot;Startup banner thumbnail — &quot;+(title?title.textContent:&quot;&quot;)+(cap?&quot; · &quot;+cap.textContent:&quot;&quot;))}});
+/* ============== END REVISION 2 RIG ============== */
+
+/* ================= WORKING-MARK GALLERY (SCOPE 3) =================
+   Thirteen constructions, one shared clock. Each mark is a fixed cell grid
+   (art) with a per-cell illumination phase (ph). At step s a cell is:
+   lit (accent + bold + denser glyph) when phase === s, trailing (muted)
+   when phase === s-1, dim otherwise. Two rest beats per cycle keep the
+   pulse calm. Direction reverse inverts the phase order. Lit glyphs are
+   genuinely denser (│→┃, ░→▒, ♕→♛, 0↔1) so the sweep survives NO_COLOR
+   as shape change, not hue. All frames are precomputed at load. */
+const LITMAP={&quot;─&quot;:&quot;━&quot;,&quot;│&quot;:&quot;┃&quot;,&quot;┴&quot;:&quot;┻&quot;,&quot;┼&quot;:&quot;╋&quot;,&quot;├&quot;:&quot;┣&quot;,&quot;┤&quot;:&quot;┫&quot;,&quot;░&quot;:&quot;▒&quot;,&quot;▒&quot;:&quot;▓&quot;,&quot;╌&quot;:&quot;╍&quot;,&quot;┆&quot;:&quot;┇&quot;,&quot;○&quot;:&quot;◉&quot;,&quot;♕&quot;:&quot;♛&quot;,&quot;✦&quot;:&quot;✶&quot;,&quot;▿&quot;:&quot;▾&quot;};
+const MARKS=[
+ {id:&quot;a1&quot;,name:&quot;A1 · Arms · compact&quot;,concept:&quot;A&quot;,size:&quot;5×4&quot;,rows:4,extra:3,tier:&quot;multi-line redesign&quot;,
+  dirF:&quot;hilt→crown · inside→out&quot;,dirR:&quot;crown→hilt · outside→in&quot;,
+  cap:&quot;Crowned sword between twin fleurs-de-lis, compact. Arms associated with Joan of Arc; granted to her family, not personally borne.&quot;,
+  art:[&quot;  ♕  &quot;,&quot; ⚜│⚜ &quot;,&quot;  │  &quot;,&quot; ─┴─ &quot;],
+  ph: [&quot;  3  &quot;,&quot; 222 &quot;,&quot;  1  &quot;,&quot; 000 &quot;]},
+ {id:&quot;a2&quot;,name:&quot;A2 · Arms · shield&quot;,concept:&quot;A&quot;,size:&quot;7×7&quot;,rows:7,extra:6,tier:&quot;banner-tier&quot;,
+  dirF:&quot;hilt→crown · inside→out&quot;,dirR:&quot;crown→hilt · outside→in&quot;,
+  cap:&quot;Full shield: crowned vertical sword, twin fleurs-de-lis, rounded escutcheon. Banner-tier footprint.&quot;,
+  art:[&quot;╭─────╮&quot;,&quot;│  ♕  │&quot;,&quot;│ ⚜│⚜ │&quot;,&quot;│  │  │&quot;,&quot;│ ─┴─ │&quot;,&quot;╰╮   ╭╯&quot;,&quot; ╰───╯ &quot;],
+  ph: [&quot;5555555&quot;,&quot;4  4  4&quot;,&quot;3 333 3&quot;,&quot;2  2  2&quot;,&quot;1 111 1&quot;,&quot;00   00&quot;,&quot; 00000 &quot;]},
+ {id:&quot;b1&quot;,name:&quot;B1 · Knowledge-eye · compact&quot;,concept:&quot;B&quot;,size:&quot;5×3&quot;,rows:3,extra:2,tier:&quot;multi-line redesign&quot;,
+  dirF:&quot;pupil→orbit · inside→out&quot;,dirR:&quot;orbit→pupil · outside→in&quot;,
+  cap:&quot;Eye in an enclosing orbit, compact. Original Atomic abstraction of the eye-in-overlapping-circles grammar.&quot;,
+  art:[&quot;◜◠◠◠◝&quot;,&quot;( ◉ )&quot;,&quot;◟◡◡◡◞&quot;],
+  ph: [&quot;22222&quot;,&quot;1 0 1&quot;,&quot;22222&quot;]},
+ {id:&quot;b2&quot;,name:&quot;B2 · Knowledge-eye · full symbol&quot;,concept:&quot;B&quot;,size:&quot;21×7&quot;,rows:7,extra:6,tier:&quot;banner-tier study&quot;,
+  dirF:&quot;pupil→eye→orbit · inside→out&quot;,dirR:&quot;orbit→eye→pupil · outside→in&quot;,
+  cap:&quot;A recognizable almond eye held inside a wide horizontal orbit: isolated pupil, layered lids, and an enclosing oval proportioned for narrow terminal cells. It follows the reference's visual grammar without tracing its silhouette.&quot;,
+  lit:{&quot;▄&quot;:&quot;█&quot;,&quot;▀&quot;:&quot;█&quot;,&quot;◉&quot;:&quot;●&quot;},
+  art:[&quot;      ▄███████▄      &quot;,&quot;  ▄██▀         ▀██▄  &quot;,&quot;██     ▄█████▄     ██&quot;,&quot;██ ▀████  ◉  ████▀ ██&quot;,&quot;██     ▀█████▀     ██&quot;,&quot;  ▀██▄         ▄██▀  &quot;,&quot;      ▀███████▀      &quot;],
+  ph: [&quot;      444444444      &quot;,&quot;  3333         3333  &quot;,&quot;33     2222222     33&quot;,&quot;33 11111  0  11111 33&quot;,&quot;33     2222222     33&quot;,&quot;  3333         3333  &quot;,&quot;      444444444      &quot;]},
+ {id:&quot;c1&quot;,name:&quot;C1 · Prometheus spark · compact&quot;,concept:&quot;C&quot;,size:&quot;5×4&quot;,rows:4,extra:3,tier:&quot;multi-line redesign&quot;,
+  dirF:&quot;spark→vessel · descent&quot;,dirR:&quot;vessel→spark · rise&quot;,
+  cap:&quot;Stolen spark descending a trace into a held vessel — the theft narrative, compact.&quot;,
+  art:[&quot;  ✦  &quot;,&quot;  ┆  &quot;,&quot;  ▲  &quot;,&quot; ╰─╯ &quot;],
+  ph: [&quot;  0  &quot;,&quot;  1  &quot;,&quot;  2  &quot;,&quot; 333 &quot;]},
+ {id:&quot;c2&quot;,name:&quot;C2 · Prometheus flame · detailed&quot;,concept:&quot;C&quot;,size:&quot;7×5&quot;,rows:5,extra:4,tier:&quot;multi-line redesign · deep&quot;,
+  dirF:&quot;spark→vessel · descent&quot;,dirR:&quot;vessel→spark · rise&quot;,
+  cap:&quot;Spark, descent trace, and a density-built flame body seated in an open vessel.&quot;,
+  art:[&quot;   ✦   &quot;,&quot;   ┆   &quot;,&quot;  ░▲░  &quot;,&quot; ░▲▲▲░ &quot;,&quot; ╰───╯ &quot;],
+  ph: [&quot;   0   &quot;,&quot;   1   &quot;,&quot;  222  &quot;,&quot; 33333 &quot;,&quot; 44444 &quot;]},
+ {id:&quot;d1&quot;,name:&quot;D1 · Owl unchained · compact&quot;,concept:&quot;D&quot;,size:&quot;5×3&quot;,rows:3,extra:2,tier:&quot;multi-line redesign&quot;,
+  dirF:&quot;eyes→chain · inside→out&quot;,dirR:&quot;chain→eyes · outside→in&quot;,
+  cap:&quot;Owl eyes and beak above a visibly broken chain — both identities kept, compact.&quot;,
+  art:[&quot;(◉ ◉)&quot;,&quot; ╰▿╯ &quot;,&quot;○╌ ╌○&quot;],
+  ph: [&quot;10 01&quot;,&quot; 111 &quot;,&quot;22 22&quot;]},
+ {id:&quot;d2&quot;,name:&quot;D2 · Owl unchained · image&quot;,concept:&quot;D&quot;,size:&quot;7×5&quot;,rows:5,extra:4,tier:&quot;multi-line redesign · deep&quot;,
+  dirF:&quot;eyes→chain · inside→out&quot;,dirR:&quot;chain→eyes · outside→in&quot;,
+  cap:&quot;Image-like block owl: a dense horned silhouette, luminous eyes, and a clearly severed chain. Built with visual mass rather than box-drawing outlines.&quot;,
+  lit:{&quot;▄&quot;:&quot;█&quot;,&quot;▀&quot;:&quot;█&quot;,&quot;◥&quot;:&quot;█&quot;,&quot;◤&quot;:&quot;█&quot;,&quot;◉&quot;:&quot;●&quot;,&quot;━&quot;:&quot;═&quot;},
+  art:[&quot;▄█▄ ▄█▄&quot;,&quot;█◉█ █◉█&quot;,&quot;▀██▿██▀&quot;,&quot; ◥███◤ &quot;,&quot;○━╯ ╰━○&quot;],
+  ph: [&quot;111 111&quot;,&quot;101 101&quot;,&quot;2222222&quot;,&quot; 22222 &quot;,&quot;334 433&quot;]},
+ {id:&quot;e1&quot;,name:&quot;E1 · Ruptured caduceus · compact&quot;,concept:&quot;E&quot;,size:&quot;5×4&quot;,rows:4,extra:3,tier:&quot;multi-line redesign&quot;,
+  dirF:&quot;base→head · along staff&quot;,dirR:&quot;head→base · along staff&quot;,
+  cap:&quot;Staff with paired serpents that break and turn outward — rupture marked, compact.&quot;,
+  art:[&quot;╮ │ ╭&quot;,&quot;╰╮│╭╯&quot;,&quot; ╳│╳ &quot;,&quot;╭╯│╰╮&quot;],
+  ph: [&quot;3 3 3&quot;,&quot;22222&quot;,&quot; 111 &quot;,&quot;00000&quot;]},
+ {id:&quot;e2&quot;,name:&quot;E2 · Ruptured caduceus · detailed&quot;,concept:&quot;E&quot;,size:&quot;7×6&quot;,rows:6,extra:5,tier:&quot;multi-line redesign · deep&quot;,
+  dirF:&quot;base→head · along staff&quot;,dirR:&quot;head→base · along staff&quot;,
+  cap:&quot;Detailed staff: serpents cross once, then break at the rupture marks and exit outward.&quot;,
+  art:[&quot; ╮ │ ╭ &quot;,&quot; ╰╮│╭╯ &quot;,&quot;  ╰┼╯  &quot;,&quot;  ╭┼╮  &quot;,&quot; ╳ │ ╳ &quot;,&quot;╭╯ │ ╰╮&quot;],
+  ph: [&quot; 5 5 5 &quot;,&quot; 44444 &quot;,&quot;  333  &quot;,&quot;  222  &quot;,&quot; 1 1 1 &quot;,&quot;00 0 00&quot;]},
+ {id:&quot;f1&quot;,name:&quot;F1 · Binary skull · compact&quot;,concept:&quot;F&quot;,size:&quot;5×4&quot;,rows:4,extra:3,tier:&quot;multi-line redesign&quot;,
+  dirF:&quot;scan left→right&quot;,dirR:&quot;scan right→left&quot;,
+  cap:&quot;Block skull with a left-to-right glitch scan — lit cells flip to binary. Candidate study only.&quot;,
+  lit:{&quot;▄&quot;:&quot;0&quot;,&quot;█&quot;:&quot;1&quot;,&quot;▀&quot;:&quot;0&quot;},
+  art:[&quot;▄███▄&quot;,&quot;█ █ █&quot;,&quot;▀███▀&quot;,&quot; ▀▀▀ &quot;],
+  ph: [&quot;01234&quot;,&quot;0 2 4&quot;,&quot;01234&quot;,&quot; 123 &quot;]},
+ {id:&quot;f2&quot;,name:&quot;F2 · Binary skull · detailed&quot;,concept:&quot;F&quot;,size:&quot;7×5&quot;,rows:5,extra:4,tier:&quot;multi-line redesign · deep&quot;,
+  dirF:&quot;scan left→right&quot;,dirR:&quot;scan right→left&quot;,
+  cap:&quot;Skull silhouette drawn in binary; the scan flips bits as it passes. Candidate study only.&quot;,
+  lit:{&quot;0&quot;:&quot;1&quot;,&quot;1&quot;:&quot;0&quot;},
+  art:[&quot; 11111 &quot;,&quot;11 1 11&quot;,&quot;1111111&quot;,&quot; 10101 &quot;,&quot;  111  &quot;],
+  ph: [&quot; 12345 &quot;,&quot;01 3 56&quot;,&quot;0123456&quot;,&quot; 12345 &quot;,&quot;  234  &quot;]},
+ {id:&quot;g1&quot;,name:&quot;G1 · Subverted ∀ · pixel build&quot;,concept:&quot;G&quot;,size:&quot;20×7&quot;,rows:7,extra:6,tier:&quot;banner-tier study&quot;,build:true,
+  dirF:&quot;outer halves→complete ∀→refusal point&quot;,dirR:&quot;proof point→complete ∀→outer halves&quot;,
+  cap:&quot;A thin ASCII reduction of Atomic's production banner. Binary pixels accumulate into the complete ∀; only then does its rule cross the boundary.&quot;,
+  binaryLit:true,
+  art:[&quot;###            ###  &quot;,&quot; ###          ###   &quot;,&quot;  ###        ###    &quot;,&quot;   ############---* &quot;,&quot;    ###    ###      &quot;,&quot;     ###  ###       &quot;,&quot;      ####          &quot;],
+  ph: [&quot;000            000  &quot;,&quot; 111          111   &quot;,&quot;  222        222    &quot;,&quot;   3333333333337899 &quot;,&quot;    444    444      &quot;,&quot;     555  555       &quot;,&quot;      6666          &quot;]},
+];
+/* Precompute every frame (both directions) and the settled state. */
+function buildMarkRows(mk,step,rev,settled){
+ const rows=[];
+ for(let r=0;r<mk.art.length;r++){
+  let line=&quot;&quot;;
+  for(let c=0;c<mk.art[r].length;c++){
+   const ch=mk.art[r][c];
+   if(ch===&quot; &quot;){line+=&quot; &quot;;continue}
+   let p=+mk.ph[r][c];
+   if(rev)p=mk.max-p;
+   let cls=&quot;m-dim&quot;,oc=ch;
+   const activeChar=()=>mk.binaryLit?((r+c+step)%2?&quot;1&quot;:&quot;0&quot;):((mk.lit&amp;&amp;mk.lit[ch])||LITMAP[ch]||ch);
+   if(settled)cls=&quot;m-mid&quot;;
+   else if(mk.build){
+    if(p>step){line+=&quot; &quot;;continue}
+    if(p===step){cls=&quot;m-lit&quot;;oc=activeChar()}
+    else cls=&quot;m-mid&quot;;
+   }else if(step===p){cls=&quot;m-lit&quot;;oc=activeChar()}
+   else if(step===p+1)cls=&quot;m-mid&quot;;
+   line+='<span class=&quot;'+cls+'&quot;>'+oc+'</span>';
+  }
+  rows.push(line);
+ }
+ return rows;
+}
+MARKS.forEach(mk=>{
+ mk.max=Math.max(...mk.ph.join(&quot;&quot;).split(&quot;&quot;).filter(ch=>ch!==&quot; &quot;).map(Number));
+ mk.steps=mk.max+3;
+ mk.frames=[0,1].map(rv=>Array.from({length:mk.steps},(_,s)=>buildMarkRows(mk,s,rv===1,false)));
+ mk.settledRows=buildMarkRows(mk,0,false,true);
+});
+/* Gallery tiles — real radio buttons, roving tabindex, live mini frames. */
+const gallery=document.getElementById(&quot;gallery&quot;),markStatus=document.getElementById(&quot;markStatus&quot;);
+let selected=0,dirRev=false;
+const tilePres=[];
+MARKS.forEach((mk,i)=>{
+ const b=document.createElement(&quot;button&quot;);
+ b.type=&quot;button&quot;;b.className=&quot;tile&quot;;b.setAttribute(&quot;role&quot;,&quot;radio&quot;);
+ b.setAttribute(&quot;aria-checked&quot;,String(i===0));b.tabIndex=i===0?0:-1;b.dataset.idx=String(i);
+ b.setAttribute(&quot;aria-label&quot;,mk.name+&quot;, &quot;+mk.size+&quot; cells, plus &quot;+mk.extra+&quot; rows versus the incumbent, sweep &quot;+mk.dirF);
+ b.innerHTML='<span class=&quot;tname&quot;><span class=&quot;mk2&quot;>▸ </span>'+mk.name+'</span>'+
+  '<pre class=&quot;screen&quot; aria-hidden=&quot;true&quot;></pre>'+
+  '<span class=&quot;tmeta&quot;>'+mk.size+' · +'+mk.extra+' rows · '+mk.dirF.split(&quot; · &quot;)[0]+'</span>';
+ b.addEventListener(&quot;click&quot;,()=>selectMark(i));
+ gallery.appendChild(b);
+ tilePres.push(b.querySelector(&quot;pre&quot;));
+});
+gallery.addEventListener(&quot;keydown&quot;,e=>{
+ const k=e.key;let d=0;
+ if(k===&quot;ArrowRight&quot;||k===&quot;ArrowDown&quot;)d=1;
+ else if(k===&quot;ArrowLeft&quot;||k===&quot;ArrowUp&quot;)d=-1;
+ else if(k===&quot;Home&quot;){selectMark(0);e.preventDefault();return}
+ else if(k===&quot;End&quot;){selectMark(MARKS.length-1);e.preventDefault();return}
+ else return;
+ e.preventDefault();
+ selectMark((selected+d+MARKS.length)%MARKS.length);
+});
+const pvTitle=document.getElementById(&quot;pvTitle&quot;),pvState=document.getElementById(&quot;pvState&quot;),pvScreen=document.getElementById(&quot;pvScreen&quot;);
+const dirBtn=document.getElementById(&quot;dirBtn&quot;),dirLabelEl=document.getElementById(&quot;dirLabel&quot;);
+const compare=document.getElementById(&quot;compare&quot;),markProofs=document.getElementById(&quot;markProofs&quot;);
+function pvHTML(rows){
+ const mk=MARKS[selected],out=rows.slice();
+ const mid=Math.floor(out.length/2);
+ out[mid]+='  <span class=&quot;mut&quot;>Demanding evidence</span>';
+ out.push(&quot;&quot;);
+ out.push('<span class=&quot;dim&quot;>'+mk.size+' cells · +'+mk.extra+' rows vs incumbent · '+mk.tier+'</span>');
+ out.push('<span class=&quot;dim&quot;>direction: '+(dirRev?mk.dirR:mk.dirF)+' · 240ms/step · never blocks input</span>');
+ return out.join(&quot;\n&quot;);
+}
+function renderPreviewFrame(rows){pvScreen.innerHTML=pvHTML(rows)}
+function renderPreviewMeta(){
+ const mk=MARKS[selected];
+ pvTitle.textContent=&quot;working mark — &quot;+mk.name;
+ pvScreen.setAttribute(&quot;aria-label&quot;,&quot;Working-mark preview — &quot;+mk.name+&quot;. &quot;+mk.cap+&quot; Phase label: Demanding evidence.&quot;);
+ dirLabelEl.textContent=dirRev?mk.dirR:mk.dirF;
+ dirBtn.setAttribute(&quot;aria-pressed&quot;,String(dirRev));
+}
+function renderCompare(){
+ const mk=MARKS[selected];
+ const left=' \n <span class=&quot;acc&quot;>⠸</span> <span class=&quot;mut&quot;>Demanding evidence</span>\n \n <span class=&quot;acc&quot;>❯</span> <span class=&quot;dim&quot;>composer directly below</span>\n \n <span class=&quot;dim&quot;>2 rows above the composer · working-status.ts:29–41</span>';
+ const mid=Math.floor(mk.settledRows.length/2);
+ const rightRows=mk.settledRows.map((r,i)=>&quot; &quot;+r+(i===mid?'  <span class=&quot;mut&quot;>Demanding evidence</span>':&quot;&quot;));
+ const right=' \n'+rightRows.join(&quot;\n&quot;)+'\n \n <span class=&quot;acc&quot;>❯</span> <span class=&quot;dim&quot;>composer pushed down '+mk.extra+' rows</span>\n \n <span class=&quot;dim&quot;>'+(mk.rows+1)+' rows above the composer · every render reflows scrollback</span>';
+ compare.innerHTML=
+  shell(&quot;incumbent · 64 cols&quot;,&quot;2 rows&quot;,left)+
+  shell(mk.name+&quot; · 64 cols&quot;,(mk.rows+1)+&quot; rows&quot;,right);
+ const pres=compare.querySelectorAll(&quot;pre&quot;);
+ pres[0].setAttribute(&quot;role&quot;,&quot;img&quot;);pres[0].setAttribute(&quot;aria-label&quot;,&quot;Incumbent working status at 64 columns: Braille spinner plus the label Demanding evidence, two rows above the composer.&quot;);
+ pres[1].setAttribute(&quot;role&quot;,&quot;img&quot;);pres[1].setAttribute(&quot;aria-label&quot;,&quot;Candidate &quot;+mk.name+&quot; at 64 columns: the mark occupies &quot;+(mk.rows+1)+&quot; rows and pushes the composer down &quot;+mk.extra+&quot; rows.&quot;);
+}
+function renderMarkProofs(){
+ const mk=MARKS[selected];
+ const midStep=Math.floor(mk.max/2);
+ const liveMid=mk.frames[dirRev?1:0][midStep].map(r=>&quot; &quot;+r).join(&quot;\n&quot;);
+ const settled=mk.settledRows.map(r=>&quot; &quot;+r).join(&quot;\n&quot;);
+ markProofs.innerHTML=&quot;&quot;;
+ [
+  [&quot;reduced motion&quot;,&quot;static mark, never blank&quot;,false,settled+'\n\n <span class=&quot;dim&quot;>settles to a static muted mark within one tick</span>',
+   &quot;Reduced motion or motion off: the mark settles to a static muted state — same cells, no sweep, never blank.&quot;],
+  [&quot;NO_COLOR&quot;,&quot;density carries the sweep&quot;,true,liveMid+'\n\n <span class=&quot;dim&quot;>hue collapsed · lit cells still swap to denser glyphs</span>',
+   &quot;NO_COLOR: the lit cells swap to denser glyphs — │ to ┃, ░ to ▒, 0 to 1 — so the sweep reads without hue.&quot;],
+  [&quot;narrow · 64 cols&quot;,&quot;fits by width&quot;,false,settled+'  <span class=&quot;mut&quot;>Demanding evidence</span>\n\n <span class=&quot;dim&quot;>widest mark is 21 cells + gutter + 18-char label = 41 cols</span>',
+   &quot;64 columns: width is never the problem — the widest construction plus gutter plus label is 41 columns. Height is the real cost.&quot;]
+ ].forEach(([title,state,nc,body,cap])=>{
+  const el=document.createElement(&quot;div&quot;);el.className=nc?&quot;no-color&quot;:&quot;&quot;;
+  el.innerHTML=shell(title,state,body)+'<p class=&quot;framecap mutcap&quot;>'+cap+'</p>';
+  const pre=el.querySelector(&quot;pre&quot;);pre.setAttribute(&quot;role&quot;,&quot;img&quot;);
+  pre.setAttribute(&quot;aria-label&quot;,&quot;Working-mark proof — &quot;+mk.name+&quot; — &quot;+title+&quot;: &quot;+cap);
+  markProofs.appendChild(el);
+ });
+}
+function selectMark(i){
+ selected=i;
+ gallery.querySelectorAll(&quot;.tile&quot;).forEach((b,j)=>{b.setAttribute(&quot;aria-checked&quot;,String(j===i));b.tabIndex=j===i?0:-1});
+ const active=gallery.querySelector('[data-idx=&quot;'+i+'&quot;]');if(active&amp;&amp;document.activeElement&amp;&amp;document.activeElement.closest&amp;&amp;document.activeElement.closest(&quot;#gallery&quot;))active.focus();
+ const mk=MARKS[i];
+ markStatus.textContent=&quot;Working mark selected: &quot;+mk.name+&quot;. &quot;+mk.size+&quot; cells, plus &quot;+mk.extra+&quot; rows versus the incumbent.&quot;;
+ renderPreviewMeta();renderCompare();renderMarkProofs();
+ if(!motionOn())settleMarks();
+}
+function toggleDir(){
+ dirRev=!dirRev;root.dataset.dir=dirRev?&quot;rev&quot;:&quot;fwd&quot;;
+ renderPreviewMeta();renderMarkProofs();
+ if(!motionOn())settleMarks();
+}
+dirBtn.addEventListener(&quot;click&quot;,toggleDir);
+let lastMark=-1;
+function drawMarks(mstep){
+ const rv=dirRev?1:0;
+ MARKS.forEach((mk,i)=>{tilePres[i].innerHTML=mk.frames[rv][mstep%mk.steps].join(&quot;\n&quot;)});
+ renderPreviewFrame(MARKS[selected].frames[rv][mstep%MARKS[selected].steps]);
+ pvState.textContent=&quot;live · 240ms step&quot;;
+}
+function settleMarks(){
+ MARKS.forEach((mk,i)=>{tilePres[i].innerHTML=mk.settledRows.join(&quot;\n&quot;)});
+ renderPreviewFrame(MARKS[selected].settledRows);
+ pvState.textContent=&quot;settled · static mark&quot;;
+}
+/* Initial paint for gallery-dependent surfaces. */
+renderPreviewMeta();renderCompare();renderMarkProofs();settleMarks();
+/* ================== END WORKING-MARK GALLERY ================== */
+
+/* ============== SHARED CLOCK — one interval for everything ==============
+   80ms base tick: spinners at 80ms, phase timeline at 2.4s, working marks
+   at 240ms. Pauses on document.hidden. Motion off settles all surfaces
+   within one tick and then idles. */
+setInterval(()=>{
+ if(document.hidden)return;
+ if(!motionOn()){if(lastStep!==-2){settleDemo();settleMarks();lastStep=-2;lastMark=-1}return}
+ const now=Date.now();
+ spinEls.forEach(([el,f])=>{if(el)el.textContent=f[Math.floor(now/80)%f.length]});
+ const step=Math.floor(now/PHASE_MS)%TIMELINE.length;
+ if(step!==lastStep){lastStep=step;renderStep(step);demoState.textContent=&quot;live · deterministic · phase &quot;+(step+1)+&quot;/&quot;+TIMELINE.length}
+ const mstep=Math.floor(now/240);
+ if(mstep!==lastMark){lastMark=mstep;drawMarks(mstep)}
+},80);
+
+/* Global keys: M/C/W/T toggles, R replay, D sweep direction. Any key while
+   the reveal or manifesto beat is running settles it first (pass-through
+   contract). Form fields are exempt; gallery arrows are handled locally. */
+document.addEventListener(&quot;keydown&quot;,event=>{
+ if(event.metaKey||event.ctrlKey||event.altKey)return;
+ const tag=event.target&amp;&amp;event.target.tagName;
+ if(tag&amp;&amp;/^(INPUT|TEXTAREA|SELECT)$/.test(tag))return;
+ if(timer)settle();
+ const key=event.key.toLowerCase();
+ if(key===&quot;m&quot;)toggleMotion();
+ else if(key===&quot;c&quot;)toggleColor();
+ else if(key===&quot;w&quot;)toggleCols();
+ else if(key===&quot;t&quot;)toggleThink();
+ else if(key===&quot;r&quot;)replay();
+ else if(key===&quot;d&quot;)toggleDir();
+});
+if(matchMedia(&quot;(prefers-reduced-motion: reduce)&quot;).matches){root.dataset.motion=&quot;off&quot;;pressed(motion,false)}
+motionOn()?replay():settle();
+</script>
+</body>
+</html>
+"></iframe>
+  </article>
+  <p class="callout"><b>Sync contract (P0):</b> this embed is generated from <code>preview.html</code>. If the preview changes, re-escape and re-embed — silent divergence between the two files is a release blocker for this artifact pair.</p>
+</section>
+
+<!-- ===================== (d) DESIGN SYSTEM — SIX SECTIONS ===================== -->
+<section id="design" aria-labelledby="design-h">
+  <p class="kicker">Design system · DESIGN.md, applied to this artifact</p>
+  <h2 id="design-h">System reference</h2>
+
+  <!-- (d.1) Overview -->
+  <h3 id="ds-overview">1 · Overview — "The Quiet Operator", with one gesture and one sentence</h3>
+  <p class="lede">Atomic is a terminal-native control plane for AI coding agents. The interface disappears into the work: glanceable at 2am, dense without clutter, surfacing a saturated color only when something needs attention. The register is <b>Restrained</b> — tinted-neutral surfaces, one accent (Catppuccin Blue) reserved for primary action and selection, status colors mapped one-to-one to orchestrator state, Unicode iconography only, no emoji. Depth is tonal strata only; no shadow, blur, or glow exists in a terminal. Revision 3 holds the startup gesture <em>singular</em>: one 640ms two-half assembly, one manifesto sentence, then silence — everything after the landing screen is status. Working-time motion is <b>illumination, not rotation</b>: activity reads as light moving through a fixed mark via role change, weight, and glyph density, never as a spinning wheel and never as CSS effects Ink cannot render.</p>
+
+  <!-- (d.2) Colors -->
+  <h3 id="ds-colors">2 · Colors — Catppuccin Mocha, addressed by role</h3>
+  <!-- copy hint: each swatch label shows the raw hex; triple-click to copy -->
+  <div class="swatches" role="list" aria-label="Color tokens">
+    <div class="sw" role="listitem"><div class="chipc" style="background:#11111b"></div><div class="meta"><b>crust</b><code>#11111b</code><span> · recess / terminal field</span></div></div>
+    <div class="sw" role="listitem"><div class="chipc" style="background:#181825"></div><div class="meta"><b>mantle</b><code>#181825</code><span> · panels, cards</span></div></div>
+    <div class="sw" role="listitem"><div class="chipc" style="background:#1e1e2e"></div><div class="meta"><b>base</b><code>#1e1e2e</code><span> · canvas</span></div></div>
+    <div class="sw" role="listitem"><div class="chipc" style="background:#313244"></div><div class="meta"><b>surface0</b><code>#313244</code><span> · chrome bars, pill fg</span></div></div>
+    <div class="sw" role="listitem"><div class="chipc" style="background:#45475a"></div><div class="meta"><b>surface1</b><code>#45475a</code><span> · neutral hover/selection</span></div></div>
+    <div class="sw" role="listitem"><div class="chipc" style="background:#585b70"></div><div class="meta"><b>surface2</b><code>#585b70</code><span> · borderDim, quiet rules</span></div></div>
+    <div class="sw" role="listitem"><div class="chipc" style="background:#6c7086"></div><div class="meta"><b>overlay0</b><code>#6c7086</code><span> · border, thinking-off hue</span></div></div>
+    <div class="sw" role="listitem"><div class="chipc" style="background:#7f849c"></div><div class="meta"><b>overlay1</b><code>#7f849c</code><span> · dim / pending / mark rest cells</span></div></div>
+    <div class="sw" role="listitem"><div class="chipc" style="background:#cdd6f4"></div><div class="meta"><b>text</b><code>#cdd6f4</code><span> · primary content</span></div></div>
+    <div class="sw" role="listitem"><div class="chipc" style="background:#a6adc8"></div><div class="meta"><b>subtext0 / muted</b><code>#a6adc8</code><span> · captions, manifesto, mark trail</span></div></div>
+    <div class="sw" role="listitem"><div class="chipc" style="background:#89b4fa"></div><div class="meta"><b>blue · accent</b><code>#89b4fa</code><span> · THE accent · spinner · lit cells</span></div></div>
+    <div class="sw" role="listitem"><div class="chipc" style="background:#a6e3a1"></div><div class="meta"><b>green</b><code>#a6e3a1</code><span> · complete, receipts</span></div></div>
+    <div class="sw" role="listitem"><div class="chipc" style="background:#f9e2af"></div><div class="meta"><b>yellow</b><code>#f9e2af</code><span> · running, retry loader</span></div></div>
+    <div class="sw" role="listitem"><div class="chipc" style="background:#f38ba8"></div><div class="meta"><b>red</b><code>#f38ba8</code><span> · error, broken glyphs</span></div></div>
+    <div class="sw" role="listitem"><div class="chipc" style="background:#cba6f7"></div><div class="meta"><b>mauve</b><code>#cba6f7</code><span> · confirm, high-thinking hue</span></div></div>
+    <div class="sw" role="listitem"><div class="chipc" style="background:#89dceb"></div><div class="meta"><b>sky</b><code>#89dceb</code><span> · awaiting input</span></div></div>
+    <div class="sw" role="listitem"><div class="chipc" style="background:#9399b2"></div><div class="meta"><b>nc-dim</b><code>#9399b2</code><span> · NO_COLOR dim (≈6.6:1 on crust)</span></div></div>
+    <div class="sw" role="listitem"><div class="chipc" style="background:#bac2de"></div><div class="meta"><b>nc-muted</b><code>#bac2de</code><span> · NO_COLOR muted (≈9.0:1 on crust)</span></div></div>
+  </div>
+  <ul class="plain" style="margin-top:.9rem">
+    <li><b>One-Accent Rule.</b> Blue on ≤10% of the surface at any time; one accented element per simulated frame. In a mark frame, the illumination sweep <em>is</em> the accent — the phase label beside it stays muted, never accented.</li>
+    <li><b>Status-Is-Truth Rule.</b> Yellow = running, green = complete, red = error, sky = awaiting input, overlay1 = pending. Never decorative. Marks never borrow status hues.</li>
+    <li><b>Illumination roles.</b> A sweeping cell is <code>accent + bold + denser glyph</code>; the trailing cell is <code>muted</code>; resting cells are <code>overlay1</code>-dim. Under NO_COLOR the density swap alone (<code>│→┃</code>, <code>░→▒</code>, <code>♕→♛</code>, <code>0↔1</code>) carries the sweep — meaning never rides on hue.</li>
+    <li><b>NO_COLOR compensation.</b> Under <code>data-color="off"</code>, hue collapses to <code>text</code> and dims lift to <code>nc-dim</code>/<code>nc-muted</code> so contrast stays ≥4.5:1.</li>
+    <li><b>Contrast repair tier.</b> All revision-3 captions/kickers use <code>--muted</code> (≈7.4:1 on base) via the <code>.kk</code> tier, because <code>--overlay1</code> on base measures ≈4.4:1 — below AA for small text. The locked startup keeps its original styling by the byte-preservation mandate.</li>
+  </ul>
+
+  <!-- (d.3) Typography -->
+  <h3 id="ds-typography">3 · Typography — weight and color only</h3>
+  <p class="lede">The terminal controls font and size; Atomic picks weight and color. Hierarchy is <b>bold/regular × text/textMuted/dim</b> — six combinations cover the entire system (the Weight-and-Tone Rule). Inventing a seventh (italics, underline, blink) is a smell, with one shipped exception: the hidden-thinking label is italic-muted in the product and the artifact mirrors it.</p>
+  <div class="tbl-wrap"><table class="tbl">
+    <thead><tr><th scope="col">Slot</th><th scope="col">Weight · color</th><th scope="col">Used for</th></tr></thead>
+    <tbody>
+      <tr><td>Title</td><td>bold · <code>text</code></td><td>workflow names, modal titles, <code>DISPATCHED</code> panel title, startup identity name</td></tr>
+      <tr><td>Banner glyph</td><td>bold · <code>banner-hue</code></td><td>the assembling <code>∀</code> halves — hue tracks thinking level (overlay0 / accent / mauve)</td></tr>
+      <tr><td>Body</td><td>regular · <code>text</code></td><td>field values, primary readable copy</td></tr>
+      <tr><td>Caption</td><td>regular · <code>textMuted</code></td><td>descriptions, hint labels, the <b>working-status label</b>, and the settled <b>manifesto line</b></td></tr>
+      <tr><td>Meta</td><td>regular · <code>dim</code></td><td>separator <code>·</code>, pending statuses, the manifesto's transient +240ms dim stage, mark footprint annotations</td></tr>
+      <tr><td>Pill text</td><td>bold · <code>surface0</code> on accent</td><td>LOCKED / CONFIRMED / BEAT 2 badges, mode pills</td></tr>
+    </tbody>
+  </table></div>
+  <ul class="plain" style="margin-top:.8rem">
+    <li><b>Manifesto rendering law.</b> Rendering A (the user's exact punctuation) is the adopted form. Wide (≥80 cols): one line. Narrow: two lines split at the sentence break — <q>We question, we break away from what is accepted.</q> / <q>Engineering matters.</q> Never truncated, never restyled, never repeated.</li>
+    <li><b>Label length law.</b> Phase labels ≤24 characters, ASCII + narrow Unicode only. Spinner + gutter + longest label = 27 columns; widest mark + gutter + label = 29 columns — both fit 64 cols with margin. Height, not width, is the multi-cell cost.</li>
+    <li><b>No-Decorative-Bold Rule.</b> Bold marks emphasis (and lit mark cells); never bold a full line of body copy.</li>
+  </ul>
+
+  <!-- (d.4) Elevation -->
+  <h3 id="ds-elevation">4 · Elevation — stacked tonal strata</h3>
+  <p class="lede">No shadows, no blur, no glow — the No-Glow Rule is absolute inside terminal frames, and it is why every "light" effect in the mark study is built from color roles, weight, and glyph density instead of CSS filters. Depth is conveyed exclusively by which solid stratum a component paints. Focus states shift one stratum and recolor the border — that is the entire focus vocabulary.</p>
+  <div class="tbl-wrap"><table class="tbl">
+    <thead><tr><th scope="col">Stratum</th><th scope="col">Token</th><th scope="col">Role</th><th scope="col">In this artifact</th></tr></thead>
+    <tbody>
+      <tr><td>Recess</td><td><code>crust #11111b</code></td><td>where you reach in — input interiors</td><td><code>.term</code> frame bodies, code blocks, gallery tile screens</td></tr>
+      <tr><td>Panel</td><td><code>mantle #181825</code></td><td>cards, lists, modal interiors</td><td>decision cards, tier panels, gallery tiles, chips</td></tr>
+      <tr><td>Canvas</td><td><code>base #1e1e2e</code></td><td>main work area</td><td>page background, fact cells</td></tr>
+      <tr><td>Chrome</td><td><code>surface0 #313244</code></td><td>persistent bars</td><td>section rules, table heads, term bars</td></tr>
+      <tr><td>Emphasis pill</td><td>accent/status bg + <code>surface0</code> fg</td><td>"you are in this mode"</td><td>LOCKED / CONFIRMED / BEAT 2 badges</td></tr>
+    </tbody>
+  </table></div>
+  <p class="callout"><b>Strata Rule:</b> every new component declares one stratum. The banner's only "shadow" is the <code>░</code> offset glyph row derived from the row above (<code>shadowColumn = column + 1</code>) — cell art, not elevation.</p>
+
+  <!-- (d.5) Components -->
+  <h3 id="ds-components">5 · Components — the surfaces this revision touches</h3>
+  <div class="tbl-wrap"><table class="tbl">
+    <thead><tr><th scope="col">Component</th><th scope="col">Spec</th><th scope="col">Change in this revision</th></tr></thead>
+    <tbody>
+      <tr><td>Startup banner reveal</td><td>36×10 <code>∀</code> grid (<code>components/atomic-banner.ts:5–34</code>); quiet-startup gate at <code>interactive-startup.ts:147</code></td><td class="good">choreography only — two halves (cols 0–17 / 18–35) travel inward in whole-column steps, gap <code>max(1, round(10·(1−t)^1.7))</code>, meet at 640ms; shadow + meta land on the final beat; rev-2 density ramp archived. Any-key settle + pass-through, PRM instant settle, &lt;80-col stacking all preserved</td></tr>
+      <tr><td>Manifesto line</td><td>one muted line below the settled banner; wraps at its sentence break under 80 cols</td><td class="good">new beat 2 — +240ms dim, +400ms muted, permanent; any key mid-beat completes it instantly and passes through; suppressed with the banner under quiet startup; renders once per session, never as status copy</td></tr>
+      <tr><td>Working status line</td><td>one blank row above, 1-cell gutter, spinner in <code>accent</code>, message in <code>textMuted</code> (<code>working-status.ts:29–41</code>)</td><td class="good">copy only — the phase-derived label family (with <code>Demanding evidence</code>); geometry, colors, spinner untouched</td></tr>
+      <tr><td>Spinner</td><td>Braille <code>⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏</code> @ 80ms, single cell, wall-clock indexed (<code>components/chat-session-host-utils.ts:9–13</code>)</td><td class="good">keep — reconfirmed by the mark study; nothing multi-cell qualifies for the one-line slot</td></tr>
+      <tr><td>Working marks (study)</td><td>12 constructions, 3×3–7×7 cells; illumination sweep at 240ms/step with two rest beats; static settled state; precomputed frames</td><td class="bad">no production adoption in this revision — candidate study only. B1 (5×3) named for already-multi-line surfaces if ever pursued; A2/B2/D2/E2/F2 are banner-tier; E disqualified (medical ambiguity); F not recommended (register conflict)</td></tr>
+      <tr><td>Hidden-thinking label</td><td>italic-muted single line</td><td class="good">carried from rev 2 — <code>Questioning the defaults...</code></td></tr>
+      <tr><td>Statusline / dispatch / empty state</td><td>hint grammar <code>&lt;key&gt; &lt;label&gt;</code>; rounded dispatch panel; <code>❯</code> prompt</td><td class="good">carried from rev 2 — Tier-2 isolated strings, individually droppable</td></tr>
+      <tr><td>Node cards / approvals / recovery</td><td>status-colored borders, retry countdowns, compaction precedence (<code>chat-session-host-rendering.ts:83–85</code>)</td><td class="bad">never revoiced, never marked — blockers name themselves and the control, plainly; compaction outranks any label</td></tr>
+    </tbody>
+  </table></div>
+
+  <h4>The working-mark constructions (the study inventory)</h4>
+  <div class="tbl-wrap"><table class="tbl">
+    <thead><tr><th scope="col">Mark</th><th scope="col">Cells</th><th scope="col">Rows vs incumbent</th><th scope="col">Sweep (fwd / rev)</th><th scope="col">Tier</th></tr></thead>
+    <tbody>
+      <tr><td>A1 · Arms compact — crowned sword + twin fleurs</td><td>5×4</td><td>+3</td><td>hilt→crown · inside→out / reverse</td><td>multi-line redesign</td></tr>
+      <tr><td>A2 · Arms shield — full escutcheon</td><td>7×7</td><td>+6</td><td>hilt→crown / reverse</td><td class="bad">banner-tier only</td></tr>
+      <tr><td>B1 · Knowledge-eye compact — eye in orbit</td><td>5×3</td><td>+2</td><td>pupil→orbit · inside→out / reverse</td><td class="good">multi-line redesign · recommended candidate</td></tr>
+      <tr><td>B2 · Knowledge-eye full symbol — almond eye inside horizontal oval</td><td>21×7</td><td>+6</td><td>pupil→eye→orbit / reverse</td><td>banner-tier study · symbol-faithful comparison</td></tr>
+      <tr><td>C1 · Prometheus spark — spark, trace, vessel</td><td>5×4</td><td>+3</td><td>spark→vessel · descent / rise</td><td>multi-line redesign</td></tr>
+      <tr><td>C2 · Prometheus flame — density-built flame body</td><td>7×5</td><td>+4</td><td>descent / rise</td><td>multi-line redesign · deep</td></tr>
+      <tr><td>D1 · Owl unchained compact — eyes, beak, broken links</td><td>5×3</td><td>+2</td><td>eyes→chain · inside→out / reverse</td><td>multi-line redesign</td></tr>
+      <tr><td>D2 · Owl unchained image — block silhouette + severed chain</td><td>7×5</td><td>+4</td><td>eyes→chain / reverse</td><td>multi-line redesign · deep · image-like comparison</td></tr>
+      <tr><td>E1 · Ruptured caduceus compact</td><td>5×4</td><td>+3</td><td>base→head · along staff / reverse</td><td class="bad">disqualified in matrix — medical reading survives rupture</td></tr>
+      <tr><td>E2 · Ruptured caduceus detailed</td><td>7×6</td><td>+5</td><td>along staff / reverse</td><td class="bad">disqualified in matrix</td></tr>
+      <tr><td>F1 · Binary skull compact — bits flip under the scan</td><td>5×4</td><td>+3</td><td>scan left→right / right→left</td><td class="bad">studied, not recommended — register conflict</td></tr>
+      <tr><td>F2 · Binary skull detailed — silhouette in binary</td><td>7×5</td><td>+4</td><td>scan left→right / right→left</td><td class="bad">studied, not recommended</td></tr>
+      <tr><td>G1 · Subverted ∀ pixel build — production-logo geometry + escaped proof point</td><td>20×7</td><td>+6</td><td>outer halves→complete ∀→refusal point / reverse</td><td class="good">banner-tier study · strongest identity-owned challenger</td></tr>
+    </tbody>
+  </table></div>
+  <p class="callout"><b>Concept framing is part of the deliverable.</b> A must always be labeled historically: arms granted to the d'Arc / du Lys family in 1429, <em>associated with</em> Joan — she testified she did not personally bear them; a bare shield is forbidden (reads generic-security). B abstracts the eye-in-overlapping-circles grammar from the supplied references into an original Atomic construction — the copyrighted Divergent faction silhouette is never traced. C requires the spark-and-vessel theft narrative or it collapses into generic app-flame. D requires owl <em>and</em> visible rupture. F's exploration overrides the archived no-skull anti-reference for this study only.</p>
+
+  <!-- (d.6) Do's and Don'ts -->
+  <h3 id="ds-dd">6 · Do's and Don'ts</h3>
+  <div class="dd">
+    <article class="panel do">
+      <h3>Do</h3>
+      <ul>
+        <li>Use Mocha tokens by role — never inline a hex in a component.</li>
+        <li>Move banner halves in whole-column steps on the fixed grid; every frame must be renderable by Ink as plain cells.</li>
+        <li>Ease out with no overshoot — the halves meet decisively, they do not bounce.</li>
+        <li>Settle everything (assembly, manifesto, spinners, all marks) to a truthful static state within one tick when motion is off or <code>prefers-reduced-motion</code> is set — static, never blank.</li>
+        <li>Carry mark activity through role change + bold + glyph density so NO_COLOR keeps the sweep readable as shape change.</li>
+        <li>Render the manifesto once per session, on the landing screen, in the user's exact punctuation.</li>
+        <li>Keep one shared clock, wall-clock-indexed frames, and precomputed frame sets; pause when the document is hidden.</li>
+        <li>State multi-cell footprint honestly: rows vs the incumbent's 2, drawn as composer displacement, not asserted.</li>
+        <li>Keep selection legible without color — the <code>▸</code> marker plus border, roving tabindex, arrow keys.</li>
+      </ul>
+    </article>
+    <article class="panel dont">
+      <h3>Don't</h3>
+      <ul>
+        <li>Don't tween the banner sub-cell — no fractional <code>transform</code> or pixel interpolation; travel is column-quantized or it is not this design.</li>
+        <li>Don't use <code>filter</code>, <code>text-shadow</code>, <code>box-shadow</code>, or gradients inside a terminal frame — Ink cannot render them and the No-Glow Rule forbids them.</li>
+        <li>Don't let a working mark read as rotation — that duplicates the incumbent spinner and fails the concept.</li>
+        <li>Don't present a 5×7 mark as low-cost — every row past two reflows scrollback above the composer on every render.</li>
+        <li>Don't repeat the manifesto as status copy, footer copy, or receipts — one landing, then silence.</li>
+        <li>Don't put voice or marks on anything yellow or red: errors, retries, cancellation, compaction, blockers, approvals stay plain.</li>
+        <li>Don't reintroduce random rotation — <code>whimsical-messages.ts</code> is the anti-pattern being deleted.</li>
+        <li>Don't render concept A without crown + sword + both fleurs; don't trace the Divergent mark for B; don't auto-recommend or auto-condemn F outside the matrix evidence.</li>
+        <li>Don't use square borders or ASCII <code>+---+</code> art — rounded <code>╭╮╰╯</code> or nothing; no emoji.</li>
+      </ul>
+    </article>
+  </div>
+</section>
+
+<!-- ====================== (e) IMPLEMENTATION HANDOFF ====================== -->
+<section id="handoff" aria-labelledby="handoff-h">
+  <p class="kicker">Implementation handoff</p>
+  <h2 id="handoff-h">From artifact to diff</h2>
+
+  <h3>Recommended files + components</h3>
+  <div class="tbl-wrap"><table class="tbl">
+    <thead><tr><th scope="col">File</th><th scope="col">Anchor</th><th scope="col">Action</th></tr></thead>
+    <tbody>
+      <tr><td><code>packages/coding-agent/src/modes/interactive/components/atomic-banner.ts</code></td><td><code>:5–34</code> banner grid + <code>░</code> shadow derivation</td><td>add an assembly frame generator: per frame, shift left-half cells (cols 0–17) by <code>−gap</code> and right-half cells (18–35) by <code>+gap</code>, clip to the 36-col canvas; shadow + meta render only on the settled frame</td></tr>
+      <tr><td><code>.../interactive-startup.ts</code></td><td><code>:147–148</code> quiet-startup gate; banner render call</td><td>schedule the reveal (8 frames @80ms) and the manifesto beat (+240ms dim, +400ms muted) behind the same gate — quiet startup suppresses both; any key settles and forwards to the editor seed input; <code>prefers-reduced-motion</code>/non-TTY renders the settled frame + manifesto instantly</td></tr>
+      <tr><td><code>.../whimsical-messages.ts</code></td><td>entire file (~466 lines)</td><td>delete; replace with a small <code>phase-labels.ts</code> exporting <code>phaseLabel(event, toolClass)</code> and the 7-lane table (verification lane = <code>Demanding evidence</code>)</td></tr>
+      <tr><td><code>.../interactive-agent-events.ts</code> · <code>.../components/chat-session-host-events.ts</code></td><td><code>:70</code> · <code>:165</code> (the two pick call sites)</td><td>swap <code>pickWhimsicalWorkingMessage()</code> → <code>phaseLabel(...)</code>; update on phase events, clear on <code>turn_end</code></td></tr>
+      <tr><td><code>.../interactive-mode-base.ts</code></td><td><code>:159</code> <code>defaultWorkingMessage</code> · <code>:162</code> <code>defaultHiddenThinkingLabel</code></td><td>revoice defaults; align the duplicated fallback literals in <code>working-status.ts:31</code> and <code>chat-session-host-rendering.ts:85</code> — all three change together</td></tr>
+      <tr><td><code>.../components/working-status.ts</code></td><td><code>:29–41</code> geometry</td><td><b>no layout change.</b> The one-line slot keeps the Braille spinner. A compact-mark variant (B1, +2 rows) would be a new <code>WorkingStatusComponent</code> — T2 at best, only for already-multi-line surfaces, and only if adopted after this study</td></tr>
+      <tr><td><code>.../components/chat-session-host-utils.ts</code></td><td><code>:9–13</code> <code>SPINNER_FRAMES</code>, <code>ANIMATION_FRAME_MS = 80</code>, wall-clock <code>spinnerFrame()</code></td><td>no change — and the pattern to copy for any future mark: stateless, wall-clock-indexed, precomputed frames</td></tr>
+      <tr><td><code>.../components/chat-session-host-rendering.ts</code></td><td><code>:83–85</code> precedence</td><td>preserve exactly — compaction outranks any label or mark</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Implementation steps</h3>
+  <ol class="plain">
+    <li><b>Assembly reveal (SCOPE 1).</b> Generate 8 discrete frames from the existing banner grid: <code>gap(t) = max(1, round(10·(1−t)^1.7))</code> columns per side, one frame per 80ms tick, meet at 640ms. Whole columns only — the artifact's <code>compose()</code> in-flight branch is the reference implementation. Shadow and identity meta land on the settled frame only. Preserve verbatim: any-key settle with keystroke pass-through, reduced-motion instant settle, quiet-startup suppression, &lt;80-col meta stacking.</li>
+    <li><b>Manifesto beat (SCOPE 2).</b> After the meet: render the line dim at +240ms, re-render muted at +400ms, then never touch it again. Narrow terminals (&lt;80 cols) split at the sentence break. Any key mid-beat completes the line instantly and passes through. The line ships in rendering A — the user's exact punctuation. No other startup prose.</li>
+    <li><b>Label family (carried from rev 2).</b> Create <code>phase-labels.ts</code> (pure, total, ≤24 chars, <code>On it</code> fallback), swap both call sites, revoice the defaults, delete <code>whimsical-messages.ts</code> — net −466 lines. Verify compaction precedence untouched.</li>
+    <li><b>Working marks (SCOPE 3) — no production change now.</b> One-line status keeps Braille. Record B1 as the compact evidence candidate and G1 as the identity-owned banner-tier candidate. G1 requires cumulative precomputed frames, static settle, NO_COLOR density swap, and a dedicated multi-line surface; it is not a spinner drop-in.</li>
+    <li><b>Validate</b> against the checklist and commands below before merging any of the above.</li>
+  </ol>
+
+  <h3>Usage example</h3>
+  <!-- Proposed shape only — this artifact implements no production behavior. -->
+  <pre class="block"><span class="c">// startup-assembly.ts — proposed shape (design artifact; not production code)</span>
+<span class="c">// Frames are plain cell grids; Ink renders exactly these strings.</span>
+<span class="k">const</span> ASSEMBLE_MS = 640, FRAME_MS = 80, GAP_MAX = 10, SEAM = 18; <span class="c">// cols 0–17 | 18–35</span>
+
+<span class="k">function</span> <span class="f">gap</span>(t: number): number {          <span class="c">// whole columns, eased out, no bounce</span>
+  <span class="k">return</span> Math.max(1, Math.round(GAP_MAX * Math.pow(1 - t, 1.7)));
+}
+
+<span class="k">function</span> <span class="f">assemblyFrame</span>(t: number): string[] {  <span class="c">// t in [0,1); t>=1 → settled grid + ░ shadow + meta</span>
+  <span class="k">return</span> BANNER_LINES.map(row => {
+    <span class="k">const</span> cells = Array(36).fill(<span class="s">" "</span>);
+    [...row].forEach((ch, c) => {
+      <span class="k">if</span> (ch === <span class="s">" "</span>) <span class="k">return</span>;
+      <span class="k">const</span> nc = c &lt; SEAM ? c - gap(t) : c + gap(t);  <span class="c">// halves travel inward</span>
+      <span class="k">if</span> (nc &gt;= 0 &amp;&amp; nc &lt; 36) cells[nc] = ch;          <span class="c">// clip at the frame edge</span>
+    });
+    <span class="k">return</span> cells.join(<span class="s">""</span>);
+  });
+}
+
+<span class="c">// Beat schedule (skipped entirely under quietStartup or prefers-reduced-motion —</span>
+<span class="c">// those paths render the settled banner + manifesto in one paint):</span>
+<span class="c">//   0–640ms    assembly, 8 column-quantized frames</span>
+<span class="c">//   640ms      meet · ░ shadow + identity meta land</span>
+<span class="c">//   +240ms     manifesto renders dim</span>
+<span class="c">//   +400ms     manifesto settles muted — permanent, once per session</span>
+<span class="c">// Any key at any point: render settled state, forward the keystroke to the seed input.</span>
+
+<span class="c">// Manifesto (rendering A — exact punctuation, frozen):</span>
+<span class="k">const</span> MANIFESTO = <span class="s">"We question, we break away from what is accepted. Engineering matters."</span>;
+<span class="k">const</span> MANIFESTO_NARROW = [ <span class="c">// &lt;80 cols: split at the sentence break</span>
+  <span class="s">"We question, we break away from what is accepted."</span>,
+  <span class="s">"Engineering matters."</span>,
+];</pre>
+
+  <h3>Accessibility &amp; responsive checklist</h3>
+  <ul class="check">
+    <li><b>Reduced motion:</b> <code>prefers-reduced-motion</code> and the M toggle settle assembly, manifesto, spinners, and all thirteen marks to a truthful static state within one tick — static, never blank; no dim beat, no sweep.</li>
+    <li><b>Keyboard:</b> full operation via <kbd>M</kbd> <kbd>C</kbd> <kbd>W</kbd> <kbd>T</kbd> <kbd>R</kbd> <kbd>D</kbd>; the mark gallery is a roving-tabindex <code>radiogroup</code> with arrow keys, <kbd>Home</kbd>/<kbd>End</kbd>, visible focus outlines, and <code>aria-checked</code> state; the global key handler ignores form fields.</li>
+    <li><b>Live regions:</b> gallery selection and the phase label mirror into visually-hidden <code>role="status"</code> regions (phase cadence ≤2.4s); spinner and mark glyph animations are <code>aria-hidden</code> behind labeled containers.</li>
+    <li><b>Image semantics:</b> every generated frame — contact sheet, proofs, comparison pair, tiles, enlarged preview — carries <code>role="img"</code> + a descriptive <code>aria-label</code> (labels use "Demanding evidence").</li>
+    <li><b>Contrast:</b> all revision-3 body/caption text ≥4.5:1 (<code>--muted</code> ≈7.4:1 on base); NO_COLOR dims lift to <code>--nc-dim</code>/<code>--nc-muted</code>; contrast figures computed from token hexes.</li>
+    <li><b>NO_COLOR:</b> assembly, manifesto, selection (<code>▸</code> marker), and every illumination sweep survive with hue collapsed — activity carried by glyph density and weight.</li>
+    <li><b>Narrow widths:</b> 64-col simulation (<kbd>W</kbd>) — banner meta stacks, manifesto wraps at its sentence break, widest mark + gutter + label = 41 cols. Page verified at 400px with no horizontal overflow; gallery collapses 2→1 columns.</li>
+    <li><b>Performance:</b> one shared 80ms interval drives everything; all 26 mark frame-sets are precomputed at load; the clock early-returns while <code>document.hidden</code>.</li>
+  </ul>
+
+  <h3>Validation commands</h3>
+  <pre class="block"><span class="c"># open the preview and the spec in a browser (macOS)</span>
+open /Users/norinlavaee/atomic/specs/design/2026-07-19T00-31-09-965Z-j68omg/preview.html
+open /Users/norinlavaee/atomic/specs/design/2026-07-19T00-31-09-965Z-j68omg/spec.html
+
+<span class="c"># scripted review (playwright-cli), if available</span>
+playwright-cli open "file:///Users/norinlavaee/atomic/specs/design/2026-07-19T00-31-09-965Z-j68omg/preview.html"
+playwright-cli screenshot "file:///Users/norinlavaee/atomic/specs/design/2026-07-19T00-31-09-965Z-j68omg/preview.html" preview-check.png
+
+<span class="c"># zero-dependency check: no external requests should appear in either file</span>
+rg -n "https?://" specs/design/2026-07-19T00-31-09-965Z-j68omg/
+
+<span class="c"># srcdoc parity: decoded iframe content must equal preview.html byte-for-byte</span>
+bun -e '
+const d="specs/design/2026-07-19T00-31-09-965Z-j68omg/";
+const spec=await Bun.file(d+"spec.html").text(),prev=await Bun.file(d+"preview.html").text();
+const m=spec.match(/srcdoc="([\s\S]*?)"><\/iframe>/);
+const dec=m[1].replace(/&quot;/g,String.fromCharCode(34)).replace(/&amp;/g,"&");
+console.log(dec===prev?"srcdoc PARITY OK":"srcdoc DIVERGED");'
+
+<span class="c"># manual gate checklist (in the preview):</span>
+<span class="c">#   R → banner halves slide in from the edges in whole-column steps, meet at</span>
+<span class="c">#       640ms, shadow + meta land, manifesto dims in at +240ms, settles +400ms</span>
+<span class="c">#   any key mid-reveal → everything settles instantly</span>
+<span class="c">#   arrows in the gallery → selection moves, preview + comparison + proofs update</span>
+<span class="c">#   D → sweep direction reverses where it has a meaningful opposite</span>
+<span class="c">#   M → all spinners freeze; every mark settles to a static muted state</span>
+<span class="c">#   C → NO_COLOR: sweeps still read via density (│→┃, ░→▒, ♕→♛, 0↔1)</span>
+<span class="c">#   W → 64-col: no clipping; manifesto wraps to two lines; reflow pair honest</span>
+<span class="c">#   OS reduced-motion on → page loads settled, motion control unpressed</span></pre>
+
+  <h3>Known limitations &amp; assumptions</h3>
+  <ul class="plain">
+    <li><b>Design artifact only.</b> Neither file implements production behavior; the usage example is a proposed shape, not shipped code. Zero runtime dependencies, zero network requests.</li>
+    <li><b>Assumption — timing envelope reading.</b> The 500–800ms envelope is treated as governing the <em>mark entrance only</em> (assembly = 640ms). The manifesto beat extends the full startup sequence to ~1040ms. If the envelope is meant to bound the entire sequence, compress the beat offsets (e.g. +160/+280ms) — the choreography is unaffected.</li>
+    <li><b>Assumption — punctuation verdict.</b> Rendering A (the user's exact comma splice) is adopted; rendering B (em dash) is the one tested alternative and is <em>not</em> shipped. Reversing that is a one-string change.</li>
+    <li><b>Assumption — default gallery selection.</b> The sheet loads with A1 selected (first tile, neutral). The recommendation itself points at B1; pre-selecting the verdict is a one-line change if preferred.</li>
+    <li><b>Working-mark adoption is explicitly not decided.</b> The study's only binding outputs are: keep Braille in the one-line slot, E disqualified, F not recommended, B1 named as the candidate <em>if</em> a multi-line surface ever wants a mark. No production component work is authorized by this spec.</li>
+    <li><b>Matrix scores are designer judgments</b> backed by the live frames and the stated evidence (footprint math, NO_COLOR behavior, reference legibility) — not user-tested data. The cultural/legal column records exposure (heraldic association, faction-mark adjacency, hacker-skull cliché), not legal advice.</li>
+    <li><b>Contrast figures are computed</b> (WCAG 2.x formula from token hexes), not screen-measured. Carried-forward rev-2 content keeps its original <code>--overlay1</code> captions (≈4.4:1) by the byte-preservation mandate; only revision-3 content uses the repaired <code>.kk</code> tier.</li>
+    <li><b>Line anchors drift.</b> File:line anchors (<code>working-status.ts:29–41</code>, <code>interactive-startup.ts:147</code>, etc.) were verified at review time; re-verify before editing. Note the corrected path: <code>components/chat-session-host-utils.ts</code> (the rev-2 spec omitted the <code>components/</code> segment).</li>
+    <li><b>Iframe keyboard focus.</b> The embedded preview's key deck and gallery need focus inside the frame; reviewers evaluating keyboard behavior should open the file URL directly.</li>
+    <li><b>Reference authority.</b> The five user-supplied images are the composition authority for concepts A and B and outrank DESIGN.md on those compositions only; all rendering still passes through Mocha roles and Unicode cells. The images are not bundled into this artifact.</li>
+  </ul>
+</section>
+
+<!-- ============================== (f) APPENDIX ============================== -->
+<section id="appendix" aria-labelledby="appendix-h">
+  <p class="kicker">Appendix</p>
+  <h2 id="appendix-h">Raw artifacts &amp; authority</h2>
+  <div class="pathbox">
+    <span class="lbl">approved preview (raw file)</span>
+    <code>/Users/norinlavaee/atomic/specs/design/2026-07-19T00-31-09-965Z-j68omg/preview.html</code>
+    <span class="lbl" style="margin-top:.5rem">this spec</span>
+    <code>/Users/norinlavaee/atomic/specs/design/2026-07-19T00-31-09-965Z-j68omg/spec.html</code>
+    <span class="lbl" style="margin-top:.5rem">open live</span>
+    <code><a href="file:///Users/norinlavaee/atomic/specs/design/2026-07-19T00-31-09-965Z-j68omg/preview.html">file:///Users/norinlavaee/atomic/specs/design/2026-07-19T00-31-09-965Z-j68omg/preview.html</a></code>
+  </div>
+  <ul class="plain" style="margin-top:.9rem">
+    <li><b>Immutable source (revision 2):</b> <code>specs/design/2026-07-18T22-43-33-028Z-kh4lmu/</code> — carried forward verbatim, read-only throughout this revision.</li>
+    <li><b>Prior revision (history):</b> <code>specs/design/2026-07-17T18-22-03-452Z-pznh1f/</code> — revision 1 plus archived motion-reference captures.</li>
+    <li><b>Production geometry authority:</b> <code>components/working-status.ts:29–41</code> (incumbent 2-row status), <code>components/atomic-banner.ts:5–34</code> (36×10 grid + <code>░</code> shadow), <code>components/chat-session-host-utils.ts:9–13</code> (Braille frames @80ms), <code>interactive-startup.ts:147</code> (quiet-startup gate).</li>
+    <li><b>Token &amp; rule authority:</b> <code>DESIGN.md</code> — Mocha roles, One-Accent, Status-Is-Truth, Pulse, Weight-and-Tone, Strata, No-Glow, Rounded-Or-Nothing.</li>
+    <li><b>Register &amp; decision authority:</b> <code>PRODUCT.md</code> — Quiet Operator register, assured-rebel reconciliation, singular startup gesture; the no-skull anti-reference whose override is scoped to the concept-F study only.</li>
+    <li><b>Concept A/B composition authority:</b> five user-supplied reference images (Joan-arms color plate + line engraving + stained glass; knowledge-eye textured + clean vector) — primary over DESIGN.md for those compositions; not bundled here.</li>
+  </ul>
+</section>
+
+</main>
+<footer><div class="wrap">∀ Atomic · implementation spec · run 2026-07-19T00-31-09-965Z-j68omg · revision 3 · pairs with preview.html (embedded above, content-identical) · design artifact only</div></footer>
+</body>
+</html>
