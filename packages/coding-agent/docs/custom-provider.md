@@ -231,9 +231,7 @@ models: [{
 Use `openrouter` for OpenRouter-style `reasoning: { effort }` controls. Use `together` for Together-style `reasoning: { enabled }` controls; with `supportsReasoningEffort`, it also sends `reasoning_effort`. Use `qwen-chat-template` for local Qwen-compatible servers that read `chat_template_kwargs.enable_thinking` and need `preserve_thinking`.
 Use `cacheControlFormat: "anthropic"` for OpenAI-compatible providers that expose Anthropic-style prompt caching via `cache_control` on the system prompt, last tool definition, and last user/assistant text content.
 
-> Migration note: Mistral moved from `openai-completions` to `mistral-conversations`.
-> Use `mistral-conversations` for native Mistral models.
-> If you intentionally route Mistral-compatible/custom endpoints through `openai-completions`, set `compat` flags explicitly as needed.
+Use `mistral-conversations` for native Mistral models. If you intentionally route a Mistral-compatible or custom endpoint through `openai-completions`, set the required `compat` flags explicitly.
 
 ### Auth Header
 
@@ -368,7 +366,6 @@ interface OAuthCredentials {
 
 For providers with non-standard APIs, implement `streamSimple`. Study the existing provider implementations before writing your own:
 
-> **Import compatibility:** The global provider/model API (`stream`, `complete`, `registerApiProvider`, `getEnvApiKey`, `streamSimple`, and the types shown below) is exported from `@earendil-works/pi-ai/compat`. Existing extensions that import these symbols from the package root remain supported, but new TypeScript code should import from `/compat` for accurate type resolution. Register OAuth through `pi.registerProvider(...)` rather than importing runtime helpers from `/oauth`.
 
 **Reference implementations:**
 
@@ -692,4 +689,4 @@ The `cost` shape is equivalent to `Model<Api>["cost"]`. Base rates and every tie
 `openrouter` sends `reasoning: { effort }`. `deepseek` sends `thinking: { type: "enabled" | "disabled" }` and `reasoning_effort` when enabled. `together` sends `reasoning: { enabled }` and also `reasoning_effort` when `supportsReasoningEffort` is enabled. `qwen` is for DashScope-style top-level `enable_thinking`. Use `qwen-chat-template` for local Qwen-compatible servers that read `chat_template_kwargs.enable_thinking` and need `preserve_thinking`. Use `chat-template` for configurable `chat_template_kwargs`, for example DeepSeek V3.x behind vLLM with `chatTemplateKwargs: { "thinking": { "$var": "thinking.enabled" } }`.
 `cacheControlFormat: "anthropic"` applies Anthropic-style `cache_control` markers to the system prompt, last tool definition, and last user/assistant text content.
 
-For `openai-responses` providers, Pi v0.80.7 replaced `compat.sendSessionIdHeader` with `compat.sessionAffinityFormat`. Use `"openai"` for `session_id` plus `x-client-request-id`, `"openai-nosession"` to omit `session_id` while retaining `x-client-request-id`, or `"openrouter"` for `x-session-id`. Responses-compatible providers may also set `supportsToolSearch` when they support deferred tool loading.
+For `openai-responses` providers, set `compat.sessionAffinityFormat` to `"openai"` for `session_id` plus `x-client-request-id`, `"openai-nosession"` to omit `session_id` while retaining `x-client-request-id`, or `"openrouter"` for `x-session-id`. Responses-compatible providers may also set `supportsToolSearch` when they support deferred tool loading.
