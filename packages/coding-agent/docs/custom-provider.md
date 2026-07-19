@@ -313,7 +313,7 @@ pi.registerProvider("corporate-ai", {
 
 After registration, users can authenticate via `/login corporate-ai`.
 
-Atomic bridges this legacy extension OAuth shape to Pi's provider-owned `OAuthAuth` runtime. Existing extensions keep their `login`, `refreshToken`, `getApiKey`, and optional `modifyModels` methods; built-in providers use Pi's canonical login/refresh/auth implementation. OAuth refresh remains serialized through Atomic's credential-store lock.
+Existing extension OAuth definitions keep their `login`, `refreshToken`, `getApiKey`, and optional `modifyModels` methods. OAuth refresh is serialized so concurrent requests do not overwrite each other's credentials.
 
 ## Dynamic model catalog refresh
 
@@ -368,7 +368,7 @@ interface OAuthCredentials {
 
 For providers with non-standard APIs, implement `streamSimple`. Study the existing provider implementations before writing your own:
 
-> **Compatibility note (Pi 0.80.10 sync):** Upstream Pi keeps the legacy global provider/model API (`stream`, `complete`, `registerApiProvider`, `getEnvApiKey`, `streamSimple`, and the `Model`/`Api`/`SimpleStreamOptions`/`AssistantMessageEventStream` types shown below) on the `@earendil-works/pi-ai/compat` entrypoint. Atomic's extension loader aliases the `@earendil-works/pi-ai` root to `/compat` at runtime, so existing extensions keep working unchanged. For new TypeScript code that needs this legacy surface, prefer importing from `@earendil-works/pi-ai/compat` for accurate type resolution. The `/oauth` entrypoint is now type-only; Atomic bridges legacy extension OAuth at registration time and uses provider-owned authentication for built-ins.
+> **Import compatibility:** The global provider/model API (`stream`, `complete`, `registerApiProvider`, `getEnvApiKey`, `streamSimple`, and the types shown below) is exported from `@earendil-works/pi-ai/compat`. Existing extensions that import these symbols from the package root remain supported, but new TypeScript code should import from `/compat` for accurate type resolution. Register OAuth through `pi.registerProvider(...)` rather than importing runtime helpers from `/oauth`.
 
 **Reference implementations:**
 

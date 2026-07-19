@@ -5,13 +5,13 @@ description: "What's new in Atomic"
 
 <Update label="July 18, 2026">
 
-## Provider-owned model runtime compatibility
+## Model catalogs and provider authentication
 
-- **Existing Atomic SDK and extensions remain compatible.** Atomic now adapts Pi's provider-owned authentication and asynchronous catalog APIs behind the existing `AuthStorage`, `ModelRegistry`, SDK session options, and extension OAuth contract. Complete credential auth — including headers and enterprise `baseUrl` overrides — reaches provider requests.
-- **Catalog refresh is visible and controllable.** The model picker renders its cached snapshot immediately and reports concise success, partial-failure, or timeout status. Run `atomic update --models` to force-refresh authenticated dynamic provider catalogs.
-- **Upstream interaction fixes are included.** Adjacent thinking blocks render as one section, Windows startup restores Atomic's terminal title after package checks, standalone Bun binaries include every interactive OAuth adapter, and early clone/fork attempts explain that the first assistant response must save the session.
+- **Dynamic provider catalogs stay current.** The model picker renders its cached snapshot immediately and reports concise success, partial-failure, or timeout status. Run `atomic update --models` to force-refresh authenticated dynamic provider catalogs.
+- **Complete authentication reaches provider requests.** API keys, provider headers, and credential-specific enterprise endpoints are preserved across normal chat and SDK requests.
+- **Interaction reliability improved.** Adjacent thinking blocks render as one section, Windows startup restores Atomic's terminal title after package checks, standalone Bun binaries include every interactive OAuth adapter, and early clone/fork attempts explain that the first assistant response must save the session.
 
-See [SDK](/sdk) and [Custom providers](/custom-provider). The Reference section includes the complete Pi v0.80.10 port matrix.
+See [SDK](/sdk) and [Custom providers](/custom-provider).
 
 </Update>
 <Update label="July 10, 2026">

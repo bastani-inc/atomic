@@ -449,7 +449,7 @@ The package root exports the same context-window helpers and types used by the r
 
 ### API Keys and OAuth
 
-Atomic preserves the public synchronous `AuthStorage` and `ModelRegistry` SDK entry points. Internally, credentials are exposed through a private asynchronous Pi `CredentialStore` adapter so provider-owned authentication can refresh tokens under Atomic's existing cross-process lock without changing `AuthStorage.list(): string[]` or the `authStorage`/`modelRegistry` session options.
+`AuthStorage` and `ModelRegistry` remain synchronous public SDK entry points. Token refresh is serialized under Atomic's credential-store lock, and the `authStorage` and `modelRegistry` session options remain available.
 
 API key resolution priority (handled by AuthStorage):
 1. Runtime overrides (via `setRuntimeApiKey`, not persisted)
@@ -457,7 +457,7 @@ API key resolution priority (handled by AuthStorage):
 3. Environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.)
 4. Fallback resolver (for custom provider keys from `models.json`)
 
-Provider-owned OAuth may resolve complete request auth: `apiKey`, request `headers`, and a credential-specific `baseUrl`. Atomic merges all three into the existing request path. In particular, GitHub Copilot enterprise and token-specific endpoints replace the static model URL for that request without dropping Atomic's retries, attribution headers, fast mode, or extension request hooks.
+OAuth credentials may provide an API key, request headers, and a credential-specific `baseUrl`. Atomic applies all three to the request. In particular, GitHub Copilot enterprise and token-specific endpoints replace the static model URL without dropping retries, attribution headers, fast mode, or extension request hooks.
 
 ```typescript
 import { AuthStorage, ModelRegistry } from "@bastani/atomic";
