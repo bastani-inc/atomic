@@ -1,6 +1,7 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import publishRelease from "../../.atomic/workflows/publish-release.js";
 import {
   prereleaseVersionPattern,
   releaseVersionPattern,
@@ -37,6 +38,23 @@ describe("publish-release request validation", () => {
       assert.throws(() => validateReleaseRequest(kind, version), /target_version/u);
     }
   });
+});
+
+test("invalid base refs return the declared structured failure output", async () => {
+  const result = await publishRelease.run({
+    inputs: {
+      target_version: "1.2.3",
+      release_kind: "release",
+      base_ref: "origin/main",
+    },
+  } as never);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.target_version, "1.2.3");
+  assert.equal(result.release_kind, "release");
+  assert.equal(result.branch, "release/1.2.3");
+  assert.match(result.summary, /validate-release-base-ref/u);
+  assert.match(result.summary, /canonical remote branch name/u);
 });
 
 test("workflow follows the short versionless release sequence", () => {

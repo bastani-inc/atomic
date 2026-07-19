@@ -98,11 +98,6 @@ export default workflow({
   },
   run: async (ctx) => {
     const release = validateReleaseRequest(ctx.inputs.release_kind, ctx.inputs.target_version);
-    const requestedBaseRef = ctx.inputs.base_ref.length === 0 ? "main" : ctx.inputs.base_ref;
-    const releaseBaseRef = canonicalReleaseBaseRef(requestedBaseRef);
-    const baseRef = releaseBaseRef.slice("refs/heads/".length);
-    const facts = releaseFacts(release, baseRef);
-
     const stop = (stage: string, details: string): never => {
       const summary = stoppedSummary(release, stage, details);
       return ctx.exit({
@@ -117,6 +112,26 @@ export default workflow({
         },
       });
     };
+
+    const fail = (stage: string, details: string) => ({
+      status: "failed" as const,
+      target_version: release.version,
+      release_kind: release.kind,
+      branch: release.branch,
+      summary: stoppedSummary(release, stage, details),
+    });
+    const requestedBaseRef = ctx.inputs.base_ref.length === 0 ? "main" : ctx.inputs.base_ref;
+    let releaseBaseRef: string;
+    try {
+      releaseBaseRef = canonicalReleaseBaseRef(requestedBaseRef);
+    } catch (error) {
+      return fail(
+        "validate-release-base-ref",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    const baseRef = releaseBaseRef.slice("refs/heads/".length);
+    const facts = releaseFacts(release, baseRef);
 
     const inspectGate = async (
       label: "required CI" | "publish action",
