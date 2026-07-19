@@ -139,6 +139,25 @@ const path = await picker.result;    // selected row's path, or undefined on can
 
 The bundled workflows extension's `/workflow resume` picker is built exclusively on this channel.
 
+### Host-native input form
+
+Use `ctx.ui.hostInputForm(request)` for structured inline forms whose keyboard handling must remain responsive under interactive-engine isolation. The terminal host mounts and focuses the real form in the bottom editor slot (`overlay: false`); Tab/Shift+Tab, arrows, text editing, configured keybindings, Enter, Escape, and Ctrl+C are handled entirely in the host process. In isolated mode only the JSON-safe open request and the final submit/cancel event cross the engine boundary. Non-isolated mode mounts the same component directly.
+
+```typescript
+const values = await ctx.ui.hostInputForm?.({
+  title: "Release",
+  fields: [
+    { name: "version", type: "string", required: true, initialValue: "" },
+    { name: "channel", type: "select", choices: ["stable", "beta"], initialValue: "stable" },
+  ],
+});
+if (values === undefined) return; // Escape, Ctrl+C, teardown, or close
+```
+
+Field types are `string`, `text`, `number`, `integer`, `boolean`, and `select`. Initial and returned values are raw strings; the caller owns domain coercion. Every current interactive Atomic host exposes the optional capability, while headless RPC and print surfaces omit it. Keep a legacy fallback only when compatibility with older hosts is required.
+
+The bundled `/workflow <name>` input picker uses this channel and retains its older custom-editor/`ctx.ui.custom()` paths only as compatibility fallbacks.
+
 ## Overlays
 
 Overlays render components on top of existing content without clearing the screen. Pass `{ overlay: true }` to `ctx.ui.custom()`:

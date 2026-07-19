@@ -1,5 +1,5 @@
 import type { CallbackActivity, CallbackActivityKind } from "../../core/callback-activity.ts";
-import type { HostSessionPickerRow } from "../../core/extensions/ui-types.ts";
+import type { HostInputFormField, HostSessionPickerRow } from "../../core/extensions/ui-types.ts";
 import type { KeyId } from "../../core/keybindings.ts";
 
 export const INTERACTIVE_ENGINE_PROTOCOL_VERSION = 1;
@@ -65,7 +65,8 @@ export type InteractiveEngineMessage =
 	| { type: "engine_session_picker_open"; componentId: string; sessions: HostSessionPickerRow[]; showRenameHint?: boolean }
 	| { type: "engine_session_picker_update"; componentId: string; sessions: HostSessionPickerRow[] }
 	| { type: "engine_session_picker_error"; componentId: string; message: string }
-	| { type: "engine_session_picker_close"; componentId: string };
+	| { type: "engine_session_picker_close"; componentId: string }
+	| { type: "engine_input_form_open"; componentId: string; title: string; fields: HostInputFormField[] };
 export type InteractiveEngineCommand =
 	| { type: "engine_custom_render"; componentId: string; requestId: number; width: number; rows: number }
 	| { type: "engine_custom_input"; componentId: string; data: string }
@@ -75,7 +76,9 @@ export type InteractiveEngineCommand =
 	| { type: "engine_render_dispose"; componentId: string }
 	| { type: "engine_session_picker_select"; componentId: string; path: string }
 	| { type: "engine_session_picker_cancel"; componentId: string }
-	| { type: "engine_session_picker_delete"; componentId: string; path: string };
+	| { type: "engine_session_picker_delete"; componentId: string; path: string }
+	| { type: "engine_input_form_submit"; componentId: string; values: Record<string, string> }
+	| { type: "engine_input_form_cancel"; componentId: string };
 
 const ACTIVITY_KINDS: readonly CallbackActivityKind[] = [
 	"extension.hook", "renderer", "tool.execute", "tool.prepare", "workflow.ctx_tool",
@@ -137,6 +140,35 @@ function parseSessionPickerRows(value: JsonValue | undefined): HostSessionPicker
 		rows.push(row);
 	}
 	return rows;
+}
+
+const INPUT_FORM_FIELD_TYPES = ["string", "text", "number", "integer", "boolean", "select"] as const;
+
+function parseInputFormFields(value: JsonValue | undefined): HostInputFormField[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const fields: HostInputFormField[] = [];
+	for (const entry of value) {
+		if (!isJsonObject(entry)) return undefined;
+		const { name, type, description, required, choices, placeholder, initialValue } = entry;
+		if (typeof name !== "string" || !INPUT_FORM_FIELD_TYPES.includes(type as HostInputFormField["type"]) || typeof initialValue !== "string") return undefined;
+		if (description !== undefined && typeof description !== "string") return undefined;
+		if (required !== undefined && typeof required !== "boolean") return undefined;
+		if (choices !== undefined && (!Array.isArray(choices) || !choices.every((choice) => typeof choice === "string"))) return undefined;
+		if (placeholder !== undefined && typeof placeholder !== "string") return undefined;
+		fields.push({ name, type: type as HostInputFormField["type"], initialValue,
+			...(typeof description === "string" ? { description } : {}),
+			...(typeof required === "boolean" ? { required } : {}),
+			...(Array.isArray(choices) ? { choices: choices as string[] } : {}),
+			...(typeof placeholder === "string" ? { placeholder } : {}) });
+	}
+	return fields;
+}
+
+function parseStringRecord(value: JsonValue | undefined): Record<string, string> | undefined {
+	if (value === undefined || !isJsonObject(value)) return undefined;
+	const entries = Object.entries(value);
+	if (entries.some(([, entry]) => typeof entry !== "string")) return undefined;
+	return Object.fromEntries(entries) as Record<string, string>;
 }
 
 function parseKeybindingsConfig(value: JsonValue | undefined): SerializableKeybindingsConfig | undefined {
@@ -232,6 +264,11 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 				? { type: value.type, componentId: value.componentId, message: value.message } : undefined;
 		case "engine_session_picker_close":
 			return typeof value.componentId === "string" ? { type: value.type, componentId: value.componentId } : undefined;
+		case "engine_input_form_open": {
+			const fields = parseInputFormFields(value.fields);
+			return typeof value.componentId === "string" && typeof value.title === "string" && fields
+				? { type: value.type, componentId: value.componentId, title: value.title, fields } : undefined;
+		}
 		default: return undefined;
 	}
 }
@@ -248,6 +285,11 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 		return { type: value.type, componentId: value.componentId, path: value.path };
 	}
 	if (value.type === "engine_session_picker_cancel") return { type: value.type, componentId: value.componentId };
+	if (value.type === "engine_input_form_cancel") return { type: value.type, componentId: value.componentId };
+	if (value.type === "engine_input_form_submit") {
+		const values = parseStringRecord(value.values);
+		return values ? { type: value.type, componentId: value.componentId, values } : undefined;
+	}
 	if (value.type === "engine_tool_render" && typeof value.requestId === "number" && typeof value.width === "number" &&
 		typeof value.toolName === "string" && typeof value.toolCallId === "string" && typeof value.executionStarted === "boolean" &&
 		typeof value.argsComplete === "boolean" && typeof value.isPartial === "boolean" && typeof value.expanded === "boolean" &&

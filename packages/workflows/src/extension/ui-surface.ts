@@ -180,6 +180,25 @@ export type PiCustomOverlayFunction = (
   options: PiCustomOverlayOptions,
 ) => Promise<unknown> | unknown;
 
+export interface PiHostInputFormField {
+  name: string;
+  type: "string" | "text" | "number" | "integer" | "boolean" | "select";
+  description?: string;
+  required?: boolean;
+  choices?: string[];
+  placeholder?: string;
+  initialValue: string;
+}
+
+export interface PiHostInputFormRequest {
+  title: string;
+  fields: PiHostInputFormField[];
+}
+
+export type PiHostInputFormFunction = (
+  request: PiHostInputFormRequest,
+) => Promise<Record<string, string> | undefined>;
+
 /**
  * JSON-safe session-selector row for the host-native session picker
  * capability. Structural mirror of @bastani/atomic `HostSessionPickerRow` —
@@ -327,6 +346,8 @@ export interface PiUISurface {
   custom?: PiCustomOverlayFunction;
   /** Host-native session-list picker (all interactive hosts; absent headless). */
   hostSessionPicker?: PiHostSessionPickerFunction;
+  /** Host-native inline input form (all current interactive Atomic hosts). */
+  hostInputForm?: PiHostInputFormFunction;
   /** Get host-owned inline custom UI focus state, if exposed by the host. */
   getHostCustomUiState?: () => PiHostCustomUiState;
   /** Observe host-owned inline custom UI focus state changes, if exposed by the host. */

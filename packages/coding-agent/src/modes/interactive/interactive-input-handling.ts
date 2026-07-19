@@ -2,6 +2,7 @@ import { InteractiveModeBase, seedStartupInput } from "./interactive-mode-base.t
 import { pasteClipboardImageToEditor, recordTimeSinceReset } from "./interactive-mode-deps.ts";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import { interruptBlockedInteractiveEngine } from "../interactive-engine/extension-ui-bridge.ts";
+import { routeGlobalClearInput } from "./interactive-global-clear.ts";
 
 InteractiveModeBase.prototype.runUserPromptTurn = async function(this: InteractiveModeBase, userInput: string): Promise<void> {
     // Show the working spinner immediately on submit so there is no visible gap
@@ -43,13 +44,13 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function(this: Interacti
   };
 
 InteractiveModeBase.prototype.setupKeyHandlers = function(this: InteractiveModeBase): void {
-    this.ui.addInputListener((data) => {
-      if (!this.keybindings.matches(data, "app.clear")) return undefined;
-      if (this.ui.hasOverlay()) return undefined;
-      this.handleCtrlC();
-      this.ui.requestRender();
-      return { consume: true };
-    });
+    this.ui.addInputListener((data) => routeGlobalClearInput(data, {
+      matchesClear: (candidate) => this.keybindings.matches(candidate, "app.clear"),
+      hasOverlay: this.ui.hasOverlay(),
+      blockingInlineCustomUiActive: this.blockingInlineCustomUiDepth > 0,
+      onClear: () => this.handleCtrlC(),
+      requestRender: () => this.ui.requestRender(),
+    }));
 
     // Set up handlers on defaultEditor - they use this.editor for text access
     // so they work correctly regardless of which editor is active
