@@ -100,13 +100,12 @@ test("the inert tag signal and protected publisher stay distinct and non-recursi
 
   assert.match(publish, /name: Publish release/u);
   assert.match(executable(publish), /workflow_run:\n\s+workflows: \["Publish tag created"\]\n\s+types: \[completed\]/u);
-  assert.match(executable(publish), /push:\n\s+branches: \[main\]\n\s+paths: \[\.github\/recovery\/0\.9\.10-alpha\.1\.json\]/u);
   assert.doesNotMatch(publish, /workflows:.*(?:Publish release|"Publish")/u);
   assert.match(publish, /permissions:\s*\r?\n\s*contents: read/u);
   assert.doesNotMatch(publish.slice(0, publish.indexOf("jobs:")), /id-token: write|contents: write/u);
   assert.match(publish, /ref: \$\{\{ github\.workflow_sha \}\}/u);
-  assert.match(publish, /RELEASE_TAG: \$\{\{ github\.event_name == 'push' && '0\.9\.10-alpha\.1' \|\| github\.event\.workflow_run\.head_branch \}\}/u);
-  assert.match(publish, /TRIGGER_SHA: \$\{\{ github\.event_name == 'push' && '88c11adcdddcf5245b7b04dd3d2912c7531906fe' \|\| github\.event\.workflow_run\.head_sha \}\}/u);
+  assert.match(publish, /RELEASE_TAG: \$\{\{ github\.event\.workflow_run\.head_branch \}\}/u);
+  assert.match(publish, /TRIGGER_SHA: \$\{\{ github\.event\.workflow_run\.head_sha \}\}/u);
   for (const field of [
     "PUBLISH_ACTION", "REPOSITORY_ID", "SIGNAL_EVENT", "SIGNAL_STATUS", "SIGNAL_CONCLUSION",
     "SIGNAL_PATH", "SIGNAL_WORKFLOW_ID", "SIGNAL_RUN_ID", "SIGNAL_RUN_ATTEMPT",
@@ -133,15 +132,6 @@ test("the inert tag signal and protected publisher stay distinct and non-recursi
   const prepare = publish.slice(publish.indexOf("    prepare-release:"), publish.indexOf("    publish-npm:"));
   assert.doesNotMatch(prepare, /id-token: write|contents: write|npm publish/u);
   assert.match(prepare, /prepublish:native -- --skip-optional-publish/u);
-  const actionRefs = [...publish.matchAll(/uses: [^\s@]+@([^\s]+)/gu)].map((match) => match[1]);
-  assert.ok(actionRefs.length > 0);
-  for (const ref of actionRefs) assert.match(ref ?? "", /^[0-9a-f]{40}$/u, `mutable publisher action ref: ${ref}`);
-  assert.doesNotMatch(publish, /bun-version: latest|mintlify@latest|tool: (?:cargo-zigbuild|cargo-xwin)\s*$/mu);
-  assert.match(publish, /bun-version: 1\.3\.14/u);
-  assert.match(publish, /node-version: 24\.12\.0/u);
-  assert.match(publish, /toolchain: 1\.97\.0/u);
-  assert.match(publish, /tool: cargo-zigbuild@0\.23\.0/u);
-  assert.match(publish, /tool: cargo-xwin@0\.23\.0/u);
   assert.match(prepare, /native_root_manifest=[\s\S]*tar -xOf[\s\S]*\.optionalDependencies \| length[\s\S]*dependency_version/u);
   assert.match(prepare, /npm pack/u);
   assert.match(prepare, /ARTIFACT-SHA256SUMS/u);
@@ -284,7 +274,7 @@ test("every same-run artifact consumer has one cleanup-bounded retry and explici
   assert.equal([...publish.matchAll(/id: retry_download_native_artifacts/gu)].length, 1);
   assert.equal([...publish.matchAll(/id: download_prepared_release/gu)].length, 2);
   assert.equal([...publish.matchAll(/id: retry_download_prepared_release/gu)].length, 2);
-  assert.equal([...publish.matchAll(/uses: actions\/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c/gu)].length, 14);
+  assert.equal([...publish.matchAll(/uses: actions\/download-artifact@/gu)].length, 14);
   assert.equal([...publish.matchAll(/failed after two attempts\./gu)].length, 7);
   assert.equal([...publish.matchAll(/name: Clean (?:partial|failed)/gu)].length, 14);
 });

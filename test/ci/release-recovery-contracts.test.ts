@@ -113,15 +113,14 @@ test("prepared native root tarball contains all six exact-version optional depen
   }
 });
 
-test("protected publisher executable path invokes context, ancestry, and one-time marker validators", async () => {
+test("protected publisher executable path invokes context and ancestry validators", async () => {
   const helper = await Bun.file(`${root}/scripts/verify-publish-context.ts`).text();
   const main = helper.slice(helper.indexOf("if (import.meta.main)"));
-  assert.match(main, /const route = validatePublishContext\(context\);/u);
+  assert.match(main, /validatePublishContext\(context\);/u);
   assert.match(main, /verifyProtectedWorkflowAncestry\(context\.workflowSha, process\.env\.PROTECTED_DEFAULT_REF\);/u);
-  assert.match(main, /if \(route === "recovery"\) verifyRecoveryMarker\(context\.eventBefore, context\.eventSha\);/u);
 
   const workflow = await Bun.file(`${root}/.github/workflows/publish-release.yml`).text();
   assert.match(workflow, /git fetch --no-tags origin "refs\/heads\/\$\{DEFAULT_BRANCH\}:\$\{PROTECTED_DEFAULT_REF\}"/u);
   assert.match(workflow, /bun scripts\/verify-publish-context\.ts/u);
-  assert.match(workflow, /paths: \[\.github\/recovery\/0\.9\.10-alpha\.1\.json\]/u);
+  assert.doesNotMatch(workflow, /workflow_dispatch:|repository_dispatch:|^\s+push:/mu);
 });
