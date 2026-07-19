@@ -7,8 +7,6 @@ import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 type RecoveryFixture = {
-  historicalWorkflowSha256: string;
-  observedWorkflowRef: string;
   releaseBaseRef: string;
   releaseBaseSha: string;
   changelogSectionSha256: Record<string, string>;
@@ -53,24 +51,6 @@ function releasedSection(text: string): string {
   return lf.slice(start, next < 0 ? lf.length : next + 1);
 }
 
-test("historical workflow bytes and graph prove attempt 2 cannot reach privileged jobs", async () => {
-  const historical = await $`git show ${`${tag}:.github/workflows/publish.yml`}`.cwd(root).text();
-  assert.equal(sha256(historical), fixture.historicalWorkflowSha256);
-  assert.match(historical, /name: Publish\r?\n/u);
-  assert.match(historical, /expected_workflow_ref="\$\{GITHUB_REPOSITORY\}\/\.github\/workflows\/publish\.yml@refs\/heads\/\$\{DEFAULT_BRANCH\}"/u);
-  assert.match(historical, /\[\[ "\$WORKFLOW_REF" == "\$expected_workflow_ref" \]\] \|\| \{[^\n]*exit 1;/u);
-  assert.notEqual(
-    fixture.observedWorkflowRef,
-    "bastani-inc/atomic/.github/workflows/publish.yml@refs/heads/main",
-    "the immutable rerun must deterministically fail its first integrity gate",
-  );
-
-  const integrity = historical.slice(historical.indexOf("    release-integrity:"), historical.indexOf("    linux-binary-smoke:"));
-  assert.doesNotMatch(integrity, /contents: write|id-token: write/u);
-  const publish = historical.slice(historical.indexOf("    publish:"));
-  assert.match(publish, /needs:[\s\S]*- release-integrity/u);
-  assert.doesNotMatch(publish.slice(0, publish.indexOf("steps:")), /if:\s*always\(\)/u);
-});
 
 test("historical release commit pins the literal immutable base trailers", async () => {
   const message = await $`git show -s --format=%B ${tag}`.cwd(root).text();

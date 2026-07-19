@@ -95,7 +95,7 @@ This is not a blanket command retry. Typecheck, docs, file-length/lint, builds, 
 
 ### Job time limits
 
-Every job in `test.yml`, `publish-tag-created.yml`, `publish.yml`, and `publish-release.yml` sets an explicit `timeout-minutes` so a hung process cannot consume GitHub's 360-minute default. Release integrity, preparation, npm publication, and GitHub Release jobs use 10 minutes. Windows smoke and native builds retain 15 minutes because their measured cold builds legitimately exceed the shorter budget; the artifact retry remains bounded inside those job-level limits.
+Every job in `test.yml`, `publish-tag-created.yml`, and `publish-release.yml` sets an explicit `timeout-minutes` so a hung process cannot consume GitHub's 360-minute default. Release integrity, preparation, npm publication, and GitHub Release jobs use 10 minutes. Windows smoke and native builds retain 15 minutes because their measured cold builds legitimately exceed the shorter budget; the artifact retry remains bounded inside those job-level limits.
 ---
 
 ## Pull Request Workflows
@@ -284,7 +284,6 @@ The meaningful pre-publish checks are split between required PR/base validation 
 | ------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `test.yml`                | Selected pushes; every pull request          | Install, typecheck, file-length/docs checks, builds, tests, and archive smoke tests |
 | `publish-tag-created.yml` | Tag/branch creation through GitHub `create`  | Emit the normal untrusted completion signal; the checked-in definition requests no permissions and executes no repository code |
-| `publish.yml`             | Manual only, inert legacy identity `Publish` | Retain a non-privileged historical workflow identity; it never publishes and is not selected by the protected publisher |
 | `publish-release.yml`     | Completed pinned signal via `workflow_run`; one exact protected-main recovery marker addition | Protected-main security boundary: validate source identity and release integrity, prepare checksummed artifacts read-only, publish npm tarballs in an OIDC-only job, then create the GitHub Release in a repository-write-only job |
 
 ---

@@ -83,12 +83,11 @@ test("release-base metadata rejects aliases, injection, duplicates, and normaliz
   }
 });
 
-test("signals, inert legacy identity, and protected publisher stay distinct and non-recursive", async () => {
+test("the inert tag signal and protected publisher stay distinct and non-recursive", async () => {
   const signal = await Bun.file(join(root, ".github/workflows/publish-tag-created.yml")).text();
-  const legacy = await Bun.file(join(root, ".github/workflows/publish.yml")).text();
   const publish = await Bun.file(join(root, ".github/workflows/publish-release.yml")).text();
   const executable = (source: string) => source.replace(/\r\n/gu, "\n").split("\n").filter((line) => !/^\s*#/u.test(line)).join("\n");
-  for (const source of [signal, legacy, publish]) {
+  for (const source of [signal, publish]) {
     const lf = source.replace(/\r\n/gu, "\n");
     assert.equal(executable(lf.replace(/\n/gu, "\r\n")), executable(lf), "workflow contracts must be CRLF safe");
   }
@@ -98,11 +97,6 @@ test("signals, inert legacy identity, and protected publisher stay distinct and 
   assert.match(executable(signal), /REF_TYPE.*github\.ref_type/u);
   assert.doesNotMatch(executable(signal), /uses:|checkout|id-token|contents: write|npm publish|upload-artifact/u);
   assert.match(signal, /tag-sourced YAML[\s\S]*not a publication security boundary/u);
-
-  assert.match(legacy, /name: Publish\r?\n/u);
-  assert.match(legacy, /workflow_dispatch:/u);
-  assert.match(legacy, /permissions: \{\}/u);
-  assert.doesNotMatch(executable(legacy), /workflow_run:|create:|id-token|contents: write|npm publish|checkout/u);
 
   assert.match(publish, /name: Publish release/u);
   assert.match(executable(publish), /workflow_run:\n\s+workflows: \["Publish tag created"\]\n\s+types: \[completed\]/u);
