@@ -1156,9 +1156,9 @@ If a dialog method includes a `timeout` field, the agent-side will auto-resolve 
 
 Some `ExtensionUIContext` methods are not supported or degraded in RPC mode because they require direct TUI access:
 - `custom()` returns `undefined`
-- `setWorkingMessage()`, `setWorkingIndicator()`, `setFooter()`, `setHeader()`, `setEditorComponent()`, `setToolsExpanded()` are no-ops
+- `setWorkingMessage()`, `setWorkingIndicator()`, `setFooter()`, `setHeader()`, `setEditorComponent()` are no-ops
 - `getEditorText()` returns `""`
-- `getToolsExpanded()` returns `false`
+- `setToolsExpanded()` and `getToolsExpanded()` maintain context-local expansion state; `getChatRenderSettings().toolOutputExpanded` reports the same value. This state is not sent through the client extension-UI protocol.
 - `pasteToEditor()` delegates to `setEditorText()` (no paste/collapse handling)
 - `getAllThemes()` returns `[]`
 - `getTheme()` returns `undefined`

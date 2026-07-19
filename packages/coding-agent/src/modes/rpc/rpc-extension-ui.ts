@@ -93,6 +93,7 @@ export function createRpcExtensionUIContext({
 	inputForm,
 }: CreateRpcExtensionUIContextOptions): ExtensionUIContext {
 	const unsupportedWarnings = new Set<string>();
+	let toolsExpanded = false;
 	const warnUnsupported = (method: string): void => {
 		if (!customUi || unsupportedWarnings.has(method)) return;
 		unsupportedWarnings.add(method);
@@ -283,19 +284,19 @@ export function createRpcExtensionUIContext({
 		},
 
 		getToolsExpanded() {
-			// Tool expansion not supported in RPC mode - no TUI
-			return false;
+			return toolsExpanded;
 		},
 
-		setToolsExpanded(_expanded: boolean) {
-			// Tool expansion not supported in RPC mode - no TUI
+		setToolsExpanded(expanded: boolean) {
+			toolsExpanded = expanded;
+			customUi?.requestRender();
 		},
 
 		getChatRenderSettings() {
 			return {
 				hideThinkingBlock: false,
 				hiddenThinkingLabel: "Thinking...",
-				toolOutputExpanded: false,
+				toolOutputExpanded: toolsExpanded,
 				showImages: false,
 				imageWidthCells: 60,
 				getToolDefinition: () => undefined,
