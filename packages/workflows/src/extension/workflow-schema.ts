@@ -43,6 +43,10 @@ const JsonSchemaObject = Type.Unsafe<Record<string, unknown>>({
   description: "Plain JSON Schema used as final-answer tool arguments for this workflow item.",
 });
 
+const GroupSchema = Type.Optional(Type.Union([Type.String(), Type.Literal(true)], {
+  description: "Intercom home group for this session. A named string joins that group; `true` auto-generates one shared UUID group per parallel set (all items in the set share it) so they can intercom each other but stay isolated from other groups. Only applied when the session has intercom access.",
+}));
+
 const StageSessionOptionProperties = {
   schema: Type.Optional(JsonSchemaObject),
   cwd: Type.Optional(Type.String({ description: "Starting directory only; does not provide worktree isolation." })),
@@ -69,6 +73,7 @@ const StageSessionOptionProperties = {
   sessionDir: Type.Optional(Type.String()),
   context: Type.Optional(Type.Union([Type.Literal("fresh"), Type.Literal("fork")])),
   forkFromSessionFile: Type.Optional(Type.String()),
+  group: GroupSchema,
 };
 
 // Keep this union opaque to Value.Convert: branch ordering otherwise coerces
@@ -110,6 +115,7 @@ const ParallelChainStepSchema = Type.Object({
   worktree: Type.Optional(Type.Boolean({ description: "Runner-managed temporary per-task worktree isolation for direct runs." })),
   gitWorktreeDir: Type.Optional(Type.String({ description: "Runner-managed reusable worktree; natural-language worktree instructions do not set this option." })),
   baseBranch: Type.Optional(Type.String()),
+  group: GroupSchema,
 });
 
 export const WorkflowParametersSchema = Type.Object({

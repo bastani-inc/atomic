@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a `group` option on subagent tasks, parallel/chain items, and the top-level call that sets the intercom home group for spawned children so same-group subagents can intercom each other while staying isolated from other groups. A named string joins that group; `true` auto-generates one shared UUID group per parallel set (shared across all items in the set). Precedence is `explicit subagent group > inherited current-session (stage) group > env ATOMIC_INTERCOM_GROUP > config > "default"`. When a subagent does not specify a group it inherits its launching session's group — read race-safely from the session's `orchestrationContext.intercomGroup` rather than global env — so subagents spawned by a grouped workflow stage join that stage's group by default. The child group env (`ATOMIC_INTERCOM_GROUP`) is written only when the child actually has intercom access (the peer `intercom` tool or the `contact_supervisor` tool); a child without intercom is never placed into a group. The `contact_supervisor` vertical channel still reaches the supervisor across group boundaries.
+
 ### Fixed
 
 - Fixed subagent live-detail and full-notification hints to use the effective `app.tools.expand` binding and omit the shortcut affordance when it is unbound.

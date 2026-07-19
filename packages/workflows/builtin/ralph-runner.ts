@@ -271,6 +271,7 @@ export async function runRalphWorkflow(
         {
           task: workflowPrompt,
           failFast: false,
+          group: `ralph-reviewers-iter-${iteration}`,
         },
       );
     } catch (err) {

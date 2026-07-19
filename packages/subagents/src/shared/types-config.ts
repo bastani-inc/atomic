@@ -67,6 +67,8 @@ export interface RunSyncOptions {
 	controlConfig?: ResolvedControlConfig;
 	intercomSessionName?: string;
 	orchestratorIntercomTarget?: string;
+	/** Resolved intercom home group for the spawned child (explicit subagent group or inherited stage group). */
+	intercomGroup?: string;
 	maxOutput?: MaxOutputConfig;
 	artifactsDir?: string;
 	artifactConfig?: ArtifactConfig;

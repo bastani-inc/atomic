@@ -14,6 +14,7 @@ import {
 } from "./intercom-utils.js";
 import type { ReplyTracker } from "./reply-tracker.ts";
 import { resolveSessionTargetId } from "./session-target.js";
+import { normalizeGroup } from "./group.js";
 
 interface IntercomToolDeps {
   ensureConnected(reason: "tool"): Promise<IntercomClient>;
@@ -42,15 +43,19 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
     description: `Send a message to another local agent session running on this machine.
 Use this to communicate findings, request help, or coordinate work with other sessions.
 
+Sessions belong to an intercom group and can ONLY message sessions in the same group;
+cross-group sends are rejected by the broker. Ungrouped sessions share the "default" group.
+
 Usage:
-  intercom({ action: "list" })                    → List active sessions
-  intercom({ action: "send", to: "session-name", message: "..." })  → Send message
+  intercom({ action: "list" })                    → List sessions in your group
+  intercom({ action: "list", group: "name" })     → Read-only peek at another group's sessions
+  intercom({ action: "send", to: "session-name", message: "..." })  → Send message (own group only)
   intercom({ action: "ask", to: "session-name", message: "..." })   → Ask and wait for reply
   intercom({ action: "reply", message: "..." })                      → Reply to the active/single pending ask
   intercom({ action: "pending" })                                      → List unresolved inbound asks
-  intercom({ action: "status" })                  → Show connection status`,
+  intercom({ action: "status" })                  → Show connection status and your group`,
     promptSnippet:
-      "Use to coordinate with other local agent sessions: list peers, send updates, ask for help, or check intercom connectivity.",
+      "Use to coordinate with other local agent sessions in your intercom group: list peers, send updates, ask for help, or check intercom connectivity. Groups are isolated; you can only message sessions in your own group.",
 
     parameters: Type.Object({
       action: Type.String({
@@ -71,6 +76,9 @@ Usage:
       replyTo: Type.Optional(Type.String({
         description: "Message ID to reply to (for threading or responding to an 'ask')",
       })),
+      group: Type.Optional(Type.String({
+        description: "Read-only group filter for 'list'/'status' (peek who is in a named group). 'send'/'ask' are always locked to your own group; passing a different group errors.",
+      })),
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -87,15 +95,30 @@ Usage:
 
       syncPresenceIdentity(ctx.sessionManager.getSessionId());
 
-      const { action, to, message, attachments, replyTo } = params;
+      const { action, to, message, attachments, replyTo, group } = params;
+      const requestedGroup = typeof group === "string" && group.trim() ? normalizeGroup(group) : undefined;
+      const resolveOwnGroup = async (): Promise<string> => {
+        const sessions = await connectedClient.listSessions();
+        const self = sessions.find((s) => s.id === connectedClient.sessionId);
+        return normalizeGroup(self?.group);
+      };
+      if ((action === "send" || action === "ask") && requestedGroup) {
+        const ownGroup = await resolveOwnGroup();
+        if (requestedGroup !== ownGroup) {
+          return {
+            content: [{ type: "text", text: `The 'group' parameter is read-only for 'list'/'status'. '${action}' is always locked to your own group ("${ownGroup}"); it cannot target group "${requestedGroup}".` }],
+            isError: true,
+            details: { error: true },
+          };
+        }
+      }
 
       switch (action) {
         case "list": {
           try {
             const mySessionId = connectedClient.sessionId;
-            const sessions = await connectedClient.listSessions();
-            const currentSession = sessions.find(s => s.id === mySessionId);
-            const otherSessions = sessions.filter(s => s.id !== mySessionId);
+            const ownSessions = await connectedClient.listSessions();
+            const currentSession = ownSessions.find(s => s.id === mySessionId);
 
             if (!currentSession) {
               return {
@@ -104,16 +127,30 @@ Usage:
                 details: { error: true },
               };
             }
+            const ownGroup = normalizeGroup(currentSession.group);
 
-            const currentSection = `**Current session:**\n${formatSessionListRow(currentSession, currentSession.cwd, true)}`;
+            if (requestedGroup && requestedGroup !== ownGroup) {
+              const peeked = await connectedClient.listSessions(requestedGroup);
+              const section = peeked.length === 0
+                ? `**Group [${requestedGroup}] (read-only peek):**\nNo sessions in this group.`
+                : `**Group [${requestedGroup}] (read-only peek):**\n${peeked.map(s => formatSessionListRow(s, currentSession.cwd, s.id === mySessionId)).join("\n")}`;
+              return {
+                content: [{ type: "text", text: `Your group: ${ownGroup}\n\n${section}` }],
+                isError: false,
+                details: { group: ownGroup, peekGroup: requestedGroup },
+              };
+            }
+
+            const otherSessions = ownSessions.filter(s => s.id !== mySessionId);
+            const currentSection = `**Current session** (group: ${ownGroup}):\n${formatSessionListRow(currentSession, currentSession.cwd, true)}`;
             const otherSection = otherSessions.length === 0
-              ? "**Other sessions:**\nNo other sessions connected."
-              : `**Other sessions:**\n${otherSessions.map(s => formatSessionListRow(s, currentSession.cwd, false)).join("\n")}`;
+              ? `**Other sessions:**\nNo other sessions in your group (${ownGroup}).`
+              : `**Other sessions** (group: ${ownGroup}):\n${otherSessions.map(s => formatSessionListRow(s, currentSession.cwd, false)).join("\n")}`;
 
             return {
               content: [{ type: "text", text: `${currentSection}\n\n${otherSection}` }],
               isError: false,
-              details: {},
+              details: { group: ownGroup },
             };
           } catch (error) {
             return {
@@ -379,13 +416,18 @@ Usage:
           try {
             const mySessionId = connectedClient.sessionId;
             const sessions = await connectedClient.listSessions();
+            const self = sessions.find((s) => s.id === mySessionId);
+            const ownGroup = normalizeGroup(self?.group);
+            const peekSection = requestedGroup && requestedGroup !== ownGroup
+              ? `\nPeeked group [${requestedGroup}]: ${(await connectedClient.listSessions(requestedGroup)).length} session(s)`
+              : "";
             return {
               content: [{
                 type: "text",
-                text: `**Intercom Status:**\nConnected: Yes\nSession ID: ${mySessionId}\nActive sessions: ${sessions.length}`,
+                text: `**Intercom Status:**\nConnected: Yes\nSession ID: ${mySessionId}\nGroup: ${ownGroup}\nActive sessions in group: ${sessions.length}${peekSection}`,
               }],
               isError: false,
-              details: {},
+              details: { group: ownGroup },
             };
           } catch (error) {
             return {

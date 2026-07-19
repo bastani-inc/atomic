@@ -1521,6 +1521,18 @@ readonly forkFromSessionFile?: string;
 
 Select a clean session or a forked context, with `forkFromSessionFile` naming an explicit fork source. Omitting `context` creates a fresh session unless the runtime is reopening durable state; see [Locally Scoped Stage Prompts](#locally-scoped-stage-prompts) for choosing fresh reviewer context versus coherent implementation context.
 
+### `group`
+
+```typescript
+readonly group?: string | true;
+```
+
+Sets the stage session's [Intercom](/intercom) home group so orchestrated stages can be isolated into coordination groups: a stage in group G can only intercom peers in G. Provide a named string to join that group, or `true` to auto-generate one shared UUID group **per parallel set** (minted once and shared across every item in that `ctx.parallel`/`tasks` set — never a fresh id per item), so a whole level of reviewers lands in the same isolated group. Omit it to inherit per the precedence chain (ultimately `"default"`).
+
+`group` is accepted at every level — run-level defaults (`context`), `stage`/`task`, `parallel` step options, and per parallel item — and resolves most-specific-first: `parallel-item > task/stage > parallel-step > run-level`. The resolved value is injected per-session (race-safe across concurrently running in-process stages, stable across model fallback). Group assignment is **gated on intercom capability**: a stage with `noTools`, a `tools` allowlist that omits `intercom`, or `excludedTools` containing `intercom` is never placed into a group (so an agent is never isolated into a group it cannot use). Subagents spawned by a grouped stage inherit that stage's group by default (see [subagents.md](subagents.md)), so a reviewer level and its helper subagents form one isolated group. The subagent-only `contact_supervisor` channel still reaches the supervisor across group boundaries.
+
+The builtin `goal` and `ralph` workflows use this to isolate each reviewer level into its own group (`goal-reviewers-turn-N` / `ralph-reviewers-iter-N`): same-level reviewers coordinate with each other but cannot reach the worker, orchestrator, parent chat, or other levels, which also keeps reviewer intercom chatter out of the main/parent context window.
+
 ### `model`
 
 ```typescript

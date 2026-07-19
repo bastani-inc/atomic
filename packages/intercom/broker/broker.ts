@@ -6,6 +6,8 @@ import { getBrokerPidPath, getBrokerSocketPath, getIntercomDirPath } from "./pat
 import type { SessionInfo, BrokerMessage } from "../types.js";
 import { DeliveredMessageCache } from "./delivered-message-cache.js";
 import { handleBrokerSend, type BrokerConnectedSession } from "./send-handler.js";
+import { SupervisorChannelCache } from "./supervisor-channel.js";
+import { normalizeGroup } from "../group.js";
 
 const INTERCOM_DIR = getIntercomDirPath();
 const SOCKET_PATH = getBrokerSocketPath();
@@ -34,6 +36,10 @@ function isSessionRegistration(value: unknown): value is Omit<SessionInfo, "id">
     return false;
   }
 
+  if (session.group !== undefined && typeof session.group !== "string") {
+    return false;
+  }
+
   return session.status === undefined || typeof session.status === "string";
 }
 
@@ -42,6 +48,7 @@ class IntercomBroker {
   private server: net.Server;
   private shutdownTimer: NodeJS.Timeout | null = null;
   private deliveredMessages = new DeliveredMessageCache();
+  private supervisorChannel = new SupervisorChannelCache();
 
   constructor() {
     mkdirSync(INTERCOM_DIR, { recursive: true });
@@ -79,8 +86,9 @@ class IntercomBroker {
 
     socket.on("close", () => {
       if (sessionId) {
+        const leavingGroup = this.sessions.get(sessionId)?.info.group;
         this.sessions.delete(sessionId);
-        this.broadcast({ type: "session_left", sessionId }, sessionId);
+        this.broadcastToGroup({ type: "session_left", sessionId }, leavingGroup, sessionId);
 
         this.scheduleShutdownCheck();
       }
@@ -131,7 +139,11 @@ class IntercomBroker {
 
         const id = randomUUID();
         setId(id);
-        const info: SessionInfo = { ...clientMessage.session, id };
+        const info: SessionInfo = {
+          ...clientMessage.session,
+          id,
+          group: normalizeGroup(clientMessage.session.group),
+        };
         this.sessions.set(id, { socket, info });
 
         if (this.shutdownTimer) {
@@ -140,13 +152,14 @@ class IntercomBroker {
         }
 
         writeMessage(socket, { type: "registered", sessionId: id });
-        this.broadcast({ type: "session_joined", session: info }, id);
+        this.broadcastToGroup({ type: "session_joined", session: info }, info.group, id);
         break;
       }
 
       case "unregister": {
+        const leavingGroup = this.sessions.get(currentId)?.info.group;
         this.sessions.delete(currentId);
-        this.broadcast({ type: "session_left", sessionId: currentId }, currentId);
+        this.broadcastToGroup({ type: "session_left", sessionId: currentId }, leavingGroup, currentId);
         setId(null);
         this.scheduleShutdownCheck();
         break;
@@ -156,14 +169,23 @@ class IntercomBroker {
         if (typeof clientMessage.requestId !== "string") {
           throw new Error("Invalid list message");
         }
+        if (clientMessage.group !== undefined && typeof clientMessage.group !== "string") {
+          throw new Error("Invalid list group");
+        }
 
-        const sessions = Array.from(this.sessions.values()).map(s => s.info);
+        const requester = currentId ? this.sessions.get(currentId) : undefined;
+        const effectiveGroup = normalizeGroup(
+          typeof clientMessage.group === "string" ? clientMessage.group : requester?.info.group,
+        );
+        const sessions = Array.from(this.sessions.values())
+          .map((s) => s.info)
+          .filter((info) => normalizeGroup(info.group) === effectiveGroup);
         writeMessage(socket, { type: "sessions", requestId: clientMessage.requestId, sessions });
         break;
       }
 
       case "send": {
-        handleBrokerSend(socket, clientMessage, currentId, this.sessions, this.deliveredMessages, writeMessage);
+        handleBrokerSend(socket, clientMessage, currentId, this.sessions, this.deliveredMessages, writeMessage, this.supervisorChannel);
         break;
       }
 
@@ -189,7 +211,7 @@ class IntercomBroker {
             session.info.model = clientMessage.model;
           }
           session.info.lastActivity = Date.now();
-          this.broadcast({ type: "presence_update", session: session.info }, currentId);
+          this.broadcastToGroup({ type: "presence_update", session: session.info }, session.info.group, currentId);
         }
         break;
       }
@@ -199,10 +221,11 @@ class IntercomBroker {
     }
   }
 
-
-  private broadcast(msg: BrokerMessage, exclude?: string): void {
+  /** Deliver a broadcast only to sessions in the given (normalized) group. */
+  private broadcastToGroup(msg: BrokerMessage, group: string | undefined, exclude?: string): void {
+    const target = normalizeGroup(group);
     for (const [id, session] of this.sessions) {
-      if (id !== exclude) {
+      if (id !== exclude && normalizeGroup(session.info.group) === target) {
         writeMessage(session.socket, msg);
       }
     }

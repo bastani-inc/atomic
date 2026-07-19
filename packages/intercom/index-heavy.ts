@@ -25,6 +25,8 @@ import type { IntercomExtensionTestOverrides } from "./intercom-test-seams.js";
 import { admitWorkflowStageInbound } from "./workflow-stage-admission.js";
 import { bindWorkflowReplyTracker, preserveWorkflowReplyTracker } from "./workflow-reply-tracker.js";
 import { routeClosedWorkflowStageMessage } from "./closed-workflow-stage-message.js";
+import { resolveHomeGroup } from "./group.js";
+import { reconnectDelayMs } from "./reconnect-backoff.js";
 if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL === "1") {
   process.env.ATOMIC_INTERCOM_HEAVY_IMPORTED = "1";
 }
@@ -98,10 +100,6 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       // The UI can disappear during session shutdown/reload while async overlay work is settling.
     }
   }
-  function getReconnectDelayMs(): number {
-    const backoffMs = [1000, 2000, 5000, 10000, 30000];
-    return backoffMs[Math.min(reconnectAttempt, backoffMs.length - 1)]!;
-  }
   function currentStatus(): string {
     const activeToolName = activeTools.values().next().value;
     const lifecycleStatus = activeToolName ? `tool:${activeToolName}` : agentRunning ? "thinking" : "idle";
@@ -121,6 +119,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       startedAt: sessionStartedAt,
       lastActivity: Date.now(),
       status: currentStatus(),
+      group: resolveHomeGroup(config, getLiveContext()),
     };
   }
   function syncPresenceIdentity(sessionId: string): void {
@@ -371,7 +370,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       void ensureConnected("background").catch(() => {
         // ensureConnected("background") already queued the next retry.
       });
-    }, getReconnectDelayMs());
+    }, reconnectDelayMs(reconnectAttempt));
   }
   async function ensureConnected(reason: "startup" | "background" | "tool" | "overlay"): Promise<IntercomClient> {
     if (!config.enabled) {

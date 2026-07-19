@@ -27,6 +27,7 @@ import type {
 } from "@bastani/atomic";
 import type { StageAdapters, StageSessionCreateResult, StageSessionRuntime } from "../runs/foreground/stage-runner.js";
 import type { StageExecutionMeta, StageOptions } from "../shared/types.js";
+import { resolveStageGroup, stageHasIntercomAccess } from "../shared/intercom-group.js";
 import { stageUiBroker, type StageUiBroker } from "../shared/stage-ui-broker.js";
 import { prepareAtomicStageSessionOptions } from "./atomic-stage-session.js";
 import type { PiCodingAgentSdk, PrepareAtomicStageSessionOptions } from "./atomic-stage-session.js";
@@ -190,7 +191,7 @@ async function createTestAgentSession(_options?: CreateAgentSessionOptions): Pro
 function stripWorkflowOnlyOptions(options: (StageOptions | CreateAgentSessionOptions) | undefined): CreateAgentSessionOptions | undefined {
   if (!options) return options;
   const maybeWorkflowOptions = options as StageOptions;
-  const { schema: _schema, mcp: _mcp, fallbackModels: _fallbackModels, ...sessionOptions } = maybeWorkflowOptions;
+  const { schema: _schema, mcp: _mcp, fallbackModels: _fallbackModels, group: _group, ...sessionOptions } = maybeWorkflowOptions;
   return sessionOptions as CreateAgentSessionOptions;
 }
 
@@ -220,12 +221,14 @@ function makeWorkflowStageOrchestrationContext(
   meta: StageExecutionMeta,
   pi: RuntimeWiringSurface,
 ): NonNullable<CreateAgentSessionOptions["orchestrationContext"]> {
+  const intercomGroup = stageHasIntercomAccess(meta.stageOptions) ? resolveStageGroup(meta.stageOptions) : undefined;
   return {
     kind: "workflow-stage",
     workflowRunId: meta.runId,
     workflowStageId: meta.stageId,
     workflowStageName: meta.stageName,
     constraints: { disableWorkflowTool: true, maxSubagentDepth: 5 },
+    ...(intercomGroup ? { intercomGroup } : {}),
     lateMessageRouter: {
       routeMessage(message, options) {
         const intercomRoute = emitLateIntercomRoute(pi, meta, [message], options, false);

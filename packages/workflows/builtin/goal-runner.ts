@@ -304,6 +304,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         reviewResults = await ctx.parallel(reviewerSteps, {
           task: objective,
           failFast: true,
+          group: `goal-reviewers-turn-${turn}`,
         });
       } catch (err) {
         reviewerBatchFailed = true;

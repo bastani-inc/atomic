@@ -183,6 +183,13 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
   readonly sessionDir?: string;
   /** @deprecated Prefer suffixing model/fallbackModels entries with `:level`; removal is deferred. */
   readonly thinkingLevel?: WorkflowThinkingLevel;
+  /**
+   * Intercom home group for this stage session. A named string joins that group;
+   * `true` auto-generates one shared UUID group per parallel set (all items in the
+   * set share it). Absent inherits per the precedence chain (ultimately "default").
+   * Only applied when the stage session actually has intercom access.
+   */
+  readonly group?: string | true;
 }
 
 export interface CompleteStageOpts extends WorkflowModelFallbackFields {
@@ -423,6 +430,7 @@ export interface WorkflowParallelChainStep {
   readonly worktree?: boolean;
   readonly gitWorktreeDir?: string;
   readonly baseBranch?: string;
+  readonly group?: string | true;
 }
 
 export type WorkflowChainStep = WorkflowDirectTaskItem | WorkflowParallelChainStep;

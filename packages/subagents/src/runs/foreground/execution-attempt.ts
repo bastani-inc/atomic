@@ -66,6 +66,7 @@ export async function runSingleAttempt(
 		promptFileStem: agent.name,
 		intercomSessionName: options.intercomSessionName,
 		orchestratorIntercomTarget: options.orchestratorIntercomTarget,
+		intercomGroup: options.intercomGroup,
 		runId: options.runId,
 		childAgentName: agent.name,
 		childIndex: options.index ?? 0,

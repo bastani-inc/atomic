@@ -18,6 +18,7 @@ export interface TaskParam {
 	progress?: boolean;
 	model?: string;
 	skill?: string | string[] | boolean;
+	group?: string | true;
 }
 
 export interface SubagentParamsLike {
@@ -46,6 +47,7 @@ export interface SubagentParamsLike {
 	includeProgress?: boolean;
 	model?: string;
 	skill?: string | string[] | boolean;
+	group?: string | true;
 	output?: string | boolean;
 	outputMode?: "inline" | "file-only";
 	reads?: string[] | false;

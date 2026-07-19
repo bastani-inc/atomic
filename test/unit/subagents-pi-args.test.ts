@@ -5,11 +5,17 @@ import { WORKFLOW_SESSION_METADATA_ENV } from "../../packages/coding-agent/src/c
 import {
   buildPiArgs,
   FANOUT_CHILD_EXTENSION_PATH,
+  INTERCOM_GROUP_ENV,
   PROMPT_RUNTIME_EXTENSION_PATH,
   SUBAGENT_FANOUT_CHILD_ENV,
   SUBAGENT_PARENT_DEPTH_ENV,
   SUBAGENT_PARENT_MAX_DEPTH,
 } from "../../packages/subagents/src/runs/shared/pi-args.js";
+import {
+  inheritedIntercomGroup,
+  resolveChildIntercomGroup,
+  sharedAutoGroupForSet,
+} from "../../packages/subagents/src/runs/shared/intercom-group.js";
 import {
   STRUCTURED_OUTPUT_CAPTURE_ENV,
   STRUCTURED_OUTPUT_SCHEMA_ENV,
@@ -238,5 +244,59 @@ describe("subagent child CLI args", () => {
     });
 
     assert.equal(result.env[WORKFLOW_SESSION_METADATA_ENV], JSON.stringify(workflow));
+  });
+
+  test("writes the intercom group env only when the child has intercom access", () => {
+    const withPeer = buildPiArgs({
+      baseArgs: [],
+      task: "hello",
+      sessionEnabled: false,
+      inheritProjectContext: true,
+      inheritSkills: true,
+      intercomGroup: "reviewers",
+      intercomSessionName: "child-1",
+    });
+    const withSupervisor = buildPiArgs({
+      baseArgs: [],
+      task: "hello",
+      sessionEnabled: false,
+      inheritProjectContext: true,
+      inheritSkills: true,
+      intercomGroup: "reviewers",
+      orchestratorIntercomTarget: "parent",
+    });
+    const withoutAccess = buildPiArgs({
+      baseArgs: [],
+      task: "hello",
+      sessionEnabled: false,
+      inheritProjectContext: true,
+      inheritSkills: true,
+      intercomGroup: "reviewers",
+    });
+
+    assert.equal(withPeer.env[INTERCOM_GROUP_ENV], "reviewers");
+    assert.equal(withSupervisor.env[INTERCOM_GROUP_ENV], "reviewers");
+    assert.equal(withoutAccess.env[INTERCOM_GROUP_ENV], undefined);
+  });
+
+  test("resolveChildIntercomGroup: explicit > inherited; true → shared auto group", () => {
+    assert.equal(resolveChildIntercomGroup("teamX", "stage", undefined), "teamX");
+    assert.equal(resolveChildIntercomGroup(undefined, "stage", undefined), "stage");
+    assert.equal(resolveChildIntercomGroup(undefined, undefined, undefined), undefined);
+    assert.equal(resolveChildIntercomGroup(true, "stage", "shared-uuid"), "shared-uuid");
+  });
+
+  test("sharedAutoGroupForSet mints one uuid for the set when any item opts into true", () => {
+    assert.equal(sharedAutoGroupForSet(undefined, [{ group: "a" }, {}]), undefined);
+    const set = sharedAutoGroupForSet(true, [{}, {}]);
+    assert.match(set ?? "", /^[0-9a-f-]{36}$/);
+    const perItem = sharedAutoGroupForSet(undefined, [{ group: true }, {}]);
+    assert.match(perItem ?? "", /^[0-9a-f-]{36}$/);
+  });
+
+  test("inheritedIntercomGroup reads the stage group from orchestrationContext only", () => {
+    assert.equal(inheritedIntercomGroup({ orchestrationContext: { intercomGroup: "stage-g" } }), "stage-g");
+    assert.equal(inheritedIntercomGroup({ orchestrationContext: {} }), undefined);
+    assert.equal(inheritedIntercomGroup(undefined), undefined);
   });
 });

@@ -16,6 +16,8 @@ interface SendOptions {
   expectsReply?: boolean;
   replyError?: string;
   messageId?: string;
+  /** Marks a `contact_supervisor` vertical-channel send that bypasses peer-group isolation. */
+  channel?: "supervisor";
 }
 
 interface SendResult {
@@ -105,6 +107,10 @@ function isSessionInfo(value: unknown): value is SessionInfo {
   }
 
   if (session.name !== undefined && typeof session.name !== "string") {
+    return false;
+  }
+
+  if (session.group !== undefined && typeof session.group !== "string") {
     return false;
   }
 
@@ -405,7 +411,7 @@ export class IntercomClient extends EventEmitter {
       }
     });
   }
-  listSessions(): Promise<SessionInfo[]> {
+  listSessions(group?: string): Promise<SessionInfo[]> {
     let socket: net.Socket;
     try {
       socket = this.requireActiveSocket();
@@ -430,7 +436,7 @@ export class IntercomClient extends EventEmitter {
       }, 5000);
       this.pendingLists.set(requestId, { resolve: wrappedResolve, reject: wrappedReject });
       try {
-        writeMessage(socket, { type: "list", requestId });
+        writeMessage(socket, group === undefined ? { type: "list", requestId } : { type: "list", requestId, group });
       } catch (error) {
         clearTimeout(timeout);
         this.pendingLists.delete(requestId);
@@ -464,7 +470,9 @@ export class IntercomClient extends EventEmitter {
       content: { text: options.text, attachments: options.attachments },
     };
     try {
-      writeMessage(socket, { type: "send", to, message, attemptId: acquired.attempt.attemptId });
+      writeMessage(socket, options.channel === "supervisor"
+        ? { type: "send", to, message, attemptId: acquired.attempt.attemptId, channel: "supervisor" }
+        : { type: "send", to, message, attemptId: acquired.attempt.attemptId });
     } catch (error) {
       this.pendingSends.reject(acquired.attempt, toError(error));
     }

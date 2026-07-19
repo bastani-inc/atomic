@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { WorkflowParallelOptions, WorkflowTaskResult, WorkflowTaskStep } from "../../shared/types.js";
 import type { EngineRuntime } from "../runtime.js";
 import type { WorkflowTaskPrimitive } from "./task.js";
@@ -18,19 +19,27 @@ export function createParallelPrimitive(input: {
 }): (steps: readonly WorkflowTaskStep[], options?: WorkflowParallelOptions) => Promise<WorkflowTaskResult[]> {
   return async (steps: readonly WorkflowTaskStep[], options: WorkflowParallelOptions = {}): Promise<WorkflowTaskResult[]> => {
     input.runtime.exit.throwIfWorkflowExitSelected();
-    const fallback = parallelFallbackTask(steps, options);
+    // Auto-group (group: true) mints ONE shared UUID for the whole parallel set so
+    // every item that opted into auto lands in the SAME isolated intercom group.
+    const needsAutoGroup = options.group === true || steps.some((step) => step.group === true);
+    const autoGroup = needsAutoGroup ? randomUUID() : undefined;
+    const resolveAutoGroup = <T extends { group?: string | true }>(value: T): T =>
+      value.group === true && autoGroup ? { ...value, group: autoGroup } : value;
+    const resolvedOptions = resolveAutoGroup(options);
+    const resolvedSteps = steps.map(resolveAutoGroup);
+    const fallback = parallelFallbackTask(resolvedSteps, resolvedOptions);
     const failFastEnabled = options.failFast !== false;
     const parallelScope: ParallelFailFastScope = {
       failed: false,
       activeStages: new Map<string, ParallelFailFastStage>(),
       parentIds: Object.freeze(input.runtime.tracker.currentParents()),
     };
-    return mapParallelSteps(steps, options.concurrency, options.failFast, async (step) => {
+    return mapParallelSteps(resolvedSteps, resolvedOptions.concurrency, resolvedOptions.failFast, async (step) => {
       input.runtime.exit.throwIfWorkflowExitSelected();
-      const prompt = replaceTaskPlaceholder(step.prompt ?? step.task ?? fallback, options.task ?? fallback);
+      const prompt = replaceTaskPlaceholder(step.prompt ?? step.task ?? fallback, resolvedOptions.task ?? fallback);
       return await input.task(
         step.name,
-        taskWithSharedDefaults(taskOptionsFromStep(step, prompt, taskPrevious(step)), options),
+        taskWithSharedDefaults(taskOptionsFromStep(step, prompt, taskPrevious(step)), resolvedOptions),
         parallelScope,
       );
     }, async (error) => {

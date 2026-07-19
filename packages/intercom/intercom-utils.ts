@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@bastani/atomic";
 import { APP_NAME, getEnvValue } from "@bastani/atomic";
 import type { Attachment, Message, SessionInfo } from "./types.ts";
+import { DEFAULT_GROUP, normalizeGroup } from "./group.js";
 
 
 export const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
@@ -414,7 +415,9 @@ export function formatSessionLabel(session: SessionInfo, duplicates: Set<string>
 }
 export function formatSessionListRow(session: SessionInfo, currentCwd: string, isSelf: boolean): string {
   const name = session.name || "Unnamed session";
-  const tags = [isSelf ? "self" : session.cwd === currentCwd ? "same cwd" : undefined, session.status]
+  const normalizedGroup = normalizeGroup(session.group);
+  const groupTag = normalizedGroup !== DEFAULT_GROUP ? `group: ${normalizedGroup}` : undefined;
+  const tags = [isSelf ? "self" : session.cwd === currentCwd ? "same cwd" : undefined, session.status, groupTag]
     .filter((tag): tag is string => Boolean(tag));
   const suffix = tags.length ? ` [${tags.join(", ")}]` : "";
   return `• ${name} (${shortSessionId(session.id)}) — ${session.cwd} (${session.model})${suffix}`;

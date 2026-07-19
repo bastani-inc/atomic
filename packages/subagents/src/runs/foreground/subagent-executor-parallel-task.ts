@@ -20,6 +20,7 @@ import {
 import type { ExtensionContext } from "@bastani/atomic";
 import type { SubagentExecutorRuntimeDeps, TaskParam } from "./subagent-executor-types.ts";
 import { resolveParallelTaskCwd } from "./subagent-executor-worktree.ts";
+import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/intercom-group.ts";
 
 interface ForegroundParallelRunInput {
 	tasks: TaskParam[];
@@ -47,6 +48,8 @@ interface ForegroundParallelRunInput {
 	onControlEvent?: (event: ControlEvent) => void;
 	childIntercomTarget?: (agent: string, index: number) => string | undefined;
 	orchestratorIntercomTarget?: string;
+	setIntercomGroup?: string | true;
+	sharedAutoIntercomGroup?: string;
 	foregroundControl?: SubagentState["foregroundControls"] extends Map<string, infer T> ? T : never;
 	concurrencyLimit: number;
 	liveResults: (SingleResult | undefined)[];
@@ -111,6 +114,11 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 			onControlEvent: input.onControlEvent,
 			intercomSessionName: input.childIntercomTarget?.(task.agent, index),
 			orchestratorIntercomTarget: input.orchestratorIntercomTarget,
+			intercomGroup: resolveChildIntercomGroup(
+				task.group ?? input.setIntercomGroup,
+				inheritedIntercomGroup(input.ctx),
+				input.sharedAutoIntercomGroup,
+			),
 			onDetachedExit: (result) => input.onDetachedExit?.(index, result),
 			nestedRoute: input.foregroundControl?.nestedRoute,
 			modelOverride: input.modelOverrides[index],

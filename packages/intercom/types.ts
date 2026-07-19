@@ -7,6 +7,8 @@ export interface SessionInfo {
   startedAt: number;
   lastActivity: number;
   status?: string;
+  /** Session's intercom group; undefined is treated as the shared "default" group. */
+  group?: string;
 }
 
 export interface Message {
@@ -37,8 +39,8 @@ export interface Attachment {
 export type ClientMessage =
   | { type: "register"; session: Omit<SessionInfo, "id"> }
   | { type: "unregister" }
-  | { type: "list"; requestId: string }
-  | { type: "send"; to: string; message: Message; attemptId?: string }
+  | { type: "list"; requestId: string; group?: string }
+  | { type: "send"; to: string; message: Message; attemptId?: string; channel?: "supervisor" }
   | { type: "presence"; name?: string; status?: string; model?: string };
 
 export type BrokerMessage =

@@ -166,6 +166,7 @@ async function runDirectChainStep(
       worktree: options.worktree === true || step.worktree === true,
       ...(step.gitWorktreeDir !== undefined ? { gitWorktreeDir: step.gitWorktreeDir } : {}),
       ...(step.baseBranch !== undefined ? { baseBranch: step.baseBranch } : {}),
+      ...(step.group !== undefined ? { group: step.group } : {}),
     };
     const expanded = expandedParallelTasks(step.parallel.map((item) => directTaskWithDefaults(item, stepOptions)));
     const prepared = prepareDirectWorktrees(

@@ -147,6 +147,7 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
           try {
             const result = await connectedClient.send(sendTo, {
               text: formatChildOrchestratorMessage("update", metadata, message),
+              channel: "supervisor",
             });
             if (!result.delivered) {
               const errorText = result.reason ?? "Session may not exist or has disconnected.";
@@ -204,6 +205,7 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
             messageId: questionId,
             text: requestText,
             expectsReply: true,
+            channel: "supervisor",
           });
           if (!sendResult.delivered) {
             const errorText = sendResult.reason ?? "Session may not exist or has disconnected.";

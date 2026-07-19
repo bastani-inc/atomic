@@ -2,6 +2,7 @@ import { resolveModelCandidate } from "../shared/model-fallback.ts";
 import { collectKnownModelProviders, toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
 import { normalizeSkillInput } from "../../agents/skills.ts";
 import { aggregateParallelOutputs } from "../shared/parallel-utils.ts";
+import { sharedAutoGroupForSet } from "../shared/intercom-group.ts";
 import { recordRun } from "../shared/run-history.ts";
 import {
 	resolveStepBehavior,
@@ -185,6 +186,8 @@ export async function runParallelPath(data: ExecutionContextData, deps: Resolved
 			onControlEvent,
 			childIntercomTarget: childIntercomTarget ? (agent, index) => childIntercomTarget(runId, agent, index) : undefined,
 			orchestratorIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
+			setIntercomGroup: params.group,
+			sharedAutoIntercomGroup: sharedAutoGroupForSet(params.group, tasks),
 			foregroundControl,
 			concurrencyLimit: parallelConcurrency,
 			maxSubagentDepths,

@@ -54,6 +54,10 @@ const MaxOutputSchema = Type.Object({
 	lines: Type.Optional(Type.Number()),
 }, { additionalProperties: false });
 
+const GroupSchema = Type.Union([Type.String(), Type.Boolean()], {
+	description: "Intercom group for spawned children. A named string joins that group; `true` auto-generates one shared UUID group per parallel set. Defaults to the current session/stage's group. Only applied when the child has intercom access; contact_supervisor still reaches the supervisor across groups.",
+});
+
 const TaskItem = Type.Object({
 	agent: Type.String(), 
 	task: Type.String(), 
@@ -65,6 +69,7 @@ const TaskItem = Type.Object({
 	progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking for this task" })),
 	model: Type.Optional(Type.String({ description: "Override model for this task (e.g. 'google/gemini-3-pro')" })),
 	skill: Type.Optional(SkillOverride),
+	group: Type.Optional(GroupSchema),
 });
 
 // Parallel task item (within a parallel step)
@@ -83,6 +88,7 @@ const ParallelTaskSchema = Type.Object({
 	progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking in {chain_dir}" })),
 	skill: Type.Optional(SkillOverride),
 	model: Type.Optional(Type.String({ description: "Override model for this task" })),
+	group: Type.Optional(GroupSchema),
 });
 
 const DynamicExpandSchema = Type.Object({
@@ -109,6 +115,7 @@ const DynamicParallelTemplateSchema = Type.Object({
 	progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking in {chain_dir}" })),
 	skill: Type.Optional(SkillOverride),
 	model: Type.Optional(Type.String({ description: "Override model for this task" })),
+	group: Type.Optional(GroupSchema),
 }, { additionalProperties: false });
 
 const DynamicCollectSchema = Type.Object({
@@ -147,6 +154,7 @@ const ChainItem = Type.Object({
 	worktree: Type.Optional(Type.Boolean({
 		description: "Create isolated git worktrees for each parallel task."
 	})),
+	group: Type.Optional(GroupSchema),
 }, {
 	description: "Chain step: use {agent, task?, ...} for sequential, {parallel: [...]} for static concurrent execution, or {expand, parallel: {...}, collect} for dynamic fanout.",
 	additionalProperties: false,
@@ -203,6 +211,7 @@ export const SubagentParams = Type.Object({
 		description: `PARALLEL mode: [{agent, task, count?, output?, outputMode?, reads?, progress?}, ...]. Maximum ${MAX_PARALLEL_TASKS} tasks after count expansion.`,
 	})),
 	concurrency: Type.Optional(Type.Integer({ minimum: 1, description: "Top-level PARALLEL mode only: max concurrent tasks. Defaults to config.parallel.concurrency or 4." })),
+	group: Type.Optional(GroupSchema),
 	worktree: Type.Optional(Type.Boolean({
 		description: "Create isolated git worktrees for each parallel task. " +
 			"Prevents filesystem conflicts. Requires clean git state. " +
