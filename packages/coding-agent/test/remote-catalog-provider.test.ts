@@ -185,4 +185,51 @@ describe("remote catalog provider", () => {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static", "fresh"]);
 	});
+
+	it("keeps an aborted pending write fenced before a newer refresh persists", async () => {
+		type StoredEntry = NonNullable<Awaited<ReturnType<InMemoryModelsStore["read"]>>>;
+		let persisted: StoredEntry | undefined;
+		let resolveFirstWrite!: () => void;
+		const firstWriteGate = new Promise<void>((resolve) => { resolveFirstWrite = resolve; });
+		let writeCount = 0;
+		const store = {
+			read: async () => persisted,
+			write: async (entry: StoredEntry) => {
+				writeCount += 1;
+				if (writeCount === 1) await firstWriteGate;
+				persisted = entry;
+			},
+			delete: async () => { persisted = undefined; },
+		};
+		vi.spyOn(globalThis, "fetch")
+			.mockResolvedValueOnce(new Response(JSON.stringify([model("stale")]), { status: 200 }))
+			.mockResolvedValueOnce(new Response(JSON.stringify([model("fresh")]), { status: 200 }));
+		const provider = withRemoteCatalog(createProvider({
+			id: "test-provider",
+			auth: { apiKey: { name: "Test", resolve: async () => ({ auth: {} }) } },
+			models: [model("static")],
+			api: {
+				stream: () => { throw new Error("not used"); },
+				streamSimple: () => { throw new Error("not used"); },
+			},
+		}));
+		const context = { credential: { type: "api_key" as const }, store, allowNetwork: true, force: true };
+		const controller = new AbortController();
+		const staleRefresh = provider.refreshModels?.({ ...context, signal: controller.signal });
+		await vi.waitFor(() => expect(writeCount).toBe(1));
+
+		controller.abort();
+		let staleSettled = false;
+		void staleRefresh?.then(() => { staleSettled = true; });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(staleSettled).toBe(false);
+		const overlappingRetry = provider.refreshModels?.(context);
+		expect(overlappingRetry).toBe(staleRefresh);
+
+		resolveFirstWrite();
+		await staleRefresh;
+		await provider.refreshModels?.(context);
+		expect(persisted?.models.map((entry) => entry.id)).toEqual(["fresh"]);
+		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static", "fresh"]);
+	});
 });

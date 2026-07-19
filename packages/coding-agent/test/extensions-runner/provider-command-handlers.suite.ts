@@ -95,7 +95,7 @@ describe("ExtensionRunner", () => {
 	};
 
 		describe("provider registration", () => {
-		it("bindCore ignores invalid queued registrations and reports extension error", () => {
+		it("bindCore ignores invalid queued registrations and reports extension error", async () => {
 			const runtime = createExtensionRuntime();
 			runtime.registerProvider(
 				"broken-provider",
@@ -115,7 +115,7 @@ describe("ExtensionRunner", () => {
 			expect(errors).toEqual([
 				'/tmp/broken-extension.ts: Provider broken-provider: "api" is required when registering streamSimple.',
 			]);
-			expect(() => modelRegistry.refresh()).not.toThrow();
+			await expect(modelRegistry.refresh()).resolves.toMatchObject({ aborted: false });
 		});
 
 		it("pre-bind unregister removes all queued registrations for a provider", () => {

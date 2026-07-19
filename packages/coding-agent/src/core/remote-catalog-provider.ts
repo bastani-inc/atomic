@@ -26,11 +26,17 @@ function parseCatalog(providerId: string, value: object): Model<Api>[] {
 		.map((model) => ({ ...model, provider: providerId }));
 }
 
-function settleOnAbort(operation: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
+function settleOnAbort(
+	operation: Promise<void>,
+	signal: AbortSignal | undefined,
+	canSettle: () => boolean,
+): Promise<void> {
 	if (!signal) return operation;
-	if (signal.aborted) return Promise.resolve();
+	if (signal.aborted && canSettle()) return Promise.resolve();
 	return new Promise<void>((resolve, reject) => {
-		const abort = () => resolve();
+		const abort = () => {
+			if (canSettle()) resolve();
+		};
 		signal.addEventListener("abort", abort, { once: true });
 		operation.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
 	});
@@ -41,6 +47,7 @@ export function withRemoteCatalog(provider: Provider, catalogBaseUrl: string = D
 	let dynamicModels: readonly Model<Api>[] = [];
 	let inflightRefresh: Promise<void> | undefined;
 	let refreshEpoch = 0;
+	let persistenceInProgress = false;
 
 	return {
 		...provider,
@@ -49,6 +56,14 @@ export function withRemoteCatalog(provider: Provider, catalogBaseUrl: string = D
 			if (inflightRefresh) return inflightRefresh;
 			const epoch = ++refreshEpoch;
 			const isCurrent = () => epoch === refreshEpoch && !context.signal?.aborted;
+			const persist = async (entry: Parameters<typeof context.store.write>[0]) => {
+				persistenceInProgress = true;
+				try {
+					await context.store.write(entry);
+				} finally {
+					persistenceInProgress = false;
+				}
+			};
 			const operation = (async () => {
 				const stored = await context.store.read();
 				if (!isCurrent()) return;
@@ -68,7 +83,7 @@ export function withRemoteCatalog(provider: Provider, catalogBaseUrl: string = D
 				if (!isCurrent()) return;
 				const checkedAt = Date.now();
 				if (response.status === 404 || response.status === 501) {
-					await context.store.write({ models: dynamicModels, checkedAt });
+					await persist({ models: dynamicModels, checkedAt });
 					return;
 				}
 				if (!response.ok) {
@@ -77,10 +92,10 @@ export function withRemoteCatalog(provider: Provider, catalogBaseUrl: string = D
 				const body: object = await response.json();
 				if (!isCurrent()) return;
 				const refreshed = parseCatalog(provider.id, body);
-				await context.store.write({ models: refreshed, checkedAt });
+				await persist({ models: refreshed, checkedAt });
 				if (isCurrent()) dynamicModels = refreshed;
 			})();
-			const refresh = settleOnAbort(operation, context.signal);
+			const refresh = settleOnAbort(operation, context.signal, () => !persistenceInProgress);
 			const published = refresh.finally(() => {
 				if (inflightRefresh === published) inflightRefresh = undefined;
 			});

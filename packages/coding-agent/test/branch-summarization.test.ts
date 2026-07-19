@@ -1,5 +1,12 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { createAssistantMessageEventStream, type Api, type AssistantMessage, type Model } from "@earendil-works/pi-ai/compat";
+import {
+	createAssistantMessageEventStream,
+	type Api,
+	type AssistantMessage,
+	type Model,
+	registerApiProvider,
+	unregisterApiProviders,
+} from "@earendil-works/pi-ai/compat";
 import { describe, expect, it } from "vitest";
 import { generateBranchSummary, prepareBranchEntries } from "../src/core/compaction/branch-summarization.ts";
 import { serializeConversation } from "../src/core/compaction/utils.ts";
@@ -170,6 +177,39 @@ describe("branch summarization with archival compaction entries", () => {
 
 		expect(result.error).toBe(rawError);
 		expect(result.error).not.toContain("Copilot long-context/usage-based billing");
+	});
+
+	it("uses the credential-specific baseUrl for direct summary dispatch", async () => {
+		resetIds();
+		const api = "branch-summary-endpoint-probe" as Api;
+		const source = "branch-summary-endpoint-test";
+		let dispatchedBaseUrl: string | undefined;
+		const streamSimple = (requestModel: Model<Api>) => {
+			dispatchedBaseUrl = requestModel.baseUrl;
+			const stream = createAssistantMessageEventStream();
+			stream.end({
+				...assistantBlocks([{ type: "text", text: "summary" }]),
+				api,
+				provider: requestModel.provider,
+				model: requestModel.id,
+			});
+			return stream;
+		};
+		registerApiProvider({ api, stream: streamSimple, streamSimple }, source);
+		try {
+			const model = { ...copilotModel(), api };
+			const result = await generateBranchSummary([entry(user("summarize through enterprise"))], {
+				model,
+				apiKey: "test-key",
+				baseUrl: "https://api.enterprise.example.com",
+				signal: new AbortController().signal,
+			});
+
+			expect(result.error).toBeUndefined();
+			expect(dispatchedBaseUrl).toBe("https://api.enterprise.example.com");
+		} finally {
+			unregisterApiProviders(source);
+		}
 	});
 
 	it("treats legacy logical-deletion records as inert when preparing prompt input", () => {
