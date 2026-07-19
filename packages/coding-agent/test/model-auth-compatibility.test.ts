@@ -149,6 +149,33 @@ describe("Pi 0.80.10 model auth compatibility", () => {
 		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 
+	test("global legacy OAuth registration authorizes built-in catalog refresh", async () => {
+		const storage = AuthStorage.inMemory({
+			anthropic: { type: "oauth", refresh: "expired", access: "expired", expires: 0 },
+		});
+		const refreshToken = vi.fn(async () => ({
+			refresh: "catalog-refresh",
+			access: "catalog-access",
+			expires: Date.now() + 60_000,
+		}));
+		registerOAuthProvider({
+			id: "anthropic",
+			name: "Global Anthropic Catalog",
+			login: async () => ({ refresh: "r", access: "a", expires: 1 }),
+			refreshToken,
+			getApiKey: (credential) => `catalog:${credential.access}`,
+		});
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(undefined, { status: 404 }));
+		const registry = ModelRegistry.inMemory(storage);
+
+		const result = await registry.refresh({ force: true });
+
+		expect(result.errors.has("anthropic")).toBe(false);
+		expect(refreshToken).toHaveBeenCalledOnce();
+		expect(fetchSpy.mock.calls.some(([url]) => String(url).includes("platform.claude.com"))).toBe(false);
+		expect(storage.get("anthropic")).toMatchObject({ type: "oauth", access: "catalog-access" });
+	});
+
 	test("runtime-only credentials authorize provider-owned catalog refresh", async () => {
 		const storage = AuthStorage.inMemory();
 		storage.setRuntimeApiKey("anthropic", "runtime-only");

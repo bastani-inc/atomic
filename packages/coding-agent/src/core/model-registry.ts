@@ -55,6 +55,18 @@ function overlayRuntimeApiKey(
 	};
 }
 
+function createProviderCredentialStore(authStorage: AuthStorage, credentials: CredentialStore): CredentialStore {
+	return {
+		...credentials,
+		read: async (providerId) => {
+			const credential = await credentials.read(providerId);
+			if (credential?.type !== "oauth" || !getLegacyOAuthProvider(providerId)) return credential;
+			const auth = await authStorage.getModelAuth(providerId, { includeFallback: false });
+			return auth?.apiKey === undefined ? undefined : { type: "api_key", key: auth.apiKey };
+		},
+	};
+}
+
 export type { ProviderConfigInput, ResolvedRequestAuth } from "./model-registry-types.ts";
 
 /** Clear the config value command cache. Exported for testing. */
@@ -91,7 +103,10 @@ export class ModelRegistry {
 			? new FileModelsStore(join(dirname(this.modelsJsonPaths[0]), "models-store.json"))
 			: new InMemoryCodingAgentModelsStore();
 		this.credentialStore = authStorage.asCredentialStore();
-		this.providerModels = createModels({ credentials: this.credentialStore, modelsStore: this.modelsStore });
+		this.providerModels = createModels({
+			credentials: createProviderCredentialStore(authStorage, this.credentialStore),
+			modelsStore: this.modelsStore,
+		});
 		for (const provider of builtinProviders()) {
 			this.providerModels.setProvider(provider.id === "radius" ? provider : withRemoteCatalog(provider));
 		}
