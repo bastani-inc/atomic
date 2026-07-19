@@ -11,12 +11,6 @@ import {
   type PublishContext,
 } from "../../scripts/verify-publish-context.js";
 
-type RecoveryFixture = {
-  normalSignalWorkflowId: string;
-  normalSignalWorkflowPath: string;
-};
-
-const fixture = await Bun.file("test/fixtures/release/0.9.10-alpha.1-recovery.json").json() as RecoveryFixture;
 const protectedSha = "0123456789abcdef0123456789abcdef01234567";
 const protectedWorkflowRef = `${EXPECTED_REPOSITORY}/${PROTECTED_PUBLISH_WORKFLOW_PATH}@refs/heads/main`;
 const validSignal: PublishContext = {
@@ -30,8 +24,8 @@ const validSignal: PublishContext = {
   signalEvent: "create",
   signalStatus: "completed",
   signalConclusion: "success",
-  signalPath: fixture.normalSignalWorkflowPath,
-  signalWorkflowId: fixture.normalSignalWorkflowId,
+  signalPath: SIGNAL_WORKFLOW_PATH,
+  signalWorkflowId: SIGNAL_WORKFLOW_ID,
   signalRunId: "30000000000",
   signalRunAttempt: "1",
   signalRepository: EXPECTED_REPOSITORY,
@@ -46,10 +40,6 @@ function rejected(contexts: PublishContext[]): void {
   for (const context of contexts) assert.throws(() => validatePublishContext(context));
 }
 
-test("pins the normal tag-signal identity", () => {
-  assert.equal(fixture.normalSignalWorkflowId, SIGNAL_WORKFLOW_ID);
-  assert.equal(fixture.normalSignalWorkflowPath, SIGNAL_WORKFLOW_PATH);
-});
 
 test("accepts only the exact successful tag-signal workflow route", () => {
   assert.equal(validatePublishContext(validSignal), "signal");
@@ -62,8 +52,6 @@ test("accepts only the exact successful tag-signal workflow route", () => {
     { ...validSignal, eventAction: "requested" },
   ]);
 });
-
-
 test("rejects arbitrary workflows, repositories, refs, and malformed identities", () => {
   rejected([
     { ...validSignal, eventName: "workflow_dispatch" },

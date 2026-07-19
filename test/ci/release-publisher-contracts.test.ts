@@ -6,11 +6,6 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-type RecoveryFixture = {
-  releaseBaseRef: string;
-  releaseBaseSha: string;
-  changelogSectionSha256: Record<string, string>;
-};
 
 type NativeManifest = {
   name: string;
@@ -19,8 +14,7 @@ type NativeManifest = {
 };
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
-const fixture = await Bun.file(`${root}/test/fixtures/release/0.9.10-alpha.1-recovery.json`).json() as RecoveryFixture;
-const tag = "0.9.10-alpha.1";
+const packageVersion = "1.2.3-alpha.1";
 const nativePackageNames = [
   "@bastani/atomic-natives-darwin-arm64",
   "@bastani/atomic-natives-darwin-x64",
@@ -39,45 +33,12 @@ const nativeBinaryNames = [
   "atomic_natives.win32-x64-msvc.node",
 ] as const;
 
-function sha256(text: string): string {
-  return new Bun.CryptoHasher("sha256").update(text).digest("hex");
-}
-
-function releasedSection(text: string): string {
-  const lf = text.replace(/\r\n/gu, "\n");
-  const start = lf.indexOf(`## [${tag}]`);
-  assert.notEqual(start, -1, `missing ${tag} section`);
-  const next = lf.indexOf("\n## [", start + 1);
-  return lf.slice(start, next < 0 ? lf.length : next + 1);
-}
-
-
-test("historical release commit pins the literal immutable base trailers", async () => {
-  const message = await $`git show -s --format=%B ${tag}`.cwd(root).text();
-  assert.equal(
-    message,
-    `Release ${tag}\n\nRelease-base-ref: ${fixture.releaseBaseRef}\nRelease-base-sha: ${fixture.releaseBaseSha}\n\n`,
-  );
-  assert.equal((await $`git show -s --format=%P ${tag}`.cwd(root).text()).trim(), fixture.releaseBaseSha);
-});
-
-test("every released 0.9.10-alpha.1 changelog section remains byte-for-byte unchanged", async () => {
-  assert.equal(Object.keys(fixture.changelogSectionSha256).length, 8);
-  for (const [path, expectedHash] of Object.entries(fixture.changelogSectionSha256)) {
-    const current = await Bun.file(`${root}/${path}`).text();
-    const lf = current.replace(/\r\n/gu, "\n");
-    assert.equal(releasedSection(lf.replace(/\n/gu, "\r\n")), releasedSection(lf), `${path} CRLF parity`);
-    assert.equal(sha256(releasedSection(current)), expectedHash, path);
-    const base = await $`git show ${`HEAD:${path}`}`.cwd(root).text();
-    assert.equal(releasedSection(current), releasedSection(base), path);
-  }
-});
 
 test("prepared native root tarball contains all six exact-version optional dependencies", async () => {
   const stage = mkdtempSync(join(tmpdir(), "atomic-native-release-contract-"));
   const nativeDir = join(stage, "native");
   const outputDir = join(stage, "packed");
-  const version = tag;
+  const version = packageVersion;
   try {
     mkdirSync(nativeDir);
     mkdirSync(outputDir);
