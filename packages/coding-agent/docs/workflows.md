@@ -2171,6 +2171,8 @@ The workflow tool action surface is:
 
 From interactive chat, model-launched workflows run in the background so the parent chat stays available. Run `/workflow connect <run>` to see agents working and chat with and steer each stage. Named workflow launches already run in the background; direct `task`, `tasks`, and `chain` launches must pass top-level `async: true`, and their accepted raw/rendered results include the same actionable connect guidance. This rule applies only to launches, not inspection or control calls (`status`, `stages`, `stage`, `transcript`, `send`, `pause`, `resume`, `interrupt`, `quit`).
 
+Named launches wait only for **startup admission**, not for workflow completion. Atomic returns `status: "running"` after durable registration, reusable-worktree setup, and other pre-body setup succeed, while the workflow body and stages continue in the background. If setup fails before the workflow body is admitted — for example, `git_worktree_dir` points inside the invoking checkout — the original `workflow` tool call instead returns a structured `status: "failed"` result with the allocated run id and concrete setup error. No background-start claim or orphan run is retained, so the caller can correct the inputs and retry immediately. Failures after admission remain ordinary background lifecycle outcomes reported through status and lifecycle notices.
+
 A model may launch in the foreground only when the user explicitly requests it or foreground execution is technically required, and it must tell the user before launching.
 
 Run a named workflow with inputs:

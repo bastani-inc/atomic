@@ -35,14 +35,9 @@ function registerBlockedDurable(backend: InMemoryDurableBackend, completedCheckp
 }
 
 class FailingInvocationMetadataBackend extends InMemoryDurableBackend {
-  private continuationRegistrations = 0;
-
   override registerWorkflow(handle: Parameters<InMemoryDurableBackend["registerWorkflow"]>[0]): void {
-    if (handle.workflowId !== runId) {
-      this.continuationRegistrations += 1;
-      if (this.continuationRegistrations === 2) {
-        throw new Error("invocation metadata persistence failed");
-      }
+    if (handle.workflowId !== runId && handle.invocationCwd !== undefined) {
+      throw new Error("invocation metadata persistence failed");
     }
     super.registerWorkflow(handle);
   }
@@ -116,7 +111,7 @@ describe("active-blocked resume claim", () => {
     const result = await runtime.resumeFailedRun(runId);
 
     assert.equal(result.ok, false);
-    assert.match(result.ok ? "" : result.message, /failed to start; source left resumable/u);
+    assert.match(result.ok ? "" : result.message, /failed to start: run\.start persistence failed; source left resumable/u);
     assert.equal(callbacks, 0);
     // No orphan running continuation snapshot.
     assert.equal(store.runs().filter((run) => run.id !== runId).length, 0);
@@ -147,7 +142,7 @@ describe("active-blocked resume claim", () => {
     const result = await runtime.resumeFailedRun(runId);
 
     assert.equal(result.ok, false);
-    assert.match(result.ok ? "" : result.message, /failed to start; source left resumable/u);
+    assert.match(result.ok ? "" : result.message, /failed to start: invocation metadata persistence failed; source left resumable/u);
     assert.equal(callbacks, 0);
     assert.equal(store.runs().filter((run) => run.id !== runId).length, 0);
     const source = store.runs().find((run) => run.id === runId);

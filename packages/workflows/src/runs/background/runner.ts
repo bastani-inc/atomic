@@ -55,12 +55,11 @@ export interface DetachedRunOpts
   /** Runtime execution mode for UI/prompt policy. Defaults to interactive. */
   executionMode?: WorkflowExecutionMode;
   /**
-   * Observes the raw executor outcome: `true` once the executor fulfilled
-   * (its body completed normally), `false` if it rejected (setup failure or a
-   * rejected terminal durable flush). Distinct from the settlement-swallowing
-   * job promise, which resolves either way.
+   * Observes the raw executor outcome. Fulfillment includes the executor's
+   * RunResult; rejection includes the thrown setup/final-flush error. The job
+   * promise still resolves either way.
    */
-  onRawSettled?: (ok: boolean) => void;
+  onRawSettled?: (ok: boolean, result: RunResult | undefined, error: unknown | undefined) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -166,9 +165,18 @@ export function runDetached<
     settleJob();
     throw error;
   }
+  const settle = (ok: boolean, result: RunResult | undefined, error: unknown | undefined): void => {
+    try {
+      onRawSettled?.(ok, result, error);
+    } finally {
+      registry.unregister(runId);
+      tracker.unregister(runId);
+      settleJob();
+    }
+  };
   void backgroundPromise.then(
-    () => { onRawSettled?.(true); tracker.unregister(runId); settleJob(); },
-    () => { onRawSettled?.(false); tracker.unregister(runId); settleJob(); },
+    (result) => { settle(true, result, undefined); },
+    (error: unknown) => { settle(false, undefined, error); },
   );
 
   // 8. Return immediate accepted result

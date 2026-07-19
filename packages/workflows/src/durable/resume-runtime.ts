@@ -21,7 +21,8 @@
 import type { WorkflowInputValues } from "../shared/types.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import type { RunOpts } from "../runs/foreground/executor-types.js";
-import { runDetached, type DetachedAccepted } from "../runs/background/runner.js";
+import { launchDetachedUntilStartup, workflowStartupFailureMessage } from "../runs/background/startup-admission.js";
+import type { JobTracker } from "../runs/background/job-tracker.js";
 import { resolveAndValidateInputs } from "../runs/foreground/executor-inputs.js";
 import { getDurableBackend } from "./factory.js";
 
@@ -35,7 +36,7 @@ import type { RunSnapshot } from "../shared/store-types.js";
 
 export type ResumeDurableResult =
   | { ok: true; runId: string; workflowId: string; name: string; message: string }
-  | { ok: false; reason: "workflow_not_found" | "not_resumable" | "invalid_inputs" | "not_registered" | "stale"; message: string };
+  | { ok: false; reason: "workflow_not_found" | "not_resumable" | "invalid_inputs" | "not_registered" | "stale" | "startup_failed"; message: string };
 
 export interface ResumeDurableDeps {
   readonly registry: WorkflowRegistry;
@@ -43,6 +44,8 @@ export interface ResumeDurableDeps {
   readonly baseRunOpts: RunOpts;
   /** Durable backend override (defaults to the global singleton). */
   readonly durableBackend?: DurableWorkflowBackend;
+  /** Job tracker used by the detached resume launch. */
+  readonly jobs?: JobTracker;
 }
 
 /** Hydrate current DBOS metadata and checkpoints before synchronous replay reads. */
@@ -180,7 +183,31 @@ export async function resumeDurableWorkflow(
     durableBackend: backend,
   };
 
-  const accepted: DetachedAccepted = runDetached(def, inputs, resumeRunOpts);
+  let launch: ReturnType<typeof launchDetachedUntilStartup>;
+  try {
+    launch = launchDetachedUntilStartup(def, inputs, {
+      ...resumeRunOpts,
+      ...(deps.jobs !== undefined ? { jobs: deps.jobs } : {}),
+    });
+  } catch (error) {
+    backend.setWorkflowStatus(resolved.workflowId, handle.status, handle.pendingPrompts, handle.resumable);
+    await backend.flush();
+    return { ok: false, reason: "startup_failed", message: `Failed to resume durable workflow ${resolved.workflowId.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  const { accepted } = launch;
+  const admission = await launch.wait;
+  if (!admission.started) {
+    const snapshot = deps.baseRunOpts.store?.runs().find((run) => run.id === accepted.runId);
+    const error = workflowStartupFailureMessage(
+      admission,
+      snapshot?.error,
+      `Workflow ${resolved.workflowId.slice(0, 8)} ended before startup admission`,
+    );
+    deps.baseRunOpts.store?.removeRun(accepted.runId);
+    backend.setWorkflowStatus(resolved.workflowId, handle.status, handle.pendingPrompts, handle.resumable);
+    await backend.flush();
+    return { ok: false, reason: "startup_failed", message: `Failed to resume durable workflow ${resolved.workflowId.slice(0, 8)}: ${error}` };
+  }
 
   return {
     ok: true,

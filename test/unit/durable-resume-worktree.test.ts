@@ -125,7 +125,7 @@ describe("durable resume with reusable git worktrees", () => {
     }
   });
 
-  test("resumed reusable worktree setup failures finalize the run instead of leaving it running", async () => {
+  test("returns resumed reusable worktree setup failures before claiming admission and restores resumability", async () => {
     const primary = createGitRepo("durable-worktree-partial-");
     const other = createGitRepo("durable-worktree-partial-other-");
     try {
@@ -150,6 +150,7 @@ describe("durable resume with reusable git worktrees", () => {
         status: "failed",
         completedCheckpoints: 1,
         invocationCwd: sourceCwd,
+        resumable: true,
       });
       const baseRunOpts = {
         store,
@@ -159,15 +160,24 @@ describe("durable resume with reusable git worktrees", () => {
         adapters: { complete: { complete: async (text: string) => text } },
       };
 
-      const result = await resumeDurableWorkflow("wf-worktree-partial-fails", { ...depsFor(def), baseRunOpts });
+      const result = await resumeDurableWorkflow("wf-worktree-partial-fails", { ...depsFor(def), baseRunOpts, jobs });
 
-      assert.equal(result.ok, true);
-      await jobs.get("wf-worktree-partial-fails")?.promise;
-      const run = store.runs().find((snapshot) => snapshot.id === "wf-worktree-partial-fails");
-      assert.equal(run?.status, "failed");
-      assert.equal(typeof run?.endedAt, "number");
-      assert.match(run?.error ?? "", /already exists but is not a Git worktree/);
+      assert.equal(result.ok, false);
+      if (!result.ok) {
+        assert.equal(result.reason, "startup_failed");
+        assert.match(result.message, /already exists but is not a Git worktree/);
+      }
+      assert.equal(store.runs().some((snapshot) => snapshot.id === "wf-worktree-partial-fails"), false);
+      assert.equal(jobs.has("wf-worktree-partial-fails"), false);
+      assert.equal(cancellation.abort("wf-worktree-partial-fails"), false);
       assert.equal(backend.getWorkflow("wf-worktree-partial-fails")?.status, "failed");
+      assert.equal(backend.getWorkflow("wf-worktree-partial-fails")?.resumable, true);
+
+      rmSync(join(primary.root, "partial-wt"), { recursive: true, force: true });
+      const retry = await resumeDurableWorkflow("wf-worktree-partial-fails", { ...depsFor(def), baseRunOpts, jobs });
+      assert.equal(retry.ok, true);
+      await jobs.get("wf-worktree-partial-fails")?.promise;
+      assert.equal(store.runs().find((snapshot) => snapshot.id === "wf-worktree-partial-fails")?.status, "completed");
     } finally {
       rmSync(primary.root, { recursive: true, force: true });
       rmSync(other.root, { recursive: true, force: true });

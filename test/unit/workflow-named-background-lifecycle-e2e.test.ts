@@ -61,6 +61,7 @@ export default workflow({
   description: "Exercise named background lifecycle outcomes",
   inputs: {
     outcome: Type.String(),
+    git_worktree_dir: Type.Optional(Type.String()),
   },
   outputs: {
     status: Type.Optional(Type.String()),
@@ -68,6 +69,7 @@ export default workflow({
     remaining_work: Type.Optional(Type.String()),
     result: Type.Optional(Type.String()),
   },
+  worktreeFromInputs: { gitWorktreeDir: "git_worktree_dir" },
   run: async (ctx) => {
     const outcome = ctx.inputs.outcome;
     if (outcome === "exit_blocked") {
@@ -247,6 +249,36 @@ function noticesFor(harness: Harness, runId: string): SentMessage[] {
 }
 
 describe("named background workflow lifecycle notifications", () => {
+  test.serial("returns an invalid in-checkout worktree setup error from the original tool call", async () => {
+    const harness = await createHarness();
+    try {
+      const result = await harness.tool.execute(
+        "call-invalid-worktree",
+        {
+          action: "run",
+          workflow: "named-lifecycle-e2e",
+          inputs: { outcome: "completed", git_worktree_dir: "packages" },
+        },
+        undefined,
+        undefined,
+        { hasUI: true } as never,
+      );
+
+      assert.equal(result.details.action, "run");
+      assert.equal(result.details.status, "failed");
+      assert.ok(result.details.runId);
+      assert.match(result.details.error ?? "", /gitWorktreeDir must be outside the invoking checkout/);
+      assert.match(JSON.stringify(result.content), /gitWorktreeDir must be outside the invoking checkout/);
+      assert.equal(jobTracker.has(result.details.runId), false);
+      assert.equal(cancellationRegistry.abort(result.details.runId), false);
+      assert.equal(store.runs().some((run) => run.id === result.details.runId), false);
+      assert.equal(durableBackend.getWorkflow(result.details.runId), undefined);
+      assert.equal(harness.entries.some((entry) => entry.type === "workflow.stage.start"), false);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   test.serial("maps returned terminal statuses and ctx.exit through the full extension path exactly once", async () => {
     const harness = await createHarness();
     try {

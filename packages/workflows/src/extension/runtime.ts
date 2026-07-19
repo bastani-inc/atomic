@@ -39,7 +39,8 @@ import {
   type WorkflowResultIntercomPort,
 } from "../intercom/result-intercom.js";
 import { validateWorkflowModels } from "../runs/shared/model-fallback.js";
-import { runDetached, workflowConnectGuidance } from "../runs/background/runner.js";
+import { workflowConnectGuidance } from "../runs/background/runner.js";
+import { launchDetachedUntilStartup, workflowStartupFailureMessage } from "../runs/background/startup-admission.js";
 import type { JobTracker } from "../runs/background/job-tracker.js";
 import { classifyWorkflowFailure } from "../shared/workflow-failures.js";
 import { getDurableBackend, initializeDurableBackend } from "../durable/factory.js";
@@ -308,7 +309,6 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
     return { ok: true, stageId: failedStageId };
   }
 
-
   async function resumeFailedRun(sourceRunId: string, stageId?: string, options?: RuntimeDispatchOptions): Promise<ResumeFailedRunResult> {
     const source = activeStore.runs().find((run) => run.id === sourceRunId);
     if (source === undefined) {
@@ -335,52 +335,35 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
     }
     const stageMessage = (verb: string, runId: string): string =>
       `${verb} workflow "${def.name}" from run ${source.id.slice(0, 8)} at stage ${resolvedStage.stageId.slice(0, 8)} (run ${runId.slice(0, 8)}).`;
-    const dispatchContinuation = (preallocatedRunId?: string) =>
-      runDetached(def, sourceInputs, {
-        ...runOptions({ workflow: def.name, inputs: sourceInputs }, options?.policy),
-        continuation: { source, resumeFromStageId: resolvedStage.stageId },
-        ...(jobs !== undefined ? { jobs } : {}),
-        ...(preallocatedRunId !== undefined ? { runId: preallocatedRunId } : {}),
-      });
-
+    const launchContinuation = () => launchDetachedUntilStartup(def, sourceInputs, {
+      ...runOptions({ workflow: def.name, inputs: sourceInputs }, options?.policy),
+      continuation: { source, resumeFromStageId: resolvedStage.stageId },
+      ...(jobs !== undefined ? { jobs } : {}),
+    });
     if (isActiveBlockedResumable) {
-      // Active recoverable block: dispatch a fresh-ID continuation (reusing the
-      // source's id would merge two run-start records and corrupt session
-      // restore). The durable source is left untouched so it stays discoverable
-      // and recoverable — including zero-checkpoint first-stage blocks — if this
-      // process dies before the continuation settles. A process-local claim
-      // prevents a concurrent same-session double-dispatch; the local source
-      // snapshot is killed once dispatched, so same-session routing will not
-      // re-resume it.
+      // Keep the durable blocked source recoverable until fresh-ID startup admission succeeds.
       if (!claimActiveBlockedResume(getDurableBackend(), source.id)) {
         return { ok: false, reason: "not_resumable", message: `run ${source.id} is already being resumed in this session` };
       }
-      let accepted: ReturnType<typeof runDetached>;
-      const startup = Promise.withResolvers<boolean>();
-      const onWorkflowStartReady = (): void => startup.resolve(true);
-      const onRawSettled = (): void => startup.resolve(false);
+      let launch: ReturnType<typeof launchContinuation>;
       try {
-        accepted = runDetached(def, sourceInputs, {
-          ...runOptions({ workflow: def.name, inputs: sourceInputs }, options?.policy),
-          continuation: { source, resumeFromStageId: resolvedStage.stageId },
-          ...(jobs !== undefined ? { jobs } : {}),
-          onWorkflowStartReady,
-          onRawSettled,
-        });
+        launch = launchContinuation();
       } catch (error) {
         releaseActiveBlockedClaim(source.id);
         return { ok: false, reason: "insufficient_state", message: `failed to resume run ${source.id}: ${error instanceof Error ? error.message : String(error)}` };
       }
-      const started = await startup.promise;
-      if (!started) {
+      const { accepted } = launch;
+      const admission = await launch.wait;
+      if (!admission.started) {
+        const startupError = workflowStartupFailureMessage(admission, activeStore.runs().find((run) => run.id === accepted.runId)?.error, `workflow run ${accepted.runId} ended before startup admission`);
         try {
           await discardFailedActiveBlockedContinuation(getDurableBackend(), accepted.runId, activeStore);
         } catch (error) {
           releaseActiveBlockedClaim(source.id);
-          return { ok: false, reason: "insufficient_state", message: `continuation for run ${source.id} failed to start and cleanup failed: ${error instanceof Error ? error.message : String(error)}; source left resumable` };
+          return { ok: false, reason: "insufficient_state", message: `continuation for run ${source.id} failed to start (${startupError}) and cleanup failed: ${error instanceof Error ? error.message : String(error)}; source left resumable` };
         }
         releaseActiveBlockedClaim(source.id);
-        return { ok: false, reason: "insufficient_state", message: `continuation for run ${source.id} failed to start; source left resumable` };
+        return { ok: false, reason: "insufficient_state", message: `continuation for run ${source.id} failed to start: ${startupError}; source left resumable` };
       }
       try {
         finalizeResumedActiveBlockedSourceRun(source, accepted.runId, activeStore, persistence);
@@ -391,7 +374,23 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
       releaseActiveBlockedClaim(source.id);
       return { ok: true, runId: accepted.runId, sourceRunId: source.id, resumeFromStageId: resolvedStage.stageId, message: stageMessage("Resuming blocked", accepted.runId) };
     }
-    const accepted = dispatchContinuation();
+    let launch: ReturnType<typeof launchContinuation>;
+    try {
+      launch = launchContinuation();
+    } catch (error) {
+      return { ok: false, reason: "insufficient_state", message: `failed to resume run ${source.id}: ${error instanceof Error ? error.message : String(error)}` };
+    }
+    const { accepted } = launch;
+    const admission = await launch.wait;
+    if (!admission.started) {
+      const startupError = workflowStartupFailureMessage(admission, activeStore.runs().find((run) => run.id === accepted.runId)?.error, `workflow run ${accepted.runId} ended before startup admission`);
+      try {
+        await discardFailedActiveBlockedContinuation(getDurableBackend(), accepted.runId, activeStore);
+      } catch (error) {
+        return { ok: false, reason: "insufficient_state", message: `continuation for run ${source.id} failed to start (${startupError}) and cleanup failed: ${error instanceof Error ? error.message : String(error)}` };
+      }
+      return { ok: false, reason: "insufficient_state", message: `continuation for run ${source.id} failed to start: ${startupError}` };
+    }
     return { ok: true, runId: accepted.runId, sourceRunId: source.id, resumeFromStageId: resolvedStage.stageId, message: stageMessage("Resuming failed", accepted.runId) };
   }
 
@@ -494,6 +493,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
       ensureReady: ensureDbosReady,
       resolveDefaultStageSessionDir,
       baseRunOpts: (policy) => runOptions({ workflow: "", inputs: {} }, policy),
+      ...(jobs !== undefined ? { jobs } : {}),
     }),
 
   };

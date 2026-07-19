@@ -13,11 +13,12 @@ import { store as defaultStore, type Store } from "../shared/store.js";
 import type { CancellationRegistry } from "../runs/background/cancellation-registry.js";
 import { jobTracker as defaultJobTracker, type JobTracker } from "../runs/background/job-tracker.js";
 import { resolveAndValidateInputs } from "../runs/foreground/executor.js";
-import { runDetached } from "../runs/background/runner.js";
+import { launchDetachedUntilStartup, workflowStartupFailureMessage } from "../runs/background/startup-admission.js";
 import type { WorkflowToolResult, WorkflowInputEntry } from "./render-result.js";
 import { deriveInputFields, schemaIsRequired } from "../shared/schema-introspection.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { WorkflowToolArgs } from "./index.js";
+import { getDurableBackend } from "../durable/factory.js";
 import {
   INTERACTIVE_WORKFLOW_POLICY,
   type WorkflowExecutionPolicy,
@@ -38,6 +39,19 @@ function failedRunResult(name: string | undefined, runId: string, error: string)
     error,
     stages: [],
   };
+}
+async function discardUnadmittedRun(runId: string, activeStore: Store): Promise<void> {
+  activeStore.removeRun(runId);
+  const backend = getDurableBackend();
+  const handle = backend.getWorkflow(runId);
+  if (handle?.status === "running") {
+    backend.setWorkflowStatus(runId, "failed", handle.pendingPrompts, false);
+    await backend.flush();
+  }
+  const deleted = await backend.deleteWorkflowIfInactive(runId);
+  if (!deleted.ok && deleted.reason !== "not_found") {
+    throw new Error(`workflow ${runId} remained ${deleted.reason}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -164,20 +178,44 @@ export async function dispatch(
         );
       }
 
-      const accepted = runDetached(def, inputs, {
-        registry: opts.registry,
-        adapters: opts.adapters,
-        store: opts.store,
-        cancellation: opts.cancellation,
-        jobs: opts.jobs,
-        persistence: opts.persistence,
-        mcp: opts.mcp,
-        config: opts.config,
-        models: opts.models,
-        executionMode: policy.mode,
-        cwd: opts.cwd,
-        defaultSessionDir: opts.defaultSessionDir,
-      });
+      const runId = crypto.randomUUID();
+      let launch: ReturnType<typeof launchDetachedUntilStartup>;
+      try {
+        launch = launchDetachedUntilStartup(def, inputs, {
+          registry: opts.registry,
+          adapters: opts.adapters,
+          store: opts.store,
+          cancellation: opts.cancellation,
+          jobs: opts.jobs,
+          persistence: opts.persistence,
+          mcp: opts.mcp,
+          config: opts.config,
+          models: opts.models,
+          executionMode: policy.mode,
+          cwd: opts.cwd,
+          defaultSessionDir: opts.defaultSessionDir,
+          runId,
+        });
+      } catch (error) {
+        return failedRunResult(def.name, runId, error instanceof Error ? error.message : String(error));
+      }
+      const { accepted } = launch;
+      const admission = await launch.wait;
+      if (!admission.started) {
+        const activeStore = opts.store ?? defaultStore;
+        const snapshot = activeStore.runs().find((run) => run.id === accepted.runId);
+        const error = workflowStartupFailureMessage(
+          admission,
+          snapshot?.error,
+          `Workflow run ${accepted.runId} ended before startup admission`,
+        );
+        try {
+          await discardUnadmittedRun(accepted.runId, activeStore);
+        } catch (cleanupError) {
+          return failedRunResult(accepted.name, accepted.runId, `${error}; startup cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
+        }
+        return failedRunResult(accepted.name, accepted.runId, error);
+      }
       if (policy.awaitTerminalRun === true) {
         const tracker = opts.jobs ?? defaultJobTracker;
         const job = tracker.get(accepted.runId);

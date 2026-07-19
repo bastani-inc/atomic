@@ -2,6 +2,7 @@ import type { WorkflowExecutionPolicy } from "../shared/types.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import type { RunOpts } from "../runs/foreground/executor.js";
 import type { Store } from "../shared/store.js";
+import type { JobTracker } from "../runs/background/job-tracker.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import {
   prepareRuntimeDurableResumable,
@@ -49,6 +50,7 @@ export interface DurableResumeRuntimeDeps {
   readonly ensureReady: () => Promise<void>;
   readonly resolveDefaultStageSessionDir?: () => string | undefined;
   readonly baseRunOpts: (policy?: WorkflowExecutionPolicy) => RunOpts;
+  readonly jobs?: JobTracker;
 }
 
 export function createDurableResumeRuntime(
@@ -74,6 +76,7 @@ export function createDurableResumeRuntime(
         registry: deps.registry,
         baseRunOpts: deps.baseRunOpts(options?.policy),
         durableBackend: backend,
+        ...(deps.jobs !== undefined ? { jobs: deps.jobs } : {}),
       };
       return await resumeDurableWorkflowAdapter(workflowIdOrPrefix, adapterDeps, preparedCatalog);
     },

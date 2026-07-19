@@ -38,6 +38,11 @@ export async function discardFailedActiveBlockedContinuation(
   store: Store,
 ): Promise<void> {
   store.removeRun(runId);
+  const handle = backend.getWorkflow(runId);
+  if (handle?.status === "running") {
+    backend.setWorkflowStatus(runId, "failed", handle.pendingPrompts, false);
+    await backend.flush();
+  }
   const deleted = await backend.deleteWorkflowIfInactive(runId);
   if (!deleted.ok && deleted.reason !== "not_found") {
     throw new Error(`continuation ${runId} remained ${deleted.reason}`);

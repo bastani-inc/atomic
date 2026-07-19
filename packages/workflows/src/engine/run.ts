@@ -324,11 +324,6 @@ export async function run<
   };
   const shouldRegisterDurableRoot = opts.parentRun === undefined
     && (opts.continuation === undefined || opts.continuation.source.id !== runId);
-  if (shouldRegisterDurableRoot) {
-    durableBackend.registerWorkflow({ ...durableRootWorkflowRegistration, invocationCwd: workflowInvocationCwd });
-  } else if (opts.parentRun === undefined) {
-    durableBackend.setWorkflowStatus(runId, "running");
-  }
   const tool = createToolPrimitive({
     workflowId: runId,
     backend: durableBackend,
@@ -412,6 +407,8 @@ export async function run<
 
     if (shouldRegisterDurableRoot) {
       durableBackend.registerWorkflow({ ...durableRootWorkflowRegistration, ...workflowInvocationMetadata(inputRuntimeDefaults, workflowInvocationCwd, gitWorktreeSetupCache) });
+    } else if (opts.parentRun === undefined) {
+      durableBackend.setWorkflowStatus(runId, "running");
     }
     if (opts.deferWorkflowStart === true) opts.onWorkflowStartReady?.();
     const rawResult = await runWorkflowDefinitionCallback(def.name, runId, () => def.run(ctx));
