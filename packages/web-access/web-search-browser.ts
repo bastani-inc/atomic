@@ -1,9 +1,9 @@
 import type { ExtensionAPI } from "@bastani/atomic";
-import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { platform } from "node:os";
 import { join } from "node:path";
+import { runBunSubprocess } from "./subprocess.ts";
 
 export interface GlimpseWindow {
 	on(event: "closed", handler: () => void): void;
@@ -16,6 +16,7 @@ export interface GlimpseWindow {
 type GlimpseOpen = (html: string, opts: Record<string, unknown>) => GlimpseWindow;
 
 let glimpseOpen: GlimpseOpen | null | undefined;
+let glimpseOpenPromise: Promise<GlimpseOpen | null> | undefined;
 
 async function openInBrowser(pi: ExtensionAPI, url: string): Promise<void> {
 	const plat = platform();
@@ -29,7 +30,7 @@ async function openInBrowser(pi: ExtensionAPI, url: string): Promise<void> {
 	}
 }
 
-function findGlimpseMjs(): string | null {
+async function findGlimpseMjs(): Promise<string | null> {
 	try {
 		const req = createRequire(import.meta.url);
 		return req.resolve("glimpseui");
@@ -37,8 +38,11 @@ function findGlimpseMjs(): string | null {
 		// Optional dependency.
 	}
 	try {
-		const globalRoot = execFileSync("npm", ["root", "-g"], { encoding: "utf-8" }).trim();
-		const entry = join(globalRoot, "glimpseui", "src", "glimpse.mjs");
+		const { stdout } = await runBunSubprocess("npm", ["root", "-g"], {
+			timeoutMs: 5_000,
+			maxStdoutBytes: 64 * 1024,
+		});
+		const entry = join(stdout.toString("utf8").trim(), "glimpseui", "src", "glimpse.mjs");
 		if (existsSync(entry)) return entry;
 	} catch {
 		// npm may be unavailable.
@@ -46,17 +50,21 @@ function findGlimpseMjs(): string | null {
 	return null;
 }
 
-async function getGlimpseOpen(): Promise<GlimpseOpen | null> {
-	if (glimpseOpen !== undefined) return glimpseOpen;
-	const resolved = findGlimpseMjs();
+async function loadGlimpseOpen(): Promise<GlimpseOpen | null> {
+	const resolved = await findGlimpseMjs();
 	if (resolved) {
 		try {
 			const mod = await import(resolved) as { open?: GlimpseOpen };
-			glimpseOpen = typeof mod.open === "function" ? mod.open : null;
-			return glimpseOpen;
+			return typeof mod.open === "function" ? mod.open : null;
 		} catch {}
 	}
-	glimpseOpen = null;
+	return null;
+}
+
+async function getGlimpseOpen(): Promise<GlimpseOpen | null> {
+	if (glimpseOpen !== undefined) return glimpseOpen;
+	glimpseOpenPromise ??= loadGlimpseOpen();
+	glimpseOpen = await glimpseOpenPromise;
 	return glimpseOpen;
 }
 

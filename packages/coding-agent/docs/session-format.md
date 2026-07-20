@@ -236,15 +236,15 @@ Emitted when the user selects a supported context-window size for the active mod
 
 ### CompactionEntry
 
-Created by `/compact`, RPC `compact`, and automatic compaction. The `summary` field contains the mechanically reconstructed verbatim transcript string, not generated summary prose. `firstKeptEntryId` points to the first ordinary message retained after the boundary.
+Created by `/compact`, RPC `compact`, and automatic compaction. The `summary` field contains the mechanically reconstructed verbatim transcript string, not generated summary prose. `firstKeptEntryId` is the first context-visible entry retained outside compaction, or `null` when no pre-boundary context-visible message is retained (including `preserve_recent: 0`).
 
 An entry is active only when `details.strategy` is exactly `"verbatim-lines"`:
 
 ```json
-{"type":"compaction","id":"c1","parentId":"m9","timestamp":"2026-07-13T10:00:00.000Z","summary":"[User]: fix the test\n(filtered 42 lines)\n[Assistant]: Fixed.","firstKeptEntryId":"m7","tokensBefore":51234,"details":{"strategy":"verbatim-lines","promptVersion":2,"rung":"standard","parameters":{"compression_ratio":0.5,"preserve_recent":2,"query":"fix the test"},"stats":{"linesBefore":812,"linesDeleted":417,"linesKept":395,"rangeCount":63,"tokensBefore":51234,"tokensAfter":24980,"percentReduction":51.2}}}
+{"type":"compaction","id":"c1","parentId":"m9","timestamp":"2026-07-13T10:00:00.000Z","summary":"[User]: fix the test\n(filtered 42 lines)\n[Assistant]: Fixed.","firstKeptEntryId":"m7","tokensBefore":51234,"details":{"strategy":"verbatim-lines","promptVersion":3,"rung":"planned","parameters":{"compression_ratio":0.5,"preserve_recent":2,"query":"fix the test"},"stats":{"linesBefore":812,"linesDeleted":417,"linesKept":395,"rangeCount":63,"tokensBefore":51234,"tokensAfter":24980,"percentReduction":51.2}}}
 ```
 
-On rebuild, Atomic emits the durable `summary` as a synthesized visible custom message, then emits original entries beginning at `firstKeptEntryId`. This exact string survives resume without rerunning a planner. `details.rung` is `"standard"`, `"critical"`, `"deterministic"`, or `"extension"`; `details.backupPath` is optional.
+On rebuild, Atomic emits the durable `summary` as a synthesized visible custom message, then emits original entries beginning at a string `firstKeptEntryId`. When the field is `null`, it emits no pre-boundary ordinary entries. In both cases, messages appended after the boundary are emitted. This exact state survives resume without rerunning a planner. Existing records with string IDs retain their behavior; `details.rung` is `"planned"` or `"extension"`, and `details.backupPath` is optional.
 
 Historical `compaction` records without `details.strategy: "verbatim-lines"` are retired summary-compaction records. They remain parseable and visible to audit/export tools but are inert in active LLM context.
 
@@ -332,8 +332,9 @@ Entries form a tree:
 `buildSessionContext()` walks the active branch from root to leaf and replays model, thinking-level, and context-window changes. It selects the latest `compaction` entry whose `details.strategy` is `"verbatim-lines"`.
 
 - With no active boundary, normal message, custom-message, and branch-summary entries are emitted verbatim.
-- With a boundary, Atomic emits its durable string as a custom-role `customType:"compaction"` message, then original messages from `firstKeptEntryId` onward, including messages appended after the boundary.
-- If a corrupt/foreign boundary's `firstKeptEntryId` is absent, Atomic emits the boundary followed by post-boundary messages rather than resurrecting all older content.
+- With a boundary whose `firstKeptEntryId` is a string, Atomic emits its durable string as a custom-role `customType:"compaction"` message, then original messages from that ID onward, including messages appended after the boundary.
+- With `firstKeptEntryId: null`, Atomic emits the boundary and post-boundary messages but no pre-boundary ordinary message.
+- If a corrupt/foreign boundary's non-null `firstKeptEntryId` is absent, Atomic emits the boundary followed by post-boundary messages rather than resurrecting all older content.
 - Legacy `context_compaction` entries and non-verbatim `compaction` entries are skipped as inert archival records.
 ## Parsing Example
 
@@ -425,7 +426,7 @@ for (const stage of stages.filter((session) => session.internal)) {
 - `appendThinkingLevelChange(level)` - Record thinking change
 - `appendContextWindowChange(contextWindow)` - Record context-window selection in tokens
 - `appendModelChange(provider, modelId)` - Record model change
-- `appendCompaction(compactedText, firstKeptEntryId, tokensBefore, details)` - Add a durable verbatim-line compaction boundary
+- `appendCompaction(compactedText, firstKeptEntryId, tokensBefore, details)` - Add a durable verbatim-line compaction boundary; pass `null` when no pre-boundary message is retained
 - `appendCustomEntry(customType, data?)` - Extension state (not in context)
 - `appendSessionInfo(name)` - Set session display name
 - `appendCustomMessageEntry(customType, content, display, details?)` - Extension message (in context)

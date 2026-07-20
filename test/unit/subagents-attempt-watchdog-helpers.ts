@@ -58,12 +58,13 @@ export async function withFakeCliEvent<T>(
   event: string,
   delayMs: number,
   fn: (dir: string) => Promise<T>,
+  timeouts: { idleMs?: number; wallMs?: number } = {},
 ): Promise<T> {
   return withFakeCli(delayedEventScript, async (dir) => {
     const fixture = { delayMs, event } satisfies FakeCliEventFixture;
     writeFileSync(join(dir, "fake-cli-event.json"), JSON.stringify(fixture));
     return fn(dir);
-  });
+  }, timeouts);
 }
 
 /** Runs `fn` with process.argv[1] pointed at a fake pi CLI script and bounded
@@ -81,8 +82,11 @@ export async function withFakeCli<T>(
   const previousKill = process.env.ATOMIC_SUBAGENT_ATTEMPT_KILL_GRACE_MS;
   writeFileSync(scriptPath, script, { mode: 0o700 });
   process.argv[1] = scriptPath;
-  process.env.ATOMIC_SUBAGENT_ATTEMPT_IDLE_TIMEOUT_MS = String(timeouts.idleMs ?? 250);
-  process.env.ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS = String(timeouts.wallMs ?? 2000);
+  // Child-process startup can exceed a few hundred milliseconds when the full
+  // unit suite is spawning many Bun fixtures. Keep the idle bound tight enough
+  // for watchdog tests while avoiding false timeouts before first activity.
+  process.env.ATOMIC_SUBAGENT_ATTEMPT_IDLE_TIMEOUT_MS = String(timeouts.idleMs ?? 1000);
+  process.env.ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS = String(timeouts.wallMs ?? 4000);
   process.env.ATOMIC_SUBAGENT_ATTEMPT_KILL_GRACE_MS = "20";
   try {
     return await fn(dir);

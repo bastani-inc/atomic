@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@bastani/atomic";
 import type { InboundMessageEntry } from "./intercom-utils.js";
 import type { InboundMessageAdmission, InboundMessageReservation } from "./inbound-message-admission.js";
 import type { IntercomContext, ReplyTracker } from "./reply-tracker.js";
+import { DEFAULT_GROUP, normalizeGroup } from "./group.js";
 
 const LATE_STAGE_MESSAGE_EVENT = "atomic:workflow-stage-late-message";
 type LateStageMessage = Parameters<ExtensionAPI["sendMessage"]>[0];
@@ -10,6 +11,8 @@ type LateStageMessageEvent = {
   completion?: Promise<void>;
   batch: boolean;
   messages: LateStageMessage[];
+  workflowRunId?: string;
+  workflowStageId?: string;
   options?: Parameters<ExtensionAPI["sendMessage"]>[1];
 };
 
@@ -19,15 +22,24 @@ interface LateStageReservation {
   context: IntercomContext;
 }
 
+function isSubagentRelayHandoff(entry: InboundMessageEntry): boolean {
+  return entry.from.id === "subagent-control" || entry.from.id === "subagent-result";
+}
+
 export function registerLateStageMessageRouter(
   pi: ExtensionAPI,
   admission: InboundMessageAdmission,
   getReplyTracker: () => ReplyTracker,
+  getOwnerGroup: () => string = () => DEFAULT_GROUP,
 ): void {
   pi.events.on(LATE_STAGE_MESSAGE_EVENT, (data) => {
     if (!data || typeof data !== "object") return;
     const event = data as Partial<LateStageMessageEvent>;
     if (!Array.isArray(event.messages) || typeof event.batch !== "boolean") return;
+    // The workflow extension owns blocking asks to a completed stage so it can
+    // schedule a post-mortem turn in that exact retained conversation. Leaving
+    // the event unhandled here also makes listener registration order irrelevant.
+    if (isCompletedStageAskRoute(event)) return;
     const tracker = getReplyTracker();
     const accepted: LateStageMessage[] = [];
     const reservations: LateStageReservation[] = [];
@@ -37,6 +49,9 @@ export function registerLateStageMessageRouter(
       if (message.customType !== "intercom_message") { accepted.push(message); continue; }
       const entry = message.details as InboundMessageEntry | undefined;
       if (!entry?.from || !entry.message) continue;
+      if (entry.channel !== "supervisor"
+        && !isSubagentRelayHandoff(entry)
+        && normalizeGroup(entry.from.group) !== normalizeGroup(getOwnerGroup())) continue;
       const result = admission.admit(entry.from, entry.message);
       if (result.kind === "pending") { joined.push(result.completion); continue; }
       if (result.kind === "duplicate") continue;
@@ -55,6 +70,17 @@ export function registerLateStageMessageRouter(
     event.completion = Promise.all([ownedCompletion, ...joined]).then(() => {});
     return event.completion;
   });
+}
+
+function isCompletedStageAskRoute(event: Partial<LateStageMessageEvent>): boolean {
+  return typeof event.workflowRunId === "string"
+    && typeof event.workflowStageId === "string"
+    && event.messages?.length !== 0
+    && event.messages?.every((message) => {
+      if (message.customType !== "intercom_message") return false;
+      const entry = message.details as InboundMessageEntry | undefined;
+      return entry?.message.expectsReply === true;
+    }) === true;
 }
 
 function deliverAtomicBatch(

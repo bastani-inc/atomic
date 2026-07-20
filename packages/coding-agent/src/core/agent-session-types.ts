@@ -33,7 +33,7 @@ export type AgentSessionEvent =
 			steering: readonly string[];
 			followUp: readonly string[];
 	  }
-	| { type: "compaction_start"; reason: "manual" | "threshold" | "overflow" }
+	| { type: "compaction_start"; reason: "manual" | "threshold" | "overflow"; midTurn?: boolean }
 	| { type: "session_info_changed"; name: string | undefined }
 	| {
 			type: "model_changed";
@@ -51,6 +51,7 @@ export type AgentSessionEvent =
 			willRetry: boolean;
 			unresolvedOverflow?: boolean;
 			errorMessage?: string;
+			midTurn?: boolean;
 	  }
 	| { type: "agent_continue_error"; source: "post_compaction"; errorMessage: string }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
@@ -157,6 +158,12 @@ export interface ExtensionBindings {
 	commandContextActions?: ExtensionCommandContextActions;
 	shutdownHandler?: ShutdownHandler;
 	onError?: ExtensionErrorListener;
+}
+
+export interface AgentSessionReloadOptions {
+	reason?: "startup" | "reload";
+	/** Runs after resources and the extension runtime are rebuilt, immediately before session_start. */
+	beforeSessionStart?: () => void | Promise<void>;
 }
 
 export interface PromptOptions {

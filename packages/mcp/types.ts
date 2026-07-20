@@ -309,6 +309,11 @@ export interface ServerEntry {
   excludeTools?: string[];
   // Debug
   debug?: boolean;  // Show server stderr (default: false)
+  /**
+   * Per-tool-call inactivity timeout in milliseconds for local or remote servers.
+   * Omit to use the MCP SDK default.
+   */
+  timeoutMs?: number;
 }
 
 // Settings

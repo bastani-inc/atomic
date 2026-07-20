@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai/compat";
+import { runCallback } from "./callback-activity.ts";
 import { ATOMIC_GUIDE_COMMAND_NAME, ATOMIC_GUIDE_HELP_CHOICES, atomicGuideModeForChoice, getAtomicGuideMessage, isAtomicGuideHelpChoice, normalizeAtomicGuideMode } from "./atomic-guide-command.ts";
 import { formatAuthStorageLoadFailedMessage, formatNoApiKeyFoundMessage, formatNoModelSelectedMessage, formatUnresolvedModelMessage } from "./auth-guidance.ts";
 import { expandPromptTemplate } from "./prompt-templates.ts";
@@ -8,23 +9,40 @@ import { stripFrontmatter } from "../utils/frontmatter.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { PromptOptions } from "./agent-session-types.ts";
 
+type UserMessageDeliveryAction = "prompt" | "steer" | "followUp" | "handled";
+
+type PromptOptionsWithWorkflowDelivery = PromptOptions & {
+	readonly __workflowDelivery?: {
+		readonly beforeDelivery?: () => void;
+		/** Called only after an idle prompt has synchronously entered the agent turn. */
+		readonly promptStarted?: () => void;
+		readonly delivered?: (action: UserMessageDeliveryAction) => void;
+	};
+};
+
 export async function prompt(this: AgentSession, text: string, options?: PromptOptions): Promise<void> {
 	const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 	const preflightResult = options?.preflightResult;
+	const workflowDelivery = (options as PromptOptionsWithWorkflowDelivery | undefined)?.__workflowDelivery;
 	let messages: AgentMessage[] | undefined;
 
 	try {
+		// Authorize workflow delivery before commands or input extensions can perform side effects.
+		// A later terminal transition cannot retroactively reject input accepted at this boundary.
+		workflowDelivery?.beforeDelivery?.();
 		// Handle slash commands first (execute immediately, even during streaming).
 		// Builtin and extension commands manage their own LLM interaction via custom messages.
 		if (expandPromptTemplates && text.startsWith("/")) {
 			const handledBuiltin = await this._tryExecuteBuiltinSlashCommand(text);
 			if (handledBuiltin) {
+				workflowDelivery?.delivered?.("handled");
 				preflightResult?.(true);
 				return;
 			}
 
 			const handledExtension = await this._tryExecuteExtensionCommand(text);
 			if (handledExtension) {
+				workflowDelivery?.delivered?.("handled");
 				preflightResult?.(true);
 				return;
 			}
@@ -41,6 +59,7 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 				this.isStreaming ? options?.streamingBehavior : undefined,
 			);
 			if (inputResult.action === "handled") {
+				workflowDelivery?.delivered?.("handled");
 				preflightResult?.(true);
 				return;
 			}
@@ -69,6 +88,7 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 			} else {
 				await this._queueSteer(expandedText, currentImages);
 			}
+			workflowDelivery?.delivered?.(options.streamingBehavior);
 			preflightResult?.(true);
 			return;
 		}
@@ -177,13 +197,21 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 	}
 
 	preflightResult?.(true);
-	await this._runAgentPrompt(messages);
+	const turn = this._runAgentPrompt(messages, workflowDelivery?.promptStarted);
+	workflowDelivery?.delivered?.("prompt");
+	await turn;
 }
 
 
-export async function _runAgentPrompt(this: AgentSession, messages: AgentMessage | AgentMessage[]): Promise<void> {
+export async function _runAgentPrompt(
+	this: AgentSession,
+	messages: AgentMessage | AgentMessage[],
+	promptStarted?: () => void,
+): Promise<void> {
 	try {
-		await this.agent.prompt(messages);
+		const turn = this.agent.prompt(messages);
+		if (this.isStreaming) promptStarted?.();
+		await turn;
 		await this.waitForRetry();
 		await this._continueQueuedAgentMessages();
 		await this._awaitPendingPostCompactionContinuation();
@@ -264,7 +292,10 @@ export async function _tryExecuteExtensionCommand(this: AgentSession, text: stri
 	const ctx = this._extensionRunner.createCommandContext();
 
 	try {
-		await command.handler(args, ctx);
+		await runCallback(
+			{ kind: "extension.hook", name: `command:${commandName}`, sourcePath: command.sourceInfo.path },
+			() => command.handler(args, ctx),
+		);
 		return true;
 	} catch (err) {
 		// Emit error via extension runner
@@ -356,9 +387,12 @@ export async function followUp(this: AgentSession, text: string, images?: ImageC
  * Internal: Queue a steering message (already expanded, no extension command check).
  */
 
-export async function sendUserMessage(this: AgentSession, 
+export async function sendUserMessage(this: AgentSession,
 	content: string | (TextContent | ImageContent)[],
-	options?: { deliverAs?: "steer" | "followUp" },
+	options?: {
+		deliverAs?: "steer" | "followUp";
+		__workflowDelivery?: PromptOptionsWithWorkflowDelivery["__workflowDelivery"];
+	},
 ): Promise<void> {
 	// Normalize content to text string + optional images
 	let text: string;
@@ -380,13 +414,16 @@ export async function sendUserMessage(this: AgentSession,
 		if (images.length === 0) images = undefined;
 	}
 
-	// Use prompt() with expandPromptTemplates: false to skip command handling and template expansion
+	// Use prompt() with expandPromptTemplates: false to skip command handling and template expansion.
+	// The private delivery hook lets workflow routing report and gate the branch
+	// selected after asynchronous input/compaction extension preflight.
 	await this.prompt(text, {
 		expandPromptTemplates: false,
 		streamingBehavior: options?.deliverAs,
 		images,
 		source: "extension",
-	});
+		__workflowDelivery: options?.__workflowDelivery,
+	} as PromptOptionsWithWorkflowDelivery);
 }
 
 /**

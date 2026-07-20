@@ -1,6 +1,7 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { type Component, fs, os, path, Container, Markdown, Spacer, Text, spawn, spawnSync, getShareViewerUrl, SessionImportFileNotFoundError, MissingSessionCwdError, getChangelogPath, normalizeChangelogLinks, parseChangelog, copyToClipboard, BorderedLoader, DynamicBorder, setRegisteredThemes, theme } from "./interactive-mode-deps.ts";
 import { isExpandable } from "./interactive-mode-helpers.ts";
+import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.ts";
 
 InteractiveModeBase.prototype.handleReloadCommand = async function(this: InteractiveModeBase): Promise<void> {
     if (this.session.isStreaming) {
@@ -48,8 +49,8 @@ InteractiveModeBase.prototype.handleReloadCommand = async function(this: Interac
     };
 
     try {
-      await this.session.reload();
-      this.keybindings.reload();
+      if (this.runtimeHost instanceof IsolatedInteractiveRuntime) await this.session.reload();
+      else await this.reloadCoordinator.reload(this.session);
       const activeHeader = this.customHeader ?? this.builtInHeader;
       if (isExpandable(activeHeader)) {
         activeHeader.setExpanded(this.toolOutputExpanded);

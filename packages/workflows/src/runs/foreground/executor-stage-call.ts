@@ -66,11 +66,19 @@ export function createTrackedStageCaller(input: {
     return false;
   };
 
-  const drainResumeContinuations = async <T>(currentResult: T): Promise<T> => {
+  const drainResumeContinuations = async <T>(currentResult: T): Promise<{
+    readonly result: T;
+    readonly chatAnswerObserved: boolean;
+  }> => {
     let result = currentResult;
+    let chatAnswerObserved = runtime.state.chatAnswerObservedThisTurn;
+    const captureChatAnswer = (): void => {
+      chatAnswerObserved ||= runtime.state.chatAnswerObservedThisTurn;
+    };
     while (runtime.state.resumeContinuationPending !== false) {
       const reason = runtime.state.resumeContinuationPending;
       runtime.state.resumeContinuationPending = false;
+      captureChatAnswer();
       suppressReadinessForCurrentTurn();
       if (!shouldInjectResumeContinuation({
         reason,
@@ -81,8 +89,10 @@ export function createTrackedStageCaller(input: {
       }
       if (skipResumeContinuationInjection()) continue;
       result = await raceAbort(runtime.innerCtx.prompt(RESUME_CONTINUATION_PROMPT), runtime.signal) as T;
+      captureChatAnswer();
     }
-    return result;
+    captureChatAnswer();
+    return { result, chatAnswerObserved };
   };
 
   return async <T>(call: () => Promise<T>, eagerSessionOrOptions?: boolean | TrackedStageCallOptions): Promise<T> => {
@@ -149,9 +159,16 @@ export function createTrackedStageCaller(input: {
         runtime.state.askUserQuestionObservedThisTurn = false;
         runtime.state.chatAnswerObservedThisTurn = false;
         result = await raceAbort(call(), runtime.signal);
-        result = await drainResumeContinuations(result);
+        const initialDrain = await drainResumeContinuations(result);
+        result = initialDrain.result;
+        let repeatReadinessAfterChatTurn = initialDrain.chatAnswerObserved;
 
-        if (!runtime.signal.aborted && readinessGateEnabled) {
+        if (
+          !runtime.signal.aborted &&
+          readinessGateEnabled &&
+          (runtime.state.askUserQuestionObservedThisTurn || repeatReadinessAfterChatTurn) &&
+          !runtime.innerCtx.__structuredOutputFinalized()
+        ) {
           let resolveNextTurnEnd: (() => void) | null = null;
           const unsubscribeTurnWatcher = runtime.innerCtx.subscribe((event) => {
             if ((event as { type?: unknown }).type === "agent_end" && resolveNextTurnEnd) {
@@ -161,16 +178,24 @@ export function createTrackedStageCaller(input: {
             }
           });
           try {
-            while (runtime.state.askUserQuestionObservedThisTurn) {
-              const decision = runtime.state.chatAnswerObservedThisTurn ? "stay" : await confirmReadiness();
+            while (runtime.state.askUserQuestionObservedThisTurn || repeatReadinessAfterChatTurn) {
+              const decision = await confirmReadiness();
               if (decision === "advance") break;
               if (runtime.signal.aborted) break;
               runtime.state.askUserQuestionObservedThisTurn = false;
               runtime.state.chatAnswerObservedThisTurn = false;
-              await raceAbort(new Promise<void>((resolve) => { resolveNextTurnEnd = resolve; }), runtime.signal);
+              runtime.state.waitingForStageChatTurn = true;
+              try {
+                await raceAbort(new Promise<void>((resolve) => { resolveNextTurnEnd = resolve; }), runtime.signal);
+              } finally {
+                runtime.state.waitingForStageChatTurn = false;
+              }
               if (runtime.signal.aborted) break;
               result = (runtime.innerCtx.__getLastAssistantText() ?? result) as T;
-              result = await drainResumeContinuations(result);
+              const continuationDrain = await drainResumeContinuations(result);
+              result = continuationDrain.result;
+              repeatReadinessAfterChatTurn ||= continuationDrain.chatAnswerObserved;
+              if (runtime.innerCtx.__structuredOutputFinalized()) break;
             }
           } finally {
             resolveNextTurnEnd = null;
@@ -212,14 +237,18 @@ export function createTrackedStageCaller(input: {
       // so the concurrency semaphore is not leaked.
       // cross-ref: issue #1498 — durable finalization failures must not leak the stage limiter.
       runtime.mcpScope.clear();
-      await runtime.innerCtx.__closeGeneration();
-      runtime.captureStageSessionMeta();
       let finalizationError: { readonly thrown: true; readonly error: unknown } | undefined;
+      try {
+        await runtime.innerCtx.__closeGeneration();
+        runtime.captureStageSessionMeta();
+      } catch (err) {
+        finalizationError = { thrown: true, error: err };
+      }
       if (trackStageLifecycle) {
         try {
           await runtime.finalizeStageSnapshot();
         } catch (err) {
-          finalizationError = { thrown: true, error: err };
+          finalizationError ??= { thrown: true, error: err };
         }
         try {
           if (runtime.state.stageClosedByWorkflowExit || runtime.exit.currentWorkflowExitAbortReason() !== undefined) {

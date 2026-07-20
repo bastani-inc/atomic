@@ -2,6 +2,7 @@ import { resolveModelCandidate } from "../shared/model-fallback.ts";
 import { collectKnownModelProviders, toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
 import { normalizeSkillInput } from "../../agents/skills.ts";
 import { aggregateParallelOutputs } from "../shared/parallel-utils.ts";
+import { sharedAutoGroupForSet } from "../shared/intercom-group.ts";
 import { recordRun } from "../shared/run-history.ts";
 import {
 	resolveStepBehavior,
@@ -43,6 +44,7 @@ import {
 	resolveParallelTaskCwd,
 } from "./subagent-executor-worktree.ts";
 import { createForegroundControlNotifier, maybeBuildForegroundIntercomReceipt, rememberForegroundRun, replaceForegroundRunChild } from "./subagent-executor-status.ts";
+import { createDetachedCleanupBarrier } from "./detached-cleanup-barrier.ts";
 
 export async function runParallelPath(data: ExecutionContextData, deps: ResolvedExecutorDeps): Promise<SubagentToolResult> {
 	const {
@@ -132,6 +134,12 @@ export async function runParallelPath(data: ExecutionContextData, deps: Resolved
 		deps.config.worktreeSetupHook,
 		deps.config.worktreeSetupHookTimeoutMs,
 	);
+	let worktreeCleanupDeferred = false;
+	const detachedCleanup = createDetachedCleanupBarrier(() => {
+		if (!worktreeSetup) return;
+		buildParallelWorktreeSuffix(worktreeSetup, artifactsDir, tasks as TaskParam[]);
+		cleanupWorktrees(worktreeSetup);
+	});
 	if (errorResult) return errorResult;
 
 	try {
@@ -160,7 +168,13 @@ export async function runParallelPath(data: ExecutionContextData, deps: Resolved
 		}
 
 		const results = await runForegroundParallelTasks({
-			onDetachedExit: (index, result) => replaceForegroundRunChild(deps.state, runId, index, result),
+			onDetachedExit: (index, result) => {
+				try {
+					replaceForegroundRunChild(deps.state, runId, index, result);
+				} finally {
+					detachedCleanup.recover(index);
+				}
+			},
 			tasks,
 			taskTexts,
 			agents,
@@ -185,6 +199,8 @@ export async function runParallelPath(data: ExecutionContextData, deps: Resolved
 			onControlEvent,
 			childIntercomTarget: childIntercomTarget ? (agent, index) => childIntercomTarget(runId, agent, index) : undefined,
 			orchestratorIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
+			setIntercomGroup: params.group,
+			sharedAutoIntercomGroup: sharedAutoGroupForSet(params.group, tasks),
 			foregroundControl,
 			concurrencyLimit: parallelConcurrency,
 			maxSubagentDepths,
@@ -221,6 +237,9 @@ export async function runParallelPath(data: ExecutionContextData, deps: Resolved
 		}
 		const detachedIndex = results.findIndex((result) => result.detached);
 		const detached = detachedIndex >= 0 ? results[detachedIndex] : undefined;
+		worktreeCleanupDeferred = detachedCleanup.defer(
+			results.flatMap((result, index) => result.detached ? [index] : []),
+		);
 		if (detached) {
 			return {
 				content: [{ type: "text", text: `Parallel run detached for intercom coordination (${detached.agent}). Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.` }],
@@ -266,6 +285,6 @@ export async function runParallelPath(data: ExecutionContextData, deps: Resolved
 			details,
 		};
 	} finally {
-		if (worktreeSetup) cleanupWorktrees(worktreeSetup);
+		if (worktreeSetup && !worktreeCleanupDeferred) cleanupWorktrees(worktreeSetup);
 	}
 }

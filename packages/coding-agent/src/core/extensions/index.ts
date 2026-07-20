@@ -83,6 +83,12 @@ export type {
 	GetThinkingLevelHandler,
 	HostCustomUiState,
 	HostCustomUiStateListener,
+	HostInputFormField,
+	HostInputFormFieldType,
+	HostInputFormRequest,
+	HostSessionPickerHandle,
+	HostSessionPickerRequest,
+	HostSessionPickerRow,
 	// Events - Input
 	InputEvent,
 	InputEventResult,

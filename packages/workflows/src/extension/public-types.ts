@@ -4,14 +4,8 @@ import type {
 } from "@bastani/atomic";
 import type { SessionManager } from "../shared/persistence-restore.js";
 import type { StageSessionRuntime } from "../runs/foreground/stage-runner.js";
-import type { StageStatus } from "../shared/store-types.js";
-import type {
-  StageOptions,
-  WorkflowChainStep,
-  WorkflowDirectTaskItem,
-  WorkflowInputValues,
-  WorkflowMaxOutput,
-} from "../shared/types.js";
+import type { RunStatus, StageStatus } from "../shared/store-types.js";
+import type { WorkflowInputValues } from "../shared/types.js";
 import type { WidgetFactory } from "../tui/store-widget-installer.js";
 import type { RenderResultOpts, WorkflowToolResult } from "./render-result.js";
 import type { PiUISurface } from "./wiring.js";
@@ -224,7 +218,7 @@ export interface ExtensionAPI {
   [key: string]: unknown;
 }
 
-export interface WorkflowToolArgs extends StageOptions {
+export interface WorkflowToolArgs {
   workflow?: string;
   inputs?: WorkflowInputValues;
   action?:
@@ -246,7 +240,7 @@ export interface WorkflowToolArgs extends StageOptions {
   all?: boolean;
   stageId?: string;
   message?: string;
-  statusFilter?: StageStatus | "all";
+  statusFilter?: StageStatus | RunStatus | "all";
   format?: "text" | "json";
   limit?: number;
   tail?: number;
@@ -256,32 +250,6 @@ export interface WorkflowToolArgs extends StageOptions {
   delivery?: "auto" | "answer" | "prompt" | "steer" | "followUp" | "resume";
   promptId?: string;
   reason?: string;
-  task?: WorkflowDirectTaskItem | string;
-  tasks?: WorkflowDirectTaskItem[];
-  chain?: WorkflowChainStep[];
-  chainName?: string;
-  context?: "fresh" | "fork";
-  forkFromSessionFile?: string;
-  concurrency?: number;
-  failFast?: boolean;
-  async?: boolean;
-  intercom?: {
-    enabled?: boolean;
-    delivery?: "off" | "notify" | "result" | "control-and-result";
-    parentSession?: string;
-    notifyOn?: Array<
-      "active_long_running" | "needs_attention" | "completed" | "failed"
-    >;
-  };
-  output?: string | false;
-  outputMode?: "inline" | "file-only";
-  reads?: readonly string[] | false;
-  chainDir?: string;
-  maxOutput?: WorkflowMaxOutput;
-  artifacts?: boolean;
-  worktree?: boolean;
-  gitWorktreeDir?: string;
-  baseBranch?: string;
 }
 
 export type WorkflowExecuteToolResult = PiAgentToolResult<WorkflowToolResult>;

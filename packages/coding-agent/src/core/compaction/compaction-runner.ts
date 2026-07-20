@@ -1,4 +1,5 @@
 import type { StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ProviderHeaders } from "@earendil-works/pi-ai";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { getKeptTailTokenEstimate } from "./compaction-boundary.js";
 import { reconstructCompactedTranscript, validateDeletedRanges } from "./deleted-ranges.js";
@@ -42,7 +43,7 @@ export async function runVerbatimCompaction(
 	preparation: VerbatimCompactionPreparation,
 	model: Model<Api>,
 	apiKey: string,
-	headers: Record<string, string> | undefined,
+	headers: ProviderHeaders | undefined,
 	signal: AbortSignal | undefined,
 	thinkingLevel: ThinkingLevel | undefined,
 	options: CompactionPlanOptions,

@@ -32,6 +32,7 @@
           "extensions",
           "skills",
           "subagents",
+          "intercom",
           "workflows",
           "prompt-templates",
           "themes",

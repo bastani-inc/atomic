@@ -1,6 +1,7 @@
 import { SessionManager, type CreateAgentSessionOptions } from "@bastani/atomic";
 import type { StageExecutionMeta, StageOptions } from "../../shared/types.js";
 import type { AgentSessionConsumer } from "./stage-runner-types.js";
+import { resolveStageGroup, stageHasIntercomAccess } from "../../shared/intercom-group.js";
 
 function workflowSessionOptions(meta: StageExecutionMeta) {
   return {
@@ -9,14 +10,19 @@ function workflowSessionOptions(meta: StageExecutionMeta) {
   };
 }
 
-function workflowOrchestrationContext(meta: StageExecutionMeta): NonNullable<CreateAgentSessionOptions["orchestrationContext"]> {
-  return {
-    kind: "workflow-stage",
+function workflowOrchestrationContext(
+  meta: StageExecutionMeta,
+  stageOptions: StageOptions | undefined,
+): NonNullable<CreateAgentSessionOptions["orchestrationContext"]> {
+  const base = {
+    kind: "workflow-stage" as const,
     workflowRunId: meta.runId,
     workflowStageId: meta.stageId,
     workflowStageName: meta.stageName,
-    constraints: { disableWorkflowTool: true, maxSubagentDepth: 5 },
+    constraints: { disableWorkflowTool: true as const, maxSubagentDepth: 5 },
   };
+  const intercomGroup = stageHasIntercomAccess(stageOptions) ? resolveStageGroup(stageOptions) : undefined;
+  return intercomGroup ? { ...base, intercomGroup } : base;
 }
 
 export function stripWorkflowOnlyOptions(
@@ -25,7 +31,7 @@ export function stripWorkflowOnlyOptions(
   meta: StageExecutionMeta,
 ): CreateAgentSessionOptions {
   const classification = workflowSessionOptions(meta);
-  const orchestrationContext = workflowOrchestrationContext(meta);
+  const orchestrationContext = workflowOrchestrationContext(meta, options);
   if (!options) {
     return defaultSessionDir === undefined
       ? { orchestrationContext }
@@ -47,6 +53,7 @@ export function stripWorkflowOnlyOptions(
     sessionDir,
     gitWorktreeDir: _gitWorktreeDir,
     baseBranch: _baseBranch,
+    group: _group,
     ...sessionOptions
   } = options;
   if (sessionOptions.sessionManager === undefined) {

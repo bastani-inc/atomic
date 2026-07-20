@@ -316,9 +316,10 @@ describe("run durable flush", () => {
       run: async (ctx) => ({ result: await ctx.stage("cached").complete("cached") }),
     });
 
-    const result = await run(def, {}, { runId: "wf-flush-fail", store: createStore(), durableBackend: backend });
-    exAssert.equal(result.status, "failed");
-    exAssert.match(result.error ?? "", /durable write failed/);
+    await exAssert.rejects(
+      () => run(def, {}, { runId: "wf-flush-fail", store: createStore(), durableBackend: backend }),
+      /durable write failed/,
+    );
   });
 
   exTest("ctx.chain and ctx.parallel replay completed task checkpoints", async () => {

@@ -431,7 +431,7 @@ describeModelRegistry((context) => {
 			).toBe(true);
 		});
 
-		test("refresh() reloads merged custom models from disk", () => {
+		test("refresh() reloads merged custom models from disk", async () => {
 			writeModelsJson({
 				anthropic: providerConfig("https://first-proxy.example.com/v1", [{ id: "claude-custom" }]),
 			});
@@ -442,7 +442,7 @@ describeModelRegistry((context) => {
 			writeModelsJson({
 				anthropic: providerConfig("https://second-proxy.example.com/v1", [{ id: "claude-custom-2" }]),
 			});
-			registry.refresh();
+			await registry.refresh();
 
 			const anthropicModels = getModelsForProvider(registry, "anthropic");
 			expect(anthropicModels.some((m) => m.id === "claude-custom")).toBe(false);
@@ -450,7 +450,7 @@ describeModelRegistry((context) => {
 			expect(anthropicModels.some((m) => m.id.includes("claude"))).toBe(true);
 		});
 
-		test("removing custom models from models.json keeps built-in provider models", () => {
+		test("removing custom models from models.json keeps built-in provider models", async () => {
 			writeModelsJson({
 				anthropic: providerConfig("https://proxy.example.com/v1", [{ id: "claude-custom" }]),
 			});
@@ -459,7 +459,7 @@ describeModelRegistry((context) => {
 
 			// Remove custom models and refresh
 			writeModelsJson({});
-			registry.refresh();
+			await registry.refresh();
 
 			const anthropicModels = getModelsForProvider(registry, "anthropic");
 			expect(anthropicModels.some((m) => m.id === "claude-custom")).toBe(false);

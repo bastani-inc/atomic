@@ -22,10 +22,20 @@ jobs:
                       binary_platform: windows-x64
             fail-fast: false
         runs-on: ${{ matrix.os }}
+        # Strict wall-clock budget: without an explicit limit a single hung test
+        # process burns the 360-minute GitHub default (observed: a wedged
+        # windows-x64 unit step ran 6h before cancellation). Green jobs finish in
+        # ~3.5m (linux) / ~9m (windows); anything beyond 10m is a hang or a
+        # regression worth failing fast on.
+        timeout-minutes: 10
         steps:
             - uses: useblacksmith/checkout@v1
               with:
+                  # LFS fixtures are required by the coding-agent test suite.
                   lfs: true
+                  # Full history and tags support CI contract fixtures and local
+                  # release tooling. Blacksmith's git mirror keeps this checkout
+                  # inexpensive while preserving those repository-wide checks.
                   fetch-depth: 0
             - uses: oven-sh/setup-bun@v2
               with:

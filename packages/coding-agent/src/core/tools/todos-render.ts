@@ -1,6 +1,6 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { Text } from "@earendil-works/pi-tui";
-import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
+import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import type { ToolRenderResultOptions } from "../extensions/types.ts";
 import {
@@ -127,7 +127,8 @@ function renderTodoDetail(theme: Theme, todo: TodoRecord, expanded: boolean): st
 }
 
 function appendExpandHint(theme: Theme, text: string): string {
-	return `${text}\n${theme.fg("dim", `(${keyHint("app.tools.expand", "Expand")})`)}`;
+	const hint = parenthesizedKeyHint("app.tools.expand", "Expand");
+	return hint ? `${text}\n${theme.fg("dim", hint)}` : text;
 }
 
 function getActionLabel(action: TodoToolDetails["action"]): string | null {

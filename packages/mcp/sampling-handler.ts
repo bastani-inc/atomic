@@ -1,3 +1,4 @@
+import type { ProviderHeaders } from "@earendil-works/pi-ai";
 import { complete, type Api, type AssistantMessage, type Message, type Model, type TextContent } from "@earendil-works/pi-ai/compat";
 import { truncateAtWord } from "./utils.ts";
 import type { ExtensionUIContext, ModelRegistry } from "@bastani/atomic";
@@ -121,7 +122,7 @@ async function resolveSamplingModel(
 ): Promise<{
   model: Model<Api>;
   apiKey?: string;
-  headers?: Record<string, string>;
+  headers?: ProviderHeaders;
 }> {
   const candidates: Model<Api>[] = [];
   const availableModels = options.modelRegistry.getAvailable();
@@ -151,7 +152,11 @@ async function resolveSamplingModel(
       errors.push(`${model.provider}/${model.id}: ${auth.error}`);
       continue;
     }
-    return { model, apiKey: auth.apiKey, headers: auth.headers };
+		return {
+			model: auth.baseUrl === undefined ? model : { ...model, baseUrl: auth.baseUrl },
+			apiKey: auth.apiKey,
+			headers: auth.headers,
+		};
   }
 
   if (errors.length > 0) {

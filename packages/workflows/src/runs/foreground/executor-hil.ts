@@ -265,7 +265,7 @@ const READINESS_GATE_ADVANCE_NORMALIZED = READINESS_GATE_ADVANCE_LABEL.trim().to
 export const READINESS_GATE_QUESTION_PARAMS = {
   questions: [
     {
-      question: "Any additional points to explore before moving on?",
+      question: "Are you ready to move on to the next stage?",
       header: "Continue?",
       options: [
         {

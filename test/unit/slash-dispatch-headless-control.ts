@@ -458,6 +458,30 @@ export default workflow({
         );
     });
 
+    test.serial("/workflow prefers host-native input form over callable isolated editor stub and Escape cancellation does not dispatch", async () => {
+        const { handler, sent } = await registerWorkflowCommand();
+        const calls: string[] = [];
+        const ctx = {
+            hasUI: true,
+            ui: {
+                notify: () => undefined,
+                hostInputForm: async () => { calls.push("host"); return undefined; },
+                setEditorComponent: () => { calls.push("inline-noop"); },
+                getEditorComponent: () => undefined,
+                custom: async () => { calls.push("remote-custom"); return undefined; },
+            },
+        } as PiCommandContext;
+
+        await handler("deep-research-codebase", ctx);
+
+        assert.deepEqual(calls, ["host"]);
+        assert.equal(
+            sent.some((message) => chatSurfacePayload(message)?.kind === "dispatch"),
+            false,
+            "cancelled host form must not dispatch the workflow",
+        );
+    });
+
     test.serial("/workflow proceeds when hasUI is unset (degraded runtimes)", async () => {
         const { handler, sent } = await registerWorkflowCommand();
         const { ctx, messages } = commandCtx(undefined);

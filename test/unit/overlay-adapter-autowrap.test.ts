@@ -117,6 +117,93 @@ async function registerIsolatedTests(): Promise<void> {
     );
   }
 
+  interface RemoteHarness {
+    adapter: GraphOverlayPort;
+    localWrites: string[];
+    remoteMouse: boolean[];
+    remoteAutowrap: boolean[];
+  }
+
+  function buildRemoteHarness(platform: NodeJS.Platform = "win32"): RemoteHarness {
+    const localWrites: string[] = [];
+    const remoteMouse: boolean[] = [];
+    const remoteAutowrap: boolean[] = [];
+    let hidden = false;
+    let focused = true;
+    const handle: PiOverlayHandle = {
+      hide: () => { hidden = true; },
+      setHidden: (value) => { hidden = value; },
+      isHidden: () => hidden,
+      focus: () => { focused = true; },
+      unfocus: () => { focused = false; },
+      isFocused: () => focused,
+    };
+    const pi: OverlayPiSurface = {
+      ui: {
+        custom: (factory, options) => {
+          options.onHandle?.(handle);
+          // Isolated host: the factory TUI terminal exposes the remote-control
+          // capability instead of a writable local process.stdout.
+          const tui: PiCustomOverlayFactoryTui = {
+            requestRender: () => undefined,
+            terminal: {
+              rows: 24,
+              columns: 80,
+              setMouseScrollTracking: (enabled) => remoteMouse.push(enabled),
+              setAutowrap: (enabled) => remoteAutowrap.push(enabled),
+            },
+          };
+          const component = factory(tui, {}, {}, () => undefined);
+          if (component instanceof Promise) {
+            throw new Error("overlay adapter factory should mount synchronously");
+          }
+          return undefined;
+        },
+      },
+    };
+    const adapter = buildGraphOverlayAdapter(pi, createStore(), {
+      terminalOutput: {
+        platform,
+        isTTY: true,
+        write: (data) => localWrites.push(data),
+      },
+    });
+    return { adapter, localWrites, remoteMouse, remoteAutowrap };
+  }
+
+  describe("workflow overlay remote terminal control", () => {
+    test("routes mouse + autowrap through the host capability, never the local stdout seam", () => {
+      const { adapter, localWrites, remoteMouse, remoteAutowrap } = buildRemoteHarness();
+
+      adapter.open(null);
+
+      assert.deepEqual(localWrites, [], "must not write escape sequences to local stdout in isolated mode");
+      assert.equal(remoteMouse.at(0), true, "mouse-scroll tracking enabled via host capability");
+      assert.deepEqual(remoteAutowrap, [false], "Windows autowrap disabled via host capability");
+    });
+
+    test("resets mouse + autowrap through the host capability on close", () => {
+      const { adapter, localWrites, remoteMouse, remoteAutowrap } = buildRemoteHarness();
+
+      adapter.open(null);
+      adapter.close();
+
+      assert.deepEqual(localWrites, []);
+      assert.equal(remoteMouse.at(-1), false, "mouse-scroll tracking reset off on close");
+      assert.deepEqual(remoteAutowrap, [false, true], "autowrap restored on close");
+    });
+
+    test("skips autowrap on non-Windows hosts but still drives mouse remotely", () => {
+      const { adapter, localWrites, remoteMouse, remoteAutowrap } = buildRemoteHarness("darwin");
+
+      adapter.open(null);
+
+      assert.deepEqual(localWrites, []);
+      assert.equal(remoteMouse.at(0), true);
+      assert.deepEqual(remoteAutowrap, [], "autowrap is Windows-only");
+    });
+  });
+
   describe("workflow overlay terminal autowrap", () => {
     test("disables autowrap when opened on a Windows TTY", () => {
       const { adapter, writes } = buildHarness();

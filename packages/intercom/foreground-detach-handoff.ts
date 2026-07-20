@@ -13,7 +13,7 @@ interface DetachHandshake {
   runtimeGeneration: number;
 }
 
-type ForegroundDeliveryDisposition = "delivered" | "unclaimed" | "abandoned";
+export type ForegroundDeliveryDisposition = "delivered" | "unclaimed" | "abandoned";
 
 /** Claims a busy inbound message only when its exact foreground owner acknowledges it. */
 export class ForegroundDetachHandoff {
@@ -49,6 +49,15 @@ export class ForegroundDetachHandoff {
     return attempt;
   }
 
+  claim(
+    from: SessionInfo,
+    message: Message,
+    generation: number,
+    isCurrent: () => boolean,
+  ): Promise<ForegroundDeliveryDisposition> {
+    return this.deliver({ from, message, generation, isCurrent, surface: () => {} });
+  }
+
   reset(): void { this.resetForGeneration(-1); }
 
   private async claimAndDeliver(
@@ -69,7 +78,8 @@ export class ForegroundDetachHandoff {
     if (probed === "timed-out") return "unclaimed";
 
     const committed = await this.awaitAcknowledgement({ ...route, phase: "commit" }, signal);
-    if (committed !== "acknowledged" || !input.isCurrent() || this.generation !== input.generation) return "abandoned";
+    if (committed === "cancelled" || !input.isCurrent() || this.generation !== input.generation) return "abandoned";
+    if (committed === "timed-out") return "unclaimed";
     input.surface();
     this.delivered.add(deliveryKey);
     return "delivered";

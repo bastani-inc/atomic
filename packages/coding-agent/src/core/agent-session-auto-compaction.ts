@@ -31,6 +31,25 @@ const OUTPUT_BUDGET_UNDERFLOW_PATTERN = new RegExp(
 );
 
 export async function _checkCompaction(this: AgentSession, assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<void> {
+	if (this._pendingPostToolCompactionGuard) {
+		const { result } = this._pendingPostToolCompactionGuard;
+		this._pendingPostToolCompactionGuard = undefined;
+		this._emit({
+			type: "compaction_end",
+			reason: "threshold",
+			result,
+			aborted: true,
+			willRetry: false,
+			midTurn: true,
+		});
+	}
+	if (
+		this._postToolCompactionPreflightError !== undefined &&
+		assistantMessage.errorMessage === this._postToolCompactionPreflightError
+	) {
+		this._postToolCompactionPreflightError = undefined;
+		return;
+	}
 	// The agent_end path passes skipAbortedCheck=true; the pre-prompt path passes
 	// false. Only the live turn-completion path may auto-continue a truncated
 	// response — before a fresh user prompt we must not resume the old turn.
@@ -369,7 +388,7 @@ export async function _runAutoCompaction(this: AgentSession, reason: "overflow" 
 				if (!authResult.ok || !authResult.apiKey) {
 					return undefined;
 				}
-				return { apiKey: authResult.apiKey, headers: authResult.headers };
+				return { apiKey: authResult.apiKey, headers: authResult.headers, baseUrl: authResult.baseUrl };
 			},
 			abortController: this._autoCompactionAbortController,
 			backupLabel: reason === "overflow" ? "overflow-auto-compact" : "auto-compact",

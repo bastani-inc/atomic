@@ -47,6 +47,7 @@ export function executeAsyncSingle(
 		controlConfig,
 		controlIntercomTarget,
 		childIntercomTarget,
+		supervisorAuthorization,
 		nestedRoute,
 		spawnRunner = defaultSpawnRunner,
 	} = params;
@@ -159,6 +160,7 @@ export function executeAsyncSingle(
 				controlConfig,
 				controlIntercomTarget,
 				childIntercomTargets: childIntercomTarget ? [childIntercomTarget(agent, 0)] : undefined,
+				supervisorAuthorizations: supervisorAuthorization ? [supervisorAuthorization] : undefined,
 				resultMode: "single",
 				nestedRoute: nestedRoute ?? inheritedNestedRoute,
 				workflowStageSubagentGuard,

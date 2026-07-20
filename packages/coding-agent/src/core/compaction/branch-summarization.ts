@@ -6,6 +6,7 @@
  */
 
 import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
+import type { ProviderHeaders } from "@earendil-works/pi-ai";
 import type { Api, Model, SimpleStreamOptions } from "@earendil-works/pi-ai/compat";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
 import { formatCopilotProviderError } from "../copilot-errors.ts";
@@ -64,7 +65,9 @@ export interface GenerateBranchSummaryOptions {
 	/** API key for the model */
 	apiKey: string;
 	/** Request headers for the model */
-	headers?: Record<string, string>;
+	headers?: ProviderHeaders;
+	/** Credential-specific request endpoint for the model */
+	baseUrl?: string;
 	/** Abort signal for cancellation */
 	signal: AbortSignal;
 	/** Optional custom instructions for summarization */
@@ -296,6 +299,7 @@ export async function generateBranchSummary(
 		model,
 		apiKey,
 		headers,
+		baseUrl,
 		signal,
 		customInstructions,
 		replaceInstructions,
@@ -342,11 +346,12 @@ export async function generateBranchSummary(
 	// without running through agent state/events.
 	const context = { systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages };
 	const requestOptions: SimpleStreamOptions = { apiKey, headers, signal, maxTokens: 2048 };
+	const requestModel = baseUrl === undefined || baseUrl === model.baseUrl ? model : { ...model, baseUrl };
 	const response = await (async () => {
 		try {
 			return streamFn
-				? await (await streamFn(model, context, requestOptions)).result()
-				: await completeSimple(model, context, requestOptions);
+				? await (await streamFn(requestModel, context, requestOptions)).result()
+				: await completeSimple(requestModel, context, requestOptions);
 		} catch (error) {
 			if (signal.aborted) {
 				return undefined;

@@ -14,6 +14,19 @@ import "./discovery-invalid-duplicates.test.js";
 // Happy path: real bundled workflows
 // ---------------------------------------------------------------------------
 
+const BUNDLED_WORKFLOW_NAMES = [
+  "adversarial-verification",
+  "classify-and-act",
+  "deep-research-codebase",
+  "fan-out-and-synthesize",
+  "generate-and-filter",
+  "goal",
+  "loop-until-done",
+  "open-claude-design",
+  "ralph",
+  "tournament",
+] as const;
+
 describe("discoverStartupWorkflowsSync — bundled manifest", () => {
   test("returns a DiscoveryResult with registry, sources, errors", async () => {
     const result = await discoverStartupWorkflowsSync();
@@ -23,14 +36,9 @@ describe("discoverStartupWorkflowsSync — bundled manifest", () => {
     assert.equal(Array.isArray(result.errors), true);
   });
 
-  test("registers exactly the four bundled workflows", async () => {
+  test("registers exactly the ten bundled workflows", async () => {
     const { registry } = await discoverStartupWorkflowsSync();
-    const names = registry.names();
-    assert.ok(names.includes("deep-research-codebase"));
-    assert.ok(names.includes("goal"));
-    assert.ok(names.includes("ralph"));
-    assert.ok(names.includes("open-claude-design"));
-    assert.equal(names.length, 4);
+    assert.deepEqual(registry.names().sort(), [...BUNDLED_WORKFLOW_NAMES].sort());
   });
 
   test("no errors on clean manifest", async () => {
@@ -40,12 +48,9 @@ describe("discoverStartupWorkflowsSync — bundled manifest", () => {
 
   test("sources array has one entry per registered workflow", async () => {
     const { sources } = await discoverStartupWorkflowsSync();
-    assert.equal(sources.length, 4);
+    assert.equal(sources.length, BUNDLED_WORKFLOW_NAMES.length);
     const ids = sources.map((s: DiscoverySource) => s.id);
-    assert.ok(ids.includes("deep-research-codebase"));
-    assert.ok(ids.includes("goal"));
-    assert.ok(ids.includes("ralph"));
-    assert.ok(ids.includes("open-claude-design"));
+    for (const name of BUNDLED_WORKFLOW_NAMES) assert.ok(ids.includes(name));
   });
 
   test("every source has kind='bundled'", async () => {
@@ -74,7 +79,7 @@ describe("discoverStartupWorkflowsSync — bundled manifest", () => {
 
   test("registry.get by normalizedName returns valid WorkflowDefinition", async () => {
     const { registry } = await discoverStartupWorkflowsSync();
-    for (const name of ["deep-research-codebase", "goal", "ralph", "open-claude-design"]) {
+    for (const name of BUNDLED_WORKFLOW_NAMES) {
       const def = registry.get(name);
       assert.notEqual(def, undefined);
       assert.equal(def!.__piWorkflow, true);
@@ -198,15 +203,14 @@ describe("DiscoverySource shape", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Registry integration: all() returns all four definitions
+// Registry integration: all() returns all ten definitions
 // ---------------------------------------------------------------------------
 
 describe("registry.all() after discovery", () => {
-  test("all() returns four WorkflowDefinition objects", async () => {
+  test("all() returns ten WorkflowDefinition objects", async () => {
     const { registry } = await discoverStartupWorkflowsSync();
     const all = registry.all();
-    assert.equal(all.length, 4);
+    assert.equal(all.length, BUNDLED_WORKFLOW_NAMES.length);
     for (const def of all) {
       assert.equal(def.__piWorkflow, true);
       assert.equal(typeof def.name, "string");

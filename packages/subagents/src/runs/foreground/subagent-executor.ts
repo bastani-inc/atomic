@@ -227,7 +227,7 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 		const prepared = built.prepared!;
 		let nestedForegroundStarted = false;
 		try {
-			const asyncResult = runAsyncPath(prepared.execData, deps);
+			const asyncResult = await runAsyncPath(prepared.execData, deps);
 			if (asyncResult) return withForkContext(asyncResult, prepared.effectiveParams.context);
 			if (prepared.foregroundControl) {
 				prepared.writeNestedForegroundEvent("subagent.nested.started");

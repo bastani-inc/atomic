@@ -20,11 +20,11 @@ Sometimes you're running multiple Atomic/pi sessions — one researching, one ex
 
 Unlike pi-messenger (a shared chat room for multi-agent swarms), intercom is for targeted 1:1 communication where you pick the recipient.
 
-Intercom also integrates with delegated subagents: child agents get a child-only `contact_supervisor` tool when subagent bridge metadata is present. Atomic-prefixed bridge environment variables are supported, and legacy `PI_*` bridge metadata remains compatible. Use `reason: "need_decision"` for blocking clarification, `reason: "interview_request"` for multiple structured supervisor answers, and `reason: "progress_update"` for meaningful plan-changing updates. Normal sessions only see the regular `intercom` tool.
+Intercom also integrates with delegated subagents: child agents get a child-only `contact_supervisor` tool when subagent bridge metadata is present. Atomic-prefixed bridge environment variables are supported, and legacy `PI_*` bridge metadata remains compatible. Atomic's subagent bridge also obtains a broker capability that binds the child session to the exact supervisor; client-authored channel flags are never trusted as cross-group authority. Use `reason: "need_decision"` for blocking clarification, `reason: "interview_request"` for multiple structured supervisor answers, and `reason: "progress_update"` for meaningful plan-changing updates. Normal sessions only see the regular `intercom` tool.
 
 ## In One Minute
 
-Intercom connections are tool-driven. Parent and delegated child sessions keep the lightweight wrapper unloaded until the model or user invokes an Intercom tool, `/intercom`, or the `ALT+M` overlay. A bridged child receives its deterministic Intercom identity and `contact_supervisor` tool at startup, but invoking that tool establishes its broker connection; merely launching a foreground or background child does not connect either session. Concurrent first-use callers share one import and connection attempt, and lazy broker state is leased to the active session generation and cleaned up on shutdown or replacement.
+Intercom connections are normally tool-driven. A bridged child still keeps its own broker connection lazy until it invokes `contact_supervisor`, but Atomic connects the parent Intercom runtime while launching the child to issue a child-bound supervisor capability. The parent retains and restores that capability across broker reconnects, and the broker confirms the supervisor's current session ID when the child registers. Concurrent first-use callers share one import and connection attempt, and broker state is leased to the active session generation and cleaned up on shutdown or replacement.
 
 ## Install
 
@@ -122,6 +122,10 @@ See auth.ts:142-156.
 
 The reply hint (enabled by default) points to `intercom({ action: "reply", ... })`, so recipients do not need raw sender or `replyTo` IDs. Idle recipients get a new turn immediately; busy interactive recipients receive the message once they go idle. Attachment content is included in the agent-visible body, and messages are rendered inline and stored in Pi session history.
 
+When a blocking `intercom.ask` targets a workflow stage that has already completed, Atomic uses the stage's retained conversation as a post-mortem chat. It automatically schedules a new turn in that exact conversation, preserving the original ask text and sender/thread correlation, so the target can answer with ordinary `intercom.reply` and the waiting sibling continues without a manual workflow follow-up. The completed stage and workflow DAG remain terminal. The workflow router has single-owner completion semantics: once it claims the ask, later late-message listeners preserve its completion promise regardless of bundled extension registration order. Parent and unrelated sessions cannot satisfy the child-to-child waiter. Deleted, unavailable, non-resumable, or failed-to-reopen targets return a bounded actionable ask error.
+
+When a blocking ask reaches a sibling workflow stage during an active model/tool turn, the target reserves it synchronously in the open stage generation before any asynchronous foreground-owner detach handshake. Queue insertion waits inside that reservation, and stage finalization drains it before publishing the terminal snapshot. This prevents a structured-output or other terminal tool call from overtaking a mid-turn ask. If destination-side admission genuinely cannot complete, the asker receives an exact-thread actionable error instead of consuming the full 10-minute timeout.
+
 For delegated background children, queued messages and terminal lifecycle notices are ordered per child. Intercom claims the terminal child’s pre-terminal ordinary entries in FIFO order and atomically admits that prelude together with the paused, completed, or failed notice. A process-local companion bridge covers lazily loaded extensions whose event buses are distinct, while exact terminal-identity deduplication prevents double admission even when the successful terminal dispatch has no queued prelude. Failed dispatches remain retryable, and pause/resume/completion identities remain distinct. Other children’s entries remain independently queued, messages are not discarded, terminal admission does not wait for a separate model turn, and correlated ask replies still bypass unrelated queued sends.
 
 ## Workflow: Planner-Worker Coordination
@@ -215,7 +219,7 @@ This matters because the agent receiving the message doesn't need to reconstruct
 
 `send` is fire-and-forget — the tool returns immediately after delivery. By default, it sends immediately even in interactive sessions. If you want an approval dialog before non-reply sends, set `confirmSend: true` in config. Replies that include `replyTo` still skip confirmation so reply-hint flows can continue without an extra approval step.
 
-`ask` sends the message and blocks until the recipient responds (10-minute timeout). The reply comes back as the tool result, so the agent continues in the same turn with full context. No confirmation dialog — if you're asking and waiting, the intent is clear.
+`ask` sends the message and blocks until the recipient responds (10-minute timeout). The reply comes back as the tool result, so the agent continues in the same turn with full context. No confirmation dialog — if you're asking and waiting, the intent is clear. A completed workflow-stage target with a retained conversation is automatically reopened for one post-mortem turn; unavailable or non-resumable completed targets fail actionably without consuming the full reply timeout.
 
 `reply` is receiver-side sugar for replying to an inbound ask. In the turn triggered by an incoming intercom ask, `intercom({ action: "reply", message: "..." })` targets that exact sender and message automatically. If you reply later, it falls back to the single unresolved inbound ask. If multiple asks are pending, use `intercom({ action: "pending" })` to inspect them and then call `reply` with `to` to disambiguate.
 
@@ -234,6 +238,8 @@ This workflow requires [`pi-subagents`](https://github.com/nicobailon/pi-subagen
 - `PI_SUBAGENT_CHILD_AGENT` — the agent type
 - `PI_SUBAGENT_CHILD_INDEX` — the child index within the run
 
+Atomic's bundled subagent bridge additionally supplies internal `ATOMIC_SUBAGENT_SUPERVISOR_CAPABILITY` and `ATOMIC_SUBAGENT_SUPERVISOR_SESSION_ID` values issued by the broker. They are not user-configurable authentication flags: the broker accepts the capability only for the child scope and supervisor session that requested it, and the parent restores the same secret if the broker reconnects. Legacy `PI_*` aliases remain readable where applicable.
+
 If any are missing, the session falls back to the regular `intercom` tool.
 
 ### Three Reasons
@@ -246,7 +252,9 @@ If any are missing, the session falls back to the regular `intercom` tool.
 
 Do not use `contact_supervisor` for routine completion handoffs. Return the final subagent result normally through `pi-subagents`.
 
-During a foreground subagent run, Atomic probes for an exact live foreground owner before delivery. The matching child reserves the request, accepts a generation-scoped detach commit, and acknowledges the commit before asks, sends, decisions, interviews, and progress updates enter the parent's model-visible steering queue. Blocking calls remain alive until the parent sends the exact threaded reply; fire-and-forget calls create no reply waiter. Background and unmatched messages keep their queued-until-idle behavior, and cancellation/replacement invalidates stale handshakes.
+Cross-group delivery uses a dedicated broker protocol. Ordinary raw `send` frames always remain group-isolated and are rejected if they include a forged `channel: "supervisor"` marker. A child can cross groups only after its broker-issued capability has bound its registered socket to the exact supervisor. The broker adds the `supervisor` channel marker to validated inbound traffic so parent relays can distinguish it. Replies cross back only when `replyTo` matches a recorded supervisor message in the exact reverse direction; fabricated thread IDs do not bypass isolation.
+
+During a foreground subagent run, Atomic probes for an exact live foreground owner before delivery. The matching child reserves the request, accepts a generation-scoped detach commit, and acknowledges it before asks, sends, decisions, interviews, and progress updates enter the parent's model-visible steering queue. A busy workflow stage first reserves the message in its AgentSession generation boundary, then waits inside that admission for the same detach handshake before model-visible queue insertion. This prevents terminal stage close from overtaking the handshake while still preventing the active subagent tool from blocking the child request that would release it; unclaimed traffic and a still-current receiver whose owner disappears before commit fall back to ordinary queue insertion. One accepted commit releases foreground supervision for every active member of a parallel group while retaining each child process and eventual result. Blocking calls remain alive until the parent sends the exact threaded reply; fire-and-forget calls create no reply waiter. Background and unmatched traffic for ordinary sessions keeps queued-until-idle behavior, and generation cancellation/replacement invalidates stale handshakes.
 
 ### Example: Blocked Subagent Asks for Guidance
 

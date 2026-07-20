@@ -38,6 +38,7 @@ atomic list                     # show installed packages from settings
 atomic update                   # update Atomic only
 atomic update --all             # update Atomic, update packages, and reconcile pinned git refs
 atomic update --extensions      # update packages and reconcile pinned git refs only
+atomic update --models          # force-refresh authenticated provider model catalogs
 atomic update --self            # update Atomic only
 atomic update --self --force    # reinstall Atomic even if current
 atomic update npm:@foo/bar      # update one package

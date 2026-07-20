@@ -1,5 +1,4 @@
 import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from "@bastani/atomic";
-import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { McpExtensionState } from "./state.js";
 import type { DirectToolSpec, McpContent } from "./types.js";
 import { getFailureAgeSeconds, lazyConnect } from "./init.js";
@@ -11,6 +10,7 @@ import { formatAuthRequiredMessage, unflattenToolArguments } from "./utils.js";
 import { waitForCaller, waitForCallerWithLateCleanup } from "./caller-wait.js";
 import { notifyUiCancellation, rethrowHostAbortAfterUiCancellation } from "./apps-cancellation.js";
 import { asCallToolResult } from "./call-tool-result.js";
+import { callToolWithConfiguredTimeout, formatMcpToolCallFailure } from "./tool-call-timeout.js";
 
 interface DirectToolStateChangedDetails extends Record<string, unknown> {
   error: "state_changed";
@@ -166,6 +166,7 @@ export function createDirectToolExecutor(
         details: { error: "not_connected", server: spec.serverName },
       };
     }
+    const definition = state.config.mcpServers[spec.serverName] ?? connection.definition;
 
     let uiSession: UiSessionRuntime | null = null;
     let closeUiForStaleState = false;
@@ -221,11 +222,11 @@ export function createDirectToolExecutor(
       signal?.throwIfAborted();
       if (!isActiveStateOwner(state)) return cancelStaleUi();
 
-      const sdkResult = await connection.client.callTool({
+      const sdkResult = await callToolWithConfiguredTimeout(connection.client, {
         name: spec.originalName,
         arguments: unflattenToolArguments(params, spec.inputSchema),
         _meta: uiSession?.requestMeta,
-      }, CallToolResultSchema, { signal });
+      }, definition, spec.serverName, signal);
       signal?.throwIfAborted();
       if (!isActiveStateOwner(state)) return cancelStaleUi();
       const result = asCallToolResult(sdkResult);
@@ -258,11 +259,11 @@ export function createDirectToolExecutor(
       };
     } catch (error) {
       await rethrowHostAbortAfterUiCancellation(signal, uiSession);
-      const message = error instanceof Error ? error.message : String(error);
-      await notifyUiCancellation(uiSession, message);
+      const cancellationMessage = error instanceof Error ? error.message : String(error);
+      await notifyUiCancellation(uiSession, cancellationMessage);
       signal?.throwIfAborted();
       if (!isActiveStateOwner(state)) return staleStateResult();
-      let errorText = `Failed to call tool: ${message}`;
+      let errorText = formatMcpToolCallFailure(error, spec.serverName, definition.timeoutMs);
       if (spec.inputSchema) errorText += `\n\nExpected parameters:\n${formatSchema(spec.inputSchema)}`;
       return {
         content: [{ type: "text" as const, text: errorText }],

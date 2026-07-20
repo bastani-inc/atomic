@@ -1,4 +1,8 @@
-import { describe, test } from "bun:test";
+import { afterEach, beforeEach, describe, test } from "bun:test";
+import { getKeybindings, setKeybindings } from "@earendil-works/pi-tui";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
+import { theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { createRpcExtensionUIContext } from "../../packages/coding-agent/src/modes/rpc/rpc-extension-ui.ts";
 import {
     assert,
     createStore,
@@ -11,15 +15,20 @@ import {
 } from "./stage-chat-view-helpers.js";
 import type { AgentSession, AgentSessionEvent, ChatMessageEntry, ToolDefinition } from "@bastani/atomic";
 import type { TSchema } from "typebox";
-import { renderLiveSubagentResult, stopResultAnimations } from "../../packages/subagents/src/tui/render.js";
+import { renderLiveSubagentResult, renderSubagentResult, stopResultAnimations } from "../../packages/subagents/src/tui/render.js";
 import { SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
 import { makeFakeKeybindings } from "../support/fake-keybindings.js";
 import type { AgentProgress, Details } from "../../packages/subagents/src/shared/types.js";
 
+const originalKeybindings = getKeybindings();
+
+beforeEach(() => setKeybindings(new KeybindingsManager()));
+afterEach(() => setKeybindings(originalKeybindings));
+
 type ToolChatEntry = Extract<ChatMessageEntry, { kind: "tool" }>;
 
-function renderText(view: StageChatView): string {
-    return stripAnsi(view.render(96).join("\n"));
+function renderText(view: StageChatView, width = 96): string {
+    return stripAnsi(view.render(width).join("\n"));
 }
 
 function chatEntries(view: StageChatView): readonly ChatMessageEntry[] {
@@ -289,12 +298,15 @@ describe("StageChatView terminal subagent cleanup regressions", () => {
         }
     });
 
-    test("ctrl+o expansion uses production-style shared toolOutputExpanded wiring", () => {
+    test("isolated RPC UI Ctrl+O repeatedly expands and collapses workflow graph details", () => {
         for (const mode of ["parallel", "chain"] as const) {
             const store = createStore();
             setupRun(store, "run-1", "stage-a", "running");
             const { handle, emit } = makeHandle(undefined, subagentToolCallMessages(mode));
-            let toolsExpanded = false;
+            const ui = createRpcExtensionUIContext({
+                output: () => {},
+                pendingExtensionRequests: new Map(),
+            });
             const view = new StageChatView({
                 store,
                 graphTheme: deriveGraphTheme({}),
@@ -305,19 +317,25 @@ describe("StageChatView terminal subagent cleanup regressions", () => {
                 onDetach: () => {},
                 onClose: () => {},
                 piKeybindings: makeFakeKeybindings(),
-                getToolsExpanded: () => toolsExpanded,
-                setToolsExpanded: (expanded) => {
-                    toolsExpanded = expanded;
-                },
-                getChatRenderSettings: () => subagentRenderSettings(toolsExpanded),
+                getToolsExpanded: ui.getToolsExpanded,
+                setToolsExpanded: ui.setToolsExpanded,
+                getChatRenderSettings: () => ({
+                    ...ui.getChatRenderSettings(),
+                    ...subagentRenderSettings(ui.getToolsExpanded()),
+                }),
             });
 
             emitRunningMultiSubagent(emit, mode);
             assert.doesNotMatch(renderText(view), /alpha-expanded-output/);
             assert.equal(view.handleInput("\x0f"), true);
-            const expanded = renderText(view);
-            assert.match(expanded, /alpha-expanded-output/, `${mode} should expand first child`);
-            assert.match(expanded, /beta-expanded-output/, `${mode} should expand second child`);
+            for (const width of [40, 96]) {
+                const expanded = renderText(view, width);
+                assert.match(expanded, /alpha-expanded-output/, `${mode} should expand first child at ${width} columns`);
+                assert.match(expanded, /beta-expanded-output/, `${mode} should expand second child at ${width} columns`);
+            }
+            assert.equal(view.handleInput("\x0f"), true);
+            assert.doesNotMatch(renderText(view), /alpha-expanded-output/);
+            assert.equal(ui.getChatRenderSettings().toolOutputExpanded, false);
             view.dispose();
         }
     });
@@ -347,6 +365,31 @@ describe("StageChatView terminal subagent cleanup regressions", () => {
         assert.match(rendered, /Press .*live detail/);
         assert.match(rendered, /⎿\s+bash: echo alpha/);
         view.dispose();
+    });
+
+    test("unbound tool expansion omits the unavailable live-detail affordance", () => {
+        const previousKeybindings = getKeybindings();
+        setKeybindings(new KeybindingsManager({ "app.tools.expand": [] }));
+        const store = createStore();
+        setupRun(store, "run-1", "stage-a", "running");
+        const { handle, emit } = makeHandle(undefined, subagentToolCallMessages("parallel"));
+        const view = new StageChatView({
+            store, graphTheme: deriveGraphTheme({}), runId: "run-1", stageId: "stage-a", workflowName: "test-wf",
+            handle, onDetach: () => {}, onClose: () => {}, getChatRenderSettings: () => subagentRenderSettings(false),
+        });
+        try {
+            emitRunningMultiSubagent(emit, "parallel");
+            const rendered = stripAnsi(renderSubagentResult(
+                { content: [{ type: "text", text: "running" }], details: runningMultiSubagentDetails("parallel") },
+                { expanded: false },
+                theme,
+            ).render(96).join("\n"));
+            assert.doesNotMatch(rendered, /Press|live detail/);
+            assert.match(rendered, /alpha/);
+        } finally {
+            view.dispose();
+            setKeybindings(previousKeybindings);
+        }
     });
 
     test("rendering a running subagent installs no animation interval (update-driven pulse)", () => {

@@ -9,7 +9,12 @@ import { waitForCondition } from "../support/wait-for-condition.js";
 
 interface ClientCalls {
   readonly reads: Array<readonly [params: object, options?: { signal?: AbortSignal }]>;
-  readonly tools: Array<readonly [params: object, schema?: object, options?: { signal?: AbortSignal }]>;
+  readonly tools: Array<readonly [params: object, schema?: object, options?: {
+    signal?: AbortSignal;
+    timeout?: number;
+    resetTimeoutOnProgress?: boolean;
+    onprogress?: () => void;
+  }]>;
 }
 
 interface ClientResponses {
@@ -20,6 +25,7 @@ interface ClientResponses {
 function createConnectedState(
   metadata: readonly ToolMetadata[],
   responses: ClientResponses = {},
+  timeoutMs?: number,
 ): { state: McpExtensionState; calls: ClientCalls; getInFlight(): number } {
   const reads: ClientCalls["reads"] = [];
   const tools: ClientCalls["tools"] = [];
@@ -28,13 +34,14 @@ function createConnectedState(
       reads.push([params, options]);
       return responses.read ?? { contents: [{ uri: "resource://test", text: "resource" }] };
     },
-    async callTool(params: object, schema?: object, options?: { signal?: AbortSignal }) {
+    async callTool(params: object, schema?: object, options?: ClientCalls["tools"][number][2]) {
       tools.push([params, schema, options]);
       return responses.tool ?? { content: [{ type: "text", text: "tool" }] };
     },
   };
   const connection = {
     client,
+    definition: { command: "bun", ...(timeoutMs === undefined ? {} : { timeoutMs }) },
     tools: [],
     resources: [],
     status: "connected" as const,
@@ -51,7 +58,7 @@ function createConnectedState(
     manager,
     lifecycle: {},
     toolMetadata: new Map([["server", [...metadata]]]),
-    config: { mcpServers: { server: { command: "bun" } } },
+    config: { mcpServers: { server: connection.definition } },
     failureTracker: new Map(),
     uiResourceHandler: {},
     consentManager: {},
@@ -97,7 +104,7 @@ test("proxy resource calls pass the invocation signal as MCP request options", a
 });
 
 test("direct tool calls pass the result schema and signal in the SDK option position", async () => {
-  const { state, calls } = createConnectedState([]);
+  const { state, calls } = createConnectedState([], {}, 250);
   const spec: DirectToolSpec = {
     serverName: "server",
     originalName: "run",
@@ -112,6 +119,9 @@ test("direct tool calls pass the result schema and signal in the SDK option posi
   assert.equal(calls.tools.length, 1);
   assert.equal(calls.tools[0]?.[1], CallToolResultSchema);
   assert.equal(calls.tools[0]?.[2]?.signal, signal);
+  assert.equal(calls.tools[0]?.[2]?.timeout, 250);
+  assert.equal(calls.tools[0]?.[2]?.resetTimeoutOnProgress, true);
+  assert.equal(typeof calls.tools[0]?.[2]?.onprogress, "function");
 });
 
 test("proxy tool calls pass the result schema and signal in the SDK option position", async () => {
@@ -120,7 +130,7 @@ test("proxy tool calls pass the result schema and signal in the SDK option posit
     originalName: "run",
     description: "run test tool",
   };
-  const { state, calls } = createConnectedState([tool]);
+  const { state, calls } = createConnectedState([tool], {}, 250);
   const signal = new AbortController().signal;
 
   await executeCall(state, tool.name, { value: 1 }, "server", undefined, signal);
@@ -128,6 +138,9 @@ test("proxy tool calls pass the result schema and signal in the SDK option posit
   assert.equal(calls.tools.length, 1);
   assert.equal(calls.tools[0]?.[1], CallToolResultSchema);
   assert.equal(calls.tools[0]?.[2]?.signal, signal);
+  assert.equal(calls.tools[0]?.[2]?.timeout, 250);
+  assert.equal(calls.tools[0]?.[2]?.resetTimeoutOnProgress, true);
+  assert.equal(typeof calls.tools[0]?.[2]?.onprogress, "function");
 });
 
 test("one direct caller aborts promptly while a survivor waits for shared readiness", async () => {
@@ -226,12 +239,14 @@ test("proxy calls aborted during an SDK request reject and settle in-flight acco
     originalName: "run",
     description: "run test tool",
   };
-  const { state, calls, getInFlight } = createConnectedState([tool], { tool: toolResponse });
+  const { state, calls, getInFlight } = createConnectedState([tool], { tool: toolResponse }, 500);
   const controller = new AbortController();
   const reason = new Error("proxy caller cancelled during SDK request");
 
   const pending = executeCall(state, tool.name, {}, "server", undefined, controller.signal);
   assert.equal(calls.tools.length, 1);
+  assert.equal(calls.tools[0]?.[2]?.signal, controller.signal);
+  assert.equal(calls.tools[0]?.[2]?.timeout, 500);
   assert.equal(getInFlight(), 1);
   controller.abort(reason);
   release({ content: [{ type: "text", text: "late" }] });

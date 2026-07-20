@@ -1,4 +1,4 @@
-import { keyHint } from "@bastani/atomic";
+import { keyHintIfBound } from "@bastani/atomic";
 import type { AsyncJobState } from "../shared/types.ts";
 import { shortenPath } from "../shared/formatters.ts";
 import { aggregateStepStatus, formatParallelOutcome } from "../shared/status-format.ts";
@@ -79,7 +79,8 @@ export function foregroundStyleWidgetStepLines(
 		lines.push(`    ${nestedLine}`);
 	}
 	if (step.status === "running") {
-		if (!expanded) lines.push(`    ${theme.fg("accent", `Press ${keyHint("app.tools.expand", "for live detail")}`)}`);
+		const expandHint = keyHintIfBound("app.tools.expand", "for live detail");
+		if (!expanded && expandHint) lines.push(`    ${theme.fg("accent", `Press ${expandHint}`)}`);
 		const output = widgetOutputPath(job, step);
 		if (output) lines.push(`    ${theme.fg("dim", `output: ${shortenPath(output)}`)}`);
 		if (expanded) {
@@ -150,7 +151,8 @@ export function compactSingleWidgetLines(job: AsyncJobState, theme: Theme, width
 			if (output) lines.push(`    ${theme.fg("dim", `output: ${shortenPath(output)}`)}`);
 		}
 	}
-	if (job.steps.some((step) => step.status === "running")) lines.push(theme.fg("accent", `  Press ${keyHint("app.tools.expand", "for live detail")}`));
+	const expandHint = keyHintIfBound("app.tools.expand", "for live detail");
+	if (expandHint && job.steps.some((step) => step.status === "running")) lines.push(theme.fg("accent", `  Press ${expandHint}`));
 	return lines.map((line) => truncLine(line, width));
 }
 
@@ -162,8 +164,9 @@ export function fitWidgetLineBudget(lines: string[], theme: Theme, width: number
 	if (lines.length <= budget) return lines;
 	const visibleLines = Math.max(1, budget - 1);
 	const hiddenCount = lines.length - visibleLines;
+	const expandHint = keyHintIfBound("app.tools.expand", "expands");
 	const hint = expanded
 		? `… ${hiddenCount} live-detail lines hidden`
-		: `… ${hiddenCount} lines hidden · ${keyHint("app.tools.expand", "expands")}`;
+		: `… ${hiddenCount} lines hidden${expandHint ? ` · ${expandHint}` : ""}`;
 	return [...lines.slice(0, visibleLines), truncLine(theme.fg("dim", hint), width)];
 }

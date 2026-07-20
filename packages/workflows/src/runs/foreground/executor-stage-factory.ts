@@ -1,3 +1,4 @@
+import { runCallback, runSynchronousCallback } from "@bastani/atomic";
 import type { Store } from "../../shared/store.js";
 import type { StageSnapshot } from "../../shared/store-types.js";
 import type { StageOptions } from "../../shared/types.js";
@@ -146,6 +147,7 @@ export function createWorkflowStageFactory(input: {
       askUserQuestionObservedThisTurn: false,
       chatAnswerObservedThisTurn: false,
       resumeContinuationPending: false,
+      waitingForStageChatTurn: false,
       liveHandleReleased: false,
       stageClosedByWorkflowExit: false,
       stageFinalized: false,
@@ -219,6 +221,9 @@ export function createWorkflowStageFactory(input: {
         throw new Error(`atomic-workflows: stage "${name}" skipped by workflow exit`);
       }
       input.exit.throwIfWorkflowExitSelected();
+      if (input.signal.aborted) {
+        throw input.signal.reason ?? new DOMException("workflow killed", "AbortError");
+      }
     };
 
     let stageStartEntryAppended = false;
@@ -251,7 +256,12 @@ export function createWorkflowStageFactory(input: {
       applyModelFallbackMeta(innerCtx.__modelFallbackMeta());
       input.activeStore.recordStageEnd(input.runId, stageSnapshot);
       stageUiBroker.cancelStagePrompt(input.runId, stageId, new Error(`atomic-workflows: stage ${stageId} completed with pending custom UI`));
-      await input.opts.onStageEnd?.(input.runId, stageSnapshot);
+      if (input.opts.onStageEnd) {
+        await runCallback(
+          { kind: "workflow.stage_adapter", name: `onStageEnd:${name}`, runId: input.runId, stageId },
+          () => input.opts.onStageEnd!(input.runId, stageSnapshot),
+        );
+      }
       if (input.opts.persistence) {
         appendStageStartOnce();
         appendStageEnd(input.opts.persistence, {
@@ -325,7 +335,12 @@ export function createWorkflowStageFactory(input: {
     runtime.unregisterStageHandle = input.stageRegistry.register(handle);
 
     input.activeStore.recordStageStart(input.runId, stageSnapshot);
-    input.opts.onStageStart?.(input.runId, stageSnapshot);
+    if (input.opts.onStageStart) {
+      runSynchronousCallback(
+        { kind: "workflow.stage_adapter", name: `onStageStart:${name}`, runId: input.runId, stageId },
+        () => input.opts.onStageStart!(input.runId, stageSnapshot),
+      );
+    }
     const blockedBy = input.scheduler.blockingAncestorFor(stageSnapshot);
     if (blockedBy !== undefined) input.scheduler.blockStageUntilCascadeRelease(stageSnapshot, blockedBy);
 

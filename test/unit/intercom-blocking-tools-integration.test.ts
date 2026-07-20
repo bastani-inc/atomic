@@ -17,14 +17,19 @@ type Tool = { execute(id: string, params: Record<string, unknown>, signal: Abort
 
 function fixture(kind: "intercom" | "supervisor") {
   let tool: Tool | undefined;
-  const sent: Array<{ to: string; message: { messageId?: string; text: string; expectsReply?: boolean; replyTo?: string } }> = [];
+  const sent: Array<{ to: string; supervisor: boolean; message: { messageId?: string; text: string; expectsReply?: boolean; replyTo?: string } }> = [];
   const waiterCalls: Array<{ from: string; replyTo: string }> = [];
   const slot = new ReplyWaiterSlot();
   const client = {
     sessionId: "child-id",
+    supervisorSessionId: "parent-id",
     async listSessions() { return []; },
     async send(to: string, message: { messageId?: string; text: string; expectsReply?: boolean; replyTo?: string }) {
-      sent.push({ to, message });
+      sent.push({ to, message, supervisor: false });
+      return { id: message.messageId ?? "sent", delivered: true };
+    },
+    async sendToSupervisor(to: string, message: { messageId?: string; text: string; expectsReply?: boolean; replyTo?: string }) {
+      sent.push({ to, message, supervisor: true });
       return { id: message.messageId ?? "sent", delivered: true };
     },
   };
@@ -47,7 +52,10 @@ function fixture(kind: "intercom" | "supervisor") {
   } else {
     registerContactSupervisorTool(pi as never, {
       ...common,
-      childOrchestratorMetadata: { orchestratorTarget: "parent", runId: "run", agent: "worker", index: 2 },
+      childOrchestratorMetadata: {
+        orchestratorTarget: "parent", runId: "run", agent: "worker", index: 2,
+        supervisor: { capability: "capability", supervisorSessionId: "stale-parent-id" },
+      },
     } as never);
   }
   return {
@@ -55,10 +63,16 @@ function fixture(kind: "intercom" | "supervisor") {
     waiterCalls,
     get waiter() { return slot.current() ?? undefined; },
     get tool() { assert.ok(tool); return tool; },
-    reply(text: string) {
+    reply(text: string, replyError?: string) {
       const current = slot.current();
       assert.ok(current);
-      current.resolve({ id: "reply", timestamp: 2, replyTo: current.replyTo, content: { text } });
+      current.resolve({
+        id: "reply",
+        timestamp: 2,
+        replyTo: current.replyTo,
+        ...(replyError !== undefined ? { replyError } : {}),
+        content: { text },
+      });
     },
   };
 }
@@ -84,6 +98,16 @@ describe("registered blocking intercom tools", () => {
     assert.equal(context.sessionManager.getSessionId(), "child-session", "the same foreground child continues after its reply");
   });
 
+  test("intercom ask surfaces a correlated completed-target revival failure as a tool error", async () => {
+    const current = fixture("intercom");
+    const execution = current.tool.execute("call", { action: "ask", to: "parent", message: "Choose" }, undefined, undefined, context);
+    await Bun.sleep(0);
+    current.reply("Completed workflow stage could not process intercom ask", "Completed workflow stage is not resumable");
+    const result = await execution;
+    assert.equal(result.isError, true);
+    assert.equal(result.content[0]?.text, "Failed: Completed workflow stage is not resumable");
+  });
+
   test("contact_supervisor need_decision uses the same threaded waiter path", async () => {
     const current = fixture("supervisor");
     const execution = current.tool.execute("call", { reason: "need_decision", message: "Choose" }, undefined, undefined, context);
@@ -91,6 +115,7 @@ describe("registered blocking intercom tools", () => {
     assert.equal(current.sent.length, 1);
     assert.equal(current.sent[0]?.to, "parent-id");
     assert.equal(current.sent[0]?.message.expectsReply, true);
+    assert.equal(current.sent[0]?.supervisor, true);
     assert.deepEqual(current.waiterCalls, [{ from: "parent-id", replyTo: current.sent[0]?.message.messageId }]);
     current.reply("Use option B");
     const result = await execution;
@@ -109,6 +134,7 @@ describe("registered blocking intercom tools", () => {
     const updated = await progress.tool.execute("call", { reason: "progress_update", message: "Halfway" }, undefined, undefined, context);
     assert.equal(updated.isError, false);
     assert.equal(progress.sent[0]?.message.expectsReply, undefined);
+    assert.equal(progress.sent[0]?.supervisor, true);
     assert.equal(progress.waiterCalls.length, 0);
   });
 });
@@ -136,6 +162,7 @@ for (const kind of ["intercom", "supervisor"] as const) {
       const piForHandoff = { events: bus };
       const childTarget = "subagent-worker-joined-1";
       const recovered: Array<{ finalOutput?: string; exitCode: number }> = [];
+      const recoveredExit = Promise.withResolvers<{ finalOutput?: string; exitCode: number }>();
       const foreground = runSync(dir, [{ ...agentConfig(), systemPrompt: "Intercom orchestration channel" }], "fake-worker", "task", {
         cwd: dir,
         runId: "joined",
@@ -143,7 +170,7 @@ for (const kind of ["intercom", "supervisor"] as const) {
         intercomSessionName: childTarget,
         allowIntercomDetach: true,
         intercomEvents: bus,
-        onDetachedExit: (value) => recovered.push(value),
+        onDetachedExit: (value) => { recovered.push(value); recoveredExit.resolve(value); },
       });
 
       let registered: Tool | undefined;
@@ -162,6 +189,9 @@ for (const kind of ["intercom", "supervisor"] as const) {
             onUnclaimed: () => { throw new Error("exact foreground owner was not found"); },
           });
           return { id: message.id, delivered: true };
+        },
+        async sendToSupervisor(_to: string, outgoing: { messageId?: string; text: string; expectsReply?: boolean; replyTo?: string }) {
+          return this.send(_to, outgoing);
         },
       };
       const common = {
@@ -195,11 +225,11 @@ for (const kind of ["intercom", "supervisor"] as const) {
       assert.match(resumed.content[0]?.text ?? "", /Approved/);
       order.push("continued");
 		writeFileSync(join(dir, gateName), "reply received");
-      for (let attempt = 0; attempt < 40 && recovered.length === 0; attempt++) await Bun.sleep(10);
+      const recoveredResult = await recoveredExit.promise;
       assert.equal(recovered.length, 1);
-      assert.equal(recovered[0]?.exitCode, 0);
-      assert.match(recovered[0]?.finalOutput ?? "", /eventual recovered child result/);
+      assert.equal(recoveredResult.exitCode, 0);
+      assert.match(recoveredResult.finalOutput ?? "", /eventual recovered child result/);
       assert.ok(order.indexOf("continued") > order.indexOf("reply"));
-    });
+    }, { idleMs: 4_000, wallMs: 4_000 });
   });
 }

@@ -1,116 +1,4 @@
-import type { CreateAgentSessionOptions } from "@bastani/atomic";
 import { Type, type Static } from "typebox";
-import type { WorkflowModelValue } from "../shared/types.js";
-
-type ArrayElement<T> = T extends readonly (infer Element)[] ? Element : never;
-
-const SdkSessionOptionSchema = <Key extends keyof CreateAgentSessionOptions>(_key: Key) =>
-  Type.Unsafe<NonNullable<CreateAgentSessionOptions[Key]>>({});
-
-const SdkSessionOptionArrayElementSchema = <Key extends keyof CreateAgentSessionOptions>(_key: Key) =>
-  Type.Unsafe<ArrayElement<NonNullable<CreateAgentSessionOptions[Key]>>>({});
-
-const IntercomOptionsSchema = Type.Object({
-  enabled: Type.Optional(Type.Boolean()),
-  delivery: Type.Optional(Type.Union([
-    Type.Literal("off"),
-    Type.Literal("notify"),
-    Type.Literal("result"),
-    Type.Literal("control-and-result"),
-  ])),
-  parentSession: Type.Optional(Type.String()),
-  notifyOn: Type.Optional(Type.Array(Type.Union([
-    Type.Literal("active_long_running"),
-    Type.Literal("needs_attention"),
-    Type.Literal("completed"),
-    Type.Literal("failed"),
-  ]))),
-});
-
-const MaxOutputSchema = Type.Object({
-  bytes: Type.Optional(Type.Number()),
-  lines: Type.Optional(Type.Number()),
-});
-
-const McpOptionsSchema = Type.Object({
-  allow: Type.Optional(Type.Array(Type.String())),
-  deny: Type.Optional(Type.Array(Type.String())),
-});
-
-const JsonSchemaObject = Type.Unsafe<Record<string, unknown>>({
-  type: "object",
-  additionalProperties: true,
-  description: "Plain JSON Schema used as final-answer tool arguments for this workflow item.",
-});
-
-const StageSessionOptionProperties = {
-  schema: Type.Optional(JsonSchemaObject),
-  cwd: Type.Optional(Type.String({ description: "Starting directory only; does not provide worktree isolation." })),
-  agentDir: Type.Optional(Type.String()),
-  authStorage: Type.Optional(SdkSessionOptionSchema("authStorage")),
-  modelRegistry: Type.Optional(SdkSessionOptionSchema("modelRegistry")),
-  model: Type.Optional(Type.Unsafe<WorkflowModelValue>({ description: "Primary model id or SDK model object. String ids may include a reasoning suffix, e.g. openai/gpt-5:high; valid levels: off|minimal|low|medium|high|xhigh|max. A parenthesized context-window token may precede or follow the suffix, e.g. github-copilot/claude-opus-4.8 (1m):xhigh or github-copilot/claude-opus-4.8:xhigh (1m). Use (long) for a generic long-context marker, or a rounded size matching the model's long tier (e.g. (1m) or (1.1m)); both select the model's advertised long tier." })),
-  contextWindow: Type.Optional(Type.Number({ description: "Context-window token budget for the stage session (e.g. 1000000). Non-strict by default: an unsupported value keeps the model's default window. Prefer the per-model `(1m)` token in a model/fallbackModels entry when only specific models should use a larger window." })),
-  contextWindowStrict: Type.Optional(Type.Boolean({ description: "Treat an unsupported contextWindow as an error instead of falling back to the model's default window." })),
-  thinkingLevel: Type.Optional(SdkSessionOptionSchema("thinkingLevel")),
-  scopedModels: Type.Optional(Type.Array(SdkSessionOptionArrayElementSchema("scopedModels"))),
-  noTools: Type.Optional(Type.Unsafe<NonNullable<CreateAgentSessionOptions["noTools"]>>({
-    enum: ["all", "builtin"],
-  })),
-  tools: Type.Optional(Type.Array(Type.String())),
-  customTools: Type.Optional(Type.Array(SdkSessionOptionArrayElementSchema("customTools"))),
-  resourceLoader: Type.Optional(SdkSessionOptionSchema("resourceLoader")),
-  sessionManager: Type.Optional(SdkSessionOptionSchema("sessionManager")),
-  settingsManager: Type.Optional(SdkSessionOptionSchema("settingsManager")),
-  sessionStartEvent: Type.Optional(SdkSessionOptionSchema("sessionStartEvent")),
-  fallbackModels: Type.Optional(Type.Array(Type.String({ description: "Fallback model id; may include a reasoning suffix like :low or :off." }))),
-  fallbackThinkingLevels: Type.Optional(Type.Array(Type.String({ description: "Deprecated compatibility helper aligned to fallbackModels; ignored when the fallback model has a :level suffix." }))),
-  mcp: Type.Optional(McpOptionsSchema),
-  sessionDir: Type.Optional(Type.String()),
-  context: Type.Optional(Type.Union([Type.Literal("fresh"), Type.Literal("fork")])),
-  forkFromSessionFile: Type.Optional(Type.String()),
-};
-
-// Keep this union opaque to Value.Convert: branch ordering otherwise coerces
-// boolean false to "false", or the legitimate string path "false" to false.
-const WorkflowOutputSchema = Type.Unsafe<string | false>({
-  not: {
-    not: {
-      anyOf: [
-        { type: "string" },
-        { const: false },
-      ],
-    },
-  },
-});
-
-const WorkflowTaskOptionProperties = {
-  output: Type.Optional(WorkflowOutputSchema),
-  outputMode: Type.Optional(Type.Union([Type.Literal("inline"), Type.Literal("file-only")])),
-  reads: Type.Optional(Type.Union([Type.Array(Type.String()), Type.Literal(false)])),
-  worktree: Type.Optional(Type.Boolean({ description: "Runner-managed temporary per-task worktree isolation for direct runs." })),
-  gitWorktreeDir: Type.Optional(Type.String({ description: "Runner-managed reusable worktree; natural-language worktree instructions do not set this option." })),
-  baseBranch: Type.Optional(Type.String()),
-  maxOutput: Type.Optional(MaxOutputSchema),
-  artifacts: Type.Optional(Type.Boolean()),
-};
-
-const DirectTaskSchema = Type.Object({
-  name: Type.String({ description: "Task/stage label." }),
-  prompt: Type.Optional(Type.String({ description: "Prompt text for this task." })),
-  task: Type.Optional(Type.String({ description: "Task text for this task." })),
-  ...StageSessionOptionProperties,
-  ...WorkflowTaskOptionProperties,
-});
-
-const ParallelChainStepSchema = Type.Object({
-  parallel: Type.Array(DirectTaskSchema),
-  concurrency: Type.Optional(Type.Number()),
-  failFast: Type.Optional(Type.Boolean()),
-  worktree: Type.Optional(Type.Boolean({ description: "Runner-managed temporary per-task worktree isolation for direct runs." })),
-  gitWorktreeDir: Type.Optional(Type.String({ description: "Runner-managed reusable worktree; natural-language worktree instructions do not set this option." })),
-  baseBranch: Type.Optional(Type.String()),
-});
 
 export const WorkflowParametersSchema = Type.Object({
   workflow: Type.Optional(Type.String({
@@ -136,10 +24,10 @@ export const WorkflowParametersSchema = Type.Object({
     Type.Literal("resume"),
     Type.Literal("reload"),
   ], {
-    description: "Workflow action: run/list/get/inputs/status, inspect stage metadata, send messages or prompt answers, pause/resume/interrupt/quit runs, or reload workflow resources. For transcript inspection, prefer status/stages/stage first to get sessionFile/transcriptPath, quote the exact path without rewriting separators (Windows backslashes are valid), then search it with rg/grep and read small ranges; transcript is path-only by default when sessionFile/transcriptPath exists, explicit tail/limit returns bounded previews, and missing transcript paths fall back to a small preview.",
+    description: "Workflow action: run/list/get/inputs/status, inspect stage metadata, send messages or prompt answers, pause/resume/interrupt/quit runs, or reload workflow resources. 'status' without runId lists every workflow run in the current session with concise per-run summaries (status, timing, active stages, awaiting-input prompts); filter the listing with statusFilter. 'status' with runId returns one run's full detail. For transcript inspection, prefer status/stages/stage first to get sessionFile/transcriptPath, quote the exact path without rewriting separators (Windows backslashes are valid), then search it with rg/grep and read small ranges; transcript is path-only by default when sessionFile/transcriptPath exists, explicit tail/limit returns bounded previews, and missing transcript paths fall back to a small preview.",
   })),
   runId: Type.Optional(Type.String({
-    description: "Run identifier or unique prefix for status/stages/stage/transcript/send/pause/resume/interrupt/quit. Use '--all' or all:true for supported bulk run-control actions.",
+    description: "Run identifier or unique prefix for status/stages/stage/transcript/send/pause/resume/interrupt/quit. Omit runId with action 'status' to list all session runs and their statuses. Use '--all' or all:true for supported bulk run-control actions.",
   })),
   all: Type.Optional(Type.Boolean({
     description: "Apply supported run-control actions (pause/interrupt/quit) to all in-flight runs instead of one run; cannot be combined with stageId.",
@@ -159,12 +47,14 @@ export const WorkflowParametersSchema = Type.Object({
     Type.Literal("completed"),
     Type.Literal("failed"),
     Type.Literal("skipped"),
+    Type.Literal("cancelled"),
+    Type.Literal("killed"),
     Type.Literal("all"),
   ], {
-    description: "Filter stages by status for the stages action; use 'all' to include every stage.",
+    description: "Filter stages (stages action) or listed runs (status action without runId) by status; 'all' (default) includes everything. For the status listing, run statuses match directly, 'awaiting_input' selects runs with at least one stage awaiting input or pending human prompt, and in-flight runs are listed first.",
   })),
   format: Type.Optional(Type.Union([Type.Literal("text"), Type.Literal("json")], {
-    description: "Agent-visible output format for data-bearing inspection actions.",
+    description: "Agent-visible output format for data-bearing inspection actions (status, stages, stage, transcript); 'json' returns the full structured result.",
   })),
   limit: Type.Optional(Type.Integer({
     minimum: 0,
@@ -199,20 +89,6 @@ export const WorkflowParametersSchema = Type.Object({
   reason: Type.Optional(Type.String({
     description: "Human-readable reason for the reload action, echoed in the reload result.",
   })),
-  task: Type.Optional(Type.Union([
-    DirectTaskSchema,
-    Type.String({ description: "Root task text for direct chain/parallel execution." }),
-  ])),
-  chainName: Type.Optional(Type.String()),
-  tasks: Type.Optional(Type.Array(DirectTaskSchema)),
-  chain: Type.Optional(Type.Array(Type.Union([DirectTaskSchema, ParallelChainStepSchema]))),
-  concurrency: Type.Optional(Type.Number()),
-  failFast: Type.Optional(Type.Boolean()),
-  async: Type.Optional(Type.Boolean()),
-  intercom: Type.Optional(IntercomOptionsSchema),
-  ...StageSessionOptionProperties,
-  ...WorkflowTaskOptionProperties,
-  chainDir: Type.Optional(Type.String()),
-});
+}, { additionalProperties: false });
 
 export type WorkflowParameters = Static<typeof WorkflowParametersSchema>;

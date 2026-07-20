@@ -33,6 +33,7 @@ export interface EngineRuntimeInput {
   readonly inputRuntimeDefaults: Partial<StageOptions>;
   readonly workflowInvocationCwd: string;
   readonly gitWorktreeSetupCache: GitWorktreeSetupCache;
+  readonly worktreeSymlinkDirectories?: readonly string[];
   readonly stageRegistry: StageControlRegistry;
   readonly exit: WorkflowExitManager;
   readonly classifyExecutorFailure: LiveStageRuntime["classifyExecutorFailure"];
@@ -76,6 +77,7 @@ export class EngineRuntime {
   readonly inputRuntimeDefaults: Partial<StageOptions>;
   readonly workflowInvocationCwd: string;
   readonly gitWorktreeSetupCache: GitWorktreeSetupCache;
+  readonly worktreeSymlinkDirectories?: readonly string[];
 
   private readonly spawnAgentStage: (
     name: string,
@@ -97,6 +99,7 @@ export class EngineRuntime {
     this.inputRuntimeDefaults = input.inputRuntimeDefaults;
     this.workflowInvocationCwd = input.workflowInvocationCwd;
     this.gitWorktreeSetupCache = input.gitWorktreeSetupCache;
+    this.worktreeSymlinkDirectories = input.worktreeSymlinkDirectories;
 
     // The runtime only wires host-injected ports; stage sessions are still
     // created lazily by the stage runner through input.adapters.agentSession.

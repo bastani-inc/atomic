@@ -1,22 +1,10 @@
 /**
- * Tests for the latest issue #1498 unresolved findings:
- * 1. Child workflow internal side effects are checkpointed under the root
- *    workflow so an interrupted child does not re-run them on parent resume.
- * 2. Resume refuses stale (session-cache-only) entries.
- * 3. Durable replay identities use a collision-resistant digest.
- * 4. ctx.tool checks cancellation after the tool function resolves.
- * 5. File-backed durability recovers from a stale lock after a crash.
- *
- * cross-ref: issue #1498.
+ * Durable hashing, scoped child checkpoints, cancellation, and replay tests.
  */
-import { describe, test, beforeEach, afterEach } from "bun:test";
+import { describe, test, beforeEach } from "bun:test";
 import assert from "node:assert/strict";
-import { hostname, tmpdir } from "node:os";
-import { join } from "node:path";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { Type } from "typebox";
 import { InMemoryDurableBackend, durableHash } from "../../packages/workflows/src/durable/backend.js";
-import { FileDurableBackend } from "../../packages/workflows/src/durable/file-backend.js";
 import { ScopedDurableBackend } from "../../packages/workflows/src/durable/scoped-backend.js";
 import { createToolPrimitive, createCheckpointIdGenerator } from "../../packages/workflows/src/durable/tool-primitive.js";
 import type { DurableCheckpoint } from "../../packages/workflows/src/durable/types.js";
@@ -31,25 +19,6 @@ function toolCheckpoint(workflowId: string, argsHash: string, output: string): D
   return { kind: "tool", workflowId, checkpointId: `tool:${argsHash}`, name: "t", argsHash, output, completedAt: 1 };
 }
 
-function findUnusedPid(): number {
-  for (let pid = 999_999; pid > 900_000; pid--) {
-    try {
-      process.kill(pid, 0);
-    } catch (err) {
-      if (typeof err === "object" && err !== null && "code" in err && err.code === "ESRCH") return pid;
-    }
-  }
-  return 999_999;
-}
-
-function writeAbandonedLockOwner(lockDir: string): void {
-  writeFileSync(join(lockDir, "owner.json"), JSON.stringify({
-    pid: findUnusedPid(),
-    host: hostname(),
-    token: "test-stale-lock",
-    acquiredAt: 1,
-  }), { encoding: "utf-8", mode: 0o600 });
-}
 
 // ---------------------------------------------------------------------------
 // #3 collision-resistant digest
@@ -132,7 +101,7 @@ describe("ScopedDurableBackend (child side effects under root)", () => {
     scoped.setWorkflowStatus(CHILD, "completed");
     assert.equal(root.getWorkflow(CHILD), undefined);
     assert.equal(scoped.listResumableWorkflows().length, 0);
-    assert.equal(scoped.toCacheEntry(CHILD), undefined);
+    assert.equal(scoped.toMetadata(CHILD), undefined);
   });
 
   test("listCheckpoints excludes sibling scopes (no double-prefix leakage)", () => {
@@ -215,60 +184,6 @@ describe("ctx.tool cancellation after side-effect resolves", () => {
 // #5 file-backed stale lock recovery
 // ---------------------------------------------------------------------------
 
-describe("FileDurableBackend stale lock recovery", () => {
-  let tmpDir: string;
-
-  beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "durable-stale-"));
-  });
-  afterEach(() => rmSync(tmpDir, { recursive: true, force: true }));
-
-  test("reclaims an abandoned lock directory and proceeds", () => {
-    const file = join(tmpDir, "state.json");
-    // Seed state so the first backend persists something.
-    const seed = new FileDurableBackend(file);
-    seed.registerWorkflow({ workflowId: ROOT, name: "w", inputs: {}, createdAt: 1, status: "running" });
-
-    // Simulate a crash leaving a stale lock directory. Stale reclaim requires
-    // an owner marker so a reclaiming process never deletes a freshly-created
-    // live lock by racing a markerless stale rm.
-    const lockDir = `${file}.lock`;
-    mkdirSync(lockDir);
-    writeAbandonedLockOwner(lockDir);
-    const old = new Date(Date.now() - 60_000);
-    utimesSync(lockDir, old, old);
-
-    // A new backend instance must recover the stale lock and succeed.
-    const recovered = new FileDurableBackend(file);
-    recovered.registerWorkflow({ workflowId: "wf-after-crash", name: "w2", inputs: {}, createdAt: 2, status: "running" });
-
-    // Both workflows are present after recovery.
-    const reloaded = new FileDurableBackend(file);
-    assert.notEqual(reloaded.getWorkflow(ROOT), undefined);
-    assert.notEqual(reloaded.getWorkflow("wf-after-crash"), undefined);
-    // The lock directory was removed by the recovered write.
-    assert.equal(existsSync(lockDir), false);
-  });
-
-  test("does not reclaim a fresh (non-stale) lock directory", () => {
-    const file = join(tmpDir, "state.json");
-    const seed = new FileDurableBackend(file);
-    seed.registerWorkflow({ workflowId: ROOT, name: "w", inputs: {}, createdAt: 1, status: "running" });
-
-    // A live lock created moments ago remains on disk (not reclaimed).
-    const lockDir = `${file}.lock`;
-    mkdirSync(lockDir);
-    assert.equal(existsSync(lockDir), true);
-    // A fresh lock is not treated as stale: the recoverable path only triggers
-    // for backdated locks. We verify the stale check indirectly by confirming
-    // the lock directory is untouched by a read-only load.
-    const reader = new FileDurableBackend(file);
-    assert.notEqual(reader.getWorkflow(ROOT), undefined);
-    // Lock still present (reader did not write).
-    assert.equal(existsSync(lockDir), true);
-    rmSync(lockDir, { recursive: true, force: true });
-  });
-});
 
 // ---------------------------------------------------------------------------
 // #1b run()-level: child ctx.tool side effects land under the root workflow id

@@ -1,12 +1,14 @@
 import type { ExtensionAPI } from "@bastani/atomic";
 import { APP_NAME, getEnvValue } from "@bastani/atomic";
-import type { Attachment, Message, SessionInfo } from "./types.ts";
+import type { Attachment, Message, SessionInfo, SupervisorRegistration } from "./types.ts";
+import { DEFAULT_GROUP, normalizeGroup } from "./group.js";
 
 
 export const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
 export const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
 export const SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT = "subagent:result-intercom-delivery";
 export const SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT = "subagent:terminal-ordering-barrier";
+export const SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT = "subagent:supervisor-authorization";
 export const INBOUND_FLUSH_DELAY_MS = 200;
 export const INBOUND_IDLE_RETRY_MS = 500;
 export const DEFAULT_UNNAMED_SESSION_ALIAS_PREFIX = "subagent-chat";
@@ -16,6 +18,8 @@ const SUBAGENT_RUN_ID_ENV = `${ENV_PREFIX}_SUBAGENT_RUN_ID`;
 const SUBAGENT_CHILD_AGENT_ENV = `${ENV_PREFIX}_SUBAGENT_CHILD_AGENT`;
 const SUBAGENT_CHILD_INDEX_ENV = `${ENV_PREFIX}_SUBAGENT_CHILD_INDEX`;
 const SUBAGENT_INTERCOM_SESSION_NAME_ENV = `${ENV_PREFIX}_SUBAGENT_INTERCOM_SESSION_NAME`;
+const SUBAGENT_SUPERVISOR_CAPABILITY_ENV = `${ENV_PREFIX}_SUBAGENT_SUPERVISOR_CAPABILITY`;
+const SUBAGENT_SUPERVISOR_SESSION_ID_ENV = `${ENV_PREFIX}_SUBAGENT_SUPERVISOR_SESSION_ID`;
 
 export interface ChildOrchestratorMetadata {
   orchestratorTarget: string;
@@ -23,11 +27,13 @@ export interface ChildOrchestratorMetadata {
   agent: string;
   index: string;
   sessionName?: string;
+  supervisor?: SupervisorRegistration;
 }
 
 export interface InboundMessageEntry {
   from: SessionInfo;
   message: Message;
+  channel?: "supervisor";
   replyCommand?: string;
   bodyText: string;
 }
@@ -79,12 +85,17 @@ export function readChildOrchestratorMetadata(): ChildOrchestratorMetadata | nul
     return null;
   }
   const sessionName = getEnvValue(SUBAGENT_INTERCOM_SESSION_NAME_ENV)?.trim();
+  const capability = getEnvValue(SUBAGENT_SUPERVISOR_CAPABILITY_ENV)?.trim();
+  const supervisorSessionId = getEnvValue(SUBAGENT_SUPERVISOR_SESSION_ID_ENV)?.trim();
   return {
     orchestratorTarget,
     runId,
     agent,
     index,
     ...(sessionName ? { sessionName } : {}),
+    ...(capability && supervisorSessionId
+      ? { supervisor: { capability, supervisorSessionId } }
+      : {}),
   };
 }
 export function formatChildOrchestratorMessage(kind: "ask" | "update" | "interview", metadata: ChildOrchestratorMetadata, message: string): string {
@@ -414,7 +425,9 @@ export function formatSessionLabel(session: SessionInfo, duplicates: Set<string>
 }
 export function formatSessionListRow(session: SessionInfo, currentCwd: string, isSelf: boolean): string {
   const name = session.name || "Unnamed session";
-  const tags = [isSelf ? "self" : session.cwd === currentCwd ? "same cwd" : undefined, session.status]
+  const normalizedGroup = normalizeGroup(session.group);
+  const groupTag = normalizedGroup !== DEFAULT_GROUP ? `group: ${normalizedGroup}` : undefined;
+  const tags = [isSelf ? "self" : session.cwd === currentCwd ? "same cwd" : undefined, session.status, groupTag]
     .filter((tag): tag is string => Boolean(tag));
   const suffix = tags.length ? ` [${tags.join(", ")}]` : "";
   return `• ${name} (${shortSessionId(session.id)}) — ${session.cwd} (${session.model})${suffix}`;

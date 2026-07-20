@@ -57,6 +57,12 @@ export interface RunOpts extends Omit<AuthoringContract.RunOpts, "adapters" | "s
   signal?: AbortSignal;
   /** Yield to the next event-loop turn before invoking user workflow code. */
   deferWorkflowStart?: boolean;
+  /**
+   * Invoked once the run has persisted `run.start`, registered its durable
+   * invocation metadata, and is about to execute the workflow body. Callers
+   * can finalize a source claim only after this startup-admission signal.
+   */
+  onWorkflowStartReady?: () => void;
   /** Resolved runtime configuration. */
   config?: WorkflowRuntimeConfig;
   /** Optional model catalog used for fallback validation/resolution. */

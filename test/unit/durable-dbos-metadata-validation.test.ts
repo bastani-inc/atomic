@@ -40,26 +40,31 @@ function createMockSdk(): DbosSdkHandle & { readonly state: MockDbosState } {
   };
 }
 
-test("DBOS hydration preserves and hides a latest malformed current metadata record", async () => {
+test("DBOS hydration hides malformed and non-current metadata without mutating it", async () => {
   const sdk = createMockSdk();
   const session1 = new DbosDurableBackend(sdk);
   session1.registerWorkflow({ workflowId: "wf-meta-valid", name: "meta-valid", inputs: { x: 1 }, createdAt: 10, status: "running" });
   session1.recordCheckpoint({ kind: "tool", workflowId: "wf-meta-valid", checkpointId: "tool:valid", name: "meta-step", argsHash: "h-valid", output: "ok", completedAt: 11 });
   session1.setWorkflowStatus("wf-meta-valid", "paused");
   await session1.flush();
-  const malformedEntries: readonly WorkflowSerializableValue[] = [
+  const malformedMetadata: readonly WorkflowSerializableValue[] = [
     null,
-    ["not", "an", "entry"],
-    "not-an-entry",
-    { type: "workflow.durable.checkpoint", workflowId: 42, name: "bad", inputs: {}, status: "paused", completedCheckpoints: 9, pendingPrompts: 0, ts: 999 },
-    { type: "workflow.durable.checkpoint", workflowId: "wf-meta-valid" },
+    ["not", "metadata"],
+    "not-metadata",
+    { workflowId: 42, name: "bad", inputs: {}, status: "paused", completedCheckpoints: 9, pendingPrompts: 0 },
+    { workflowId: "wf-meta-valid" },
   ];
-  malformedEntries.forEach((entry, index) => {
+  malformedMetadata.forEach((metadata, index) => {
     sdk.state.steps.set(`wf-meta-valid:checkpoint:__atomic_metadata:999999999999${index}:malformed`, {
       __atomicDurableMetadata: true,
-      version: 2,
-      entry,
+      version: 3,
+      metadata,
     });
+  });
+  sdk.state.steps.set("wf-meta-valid:checkpoint:__atomic_metadata:9999999999999:non-current", {
+    __atomicDurableMetadata: true,
+    version: 2,
+    metadata: { workflowId: "wf-meta-valid" },
   });
 
   const fresh = new DbosDurableBackend(sdk);

@@ -26,19 +26,21 @@ function fixture(options: { send?: SendBehavior; resolveGate?: Promise<void> } =
 	const tools = new Map<string, Tool>();
 	const slot = new ReplyWaiterSlot();
 	const sent: Array<{ to: string; message: { messageId?: string; text: string } }> = [];
+	const send = async (to: string, message: { messageId?: string; text: string }) => {
+		if (options.send?.delayMs) await Bun.sleep(options.send.delayMs);
+		if (options.send?.throwError) throw options.send.throwError;
+		sent.push({ to, message });
+		return {
+			id: message.messageId ?? "sent",
+			delivered: options.send?.delivered ?? true,
+			reason: options.send?.reason,
+		};
+	};
 	const client = {
 		sessionId: "self-id",
 		async listSessions() { return []; },
-		async send(to: string, message: { messageId?: string; text: string }) {
-			if (options.send?.delayMs) await Bun.sleep(options.send.delayMs);
-			if (options.send?.throwError) throw options.send.throwError;
-			sent.push({ to, message });
-			return {
-				id: message.messageId ?? "sent",
-				delivered: options.send?.delivered ?? true,
-				reason: options.send?.reason,
-			};
-		},
+		send,
+		sendToSupervisor: send,
 	};
 	const pi = {
 		registerTool(tool: Tool & { name: string }) { tools.set(tool.name, tool); },
@@ -225,6 +227,13 @@ describe("concurrent blocking intercom requests", () => {
 			content: { text: "Wrong thread" },
 		});
 		assert.equal(misrouted, false, "replies to other threads never resolve the waiter");
+    const wrongSender = routeIncomingReply(waiter, { ...from, id: "parent-or-unrelated-session" }, {
+      id: "wrong-sender",
+      timestamp: Date.now(),
+      replyTo: waiter.replyTo,
+      content: { text: "Right thread, wrong session" },
+    });
+    assert.equal(wrongSender, false, "parent or unrelated sessions cannot resolve a child-to-child ask");
 		current.replyToPending();
 		assert.match((await winner).content[0]?.text ?? "", /Approved/);
 	});

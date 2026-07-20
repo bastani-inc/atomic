@@ -10,7 +10,7 @@ InteractiveModeBase.prototype.getLoginProviderOptions = function(this: Interacti
     );
     const options: AuthSelectorProvider[] = oauthProviders.map((provider) => ({
       id: provider.id,
-      name: provider.name,
+      name: provider.loginLabel ?? provider.name,
       authType: "oauth",
     }));
 
@@ -152,8 +152,8 @@ InteractiveModeBase.prototype.showOAuthSelector = async function(this: Interacti
           }
 
           try {
-            this.session.modelRegistry.authStorage.logout(providerOption.id);
-            this.session.modelRegistry.refresh();
+            await this.session.modelRegistry.authStorage.logoutAsync(providerOption.id);
+            await this.session.modelRegistry.refresh();
             await this.updateAvailableProviderCount();
             this.setupAutocompleteProvider();
             const message =

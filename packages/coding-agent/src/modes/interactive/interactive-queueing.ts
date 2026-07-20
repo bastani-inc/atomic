@@ -65,7 +65,7 @@ InteractiveModeBase.prototype.restoreQueuedMessagesToEditor = function(this: Int
     if (allQueued.length === 0) {
       this.updatePendingMessagesDisplay();
       if (options?.abort) {
-        this.agent.abort();
+        void this.session.abort();
       }
       return 0;
     }
@@ -74,7 +74,7 @@ InteractiveModeBase.prototype.restoreQueuedMessagesToEditor = function(this: Int
     this.editor.setText(combinedText);
     this.updatePendingMessagesDisplay();
     if (options?.abort) {
-      this.agent.abort();
+      void this.session.abort();
     }
     return allQueued.length;
   };

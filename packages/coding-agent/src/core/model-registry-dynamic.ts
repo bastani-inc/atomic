@@ -1,17 +1,72 @@
 import {
 	type Api,
+	getApiProvider,
 	type Model,
-	type OAuthProviderInterface,
 	registerApiProvider,
 	type SimpleStreamOptions,
+	unregisterApiProviders,
 } from "@earendil-works/pi-ai/compat";
-import { registerOAuthProvider } from "@earendil-works/pi-ai/oauth";
 import { warnDeprecation } from "../utils/deprecation.ts";
 import { normalizeContextWindowOptions, validateContextWindowValue } from "./context-window.ts";
 import { applyModelOverride } from "./model-registry-builtins.ts";
 import type { DynamicProviderApplyInput, ProviderConfigInput } from "./model-registry-types.ts";
+import { registerLegacyOAuthProvider, unregisterLegacyOAuthProviders } from "./oauth-provider-bridge.ts";
 import { isLegacyEnvVarNameConfigValue } from "./resolve-config-value.ts";
 
+
+type RuntimeApiProvider = Parameters<typeof registerApiProvider>[0];
+type ActiveApiProvider = NonNullable<ReturnType<typeof getApiProvider>>;
+
+interface RuntimeApiRegistration {
+	sourceId: string;
+	provider: RuntimeApiProvider;
+	activeProvider?: ActiveApiProvider;
+}
+
+const runtimeApiRegistrations = new Map<Api, RuntimeApiRegistration[]>();
+const runtimeApiFallbacks = new Map<Api, ActiveApiProvider>();
+
+function unregisterRuntimeApiProvider(sourceId: string): void {
+	for (const [api, registrations] of runtimeApiRegistrations) {
+		const index = registrations.findIndex((entry) => entry.sourceId === sourceId);
+		if (index < 0) continue;
+		const [removed] = registrations.splice(index, 1);
+		if (removed && getApiProvider(api) === removed.activeProvider) {
+			unregisterApiProviders(sourceId);
+			const previous = registrations.at(-1);
+			if (previous) {
+				registerApiProvider(previous.provider, previous.sourceId);
+				previous.activeProvider = getApiProvider(api);
+			} else {
+				const fallback = runtimeApiFallbacks.get(api);
+				if (fallback) registerApiProvider(fallback, `atomic:restored-api:${api}`);
+			}
+		}
+		if (registrations.length === 0) {
+			runtimeApiRegistrations.delete(api);
+			runtimeApiFallbacks.delete(api);
+		}
+	}
+}
+
+function registerRuntimeApiProvider(provider: RuntimeApiProvider, sourceId: string): void {
+	unregisterRuntimeApiProvider(sourceId);
+	const registrations = runtimeApiRegistrations.get(provider.api) ?? [];
+	if (registrations.length === 0) {
+		const fallback = getApiProvider(provider.api);
+		if (fallback) runtimeApiFallbacks.set(provider.api, fallback);
+	}
+	const registration: RuntimeApiRegistration = { sourceId, provider };
+	registrations.push(registration);
+	runtimeApiRegistrations.set(provider.api, registrations);
+	registerApiProvider(provider, sourceId);
+	registration.activeProvider = getApiProvider(provider.api);
+}
+
+export function unregisterProviderRuntime(sourceId: string): void {
+	unregisterRuntimeApiProvider(sourceId);
+	unregisterLegacyOAuthProviders(sourceId);
+}
 function validateContextWindowOptions(providerName: string, modelId: string, options: readonly number[] | undefined): void {
 	for (const option of options ?? []) {
 		if (validateContextWindowValue(option)) {
@@ -123,27 +178,18 @@ export function validateProviderConfig(providerName: string, config: ProviderCon
 }
 
 export function applyProviderConfigToModels(input: DynamicProviderApplyInput): Model<Api>[] {
-	const { providerName, config, authStorage, modelOverrides, storeProviderRequestConfig, storeModelHeaders } = input;
+	const { providerName, registrationSource, config, authStorage, modelOverrides, storeProviderRequestConfig, storeModelHeaders } = input;
 	let models = input.models;
 
-	if (config.oauth) {
-		const oauthProvider: OAuthProviderInterface = {
-			...config.oauth,
-			id: providerName,
-		};
-		registerOAuthProvider(oauthProvider);
-	}
+	if (input.registerRuntime && config.oauth) registerLegacyOAuthProvider(providerName, config.oauth, registrationSource);
 
-	if (config.streamSimple) {
+	if (input.registerRuntime && config.streamSimple) {
 		const streamSimple = config.streamSimple;
-		registerApiProvider(
-			{
-				api: config.api!,
-				stream: (model, context, options) => streamSimple(model, context, options as SimpleStreamOptions),
-				streamSimple,
-			},
-			`provider:${providerName}`,
-		);
+		registerRuntimeApiProvider({
+			api: config.api!,
+			stream: (model, context, options) => streamSimple(model, context, options as SimpleStreamOptions),
+			streamSimple,
+		}, registrationSource);
 	}
 
 	storeProviderRequestConfig(providerName, config);

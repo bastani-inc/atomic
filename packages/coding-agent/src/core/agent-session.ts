@@ -31,6 +31,8 @@ import type { AgentSessionInternalSurface, AgentSessionPublicSurface } from "./a
 import { agentSessionMessageQueueMethods } from "./agent-session-message-queue.ts";
 import { agentSessionModelsMethods } from "./agent-session-models.ts";
 import { agentSessionPromptMethods } from "./agent-session-prompt.ts";
+import { agentSessionPostToolCompactionMethods } from "./agent-session-post-tool-compaction.ts";
+import type { PendingPostToolCompactionGuard } from "./agent-session-post-tool-compaction.ts";
 import { agentSessionRetryMethods } from "./agent-session-retry.ts";
 import { agentSessionStateMethods } from "./agent-session-state.ts";
 import { agentSessionToolHooksMethods } from "./agent-session-tool-hooks.ts";
@@ -91,6 +93,9 @@ export class AgentSession {
 	protected _postCompactionContinuationToken = 0;
 	protected _lengthContinuationAttempts = 0;
 	protected _outputBudgetErrorContinuationAttempts = 0;
+	protected _postToolCompactionPreflightError: string | undefined = undefined;
+	protected _pendingPostToolCompactionGuard: PendingPostToolCompactionGuard | undefined = undefined;
+	protected _terminatingToolCallIds = new Set<string>();
 	protected _branchSummaryAbortController: AbortController | undefined = undefined;
 	protected _retryAbortController: AbortController | undefined = undefined;
 	protected _retryAttempt = 0;
@@ -186,6 +191,7 @@ Object.assign(
 	agentSessionModelsMethods,
 	agentSessionCompactionMethods,
 	agentSessionAutoCompactionMethods,
+	agentSessionPostToolCompactionMethods,
 	agentSessionExtensionBindingsMethods,
 	agentSessionToolRegistryMethods,
 	agentSessionRetryMethods,

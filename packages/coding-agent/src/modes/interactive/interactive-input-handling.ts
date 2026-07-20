@@ -1,6 +1,8 @@
 import { InteractiveModeBase, seedStartupInput } from "./interactive-mode-base.ts";
 import { pasteClipboardImageToEditor, recordTimeSinceReset } from "./interactive-mode-deps.ts";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
+import { interruptBlockedInteractiveEngine } from "../interactive-engine/extension-ui-bridge.ts";
+import { routeGlobalClearInput } from "./interactive-global-clear.ts";
 
 InteractiveModeBase.prototype.runUserPromptTurn = async function(this: InteractiveModeBase, userInput: string): Promise<void> {
     // Show the working spinner immediately on submit so there is no visible gap
@@ -42,17 +44,18 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function(this: Interacti
   };
 
 InteractiveModeBase.prototype.setupKeyHandlers = function(this: InteractiveModeBase): void {
-    this.ui.addInputListener((data) => {
-      if (!this.keybindings.matches(data, "app.clear")) return undefined;
-      if (this.ui.hasOverlay()) return undefined;
-      this.handleCtrlC();
-      this.ui.requestRender();
-      return { consume: true };
-    });
+    this.ui.addInputListener((data) => routeGlobalClearInput(data, {
+      matchesClear: (candidate) => this.keybindings.matches(candidate, "app.clear"),
+      hasOverlay: this.ui.hasOverlay(),
+      blockingInlineCustomUiActive: this.blockingInlineCustomUiDepth > 0,
+      onClear: () => this.handleCtrlC(),
+      requestRender: () => this.ui.requestRender(),
+    }));
 
     // Set up handlers on defaultEditor - they use this.editor for text access
     // so they work correctly regardless of which editor is active
     this.defaultEditor.onEscape = () => {
+      if (!this.session.isStreaming && interruptBlockedInteractiveEngine(this.runtimeHost)) return;
       if (this.session.isStreaming) {
         this.restoreQueuedMessagesToEditor({ abort: true });
       } else if (this.session.isBashRunning) {
@@ -175,7 +178,12 @@ InteractiveModeBase.prototype.recoverCookedStartupInput = function(this: Interac
     const cookedLines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
     const isCommandLike = (line: string | undefined) =>
       line !== undefined && (line.startsWith("/") || line.startsWith("!"));
-    const singleCommandLike = cookedLines.length === 1 && isCommandLike(cookedLines[0]);
+    // A raw startup capture distinguishes drafts from Enter-terminated submissions.
+    // Never reinterpret its visible command-like draft (including a bare "/") as
+    // submitted merely because header/chat initialization is now draining input.
+    const singleCommandLike = this.options.startupInputCapture === undefined
+      && cookedLines.length === 1
+      && isCommandLike(cookedLines[0]);
     if (cookedLines.length < 2 && !singleCommandLike) return false;
 
     this.startupCookedInputRecovered = true;

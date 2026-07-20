@@ -9,6 +9,7 @@ EXECUTION (use exactly ONE mode):
 • PARALLEL: { tasks: [{agent,task,count?,output?,reads?,progress?}, ...], concurrency?: number, worktree?: true } - independent concurrent tasks (worktree: isolate each task in a git worktree)
 • Optional context: { context: "fresh" | "fork" } (default: if any requested agent has defaultContext: "fork", the whole invocation uses fork; otherwise "fresh"; inspect agent defaults via { action: "list" })
 • async:true is selective for genuinely long-running/background work; foreground is appropriate when the parent needs the result before proceeding
+• group (string | true) sets the intercom group for spawned children so same-group subagents can intercom each other but stay isolated from other groups. Boolean true or the trimmed, case-insensitive string sentinel "true"/"auto" auto-generates one shared group per parallel set; those names are reserved and cannot be literal groups. Defaults to the current session/stage's group (subagents inherit their launching stage's group). Only applied when the child has intercom access; contact_supervisor still reaches the supervisor across groups.
 CHAIN TEMPLATE VARIABLES (use in task strings):
 • {task} - The original task/request from the user
 • {previous} - Text response from the previous step (empty for first step)

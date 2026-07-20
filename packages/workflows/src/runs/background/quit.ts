@@ -1,7 +1,7 @@
 import type { PauseResult } from "./status.js";
 import { store as defaultStore } from "../../shared/store.js";
 import type { Store } from "../../shared/store-public-types.js";
-import type { StageSnapshot } from "../../shared/store-types.js";
+import type { RunSnapshot, StageSnapshot } from "../../shared/store-types.js";
 import { expandWorkflowGraph } from "../../shared/expanded-workflow-graph.js";
 import { topLevelWorkflowRuns } from "../../shared/run-visibility.js";
 import {
@@ -11,6 +11,7 @@ import {
 } from "../foreground/stage-control-registry.js";
 import { getDurableBackend } from "../../durable/factory.js";
 import type { DurableWorkflowBackend } from "../../durable/backend.js";
+import { recordRunTimingCheckpoint } from "../../durable/run-timing.js";
 import {
   getLoadableDurableWorkflow,
   transitionDurableWorkflowStatus,
@@ -90,7 +91,7 @@ export async function quitRun(
   const current = activeStore.runs().find((candidate) => candidate.id === runId);
   if (current === undefined) return { ok: false, runId, reason: "not_found" };
   if (current.endedAt !== undefined) return { ok: false, runId, reason: "already_ended" };
-  const durableTransition = await markDurableQuit(runId);
+  const durableTransition = await markDurableQuit(runId, current);
   if (durableTransition === "refused") return { ok: false, runId, reason: "already_ended" };
   for (const pausedRunId of pausedRunIds) activeStore.recordRunPaused(pausedRunId);
   activeStore.recordRunPaused(runId, undefined, { exitReason: "quit", resumable: true });
@@ -115,7 +116,7 @@ function controllableHandles(
   );
 }
 
-async function markDurableQuit(runId: string): Promise<"transitioned" | "not_needed" | "refused"> {
+async function markDurableQuit(runId: string, run: RunSnapshot): Promise<"transitioned" | "not_needed" | "refused"> {
   const backend = discoverDurableQuitBackend(runId);
   if (backend === undefined) return "not_needed";
   // The workflow is durably tracked, so a failure to persist the paused
@@ -125,7 +126,10 @@ async function markDurableQuit(runId: string): Promise<"transitioned" | "not_nee
     backend, runId, ["running", "paused"], "paused", undefined, true,
   );
   if (!transitioned) return "refused";
-  await backend.flush?.();
+  // Persist the exact accumulated run elapsed at quit time so a later durable
+  // resume seeds the total workflow duration with prior-session time.
+  recordRunTimingCheckpoint(backend, run);
+  await backend.flush();
   return "transitioned";
 }
 

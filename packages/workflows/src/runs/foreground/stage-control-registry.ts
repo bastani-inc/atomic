@@ -26,6 +26,7 @@
  */
 
 import type { AgentSession, AgentSessionEvent } from "@bastani/atomic";
+import type { StageUserMessageDeliveryAction } from "./stage-runner-types.js";
 
 export type StageControlStatus =
   | "pending"
@@ -63,6 +64,12 @@ export interface StageControlHandle {
   pendingToolExecutionEvents?(): readonly AgentSessionEvent[];
   /** Ensure the SDK session exists. Cheap when already attached. */
   ensureAttached(): Promise<void>;
+  /** Deliver through the idle-aware session primitive and report the actual action. */
+  sendUserMessage?(
+    text: string,
+    options?: { readonly deliverAs?: "steer" | "followUp" },
+  ): Promise<StageUserMessageDeliveryAction>;
+
   /** Send a prompt. Use only when the stage is idle / not streaming. */
   prompt(text: string): Promise<void>;
   /** Steer the current streaming operation (interrupt mid-turn). */
@@ -79,7 +86,7 @@ export interface StageControlHandle {
    * Release a paused stage. If `message` is provided it is sent as the
    * next user message before resuming.
    */
-  resume(message?: string): Promise<void>;
+  resume(message?: string): Promise<void | StageUserMessageDeliveryAction>;
   /**
    * Subscribe to AgentSession events. The pending-listener semantics
    * from `InternalStageContext.subscribe` apply: listeners registered

@@ -21,6 +21,12 @@ async function handoff(bus: ReturnType<typeof eventBus>, route: { requestId: str
 }
 
 const bridgedAgent = () => ({ ...agentConfig(), systemPrompt: "Intercom orchestration channel:\nCoordinate." });
+
+// Fake-CLI children pay real runtime process startup (often 100ms+) before
+// their scripted output delay, which lands too close to the default 250ms
+// idle watchdog on slower or loaded machines. None of these tests assert
+// watchdog behavior, so run them with generous timeouts to stay deterministic.
+const DETACH_TIMEOUTS = { idleMs: 4000, wallMs: 10_000 };
 describe("foreground intercom detach routing", () => {
 
   test("reports the eventual result exactly once and finalizes artifacts after detach", async () => {
@@ -93,7 +99,7 @@ const timer = setInterval(() => {
       assert.equal(a.exitCode, -2);
       assert.equal(b.detached, undefined);
       assert.equal(b.exitCode, 0);
-    });
+    }, DETACH_TIMEOUTS);
   });
 
   test("lifecycle cancellation still terminates a detached child and cleans listeners once", async () => {
@@ -115,7 +121,7 @@ const timer = setInterval(() => {
       assert.equal(recovered.length, 1);
       assert.notEqual(recovered[0]?.exitCode, 0);
       assert.equal(emitter.listenerCount(INTERCOM_DETACH_REQUEST_EVENT), 0);
-    });
+    }, DETACH_TIMEOUTS);
   });
 
   test("abort before detach terminates normally and leaves no detach listener", async () => {
@@ -132,9 +138,53 @@ const timer = setInterval(() => {
       assert.notEqual(result.exitCode, 0);
       assert.equal(result.detached, undefined);
       assert.equal(emitter.listenerCount(INTERCOM_DETACH_REQUEST_EVENT), 0);
-    });
+    }, DETACH_TIMEOUTS);
   });
 
+
+  test("a parallel detach commit releases active sibling supervision while retaining both children", async () => {
+    const gateName = "release-parallel-detached-children";
+    const fakeScript = `import { existsSync } from "node:fs";
+import { join } from "node:path";
+const gate = join(process.cwd(), ${JSON.stringify(gateName)});
+const timer = setInterval(() => {
+  if (!existsSync(gate)) return;
+  clearInterval(timer);
+  console.log(${JSON.stringify(successEvent("parallel child recovered"))});
+}, 5);`;
+    await withFakeCli(fakeScript, async (dir) => {
+      const emitter = new EventEmitter();
+      const bus = eventBus(emitter);
+      const groupDetach = new AbortController();
+      const recovered: Array<{ exitCode: number }> = [];
+      const recoveredBoth = Promise.withResolvers<void>();
+      const launch = (index: number, target: string) => runSync(dir, [bridgedAgent()], "fake-worker", target, {
+        cwd: dir,
+        runId: "parallel-detach",
+        index,
+        intercomSessionName: target,
+        allowIntercomDetach: true,
+        intercomEvents: bus,
+        intercomDetachSignal: groupDetach.signal,
+        onIntercomDetachCommit: () => groupDetach.abort(),
+        onDetachedExit: (result) => {
+          recovered.push(result);
+          if (recovered.length === 2) recoveredBoth.resolve();
+        },
+      });
+      const first = launch(0, "child-a");
+      const sibling = launch(1, "child-b");
+      await Bun.sleep(25);
+      await handoff(bus, { requestId: "parallel-question", childIntercomTarget: "child-a" });
+
+      const placeholders = await Promise.all([first, sibling]);
+      assert.ok(placeholders.every((result) => result.detached === true));
+      fs.writeFileSync(join(dir, gateName), "release", "utf8");
+      await recoveredBoth.promise;
+      assert.equal(recovered.length, 2);
+      assert.ok(recovered.every((result) => result.exitCode === 0));
+    }, { idleMs: 4_000, wallMs: 4_000 });
+  });
   test("background-style execution ignores targeted detach requests", async () => {
     await withFakeCliEvent(successEvent("background result"), 80, async (dir) => {
       const emitter = new EventEmitter();
@@ -150,7 +200,7 @@ const timer = setInterval(() => {
       assert.equal(result.exitCode, 0);
       assert.match(result.finalOutput ?? "", /background result/);
       assert.equal(emitter.listenerCount(INTERCOM_DETACH_REQUEST_EVENT), 0);
-    });
+    }, DETACH_TIMEOUTS);
   });
 
   test("duplicate targeted delivery detaches and recovers the child only once", async () => {
@@ -158,9 +208,11 @@ const timer = setInterval(() => {
       const emitter = new EventEmitter();
       const bus = eventBus(emitter);
       const recovered: Array<{ finalOutput?: string }> = [];
+      const recoveredExit = Promise.withResolvers<void>();
       const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
         cwd: dir, runId: "duplicate", index: 0, intercomSessionName: "child-a",
-        allowIntercomDetach: true, intercomEvents: bus, onDetachedExit: result => recovered.push(result),
+        allowIntercomDetach: true, intercomEvents: bus,
+        onDetachedExit: result => { recovered.push(result); recoveredExit.resolve(); },
       });
       await Bun.sleep(20);
       const request = { requestId: "same", messageId: "same", senderId: "child-id", childIntercomTarget: "child-a", runtimeGeneration: 4 };
@@ -169,11 +221,12 @@ const timer = setInterval(() => {
       bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { ...request, phase: "commit" });
       bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { ...request, phase: "commit" });
       assert.equal((await pending).detached, true);
-      for (let i = 0; i < 20 && recovered.length === 0; i++) await Bun.sleep(10);
+      await recoveredExit.promise;
+      await Bun.sleep(0);
       assert.equal(recovered.length, 1);
       assert.match(recovered[0]?.finalOutput ?? "", /once/);
       assert.equal(emitter.listenerCount(INTERCOM_DETACH_REQUEST_EVENT), 0);
-    });
+    }, DETACH_TIMEOUTS);
   });
 
   test("rejects commit without a matching probe and rejects generation reuse", async () => {
@@ -191,7 +244,7 @@ const timer = setInterval(() => {
       const result = await pending;
       assert.equal(result.detached, undefined);
       assert.equal(result.exitCode, 0);
-    });
+    }, DETACH_TIMEOUTS);
   });
   test("legacy unscoped delivery still requires observed intercom tool start", async () => {
     await withFakeCliEvent(successEvent("normal"), 100, async (dir) => {
@@ -205,7 +258,7 @@ const timer = setInterval(() => {
       const result = await pending;
       assert.equal(result.detached, undefined);
       assert.equal(result.exitCode, 0);
-    });
+    }, DETACH_TIMEOUTS);
   });
 
   test("rejects missing and incorrect exact targets", async () => {
@@ -221,7 +274,7 @@ const timer = setInterval(() => {
       const result = await pending;
       assert.equal(result.detached, undefined);
       assert.equal(result.exitCode, 0);
-    });
+    }, DETACH_TIMEOUTS);
   });
 
   test("treats hostile-looking event content as inert fixture data", async () => {
@@ -233,6 +286,6 @@ const timer = setInterval(() => {
       });
       assert.equal(result.exitCode, 0);
       assert.equal(result.finalOutput, hostileText);
-    });
+    }, DETACH_TIMEOUTS);
   });
 });

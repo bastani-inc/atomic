@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { keyHint, type ExtensionAPI, type ExtensionContext } from "@bastani/atomic";
+import { keyHintIfBound, type ExtensionAPI, type ExtensionContext } from "@bastani/atomic";
 import { Key, matchesKey } from "@earendil-works/pi-tui";
 import { discoverAgents, discoverAgentsAll, type ChainConfig } from "../agents/agents.ts";
 import type { SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
@@ -164,7 +164,8 @@ async function requestSlashRun(
 			if (!ctx.hasUI) return;
 			const tool = update.currentTool ? ` ${update.currentTool}` : "";
 			const count = update.toolCount ?? 0;
-			ctx.ui.setStatus("subagent-slash", `${count} tools${tool} | ${keyHint("app.tools.expand", "live detail")}`);
+			const expandHint = keyHintIfBound("app.tools.expand", "live detail");
+			ctx.ui.setStatus("subagent-slash", `${count} tools${tool}${expandHint ? ` | ${expandHint}` : ""}`);
 		};
 
 		const onTerminalInput = ctx.hasUI

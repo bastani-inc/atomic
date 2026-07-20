@@ -58,7 +58,6 @@ export interface WorkflowExtensionRuntimeState {
   startWorkflowDiscoveryWarmup(onSettled?: () => void): void;
   runWithLifecycleSuppressedForPolicy<T>(policy: WorkflowExecutionPolicy, fn: () => Promise<T>): Promise<T>;
   setNotificationsActive(active: boolean): void;
-  setIntercomParentSession(session: string | null): void;
   updateHostStageSessionDir(sessionManager: SessionManager | undefined): void;
   /** Current default stage session directory, when the host set a non-default one. */
   resolveDefaultStageSessionDir(): string | undefined;
@@ -67,6 +66,7 @@ export interface WorkflowExtensionRuntimeState {
 export function createWorkflowExtensionRuntimeState(
   pi: ExtensionAPI,
   adapters: StageAdapters,
+  resolveCwd: () => string = () => pi.sessionManager?.getCwd?.() ?? process.cwd(),
 ): WorkflowExtensionRuntimeState {
   const persistenceRef = { current: makePersistencePort(pi, WORKFLOW_CONFIG_DEFAULTS.persistRuns) };
   const mcpPort = makeMcpPort(pi);
@@ -77,6 +77,7 @@ export function createWorkflowExtensionRuntimeState(
       persistRuns: WORKFLOW_CONFIG_DEFAULTS.persistRuns,
       statusFile: WORKFLOW_CONFIG_DEFAULTS.statusFile,
       resumeInFlight: WORKFLOW_CONFIG_DEFAULTS.resumeInFlight,
+      worktree: WORKFLOW_CONFIG_DEFAULTS.worktree,
     },
   };
   let statusWriterRef: StatusWriter = createStatusWriter(store, runtimeConfigRef.current);
@@ -121,25 +122,17 @@ export function createWorkflowExtensionRuntimeState(
     });
   };
 
-  let intercomParentSession: string | null = null;
-  const intercomPort = {
-    emit: typeof pi.events?.emit === "function"
-      ? (event: string, payload: Record<string, unknown>) => pi.events!.emit!(event, payload)
-      : undefined,
-    parentSession: () => intercomParentSession ?? undefined,
-  };
   const hostStageSessionDir: { current: string | undefined } = { current: undefined };
   const resolveDefaultStageSessionDir = (): string | undefined => hostStageSessionDir.current;
   const startupDiscovery = discoverStartupWorkflowsSync();
   const runtimeRef: { current: ExtensionRuntime } = {
     current: createExtensionRuntime({
       registry: startupDiscovery.registry,
-      cwd: process.cwd(),
+      cwd: resolveCwd(),
       adapters,
       cancellation: cancellationRegistry,
       persistence: persistenceRef.current,
       mcp: mcpPort,
-      intercom: intercomPort,
       config: runtimeConfigRef.current,
       resolveDefaultStageSessionDir,
     }),
@@ -149,11 +142,15 @@ export function createWorkflowExtensionRuntimeState(
   const runtimeProxy: ExtensionRuntime = {
     get registry() { return runtimeRef.current.registry; },
     dispatch(args, options) { return runtimeRef.current.dispatch(args, options); },
-    runDirect(args, options) { return runtimeRef.current.runDirect(args, options); },
     resumeFailedRun(sourceRunId, stageId, options) { return runtimeRef.current.resumeFailedRun(sourceRunId, stageId, options); },
     resumeDurableWorkflow(workflowIdOrPrefix, options) { return runtimeRef.current.resumeDurableWorkflow(workflowIdOrPrefix, options); },
-    listDurableResumable(sessionDir) { return runtimeRef.current.listDurableResumable(sessionDir); },
-    prepareDurableResumable(workflowIdOrPrefix, sessionDir) { return runtimeRef.current.prepareDurableResumable(workflowIdOrPrefix, sessionDir); },
+    listDurableResumable() { return runtimeRef.current.listDurableResumable(); },
+    prepareDurableResumable(workflowIdOrPrefix) { return runtimeRef.current.prepareDurableResumable(workflowIdOrPrefix); },
+    prepareDurableResumableForIds(workflowIds) {
+      const targeted = runtimeRef.current.prepareDurableResumableForIds;
+      if (targeted !== undefined) return targeted.call(runtimeRef.current, workflowIds);
+      return runtimeRef.current.prepareDurableResumable();
+    },
     prepareCompletedDurable() {
       return runtimeRef.current.prepareCompletedDurable?.() ?? Promise.resolve([]);
     },
@@ -192,12 +189,11 @@ export function createWorkflowExtensionRuntimeState(
     if (models === undefined) return runtimeProxy;
     return createExtensionRuntime({
       registry: runtimeRef.current.registry,
-      cwd: process.cwd(),
+      cwd: resolveCwd(),
       adapters,
       cancellation: cancellationRegistry,
       persistence: persistenceRef.current,
       mcp: mcpPort,
-      intercom: intercomPort,
       config: runtimeConfigRef.current,
       models,
       resolveDefaultStageSessionDir,
@@ -220,6 +216,7 @@ export function createWorkflowExtensionRuntimeState(
       persistRuns: effectiveConfig.persistRuns,
       statusFile: effectiveConfig.statusFile,
       resumeInFlight: effectiveConfig.resumeInFlight,
+      worktree: effectiveConfig.worktree,
     };
     lifecycleNotificationConfigRef.current = effectiveConfig.workflowNotifications;
     reinstallLifecycleNotifications();
@@ -231,12 +228,11 @@ export function createWorkflowExtensionRuntimeState(
   function rebuildRuntime(registry = runtimeRef.current.registry): void {
     runtimeRef.current = createExtensionRuntime({
       registry,
-      cwd: process.cwd(),
+      cwd: resolveCwd(),
       adapters,
       cancellation: cancellationRegistry,
       persistence: persistenceRef.current,
       mcp: mcpPort,
-      intercom: intercomPort,
       config: runtimeConfigRef.current,
       resolveDefaultStageSessionDir,
     });
@@ -434,7 +430,6 @@ export function createWorkflowExtensionRuntimeState(
       reinstallLifecycleNotifications();
       reinstallHilAnswerNotifications();
     },
-    setIntercomParentSession(session) { intercomParentSession = session; },
     updateHostStageSessionDir(sessionManager) {
       try {
         hostStageSessionDir.current = sessionManager?.usesDefaultSessionDir?.() === false

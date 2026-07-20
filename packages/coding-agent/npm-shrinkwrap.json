@@ -11,9 +11,10 @@
 			"dependencies": {
 				"@bastani/atomic-natives": "0.0.0",
 				"@bufbuild/protobuf": "^2.12.1",
-				"@earendil-works/pi-agent-core": "^0.80.7",
-				"@earendil-works/pi-ai": "^0.80.7",
-				"@earendil-works/pi-tui": "^0.80.7",
+				"@dbos-inc/dbos-sdk": "4.23.6",
+				"@earendil-works/pi-agent-core": "^0.80.10",
+				"@earendil-works/pi-ai": "^0.80.10",
+				"@earendil-works/pi-tui": "^0.80.10",
 				"@modelcontextprotocol/ext-apps": "^1.7.4",
 				"@modelcontextprotocol/sdk": "^1.25.1",
 				"@mozilla/readability": "^0.6.0",
@@ -21,6 +22,7 @@
 				"chalk": "5.6.2",
 				"cross-spawn": "7.0.6",
 				"diff": "8.0.4",
+				"embedded-postgres": "18.4.0-beta.17",
 				"glob": "13.0.6",
 				"highlight.js": "10.7.3",
 				"hosted-git-info": "9.0.3",
@@ -43,7 +45,6 @@
 				"zod": "^3.25.0 || ^4.0.0"
 			},
 			"optionalDependencies": {
-				"@dbos-inc/dbos-sdk": "4.23.6",
 				"@mariozechner/clipboard": "0.3.9"
 			},
 			"bin": {
@@ -644,16 +645,15 @@
 			},
 			"engines": {
 				"node": ">=20"
-			},
-			"optional": true
+			}
 		},
 		"node_modules/@earendil-works/pi-agent-core": {
-			"version": "0.80.7",
-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-0.80.7.tgz",
-			"integrity": "sha512-EFjyAuoz2kn24sR9Q5A86sZCG6mD+nz58DCsA2I2wxgmS50cF1tSLCBOZaHKI5U9Y3pJs4BefeK3LRkB5TdJag==",
+			"version": "0.80.10",
+			"resolved": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-0.80.10.tgz",
+			"integrity": "sha512-nwnOR3SuLYGRFfyQm8ri4Nj5VGVAvAM9GuqQd3u7BUQj0d6hmD2F8w7OHAAjThE3CuySIdM+v8E22QJG6/RfCg==",
 			"license": "MIT",
 			"dependencies": {
-				"@earendil-works/pi-ai": "^0.80.7",
+				"@earendil-works/pi-ai": "^0.80.10",
 				"ignore": "7.0.5",
 				"typebox": "1.1.38",
 				"yaml": "2.9.0"
@@ -678,9 +678,9 @@
 			"license": "MIT"
 		},
 		"node_modules/@earendil-works/pi-ai": {
-			"version": "0.80.7",
-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-0.80.7.tgz",
-			"integrity": "sha512-8RLKLwe5TFM9kKFMNu/lTzveduq4GxZbnlG6ba8FAhLeb5wJP4zbj1eBumKBRvggpFQnW5R/Vo2a8zTlHsV9SQ==",
+			"version": "0.80.10",
+			"resolved": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-0.80.10.tgz",
+			"integrity": "sha512-Moe/H8c87yacDGK9dPbWphZNjVsrb3nTrIHycOQJAkFEnY9PYxOOd74+ny44kATfPU9Dm7aTHefar3pZF+UKUA==",
 			"license": "MIT",
 			"dependencies": {
 				"@anthropic-ai/sdk": "0.91.1",
@@ -709,9 +709,9 @@
 			"license": "MIT"
 		},
 		"node_modules/@earendil-works/pi-tui": {
-			"version": "0.80.7",
-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-0.80.7.tgz",
-			"integrity": "sha512-1B2++fLZfgI3XMzW2BTpuDuam2uyHnUUEmsOvi5R0Ne9RAt59WjFV0G8ozX6l1Xafa9P5Y3eT4aDtRr/v/CUTA==",
+			"version": "0.80.10",
+			"resolved": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-0.80.10.tgz",
+			"integrity": "sha512-c2JO29PbhKPEQ6fgHQKAl0WhwuFqzWfzspMmP+8B5tpDuP+0mvarRbKKg8gq4b+pQx/QX+6aVS4ko7deoyjQjg==",
 			"license": "MIT",
 			"dependencies": {
 				"get-east-asian-width": "1.6.0",
@@ -720,6 +720,142 @@
 			"engines": {
 				"node": ">=22.19.0"
 			}
+		},
+		"node_modules/@embedded-postgres/darwin-arm64": {
+			"version": "18.4.0-beta.17",
+			"resolved": "https://registry.npmjs.org/@embedded-postgres/darwin-arm64/-/darwin-arm64-18.4.0-beta.17.tgz",
+			"integrity": "sha512-Kg1ZMNFzkVIJs3g4V2UYEc5X005km9rGinxFBH8R1sOU2Rblvz4pt2Uf93Pu8Rk273Ue9HIdrbMPpgUqwjUi0Q==",
+			"license": "MIT",
+			"engines": {
+				"node": ">=16"
+			},
+			"os": [
+				"darwin"
+			],
+			"cpu": [
+				"arm64"
+			],
+			"optional": true,
+			"hasInstallScript": true
+		},
+		"node_modules/@embedded-postgres/darwin-x64": {
+			"version": "18.4.0-beta.17",
+			"resolved": "https://registry.npmjs.org/@embedded-postgres/darwin-x64/-/darwin-x64-18.4.0-beta.17.tgz",
+			"integrity": "sha512-4tShSYWMxUQTSWoQAdLnHISvRj6L9gTch9/31ASJPg6wgyN64LDRwMcOINEWybM7N0ropJ3nTYhFT3UX1bKY5Q==",
+			"license": "MIT",
+			"engines": {
+				"node": ">=16"
+			},
+			"os": [
+				"darwin"
+			],
+			"cpu": [
+				"x64"
+			],
+			"optional": true,
+			"hasInstallScript": true
+		},
+		"node_modules/@embedded-postgres/linux-arm": {
+			"version": "18.4.0-beta.17",
+			"resolved": "https://registry.npmjs.org/@embedded-postgres/linux-arm/-/linux-arm-18.4.0-beta.17.tgz",
+			"integrity": "sha512-VuD1nFasN7yG57zpJcp6MBXM0nXqGfb8GBQV+f1FGJ17+VMNYLIFLhFp99UlY4xnWG74FQC4NPYw8eCwSTJ6qg==",
+			"license": "MIT",
+			"engines": {
+				"node": ">=16"
+			},
+			"os": [
+				"linux"
+			],
+			"cpu": [
+				"arm"
+			],
+			"optional": true,
+			"hasInstallScript": true
+		},
+		"node_modules/@embedded-postgres/linux-arm64": {
+			"version": "18.4.0-beta.17",
+			"resolved": "https://registry.npmjs.org/@embedded-postgres/linux-arm64/-/linux-arm64-18.4.0-beta.17.tgz",
+			"integrity": "sha512-TIzjtGnDGSD/LbdW0OWCEcbI+YVT0WKSfSr20TCkkP4UR8zeKe+QCZbO0/CM4hS9EWyZ4cDebjRvpRc3iMi6wg==",
+			"license": "MIT",
+			"engines": {
+				"node": ">=16"
+			},
+			"os": [
+				"linux"
+			],
+			"cpu": [
+				"arm64"
+			],
+			"optional": true,
+			"hasInstallScript": true
+		},
+		"node_modules/@embedded-postgres/linux-ia32": {
+			"version": "18.4.0-beta.17",
+			"resolved": "https://registry.npmjs.org/@embedded-postgres/linux-ia32/-/linux-ia32-18.4.0-beta.17.tgz",
+			"integrity": "sha512-aSRe4kknqRHuedtpo/rDIaqa8r9VrKIgW9p5FkJyIFqUUkIkxRqND1dg8xrDRREcSUXRJKS0x+j/AuxflgYIfg==",
+			"license": "MIT",
+			"engines": {
+				"node": ">=16"
+			},
+			"os": [
+				"linux"
+			],
+			"cpu": [
+				"ia32"
+			],
+			"optional": true,
+			"hasInstallScript": true
+		},
+		"node_modules/@embedded-postgres/linux-ppc64": {
+			"version": "18.4.0-beta.17",
+			"resolved": "https://registry.npmjs.org/@embedded-postgres/linux-ppc64/-/linux-ppc64-18.4.0-beta.17.tgz",
+			"integrity": "sha512-zO2RRUFdKRPplrdhmglG39VXJZzDXu3P3ONAG1sFPhGh89vbk24Btd5P7uOmQLIpWehzL0s+UqUWoeE/ZUKvgw==",
+			"license": "MIT",
+			"engines": {
+				"node": ">=16"
+			},
+			"os": [
+				"linux"
+			],
+			"cpu": [
+				"ppc64"
+			],
+			"optional": true,
+			"hasInstallScript": true
+		},
+		"node_modules/@embedded-postgres/linux-x64": {
+			"version": "18.4.0-beta.17",
+			"resolved": "https://registry.npmjs.org/@embedded-postgres/linux-x64/-/linux-x64-18.4.0-beta.17.tgz",
+			"integrity": "sha512-jVw/MdDtIX/vICH/DKIe6/mHpiCggdx6QVyza4vt/NbcZFsL0KhwglF6F1Koqx3gRBZ9XtN+vi63EsqSyqOSxA==",
+			"license": "MIT",
+			"engines": {
+				"node": ">=16"
+			},
+			"os": [
+				"linux"
+			],
+			"cpu": [
+				"x64"
+			],
+			"optional": true,
+			"hasInstallScript": true
+		},
+		"node_modules/@embedded-postgres/windows-x64": {
+			"version": "18.4.0-beta.17",
+			"resolved": "https://registry.npmjs.org/@embedded-postgres/windows-x64/-/windows-x64-18.4.0-beta.17.tgz",
+			"integrity": "sha512-AwRerliA4IGWyW5jWBvHt5vidVUSB0QQW9Tt2y7ScnmifnCb/awfxZr4BkBSTv+gNt8Djcddqs+xSF5Z6/CkTg==",
+			"license": "MIT",
+			"engines": {
+				"node": ">=16"
+			},
+			"os": [
+				"win32"
+			],
+			"cpu": [
+				"x64"
+			],
+			"optional": true,
+			"hasInstallScript": true
 		},
 		"node_modules/@esbuild/aix-ppc64": {
 			"version": "0.28.1",
@@ -1791,6 +1927,15 @@
 				"sprintf-js": "~1.0.2"
 			}
 		},
+		"node_modules/async-exit-hook": {
+			"version": "2.0.1",
+			"resolved": "https://registry.npmjs.org/async-exit-hook/-/async-exit-hook-2.0.1.tgz",
+			"integrity": "sha512-NW2cX8m1Q7KPA7a5M2ULQeZ2wR5qI5PAbw5L0UOMxdioVk9PMZ0h1TmyZEkPYrCvYjDlFICusOu1dlEKAAeXBw==",
+			"license": "MIT",
+			"engines": {
+				"node": ">=0.12.0"
+			}
+		},
 		"node_modules/balanced-match": {
 			"version": "4.0.4",
 			"resolved": "https://registry.npmjs.org/balanced-match/-/balanced-match-4.0.4.tgz",
@@ -1968,8 +2113,7 @@
 			"license": "MIT",
 			"engines": {
 				"node": ">=18"
-			},
-			"optional": true
+			}
 		},
 		"node_modules/content-disposition": {
 			"version": "1.1.0",
@@ -2022,7 +2166,6 @@
 			"engines": {
 				"node": ">=12.13"
 			},
-			"optional": true,
 			"funding": {
 				"url": "https://github.com/sponsors/mesqueeb"
 			}
@@ -2252,6 +2395,29 @@
 			"resolved": "https://registry.npmjs.org/ee-first/-/ee-first-1.1.1.tgz",
 			"integrity": "sha512-WMwm9LhRUo+WUaRN+vRuETqG89IgZphVSNkdFgeb6sS/E4OrDIN7t48CAewSHXc6C8lefD8KKfr5vY61brQlow==",
 			"license": "MIT"
+		},
+		"node_modules/embedded-postgres": {
+			"version": "18.4.0-beta.17",
+			"resolved": "https://registry.npmjs.org/embedded-postgres/-/embedded-postgres-18.4.0-beta.17.tgz",
+			"integrity": "sha512-ORT/A1YiO6ecpRHpyIIBgyCR/8ASqqYZuFw11aX9PkqTX3FUM5+9sNOXY1mGIixxsm2TWSIA5WghJEk7A5ZxVw==",
+			"license": "MIT",
+			"dependencies": {
+				"async-exit-hook": "^2.0.1",
+				"pg": "^8.7.3"
+			},
+			"optionalDependencies": {
+				"@embedded-postgres/darwin-arm64": "^18.4.0-beta.17",
+				"@embedded-postgres/darwin-x64": "^18.4.0-beta.17",
+				"@embedded-postgres/linux-arm": "^18.4.0-beta.17",
+				"@embedded-postgres/linux-arm64": "^18.4.0-beta.17",
+				"@embedded-postgres/linux-ia32": "^18.4.0-beta.17",
+				"@embedded-postgres/linux-ppc64": "^18.4.0-beta.17",
+				"@embedded-postgres/linux-x64": "^18.4.0-beta.17",
+				"@embedded-postgres/windows-x64": "^18.4.0-beta.17"
+			},
+			"engines": {
+				"node": ">=16"
+			}
 		},
 		"node_modules/encodeurl": {
 			"version": "2.0.0",
@@ -3051,7 +3217,6 @@
 			"engines": {
 				"node": ">=12.13"
 			},
-			"optional": true,
 			"funding": {
 				"url": "https://github.com/sponsors/mesqueeb"
 			}
@@ -3849,8 +4014,7 @@
 			},
 			"engines": {
 				"node": ">= 16.0.0"
-			},
-			"optional": true
+			}
 		},
 		"node_modules/pg-cloudflare": {
 			"version": "1.4.0",
@@ -3863,8 +4027,7 @@
 			"version": "2.14.0",
 			"resolved": "https://registry.npmjs.org/pg-connection-string/-/pg-connection-string-2.14.0.tgz",
 			"integrity": "sha512-XwWDGcLRGCXAR8F/AM5bG7Q+A3Wm2s6QeEjlOKZLlH3UYcguiqCWKyWXVag5TLTIjR7oOJUY8kcADaZgWPyLeg==",
-			"license": "MIT",
-			"optional": true
+			"license": "MIT"
 		},
 		"node_modules/pg-int8": {
 			"version": "1.0.1",
@@ -3873,8 +4036,7 @@
 			"license": "ISC",
 			"engines": {
 				"node": ">=4.0.0"
-			},
-			"optional": true
+			}
 		},
 		"node_modules/pg-pool": {
 			"version": "3.14.0",
@@ -3883,15 +4045,13 @@
 			"license": "MIT",
 			"peerDependencies": {
 				"pg": ">=8.0"
-			},
-			"optional": true
+			}
 		},
 		"node_modules/pg-protocol": {
 			"version": "1.15.0",
 			"resolved": "https://registry.npmjs.org/pg-protocol/-/pg-protocol-1.15.0.tgz",
 			"integrity": "sha512-cq9sECI5s0+uPUXjbz8ioyPJni6RzsRib0US67i5IoTZKw8fNeYlVE7u8F4dG7vEJJtc5wdD1K189lCCUwqWTQ==",
-			"license": "MIT",
-			"optional": true
+			"license": "MIT"
 		},
 		"node_modules/pg-types": {
 			"version": "2.2.0",
@@ -3907,8 +4067,7 @@
 			},
 			"engines": {
 				"node": ">=4"
-			},
-			"optional": true
+			}
 		},
 		"node_modules/pgpass": {
 			"version": "1.0.5",
@@ -3917,8 +4076,7 @@
 			"license": "MIT",
 			"dependencies": {
 				"split2": "^4.1.0"
-			},
-			"optional": true
+			}
 		},
 		"node_modules/pkce-challenge": {
 			"version": "5.0.1",
@@ -3936,8 +4094,7 @@
 			"license": "MIT",
 			"engines": {
 				"node": ">=4"
-			},
-			"optional": true
+			}
 		},
 		"node_modules/postgres-bytea": {
 			"version": "1.0.1",
@@ -3946,8 +4103,7 @@
 			"license": "MIT",
 			"engines": {
 				"node": ">=0.10.0"
-			},
-			"optional": true
+			}
 		},
 		"node_modules/postgres-date": {
 			"version": "1.0.7",
@@ -3956,8 +4112,7 @@
 			"license": "MIT",
 			"engines": {
 				"node": ">=0.10.0"
-			},
-			"optional": true
+			}
 		},
 		"node_modules/postgres-interval": {
 			"version": "1.2.0",
@@ -3969,8 +4124,7 @@
 			},
 			"engines": {
 				"node": ">=0.10.0"
-			},
-			"optional": true
+			}
 		},
 		"node_modules/powershell-utils": {
 			"version": "0.1.0",
@@ -4212,9 +4366,9 @@
 			}
 		},
 		"node_modules/semver": {
-			"version": "7.8.0",
-			"resolved": "https://registry.npmjs.org/semver/-/semver-7.8.0.tgz",
-			"integrity": "sha512-AcM7dV/5ul4EekoQ29Agm5vri8JNqRyj39o0qpX6vDF2GZrtutZl5RwgD1XnZjiTAfncsJhMI48QQH3sN87YNA==",
+			"version": "7.8.5",
+			"resolved": "https://registry.npmjs.org/semver/-/semver-7.8.5.tgz",
+			"integrity": "sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA==",
 			"license": "ISC",
 			"bin": {
 				"semver": "bin/semver.js"
@@ -4260,7 +4414,6 @@
 			"engines": {
 				"node": ">=10"
 			},
-			"optional": true,
 			"funding": {
 				"url": "https://github.com/sponsors/sindresorhus"
 			}
@@ -4402,8 +4555,7 @@
 			"license": "ISC",
 			"engines": {
 				"node": ">= 10.x"
-			},
-			"optional": true
+			}
 		},
 		"node_modules/sprintf-js": {
 			"version": "1.0.3",
@@ -4476,8 +4628,7 @@
 			},
 			"engines": {
 				"node": ">=10"
-			},
-			"optional": true
+			}
 		},
 		"node_modules/toidentifier": {
 			"version": "1.0.1",
@@ -4563,7 +4714,6 @@
 			"engines": {
 				"node": ">=10"
 			},
-			"optional": true,
 			"funding": {
 				"url": "https://github.com/sponsors/sindresorhus"
 			}
@@ -4817,8 +4967,7 @@
 			"license": "MIT",
 			"engines": {
 				"node": ">=0.4"
-			},
-			"optional": true
+			}
 		},
 		"node_modules/yaml": {
 			"version": "2.9.0",

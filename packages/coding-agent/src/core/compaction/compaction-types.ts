@@ -68,7 +68,8 @@ export interface VerbatimCompactionDetails {
 }
 
 export interface VerbatimCompactionPreparation {
-	firstKeptEntryId: string;
+	/** First context-visible tail entry, or null when no pre-boundary message is retained. */
+	firstKeptEntryId: string | null;
 	region: NumberedRegion;
 	regionEntryIds: string[];
 	keptTailMessageCount: number;
@@ -79,7 +80,7 @@ export interface VerbatimCompactionPreparation {
 
 export interface VerbatimCompactionResult {
 	compactedText: string;
-	firstKeptEntryId: string;
+	firstKeptEntryId: string | null;
 	tokensBefore: number;
 	stats: VerbatimCompactionStats;
 	parameters: VerbatimCompactionParameters;

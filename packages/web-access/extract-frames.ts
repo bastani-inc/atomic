@@ -66,10 +66,10 @@ function buildFrameResult(
 }
 
 async function extractLocalFrames(
-	filePath: string, timestamps: number[],
+	filePath: string, timestamps: number[], signal?: AbortSignal,
 ): Promise<{ frames: VideoFrame[]; error: string | null }> {
 	const results = await Promise.all(timestamps.map(async (t) => {
-		const frame = await extractVideoFrame(filePath, t);
+		const frame = await extractVideoFrame(filePath, t, signal);
 		if ("error" in frame) return { error: frame.error };
 		return { ...frame, timestamp: formatSeconds(t) };
 	}));
@@ -89,12 +89,13 @@ function safeVideoInfo(url: string): { info: ReturnType<typeof isVideoFile>; err
 export async function extractRequestedFrames(
 	url: string,
 	options?: ExtractOptions,
+	signal?: AbortSignal,
 ): Promise<ExtractedContent | null> {
 	if (options?.frames && !options.timestamp) {
 		const frameCount = options.frames;
 		const ytInfo = isYouTubeURL(url);
 		if (ytInfo.isYouTube && ytInfo.videoId) {
-			const streamInfo = await getYouTubeStreamInfo(ytInfo.videoId);
+			const streamInfo = await getYouTubeStreamInfo(ytInfo.videoId, signal);
 			if ("error" in streamInfo) {
 				return { url, title: "Frames", content: streamInfo.error, error: streamInfo.error };
 			}
@@ -104,7 +105,7 @@ export async function extractRequestedFrames(
 			}
 			const dur = Math.floor(streamInfo.duration);
 			const timestamps = computeRangeTimestamps(0, dur, frameCount);
-			const result = await extractYouTubeFrames(ytInfo.videoId, timestamps, streamInfo);
+			const result = await extractYouTubeFrames(ytInfo.videoId, timestamps, streamInfo, signal);
 			const label = `${formatSeconds(0)}-${formatSeconds(dur)}`;
 			return buildFrameResult(url, label, timestamps.length, result.frames, result.error, streamInfo.duration);
 		}
@@ -114,13 +115,13 @@ export async function extractRequestedFrames(
 			return { url, title: "", content: "", error: localVideo.error };
 		}
 		if (localVideo.info) {
-			const durationResult = await getLocalVideoDuration(localVideo.info.absolutePath);
+			const durationResult = await getLocalVideoDuration(localVideo.info.absolutePath, signal);
 			if (typeof durationResult !== "number") {
 				return { url, title: "Frames", content: durationResult.error, error: durationResult.error };
 			}
 			const dur = Math.floor(durationResult);
 			const timestamps = computeRangeTimestamps(0, dur, frameCount);
-			const result = await extractLocalFrames(localVideo.info.absolutePath, timestamps);
+			const result = await extractLocalFrames(localVideo.info.absolutePath, timestamps, signal);
 			const label = `${formatSeconds(0)}-${formatSeconds(dur)}`;
 			return buildFrameResult(url, label, timestamps.length, result.frames, result.error, durationResult);
 		}
@@ -142,7 +143,7 @@ export async function extractRequestedFrames(
 		const frameCount = options.frames;
 		const ytInfo = isYouTubeURL(url);
 		if (ytInfo.isYouTube && ytInfo.videoId) {
-			const streamInfo = await getYouTubeStreamInfo(ytInfo.videoId);
+			const streamInfo = await getYouTubeStreamInfo(ytInfo.videoId, signal);
 			if ("error" in streamInfo) {
 				if (spec.type === "range") {
 					const label = `${formatSeconds(spec.start)}-${formatSeconds(spec.end)}`;
@@ -165,7 +166,7 @@ export async function extractRequestedFrames(
 				const timestamps = frameCount
 					? computeRangeTimestamps(spec.start, spec.end, frameCount)
 					: computeRangeTimestamps(spec.start, spec.end);
-				const result = await extractYouTubeFrames(ytInfo.videoId, timestamps, streamInfo);
+				const result = await extractYouTubeFrames(ytInfo.videoId, timestamps, streamInfo, signal);
 				return buildFrameResult(url, label, timestamps.length, result.frames, result.error, result.duration ?? undefined);
 			}
 
@@ -177,7 +178,7 @@ export async function extractRequestedFrames(
 					return { url, title: `Frames ${label}`, content: error, error };
 				}
 				const timestamps = computeRangeTimestamps(spec.seconds, end, frameCount);
-				const result = await extractYouTubeFrames(ytInfo.videoId, timestamps, streamInfo);
+				const result = await extractYouTubeFrames(ytInfo.videoId, timestamps, streamInfo, signal);
 				return buildFrameResult(url, label, timestamps.length, result.frames, result.error, result.duration ?? undefined);
 			}
 
@@ -185,7 +186,7 @@ export async function extractRequestedFrames(
 				const error = `Timestamp ${formatSeconds(spec.seconds)} exceeds video duration (${formatSeconds(Math.floor(streamInfo.duration))})`;
 				return { url, title: `Frame at ${options.timestamp}`, content: error, error };
 			}
-			const frame = await extractYouTubeFrame(ytInfo.videoId, spec.seconds, streamInfo);
+			const frame = await extractYouTubeFrame(ytInfo.videoId, spec.seconds, streamInfo, signal);
 			if ("error" in frame) {
 				return { url, title: `Frame at ${options.timestamp}`, content: frame.error, error: frame.error };
 			}
@@ -201,7 +202,7 @@ export async function extractRequestedFrames(
 				const timestamps = frameCount
 					? computeRangeTimestamps(spec.start, spec.end, frameCount)
 					: computeRangeTimestamps(spec.start, spec.end);
-				const result = await extractLocalFrames(localVideo.info.absolutePath, timestamps);
+				const result = await extractLocalFrames(localVideo.info.absolutePath, timestamps, signal);
 				const label = `${formatSeconds(spec.start)}-${formatSeconds(spec.end)}`;
 				return buildFrameResult(url, label, timestamps.length, result.frames, result.error);
 			}
@@ -209,12 +210,12 @@ export async function extractRequestedFrames(
 			if (frameCount) {
 				const end = spec.seconds + (frameCount - 1) * MIN_FRAME_INTERVAL;
 				const timestamps = computeRangeTimestamps(spec.seconds, end, frameCount);
-				const result = await extractLocalFrames(localVideo.info.absolutePath, timestamps);
+				const result = await extractLocalFrames(localVideo.info.absolutePath, timestamps, signal);
 				const label = `${formatSeconds(spec.seconds)}-${formatSeconds(end)}`;
 				return buildFrameResult(url, label, timestamps.length, result.frames, result.error);
 			}
 
-			const frame = await extractVideoFrame(localVideo.info.absolutePath, spec.seconds);
+			const frame = await extractVideoFrame(localVideo.info.absolutePath, spec.seconds, signal);
 			if ("error" in frame) {
 				return { url, title: `Frame at ${options.timestamp}`, content: frame.error, error: frame.error };
 			}

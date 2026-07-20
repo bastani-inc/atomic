@@ -37,6 +37,7 @@ export async function runSequentialStep(state: RunnerExecutionState, seqStep: Su
 		piArgv1: config.piArgv1,
 		childIntercomTarget: config.childIntercomTargets?.[flatIndex],
 		orchestratorIntercomTarget: config.controlIntercomTarget,
+		supervisorAuthorization: config.supervisorAuthorizations?.[flatIndex],
 		nestedRoute: config.nestedRoute,
 		registerInterrupt: (interrupt) => {
 			state.activeChildInterrupt = interrupt;

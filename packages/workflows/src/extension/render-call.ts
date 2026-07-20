@@ -26,17 +26,11 @@ export interface WorkflowToolArgs {
     | "reload"
     | "inputs";
   runId?: string;
-  task?: { name?: string; prompt?: string; task?: string } | string;
-  tasks?: readonly unknown[];
-  chain?: readonly unknown[];
 }
 
 function runTarget(args: WorkflowToolArgs): string | undefined {
   if (args.workflow !== undefined && args.workflow.trim().length > 0) return args.workflow;
   if (args.runId !== undefined && args.runId.trim().length > 0) return args.runId;
-  if (args.task !== undefined) return "direct-task";
-  if (args.tasks !== undefined) return "direct-parallel";
-  if (args.chain !== undefined) return "direct-chain";
   return undefined;
 }
 

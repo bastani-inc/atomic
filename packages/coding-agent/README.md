@@ -388,6 +388,7 @@ atomic list
 atomic update                               # update Atomic only
 atomic update --all                         # update Atomic and packages
 atomic update --extensions                  # update packages only
+atomic update --models                      # force-refresh authenticated provider model catalogs
 atomic update --self                        # update Atomic only
 atomic update --self --force                # reinstall Atomic even if current
 atomic update npm:@foo/atomic-tools         # update one package
@@ -487,6 +488,7 @@ atomic uninstall <source> [-l]       # Alias for remove
 atomic update [source|self|atomic]   # Update Atomic only, or one package source
 atomic update --all                  # Update Atomic and packages
 atomic update --extensions           # Update packages only
+atomic update --models               # Force-refresh authenticated provider model catalogs
 atomic update --self                 # Update Atomic only
 atomic update --self --force         # Reinstall Atomic even if current
 atomic update --extension <src>      # Update one package

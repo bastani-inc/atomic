@@ -21,6 +21,7 @@ export interface LiveStageMutableState {
   askUserQuestionObservedThisTurn: boolean;
   chatAnswerObservedThisTurn: boolean;
   resumeContinuationPending: false | ResumeContinuationReason;
+  waitingForStageChatTurn: boolean;
   liveHandleReleased: boolean;
   stageClosedByWorkflowExit: boolean;
   stageFinalized: boolean;

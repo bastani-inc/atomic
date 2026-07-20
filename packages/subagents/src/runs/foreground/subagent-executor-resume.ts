@@ -25,6 +25,7 @@ import {
 	resolveIntercomSessionTarget,
 	resolveSubagentIntercomTarget,
 } from "../../intercom/intercom-bridge.ts";
+import { requestSupervisorAuthorization } from "../../intercom/supervisor-authorization.ts";
 import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.ts";
 import {
@@ -415,6 +416,10 @@ export async function resumeAsyncRun(input: {
 	}
 
 	const runId = randomUUID().slice(0, 8);
+	const revivedTarget = intercomBridge.active
+		? resolveSubagentIntercomTarget(runId, target.agent, 0)
+		: undefined;
+	const supervisorAuthorization = await requestSupervisorAuthorization(input.deps.pi.events, revivedTarget);
 	const artifactConfig: ArtifactConfig = { ...DEFAULT_ARTIFACT_CONFIG, enabled: input.params.artifacts !== false };
 	const availableModels = input.ctx.modelRegistry.getAvailable().map(toModelInfo);
 	const result = input.deps.runtime.executeAsyncSingle(runId, {
@@ -444,12 +449,12 @@ export async function resumeAsyncRun(input: {
 		controlConfig: resolveControlConfig(input.deps.config.control, input.params.control),
 		controlIntercomTarget: intercomBridge.active ? intercomBridge.orchestratorTarget : undefined,
 		childIntercomTarget: intercomBridge.active ? (agent, index) => resolveSubagentIntercomTarget(runId, agent, index) : undefined,
+		supervisorAuthorization,
 		availableModels,
 	});
 	if (result.isError) return result;
 
 	const revivedId = result.details.asyncId ?? runId;
-	const revivedTarget = intercomBridge.active ? resolveSubagentIntercomTarget(revivedId, target.agent, 0) : undefined;
 	const sourceLabel = target.source;
 	const lines = [
 		`Revived ${sourceLabel} subagent from ${target.runId}.`,

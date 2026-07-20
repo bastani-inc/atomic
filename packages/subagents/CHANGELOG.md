@@ -2,12 +2,26 @@
 
 ## [Unreleased]
 
-## [0.9.10-alpha.1] - 2026-07-15
+## [0.9.10-alpha.1] - 2026-07-19
+
+### Added
+
+- Added a `group` option on subagent tasks, parallel/chain items, and the top-level call that sets the intercom home group for spawned children so same-group subagents can intercom each other while staying isolated from other groups. A named string joins that group; `true` auto-generates one shared UUID group per parallel set (shared across all items in the set). Precedence is `explicit subagent group > inherited current-session (stage) group > env ATOMIC_INTERCOM_GROUP > config > "default"`. When a subagent does not specify a group it inherits its launching session's group — read race-safely from the session's `orchestrationContext.intercomGroup` rather than global env — so subagents spawned by a grouped workflow stage join that stage's group by default. The child group env (`ATOMIC_INTERCOM_GROUP`) is written only when the child actually has intercom access (the peer `intercom` tool or the `contact_supervisor` tool); a child without intercom is never placed into a group. `contact_supervisor` retains cross-group supervisor access through a broker-issued child capability rather than a client-authored channel marker.
+
+### Changed
+
+- Reworked isolated parallel worktrees to use the canonical main repository's `.atomic/worktrees/` directory, `worktree-*` branches, remote-default/`HEAD` base resolution, local-settings/hooks/`.worktreeinclude` post-creation setup, and force-remove plus branch-delete cleanup, including setup-failure cleanup from linked-worktree invocations.
 
 ### Fixed
 
 - Fixed async subagent completion notices racing workflow-stage finalization. Completion notifications now carry stable admission identities, join already-claimed terminal preludes as one stage batch when received before close, and route externally without terminal transcript mutation when close wins. Successful-notification deduplication, retry acknowledgement, terminal ordering, and detached non-blocking execution remain intact.
 - Fixed asynchronous terminal dispatch to defer its acknowledgement and successful-notification dedupe until custom-message admission settles. Rejected batch routes now restore claimed Intercom preludes and return a failed acknowledgement so the durable result watcher can retry the same stable notification ID.
+- Fixed foreground subagent supervisor coordination deadlocking when launched inside a busy workflow stage, including parallel foreground groups where a long-running sibling kept the aggregate tool call active after the asking child detached. The workflow parent now honors the exact-owner probe/commit handshake before stage AgentSession admission; one accepted parallel commit releases foreground supervision for all active siblings while retaining their process lifecycle and eventual result recovery, and tasks still queued behind the concurrency limit are skipped without launching unsupervised. Run-owned direct and chain-parallel worktrees remain alive until all detached children close, when diffs are captured before cleanup instead of deleting active execution roots. Blocking decisions and interviews can receive replies while direct single execution, background execution, cancellation, and status/result recovery remain intact.
+- Secured foreground, background, parallel, chain, revived, and bounded dynamic-fanout supervisor communication by requesting broker-issued authorizations before child spawn and passing each grant through dedicated child environment metadata. Foreground/single-child paths use exact child scopes; asynchronous chains use bounded per-child slots so dynamic fanout index shifts cannot invalidate later children. Descendants without a fresh grant explicitly clear inherited capability metadata, parent-held grants are restored after reconnects, and the lightweight Intercom wrapper lazy-loads authorization on demand. Claimed provider failures abort launch; hosts without a provider suppress supervisor metadata instead of leaving `contact_supervisor` silently unusable.
+- Fixed subagent live-detail and full-notification hints to use the effective `app.tools.expand` binding and omit the shortcut affordance when it is unbound.
+- Fixed completion-notification header parsing to avoid polynomial regular-expression behavior on long malformed agent/task text while preserving accepted notification formats.
+- Fixed session startup stalling on background-job hydration when the subagents run directory has accumulated many historical runs. Active-job hydration is now deferred off the `session_start` hot path and only eagerly reconciles runs touched within the last 7 days (older runs are skipped with two `stat` calls instead of a full per-run status read and reconciliation), so the jobs widget populates moments after startup without blocking first input.
+- Fixed a host-process crash from the background-job tracker's timers using a stale extension context. Deferred hydration, poller ticks, and cleanup timers hold onto contexts that become invalid after `ctx.newSession()`, `ctx.fork()`, `ctx.switchSession()`, or `ctx.reload()`; every context read in those timer paths is now probed defensively and a stale retained UI context is dropped instead of throwing an unhandled "extension ctx is stale" error out of an unref'd timer.
 
 ## [0.9.9] - 2026-07-15
 

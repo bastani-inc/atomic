@@ -63,7 +63,7 @@ describe("workflow-first execution routing", () => {
     }
   });
 
-  test("supports named, direct, and rich inline TypeScript workflows", () => {
+  test("supports named and rich inline TypeScript workflows", () => {
     for (const phrase of [
       "builtin, project, user, or package",
       "custom TypeScript `workflow({...})` inline",
@@ -116,32 +116,21 @@ describe("workflow-first execution routing", () => {
     }
   });
 
-  test("distinguishes starting cwd from runner-managed worktree isolation", () => {
+  test("routes worktree isolation through declared named-workflow inputs", () => {
     for (const phrase of [
       "Natural-language instructions to create or use a worktree do not enable runner isolation",
-      "`cwd` only selects the starting directory",
-      "set `worktree: true` or `gitWorktreeDir`",
-      "one run per independent item",
+      "named workflow must declare and implement any worktree inputs",
+      "inspect its inputs before launching",
     ]) {
       expect(combinedGuidance).toContain(phrase);
     }
   });
 
-  test("documents worktree isolation semantics at the workflow tool boundary", () => {
-    expect(WorkflowParametersSchema).toMatchObject({
-      properties: {
-        cwd: {
-          description: "Starting directory only; does not provide worktree isolation.",
-        },
-        worktree: {
-          description: "Runner-managed temporary per-task worktree isolation for direct runs.",
-        },
-        gitWorktreeDir: {
-          description:
-            "Runner-managed reusable worktree; natural-language worktree instructions do not set this option.",
-        },
-      },
-    });
+  test("removes direct execution options from the workflow tool boundary", () => {
+    const properties = WorkflowParametersSchema.properties as Record<string, unknown>;
+    for (const removed of ["task", "tasks", "chain", "cwd", "worktree", "gitWorktreeDir", "concurrency", "failFast"]) {
+      expect(properties).not.toHaveProperty(removed);
+    }
   });
 
   test("keeps workflow lifecycle, transcript, and artifact handoff guidance", () => {
@@ -157,23 +146,17 @@ describe("workflow-first execution routing", () => {
     }
   });
 
-  test("requires interactive workflow launches to run in the background", () => {
+  test("documents that named workflow launches run in the background", () => {
     for (const phrase of [
-      "In interactive chat, launch every workflow in the background",
-      "Named workflow launches already run in the background",
+      "In interactive chat, named workflow launches run in the background",
       "`/workflow connect <run>`",
       "see agents working",
       "chat with and steer each stage",
-      "direct `task`, `tasks`, and `chain` launches must set top-level `async: true`",
-      "This applies only to launches, not inspection or control calls",
+      "Inspection and control calls",
       "`status`, `stages`, `stage`, `transcript`, `send`, `pause`, `resume`, `interrupt`, `quit`",
-      "only when the user explicitly requests it or it is technically required",
-      "tell the user before launching it",
     ]) {
       expect(combinedGuidance).toContain(phrase);
     }
-    const launchGuidance = workflowGuidance.find((line) => line.includes("launch every workflow in the background")) ?? "";
-    expect(launchGuidance).not.toMatch(/attach|detach/i);
   });
 
   test("keeps subagents complementary without universal delegation", () => {

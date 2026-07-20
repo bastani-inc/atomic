@@ -3,6 +3,17 @@ title: "Changelog"
 description: "What's new in Atomic"
 ---
 
+<Update label="July 18, 2026">
+
+## Model catalogs and provider authentication
+
+- **Dynamic provider catalogs stay current.** The model picker renders its cached snapshot immediately and reports concise success, partial-failure, or timeout status. Run `atomic update --models` to force-refresh authenticated dynamic provider catalogs.
+- **Complete authentication reaches provider requests.** API keys, provider headers, and credential-specific enterprise endpoints are preserved across normal chat and SDK requests.
+- **Interaction reliability improved.** Adjacent thinking blocks render as one section, Windows startup restores Atomic's terminal title after package checks, standalone Bun binaries include every interactive OAuth adapter, and early clone/fork attempts explain that the first assistant response must save the session.
+
+See [SDK](/sdk) and [Custom providers](/custom-provider).
+
+</Update>
 <Update label="July 10, 2026">
 
 ## Pi 0.80.6 compatibility

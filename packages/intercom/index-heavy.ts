@@ -14,7 +14,8 @@ import { registerIntercomLifecycle } from "./lifecycle.js";
 import { registerSubagentRelay } from "./subagent-relay.js";
 import { ForegroundDetachHandoff, handleForegroundInboundDelivery } from "./foreground-detach-handoff.js";
 import { routeIncomingReply } from "./reply-routing.js";
-import { INBOUND_FLUSH_DELAY_MS, INBOUND_IDLE_RETRY_MS, type InboundMessageEntry, buildPresenceIdentity, formatAttachments, readChildOrchestratorMetadata, toError } from "./intercom-utils.js";
+import { INBOUND_FLUSH_DELAY_MS, INBOUND_IDLE_RETRY_MS, buildPresenceIdentity, formatAttachments, readChildOrchestratorMetadata, toError } from "./intercom-utils.js";
+import { buildIncomingCustomMessage, createIncomingMessageSender } from "./incoming-message-delivery.js";
 import { InboundIdleQueue } from "./inbound-idle-queue.js";
 import { registerTerminalOrderingBarrier } from "./terminal-ordering-barrier.js";
 import { resolveSessionTargetId } from "./session-target.js";
@@ -24,6 +25,11 @@ import { retryStableDelivery } from "./stable-delivery-retry.js";
 import type { IntercomExtensionTestOverrides } from "./intercom-test-seams.js";
 import { admitWorkflowStageInbound } from "./workflow-stage-admission.js";
 import { bindWorkflowReplyTracker, preserveWorkflowReplyTracker } from "./workflow-reply-tracker.js";
+import { routeClosedWorkflowStageMessage } from "./closed-workflow-stage-message.js";
+import { createWorkflowStageDeliveryFailureHandler } from "./workflow-stage-delivery-failure.js";
+import { resolveHomeGroup } from "./group.js";
+import { reconnectDelayMs } from "./reconnect-backoff.js";
+import { SupervisorAuthorizationRegistry } from "./supervisor-authorization-registry.js";
 if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL === "1") {
   process.env.ATOMIC_INTERCOM_HEAVY_IMPORTED = "1";
 }
@@ -40,6 +46,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   };
   let client: IntercomClient | null = null;
   const config: IntercomConfig = loadConfig();
+  const childOrchestratorMetadata = readChildOrchestratorMetadata();
   let runtimeContext: ExtensionContext | null = null;
   let currentSessionId: string | null = null;
   let currentModel = "unknown";
@@ -59,18 +66,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   const foregroundDetachHandoff = new ForegroundDetachHandoff(pi);
   const pendingIdleMessages = new InboundIdleQueue();
   const inboundDeliveries = new InboundMessageAdmission();
+  const supervisorAuthorizations = new SupervisorAuthorizationRegistry();
   let inboundFlushTimer: NodeJS.Timeout | null = null;
-  function rejectReplyWaiter(error: Error): void {
-    replyWaiters.rejectCurrent(error);
-  }
-  function clearReconnectTimer(): void {
-    if (reconnectTimer) clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-  }
-  function clearInboundFlushTimer(): void {
-    if (inboundFlushTimer) clearTimeout(inboundFlushTimer);
-    inboundFlushTimer = null;
-  }
+  function rejectReplyWaiter(error: Error): void { replyWaiters.rejectCurrent(error); }
+  function clearReconnectTimer(): void { if (reconnectTimer) clearTimeout(reconnectTimer); reconnectTimer = null; }
+  function clearInboundFlushTimer(): void { if (inboundFlushTimer) clearTimeout(inboundFlushTimer); inboundFlushTimer = null; }
   function getLiveContext(ctx: ExtensionContext | null = runtimeContext, generation = runtimeGeneration): ExtensionContext | null {
     if (disposed || shuttingDown || generation !== runtimeGeneration || !ctx) {
       return null;
@@ -97,10 +97,6 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       // The UI can disappear during session shutdown/reload while async overlay work is settling.
     }
   }
-  function getReconnectDelayMs(): number {
-    const backoffMs = [1000, 2000, 5000, 10000, 30000];
-    return backoffMs[Math.min(reconnectAttempt, backoffMs.length - 1)]!;
-  }
   function currentStatus(): string {
     const activeToolName = activeTools.values().next().value;
     const lifecycleStatus = activeToolName ? `tool:${activeToolName}` : agentRunning ? "thinking" : "idle";
@@ -120,6 +116,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       startedAt: sessionStartedAt,
       lastActivity: Date.now(),
       status: currentStatus(),
+      group: resolveHomeGroup(config, getLiveContext()),
     };
   }
   function syncPresenceIdentity(sessionId: string): void {
@@ -147,36 +144,13 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     return Boolean(resolvedTo && activeClient?.sessionId && resolvedTo === activeClient.sessionId)
       || targets.has(to.trim().toLowerCase());
   }
-  function buildIncomingCustomMessage(entry: InboundMessageEntry) {
-    const senderDisplay = entry.from.name || entry.from.id.slice(0, 8);
-    const replyInstruction = entry.replyCommand ? `\n\nTo reply, use the intercom tool: ${entry.replyCommand}` : "";
-    return {
-      customType: "intercom_message" as const,
-      content: `**📨 From ${senderDisplay}** (${entry.from.cwd})${replyInstruction}\n\n${entry.bodyText}`,
-      display: true as const,
-      details: entry,
-    };
-  }
-  registerLateStageMessageRouter(pi, inboundDeliveries, () => replyTracker);
-  function sendIncomingMessage(entry: InboundMessageEntry, delivery: "trigger" | "followUp" | "prelude", generation = runtimeGeneration, trackReplyContext = true, turnContext?: ReturnType<ReplyTracker["recordIncomingMessage"]>): Promise<void> {
-    if (runtimeStarted && !getLiveContext(runtimeContext, generation)) {
-      return Promise.resolve();
-    }
-    if (delivery === "trigger" && trackReplyContext) {
-      replyTracker.queueTurnContext(turnContext ?? { from: entry.from, message: entry.message, receivedAt: Date.now() });
-    }
-    const baseOptions = { stageAdmissionKey: `intercom:${entry.message.id}` } as const;
-    const options = delivery === "trigger"
-      ? { ...baseOptions, triggerTurn: true } as const
-      : delivery === "followUp" ? { ...baseOptions, deliverAs: "followUp" } as const : baseOptions;
-    return Promise.resolve(pi.sendMessage(buildIncomingCustomMessage(entry), options));
-  }
-  function routeClosedStageMessage(entry: InboundMessageEntry, generation: number): void {
-    void retryStableDelivery({
-      deliver: () => sendIncomingMessage(entry, "trigger", generation, false),
-      isCurrent: () => Boolean(getLiveContext(runtimeContext, generation)),
-    }).catch(() => {});
-  }
+  registerLateStageMessageRouter(pi, inboundDeliveries, () => replyTracker, () => resolveHomeGroup(config, getLiveContext()));
+  const sendIncomingMessage = createIncomingMessageSender({
+    pi,
+    currentGeneration: () => runtimeGeneration,
+    canDeliver: (generation) => !runtimeStarted || Boolean(getLiveContext(runtimeContext, generation)),
+    queueTurnContext: (context) => replyTracker.queueTurnContext(context),
+  });
   const unregisterTerminalOrderingBarrier = registerTerminalOrderingBarrier(pi, {
     queue: pendingIdleMessages,
     toMessage: buildIncomingCustomMessage,
@@ -231,7 +205,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     }).catch(() => {});
   }
   testOverrides.captureInboundHandler?.(handleIncomingMessage);
-  function handleIncomingMessage(ctx: ExtensionContext, from: SessionInfo, message: Message): void {
+  function handleIncomingMessage(ctx: ExtensionContext, from: SessionInfo, message: Message, channel?: "supervisor"): void {
     const messageGeneration = runtimeGeneration;
     const liveContext = getLiveContext(ctx, messageGeneration);
     if (!liveContext) {
@@ -245,11 +219,16 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const replyCommand = config.replyHint && message.expectsReply
       ? `intercom({ action: "reply", message: "..." })`
       : undefined;
-    const entry = { from, message, replyCommand, bodyText };
+    const entry = { from, message, replyCommand, bodyText, ...(channel ? { channel } : {}) };
     const stageClosed = liveContext.orchestrationContext?.kind === "workflow-stage"
       && liveContext.orchestrationContext.messageAdmission?.isOpen() === false;
     if (stageClosed) {
-      routeClosedStageMessage(entry, messageGeneration);
+      routeClosedWorkflowStageMessage(
+        entry, inboundDeliveries, replyTracker, replyWaiters.current(),
+        () => sendIncomingMessage(entry, "trigger", messageGeneration, false),
+        () => client,
+        () => Boolean(getLiveContext(liveContext, messageGeneration)),
+      );
       return;
     }
     const admission = inboundDeliveries.admit(from, message);
@@ -261,15 +240,27 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     }
     const replyContext = replyTracker.recordIncomingMessage(from, message);
     const commit = (): void => { inboundDeliveries.commit(reservation); };
-    const release = (error: unknown): void => {
-      const failure = error instanceof Error ? error : new Error(String(error));
-      inboundDeliveries.release(reservation, failure);
-      replyTracker.forgetIncomingMessage(replyContext);
-    };
-    const stageDelivery = admitWorkflowStageInbound(liveContext, () => {
-      replyTracker.queueTurnContext(replyContext);
-      return retryStableDelivery({ deliver: () => sendIncomingMessage(entry, "trigger", messageGeneration, false), isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)) });
+    const release = createWorkflowStageDeliveryFailureHandler({
+      entry,
+      admission: inboundDeliveries,
+      reservation,
+      tracker: replyTracker,
+      replyContext,
+      currentClient: () => client,
+      commit,
     });
+    const stageDelivery = admitWorkflowStageInbound(
+      liveContext,
+      (admissionBarrier) => {
+        replyTracker.queueTurnContext(replyContext);
+        return retryStableDelivery({
+          deliver: () => sendIncomingMessage(entry, "trigger", messageGeneration, false, undefined, admissionBarrier),
+          isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)),
+        });
+      },
+      () => foregroundDetachHandoff.claim(from, message, messageGeneration, () => Boolean(getLiveContext(liveContext, messageGeneration))),
+      release,
+    );
     if (stageDelivery !== false) {
       void stageDelivery.then(commit, release);
       return;
@@ -334,12 +325,12 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     })();
   }
   function attachClientHandlers(nextClient: IntercomClient): void {
-    nextClient.on("message", (from, message) => {
+    nextClient.on("message", (from: SessionInfo, message: Message, channel?: "supervisor") => {
       const liveContext = getLiveContext();
       if (client !== nextClient || !liveContext) {
         return;
       }
-      handleIncomingMessage(liveContext, from, message);
+      handleIncomingMessage(liveContext, from, message, channel);
     });
     nextClient.on("disconnected", (error: Error) => {
       if (client !== nextClient) {
@@ -371,7 +362,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       void ensureConnected("background").catch(() => {
         // ensureConnected("background") already queued the next retry.
       });
-    }, getReconnectDelayMs());
+    }, reconnectDelayMs(reconnectAttempt));
   }
   async function ensureConnected(reason: "startup" | "background" | "tool" | "overlay"): Promise<IntercomClient> {
     if (!config.enabled) {
@@ -398,7 +389,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       attachClientHandlers(nextClient);
       try {
         await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs);
-        await nextClient.connect(buildRegistration());
+        await nextClient.connect(
+          buildRegistration(), childOrchestratorMetadata?.supervisor, supervisorAuthorizations.ownerToken,
+        );
+        await supervisorAuthorizations.restore(nextClient);
         if (!getLiveContext(contextAtStart, generationAtStart)) {
           await nextClient.disconnect();
           throw new Error("Intercom runtime no longer active");
@@ -434,7 +428,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     currentSessionTargetMatches,
     sendIncomingMessage,
     ensureConnected,
+    authorizeSupervisorChild: (childName) => supervisorAuthorizations.authorize(childName, () => ensureConnected("background")),
     resolveSessionTarget: resolveSessionTargetId,
+    homeGroup: () => resolveHomeGroup(config, getLiveContext()),
   });
 
   registerIntercomLifecycle(pi, {
@@ -473,7 +469,6 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     return new InlineMessageComponent(details.from, details.message, theme, details.replyCommand, details.bodyText);
   });
 
-  const childOrchestratorMetadata = readChildOrchestratorMetadata();
   registerContactSupervisorTool(pi, {
     childOrchestratorMetadata,
     ensureConnected,

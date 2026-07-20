@@ -33,7 +33,7 @@ export type WorkflowThinkingLevel = "off" | "minimal" | "low" | "medium" | "high
 export type WorkflowExecutionMode = "interactive" | "non_interactive";
 export type WorkflowExitStatus = "completed" | "skipped" | "cancelled" | "blocked";
 export type RunStatus = "pending" | "running" | "paused" | WorkflowExitStatus | "failed" | "killed";
-export type WorkflowDetailsMode = "named" | "single" | "parallel" | "chain" | "inspection" | "control";
+export type WorkflowDetailsMode = "named" | "inspection" | "control";
 export type WorkflowDetailsStatus = "accepted" | "running" | WorkflowExitStatus | "failed" | "killed" | "noop";
 export type WorkflowAction = "list" | "get" | "inputs" | "run" | "status" | "interrupt" | "resume";
 
@@ -183,6 +183,13 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
   readonly sessionDir?: string;
   /** @deprecated Prefer suffixing model/fallbackModels entries with `:level`; removal is deferred. */
   readonly thinkingLevel?: WorkflowThinkingLevel;
+  /**
+   * Intercom home group for this stage session. A named string joins that group;
+   * `true` auto-generates one shared UUID group per parallel set (all items in the
+   * set share it). Absent inherits per the precedence chain (ultimately "default").
+   * Only applied when the stage session actually has intercom access.
+   */
+  readonly group?: string | true;
 }
 
 export interface CompleteStageOpts extends WorkflowModelFallbackFields {
@@ -233,12 +240,28 @@ export interface WorkflowPersistencePort {
   appendCustomMessageEntry?(content: string, meta?: Record<string, unknown>): string | undefined;
 }
 
+/** Stable public identifier used to correlate replayed/overlapping turn lifecycle events. */
+export type StageSessionTurnId = string | number;
+
+/** Public lifecycle events emitted by stage session adapters for turn ownership. */
+export type StageSessionEvent =
+  | { readonly type: "agent_start"; readonly turnId?: StageSessionTurnId }
+  | { readonly type: "agent_end"; readonly turnId?: StageSessionTurnId; readonly messages?: readonly WorkflowSerializableValue[] };
+
 export interface StageSessionRuntime {
   prompt(text: string, options?: PromptOptions): Promise<string | void>;
   sendUserMessage?(content: StageUserMessageContent, options?: StageSendUserMessageOptions): Promise<void>;
   steer(text: string): Promise<void>;
   followUp(text: string): Promise<void>;
-  subscribe(listener: (event: never) => void): () => void;
+  /**
+   * Must emit `agent_start` when a submitted user-message turn takes ownership and
+   * `agent_end` when that owned turn terminates. Registration may replay state
+   * synchronously; synchronous untagged replays are snapshots only. An adapter
+   * that can emit a later end for a replayed turn while a newer turn is active
+   * must provide the same stable `turnId` on that replayed start and its end.
+   * After registration returns, starts must represent new turns.
+   */
+  subscribe(listener: (event: StageSessionEvent) => void): () => void;
   readonly sessionFile: string | undefined;
   readonly sessionId: string;
   setModel(model: WorkflowSerializableValue): Promise<void>;
@@ -310,7 +333,7 @@ export interface StageContext<TSchemaDef extends TSchema | undefined = undefined
   sendUserMessage(content: StageUserMessageContent, options?: StageSendUserMessageOptions): Promise<void>;
   steer(text: string): Promise<void>;
   followUp(text: string): Promise<void>;
-  subscribe(listener: (event: never) => void): () => void;
+  subscribe(listener: (event: StageSessionEvent) => void): () => void;
   readonly sessionFile: string | undefined;
   readonly sessionId: string;
   setModel(model: WorkflowModelValue): Promise<void>;
@@ -395,29 +418,8 @@ export interface WorkflowParallelOptions extends WorkflowSharedTaskDefaults {
   readonly failFast?: boolean;
 }
 
-export interface WorkflowDirectTaskItem extends WorkflowTaskOptions {
-  readonly name: string;
-  readonly count?: number;
-}
-
-export interface WorkflowParallelChainStep {
-  readonly parallel: readonly WorkflowDirectTaskItem[];
-  readonly concurrency?: number;
-  readonly failFast?: boolean;
-  readonly worktree?: boolean;
-  readonly gitWorktreeDir?: string;
-  readonly baseBranch?: string;
-}
-
-export type WorkflowChainStep = WorkflowDirectTaskItem | WorkflowParallelChainStep;
 export type WorkflowTaskSessionOptions = StageOptions & WorkflowTaskSessionFields;
 
-export interface WorkflowDirectOptions extends StageOptions, WorkflowTaskSessionFields {
-  readonly chainName?: string;
-  readonly concurrency?: number;
-  readonly failFast?: boolean;
-  readonly chainDir?: string;
-}
 
 export interface WorkflowRunChildOptions<TInputs extends WorkflowInputValues = WorkflowInputValues> {
   readonly inputs?: TInputs;

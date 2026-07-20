@@ -1,0 +1,11 @@
+export function partitionPrompt(prompt: string, maxBranches: number): string {
+  return `<role>\nYou partition work into independent evidence-producing branches.\n</role>\n\n<objective>\nPartition this task: ${prompt}\n</objective>\n\n<requirements>\nReturn between 1 and ${maxBranches} non-overlapping partitions. Split by files, sources, claims, candidates, or work items that can be evaluated independently. Give each partition a concise label and a self-contained objective. Avoid duplicate scope and identify boundaries explicitly. Return only the structured result requested by the schema.\n</requirements>`;
+}
+
+export function branchPrompt(input: { readonly prompt: string; readonly label: string; readonly objective: string }): string {
+  return `<role>\nYou own one independent branch of a larger task.\n</role>\n\n<overall_task>\n${input.prompt}\n</overall_task>\n\n<branch>\n${input.label}: ${input.objective}\n</branch>\n\n<success_criteria>\nInvestigate only this branch, cite concrete files/sources/commands or other observable evidence, distinguish findings from uncertainty, and produce a standalone artifact that a synthesizer can audit.\n</success_criteria>\n\n<output_format>\nMarkdown with Scope, Findings, Evidence, Conflicts or uncertainty, and Recommendations headings.\n</output_format>`;
+}
+
+export function synthesisPrompt(prompt: string, manifestPath: string): string {
+  return `<role>\nYou synthesize independent branch artifacts at a strict barrier.\n</role>\n\n<objective>\nProduce the final answer for: ${prompt}\n</objective>\n\n<artifact_contract>\nRead ${manifestPath} first, then read every branch artifact listed there. Do not omit a completed branch and do not assume access to branch conversations.\n</artifact_contract>\n\n<success_criteria>\nDeduplicate overlapping findings, explicitly resolve or preserve conflicting claims, retain material uncertainty, and cite branch labels and artifact paths for important conclusions. The answer must be traceable to evidence rather than majority vote.\n</success_criteria>\n\n<output_format>\nMarkdown with Executive synthesis, Consolidated findings, Conflicts and resolutions, Evidence index, and Remaining uncertainty headings.\n</output_format>`;
+}

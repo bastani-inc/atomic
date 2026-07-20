@@ -9,7 +9,7 @@ description: |
   - Code that has gotten messy after several iterations.
 tools: read, edit, write, search, find, ls, bash, todo
 model: openai-codex/gpt-5.6-sol:medium
-fallbackModels: github-copilot/gpt-5.6-sol:medium, openai/gpt-5.6-sol:medium, openai-codex/gpt-5.5:medium, github-copilot/gpt-5.5:medium, openai/gpt-5.5:medium, anthropic/claude-fable-5:low, github-copilot/claude-opus-4.8 (1m):medium, anthropic/claude-opus-4-8:medium, cursor/gpt-5.6-sol:medium, cursor/gpt-5.5:medium, cursor/claude-fable-5:low, cursor/claude-opus-4-8-thinking:medium, cursor/grok-4.5, zai/glm-5.2:high, zai-coding-cn/glm-5.2:high, cursor/glm-5.2, openrouter/openai/gpt-5.6-sol:medium, openrouter/openai/gpt-5.5:medium, openrouter/anthropic/claude-fable-5:low, openrouter/anthropic/claude-opus-4-8:medium, openrouter/x-ai/grok-4.5, openrouter/z-ai/glm-5.2:xhigh
+fallbackModels: github-copilot/gpt-5.6-sol:medium, openai/gpt-5.6-sol:medium, openai-codex/gpt-5.5:medium, github-copilot/gpt-5.5:medium, openai/gpt-5.5:medium, anthropic/claude-fable-5:low, github-copilot/claude-opus-4.8 (1m):medium, anthropic/claude-opus-4-8:medium, cursor/gpt-5.6-sol:medium, cursor/gpt-5.5:medium, cursor/claude-fable-5:low, cursor/claude-opus-4-8-thinking:medium, xai/grok-4.5:high, cursor/grok-4.5:high, zai/glm-5.2:high, zai-coding-cn/glm-5.2:high, cursor/glm-5.2, openrouter/openai/gpt-5.6-sol:medium, openrouter/openai/gpt-5.5:medium, openrouter/anthropic/claude-fable-5:low, openrouter/anthropic/claude-opus-4-8:medium, openrouter/x-ai/grok-4.5, openrouter/z-ai/glm-5.2:xhigh
 skills: tdd, playwright-cli, tmux
 ---
 

@@ -1,14 +1,15 @@
-/** DBOS-backed durable backend adapter, loaded only when configured. */
+/** DBOS-backed durable backend adapter. */
 
 import type { DurableCheckpoint, DurableWorkflowHandle, DurableWorkflowStatus, ResumableWorkflowEntry } from "./types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import type { WorkflowSerializableObject as DurableInputs } from "./types.js";
-import { InMemoryDurableBackend, type DurableWorkflowBackend, type WorkflowRegistrationInput } from "./backend.js";
+import { InMemoryDurableBackend, type DurableInactiveDeleteResult, type DurableWorkflowBackend, type DurableWorkflowCatalogEntries, type WorkflowRegistrationInput } from "./backend.js";
 import { encodeCheckpoint, classifyCheckpointPayload } from "./dbos-envelope.js";
 import { transitionDbosWorkflowStatus } from "./dbos-status-transition.js";
-import { classifyLatestMetadata, encodeMetadata, isMetadataStep, metadataStepName } from "./dbos-metadata.js";
+import { claimMetadataStepName, classifyLatestMetadata, encodeMetadata, isMetadataStep, metadataStepName, parseCurrentMetadataRecord } from "./dbos-metadata.js";
 import { inactivePromptReservationToken, type PromptReservationToken } from "./prompt-reservation-state.js";
 import { DBOS_DELETION_STEP, classifyDbosDeletionTombstone, encodeDbosDeletionTombstone } from "./dbos-tombstone.js";
+import { isLiveRunningWorkflow } from "./resume-eligibility.js";
 import {
   DbosPromptReservationTracker,
   isDbosPromptStateStep,
@@ -53,62 +54,66 @@ export interface DbosStepRecord {
   readonly output: WorkflowSerializableValue;
   readonly completedAt?: number;
 }
+import {
+  createRealDbosHandle,
+  getAtomicExecutorId,
+  type DbosLogger,
+  type DbosStatic,
+} from "./dbos-sdk-handle.js";
 // ---------------------------------------------------------------------------
 // Real SDK handle factory (lazy import, no top-level dependency)
 // ---------------------------------------------------------------------------
 
-interface DbosWorkflowHandle {
-  readonly workflowID?: string;
-  getStatus(): Promise<DbosStatus | null>;
-  getResult(): Promise<WorkflowSerializableValue>;
+export interface ConfiguredDbosDurability {
+  readonly backend: DbosDurableBackend;
+  readonly launch: () => Promise<void>;
+  readonly shutdown: () => Promise<void>;
 }
 
-interface DbosStatus {
-  readonly workflowID?: string;
-  readonly workflowId?: string;
-  readonly workflowName?: string;
-  readonly name?: string;
-  readonly status?: string;
-  readonly createdAt?: number;
-  readonly input?: readonly WorkflowSerializableValue[];
+const SILENT_DBOS_LOGGER: DbosLogger = {
+  info() {},
+  debug() {},
+  warn() {},
+  error() {},
+};
+
+/**
+ * Effective system database URL: explicit config wins over
+ * `DBOS_SYSTEM_DATABASE_URL`. Values are trimmed so env-injected URLs
+ * (secrets managers, env files) with trailing whitespace/newlines connect
+ * cleanly, and a whitespace-only value means "not set".
+ */
+export function effectiveSystemDatabaseUrl(
+  configUrl: string | undefined,
+  envUrl: string | undefined = process.env.DBOS_SYSTEM_DATABASE_URL,
+): string | undefined {
+  const url = (configUrl ?? envUrl)?.trim();
+  return url === undefined || url.length === 0 ? undefined : url;
 }
 
-interface DbosStatic {
-  setConfig(config: Record<string, WorkflowSerializableValue>): void;
-  launch(): Promise<void>;
-  shutdown(): Promise<void>;
-  registerWorkflow<Args extends readonly WorkflowSerializableValue[]>(
-    fn: (...args: Args) => Promise<WorkflowSerializableValue>,
-    config?: { readonly name?: string },
-  ): (...args: Args) => Promise<WorkflowSerializableValue>;
-  startWorkflow<Args extends readonly WorkflowSerializableValue[]>(
-    target: (...args: Args) => Promise<WorkflowSerializableValue>,
-    params?: { readonly workflowID?: string },
-  ): (...args: Args) => Promise<DbosWorkflowHandle>;
-  retrieveWorkflow(workflowId: string): DbosWorkflowHandle;
-  resumeWorkflow(workflowId: string): Promise<DbosWorkflowHandle>;
-  cancelWorkflow(workflowId: string, options?: { readonly cancelChildren?: boolean }): Promise<void>;
-  listWorkflows(input: Record<string, WorkflowSerializableValue>): Promise<readonly DbosStatus[]>;
-  deleteWorkflows(workflowIds: string[], deleteChildren?: boolean): Promise<void>;
-}
-
-export function isDbosConfigured(): boolean {
-  const url = process.env.DBOS_SYSTEM_DATABASE_URL;
-  return typeof url === "string" && url.length > 0;
-}
-
-export async function createDbosDurableBackend(config?: { readonly systemDatabaseUrl?: string }): Promise<DurableWorkflowBackend> {
+/** Configure and register DBOS workflows without launching the executor. */
+export async function configureDbosDurableBackend(config?: { readonly systemDatabaseUrl?: string }): Promise<ConfiguredDbosDurability> {
   const sdk = await importDbosSdk();
-  const url = config?.systemDatabaseUrl ?? process.env.DBOS_SYSTEM_DATABASE_URL;
-  if (url === undefined || url.length === 0) throw new Error("DBOS_SYSTEM_DATABASE_URL is required for DBOS workflow durability.");
-  sdk.setConfig({ name: "atomic-workflows", systemDatabaseUrl: url, runAdminServer: false });
+  const url = effectiveSystemDatabaseUrl(config?.systemDatabaseUrl);
+  sdk.setConfig({
+    name: "atomic-workflows",
+    ...(url === undefined ? {} : { systemDatabaseUrl: url }),
+    runAdminServer: false,
+    // Unique per process: concurrent Atomic sessions share one database, and
+    // DBOS-level pending-workflow recovery must stay scoped to the owner.
+    executorID: getAtomicExecutorId(),
+    logger: SILENT_DBOS_LOGGER,
+  });
   const mainWorkflow = sdk.registerWorkflow(async (_name: string, inputs: DurableInputs) => inputs, { name: "atomicWorkflowHandle" });
   const checkpointWorkflow = sdk.registerWorkflow(async (_workflowId: string, _stepName: string, output: WorkflowSerializableValue) => output, { name: "atomicWorkflowCheckpoint" });
-  await sdk.launch();
-  return new DbosDurableBackend(createRealDbosHandle(sdk, mainWorkflow, checkpointWorkflow));
+  return {
+    backend: new DbosDurableBackend(createRealDbosHandle(sdk, mainWorkflow, checkpointWorkflow)),
+    launch: () => sdk.launch(),
+    shutdown: () => sdk.shutdown(),
+  };
 }
 
-async function importDbosSdk(): Promise<DbosStatic> {
+export async function importDbosSdk(): Promise<DbosStatic> {
   const spec = "@dbos-inc/dbos-sdk";
   try {
     const mod = await import(spec);
@@ -117,95 +122,8 @@ async function importDbosSdk(): Promise<DbosStatic> {
     return dbos;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`DBOS workflow durability is configured but @dbos-inc/dbos-sdk could not be loaded: ${msg}`);
+    throw new Error(`@dbos-inc/dbos-sdk could not be loaded: ${msg}`);
   }
-}
-
-function createRealDbosHandle(
-  dbos: DbosStatic,
-  mainWorkflow: (name: string, inputs: Record<string, WorkflowSerializableValue>) => Promise<WorkflowSerializableValue>,
-  checkpointWorkflow: (workflowId: string, stepName: string, output: WorkflowSerializableValue) => Promise<WorkflowSerializableValue>,
-): DbosSdkHandle {
-  const checkpointId = (workflowId: string, stepName: string): string => `${workflowId}:checkpoint:${stepName}`;
-  return {
-    launch: () => dbos.launch(),
-    shutdown: () => dbos.shutdown(),
-    async startWorkflow(workflowId, name, inputs) {
-      try {
-        await dbos.startWorkflow(mainWorkflow, { workflowID: workflowId })(name, { ...inputs });
-      } catch (err) {
-        if (!isDbosDuplicateWorkflowError(err)) throw err;
-      }
-    },
-    async retrieveWorkflow(workflowId) {
-      const statuses = await dbos.listWorkflows({ workflowIDs: [workflowId], loadInput: true, limit: 1 });
-      const status = statuses[0];
-      if (status === undefined) return undefined;
-      return statusToInfo(status, workflowId);
-    },
-    async cancelWorkflow(workflowId) { await dbos.cancelWorkflow(workflowId, { cancelChildren: true }); },
-    async resumeWorkflow(workflowId) { await dbos.resumeWorkflow(workflowId); },
-    async listAllWorkflows() {
-      const statuses = await dbos.listWorkflows({ workflowName: "atomicWorkflowHandle", loadInput: true, sortDesc: true });
-      return statuses.map((s) => statusToInfo(s, s.workflowID ?? s.workflowId ?? ""));
-    },
-    async listStepRecords(workflowId) {
-      const prefix = `${workflowId}:checkpoint:`;
-      const statuses = await dbos.listWorkflows({ workflow_id_prefix: prefix, loadOutput: true, sortDesc: false });
-      const records: DbosStepRecord[] = [];
-      for (const s of statuses) {
-        if (s.status !== "SUCCESS") continue;
-        const wid = s.workflowID ?? s.workflowId ?? "";
-        const stepName = wid.slice(prefix.length);
-        if (stepName.length === 0) continue;
-        const handle = dbos.retrieveWorkflow(wid);
-        const output = await handle.getResult();
-        records.push({ stepName, output, completedAt: s.createdAt });
-      }
-      return records;
-    },
-    async recordStepOutput(workflowId, stepName, output) {
-      try {
-        await dbos.startWorkflow(checkpointWorkflow, { workflowID: checkpointId(workflowId, stepName) })(workflowId, stepName, output);
-      } catch (err) {
-        if (!isDbosDuplicateWorkflowError(err)) throw err;
-      }
-    },
-    async deleteWorkflowData(workflowId) {
-      const prefix = `${workflowId}:checkpoint:`;
-      const checkpointIds: string[] = [];
-      const pageSize = 1_000;
-      for (let offset = 0;; offset += pageSize) {
-        const page = await dbos.listWorkflows({ workflow_id_prefix: prefix, limit: pageSize, offset });
-        checkpointIds.push(...page.map((status) => status.workflowID ?? status.workflowId ?? "").filter((id) => id.length > 0));
-        if (page.length < pageSize) break;
-      }
-      await dbos.deleteWorkflows([...new Set([workflowId, ...checkpointIds])], true);
-    },
-  };
-}
-
-function isDbosDuplicateWorkflowError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
-  return /duplicate|conflict|already/i.test(msg);
-}
-
-function statusToInfo(status: DbosStatus, fallbackId: string): DbosWorkflowInfo {
-  const info: DbosWorkflowInfo = {
-    workflowId: status.workflowID ?? status.workflowId ?? fallbackId,
-    name: status.workflowName ?? status.name ?? "atomicWorkflowHandle",
-    status: status.status ?? "PENDING",
-    createdAt: status.createdAt ?? Date.now(),
-  };
-  // Inputs were passed as (name, inputs) to the main workflow; extract the
-  // inputs object from the second positional argument.
-  if (status.input !== undefined && status.input.length >= 2) {
-    const inputs = status.input[1];
-    if (typeof inputs === "object" && inputs !== null && !Array.isArray(inputs)) {
-      return { ...info, inputs: inputs as DurableInputs };
-    }
-  }
-  return info;
 }
 // ---------------------------------------------------------------------------
 // Backend adapter
@@ -224,16 +142,17 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
   public readonly persistent = true;
   private readonly mem = new InMemoryDurableBackend();
   private readonly sdk: DbosSdkHandle;
-  private readonly hydrated = new Set<string>();
-  private readonly incompatible = new Set<string>();
-  private readonly compatible = new Set<string>();
+  private readonly invalid = new Set<string>();
+  private readonly current = new Set<string>();
   private readonly locallyRegistered = new Set<string>();
   private readonly promptReservations: DbosPromptReservationTracker;
+  private readonly executorId: string;
   private writeQueue: Promise<void> = Promise.resolve();
   private writeErrors: Error[] = [];
 
-  constructor(sdk: DbosSdkHandle) {
+  constructor(sdk: DbosSdkHandle, options?: { readonly executorId?: string }) {
     this.sdk = sdk;
+    this.executorId = options?.executorId ?? getAtomicExecutorId();
     this.promptReservations = new DbosPromptReservationTracker({
       pendingPrompts: (workflowId) => this.mem.getWorkflow(workflowId)?.pendingPrompts ?? 0,
       adjustPendingPrompts: (workflowId, delta) => this.mem.adjustPendingPrompts(workflowId, delta),
@@ -244,8 +163,8 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
   }
 
   registerWorkflow(handle: WorkflowRegistrationInput): void {
-    this.incompatible.delete(handle.workflowId);
-    this.compatible.add(handle.workflowId);
+    this.invalid.delete(handle.workflowId);
+    this.current.add(handle.workflowId);
     this.locallyRegistered.add(handle.workflowId);
     const pendingPrompts = this.promptReservations.registerWorkflow(
       handle.workflowId, handle.pendingPrompts, this.mem.getWorkflow(handle.workflowId)?.pendingPrompts ?? 0,
@@ -309,8 +228,44 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
       expectedStatuses: expected, status, flush: () => this.flush(), local: () => this.getLoadableWorkflow(workflowId),
       read: async () => classifyLatestMetadata(await this.sdk.listStepRecords(workflowId), workflowId),
       reconcile: (entry) => this.mem.setWorkflowStatus(workflowId, entry.status, undefined, entry.resumable),
+      claim: (authoritative, generation) => this.claimStatusTransition(
+        workflowId, authoritative, generation, status, pendingPrompts, resumable,
+      ),
       write: async () => { this.setWorkflowStatus(workflowId, status, pendingPrompts, resumable); await this.flush(); },
     });
+  }
+
+  /**
+   * The transition's metadata write IS the claim: every racer that observed
+   * first record, and a unique transition claim id identifies the winner even
+   * for concurrent callers sharing one executor. The claim itself carries the
+   * requested status metadata, so a crash cannot expose an intermediate state
+   * with stale resumability.
+   */
+  private async claimStatusTransition(
+    workflowId: string,
+    authoritative: import("./types.js").DurableWorkflowMetadata,
+    generation: number,
+    status: DurableWorkflowStatus,
+    pendingPrompts?: number,
+    resumable?: boolean,
+  ): Promise<boolean> {
+    const stepName = claimMetadataStepName(generation);
+    const transitionClaimId = crypto.randomUUID();
+    const claim: import("./types.js").DurableWorkflowMetadata = {
+      ...authoritative,
+      status,
+      ...(pendingPrompts !== undefined ? { pendingPrompts } : {}),
+      ...(resumable !== undefined ? { resumable } : {}),
+      ownerExecutorId: this.executorId,
+      transitionClaimId,
+      updatedAt: Date.now(),
+    };
+    await this.sdk.recordStepOutput(workflowId, stepName, encodeMetadata(claim));
+    const records = await this.sdk.listStepRecords(workflowId);
+    const record = records.find((candidate) => candidate.stepName === stepName);
+    if (record === undefined) return false;
+    return parseCurrentMetadataRecord(record, workflowId)?.transitionClaimId === transitionClaimId;
   }
 
   adjustPendingPrompts(workflowId: string, delta: number): void {
@@ -334,19 +289,31 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
   releasePendingPrompt(workflowId: string, reservationId: string, token: PromptReservationToken): void {
     if (this.isWorkflowLoadable(workflowId)) this.promptReservations.release(workflowId, reservationId, token);
   }
-
   listResumableWorkflows(): readonly ResumableWorkflowEntry[] {
-    return this.mem.listResumableWorkflows().filter((entry) => !this.incompatible.has(entry.workflowId));
+    // A running workflow with a fresh heartbeat is genuinely executing in SOME
+    // session; it is never a resume target (double dispatch). Only crashed
+    // (stale-heartbeat) running workflows remain listed.
+    return this.mem.listResumableWorkflows().filter((entry) =>
+      !this.invalid.has(entry.workflowId)
+      && !isLiveRunningWorkflow({ status: entry.status, updatedAt: entry.updatedAt }));
   }
+
   listCompletedWorkflows(): readonly ResumableWorkflowEntry[] {
-    return this.mem.listCompletedWorkflows().filter((entry) => !this.incompatible.has(entry.workflowId));
+    return this.mem.listCompletedWorkflows().filter((entry) => !this.invalid.has(entry.workflowId));
   }
-  toCacheEntry(workflowId: string) { return this.incompatible.has(workflowId) ? undefined : this.mem.toCacheEntry(workflowId); }
+
+  toMetadata(workflowId: string) {
+    return this.invalid.has(workflowId) ? undefined : this.mem.toMetadata(workflowId);
+  }
+
+  async prepareWorkflowCatalog(): Promise<DurableWorkflowCatalogEntries> {
+    await this.hydrateResumableWorkflows();
+    return { resumable: this.listResumableWorkflows(), completed: this.listCompletedWorkflows() };
+  }
   async deleteWorkflow(workflowId: string): Promise<void> {
-    this.incompatible.add(workflowId);
-    this.compatible.delete(workflowId);
+    this.invalid.add(workflowId);
+    this.current.delete(workflowId);
     this.locallyRegistered.delete(workflowId);
-    this.hydrated.delete(workflowId);
     this.promptReservations.delete(workflowId);
     await this.mem.deleteWorkflow(workflowId);
     await this.enqueueWrite(async () => {
@@ -354,15 +321,27 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
       await this.sdk.recordStepOutput(workflowId, DBOS_DELETION_STEP, encodeDbosDeletionTombstone(workflowId));
     });
   }
+
+  async deleteWorkflowIfInactive(workflowId: string): Promise<DurableInactiveDeleteResult> {
+    await this.flush();
+    await this.hydrateWorkflow(workflowId);
+    const handle = this.getLoadableWorkflow(workflowId);
+    if (handle === undefined) return { ok: false, reason: "not_found" };
+    if (handle.status === "running") return { ok: false, reason: "running" };
+    const guarded = await this.transitionWorkflowStatus(workflowId, [handle.status], handle.status);
+    if (!guarded) return { ok: false, reason: "running" };
+    await this.deleteWorkflow(workflowId);
+    await this.flush();
+    return { ok: true };
+  }
   isWorkflowLoadable(workflowId: string): boolean {
-    return !this.incompatible.has(workflowId)
-      && (this.locallyRegistered.has(workflowId) || this.compatible.has(workflowId));
+    return !this.invalid.has(workflowId)
+      && (this.locallyRegistered.has(workflowId) || this.current.has(workflowId));
   }
   reset(): void {
     this.mem.reset();
-    this.hydrated.clear();
-    this.incompatible.clear();
-    this.compatible.clear();
+    this.invalid.clear();
+    this.current.clear();
     this.locallyRegistered.clear();
     this.promptReservations.clear();
     this.writeQueue = Promise.resolve();
@@ -388,7 +367,6 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
     const deletion = classifyDbosDeletionTombstone(records, workflowId);
     if (deletion !== "absent") await this.suppressWorkflow(workflowId);
   }
-
   async hydrateResumableWorkflows(): Promise<void> {
     const all = await this.sdk.listAllWorkflows();
     for (const info of all) {
@@ -400,10 +378,6 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
   private async hydrateInfo(info: DbosWorkflowInfo): Promise<void> {
     const records = await this.sdk.listStepRecords(info.workflowId);
     const metadata = classifyLatestMetadata(records, info.workflowId);
-    if (metadata.kind === "legacy") {
-      await this.cleanupLegacyWorkflow(info.workflowId);
-      return;
-    }
     if (metadata.kind !== "current") {
       await this.suppressWorkflow(info.workflowId);
       return;
@@ -413,10 +387,6 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
       if (isMetadataStep(record.stepName) || isDbosPromptStateStep(record.stepName)
         || record.stepName === DBOS_DELETION_STEP) continue;
       const classified = classifyCheckpointPayload(info.workflowId, record.stepName, record.output);
-      if (classified.kind === "legacy") {
-        await this.cleanupLegacyWorkflow(info.workflowId);
-        return;
-      }
       if (classified.kind === "unknown") {
         await this.suppressWorkflow(info.workflowId);
         return;
@@ -424,37 +394,32 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
       checkpoints.push(classified.checkpoint);
     }
     await this.mem.deleteWorkflow(info.workflowId);
-    this.incompatible.delete(info.workflowId);
-    this.compatible.add(info.workflowId);
-    this.applyMetadata(info.workflowId, metadata.entry);
+    this.invalid.delete(info.workflowId);
+    this.current.add(info.workflowId);
+    this.applyMetadata(info.workflowId, metadata.metadata);
     checkpoints.forEach((checkpoint) => this.mem.recordCheckpoint(checkpoint));
     const current = this.mem.getWorkflow(info.workflowId);
     if (current !== undefined) {
       const pendingPrompts = this.promptReservations.hydrate(
         info.workflowId,
-        metadata.entry.pendingPrompts,
+        metadata.metadata.pendingPrompts,
         records,
-        metadata.entry.promptReservationEpoch,
+        metadata.metadata.promptReservationEpoch,
       );
-      this.mem.setWorkflowStatus(info.workflowId, current.status, pendingPrompts, current.resumable);
-    }
-    this.hydrated.add(info.workflowId);
-  }
-
-  private async cleanupLegacyWorkflow(workflowId: string): Promise<void> {
-    try {
-      await this.deleteWorkflow(workflowId);
-    } catch {
-      // deleteWorkflow marks the in-memory mirror incompatible before durable
-      // cleanup. Its write queue records/logs the error, while hydration must
-      // still return a filtered catalog and allow later discovery to retry.
+      // Re-register instead of setWorkflowStatus: hydration is a read-side
+      // reconstruction and must preserve the authoritative updatedAt, which
+      // doubles as the cross-session liveness heartbeat for running handles.
+      this.applyMetadata(info.workflowId, {
+        ...metadata.metadata,
+        pendingPrompts,
+        completedCheckpoints: current.completedCheckpoints,
+      });
     }
   }
 
   private async suppressWorkflow(workflowId: string): Promise<void> {
-    this.incompatible.add(workflowId);
-    this.compatible.delete(workflowId);
-    this.hydrated.delete(workflowId);
+    this.invalid.add(workflowId);
+    this.current.delete(workflowId);
     this.promptReservations.delete(workflowId);
     await this.mem.deleteWorkflow(workflowId);
   }
@@ -464,35 +429,49 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
     this.writeQueue = next.catch((err) => {
       const error = err instanceof Error ? err : new Error(String(err));
       this.writeErrors.push(error);
-      console.warn(`atomic-workflows: DBOS durable write failed: ${error.message}`);
+      // The next readiness/flush boundary surfaces this fatal persistence error.
     });
     return next;
   }
 
   private async writeMetadata(workflowId: string): Promise<void> {
-    const entry = this.mem.toCacheEntry(workflowId);
-    if (entry === undefined) return;
-    const metadata = this.promptReservations.metadataEntry(workflowId, entry);
-    await this.sdk.recordStepOutput(workflowId, metadataStepName(entry.ts), encodeMetadata(metadata));
+    const value = this.mem.toMetadata(workflowId);
+    if (value === undefined) return;
+    const metadata = {
+      ...this.promptReservations.metadata(workflowId, value),
+      // Ownership provenance: consulted for `running` handles to distinguish a
+      // workflow live in another Atomic session from a crashed one.
+      ownerExecutorId: this.executorId,
+    };
+    await this.sdk.recordStepOutput(
+      workflowId,
+      metadataStepName(metadata.updatedAt),
+      encodeMetadata(metadata),
+    );
   }
 
-  private applyMetadata(workflowId: string, entry: import("./types.js").DurableCheckpointEntry): void {
+  private applyMetadata(
+    workflowId: string,
+    metadata: import("./types.js").DurableWorkflowMetadata,
+  ): void {
     this.mem.registerWorkflow({
       workflowId,
-      name: entry.name,
-      inputs: entry.inputs,
-      createdAt: entry.ts,
-      updatedAt: entry.ts,
-      status: entry.status,
-      completedCheckpoints: entry.completedCheckpoints,
-      pendingPrompts: entry.pendingPrompts,
-      ...(entry.label !== undefined ? { label: entry.label } : {}),
-      ...(entry.rootWorkflowId !== undefined ? { rootWorkflowId: entry.rootWorkflowId } : {}),
-      ...(entry.resumable !== undefined ? { resumable: entry.resumable } : {}),
-      ...(entry.invocationCwd !== undefined ? { invocationCwd: entry.invocationCwd } : {}),
-      ...(entry.workflowCwd !== undefined ? { workflowCwd: entry.workflowCwd } : {}),
-      ...(entry.repositoryRoot !== undefined ? { repositoryRoot: entry.repositoryRoot } : {}),
-      ...(entry.gitWorktreeRoot !== undefined ? { gitWorktreeRoot: entry.gitWorktreeRoot } : {}),
+      name: metadata.name,
+      inputs: metadata.inputs,
+      createdAt: metadata.createdAt,
+      updatedAt: metadata.updatedAt,
+      status: metadata.status,
+      completedCheckpoints: metadata.completedCheckpoints,
+      pendingPrompts: metadata.pendingPrompts,
+      ...(metadata.ownerExecutorId !== undefined ? { ownerExecutorId: metadata.ownerExecutorId } : {}),
+      ...(metadata.sessionFile !== undefined ? { sessionFile: metadata.sessionFile } : {}),
+      ...(metadata.label !== undefined ? { label: metadata.label } : {}),
+      ...(metadata.rootWorkflowId !== undefined ? { rootWorkflowId: metadata.rootWorkflowId } : {}),
+      ...(metadata.resumable !== undefined ? { resumable: metadata.resumable } : {}),
+      ...(metadata.invocationCwd !== undefined ? { invocationCwd: metadata.invocationCwd } : {}),
+      ...(metadata.workflowCwd !== undefined ? { workflowCwd: metadata.workflowCwd } : {}),
+      ...(metadata.repositoryRoot !== undefined ? { repositoryRoot: metadata.repositoryRoot } : {}),
+      ...(metadata.gitWorktreeRoot !== undefined ? { gitWorktreeRoot: metadata.gitWorktreeRoot } : {}),
     });
   }
 }

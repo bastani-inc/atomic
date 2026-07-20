@@ -1,9 +1,11 @@
+import { join } from "node:path";
 import chalk from "chalk";
 import { selectConfig } from "./cli/config-selector.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
 import {
 	APP_NAME,
 	detectInstallMethod,
+	getAgentConfigPaths,
 	getAgentDir,
 	getPackageDir,
 	getSelfUpdateCommand,
@@ -12,10 +14,12 @@ import {
 	type SelfUpdateCommand,
 	VERSION,
 } from "./config.ts";
+import { AuthStorage } from "./core/auth-storage.ts";
 import type { ExtensionFactory } from "./core/extensions/types.ts";
 import { DefaultPackageManager } from "./core/package-manager.ts";
 import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
 import { DefaultResourceLoader } from "./core/resource-loader.ts";
+import { ModelRegistry } from "./core/model-registry.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { hasProjectTrustInputs, ProjectTrustStore } from "./core/trust-manager.ts";
 import { spawnProcess } from "./utils/child-process.ts";
@@ -42,6 +46,54 @@ function updateTargetIncludesSelf(target: UpdateTarget): boolean {
 
 function updateTargetIncludesExtensions(target: UpdateTarget): boolean {
 	return target.type === "all" || target.type === "extensions";
+}
+
+export async function refreshModelCatalogs(
+	agentDir: string,
+	options: { cwd?: string; settingsManager?: SettingsManager; extensionFactories?: ExtensionFactory[] } = {},
+): Promise<void> {
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), 15_000);
+	const aborted = new Promise<null>((resolve) => {
+		controller.signal.addEventListener("abort", () => resolve(null), { once: true });
+	});
+	try {
+		const cwd = options.cwd ?? process.cwd();
+		const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir, { projectTrusted: true });
+		const resourceLoader = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			settingsManager,
+			extensionFactories: options.extensionFactories,
+			noSkills: true,
+			noPromptTemplates: true,
+			noThemes: true,
+		});
+		const loaded = await Promise.race([resourceLoader.reload().then(() => true), aborted]);
+		if (!loaded) throw new Error("Model catalog refresh timed out.");
+		const authPaths = [join(agentDir, "auth.json"), ...getAgentConfigPaths("auth.json")]
+			.filter((path, index, paths) => paths.indexOf(path) === index);
+		const modelPaths = [join(agentDir, "models.json"), ...getAgentConfigPaths("models.json")]
+			.filter((path, index, paths) => paths.indexOf(path) === index);
+		const modelRegistry = ModelRegistry.create(AuthStorage.create(authPaths), modelPaths);
+		const extensionsResult = resourceLoader.getExtensions();
+		if (extensionsResult.errors.length > 0) {
+			const details = extensionsResult.errors.map(({ path, error }) => `${path}: ${error}`).join("; ");
+			throw new Error(`Could not load extensions for model catalog refresh: ${details}`);
+		}
+		for (const { name, config } of extensionsResult.runtime.pendingProviderRegistrations) {
+			modelRegistry.registerProvider(name, config);
+		}
+		const refresh = modelRegistry.refresh({ allowNetwork: true, force: true, signal: controller.signal });
+		const result = await Promise.race([refresh, aborted]);
+		if (!result || result.aborted) throw new Error("Model catalog refresh timed out.");
+		if (result.errors.size > 0) {
+			const details = [...result.errors].map(([provider, error]) => `${provider}: ${error.message}`).join("; ");
+			throw new Error(`Could not refresh model catalogs: ${details}`);
+		}
+	} finally {
+		clearTimeout(timeout);
+	}
 }
 
 function printSelfUpdateUnavailable(npmCommand?: string[], updatePackageName = PACKAGE_NAME): void {
@@ -130,6 +182,7 @@ function parseProjectTrustOverride(args: readonly string[]): boolean | undefined
 
 export interface PackageCommandRuntimeOptions {
 	extensionFactories?: ExtensionFactory[];
+	refreshModelCatalogs?: (agentDir: string) => Promise<void>;
 }
 
 interface CommandSettingsResult {
@@ -350,6 +403,19 @@ export async function handlePackageCommand(
 
 			case "update": {
 				const target = options.updateTarget ?? { type: "self" };
+				if (target.type === "models") {
+					if (runtimeOptions.refreshModelCatalogs) {
+						await runtimeOptions.refreshModelCatalogs(agentDir);
+					} else {
+						await refreshModelCatalogs(agentDir, {
+							cwd,
+							settingsManager,
+							extensionFactories: runtimeOptions.extensionFactories,
+						});
+					}
+					console.log(chalk.green("Model catalogs refreshed"));
+					return true;
+				}
 				if (options.showExtensionsSkippedNote) {
 					console.log(
 						chalk.dim(`Extensions are skipped. Run ${APP_NAME} update --extensions to update extensions.`),

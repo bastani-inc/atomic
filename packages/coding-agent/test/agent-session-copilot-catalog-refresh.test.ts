@@ -110,7 +110,7 @@ test("refreshCurrentModelFromRegistry adopts catalog metadata and clamps stale C
 	const unsubscribe = session.subscribe((event) => emittedEventTypes.push(event.type));
 
 	setActiveCopilotModelCatalog(maiCodeCatalog);
-	registry.refresh();
+	await registry.refresh();
 	session.refreshCurrentModelFromRegistry();
 	unsubscribe();
 
@@ -141,7 +141,7 @@ test("refreshCurrentModelFromRegistry leaves the active fallback untouched when 
 	});
 
 	setActiveCopilotModelCatalog(maiCodeCatalog);
-	registry.refresh();
+	await registry.refresh();
 	session.refreshCurrentModelFromRegistry();
 
 	assert.equal(session.model, fallbackModel);

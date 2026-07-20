@@ -6,13 +6,6 @@ import type { PiExecuteContext, WorkflowToolArgs } from "./public-types.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
 import { workflowGetResult } from "./workflow-tool-content.js";
 import {
-  directModeCount,
-  hasDirectExecutionMode,
-  hasNamedExecutionMode,
-  withForkParentSession,
-  workflowRunResultFromDetails,
-} from "./workflow-tool-helpers.js";
-import {
   workflowInterruptAction,
   workflowQuitAction,
   workflowPauseAction,
@@ -25,6 +18,7 @@ import {
   workflowTranscriptResult,
 } from "./workflow-tool-inspection.js";
 import { workflowSendAction, type WorkflowSendDeps } from "./workflow-tool-send.js";
+import { buildWorkflowStatusListing } from "./workflow-status-summary.js";
 import {
   ambiguousRunMessage,
   isWorkflowStageToolContext,
@@ -75,15 +69,6 @@ export function makeExecuteWorkflowTool(
         return getRuntime().dispatch(args, { policy });
       }
       case "run": {
-        if (hasDirectExecutionMode(args)) {
-          const activeRuntime = getRuntime();
-          const normalModeCount = directModeCount(args) + (hasNamedExecutionMode(args) ? 1 : 0);
-          if (normalModeCount !== 1) {
-            throw new Error("Workflow extension: specify exactly one normal execution mode: workflow, task, tasks, or chain");
-          }
-          const details = await activeRuntime.runDirect(withForkParentSession(args, ctx), { policy });
-          return workflowRunResultFromDetails(details);
-        }
         await ensureWorkflowResourcesVisible();
         return getRuntime().dispatch(args, { policy });
       }
@@ -106,7 +91,16 @@ export function makeExecuteWorkflowTool(
             ? { action: "statusDetail", runId: result.runId, detail: result.detail }
             : { action: "statusDetail", runId: target, error: `run not found: ${target}` };
         }
-        return { action: "status", snapshots: topLevelExpandedSnapshots() };
+        const listing = buildWorkflowStatusListing(
+          topLevelExpandedSnapshots(),
+          args.statusFilter ?? "all",
+        );
+        return {
+          action: "status",
+          filter: listing.filter,
+          runs: listing.runs,
+          snapshots: listing.snapshots,
+        };
       }
       case "stages":
         return workflowStagesResult(args);

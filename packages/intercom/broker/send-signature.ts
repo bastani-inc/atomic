@@ -5,6 +5,7 @@ export interface LogicalSendOptions {
   attachments?: Attachment[];
   replyTo?: string;
   expectsReply?: boolean;
+  replyError?: string;
 }
 
 function normalizeAttachments(attachments: Attachment[] | undefined): Array<Record<string, string>> | undefined {
@@ -24,6 +25,7 @@ export function buildSendSignature(to: string, options: LogicalSendOptions): str
     attachments: normalizeAttachments(options.attachments) ?? [],
     replyTo: options.replyTo ?? null,
     expectsReply: options.expectsReply ?? false,
+    replyError: options.replyError ?? null,
   });
 }
 
@@ -33,5 +35,6 @@ export function buildMessageSendSignature(to: string, message: Message): string 
     attachments: message.content.attachments,
     replyTo: message.replyTo,
     expectsReply: message.expectsReply,
+    replyError: message.replyError,
   });
 }

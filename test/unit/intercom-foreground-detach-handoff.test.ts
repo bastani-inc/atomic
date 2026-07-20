@@ -115,7 +115,7 @@ describe("broker foreground delivery handshake", () => {
     assert.equal(committed, 0);
   });
 
-  test("an unacknowledged commit never surfaces a reserved delivery", async () => {
+  test("an unacknowledged commit falls back without surfacing a reserved delivery", async () => {
     const emitter = new EventEmitter();
     const events = {
       emit(channel: string, payload: object) { emitter.emit(channel, payload); },
@@ -126,10 +126,10 @@ describe("broker foreground delivery handshake", () => {
     emitter.on(INTERCOM_DETACH_REQUEST_EVENT, (request: { phase?: string }) => {
       if (request.phase === "probe") emitter.emit(INTERCOM_DETACH_RESPONSE_EVENT, { ...request, accepted: true });
     });
-    assert.equal(await handoff.deliver({ from: from("a", "child-a"), message: message("q", true), generation: 1, surface: () => surfaced++, isCurrent: () => true }), "abandoned");
+    assert.equal(await handoff.deliver({ from: from("a", "child-a"), message: message("q", true), generation: 1, surface: () => surfaced++, isCurrent: () => true }), "unclaimed");
     assert.equal(surfaced, 0);
   });
-  test("a reserved owner cancelled before commit does not enter the unclaimed queue", async () => {
+  test("an owner lost before commit re-enters the unclaimed fallback", async () => {
     const emitter = new EventEmitter();
     const events = {
       emit(channel: string, payload: object) { emitter.emit(channel, payload); },
@@ -151,7 +151,7 @@ describe("broker foreground delivery handshake", () => {
       onUnclaimed: () => queued++,
     });
     assert.equal(surfaced, 0);
-    assert.equal(queued, 0);
+    assert.equal(queued, 1);
   });
 
   test("generation reuse starts a fresh handshake instead of reusing a pending attempt", async () => {

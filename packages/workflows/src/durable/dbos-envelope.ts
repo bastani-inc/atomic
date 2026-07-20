@@ -8,10 +8,7 @@
  * the synchronous replay reads (`getToolOutput`, `getUiResponse`,
  * `getStageOutput`) cannot reconstruct their lookup keys.
  *
- * The envelope is forward-compatible: old/simple payloads (plain values without
- * the envelope marker) are treated as generic stage outputs during hydration.
- *
- * cross-ref: issue #1498 — DBOS read-side hydration.
+ * Payloads without the current envelope marker and version are rejected.
  */
 
 import type { WorkflowSerializableObject, WorkflowSerializableValue } from "../shared/types.js";
@@ -25,7 +22,7 @@ import {
   type DurableUiCheckpoint,
   type UiPromptKind,
 } from "./types.js";
-import { classifyDurableFormatVersion, DURABLE_FORMAT_VERSION } from "./format-version.js";
+import { isCurrentDurableFormat, DURABLE_FORMAT_VERSION } from "./format-version.js";
 
 /** Envelope schema version. */
 export const DBOS_ENVELOPE_VERSION = DURABLE_FORMAT_VERSION;
@@ -66,9 +63,24 @@ export interface DbosCheckpointEnvelope extends WorkflowSerializableObject {
 }
 
 /**
+ * Stage-kind checkpoints from older session-timing writers may omit
+ * topology. The current format requires it, so default at every write
+ * boundary — persisted records must match the normalized in-memory mirror or
+ * a fresh process would reject them as foreign.
+ */
+export function withCurrentStageTopology(cp: DurableCheckpoint): DurableCheckpoint {
+  if (cp.kind !== "stage" || cp.topology !== undefined) return cp;
+  return {
+    ...cp,
+    topology: { version: DURABLE_STAGE_TOPOLOGY_VERSION, stageId: cp.checkpointId, parentIds: [] },
+  };
+}
+
+/**
  * Encode a durable checkpoint into a DBOS step-output envelope.
  */
-export function encodeCheckpoint(cp: DurableCheckpoint): DbosCheckpointEnvelope {
+export function encodeCheckpoint(checkpoint: DurableCheckpoint): DbosCheckpointEnvelope {
+  const cp = withCurrentStageTopology(checkpoint);
   const output = checkpointOutputValue(cp);
   const base: DbosCheckpointEnvelope = {
     __dbos_checkpoint__: ENVELOPE_MARKER,
@@ -120,7 +132,6 @@ function hasCheckpointEnvelopeMarker(value: WorkflowSerializableValue | undefine
 }
 export type DbosCheckpointCompatibility =
   | { readonly kind: "current"; readonly checkpoint: DurableCheckpoint }
-  | { readonly kind: "legacy" }
   | { readonly kind: "unknown" };
 
 /** Classify and decode one DBOS checkpoint payload without reinterpreting marked formats. */
@@ -129,9 +140,7 @@ export function classifyCheckpointPayload(
   stepName: string,
   value: WorkflowSerializableValue,
 ): DbosCheckpointCompatibility {
-  if (!hasCheckpointEnvelopeMarker(value)) return { kind: "current", checkpoint: decodeLegacy(workflowId, stepName, value) };
-  const compatibility = classifyDurableFormatVersion(value.v);
-  if (compatibility !== "current") return { kind: compatibility };
+  if (!hasCheckpointEnvelopeMarker(value) || !isCurrentDurableFormat(value.v)) return { kind: "unknown" };
   const hasOutput = value["hasOutput"];
   const containsOutput = value["output"] !== undefined;
   if (value["checkpointId"] !== stepName || typeof hasOutput !== "boolean" || hasOutput !== containsOutput) {
@@ -141,15 +150,7 @@ export function classifyCheckpointPayload(
   return checkpoint === undefined ? { kind: "unknown" } : { kind: "current", checkpoint };
 }
 
-/**
- * Decode a DBOS step output into a durable checkpoint.
- *
- * - Envelope payloads reconstruct the full checkpoint with original metadata.
- * - Non-envelope payloads (legacy/simple) produce a generic stage checkpoint
- *   so the output is still discoverable during replay.
- *
- * Returns `undefined` if the payload cannot be interpreted.
- */
+/** Decode one current DBOS checkpoint envelope. */
 export function decodeToCheckpoint(
   workflowId: string,
   stepName: string,
@@ -188,7 +189,7 @@ function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): Durabl
     } as DurableUiCheckpoint;
   }
   const topology = stageTopology(env.topology);
-  if (env.kind !== "stage"
+  if (env.kind !== "stage" || topology === undefined
     || (env.replayKey !== undefined && typeof env.replayKey !== "string")
     || (env.sessionId !== undefined && typeof env.sessionId !== "string")
     || (env.sessionFile !== undefined && typeof env.sessionFile !== "string")
@@ -206,7 +207,7 @@ function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): Durabl
     name: env.name ?? "stage",
     replayKey: env.replayKey ?? env.checkpointId,
     ...(env.hasOutput !== false && env.output !== undefined ? { output: env.output } : {}),
-    ...(topology !== undefined ? { topology } : {}),
+    topology,
     ...(env.sessionId !== undefined ? { sessionId: env.sessionId } : {}),
     ...(env.sessionFile !== undefined ? { sessionFile: env.sessionFile } : {}),
     ...(typeof env.startedAt === "number" ? { startedAt: env.startedAt } : {}),
@@ -264,21 +265,6 @@ function isOptionalFiniteNumber(value: WorkflowSerializableValue | undefined): b
 
 function isStringArray(value: WorkflowSerializableValue | undefined): value is readonly string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
-}
-function decodeLegacy(
-  workflowId: string,
-  stepName: string,
-  output: WorkflowSerializableValue,
-): DurableStageCheckpoint {
-  return {
-    kind: "stage",
-    workflowId,
-    checkpointId: `stage:${stepName}`,
-    name: stepName,
-    replayKey: stepName,
-    output,
-    completedAt: Date.now(),
-  };
 }
 
 function checkpointOutputValue(cp: DurableCheckpoint): WorkflowSerializableValue | undefined {

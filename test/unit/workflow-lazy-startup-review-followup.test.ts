@@ -12,16 +12,6 @@ import { setDurableBackend } from "../../packages/workflows/src/durable/factory.
 
 const previousWorkflowStageSubagentGuard = process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
 
-interface SelectorComponent {
-  handleInput?: (data: string) => void;
-}
-
-type SelectorFactory = (
-  tui: { requestRender: () => void },
-  theme: unknown,
-  keys: unknown,
-  done: () => void,
-) => SelectorComponent;
 class HydrationCapableBackend extends InMemoryDurableBackend {
   hydrateCalls = 0;
   async hydrateWorkflow(): Promise<void> { this.hydrateCalls += 1; }
@@ -100,15 +90,32 @@ describe("workflow lazy-startup review follow-up fixes", () => {
       hasUI: true,
       ui: {
         notify: () => undefined,
-        custom: (factoryArg: unknown) => {
+        custom: () => undefined,
+        hostSessionPicker: () => {
           pickerCalls += 1;
-          const component = (factoryArg as SelectorFactory)({ requestRender: () => undefined }, {}, {}, () => undefined);
-          setImmediate(() => component.handleInput?.("\u001b"));
-          return undefined;
+          return {
+            // The picker must open before any resource/catalog discovery runs.
+            // Discovery happens lazily via hydrate(), so keep the picker open
+            // until it has been attempted (and failed), then cancel — proving
+            // the picker stayed open the whole time.
+            result: (async (): Promise<string | undefined> => {
+              // Wait on a generous wall-clock deadline (not a fixed tick count):
+              // under a loaded event loop the hydrate failure can take many more
+              // than a handful of setImmediate turns to land, so a small tick
+              // budget would cancel prematurely and flake.
+              const deadline = Date.now() + 5_000;
+              while (refreshCalls === 0 && Date.now() < deadline) {
+                await new Promise((resolve) => setImmediate(resolve));
+              }
+              return undefined;
+            })(),
+            update: () => undefined,
+            error: () => undefined,
+            close: () => undefined,
+          };
         },
       },
     });
-
     assert.equal(refreshCalls, 1);
     assert.equal(pickerCalls, 1);
   });
@@ -230,7 +237,6 @@ describe("workflow lazy-startup review follow-up fixes", () => {
         dispatch: async (): Promise<WorkflowToolResult> => canSeeLazyWorkflow
           ? { action: "run", name: "lazy model run", runId: "model-run", status: "running", stages: [] }
           : { action: "run", name: "lazy model run", runId: "", status: "failed", error: "Workflow not found: lazy model run", stages: [] },
-        runDirect: async (): Promise<never> => { throw new Error("runDirect should not run"); },
       } as unknown as ExtensionRuntime;
     };
     const handler = makeExecuteWorkflowTool(

@@ -3,7 +3,7 @@ import { Container, Text } from "@earendil-works/pi-tui";
 import { chmod as fsChmod, mkdir as fsMkdir, readFile as fsReadFile, readdir as fsReaddir, stat as fsStat, writeFile as fsWriteFile } from "fs/promises";
 import { dirname, join } from "path";
 import { type Static, Type } from "typebox";
-import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
+import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.ts";
 import { getLanguageFromPath, highlightCode } from "../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { getRegisteredConflictBlocks, parseConflictBlocks, type ConflictBlock } from "./conflict-registry.ts";
@@ -216,7 +216,7 @@ function formatWriteCall(
 		const remaining = lines.length - maxLines;
 		text += `\n\n${displayLines.map((line) => (lang ? line : theme.fg("toolOutput", replaceTabs(line)))).join("\n")}`;
 		if (remaining > 0) {
-			text += `${theme.fg("muted", `\n... (${remaining} more lines, ${totalLines} total,`)} ${keyHint("app.tools.expand", "Expand")}${theme.fg("muted", ")")}`;
+			text += theme.fg("muted", "\n... ") + parenthesizedKeyHint("app.tools.expand", "Expand", `${remaining} more lines, ${totalLines} total`);
 		}
 	}
 

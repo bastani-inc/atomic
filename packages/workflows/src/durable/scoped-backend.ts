@@ -12,17 +12,16 @@
  * remaps every checkpoint identity to the root workflow id, prefixed by a stable
  * child boundary key, so the same side effects are recovered on resume.
  *
- * Only checkpoint read/write methods are scoped. Lifecycle methods
- * (`registerWorkflow`, `setWorkflowStatus`, completed/resumable listing,
- * `toCacheEntry`, `getWorkflow`) are no-ops for scoped children because child
- * runs are never independently addressable — only the root workflow is.
+ * Only checkpoint read/write methods are scoped. Root lifecycle, catalog,
+ * metadata, and deletion methods are no-ops because child runs are not
+ * independently addressable.
  *
  * cross-ref: issue #1498 — child side effects under the root durable workflow.
  */
 
 import type { DurableCheckpoint, DurableWorkflowStatus, ResumableWorkflowEntry } from "./types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
-import { adjustDurablePendingPrompts, type DurableWorkflowBackend, type WorkflowRegistrationInput } from "./backend.js";
+import type { DurableInactiveDeleteResult, DurableWorkflowBackend, DurableWorkflowCatalogEntries, WorkflowRegistrationInput } from "./backend.js";
 import { claimDurablePromptToken, durablePromptScope, releaseDurablePrompt, reserveDurablePrompt, type PromptReservationToken } from "./prompt-reservations.js";
 
 /**
@@ -63,16 +62,11 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
   }
 
   async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
-    if (this.inner.recordCheckpointAsync !== undefined) {
-      await this.inner.recordCheckpointAsync(this.remap(checkpoint));
-      return;
-    }
-    this.inner.recordCheckpoint(this.remap(checkpoint));
-    await this.inner.flush?.();
+    await this.inner.recordCheckpointAsync(this.remap(checkpoint));
   }
 
   flush(): Promise<void> {
-    return this.inner.flush?.() ?? Promise.resolve();
+    return this.inner.flush();
   }
 
   getToolOutput(_workflowId: string, argsHash: string): WorkflowSerializableValue | undefined {
@@ -120,18 +114,18 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
     // No-op: child status is reflected via the root workflow boundary.
   }
 
-  transitionWorkflowStatus(
+  async transitionWorkflowStatus(
     _workflowId: string,
     _expectedStatuses: readonly DurableWorkflowStatus[],
     _status: DurableWorkflowStatus,
     _pendingPrompts?: number,
     _resumable?: boolean,
-  ): boolean {
+  ): Promise<boolean> {
     return false;
   }
 
   adjustPendingPrompts(_workflowId: string, delta: number): void {
-    adjustDurablePendingPrompts(this.inner, this.scope.rootWorkflowId, delta);
+    this.inner.adjustPendingPrompts(this.scope.rootWorkflowId, delta);
   }
 
   promptReservationScope(_workflowId: string): { readonly rootWorkflowId: string; readonly scope: string } {
@@ -158,12 +152,20 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
     return [];
   }
 
-  toCacheEntry(_workflowId: string): undefined {
+  async prepareWorkflowCatalog(): Promise<DurableWorkflowCatalogEntries> {
+    return { resumable: [], completed: [] };
+  }
+
+  toMetadata(_workflowId: string): undefined {
     return undefined;
   }
 
   async deleteWorkflow(_workflowId: string): Promise<void> {
     // No-op: scoped children never own or delete root durable state.
+  }
+
+  async deleteWorkflowIfInactive(_workflowId: string): Promise<DurableInactiveDeleteResult> {
+    return { ok: false, reason: "not_found" };
   }
 
   isWorkflowLoadable(_workflowId: string): boolean {

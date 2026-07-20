@@ -1,7 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { APP_NAME, CONFIG_DIR_NAME } from "@bastani/atomic";
+import { APP_NAME } from "@bastani/atomic";
 import { findReadableConfigPath } from "./config-paths.ts";
 
 const CONFIG_PATH = findReadableConfigPath();

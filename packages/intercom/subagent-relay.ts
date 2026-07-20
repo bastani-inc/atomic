@@ -7,6 +7,7 @@ import {
   SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT,
   SUBAGENT_RESULT_INTERCOM_EVENT,
   SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT,
+  SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT,
   getErrorMessage,
   parseSubagentIntercomPayload,
   parseSubagentResultBarrier,
@@ -23,7 +24,9 @@ interface SubagentRelayDeps {
   currentSessionTargetMatches(to: string, resolvedTo?: string | null, activeClient?: IntercomClient): boolean;
   sendIncomingMessage(entry: { from: SessionInfo; message: Message; bodyText: string }, delivery: "trigger" | "followUp", generation?: number): unknown;
   ensureConnected(reason: "background"): Promise<IntercomClient>;
+  authorizeSupervisorChild?(childName: string): Promise<import("./broker/client.js").SupervisorAuthorization>;
   resolveSessionTarget(activeClient: IntercomClient, nameOrId: string): Promise<string | null>;
+  homeGroup?(): string;
 }
 
 async function dispatchRelayFallback(
@@ -59,7 +62,7 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
     const entry = {
       from: {
         id: sender, name: sender, cwd: deps.runtimeContext()?.cwd ?? process.cwd(),
-        model: sender, pid: process.pid, startedAt: now, lastActivity: now, status,
+        model: sender, pid: process.pid, startedAt: now, lastActivity: now, status, group: deps.homeGroup?.(),
       },
       message: { id: randomUUID(), timestamp: now, content: { text: messageText } },
       bodyText: messageText,
@@ -243,6 +246,13 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
       }
     })();
   }
+  pi.events.on(SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT, (payload) => {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return;
+    const request = payload as { childName?: unknown; completion?: Promise<unknown> };
+    const childName = typeof request.childName === "string" ? request.childName.trim() : "";
+    if (!childName || request.completion || !deps.authorizeSupervisorChild) return;
+    request.completion = deps.authorizeSupervisorChild(childName);
+  });
   pi.events.on(SUBAGENT_CONTROL_INTERCOM_EVENT, (payload) => {
     relaySubagentIntercomPayload(payload, {
       sender: "subagent-control",

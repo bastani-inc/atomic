@@ -31,6 +31,7 @@ See [examples/extensions/](https://github.com/bastani-inc/atomic/tree/main/packa
 ## Table of Contents
 
 - [Startup and lazy discovery](#startup-and-lazy-discovery)
+- [Interactive callback isolation](#interactive-callback-isolation)
 - [Quick Start](#quick-start)
 - [Extension Locations](#extension-locations)
 - [Available Imports](#available-imports)
@@ -55,11 +56,21 @@ See [examples/extensions/](https://github.com/bastani-inc/atomic/tree/main/packa
 
 ## Startup and lazy discovery
 
-Atomic keeps the interactive startup path responsive by registering lightweight command/tool wrappers first and deferring noncritical discovery work until after the session is usable. Built-in MCP, workflow, subagent, web-access, and Intercom extensions expose their public commands/tools immediately, but expensive server connections, workflow module evaluation, result-watcher priming, cleanup scans, and browser/provider loading may run in the background or on first explicit use. Commands such as `/workflow list`, named workflow runs/inputs, failed or durable workflow resume, `/mcp`, direct MCP tool calls, `mcp({ search })`, `mcp({ describe })`, `mcp({ server })`, and explicit reload/setup flows still wait for the resources they need before returning results; cold-cache MCP proxy `describe` first narrows hydration to prefix-matched or explicitly requested servers without starting unrelated servers after a prefix-directed miss, cold-cache unscoped MCP proxy `search` intentionally hydrates all uncached lazy servers so it can search the full configured tool set, env-selected MCP direct tools warm only their selected servers and refresh live tool registration when ready, workflow direct `task`/`tasks`/`chain` runs and paused live-run resume/pickers bypass full workflow discovery, autocomplete falls back to current/admin completions when lazy discovery fails, and workflow session restore reads only lightweight config during `session_start` so persisted-run settings apply without evaluating workflow modules.
+Atomic keeps the interactive startup path responsive by registering lightweight command/tool wrappers first and deferring noncritical discovery work until after the session is usable. Built-in MCP, workflow, subagent, web-access, and Intercom extensions expose their public commands/tools immediately, but expensive server connections, workflow module evaluation, result-watcher priming, cleanup scans, and browser/provider loading may run in the background or on first explicit use. Commands such as `/workflow list`, named workflow runs/inputs, failed or durable workflow resume, `/mcp`, direct MCP tool calls, `mcp({ search })`, `mcp({ describe })`, `mcp({ server })`, and explicit reload/setup flows still wait for the resources they need before returning results; cold-cache MCP proxy `describe` first narrows hydration to prefix-matched or explicitly requested servers without starting unrelated servers after a prefix-directed miss, cold-cache unscoped MCP proxy `search` intentionally hydrates all uncached lazy servers so it can search the full configured tool set, env-selected MCP direct tools warm only their selected servers and refresh live tool registration when ready, paused live-workflow resume/pickers bypass full workflow discovery, autocomplete falls back to current/admin completions when lazy discovery fails, and workflow session restore reads only lightweight config during `session_start` so persisted-run settings apply without evaluating workflow modules.
 
 Web-access and Intercom first-use calls await one shared lazy initializer plus the latest active lifecycle replay before executing. Failed initializer/replay attempts remain retryable. Session-scoped leases retire candidates synchronously on shutdown, reject calls spanning teardown, and require fresh initialization after restart; shutdown awaits retired replay/initializer cleanup before the extension instance can be replaced, and Intercom serializes replay with live lifecycle forwarding so matching ends and newer model selections cannot be overtaken by stale replay. Aborting one web-access caller during a shared wait does not cancel initialization for other callers, and host abort after provider/curator execution preserves the exact abort reason while explicit curator user cancellation remains result-shaped. Non-empty `web_search`/`fetch_content` batches with no successful items are marked as tool errors with stage diagnostics; partial successes remain successful and retain their completed items.
 
-Bundled MCP startup, proxy calls, direct tools, and readiness-critical commands share a generation-scoped initializer and exact session lease. Failed background attempts remain retryable and single-flight; stale contexts cannot reuse initialized state; commands keep the state they initialized across lazy imports; and direct/proxy operations revalidate ownership after lifecycle-spanning waits and before metadata or SDK side effects. Caller cancellation races readiness, connection, manager-close, and UI-start waits with the exact reason, closes any UI runtime produced after cancellation, and does not cancel shared producers needed by survivors. Session restart/shutdown retires OAuth ownership immediately and uses bounded, observed cleanup so non-abortable SDK work cannot permanently block replacement sessions while late completion remains fenced. SDK-supported resource/tool requests still receive the call signal, though protocol-level remote cancellation is advisory; UI-backed MCP Apps calls preserve terminal cancellation ordering and keep successful result events mutually exclusive.
+Bundled MCP startup, proxy calls, direct tools, and readiness-critical commands share a generation-scoped initializer and exact session lease. Failed background attempts remain retryable and single-flight; stale contexts cannot reuse initialized state; commands keep the state they initialized across lazy imports; and direct/proxy operations revalidate ownership after lifecycle-spanning waits and before metadata or SDK side effects. Caller cancellation races readiness, connection, manager-close, and UI-start waits with the exact reason, closes any UI runtime produced after cancellation, and does not cancel shared producers needed by survivors. Session restart/shutdown retires OAuth ownership immediately and uses bounded, observed cleanup so non-abortable SDK work cannot permanently block replacement sessions while late completion remains fenced. SDK-supported resource/tool requests still receive the call signal, though protocol-level remote cancellation is advisory; UI-backed MCP Apps calls preserve terminal cancellation ordering and keep successful result events mutually exclusive. Per-server `timeoutMs` applies a validated local-or-remote MCP tool-call inactivity limit at every call path while composing with the host abort signal; progress resets that timer, so a continuously reporting tool can run indefinitely, and omitting the field keeps the MCP SDK default.
+
+## Interactive callback isolation
+
+Interactive Atomic sessions run the agent engine, extensions, tools, hooks, workflow code, and extension-owned render components in a supervised child process. The terminal host owns stdin and cached rendering, so a synchronous busy loop in one callback cannot stop keyboard handling, spinners, or render scheduling. The engine sends a heartbeat every 50 ms; Atomic identifies the active callback after a 250 ms heartbeat gap and marks the engine unresponsive after one second. Escape requests cooperative cancellation and escalates to terminating the engine when it cannot acknowledge; the interrupted result is reported as unknown and is never retried automatically.
+
+Dialogs and `ctx.ui.custom()` components are proxied to the host as rendered lines with asynchronous input forwarding. Custom UI results must be JSON-safe. APIs that require a synchronous callback in the terminal process—raw `onTerminalInput` transforms, synchronous `getEditorText`, custom editor factories, autocomplete wrappers, component-factory widgets, and custom header/footer factories—are unavailable in isolated interactive mode and produce a warning rather than executing extension code in the host. Print and public RPC modes retain their existing execution model.
+
+For session-style list pickers use `ctx.ui.hostSessionPicker(request)` instead of remote-rendering a selector through `ctx.ui.custom()`: the terminal host mounts the real built-in session selector natively, fed with JSON-safe rows (`HostSessionPickerRow`: `SessionInfo` with `createdAt`/`modifiedAt` epoch millis). Arrow-key navigation and search never cross the process boundary; only semantic events do — the returned handle exposes `result` (resolves with the selected row's `path`, or `undefined` on cancel), `update(rows)`, `error(message)`, and `close()`, and the request's `onDelete(path)` callback owns deletion (the host keeps the row until the extension replies with `update` or `error`). Every interactive host implements the identical API — in-process (no IPC) when not isolated, over the engine protocol when isolated — so callers never branch; the member is absent only on non-interactive surfaces (headless RPC, print), where commands should fail with an actionable error. See [Host-native session picker](/tui#host-native-session-picker) for an example.
+
+For structured forms use `ctx.ui.hostInputForm(request)`. It accepts JSON-safe field descriptors (`string`, `text`, `number`, `integer`, `boolean`, or `select`, each with a raw `initialValue`) and resolves to a raw string record or `undefined` on cancellation. The terminal host owns the component, focus, validation, configured-keybinding handling, and mutable text state, so Tab, arrows, editing, Enter, Escape, and Ctrl+C are host-local rather than asynchronously forwarded to the engine child. Both interactive modes expose the same optional API; headless RPC and print omit it. See [Host-native input form](/tui#host-native-input-form).
 
 ## Quick Start
 
@@ -319,8 +330,9 @@ user sends prompt ────────────────────�
   │   │     ├─► tool_result (can modify)           │       │
   │   │     └─► tool_execution_end                 │       │
   │   │                                            │       │
-  │   └─► turn_end                                 │       │
-  │                                                        │
+  │   ├─► turn_end                                 │       │
+  │   └─► post-tool threshold preflight            │       │
+  │       (may compact before the next provider request)   │
   └─► agent_end                                            │
                                                            │
 user sends another prompt ◄────────────────────────────────┘
@@ -460,14 +472,14 @@ Do cleanup work in `session_shutdown`, then reestablish any in-memory state in `
 
 #### session_before_compact / session_compact
 
-Fired by `/compact` and auto-compaction. Atomic prepares a protected recent tail and a numbered compactable region. Extensions may cancel or provide a complete, non-empty `compactedText` replacement for that region; they cannot move `firstKeptEntryId`. The override is persisted verbatim and works without provider credentials.
+Fired by `/compact` and auto-compaction, including a threshold crossing detected after tool results enter the prospective next-turn context. Atomic prepares the complete active transcript except for the exact newest `preserve_recent` context-visible messages. Extensions may cancel or provide a complete, non-empty `compactedText` replacement for that region; they cannot move `firstKeptEntryId`. The override is persisted verbatim and works without provider credentials. A successful post-tool compaction returns its rebuilt context directly to the already-active Pi loop; it does not start a separate continuation. Cancellation or failure prevents that loop's follow-up provider request.
 
 ```typescript
 pi.on("session_before_compact", async (event) => {
   const { preparation, branchEntries, parameters, reason, signal } = event;
 
   // preparation.region.lines - unnumbered compactable transcript lines
-  // preparation.firstKeptEntryId - fixed start of the verbatim tail
+  // preparation.firstKeptEntryId - fixed start of the exact tail, or null when the tail is empty
   // preparation.tokensBefore - whole-context token estimate
   // parameters - compression_ratio, preserve_recent, query
   // branchEntries - raw entries on the active branch
@@ -649,7 +661,7 @@ pi.on("tool_execution_end", async (event, ctx) => {
 
 #### context
 
-Fired before each LLM call. Modify messages non-destructively. See [Session Format](/session-format) for message types.
+Fired before each LLM call. Modify messages non-destructively. See [Session Format](/session-format) for message types. When tool output crosses the buffered compaction threshold, the post-tool compaction preflight finishes before this hook runs for the follow-up call, so `event.messages` contains the rebuilt compacted context.
 
 ```typescript
 pi.on("context", async (event, ctx) => {
@@ -1045,12 +1057,12 @@ if (usage && usage.tokens > 100_000) {
 
 ### ctx.compact()
 
-Trigger Atomic's verbatim line compactor without awaiting completion. The planner emits numbered deleted-line ranges only; Atomic validates them and reconstructs retained text mechanically. Use `compression_ratio` (fraction of compactable lines to keep), client-side `preserve_recent`, and `query` to tune the run, and `onComplete`/`onError` for follow-up actions.
+Trigger Atomic's verbatim line compactor without awaiting completion. The planner emits numbered deleted-line ranges only; Atomic validates them and reconstructs retained text mechanically. Use `compression_ratio` (fraction of compactable lines to keep), client-side `preserve_recent` (an exact context-visible message count), and `query` to tune the run, and `onComplete`/`onError` for follow-up actions.
 
 ```typescript
 ctx.compact({
   compression_ratio: 0.5, // fraction of compactable lines to keep
-  preserve_recent: 2,    // keep recent messages and widen to a user-turn start
+  preserve_recent: 2,    // protect exactly the newest two context-visible messages
   query: "keep active migration details",
   onComplete: (result) => {
     ctx.ui.notify(`Compaction kept ${result.stats.linesKept}/${result.stats.linesBefore} lines`, "info");
@@ -2159,22 +2171,24 @@ If a slot intentionally has no visible content, return an empty `Component` such
 
 #### Keybinding Hints
 
-Use `keyHint()` to display keybinding hints that respect the active keybinding configuration:
+Use `keyHintIfBound()` when an affordance should disappear if the action has no effective keybinding. Add surrounding punctuation only when the helper returns text:
 
 ```typescript
-import { keyHint } from "@bastani/atomic";
+import { keyHintIfBound } from "@bastani/atomic";
 
 renderResult(result, { expanded }, theme, context) {
   let text = theme.fg("success", "✓ Done");
-  if (!expanded) {
-    text += ` (${keyHint("app.tools.expand", "to expand")})`;
+  const expandHint = keyHintIfBound("app.tools.expand", "to expand");
+  if (!expanded && expandHint) {
+    text += ` (${expandHint})`;
   }
   return new Text(text, 0, 0);
 }
 ```
 
 Available functions:
-- `keyHint(keybinding, description)` - Formats a configured keybinding id such as `"app.tools.expand"` or `"tui.select.confirm"`
+- `keyHint(keybinding, description)` - Formats a configured keybinding id such as `"app.tools.expand"` or `"tui.select.confirm"`; use it when the binding is required by the surrounding UI
+- `keyHintIfBound(keybinding, description)` - Formats the hint only when the action has an effective key list; use it for optional affordances and conditionally compose parentheses or separators
 - `keyText(keybinding)` - Returns the raw configured key text for a keybinding id
 - `rawKeyHint(key, description)` - Format a raw key string
 

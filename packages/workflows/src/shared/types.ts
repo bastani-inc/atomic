@@ -291,12 +291,6 @@ export type WorkflowAction = AuthoringContract.WorkflowAction;
 export type WorkflowDetails = Mutable<AuthoringContract.WorkflowDetails>;
 export type WorkflowTaskSessionFields = Mutable<AuthoringContract.WorkflowTaskSessionFields>;
 export type WorkflowTaskSessionOptions = StageOptions & WorkflowTaskSessionFields;
-export interface WorkflowDirectTaskItem extends WorkflowTaskOptions, Omit<Mutable<AuthoringContract.WorkflowDirectTaskItem>, keyof AuthoringContract.WorkflowTaskOptions> {}
-export interface WorkflowParallelChainStep extends Omit<AuthoringContract.WorkflowParallelChainStep, "parallel"> {
-  readonly parallel: readonly WorkflowDirectTaskItem[];
-}
-export type WorkflowChainStep = WorkflowDirectTaskItem | WorkflowParallelChainStep;
-export interface WorkflowDirectOptions extends StageOptions, Omit<Mutable<AuthoringContract.WorkflowDirectOptions>, keyof AuthoringContract.StageOptions> {}
 
 // ---------------------------------------------------------------------------
 // Stage context (provided to ctx.stage() calls)

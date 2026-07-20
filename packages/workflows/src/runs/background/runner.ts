@@ -54,6 +54,12 @@ export interface DetachedRunOpts
   jobs?: JobTracker;
   /** Runtime execution mode for UI/prompt policy. Defaults to interactive. */
   executionMode?: WorkflowExecutionMode;
+  /**
+   * Observes the raw executor outcome. Fulfillment includes the executor's
+   * RunResult; rejection includes the thrown setup/final-flush error. The job
+   * promise still resolves either way.
+   */
+  onRawSettled?: (ok: boolean, result: RunResult | undefined, error: unknown | undefined) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -122,6 +128,7 @@ export function runDetached<
     cancellation: _cancellation,
     ui: _ui,
     store: storeOverride,
+    onRawSettled,
     ...restOpts
   } = opts;
   const store: Store = storeOverride ?? defaultStore;
@@ -135,24 +142,42 @@ export function runDetached<
     deferWorkflowStart: true,
   };
 
-  // 5. Start background promise
-  const backgroundPromise: Promise<RunResult> = syncRun(def, inputs, execOpts);
-
-  // 6. Build void promise that unregisters on settle and swallows rejections
-  const voidPromise: Promise<void> = backgroundPromise.then(
-    () => {
+  // 5-7. Register the job BEFORE starting the executor, so a registration
+  //   failure can never leave a started (and now-orphaned) executor running.
+  //   The job promise settles when the executor settles; it is wired below.
+  let settleJob: () => void = () => {};
+  const voidPromise: Promise<void> = new Promise<void>((resolve) => { settleJob = resolve; });
+  try {
+    tracker.register({ runId, controller, promise: voidPromise });
+  } catch (error) {
+    controller.abort(error);
+    registry.unregister(runId);
+    settleJob();
+    throw error;
+  }
+  let backgroundPromise: Promise<RunResult>;
+  try {
+    backgroundPromise = syncRun(def, inputs, execOpts);
+  } catch (error) {
+    controller.abort(error);
+    registry.unregister(runId);
+    tracker.unregister(runId);
+    settleJob();
+    throw error;
+  }
+  const settle = (ok: boolean, result: RunResult | undefined, error: unknown | undefined): void => {
+    try {
+      onRawSettled?.(ok, result, error);
+    } finally {
+      registry.unregister(runId);
       tracker.unregister(runId);
-      // CancellationRegistry.unregister called by executor in its finally block.
-    },
-    (_err: unknown) => {
-      // Reject path: executor already records failed/killed status in store.
-      // Swallow here to avoid unhandled rejection — store is source of truth.
-      tracker.unregister(runId);
-    },
+      settleJob();
+    }
+  };
+  void backgroundPromise.then(
+    (result) => { settle(true, result, undefined); },
+    (error: unknown) => { settle(false, undefined, error); },
   );
-
-  // 7. Register live job in tracker
-  tracker.register({ runId, controller, promise: voidPromise });
 
   // 8. Return immediate accepted result
   return buildDetachedAccepted(def.name, runId);

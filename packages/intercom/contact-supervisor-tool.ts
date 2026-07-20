@@ -118,14 +118,18 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
 
         const metadata = childOrchestratorMetadata;
         let sendTo: string;
-        try {
-          sendTo = await resolveSessionTarget(connectedClient, metadata.orchestratorTarget) ?? metadata.orchestratorTarget;
-        } catch (error) {
-          return {
-            content: [{ type: "text", text: `Failed to resolve supervisor target: ${getErrorMessage(error)}` }],
-            isError: true,
-            details: { error: true },
-          };
+        if (connectedClient.supervisorSessionId || metadata.supervisor) {
+          sendTo = connectedClient.supervisorSessionId ?? metadata.supervisor!.supervisorSessionId;
+        } else {
+          try {
+            sendTo = await resolveSessionTarget(connectedClient, metadata.orchestratorTarget) ?? metadata.orchestratorTarget;
+          } catch (error) {
+            return {
+              content: [{ type: "text", text: `Failed to resolve supervisor target: ${getErrorMessage(error)}` }],
+              isError: true,
+              details: { error: true },
+            };
+          }
         }
         if (signal?.aborted) {
           return {
@@ -145,7 +149,7 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
         if (reason === "progress_update") {
           const message = params.message as string;
           try {
-            const result = await connectedClient.send(sendTo, {
+            const result = await connectedClient.sendToSupervisor(sendTo, {
               text: formatChildOrchestratorMessage("update", metadata, message),
             });
             if (!result.delivered) {
@@ -200,7 +204,7 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
           const requestText = reason === "interview_request"
             ? formatChildOrchestratorMessage("interview", metadata, formatSupervisorInterviewRequest(supervisorInterview!, typeof params.message === "string" ? params.message : undefined))
             : formatChildOrchestratorMessage("ask", metadata, params.message as string);
-          const sendResult = await connectedClient.send(sendTo, {
+          const sendResult = await connectedClient.sendToSupervisor(sendTo, {
             messageId: questionId,
             text: requestText,
             expectsReply: true,

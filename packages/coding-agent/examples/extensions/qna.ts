@@ -88,7 +88,7 @@ export default function (pi: ExtensionAPI) {
 					};
 
 					const response = await complete(
-						ctx.model!,
+						auth.baseUrl === undefined ? ctx.model! : { ...ctx.model!, baseUrl: auth.baseUrl },
 						{ systemPrompt: SYSTEM_PROMPT, messages: [userMessage] },
 						{ apiKey: auth.apiKey, headers: auth.headers, signal: loader.signal },
 					);

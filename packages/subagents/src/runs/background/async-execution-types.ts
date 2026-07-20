@@ -2,6 +2,7 @@ import type { ExtensionAPI, SessionWorkflowMetadata } from "@bastani/atomic";
 import type { AgentConfig } from "../../agents/agents.ts";
 import type { ChainStep } from "../../shared/settings.ts";
 import type { AvailableModelInfo } from "../shared/model-fallback.ts";
+import type { SupervisorAuthorization } from "../../intercom/supervisor-authorization.ts";
 import type {
 	ArtifactConfig,
 	Details,
@@ -44,6 +45,8 @@ export interface AsyncChainParams {
 	controlConfig?: ResolvedControlConfig;
 	controlIntercomTarget?: string;
 	childIntercomTarget?: (agent: string, index: number) => string | undefined;
+	supervisorAuthorizations?: Array<SupervisorAuthorization | undefined>;
+	dynamicSupervisorAuthorizations?: Record<number, SupervisorAuthorization[]>;
 	nestedRoute?: NestedRouteInfo;
 }
 
@@ -73,6 +76,7 @@ export interface AsyncSingleParams {
 	controlConfig?: ResolvedControlConfig;
 	controlIntercomTarget?: string;
 	childIntercomTarget?: (agent: string, index: number) => string | undefined;
+	supervisorAuthorization?: SupervisorAuthorization;
 	nestedRoute?: NestedRouteInfo;
 	/** Internal launch seam used by focused runtime tests. */
 	spawnRunner?: (

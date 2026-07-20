@@ -23,6 +23,12 @@ describe("public entrypoint", () => {
     assert.equal("WorkflowRunOptions" in workflows, false);
   });
 
+  test("does not export direct one-off executor helpers", () => {
+    assert.equal("runTask" in workflows, false);
+    assert.equal("runParallel" in workflows, false);
+    assert.equal("runChain" in workflows, false);
+  });
+
   test("exports TypeBox schema types through the source entrypoint", () => {
     const schema = Type.Object({ ok: Type.Boolean() });
     const value: Static<typeof schema> = { ok: true };

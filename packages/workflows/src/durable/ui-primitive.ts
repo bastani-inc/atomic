@@ -70,15 +70,15 @@ export function wrapUiWithDurable(base: WorkflowUIContext, deps: DurableUiDeps):
 
   const releasePending = async (identity: { readonly hash: string }, token: PromptReservationToken): Promise<void> => {
     releaseDurablePrompt(deps.backend, deps.workflowId, identity.hash, token);
-    await deps.backend.flush?.();
+    await deps.backend.flush();
   };
   const beginPending = (identity: { readonly hash: string }): {
     readonly token: PromptReservationToken;
     readonly write?: Promise<void>;
   } => {
     const token = reserveDurablePrompt(deps.backend, deps.workflowId, identity.hash);
-    const write = deps.backend.flush?.();
-    return { token, ...(write !== undefined ? { write } : {}) };
+    const write = deps.backend.flush();
+    return { token, write };
   };
   const waitForPendingWrite = async (
     identity: { readonly hash: string },
@@ -89,7 +89,7 @@ export function wrapUiWithDurable(base: WorkflowUIContext, deps: DurableUiDeps):
       await pending.write;
     } catch (error) {
       releaseDurablePrompt(deps.backend, deps.workflowId, identity.hash, pending.token);
-      try { await deps.backend.flush?.(); } catch { /* Preserve the opening-write failure. */ }
+      try { await deps.backend.flush(); } catch { /* Preserve the opening-write failure. */ }
       throw error;
     }
   };

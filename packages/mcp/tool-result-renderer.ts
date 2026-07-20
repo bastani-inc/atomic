@@ -57,8 +57,9 @@ export function renderMcpToolResult(
   const output = display.lines
     .map((line) => line === "…" ? theme.fg("muted", line) : theme.fg("toolOutput", line))
     .join("\n");
-  const hint = display.truncated && !options.expanded
-    ? `\n${theme.fg("muted", `(${keyText("app.tools.expand")} Expand)`)}`
+  const expandKey = keyText("app.tools.expand");
+  const hint = display.truncated && !options.expanded && expandKey
+    ? `\n${theme.fg("muted", `(${expandKey} Expand)`)}`
     : "";
 
   return new Text(`${output}${hint}`, 0, 0);

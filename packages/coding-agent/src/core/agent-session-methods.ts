@@ -1,5 +1,7 @@
 import type { Agent, AgentEvent, AgentMessage, AgentState, AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ProviderHeaders } from "@earendil-works/pi-ai";
 import type { Api, AssistantMessage, ImageContent, Message, Model, TextContent } from "@earendil-works/pi-ai/compat";
+import type { PendingPostToolCompactionGuard } from "./agent-session-post-tool-compaction.ts";
 import type { BashResult } from "./bash-executor.ts";
 import type { VerbatimCompactionParameters, VerbatimCompactionResult } from "./compaction/index.ts";
 import type {
@@ -27,6 +29,7 @@ import type { BashOperations } from "./tools/bash.ts";
 import type {
 	AgentSessionEvent,
 	AgentSessionEventListener,
+	AgentSessionReloadOptions,
 	ContextWindowReplayRequest,
 	ContextWindowReplaySource,
 	DrainedAgentQueues,
@@ -40,7 +43,7 @@ import type {
 import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.ts";
 
 export interface VerbatimCompactionApplyOptions {
-	resolvePlannerAuth: () => Promise<{ apiKey: string; headers?: Record<string, string> } | undefined>;
+	resolvePlannerAuth: () => Promise<{ apiKey: string; headers?: ProviderHeaders; baseUrl?: string } | undefined>;
 	abortController: AbortController;
 	backupLabel: string;
 	compression_ratio?: number;
@@ -99,7 +102,7 @@ export interface AgentSessionMethodSurface {
 	readonly extensionRunner: ExtensionRunner;
 
 	_handleAgentEvent(event: AgentEvent): void;
-	_getRequiredRequestAuth(model: Model<Api>): Promise<{ apiKey: string; headers?: Record<string, string> }>;
+	_getRequiredRequestAuth(model: Model<Api>): Promise<{ apiKey: string; headers?: ProviderHeaders; baseUrl?: string }>;
 	_installAgentToolHooks(): void;
 	_installAgentNextTurnRefresh(): void;
 	_emit(event: AgentSessionEvent): void;
@@ -130,7 +133,7 @@ export interface AgentSessionMethodSurface {
 	_refreshBaseSystemPromptFromActiveTools(): void;
 
 	prompt(text: string, options?: PromptOptions): Promise<void>;
-	_runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void>;
+	_runAgentPrompt(messages: AgentMessage | AgentMessage[], promptStarted?: () => void): Promise<void>;
 	_runAgentContinue(): Promise<void>;
 	_continueQueuedAgentMessages(): Promise<void>;
 	_tryExecuteBuiltinSlashCommand(text: string): Promise<boolean>;
@@ -205,6 +208,8 @@ export interface AgentSessionMethodSurface {
 	_resumeAfterAutoCompaction(): Promise<void>;
 	_resumeAfterLengthTruncation(): void;
 	_runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<void>;
+	_preflightPostToolContext(messages: AgentMessage[], signal?: AbortSignal): Promise<AgentMessage[]>;
+	_finishPostToolCompactionPreflight(messages: AgentMessage[]): AgentMessage[];
 	setAutoCompactionEnabled(enabled: boolean): void;
 
 	bindExtensions(bindings: ExtensionBindings): Promise<void>;
@@ -217,7 +222,7 @@ export interface AgentSessionMethodSurface {
 	_bindExtensionCore(runner: ExtensionRunner): void;
 	_refreshToolRegistry(options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void;
 	_buildRuntime(options: RuntimeBuildOptions): void;
-	reload(options?: { reason?: "startup" | "reload" }): Promise<void>;
+	reload(options?: AgentSessionReloadOptions): Promise<void>;
 
 	_isRetryableError(message: AssistantMessage): boolean;
 	_normalizePersistedGeminiToolArgs(message: AssistantMessage): void;
@@ -347,6 +352,9 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_postCompactionContinuationToken: number;
 	_lengthContinuationAttempts: number;
 	_outputBudgetErrorContinuationAttempts: number;
+	_postToolCompactionPreflightError: string | undefined;
+	_pendingPostToolCompactionGuard: PendingPostToolCompactionGuard | undefined;
+	_terminatingToolCallIds: Set<string>;
 	_pendingInterruptDeliveries: number;
 	_activeInterruptQueueHold: InterruptQueueHold | undefined;
 	_activeInterruptAbortMessage: string | undefined;

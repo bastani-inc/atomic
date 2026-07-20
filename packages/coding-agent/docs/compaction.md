@@ -1,6 +1,6 @@
 # Compaction & Branch Summarization
 
-LLMs have finite context windows. Atomic reduces older context with **verbatim line compaction** while preserving recent logical turns as ordinary messages. Branch summarization is a separate, intentionally lossy feature used only when navigating away from a branch.
+LLMs have finite context windows. Atomic reduces transcript context with **verbatim line compaction** while preserving an exact count of recent context-visible messages as ordinary messages. Branch summarization is a separate, intentionally lossy feature used only when navigating away from a branch.
 
 Compaction runs entirely locally with the active session model; no external compaction service is involved. The model only selects which lines to delete — Atomic reconstructs the retained text mechanically, so surviving lines are never rewritten.
 
@@ -44,11 +44,11 @@ Each deleted span is replaced on its own line with exactly:
 (filtered N lines)
 ```
 
-The spelling is always plural, including `(filtered 1 lines)`. When a later compaction swallows an earlier marker, Atomic adds the earlier marker's count to the new marker. Adjacent old markers are folded too, so counts remain cumulative across repeated compactions.
+The spelling is always plural, including `(filtered 1 lines)`. When a later compaction swallows an earlier marker, Atomic adds the earlier marker's count to the new marker. Adjacent old markers are folded too, so counts remain cumulative across repeated compactions. On repeated compaction, the planner receives the prior durable verbatim summary plus every currently active ordinary message except the exact protected tail.
 
 ### Protected structure
 
-Role-header lines such as `[User]:` and `[Assistant]:` are ordinary ranked lines and may be deleted. Explicit protected spans, including blank lines, are never deleted. The recent logical-turn tail is protected client-side by remaining outside the classifier request entirely.
+Role-header lines such as `[User]:` and `[Assistant]:` are ordinary ranked lines and may be deleted. Explicit protected spans, including blank lines, are never deleted. The configured number of newest context-visible messages remains outside the classifier request entirely; all preceding active transcript content is included.
 
 Images in the compactable region become the literal line `[image]`; images in the protected recent tail remain normal image content. Tool-result text remains capped at 16,000 characters before becoming durable compaction text, with an explicit truncation marker for the remainder.
 
@@ -59,10 +59,10 @@ The effective parameters appear in extension events and successful results:
 | Parameter | Default | Meaning |
 |---|---:|---|
 | `compression_ratio` | `0.5` | Fraction of compactable **lines to keep**, not a token ratio |
-| `preserve_recent` | `2` | Number of recent context-visible messages protected client-side; the cut widens backward to a user-turn start |
+| `preserve_recent` | `2` | Exact number of newest context-visible messages protected client-side |
 | `query` | Last visible user message | Relevance focus for deciding which older lines to retain |
 
-`preserve_recent` never leaves an assistant message or tool result at the start of the kept tail. Even when it is `0`, Atomic keeps the final logical turn. If `query` is absent, Atomic derives it from the last visible user message.
+`preserve_recent` counts context-visible messages without aligning the boundary to a user turn. An assistant message or tool result may therefore begin the kept tail. A value of `0` protects no messages and makes the entire active transcript compactable. If `query` is absent, Atomic derives it from the last visible user message.
 
 Configure defaults in `~/.atomic/agent/settings.json` or `.atomic/settings.json`:
 
@@ -83,18 +83,20 @@ Configure defaults in `~/.atomic/agent/settings.json` or `.atomic/settings.json`
 ## When compaction runs
 
 - **Manual:** `/compact`, `ctx.compact()`, `session.compact()`, or RPC `{ "type": "compact" }`.
-- **Threshold:** automatic compaction starts when estimated context usage reaches the effective input budget minus `reserveTokens`.
+- **Threshold:** automatic compaction starts when estimated context usage exceeds the effective input budget minus `reserveTokens`. Atomic checks both completed responses and the prospective next-turn context after tool results have been appended. A post-tool crossing is compacted before the active Pi tool loop sends its follow-up provider request.
 - **Overflow:** an actual provider context overflow compacts and then retries the interrupted turn.
 
-The in-flight/final logical turn is outside the compactable region. Cancellation and abort behavior remains consistent with normal session operations. Atomic writes a backup snapshot immediately before appending a compaction boundary.
+Exactly the configured recent-message tail is outside the compactable region; Atomic does not force the final logical turn to remain outside it. Pressing Escape while compaction is active cancels it like other session operations. In isolated interactive mode, cancellation and host UI response frames use an independent RPC control lane, so they can reach the engine while the ordinary `compact` request is still pending instead of waiting behind it. Atomic writes a backup snapshot immediately before appending a compaction boundary.
+
+The post-tool check stays inside the active Pi loop: it runs at most one ordinary verbatim compaction attempt for that completed tool turn, returns the rebuilt context to the loop, and never calls or schedules `agent.continue()`. Normal context reconstruction preserves provider tool-call/result protocol validity. Below-threshold tool turns follow the unchanged request path. Because the same active run resumes without emitting another `agent_start`, the interactive TUI replaces the compaction loader with its working spinner as soon as successful mid-turn compaction ends; streaming feedback therefore resumes immediately without waiting for another user interaction.
 
 ## One-pass planning and failure behavior
 
 Atomic asks the active session model, at the active reasoning level and through the normal session stream/provider wrapper, to rank every eligible line in one global pass and apply one threshold. The entire compactable region is sent in exactly one classifier request; it is never split into chunks. Manual, threshold, and overflow compaction all calculate the line target directly from the prepared `compression_ratio`. Explicit protected lines form a hard keep floor.
 
-The request uses the same provider path and failure handling as pi's summary compaction. Provider/API errors, overflow, abort, malformed output, or empty/unusable safe ranges fail after that one request. These failures write no compaction entry and schedule no continuation. There is no semantic retry, critical rung, deterministic fallback, or deterministic target correction.
+The request uses the same provider path and failure handling as pi's summary compaction. Provider/API errors, overflow, abort, malformed output, or empty/unusable safe ranges fail after that one request. These failures write no compaction entry and schedule no continuation. During the post-tool preflight, failure or cancellation also stops the active loop before its follow-up provider request, is surfaced through the normal compaction lifecycle, and is not admitted to ordinary provider retry or model fallback. There is no semantic retry, critical rung, deterministic fallback, or deterministic target correction.
 
-A syntactically valid usable result is accepted once after safety-only normalization, even when it deletes fewer lines or tokens than requested. Atomic never adds or restores model-selected deletions to force a target. During overflow recovery, the existing one-shot compact-and-retry continuation may therefore surface unresolved overflow naturally.
+A syntactically valid usable result is accepted once after safety-only normalization, even when it deletes fewer lines or tokens than requested. Atomic never adds or restores model-selected deletions to force a target. During overflow recovery, the existing one-shot compact-and-retry continuation may therefore surface unresolved overflow naturally. During a post-tool preflight, Atomic likewise does not add a second compaction strategy or attempt; if the rebuilt context is still known to exceed the provider's hard input limit, it refuses to send the follow-up request and reports the limit failure clearly.
 
 ### Length-truncated response recovery
 
@@ -153,9 +155,9 @@ A successful run appends the existing pi-style `type:"compaction"` entry shape:
 }
 ```
 
-A `compaction` entry is active only when `details.strategy === "verbatim-lines"`. On rebuild, Atomic emits a visible custom-role boundary message containing the durable `summary`, followed by the original messages beginning at `firstKeptEntryId`. The boundary is converted to a user-role provider message and shown in the TUI as a collapsible compaction card.
+A `compaction` entry is active only when `details.strategy === "verbatim-lines"`. On rebuild, Atomic emits a visible custom-role boundary message containing the durable `summary`, followed by the original messages beginning at `firstKeptEntryId`. When no pre-boundary context-visible message is retained—such as with `preserve_recent: 0`—`firstKeptEntryId` is `null`. Messages appended after the boundary are always replayed. The boundary is converted to a user-role provider message and shown in the TUI as a collapsible compaction card.
 
-Resume does not rerun planning or re-derive deletions: the exact compacted string is already in JSONL. Legacy `context_compaction` logical-deletion records and old `compaction` summary records without the discriminator are inert archival data. Their historical omissions are not reapplied when an old session resumes.
+Resume does not rerun planning or re-derive deletions: the exact compacted string and nullable tail boundary are already in JSONL. Existing records with a string `firstKeptEntryId` keep their original resume behavior. Legacy `context_compaction` logical-deletion records and old `compaction` summary records without the discriminator are inert archival data. Their historical omissions are not reapplied when an old session resumes.
 
 ## Extension hooks
 
@@ -379,7 +381,7 @@ Configure compaction in `~/.atomic/agent/settings.json` or `<project-dir>/.atomi
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `enabled` | `true` | Enable automatic Verbatim Compaction. |
-| `reserveTokens` | `16384` | Tokens to reserve for the next LLM response; threshold auto-compaction starts when context usage exceeds the model's effective input budget minus this reserve. |
+| `reserveTokens` | `16384` | Tokens to reserve for the next LLM response; threshold auto-compaction starts when completed-response usage or a prospective post-tool context exceeds the model's effective input budget minus this reserve. |
 
 Disable auto-compaction with `"enabled": false`. You can still compact manually with `/compact`.
 

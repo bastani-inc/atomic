@@ -16,7 +16,7 @@ This monorepo uses Bun for development commands; avoid npm/yarn/pnpm except for 
 
 ```bash
 bun run test:unit
-bun --cwd packages/coding-agent run build
+bun run --cwd packages/coding-agent build
 ```
 
 Atomic keeps the caller's current working directory when launched from development wrappers.
@@ -67,20 +67,22 @@ bun run test:unit                 # Run unit tests
 bun run test:integration          # Run integration tests
 bun run test:all                  # Run all tests
 # Run package Vitest tests
-bun --cwd packages/coding-agent run test -- test/specific.test.ts
+bun run --cwd packages/coding-agent test -- test/specific.test.ts
 ```
 
-The file-length gate scans tracked `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, and `.rs` files via `git ls-files`, falls back to a recursive walk outside Git, and counts physical lines with a no-final-newline correction. Only generated/vendored path globs (`node_modules`, `dist`, `target`, `binaries`, `.git`, `vendor`, minified bundles, and the bundled third-party `packages/workflows/skills/impeccable/**` skill) plus first-five-line generated markers are excluded; there is no grandfather/baseline allowlist for authored files.
+The file-length gate scans tracked `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, and `.rs` files via `git ls-files`, falls back to a recursive walk outside Git, and counts physical lines with a no-final-newline correction. Only generated/vendored path globs (`node_modules`, `dist`, `target`, `binaries`, `.git`, `vendor`, minified bundles, and the bundled third-party `packages/workflows/skills/impeccable/**` skill) plus first-five-line generated markers are excluded.
 
-## Release shrinkwrap
+## Deterministic installs
 
-`@bastani/atomic` ships `packages/coding-agent/npm-shrinkwrap.json` for deterministic package-manager installs. Release bases stay versionless at `0.0.0`; `scripts/cut-release.ts` resolves the selected exact remote branch, stamps the real version in a detached worktree, records immutable base-ref/SHA trailers, and regenerates the shrinkwrap there before tagging. Non-main publication bases must be exactly allowlisted as documented in the repository CI guide.
-
-The shrinkwrap generator is hermetic for Atomic-owned packages. It derives `@bastani/atomic-natives` and generated native optional package entries from local package metadata plus deterministic registry tarball URLs, so release publishing does not depend on npm metadata for native packages that were just published.
+`@bastani/atomic` ships `packages/coding-agent/npm-shrinkwrap.json` so package-manager installs resolve the same dependency tree every time. Contributors working from a source checkout can validate that the checked-in shrinkwrap is up to date with:
 
 ```bash
 bun run scripts/generate-coding-agent-shrinkwrap.mjs --check
 ```
+
+## Release security boundary
+
+Atomic's release bases remain at the `0.0.0` placeholder. `scripts/cut-release.ts` stamps the real version only on a detached tagged release commit. Tag creation runs an inert signal workflow; a separate `workflow_run` publisher loaded from protected `main` validates the exact upstream repository, source workflow/event/run, tag/SHA, immutable release-base trailers, and deterministic release tree. The privileged trigger checks out only protected workflow code: it treats the tag tree as data, exports it only after deterministic verification, and makes every read-only build verify the protected job's source checksum instead of checking out tag-selected code. Same-run artifact transport failures receive at most one retry after partial-download cleanup and still fail explicitly on the second error; verified source archives are streamed to tar over stdin for portable Windows drive-letter handling. Preparation restores the digest-verified source after documentation validation before producing artifacts. Release-source jobs configure no dependency cache, npm publication has OIDC without repository write, and GitHub Release creation has repository write without OIDC. Never move or recreate a failed release tag or dispatch the privileged publisher. See the repository's [CI/CD pipeline](https://github.com/bastani-inc/atomic/blob/main/docs/ci.md#release-pipeline) for trusted-publisher configuration.
 
 ## Project Structure
 

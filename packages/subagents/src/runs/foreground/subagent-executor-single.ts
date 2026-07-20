@@ -7,6 +7,7 @@ import { injectSingleProgressInstruction, resolveSingleProgress, writeInitialPro
 import { recordRun } from "../shared/run-history.ts";
 import { getSingleResultOutput, compactForegroundDetails } from "../../shared/utils.ts";
 import { updateForegroundNestedProjection } from "../shared/nested-events.ts";
+import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/intercom-group.ts";
 import {
 	INTERCOM_BRIDGE_MARKER,
 	resolveSubagentIntercomTarget,
@@ -186,6 +187,7 @@ export async function runSinglePath(data: ExecutionContextData, deps: ResolvedEx
 			onControlEvent,
 			intercomSessionName: childIntercomTarget,
 			orchestratorIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
+			intercomGroup: resolveChildIntercomGroup(params.group, inheritedIntercomGroup(ctx), undefined),
 			nestedRoute: foregroundControl?.nestedRoute,
 			onDetachedExit: (result) => {
 				cleanupTransientProgress(progressDir, artifactConfig.enabled);

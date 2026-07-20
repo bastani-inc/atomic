@@ -36,6 +36,39 @@ interface LightweightIntercomOptions {
 }
 
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
+const SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT = "subagent:supervisor-authorization";
+interface SupervisorAuthorizationRequest {
+	childName?: string;
+	completion?: Promise<unknown>;
+}
+
+const WORKFLOW_STAGE_LATE_MESSAGE_EVENT = "atomic:workflow-stage-late-message";
+
+interface WorkflowStageLateMessageEvent {
+	handled?: boolean;
+	completion?: Promise<void>;
+	workflowRunId?: string;
+	workflowStageId?: string;
+	messages?: Array<{
+		customType?: string;
+		content?: string;
+		details?: { message?: { expectsReply?: boolean } };
+	}>;
+}
+
+function isCompletedStageAskRoute(event: WorkflowStageLateMessageEvent): boolean {
+	return typeof event.workflowRunId === "string"
+		&& event.workflowRunId.length > 0
+		&& typeof event.workflowStageId === "string"
+		&& event.workflowStageId.length > 0
+		&& Array.isArray(event.messages)
+		&& event.messages.length > 0
+		&& event.messages.every((message) =>
+			message.customType === "intercom_message"
+			&& typeof message.content === "string"
+			&& message.details?.message?.expectsReply === true,
+		);
+}
 const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
 
 const SUBAGENT_ENV_PREFIX = `${APP_NAME.toUpperCase()}_SUBAGENT_`;
@@ -306,6 +339,18 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			?? [...activeLifecycle.activeTools.values()].at(-1)?.ctx
 			?? activeLifecycle.modelSelect?.ctx;
 	}
+	pi.events.on(SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT, (payload) => {
+		if (!payload || typeof payload !== "object" || Array.isArray(payload)) return;
+		const request = payload as SupervisorAuthorizationRequest;
+		if (typeof request.childName !== "string" || !request.childName.trim() || request.completion) return;
+		request.completion = loadHeavy(latestLifecycleContext()).then(async (handle) => {
+			handle.assertCurrent();
+			const forwarded: SupervisorAuthorizationRequest = { childName: request.childName };
+			await dispatchEventHandlers(handle.heavy, SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT, forwarded);
+			if (!forwarded.completion) throw new Error("Intercom supervisor authorization provider is unavailable");
+			return await forwarded.completion;
+		});
+	});
 	for (const eventName of [SUBAGENT_CONTROL_INTERCOM_EVENT, SUBAGENT_RESULT_INTERCOM_EVENT] as const) {
 		pi.events.on(eventName, (payload) => {
 			void loadHeavy(latestLifecycleContext()).then(async (handle) => {
@@ -318,13 +363,17 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			});
 		});
 	}
-	pi.events.on("atomic:workflow-stage-late-message", (payload) => {
+	pi.events.on(WORKFLOW_STAGE_LATE_MESSAGE_EVENT, (payload) => {
 		if (!payload || typeof payload !== "object") return;
-		const event = payload as { handled?: boolean; completion?: Promise<void> };
+		const event = payload as WorkflowStageLateMessageEvent;
+		// A completed-stage blocking ask belongs to the workflow post-mortem
+		// router. It must remain unclaimed when Intercom registers first, while
+		// every event already claimed by an earlier listener keeps its owner.
+		if (event.handled === true || isCompletedStageAskRoute(event)) return;
 		event.handled = true;
 		event.completion = loadHeavy(latestLifecycleContext()).then(async (handle) => {
 			handle.assertCurrent();
-			await dispatchEventHandlers(handle.heavy, "atomic:workflow-stage-late-message", payload);
+			await dispatchEventHandlers(handle.heavy, WORKFLOW_STAGE_LATE_MESSAGE_EVENT, payload);
 			handle.assertCurrent();
 		});
 	});
@@ -335,14 +384,16 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		label: "Intercom",
 		description: `Send a message to another local agent session running on this machine.
 Use this to communicate findings, request help, or coordinate work with other sessions.
+Sessions belong to an intercom group and can ONLY message sessions in the same group; cross-group sends are rejected by the broker. Ungrouped sessions share the "default" group.
 Usage:
-  intercom({ action: "list" })                    → List active sessions
-  intercom({ action: "send", to: "session-name", message: "..." })  → Send message
+  intercom({ action: "list" })                    → List sessions in your group
+  intercom({ action: "list", group: "name" })     → Read-only peek at another group's sessions
+  intercom({ action: "send", to: "session-name", message: "..." })  → Send message (own group only)
   intercom({ action: "ask", to: "session-name", message: "..." })   → Ask and wait for reply
   intercom({ action: "reply", message: "..." })                      → Reply to the active/single pending ask
   intercom({ action: "pending" })                                      → List unresolved inbound asks
-  intercom({ action: "status" })                  → Show connection status`,
-		promptSnippet: "Use to coordinate with other local agent sessions: list peers, send updates, ask for help, or check intercom connectivity.",
+  intercom({ action: "status" })                  → Show connection status and your group`,
+		promptSnippet: "Use to coordinate with other local agent sessions in your intercom group: list peers, send updates, ask for help, or check intercom connectivity. Groups are isolated; you can only message sessions in your own group.",
 		parameters: Type.Object({
 			action: Type.String({ description: "Action: 'list', 'send', 'ask', 'reply', 'pending', or 'status'" }),
 			to: Type.Optional(Type.String({ description: "Target session name or ID (for 'send', 'ask', or disambiguating 'reply')" })),
@@ -354,6 +405,7 @@ Usage:
 				language: Type.Optional(Type.String()),
 			}))),
 			replyTo: Type.Optional(Type.String({ description: "Message ID to reply to (for threading or responding to an 'ask')" })),
+			group: Type.Optional(Type.String({ description: "Read-only group filter for 'list'/'status'; 'send'/'ask' are locked to your own group." })),
 		}),
 		execute: (...args) => executeHeavyTool(loadHeavy, "intercom", args),
 		renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "intercom", args),

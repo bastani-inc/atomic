@@ -12,13 +12,15 @@ export function isExpandable(obj: unknown): obj is Expandable {
 
 export class ExpandableText extends Text implements Expandable {
   private expanded: boolean;
+  private contentWidth: number | undefined;
+  private readonly textPaddingX: number;
 
-  declare private readonly getCollapsedText: () => string;
-  declare private readonly getExpandedText: () => string;
+  declare private readonly getCollapsedText: (width?: number) => string;
+  declare private readonly getExpandedText: (width?: number) => string;
 
   constructor(
-    getCollapsedText: () => string,
-    getExpandedText: () => string,
+    getCollapsedText: (width?: number) => string,
+    getExpandedText: (width?: number) => string,
     expanded = false,
     paddingX = 0,
     paddingY = 0,
@@ -31,6 +33,7 @@ export class ExpandableText extends Text implements Expandable {
     this.getCollapsedText = getCollapsedText;
     this.getExpandedText = getExpandedText;
     this.expanded = expanded;
+    this.textPaddingX = paddingX;
   }
 
   setExpanded(expanded: boolean): void {
@@ -39,7 +42,22 @@ export class ExpandableText extends Text implements Expandable {
   }
 
   refresh(): void {
-    this.setText(this.expanded ? this.getExpandedText() : this.getCollapsedText());
+    const width = this.contentWidth;
+    this.setText(
+      this.expanded ? this.getExpandedText(width) : this.getCollapsedText(width),
+    );
+  }
+
+  override render(width: number): string[] {
+    // Text getters may adapt their layout to the available content width
+    // (e.g. the startup banner drops its side-by-side meta column on narrow
+    // terminals), so refresh whenever the render width changes.
+    const contentWidth = Math.max(1, width - this.textPaddingX * 2);
+    if (contentWidth !== this.contentWidth) {
+      this.contentWidth = contentWidth;
+      this.refresh();
+    }
+    return super.render(width);
   }
 }
 

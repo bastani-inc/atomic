@@ -252,8 +252,8 @@ export class SessionManager {
 		this._appendEntry(entry);
 		return entry.id;
 	}
-	appendCompaction(compactedText: string, firstKeptEntryId: string, tokensBefore: number, details: VerbatimCompactionDetails): string {
-		if (!this.byId.has(firstKeptEntryId)) throw new Error(`Entry ${firstKeptEntryId} not found`);
+	appendCompaction(compactedText: string, firstKeptEntryId: string | null, tokensBefore: number, details: VerbatimCompactionDetails): string {
+		if (firstKeptEntryId !== null && !this.byId.has(firstKeptEntryId)) throw new Error(`Entry ${firstKeptEntryId} not found`);
 		const entry = createCompactionEntry(compactedText, firstKeptEntryId, tokensBefore, details, this.byId, this.leafId);
 		this._appendEntry(entry);
 		return entry.id;

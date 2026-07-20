@@ -148,6 +148,9 @@ export interface WorkflowRuntimeConfig {
   readonly statusFile: boolean;
   readonly statusFilePath?: string;
   readonly resumeInFlight: "ask" | "auto" | "never";
+  readonly worktree?: {
+    readonly symlinkDirectories: readonly string[];
+  };
 }
 
 export interface WorkflowWorktreeInputBinding {

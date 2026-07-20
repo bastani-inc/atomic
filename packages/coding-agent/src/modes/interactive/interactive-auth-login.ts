@@ -3,7 +3,7 @@ import { type Api, type Model, type OAuthProviderId, type OAuthSelectPrompt, pat
 import { hasDefaultModelProvider, isUnknownModel } from "./interactive-mode-helpers.ts";
 
 InteractiveModeBase.prototype.completeProviderAuthentication = async function(this: InteractiveModeBase, providerId: string, providerName: string, authType: "oauth" | "api_key", previousModel: Model<Api> | undefined): Promise<void> {
-    this.session.modelRegistry.refresh();
+    await this.session.modelRegistry.refresh();
 
     const actionLabel =
       authType === "oauth"
@@ -271,6 +271,13 @@ InteractiveModeBase.prototype.showLoginDialog = async function(this: Interactive
             this.showOAuthLoginSelect(dialog, prompt),
 
           onManualCodeInput: () => manualCodePromise,
+
+          onManualCodeCancel: () => {
+            dialog.dismissPendingInput();
+            manualCodeResolve?.("");
+            manualCodeResolve = undefined;
+            manualCodeReject = undefined;
+          },
 
           signal: dialog.signal,
         },

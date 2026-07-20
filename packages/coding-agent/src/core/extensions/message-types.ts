@@ -11,6 +11,21 @@ export interface SendMessageOptions {
 	excludeFromContext?: boolean;
 	/** Stable producer identity used for exactly-once workflow-stage admission. */
 	stageAdmissionKey?: string;
+	/**
+	 * Holds an already-admitted workflow-stage delivery behind producer-specific
+	 * coordination. The generation boundary tracks this promise so stage close
+	 * cannot overtake the eventual queue insertion.
+	 *
+	 * @internal
+	 */
+	stageAdmissionBarrier?: () => Promise<void>;
+	/**
+	 * When the parent chat is streaming, persist the custom message to the
+	 * transcript (visible and durable) instead of only queueing a transient
+	 * steer that can be dropped when the queue is cleared or the turn aborts.
+	 * Use for status notices that must not be silently lost.
+	 */
+	persistWhenStreaming?: boolean;
 
 	/**
 	 * Optional replacement text for generic abort tool/assistant results when

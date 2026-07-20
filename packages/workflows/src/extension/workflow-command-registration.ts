@@ -5,6 +5,7 @@ import { store } from "../shared/store.js";
 import type { WorkflowExecutionPolicy } from "../shared/types.js";
 import { emitChatSurface } from "../tui/chat-surface-message.js";
 import { openInlineInputsForm } from "../tui/inline-form-overlay.js";
+import { openHostInputsForm } from "../tui/host-input-form.js";
 import { openInputsPicker } from "../tui/inputs-overlay.js";
 import { deriveGraphTheme } from "../tui/graph-theme.js";
 import { selectRunsForPicker } from "../tui/session-picker.js";
@@ -65,6 +66,18 @@ export function registerWorkflowSlashCommand(
         const buildCompletions = (): PiArgumentCompletionResult => workflowArgumentCompletions(partial, deps.runtimeProxy);
         if (!workflowArgumentCompletionsNeedWorkflowResources(partial)) return buildCompletions();
         return Promise.resolve(deps.ensureWorkflowResourcesLoaded()).then(buildCompletions).catch(buildCompletions);
+      },
+    },
+    workflowCommands,
+  );
+  registerWorkflowCommand(
+    pi,
+    "workflows",
+    {
+      description: "List retained workflow runs or open one by id. Usage: /workflows [run-id]",
+      handler: (args, ctx) => {
+        const target = args.trim();
+        return workflowSlashHandler(target.length === 0 ? "resume" : `resume ${target}`, ctx, pi, deps);
       },
     },
     workflowCommands,
@@ -180,7 +193,9 @@ async function workflowSlashHandler(
   let mergedInputs = inputs;
   let pickerWasShown = false;
   const canOpenPicker = policy.allowInputPicker && !wantsPickerSkip && (
-    typeof ctx.ui?.setEditorComponent === "function" || typeof ctx.ui?.custom === "function"
+    typeof ctx.ui?.hostInputForm === "function" ||
+    typeof ctx.ui?.setEditorComponent === "function" ||
+    typeof ctx.ui?.custom === "function"
   );
   if (canOpenPicker) {
     await ensureWorkflowResourcesVisible();
@@ -195,9 +210,12 @@ async function workflowSlashHandler(
     if (fields.length > 0 && (inputTokens.length === 0 || missingRequired)) {
       pickerWasShown = true;
       const pickerTheme = deriveGraphTheme({});
-      let pickerResult = typeof ctx.ui?.setEditorComponent === "function"
-        ? await openInlineInputsForm(pi, ctx, { workflowName, fields, prefilled: inputs, theme: pickerTheme })
+      let pickerResult = typeof ctx.ui?.hostInputForm === "function"
+        ? await openHostInputsForm(ctx.ui, { workflowName, fields, prefilled: inputs })
         : { kind: "unsupported" as const };
+      if (pickerResult.kind === "unsupported" && typeof ctx.ui?.setEditorComponent === "function") {
+        pickerResult = await openInlineInputsForm(pi, ctx, { workflowName, fields, prefilled: inputs, theme: pickerTheme });
+      }
       if (pickerResult.kind === "unsupported" && typeof ctx.ui?.custom === "function") {
         pickerResult = await openInputsPicker(ctx.ui, { workflowName, fields, prefilled: inputs, theme: pickerTheme });
       }

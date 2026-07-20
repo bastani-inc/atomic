@@ -212,7 +212,7 @@ export function expectRegisteredCommand(
 
 export const EXPECTED_WORKFLOW_DESCRIPTION_TOKENS = [
   "named builtin, project, user, or package workflows",
-  "direct one-off",
+  "Run named",
   "custom TypeScript workflow",
   "inline with normal coding tools",
   "discover with list/get/inputs",

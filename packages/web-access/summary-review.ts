@@ -1,3 +1,4 @@
+import type { ProviderHeaders } from "@earendil-works/pi-ai";
 import { complete, getModel, type Message, type Model } from "@earendil-works/pi-ai/compat";
 import type { ExtensionContext } from "@bastani/atomic";
 import type { QueryResultData } from "./storage.js";
@@ -180,7 +181,7 @@ export function buildDeterministicSummary(results: QueryResultData[]): { summary
 async function resolveSummaryModel(
 	ctx: SummaryGenerationContext,
 	modelOverride?: string,
-): Promise<{ model: Model; apiKey: string; headers?: Record<string, string> }> {
+): Promise<{ model: Model; apiKey: string; headers?: ProviderHeaders }> {
 	const normalizedOverride = typeof modelOverride === "string" ? modelOverride.trim() : "";
 	if (normalizedOverride.length > 0) {
 		const slashIndex = normalizedOverride.indexOf("/");
@@ -197,14 +198,24 @@ async function resolveSummaryModel(
 		if (!selectedAuth.ok || !selectedAuth.apiKey) {
 			throw new Error(`No API key available for summary model ${normalizedOverride}`);
 		}
-		return { model: selectedModel, apiKey: selectedAuth.apiKey, headers: selectedAuth.headers };
+		return {
+			model: selectedAuth.baseUrl === undefined ? selectedModel : { ...selectedModel, baseUrl: selectedAuth.baseUrl },
+			apiKey: selectedAuth.apiKey,
+			headers: selectedAuth.headers,
+		};
 	}
 
 	for (const { provider, id } of PREFERRED_SUMMARY_MODELS) {
 		const model = getModel(provider, id);
 		if (!model) continue;
 		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-		if (auth.ok && auth.apiKey) return { model, apiKey: auth.apiKey, headers: auth.headers };
+		if (auth.ok && auth.apiKey) {
+			return {
+				model: auth.baseUrl === undefined ? model : { ...model, baseUrl: auth.baseUrl },
+				apiKey: auth.apiKey,
+				headers: auth.headers,
+			};
+		}
 	}
 
 	throw new Error(`No API key available for summary models: ${PREFERRED_SUMMARY_MODELS.map(c => `${c.provider}/${c.id}`).join(", ")}`);

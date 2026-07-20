@@ -114,7 +114,8 @@ Pi-specific files are the write targets for imported or shared global servers wh
       "command": "npx",
       "args": ["-y", "some-mcp-server"],
       "lifecycle": "lazy",
-      "idleTimeout": 10
+      "idleTimeout": 10,
+      "timeoutMs": 30000
     }
   }
 }
@@ -133,10 +134,13 @@ Pi-specific files are the write targets for imported or shared global servers wh
 | `bearerToken` / `bearerTokenEnv` | Token or env var name; `bearerToken` supports `${VAR}` and `$env:VAR` interpolation |
 | `lifecycle` | `"lazy"` (default), `"eager"`, or `"keep-alive"` |
 | `idleTimeout` | Minutes before idle disconnect (overrides global) |
+| `timeoutMs` | Per-tool-call inactivity timeout in milliseconds for local or remote servers; omit to use the MCP SDK default |
 | `exposeResources` | Expose MCP resources as tools (default: true) |
 | `directTools` | `true`, `string[]`, or `false` — register tools individually instead of through proxy |
 | `excludeTools` | `string[]` of tool names to hide (matches original names like `get_screenshot` and prefixed names like `figma_get_screenshot`) |
 | `debug` | Show server stderr (default: false) |
+
+`timeoutMs` is an **inactivity timeout**, not a total wall-clock limit. Each MCP progress notification resets the timer, so a tool that continues reporting progress can run indefinitely. The value must be a finite number greater than zero; invalid values produce a configuration error when the MCP config loads.
 
 ### Lifecycle Modes
 
@@ -336,7 +340,7 @@ Prefer `.mcp.json` for project-local shared MCP config. Use `.pi/mcp.json` only 
 | Connect | `mcp({ connect: "server-name" })` |
 | UI messages | `mcp({ action: "ui-messages" })` |
 
-MCP proxy and direct-tool results render compactly by default: long text shows the first three lines plus a `Ctrl+o Expand` hint, while the full result remains available when expanded and is still returned unchanged to the model.
+MCP proxy and direct-tool results render compactly by default: long text shows the first three lines plus a `ctrl+o Expand` hint, while the full result remains available when expanded and is still returned unchanged to the model.
 
 Search includes both MCP tools and Pi tools (from extensions). Pi tools appear first with `[pi tool]` prefix. Space-separated words are OR'd.
 

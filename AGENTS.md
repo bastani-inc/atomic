@@ -121,7 +121,7 @@ atomic:
 
 ## Releasing
 
-Atomic uses a **versionless release-base** flow (modeled on openai/codex): every supported base, including `main`, keeps `packages/*/package.json` at the `0.0.0` placeholder. The real version is materialized only on a throwaway `Release <version>` commit whose sole parent is the exact selected remote branch SHA; that commit is tagged but never merged back. `scripts/cut-release.ts --base <short-branch>` records immutable `Release-base-ref: refs/heads/<short-branch>` and `Release-base-sha: <full SHA>` trailers. Creating the tag triggers `publish.yml` through GitHub's `create` event. GitHub loads this event workflow from the protected default branch, pins `github.workflow_sha`, and binds the event tag/SHA to the remote tag. The publisher allows `refs/heads/main` by default plus exact canonical refs in the comma-separated repository variable `RELEASE_BASE_REFS`, fetches only that branch into a fixed local ref, proves trailer SHA/parent equality and current remote containment, and verifies the deterministic release tree before npm OIDC publication. Repository permissions default to read-only; only the final publish job receives `contents: write` and `id-token: write`. Do not dispatch the workflow manually.
+Atomic uses a **versionless release-base** flow: supported bases keep `packages/*/package.json` at `0.0.0`; `scripts/cut-release.ts` materializes the real version only on a tagged detached `Release <version>` commit with harmless immutable `Release-base-ref`/`Release-base-sha` trailers. Pushing the version tag directly starts `publish.yml`. Its lightweight integrity job checks that the source resolves to the tag commit, `packages/coding-agent/package.json` equals the tag, and the subject is `Release <version>`. Build jobs produce and smoke-test native modules and archives; a draft GitHub Release is staged before OIDC-only npm publication and undrafted only after npm succeeds. `publish-npm` alone receives `id-token: write` under `npm-publish`; release staging, undrafting, and failed-draft cleanup alone receive `contents: write`. Configure npm trusted publishers with filename `publish.yml` and environment `npm-publish`.
 
 Cut and publish a release with:
 
@@ -129,22 +129,21 @@ Cut and publish a release with:
 bun run scripts/cut-release.ts 0.8.31 --base main --push
 ```
 
-The selected base is never advanced by the version stamp. The script resolves its exact `refs/heads/...` ref on `origin`, creates the release commit in a detached git worktree, records the immutable base trailers, tags it, and abandons the worktree. The tag push is the sole publication signal. Configure non-main bases in `RELEASE_BASE_REFS` before cutting the release. There is no legacy fallback: release commits without both valid trailers are rejected.
+The selected base is never advanced by the version stamp. The script resolves its exact `refs/heads/...` ref on `origin`, creates the release commit in a detached git worktree, records the base trailers, tags it, and abandons the worktree. The tag push is the publication signal. The publisher deliberately does not validate or allowlist those trailers; its integrity boundary is the tag/package-version/commit-subject match.
 
 ### Agent publishing requests
 
-If a user asks to publish a release or prerelease, execute the release process directly rather than launching an Atomic workflow:
+If a user asks to publish a release or prerelease, route the request through the repository-local `publish-release` Atomic workflow:
 
 1. Ask for the version only when it was not supplied. Stable releases use `MAJOR.MINOR.PATCH`; prereleases use `MAJOR.MINOR.PATCH-alpha.REVISION` with revision starting at 1.
 2. Infer release versus prerelease from a valid supplied version; ask only when it is ambiguous or invalid. Use the requested `base_ref`, defaulting to the short branch name `main` when omitted.
-3. For non-main bases, require the branch to be protected with the repository's required CI checks and configure its exact canonical `refs/heads/<base_ref>` in the repository variable `RELEASE_BASE_REFS`; entries are comma-separated with no spaces, aliases, globs, or partial matches.
-4. Create `[release|prerelease]/<version>` without a leading `v` from the selected base.
-5. Update every relevant `packages/*/CHANGELOG.md` according to the Changelog rules below. Keep the selected base versionless; do not run `scripts/bump-version.ts` on the branch.
-6. Run local validation, commit all intended release-notes changes, push the branch, and open a PR to the selected base.
-7. Inspect required CI checks once. Never use `--watch`, sleeps, polling loops, or another workflow as a waiter. If checks are pending, report the PR/run and wait for a lifecycle notice or user follow-up; if checks fail, ask what to do.
-8. After checks pass, merge the exact verified head commit, switch to the selected base, and pull `origin/<base_ref>`.
-9. Run `bun run scripts/cut-release.ts <version> --base <base_ref> --push --yes`. This stamps the real version only on the detached release commit, records canonical base metadata, and pushes the tag, which automatically starts protected publishing.
-10. Inspect the matching `Publish <version>` action once. If it is pending, report its URL and wait for a lifecycle notice or user follow-up rather than blocking. If it fails, report the failing job and ask what to do. If it succeeds, verify npm and GitHub Release state and summarize the release evidence.
+3. For non-main bases, require the branch to be protected with the repository's required CI checks before using it as the selected release base.
+4. Launch one `publish-release` workflow run with `target_version`, `release_kind`, and `base_ref`. Do not duplicate its Git, PR, tag, or publishing actions inline.
+5. The workflow creates `[release|prerelease]/<version>` from the selected base, updates relevant changelogs without bumping package versions, validates and commits the changes, pushes the branch, and opens the PR.
+6. It watches required CI until every required check reaches a terminal state, treating an admin merge of the PR as approval to proceed; check failures or an expired watch window stop the run with evidence.
+7. After checks pass, it merges the exact verified PR head, switches to the selected base, and fast-forwards from `origin/<base_ref>`.
+8. It runs `bun run scripts/cut-release.ts <version> --base <base_ref> --push --yes`, which stamps only the detached release commit and pushes the tag. That tag push automatically starts `publish.yml`; the workflow does not manually dispatch normal publication.
+9. It watches the matching `Publish <version>` action until it completes. Failure or an expired watch window stops the run with evidence; success returns a concise release summary.
 
 ## Docs
 
@@ -204,7 +203,7 @@ bun run scripts/bump-version.ts 0.0.0 && bun install
 
 An overview of CI is described here: [CI Docs](docs/ci.md).
 
-Note: Remember that npm publishing with provenance does NOT require a token. That's the whole point. So if you see any steps in the CI related to setting up npm tokens (e.g., NPM_TOKEN|NODE_AUTH_TOKEN) for publishing, those are likely mistakes and should be removed.
+Note: npm provenance publishing uses GitHub OIDC trusted publishing and must not configure a static npm credential.
 
 ## Tips
 

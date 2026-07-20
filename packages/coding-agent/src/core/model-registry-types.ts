@@ -4,11 +4,13 @@ import type {
 	AssistantMessageEventStream,
 	Context,
 	Model,
-	OAuthProviderInterface,
 	OpenAICompletionsCompat,
 	OpenAIResponsesCompat,
 	SimpleStreamOptions,
 } from "@earendil-works/pi-ai/compat";
+import type { ProviderHeaders } from "@earendil-works/pi-ai";
+import type { LegacyOAuthProvider } from "./oauth-provider-bridge.ts";
+import type { RefreshModelsContext } from "@earendil-works/pi-ai";
 import type { AuthStorage } from "./auth-storage.ts";
 import type { ModelOverride } from "./model-registry-schemas.ts";
 
@@ -27,7 +29,8 @@ export type ResolvedRequestAuth =
 	| {
 			ok: true;
 			apiKey?: string;
-			headers?: Record<string, string>;
+			headers?: ProviderHeaders;
+			baseUrl?: string;
 	  }
 	| {
 			ok: false;
@@ -58,6 +61,8 @@ export interface ModelRegistryLoadResult {
 
 export interface DynamicProviderApplyInput {
 	providerName: string;
+	registrationSource: string;
+	registerRuntime?: boolean;
 	config: ProviderConfigInput;
 	models: Model<Api>[];
 	modelOverrides: Map<string, Map<string, ModelOverride>>;
@@ -79,7 +84,8 @@ export interface ProviderConfigInput {
 	streamSimple?: (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream;
 	headers?: Record<string, string>;
 	authHeader?: boolean;
-	oauth?: Omit<OAuthProviderInterface, "id">;
+	refreshModels?(context: RefreshModelsContext): Promise<NonNullable<ProviderConfigInput["models"]>>;
+	oauth?: LegacyOAuthProvider;
 	models?: Array<{
 		id: string;
 		name: string;

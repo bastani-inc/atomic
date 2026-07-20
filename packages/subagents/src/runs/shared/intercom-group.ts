@@ -1,0 +1,50 @@
+import { randomUUID } from "node:crypto";
+
+interface OrchestrationCarrier {
+	orchestrationContext?: { intercomGroup?: string } | undefined;
+}
+
+/** Normalize agent-serialized auto-group sentinels without changing real group names. */
+export function normalizeAutoGroupSentinel(group: string | true | undefined): string | true | undefined {
+	if (group === undefined || group === true) return group;
+	const sentinel = group.trim().toLowerCase();
+	return sentinel === "true" || sentinel === "auto" ? true : group;
+}
+
+/** Read the inherited stage/session intercom group from the extension context (never from process.env). */
+export function inheritedIntercomGroup(ctx: OrchestrationCarrier | undefined): string | undefined {
+	const group = ctx?.orchestrationContext?.intercomGroup;
+	return typeof group === "string" && group.trim().length > 0 ? group.trim() : undefined;
+}
+
+/**
+ * Resolve the intercom group for a spawned subagent child. Precedence:
+ * explicit task/parallel/chain group > inherited current-session (stage) group.
+ * `true` resolves to `sharedAutoGroup` (a single UUID minted once per parallel
+ * set) so every child in the set shares one isolated group. Returns undefined
+ * when nothing applies, so the child inherits env/config/default itself.
+ */
+export function resolveChildIntercomGroup(
+	explicit: string | true | undefined,
+	inherited: string | undefined,
+	sharedAutoGroup: string | undefined,
+): string | undefined {
+	const normalized = normalizeAutoGroupSentinel(explicit);
+	if (normalized === true) return sharedAutoGroup ?? randomUUID();
+	if (typeof normalized === "string" && normalized.trim().length > 0) return normalized.trim();
+	return inherited;
+}
+
+/**
+ * Mint one shared auto-group UUID for a set when the set-level group or any item
+ * requested `true`; otherwise undefined. Ensures all `true` items in one parallel
+ * set land in the SAME group.
+ */
+export function sharedAutoGroupForSet(
+	setGroup: string | true | undefined,
+	items: ReadonlyArray<{ group?: string | true }>,
+): string | undefined {
+	const needsAuto = normalizeAutoGroupSentinel(setGroup) === true
+		|| items.some((item) => normalizeAutoGroupSentinel(item.group) === true);
+	return needsAuto ? randomUUID() : undefined;
+}

@@ -832,7 +832,7 @@ subagent({ action: "doctor" })
 
 ## Worktree isolation
 
-Parallel agents can clobber each other if they edit the same checkout. `worktree: true` gives each parallel child its own git worktree branched from `HEAD`.
+Parallel agents can clobber each other if they edit the same checkout. `worktree: true` gives each parallel child a branch-backed worktree under `<main-root>/.atomic/worktrees/<flattened-name>` on branch `worktree-<flattened-name>`. `/` is flattened to `+`, and creation remains anchored at the canonical main repository root even when Atomic is invoked inside another linked worktree. The base ref is `origin/<default-branch>` (fetched when needed), then `HEAD`.
 
 ```ts
 { tasks: [
@@ -854,11 +854,14 @@ Requirements:
 
 - run inside a git repo
 - working tree must be clean
-- `node_modules/` is symlinked into each worktree when present
+- `node_modules/` is symlinked from the main root into each worktree when present
 - task-level `cwd` overrides must be omitted or match the shared cwd
 - configured `worktreeSetupHook` must return valid JSON before timeout
+- `.atomic/settings.local.json` and untracked `.atomic/settings.json` are propagated without overwriting tracked content
+- the main repository's Husky or populated `.git/hooks` directory is shared through `core.hooksPath`
+- gitignored files matched by `.worktreeinclude` are copied into the worktree
 
-After a worktree parallel step completes, per-agent diff stats are appended to the output and full patch files are written to artifacts. Worktrees and temp branches are cleaned up in `finally` blocks.
+After a worktree parallel step completes, per-agent diff stats are appended to the output and full patch files are written to artifacts. Cleanup forcibly removes each worktree, waits briefly for Git's lock release, and deletes its `worktree-*` branch; the same cleanup runs after post-creation setup failures.
 
 ## Configuration
 

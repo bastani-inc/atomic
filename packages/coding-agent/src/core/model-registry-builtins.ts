@@ -1,3 +1,4 @@
+import type { ProviderHeaders } from "@earendil-works/pi-ai";
 import {
 	type Api,
 	getModels,
@@ -24,7 +25,7 @@ function withDynamicGitHubCopilotModels(provider: string, models: Model<Api>[]):
 	return dynamicModels.length === 0 ? models : [...models, ...dynamicModels];
 }
 
-function hasHeader(headers: Record<string, string> | undefined, headerName: string): boolean {
+function hasHeader(headers: ProviderHeaders | undefined, headerName: string): boolean {
 	if (!headers) return false;
 	const normalizedHeaderName = headerName.toLowerCase();
 	return Object.keys(headers).some((key) => key.toLowerCase() === normalizedHeaderName);
@@ -32,8 +33,8 @@ function hasHeader(headers: Record<string, string> | undefined, headerName: stri
 
 export function withGitHubCopilotApiVersionHeader(
 	model: Model<Api>,
-	headers: Record<string, string> | undefined,
-): Record<string, string> | undefined {
+	headers: ProviderHeaders | undefined,
+): ProviderHeaders | undefined {
 	if (model.provider !== "github-copilot" || hasHeader(headers, GITHUB_COPILOT_API_VERSION_HEADER)) {
 		return headers;
 	}
@@ -153,15 +154,21 @@ export function applyModelOverride(model: Model<Api>, override: ModelOverride): 
 export function loadBuiltInModels(
 	overrides: Map<string, ProviderOverride>,
 	modelOverrides: Map<string, Map<string, ModelOverride>>,
+	baseModels?: readonly Model<Api>[],
 ): Model<Api>[] {
-	return getProviders().flatMap((provider) => {
-		const models = withDynamicGitHubCopilotModels(provider, getModels(provider as BuiltinProvider) as Model<Api>[]);
+	const providers = baseModels
+		? [...new Set(baseModels.map((model) => model.provider))]
+		: getProviders();
+	return providers.flatMap((provider) => {
+		const providerModels = baseModels
+			? baseModels.filter((model) => model.provider === provider)
+			: getModels(provider as BuiltinProvider) as Model<Api>[];
+		const models = withDynamicGitHubCopilotModels(provider, [...providerModels]);
 		const providerOverride = overrides.get(provider);
 		const perModelOverrides = modelOverrides.get(provider);
 
-		return models.map((m) => {
-			let model = withCopilotEnvironmentBaseUrl(m);
-
+		return models.map((candidate) => {
+			let model = withCopilotEnvironmentBaseUrl(candidate);
 			if (providerOverride) {
 				model = {
 					...model,
@@ -169,9 +176,8 @@ export function loadBuiltInModels(
 					compat: mergeCompat(model.compat, providerOverride.compat),
 				};
 			}
-
 			model = withCopilotThinkingLevelMap(withCopilotContextWindowOptions(model));
-			const modelOverride = perModelOverrides?.get(m.id);
+			const modelOverride = perModelOverrides?.get(candidate.id);
 			return modelOverride ? applyModelOverride(model, modelOverride) : model;
 		});
 	});

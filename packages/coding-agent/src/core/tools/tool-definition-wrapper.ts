@@ -1,6 +1,7 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { Static, TSchema } from "typebox";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
+import { runCallback, runSynchronousCallback } from "../callback-activity.ts";
 
 declare module "@earendil-works/pi-agent-core" {
 	interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any> {
@@ -24,11 +25,18 @@ export function wrapToolDefinition<TParams extends TSchema, TDetails = unknown>(
 		parameters: definition.parameters,
 		maxResultSizeChars: definition.maxResultSizeChars,
 		prepareArguments: definition.prepareArguments
-			? (args) => definition.prepareArguments?.(args) as PiPreparedParams<TParams>
+			? (args) =>
+					runSynchronousCallback(
+						{ kind: "tool.prepare", name: definition.name },
+						() => definition.prepareArguments?.(args) as PiPreparedParams<TParams>,
+					)
 			: undefined,
 		executionMode: definition.executionMode,
 		execute: (toolCallId, params, signal, onUpdate) =>
-			definition.execute(toolCallId, params as Static<TParams>, signal, onUpdate, ctxFactory?.() as ExtensionContext),
+			runCallback(
+				{ kind: "tool.execute", name: definition.name, toolCallId },
+				() => definition.execute(toolCallId, params as Static<TParams>, signal, onUpdate, ctxFactory?.() as ExtensionContext),
+			),
 	};
 }
 

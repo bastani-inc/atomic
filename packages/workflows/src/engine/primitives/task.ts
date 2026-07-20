@@ -15,7 +15,7 @@ import {
 import {
   cleanupPreparedWorktrees,
   collectWorktreeDiffs,
-  prepareDirectWorktrees,
+  prepareTaskWorktrees,
   stageOptionsWithGitWorktree,
   stageOptionsWithInputDefaults,
 } from "../../runs/foreground/executor-direct-helpers.js";
@@ -81,12 +81,13 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
     };
 
     if (options.worktree !== true) return runTaskOnce(options);
-    const prepared = prepareDirectWorktrees(
+    const prepared = prepareTaskWorktrees(
       [{ ...options, name }],
       { ...options, worktree: true },
       `${runtime.runId}-${name}-${crypto.randomUUID()}`,
       name,
       runtime.workflowInvocationCwd,
+      runtime.worktreeSymlinkDirectories,
     );
     const preparedTask = prepared.tasks[0]!;
     try {

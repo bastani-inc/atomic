@@ -1,6 +1,7 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { type Api, type Model, getAgentDir, findExactModelReferenceMatch, resolveModelScope, ContextWindowSelectorComponent, formatContextWindow, copilotApiBaseUrlFromToken, copilotCatalogCacheHost, copilotCatalogCachePath, fetchCopilotModelCatalog, readCopilotCatalogCache, setActiveCopilotModelCatalog, writeCopilotCatalogCache, ModelSelectorComponent, ScopedModelsSelectorComponent, UserMessageSelectorComponent } from "./interactive-mode-deps.ts";
 import { ANTHROPIC_SUBSCRIPTION_AUTH_WARNING, isAnthropicSubscriptionAuthKey } from "./interactive-mode-helpers.ts";
+import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
 
 InteractiveModeBase.prototype.handleModelCommand = async function(this: InteractiveModeBase, searchTerm?: string): Promise<void> {
     if (!searchTerm) {
@@ -36,8 +37,9 @@ InteractiveModeBase.prototype.getModelCandidates = async function(this: Interact
       return this.session.scopedModels.map((scoped) => scoped.model);
     }
 
-    await this.refreshCopilotModelCatalog();
-    this.session.modelRegistry.refresh();
+    const allowNetwork = !isOfflineModeEnabled();
+    if (allowNetwork) await this.refreshCopilotModelCatalog();
+    await this.session.modelRegistry.refresh({ allowNetwork });
     try {
       return await this.session.modelRegistry.getAvailable();
     } catch {
@@ -71,7 +73,7 @@ InteractiveModeBase.prototype.loadCopilotModelCatalog = async function(this: Int
         writeCopilotCatalogCache(cachePath, baseUrl, catalog);
       }
       setActiveCopilotModelCatalog(catalog);
-      registry.refresh();
+      await registry.refresh();
       this.session.refreshCurrentModelFromRegistry();
       this.copilotCatalogApplied = true;
     } catch {
@@ -195,7 +197,7 @@ InteractiveModeBase.prototype.showContextWindowSelector = function(this: Interac
 
 InteractiveModeBase.prototype.showModelsSelector = async function(this: InteractiveModeBase): Promise<void> {
     // Get all available models
-    this.session.modelRegistry.refresh();
+	await this.session.modelRegistry.refresh({ allowNetwork: !isOfflineModeEnabled() });
     const allModels = this.session.modelRegistry.getAvailable();
 
     if (allModels.length === 0) {

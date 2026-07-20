@@ -15,7 +15,8 @@ import type {
   WorkflowModelCatalogPort,
 } from "../../shared/types.js";
 
-export type StageSessionEvent = Parameters<AgentSession["subscribe"]>[0] extends (event: infer T) => void ? T : never;
+type AgentStageSessionEvent = Parameters<AgentSession["subscribe"]>[0] extends (event: infer T) => void ? T : never;
+export type StageSessionEvent = AgentStageSessionEvent & { readonly turnId?: string | number };
 
 export type WorkflowFastModeSettings = {
   readonly chat: boolean;
@@ -26,9 +27,21 @@ export type WorkflowFastModeSettingsManager = {
   getCodexFastModeSettings(): WorkflowFastModeSettings;
 };
 
+export type StageUserMessageDeliveryAction = "prompt" | "steer" | "followUp" | "handled";
+
+export interface StageUserMessageDeliveryHooks {
+  readonly beforeDelivery?: () => void;
+  /** Releases serialized admission once an idle prompt synchronously owns the turn. */
+  readonly promptStarted?: () => void;
+  readonly delivered?: (action: StageUserMessageDeliveryAction) => void;
+}
+
 export interface StageSessionRuntime {
   prompt(text: string, options?: PromptOptions): Promise<string | void>;
-  sendUserMessage?(content: StageUserMessageContent, options?: StageSendUserMessageOptions): Promise<void>;
+  sendUserMessage?(
+    content: StageUserMessageContent,
+    options?: StageSendUserMessageOptions & { readonly __workflowDelivery?: StageUserMessageDeliveryHooks },
+  ): Promise<void>;
   sealWorkflowStageGeneration?(): void;
   closeWorkflowStageGeneration?(): Promise<void>;
   transferWorkflowStageDeliveriesTo?(target: object): void;
@@ -126,6 +139,12 @@ export interface InternalStageContext extends StageContext {
   __ensureSession(): Promise<void>;
   /** Internal: reopen an archived stage transcript before post-terminal follow-up. */
   __ensureSessionFromFile(sessionFile: string): Promise<void>;
+  /** Internal idle-aware delivery primitive; returns the action actually taken. */
+  __sendUserMessage(
+    content: StageUserMessageContent,
+    options?: StageSendUserMessageOptions,
+    beforeDelivery?: () => void,
+  ): Promise<StageUserMessageDeliveryAction>;
   /** Internal: synchronously reject new detached traffic without waiting for active work. */
   __sealGeneration(): void;
   /** Internal: atomically stop detached traffic admission and drain admitted work. */

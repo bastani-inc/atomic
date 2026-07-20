@@ -59,6 +59,12 @@ export interface WorkflowStageOrchestrationContext {
 	readonly lateMessageRouter?: WorkflowStageLateMessageRouter;
 	/** Internal synchronous boundary used before producer reply/turn side effects. */
 	readonly messageAdmission?: WorkflowStageMessageAdmission;
+	/**
+	 * Resolved per-session intercom home group for this stage. Concrete, already
+	 * normalized upstream. Read by the intercom extension (buildRegistration) and
+	 * inherited by subagents this stage spawns. Absent => no group override.
+	 */
+	readonly intercomGroup?: string;
 }
 
 // Union alias kept for forward-compatible orchestration context variants.

@@ -4,6 +4,7 @@ import {
   type PostMortemStageChatDeps,
 } from "../runs/foreground/postmortem-stage-chat.js";
 import type { StageControlHandle } from "../runs/foreground/stage-control-registry.js";
+import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-runner-types.js";
 import { store } from "../shared/store.js";
 import { stageUiBroker } from "../shared/stage-ui-broker.js";
 import {
@@ -63,6 +64,31 @@ function workflowSendResult(
   message: string,
 ): WorkflowSendToolResult {
   return { action: "send", runId, stageId, delivery, status, message };
+}
+
+async function deliverStageUserMessage(
+  handle: StageControlHandle,
+  text: string,
+  deliverAs?: "steer" | "followUp",
+): Promise<StageUserMessageDeliveryAction> {
+  if (handle.sendUserMessage !== undefined) return handle.sendUserMessage(text, { deliverAs });
+  if (!handle.isStreaming) {
+    await handle.prompt(text);
+    return "prompt";
+  }
+  if (deliverAs === "steer") {
+    await handle.steer(text);
+    return "steer";
+  }
+  await handle.followUp(text);
+  return "followUp";
+}
+
+function deliveryMessage(delivery: StageUserMessageDeliveryAction): string {
+  if (delivery === "prompt") return "Prompt started for stage.";
+  if (delivery === "steer") return "Steered live stage.";
+  if (delivery === "followUp") return "Follow-up queued for stage.";
+  return "Message handled by stage extension.";
 }
 
 export async function workflowSendAction(
@@ -172,28 +198,48 @@ export async function workflowSendAction(
   // instead of letting that rejection cross the tool boundary. Failed handles
   // remain eligible for their existing recoverable execution-resume semantics.
   const isTerminalPostMortemStage = handle.status === "completed";
+  if (requestedDelivery === "resume" && handle.status !== "paused" && !isTerminalPostMortemStage) {
+    return workflowSendResult(stageRunId, stage.stageId, "resume", "noop", "Stage is not paused; no resume message was delivered.");
+  }
+  if (handle.status === "paused" && requestedDelivery !== "resume" && requestedDelivery !== "auto") {
+    return workflowSendResult(stageRunId, stage.stageId, requestedDelivery, "noop", "Stage is paused; resume it before sending a new message.");
+  }
   if (requestedDelivery === "resume" || (requestedDelivery === "auto" && handle.status === "paused")) {
     if (isTerminalPostMortemStage) {
       return workflowSendResult(stageRunId, stage.stageId, "resume", "noop", "Cannot resume a terminal post-mortem stage; use delivery \"followUp\" or \"prompt\" to continue its retained conversation.");
     }
-    await handle.resume(text);
-    return workflowSendResult(stageRunId, stage.stageId, "resume", "ok", "Resumed stage with message.");
+    const resumedDelivery = await handle.resume(text);
+    if (resumedDelivery !== undefined && resumedDelivery !== "prompt") {
+      return workflowSendResult(stageRunId, stage.stageId, resumedDelivery, "ok", deliveryMessage(resumedDelivery));
+    }
+    if (resumedDelivery === "prompt") {
+      return workflowSendResult(stageRunId, stage.stageId, "prompt", "ok", "Resumed stage and started prompt.");
+    }
+    const hasResumeMessage = text.trim().length > 0;
+    return workflowSendResult(
+      stageRunId,
+      stage.stageId,
+      "resume",
+      "ok",
+      hasResumeMessage ? "Resumed interrupted stage with message." : "Resumed stage.",
+    );
   }
   if (requestedDelivery === "steer") {
     if (isTerminalPostMortemStage) {
       return workflowSendResult(stageRunId, stage.stageId, "steer", "noop", "Cannot steer a terminal post-mortem stage; use delivery \"followUp\" or \"prompt\" to continue its retained conversation.");
     }
-    await handle.steer(text);
-    return workflowSendResult(stageRunId, stage.stageId, "steer", "ok", "Steered live stage.");
+    const delivery = await deliverStageUserMessage(handle, text, "steer");
+    return workflowSendResult(stageRunId, stage.stageId, delivery, "ok", deliveryMessage(delivery));
   }
   if (requestedDelivery === "auto" && handle.isStreaming && !isTerminalPostMortemStage) {
-    await handle.steer(text);
-    return workflowSendResult(stageRunId, stage.stageId, "steer", "ok", "Steered live stage.");
+    const delivery = await deliverStageUserMessage(handle, text, "steer");
+    return workflowSendResult(stageRunId, stage.stageId, delivery, "ok", deliveryMessage(delivery));
   }
   if (requestedDelivery === "prompt") {
-    await handle.prompt(text);
-    return workflowSendResult(stageRunId, stage.stageId, "prompt", "ok", "Prompt sent to stage.");
+    const delivery = await deliverStageUserMessage(handle, text);
+    const message = delivery === "prompt" ? "Prompt sent to stage." : deliveryMessage(delivery);
+    return workflowSendResult(stageRunId, stage.stageId, delivery, "ok", message);
   }
-  await handle.followUp(text);
-  return workflowSendResult(stageRunId, stage.stageId, "followUp", "ok", "Follow-up queued for stage.");
+  const delivery = await deliverStageUserMessage(handle, text, "followUp");
+  return workflowSendResult(stageRunId, stage.stageId, delivery, "ok", deliveryMessage(delivery));
 }

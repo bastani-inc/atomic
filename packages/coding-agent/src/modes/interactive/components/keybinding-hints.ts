@@ -85,6 +85,22 @@ export function keyHint(keybinding: Keybinding, description: string): string {
 	return theme.fg("dim", keyText(keybinding)) + theme.fg("muted", ` ${formatHintLabel(description)}`);
 }
 
+export function keyHintIfBound(keybinding: Keybinding, description: string): string {
+	const text = keyText(keybinding);
+	if (!text) return "";
+	return theme.fg("dim", text) + theme.fg("muted", ` ${formatHintLabel(description)}`);
+}
+
+export function parenthesizedKeyHint(
+	keybinding: Keybinding,
+	description: string,
+	prefix?: string,
+): string {
+	const hint = keyHintIfBound(keybinding, description);
+	if (!hint) return prefix ? theme.fg("muted", `(${prefix})`) : "";
+	return theme.fg("muted", `(${prefix ? `${prefix}, ` : ""}`) + hint + theme.fg("muted", ")");
+}
+
 export function rawKeyHint(key: string, description: string): string {
 	return theme.fg("dim", formatKeyText(key)) + theme.fg("muted", ` ${formatHintLabel(description)}`);
 }

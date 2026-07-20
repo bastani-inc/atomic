@@ -111,12 +111,13 @@ export async function navigateTree(this: AgentSession,
 		let summaryDetails: unknown;
 		if (options.summarize && entriesToSummarize.length > 0 && !extensionSummary) {
 			const model = this.model!;
-			const { apiKey, headers } = await this._getRequiredRequestAuth(model);
+			const { apiKey, headers, baseUrl } = await this._getRequiredRequestAuth(model);
 			const branchSummarySettings = this.settingsManager.getBranchSummarySettings();
 			const result = await generateBranchSummary(entriesToSummarize, {
 				model,
 				apiKey,
 				headers,
+				baseUrl,
 				signal: this._branchSummaryAbortController.signal,
 				customInstructions,
 				replaceInstructions,

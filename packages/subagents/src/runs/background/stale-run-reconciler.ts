@@ -286,7 +286,7 @@ function writeFailedRepair(asyncDir: string, status: AsyncStatus, resultPath: st
 			message: repair.message,
 		});
 	} catch (error) {
-		console.error(`Failed to append stale-repair event for '${asyncDir}'; publishing the recoverable result:`, error);
+		console.error(`Failed to append stale-repair event for '${asyncDir}'; publishing the recoverable result: ${getErrorMessage(error)}`);
 	}
 	return publishStagedRepair(resultPath, repair.status, repair.result, publish);
 }

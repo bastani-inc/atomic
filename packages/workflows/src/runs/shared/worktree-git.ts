@@ -1,136 +1,24 @@
-import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { createGitEnvironment } from "@bastani/atomic";
 import type { GitResult, GitWorktreeSetupOptions, GitWorktreeSetupResult } from "./worktree-types.js";
 import { openGitWorktreeGenerationAnchor, type GitWorktreeGenerationAnchor } from "./worktree-generation.js";
+import { findCanonicalGitRoot } from "./worktree-root.js";
+import {
+	gitFailureMessage,
+	isGitTimeoutResult,
+	runGit,
+	runGitReadOnlyProbe,
+} from "./worktree-git-runner.js";
 
-const DISABLED_GIT_HOOKS_PATH = process.platform === "win32" ? "NUL" : "/dev/null";
-const GIT_COMMAND_TIMEOUT_MS = 60_000;
-const GIT_READ_ONLY_PROBE_TIMEOUT_ATTEMPTS = 2;
-
-export type GitRunner = (cwd: string, args: readonly string[]) => GitResult;
-
-let gitRunnerOverride: GitRunner | undefined;
-
-function gitCommandArgs(args: readonly string[]): string[] {
-	return [
-		"-c",
-		`core.hooksPath=${DISABLED_GIT_HOOKS_PATH}`,
-		"-c",
-		"core.fsmonitor=false",
-		...args,
-	];
-}
-
-function gitCommandArgv(args: readonly string[]): string[] {
-	return ["git", ...gitCommandArgs(args)];
-}
-
-function withGitResultDiagnostics(result: GitResult, cwd: string, args: readonly string[]): GitResult {
-	return {
-		...result,
-		argv: result.argv ?? gitCommandArgv(args),
-		cwd: result.cwd ?? cwd,
-		timeoutMs: result.timeoutMs ?? GIT_COMMAND_TIMEOUT_MS,
-	};
-}
-
-function runGitProcess(cwd: string, args: readonly string[]): GitResult {
-	const startedAt = Date.now();
-	const result = spawnSync("git", gitCommandArgs(args), {
-		cwd,
-		encoding: "utf-8",
-		env: createGitEnvironment({
-			GIT_OPTIONAL_LOCKS: "0",
-			GIT_TERMINAL_PROMPT: "0",
-			GCM_INTERACTIVE: "never",
-		}),
-		timeout: GIT_COMMAND_TIMEOUT_MS,
-	});
-	return {
-		stdout: result.stdout ?? "",
-		stderr: result.stderr ?? "",
-		status: result.status ?? null,
-		signal: result.signal ?? null,
-		elapsedMs: Math.max(0, Date.now() - startedAt),
-		...(result.error === undefined ? {} : { error: result.error }),
-	};
-}
-
-export function withGitRunnerForTest<T>(runner: GitRunner, callback: () => T): T {
-	const previous = gitRunnerOverride;
-	gitRunnerOverride = runner;
-	try {
-		return callback();
-	} finally {
-		gitRunnerOverride = previous;
-	}
-}
-
-export function runGit(cwd: string, args: readonly string[]): GitResult {
-	return withGitResultDiagnostics((gitRunnerOverride ?? runGitProcess)(cwd, args), cwd, args);
-}
-
-export function runGitChecked(cwd: string, args: readonly string[]): string {
-	const result = runGit(cwd, args);
-	if (result.status !== 0) throw new Error(gitFailureMessage(result));
-	return result.stdout;
-}
-
-function gitErrorCode(error: Error): string | undefined {
-	return "code" in error ? String((error as Error & { readonly code?: unknown }).code) : undefined;
-}
-
-export function isGitTimeoutResult(result: GitResult): boolean {
-	const error = result.error;
-	if (error === undefined) return false;
-	const code = gitErrorCode(error)?.toUpperCase();
-	const message = error.message.toLowerCase();
-	return code === "ETIMEDOUT" || message.includes("etimedout") || message.includes("timed out");
-}
-
-function formatGitDiagnosticArg(value: string): string {
-	if (/^[A-Za-z0-9_./:@%+=,\\-]+$/.test(value)) return value;
-	return JSON.stringify(value);
-}
-
-function formatGitCommand(argv: readonly string[]): string {
-	return argv.map(formatGitDiagnosticArg).join(" ");
-}
-
-function gitDiagnosticSuffix(result: GitResult): string {
-	const details: string[] = [];
-	if (result.argv !== undefined && result.argv.length > 0) details.push(`command: ${formatGitCommand(result.argv)}`);
-	if (result.cwd !== undefined) details.push(`cwd: ${result.cwd}`);
-	if (result.timeoutMs !== undefined) details.push(`timeout: ${result.timeoutMs}ms`);
-	if (result.elapsedMs !== undefined) details.push(`elapsed: ${result.elapsedMs}ms`);
-	details.push(`status: ${result.status === null ? "null" : result.status}`);
-	if (result.signal !== undefined) details.push(`signal: ${result.signal ?? "null"}`);
-	if (result.attempts !== undefined && result.attempts > 1) details.push(`attempts: ${result.attempts}`);
-	return details.length === 0 ? "" : ` (${details.join("; ")})`;
-}
-
-export function gitFailureMessage(result: GitResult): string {
-	if (result.error !== undefined) {
-		const code = gitErrorCode(result.error);
-		if (isGitTimeoutResult(result)) {
-			return `git command timed out after ${result.timeoutMs ?? GIT_COMMAND_TIMEOUT_MS}ms${code === undefined ? "" : ` (${code})`}: ${result.error.message}${gitDiagnosticSuffix(result)}`;
-		}
-		return `${code === undefined ? result.error.message : `${code}: ${result.error.message}`}${gitDiagnosticSuffix(result)}`;
-	}
-	return `${result.stderr.trim() || result.stdout.trim() || `git exited with status ${result.status}`}${gitDiagnosticSuffix(result)}`;
-}
-
-function runGitReadOnlyProbe(cwd: string, args: readonly string[]): GitResult {
-	let attempts = 1;
-	let result = runGit(cwd, args);
-	while (attempts < GIT_READ_ONLY_PROBE_TIMEOUT_ATTEMPTS && result.status !== 0 && isGitTimeoutResult(result)) {
-		attempts += 1;
-		result = runGit(cwd, args);
-	}
-	return attempts > 1 ? { ...result, attempts } : result;
-}
+export {
+	gitFailureMessage,
+	isGitTimeoutResult,
+	runGit,
+	runGitChecked,
+	runGitPlain,
+	withGitRunnerForTest,
+} from "./worktree-git-runner.js";
+export type { GitRunner } from "./worktree-git-runner.js";
 
 export interface GitWorktreeSetupCache {
 	get(options: GitWorktreeSetupOptions): GitWorktreeSetupResult;
@@ -301,7 +189,11 @@ function repositoryRootForGitWorktree(cwd: string): string {
 		}
 		throw new Error(`gitWorktreeDir requires the workflow to be invoked from inside a Git repository. Start from a Git checkout or omit gitWorktreeDir. Git reported: ${gitFailureMessage(result)}`);
 	}
-	return result.stdout.trim();
+	const normalized = gitPathFromOutput(result.stdout, cwd);
+	if (normalized === undefined) {
+		throw new Error(`gitWorktreeDir could not resolve the repository top level from ${cwd}: git returned an empty path.`);
+	}
+	return normalized;
 }
 
 export function gitTopLevelFromResult(result: GitResult, cwd: string, description: string): string | undefined {
@@ -436,6 +328,10 @@ function assertCachedGitWorktreeIdentity(cached: CachedGitWorktreeSetup, options
 
 export function setupGitWorktree(options: GitWorktreeSetupOptions): GitWorktreeSetupResult {
 	const repoRoot = repositoryRootForGitWorktree(options.cwd);
+	const mainRoot = findCanonicalGitRoot(repoRoot);
+	if (mainRoot === undefined) {
+		throw new Error(`Unable to resolve the canonical main Git repository root from ${repoRoot}.`);
+	}
 	const { relativeCwd, logicalRepoRoot } = cwdWithinGitRepository(options.cwd, repoRoot);
 	const worktreeRoot = resolveGitWorktreePath(options.gitWorktreeDir, logicalRepoRoot);
 	validateWorktreeOutsideInvokingCheckout(worktreeRoot, repoRoot);
@@ -456,11 +352,11 @@ export function setupGitWorktree(options: GitWorktreeSetupOptions): GitWorktreeS
 		throw new Error(`Failed to create parent directory for requested gitWorktreeDir ${worktreeRoot}: ${message}`);
 	}
 	const baseRef = options.baseBranch?.trim() || "HEAD";
-	const result = runGit(repoRoot, ["worktree", "add", "--detach", worktreeRoot, baseRef]);
+	const result = runGit(mainRoot, ["worktree", "add", "--detach", worktreeRoot, baseRef]);
 	if (result.status !== 0) {
 		throw new Error([
 			`Failed to create git worktree at requested gitWorktreeDir ${worktreeRoot} from ${baseRef}. Git reported: ${gitFailureMessage(result)}`,
-			`If another process just created this same-repository worktree, rerun the workflow to resume it. If this is an orphaned worktree from an interrupted run, recover or remove it with: ${worktreeRecoveryCommand(repoRoot, worktreeRoot)}`,
+			`If another process just created this same-repository worktree, rerun the workflow to resume it. If this is an orphaned worktree from an interrupted run, recover or remove it with: ${worktreeRecoveryCommand(mainRoot, worktreeRoot)}`,
 		].join("\n"));
 	}
 	try {
@@ -468,7 +364,7 @@ export function setupGitWorktree(options: GitWorktreeSetupOptions): GitWorktreeS
 		validateExistingGitWorktreeRoot(worktreeRoot, repoRoot);
 	} catch (error) {
 		// Best-effort rollback of a target that changed while Git was creating it.
-		runGit(repoRoot, ["worktree", "remove", "--force", worktreeRoot]);
+		runGit(mainRoot, ["worktree", "remove", "--force", worktreeRoot]);
 		const message = error instanceof Error ? error.message : String(error);
 		throw new Error(`Created gitWorktreeDir failed post-creation validation: ${message}`);
 	}

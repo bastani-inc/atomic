@@ -8,6 +8,7 @@ import { asAgentSession, attachCreatedStageSession, disposeStageSession, normali
 import { structuredOutputToolErrorFromEvent } from "./stage-runner-structured-output.js";
 import { buildStageSessionOptions } from "./stage-runner-session-options.js";
 import { sendStageUserMessage } from "./stage-runner-send-user-message.js";
+import { StageMessageAdmission } from "./stage-runner-message-admission.js";
 import { nextResumedContextOverflowFallbackIndex, terminatingToolCallId, unresolvedContextOverflowFailure, unresolvedContextOverflowMessage } from "./stage-runner-unresolved-overflow.js";
 import type { AgentSessionConsumer, StageModelFallbackMeta, StageRunnerOpts, StageSessionCreateOptions, StageSessionCreateResult, StageSessionEvent, StageSessionRuntime, WorkflowFastModeSettingsManager } from "./stage-runner-types.js";
 import { StageSessionReplacement } from "./stage-runner-replacement.js";
@@ -44,6 +45,7 @@ export class StageSessionController {
   private readonly modelCatalog: WorkflowModelCatalogPort | undefined;
   private sessionSettingsManager: WorkflowFastModeSettingsManager | undefined;
   private readonly replacement = new StageSessionReplacement();
+  private readonly messageAdmission = new StageMessageAdmission();
 
   constructor(
     private readonly opts: StageRunnerOpts,
@@ -106,8 +108,11 @@ export class StageSessionController {
     return session;
   }
 
-  async sendUserMessage(content: StageUserMessageContent, options?: StageSendUserMessageOptions): Promise<void> {
-    await sendStageUserMessage(await this.ensureSession("prompt"), content, options);
+  async sendUserMessage(content: StageUserMessageContent, options?: StageSendUserMessageOptions, beforeDelivery?: () => void):
+    Promise<Awaited<ReturnType<typeof sendStageUserMessage>>> {
+    return this.messageAdmission.run(async (release) => sendStageUserMessage(
+      await this.ensureSession("prompt"), content, options, beforeDelivery, release, this.messageAdmission,
+    ));
   }
 
   sealGeneration(): void {
@@ -189,7 +194,7 @@ export class StageSessionController {
     this.pendingListeners.clear();
     this.unsubscribeTerminateWatcher?.();
     this.unsubscribeTerminateWatcher = undefined;
-    this.terminatingToolCallIds.clear();
+    this.terminatingToolCallIds.clear(); this.messageAdmission.dispose();
     await this.replacement.dispose();
     await disposeStageSession(this.session);
   }
@@ -345,7 +350,7 @@ export class StageSessionController {
   }
 
   private async disposeCurrentSession(): Promise<void> {
-    const current = this.session;
+    const current = this.session; this.messageAdmission.reset();
     this.replacement.retire(current);
     this.session = undefined;
     this.sessionPromise = undefined;

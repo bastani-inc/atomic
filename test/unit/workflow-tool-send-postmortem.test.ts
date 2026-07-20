@@ -73,12 +73,12 @@ function runExecutionSnapshot(): object {
 }
 
 describe("workflow send — post-mortem parity", () => {
-  test("revives a retained session and delivers a follow-up", async () => {
+  test("revives a retained idle session and starts a conversational prompt", async () => {
     const sessionFile = retainedSession("send-ok");
     seedCompletedRun(sessionFile);
-    const followUps: string[] = [];
+    const prompts: string[] = [];
     const counter = { creates: 0 };
-    const session: StageSessionRuntime = { ...mockSession(), sessionFile, async followUp(text: string) { followUps.push(text); } };
+    const session: StageSessionRuntime = { ...mockSession(), sessionFile, async prompt(text: string) { prompts.push(text); } };
 
     const result = await workflowSendAction(
       { runId: RUN_ID, stageId: "stage-a", text: "any regressions?" },
@@ -86,8 +86,8 @@ describe("workflow send — post-mortem parity", () => {
     );
 
     assert.equal(result.status, "ok");
-    assert.equal(result.delivery, "followUp");
-    assert.deepEqual(followUps, ["any regressions?"]);
+    assert.equal(result.delivery, "prompt");
+    assert.deepEqual(prompts, ["any regressions?"]);
     assert.equal(counter.creates, 1);
     assert.equal(store.runs().find((r) => r.id === RUN_ID)?.status, "completed");
     assert.equal(store.runs().find((r) => r.id === RUN_ID)?.stages[0]?.status, "completed");

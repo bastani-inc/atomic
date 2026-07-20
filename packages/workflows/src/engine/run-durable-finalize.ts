@@ -10,46 +10,38 @@
  */
 
 import type { RunSnapshot } from "../shared/store-types.js";
-import type { WorkflowPersistencePort } from "../shared/types.js";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
-import { persistDurableCacheEntry } from "../durable/resume-catalog.js";
 import type { DurableWorkflowStatus } from "../durable/types.js";
+import { recordRunTimingCheckpoint } from "../durable/run-timing.js";
+import { effectiveRunStatus } from "../shared/returned-run-status.js";
 
 export interface DurableTerminalFinalizeInput {
   readonly runId: string;
   readonly runSnapshot: RunSnapshot;
   readonly isRoot: boolean;
   readonly durableBackend: DurableWorkflowBackend;
-  readonly persistence?: WorkflowPersistencePort;
 }
 
-/**
- * Map and persist the terminal durable status for a root workflow run when the
- * run did not complete normally. Safe to call from a `finally` block: flush
- * failures are logged but never rethrown so they do not mask the original
- * failure/exit status.
- */
+/** Persist the terminal durable status and surface DBOS write failures. */
 export async function finalizeDurableTerminalStatus(input: DurableTerminalFinalizeInput): Promise<void> {
   if (!input.isRoot) return;
-  const status = input.runSnapshot.status;
+  const status = effectiveRunStatus(input.runSnapshot);
   const isExitTerminal = input.runSnapshot.exited === true && status !== "running";
-  const isReturnedBlockedTerminal = status === "blocked" && input.runSnapshot.endedAt !== undefined;
-  if (status !== "failed" && status !== "killed" && !isExitTerminal && !isReturnedBlockedTerminal) return;
+  const isBlocked = status === "blocked"
+    && (input.runSnapshot.endedAt !== undefined || input.runSnapshot.blockedAt !== undefined);
+  if (status !== "failed" && status !== "killed" && !isExitTerminal && !isBlocked) return;
 
   const durableStatus = toDurableStatus(status);
   if (durableStatus !== undefined) {
+    // Failed/blocked runs may be resumed cross-session by workflow id; persist
+    // the exact accumulated elapsed so the resumed dashboard total continues
+    // from the prior sessions instead of restarting at zero.
+    if (durableStatus === "failed" || durableStatus === "blocked") {
+      recordRunTimingCheckpoint(input.durableBackend, input.runSnapshot);
+    }
     input.durableBackend.setWorkflowStatus(input.runId, durableStatus, undefined, input.runSnapshot.resumable);
   }
-  try {
-    await input.durableBackend.flush?.();
-  } catch (flushErr) {
-    const msg = flushErr instanceof Error ? flushErr.message : String(flushErr);
-    console.warn(`atomic-workflows: durable terminal status flush failed: ${msg}`);
-  }
-  if (input.persistence !== undefined && input.durableBackend.persistent) {
-    const cacheEntry = input.durableBackend.toCacheEntry(input.runId);
-    if (cacheEntry) persistDurableCacheEntry(input.persistence, cacheEntry);
-  }
+  await input.durableBackend.flush();
 }
 
 function toDurableStatus(status: RunSnapshot["status"]): DurableWorkflowStatus | undefined {

@@ -1,5 +1,9 @@
-import { describe, test } from "bun:test";
+import { afterEach, beforeEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { getKeybindings, setKeybindings } from "@earendil-works/pi-tui";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { keyText, type AgentToolResult, type ToolRenderResultOptions } from "../../packages/coding-agent/src/index.ts";
 import {
   formatMcpToolResultLines,
@@ -23,14 +27,25 @@ function renderResult(text: string, options: ToolRenderResultOptions): string {
   return renderMcpToolResult(textResult(text), options, theme).render(80).join("\n");
 }
 
+const previousKeybindings = getKeybindings();
+
+beforeEach(() => setKeybindings(new KeybindingsManager()));
+afterEach(() => setKeybindings(previousKeybindings));
+
 describe("MCP tool result rendering", () => {
+  test("README documents the exact Atomic-normal expand hint", () => {
+    const readme = readFileSync(join(import.meta.dir, "../../packages/mcp/README.md"), "utf8");
+    assert.match(readme, /`ctrl\+o Expand`/);
+    assert.doesNotMatch(readme, /`Ctrl\+o Expand`/);
+  });
+
   test("formats collapsed result hint with the configured expand keybinding", () => {
     const rendered = renderResult("one\ntwo\nthree\nfour", {
       expanded: false,
       isPartial: false,
     });
 
-    assert.match(rendered, new RegExp(`\\(${keyText("app.tools.expand")} Expand\\)`));
+    assert.ok(rendered.includes(`(${keyText("app.tools.expand")} Expand)`));
     assert.doesNotMatch(rendered, /CTRL\+O/);
     assert.doesNotMatch(rendered, /Ctrl\+o/);
   });
@@ -43,6 +58,15 @@ describe("MCP tool result rendering", () => {
 
     assert.doesNotMatch(rendered, new RegExp(`${keyText("app.tools.expand")} Expand`));
     assert.match(rendered, /four/);
+  });
+
+
+  test("omits the unavailable expand affordance when the binding is empty", () => {
+    setKeybindings(new KeybindingsManager({ "app.tools.expand": [] }));
+    const rendered = renderResult("one\ntwo\nthree\nfour", { expanded: false, isPartial: false });
+
+    assert.doesNotMatch(rendered, /Expand|\(\s*\)/);
+    assert.match(rendered, /…/);
   });
 
   test("reports truncation only when collapsed content exceeds the line budget", () => {

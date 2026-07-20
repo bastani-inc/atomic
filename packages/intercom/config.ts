@@ -19,6 +19,9 @@ export interface IntercomConfig {
 
   /** Show reply hint in incoming messages (default: true) */
   replyHint: boolean;
+
+  /** Default intercom home group for this session (overridden by env/orchestrator). */
+  group?: string;
 }
 
 const CONFIG_PATHS = getAgentConfigPaths("intercom", "config.json");
@@ -101,6 +104,13 @@ export function loadConfig(): IntercomConfig {
         throw new Error(`"status" must be a string`);
       }
       config.status = parsedConfig.status;
+    }
+
+    if (Object.hasOwn(parsedConfig, "group")) {
+      if (typeof parsedConfig.group !== "string") {
+        throw new Error(`"group" must be a string`);
+      }
+      config.group = parsedConfig.group;
     }
 
     return config;

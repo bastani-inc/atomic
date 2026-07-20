@@ -43,8 +43,19 @@ export async function runParallelChainTasks(input: ParallelChainRunInput): Promi
 	const concurrency = input.step.concurrency ?? MAX_CONCURRENCY;
 	const failFast = input.step.failFast ?? false;
 	let aborted = false;
+	const intercomDetachController = new AbortController();
 
 	return mapConcurrent(input.step.parallel, concurrency, async (task, taskIndex) => {
+		if (intercomDetachController.signal.aborted) {
+			return {
+				agent: task.agent,
+				task: input.parallelTemplates[taskIndex] ?? task.task ?? "{previous}",
+				exitCode: -1,
+				messages: [],
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+				error: "Skipped after foreground group detached for intercom coordination",
+			};
+		}
 		if (aborted && failFast) {
 			return {
 				agent: task.agent,
@@ -126,6 +137,8 @@ export async function runParallelChainTasks(input: ParallelChainRunInput): Promi
 			orchestratorIntercomTarget: input.orchestratorIntercomTarget,
 			nestedRoute: input.nestedRoute,
 			onDetachedExit: (recovered) => input.onDetachedExit?.(input.globalTaskIndex + taskIndex, recovered),
+			intercomDetachSignal: intercomDetachController.signal,
+			onIntercomDetachCommit: () => intercomDetachController.abort(),
 			modelOverride: effectiveModel,
 			availableModels: input.availableModels,
 			knownModelProviders: input.knownModelProviders,

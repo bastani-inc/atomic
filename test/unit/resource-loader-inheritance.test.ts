@@ -42,6 +42,10 @@ describe("DefaultResourceLoader inheritance snapshots", () => {
                 "Use inherited instructions.",
             ].join("\n"),
         );
+        writeFileSync(
+            join(externalPackage, "index.ts"),
+            "export default function inheritedExtension() {}\n",
+        );
 
         const observedSnapshots: DefaultResourceLoaderInheritanceSnapshot[] = [];
         const parentLoader = new DefaultResourceLoader({
@@ -61,6 +65,7 @@ describe("DefaultResourceLoader inheritance snapshots", () => {
         });
 
         await parentLoader.reload();
+        assert.deepEqual(parentLoader.getExtensions().errors, []);
 
         assert.equal(observedSnapshots.length, 1);
         assert.deepEqual(observedSnapshots[0]?.additionalExtensionPaths, [
@@ -84,6 +89,7 @@ describe("DefaultResourceLoader inheritance snapshots", () => {
             builtinPackagePaths: [],
         });
         await childLoader.reload();
+        assert.deepEqual(childLoader.getExtensions().errors, []);
 
         const childSkills = childLoader.getSkills().skills.map((skill) => skill.name);
         assert.ok(
