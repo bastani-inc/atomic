@@ -78,16 +78,15 @@ function parseNumstat(numstat: string): { filesChanged: number; insertions: numb
 }
 
 function captureWorktreeDiff(
-	setup: WorktreeSetup,
 	worktree: WorktreeInfo,
 	agent: string,
 	patchPath: string,
 ): WorktreeDiff {
 	removeSyntheticPathsBeforeDiff(worktree);
 	runGitChecked(worktree.path, ["add", "-A"]);
-	const diffStat = runGitChecked(worktree.path, ["diff", "--cached", "--stat", setup.baseCommit]).trim();
-	const patch = runGitChecked(worktree.path, ["diff", "--cached", setup.baseCommit]);
-	const numstat = runGitChecked(worktree.path, ["diff", "--cached", "--numstat", setup.baseCommit]);
+	const diffStat = runGitChecked(worktree.path, ["diff", "--cached", "--stat", worktree.baseCommit]).trim();
+	const patch = runGitChecked(worktree.path, ["diff", "--cached", worktree.baseCommit]);
+	const numstat = runGitChecked(worktree.path, ["diff", "--cached", "--numstat", worktree.baseCommit]);
 	fs.writeFileSync(patchPath, patch, "utf-8");
 
 	if (!patch.trim()) {
@@ -133,7 +132,7 @@ export function diffWorktrees(setup: WorktreeSetup, agents: string[], diffsDir: 
 		const agent = agents[index] ?? `task-${index + 1}`;
 		const patchPath = path.join(diffsDir, `task-${index}-${safePatchAgentName(agent)}.patch`);
 		try {
-			diffs.push(captureWorktreeDiff(setup, worktree, agent, patchPath));
+			diffs.push(captureWorktreeDiff(worktree, agent, patchPath));
 		} catch {
 			// Preserve execution flow; failed diff capture maps to an empty per-task patch.
 			writeEmptyPatch(patchPath);

@@ -1670,7 +1670,11 @@ Controls automatic session and worktree-diff artifact collection in direct resul
 readonly worktree?: boolean;
 ```
 
-Requests a runner-managed temporary per-task worktree in direct mode. It is mutually exclusive with `gitWorktreeDir`, and the runner cleans it up even when startup fails before the callback.
+Requests a runner-managed temporary per-task Git worktree in direct mode. Atomic resolves the canonical main checkout from filesystem `.git` metadata, then creates `<mainRoot>/.atomic/worktrees/<flattened-name>` with `/` replaced by `+`. Creation uses `git worktree add -B worktree-<flattened-name> <path> <baseRef>`; base selection is explicit `baseBranch`, then `origin/<defaultBranch>` (fetched when missing), then the invoking checkout's `HEAD`. Linked-worktree invocations remain anchored at the main root, so temporary worktrees never nest.
+
+On first use Atomic writes `<mainRoot>/.atomic/worktrees/.gitignore` containing `*` without editing the tracked root `.gitignore`. Setup copies untracked `.atomic/settings.local.json` and `.atomic/settings.json`, copies ignored files matched by `.worktreeinclude`, and symlinks `node_modules` plus workflow-config `worktree.symlinkDirectories`. If `.husky/` or populated `.git/hooks/` exists, Atomic idempotently sets shared `core.hooksPath` to that absolute main-root directory; this is the only worktree-machinery shared-config write. Every Git spawn scrubs hook-inherited repository-local environment variables.
+
+It is mutually exclusive with `gitWorktreeDir`. Cleanup is idempotent: Atomic force-removes the worktree, briefly waits for Git lock release, then deletes `worktree-<flattened-name>`, including after setup or task failure.
 
 ### `gitWorktreeDir` / `baseBranch`
 
@@ -1681,11 +1685,11 @@ readonly baseBranch?: string;
 
 Selects or creates a reusable same-repository Git worktree for `ctx.stage`, `ctx.task`, `ctx.chain`, and `ctx.parallel`.
 
-- **Creation and validation:** A missing path is created with `git worktree add --detach <path> <baseBranch>`, where an omitted or blank `baseBranch` defaults to `HEAD`. Existing paths must be same-repository worktree roots outside the invoking checkout; the checkout itself, nested targets, and missing targets whose symlinked parent resolves inside it are rejected.
-- **Cwd remapping:** The default cwd preserves the invoking repository-relative subdirectory inside the worktree. Absolute cwd values inside the invoking repository are remapped, values already inside the worktree are preserved, and relative values resolve from the worktree cwd without lexical or symlink escape.
-- **Output containment:** Runner-managed reusable-worktree relative outputs follow the effective worktree cwd and cannot escape through traversal or symlinks. Temporary-worktree outputs are copied to distinct runner-owned artifact directories before cleanup, including in `file-only` mode, and Atomic rejects a pre-existing symlink or junction at the trusted artifact root. Explicit absolute outputs and nonblank explicit `chainDir` paths remain caller-selected, while blank `chainDir` is omitted.
-- **Caching and diagnostics:** Temporary isolation defaults to the runner invocation cwd, and relative task cwd values resolve there. Reusable setup is cached by canonical repository and target identity independently of equivalent path spelling or `baseBranch`, revalidates checkout identity before reuse, retries one transient timeout from read-only repository probes, and reports the exact Git command, cwd, timeout, elapsed time, exit status or signal, and spawn error details on failure.
-- **Security boundary:** Worktrees isolate checkouts and cwd, not the operating system. Use a container, VM, or another OS-enforced boundary for untrusted code that can race or mutate arbitrary paths.
+- **Creation and validation:** Filesystem-only `.git` parsing resolves the invoking and canonical main roots. A missing caller-selected path is created from the main root with `git worktree add --detach`; an omitted `baseBranch` preserves the invoking checkout's `HEAD`. Existing paths must be same-repository worktree roots outside the invoking checkout; self/nested targets, malformed pointers, and symlink escapes are rejected.
+- **Cwd remapping:** The default cwd preserves the invoking repository-relative subdirectory inside the worktree. Absolute cwd values inside the invoking repository are remapped, values already inside the worktree are preserved, and relative values resolve without lexical or symlink escape.
+- **Output containment:** Reusable-worktree relative outputs remain contained. Temporary-worktree outputs are copied to runner-owned artifact directories before forced cleanup, including in `file-only` mode.
+- **Caching, resume, and diagnostics:** Reusable setup is cached by canonical repository and target identity, revalidates identity before reuse, and durable resume replays the original invocation cwd and reusable metadata rather than the resuming session's cwd. Git content/identity probes retain transient-timeout retries and detailed command/cwd/timing diagnostics; root/trust detection itself is filesystem-only.
+- **Security boundary:** Worktrees isolate checkouts and cwd, not the operating system. Use an OS-enforced sandbox for untrusted code.
 
 For lower-level integrations, [`setupGitWorktree(options)`](#setupgitworktreeoptions) returns the validated and remapped setup result.
 
@@ -2700,6 +2704,9 @@ Example config:
   "workflowNotifications": {
     "enabled": true,
     "notifyOn": ["completed", "failed", "blocked", "awaiting_input"]
+  },
+  "worktree": {
+    "symlinkDirectories": ["node_modules", ".cache"]
   }
 }
 ```
@@ -2715,6 +2722,7 @@ Runtime config defaults:
 | `resumeInFlight` | `"ask"` | Behavior when discovering resumable in-flight work |
 | `workflowNotifications.enabled` | `true` | Emit workflow lifecycle notices into the active main chat |
 | `workflowNotifications.notifyOn` | `["completed", "failed", "blocked", "awaiting_input"]` | Lifecycle states to track; terminal `completed`/`failed`/`blocked` outcomes and active recoverable blocks create main-chat notices, while `awaiting_input` is tracked for dedupe/restore without waking the main agent |
+| `worktree.symlinkDirectories` | `[]` (plus built-in `node_modules`) | Main-root directories symlinked into each runner-managed temporary worktree |
 
 Invalid JSON or invalid shapes produce `CONFIG_INVALID` diagnostics. Missing config files are ignored.
 

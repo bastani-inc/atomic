@@ -832,7 +832,7 @@ subagent({ action: "doctor" })
 
 ## Worktree isolation
 
-Parallel agents can clobber each other if they edit the same checkout. `worktree: true` gives each parallel child its own git worktree branched from `HEAD`.
+Parallel agents can clobber each other if they edit the same checkout. `worktree: true` gives each parallel child its own Git branch and worktree.
 
 ```ts
 { tasks: [
@@ -850,15 +850,18 @@ Parallel agents can clobber each other if they edit the same checkout. `worktree
 ]}
 ```
 
+Atomic resolves linked-checkout `.git` pointers through the filesystem and creates `<mainRoot>/.atomic/worktrees/<flattened-name>`, never a nested worktree. `/` becomes `+`; the branch is `worktree-<flattened-name>` and creation uses `git worktree add -B`. Base selection prefers `origin/<defaultBranch>` (fetching when absent), then the invoking checkout's `HEAD`.
+
+Setup copies untracked Atomic local settings, copies ignored files selected by `.worktreeinclude`, symlinks `node_modules` plus configured `worktree.symlinkDirectories`, and idempotently points shared `core.hooksPath` at main-root `.husky/` or populated `.git/hooks/`. Every Git spawn scrubs repository-local hook environment variables.
+
 Requirements:
 
-- run inside a git repo
-- working tree must be clean
-- `node_modules/` is symlinked into each worktree when present
+- run inside a Git repository with valid worktree metadata
+- tracked working-tree changes must be committed or stashed
 - task-level `cwd` overrides must be omitted or match the shared cwd
 - configured `worktreeSetupHook` must return valid JSON before timeout
 
-After a worktree parallel step completes, per-agent diff stats are appended to the output and full patch files are written to artifacts. Worktrees and temp branches are cleaned up in `finally` blocks.
+After a parallel step completes, per-agent diff stats and patch artifacts are captured. Cleanup force-removes each worktree, briefly waits for Git locks, and deletes its temporary branch in `finally`; repeated cleanup is safe.
 
 ## Configuration
 
@@ -928,8 +931,17 @@ Fields:
 - `instructionFile`: optional Markdown template replacing the default bridge instructions. `{orchestratorTarget}` is interpolated. Relative paths resolve from `~/.atomic/agent/extensions/subagent/` (or the legacy `~/.pi/agent/extensions/subagent/` path when used).
 
 Bridge activation also requires the Atomic intercom companion (or upstream `pi-intercom` installed through `pi install npm:pi-intercom` / a legacy local extension checkout), a targetable current session name or fallback alias, and the intercom extension in any explicit agent `extensions` allowlist.
-
 The default injected guidance tells children to use `contact_supervisor` with `reason: "need_decision"` when blocked or needing a decision, `reason: "progress_update"` only for meaningful blocked/progress updates, generic `intercom` as fallback plumbing, and avoid routine completion handoffs.
+
+### `worktree.symlinkDirectories`
+
+```json
+{ "worktree": { "symlinkDirectories": ["node_modules", ".cache", ".venv"] } }
+```
+
+Each existing listed directory is symlinked from the canonical main checkout into runner-managed temporary worktrees. `node_modules` remains a built-in default.
+
+
 
 ### `worktreeSetupHook`
 

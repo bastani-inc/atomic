@@ -63,6 +63,7 @@ export async function runChainPath(data: ExecutionContextData, deps: ResolvedExe
 		workflowStageSubagentGuard,
 		worktreeSetupHook: deps.config.worktreeSetupHook,
 		worktreeSetupHookTimeoutMs: deps.config.worktreeSetupHookTimeoutMs,
+		worktreeSymlinkDirectories: deps.config.worktree?.symlinkDirectories,
 		runSync: deps.runtime.runSync,
 		onDetachedExit: (index, result) => replaceForegroundRunChild(deps.state, runId, index, result),
 	});

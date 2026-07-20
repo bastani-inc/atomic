@@ -42,6 +42,10 @@ export interface WorkflowNotificationsConfig {
   readonly notifyOn?: readonly WorkflowLifecycleNoticeKind[];
 }
 
+export interface WorkflowWorktreeConfig {
+  readonly symlinkDirectories?: readonly string[];
+}
+
 export interface WorkflowExtensionConfig {
   /** Explicit named workflows to register by module path. */
   readonly workflows?: Readonly<Record<string, WorkflowConfigEntry>>;
@@ -57,6 +61,8 @@ export interface WorkflowExtensionConfig {
   readonly resumeInFlight?: "ask" | "auto" | "never";
   /** Main-chat workflow lifecycle notices. */
   readonly workflowNotifications?: WorkflowNotificationsConfig;
+  /** Runner-managed temporary worktree setup. */
+  readonly worktree?: WorkflowWorktreeConfig;
 }
 
 /** Severity of a config diagnostic. */
@@ -151,6 +157,9 @@ function mergeConfigs(
     ...(base.resumeInFlight !== undefined || override.resumeInFlight !== undefined
       ? { resumeInFlight: override.resumeInFlight ?? base.resumeInFlight }
       : {}),
+    ...(base.worktree !== undefined || override.worktree !== undefined
+      ? { worktree: { ...(base.worktree ?? {}), ...(override.worktree ?? {}) } }
+      : {}),
     ...(base.workflowNotifications !== undefined || override.workflowNotifications !== undefined
       ? {
           workflowNotifications: {
@@ -200,6 +209,7 @@ export interface WorkflowEffectiveConfig {
     readonly enabled: boolean;
     readonly notifyOn: readonly WorkflowLifecycleNoticeKind[];
   };
+  readonly worktree?: WorkflowWorktreeConfig;
   readonly workflows?: Readonly<Record<string, WorkflowConfigEntry>>;
 }
 
@@ -228,6 +238,7 @@ export function withWorkflowDefaults(
         config.workflowNotifications?.notifyOn
         ?? WORKFLOW_CONFIG_DEFAULTS.workflowNotifications.notifyOn,
     },
+    ...(config.worktree !== undefined ? { worktree: config.worktree } : {}),
     ...(config.workflows !== undefined ? { workflows: config.workflows } : {}),
   };
 }

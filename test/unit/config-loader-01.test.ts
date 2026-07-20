@@ -109,6 +109,7 @@ describe("loadWorkflowConfig — project-local config only (primary candidate)",
     await writeJson(projDir, "config.json", {
       maxDepth: 3,
       resumeInFlight: "auto",
+      worktree: { symlinkDirectories: ["node_modules", ".cache"] },
     });
   });
 
@@ -123,6 +124,7 @@ describe("loadWorkflowConfig — project-local config only (primary candidate)",
     assert.notEqual(result.config, null);
     assert.equal(result.config!.maxDepth, 3);
     assert.equal(result.config!.resumeInFlight, "auto");
+    assert.deepEqual(result.config!.worktree?.symlinkDirectories, ["node_modules", ".cache"]);
   });
 });
 describe("loadWorkflowConfig — non-pi config ignored", () => {

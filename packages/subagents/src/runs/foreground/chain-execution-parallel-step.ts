@@ -49,6 +49,7 @@ export async function runStaticParallelChainStep(input: {
 				setupHook: context.params.worktreeSetupHook
 					? { hookPath: context.params.worktreeSetupHook, timeoutMs: context.params.worktreeSetupHookTimeoutMs }
 					: undefined,
+				symlinkDirectories: context.params.worktreeSymlinkDirectories,
 			});
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);

@@ -18,6 +18,8 @@
 - Added `atomic update --models` to force-refresh authenticated dynamic provider catalogs with bounded, provider-scoped persistence and actionable failures ([#1875](https://github.com/bastani-inc/atomic/issues/1875)).
 
 ### Changed
+- Redesigned bundled workflow and subagent Git worktree isolation with Codex-style filesystem root detection and Claude Code-style main-root lifecycle management, including `.atomic/worktrees/`, branch-per-worktree creation, local setup propagation, configurable symlink directories, scrubbed Git environments, and forced cleanup. The only sanctioned shared-config write is idempotent `core.hooksPath` setup for Husky/native hooks.
+
 
 - Promoted the DBOS SDK and `embedded-postgres` to mandatory dependencies. Atomic configures and launches DBOS lazily on the first workflow action, awaits readiness before every workflow lifecycle path, and surfaces initialization or persistence failures for that action instead of continuing on another backend. Without `DBOS_SYSTEM_DATABASE_URL`, workflow durability runs on an embedded Postgres from npm-distributed binaries (detached daemon under `~/.atomic/postgres`, shared across sessions; Docker `dbos-db` container only as a platform fallback). Concurrent Atomic sessions sharing one database use per-process executor identities, owner/heartbeat metadata, and first-writer-wins resume claims so one session's live workflow cannot be double-dispatched from another.
 

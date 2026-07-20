@@ -58,7 +58,7 @@ export async function runTask(
   const direct = defineDirectWorkflow("direct-task", async (ctx) => {
     const taskWithDefaults = directTaskWithDefaults(task, options);
     validationWarnings = await validateDirectModels([taskWithDefaults], runOptions);
-    prepared = prepareDirectWorktrees([taskWithDefaults], options, runId, "single", workflowInvocationCwd);
+    prepared = prepareDirectWorktrees([taskWithDefaults], options, runId, "single", workflowInvocationCwd, runOptions.config?.worktree?.symlinkDirectories);
     const preparedTask = prepared.tasks[0]!;
     const rawResult = await ctx.task(preparedTask.name, directTaskToStep(preparedTask));
     const { result, artifact } = await writeDirectOutput(
@@ -103,7 +103,7 @@ export async function runParallel(
     const tasksWithDefaults = tasks.map((task) => directTaskWithDefaults(task, options));
     const expanded = expandedParallelTasks(tasksWithDefaults);
     validationWarnings = await validateDirectModels(expanded, runOptions);
-    prepared = prepareDirectWorktrees(expanded, options, runId, "parallel", workflowInvocationCwd);
+    prepared = prepareDirectWorktrees(expanded, options, runId, "parallel", workflowInvocationCwd, runOptions.config?.worktree?.symlinkDirectories);
     const steps = prepared.tasks.map((task) => directTaskToStep(task));
     const rawResults = await ctx.parallel(steps, {
       task: options.task,
@@ -152,6 +152,7 @@ async function runDirectChainStep(
   runId: string,
   workflowInvocationCwd: string,
   gitWorktreeSetupCache: GitWorktreeSetupCache,
+  symlinkDirectories: readonly string[],
 ): Promise<{ results: WorkflowTaskResult[]; artifacts: WorkflowArtifact[] }> {
   if ("parallel" in step) {
     const stepOptions = {
@@ -163,7 +164,7 @@ async function runDirectChainStep(
     };
     const expanded = expandedParallelTasks(step.parallel.map((item) => directTaskWithDefaults(item, stepOptions)));
     const prepared = prepareDirectWorktrees(
-      expanded, stepOptions, `${runId}-s${index}`, `step-${index}`, workflowInvocationCwd,
+      expanded, stepOptions, `${runId}-s${index}`, `step-${index}`, workflowInvocationCwd, symlinkDirectories,
     );
     try {
       const steps = prepared.tasks.map((item) =>
@@ -198,7 +199,7 @@ async function runDirectChainStep(
 
   const prompt = directTaskPrompt(step) ?? (index === 0 ? "{task}" : "{previous}");
   const prepared = prepareDirectWorktrees(
-    [directTaskWithDefaults(step, options)], options, `${runId}-s${index}`, `step-${index}`, workflowInvocationCwd,
+    [directTaskWithDefaults(step, options)], options, `${runId}-s${index}`, `step-${index}`, workflowInvocationCwd, symlinkDirectories,
   );
   const preparedStep = prepared.tasks[0]!;
   try {
@@ -254,6 +255,7 @@ export async function runChain(
         runId,
         workflowInvocationCwd,
         gitWorktreeSetupCache,
+        runOptions.config?.worktree?.symlinkDirectories ?? [],
       );
       results.push(...step.results);
       artifacts.push(...step.artifacts);

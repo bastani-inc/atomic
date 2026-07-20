@@ -2,8 +2,12 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { APP_NAME } from "@bastani/atomic";
+import { createGitEnvironment } from "@bastani/atomic";
+import { resolveTemporaryWorktreeBaseRef } from "./worktree-base-ref.js";
 import { runGit, runGitChecked } from "./worktree-git.js";
+import { buildWorktreeBranch, buildWorktreePath, ensureWorktreeDirectory } from "./worktree-paths.js";
+import { performPostCreationSetup } from "./worktree-post-create.js";
+import { resolveMainRepoRoot } from "./worktree-root.js";
 import type {
 	CreateWorktreesOptions,
 	RepoState,
@@ -18,17 +22,20 @@ import type {
 
 const DEFAULT_WORKTREE_SETUP_HOOK_TIMEOUT_MS = 30000;
 
+function checkoutRootFromGit(cwd: string): string {
+	return runGitChecked(cwd, ["rev-parse", "--show-toplevel"]).trim();
+}
+
 function resolveRepoState(cwd: string): RepoState {
-	const cwdRelative = resolveRepoCwdRelative(cwd);
-	const toplevel = runGitChecked(cwd, ["rev-parse", "--show-toplevel"]).trim();
-
-	const status = runGitChecked(toplevel, ["status", "--porcelain"]);
-	if (status.trim().length > 0) {
-		throw new Error("worktree isolation requires a clean git working tree. Commit or stash changes first.");
-	}
-
-	const baseCommit = runGitChecked(toplevel, ["rev-parse", "HEAD"]).trim();
-	return { toplevel, cwdRelative, baseCommit };
+	const checkoutRoot = checkoutRootFromGit(cwd);
+	const mainRoot = resolveMainRepoRoot(checkoutRoot);
+	if (mainRoot === undefined) throw new Error("worktree isolation requires valid Git worktree metadata");
+	const relative = path.relative(fs.realpathSync.native(checkoutRoot), fs.realpathSync.native(cwd));
+	const cwdRelative = relative === "" || relative.startsWith("..") || path.isAbsolute(relative) ? "" : relative;
+	const status = runGitChecked(checkoutRoot, ["status", "--porcelain", "--untracked-files=no"]);
+	if (status.trim().length > 0) throw new Error("worktree isolation requires a clean git working tree. Commit or stash changes first.");
+	const baseCommit = runGitChecked(checkoutRoot, ["rev-parse", "HEAD"]).trim();
+	return { checkoutRoot, mainRoot, cwdRelative, baseCommit };
 }
 
 function normalizeComparableCwd(cwd: string): string {
@@ -63,44 +70,16 @@ export function formatWorktreeTaskCwdConflict(
 	return `worktree isolation uses the shared cwd (${sharedCwd}); task ${conflict.index + 1} (${conflict.agent}) sets cwd to ${conflict.cwd}. Remove task-level cwd overrides or disable worktree.`;
 }
 
-function buildWorktreeBranch(runId: string, index: number): string {
-	return `${APP_NAME}-parallel-${runId}-${index}`;
-}
-
-function buildWorktreePath(runId: string, index: number): string {
-	return path.join(os.tmpdir(), `${APP_NAME}-worktree-${runId}-${index}`);
-}
-
-function resolveRepoCwdRelative(cwd: string): string {
-	const repoCheck = runGit(cwd, ["rev-parse", "--is-inside-work-tree"]);
-	if (repoCheck.status !== 0 || repoCheck.stdout.trim() !== "true") {
-		throw new Error("worktree isolation requires a git repository");
-	}
-	const rawPrefix = runGitChecked(cwd, ["rev-parse", "--show-prefix"]).trim();
-	const normalizedPrefix = rawPrefix
-		? path.normalize(rawPrefix.replace(/[\\/]+$/, ""))
-		: "";
-	return normalizedPrefix === "." ? "" : normalizedPrefix;
-}
-
 export function resolveExpectedWorktreeAgentCwd(cwd: string, runId: string, index: number): string {
-	const cwdRelative = resolveRepoCwdRelative(cwd);
-	const worktreePath = buildWorktreePath(runId, index);
+	const checkoutRoot = checkoutRootFromGit(cwd);
+	const mainRoot = resolveMainRepoRoot(checkoutRoot);
+	if (mainRoot === undefined) throw new Error("worktree isolation requires valid Git worktree metadata");
+	const relative = path.relative(fs.realpathSync.native(checkoutRoot), fs.realpathSync.native(cwd));
+	const cwdRelative = relative === "" || relative.startsWith("..") || path.isAbsolute(relative) ? "" : relative;
+	const worktreePath = buildWorktreePath(mainRoot, runId, index);
 	return cwdRelative ? path.join(worktreePath, cwdRelative) : worktreePath;
 }
 
-function linkNodeModulesIfPresent(toplevel: string, worktreePath: string): boolean {
-	const nodeModulesPath = path.join(toplevel, "node_modules");
-	const nodeModulesLinkPath = path.join(worktreePath, "node_modules");
-	if (!fs.existsSync(nodeModulesPath) || fs.existsSync(nodeModulesLinkPath)) return false;
-	try {
-		fs.symlinkSync(nodeModulesPath, nodeModulesLinkPath);
-		return true;
-	} catch {
-		// Symlink creation is optional (e.g., unsupported filesystems on CI runners).
-		return false;
-	}
-}
 
 function parseHookTimeout(timeoutMs: number | undefined): number {
 	if (timeoutMs === undefined) return DEFAULT_WORKTREE_SETUP_HOOK_TIMEOUT_MS;
@@ -192,6 +171,7 @@ function runWorktreeSetupHook(
 		input: JSON.stringify(input),
 		timeout: hook.timeoutMs,
 		shell: false,
+		env: createGitEnvironment(),
 	});
 
 	if (result.error) {
@@ -227,109 +207,81 @@ function runWorktreeSetupHook(
 	return [...uniquePaths];
 }
 
+function waitForGitLockRelease(): void {
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+}
+
+function removeWorktreeAndBranch(repoCwd: string, worktreePath: string, branch: string): void {
+	try { runGitChecked(repoCwd, ["worktree", "remove", "--force", worktreePath]); } catch {
+		// Idempotent best-effort cleanup.
+	}
+	waitForGitLockRelease();
+	try { runGitChecked(repoCwd, ["branch", "-D", branch]); } catch {
+		// Idempotent best-effort cleanup.
+	}
+}
+
 function createSingleWorktree(
-	toplevel: string,
-	cwdRelative: string,
+	repo: RepoState,
 	runId: string,
 	index: number,
-	baseCommit: string,
+	baseRef: string,
 	setupHook: ResolvedWorktreeSetupHook | undefined,
-	agent: string | undefined,
+	options: CreateWorktreesOptions,
 ): WorktreeInfo {
 	const branch = buildWorktreeBranch(runId, index);
-	const worktreePath = buildWorktreePath(runId, index);
-	const add = runGit(toplevel, ["worktree", "add", worktreePath, "-b", branch, "HEAD"]);
+	const worktreePath = buildWorktreePath(repo.mainRoot, runId, index);
+	const baseCommit = runGitChecked(repo.mainRoot, ["rev-parse", `${baseRef}^{commit}`]).trim();
+	const add = runGit(repo.mainRoot, ["worktree", "add", "-B", branch, worktreePath, baseRef]);
 	if (add.status !== 0) {
-		const message = add.stderr.trim() || add.stdout.trim() || `failed to create worktree ${worktreePath}`;
-		throw new Error(message);
+		waitForGitLockRelease();
+		try { runGitChecked(repo.mainRoot, ["branch", "-D", branch]); } catch {}
+		throw new Error(add.stderr.trim() || add.stdout.trim() || `failed to create worktree ${worktreePath}`);
 	}
-
-	const agentCwd = cwdRelative ? path.join(worktreePath, cwdRelative) : worktreePath;
+	const agentCwd = repo.cwdRelative ? path.join(worktreePath, repo.cwdRelative) : worktreePath;
 	try {
-		const nodeModulesLinked = linkNodeModulesIfPresent(toplevel, worktreePath);
-		const syntheticPaths = nodeModulesLinked ? ["node_modules"] : [];
-
+		const syntheticPaths = performPostCreationSetup(repo.mainRoot, worktreePath, options.symlinkDirectories ?? [], runGit);
 		if (setupHook) {
-			const hookSyntheticPaths = runWorktreeSetupHook(setupHook, {
+			syntheticPaths.push(...runWorktreeSetupHook(setupHook, {
 				version: 1,
-				repoRoot: toplevel,
+				repoRoot: repo.mainRoot,
 				worktreePath,
 				agentCwd,
 				branch,
 				index,
 				runId,
 				baseCommit,
-				agent,
-			});
-			syntheticPaths.push(...hookSyntheticPaths);
+				agent: options.agents?.[index],
+			}));
 		}
-
-		return {
-			path: worktreePath,
-			agentCwd,
-			branch,
-			index,
-			nodeModulesLinked,
-			syntheticPaths,
-		};
+		return { path: worktreePath, agentCwd, branch, baseCommit, index, nodeModulesLinked: syntheticPaths.includes("node_modules"), syntheticPaths };
 	} catch (error) {
-		try { runGitChecked(toplevel, ["worktree", "remove", "--force", worktreePath]); } catch {
-			// Best-effort rollback; preserve the original setup failure.
-		}
-		try { runGitChecked(toplevel, ["branch", "-D", branch]); } catch {
-			// Best-effort rollback; preserve the original setup failure.
-		}
+		removeWorktreeAndBranch(repo.mainRoot, worktreePath, branch);
 		throw error;
 	}
 }
 
-function cleanupSingleWorktree(repoCwd: string, worktree: WorktreeInfo): void {
-	try { runGitChecked(repoCwd, ["worktree", "remove", "--force", worktree.path]); } catch {
-		// Cleanup is best-effort to avoid masking caller errors.
-	}
-	try { runGitChecked(repoCwd, ["branch", "-D", worktree.branch]); } catch {
-		// Cleanup is best-effort to avoid masking caller errors.
-	}
-}
-
-export function createWorktrees(cwd: string, runId: string, count: number, options?: CreateWorktreesOptions): WorktreeSetup {
+export function createWorktrees(cwd: string, runId: string, count: number, options: CreateWorktreesOptions = {}): WorktreeSetup {
 	const repo = resolveRepoState(cwd);
-	const setupHook = resolveWorktreeSetupHook(repo.toplevel, options?.setupHook);
+	ensureWorktreeDirectory(repo.mainRoot);
+	const setupHook = resolveWorktreeSetupHook(repo.mainRoot, options.setupHook);
 	const worktrees: WorktreeInfo[] = [];
-
 	try {
 		for (let index = 0; index < count; index++) {
-			worktrees.push(createSingleWorktree(
-				repo.toplevel,
-				repo.cwdRelative,
-				runId,
-				index,
-				repo.baseCommit,
-				setupHook,
-				options?.agents?.[index],
-			));
+			const explicitBase = options.baseBranches?.[index] ?? options.baseBranch;
+			const baseRef = resolveTemporaryWorktreeBaseRef(repo.mainRoot, repo.baseCommit, explicitBase, runGit);
+			worktrees.push(createSingleWorktree(repo, runId, index, baseRef, setupHook, options));
 		}
 	} catch (error) {
-		cleanupWorktrees({
-			cwd: repo.toplevel,
-			worktrees,
-			baseCommit: repo.baseCommit,
-		});
+		cleanupWorktrees({ cwd: repo.mainRoot, worktrees, baseCommit: repo.baseCommit });
 		throw error;
 	}
-
-	return {
-		cwd: repo.toplevel,
-		worktrees,
-		baseCommit: repo.baseCommit,
-	};
+	return { cwd: repo.mainRoot, worktrees, baseCommit: repo.baseCommit };
 }
 
 export function cleanupWorktrees(setup: WorktreeSetup): void {
 	for (let index = setup.worktrees.length - 1; index >= 0; index--) {
-		cleanupSingleWorktree(setup.cwd, setup.worktrees[index]!);
-	}
-	try { runGitChecked(setup.cwd, ["worktree", "prune"]); } catch {
-		// Pruning is best-effort cleanup.
+		const worktree = setup.worktrees[index]!;
+		removeWorktreeAndBranch(setup.cwd, worktree.path, worktree.branch);
 	}
 }

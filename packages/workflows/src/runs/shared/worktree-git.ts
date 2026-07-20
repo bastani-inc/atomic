@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createGitEnvironment } from "@bastani/atomic";
+import { resolveMainRepoRoot } from "./worktree-root.js";
 import type { GitResult, GitWorktreeSetupOptions, GitWorktreeSetupResult } from "./worktree-types.js";
 import { openGitWorktreeGenerationAnchor, type GitWorktreeGenerationAnchor } from "./worktree-generation.js";
 
@@ -436,6 +437,8 @@ function assertCachedGitWorktreeIdentity(cached: CachedGitWorktreeSetup, options
 
 export function setupGitWorktree(options: GitWorktreeSetupOptions): GitWorktreeSetupResult {
 	const repoRoot = repositoryRootForGitWorktree(options.cwd);
+	const mainRepoRoot = resolveMainRepoRoot(repoRoot);
+	if (mainRepoRoot === undefined) throw new Error(`Invalid Git worktree metadata for invoking checkout: ${repoRoot}`);
 	const { relativeCwd, logicalRepoRoot } = cwdWithinGitRepository(options.cwd, repoRoot);
 	const worktreeRoot = resolveGitWorktreePath(options.gitWorktreeDir, logicalRepoRoot);
 	validateWorktreeOutsideInvokingCheckout(worktreeRoot, repoRoot);
@@ -455,12 +458,12 @@ export function setupGitWorktree(options: GitWorktreeSetupOptions): GitWorktreeS
 		const message = error instanceof Error ? error.message : String(error);
 		throw new Error(`Failed to create parent directory for requested gitWorktreeDir ${worktreeRoot}: ${message}`);
 	}
-	const baseRef = options.baseBranch?.trim() || "HEAD";
-	const result = runGit(repoRoot, ["worktree", "add", "--detach", worktreeRoot, baseRef]);
+	const baseRef = options.baseBranch?.trim() || runGitChecked(repoRoot, ["rev-parse", "HEAD"]).trim();
+	const result = runGit(mainRepoRoot, ["worktree", "add", "--detach", worktreeRoot, baseRef]);
 	if (result.status !== 0) {
 		throw new Error([
 			`Failed to create git worktree at requested gitWorktreeDir ${worktreeRoot} from ${baseRef}. Git reported: ${gitFailureMessage(result)}`,
-			`If another process just created this same-repository worktree, rerun the workflow to resume it. If this is an orphaned worktree from an interrupted run, recover or remove it with: ${worktreeRecoveryCommand(repoRoot, worktreeRoot)}`,
+			`If another process just created this same-repository worktree, rerun the workflow to resume it. If this is an orphaned worktree from an interrupted run, recover or remove it with: ${worktreeRecoveryCommand(mainRepoRoot, worktreeRoot)}`,
 		].join("\n"));
 	}
 	try {
@@ -468,7 +471,7 @@ export function setupGitWorktree(options: GitWorktreeSetupOptions): GitWorktreeS
 		validateExistingGitWorktreeRoot(worktreeRoot, repoRoot);
 	} catch (error) {
 		// Best-effort rollback of a target that changed while Git was creating it.
-		runGit(repoRoot, ["worktree", "remove", "--force", worktreeRoot]);
+		runGit(mainRepoRoot, ["worktree", "remove", "--force", worktreeRoot]);
 		const message = error instanceof Error ? error.message : String(error);
 		throw new Error(`Created gitWorktreeDir failed post-creation validation: ${message}`);
 	}

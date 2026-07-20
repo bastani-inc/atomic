@@ -133,6 +133,7 @@ export async function runParallelPath(data: ExecutionContextData, deps: Resolved
 		tasks,
 		deps.config.worktreeSetupHook,
 		deps.config.worktreeSetupHookTimeoutMs,
+		deps.config.worktree?.symlinkDirectories,
 	);
 	let worktreeCleanupDeferred = false;
 	const detachedCleanup = createDetachedCleanupBarrier(() => {

@@ -32,6 +32,7 @@ function createRepoShape(): { readonly root: string; readonly repo: string; read
   const repo = join(root, "repo");
   const sourceCwd = join(repo, "packages", "api");
   mkdirSync(sourceCwd, { recursive: true });
+  mkdirSync(join(repo, ".git"));
   return { root, repo, sourceCwd };
 }
 
@@ -229,6 +230,27 @@ describe("workflow reusable git worktree git runner", () => {
       assert.equal(cache.get(options), setup);
     } finally {
       cache.dispose();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("creates a reusable target from the canonical main root when invoked inside a linked worktree", () => {
+    const { root, repo } = createGitRepository();
+    const linkedSource = join(root, "linked-source");
+    const linkedNested = join(linkedSource, "nested");
+    const target = join(root, "reusable-target");
+    try {
+      mkdirSync(join(repo, "nested"));
+      writeFileSync(join(repo, "nested", "tracked.txt"), "nested\n");
+      runGitChecked(repo, ["add", "."]);
+      runGitChecked(repo, ["-c", "user.name=Atomic Test", "-c", "user.email=atomic-test@example.com", "commit", "--allow-empty", "-m", "nested"]);
+      runGitChecked(repo, ["worktree", "add", "--detach", linkedSource]);
+      const setup = setupGitWorktree({ cwd: linkedNested, gitWorktreeDir: target });
+      assert.equal(setup.created, true);
+      assert.equal(setup.cwd, join(target, "nested"));
+      assert.equal(runGitChecked(target, ["rev-parse", "--git-common-dir"]).trim(), join(repo, ".git"));
+      runGitChecked(repo, ["worktree", "remove", "--force", target]);
+    } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });

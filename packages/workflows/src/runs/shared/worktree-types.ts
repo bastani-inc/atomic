@@ -8,6 +8,7 @@ export interface WorktreeInfo {
 	path: string;
 	agentCwd: string;
 	branch: string;
+	baseCommit: string;
 	index: number;
 	nodeModulesLinked: boolean;
 	syntheticPaths: string[];
@@ -37,7 +38,10 @@ export interface WorktreeSetupHookConfig {
 
 export interface CreateWorktreesOptions {
 	agents?: string[];
+	baseBranch?: string;
+	baseBranches?: Array<string | undefined>;
 	setupHook?: WorktreeSetupHookConfig;
+	symlinkDirectories?: readonly string[];
 }
 
 export interface ResolvedWorktreeSetupHook {
@@ -92,7 +96,8 @@ export interface GitWorktreeSetupResult {
 }
 
 export interface RepoState {
-	toplevel: string;
+	checkoutRoot: string;
+	mainRoot: string;
 	cwdRelative: string;
 	baseCommit: string;
 }

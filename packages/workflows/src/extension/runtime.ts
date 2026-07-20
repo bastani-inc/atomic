@@ -173,6 +173,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
             statusFile: config?.statusFile ?? false,
             ...(config?.statusFilePath !== undefined ? { statusFilePath: config.statusFilePath } : {}),
             resumeInFlight: config?.resumeInFlight ?? "ask",
+            ...(config?.worktree !== undefined ? { worktree: config.worktree } : {}),
           };
     const defaultSessionDir = resolveDefaultStageSessionDir?.();
     return {

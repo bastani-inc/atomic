@@ -446,6 +446,7 @@ export async function resumeAsyncRun(input: {
 		workflowStageSubagentGuard: isWorkflowStageOrchestrationContext(input.ctx),
 		worktreeSetupHook: input.deps.config.worktreeSetupHook,
 		worktreeSetupHookTimeoutMs: input.deps.config.worktreeSetupHookTimeoutMs,
+		worktreeSymlinkDirectories: input.deps.config.worktree?.symlinkDirectories,
 		controlConfig: resolveControlConfig(input.deps.config.control, input.params.control),
 		controlIntercomTarget: intercomBridge.active ? intercomBridge.orchestratorTarget : undefined,
 		childIntercomTarget: intercomBridge.active ? (agent, index) => resolveSubagentIntercomTarget(runId, agent, index) : undefined,

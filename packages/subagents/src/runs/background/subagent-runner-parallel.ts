@@ -36,6 +36,7 @@ export async function runParallelGroup(state: RunnerExecutionState, group: Paral
 			worktreeSetup = createWorktrees(cwd, `${id}-s${stepIndex}`, group.parallel.length, {
 				agents: group.parallel.map((task) => task.agent),
 				setupHook: config.worktreeSetupHook ? { hookPath: config.worktreeSetupHook, timeoutMs: config.worktreeSetupHookTimeoutMs } : undefined,
+				symlinkDirectories: config.worktree?.symlinkDirectories,
 			});
 		} catch (error) {
 			const setupError = error instanceof Error ? error.message : String(error);

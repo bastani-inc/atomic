@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, test } from "bun:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-env.js";
 import { runGitChecked } from "../../packages/workflows/src/runs/shared/worktree-git.js";
+import { cleanupWorktrees, createWorktrees } from "../../packages/workflows/src/runs/shared/worktree-setup.js";
 
 /**
  * Regression guard for the 2026-07-20 core.worktree pollution incident.
@@ -53,10 +54,26 @@ afterEach(() => {
 	rmSync(fixtureDir, { recursive: true, force: true });
 });
 
-test("repository git helpers stay scrubbed under hook env and cannot touch the hook repository", () => {
+test("full create and cleanup scrubs hostile hook env and only writes core.hooksPath", () => {
 	runGitChecked(fixtureDir, ["init", "--quiet", "--initial-branch=main"]);
 	runGitChecked(fixtureDir, ["config", "--local", "user.email", "fixture@example.com"]);
-	const after = readFileSync(join(sentinelRepo, ".git", "config"), "utf-8");
-	assert.ok(!after.includes("worktree"), `sentinel config gained a worktree entry:\n${after}`);
-	assert.equal(after, sentinelConfigBefore, "sentinel repository config must be byte-identical");
+	runGitChecked(fixtureDir, ["config", "--local", "user.name", "Atomic Fixture"]);
+	writeFileSync(join(fixtureDir, "tracked.txt"), "fixture\n");
+	runGitChecked(fixtureDir, ["add", "."]);
+	runGitChecked(fixtureDir, ["commit", "--quiet", "--no-gpg-sign", "-m", "initial"]);
+	writeFileSync(join(fixtureDir, ".git", "hooks", "pre-commit"), "#!/bin/sh\n");
+	const beforeEntries = runGitChecked(fixtureDir, ["config", "--local", "--list"])
+		.split("\n").filter(Boolean).filter((entry) => !entry.startsWith("core.hookspath="));
+
+	const setup = createWorktrees(fixtureDir, "pollution/guard", 1);
+	cleanupWorktrees(setup);
+	cleanupWorktrees(setup);
+
+	const sentinelAfter = readFileSync(join(sentinelRepo, ".git", "config"), "utf-8");
+	assert.equal(sentinelAfter, sentinelConfigBefore, "sentinel repository config must be byte-identical");
+	const afterEntries = runGitChecked(fixtureDir, ["config", "--local", "--list"]);
+	assert.deepEqual(afterEntries.split("\n").filter(Boolean).filter((entry) => !entry.startsWith("core.hookspath=")), beforeEntries);
+	assert.doesNotMatch(afterEntries, /^core\.worktree=/m);
+	assert.equal(runGitChecked(fixtureDir, ["config", "--local", "--get", "core.hooksPath"]).trim(), join(realpathSync.native(fixtureDir), ".git", "hooks"));
+	assert.equal(runGitChecked(fixtureDir, ["branch", "--list", "worktree-atomic-worktree-pollution+guard-0"]).trim(), "");
 });

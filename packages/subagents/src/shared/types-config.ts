@@ -136,5 +136,6 @@ export interface ExtensionConfig {
 	chain?: ExtensionChainConfig;
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
+	worktree?: { symlinkDirectories?: string[] };
 	intercomBridge?: IntercomBridgeConfig;
 }

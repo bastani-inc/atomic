@@ -1,8 +1,8 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { runGitChecked } from "../../packages/workflows/src/runs/shared/worktree-git.js";
 import { createStore, mockSession, runChain, runParallel, runTask } from "./executor-shared.js";
 
@@ -24,7 +24,7 @@ function assertNoTemporaryWorktrees(repo: string, expectedCheckouts = 1): void {
   const checkouts = runGitChecked(repo, ["worktree", "list", "--porcelain"])
     .split("\n")
     .filter((line) => line.startsWith("worktree "));
-  const generatedBranches = runGitChecked(repo, ["branch", "--list", "atomic-parallel-*"]).trim();
+  const generatedBranches = runGitChecked(repo, ["branch", "--list", "worktree-atomic-worktree-*"]).trim();
   assert.equal(checkouts.length, expectedCheckouts);
   assert.equal(generatedBranches, "");
 }
@@ -127,6 +127,7 @@ test("temporary isolation invoked from a linked worktree preserves its nested cw
   runGitChecked(repo, ["worktree", "add", "--detach", linked]);
   const nested = join(linked, "packages", "api");
   let sessionCwd = "";
+  let observedBranch = "";
   try {
     const details = await runTask(
       { name: "writer", prompt: "write" },
@@ -138,6 +139,7 @@ test("temporary isolation invoked from a linked worktree preserves its nested cw
           agentSession: {
             async create(options) {
               sessionCwd = options.cwd ?? "";
+              observedBranch = runGitChecked(repo, ["branch", "--list", "worktree-atomic-worktree-*"]).trim();
               return mockSession();
             },
           },
@@ -147,6 +149,10 @@ test("temporary isolation invoked from a linked worktree preserves its nested cw
     assert.equal(details.status, "completed");
     assert.notEqual(sessionCwd, realpathSync(nested));
     assert.match(sessionCwd, /packages[/\\]api$/);
+    assert.equal(sessionCwd.startsWith(`${join(repo, ".atomic", "worktrees")}${sep}`), true);
+    assert.equal(sessionCwd.startsWith(`${linked}${sep}`), false);
+    assert.match(observedBranch, /worktree-atomic-worktree-/);
+    assert.equal(readFileSync(join(repo, ".atomic", "worktrees", ".gitignore"), "utf8"), "*\n");
     assert.equal(runGitChecked(linked, ["status", "--porcelain"]), "");
     assertNoTemporaryWorktrees(repo, 2);
   } finally {

@@ -28,6 +28,7 @@ export function createParallelWorktreeSetup(
 	tasks: TaskParam[],
 	setupHook: ExtensionConfig["worktreeSetupHook"],
 	setupHookTimeoutMs: ExtensionConfig["worktreeSetupHookTimeoutMs"],
+	symlinkDirectories: readonly string[] | undefined,
 ): { setup?: WorktreeSetup; errorResult?: SubagentToolResult } {
 	if (!enabled) return {};
 	try {
@@ -37,6 +38,7 @@ export function createParallelWorktreeSetup(
 				setupHook: setupHook
 					? { hookPath: setupHook, timeoutMs: setupHookTimeoutMs }
 					: undefined,
+				symlinkDirectories,
 			}),
 		};
 	} catch (error) {

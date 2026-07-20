@@ -74,6 +74,15 @@ function validateConfig(value: unknown): string | null {
     }
   }
 
+  if ("worktree" in c) {
+    const value = c["worktree"];
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return `"worktree" must be a JSON object`;
+    const worktree = value as Record<string, unknown>;
+    if ("symlinkDirectories" in worktree && (!Array.isArray(worktree["symlinkDirectories"]) || !(worktree["symlinkDirectories"] as unknown[]).every((item) => typeof item === "string"))) {
+      return `"worktree.symlinkDirectories" must be an array of strings`;
+    }
+  }
+
   if ("workflows" in c) {
     if (c["workflows"] === null || typeof c["workflows"] !== "object" || Array.isArray(c["workflows"])) {
       return `"workflows" must be a JSON object, got ${JSON.stringify(typeof c["workflows"])}`;

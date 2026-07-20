@@ -86,6 +86,7 @@ export interface ChainExecutionParams {
 	nestedRoute?: NestedRouteInfo;
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
+	worktreeSymlinkDirectories?: readonly string[];
 	runSync?: RunSyncDependency;
 	onDetachedExit?: (index: number, result: SingleResult) => void;
 }

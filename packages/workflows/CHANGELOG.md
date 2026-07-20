@@ -23,6 +23,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Added `statusFilter` support to the `status` run listing: run statuses (`pending`/`running`/`paused`/`blocked`/`completed`/`failed`/`skipped`/`cancelled`/`killed`) filter runs directly, `awaiting_input` selects runs with at least one stage awaiting input or pending human prompt, and `all` (the default) includes everything. The `cancelled` and `killed` filter values are newly accepted, and the tool schema descriptions for `action`, `runId`, `statusFilter`, and `format` now document the no-`runId` listing mode so agents can discover it.
 
 ### Changed
+- Redesigned Git worktree isolation around filesystem-only canonical-main-root detection and a Claude Code-compatible temporary lifecycle: main-root `.atomic/worktrees/` locations, flattened names, `worktree-*` branches created with `-B`, origin-default/HEAD base fallback, settings and `.worktreeinclude` propagation, configurable symlink directories, idempotent hooks-path setup, and forced worktree/branch cleanup. Reusable `gitWorktreeDir` paths retain caller-selected detached semantics while creation is anchored at the canonical main checkout.
+
 
 - DBOS is configured, registered, and launched lazily on the first workflow action (never during CLI/session startup), reused process-wide, and readiness is awaited across workflow execution, control, resume, inspection, and deletion paths. Initialization and persistence failures fail the workflow action; no alternate backend is selected.
 

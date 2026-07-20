@@ -42,6 +42,7 @@ export interface AsyncChainParams {
 	workflowStageSubagentGuard?: boolean;
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
+	worktreeSymlinkDirectories?: readonly string[];
 	controlConfig?: ResolvedControlConfig;
 	controlIntercomTarget?: string;
 	childIntercomTarget?: (agent: string, index: number) => string | undefined;
@@ -73,6 +74,7 @@ export interface AsyncSingleParams {
 	workflowStageSubagentGuard?: boolean;
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
+	worktreeSymlinkDirectories?: readonly string[];
 	controlConfig?: ResolvedControlConfig;
 	controlIntercomTarget?: string;
 	childIntercomTarget?: (agent: string, index: number) => string | undefined;
