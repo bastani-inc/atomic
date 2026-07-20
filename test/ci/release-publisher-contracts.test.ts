@@ -74,14 +74,15 @@ test("prepared native root tarball contains all six exact-version optional depen
   }
 });
 
-test("protected publisher executable path invokes context and ancestry validators", async () => {
-  const helper = await Bun.file(`${root}/scripts/verify-publish-context.ts`).text();
-  const main = helper.slice(helper.indexOf("if (import.meta.main)"));
-  assert.match(main, /validatePublishContext\(context\);/u);
-  assert.match(main, /verifyProtectedWorkflowAncestry\(context\.workflowSha, process\.env\.PROTECTED_DEFAULT_REF\);/u);
-
-  const workflow = await Bun.file(`${root}/.github/workflows/publish-release.yml`).text();
-  assert.match(workflow, /git fetch --no-tags origin "refs\/heads\/\$\{DEFAULT_BRANCH\}:\$\{PROTECTED_DEFAULT_REF\}"/u);
-  assert.match(workflow, /bun scripts\/verify-publish-context\.ts/u);
-  assert.doesNotMatch(workflow, /workflow_dispatch:|repository_dispatch:|^\s+push:/mu);
+test("publish pipeline prepares exact native package set and publishes in dependency order", async () => {
+  const workflow = await Bun.file(`${root}/.github/workflows/publish.yml`).text();
+  const expectedOrder = [
+    ...nativePackageNames,
+    "@bastani/atomic-natives",
+    "@bastani/atomic",
+  ].join(" ");
+  assert.match(workflow, /prepublish:native -- --skip-optional-publish/u);
+  assert.match(workflow, /Expected exactly eight npm packages/u);
+  assert.ok(workflow.includes(`packages=(${expectedOrder})`), "npm packages must publish native leaves, native root, then coding agent");
+  assert.match(workflow, /npm view "\$name@\$VERSION" version[\s\S]*already exists; skipping[\s\S]*npm publish "\$\{tarballs\[\$name\]\}" --provenance/u);
 });

@@ -1,231 +1,112 @@
 # CI/CD Pipeline
 
-This document describes the GitHub Actions workflows for the Atomic monorepo and the publishable npm packages, `@bastani/atomic` and `@bastani/atomic-natives`.
+Atomic publishes `@bastani/atomic` from `packages/coding-agent` and `@bastani/atomic-natives` from `packages/natives`. The other workspace packages remain private and are bundled into the coding-agent package.
 
-`@bastani/atomic` lives in `packages/coding-agent`. It is the Atomic-branded coding-agent CLI package and bundles the first-party workflows, subagents, MCP, web-access, intercom, cursor, and native-loader assets into its published tarball.
-
-`@bastani/atomic-natives` lives in `packages/natives`. It is published alongside `@bastani/atomic` so the CLI can depend on a provenance-backed root native package plus generated optional platform packages. Other companion packages under `packages/*` remain private and are copied into `@bastani/atomic` at build time.
-
-## Workflow Overview
+## Workflow overview
 
 ```text
-Pull request / push
-  ├─ Linux: install, typecheck, file-length/docs checks, unit tests, native build, and coding-agent tests
-  ├─ Linux + Windows: build @bastani/atomic and run the installed-package Node integration smoke
-  └─ Linux + Windows: scripts/build-binaries.sh --skip-install --skip-package-build --platform <native-x64>
-     └─ reuse the caller's install/build, extract the archive, verify bundled paths,
-        and run --version plus --no-session smoke tests
+Pull request / selected branch push
+└─ test.yml (Linux and Windows matrix)
+   ├─ install, typecheck, file-length and docs checks
+   ├─ unit, integration, native, and coding-agent tests
+   └─ Linux and Windows release-archive smoke tests
 
-Release tag creation (`<version>`)
-  ├─ tag-sourced Publish tag created workflow emits an inert, untrusted completion signal
-  ├─ protected-default-branch Publish release workflow starts through `workflow_run`
-  ├─ validate the exact upstream repository IDs, source workflow ID/path, create event,
-  │  completed status/conclusion, run ID/attempt, tag, and SHA
-  ├─ prove the protected publisher workflow ref/SHA belongs to current protected main
-  ├─ bind the signal tag/SHA and read immutable release-base trailers from the tag commit
-  ├─ require an exact allowlisted canonical branch ref and fetch it into a fixed local ref
-  ├─ prove the recorded base SHA is the release parent and remains in the current remote base
-  ├─ deterministically verify the release tree against that fetched base
-  ├─ export the verified tag tree as a checksummed source archive without executing it
-  ├─ smoke test Linux and Windows x64 release archives from that verified source
-  ├─ build native NAPI artifacts for Linux, Windows, and macOS from that source
-  └─ after integrity, smoke, and native-artifact jobs pass
-     ├─ read-only preparation validates the source checksum before any repository command
-     ├─ validate docs/shrinkwrap/metadata and build six archives
-     ├─ generate six platform packages and populate the root native manifest's six exact-version optional dependencies without publishing
-     ├─ create and checksum exactly eight allowlisted npm tarballs
-     ├─ upload one short-lived prepared-release artifact
-     ├─ OIDC-only npm job verifies checksums and exact tarball names/versions
-     ├─ require registry integrity equality for already-existing versions
-     ├─ reconfirm the tag before each missing tarball's provenance-backed publication
-     └─ contents-write-only job revalidates the artifact/tag and creates the GitHub Release
+Release tag push (`0.9.10` or `0.9.10-alpha.1`)
+└─ publish.yml
+   ├─ integrity: tag package version = tag and tag commit subject = `Release <tag>`
+   ├─ native-artifacts: six-platform NAPI matrix
+   ├─ linux-binary-smoke + windows-binary-smoke
+   ├─ build: shrinkwrap/package validation, six archives, eight npm tarballs,
+   │  release notes, and SHA256SUMS
+   ├─ stage-github-release: create a verified draft and refuse to change a
+   │  published release
+   ├─ publish-npm: tokenless OIDC publication, skipping existing versions
+   ├─ publish-github-release: undraft only after npm succeeds
+   └─ cleanup-draft-github-release: delete a draft when later work fails
 ```
 
-## Package Shape
+This release graph follows pi's draft-first publication shape. Public GitHub Release publication remains last so users never see a release whose npm publication failed.
 
-The repository root is a private workspace package named `atomic-monorepo`.
+## Tests (`test.yml`)
 
-The publishable workspace packages are:
+The test workflow runs on pushes to `main`, `release/**`, and `prerelease/**`, and on every pull request. Its matrix is unchanged:
 
-- `packages/coding-agent/package.json`
-  - package name: `@bastani/atomic`
-  - CLI binary: `atomic` → `dist/cli.js`
-  - `main`: `./dist/index.js`
-  - `types`: `./dist/index.d.ts`
-  - package version: shared by all `packages/*` packages
-- `packages/natives/package.json`
-  - package name: `@bastani/atomic-natives`
-  - NAPI-RS loader and generated optional platform packages for Atomic native bindings
-  - package version: shared with `@bastani/atomic`
+- `blacksmith-4vcpu-ubuntu-2404` with `linux-x64` archive coverage
+- `blacksmith-4vcpu-windows-2025` with `windows-x64` archive coverage
 
-Bundled builtin packages copied into `packages/coding-agent/dist/builtin/` during `bun run build`:
+Both legs install with Bun, build `@bastani/atomic`, run deterministic CI contracts and test suites, build native bindings, and smoke an installed release archive. Platform-independent typecheck, file-length, and documentation checks run on Linux. Archive smoke tests verify bundled builtins, native modules, runtime dependencies, `--version`, and startup far enough to reject extension-load failures.
 
-- `workflows` from `packages/workflows` (`@bastani/workflows`)
-- `subagents` from `packages/subagents` (`@bastani/subagents`)
-- `mcp` from `packages/mcp` (`@bastani/mcp`)
-- `web-access` from `packages/web-access` (`@bastani/web-access`)
-- `intercom` from `packages/intercom` (`@bastani/intercom`)
+## Direct release trigger and recovery
 
-These companion packages remain in the workspace for source organization and tests, but are marked `private: true` and must not be published independently. `@bastani/atomic-natives` is the exception because `@bastani/atomic` depends on it at runtime.
+`.github/workflows/publish.yml` starts directly when an Atomic release tag is pushed. Atomic tags have no `v` prefix:
 
+| Tag | npm dist-tag | GitHub Release |
+| --- | --- | --- |
+| `0.9.10` | `latest` | stable, marked latest |
+| `0.9.10-alpha.1` | `next` | prerelease, not latest |
 
-## CI performance and caching
+A manual dispatch is available only for release recovery. It requires `tag` and accepts optional `source_ref`; when omitted, `source_ref` defaults to the tag. The integrity job always verifies the release tag itself. Native, smoke, and payload builds consume `source_ref`, matching pi's recovery model; payload metadata validation still requires the recovery source's package version to equal the release tag.
 
-Recent Actions measurements (2026-07-12) showed the Linux test leg completing in about 3m34s while Windows took about 6m02s on a main push and 7m58s on a PR. The platform-independent Windows work removed here is typecheck (15s), file-length/docs links (about 2s), and Mintlify (61s), for about **1m18s** of sampled critical-path savings. Platform-sensitive unit, integration, native-package, coding-agent, and archive smoke coverage remains on Windows. Binary assembly also reuses the install and package build already completed in each job, avoiding another frozen install and package build.
+Concurrency is scoped per release tag and does not cancel an in-progress publication.
 
-Release tags no longer repeat typecheck and the complete test suites. Creating a tag starts `publish-tag-created.yml` through GitHub's native `create` event. A `create` run can evaluate YAML from the created tag, so the listener is untrusted and is **not** the publication security boundary. The checked-in listener is deliberately inert (`permissions: {}`, no checkout, repository code, artifacts, secrets, OIDC, or publish commands); its only useful output is a completed-run signal. `publish-release.yml` is selected separately through `workflow_run`, which GitHub loads from the default branch. The protected integrity job requires the exact `publish-release.yml@refs/heads/<default>` workflow ref, checks out its immutable `github.workflow_sha`, and proves that SHA remains in freshly fetched protected-default history. Normal publication accepts only the pinned upstream repository numeric ID/full name and a successful completed `create` run from the exact `Publish tag created` workflow numeric ID/path. It validates the source and head repository identities, workflow ID/path, event, status, conclusion, run ID/attempt, tag, and SHA before release processing; arbitrary workflows and `Publish release` itself cannot satisfy those checks, so the design does not recurse. The publisher independently resolves the exact remote tag and validates the release-base trailers and deterministic tree.
+## Lightweight integrity gate
 
-Every same-run artifact download has a bounded transport-flake recovery state machine: clean the destination, attempt once, remove any partial download on failure, retry exactly once, remove any second partial download, and then fail with an explicit message. There is no polling, sleep, or third attempt. The verified-source consumers still validate the protected job's SHA-256 digest before extraction. Extraction streams the archive to tar over stdin (`tar -xzf - ... < "$archive"`), which is portable across GNU tar and bsdtar and prevents Git Bash GNU tar from interpreting an absolute Windows `C:` archive operand as a remote host. A failed extraction removes its partial destination.
+The integrity job checks out the release tag and performs only these release identity checks:
 
-The `workflow_run` security boundary never checks out or executes the tag tree. The top-level verifier comes from protected main. Its deterministic reconstruction executes the version/shrinkwrap scripts from the release commit's sole parent only after proving that parent remains an ancestor of the freshly fetched, exact allowlisted release base; repository policy requires every configured base to be protected with required CI. Thus an arbitrary tag cannot select executable verifier code. After the context, ancestry, base, and deterministic-tree checks pass, the trusted job exports the verified tree with `git archive`, records its SHA-256 digest as a job output, and uploads it as an immutable same-run source artifact. Every smoke, native-build, and preparation job downloads that exact SHA-named artifact into a freshly cleaned temporary path, applies the bounded retry above, verifies the protected job output digest, and extracts it into a fresh temporary directory before running any repository command. Documentation validation remains read-only in intent, but the preparation job still discards its working tree afterward and restores the archive only after rechecking its protected digest; dependency installation and artifact production therefore start from fresh verified bytes. Those jobs have no tag checkout and configure no Actions, Bun, `node_modules`, or Cargo cache. This implements GitHub CodeQL's guidance to [avoid caching in sensitive release workflows](https://codeql.github.com/codeql-query-help/actions/actions-cache-poisoning-poisonable-step/): unverified tag-controlled code never receives the default-branch cache service credentials and cannot write cache state or substitute a build input.
+1. The tag has the supported stable or `-alpha.N` format.
+2. `packages/coding-agent/package.json` at the tag has a version exactly equal to the tag.
+3. The tag commit subject is exactly `Release <tag>`.
 
-Verification/build/package jobs remain read-only. During preparation, NAPI-RS generates the six platform packages and updates the root `@bastani/atomic-natives` manifest with all six exact-version `optionalDependencies` while `--skip-optional-publish` prevents that preparation command from contacting the registry; the workflow then packs and inspects the actual root tarball manifest. A checksummed artifact then crosses into a minimal npm job with `id-token: write` but no repository-write permission. That job independently requires the exact eight-name/version package set and compares `release.env` byte-for-byte with trusted job outputs; it never sources, evaluates, or executes artifact metadata. It performs no checkout, install, docs validation, or build and reconfirms the tag before each allowlisted tarball publication. A final separate job has `contents: write` but no OIDC permission and only verifies the artifact/tag before creating the GitHub Release. npm publication remains tokenless `npm publish --provenance` using OIDC.
+The publisher intentionally does not reconstruct the release tree, validate release-base trailers, inspect protected workflow ancestry, maintain a release-base allowlist, or bind a separate create event. `scripts/cut-release.ts` still records release-base trailers because they are useful release provenance, but they are not a publisher gate.
 
-Blacksmith's [Actions cache](https://docs.blacksmith.sh/blacksmith-caching/dependencies-actions) automatically redirects official GitHub and popular third-party cache actions to its colocated backend, but it does not implicitly add a Bun dependency cache or Cargo compilation cache. We intentionally do not cache `node_modules`, Bun's global cache, or Cargo outputs. In the protected publisher this is a security invariant, not only a performance choice: no job that executes the verified release source restores or writes a cache. [Sticky Disks](https://docs.blacksmith.sh/blacksmith-caching/dependencies-sticky-disks) and [Git checkout caching](https://docs.blacksmith.sh/blacksmith-caching/git-checkout-caching) must not be enabled for the publisher's release-source jobs; their source input is exclusively the checksummed artifact described above.
+## Versionless release bases
 
-The test matrix checks out with `lfs: true` (two coding-agent test fixtures are LFS objects) and `fetch-depth: 0`. Full history plus tags is load-bearing, not an optimization target: the `test:ci-contracts` step executes `scripts/verify-release-integrity.ts` against a real historical release tag, including a `merge-base --is-ancestor` check against `origin/main` that a shallow clone cannot answer (a shallow-fetch attempt broke this contract on both platforms). The check itself costs single-digit seconds and is the only pre-merge guard on the release verifier, so it stays. With [Git checkout caching](https://docs.blacksmith.sh/blacksmith-caching/git-checkout-caching) the full clone lives on the runner-side mirror and full-history checkouts stay cheap; only the standard-clone fallback pays for history. A `Blacksmith cache setup failed, using standard checkout: ... failed to expose and mount sticky disk` warning is the beta git-mirror feature degrading gracefully on Blacksmith's side — the run continues on a normal clone; it is not caused by (or fixable from) workflow YAML, and recurring instances belong in a Blacksmith support report.
-
-Blacksmith [Test Analytics](https://docs.blacksmith.sh/blacksmith-observability/test-analytics) requires uploaded JUnit XML. Bun's current test commands do not produce a repository-standard JUnit artifact, so CI does not add a lossy conversion solely for analytics. The Blacksmith dashboard/run history should continue to be used to validate these savings and identify a future test shard only when suite timings justify it. Runner sizes remain at 4 vCPU for test/smoke work; the measured work is mostly serial, so a larger runner is not assumed to improve it.
-
-### Bounded flaky-test recovery
-
-Only the unit, integration, and coding-agent test-suite steps use `scripts/run-flaky-test-suite.ts`. The green path runs the command once with no artifact writes. After a genuine suite failure, the runner preserves attempt 1, emits an OS/Bun/CPU/memory/load summary, and reruns that same smallest safe suite **once**. If attempt 2 passes, the job succeeds with a visible `Detected flake` warning and step-summary entry; if it fails, the step fails with both logs. `.ci-diagnostics/` is uploaded for 14 days on both Linux and Windows whenever files exist.
-
-This is not a blanket command retry. Typecheck, docs, file-length/lint, builds, native/package/archive checks, shrinkwrap, metadata, provenance, and publishing never use the wrapper. Workflow structure and release-verifier fixtures run first in the separate `test:ci-contracts` step with no retry wrapper; the retry runner's own unit contract is also a no-retry file. Bun does not currently expose a stable cross-platform failed-file manifest suitable for safely reconstructing arbitrary test commands, so the fallback reruns the named suite rather than guessing file paths. The policy adds no second-run cost when CI is green; a recovered flake costs one suite duration and remains observable instead of hiding the instability.
-
-### Job time limits
-
-Every job in `test.yml`, `publish-tag-created.yml`, and `publish-release.yml` sets an explicit `timeout-minutes` so a hung process cannot consume GitHub's 360-minute default. Release integrity, preparation, npm publication, and GitHub Release jobs use 10 minutes. Windows smoke and native builds retain 15 minutes because their measured cold builds legitimately exceed the shorter budget; the artifact retry remains bounded inside those job-level limits.
----
-
-## Pull Request Workflows
-
-### Tests (`test.yml`)
-
-Runs on pushes to `main`, `release/**`, and `prerelease/**`, plus PRs targeting any branch so allowlisted workstream bases receive the same required validation before merge.
-
-Matrix:
-
-- `blacksmith-4vcpu-ubuntu-2404` with native `linux-x64` binary smoke coverage
-- `blacksmith-4vcpu-windows-2025` with native `windows-x64` binary smoke coverage
-
-Steps:
-
-1. Check out the repository.
-2. Set up Bun.
-3. Set up Node 24 (required by the installed-package Node smoke below; the published `atomic` bin runs under `#!/usr/bin/env node` for npm/bun installs).
-4. Install dependencies with `bun install --frozen-lockfile`.
-5. On Linux, run typecheck, file-length, and docs/Mintlify checks. Unit, native-package, and coding-agent suites continue on both Linux and Windows.
-6. Build `@bastani/atomic` and run `bun run test:integration` with `ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE=1` on both platforms. The installed-like layout runs `dist/cli.js --no-session` under **Node**, failing on extension-load diagnostics and preserving the cross-platform npm-install behavior.
-7. Build the native release binary with `scripts/build-binaries.sh --skip-install --skip-package-build --platform <native-x64>` so the matrix does not repeat its install or package build.
-8. Extract the generated archive, verify required bundled paths, run `atomic --version`, and run `atomic --no-session` far enough to catch extension-load diagnostics while allowing the expected no-models exit.
-
----
-
-## Release Pipeline
-
-### Trigger and privilege boundary
-
-Creating a valid release tag starts the tag-sourced `publish-tag-created.yml` listener. Its checked-in definition rejects branch creates and invalid version tags, but its YAML is untrusted because `create` can select the created ref. The listener's minimal shape limits blast radius; it is not authority to publish. A completed listener run triggers `publish-release.yml` through `workflow_run`. GitHub requires that downstream workflow to exist on the default branch and runs it in the default-branch context.
-
-Before touching release content, `publish-release.yml` validates the upstream and head repository full names and immutable numeric IDs, event action, exact source workflow numeric ID/path, source event/status/conclusion, positive run ID/attempt, tag, and full SHA. It also requires its own `github.workflow_ref` to be protected-main `publish-release.yml`, pins `github.workflow_sha`, and proves that SHA is contained in freshly fetched protected-default history. It independently resolves `refs/tags/<tag>` and requires equality with the source SHA. The source selector names only `Publish tag created`; because the protected workflow is distinctly named `Publish release`, it cannot select itself.
-
-The npm job uses the protected-branch `npm-publish` environment and only receives `contents: read` plus `id-token: write`. Configure the package-specific npm trusted publisher for **all eight published package names** to workflow filename `publish-release.yml` and environment `npm-publish`: `@bastani/atomic`, `@bastani/atomic-natives`, `@bastani/atomic-natives-darwin-arm64`, `@bastani/atomic-natives-darwin-x64`, `@bastani/atomic-natives-linux-arm64-gnu`, `@bastani/atomic-natives-linux-x64-gnu`, `@bastani/atomic-natives-win32-arm64-msvc`, and `@bastani/atomic-natives-win32-x64-msvc`. npm permits one trusted publisher per package. No `NPM_TOKEN` or `NODE_AUTH_TOKEN` is used. The separate GitHub Release job receives `contents: write` without `id-token: write`.
-
-### Tag Naming
-
-| Tag                                                       | npm tag  | GitHub Release                |
-| --------------------------------------------------------- | -------- | ----------------------------- |
-| `<major>.<minor>.<patch>` (e.g. `0.8.0`)                  | `latest` | normal release, marked latest |
-| `<major>.<minor>.<patch>-<prerelease>` (e.g. `0.8.0-alpha.1`) | `next`   | prerelease, not marked latest |
-
-`main` and every supported release workstream are **versionless**: their `packages/*/package.json` files stay at the `0.0.0` placeholder. The real version exists only in the tagged `Release <version>` tree produced by `scripts/cut-release.ts`, where the tag matches `packages/coding-agent/package.json` exactly and all workspace versions are stamped in sync. `publish-release.yml` verifies that tree as Git data, archives it without executing tag-controlled code, and runs read-only builds only after consumers verify the protected integrity job's source checksum; the credentialed jobs consume only separately checksummed prepared artifacts.
-
-### Cutting a release (versionless base)
-
-The selected base never carries a real version, so releasing does not bump it. Instead, `scripts/cut-release.ts` materializes the version on a throwaway `Release <version>` commit whose sole parent is the exact selected remote branch SHA, then tags that commit:
+`main` and supported workstream bases keep all versioned manifests at `0.0.0`. `scripts/cut-release.ts` resolves the selected remote branch SHA, creates a detached worktree, stamps the requested version, regenerates `packages/coding-agent/npm-shrinkwrap.json`, commits with subject `Release <version>`, tags that commit, removes the worktree, and pushes only the tag. The selected base never receives the version stamp.
 
 ```sh
-bun run scripts/cut-release.ts 0.8.0 --base main --push
-bun run scripts/cut-release.ts 0.8.0-alpha.1 --base main --push
+bun run scripts/cut-release.ts 0.9.10 --base main --push
+bun run scripts/cut-release.ts 0.9.10-alpha.1 --base main --push
 ```
 
-Internally the script validates a clean tree and a short canonical branch name supplied through `--base` (or uses the current attached branch when omitted). It canonicalizes that name to `refs/heads/<base>`, resolves exactly that ref on `origin`, creates a detached `git worktree` at the resulting full SHA, stamps every versioned manifest with `scripts/bump-version.ts` (all `packages/*/package.json`, the `@bastani/atomic-natives` pin, `packages/natives/native/index.js`, and the Cargo manifests/lock), and regenerates `packages/coding-agent/npm-shrinkwrap.json`. The release commit records `Release-base-ref: refs/heads/<base>` and `Release-base-sha: <full SHA>` trailers before it is tagged. The script removes the worktree and pushes only the tag; the selected base is never advanced by the version stamp. The publisher has no legacy fallback and rejects any release commit missing either trailer. `bun.lock` keeps the base's `0.0.0` workspace placeholders—it is not shipped in the npm tarball and `bun install --frozen-lockfile` tolerates the version-string mismatch.
+The tag push is the publication signal. Do not bump package versions directly on a release base.
 
-The release shrinkwrap is prepared before the tag is published. Internal Atomic entries such as `@bastani/atomic-natives` and its generated platform optional packages are derived from the stamped local `package.json` metadata and deterministic npm tarball URLs like `https://registry.npmjs.org/@bastani/atomic-natives/-/atomic-natives-<version>.tgz`; the generator intentionally does not query npm metadata for the just-published native packages or require their registry `integrity` fields.
+## Build and validation jobs
 
-### Release base allowlist
+### Native NAPI matrix
 
-`refs/heads/main` is always publication-eligible. To publish from another workstream, first protect that branch with the repository's required CI checks, then configure the repository variable `RELEASE_BASE_REFS`. Its value is a comma-separated list of exact canonical full refs, for example `refs/heads/release/workstream-a,refs/heads/prerelease/workstream-b`. Do not include spaces, globs, prefixes, short names such as `release/workstream-a`, remote aliases such as `origin/release/workstream-a`, or tags. Matching is exact and case-sensitive; malformed configured entries and refs absent from the allowlist fail closed. Adding a ref to this variable is the repository administrator's explicit attestation that the branch is an approved, protected release workstream; the publisher verifies commit/ref evidence but does not infer branch policy from its name.
+The native job always rebuilds and uploads one artifact for each shipped `@bastani/atomic-natives` target. It uses pinned Rust 1.97.0; x64 targets use the compatibility-oriented `x86-64-v2` baseline.
 
-The `publish-release` workflow's existing `base_ref` input remains a short branch name and defaults to `main`. It targets and synchronizes that branch, then invokes `cut-release.ts --base <base_ref>`. For a non-main value, the corresponding canonical `refs/heads/<base_ref>` must already be present in `RELEASE_BASE_REFS`.
+| Platform | Runner | Explicit rustup target |
+| --- | --- | --- |
+| Linux x64 | `blacksmith-4vcpu-ubuntu-2404` | `x86_64-unknown-linux-gnu` |
+| Linux arm64 | `blacksmith-4vcpu-ubuntu-2404-arm` | `aarch64-unknown-linux-gnu` |
+| macOS x64 | `macos-26-intel` | `x86_64-apple-darwin` |
+| macOS arm64 | `blacksmith-6vcpu-macos-26` | `aarch64-apple-darwin` |
+| Windows x64 | `blacksmith-4vcpu-ubuntu-2404` | `x86_64-pc-windows-msvc` |
+| Windows arm64 | `blacksmith-4vcpu-ubuntu-2404` | `aarch64-pc-windows-msvc` |
 
-### Publish Flow
+The old publisher built both Linux GNU bindings directly on Ubuntu 24.04, so its shipped cdylibs could acquire that runner's newer glibc symbol floor. The new pipeline fixes that portability bug: workflow-level `GLIBC_FLOOR=2.17` leaves rustup on each bare Linux target but passes `x86_64-unknown-linux-gnu.2.17` or `aarch64-unknown-linux-gnu.2.17` to `packages/natives/scripts/build-native.ts`. That script invokes cargo-zigbuild and copies the cdylib from Cargo's bare-target output directory, explicitly handling the bare-vs-glibc-suffixed target split. Windows targets use LLVM and cargo-xwin. Darwin x64 and arm64 build on real Intel and Apple Silicon macOS runners. The matrix has `fail-fast: false`, names artifacts with platform and architecture, and never downloads native artifacts from another run.
 
-```text
-git push origin 0.8.0
-       │
-       ├─ Publish tag created / Signal protected publisher (`create`, untrusted and inert)
-       ├─ Publish release / Verify release integrity (`workflow_run`, protected default branch)
-       │    · checkout only the protected workflow SHA
-       │    · validate context, ancestry, base, and deterministic release tree
-       │    · archive the verified tag tree as data without executing it
-       │    · upload a SHA-256-bound verified source artifact
-       ├─ Smoke Linux binary from verified source
-       ├─ Smoke Windows binary from verified source
-       └─ after integrity and smoke jobs pass
-          ▼
-Prepare immutable release artifacts (read-only)
-  · clean the destination, download the exact SHA-named verified source artifact, and retry at most once after partial-download cleanup
-  · fail explicitly after the second transport failure
-  · verify its protected-job SHA-256 output before streaming it to tar over stdin
-  · never checkout the tag or restore/write an Actions dependency cache
-  · install, validate docs/shrinkwrap/package metadata, and build six binaries
-  · download the six native bindings and generate six platform packages
-  · populate the root native manifest's six exact-version optional dependencies without publishing
-  · create eight npm tarballs: six platform packages, `@bastani/atomic-natives`, and `@bastani/atomic`
-  · inspect the packed root native manifest and require that exact six-dependency/version set
-  · extract release notes and generate binary checksums
-  · checksum every tarball, binary, notes file, and release metadata file
-  · upload one short-lived `prepared-release-<sha>` artifact
-       │
-       ▼
-Publish verified npm tarballs (`id-token: write`, no repository write)
-  · download the prepared artifact; do not checkout, install, or run repository scripts
-  · verify all artifact checksums and require the exact eight-name/version allowlist
-  · for an existing version, require registry `dist.integrity` to equal the prepared tarball exactly
-  · for a missing version, reconfirm the remote tag/SHA immediately before `npm publish <tarball> --provenance`
-       │
-       ▼
-Create GitHub Release (`contents: write`, no OIDC)
-  · redownload and verify the checksummed artifact
-  · reconfirm the remote tag/SHA
-  · create the release from the extracted notes and six binary archives plus `SHA256SUMS`
-```
+The build job downloads the six same-run bindings, generates the six platform npm packages, and populates the root native package's exact-version optional dependencies without publishing during preparation.
 
-### Why npm Publish Before GitHub Release?
+### Binary smoke tests
 
-npm versions are immutable. The workflow publishes to npm first so the GitHub Release is only created after the npm package is available.
+Linux and Windows x64 each run `scripts/build-binaries.sh` for their platform, extract the resulting archive, check required bundled files, run `--version`, and start `--no-session` from a clean temporary directory. Expected no-model/no-key exits are accepted; extension-load failures and unexpected exits fail the job.
 
-npm provenance currently supports GitHub-hosted runners only, so the final publish job runs on `ubuntu-latest` even though the binary smoke-test and most native-artifact jobs can use Blacksmith runners. The native-artifact matrix follows Blacksmith's architecture-aware runner pattern: Linux x64 uses `blacksmith-4vcpu-ubuntu-2404`, Linux arm64 uses `blacksmith-4vcpu-ubuntu-2404-arm`, Darwin arm64 uses `blacksmith-6vcpu-macos-26`, and Darwin x64 uses GitHub's Intel macOS runner (`macos-26-intel`) because Blacksmith does not provide Intel macOS runners.
+### Release payload
 
-### GitHub Release Creation
+After native and smoke jobs pass, `build`:
 
-GitHub Releases are created with `softprops/action-gh-release@v3`, matching pi's release-action pattern. Release notes are extracted from `packages/coding-agent/CHANGELOG.md` using a pi-style awk filter on the `## [<version>]` heading.
+1. Installs with `bun install --frozen-lockfile` and runs `bun run check:shrinkwrap`.
+2. Generates native platform package directories and the native root manifest.
+3. Runs `scripts/build-binaries.sh --skip-install` for all six archives.
+4. Validates package identity, versions, public/private metadata, binary entrypoint, workspace dependency ranges, build outputs, six native modules, and six exact-version native optional dependencies.
+5. Packs exactly eight npm tarballs.
+6. Extracts release notes from `packages/coding-agent/CHANGELOG.md`.
+7. Creates `SHA256SUMS` for the six binary archives.
+8. Uploads the npm tarballs and GitHub Release assets as one same-run artifact.
 
-For prerelease versions (any version containing `-`):
-
-- `prerelease: true`
-- `make_latest: false`
-- npm tag: `next`
-
-For stable versions:
-
-- `prerelease: false`
-- `make_latest: true`
-- npm tag: `latest`
-
-Binaries attached to every release:
+GitHub Release assets are:
 
 - `atomic-darwin-arm64.tar.gz`
 - `atomic-darwin-x64.tar.gz`
@@ -235,106 +116,43 @@ Binaries attached to every release:
 - `atomic-windows-arm64.zip`
 - `SHA256SUMS`
 
----
+## Draft-first GitHub Release
 
-## Publish Package Rule
+`stage-github-release` validates `SHA256SUMS`, refuses to mutate an already-published release, replaces a prior recovery draft when necessary, and runs `gh release create --verify-tag --draft`. It verifies the exact uploaded asset-name set.
 
-CI publishes exactly eight allowlisted npm packages per release: the two package roots plus six generated native platform packages.
+After npm succeeds, `publish-github-release` changes the draft to public and sets stable/prerelease/latest metadata. If staging or either publication job fails, the cleanup job runs with pi's `always()` condition and deletes the release only when it is still a draft.
 
-- `@bastani/atomic`
-- `@bastani/atomic-natives`
-- `@bastani/atomic-natives-darwin-arm64`
-- `@bastani/atomic-natives-darwin-x64`
-- `@bastani/atomic-natives-linux-arm64-gnu`
-- `@bastani/atomic-natives-linux-x64-gnu`
-- `@bastani/atomic-natives-win32-arm64-msvc`
-- `@bastani/atomic-natives-win32-x64-msvc`
-Do not add publish steps for:
+## npm publication
 
-- `@bastani/workflows`
-- `@bastani/subagents`
-- `@bastani/mcp`
-- `@bastani/web-access`
-- `@bastani/intercom`
-- `@bastani/cursor`
-- any other `packages/*` workspace
+The npm job uses environment `npm-publish` with only `contents: read` and `id-token: write`. It upgrades to an npm version that supports trusted publishing and publishes with provenance. Configure the npm trusted publisher for workflow filename `publish.yml` and environment `npm-publish` on all eight package names:
 
-Those extensions are bundled into `@bastani/atomic` by `packages/coding-agent/scripts/copy-builtin-packages.ts`.
+1. `@bastani/atomic-natives-darwin-arm64`
+2. `@bastani/atomic-natives-darwin-x64`
+3. `@bastani/atomic-natives-linux-arm64-gnu`
+4. `@bastani/atomic-natives-linux-x64-gnu`
+5. `@bastani/atomic-natives-win32-arm64-msvc`
+6. `@bastani/atomic-natives-win32-x64-msvc`
+7. `@bastani/atomic-natives`
+8. `@bastani/atomic`
 
----
+That order publishes native leaves first, then the native root, then the coding agent. A package version already present in the registry is logged and skipped, making recovery idempotent. Stable versions use `latest`; alpha versions use `next`. No static npm credential is configured.
 
-## No Verdaccio Validation
+## Permissions and time limits
 
-Verdaccio is intentionally not used.
+Repository-wide workflow permissions are read-only. Only draft staging, undrafting, and failed-draft cleanup receive `contents: write`. Only npm publication receives `id-token: write`; it never receives repository write permission. Every job has an explicit timeout.
 
-The meaningful pre-publish checks are split between required PR/base validation and release-specific gates. The release job proves the recorded base SHA is the release commit's sole parent, that this SHA remains contained in the freshly fetched current allowlisted remote branch, and that the release tree is exactly the deterministic release transform. It then checks:
+## Workflow files
 
-- deterministic `npm-shrinkwrap.json` validation for `@bastani/atomic`
-- synchronized tag/package versions and publish metadata
-- `@bastani/atomic` build output and builtin extension/resources
-- the packed `@bastani/atomic-natives` manifest's exact six platform `optionalDependencies`, each matching the release version
-- exactly eight checksummed allowlisted npm tarballs and six release archives
-- registry-integrity equality on idempotent skips and npm OIDC provenance on new publications
+| File | Trigger | Purpose |
+| --- | --- | --- |
+| `.github/workflows/test.yml` | selected pushes and every pull request | workspace tests and cross-platform release smoke |
+| `.github/workflows/publish.yml` | release tag push; manual recovery dispatch | verify, build, stage draft, publish npm, undraft, clean failed drafts |
 
----
+## Release checklist
 
-## Workflow Files Reference
-
-| File                      | Trigger                                      | Purpose                                                                                                                                                                                                       |
-| ------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `test.yml`                | Selected pushes; every pull request          | Install, typecheck, file-length/docs checks, builds, tests, and archive smoke tests |
-| `publish-tag-created.yml` | Tag/branch creation through GitHub `create`  | Emit the normal untrusted completion signal; the checked-in definition requests no permissions and executes no repository code |
-| `publish-release.yml`     | Completed pinned signal via `workflow_run`   | Protected-main security boundary: validate source identity and release integrity, prepare checksummed artifacts read-only, publish npm tarballs in an OIDC-only job, then create the GitHub Release in a repository-write-only job |
-
----
-
-## Release Checklist
-
-1. Choose the short release base name (default `main`). Move the `[Unreleased]` section in `packages/coding-agent/CHANGELOG.md` to `## [0.8.0] - <YYYY-MM-DD>` and land it on that base like any normal change. The publish workflow uses this section as the GitHub Release body. **Do not bump any `package.json` version—the release base is versionless.** For a non-main base, configure its exact canonical ref in `RELEASE_BASE_REFS` before cutting the release.
-
-2. Run local validation (optional; required PR/base CI already covers it on the integrated parent):
-
-    ```sh
-    bun run typecheck
-    bun run check:file-length
-    cd packages/coding-agent && bun run docs:check
-    cd docs && bunx --bun mintlify@latest validate
-    bunx --bun mintlify@latest broken-links
-    cd ..
-    bun run build
-    cd ../..
-    bun run test:unit
-    bun run test:integration
-    ./scripts/build-binaries.sh --platform linux-x64
-    tmpdir=$(mktemp -d)
-    tar -xzf packages/coding-agent/binaries/atomic-linux-x64.tar.gz -C "$tmpdir"
-    "$tmpdir/atomic/atomic" --version
-    set +e
-    output=$(printf '' | "$tmpdir/atomic/atomic" --no-session 2>&1)
-    status=$?
-    set -e
-    echo "$output"
-    if grep -q 'Failed to load extension' <<<"$output"; then
-      exit 1
-    fi
-    if [ "$status" -ne 0 ] && ! grep -Eq 'No models available|No model selected|No API key found' <<<"$output"; then
-      exit "$status"
-    fi
-    rm -rf "$tmpdir"
-    ```
-
-    On Windows, substitute `--platform windows-x64`, extract `atomic-windows-x64.zip`, and run `atomic.exe --version` plus the equivalent `atomic.exe --no-session` smoke. (A versionless base build reports the `0.0.0` placeholder for `--version`; a release build from the tag reports the real version.)
-
-3. From a clean selected base, cut and push the release tag. This stamps the version onto a detached `Release 0.8.0` commit at the exact remote base SHA, regenerates the deterministic `@bastani/atomic` shrinkwrap from local metadata, records immutable base metadata, tags it, and pushes only the tag. Tag creation starts the inert signal; its successful completion starts the protected-main publisher through `workflow_run`.
-
-    ```sh
-    bun run scripts/cut-release.ts 0.8.0 --base main --push
-    ```
-
-    Omit `--push` to inspect the tag locally first (`git show 0.8.0`, `git log --oneline -1 0.8.0`), then `git push origin 0.8.0`. The selected base is never advanced by the version stamp.
-
-    For a non-main workstream, substitute its short branch name for `main` and first add its exact canonical `refs/heads/<base>` value to `RELEASE_BASE_REFS`. Before pushing, inspect `git show -s --format=%B <version>` and require exactly one matching `Release-base-ref` and `Release-base-sha`; the latter must be the release commit's sole parent. The protected publisher rechecks both values against the current remote branch.
-
-4. Inspect the resulting `Publish tag signal 0.8.0` and `Publish 0.8.0` runs. Do not dispatch a workflow, use `--watch`, or add sleep/poll loops. The publisher must be a `workflow_run` run linked to the exact successful signal run/tag/SHA. If a run is still active, return later or rely on GitHub notifications.
-
-For prereleases, substitute `0.8.0-alpha.1`. The repository-local `publish-release` Atomic workflow uses the same signal-to-publisher path and returns a resumable blocked result when PR checks or publishing are still pending; it never waits, sleeps, polls, or dispatches another workflow.
+1. Move relevant package changelog entries out of `[Unreleased]` and land the changelog-only PR on the selected versionless base. Do not bump package manifests.
+2. Require the selected base's normal CI to pass.
+3. From a clean checkout, run `bun run scripts/cut-release.ts <version> --base <base> --push`.
+4. Inspect the single `Publish <version>` push run. Do not start a duplicate manual run during normal publication.
+5. If recovery is required, manually dispatch `publish.yml` with the original `tag`; set `source_ref` to the exact recovery ref whose package version still matches that tag.
+6. Confirm all eight npm packages and the public GitHub Release exist with the expected dist-tag and assets.

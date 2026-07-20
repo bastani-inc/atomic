@@ -94,14 +94,13 @@ test("workflow follows the short versionless release sequence", () => {
   }
 });
 
-test("workflow preserves versionless bases and delegates through the inert signal to protected publication", () => {
+test("workflow preserves versionless bases and inspects direct tag publication", () => {
   const source = workflowSource();
   assert.match(source, /package manifests, lockfiles, Cargo files, and generated version files remain at 0\.0\.0/u);
   assert.match(source, /scripts\/cut-release\.ts \$\{release\.version\} --base \$\{baseRef\} --push --yes/u);
-  assert.match(source, /Pushing the version tag starts the inert Publish tag created signal/u);
-  assert.match(source, /protected-main publish-release\.yml through workflow_run/u);
-  assert.match(source, /successful create-event publish-tag-created\.yml signal for the exact tag\/SHA/u);
-  assert.match(source, /workflow_run-event publish-release\.yml run whose triggering workflow_run ID is that signal run/u);
+  assert.match(source, /Pushing the version tag directly starts publish\.yml/u);
+  assert.match(source, /push-event publish\.yml run for the exact tag and release SHA/u);
+  assert.match(source, /exact publish workflow path, matching tag, SHA, and push event/u);
   assert.doesNotMatch(source, /gh workflow run|workflow_dispatch|environment:\s*npm-publish/u);
 });
 

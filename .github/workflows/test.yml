@@ -33,12 +33,9 @@ jobs:
               with:
                   # LFS fixtures are required by the coding-agent test suite.
                   lfs: true
-                  # Full history + tags are load-bearing: the test:ci-contracts
-                  # step executes scripts/verify-release-integrity.ts against a
-                  # real historical release tag, including a merge-base
-                  # ancestry check against origin/main that a shallow clone
-                  # cannot answer. Blacksmith's git-mirror keeps the full clone
-                  # cached; only the standard-clone fallback pays for history.
+                  # Full history and tags support CI contract fixtures and local
+                  # release tooling. Blacksmith's git mirror keeps this checkout
+                  # inexpensive while preserving those repository-wide checks.
                   fetch-depth: 0
             - uses: oven-sh/setup-bun@v2
               with:

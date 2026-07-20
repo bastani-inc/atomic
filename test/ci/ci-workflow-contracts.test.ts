@@ -1,9 +1,7 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { $ } from "bun";
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   canonicalReleaseBaseRef,
@@ -12,341 +10,155 @@ import {
 } from "../../scripts/release-base.js";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
+const publishPath = join(root, ".github/workflows/publish.yml");
 
-function stepRunScript(workflow: string, stepName: string): string {
-  const stepStart = workflow.indexOf(`- name: ${stepName}`);
-  assert.notEqual(stepStart, -1, `missing step: ${stepName}`);
-  const runStart = workflow.indexOf("run: |", stepStart);
-  const runLineStart = workflow.lastIndexOf("\n", runStart) + 1;
-  const runLine = workflow.slice(runLineStart, workflow.indexOf("\n", runStart));
-  const indentation = runLine.match(/^(\s*)/u)?.[1].length ?? 0;
-  const lines = workflow.slice(workflow.indexOf("\n", runStart) + 1).split("\n");
-  const body: string[] = [];
-  for (const line of lines) {
-    const currentIndentation = line.match(/^(\s*)/u)?.[1].length ?? 0;
-    if (line.trim().length > 0 && currentIndentation <= indentation) break;
-    body.push(line.slice(Math.min(line.length, indentation + 4)));
-  }
-  return body.join("\n");
+function jobBlock(workflow: string, name: string, next?: string): string {
+  const start = workflow.indexOf(`  ${name}:`);
+  assert.notEqual(start, -1, `missing job: ${name}`);
+  const end = next ? workflow.indexOf(`  ${next}:`, start + 1) : workflow.length;
+  return workflow.slice(start, end);
 }
 
-test("test workflow runs platform-independent suites once and preserves cross-platform smoke", async () => {
+test("test workflow preserves its two-platform matrix and deterministic contracts", async () => {
   const workflow = await Bun.file(join(root, ".github/workflows/test.yml")).text();
-  assert.match(workflow, /pull_request:\s*\r?\n\s*jobs:/);
-  assert.doesNotMatch(workflow, /pull_request:\s*\r?\n\s*branches:/);
-  for (const step of ["Typecheck", "File length check", "Docs link validation"]) {
-    const block = workflow.slice(workflow.indexOf(`- name: ${step}`), workflow.indexOf("- name:", workflow.indexOf(`- name: ${step}`) + 1));
-    assert.match(block, /if: runner\.os == 'Linux'/, `${step} must run on only one matrix leg`);
-  }
-  assert.match(workflow, /ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE: "1"/);
-  assert.match(workflow, /--skip-install --skip-package-build --platform/);
+  assert.match(workflow, /blacksmith-4vcpu-ubuntu-2404/);
+  assert.match(workflow, /blacksmith-4vcpu-windows-2025/);
+  assert.match(workflow, /name: Deterministic CI and release contracts[\s\S]*run: bun run test:ci-contracts/);
   assert.match(workflow, /Smoke test Linux release archive/);
   assert.match(workflow, /Smoke test Windows release archive/);
-  assert.match(workflow, /run-flaky-test-suite\.ts --label "unit tests/);
-  assert.match(workflow, /name: Deterministic CI and release contracts[\s\S]*run: bun run test:ci-contracts/);
-  const deterministicBlock = workflow.slice(workflow.indexOf("name: Deterministic CI and release contracts"), workflow.indexOf("name: Unit tests"));
-  assert.doesNotMatch(deterministicBlock, /run-flaky-test-suite/);
-  assert.match(workflow, /run-flaky-test-suite\.ts --label "integration tests/);
-  assert.match(workflow, /run-flaky-test-suite\.ts --label "coding-agent tests/);
-  assert.match(workflow, /name: Upload flaky-test diagnostics[\s\S]*if: always\(\)/);
 });
 
-test("release-base metadata preserves exact canonical refs and raw LF/CRLF trailers", () => {
+test("publish workflow has direct tag and recovery triggers", async () => {
+  const workflow = await Bun.file(publishPath).text();
+  assert.match(workflow, /push:\s*\n\s*tags:/);
+  assert.match(workflow, /"\[0-9\]\*\.\[0-9\]\*\.\[0-9\]\*"/);
+  assert.match(workflow, /workflow_dispatch:\s*\n\s*inputs:\s*\n\s*tag:[\s\S]*required: true[\s\S]*source_ref:[\s\S]*required: false/);
+  assert.match(workflow, /SOURCE_REF: \$\{\{ github\.event\.inputs\.source_ref \|\| github\.event\.inputs\.tag \|\| github\.ref_name \}\}/);
+  assert.doesNotMatch(workflow, /workflow_run:|create:|repository_dispatch:/);
+});
+
+test("publish workflow uses one lightweight integrity gate", async () => {
+  const workflow = await Bun.file(publishPath).text();
+  const integrity = jobBlock(workflow, "integrity", "native-artifacts");
+  assert.equal([...workflow.matchAll(/^  integrity:$/gmu)].length, 1);
+  assert.match(integrity, /ref: \$\{\{ env\.RELEASE_TAG \}\}/);
+  assert.match(integrity, /packages\/coding-agent\/package\.json/);
+  assert.match(integrity, /Package version \$version does not match tag \$RELEASE_TAG/);
+  assert.match(integrity, /subject.*git show -s --format=%s/);
+  assert.match(integrity, /Release \$RELEASE_TAG/);
+  assert.doesNotMatch(integrity, /Release-base-|merge-base|workflow_ref|workflow_sha|git archive|bump-version|generate-coding-agent-shrinkwrap/iu);
+});
+
+test("publish graph stages a draft before npm and undrafts last", async () => {
+  const workflow = await Bun.file(publishPath).text();
+  for (const job of ["integrity", "native-artifacts", "linux-binary-smoke", "windows-binary-smoke", "build", "stage-github-release", "publish-npm", "publish-github-release", "cleanup-draft-github-release"]) {
+    assert.match(workflow, new RegExp(`^  ${job}:$`, "mu"));
+  }
+  assert.match(jobBlock(workflow, "build", "stage-github-release"), /needs: \[integrity, native-artifacts, linux-binary-smoke, windows-binary-smoke\]/);
+  const stage = jobBlock(workflow, "stage-github-release", "publish-npm");
+  assert.match(stage, /needs: \[integrity, build\]/);
+  assert.match(stage, /already published.*Refusing to mutate[\s\S]*--verify-tag --draft/s);
+  assert.match(jobBlock(workflow, "publish-npm", "publish-github-release"), /needs: \[integrity, stage-github-release\]/);
+  assert.match(jobBlock(workflow, "publish-github-release", "cleanup-draft-github-release"), /needs: \[stage-github-release, publish-npm\][\s\S]*--draft=false/);
+  assert.match(jobBlock(workflow, "cleanup-draft-github-release"), /always\(\).*needs\.stage-github-release\.result != 'skipped'.*needs\.publish-npm\.result != 'success'/);
+});
+
+test("publish permissions, timeouts, runners, and OIDC are least privilege", async () => {
+  const workflow = await Bun.file(publishPath).text();
+  assert.match(workflow.slice(0, workflow.indexOf("jobs:")), /permissions:\s*\n\s*contents: read/);
+  const npm = jobBlock(workflow, "publish-npm", "publish-github-release");
+  assert.match(npm, /environment: npm-publish/);
+  assert.match(npm, /permissions:\s*\n\s*contents: read\s*\n\s*id-token: write/);
+  assert.doesNotMatch(npm, /contents: write/);
+  assert.match(npm, /npm publish .*--provenance.*--tag "\$NPM_TAG"/);
+  assert.match(npm, /npm view .*@\$VERSION.*already exists; skipping/s);
+  for (const writeJob of [jobBlock(workflow, "stage-github-release", "publish-npm"), jobBlock(workflow, "publish-github-release", "cleanup-draft-github-release"), jobBlock(workflow, "cleanup-draft-github-release")]) {
+    assert.match(writeJob, /contents: write/);
+    assert.match(writeJob, /GH_REPO: \$\{\{ github\.repository \}\}/);
+    assert.doesNotMatch(writeJob, /id-token: write|npm publish/);
+  }
+  assert.equal([...workflow.matchAll(/^    timeout-minutes:/gmu)].length, 9);
+  assert.match(workflow, /blacksmith-4vcpu-ubuntu-2404-arm/);
+  assert.match(workflow, /macos-26-intel/);
+  assert.match(workflow, /blacksmith-6vcpu-macos-26/);
+  assert.match(workflow, /blacksmith-4vcpu-windows-2025/);
+});
+
+test("native release matrix pins all shipped targets and the Linux glibc floor", async () => {
+  const workflow = await Bun.file(publishPath).text();
+  const native = jobBlock(workflow, "native-artifacts", "linux-binary-smoke");
+  for (const target of [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+  ]) assert.match(native, new RegExp(target));
+  assert.match(workflow.slice(0, workflow.indexOf("jobs:")), /GLIBC_FLOOR: "2\.17"/);
+  assert.match(native, /build_target="\$\{BARE_TARGET\}\.\$\{GLIBC_FLOOR\}"/);
+  assert.match(native, /toolchain: 1\.97\.0/);
+  assert.match(workflow.slice(0, workflow.indexOf("jobs:")), /RUSTUP_TOOLCHAIN: "1\.97\.0"/);
+  assert.match(native, /NATIVE_TARGET: \$\{\{ matrix\.platform == 'darwin' && matrix\.target \|\| '' \}\}/);
+  assert.match(native, /CROSS_TARGET: \$\{\{ matrix\.platform != 'darwin'/);
+  assert.match(native, /cargo-zigbuild/);
+  assert.match(native, /RUSTFLAGS=-C target-cpu=x86-64-v2/);
+  assert.match(native, /fail-fast: false/);
+  assert.match(native, /name: atomic-natives-\$\{\{ matrix\.platform \}\}-\$\{\{ matrix\.arch \}\}/);
+  assert.match(native, /macos-26-intel/);
+  assert.match(native, /blacksmith-6vcpu-macos-26/);
+  assert.doesNotMatch(native, /run-id:|github-token:|artifact_lookup|cache/iu);
+});
+
+test("release build retains Atomic native, smoke, shrinkwrap, metadata, and asset contracts", async () => {
+  const workflow = await Bun.file(publishPath).text();
+  assert.match(workflow, /"win32-arm64-msvc"/);
+  assert.match(workflow, /atomic-windows-arm64\.zip/);
+  assert.match(workflow, /bun run check:shrinkwrap/);
+  assert.match(workflow, /Build Linux x64 archive[\s\S]*--platform linux-x64/);
+  assert.match(workflow, /Build Windows x64 archive[\s\S]*--platform windows-x64/);
+  assert.match(workflow, /Failed to load extension/);
+  assert.match(workflow, /native optionalDependencies must be the six exact-version platform packages/);
+  assert.match(workflow, /test .* = 8/);
+  assert.doesNotMatch(workflow, /Release-base-ref|Release-base-sha|RELEASE_BASE_REFS|deterministic release tree|create-event binding/iu);
+});
+
+test("obsolete release workflow files and publisher-only verifiers are absent", () => {
+  for (const path of [
+    ".github/workflows/publish" + "-tag-created.yml",
+    ".github/workflows/publish" + "-release.yml",
+    "scripts/verify" + "-publish-context.ts",
+    "scripts/verify" + "-release-integrity.ts",
+  ]) assert.equal(existsSync(join(root, path)), false, path);
+});
+
+
+test("developer release setup documents only the direct publish workflow", async () => {
+  const setup = await Bun.file(join(root, "DEV_SETUP.md")).text();
+  assert.match(setup, /tag push starts `\.github\/workflows\/publish\.yml` directly/u);
+  assert.match(setup, /trusted publishers with workflow filename `publish\.yml` and environment `npm-publish`/u);
+  for (const forbidden of [
+    "publish" + "-tag-created.yml",
+    "publish" + "-release.yml",
+    "RELEASE" + "_BASE_REFS",
+    "NPM" + "_TOKEN",
+    "NODE" + "_AUTH_TOKEN",
+  ]) assert.equal(setup.includes(forbidden), false, forbidden);
+});
+test("release-base metadata remains available to the versionless cut flow", () => {
   const sha = "0123456789abcdef0123456789abcdef01234567";
   assert.equal(canonicalReleaseBaseRef("main"), "refs/heads/main");
-  assert.equal(canonicalReleaseBaseRef("release/workstream-1"), "refs/heads/release/workstream-1");
   assert.equal(validateCanonicalReleaseBaseRef("refs/heads/release/workstream-1"), "refs/heads/release/workstream-1");
   for (const newline of ["\n", "\r\n"]) {
-    const message = `Release 1.2.3${newline}${newline}Release-base-ref: refs/heads/release/workstream-1${newline}Release-base-sha: ${sha}${newline}`;
-    assert.deepEqual(parseReleaseBaseTrailers(message), { baseRef: "refs/heads/release/workstream-1", baseSha: sha });
+    const message = `Release 1.2.3${newline}${newline}Release-base-ref: refs/heads/main${newline}Release-base-sha: ${sha}${newline}`;
+    assert.deepEqual(parseReleaseBaseTrailers(message), { baseRef: "refs/heads/main", baseSha: sha });
   }
 });
 
-test("release-base metadata rejects aliases, injection, duplicates, and normalization", () => {
-  for (const ref of ["origin/main", "refs/heads/main", " main", "main ", "main\tother", "main:evil", "main^{}", "../main", "main.lock", "main\nother"]) {
-    assert.throws(() => canonicalReleaseBaseRef(ref), /canonical remote branch name/u);
-  }
-  for (const ref of ["main", "refs/tags/main", "refs/heads/../main", "refs/heads/main:evil", "refs/heads/main.lock"]) {
-    assert.throws(() => validateCanonicalReleaseBaseRef(ref), /canonical refs\/heads/u);
-  }
-  const sha = "0123456789abcdef0123456789abcdef01234567";
-  const valid = `Release 1.2.3\n\nRelease-base-ref: refs/heads/main\nRelease-base-sha: ${sha}\n`;
-  for (const message of [
-    "Release 1.2.3\n",
-    `${valid}Release-base-ref: refs/heads/main\n`,
-    valid.replace(sha, "ABCDEF"),
-    valid.replace("refs/heads/main", " refs/heads/main"),
-    valid.replace(`Release-base-sha: ${sha}`, `Release-base-sha:${sha}`),
-    valid.replace(sha, `${sha} `),
-  ]) {
-    assert.throws(() => parseReleaseBaseTrailers(message), /release base trailer/iu);
-  }
-});
-
-test("the inert tag signal and protected publisher stay distinct and non-recursive", async () => {
-  const signal = await Bun.file(join(root, ".github/workflows/publish-tag-created.yml")).text();
-  const publish = await Bun.file(join(root, ".github/workflows/publish-release.yml")).text();
-  const executable = (source: string) => source.replace(/\r\n/gu, "\n").split("\n").filter((line) => !/^\s*#/u.test(line)).join("\n");
-  for (const source of [signal, publish]) {
-    const lf = source.replace(/\r\n/gu, "\n");
-    assert.equal(executable(lf.replace(/\n/gu, "\r\n")), executable(lf), "workflow contracts must be CRLF safe");
-  }
-
-  assert.match(executable(signal), /on:\n\s+create:/u);
-  assert.match(executable(signal), /permissions: \{\}/u);
-  assert.match(executable(signal), /REF_TYPE.*github\.ref_type/u);
-  assert.doesNotMatch(executable(signal), /uses:|checkout|id-token|contents: write|npm publish|upload-artifact/u);
-  assert.match(signal, /tag-sourced YAML[\s\S]*not a publication security boundary/u);
-
-  assert.match(publish, /name: Publish release/u);
-  assert.match(executable(publish), /workflow_run:\n\s+workflows: \["Publish tag created"\]\n\s+types: \[completed\]/u);
-  assert.doesNotMatch(publish, /workflows:.*(?:Publish release|"Publish")/u);
-  assert.match(publish, /permissions:\s*\r?\n\s*contents: read/u);
-  assert.doesNotMatch(publish.slice(0, publish.indexOf("jobs:")), /id-token: write|contents: write/u);
-  assert.match(publish, /ref: \$\{\{ github\.workflow_sha \}\}/u);
-  assert.match(publish, /RELEASE_TAG: \$\{\{ github\.event\.workflow_run\.head_branch \}\}/u);
-  assert.match(publish, /TRIGGER_SHA: \$\{\{ github\.event\.workflow_run\.head_sha \}\}/u);
-  for (const field of [
-    "PUBLISH_ACTION", "REPOSITORY_ID", "SIGNAL_EVENT", "SIGNAL_STATUS", "SIGNAL_CONCLUSION",
-    "SIGNAL_PATH", "SIGNAL_WORKFLOW_ID", "SIGNAL_RUN_ID", "SIGNAL_RUN_ATTEMPT",
-    "SIGNAL_REPOSITORY", "SIGNAL_REPOSITORY_ID", "SIGNAL_HEAD_REPOSITORY", "SIGNAL_HEAD_REPOSITORY_ID",
-  ]) assert.match(publish, new RegExp(`${field}: \\$\\{\\{ github\\.event`));
-  assert.match(publish, /PROTECTED_DEFAULT_REF: refs\/remotes\/atomic-publisher\/protected-default/u);
-  assert.match(publish, /bun scripts\/verify-publish-context\.ts/u);
-  assert.match(publish, /bun run scripts\/verify-release-integrity\.ts[\s\\\r\n]*--base-ref "\$fixed_base_ref"/u);
-  assert.match(publish, /release_sha.*TRIGGER_SHA/u);
-  assert.match(publish, /ALLOWED_RELEASE_BASE_REFS.*vars\.RELEASE_BASE_REFS/u);
-  assert.match(publish, /fixed_base_ref=refs\/remotes\/atomic-publisher\/release-base/u);
-  assert.match(publish, /merge-base --is-ancestor "\$release_base_sha" "\$fetched_base_sha"/u);
-  assert.match(publish, /--expected-base-ref "\$release_base_ref"/u);
-  assert.match(publish, /--expected-base-sha "\$release_base_sha"/u);
-  const checkoutSteps = [...publish.matchAll(/uses: (?:useblacksmith\/checkout|actions\/checkout)@/gu)];
-  assert.equal(checkoutSteps.length, 1, "only the integrity job may checkout source");
-  assert.doesNotMatch(publish, /ref: \$\{\{ needs\.release-integrity\.outputs\.sha \}\}/u);
-  assert.match(publish, /git archive --format=tar\.gz --output="\$source_archive" "\$release_sha"/u);
-  assert.match(publish, /source_checksum=.*sha256sum/u);
-  assert.match(publish, /name: verified-release-source-\$\{\{ steps\.release\.outputs\.sha \}\}/u);
-  assert.match(publish, /actual_checksum=.*Bun\.CryptoHasher\("sha256"\)/u);
-  assert.doesNotMatch(publish, /gh workflow run|--paginate|--watch|sleep [0-9]/u);
-
-  const prepare = publish.slice(publish.indexOf("    prepare-release:"), publish.indexOf("    publish-npm:"));
-  assert.doesNotMatch(prepare, /id-token: write|contents: write|npm publish/u);
-  assert.match(prepare, /prepublish:native -- --skip-optional-publish/u);
-  assert.match(prepare, /native_root_manifest=[\s\S]*tar -xOf[\s\S]*\.optionalDependencies \| length[\s\S]*dependency_version/u);
-  assert.match(prepare, /npm pack/u);
-  assert.match(prepare, /ARTIFACT-SHA256SUMS/u);
-  const npmJob = publish.slice(publish.indexOf("    publish-npm:"), publish.indexOf("    create-github-release:"));
-  assert.match(npmJob, /contents: read\s*\r?\n\s*id-token: write/u);
-  assert.match(npmJob, /environment: npm-publish/u);
-  assert.doesNotMatch(npmJob, /contents: write|checkout|bun install|mintlify|build-binaries/u);
-  assert.match(npmJob, /actions\/download-artifact@v8/u);
-  const docsValidation = prepare.indexOf("name: Mintlify docs validation");
-  const sourceRestore = prepare.indexOf("name: Restore trusted release source after docs validation");
-  const dependencyInstall = prepare.indexOf("name: Install dependencies");
-  const packageBuild = prepare.indexOf("name: Build @bastani/atomic package and binaries");
-  assert.ok(docsValidation >= 0 && docsValidation < sourceRestore, "docs validation must precede trusted source restoration");
-  assert.ok(sourceRestore < dependencyInstall && dependencyInstall < packageBuild, "artifacts must use the restored digest-bound source");
-  const restore = stepRunScript(prepare, "Restore trusted release source after docs validation");
-  assert.match(restore, /CryptoHasher\("sha256"\)[\s\S]*checksum mismatch after docs validation[\s\S]*tar -xzf -/u);
-  assert.match(npmJob, /actions\/setup-node@v6/u);
-  assert.match(npmJob, /allowed=\([\s\S]*@bastani\/atomic-natives[\s\S]*@bastani\/atomic/u);
-  assert.match(npmJob, /reconfirm_tag[\s\S]*npm publish/u);
-  assert.match(npmJob, /npm view "\$name@\$VERSION" dist\.integrity/u);
-  assert.match(npmJob, /local_integrity="sha512-/u);
-  assert.match(npmJob, /registry_integrity.*local_integrity/u);
-  assert.doesNotMatch(npmJob, /(?:source|\.)\s+release\.env|eval\s/u);
-  assert.match(npmJob, /printf 'RELEASE_TAG=%s\\nVERIFIED_SHA=%s\\nVERSION=%s\\nNPM_TAG=%s\\n'/u);
-  assert.match(npmJob, /cmp --silent "\$expected_metadata" release\.env/u);
-
-  const releaseJob = publish.slice(publish.indexOf("    create-github-release:"));
-  assert.match(releaseJob, /permissions:\s*\r?\n\s*contents: write/u);
-  assert.doesNotMatch(releaseJob, /id-token: write|npm publish|bun install|checkout/u);
-  assert.match(releaseJob, /softprops\/action-gh-release@v3/u);
-  assert.doesNotMatch(publish, /uses:\s+[^\s]+@[0-9a-f]{40}/u);
-  assert.match(publish, /atomic_natives\.win32-arm64-msvc\.node/u);
-  assert.match(publish, /atomic-windows-arm64\.zip/u);
-  assert.match(publish, /bun run check:shrinkwrap/u);
-});
-
-test("privileged publisher never executes a tag checkout or cache-derived release tree", async () => {
-  const publish = await Bun.file(join(root, ".github/workflows/publish-release.yml")).text();
-  const integrityStart = publish.indexOf("    release-integrity:");
-  const linuxStart = publish.indexOf("    linux-binary-smoke:");
-  const integrity = publish.slice(integrityStart, linuxStart);
-
-  const contextCheck = integrity.indexOf("bun scripts/verify-publish-context.ts");
-  const treeCheck = integrity.indexOf("bun run scripts/verify-release-integrity.ts");
-  const archive = integrity.indexOf("git archive --format=tar.gz");
-  const upload = integrity.indexOf("name: Upload verified release source");
-  assert.ok(contextCheck >= 0 && contextCheck < treeCheck, "context validation must precede tree validation");
-  assert.ok(treeCheck < archive && archive < upload, "only a verified tree may become source data");
-  assert.doesNotMatch(integrity, /git (?:checkout|switch)|worktree add|ref: \$\{\{ github\.event/u);
-
-  const jobNames = ["linux-binary-smoke", "windows-binary-smoke", "atomic-native-artifacts", "prepare-release"];
-  for (const [index, jobName] of jobNames.entries()) {
-    const start = publish.indexOf(`    ${jobName}:`);
-    const nextName = jobNames[index + 1];
-    const end = nextName ? publish.indexOf(`    ${nextName}:`) : publish.indexOf("    publish-npm:");
-    const job = publish.slice(start, end);
-    const extractStart = job.indexOf("- name: Verify and extract trusted release source");
-    const extractEnd = job.indexOf("\n            - ", extractStart + 1);
-    const extract = job.slice(extractStart, extractEnd);
-    const sourcePrefix = job.slice(0, extractStart);
-    const firstDownload = job.indexOf("id: download_verified_source");
-    const partialCleanup = job.indexOf("name: Clean partial verified source download");
-    const retry = job.indexOf("id: retry_download_verified_source");
-    const finalCleanup = job.indexOf("name: Clean failed verified source retry");
-    const explicitFailure = job.indexOf("name: Fail after verified source download retry");
-    assert.ok(firstDownload >= 0 && firstDownload < partialCleanup, `${jobName}: first failure must precede cleanup`);
-    assert.ok(partialCleanup < retry && retry < finalCleanup, `${jobName}: cleanup must precede the only retry`);
-    assert.ok(finalCleanup < explicitFailure && explicitFailure < extractStart, `${jobName}: final cleanup/failure must precede verification`);
-    assert.equal([...sourcePrefix.matchAll(/uses: actions\/download-artifact@v8/gu)].length, 2, `${jobName}: exactly two source download attempts`);
-    assert.equal([...sourcePrefix.matchAll(/continue-on-error: true/gu)].length, 2, `${jobName}: both attempts expose outcomes for cleanup`);
-    assert.match(sourcePrefix, /if: steps\.download_verified_source\.outcome == 'failure'[\s\S]*id: retry_download_verified_source/u, jobName);
-    assert.match(sourcePrefix, /if: steps\.retry_download_verified_source\.outcome == 'failure'[\s\S]*failed after two attempts/u, jobName);
-    assert.match(extract, /Bun\.CryptoHasher\("sha256"\)[\s\S]*source_checksum/u, jobName);
-    assert.match(extract, /actual_checksum[\s\S]*Verified release source checksum mismatch/u, jobName);
-    assert.doesNotMatch(extract, /sha256sum|shasum/u, jobName);
-    assert.match(extract, /tar -xzf - -C "\$RUNNER_TEMP\/verified-release" < "\$archive"/u, jobName);
-    assert.doesNotMatch(extract, /tar -xzf "\$archive"/u, jobName);
-    assert.doesNotMatch(job, /(?:useblacksmith\/checkout|actions\/checkout)@/u, jobName);
-    assert.doesNotMatch(job, /actions\/cache|setup-[^\s]+[\s\S]*cache:/u, jobName);
-  }
-
-  assert.match(publish, /path: \$\{\{ runner\.temp \}\}\/atomic-native-artifacts/u);
-  assert.match(publish, /cp "\$RUNNER_TEMP\/atomic-native-artifacts"\/\*\.node "\$RUNNER_TEMP\/verified-release\/packages\/natives\/native\/"/u);
-  assert.match(publish, /working-directory: \$\{\{ runner\.temp \}\}\/verified-release/u);
-});
-
-
-test("portable source extraction streams a drive-letter archive only after its digest matches", async () => {
-  const workflow = readFileSync(join(root, ".github/workflows/publish-release.yml"), "utf8");
-  const expectedPlaceholder = "${{ needs.release-integrity.outputs.source_checksum }}";
-  const scriptTemplate = stepRunScript(workflow, "Verify and extract trusted release source");
-  const stage = mkdtempSync(join(tmpdir(), "atomic-portable-extract-"));
-  try {
-    const payload = join(stage, "payload");
-    const download = join(stage, "verified-release-source");
-    const bin = join(stage, "bin");
-    mkdirSync(payload);
-    mkdirSync(download);
-    mkdirSync(bin);
-    writeFileSync(join(payload, "proof.txt"), "portable extraction\n");
-    const create = await $`tar -czf fixture.tar.gz -C payload .`.cwd(stage).nothrow().quiet();
-    assert.equal(create.exitCode, 0, create.stderr.toString());
-    const archive = join(download, "verified-release-source.tar.gz");
-    copyFileSync(join(stage, "fixture.tar.gz"), archive);
-    const checksum = new Bun.CryptoHasher("sha256").update(await Bun.file(archive).arrayBuffer()).digest("hex");
-
-    const realTar = (await $`which tar`.text()).trim();
-    const argsFile = join(stage, "tar-args.txt");
-    const fakeTar = join(bin, "tar");
-    writeFileSync(fakeTar, `#!/usr/bin/env bash\nprintf '%s\\n' "$*" > "$TAR_ARGS_FILE"\n[[ " $* " == *" - "* ]] || { echo 'archive path was passed as a tar operand' >&2; exit 97; }\nexec "$REAL_TAR" "$@"\n`);
-    chmodSync(fakeTar, 0o755);
-
-    const script = scriptTemplate.replace(expectedPlaceholder, checksum);
-    const result = Bun.spawnSync(["bash", "-c", script], {
-      env: { ...process.env, RUNNER_TEMP: stage, REAL_TAR: realTar, TAR_ARGS_FILE: argsFile, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    assert.equal(result.exitCode, 0, result.stderr.toString());
-    assert.equal(readFileSync(join(stage, "verified-release", "proof.txt"), "utf8"), "portable extraction\n");
-    assert.match(readFileSync(argsFile, "utf8"), /^-xzf - -C /u);
-
-    writeFileSync(join(stage, "verified-release", "sentinel"), "unchanged");
-    const mismatch = Bun.spawnSync(["bash", "-c", scriptTemplate.replace(expectedPlaceholder, "0".repeat(64))], {
-      env: { ...process.env, RUNNER_TEMP: stage, REAL_TAR: realTar, TAR_ARGS_FILE: argsFile, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    assert.notEqual(mismatch.exitCode, 0);
-    assert.equal(readFileSync(join(stage, "verified-release", "sentinel"), "utf8"), "unchanged");
-  } finally {
-    rmSync(stage, { recursive: true, force: true });
-  }
-});
-
-test("every same-run artifact consumer has one cleanup-bounded retry and explicit terminal failure", async () => {
-  const publish = await Bun.file(join(root, ".github/workflows/publish-release.yml")).text();
-  assert.equal([...publish.matchAll(/id: download_verified_source/gu)].length, 4);
-  assert.equal([...publish.matchAll(/id: retry_download_verified_source/gu)].length, 4);
-  assert.equal([...publish.matchAll(/id: download_native_artifacts/gu)].length, 1);
-  assert.equal([...publish.matchAll(/id: retry_download_native_artifacts/gu)].length, 1);
-  assert.equal([...publish.matchAll(/id: download_prepared_release/gu)].length, 2);
-  assert.equal([...publish.matchAll(/id: retry_download_prepared_release/gu)].length, 2);
-  assert.equal([...publish.matchAll(/uses: actions\/download-artifact@/gu)].length, 14);
-  assert.equal([...publish.matchAll(/failed after two attempts\./gu)].length, 7);
-  assert.equal([...publish.matchAll(/name: Clean (?:partial|failed)/gu)].length, 14);
-});
-test("publish-release preserves the selectable base_ref input", async () => {
-  const workflow = await Bun.file(join(root, ".atomic/workflows/publish-release.ts")).text();
-  assert.match(workflow, /base_ref: Type\.String\(\{[\s\S]*?default: "main"/);
-  assert.match(workflow, /const requestedBaseRef = ctx\.inputs\.base_ref\.length === 0 \? "main" : ctx\.inputs\.base_ref/);
-  assert.match(workflow, /releaseBaseRef = canonicalReleaseBaseRef\(requestedBaseRef\)/);
-  assert.match(workflow, /cut-release\.ts \$\{release\.version\} --base \$\{baseRef\}/);
-});
-
-test("release-base workflow contracts are LF and CRLF safe", async () => {
-  const lf = (await Bun.file(join(root, ".github/workflows/publish-release.yml")).text()).replace(/\r\n/gu, "\n");
-  for (const workflow of [lf, lf.replace(/\n/gu, "\r\n")]) {
-    assert.match(workflow, /release_base_ref=.*Release-base-ref[^\r\n]*\r?\n/);
-    assert.match(workflow, /release_base_sha=.*Release-base-sha[^\r\n]*\r?\n/);
-    assert.match(workflow, /fixed_base_ref=refs\/remotes\/atomic-publisher\/release-base\r?\n/);
-    assert.match(workflow, /--expected-base-ref "\$release_base_ref" \\\r?\n/);
-  }
-});
-
-test("cut-release records canonical immutable release-base trailers without waiting", async () => {
+test("cut-release still creates the detached version-stamped tag", async () => {
   const script = await Bun.file(join(root, "scripts/cut-release.ts")).text();
   assert.match(script, /canonicalReleaseBaseRef\(baseBranch\)/);
-  assert.match(script, /ls-remote --exit-code --refs origin \$\{baseRef\}/);
-  assert.match(script, /--base requires a canonical remote branch name/);
   assert.match(script, /Release-base-ref: \$\{baseRef\}\\nRelease-base-sha: \$\{baseSha\}/);
-  assert.doesNotMatch(script, /Bun\.sleep|setTimeout|--no-gpg-sign/);
-  assert.match(script, /commit --no-verify/);
+  assert.match(script, /git -C \$\{ROOT\} push origin \$\{version\}/);
+  assert.doesNotMatch(script, /Bun\.sleep|setTimeout/);
 });
-
-// This process-heavy contract invokes the verifier through temporary Git
-// worktrees; native Windows Git can exceed Bun's 5s default test timeout.
-test("release verifier supports legacy local checks and publisher-bound workstreams", async () => {
-  const tag = "0.9.7-alpha.1";
-  const integrityWorktrees = async () => (await $`git worktree list --porcelain`.cwd(root).text())
-    .split(/\r?\n/u)
-    .filter((line) => line.startsWith("worktree ") && line.includes("atomic-release-integrity-")).length;
-  const worktreesBefore = await integrityWorktrees();
-  const legacy = await $`bun run scripts/verify-release-integrity.ts --base-ref origin/main --release-commit ${tag}`.cwd(root).nothrow().quiet();
-  assert.equal(legacy.exitCode, 0, legacy.stderr.toString());
-
-  const temp = mkdtempSync(join(tmpdir(), "atomic-forged-release-"));
-  const index = join(temp, "index");
-  try {
-    const tree = (await $`git show -s --format=%T ${tag}`.cwd(root).text()).trim();
-    const parent = (await $`git show -s --format=%P ${tag}`.cwd(root).text()).trim();
-    const trailerMessage = `Release ${tag}\n\nRelease-base-ref: refs/heads/main\nRelease-base-sha: ${parent}\n`;
-    const withTrailers = (await $`printf ${trailerMessage} | git commit-tree ${tree} -p ${parent}`.cwd(root).env({ ...process.env, GIT_AUTHOR_NAME: "test", GIT_AUTHOR_EMAIL: "test@example.com", GIT_COMMITTER_NAME: "test", GIT_COMMITTER_EMAIL: "test@example.com" }).text()).trim();
-    const valid = await $`bun run scripts/verify-release-integrity.ts --base-ref origin/main --release-commit ${withTrailers} --expected-base-ref refs/heads/main --expected-base-sha ${parent}`.cwd(root).nothrow().quiet();
-    assert.equal(valid.exitCode, 0, valid.stderr.toString());
-
-    const workstreamMessage = trailerMessage.replace("refs/heads/main", "refs/heads/release/workstream-a");
-    const workstream = (await $`printf ${workstreamMessage} | git commit-tree ${tree} -p ${parent}`.cwd(root).env({ ...process.env, GIT_AUTHOR_NAME: "test", GIT_AUTHOR_EMAIL: "test@example.com", GIT_COMMITTER_NAME: "test", GIT_COMMITTER_EMAIL: "test@example.com" }).text()).trim();
-    const workstreamResult = await $`bun run scripts/verify-release-integrity.ts --base-ref origin/main --release-commit ${workstream} --expected-base-ref refs/heads/release/workstream-a --expected-base-sha ${parent}`.cwd(root).nothrow().quiet();
-    assert.equal(workstreamResult.exitCode, 0, workstreamResult.stderr.toString());
-
-    const mismatch = await $`bun run scripts/verify-release-integrity.ts --base-ref origin/main --release-commit ${withTrailers} --expected-base-ref refs/heads/workstream --expected-base-sha ${parent}`.cwd(root).nothrow().quiet();
-    assert.notEqual(mismatch.exitCode, 0);
-    assert.match(mismatch.stderr.toString(), /does not match expected refs\/heads\/workstream/);
-
-    await $`git read-tree ${tree}`.cwd(root).env({ ...process.env, GIT_INDEX_FILE: index }).quiet();
-    const blob = (await $`printf 'forged\\n' | git hash-object -w --stdin`.cwd(root).text()).trim();
-    await $`git update-index --add --cacheinfo 100644,${blob},FORGED_RELEASE_FILE`.cwd(root).env({ ...process.env, GIT_INDEX_FILE: index }).quiet();
-    const forgedTree = (await $`git write-tree`.cwd(root).env({ ...process.env, GIT_INDEX_FILE: index }).text()).trim();
-    const forged = (await $`printf ${trailerMessage} | git commit-tree ${forgedTree} -p ${parent}`.cwd(root).env({ ...process.env, GIT_AUTHOR_NAME: "test", GIT_AUTHOR_EMAIL: "test@example.com", GIT_COMMITTER_NAME: "test", GIT_COMMITTER_EMAIL: "test@example.com" }).text()).trim();
-    const forgedResult = await $`bun run scripts/verify-release-integrity.ts --base-ref origin/main --release-commit ${forged} --expected-base-ref refs/heads/main --expected-base-sha ${parent}`.cwd(root).nothrow().quiet();
-    assert.notEqual(forgedResult.exitCode, 0);
-    assert.match(forgedResult.stderr.toString(), /does not match deterministic version\/shrinkwrap output/);
-    assert.equal(await integrityWorktrees(), worktreesBefore, "failed verification must clean up its temporary worktree registration");
-  } finally {
-    rmSync(temp, { recursive: true, force: true });
-  }
-}, 30_000);

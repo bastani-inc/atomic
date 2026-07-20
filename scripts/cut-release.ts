@@ -20,9 +20,8 @@
  *   5. commit `Release <version>` and tag `<version>` inside the worktree
  *   6. remove the worktree — the tag (and its commit) persist in the repo
  *
- * The tag-sourced workflow only emits an inert completion signal. Protected
- * main's publish-release.yml then verifies this tagged tree as data and exports
- * a checksummed source archive, so builds never checkout a tag-selected ref.
+ * Pushing the version tag directly starts publish.yml, which verifies the tag
+ * commit identity before building and publishing the release.
  *
  * Usage:
  *   bun run scripts/cut-release.ts <version> [--base <ref>] [--push] [--yes]

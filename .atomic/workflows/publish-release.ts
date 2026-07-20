@@ -61,8 +61,8 @@ function releaseFacts(release: ValidatedRelease, baseRef: string): string {
     `Release base: ${baseRef}`,
     "The release base is versionless: package manifests, lockfiles, Cargo files, and generated version files remain at 0.0.0.",
     "Only scripts/cut-release.ts may stamp the real version on the detached Release commit after the changelog PR merges.",
-    "Pushing the version tag starts the inert Publish tag created signal; its successful completion starts protected-main publish-release.yml through workflow_run. Never dispatch the publisher manually.",
-    "Use Bun for development commands. Do not watch, sleep, poll, force-push, force a tag, rerun a release signal during a normal release, or launch a duplicate release workflow.",
+    "Pushing the version tag directly starts publish.yml. Do not dispatch a duplicate normal publication run.",
+    "Use Bun for development commands. Do not watch, sleep, poll, force-push, force a tag, rerun publication during a normal release, or launch a duplicate release workflow.",
   ].join("\n");
 }
 
@@ -258,7 +258,7 @@ export default workflow({
         facts,
         `Verified synchronized base SHA: ${synchronized.base_sha}`,
         `Run exactly: bun run scripts/cut-release.ts ${release.version} --base ${baseRef} --push --yes`,
-        "Do not run scripts/bump-version.ts directly, move the base branch, force a tag, or dispatch publish-release.yml.",
+        "Do not run scripts/bump-version.ts directly, move the base branch, force a tag, or dispatch publish.yml for a normal release.",
         "Verify the exact remote tag resolves to the resulting release commit, whose sole parent/base trailer matches the synchronized base and whose package version matches the tag.",
         "Return the exact 40-character release_sha. If a conflicting tag exists, return blocked instead of moving it.",
       ].join("\n\n"),
@@ -272,9 +272,9 @@ export default workflow({
       `Inspect the automatically triggered protected Publish ${release.version} GitHub Actions run exactly once (attempt ${attempt}).`,
       facts,
       `Expected release SHA: ${released.release_sha}`,
-      "Use gh run list/view without --watch. First identify the successful create-event publish-tag-created.yml signal for the exact tag/SHA, then select only the workflow_run-event publish-release.yml run whose triggering workflow_run ID is that signal run.",
-      "Require repository bastani-inc/atomic, the exact signal and protected publisher workflow paths, matching tag and SHA, and the expected signal-to-publisher relationship. Return pending when either exact run is absent, queued, or active. Return failed for identity mismatch, command/auth failure, or a completed non-success conclusion.",
-      "Return passed only when the exact protected publish action completed successfully. Include its URL as evidence_url.",
+      "Use gh run list/view without --watch and select the push-event publish.yml run for the exact tag and release SHA.",
+      "Require repository bastani-inc/atomic, the exact publish workflow path, matching tag, SHA, and push event. Return pending when the exact run is absent, queued, or active. Return failed for identity mismatch, command/auth failure, or a completed non-success conclusion.",
+      "Return passed only when the exact publish action completed successfully. Include its URL as evidence_url.",
       "Do not dispatch, rerun, watch, sleep, poll, tag, publish packages, or create a GitHub Release manually.",
     ].join("\n\n"));
 

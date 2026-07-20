@@ -284,7 +284,7 @@ Examples import the workspace package `@bastani/workflows`.
 
 ## Releasing
 
-Atomic uses a **versionless release-base** flow: `main` and supported workstreams stay at the `0.0.0` placeholder, while the real version is materialized only on a throwaway `Release <version>` commit whose parent is the selected exact remote branch SHA. Pushing the `<version>` tag (no leading `v`, for example `0.8.24` or `0.8.24-alpha.1`) starts an inert tag signal; a separate protected-main `workflow_run` publisher validates the source identity and immutable release metadata, cross-compiles binaries, publishes to npm with OIDC provenance, and creates the GitHub Release with binaries attached. See [Release Pipeline](./docs/ci.md#release-pipeline) for the authoritative security, recovery, and allowlist details.
+Atomic uses a **versionless release-base** flow: `main` and supported workstreams stay at the `0.0.0` placeholder, while the real version is materialized only on a throwaway `Release <version>` commit whose parent is the selected exact remote branch SHA. Pushing the `<version>` tag (no leading `v`, for example `0.8.24` or `0.8.24-alpha.1`) directly starts `.github/workflows/publish.yml`. Its lightweight integrity job checks the tag/package version and `Release <version>` subject before same-run native and archive builds, draft GitHub Release staging, OIDC npm publication, and final undrafting. See [Direct release trigger and recovery](./docs/ci.md#direct-release-trigger-and-recovery).
 
 ### Workflow
 
@@ -293,12 +293,12 @@ Atomic uses a **versionless release-base** flow: `main` and supported workstream
     ```sh
     bun run scripts/cut-release.ts <version> --base main --push
     ```
-    The selected branch is never advanced; the script does the stamp in a detached git worktree and abandons it (the tag keeps the commit alive). Omit `--push` to inspect the tag locally first, then `git push origin <version>`. Non-main bases must be configured as exact canonical refs in `RELEASE_BASE_REFS` as documented in [Release base allowlist](./docs/ci.md#release-base-allowlist).
-3. The tag push starts `.github/workflows/publish-tag-created.yml`, whose completed run signals protected-main `.github/workflows/publish-release.yml`. It validates exact source and release invariants, prepares checksummed artifacts read-only, publishes npm tarballs in an OIDC-only job, and creates the GitHub Release in a separate repository-write-only job. npm trusted publishers must name `publish-release.yml` and environment `npm-publish`.
+    The selected branch is never advanced; the script does the stamp in a detached git worktree and abandons it (the tag keeps the commit alive). Omit `--push` to inspect the tag locally first, then `git push origin <version>`. A non-main base must be protected with the repository's required CI checks before it is used.
+3. The tag push starts `.github/workflows/publish.yml` directly. It validates the tag identity, rebuilds all native bindings and release archives, stages a verified draft GitHub Release, publishes npm packages through OIDC, and undrafts the GitHub Release only after npm succeeds. Configure npm trusted publishers with workflow filename `publish.yml` and environment `npm-publish`.
 
 To run the full guarded automation (release-notes PR + cut-release + publish monitoring), use the `publish-release` Atomic workflow instead of the manual steps above.
 
-Bun is the development/test/runtime path. **npm is still the registry publication tool** because npm's provenance flow signs the published tarball via OIDC. Provenance is enabled in CI; no `NPM_TOKEN` is needed.
+Bun is the development/test/runtime path. **npm is still the registry publication tool** because npm's provenance flow signs the published tarball via OIDC. CI uses trusted publishing without a static npm credential.
 
 ---
 
