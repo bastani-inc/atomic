@@ -45,6 +45,24 @@ async function artifactText(path: string, fallback: string): Promise<string> {
   try { return await readFile(path, "utf8"); } catch { return fallback; }
 }
 
+/**
+ * Resolve a low-confidence or unlisted classification. Interactive runs ask the
+ * user; headless/non-interactive runs (where ctx.ui rejects) deterministically
+ * fall back to the exact proposed category when it is listed, else the first
+ * configured category, so the workflow still produces its declared outputs.
+ */
+async function resolveFallbackCategory(
+  ctx: WorkflowRunContext<Inputs>,
+  exactCategory: string | undefined,
+): Promise<{ category: string; fallbackMode: "interactive_select" | "deterministic" }> {
+  try {
+    const category = await ctx.ui.select("Classification is uncertain. Choose the action category.", ctx.inputs.categories);
+    return { category, fallbackMode: "interactive_select" };
+  } catch {
+    return { category: exactCategory ?? ctx.inputs.categories[0]!, fallbackMode: "deterministic" };
+  }
+}
+
 export async function runClassifyAndAct(ctx: WorkflowRunContext<Inputs>): Promise<ClassifyAndActResult> {
   const cwd = ctx.cwd ?? process.cwd();
   const artifactDir = join(cwd, ".atomic", "workflows", "runs", `classify-and-act-${randomUUID()}`);
@@ -66,9 +84,8 @@ export async function runClassifyAndAct(ctx: WorkflowRunContext<Inputs>): Promis
     ? String(value.rationale) : "Classifier did not provide a usable structured rationale.";
   const exactCategory = ctx.inputs.categories.find((category) => category === proposedCategory);
   const needsFallback = exactCategory === undefined || confidence < ctx.inputs.confidence_threshold;
-  const category = needsFallback
-    ? await ctx.ui.select("Classification is uncertain. Choose the action category.", ctx.inputs.categories)
-    : exactCategory;
+  const fallback = needsFallback ? await resolveFallbackCategory(ctx, exactCategory) : undefined;
+  const category = fallback?.category ?? exactCategory!;
 
   const classificationPath = join(artifactDir, "classification.json");
   await writeFile(classificationPath, JSON.stringify({
@@ -78,6 +95,7 @@ export async function runClassifyAndAct(ctx: WorkflowRunContext<Inputs>): Promis
     threshold: ctx.inputs.confidence_threshold,
     rationale,
     fallback_used: needsFallback,
+    fallback_mode: fallback?.fallbackMode ?? "none",
   }, null, 2));
 
   const actionPath = join(artifactDir, `action-${safeName(category)}.md`);

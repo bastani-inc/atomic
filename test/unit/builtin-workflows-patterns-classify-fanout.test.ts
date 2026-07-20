@@ -58,6 +58,47 @@ describe("classify-and-act builtin", () => {
     assert.equal(classification.fallback_used, true);
     assert.equal(result.category, "analysis");
   });
+
+  test("falls back deterministically when the fallback select rejects in headless mode", async () => {
+    const { default: definition } = await import("../../packages/workflows/builtin/classify-and-act.js");
+    const ctx = makeMockCtx({
+      prompt: "Investigate and maybe change the parser",
+      categories: ["analysis", "implementation"],
+      confidence_threshold: 0.8,
+    }, {
+      task: (name) => name === "classifier"
+        ? JSON.stringify({ category: "implementation", confidence: 0.4, rationale: "ambiguous" })
+        : undefined,
+    });
+    ctx.cwd = tempCwd();
+    ctx.ui.select = async () => {
+      throw new Error("workflow UI is unavailable in non-interactive mode");
+    };
+    const result = await definition.run(ctx);
+    // Proposed category is listed, so the deterministic fallback keeps it.
+    assert.equal(result.category, "implementation");
+    assert.deepEqual(ctx.calls.task, ["classifier", "action-implementation"]);
+    const classification = JSON.parse(readFileSync(result.classification_path, "utf8"));
+    assert.equal(classification.fallback_used, true);
+    assert.equal(classification.fallback_mode, "deterministic");
+
+    // Unlisted proposed category degrades to the first configured category.
+    const unlisted = makeMockCtx({
+      prompt: "Investigate and maybe change the parser",
+      categories: ["analysis", "implementation"],
+      confidence_threshold: 0.8,
+    }, {
+      task: (name) => name === "classifier"
+        ? JSON.stringify({ category: "unrelated", confidence: 0.95, rationale: "off-list" })
+        : undefined,
+    });
+    unlisted.cwd = tempCwd();
+    unlisted.ui.select = async () => {
+      throw new Error("workflow UI is unavailable in non-interactive mode");
+    };
+    const unlistedResult = await definition.run(unlisted);
+    assert.equal(unlistedResult.category, "analysis");
+  });
 });
 
 describe("fan-out-and-synthesize builtin", () => {
