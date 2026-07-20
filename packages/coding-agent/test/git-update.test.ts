@@ -13,12 +13,16 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DefaultPackageManager } from "../src/core/package-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { createGitEnvironment } from "../src/utils/git-env.ts";
 
-// Helper to run git commands in a directory
+// Helper to run git commands in a directory. Scrub repository-local Git env so
+// runs under commit/push hooks (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE) cannot
+// redirect fixture git commands at the invoking repository.
 function git(args: string[], cwd: string): string {
 	const result = spawnSync("git", args, {
 		cwd,
 		encoding: "utf-8",
+		env: createGitEnvironment(),
 	});
 	if (result.status !== 0) {
 		throw new Error(`Command failed: git ${args.join(" ")}\n${result.stderr}`);
