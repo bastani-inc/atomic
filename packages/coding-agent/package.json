@@ -132,7 +132,7 @@
     "@typescript/native-preview": "7.0.0-dev.20260707.2",
     "shx": "0.4.0",
     "typescript": "7.0.2",
-    "vitest": "4.1.9"
+    "vitest": "4.1.10"
   },
   "keywords": [
     "coding-agent",
