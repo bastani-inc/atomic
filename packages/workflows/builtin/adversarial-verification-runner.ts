@@ -1,8 +1,9 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Type, type Static } from "typebox";
 import type { WorkflowRunContext, WorkflowSerializableValue } from "../src/shared/types.js";
 import { renderReducerPrompt, renderRepairPrompt, renderVerifierPrompt, renderWorkerPrompt } from "./adversarial-verification-prompts.js";
+import { stableArtifactRoot } from "./pattern-artifact-root.js";
 
 const verifierSchema = Type.Object({
   verdict: Type.Union([Type.Literal("pass"), Type.Literal("fail")]),
@@ -43,8 +44,7 @@ function isReducer(value: WorkflowSerializableValue): value is ReducerDecision {
 }
 
 export async function runAdversarialVerification(ctx: WorkflowRunContext<Inputs>): Promise<AdversarialVerificationResult> {
-  const root = join(ctx.cwd ?? process.cwd(), ".atomic", "workflows", "runs", `adversarial-verification-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`);
-  await mkdir(root, { recursive: true });
+  const root = await stableArtifactRoot(ctx, "adversarial-verification");
   const rubricPath = join(root, "rubric.md");
   const candidatePath = join(root, "candidate.md");
   await writeFile(rubricPath, ["# Verification rubric", "- The candidate satisfies the literal task.", "- Important claims cite observable evidence.", "- Relevant validation is executed and reported.", "- No blocking correctness, safety, or completeness gap remains."].join("\n"));

@@ -137,4 +137,22 @@ describe("fan-out-and-synthesize builtin", () => {
     assert.match(ctx.calls.prompts.synthesize[0], /conflict/i);
     assert.match(ctx.calls.prompts.synthesize[0], /cite/i);
   });
+
+  test("derives its artifact root through ctx.tool so durable resume replays the original directory", async () => {
+    const { default: definition } = await import("../../packages/workflows/builtin/fan-out-and-synthesize.js");
+    const replayedRoot = join(tempCwd(), "replayed-artifact-root");
+    const ctx = makeMockCtx({ prompt: "Audit the subsystem", max_branches: 2, max_concurrency: 2 }, {
+      task: (name) => name === "partition"
+        ? JSON.stringify({ partitions: [{ label: "runtime", objective: "Inspect runtime behavior" }] })
+        : undefined,
+      // Simulate a resumed run whose durable backend replays the cached root.
+      tool: (name) => name === "artifact-root" ? replayedRoot : undefined,
+    });
+    ctx.cwd = tempCwd();
+    const result = await definition.run(ctx);
+    assert.deepEqual(ctx.calls.tool, ["artifact-root"]);
+    assert.equal(result.artifact_dir, replayedRoot);
+    assert.ok(result.manifest_path.startsWith(replayedRoot));
+    assert.ok(result.branch_artifact_paths.every((path) => path.startsWith(replayedRoot)));
+  });
 });

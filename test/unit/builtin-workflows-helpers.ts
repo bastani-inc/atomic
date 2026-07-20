@@ -19,6 +19,7 @@ import type {
     WorkflowTaskOptions,
     WorkflowTaskResult,
     WorkflowTaskStep,
+    WorkflowSerializableValue,
     WorkflowUIContext,
 } from "../../packages/workflows/src/shared/types.js";
 import {
@@ -57,6 +58,7 @@ export interface MockCalls {
     readonly chain: string[][];
     readonly prompts: Record<string, string[]>;
     readonly taskOptions: Record<string, WorkflowTaskOptions[]>;
+    readonly tool: string[];
 }
 
 interface MockResponders {
@@ -80,6 +82,12 @@ interface MockResponders {
         | undefined;
     omitParallelResults?: readonly string[];
     skipOutputWrites?: readonly string[];
+    /** Override a ctx.tool call, e.g. to replay a durably cached value. */
+    tool?: (
+        name: string,
+        args: Readonly<Record<string, WorkflowSerializableValue>>,
+        calls: MockCalls,
+    ) => WorkflowSerializableValue | undefined;
 }
 
 export function promptText(options: WorkflowTaskOptions): string {
@@ -144,6 +152,7 @@ export function makeMockCtx<TInputs extends WorkflowInputValues>(
         chain: [],
         prompts: {},
         taskOptions: {},
+        tool: [],
     };
 
     const ui: WorkflowUIContext = {
@@ -250,8 +259,15 @@ export function makeMockCtx<TInputs extends WorkflowInputValues>(
             );
         },
         ui,
-        tool: async () => {
-            throw new Error("ctx.tool should not be used by builtin workflow mocks");
+        tool: async <T extends WorkflowSerializableValue>(
+            name: string,
+            args: Readonly<Record<string, WorkflowSerializableValue>>,
+            fn: () => Promise<T>,
+        ): Promise<T> => {
+            calls.tool.push(name);
+            const override = responders.tool?.(name, args, calls);
+            if (override !== undefined) return override as T;
+            return fn();
         },
     };
 

@@ -1,9 +1,9 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Type } from "typebox";
 import type { WorkflowRunContext, WorkflowSerializableValue, WorkflowTaskStep } from "../src/shared/types.js";
 import { branchPrompt, partitionPrompt, synthesisPrompt } from "./fan-out-and-synthesize-prompts.js";
+import { stableArtifactRoot } from "./pattern-artifact-root.js";
 
 const partitionSchema = Type.Object({
   partitions: Type.Array(Type.Object({
@@ -50,9 +50,7 @@ function parsedPartitions(value: WorkflowSerializableValue | undefined, limit: n
 }
 
 export async function runFanOutAndSynthesize(ctx: WorkflowRunContext<Inputs>): Promise<FanOutAndSynthesizeResult> {
-  const cwd = ctx.cwd ?? process.cwd();
-  const artifactDir = join(cwd, ".atomic", "workflows", "runs", `fan-out-and-synthesize-${randomUUID()}`);
-  await mkdir(artifactDir, { recursive: true });
+  const artifactDir = await stableArtifactRoot(ctx, "fan-out-and-synthesize");
   const plan = await ctx.task("partition", {
     prompt: partitionPrompt(ctx.inputs.prompt, ctx.inputs.max_branches),
     schema: partitionSchema,

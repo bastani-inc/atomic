@@ -1,9 +1,9 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Type } from "typebox";
 import type { WorkflowRunContext, WorkflowSerializableValue } from "../src/shared/types.js";
 import { actionPrompt, classifierPrompt } from "./classify-and-act-prompts.js";
+import { stableArtifactRoot } from "./pattern-artifact-root.js";
 
 export const classificationSchema = Type.Object({
   category: Type.String({ description: "One category copied verbatim from the supplied list." }),
@@ -64,9 +64,7 @@ async function resolveFallbackCategory(
 }
 
 export async function runClassifyAndAct(ctx: WorkflowRunContext<Inputs>): Promise<ClassifyAndActResult> {
-  const cwd = ctx.cwd ?? process.cwd();
-  const artifactDir = join(cwd, ".atomic", "workflows", "runs", `classify-and-act-${randomUUID()}`);
-  await mkdir(artifactDir, { recursive: true });
+  const artifactDir = await stableArtifactRoot(ctx, "classify-and-act");
   const classified = await ctx.task("classifier", {
     prompt: classifierPrompt(ctx.inputs.prompt, ctx.inputs.categories),
     schema: classificationSchema,

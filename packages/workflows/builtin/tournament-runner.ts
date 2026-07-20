@@ -12,6 +12,7 @@ import {
   renderPairwiseJudgePrompt,
   renderTournamentAttemptPrompt,
 } from "./tournament-prompts.js";
+import { stableArtifactRoot } from "./pattern-artifact-root.js";
 
 const judgeDecisionSchema = Type.Object({
   winner: Type.Union([Type.Literal("first"), Type.Literal("second")]),
@@ -71,8 +72,7 @@ function resultByName(results: readonly WorkflowTaskResult[], name: string): Wor
 }
 
 export async function runTournament(ctx: WorkflowRunContext<TournamentInputs>) {
-  const cwd = ctx.cwd ?? process.cwd();
-  const artifactDir = join(cwd, ".atomic", "workflows", "runs", `tournament-${Date.now()}-${crypto.randomUUID()}`);
+  const artifactDir = await stableArtifactRoot(ctx, "tournament");
   const attemptsDir = join(artifactDir, "attempts");
   const judgesDir = join(artifactDir, "judges");
   await mkdir(attemptsDir, { recursive: true });

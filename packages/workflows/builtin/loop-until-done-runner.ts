@@ -12,6 +12,7 @@ import {
   renderEvaluationPrompt,
   renderIterationPrompt,
 } from "./loop-until-done-prompts.js";
+import { stableArtifactRoot } from "./pattern-artifact-root.js";
 
 const evaluationSchema = Type.Object({
   done: Type.Boolean(),
@@ -90,8 +91,7 @@ async function writeLedger(path: string, task: string, maxIterations: number, st
 }
 
 export async function runLoopUntilDone(ctx: WorkflowRunContext<LoopInputs>) {
-  const cwd = ctx.cwd ?? process.cwd();
-  const artifactDir = join(cwd, ".atomic", "workflows", "runs", `loop-until-done-${Date.now()}-${crypto.randomUUID()}`);
+  const artifactDir = await stableArtifactRoot(ctx, "loop-until-done");
   const iterationsDir = join(artifactDir, "iterations");
   const evaluationsDir = join(artifactDir, "evaluations");
   await mkdir(iterationsDir, { recursive: true });

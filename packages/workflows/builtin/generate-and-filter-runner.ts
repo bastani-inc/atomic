@@ -1,8 +1,9 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Type, type Static } from "typebox";
 import type { WorkflowRunContext, WorkflowSerializableValue } from "../src/shared/types.js";
 import { renderFilterPrompt, renderFinalShortlistPrompt, renderGeneratorPrompt, renderJudgePrompt } from "./generate-and-filter-prompts.js";
+import { stableArtifactRoot } from "./pattern-artifact-root.js";
 
 const filterSchema = Type.Object({
   shortlist: Type.Array(Type.String()),
@@ -34,8 +35,7 @@ function judgeDecision(value: WorkflowSerializableValue | undefined): JudgeDecis
 }
 
 export async function runGenerateAndFilter(ctx: WorkflowRunContext<Inputs>): Promise<GenerateAndFilterResult> {
-  const root = join(ctx.cwd ?? process.cwd(), ".atomic", "workflows", "runs", `generate-and-filter-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`);
-  await mkdir(root, { recursive: true });
+  const root = await stableArtifactRoot(ctx, "generate-and-filter");
   const candidatePaths = Array.from({ length: ctx.inputs.num_candidates }, (_, index) => join(root, `candidate-${index + 1}.md`));
   const shortlistLimit = Math.min(ctx.inputs.shortlist_size, ctx.inputs.num_candidates);
   await ctx.parallel(candidatePaths.map((path, index) => ({
