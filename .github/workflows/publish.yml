@@ -86,7 +86,7 @@ jobs:
           - { runner: blacksmith-4vcpu-ubuntu-2404, platform: win32, arch: x64, target: x86_64-pc-windows-msvc }
           - { runner: blacksmith-4vcpu-ubuntu-2404, platform: win32, arch: arm64, target: aarch64-pc-windows-msvc }
     steps:
-      - uses: actions/checkout@v4
+      - uses: useblacksmith/checkout@v1
         with:
           ref: ${{ env.SOURCE_REF }}
           persist-credentials: false
@@ -163,7 +163,7 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: useblacksmith/checkout@v1
         with:
           ref: ${{ env.SOURCE_REF }}
           persist-credentials: false
@@ -204,7 +204,7 @@ jobs:
     runs-on: blacksmith-4vcpu-windows-2025
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: useblacksmith/checkout@v1
         with:
           ref: ${{ env.SOURCE_REF }}
           persist-credentials: false
@@ -249,7 +249,7 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: useblacksmith/checkout@v1
         with:
           ref: ${{ env.SOURCE_REF }}
           persist-credentials: false

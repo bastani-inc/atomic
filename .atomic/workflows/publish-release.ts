@@ -269,7 +269,7 @@ export default workflow({
     }
 
     const publish = await inspectGate("publish action", (attempt) => [
-      `Inspect the automatically triggered protected Publish ${release.version} GitHub Actions run exactly once (attempt ${attempt}).`,
+      `Inspect the automatically triggered Publish ${release.version} GitHub Actions run exactly once (attempt ${attempt}).`,
       facts,
       `Expected release SHA: ${released.release_sha}`,
       "Use gh run list/view without --watch and select the push-event publish.yml run for the exact tag and release SHA.",
