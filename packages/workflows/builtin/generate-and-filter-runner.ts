@@ -37,7 +37,7 @@ export async function runGenerateAndFilter(ctx: WorkflowRunContext<Inputs>): Pro
   const root = join(ctx.cwd ?? process.cwd(), ".atomic", "workflows", "runs", `generate-and-filter-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`);
   await mkdir(root, { recursive: true });
   const candidatePaths = Array.from({ length: ctx.inputs.num_candidates }, (_, index) => join(root, `candidate-${index + 1}.md`));
-  const shortlistLimit = Math.min(ctx.inputs.shortlist_size, ctx.inputs.num_candidates - 1);
+  const shortlistLimit = Math.min(ctx.inputs.shortlist_size, ctx.inputs.num_candidates);
   await ctx.parallel(candidatePaths.map((path, index) => ({
     name: `generate-${index + 1}`, prompt: renderGeneratorPrompt(ctx.inputs.prompt, index + 1), context: "fresh" as const,
     output: path, outputMode: "file-only" as const,

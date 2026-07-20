@@ -51,7 +51,7 @@ export async function runAdversarialVerification(ctx: WorkflowRunContext<Inputs>
   await ctx.task("worker", { prompt: renderWorkerPrompt(ctx.inputs.task), context: "fresh", output: candidatePath, outputMode: "file-only" });
 
   let repairsCompleted = 0;
-  let reviewReportPath = join(root, "review-0.json");
+  let reviewReportPath!: string;
   let verifierArtifactPaths: string[] = [];
   let decision: ReducerDecision = { decision: "reject", rationale: "No valid reducer decision was produced.", remaining_work: ["Reducer did not return a valid structured decision."] };
   for (;;) {

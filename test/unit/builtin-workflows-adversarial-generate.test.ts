@@ -133,3 +133,18 @@ test("generate-and-filter skips judge when disabled", async () => {
     assert.ok(readPaths(ctx.calls.taskOptions["final-shortlist"]?.[0]).some((path) => path.endsWith("filter.json")));
   });
 });
+
+test("generate-and-filter keeps the full shortlist when shortlist_size equals num_candidates", async () => {
+  await withTempCwd(async (cwd) => {
+    const ctx = assignCwd(makeMockCtx({ prompt: "generate options", num_candidates: 2, shortlist_size: 2, use_judge: false, max_concurrency: 2 }, {
+      task: (name, options) => name === "dedupe-and-filter"
+        ? JSON.stringify({ shortlist: readPaths(options).filter((path) => path.includes("candidate-")), discarded: [] })
+        : undefined,
+    }), cwd);
+    const result = await generateAndFilter.run(ctx);
+    assert.equal(result.shortlist.length, 2);
+    assert.deepEqual([...result.shortlist].sort(), [...result.candidate_artifact_paths].sort());
+    const filterPrompt = String(ctx.calls.taskOptions["dedupe-and-filter"]?.[0]?.prompt ?? "");
+    assert.match(filterPrompt, /Select at most 2 strongest candidates/);
+  });
+});
