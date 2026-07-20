@@ -37,7 +37,15 @@
           "prompt-templates",
           "themes",
           "packages",
-          "models",
+          {
+            "group": "Models",
+            "pages": [
+              "models",
+              "models/model-selection",
+              "models/pareto-efficiency",
+              "models/artificial-analysis-index"
+            ]
+          },
           "custom-provider"
         ]
       },
