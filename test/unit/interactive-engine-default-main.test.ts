@@ -1,6 +1,6 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -158,7 +158,10 @@ function isAlive(pid: number): boolean {
 async function waitForFile(path: string, timeoutMs = 5_000): Promise<number> {
 	const deadline = performance.now() + timeoutMs;
 	while (performance.now() < deadline) {
-		try { return Number(readFileSync(path, "utf8")); } catch {}
+		try {
+			const pid = Number(readFileSync(path, "utf8"));
+			if (Number.isSafeInteger(pid) && pid > 0) return pid;
+		} catch {}
 		await Bun.sleep(10);
 	}
 	throw new Error(`Timed out waiting for ${path}`);
@@ -172,6 +175,19 @@ async function waitForExit(pid: number, timeoutMs = 4_000): Promise<void> {
 	}
 	throw new Error(`PID ${pid} remained alive`);
 }
+
+serialTest("PID-file polling ignores an observable empty file while the writer is publishing", async () => {
+	const temp = mkdtempSync(join(tmpdir(), "atomic-pid-file-"));
+	const path = join(temp, "process.pid");
+	writeFileSync(path, "", "utf8");
+	const publish = Bun.sleep(25).then(() => writeFileSync(path, "123", "utf8"));
+	try {
+		assert.equal(await waitForFile(path), 123);
+	} finally {
+		await publish;
+		rmSync(temp, { recursive: true, force: true });
+	}
+});
 
 function maximumGap(values: readonly number[]): number {
 	let maximum = 0;

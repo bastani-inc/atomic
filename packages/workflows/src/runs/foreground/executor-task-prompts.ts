@@ -7,11 +7,8 @@ import type {
   WorkflowTaskStep,
   WorkflowChainOptions,
   WorkflowParallelOptions,
-  WorkflowDirectOptions,
-  WorkflowDirectTaskItem,
   WorkflowMaxOutput,
 } from "../../shared/types.js";
-import { normalizeAutoGroupSentinel } from "../../shared/intercom-group.js";
 
 export function normalizeTaskContexts(
   previous: WorkflowTaskOptions["previous"],
@@ -148,9 +145,6 @@ export function parallelFallbackTask(steps: readonly WorkflowTaskStep[], options
   return "";
 }
 
-export function directTaskPrompt(item: WorkflowDirectTaskItem): string | undefined {
-  return item.prompt ?? item.task;
-}
 
 export function normalizeMaxOutput(maxOutput: WorkflowMaxOutput | undefined): Required<WorkflowMaxOutput> {
   return {
@@ -229,73 +223,4 @@ export function taskWithSharedDefaults(
     ...sharedTaskDefaultsFromOptions(options),
     ...withoutUndefinedProperties(taskOptions),
   } as WorkflowTaskExecutionOptions;
-}
-
-export function directTaskWithDefaults(
-  item: WorkflowDirectTaskItem,
-  options: WorkflowDirectOptions,
-): WorkflowDirectTaskItem {
-  const {
-    task: _task,
-    chainName: _chainName,
-    concurrency: _concurrency,
-    failFast: _failFast,
-    chainDir: _chainDir,
-    reads,
-    output,
-    outputMode,
-    worktree,
-    gitWorktreeDir,
-    baseBranch,
-    maxOutput,
-    artifacts,
-    ...stageDefaults
-  } = options;
-
-  const taskWithStageDefaults = {
-    ...withoutUndefinedProperties(stageDefaults),
-    ...withoutUndefinedProperties(item),
-    ...(item.group !== undefined
-      ? { group: normalizeAutoGroupSentinel(item.group) }
-      : stageDefaults.group !== undefined
-        ? { group: normalizeAutoGroupSentinel(stageDefaults.group) }
-        : {}),
-    name: item.name,
-  } as WorkflowDirectTaskItem;
-
-  return {
-    ...taskWithStageDefaults,
-    ...(item.reads === undefined && reads !== undefined ? { reads } : {}),
-    ...(item.output === undefined && output !== undefined ? { output } : {}),
-    ...(item.outputMode === undefined && outputMode !== undefined ? { outputMode } : {}),
-    ...(item.worktree === undefined && worktree !== undefined ? { worktree } : {}),
-    ...(item.gitWorktreeDir === undefined && gitWorktreeDir !== undefined ? { gitWorktreeDir } : {}),
-    ...(item.baseBranch === undefined && baseBranch !== undefined ? { baseBranch } : {}),
-    ...(item.maxOutput === undefined && maxOutput !== undefined ? { maxOutput } : {}),
-    ...(item.artifacts === undefined && artifacts !== undefined ? { artifacts } : {}),
-  };
-}
-
-export function directTaskToStep(
-  item: WorkflowDirectTaskItem,
-  fallbackPrompt?: string,
-  previous?: WorkflowTaskOptions["previous"],
-): WorkflowTaskStep {
-  const {
-    count: _count,
-    output: _output,
-    outputMode: _outputMode,
-    worktree: _worktree,
-    prompt,
-    task,
-    previous: itemPrevious,
-    group,
-    ...stageOptions
-  } = item;
-  return {
-    ...stageOptions,
-    ...(group !== undefined ? { group: normalizeAutoGroupSentinel(group) } : {}),
-    prompt: prompt ?? task ?? fallbackPrompt,
-    previous: previous ?? itemPrevious,
-  };
 }

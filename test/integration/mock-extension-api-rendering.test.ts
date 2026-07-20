@@ -225,12 +225,6 @@ describe("renderCall — all action branches", () => {
     assert.ok(renderCall({ workflow: "wf-c" }).includes("run"));
   });
 
-  test("describes direct task runs instead of an unnamed workflow", () => {
-    assert.equal(
-      renderCall({ task: { name: "subagent-tool-probe", prompt: "probe" } }),
-      'workflow: run "direct-task"',
-    );
-  });
 
   test("respects host render width", () => {
     const out = renderCall(

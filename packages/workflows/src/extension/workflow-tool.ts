@@ -6,13 +6,6 @@ import type { PiExecuteContext, WorkflowToolArgs } from "./public-types.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
 import { workflowGetResult } from "./workflow-tool-content.js";
 import {
-  directModeCount,
-  hasDirectExecutionMode,
-  hasNamedExecutionMode,
-  withForkParentSession,
-  workflowRunResultFromDetails,
-} from "./workflow-tool-helpers.js";
-import {
   workflowInterruptAction,
   workflowQuitAction,
   workflowPauseAction,
@@ -76,15 +69,6 @@ export function makeExecuteWorkflowTool(
         return getRuntime().dispatch(args, { policy });
       }
       case "run": {
-        if (hasDirectExecutionMode(args)) {
-          const activeRuntime = getRuntime();
-          const normalModeCount = directModeCount(args) + (hasNamedExecutionMode(args) ? 1 : 0);
-          if (normalModeCount !== 1) {
-            throw new Error("Workflow extension: specify exactly one normal execution mode: workflow, task, tasks, or chain");
-          }
-          const details = await activeRuntime.runDirect(withForkParentSession(args, ctx), { policy });
-          return workflowRunResultFromDetails(details);
-        }
         await ensureWorkflowResourcesVisible();
         return getRuntime().dispatch(args, { policy });
       }

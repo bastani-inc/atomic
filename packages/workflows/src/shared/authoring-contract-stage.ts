@@ -33,7 +33,7 @@ export type WorkflowThinkingLevel = "off" | "minimal" | "low" | "medium" | "high
 export type WorkflowExecutionMode = "interactive" | "non_interactive";
 export type WorkflowExitStatus = "completed" | "skipped" | "cancelled" | "blocked";
 export type RunStatus = "pending" | "running" | "paused" | WorkflowExitStatus | "failed" | "killed";
-export type WorkflowDetailsMode = "named" | "single" | "parallel" | "chain" | "inspection" | "control";
+export type WorkflowDetailsMode = "named" | "inspection" | "control";
 export type WorkflowDetailsStatus = "accepted" | "running" | WorkflowExitStatus | "failed" | "killed" | "noop";
 export type WorkflowAction = "list" | "get" | "inputs" | "run" | "status" | "interrupt" | "resume";
 
@@ -418,30 +418,8 @@ export interface WorkflowParallelOptions extends WorkflowSharedTaskDefaults {
   readonly failFast?: boolean;
 }
 
-export interface WorkflowDirectTaskItem extends WorkflowTaskOptions {
-  readonly name: string;
-  readonly count?: number;
-}
-
-export interface WorkflowParallelChainStep {
-  readonly parallel: readonly WorkflowDirectTaskItem[];
-  readonly concurrency?: number;
-  readonly failFast?: boolean;
-  readonly worktree?: boolean;
-  readonly gitWorktreeDir?: string;
-  readonly baseBranch?: string;
-  readonly group?: string | true;
-}
-
-export type WorkflowChainStep = WorkflowDirectTaskItem | WorkflowParallelChainStep;
 export type WorkflowTaskSessionOptions = StageOptions & WorkflowTaskSessionFields;
 
-export interface WorkflowDirectOptions extends StageOptions, WorkflowTaskSessionFields {
-  readonly chainName?: string;
-  readonly concurrency?: number;
-  readonly failFast?: boolean;
-  readonly chainDir?: string;
-}
 
 export interface WorkflowRunChildOptions<TInputs extends WorkflowInputValues = WorkflowInputValues> {
   readonly inputs?: TInputs;

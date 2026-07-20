@@ -142,6 +142,50 @@ export type OpenClaudeDesignWorkflowDefinition = WorkflowDefinition<
   OpenClaudeDesignWorkflowRunInputs
 >;
 
+export {
+  default as adversarialVerification,
+  type AdversarialVerificationDefinition,
+  type AdversarialVerificationInputs,
+  type AdversarialVerificationOutputs,
+  type AdversarialVerificationRunInputs,
+} from "./adversarial-verification.js";
+export {
+  default as classifyAndAct,
+  type ClassifyAndActWorkflowDefinition,
+  type ClassifyAndActWorkflowInputs,
+  type ClassifyAndActWorkflowOutputs,
+  type ClassifyAndActWorkflowRunInputs,
+} from "./classify-and-act.js";
+export {
+  default as fanOutAndSynthesize,
+  type FanOutAndSynthesizeWorkflowDefinition,
+  type FanOutAndSynthesizeWorkflowInputs,
+  type FanOutAndSynthesizeWorkflowOutputs,
+  type FanOutAndSynthesizeWorkflowRunInputs,
+} from "./fan-out-and-synthesize.js";
+export {
+  default as generateAndFilter,
+  type GenerateAndFilterDefinition,
+  type GenerateAndFilterInputs,
+  type GenerateAndFilterOutputs,
+  type GenerateAndFilterRunInputs,
+} from "./generate-and-filter.js";
+export {
+  default as loopUntilDone,
+  type LoopUntilDoneWorkflowDefinition,
+  type LoopUntilDoneWorkflowInputs,
+  type LoopUntilDoneWorkflowOutputs,
+  type LoopUntilDoneWorkflowRunInputs,
+  type LoopUntilDoneWorkflowStatus,
+} from "./loop-until-done.js";
+export {
+  default as tournament,
+  type TournamentWorkflowDefinition,
+  type TournamentWorkflowInputs,
+  type TournamentWorkflowOutputs,
+  type TournamentWorkflowRunInputs,
+} from "./tournament.js";
+
 export declare const deepResearchCodebase: DeepResearchCodebaseWorkflowDefinition;
 export declare const goal: GoalWorkflowDefinition;
 export declare const ralph: RalphWorkflowDefinition;

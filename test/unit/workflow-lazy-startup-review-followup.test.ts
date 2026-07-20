@@ -237,7 +237,6 @@ describe("workflow lazy-startup review follow-up fixes", () => {
         dispatch: async (): Promise<WorkflowToolResult> => canSeeLazyWorkflow
           ? { action: "run", name: "lazy model run", runId: "model-run", status: "running", stages: [] }
           : { action: "run", name: "lazy model run", runId: "", status: "failed", error: "Workflow not found: lazy model run", stages: [] },
-        runDirect: async (): Promise<never> => { throw new Error("runDirect should not run"); },
       } as unknown as ExtensionRuntime;
     };
     const handler = makeExecuteWorkflowTool(

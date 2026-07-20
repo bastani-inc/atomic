@@ -13,17 +13,15 @@
 import { createRegistry } from "../workflows/registry.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import {
-  INTERACTIVE_WORKFLOW_POLICY,
   type WorkflowDefinition,
   type WorkflowPersistencePort,
   type WorkflowMcpPort,
   type WorkflowRuntimeConfig,
-  type WorkflowDetails,
   type WorkflowModelCatalogPort,
   type WorkflowExecutionPolicy,
 } from "../shared/types.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
-import { resolveAndValidateInputs, runChain, runParallel, runTask, type RunOpts } from "../runs/foreground/executor.js";
+import { resolveAndValidateInputs, type RunOpts } from "../runs/foreground/executor.js";
 import type { Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { CancellationRegistry } from "../runs/background/cancellation-registry.js";
@@ -31,19 +29,9 @@ import { store as defaultStore } from "../shared/store.js";
 import { dispatch } from "./dispatcher.js";
 import type { WorkflowToolArgs } from "./index.js";
 import type { WorkflowToolResult } from "./render-result.js";
-import {
-  emitWorkflowControlIntercom,
-  emitWorkflowResultIntercom,
-  workflowIntercomAvailable,
-  type WorkflowIntercomDelivery,
-  type WorkflowResultIntercomPort,
-} from "../intercom/result-intercom.js";
-import { workflowConnectGuidance } from "../runs/background/runner.js";
 import { launchDetachedUntilStartup, workflowStartupFailureMessage } from "../runs/background/startup-admission.js";
 import type { JobTracker } from "../runs/background/job-tracker.js";
-import { classifyWorkflowFailure } from "../shared/workflow-failures.js";
 import { getDurableBackend, initializeDurableBackend } from "../durable/factory.js";
-import { directMode, directOptions, directProgressTotal } from "./runtime-direct.js";
 import {
   createDurableResumeRuntime,
   type DurableResumeRuntime,
@@ -76,8 +64,6 @@ export interface ExtensionRuntimeOpts {
   persistence?: WorkflowPersistencePort;
   /** MCP scope-gating port forwarded to the executor. */
   mcp?: WorkflowMcpPort;
-  /** Workflow-native pi-intercom result/control event delivery. */
-  intercom?: WorkflowResultIntercomPort;
   /**
    * Resolved runtime configuration. Injected by the composition root after
    * merging file config with defaults. Forwarded to dispatch → run/runDetached.
@@ -112,8 +98,6 @@ export interface ExtensionRuntime extends DurableResumeRuntime {
    */
   dispatch(args: WorkflowToolArgs, options?: RuntimeDispatchOptions): Promise<WorkflowToolResult>;
 
-  /** Execute direct single/parallel/chain workflow tool modes. */
-  runDirect(args: WorkflowToolArgs, options?: RuntimeDispatchOptions): Promise<WorkflowDetails>;
 
   /** Start a linked continuation for a failed resumable named workflow run. */
   resumeFailedRun(sourceRunId: string, stageId?: string, options?: RuntimeDispatchOptions): Promise<ResumeFailedRunResult>;
@@ -147,7 +131,6 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
   const persistence = opts.persistence;
   const mcp = opts.mcp;
   const config = opts.config;
-  const intercom = opts.intercom;
   const models = opts.models;
   const jobs = opts.jobs;
   const runtimeCwd = opts.cwd ?? process.cwd();
@@ -158,22 +141,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
     await dbosReady;
   };
 
-  function runOptions(args: WorkflowToolArgs, policy?: WorkflowExecutionPolicy): RunOpts {
-    const argConcurrency =
-      typeof args.concurrency === "number" && Number.isFinite(args.concurrency)
-        ? Math.max(1, Math.floor(args.concurrency))
-        : undefined;
-    const effectiveConfig =
-      argConcurrency === undefined
-        ? config
-        : {
-            maxDepth: config?.maxDepth ?? 4,
-            defaultConcurrency: argConcurrency,
-            persistRuns: config?.persistRuns ?? true,
-            statusFile: config?.statusFile ?? false,
-            ...(config?.statusFilePath !== undefined ? { statusFilePath: config.statusFilePath } : {}),
-            resumeInFlight: config?.resumeInFlight ?? "ask",
-          };
+  function runOptions(policy?: WorkflowExecutionPolicy): RunOpts {
     const defaultSessionDir = resolveDefaultStageSessionDir?.();
     return {
       adapters,
@@ -181,90 +149,13 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
       cancellation,
       persistence,
       mcp,
-      config: effectiveConfig,
+      config,
       models,
       ...(defaultSessionDir !== undefined ? { defaultSessionDir } : {}),
       ...(policy !== undefined ? { executionMode: policy.mode } : {}),
       registry,
       cwd: runtimeCwd,
     };
-  }
-  function explicitIntercomDelivery(args: WorkflowToolArgs): WorkflowIntercomDelivery | undefined {
-    if (args.intercom?.enabled === false) return "off";
-    if (args.intercom?.delivery !== undefined) return args.intercom.delivery;
-    if (args.intercom?.enabled === true) return "control-and-result";
-    return undefined;
-  }
-  function effectiveIntercomDelivery(args: WorkflowToolArgs, mode: WorkflowDetails["mode"]): WorkflowIntercomDelivery {
-    const explicit = explicitIntercomDelivery(args);
-    if (explicit !== undefined) return explicit;
-    if (
-      args.async === true &&
-      workflowIntercomAvailable(intercom) &&
-      (mode === "parallel" || mode === "chain")
-    ) {
-      return "control-and-result";
-    }
-    return "off";
-  }
-  function intercomParentSession(args: WorkflowToolArgs): string | undefined {
-    if (args.intercom?.parentSession !== undefined) return args.intercom.parentSession;
-    if (typeof intercom?.parentSession === "function") return intercom.parentSession();
-    return intercom?.parentSession;
-  }
-
-  function withIntercomSummary(
-    details: WorkflowDetails,
-    delivery: WorkflowIntercomDelivery,
-    parentSession?: string,
-  ): WorkflowDetails {
-    if (delivery === "off") return details;
-    return {
-      ...details,
-      intercom: {
-        enabled: workflowIntercomAvailable(intercom),
-        delivery,
-        ...(parentSession !== undefined ? { parentSession } : {}),
-      },
-    };
-  }
-
-  function emitDirectIntercom(details: WorkflowDetails, delivery: WorkflowIntercomDelivery, parentSession?: string): void {
-    if (delivery === "off") return;
-    const summarized = withIntercomSummary(details, delivery, parentSession);
-    emitWorkflowControlIntercom(
-      intercom,
-      summarized,
-      `workflow ${summarized.status}: ${summarized.runId ?? "unknown run"}`,
-      { delivery: delivery === "result" ? "result" : delivery, parentSession },
-    );
-    emitWorkflowResultIntercom(intercom, summarized, {
-      delivery: delivery === "notify" ? "notify" : delivery,
-      parentSession,
-    });
-  }
-
-  function runDirectForeground(
-    args: WorkflowToolArgs,
-    runId?: string,
-    policy?: WorkflowExecutionPolicy,
-  ): Promise<WorkflowDetails> {
-    const directRunOptions = directOptions(args);
-    const baseRunOptions = runOptions(args, policy);
-    const effectiveRunOptions = runId === undefined
-      ? baseRunOptions
-      : { ...baseRunOptions, runId };
-
-    if (Array.isArray(args.chain)) {
-      return runChain(args.chain, directRunOptions, effectiveRunOptions);
-    }
-    if (Array.isArray(args.tasks)) {
-      return runParallel(args.tasks, directRunOptions, effectiveRunOptions);
-    }
-    if (args.task !== undefined && typeof args.task === "object") {
-      return runTask(args.task, directRunOptions, effectiveRunOptions);
-    }
-    throw new Error("WorkflowRuntime.runDirect: no direct execution mode supplied");
   }
 
   function matchesResumeStageIdentifier(stage: RunSnapshot["stages"][number], identifier: string): boolean {
@@ -335,7 +226,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
     const stageMessage = (verb: string, runId: string): string =>
       `${verb} workflow "${def.name}" from run ${source.id.slice(0, 8)} at stage ${resolvedStage.stageId.slice(0, 8)} (run ${runId.slice(0, 8)}).`;
     const launchContinuation = () => launchDetachedUntilStartup(def, sourceInputs, {
-      ...runOptions({ workflow: def.name, inputs: sourceInputs }, options?.policy),
+      ...runOptions(options?.policy),
       continuation: { source, resumeFromStageId: resolvedStage.stageId },
       ...(jobs !== undefined ? { jobs } : {}),
     });
@@ -393,38 +284,6 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
     return { ok: true, runId: accepted.runId, sourceRunId: source.id, resumeFromStageId: resolvedStage.stageId, message: stageMessage("Resuming failed", accepted.runId) };
   }
 
-  async function runDirectAsync(args: WorkflowToolArgs, policy?: WorkflowExecutionPolicy): Promise<WorkflowDetails> {
-    await ensureDbosReady();
-    const runId = crypto.randomUUID();
-    const mode = directMode(args);
-    const delivery = effectiveIntercomDelivery(args, mode);
-    const parentSession = intercomParentSession(args);
-    const background = runDirectForeground(args, runId, policy);
-    void background.then(
-      (details) => {
-        emitDirectIntercom(details, delivery, parentSession);
-      },
-      (error: unknown) => {
-        const details: WorkflowDetails = withIntercomSummary({
-          mode,
-          action: "run",
-          runId,
-          status: "failed",
-          progress: { completed: 0, total: directProgressTotal(args) },
-          error: classifyWorkflowFailure(error).userMessage,
-        }, delivery, parentSession);
-        emitDirectIntercom(details, delivery, parentSession);
-      },
-    );
-    return withIntercomSummary({
-      mode,
-      action: "run",
-      runId,
-      status: "accepted",
-      progress: { completed: 0, total: directProgressTotal(args) },
-      message: workflowConnectGuidance(runId),
-    }, delivery, parentSession);
-  }
 
   return {
     get registry(): WorkflowRegistry {
@@ -450,21 +309,6 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
       });
     },
 
-    async runDirect(args: WorkflowToolArgs, options?: RuntimeDispatchOptions): Promise<WorkflowDetails> {
-      await ensureDbosReady();
-      const policy = options?.policy ?? INTERACTIVE_WORKFLOW_POLICY;
-      if (args.async === true && policy.awaitTerminalRun !== true) {
-        return runDirectAsync(args, policy);
-      }
-      const mode = directMode(args);
-      const delivery = effectiveIntercomDelivery(args, mode);
-      const parentSession = intercomParentSession(args);
-      return runDirectForeground(args, undefined, policy).then((details) => {
-        const summarized = withIntercomSummary(details, delivery, parentSession);
-        emitDirectIntercom(summarized, delivery, parentSession);
-        return summarized;
-      });
-    },
 
     resumeFailedRun,
     ...createDurableResumeRuntime({
@@ -474,7 +318,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
       runtimeCwd,
       ensureReady: ensureDbosReady,
       resolveDefaultStageSessionDir,
-      baseRunOpts: (policy) => runOptions({ workflow: "", inputs: {} }, policy),
+      baseRunOpts: (policy) => runOptions(policy),
       ...(jobs !== undefined ? { jobs } : {}),
     }),
 

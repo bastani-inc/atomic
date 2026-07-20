@@ -244,7 +244,11 @@ export default workflow({
 Builtin workflows are also callable as modules for reuse:
 
 ```typescript
-import { deepResearchCodebase, goal, openClaudeDesign, ralph } from "@bastani/workflows/builtin";
+import {
+  adversarialVerification, classifyAndAct, deepResearchCodebase,
+  fanOutAndSynthesize, generateAndFilter, goal, loopUntilDone,
+  openClaudeDesign, ralph, tournament,
+} from "@bastani/workflows/builtin";
 import goalWorkflow from "@bastani/workflows/builtin/goal";
 import openClaudeDesignWorkflow from "@bastani/workflows/builtin/open-claude-design";
 ```
@@ -311,9 +315,9 @@ Worktree semantics:
 - The default execution cwd preserves the caller's repo-relative cwd inside the worktree. For example, invoking a workflow from `repo/packages/api` with `gitWorktreeDir=../repo-wt` uses `../repo-wt/packages/api` for workflow `ctx.cwd` and stage/task execution.
 - Symlinked repo/worktree paths preserve their logical spelling in the default cwd, matching Codex-style worktree behavior.
 - An explicit absolute `cwd` inside the invoking checkout is remapped to the corresponding worktree path; an absolute `cwd` already inside the selected worktree is preserved. Relative values resolve from the worktree default cwd and cannot escape it. Foreign paths, lexical traversal, and symlink escapes fail before a session starts.
-- Runner-managed relative direct output paths follow that effective worktree cwd and cannot traverse or follow symlinks outside the selected worktree. Explicit absolute outputs and nonblank explicit `chainDir` locations remain caller-selected; blank `chainDir` values are treated as omitted.
+- Relative stage/task outputs follow the effective worktree cwd and cannot traverse or follow symlinks outside the selected worktree. Explicit absolute outputs remain caller-selected.
 
-`worktree: true` is different: it creates a branch-backed temporary checkout at `<main-root>/.atomic/worktrees/<flattened-name>` using branch `worktree-<flattened-name>` and cleans up both checkout and branch afterward, including failures before the workflow callback starts. `/` in generated names is flattened to `+`, and creation stays anchored at the canonical main root even when Atomic is launched from a linked worktree. The base ref is an explicit `baseBranch`, then `origin/<default-branch>` (fetched when needed), then `HEAD`. Post-creation setup copies `.atomic/settings.local.json` plus untracked `.atomic/settings.json`, shares the main repository's Husky or populated `.git/hooks` directory through `core.hooksPath`, symlinks configured `worktree.symlinkDirectories`, and copies gitignored files matched by `.worktreeinclude`; tracked checkout content is never overwritten. When no task `cwd` is set, temporary isolation starts from the runner invocation cwd; relative task cwd values resolve from that same invocation cwd. Relative direct outputs without a nonblank `chainDir` are persisted under distinct per-task runner-owned temporary artifact directories before cleanup; returned output artifact paths therefore remain readable, including with `outputMode: "file-only"`. Those relative paths cannot traverse or follow symlinks outside their runner-owned output root, and a pre-existing symlink or junction at the trusted artifact root is rejected. It is mutually exclusive with `gitWorktreeDir`, which is intended for named/reusable worktrees that remain available across retries and `/workflow resume`. Durable resume records the original invocation cwd and resolved reusable-worktree metadata, then replays from that original repository context rather than whichever cwd the resumed interactive session currently has. Reusable worktree setup is cached by canonical repository and target identity within a workflow run, independent of equivalent path spelling or `baseBranch`, and the selected checkout identity is revalidated before reuse. Read-only Git repository probes retry a transient timeout once, and slow Git subprocess failures include the exact command, cwd, timeout, elapsed time, exit status/signal, and spawn error details.
+`worktree: true` on an authored `ctx.task(...)` is different: it creates a branch-backed temporary checkout at `<main-root>/.atomic/worktrees/<flattened-name>` using branch `worktree-<flattened-name>` and cleans up both checkout and branch afterward, including failures before the task callback starts. `/` in generated names is flattened to `+`, and creation stays anchored at the canonical main root even when Atomic is launched from a linked worktree. The base ref is an explicit `baseBranch`, then `origin/<default-branch>` (fetched when needed), then `HEAD`. Post-creation setup copies `.atomic/settings.local.json` plus untracked `.atomic/settings.json`, shares the main repository's Husky or populated `.git/hooks` directory through `core.hooksPath`, symlinks configured `worktree.symlinkDirectories`, and copies gitignored files matched by `.worktreeinclude`; tracked checkout content is never overwritten. When no task `cwd` is set, temporary isolation starts from the runner invocation cwd; relative task cwd values resolve from that same invocation cwd. Relative task outputs are persisted under distinct per-task runner-owned temporary artifact directories before cleanup; returned output artifact paths therefore remain readable, including with `outputMode: "file-only"`. Those relative paths cannot traverse or follow symlinks outside their runner-owned output root, and a pre-existing symlink or junction at the trusted artifact root is rejected. It is mutually exclusive with `gitWorktreeDir`, which is intended for named/reusable worktrees that remain available across retries and `/workflow resume`. Durable resume records the original invocation cwd and resolved reusable-worktree metadata, then replays from that original repository context rather than whichever cwd the resumed interactive session currently has. Reusable worktree setup is cached by canonical repository and target identity within a workflow run, independent of equivalent path spelling or `baseBranch`, and the selected checkout identity is revalidated before reuse. Read-only Git repository probes retry a transient timeout once, and slow Git subprocess failures include the exact command, cwd, timeout, elapsed time, exit status/signal, and spawn error details.
 
 Worktrees provide checkout and cwd isolation, not an operating-system security sandbox. A process with permission to mutate arbitrary sibling paths can still race filesystem checks; use a container, VM, or another OS-enforced boundary for untrusted code.
 
@@ -376,16 +380,7 @@ export default workflow({
 });
 ```
 
-Direct helpers and workflow tool direct modes can set task-local fallbacks or a top-level default:
-
-```typescript
-await runParallel([
-  { name: "runtime-review", task: "Review runtime changes", model: "anthropic/claude-sonnet-4" },
-  { name: "quality-review", task: "Review quality risks", fallbackModels: ["openai/gpt-5-mini"] },
-], {
-  fallbackModels: ["github-copilot/gpt-5-mini"],
-});
-```
+Set `model` and `fallbackModels` on the authored stage/task/chain/parallel item that needs them.
 
 When pi exposes its model registry, workflow runs validate user-specified `model` / `fallbackModels` before starting model-backed work and report all unavailable or ambiguous IDs together. Bare model IDs are accepted only when they resolve uniquely or match the current provider; otherwise use `provider/model`. Fallback attempts may send the same prompt/context to a different provider, so choose fallbacks that fit your cost, privacy, and data-handling requirements.
 
@@ -557,7 +552,7 @@ Tradeoff: `Type.Unsafe<T>()` does not deeply validate at runtime — it trusts t
 
 Input overrides are bare `key=value` tokens (no leading `--`). Values are JSON-parsed when possible, so numbers, booleans, and quoted strings work as expected (e.g. `count=3`, `flag=true`, `prompt="multi word value"`). A whole-object override can be passed as a single JSON token (e.g. `{"prompt":"...","count":3}`). Runtime validation is strict: unknown input keys, missing required values, type mismatches, and invalid `select` choices fail before a named workflow run starts.
 
-Named workflow launches always run as **background tasks** in interactive sessions. Run `/workflow connect <run>` to see agents working and chat with and steer each stage. Model-launched direct `task`, `tasks`, and `chain` calls must set top-level `async: true` so the chat editor stays free, and their raw/rendered accepted results include the same connect guidance; inspection and control calls are unaffected. Foreground launches are reserved for explicit user requests or technical requirements, with notice before launch. Press **F2** to open the same live graph viewer; HIL prompts (`ctx.ui.input/confirm/select/editor/custom`) appear as awaiting-input graph nodes. Press Enter on a focused node, or click a visible graph node directly, to open that stage and answer locally, never as a modal dialog over the chat. `ctrl+x` is the workflow hierarchy chord: attached stage chats show **ctrl+x return to graph**, while graph surfaces show **ctrl+x leave graph · return to main chat**. Workflow surfaces consume it before configurable editor/tool actions. Composer and prompt drafts survive leaving a stage, and pending custom questions remain pending for reattachment. `ctrl+d` and `q` are not workflow navigation controls; ordinary editor/prompt Ctrl+D behavior and printable prompt `q` remain available. Existing `esc`, `ctrl+c`, and graph `h` close/hide behavior is unchanged. While the graph pane is active, vertical wheel/trackpad gestures pan vertically and horizontal gestures pan wide graphs left and right when the terminal reports them, without falling through to the main chat or terminal scrollback. Attached stage chats capture mouse/trackpad wheel events by default so scrolling stays inside the active stage transcript or prompt instead of falling through to terminal/main-chat scrollback. Press `ctrl+t` to toggle **copy mode**: copy mode disables workflow-chat mouse reporting so normal terminal/tmux text selection can work; press `ctrl+t` again to leave copy mode and restore workflow-chat scrolling. Archived read-only stage transcripts show the same copy-mode footer/status, allowing their transcript text to be selected and copied while preserving `esc` close and `ctrl+x` graph navigation. While copy mode is on, wheel/trackpad gestures are handled by the terminal/tmux and may scroll terminal scrollback, so leave copy mode before using the wheel again. Human input is detected when those runtime `ctx.ui.*` calls execute; workflows no longer have a declaration-time HIL flag.
+Named workflow launches always run as **background tasks** in interactive sessions. Run `/workflow connect <run>` to see agents working and chat with and steer each stage. Foreground launches are reserved for explicit user requests or technical requirements, with notice before launch. Press **F2** to open the same live graph viewer; HIL prompts (`ctx.ui.input/confirm/select/editor/custom`) appear as awaiting-input graph nodes. Press Enter on a focused node, or click a visible graph node directly, to open that stage and answer locally, never as a modal dialog over the chat. `ctrl+x` is the workflow hierarchy chord: attached stage chats show **ctrl+x return to graph**, while graph surfaces show **ctrl+x leave graph · return to main chat**. Workflow surfaces consume it before configurable editor/tool actions. Composer and prompt drafts survive leaving a stage, and pending custom questions remain pending for reattachment. `ctrl+d` and `q` are not workflow navigation controls; ordinary editor/prompt Ctrl+D behavior and printable prompt `q` remain available. Existing `esc`, `ctrl+c`, and graph `h` close/hide behavior is unchanged. While the graph pane is active, vertical wheel/trackpad gestures pan vertically and horizontal gestures pan wide graphs left and right when the terminal reports them, without falling through to the main chat or terminal scrollback. Attached stage chats capture mouse/trackpad wheel events by default so scrolling stays inside the active stage transcript or prompt instead of falling through to terminal/main-chat scrollback. Press `ctrl+t` to toggle **copy mode**: copy mode disables workflow-chat mouse reporting so normal terminal/tmux text selection can work; press `ctrl+t` again to leave copy mode and restore workflow-chat scrolling. Archived read-only stage transcripts show the same copy-mode footer/status, allowing their transcript text to be selected and copied while preserving `esc` close and `ctrl+x` graph navigation. While copy mode is on, wheel/trackpad gestures are handled by the terminal/tmux and may scroll terminal scrollback, so leave copy mode before using the wheel again. Human input is detected when those runtime `ctx.ui.*` calls execute; workflows no longer have a declaration-time HIL flag.
 
 Named launches return only after startup admission, while the admitted workflow body and stages remain background work. Pre-body setup failures (including invalid input-bound reusable worktrees) are returned immediately from the original tool call as structured failed results with the concrete error and allocated run id; Atomic does not first claim that the workflow started, and it removes the unadmitted run so corrected inputs can be retried immediately. Failures after admission continue to use normal background status and lifecycle notices.
 
@@ -578,7 +573,7 @@ Prompt answer replay is live-memory only. `StageSnapshot.promptAnswerState` repo
 ```json
 {
   "name": "workflow",
-  "description": "Run named builtin, project, user, or package workflows, or direct one-off task/tasks/chain workflows; custom definitions may import reusable project/package workflows or builtin definitions from @bastani/workflows/builtin and nest them with ctx.workflow(...), including deeper composition within the configured maxDepth; when workflow execution fits but another shape would better achieve the task, author a custom TypeScript workflow({...}) inline with normal coding tools, reload it, and run it; discover with list/get/inputs, list session runs with status (no runId; statusFilter narrows the list), inspect status/stages/stage details, send prompt answers or steering, pause/resume/interrupt/quit runs, and reload workflow resources. For large stage handoffs, write context to files/artifacts, pass paths via reads, and prompt downstream agents to 'Read the file at <path>...' instead of injecting large previous text. For transcripts, prefer status/stages/stage to get sessionFile/transcriptPath, quote the exact path without rewriting separators (Windows backslashes are valid), then search it with rg/grep and read small ranges; transcript is path-only by default when sessionFile/transcriptPath exists, explicit tail/limit returns bounded previews, and missing transcript paths fall back to a small preview.",
+  "description": "Run named builtin, project, user, or package workflows; custom definitions may import reusable project/package workflows or builtin definitions from @bastani/workflows/builtin and nest them with ctx.workflow(...), including deeper composition within the configured maxDepth; when workflow execution fits but another shape would better achieve the task, author a custom TypeScript workflow({...}) inline with normal coding tools, reload it, and run it; discover with list/get/inputs, list session runs with status (no runId; statusFilter narrows the list), inspect status/stages/stage details, send prompt answers or steering, pause/resume/interrupt/quit runs, and reload workflow resources. For large stage handoffs, write context to files/artifacts, pass paths via reads, and prompt downstream agents to 'Read the file at <path>...' instead of injecting large previous text. For transcripts, prefer status/stages/stage to get sessionFile/transcriptPath, quote the exact path without rewriting separators (Windows backslashes are valid), then search it with rg/grep and read small ranges; transcript is path-only by default when sessionFile/transcriptPath exists, explicit tail/limit returns bounded previews, and missing transcript paths fall back to a small preview.",
   "parameters": {
     "workflow": "string (optional) — workflow ID or normalized name",
     "inputs": "object (optional) — key/value map of workflow inputs",
@@ -596,17 +591,7 @@ Prompt answer replay is live-memory only. `StageSnapshot.promptAnswerState` repo
     "delivery": "optional send delivery mode: auto, answer, prompt, steer, followUp, or resume; auto prioritizes answer, then resume, steer, followUp",
     "promptId": "optional pending prompt identifier for send/answer",
     "reason": "optional human-readable reload reason",
-    "all": "optional boolean for pause/interrupt/quit all; cannot be combined with stageId",
-    "task": "optional direct task object (name + prompt/task) or root task string for direct chain/parallel runs",
-    "tasks": "optional array of direct task objects (parallel direct run)",
-    "chain": "optional array of direct task objects and/or { parallel: [...] } groups (sequential direct run)",
-    "chainName": "optional label for a direct chain run",
-    "concurrency": "optional parallelism limit for direct tasks/chain",
-    "failFast": "optional fail-fast toggle for direct parallel work",
-    "async": "optional boolean to dispatch a run in the background",
-    "intercom": "optional intercom coordination options",
-    "chainDir": "optional directory for direct chain artifacts",
-    "session/task options": "per-stage overrides also accepted at the top level and on direct task items — schema, model, thinkingLevel, fallbackModels, tools, noTools, customTools, mcp, context, cwd, output, outputMode, reads, worktree, gitWorktreeDir, baseBranch, maxOutput, artifacts, and more"
+    "all": "optional boolean for pause/interrupt/quit all; cannot be combined with stageId"
   }
 }
 ```
@@ -651,7 +636,7 @@ export default workflow({
 });
 ```
 
-The `workflow` tool still supports direct one-off `task`, `tasks`, and `chain` modes for agent-initiated orchestration. Those direct modes are runtime tool inputs, not workflow definition files.
+The `workflow` tool accepts named workflow execution (`workflow` plus `inputs`), discovery, inspection, messaging, run control, and reload. Author stage graphs with `ctx.task`, `ctx.chain`, and `ctx.parallel` inside workflow definitions.
 
 For large handoffs, prefer artifact paths over prompt injection: write stage output to `output`, set `outputMode: "file-only"` when the parent only needs the path, pass paths with `reads`, and instruct downstream agents explicitly with wording like `Read the file at <path>...`. Reserve `previous`/`{previous}` for compact summaries; avoid passing full session histories, all prior stage outputs, or every review round directly into the next model prompt. In review loops, save JSON review artifacts and pass only the latest review-round artifact, with a ledger or index file linking older rounds when needed.
 
@@ -662,6 +647,45 @@ To inspect a workflow's input schema inside pi, use `/workflow inputs <name>` or
 ---
 
 ## Builtin workflows
+
+### Six composable pattern workflows
+
+The six common patterns ship as full builtins and are discoverable/runnable by name:
+
+| Workflow | Graph and use | Inputs (defaults) | Parent-consumable outputs |
+|---|---|---|---|
+| `classify-and-act` | structured classifier → deterministic action; HIL fallback for low confidence | `prompt`; `categories` (3 defaults), `confidence_threshold=0.75` | result, category/confidence, classification/action paths |
+| `fan-out-and-synthesize` | partition → bounded artifact fan-out → evidence synthesis barrier | `prompt`; `max_branches=4`, `max_concurrency=4` | result, partitions, branch/synthesis/manifest paths |
+| `adversarial-verification` | worker → fresh rubric verifiers → reducer → bounded repair | `task`; `verifier_count=3`, `max_repairs=2` | result, approval, repairs, candidate/review/verifier paths |
+| `generate-and-filter` | candidate fan-out → dedupe/filter → optional judge → shortlist | `prompt`; `num_candidates=8`, `shortlist_size=3`, `use_judge=true`, `max_concurrency=4` | result, shortlist and candidate/filter/judge/final/manifest paths |
+| `tournament` | independent attempts → order-balanced pairwise judges → bracket reducer | `prompt`; `num_attempts=4`, `max_concurrency=4` | result, winner, attempt/judge/bracket paths |
+| `loop-until-done` | durable ledger → iteration/evaluator loop → complete or inspectable exhaustion | `prompt`; `max_iterations=5` | result/status, ledger, iteration/evaluation paths, remaining work |
+
+All six are exported from `@bastani/workflows/builtin` as definitions (`classifyAndAct`, `fanOutAndSynthesize`, `adversarialVerification`, `generateAndFilter`, `tournament`, and `loopUntilDone`). Import and nest them through `ctx.workflow(definition, { inputs, stageName })`; nested calls respect `maxDepth`. Prefer composition over copying their prompts or graphs: children contribute their stages, dedicated prompts, gates, artifacts, HIL nodes, and declared outputs to the expanded parent graph.
+
+A migration parent can nest all three definitions: fan out the fix pass, independently verify the produced patch set, then run a bounded evidence loop until the repository tests pass:
+
+```ts
+import { adversarialVerification, fanOutAndSynthesize, loopUntilDone } from "@bastani/workflows/builtin";
+
+const fixes = await ctx.workflow(fanOutAndSynthesize, {
+  inputs: { prompt: "Fix every migration call site", max_branches: 6 },
+  stageName: "migration fixes",
+});
+const verification = await ctx.workflow(adversarialVerification, {
+  inputs: { task: `Verify every patch listed by ${fixes.outputs.manifest_path}` },
+  stageName: "verify migration patches",
+});
+const convergence = await ctx.workflow(loopUntilDone, {
+  inputs: {
+    prompt: `Run the migration test suite and repair remaining failures. Start from ${fixes.outputs.manifest_path}; respect the verification decision at ${verification.outputs.review_report_path}.`,
+    max_iterations: 5,
+  },
+  stageName: "loop while migration tests fail",
+});
+```
+
+The parent can consume `fixes.outputs`, `verification.outputs`, and `convergence.outputs` directly, and can repeat the verification child per patch when its own typed input lists individual patch artifacts.
 
 ### `deep-research-codebase`
 

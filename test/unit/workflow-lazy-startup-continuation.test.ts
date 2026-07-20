@@ -246,34 +246,6 @@ describe("workflow lazy-startup continuation fixes", () => {
   });
 
 
-  test("workflow tool direct task run bypasses workflow discovery", async () => {
-    let ensureCalls = 0;
-    let runDirectCalls = 0;
-    const runtime = {
-      async runDirect(): Promise<unknown> {
-        runDirectCalls += 1;
-        return { mode: "task", status: "completed", runId: "direct-run", output: { ok: true } };
-      },
-      dispatch(): never {
-        throw new Error("dispatch should not run");
-      },
-    } as unknown as ExtensionRuntime;
-    const handler = makeExecuteWorkflowTool(
-      runtime,
-      () => undefined,
-      async () => {
-        ensureCalls += 1;
-        throw new Error("discovery failed");
-      },
-    );
-
-    const result = await handler({ action: "run", task: { name: "direct", task: "do it" } }, {} as never);
-
-    assert.equal(ensureCalls, 0);
-    assert.equal(runDirectCalls, 1);
-    assert.equal(result.action, "run");
-    assert.equal(result.runId, "direct-run");
-  });
 
 
   test("workflow tool paused resume bypasses workflow discovery", async () => {

@@ -7,9 +7,6 @@ import { join } from "node:path";
 import {
     RESUME_CONTINUATION_PROMPT,
     run,
-    runChain,
-    runParallel,
-    runTask,
     resolveInputs,
 } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
@@ -354,9 +351,6 @@ export {
     resolveInputs,
     resumeRun,
     run,
-    runChain,
-    runParallel,
-    runTask,
     sleep,
     stageUiBroker,
     structuredOutputMockSession,

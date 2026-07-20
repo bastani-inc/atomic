@@ -16,7 +16,6 @@ import {
     store,
     restoreOnSessionStart,
     WORKFLOW_STAGE_SUBAGENT_GUARD_ENV,
-    WORKFLOW_INVALID_PROVIDER_CREDENTIALS_MESSAGE,
     LIFECYCLE_NOTICE_CUSTOM_TYPE,
     stageControlRegistry,
     stageUiBroker,
@@ -369,28 +368,6 @@ describe("tool run-control actions", () => {
         assert.equal(r.runId, runId);
     });
 
-    test.serial("runtime runDirect retains direct startup model auth failures", async () => {
-        const runtime = createExtensionRuntime({
-            registry: createRegistry([]),
-            models: {
-                async listModels() {
-                    throw { message: "request failed", status: 401 };
-                },
-            },
-        });
-
-        const accepted = await runtime.runDirect({
-            task: { name: "scout", task: "inspect repo", model: "openai/gpt" },
-            async: true,
-        });
-
-        assert.equal(accepted.status, "accepted");
-        assert.ok(accepted.runId);
-        await waitForToolRunEnded(accepted.runId);
-        const failed = store.runs().find((run) => run.id === accepted.runId);
-        assert.equal(failed?.status, "failed");
-        assert.equal(failed?.error, WORKFLOW_INVALID_PROVIDER_CREDENTIALS_MESSAGE);
-    });
 
     test.serial("makeExecuteWorkflowTool resume rejects ambiguous stage prefixes", async () => {
         const runId = `resume-tool-ambiguous-stage-${Date.now()}`;

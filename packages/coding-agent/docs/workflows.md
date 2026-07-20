@@ -44,7 +44,6 @@ Default to a workflow for non-trivial work with a verifiable objective — see [
 - [Monitor and Control Runs](#monitor-and-control-runs)
 - [Lifecycle Notices and Human Input](#lifecycle-notices-and-human-input)
 - [Durable Workflows and Cross-Session Resume](#durable-workflows-and-cross-session-resume)
-- [Direct One-Off Runs](#direct-one-off-runs)
 - [Workflow Locations](#workflow-locations)
 - [Reloading workflow resources](#reloading-workflow-resources)
 - [Workflow Configuration](#workflow-configuration)
@@ -168,7 +167,7 @@ Loop or stop-condition phrasing is an especially strong workflow signal: `do X u
 
 Use direct chat only for tiny, deterministic, low-risk answers or edits where stage tracking clearly costs more than it adds, typically a single-file/no-test/no-review change. Decide inline versus workflow before the first tool call; reconnaissance is already inline execution. Once workflow fit is clear, limit pre-workflow reconnaissance to the few reads needed to sharpen the objective and validation criteria, and put deeper research or behavior probing inside the run.
 
-Workflow-first does not require builtins, monolithic workflows, or a force-fit builtin: a builtin that matches 60% of the task and fights the other 40% is worse than a small custom graph. Discover named builtin, project, user, and package workflows; use direct `task`, `tasks`, or `chain` calls for simple tracked shapes; or author a task-specific TypeScript `workflow({...})` inline with normal coding tools whenever the task needs richer branching, dynamic fan-out, artifacts, structured outputs, child workflows, human input, gates, retries, or loops.
+Workflow-first does not require builtins, monolithic workflows, or a force-fit builtin: a builtin that matches 60% of the task and fights the other 40% is worse than a small custom graph. Discover named builtin, project, user, and package workflows; or author a task-specific TypeScript `workflow({...})` inline with normal coding tools whenever the task needs richer branching, dynamic fan-out, artifacts, structured outputs, child workflows, human input, gates, retries, or loops.
 
 Rich custom workflows can compose the [common workflow patterns](#common-workflow-patterns): classify and branch at runtime, fan out and synthesize artifacts, run worker/verifier/reducer repair cycles, generate and filter or tournament-rank candidates, and loop until explicit evidence says the work is done. Workflow definitions are composable TypeScript modules — see [Workflow Composition](#workflow-composition). Atomic can write the definition, reload workflow resources, and run it for the current task; the workflow tool has no create action.
 
@@ -180,7 +179,6 @@ If inline work drifts past roughly ten exploratory tool calls without an artifac
 | Run an autonomous job that materially benefits from a durable goal ledger, bounded worker turns, named validation, and reviewer-gated completion | `/workflow goal objective="..."` so Atomic captures receipts, gates completion through reviewers, stops as `complete`, `blocked`, or `needs_human`, and can optionally run a final PR handoff with `create_pr=true` after approval |
 | Run an autonomous job that materially benefits from a durable research-first pipeline, delegated implementation, and iterative review | `/workflow ralph prompt="..."` so Atomic can transform the prompt into a research question, research the codebase first, delegate implementation through sub-agents, review, and iterate; prompt text alone does not opt in to PR creation, so add `create_pr=true` only when you want the final `pull-request` stage and `pr_report` |
 | Create or edit reusable automation | a TypeScript workflow definition exported from `workflow({...})` |
-| Track one-off work without saving a workflow file | direct `workflow({ task })`, `workflow({ tasks })`, or `workflow({ chain })` calls |
 | Make a workflow robust | design the stage graph, context handoffs, artifacts, validation gates, model fallbacks, and human approval points before coding |
 
 ### Choosing an Execution Shape
@@ -193,7 +191,6 @@ The shapes, cheapest first:
 |---|---|---|---|
 | **Inline** | Answer or edit directly in the current session. | Lowest latency, zero ceremony. | No tracking, no gates, no isolation, easy to drift. |
 | **Inline + subagents** | Bounded specialist delegation (locate/analyze/research/debug passes, noisy command investigation, parallel read-only fanouts) while the parent keeps control and synthesizes. | Context isolation for noisy or parallel evidence-gathering. | No completion gate, no durable stages; the parent is the only reviewer. |
-| **Direct one-off shapes** | `workflow({ task })`, `workflow({ tasks })`, or `workflow({ chain })` without saving a definition. | Stage tracking, artifacts, model fallbacks, monitoring, resume. | Linear/parallel control flow only; no custom branching or loops. |
 | **Named workflows** | Installed builtin, project, user, or package workflows (`goal`, `ralph`, `deep-research-codebase`, `open-claude-design`, ...). | A proven graph: bounded loops, reviewer gates, ledgers, evidence contracts, tuned model chains. | The task must actually match the graph's objective and inputs. |
 | **Custom workflow** | A task-specific TypeScript `workflow({...})` authored inline, composing the common workflow patterns. | Exactly the control flow the task needs: runtime branching, dynamic fan-out, custom gates, tournaments, bounded loops. | Authoring and reload time; you own the design quality. |
 | **Composed/nested workflows** | A custom parent that imports proven definitions and calls `ctx.workflow(child)`. | Reuse of hardened children (research, review loops) inside custom control flow, within `maxDepth`. | Parent/child input-output contracts must be mapped deliberately. |
@@ -228,7 +225,7 @@ When the ladder is ambiguous, score the task on six dimensions (0–2 each):
 Interpretation:
 
 - **0–3 total:** inline. Adding stages creates more work than value.
-- **4–6 total, Iteration ≤ 1, no gate:** inline subagents (parent-controlled) or a direct one-off `task`/`tasks`/`chain` when tracking and artifacts help.
+- **4–6 total, Iteration ≤ 1, no gate:** inline subagents when the parent should retain control, or a small named/custom workflow when tracking and artifacts matter.
 - **7+ total, or Iteration = 2, or Verifiability = 2 with a review/approval gate:** a real workflow. Prefer a named workflow when one fits the whole task; otherwise author a custom graph, nesting proven children where sub-problems overlap.
 - **Any single hard signal overrides the arithmetic:** an explicit loop/stop condition, an approval or evidence gate, or a request for durable/background execution puts the task in workflow territory regardless of total score.
 
@@ -293,18 +290,78 @@ Atomic's category is broader and more explicit: it is the loop engine for engine
 
 ## Built-in Workflows
 
-Atomic bundles four workflows that cover the most common multi-stage jobs. They are available in every session — no install step required. Use `/workflow list` to confirm they are loaded, and `/workflow inputs <name>` to see the exact inputs in your environment.
+Atomic bundles ten workflows: four established end-to-end workflows and six reusable implementations of the common workflow patterns. They are available in every session — no install step required. Use `/workflow list` to confirm they are loaded, and `/workflow inputs <name>` to see the exact inputs in your environment.
 
-Workflow authors can also use these builtins as workflow definitions. Import them from `@bastani/workflows/builtin` and pass the definition directly to `ctx.workflow(...)` when one workflow should call `deep-research-codebase`, `goal`, `ralph`, `open-claude-design`, or another builtin as a nested child workflow. See [Workflow Composition](#workflow-composition) for full examples alongside user-defined child workflows.
+Workflow authors can also use these builtins as workflow definitions. Import them from `@bastani/workflows/builtin` and pass the definition directly to `ctx.workflow(...)` when one workflow should call `deep-research-codebase`, `goal`, `ralph`, `open-claude-design`, or any of the six pattern builtins as a nested child workflow. See [Workflow Composition](#workflow-composition) for full examples alongside user-defined child workflows.
 
 For the builtin result tables below, `deep-research-codebase`, `goal`, and `ralph` explicitly declare `outputs: { result: Type.Optional(Type.String(...)) }`, so `result` is an optional part of their declared output contracts and may be omitted, including after an intentional early exit. Like every workflow output, `result` must be declared in `outputs` and returned from `run` or supplied to `ctx.exit({ outputs })` when present — see [Outputs](#outputs); Atomic adds no automatic `result` output.
 
 | Workflow | What it does | When to use |
 |---|---|---|
+| `classify-and-act` | Structured classifier → deterministic category action; low confidence falls back to human selection. | Route heterogeneous requests to isolated category-specific work. |
+| `fan-out-and-synthesize` | Structured partition → bounded parallel artifact branches → synthesis barrier. | Split independent slices and merge evidence with dedupe/conflict resolution. |
+| `adversarial-verification` | Worker → fresh rubric verifiers → reducer → bounded repair loop. | Independently prove or reject a candidate. |
+| `generate-and-filter` | Candidate fan-out → rubric dedupe/filter → optional judge → shortlist. | Explore more options than you need and select the strongest distinct few. |
+| `tournament` | Whole-task attempts → balanced pairwise judges → bracket reducer. | Compare subjective or approach-sensitive solutions. |
+| `loop-until-done` | Durable ledger → iteration/evaluator loop → success or inspectable bound exhaustion. | Continue until explicit evidence proves completion. |
 | `deep-research-codebase` | Scout + research-history chain → parallel specialist waves → aggregator. Indexes the whole repo and synthesizes findings. | Broad or cross-cutting research before you decide what to change. Prefer `/skill:research-codebase` for one subsystem. |
 | `goal` | Persisted goal ledger → bounded worker turns → receipts → three-reviewer gate → deterministic reducer → final report → optional final-stage PR handoff after approval. | Clearly delegated autonomous work that materially benefits from a durable goal ledger, bounded worker turns, named validation, and reviewer-gated completion; optionally allow only the final `pull-request` stage to attempt PR creation with `create_pr=true` after Goal reaches `complete`. |
 | `ralph` | Raw prompt → research-prompt-refinement → codebase/online research → sub-agent orchestration → multi-model parallel review → optional final-stage PR handoff. | Clearly delegated autonomous work that materially benefits from a durable research-first pipeline, delegated implementation, and iterative review; optionally allow only the final `pull-request` stage to attempt PR creation with `create_pr=true`. |
 | `open-claude-design` | Combined discovery/init (`/skill:impeccable shape` + `/skill:impeccable init` in one `discovery` stage) → design-system/reference research (`ds-*`) → curated gallery reference-discovery using that context → separate forked `generate-*` and `user-feedback-*` chains → rich HTML handoff (`exporter` → `final-display`). The discovery stage asks what to build, the output type, and which references to emulate, then lets impeccable init detect/create/reconcile `PRODUCT.md` and `DESIGN.md` (references take precedence over project context). Renders a live `preview.html` you can iterate against in the browser (opens through impeccable `live` / the `playwright-cli` skill when available). | UI, page, component, theme, or design-token work that benefits from a guided brief, beautiful references, and generation + user feedback loops. |
+
+### Six composable pattern builtins
+
+The six patterns in [Pattern diagrams](#pattern-diagrams) ship as full definitions exported from `@bastani/workflows/builtin`. Each has typed/defaulted inputs and declared outputs a parent can consume:
+
+| Workflow | Required input | Bounded/defaulted knobs | Principal declared outputs |
+|---|---|---|---|
+| `classify-and-act` | `prompt` | `categories` (1–8), `confidence_threshold` (0.5–0.99) | `result`, `category`, `confidence`, classification/action paths |
+| `fan-out-and-synthesize` | `prompt` | `max_branches` (1–12), `max_concurrency` (1–12) | `result`, partitions, branch paths, synthesis/manifest paths |
+| `adversarial-verification` | `task` | `verifier_count` (1–5), `max_repairs` (0–5) | `result`, `approved`, repairs, candidate/review/verifier paths, remaining work |
+| `generate-and-filter` | `prompt` | `num_candidates` (2–20), `shortlist_size` (1–10), `use_judge`, `max_concurrency` | `result`, shortlist, candidate/filter/judge/final/manifest paths |
+| `tournament` | `prompt` | `num_attempts` (2–8), `max_concurrency` (1–8) | `result`, winner, attempt/judge/bracket paths |
+| `loop-until-done` | `prompt` | `max_iterations` (1–20) | `result`, `status`, ledger, iteration/evaluation paths, remaining work |
+
+Run them by name with `/workflow <name> ...` or import their definitions:
+
+```ts
+import {
+  adversarialVerification, classifyAndAct, fanOutAndSynthesize,
+  generateAndFilter, loopUntilDone, tournament,
+} from "@bastani/workflows/builtin";
+
+const child = await ctx.workflow(fanOutAndSynthesize, {
+  inputs: { prompt: "Fix every migration call site", max_branches: 6 },
+  stageName: "migration fix pass",
+});
+if (child.exited === false) console.log(child.outputs.synthesis_path);
+```
+
+All six can be nested with `ctx.workflow(definition, { inputs, stageName })` and count toward `maxDepth` (default four workflow levels). Prefer composing these definitions over copying their prompts or graphs: nested children contribute their stages, dedicated prompts, gates, artifacts, HIL nodes, and declared outputs to the expanded parent graph. A migration parent can wrap a `fan-out-and-synthesize` fix pass in `loop-until-done` while tests fail, then invoke `adversarial-verification` for each resulting patch; the parent consumes declared artifact paths and decisions rather than recreating the three graphs.
+
+Concrete migration composition:
+
+```ts
+import { adversarialVerification, fanOutAndSynthesize, loopUntilDone } from "@bastani/workflows/builtin";
+
+const fixes = await ctx.workflow(fanOutAndSynthesize, {
+  inputs: { prompt: "Fix every migration call site", max_branches: 6 },
+  stageName: "migration fixes",
+});
+const verification = await ctx.workflow(adversarialVerification, {
+  inputs: { task: `Verify every patch listed by ${fixes.outputs.manifest_path}` },
+  stageName: "verify migration patches",
+});
+const convergence = await ctx.workflow(loopUntilDone, {
+  inputs: {
+    prompt: `Run migration tests and repair remaining failures using ${fixes.outputs.manifest_path} and ${verification.outputs.review_report_path}.`,
+    max_iterations: 5,
+  },
+  stageName: "loop while migration tests fail",
+});
+```
+
+The parent can consume every child's precise declared outputs and can call `adversarialVerification` once per patch when its own typed input enumerates patch artifacts.
 
 ### `deep-research-codebase`
 
@@ -677,7 +734,7 @@ Authoring basics:
 
 To migrate an existing file from the removed `defineWorkflow(...).compile()` builder, see [Migrating from the `defineWorkflow()` Builder API](#migrating-from-the-defineworkflow-builder-api) for the full method-to-key mapping, a before/after walkthrough, and a conversion checklist.
 
-`prompt` and `task` are aliases for task text. Prefer `prompt` inside authored workflow files because it mirrors lower-level `stage.prompt(...)`; `task` remains useful in direct tool calls and chain examples.
+`prompt` and `task` are aliases for task text inside authored workflow primitives. Prefer `prompt` because it mirrors lower-level `stage.prompt(...)`; `task` remains useful in `ctx.chain(...)` examples.
 
 Author workflows to create at least one tracked stage by calling `ctx.task()`, `ctx.chain()`, `ctx.parallel()`, `ctx.stage()`, or `ctx.workflow()` in the run body so each normal run has graph nodes to inspect, attach to, interrupt, resume, and render. Guard-only workflows may call `ctx.exit(...)` before creating a stage when they intentionally stop early.
 
@@ -1307,7 +1364,7 @@ ctx.chain(
 ): Promise<WorkflowTaskResult[]>;
 ```
 
-Runs named task steps in sequence. The first missing task uses `{task}` from chain options or the root direct task; later missing tasks use `{previous}`.
+Runs named task steps in sequence. The first missing task uses `{task}` from chain options; later missing tasks use `{previous}`.
 
 ### `ctx.parallel(steps, options?)`
 
@@ -1485,7 +1542,7 @@ See [Early exit with `ctx.exit()`](#early-exit-with-ctxexit) for snapshotting, c
 
 ## Task and Stage Options
 
-`StageOptions`, task session fields, and the direct step types share the fields below. `ctx.task`, `ctx.chain`, and `ctx.parallel` inherit these options where their signatures use the corresponding option type.
+`StageOptions` and task session fields share the fields below. `ctx.task`, `ctx.chain`, and `ctx.parallel` inherit these options where their signatures use the corresponding option type.
 
 ### `prompt` / `task`
 
@@ -1494,7 +1551,7 @@ readonly prompt?: string;
 readonly task?: string;
 ```
 
-Aliases for task text. Prefer `prompt` in authored workflow files because it mirrors `stage.prompt(...)`; `task` remains useful in direct tool calls and chains.
+Aliases for task text. Prefer `prompt` in authored workflow files because it mirrors `stage.prompt(...)`; `task` remains a supported alias inside authored `ctx.task`, `ctx.chain`, and `ctx.parallel` calls.
 
 ### `previous`
 
@@ -1526,7 +1583,7 @@ Select a clean session or a forked context, with `forkFromSessionFile` naming an
 readonly group?: string | true;
 ```
 
-Sets the stage session's [Intercom](/intercom) home group so orchestrated stages can be isolated into coordination groups: a stage in group G can only intercom peers in G. Provide a named string to join that group, or boolean `true` to auto-generate one shared UUID group **per parallel set** (minted once and shared across every item in that `ctx.parallel`/`tasks` set — never a fresh id per item), so a whole level of reviewers lands in the same isolated group. Authored workflow values and agent-serialized direct-tool values both accept the trimmed, case-insensitive string sentinels `"true"` and `"auto"`. Those two names are reserved for automatic grouping; use a different name when you need a literal named group. Omit `group` to inherit per the precedence chain (ultimately `"default"`).
+Sets the stage session's [Intercom](/intercom) home group so orchestrated stages can be isolated into coordination groups: a stage in group G can only intercom peers in G. Provide a named string to join that group, or boolean `true` to auto-generate one shared UUID group **per `ctx.parallel(...)` set** (minted once and shared across every item in that set — never a fresh id per item), so a whole level of reviewers lands in the same isolated group. Authored workflow values accept the trimmed, case-insensitive string sentinels `"true"` and `"auto"`. Those two names are reserved for automatic grouping; use a different name when you need a literal named group. Omit `group` to inherit per the precedence chain (ultimately `"default"`).
 
 `group` is accepted at every level — run-level defaults (`context`), `stage`/`task`, `parallel` step options, and per parallel item — and resolves most-specific-first: `parallel-item > task/stage > parallel-step > run-level`. The resolved value is injected per-session (race-safe across concurrently running in-process stages, stable across model fallback). Group assignment is **gated on intercom capability**: a stage with `noTools`, a `tools` allowlist that omits `intercom`, or `excludedTools` containing `intercom` is never placed into a group (so an agent is never isolated into a group it cannot use). Subagents spawned by a grouped stage inherit that stage's group by default (see [subagents.md](/subagents)), so a reviewer level and its helper subagents form one isolated group. The subagent-only `contact_supervisor` channel still reaches the supervisor across group boundaries through a broker capability bound to the child/supervisor relationship and restored across reconnects; ordinary client `send` frames never gain cross-group authority from a channel flag.
 
@@ -1635,7 +1692,7 @@ readonly output?: string | false;
 readonly outputMode?: "inline" | "file-only";
 ```
 
-Writes direct output to a path or disables output persistence with `false`. `outputMode` defaults to `inline`; `file-only` keeps the parent result compact by returning an artifact reference instead of full text and requires an output path.
+Writes stage/task output to a path or disables output persistence with `false`. `outputMode` defaults to `inline`; `file-only` keeps the parent result compact by returning an artifact reference instead of full text and requires an output path.
 
 ### `reads`
 
@@ -1662,7 +1719,7 @@ Limits inline output by bytes, lines, or both. Omitted bounds default to `204800
 readonly artifacts?: boolean;
 ```
 
-Controls automatic session and worktree-diff artifact collection in direct results and defaults to `true`; explicit output-file artifacts remain available when automatic collection is disabled.
+Controls automatic session and worktree-diff artifact collection in task results and defaults to `true`; explicit output-file artifacts remain available when automatic collection is disabled.
 
 ### `worktree`
 
@@ -1670,7 +1727,7 @@ Controls automatic session and worktree-diff artifact collection in direct resul
 readonly worktree?: boolean;
 ```
 
-Requests a runner-managed branch-backed temporary worktree in direct mode. Atomic creates it at `<main-root>/.atomic/worktrees/<flattened-name>` on branch `worktree-<flattened-name>`, replacing `/` in generated names with `+`. Creation remains anchored at the canonical main root when invoked inside a linked worktree. The base ref resolves as explicit `baseBranch`, then `origin/<default-branch>` (fetched when absent), then `HEAD`. Atomic propagates local settings, configures the main repository's Husky or populated hooks directory through shared `core.hooksPath`, symlinks configured `worktree.symlinkDirectories`, and copies gitignored `.worktreeinclude` matches without overwriting tracked files. It is mutually exclusive with `gitWorktreeDir`; cleanup forcibly removes the worktree and deletes its branch even after post-creation startup failure.
+Requests a runner-managed branch-backed temporary worktree for an authored `ctx.task(...)`. Atomic creates it at `<main-root>/.atomic/worktrees/<flattened-name>` on branch `worktree-<flattened-name>`, replacing `/` in generated names with `+`. Creation remains anchored at the canonical main root when invoked inside a linked worktree. The base ref resolves as explicit `baseBranch`, then `origin/<default-branch>` (fetched when absent), then `HEAD`. Atomic propagates local settings, configures the main repository's Husky or populated hooks directory through shared `core.hooksPath`, symlinks configured `worktree.symlinkDirectories`, and copies gitignored `.worktreeinclude` matches without overwriting tracked files. It is mutually exclusive with `gitWorktreeDir`; cleanup forcibly removes the worktree and deletes its branch even when startup fails before the callback.
 
 ### `gitWorktreeDir` / `baseBranch`
 
@@ -1683,7 +1740,7 @@ Selects or creates a reusable same-repository Git worktree for `ctx.stage`, `ctx
 
 - **Creation and validation:** A missing path is created with `git worktree add --detach <path> <baseBranch>` from the canonical main repository root, where an omitted or blank `baseBranch` defaults to `HEAD`. Existing paths must be same-repository worktree roots outside the invoking checkout; the checkout itself, nested targets, and missing targets whose symlinked parent resolves inside it are rejected.
 - **Cwd remapping:** The default cwd preserves the invoking repository-relative subdirectory inside the worktree. Absolute cwd values inside the invoking repository are remapped, values already inside the worktree are preserved, and relative values resolve from the worktree cwd without lexical or symlink escape.
-- **Output containment:** Runner-managed reusable-worktree relative outputs follow the effective worktree cwd and cannot escape through traversal or symlinks. Temporary-worktree outputs are copied to distinct runner-owned artifact directories before cleanup, including in `file-only` mode, and Atomic rejects a pre-existing symlink or junction at the trusted artifact root. Explicit absolute outputs and nonblank explicit `chainDir` paths remain caller-selected, while blank `chainDir` is omitted.
+- **Output containment:** Runner-managed reusable-worktree relative outputs follow the effective worktree cwd and cannot escape through traversal or symlinks. Temporary-worktree outputs are copied to distinct runner-owned artifact directories before cleanup, including in `file-only` mode. Explicit absolute outputs remain caller-selected.
 - **Caching and diagnostics:** Temporary isolation defaults to the runner invocation cwd, and relative task cwd values resolve there. Reusable setup is cached by canonical repository and target identity independently of equivalent path spelling or `baseBranch`, revalidates checkout identity before reuse, retries one transient timeout from read-only repository probes, and reports the exact Git command, cwd, timeout, elapsed time, exit status or signal, and spawn error details on failure.
 - **Security boundary:** Worktrees isolate checkouts and cwd, not the operating system. Use a container, VM, or another OS-enforced boundary for untrusted code that can race or mutate arbitrary paths.
 
@@ -1724,28 +1781,19 @@ These are advanced host-supplied SDK seams on the runtime `StageOptions` used by
 
 The runtime strips workflow-owned fields before forwarding session options. Internal durable fields such as `resumeFromSessionFile`, `durableReplayKey`, and `durableAccumulatedDurationMs` are not public authoring options.
 
-### `name` / `count` (step items)
+### `name` (step items)
 
 ```typescript
 interface WorkflowTaskStep extends WorkflowTaskOptions {
   readonly name: string;
 }
-interface WorkflowDirectTaskItem extends WorkflowTaskOptions {
-  readonly name: string;
-  readonly count?: number;
-}
 ```
 
-Every chain, parallel, and direct task item has a required display name. Direct items may request repeated expansion with `count`; omitting it runs the item once.
+Every authored chain and parallel item has a required display name.
 
-### `chainName` / `chainDir`
+### `chainDir`
 
-```typescript
-readonly chainName?: string;
-readonly chainDir?: string;
-```
-
-`chainName` groups direct-chain status and artifacts. `chainDir` sets the shared directory for relative reads, outputs, and worktree diffs; the runtime treats blank values as omitted.
+`WorkflowChainOptions.chainDir` sets the base directory for relative reads and outputs inside an authored `ctx.chain(...)`. It is an in-workflow primitive option, not a top-level workflow tool argument.
 
 ### `concurrency` / `failFast`
 
@@ -1754,22 +1802,7 @@ readonly concurrency?: number;
 readonly failFast?: boolean;
 ```
 
-`WorkflowParallelOptions` and direct options use `concurrency` to bound active tasks. When omitted, the runtime uses the workflow's `defaultConcurrency` setting, which defaults to `4`; parallel execution is fail-fast unless `failFast` is explicitly `false`.
-
-### Parallel chain-step fields
-
-```typescript
-interface WorkflowParallelChainStep {
-  readonly parallel: readonly WorkflowDirectTaskItem[];
-  readonly concurrency?: number;
-  readonly failFast?: boolean;
-  readonly worktree?: boolean;
-  readonly gitWorktreeDir?: string;
-  readonly baseBranch?: string;
-}
-```
-
-A direct chain may contain a grouped parallel step with its own concurrency, failure, and worktree defaults. Missing tasks inside the group use `{previous}`.
+`WorkflowParallelOptions` uses `concurrency` to bound active tasks in an authored `ctx.parallel(...)`. When omitted, the runtime uses the workflow's `defaultConcurrency` setting, which defaults to `4`; parallel execution is fail-fast unless `failFast` is explicitly `false`.
 
 ### Stage prompt options (`StagePromptOptions`)
 
@@ -2066,7 +2099,7 @@ interface WorkflowIntercomSummary extends WorkflowSerializableObject {
 }
 ```
 
-Returned by `runTask()`, `runChain()`, and `runParallel()`. Its mode-specific fields carry direct results, output and artifact summaries, control or Intercom details, warnings, and intentional-exit metadata.
+Used by workflow tool result rendering and Intercom integration for named, inspection, and control results.
 
 ### `WorkflowChildResult`
 
@@ -2164,12 +2197,12 @@ workflow({ action: "inputs", workflow: "deep-research-codebase" })
 The workflow tool action surface is:
 
 - discovery: `list`, `get`, `inputs`
-- execution: named `run`, plus direct one-off `task`, `tasks`, and `chain` modes
+- execution: named `run` with validated `workflow` and `inputs`
 - inspection: `status`, `stages`, `stage`, `transcript`
 - messaging and run control: `send`, `pause`, `interrupt`, `quit`, `resume`
 - rediscovery: `reload`
 
-From interactive chat, model-launched workflows run in the background so the parent chat stays available. Run `/workflow connect <run>` to see agents working and chat with and steer each stage. Named workflow launches already run in the background; direct `task`, `tasks`, and `chain` launches must pass top-level `async: true`, and their accepted raw/rendered results include the same actionable connect guidance. This rule applies only to launches, not inspection or control calls (`status`, `stages`, `stage`, `transcript`, `send`, `pause`, `resume`, `interrupt`, `quit`).
+From interactive chat, named workflow launches run in the background so the parent chat stays available. Run `/workflow connect <run>` to see agents working and chat with and steer each stage. Inspection and control calls (`status`, `stages`, `stage`, `transcript`, `send`, `pause`, `resume`, `interrupt`, `quit`) remain available while work runs.
 
 Named launches wait only for **startup admission**, not for workflow completion. Atomic returns `status: "running"` after durable registration, reusable-worktree setup, and other pre-body setup succeed, while the workflow body and stages continue in the background. If setup fails before the workflow body is admitted — for example, `git_worktree_dir` points inside the invoking checkout — the original `workflow` tool call instead returns a structured `status: "failed"` result with the allocated run id and concrete setup error. No background-start claim or orphan run is retained, so the caller can correct the inputs and retry immediately. Failures after admission remain ordinary background lifecycle outcomes reported through status and lifecycle notices.
 
@@ -2336,7 +2369,7 @@ When several paused stages resume together, Atomic settles every acknowledgement
 
 These are distinct operations. *Resuming workflow execution* (`/workflow resume`) is for paused, interrupted, recoverably failed, or unfinished durable work; it may replay checkpoints, continue an incomplete stage, and dispatch remaining DAG work. *Opening a post-mortem chat* reopens one terminal agent stage's retained conversation for follow-up only — it never resumes, retries, rewinds, or otherwise changes workflow execution.
 
-Any eligible terminal agent stage with a valid retained session opens as an interactive post-mortem chat regardless of how you reach it: same-process `task`/`tasks`/`chain` stages, completed-workflow inspection, generic `/workflow attach` / `/workflow connect`, restored/replayed durable snapshots after a restart, and `workflow({ action: "send" })`. Explicit `/workflow attach <root-run> <nested-stage>` targets are resolved through the expanded graph and routed to the child run that owns the stage while the overlay remains rooted on the requested graph; the resolved owner is preserved when sibling child workflows reuse the same local stage ID.
+Any eligible terminal agent stage with a valid retained session opens as an interactive post-mortem chat regardless of how you reach it: same-process `ctx.task`/`ctx.chain`/`ctx.parallel` stages, completed-workflow inspection, generic `/workflow attach` / `/workflow connect`, restored/replayed durable snapshots after a restart, and `workflow({ action: "send" })`. Explicit `/workflow attach <root-run> <nested-stage>` targets are resolved through the expanded graph and routed to the child run that owns the stage while the overlay remains rooted on the requested graph; the resolved owner is preserved when sibling child workflows reuse the same local stage ID.
 
 When a nested stage is reopened after a restart or from another checkout, its session cwd comes from the durable root workflow (resolved workflow cwd first, then original invocation cwd) while stage-control ownership remains with the actual child run. Follow-up turns are appended in place to the stage's retained session (no separate fork), so the agent may still invoke its ordinary tools and cause side effects; only the workflow DAG, run/stage status, results, timings, checkpoints, and topology are immutable.
 
@@ -2505,108 +2538,6 @@ Atomic updates the in-memory replay mirror for awaited DBOS checkpoints only aft
 
 Atomic does not use the legacy file backend under `~/.atomic/workflow-durable`; cross-session `/workflow resume` reads DBOS only.
 
-## Direct One-Off Runs
-
-Use direct workflow-native orchestration for one-off tracked work that does not need a reusable workflow file.
-
-Single tracked task:
-
-```ts
-workflow({
-  task: {
-    name: "review",
-    task: "Review this patch for API risks.",
-    context: "fresh",
-    output: "reviews/api.md",
-  },
-  async: true,
-  intercom: { delivery: "result" },
-})
-```
-
-Parallel fan-out:
-
-```ts
-workflow({
-  tasks: [
-    { name: "docs", task: "Review documentation gaps" },
-    { name: "risks", task: "Review operational risks" },
-  ],
-  concurrency: 2,
-  outputMode: "file-only",
-  async: true,
-})
-```
-
-Dependent chain:
-
-```ts
-workflow({
-  task: "Design the workflow SDK migration",
-  chain: [
-    { name: "research", task: "Research {task}" },
-    { name: "plan", task: "Plan from {previous}" },
-  ],
-  async: true,
-})
-```
-
-Mixed chain with a parallel review step:
-
-```ts
-workflow({
-  task: "map the release process",
-  chain: [
-    { name: "researcher", task: "Research {task}" },
-    {
-      parallel: [
-        { name: "risk-reviewer", task: "Review risks in {previous}" },
-        { name: "docs-reviewer", task: "Find documentation gaps in {previous}" },
-      ],
-      concurrency: 2,
-    },
-    { name: "planner", task: "Create a plan from {previous}" },
-  ],
-  async: true,
-  intercom: { delivery: "result" },
-})
-```
-
-Direct mode supports top-level/default options and per-task options such as `context`, `forkFromSessionFile`, `model`, `fallbackModels`, `thinkingLevel`, `contextWindow`, `tools`, `noTools`, `customTools`, `mcp`, `output`, `outputMode`, `reads`, `worktree`, `gitWorktreeDir`, `baseBranch`, `maxOutput`, `artifacts`, `sessionDir`, `cwd`, and `agentDir`. Direct chains also support `chainName`, `chainDir`, and `failFast`.
-
-Every async direct launch that returns `status: "accepted"` is registered in the run store before control returns. The run therefore appears immediately in `workflow({ action: "status" })`, `/workflow status`, and the workflow graph, and remains inspectable through its terminal state. Model validation, task expansion, and temporary-worktree preparation run inside that registered lifecycle; if any of them fails before the first stage starts, Atomic retains a terminal `failed` snapshot with the concrete error and emits the ordinary failed lifecycle notice to the invoking chat. Foreground direct helpers use the same retained lifecycle rather than returning an untracked startup error.
-
-### Direct-run grouping and Intercom options
-
-```typescript
-interface WorkflowToolArgs extends StageOptions {
-  // Named-workflow, inspection, messaging, task/chain, and output fields omitted here.
-  chainName?: string;
-  chainDir?: string;
-  concurrency?: number;
-  failFast?: boolean;
-  async?: boolean;
-  intercom?: {
-    enabled?: boolean;
-    delivery?: "off" | "notify" | "result" | "control-and-result";
-    parentSession?: string;
-    notifyOn?: Array<
-      "active_long_running" | "needs_attention" | "completed" | "failed"
-    >;
-  };
-}
-```
-
-The signature excerpt shows the grouping, scheduling, and Intercom fields; `WorkflowToolArgs` also carries the named-workflow, inspection, messaging, task/chain, and output fields documented throughout this guide. `chainName` and `chainDir` group direct-chain status and artifacts, while `concurrency` and `failFast` control direct fan-out. `async` launches independently; `intercom` controls whether and how notifications or results return to a parent session, which parent receives them, and which lifecycle events notify.
-
-For large fan-outs, prefer `outputMode: "file-only"` so the parent result contains compact file references instead of full output. Treat [intercom](/intercom) payloads from async direct runs as user-visible workflow output.
-
-Worktree isolation is an explicit runtime option, not a property inferred from task text. Natural-language instructions to create or use a worktree do not enable runner isolation, and `cwd` only selects the starting directory; a write-capable direct run without a worktree option executes in that checkout. Set `worktree: true` for runner-managed temporary per-task worktrees, or set `gitWorktreeDir` for a runner-managed reusable same-repository worktree. Invalid, empty, foreign-repository, or conflicting worktree requests fail with an actionable diagnostic rather than falling back to the invoking checkout.
-
-For independent task queues, prefer one run per item with its own reusable worktree instead of a monolithic chain rooted in the primary checkout.
-
-Worktree mechanics and validation rules are covered in [Task and Stage Options](#task-and-stage-options).
-
 ## Workflow Locations
 
 Atomic discovers workflow definitions in this order:
@@ -2711,7 +2642,7 @@ Runtime config defaults:
 
 | Key | Default | Purpose |
 |-----|---------|---------|
-| `defaultConcurrency` | `4` | Default concurrency for direct parallel/grouped execution |
+| `defaultConcurrency` | `4` | Default concurrency for authored `ctx.parallel(...)` execution |
 | `maxDepth` | `4` | Maximum workflow nesting depth |
 | `persistRuns` | `true` | Persist run metadata for status/resume/history |
 | `statusFile` | `false` | Write a derived status file; defaults under `.atomic/workflows/status.json` when enabled |
@@ -2815,7 +2746,7 @@ Workflow stage sessions inherit the same package and temporary `-e` resource dis
 
 - `/workflow <name> key=value ...` for interactive named runs
 - `/workflow connect|attach|pause|interrupt|quit|resume|status|inputs|reload` for live control, inspection, and rediscovery
-- the `workflow` tool for agent-initiated orchestration and direct one-off runs
+- the `workflow` tool for named execution, discovery, inspection, messaging, run control, and reload
 
 The signatures in this reference follow the externally shipped standalone authoring declaration in `packages/workflows/src/authoring.ts`. Atomic's internal runtime types may specialize opaque SDK values or add executor-only integration fields; those are not ordinary workflow-package authoring API.
 
@@ -2865,7 +2796,6 @@ Workflow SDK type resolution depends on the package's other imports:
 Either form makes `import { workflow } from "@bastani/workflows"
 import { Type } from "typebox"` and the `@bastani/workflows/builtin/*` composition imports resolve under `tsc` (`moduleResolution: NodeNext`) with no hand-authored `.d.ts`, no `declare module` shim, and no `paths` alias. `@bastani/workflows` is not a separate npm package — its types ship with `@bastani/atomic` — so list both `@bastani/atomic` and `typebox` (workflow files import `Type` from `typebox`) in `peerDependencies`. Runtime discovery and loading via `atomic.workflows` are unchanged: Atomic's loader still supplies the SDK when workflow files execute.
 
-The `workflow` tool supports direct one-off `task`, `tasks`, and `chain` modes. Direct chains support `chainName` for status/artifact grouping and `chainDir` as a shared directory for relative reads, outputs, and worktree diffs.
 
 ### `workflow(spec)`
 
@@ -2987,20 +2917,9 @@ interface RunOpts {
 }
 ```
 
-Supplies runtime adapters, execution policy, persistence, MCP, cancellation, graph/store integration, continuation metadata, and lifecycle callbacks to `run(...)` and direct helpers. Every field is optional.
+Supplies runtime adapters, execution policy, persistence, MCP, cancellation, graph/store integration, continuation metadata, and lifecycle callbacks to `run(...)`. Every field is optional.
 
 The public authoring declaration intentionally excludes runtime-only executor fields such as `defaultSessionDir`, `gitWorktreeSetupCache`, `durableBackend`, `durableScope`, and `onStageSession`.
-
-### `runTask()` / `runChain()` / `runParallel()`
-
-```typescript
-function runTask(task: WorkflowDirectTaskItem, runOptions?: RunOpts): Promise<WorkflowDetails>;
-function runTask(task: WorkflowDirectTaskItem, options?: WorkflowDirectOptions, runOptions?: RunOpts): Promise<WorkflowDetails>;
-function runChain(steps: readonly WorkflowChainStep[], options?: WorkflowDirectOptions, runOptions?: RunOpts): Promise<WorkflowDetails>;
-function runParallel(tasks: readonly WorkflowDirectTaskItem[], options?: WorkflowDirectOptions, runOptions?: RunOpts): Promise<WorkflowDetails>;
-```
-
-Execute direct one-off shapes without a reusable definition. Their item and option fields match [Task and Stage Options](#task-and-stage-options), and they return [`WorkflowDetails`](#workflowdetails).
 
 ### `resolveInputs(schema, provided)`
 
@@ -3152,7 +3071,7 @@ import {
 } from "@bastani/workflows/builtin";
 ```
 
-Each builtin is a workflow definition. You can also import it from its individual module path: `@bastani/workflows/builtin/deep-research-codebase`, `/goal`, `/open-claude-design`, or `/ralph`. See [Compose with builtin workflows](#compose-with-builtin-workflows) for the import table and a parent workflow example.
+Each builtin is a workflow definition. The barrel and individual module paths also export the six pattern workflows documented below. See [Compose with builtin workflows](#compose-with-builtin-workflows) for the import table and a parent workflow example.
 
 
 ## Fast Inference for Workflow Stages
@@ -3237,7 +3156,7 @@ A compressed handoff includes:
 - rejected alternatives when they matter
 - next action expected from the downstream stage
 
-Use `output`, `outputMode: "file-only"`, `reads`, and `chainDir` for large research bundles, logs, or reviewer outputs. Keep summaries compact and let downstream stages read full artifacts only when needed. In the downstream stage prompt, say `Read the file at ${artifactPath} before continuing.` Do not inject full session tails, all previous stage outputs, or every prior review round into later prompts by default; pass the latest relevant artifact paths and make older history discoverable from a ledger or index file.
+Use `output`, `outputMode: "file-only"`, and `reads` for large research bundles, logs, or reviewer outputs. Keep summaries compact and let downstream stages read full artifacts only when needed. In the downstream stage prompt, say `Read the file at ${artifactPath} before continuing.` Do not inject full session tails, all previous stage outputs, or every prior review round into later prompts by default; pass the latest relevant artifact paths and make older history discoverable from a ledger or index file.
 
 Substantial handoffs should travel through files or durable artifacts instead of hidden transcript assumptions. This keeps stage prompts small, makes review/audit possible, and lets later stages reread the authoritative material without depending on what a previous model summarized.
 
@@ -3681,7 +3600,7 @@ Summarize root cause, proposed fix, files involved, validation plan, and remaini
 
 For workflows larger than one tracked task, choose a small control-flow pattern before writing prompts. **Workflow authors should favor these common patterns by default:** naming the pattern up front keeps the stage graph understandable, makes validation gates explicit, and helps reviewers see why work is split across model sessions. Reach for a bespoke structure only when none of these patterns fit.
 
-These patterns are composable. For example, a migration workflow might use **fan-out-and-synthesize** to fix many call sites, then **adversarial verification** to review each patch, and finally **loop until done** while tests still fail.
+These patterns are composable and the headings below link to runnable builtins. For example, a migration workflow can nest [**fan-out-and-synthesize**](#six-composable-pattern-builtins) for call-site fixes, [**adversarial-verification**](#six-composable-pattern-builtins) per patch, and [**loop-until-done**](#six-composable-pattern-builtins) while tests still fail. Import and compose the builtin definitions instead of copying their prompts/graphs.
 
 | Pattern | Use it when | Atomic shape |
 |---|---|---|
@@ -3695,6 +3614,8 @@ These patterns are composable. For example, a migration workflow might use **fan
 #### Pattern diagrams
 
 ##### 1. Classify-and-act
+
+Builtin definition and contracts: [Six composable pattern builtins](#six-composable-pattern-builtins).
 
 ```text
 ┌─ 1  Classify-and-act ────────────────────────────────────┐
@@ -3718,6 +3639,8 @@ Best practices:
 - Add a fallback or human-input branch for low-confidence classifications.
 
 ##### 2. Fan-out-and-synthesize
+
+Builtin definition and contracts: [Six composable pattern builtins](#six-composable-pattern-builtins).
 
 ```text
 ┌─ 2  Fan-out-and-synthesize ──────────────────────────────┐
@@ -3745,6 +3668,8 @@ Best practices:
 
 ##### 3. Adversarial verification
 
+Builtin definition and contracts: [Six composable pattern builtins](#six-composable-pattern-builtins).
+
 ```text
 ┌─ 3  Adversarial verification ────────────────────────────┐
 │                                                          │
@@ -3769,6 +3694,8 @@ Best practices:
 
 ##### 4. Generate-and-filter
 
+Builtin definition and contracts: [Six composable pattern builtins](#six-composable-pattern-builtins).
+
 ```text
 ┌─ 4  Generate-and-filter ─────────────────────────────────┐
 │                                                          │
@@ -3792,6 +3719,8 @@ Best practices:
 - Use this for exploration, naming, design options, hypotheses, and lightweight eval ideas.
 
 ##### 5. Tournament
+
+Builtin definition and contracts: [Six composable pattern builtins](#six-composable-pattern-builtins).
 
 ```text
 ┌─ 5  Tournament ──────────────────────────────────────────┐
@@ -3818,6 +3747,8 @@ Best practices:
 - Keep the judge rubric short and require rationale tied to observable criteria.
 
 ##### 6. Loop until done
+
+Builtin definition and contracts: [Six composable pattern builtins](#six-composable-pattern-builtins).
 
 ```text
 ┌─ 6  Loop until done ─────────────────────────────────────┐

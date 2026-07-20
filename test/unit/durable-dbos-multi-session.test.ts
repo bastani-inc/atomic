@@ -117,7 +117,7 @@ describe("cross-process hydration of ordinary run checkpoints", () => {
       createdAt: 1,
       status: "running",
     });
-    // Session-timing and direct-task writers emit stage-kind checkpoints
+    // Older session-timing writers emit stage-kind checkpoints
     // WITHOUT topology; the durable record must still be current-format.
     await writer.recordCheckpointAsync({
       kind: "stage",

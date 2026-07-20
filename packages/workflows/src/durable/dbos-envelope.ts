@@ -63,7 +63,7 @@ export interface DbosCheckpointEnvelope extends WorkflowSerializableObject {
 }
 
 /**
- * Stage-kind checkpoints from session-timing and direct-task writers may omit
+ * Stage-kind checkpoints from older session-timing writers may omit
  * topology. The current format requires it, so default at every write
  * boundary — persisted records must match the normalized in-memory mirror or
  * a fresh process would reject them as foreign.

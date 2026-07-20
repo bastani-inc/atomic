@@ -6,7 +6,6 @@ import { store } from "../shared/store.js";
 import { installCompactionHook } from "../shared/persistence-compaction-policy.js";
 import { clearForms } from "../tui/inline-form-store.js";
 import { installStoreWidget } from "../tui/store-widget-installer.js";
-import { registerIntercomParentSession } from "../intercom/intercom-bridge.js";
 import { resetWorkflowLifecycleNotificationState } from "./lifecycle-notifications.js";
 import { resetWorkflowHilAnswerNotificationState } from "./hil-answer-notifications.js";
 import type { ExtensionAPI } from "./public-types.js";
@@ -72,7 +71,7 @@ export function registerWorkflowLifecycleHandlers(
     resetWorkflowLifecycleNotificationState(runtimeState.lifecycleNotificationState);
     resetWorkflowHilAnswerNotificationState(runtimeState.hilAnswerNotificationState);
     stageControlRegistry.clear();
-    runtimeState.setIntercomParentSession(registerIntercomParentSession(pi));
+    // Named workflows publish lifecycle notices through the normal notification path.
     runtimeState.setNotificationsActive(true);
     runtimeState.startWorkflowDiscoveryWarmup(() => {
       if (!ctx?.ui) return;

@@ -292,54 +292,6 @@ describe("named background workflow lifecycle notifications", () => {
     }
   });
 
-  test.serial("retains direct startup failures and sends the real error to the invoking chat", async () => {
-    const harness = await createHarness();
-    try {
-      const accepted = await harness.tool.execute(
-        "call-direct-startup-failure",
-        {
-          async: true,
-          task: {
-            name: "direct-startup-failure",
-            task: "never starts",
-            worktree: true,
-            gitWorktreeDir: "reused-worktree",
-          },
-        },
-        undefined,
-        undefined,
-        { hasUI: true } as never,
-      );
-
-      assert.equal(accepted.details.status, "accepted");
-      const runId = accepted.details.runId;
-      assert.ok(runId);
-      const deadline = Date.now() + 1000;
-      while (store.runs().find((run) => run.id === runId)?.endedAt === undefined && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 5));
-      }
-      const snapshot = store.runs().find((run) => run.id === runId);
-      assert.equal(snapshot?.status, "failed");
-      assert.match(snapshot?.error ?? "", /worktree and gitWorktreeDir are mutually exclusive/);
-      assert.deepEqual(snapshot?.stages, []);
-      const status = await harness.tool.execute(
-        "call-direct-startup-status",
-        { action: "status" },
-        undefined,
-        undefined,
-        { hasUI: true } as never,
-      );
-      assert.equal(status.details.action, "status");
-      assert.equal(status.details.runs.some((run) => run.runId === runId && run.status === "failed"), true);
-      assert.equal(status.details.snapshots.some((run) => run.id === runId && run.error === snapshot?.error), true);
-      const notices = noticesFor(harness, runId);
-      assert.equal(notices.length, 1);
-      assert.equal(notices[0]?.details?.kind, "failed");
-      assert.match(notices[0]?.content ?? "", /worktree and gitWorktreeDir are mutually exclusive/);
-    } finally {
-      await harness.cleanup();
-    }
-  });
 
   test.serial("records a named ctx.tool startup throw as failed with a lifecycle notice", async () => {
     const harness = await createHarness();

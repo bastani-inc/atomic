@@ -32,16 +32,35 @@ import {
 } from "./builtin-workflows-helpers.js";
 
 describe("builtin/index manifest", () => {
-    test("exports all four builtins by name", async () => {
+    test("exports all ten builtins by name", async () => {
         const mod = await import("../../packages/workflows/builtin/index.js");
-        assert.notEqual(mod.deepResearchCodebase, undefined);
-        assert.notEqual(mod.goal, undefined);
-        assert.notEqual(mod.ralph, undefined);
-        assert.notEqual(mod.openClaudeDesign, undefined);
-
-        assertWorkflowDefinition(mod.deepResearchCodebase);
-        assertWorkflowDefinition(mod.goal);
-        assertWorkflowDefinition(mod.ralph);
-        assertWorkflowDefinition(mod.openClaudeDesign);
+        const definitions = [
+            mod.adversarialVerification,
+            mod.classifyAndAct,
+            mod.deepResearchCodebase,
+            mod.fanOutAndSynthesize,
+            mod.generateAndFilter,
+            mod.goal,
+            mod.loopUntilDone,
+            mod.openClaudeDesign,
+            mod.ralph,
+            mod.tournament,
+        ];
+        assert.deepEqual(
+            definitions.map((definition) => definition?.normalizedName),
+            [
+                "adversarial-verification",
+                "classify-and-act",
+                "deep-research-codebase",
+                "fan-out-and-synthesize",
+                "generate-and-filter",
+                "goal",
+                "loop-until-done",
+                "open-claude-design",
+                "ralph",
+                "tournament",
+            ],
+        );
+        for (const definition of definitions) assertWorkflowDefinition(definition);
     });
 });
