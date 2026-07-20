@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.10] - 2026-07-20
+
+### Added
+
+- Added validated per-server MCP tool-call inactivity timeouts for local and remote servers, with progress-aware timer resets, user-readable timeout errors, and preserved host cancellation.
+
+### Fixed
+
+- Fixed collapsed MCP results showing a malformed or unavailable expand shortcut when `app.tools.expand` is remapped or unbound.
+- Preserved credential-specific `baseUrl` overrides for MCP sampling requests so enterprise/provider-owned endpoints are used alongside dynamic API keys and headers ([#1875](https://github.com/bastani-inc/atomic/issues/1875)).
+
 ## [0.9.10-alpha.1] - 2026-07-19
 
 ### Added
