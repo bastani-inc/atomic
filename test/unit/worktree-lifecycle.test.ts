@@ -1,4 +1,8 @@
 import { test } from "bun:test";
+
+// The setup-hook failure contract executes a bash-shebang script directly,
+// which Windows cannot spawn; the error-path contract runs on unix jobs.
+const unixTest = process.platform === "win32" ? test.skip : test;
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -208,7 +212,7 @@ test("subagent worktrees use the same linked-invocation lifecycle", () => {
 	}
 });
 
-test("post-creation setup failure removes the worktree and branch", () => {
+unixTest("post-creation setup failure removes the worktree and branch", () => {
 	const { root, repo } = createRepository();
 	const hook = join(root, "bad-hook.sh");
 	writeFileSync(hook, "#!/bin/sh\nprintf 'not-json'\n");

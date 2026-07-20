@@ -104,7 +104,7 @@ function originDefaultBranch(mainRoot: string): string | undefined {
 }
 function resolveRepoState(cwd: string): RepoState {
 	const cwdRelative = resolveRepoCwdRelative(cwd);
-	const toplevel = runGitChecked(cwd, ["rev-parse", "--show-toplevel"]).trim();
+	const toplevel = path.resolve(runGitChecked(cwd, ["rev-parse", "--show-toplevel"]).trim());
 	const mainRoot = findCanonicalGitRoot(toplevel);
 	if (mainRoot === undefined) throw new Error(`unable to resolve canonical main Git repository root from ${toplevel}`);
 	const status = runGitChecked(toplevel, ["status", "--porcelain", "--untracked-files=no"]);
@@ -171,7 +171,7 @@ function resolveRepoCwdRelative(cwd: string): string {
 }
 export function resolveExpectedWorktreeAgentCwd(cwd: string, runId: string, index: number): string {
 	const cwdRelative = resolveRepoCwdRelative(cwd);
-	const toplevel = runGitChecked(cwd, ["rev-parse", "--show-toplevel"]).trim();
+	const toplevel = path.resolve(runGitChecked(cwd, ["rev-parse", "--show-toplevel"]).trim());
 	const mainRoot = findCanonicalGitRoot(toplevel);
 	if (mainRoot === undefined) throw new Error(`unable to resolve canonical main Git repository root from ${toplevel}`);
 	const worktreePath = buildWorktreePath(mainRoot, runId, index);

@@ -189,7 +189,11 @@ function repositoryRootForGitWorktree(cwd: string): string {
 		}
 		throw new Error(`gitWorktreeDir requires the workflow to be invoked from inside a Git repository. Start from a Git checkout or omit gitWorktreeDir. Git reported: ${gitFailureMessage(result)}`);
 	}
-	return result.stdout.trim();
+	const normalized = gitPathFromOutput(result.stdout, cwd);
+	if (normalized === undefined) {
+		throw new Error(`gitWorktreeDir could not resolve the repository top level from ${cwd}: git returned an empty path.`);
+	}
+	return normalized;
 }
 
 export function gitTopLevelFromResult(result: GitResult, cwd: string, description: string): string | undefined {

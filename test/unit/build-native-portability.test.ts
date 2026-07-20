@@ -1,4 +1,9 @@
 import { test } from "bun:test";
+
+// These contracts drive the build script through bash-shebang stub executables
+// (fake cargo/bunx on PATH), which Windows cannot execute; the same arg
+// contracts run on the Linux and macOS jobs.
+const unixTest = process.platform === "win32" ? test.skip : test;
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,7 +14,7 @@ const root = fileURLToPath(new URL("../..", import.meta.url));
 const script = join(root, "packages/natives/scripts/build-native.ts");
 const output = join(root, "packages/natives/native/atomic_natives.linux-x64-gnu.node");
 
-test("glibc-suffixed Linux targets use cargo-zigbuild and copy from the bare target directory", () => {
+unixTest("glibc-suffixed Linux targets use cargo-zigbuild and copy from the bare target directory", () => {
   const stage = mkdtempSync(join(tmpdir(), "atomic-zigbuild-contract-"));
   const bin = join(stage, "bin");
   const target = join(stage, "target");
@@ -45,7 +50,7 @@ test("glibc-suffixed Linux targets use cargo-zigbuild and copy from the bare tar
   }
 });
 
-test("explicit Darwin targets stay native and do not request cross compilation", () => {
+unixTest("explicit Darwin targets stay native and do not request cross compilation", () => {
   const stage = mkdtempSync(join(tmpdir(), "atomic-darwin-native-contract-"));
   const bin = join(stage, "bin");
   const args = join(stage, "bunx-args.txt");
