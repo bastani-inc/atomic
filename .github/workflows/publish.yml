@@ -308,7 +308,7 @@ jobs:
           awk -v ver="$VERSION" 'BEGIN { found=0 } /^## \[/ { if (found) exit; if ($0 ~ "^## \\[" ver "\\]") { found=1; next } } found { print }' packages/coding-agent/CHANGELOG.md > release-assets/RELEASE_NOTES.md
           test -s release-assets/RELEASE_NOTES.md || echo "Release $VERSION" > release-assets/RELEASE_NOTES.md
           (cd release-assets && sha256sum atomic-*.tar.gz atomic-*.zip > SHA256SUMS)
-          for dir in packages/natives/npm/* packages/natives packages/coding-agent; do npm pack "$dir" --pack-destination npm-packages; done
+          for dir in packages/natives/npm/* packages/natives packages/coding-agent; do npm pack "./$dir" --pack-destination npm-packages; done
           test "$(find npm-packages -name '*.tgz' -type f | wc -l | tr -d ' ')" = 8
           bun -e '
             const expected = new Set(["@bastani/atomic-natives-darwin-arm64","@bastani/atomic-natives-darwin-x64","@bastani/atomic-natives-linux-arm64-gnu","@bastani/atomic-natives-linux-x64-gnu","@bastani/atomic-natives-win32-arm64-msvc","@bastani/atomic-natives-win32-x64-msvc"]);
