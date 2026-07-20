@@ -140,10 +140,10 @@ If a user asks to publish a release or prerelease, route the request through the
 3. For non-main bases, require the branch to be protected with the repository's required CI checks before using it as the selected release base.
 4. Launch one `publish-release` workflow run with `target_version`, `release_kind`, and `base_ref`. Do not duplicate its Git, PR, tag, or publishing actions inline.
 5. The workflow creates `[release|prerelease]/<version>` from the selected base, updates relevant changelogs without bumping package versions, validates and commits the changes, pushes the branch, and opens the PR.
-6. It inspects required CI once. Pending or failed checks pause at a human choice to reinspect the same run or stop; the workflow never watches, sleeps, or polls.
+6. It watches required CI until every required check reaches a terminal state, treating an admin merge of the PR as approval to proceed; check failures or an expired watch window stop the run with evidence.
 7. After checks pass, it merges the exact verified PR head, switches to the selected base, and fast-forwards from `origin/<base_ref>`.
 8. It runs `bun run scripts/cut-release.ts <version> --base <base_ref> --push --yes`, which stamps only the detached release commit and pushes the tag. That tag push automatically starts `publish.yml`; the workflow does not manually dispatch normal publication.
-9. It inspects the matching `Publish <version>` action once. Pending or failed publishing pauses at the same reinspect-or-stop gate; success returns a concise release summary.
+9. It watches the matching `Publish <version>` action until it completes. Failure or an expired watch window stops the run with evidence; success returns a concise release summary.
 
 ## Docs
 

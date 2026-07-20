@@ -104,13 +104,14 @@ test("workflow preserves versionless bases and inspects direct tag publication",
   assert.doesNotMatch(source, /gh workflow run|workflow_dispatch|environment:\s*npm-publish/u);
 });
 
-test("pending and failed external gates pause for a same-run human decision", () => {
+test("external gates watch to a terminal state and stop the run instead of prompting humans", () => {
   const source = workflowSource();
-  assert.match(source, /await ctx\.ui\.select/u);
-  assert.match(source, /Reinspect after external state changes/u);
-  assert.match(source, /Stop this release/u);
-  assert.match(source, /continue this same workflow run and reinspect/u);
-  assert.match(source, /return inspectGate\(label, prompt, attempt \+ 1\)/u);
+  assert.doesNotMatch(source, /await ctx\.ui\.select|Reinspect after external state changes|Stop this release/u);
+  assert.match(source, /until they reach a terminal state/u);
+  assert.match(source, /re-check with gh pr checks\/view roughly every 30 seconds/u);
+  assert.match(source, /admin merge/u);
+  assert.match(source, /Watch the automatically triggered Publish \$\{release\.version\} GitHub Actions run until it completes/u);
+  assert.match(source, /did not reach a terminal state within the watch window/u);
 });
 
 test("workflow contains no executable wait, polling, watch, or manual publisher dispatch", () => {

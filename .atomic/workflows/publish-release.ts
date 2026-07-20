@@ -50,9 +50,6 @@ type Gate = Static<typeof gateSchema>;
 type Base = Static<typeof baseSchema>;
 type Release = Static<typeof releaseSchema>;
 
-const reinspectChoice = "Reinspect after external state changes";
-const stopChoice = "Stop this release";
-
 function releaseFacts(release: ValidatedRelease, baseRef: string): string {
   return [
     `Release kind: ${release.kind}`,
@@ -62,7 +59,7 @@ function releaseFacts(release: ValidatedRelease, baseRef: string): string {
     "The release base is versionless: package manifests, lockfiles, Cargo files, and generated version files remain at 0.0.0.",
     "Only scripts/cut-release.ts may stamp the real version on the detached Release commit after the changelog PR merges.",
     "Pushing the version tag directly starts publish.yml. Do not dispatch a duplicate normal publication run.",
-    "Use Bun for development commands. Do not watch, sleep, poll, force-push, force a tag, rerun publication during a normal release, or launch a duplicate release workflow.",
+    "Use Bun for development commands. Do not force-push, force a tag, rerun publication during a normal release, or launch a duplicate release workflow.",
   ].join("\n");
 }
 
@@ -154,30 +151,22 @@ export default workflow({
 
     const inspectGate = async (
       label: "required CI" | "publish action",
-      prompt: (attempt: number) => string,
-      attempt = 1,
+      prompt: string,
     ): Promise<Gate> => {
-      const result = await ctx.task(`inspect-${label.replaceAll(" ", "-")}-${attempt}`, {
+      const stageName = `watch-${label.replaceAll(" ", "-")}`;
+      const result = await ctx.task(stageName, {
         context: "fresh",
         schema: gateSchema,
-        prompt: prompt(attempt),
+        prompt,
       });
       const outcome = result.structured as Gate;
       if (outcome.status === "passed") return outcome;
-
-      const choice = await ctx.ui.select(
-        [
-          `${label} is ${outcome.status}.`,
-          outcome.summary,
-          outcome.status === "pending"
-            ? "After GitHub advances, continue this same workflow run and reinspect."
-            : "Fix the external failure or stop. The workflow will not repair or bypass it silently.",
-          "Choose the next action:",
-        ].join("\n\n"),
-        [reinspectChoice, stopChoice] as const,
+      return stop(
+        stageName,
+        outcome.status === "pending"
+          ? `${label} did not reach a terminal state within the watch window: ${outcome.summary}`
+          : outcome.summary,
       );
-      if (choice === stopChoice) return stop(`inspect-${label.replaceAll(" ", "-")}`, outcome.summary);
-      return inspectGate(label, prompt, attempt + 1);
     };
 
     const prepareResult = await ctx.task("prepare-changelog-branch", {
@@ -220,14 +209,16 @@ export default workflow({
       return stop("validate-commit-push-open-pr", pullRequest.summary);
     }
 
-    const ci = await inspectGate("required CI", (attempt) => [
-      `Inspect required checks exactly once for ${pullRequest.pr_url} (attempt ${attempt}).`,
+    const ci = await inspectGate("required CI", [
+      `Watch required checks for ${pullRequest.pr_url} until they reach a terminal state.`,
       facts,
       `Expected PR number: ${pullRequest.pr_number}`,
       `Expected PR head SHA: ${pullRequest.head_sha}`,
       "Use current gh pr view/checks data. Require the same PR, base, head branch, exact head SHA, and a non-empty required-check set.",
-      "Return passed only when every required check passed. Return pending for queued/in-progress/missing-yet checks. Return failed for failed checks, identity drift, malformed evidence, or command/auth failure.",
-      "Do not merge, rerun, watch, sleep, poll, tag, or publish. Include an evidence_url when available.",
+      "Wait for completion instead of returning early: re-check with gh pr checks/view roughly every 30 seconds, for up to 45 minutes.",
+      "If the PR becomes merged while waiting (for example an admin merge), treat that as passed and cite the merge as evidence.",
+      "Return passed only when every required check passed or the PR is merged. Return failed for failed checks, identity drift, malformed evidence, or command/auth failure. Return pending only if the watch window expires without a terminal state.",
+      "Do not merge, rerun checks, tag, or publish. Include an evidence_url when available.",
     ].join("\n\n"));
 
     const mergeResult = await ctx.task("merge-exact-head-and-sync-base", {
@@ -268,14 +259,14 @@ export default workflow({
       return stop("cut-and-push-release-tag", released.summary);
     }
 
-    const publish = await inspectGate("publish action", (attempt) => [
-      `Inspect the automatically triggered Publish ${release.version} GitHub Actions run exactly once (attempt ${attempt}).`,
+    const publish = await inspectGate("publish action", [
+      `Watch the automatically triggered Publish ${release.version} GitHub Actions run until it completes.`,
       facts,
       `Expected release SHA: ${released.release_sha}`,
-      "Use gh run list/view without --watch and select the push-event publish.yml run for the exact tag and release SHA.",
-      "Require repository bastani-inc/atomic, the exact publish workflow path, matching tag, SHA, and push event. Return pending when the exact run is absent, queued, or active. Return failed for identity mismatch, command/auth failure, or a completed non-success conclusion.",
-      "Return passed only when the exact publish action completed successfully. Include its URL as evidence_url.",
-      "Do not dispatch, rerun, watch, sleep, poll, tag, publish packages, or create a GitHub Release manually.",
+      "Use gh run list/view and select the push-event publish.yml run for the exact tag and release SHA. Require repository bastani-inc/atomic, the exact publish workflow path, matching tag, SHA, and push event.",
+      "Wait for completion instead of returning early: re-check roughly every 30 seconds, for up to 60 minutes; the run may take a few minutes to appear after the tag push.",
+      "Return passed only when the exact publish action completed successfully; include its URL as evidence_url. Return failed for identity mismatch, command/auth failure, or a completed non-success conclusion. Return pending only if the watch window expires without a terminal state.",
+      "Do not dispatch, rerun, tag, publish packages, or create a GitHub Release manually.",
     ].join("\n\n"));
 
     const summary = [
