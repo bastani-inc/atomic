@@ -24,6 +24,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Reworked runner-managed Git worktrees to use Claude Code's git-native lifecycle: canonical main-root anchoring, `.atomic/worktrees/` locations, `worktree-*` branches with default-remote base resolution, local-settings/hooks/ignored-file setup, configurable `worktree.symlinkDirectories`, and force-remove plus branch-delete cleanup. Reusable `gitWorktreeDir` creation is now anchored at the canonical main root while retaining its existing path, validation, and cache semantics.
+
 - DBOS is configured, registered, and launched lazily on the first workflow action (never during CLI/session startup), reused process-wide, and readiness is awaited across workflow execution, control, resume, inspection, and deletion paths. Initialization and persistence failures fail the workflow action; no alternate backend is selected.
 
 - Debounced durable stage-session timing checkpoints into 30-second buckets. Duration-only progress no longer forces a full durable state read-merge-rewrite on every prompt/steer event; session identity changes (session id/file/start) still persist immediately, so cross-process resume continues from the same retained session with at most a 30-second loss of accumulated timing precision.

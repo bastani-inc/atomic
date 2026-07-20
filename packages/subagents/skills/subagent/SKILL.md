@@ -419,7 +419,7 @@ subagent({
 })
 ```
 
-`worktree: true` gives each parallel task its own git worktree branched from HEAD. This requires a clean git state and is mainly for intentionally parallel writer workflows. If you want one writer thread and several advisory readers, prefer a single-writer pattern instead — only `debugger` and `code-simplifier` write, so co-locating them with read-only specialists in the same worktree is safe.
+`worktree: true` gives each parallel task its own `worktree-*` branch under the canonical main root's `.atomic/worktrees/`, using the remote default branch when available and `HEAD` otherwise. This requires a clean git state and is mainly for intentionally parallel writer workflows. If you want one writer thread and several advisory readers, prefer a single-writer pattern instead — only `debugger` and `code-simplifier` write, so co-locating them with read-only specialists in the same worktree is safe.
 
 ## Subagent + Intercom Coordination
 

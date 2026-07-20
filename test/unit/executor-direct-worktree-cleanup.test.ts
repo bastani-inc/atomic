@@ -24,7 +24,7 @@ function assertNoTemporaryWorktrees(repo: string, expectedCheckouts = 1): void {
   const checkouts = runGitChecked(repo, ["worktree", "list", "--porcelain"])
     .split("\n")
     .filter((line) => line.startsWith("worktree "));
-  const generatedBranches = runGitChecked(repo, ["branch", "--list", "atomic-parallel-*"]).trim();
+  const generatedBranches = runGitChecked(repo, ["branch", "--list", "worktree-*"]).trim();
   assert.equal(checkouts.length, expectedCheckouts);
   assert.equal(generatedBranches, "");
 }
@@ -147,6 +147,7 @@ test("temporary isolation invoked from a linked worktree preserves its nested cw
     assert.equal(details.status, "completed");
     assert.notEqual(sessionCwd, realpathSync(nested));
     assert.match(sessionCwd, /packages[/\\]api$/);
+    assert.equal(sessionCwd.startsWith(join(repo, ".atomic", "worktrees")), true);
     assert.equal(runGitChecked(linked, ["status", "--porcelain"]), "");
     assertNoTemporaryWorktrees(repo, 2);
   } finally {

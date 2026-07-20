@@ -87,6 +87,7 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
       `${runtime.runId}-${name}-${crypto.randomUUID()}`,
       name,
       runtime.workflowInvocationCwd,
+      runtime.worktreeSymlinkDirectories,
     );
     const preparedTask = prepared.tasks[0]!;
     try {

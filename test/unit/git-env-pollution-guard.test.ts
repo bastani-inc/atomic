@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, test } from "bun:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-env.js";
 import { runGitChecked } from "../../packages/workflows/src/runs/shared/worktree-git.js";
+import { cleanupWorktrees, createWorktrees } from "../../packages/workflows/src/runs/shared/worktree-setup.js";
 
 /**
  * Regression guard for the 2026-07-20 core.worktree pollution incident.
@@ -24,8 +25,8 @@ let fixtureDir: string;
 const savedEnv = new Map<string, string | undefined>();
 
 beforeEach(() => {
-	sentinelRepo = mkdtempSync(join(tmpdir(), "atomic-git-env-sentinel-"));
-	fixtureDir = mkdtempSync(join(tmpdir(), "atomic-git-env-fixture-"));
+	sentinelRepo = realpathSync.native(mkdtempSync(join(tmpdir(), "atomic-git-env-sentinel-")));
+	fixtureDir = realpathSync.native(mkdtempSync(join(tmpdir(), "atomic-git-env-fixture-")));
 	const init = spawnSync("git", ["init", "--quiet", "--initial-branch=main"], {
 		cwd: sentinelRepo,
 		env: createGitEnvironment(),
@@ -53,10 +54,34 @@ afterEach(() => {
 	rmSync(fixtureDir, { recursive: true, force: true });
 });
 
-test("repository git helpers stay scrubbed under hook env and cannot touch the hook repository", () => {
+test("full worktree lifecycle stays scrubbed and only writes shared core.hooksPath", () => {
 	runGitChecked(fixtureDir, ["init", "--quiet", "--initial-branch=main"]);
+	runGitChecked(fixtureDir, ["config", "--local", "user.name", "Atomic Fixture"]);
 	runGitChecked(fixtureDir, ["config", "--local", "user.email", "fixture@example.com"]);
-	const after = readFileSync(join(sentinelRepo, ".git", "config"), "utf-8");
-	assert.ok(!after.includes("worktree"), `sentinel config gained a worktree entry:\n${after}`);
-	assert.equal(after, sentinelConfigBefore, "sentinel repository config must be byte-identical");
+	writeFileSync(join(fixtureDir, "tracked.txt"), "fixture\n");
+	mkdirSync(join(fixtureDir, ".husky"));
+	writeFileSync(join(fixtureDir, ".husky", "pre-commit"), "#!/bin/sh\n");
+	runGitChecked(fixtureDir, ["add", "."]);
+	runGitChecked(fixtureDir, ["commit", "--no-gpg-sign", "-m", "fixture"]);
+
+	const configPath = join(fixtureDir, ".git", "config");
+	const keysBefore = runGitChecked(fixtureDir, ["config", "--file", configPath, "--name-only", "--list"])
+		.trim().split("\n").filter(Boolean);
+	const setup = createWorktrees(fixtureDir, "hostile/nested", 1, { symlinkDirectories: [] });
+	const worktree = setup.worktrees[0]!;
+	assert.equal(worktree.path, join(fixtureDir, ".atomic", "worktrees", "hostile+nested-0"));
+	assert.equal(runGitChecked(worktree.path, ["branch", "--show-current"]).trim(), "worktree-hostile+nested-0");
+	assert.equal(readFileSync(join(fixtureDir, ".atomic", "worktrees", ".gitignore"), "utf8"), "*\n");
+	cleanupWorktrees(setup);
+	cleanupWorktrees(setup);
+	assert.equal(existsSync(worktree.path), false);
+	assert.notEqual(runGitChecked(fixtureDir, ["branch", "--list", "worktree-hostile+nested-0"]).trim(), "worktree-hostile+nested-0");
+
+	const keysAfter = runGitChecked(fixtureDir, ["config", "--file", configPath, "--name-only", "--list"])
+		.trim().split("\n").filter(Boolean);
+	assert.deepEqual(keysAfter.filter((key) => !keysBefore.includes(key)), ["core.hookspath"]);
+	const invokingConfig = readFileSync(configPath, "utf8");
+	assert.ok(!invokingConfig.toLowerCase().includes("worktree ="), `invoking config gained core.worktree:\n${invokingConfig}`);
+	const sentinelAfter = readFileSync(join(sentinelRepo, ".git", "config"), "utf-8");
+	assert.equal(sentinelAfter, sentinelConfigBefore, "sentinel repository config must be byte-identical");
 });

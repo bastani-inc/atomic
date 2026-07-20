@@ -299,6 +299,7 @@ export function prepareDirectWorktrees(
   runId: string,
   scope: string,
   workflowInvocationCwd: string = process.cwd(),
+  symlinkDirectories?: readonly string[],
 ): PreparedDirectWorktrees {
   if (!hasDirectWorktreeIsolation(tasks, options)) {
     return {
@@ -319,7 +320,11 @@ export function prepareDirectWorktrees(
   if (conflict !== undefined) throw new Error(formatWorktreeTaskCwdConflict(conflict, sharedCwd));
 
   const agents = tasks.map((task) => task.name);
-  const setup = createWorktrees(sharedCwd, runId, tasks.length, { agents });
+  const setup = createWorktrees(sharedCwd, runId, tasks.length, {
+    agents,
+    baseBranch: options.baseBranch,
+    symlinkDirectories,
+  });
   return {
     tasks: tasks.map((task, index) => ({
       ...task,

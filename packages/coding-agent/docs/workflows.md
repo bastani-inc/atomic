@@ -1670,7 +1670,7 @@ Controls automatic session and worktree-diff artifact collection in direct resul
 readonly worktree?: boolean;
 ```
 
-Requests a runner-managed temporary per-task worktree in direct mode. It is mutually exclusive with `gitWorktreeDir`, and the runner cleans it up even when startup fails before the callback.
+Requests a runner-managed branch-backed temporary worktree in direct mode. Atomic creates it at `<main-root>/.atomic/worktrees/<flattened-name>` on branch `worktree-<flattened-name>`, replacing `/` in generated names with `+`. Creation remains anchored at the canonical main root when invoked inside a linked worktree. The base ref resolves as explicit `baseBranch`, then `origin/<default-branch>` (fetched when absent), then `HEAD`. Atomic propagates local settings, configures the main repository's Husky or populated hooks directory through shared `core.hooksPath`, symlinks configured `worktree.symlinkDirectories`, and copies gitignored `.worktreeinclude` matches without overwriting tracked files. It is mutually exclusive with `gitWorktreeDir`; cleanup forcibly removes the worktree and deletes its branch even after post-creation startup failure.
 
 ### `gitWorktreeDir` / `baseBranch`
 
@@ -1681,7 +1681,7 @@ readonly baseBranch?: string;
 
 Selects or creates a reusable same-repository Git worktree for `ctx.stage`, `ctx.task`, `ctx.chain`, and `ctx.parallel`.
 
-- **Creation and validation:** A missing path is created with `git worktree add --detach <path> <baseBranch>`, where an omitted or blank `baseBranch` defaults to `HEAD`. Existing paths must be same-repository worktree roots outside the invoking checkout; the checkout itself, nested targets, and missing targets whose symlinked parent resolves inside it are rejected.
+- **Creation and validation:** A missing path is created with `git worktree add --detach <path> <baseBranch>` from the canonical main repository root, where an omitted or blank `baseBranch` defaults to `HEAD`. Existing paths must be same-repository worktree roots outside the invoking checkout; the checkout itself, nested targets, and missing targets whose symlinked parent resolves inside it are rejected.
 - **Cwd remapping:** The default cwd preserves the invoking repository-relative subdirectory inside the worktree. Absolute cwd values inside the invoking repository are remapped, values already inside the worktree are preserved, and relative values resolve from the worktree cwd without lexical or symlink escape.
 - **Output containment:** Runner-managed reusable-worktree relative outputs follow the effective worktree cwd and cannot escape through traversal or symlinks. Temporary-worktree outputs are copied to distinct runner-owned artifact directories before cleanup, including in `file-only` mode, and Atomic rejects a pre-existing symlink or junction at the trusted artifact root. Explicit absolute outputs and nonblank explicit `chainDir` paths remain caller-selected, while blank `chainDir` is omitted.
 - **Caching and diagnostics:** Temporary isolation defaults to the runner invocation cwd, and relative task cwd values resolve there. Reusable setup is cached by canonical repository and target identity independently of equivalent path spelling or `baseBranch`, revalidates checkout identity before reuse, retries one transient timeout from read-only repository probes, and reports the exact Git command, cwd, timeout, elapsed time, exit status or signal, and spawn error details on failure.
@@ -2700,6 +2700,9 @@ Example config:
   "workflowNotifications": {
     "enabled": true,
     "notifyOn": ["completed", "failed", "blocked", "awaiting_input"]
+  },
+  "worktree": {
+    "symlinkDirectories": ["node_modules"]
   }
 }
 ```
@@ -2715,6 +2718,7 @@ Runtime config defaults:
 | `resumeInFlight` | `"ask"` | Behavior when discovering resumable in-flight work |
 | `workflowNotifications.enabled` | `true` | Emit workflow lifecycle notices into the active main chat |
 | `workflowNotifications.notifyOn` | `["completed", "failed", "blocked", "awaiting_input"]` | Lifecycle states to track; terminal `completed`/`failed`/`blocked` outcomes and active recoverable blocks create main-chat notices, while `awaiting_input` is tracked for dedupe/restore without waking the main agent |
+| `worktree.symlinkDirectories` | `["node_modules"]` | Main-root directories symlinked into each runner-managed temporary worktree during post-creation setup |
 
 Invalid JSON or invalid shapes produce `CONFIG_INVALID` diagnostics. Missing config files are ignored.
 

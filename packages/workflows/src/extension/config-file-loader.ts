@@ -73,6 +73,19 @@ function validateConfig(value: unknown): string | null {
       }
     }
   }
+  if ("worktree" in c) {
+    const worktree = c["worktree"];
+    if (worktree === null || typeof worktree !== "object" || Array.isArray(worktree)) {
+      return `"worktree" must be a JSON object, got ${JSON.stringify(typeof worktree)}`;
+    }
+    const config = worktree as Record<string, unknown>;
+    if ("symlinkDirectories" in config) {
+      const directories = config["symlinkDirectories"];
+      if (!Array.isArray(directories) || directories.some((entry) => typeof entry !== "string")) {
+        return `"worktree.symlinkDirectories" must be an array of strings`;
+      }
+    }
+  }
 
   if ("workflows" in c) {
     if (c["workflows"] === null || typeof c["workflows"] !== "object" || Array.isArray(c["workflows"])) {

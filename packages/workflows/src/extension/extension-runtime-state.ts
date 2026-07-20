@@ -78,6 +78,7 @@ export function createWorkflowExtensionRuntimeState(
       persistRuns: WORKFLOW_CONFIG_DEFAULTS.persistRuns,
       statusFile: WORKFLOW_CONFIG_DEFAULTS.statusFile,
       resumeInFlight: WORKFLOW_CONFIG_DEFAULTS.resumeInFlight,
+      worktree: WORKFLOW_CONFIG_DEFAULTS.worktree,
     },
   };
   let statusWriterRef: StatusWriter = createStatusWriter(store, runtimeConfigRef.current);
@@ -226,6 +227,7 @@ export function createWorkflowExtensionRuntimeState(
       persistRuns: effectiveConfig.persistRuns,
       statusFile: effectiveConfig.statusFile,
       resumeInFlight: effectiveConfig.resumeInFlight,
+      worktree: effectiveConfig.worktree,
     };
     lifecycleNotificationConfigRef.current = effectiveConfig.workflowNotifications;
     reinstallLifecycleNotifications();

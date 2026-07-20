@@ -275,6 +275,7 @@ export async function run<
     inputRuntimeDefaults,
     workflowInvocationCwd,
     stageRegistry, gitWorktreeSetupCache,
+    worktreeSymlinkDirectories: opts.config?.worktree?.symlinkDirectories,
     exit,
     classifyExecutorFailure,
   });

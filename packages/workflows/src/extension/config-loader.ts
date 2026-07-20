@@ -42,6 +42,10 @@ export interface WorkflowNotificationsConfig {
   readonly notifyOn?: readonly WorkflowLifecycleNoticeKind[];
 }
 
+export interface WorkflowWorktreeConfig {
+  /** Main-root directories symlinked into temporary worktrees. */
+  readonly symlinkDirectories?: readonly string[];
+}
 export interface WorkflowExtensionConfig {
   /** Explicit named workflows to register by module path. */
   readonly workflows?: Readonly<Record<string, WorkflowConfigEntry>>;
@@ -57,6 +61,8 @@ export interface WorkflowExtensionConfig {
   readonly resumeInFlight?: "ask" | "auto" | "never";
   /** Main-chat workflow lifecycle notices. */
   readonly workflowNotifications?: WorkflowNotificationsConfig;
+  /** Temporary-worktree post-creation settings. */
+  readonly worktree?: WorkflowWorktreeConfig;
 }
 
 /** Severity of a config diagnostic. */
@@ -159,6 +165,9 @@ function mergeConfigs(
           },
         }
       : {}),
+    ...(base.worktree !== undefined || override.worktree !== undefined
+      ? { worktree: { ...(base.worktree ?? {}), ...(override.worktree ?? {}) } }
+      : {}),
     ...(workflows !== undefined ? { workflows } : {}),
   };
 }
@@ -184,6 +193,9 @@ export const WORKFLOW_CONFIG_DEFAULTS = {
     enabled: true,
     notifyOn: ["completed", "failed", "blocked", "awaiting_input"] as const,
   },
+  worktree: {
+    symlinkDirectories: ["node_modules"] as readonly string[],
+  },
 } as const;
 
 /**
@@ -199,6 +211,9 @@ export interface WorkflowEffectiveConfig {
   readonly workflowNotifications: {
     readonly enabled: boolean;
     readonly notifyOn: readonly WorkflowLifecycleNoticeKind[];
+  };
+  readonly worktree: {
+    readonly symlinkDirectories: readonly string[];
   };
   readonly workflows?: Readonly<Record<string, WorkflowConfigEntry>>;
 }
@@ -227,6 +242,11 @@ export function withWorkflowDefaults(
       notifyOn:
         config.workflowNotifications?.notifyOn
         ?? WORKFLOW_CONFIG_DEFAULTS.workflowNotifications.notifyOn,
+    },
+    worktree: {
+      symlinkDirectories:
+        config.worktree?.symlinkDirectories
+        ?? WORKFLOW_CONFIG_DEFAULTS.worktree.symlinkDirectories,
     },
     ...(config.workflows !== undefined ? { workflows: config.workflows } : {}),
   };
