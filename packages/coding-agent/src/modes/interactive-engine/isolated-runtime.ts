@@ -1,9 +1,6 @@
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { AgentSession, AgentSessionEvent } from "../../core/agent-session.ts";
-import {
-	AgentSessionRuntime,
-	type CreateAgentSessionRuntimeFactory,
-} from "../../core/agent-session-runtime.ts";
+import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../../core/agent-session-runtime.ts";
 import type { PromptOptions } from "../../core/agent-session-types.ts";
 import { SessionManager } from "../../core/session-manager.ts";
 import type { RpcClient } from "../rpc/rpc-client.ts";
@@ -78,6 +75,13 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		// Non-blocking refresh so isolated autocomplete lists engine-only extension
 		// commands after bind/restart/reload/new/resume/fork. See RemoteCommandCatalog.
 		this.remoteCommands.refresh();
+	}
+
+	override async logoutProvider(provider: string) {
+		const result = await this.client.logoutProvider(provider);
+		this.remoteModelCatalog.apply({ models: result.models, scopedModels: result.scopedModels ?? [] });
+		await super.session.modelRegistry.authStorage.logoutAsync(provider);
+		return result;
 	}
 
 	onDiagnostic(listener: (diagnostic: ActivityWatchdogDiagnostic) => void): () => void {

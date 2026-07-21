@@ -8,6 +8,7 @@ import type {
 	RpcCommand,
 	RpcAutocompleteItem,
 	RpcContextWindowInfo,
+	RpcLogoutProviderResult,
 	RpcModelRefreshResult,
 	RpcResponse,
 	RpcSessionState,
@@ -49,6 +50,10 @@ export abstract class RpcClientApi {
 	async getAvailableModels(): Promise<ModelInfo[]> {
 		return this.data<{ models: ModelInfo[] }>(await this.request({ type: "get_available_models" })).models;
 	}
+	async logoutProvider(provider: string): Promise<RpcLogoutProviderResult> {
+		return this.data(await this.request({ type: "logout_provider", provider }));
+	}
+
 	async refreshModels(options: { timeoutMs?: number; force?: boolean; allowNetwork?: boolean } = {}): Promise<RpcModelRefreshResult> {
 		return this.data(await this.request({ type: "refresh_models", ...options }));
 	}
