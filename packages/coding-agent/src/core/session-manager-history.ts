@@ -76,7 +76,7 @@ export function buildSessionContext(
 			};
 		} else if (entry.type === "message" && entry.message.role === "assistant") {
 			const previousModel = model as SessionContext["model"];
-			const sameSelection: object | undefined = previousModel?.provider === entry.message.provider && previousModel.modelId === entry.message.model
+			const sameSelection: object | undefined = previousModel !== null && previousModel.provider === entry.message.provider && previousModel.modelId === entry.message.model
 				? previousModel.modelSelection
 				: undefined;
 			model = {

@@ -41,6 +41,15 @@ export function resolveProviderModelSelection(input: {
 	throw selectionError("AmbiguousSelection", input, `Model ${input.provider}/${JSON.stringify(input.modelId)} matches ${matches.length} exact occurrences; select an occurrence explicitly.`);
 }
 
+export function rebindRegisteredProviderModel(
+	model: Model<Api>,
+	registry: { requiresExactSelectionPersistence(provider: string): boolean; getAll(): Model<Api>[] },
+	registeredProviders: ReadonlySet<string>,
+): Model<Api> {
+	if (!registeredProviders.has(model.provider) || registry.requiresExactSelectionPersistence(model.provider)) return model;
+	return registry.getAll().find((candidate) => candidate.provider === model.provider && candidate.id === model.id) ?? model;
+}
+
 export function validateSelectedProviderModel(
 	model: Model<Api>,
 	registry: {

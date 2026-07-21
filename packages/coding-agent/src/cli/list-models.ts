@@ -29,7 +29,7 @@ function formatTokenCount(count: number): string {
  * List available models, optionally filtered by search pattern
  */
 export async function listModels(modelRegistry: ModelRegistry, searchPattern?: string): Promise<void> {
-	await modelRegistry.prepareRequiredProviders({ allowNetwork: !isOfflineModeEnabled(), explicit: true });
+	await modelRegistry.prepareRequiredProviders({ allowNetwork: !isOfflineModeEnabled() });
 	const loadError = modelRegistry.getError();
 	if (loadError) {
 		console.error(chalk.yellow(`Warning: errors loading models.json:\n${loadError}`));

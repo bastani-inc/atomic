@@ -27,10 +27,11 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 	return { promise: new Promise<T>((done) => (resolve = done)), resolve };
 }
 
-function createSelector(refresh: ModelRegistry["refresh"]): ModelSelectorComponent {
+function createSelector(refresh: ModelRegistry["refresh"], prepareRequiredProviders?: ModelRegistry["prepareRequiredProviders"]): ModelSelectorComponent {
 	initTheme("dark");
 	const registry = {
 		refresh,
+		prepareRequiredProviders,
 		getError: () => undefined,
 		getAvailable: async () => [model],
 		find: () => model,
@@ -72,6 +73,16 @@ describe("model selector catalog refresh status", () => {
 		const rendered = await renderedAfterWork(selector);
 		expect(rendered).toContain("cached-model");
 		expect(rendered).toContain("Could not refresh configured; showing available models.");
+	});
+
+	it("keeps unrelated snapshot models visible when required preparation fails", async () => {
+		const selector = createSelector(
+			async () => ({ aborted: false, errors: new Map() }),
+			async () => { throw new Error("Cursor authentication is not configured"); },
+		);
+		const rendered = await renderedAfterWork(selector);
+		expect(rendered).toContain("cached-model");
+		expect(rendered).toContain("Could not prepare required model catalogs");
 	});
 
 	it("summarizes multiple provider errors", async () => {

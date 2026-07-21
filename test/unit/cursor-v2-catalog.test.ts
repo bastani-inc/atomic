@@ -2,6 +2,7 @@ import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { create, toBinary } from "@bufbuild/protobuf";
 import {
 	CURSOR_HOST_CONTEXT_WINDOW,
@@ -59,7 +60,7 @@ describe("Cursor authoritative catalog", () => {
 		for (const relative of ["cursor-models-raw.json", "model-reference.ts", "proto/agent_pb.ts", "proto/protobuf-codec-base64.ts"]) {
 			assert.equal(existsSync(new URL(relative, cursorSourceRoot)), false, `${relative} must stay deleted`);
 		}
-		for (const path of productionCursorFiles(cursorSourceRoot.pathname)) {
+		for (const path of productionCursorFiles(fileURLToPath(cursorSourceRoot))) {
 			const source = readFileSync(path, "utf8");
 			assert.doesNotMatch(source, /CURSOR_DEFAULT_MODEL_ID|["']composer-2["']|AvailableModels/u, `${path} contains a forbidden static/default catalog symbol`);
 		}

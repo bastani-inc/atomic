@@ -43,7 +43,8 @@ function splitCustomModelThinkingSuffix(pattern: string): {
 }
 
 export async function prepareExplicitProvider(provider: string, modelRegistry: ModelRegistry): Promise<void> {
-	if (!modelRegistry.requiresProviderPreparation(provider)) return;
+	if (typeof modelRegistry.requiresProviderPreparation !== "function" || !modelRegistry.requiresProviderPreparation(provider)) return;
+	if (typeof modelRegistry.prepareRequiredProviders !== "function") return;
 	await modelRegistry.prepareRequiredProviders({
 		allowNetwork: !isOfflineModeEnabled(), explicit: true, providers: new Set([provider]),
 	});

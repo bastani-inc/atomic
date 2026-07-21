@@ -33,7 +33,7 @@ import { convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import { findInitialModel, prepareExplicitProvider, resolveRestoredModelReference } from "./model-resolver.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
-import { validateSelectedProviderModel } from "./model-registry-selection.ts";
+import { rebindRegisteredProviderModel, validateSelectedProviderModel } from "./model-registry-selection.ts";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
@@ -148,11 +148,10 @@ export async function createAgentSession(
     await resourceLoader.reload();
     time("resourceLoader.reload");
   }
-
   await modelRegistry.refresh({ allowNetwork: false, skipRequiredProviderExtensions: true });
   // Direct SDK and workflow-stage sessions must cross the same tracked preparation door.
+  const pendingProviderNames = new Set(resourceLoader.getExtensions().runtime.pendingProviderRegistrations.map(({ name }) => name));
   await registerPendingProvidersAndPrepare(resourceLoader, modelRegistry, !isOfflineModeEnabled());
-
   // Check if session has existing data to restore
   if (options.model) await prepareExplicitProvider(options.model.provider, modelRegistry);
   const existingSession = sessionManager.buildSessionContext();
@@ -198,6 +197,7 @@ export async function createAgentSession(
       modelFallbackMessage += `. Using ${model.provider}/${model.id}`;
     }
   }
+  if (model) model = rebindRegisteredProviderModel(model, modelRegistry, pendingProviderNames);
 	if (model) model = validateSelectedProviderModel(model, modelRegistry);
 
   let thinkingLevel = options.thinkingLevel;

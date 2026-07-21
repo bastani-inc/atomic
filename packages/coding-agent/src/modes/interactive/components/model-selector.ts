@@ -130,13 +130,20 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		// Add bottom border
 		this.addChild(new DynamicBorder());
 
-		// Required dynamic providers must complete tracked preparation before listing.
-		void this.refreshModels().catch((error) => {
-			if (this.closed) return;
-			this.refreshStatusSuccess = false;
-			this.refreshStatusMessage = `Could not prepare model catalogs: ${error instanceof Error ? error.message : String(error)}`;
-			this.tui.requestRender();
-		});
+		// Show the current snapshot first, then prepare exact providers and refresh ordinary catalogs.
+		void this.loadModelsFromSnapshot()
+			.then(() => {
+				if (initialSearchInput) this.filterModels(initialSearchInput);
+				else this.updateList();
+				this.tui.requestRender();
+				return this.refreshModels();
+			})
+			.catch((error) => {
+				if (this.closed) return;
+				this.refreshStatusSuccess = false;
+				this.refreshStatusMessage = `Could not refresh model catalogs: ${error instanceof Error ? error.message : String(error)}`;
+				this.tui.requestRender();
+			});
 	}
 
 	private async loadModelsFromSnapshot(): Promise<void> {
@@ -184,15 +191,38 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	}
 
 	private async refreshModels(): Promise<void> {
-		await this.modelRegistry.prepareRequiredProviders({
-			explicit: true,
+		let preparationError: Error | undefined;
+		if (typeof this.modelRegistry.prepareRequiredProviders === "function") {
+			try {
+				await this.modelRegistry.prepareRequiredProviders({
+					allowNetwork: !isOfflineModeEnabled(),
+					signal: this.refreshAbortController.signal,
+					timeoutMs: 15_000,
+				});
+			} catch (error) {
+				preparationError = error instanceof Error ? error : new Error(String(error));
+			}
+		}
+		const result = await this.modelRegistry.refresh({
 			allowNetwork: !isOfflineModeEnabled(),
 			signal: this.refreshAbortController.signal,
 			timeoutMs: 15_000,
+			skipRequiredProviderExtensions: true,
 		});
 		if (this.closed) return;
-		this.refreshStatusMessage = "Model catalogs prepared.";
-		this.refreshStatusSuccess = true;
+		this.refreshStatusSuccess = false;
+		if (preparationError) {
+			this.refreshStatusMessage = `Could not prepare required model catalogs: ${preparationError.message}; showing available models.`;
+		} else if (result.aborted) {
+			this.refreshStatusMessage = "Model refresh timed out; showing cached models.";
+		} else if (result.errors.size === 1) {
+			this.refreshStatusMessage = `Could not refresh ${result.errors.keys().next().value}; showing available models.`;
+		} else if (result.errors.size > 1) {
+			this.refreshStatusMessage = `Could not refresh ${result.errors.size} model catalogs; showing available models.`;
+		} else {
+			this.refreshStatusMessage = "Model catalogs refreshed.";
+			this.refreshStatusSuccess = true;
+		}
 		await this.loadModelsFromSnapshot();
 		this.filterModels(this.searchInput.getValue());
 		this.tui.requestRender();
