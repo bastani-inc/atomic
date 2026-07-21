@@ -105,7 +105,7 @@ describe("createAgentSession stream options", () => {
 		});
 
 		try {
-			await session.agent.streamFn(model, { messages: [] }, requestOptions);
+			await session.agent.streamFunction(model, { messages: [] }, requestOptions);
 			return capturedOptions;
 		} finally {
 			session.dispose();
@@ -177,7 +177,7 @@ describe("createAgentSession stream options", () => {
 		});
 
 		try {
-			await session.agent.streamFn(model, { messages: [] });
+			await session.agent.streamFunction(model, { messages: [] });
 			expect(capturedOptions?.headers?.["X-GitHub-Api-Version"]).toBe("2026-06-01");
 		} finally {
 			session.dispose();
@@ -221,7 +221,7 @@ describe("createAgentSession stream options", () => {
 		});
 
 		try {
-			await session.agent.streamFn(model, { messages: [] }, { headers: { "x-github-api-version": "request-version" } });
+			await session.agent.streamFunction(model, { messages: [] }, { headers: { "x-github-api-version": "request-version" } });
 			expect(capturedOptions?.headers?.["x-github-api-version"]).toBe("request-version");
 			expect(capturedOptions?.headers?.["X-GitHub-Api-Version"]).toBeUndefined();
 			expect(
@@ -273,7 +273,7 @@ describe("createAgentSession stream options", () => {
 		});
 
 		try {
-			await session.agent.streamFn(model, { messages: [] });
+			await session.agent.streamFunction(model, { messages: [] });
 			expect(dispatchedBaseUrl).toBe("https://api.enterprise.example.com");
 		} finally {
 			session.dispose();
@@ -305,7 +305,7 @@ describe("createAgentSession stream options", () => {
 		});
 
 		try {
-			await session.agent.streamFn(model, { messages: [] });
+			await session.agent.streamFunction(model, { messages: [] });
 			expect(dispatchedBaseUrl).toBe("");
 		} finally {
 			session.dispose();
@@ -341,7 +341,7 @@ describe("createAgentSession stream options", () => {
 		});
 
 		try {
-			await session.agent.streamFn(model, { messages: [] });
+			await session.agent.streamFunction(model, { messages: [] });
 			expect(dispatchedHeaders?.["cf-aig-authorization"]).toBe("Bearer runtime-cf-key");
 			expect(dispatchedHeaders?.Authorization).toBeNull();
 			expect(dispatchedHeaders?.["x-api-key"]).toBeNull();

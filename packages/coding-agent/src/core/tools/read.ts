@@ -193,7 +193,7 @@ function formatReadResult(
 	}
 	const rawPath = str(args?.path);
 	const output = oversizedRead ? buildOversizedReadMessage(oversizedRead) : getTextOutput(result, showImages);
-	const lang = rawPath && !oversizedReadBlocked ? getLanguageFromPath(rawPath) : undefined;
+	const lang = !isError && rawPath && !oversizedReadBlocked ? getLanguageFromPath(rawPath) : undefined;
 	const renderedLines = lang ? highlightCode(replaceTabs(output), lang) : output.split("\n");
 	const lines = trimTrailingEmptyLines(renderedLines);
 	const maxLines = options.expanded ? lines.length : 10;

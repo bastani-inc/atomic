@@ -2538,8 +2538,8 @@ class VimEditor extends CustomEditor {
 
 export default function (pi: ExtensionAPI) {
   pi.on("session_start", (_event, ctx) => {
-    ctx.ui.setEditorComponent((_tui, theme, keybindings) =>
-      new VimEditor(theme, keybindings)
+    ctx.ui.setEditorComponent((tui, theme, keybindings) =>
+      new VimEditor(tui, theme, keybindings)
     );
   });
 }
@@ -2548,7 +2548,7 @@ export default function (pi: ExtensionAPI) {
 **Key points:**
 - Extend `CustomEditor` (not base `Editor`) to get app keybindings (escape to abort, ctrl+d, model switching)
 - Call `super.handleInput(data)` for keys you don't handle
-- Factory receives `theme` and `keybindings` from the app
+- Factory receives `tui`, `theme`, and `keybindings` from the app
 - Use `ctx.ui.getEditorComponent()` before `setEditorComponent()` to wrap the previously configured custom editor
 - Pass `undefined` to restore default: `ctx.ui.setEditorComponent(undefined)`
 

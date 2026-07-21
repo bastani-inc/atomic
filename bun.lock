@@ -20,9 +20,9 @@
         "@bastani/atomic-natives": "0.0.0",
         "@bufbuild/protobuf": "^2.12.1",
         "@dbos-inc/dbos-sdk": "4.23.6",
-        "@earendil-works/pi-agent-core": "^0.80.10",
-        "@earendil-works/pi-ai": "^0.80.10",
-        "@earendil-works/pi-tui": "^0.80.10",
+        "@earendil-works/pi-agent-core": "^0.81.1",
+        "@earendil-works/pi-ai": "^0.81.1",
+        "@earendil-works/pi-tui": "^0.81.1",
         "@modelcontextprotocol/ext-apps": "^1.7.4",
         "@modelcontextprotocol/sdk": "^1.25.1",
         "@mozilla/readability": "^0.6.0",
@@ -75,7 +75,7 @@
       "dependencies": {
         "@bastani/atomic-natives": "0.0.0",
         "@bufbuild/protobuf": "^2.12.1",
-        "@earendil-works/pi-ai": "^0.80.10",
+        "@earendil-works/pi-ai": "^0.81.1",
       },
       "peerDependencies": {
         "@bastani/atomic": "*",
@@ -93,7 +93,7 @@
       },
       "peerDependencies": {
         "@bastani/atomic": "*",
-        "@earendil-works/pi-tui": "^0.80.10",
+        "@earendil-works/pi-tui": "^0.81.1",
       },
       "optionalPeers": [
         "@bastani/atomic",
@@ -112,8 +112,8 @@
       },
       "peerDependencies": {
         "@bastani/atomic": "*",
-        "@earendil-works/pi-ai": "^0.80.10",
-        "@earendil-works/pi-tui": "^0.80.10",
+        "@earendil-works/pi-ai": "^0.81.1",
+        "@earendil-works/pi-tui": "^0.81.1",
         "zod": "^3.25.0 || ^4.0.0",
       },
       "optionalPeers": [
@@ -138,9 +138,9 @@
       },
       "peerDependencies": {
         "@bastani/atomic": "*",
-        "@earendil-works/pi-agent-core": "^0.80.10",
-        "@earendil-works/pi-ai": "^0.80.10",
-        "@earendil-works/pi-tui": "^0.80.10",
+        "@earendil-works/pi-agent-core": "^0.81.1",
+        "@earendil-works/pi-ai": "^0.81.1",
+        "@earendil-works/pi-tui": "^0.81.1",
       },
       "optionalPeers": [
         "@bastani/atomic",
@@ -161,7 +161,7 @@
       },
       "peerDependencies": {
         "@bastani/atomic": "*",
-        "@earendil-works/pi-tui": "^0.80.10",
+        "@earendil-works/pi-tui": "^0.81.1",
       },
       "optionalPeers": [
         "@bastani/atomic",
@@ -177,7 +177,7 @@
       },
       "peerDependencies": {
         "@bastani/atomic": "*",
-        "@earendil-works/pi-tui": "^0.80.10",
+        "@earendil-works/pi-tui": "^0.81.1",
       },
       "optionalPeers": [
         "@bastani/atomic",
@@ -187,6 +187,7 @@
   },
   "overrides": {
     "@types/node": "24.12.4",
+    "brace-expansion": "5.0.7",
   },
   "packages": {
     "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.91.1", "", { "dependencies": { "json-schema-to-ts": "^3.1.1" }, "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["zod"], "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-LAmu761tSN9r66ixvmciswUj/ZC+1Q4iAfpedTfSVLeswRwnY3n2Nb6Tsk+cLPP28aLOPWeMgIuTuCcMC6W/iw=="],
@@ -265,11 +266,11 @@
 
     "@dbos-inc/dbos-sdk": ["@dbos-inc/dbos-sdk@4.23.6", "", { "dependencies": { "commander": "^12.0.0", "pg": "^8.11.3", "serialize-error": "^8.1.0", "superjson": "^1.13.3", "ws": "^8.18.1", "yaml": "^2.8.3" }, "bin": { "dbos": "dist/src/cli/cli.js", "dbos-sdk": "dist/src/cli/cli.js" } }, "sha512-Hrdm/WM7DUMqb517ib+msv/pIGnUepP/h3Q62T0j8/LYHRXS2PyOSd76emn1wccPDuTwhUhNyzBfbxoTbW0DJQ=="],
 
-    "@earendil-works/pi-agent-core": ["@earendil-works/pi-agent-core@0.80.10", "", { "dependencies": { "@earendil-works/pi-ai": "^0.80.10", "ignore": "7.0.5", "typebox": "1.1.38", "yaml": "2.9.0" } }, "sha512-nwnOR3SuLYGRFfyQm8ri4Nj5VGVAvAM9GuqQd3u7BUQj0d6hmD2F8w7OHAAjThE3CuySIdM+v8E22QJG6/RfCg=="],
+    "@earendil-works/pi-agent-core": ["@earendil-works/pi-agent-core@0.81.1", "", { "dependencies": { "@earendil-works/pi-ai": "^0.81.1", "ignore": "7.0.5", "typebox": "1.1.38", "yaml": "2.9.0" } }, "sha512-yqbh68CyhqxMov/jUogFJfMqlu2Gd37GAki+tr59YCmAPHfomiCA5ESzusXtpGzABeiZFC/OrRdQ4GwCCOMIHA=="],
 
-    "@earendil-works/pi-ai": ["@earendil-works/pi-ai@0.80.10", "", { "dependencies": { "@anthropic-ai/sdk": "0.91.1", "@aws-sdk/client-bedrock-runtime": "3.1048.0", "@google/genai": "1.52.0", "@mistralai/mistralai": "2.2.6", "@opentelemetry/api": "1.9.0", "@smithy/node-http-handler": "4.7.3", "http-proxy-agent": "7.0.2", "https-proxy-agent": "7.0.6", "openai": "6.26.0", "partial-json": "0.1.7", "typebox": "1.1.38" }, "bin": { "pi-ai": "dist/cli.js" } }, "sha512-Moe/H8c87yacDGK9dPbWphZNjVsrb3nTrIHycOQJAkFEnY9PYxOOd74+ny44kATfPU9Dm7aTHefar3pZF+UKUA=="],
+    "@earendil-works/pi-ai": ["@earendil-works/pi-ai@0.81.1", "", { "dependencies": { "@anthropic-ai/sdk": "0.91.1", "@aws-sdk/client-bedrock-runtime": "3.1048.0", "@google/genai": "1.52.0", "@mistralai/mistralai": "2.2.6", "@opentelemetry/api": "1.9.0", "@smithy/node-http-handler": "4.7.3", "http-proxy-agent": "7.0.2", "https-proxy-agent": "7.0.6", "openai": "6.26.0", "partial-json": "0.1.7", "typebox": "1.1.38" }, "bin": { "pi-ai": "dist/cli.js" } }, "sha512-hzHE7Z8l5mgJk+ke67Lge0rwS2+wbKJrFKl9o5M1R1rh33+cCT7D1AHz1OAtX5wFs90E1/BTGhyJRTUHaMxGvQ=="],
 
-    "@earendil-works/pi-tui": ["@earendil-works/pi-tui@0.80.10", "", { "dependencies": { "get-east-asian-width": "1.6.0", "marked": "18.0.5" } }, "sha512-c2JO29PbhKPEQ6fgHQKAl0WhwuFqzWfzspMmP+8B5tpDuP+0mvarRbKKg8gq4b+pQx/QX+6aVS4ko7deoyjQjg=="],
+    "@earendil-works/pi-tui": ["@earendil-works/pi-tui@0.81.1", "", { "dependencies": { "get-east-asian-width": "1.6.0", "marked": "18.0.5" } }, "sha512-OMEe+Zt8oQYi/rCq3upxsTlIScWL0FPhXwQus34TbQb3EmTx88S7Uzx32JxvQiEeWOw8eDCdJf2PBUBE9r6wIg=="],
 
     "@embedded-postgres/darwin-arm64": ["@embedded-postgres/darwin-arm64@18.4.0-beta.17", "", { "os": "darwin", "cpu": "arm64" }, "sha512-Kg1ZMNFzkVIJs3g4V2UYEc5X005km9rGinxFBH8R1sOU2Rblvz4pt2Uf93Pu8Rk273Ue9HIdrbMPpgUqwjUi0Q=="],
 
@@ -815,7 +816,7 @@
 
     "bowser": ["bowser@2.14.1", "", {}, "sha512-tzPjzCxygAKWFOJP011oxFHs57HzIhOEracIgAePE4pqB3LikALKnSzUyU4MGs9/iCEUuHlAJTjTc5M+u7YEGg=="],
 
-    "brace-expansion": ["brace-expansion@5.0.6", "", { "dependencies": { "balanced-match": "^4.0.2" } }, "sha512-kLpxurY4Z4r9sgMsyG0Z9uzsBlgiU/EFKhj/h91/8yHu0edo7XuixOIH3VcJ8kkxs6/jPzoI6U9Vj3WqbMQ94g=="],
+    "brace-expansion": ["brace-expansion@5.0.7", "", { "dependencies": { "balanced-match": "^4.0.2" } }, "sha512-7oFy703dxfY3/NLxC1fh2SUCQ0H9rmAY+5EpDVfXjUTTs+HEwR2nYaqLv+GWcTsumwxPfiz6CzCNkwXwBUwqCA=="],
 
     "braces": ["braces@3.0.3", "", { "dependencies": { "fill-range": "^7.1.1" } }, "sha512-yQbXgO/OSZVD2IsiLlro+7Hf6Q18EJrKSEsdoMzKePKXct3gvD8oLcOQdIzGupr5Fj+EDe8gO/lxc1BzfMpxvA=="],
 

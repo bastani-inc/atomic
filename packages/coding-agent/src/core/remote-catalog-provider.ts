@@ -1,4 +1,5 @@
-import type { Api, Model, Provider } from "@earendil-works/pi-ai";
+import { stat } from "node:fs/promises";
+import type { Api, Model, ModelsStoreEntry, Provider } from "@earendil-works/pi-ai";
 import { VERSION } from "../config.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 
@@ -26,6 +27,14 @@ function parseCatalog(providerId: string, value: object): Model<Api>[] {
 		.map((model) => ({ ...model, provider: providerId }));
 }
 
+function remoteModels(entry: ModelsStoreEntry | undefined, localLastModified: number | undefined): readonly Model<Api>[] {
+	if (!entry) return [];
+	if (localLastModified !== undefined && (entry.lastModified === undefined || entry.lastModified <= localLastModified)) {
+		return [];
+	}
+	return entry.models;
+}
+
 function settleOnAbort(
 	operation: Promise<void>,
 	signal: AbortSignal | undefined,
@@ -51,7 +60,11 @@ interface InflightRefresh {
 	signal?: AbortSignal;
 }
 /** Add a persisted pi.dev catalog overlay to a static built-in provider. */
-export function withRemoteCatalog(provider: Provider, catalogBaseUrl: string = DEFAULT_CATALOG_BASE_URL): Provider {
+export function withRemoteCatalog(
+	provider: Provider,
+	catalogBaseUrl: string = DEFAULT_CATALOG_BASE_URL,
+	localCatalogUrl?: URL,
+): Provider {
 	let dynamicModels: readonly Model<Api>[] = [];
 	let inflightRefresh: InflightRefresh | undefined;
 	let refreshEpoch = 0;
@@ -92,13 +105,17 @@ export function withRemoteCatalog(provider: Provider, catalogBaseUrl: string = D
 			}
 		};
 		const operation = (async () => {
+			const localLastModified = localCatalogUrl
+				? await stat(localCatalogUrl).then((value) => value.mtimeMs, () => undefined)
+				: undefined;
 			const stored = await context.store.read();
 			if (!isCurrent()) return;
-			if (stored) dynamicModels = stored.models.filter((model) => model.provider === provider.id);
+			dynamicModels = remoteModels(stored, localLastModified).filter((model) => model.provider === provider.id);
 			if (!context.allowNetwork) return;
 			if (
 				!context.force &&
 				stored?.checkedAt !== undefined &&
+				stored.lastModified !== undefined &&
 				Date.now() - stored.checkedAt < REMOTE_CATALOG_REFRESH_INTERVAL_MS
 			) return;
 
@@ -110,17 +127,24 @@ export function withRemoteCatalog(provider: Provider, catalogBaseUrl: string = D
 			if (!isCurrent()) return;
 			const checkedAt = Date.now();
 			if (response.status === 404 || response.status === 501) {
-				await persist({ models: dynamicModels, checkedAt });
+				await persist({ ...(stored ?? { models: [] }), checkedAt, lastModified: 0 });
 				return;
 			}
 			if (!response.ok) {
+				await persist({ ...(stored ?? { models: [] }), checkedAt });
 				throw new Error(`Model catalog request failed for ${provider.id}: ${response.status}`);
 			}
 			const body: object = await response.json();
 			if (!isCurrent()) return;
 			const refreshed = parseCatalog(provider.id, body);
-			await persist({ models: refreshed, checkedAt });
-			if (isCurrent()) dynamicModels = refreshed;
+			const lastModified = Date.parse(response.headers.get("last-modified") ?? "");
+			const entry = {
+				models: refreshed,
+				checkedAt,
+				lastModified: Number.isNaN(lastModified) ? 0 : lastModified,
+			};
+			await persist(entry);
+			if (isCurrent()) dynamicModels = remoteModels(entry, localLastModified);
 		})();
 		const refresh = settleOnAbort(operation, context.signal, () => !persistenceInProgress);
 		const published = refresh.finally(() => {

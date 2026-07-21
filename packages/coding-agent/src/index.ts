@@ -207,10 +207,16 @@ export {
 	type JsonObject,
 	type JsonPrimitive,
 	type JsonValue,
+	type MessageEndEvent,
+	type MessageStartEvent,
+	type MessageUpdateEvent,
 	type PromptTemplate,
 	type StructuredOutputCapture,
 	type StructuredOutputFileCapture,
 	type StructuredOutputToolOptions,
+	type ToolExecutionEndEvent,
+	type ToolExecutionStartEvent,
+	type ToolExecutionUpdateEvent,
 } from "./core/sdk.ts";
 export {
 	WORKFLOW_SESSION_METADATA_ENV,

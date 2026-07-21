@@ -4,9 +4,15 @@ export type {
   ExtensionCommandContext,
   ExtensionContext,
   ExtensionFactory,
+  MessageEndEvent,
+  MessageStartEvent,
+  MessageUpdateEvent,
   SlashCommandInfo,
   SlashCommandSource,
   ToolDefinition,
+  ToolExecutionEndEvent,
+  ToolExecutionStartEvent,
+  ToolExecutionUpdateEvent,
 } from "./extensions/index.ts";
 export type { PromptTemplate } from "./prompt-templates.ts";
 export type { Skill } from "./skills.ts";

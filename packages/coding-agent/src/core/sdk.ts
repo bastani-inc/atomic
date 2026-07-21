@@ -1,9 +1,5 @@
 import { join } from "node:path";
-import {
-  Agent,
-  type AgentMessage,
-  type ThinkingLevel,
-} from "@earendil-works/pi-agent-core";
+import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@earendil-works/pi-agent-core";
 import {
   clampThinkingLevel,
   type Api,
@@ -47,6 +43,10 @@ import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "./sdk-
 export type { CreateAgentSessionOptions, CreateAgentSessionResult } from "./sdk-types.ts";
 
 export * from "./sdk-exports.ts";
+
+// Preserve the pre-0.81 fallback for extensions that construct Agent instances
+// or invoke low-level agent loops without supplying streamFn.
+setDefaultStreamFn(streamSimple);
 
 // Helper Functions
 

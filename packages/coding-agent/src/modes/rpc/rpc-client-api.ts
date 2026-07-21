@@ -61,6 +61,11 @@ export abstract class RpcClientApi {
 	async cycleThinkingLevel(): Promise<{ level: ThinkingLevel } | null> {
 		return this.data(await this.request({ type: "cycle_thinking_level" }));
 	}
+	async getAvailableThinkingLevels(): Promise<ThinkingLevel[]> {
+		return this.data<{ levels: ThinkingLevel[] }>(
+			await this.request({ type: "get_available_thinking_levels" }),
+		).levels;
+	}
 	async setContextWindow(contextWindow: number | string): Promise<void> {
 		this.data(await this.request({ type: "set_context_window", contextWindow }));
 	}

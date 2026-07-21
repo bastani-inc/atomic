@@ -401,6 +401,24 @@ Response:
 }
 ```
 
+#### get_available_thinking_levels
+
+Return the thinking levels supported by the current model, in cycle order.
+
+```json
+{"type": "get_available_thinking_levels"}
+```
+
+Response:
+```json
+{
+  "type": "response",
+  "command": "get_available_thinking_levels",
+  "success": true,
+  "data": {"levels": ["off", "low", "medium", "high"]}
+}
+```
+
 ### Queue Modes
 
 #### set_steering_mode
@@ -921,6 +939,9 @@ Events are streamed to stdout as JSON lines during agent operation. Events do NO
 | `compaction_end` | Verbatim line compaction completes |
 | `auto_retry_start` | Auto-retry begins (after transient error) |
 | `auto_retry_end` | Auto-retry completes (success or final failure) |
+| `summarization_retry_scheduled` | Retry scheduled for a transient compaction or branch-summary provider error |
+| `summarization_retry_attempt_start` | Retried summarization request starts |
+| `summarization_retry_finished` | Summarization retry loop completes |
 | `extension_error` | Extension threw an error |
 
 ### agent_start
@@ -1157,6 +1178,34 @@ On final failure (max retries exceeded):
 }
 ```
 
+
+### summarization_retry_scheduled / summarization_retry_attempt_start / summarization_retry_finished
+
+Emitted when compaction planning or branch summarization retries after a transient provider error. These events use the same retry settings as automatic assistant-turn retries.
+
+```json
+{
+  "type": "summarization_retry_scheduled",
+  "attempt": 1,
+  "maxAttempts": 3,
+  "delayMs": 2000,
+  "errorMessage": "terminated"
+}
+```
+
+```json
+{
+  "type": "summarization_retry_attempt_start",
+  "source": "compaction",
+  "reason": "threshold"
+}
+```
+
+For branch summaries, `source` is `"branchSummary"` and no `reason` is present. The loop then emits:
+
+```json
+{"type": "summarization_retry_finished"}
+```
 ### extension_error
 
 Emitted when an extension throws an error.

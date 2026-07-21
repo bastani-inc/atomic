@@ -246,6 +246,19 @@ describe("RPC context-window commands", () => {
 		expect(model.contextWindow).toBe(1_000_000);
 	}, 20_000);
 
+	test("lists the current model's available thinking levels", async () => {
+		rpc = startRpcHarness({ cwd, agentDir, sessionDir });
+
+		const response = await rpc.send({ type: "get_available_thinking_levels" });
+
+		expect(response).toMatchObject({
+			type: "response",
+			command: "get_available_thinking_levels",
+			success: true,
+		});
+		expect(responseData(response)).toEqual({ levels: ["off"] });
+	}, 20_000);
+
 	test("returns a clear error for unsupported runtime context windows", async () => {
 		rpc = startRpcHarness({ cwd, agentDir, sessionDir });
 

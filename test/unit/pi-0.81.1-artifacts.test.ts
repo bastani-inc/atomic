@@ -4,9 +4,9 @@ import { join } from "node:path";
 
 const root = join(import.meta.dir, "../..");
 const expectedIntegrity = new Map([
-	["@earendil-works/pi-agent-core", "sha512-nwnOR3SuLYGRFfyQm8ri4Nj5VGVAvAM9GuqQd3u7BUQj0d6hmD2F8w7OHAAjThE3CuySIdM+v8E22QJG6/RfCg=="],
-	["@earendil-works/pi-ai", "sha512-Moe/H8c87yacDGK9dPbWphZNjVsrb3nTrIHycOQJAkFEnY9PYxOOd74+ny44kATfPU9Dm7aTHefar3pZF+UKUA=="],
-	["@earendil-works/pi-tui", "sha512-c2JO29PbhKPEQ6fgHQKAl0WhwuFqzWfzspMmP+8B5tpDuP+0mvarRbKKg8gq4b+pQx/QX+6aVS4ko7deoyjQjg=="],
+	["@earendil-works/pi-agent-core", "sha512-yqbh68CyhqxMov/jUogFJfMqlu2Gd37GAki+tr59YCmAPHfomiCA5ESzusXtpGzABeiZFC/OrRdQ4GwCCOMIHA=="],
+	["@earendil-works/pi-ai", "sha512-hzHE7Z8l5mgJk+ke67Lge0rwS2+wbKJrFKl9o5M1R1rh33+cCT7D1AHz1OAtX5wFs90E1/BTGhyJRTUHaMxGvQ=="],
+	["@earendil-works/pi-tui", "sha512-OMEe+Zt8oQYi/rCq3upxsTlIScWL0FPhXwQus34TbQb3EmTx88S7Uzx32JxvQiEeWOw8eDCdJf2PBUBE9r6wIg=="],
 ]);
 
 const declarations = new Map([
@@ -19,13 +19,13 @@ const declarations = new Map([
 	["packages/workflows", ["@earendil-works/pi-tui"]],
 ]);
 
-test("Pi v0.80.10 declarations and publish artifacts stay synchronized", async () => {
+test("Pi v0.81.1 declarations and publish artifacts stay synchronized", async () => {
 	let declarationCount = 0;
 	for (const [workspace, names] of declarations) {
 		const manifest = await Bun.file(join(root, workspace, "package.json")).json();
 		assert.equal(manifest.version, "0.0.0");
 		for (const name of names) {
-			assert.equal(manifest.dependencies?.[name] ?? manifest.peerDependencies?.[name], "^0.80.10");
+			assert.equal(manifest.dependencies?.[name] ?? manifest.peerDependencies?.[name], "^0.81.1");
 			declarationCount++;
 		}
 	}
@@ -53,14 +53,14 @@ test("Pi v0.80.10 declarations and publish artifacts stay synchronized", async (
 	for (const [name, integrity] of expectedIntegrity) {
 		for (const lock of [npmLock, shrinkwrap]) {
 			const entry = lock.packages[`node_modules/${name}`];
-			assert.equal(entry.version, "0.80.10");
+			assert.equal(entry.version, "0.81.1");
 			assert.equal(entry.integrity, integrity);
 		}
-		assert.ok(bunLock.includes(`${name}@0.80.10`));
+		assert.ok(bunLock.includes(`${name}@0.81.1`));
 		assert.ok(bunLock.includes(integrity));
 	}
 	assert.equal(
 		npmLock.packages["node_modules/@earendil-works/pi-agent-core"].dependencies["@earendil-works/pi-ai"],
-		"^0.80.10",
+		"^0.81.1",
 	);
 });

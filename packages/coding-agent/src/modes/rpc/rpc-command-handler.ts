@@ -157,6 +157,12 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "cycle_thinking_level", level ? { level } : null);
 			}
 
+			case "get_available_thinking_levels": {
+				return createRpcSuccessResponse(id, "get_available_thinking_levels", {
+					levels: session.getAvailableThinkingLevels(),
+				});
+			}
+
 			case "set_context_window": {
 				const contextWindow = parseRpcContextWindow(command.contextWindow);
 				session.setContextWindow(contextWindow);

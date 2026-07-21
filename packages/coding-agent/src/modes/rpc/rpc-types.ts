@@ -49,6 +49,7 @@ export type RpcCommand =
 	// Thinking
 	| { id?: string; type: "set_thinking_level"; level: ThinkingLevel }
 	| { id?: string; type: "cycle_thinking_level" }
+	| { id?: string; type: "get_available_thinking_levels" }
 
 	// Context Window
 	| { id?: string; type: "set_context_window"; contextWindow: number | string }
@@ -217,6 +218,13 @@ export type RpcResponse =
 			command: "cycle_thinking_level";
 			success: true;
 			data: { level: ThinkingLevel } | null;
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_available_thinking_levels";
+			success: true;
+			data: { levels: ThinkingLevel[] };
 	  }
 
 	// Context Window
