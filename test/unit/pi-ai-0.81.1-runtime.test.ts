@@ -24,7 +24,7 @@ function assertCost(actual: number, expected: number): void {
 	assert.ok(Math.abs(actual - expected) < 1e-12, `expected ${actual} to equal ${expected}`);
 }
 
-describe("pi-ai 0.80.6 runtime compatibility", () => {
+describe("pi-ai 0.81.1 runtime compatibility", () => {
 	test("uses one long-context tier for every GPT-5.5 cost bucket", () => {
 		const model = requireModel("openai-codex", "gpt-5.5");
 
@@ -39,7 +39,7 @@ describe("pi-ai 0.80.6 runtime compatibility", () => {
 		assertCost(aboveThreshold.cacheRead, 0.272);
 	});
 
-	test("exposes only named GPT-5.6 variants with backend-specific context windows", () => {
+	test("exposes only named GPT-5.6 variants with the corrected context window", () => {
 		const variants = ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"];
 		const openAiModels = getModels("openai");
 		const codexModels = getModels("openai-codex");
@@ -49,7 +49,7 @@ describe("pi-ai 0.80.6 runtime compatibility", () => {
 		assert.equal(azureModels.some((model) => model.id === "gpt-5.6"), false);
 		for (const id of variants) {
 			assert.equal(requireModel("openai", id).contextWindow, 272_000);
-			assert.equal(requireModel("openai-codex", id).contextWindow, 372_000);
+			assert.equal(requireModel("openai-codex", id).contextWindow, 272_000);
 		}
 		assert.deepEqual(
 			openAiModels.filter((model) => model.id.startsWith("gpt-5.6")).map((model) => model.id),

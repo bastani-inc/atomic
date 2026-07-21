@@ -56,6 +56,20 @@ export type AgentSessionEvent =
 	| { type: "agent_continue_error"; source: "post_compaction"; errorMessage: string }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
+	| {
+			type: "summarization_retry_scheduled";
+			attempt: number;
+			maxAttempts: number;
+			delayMs: number;
+			errorMessage: string;
+	  }
+	| { type: "summarization_retry_attempt_start"; source: "branchSummary" }
+	| {
+			type: "summarization_retry_attempt_start";
+			source: "compaction";
+			reason: "manual" | "threshold" | "overflow";
+	  }
+	| { type: "summarization_retry_finished" }
 	| { type: "model_fallback_start"; from: string; to: string; reason: string; attempt: number }
 	| { type: "model_fallback_end"; success: boolean; from?: string; to?: string; finalError?: string };
 

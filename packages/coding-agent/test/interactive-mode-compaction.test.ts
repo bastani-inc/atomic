@@ -276,6 +276,31 @@ describe("InteractiveMode compaction events", () => {
 		expect(visibleBoundaries(chatContainer)).toHaveLength(1);
 		expect(renderedText(chatContainer).match(/✻ Context compacted/g)).toHaveLength(1);
 	});
+
+	it("preserves steering behavior when flushing into an active agent run", async () => {
+		const fakeThis = {
+			compactionQueuedMessages: [{ text: "change direction", mode: "steer" as const }],
+			session: {
+				clearQueue: vi.fn(),
+				prompt: vi.fn().mockResolvedValue(undefined),
+				steer: vi.fn().mockResolvedValue(undefined),
+				followUp: vi.fn().mockResolvedValue(undefined),
+			},
+			isExtensionCommand: vi.fn().mockReturnValue(false),
+			updatePendingMessagesDisplay: vi.fn(),
+			showError: vi.fn(),
+		};
+
+		const flushCompactionQueue = Reflect.get(InteractiveMode.prototype, "flushCompactionQueue") as (
+			this: typeof fakeThis,
+			options?: { willRetry?: boolean },
+		) => Promise<void>;
+		await flushCompactionQueue.call(fakeThis, { willRetry: false });
+
+		expect(fakeThis.session.prompt).toHaveBeenCalledWith("change direction", { streamingBehavior: "steer" });
+		expect(fakeThis.compactionQueuedMessages).toEqual([]);
+		expect(fakeThis.showError).not.toHaveBeenCalled();
+	});
 });
 
 describe("compaction boundary component", () => {

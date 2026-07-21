@@ -108,6 +108,8 @@ After a successful API-key or OAuth login, Atomic refreshes provider credentials
 | MiniMax (China) | `MINIMAX_CN_API_KEY` | `minimax-cn` |
 | Moonshot AI | `MOONSHOT_API_KEY` | `moonshotai` |
 | Moonshot AI (China) | `MOONSHOT_API_KEY` | `moonshotai-cn` |
+| Qwen Token Plan | `QWEN_TOKEN_PLAN_API_KEY` | `qwen-token-plan` |
+| Qwen Token Plan (China) | `QWEN_TOKEN_PLAN_CN_API_KEY` | `qwen-token-plan-cn` |
 | Xiaomi MiMo | `XIAOMI_API_KEY` | `xiaomi` |
 | Xiaomi MiMo Token Plan (China) | `XIAOMI_TOKEN_PLAN_CN_API_KEY` | `xiaomi-token-plan-cn` |
 | Xiaomi MiMo Token Plan (Amsterdam) | `XIAOMI_TOKEN_PLAN_AMS_API_KEY` | `xiaomi-token-plan-ams` |
@@ -130,6 +132,8 @@ Store credentials in `~/.atomic/agent/auth.json`:
   "opencode": { "type": "api_key", "key": "..." },
   "opencode-go": { "type": "api_key", "key": "..." },
   "together": { "type": "api_key", "key": "..." },
+  "qwen-token-plan": { "type": "api_key", "key": "sk-sp-..." },
+  "qwen-token-plan-cn": { "type": "api_key", "key": "sk-sp-..." },
   "xiaomi": { "type": "api_key", "key": "..." },
   "xiaomi-token-plan-cn":  { "type": "api_key", "key": "..." },
   "xiaomi-token-plan-ams": { "type": "api_key", "key": "..." },

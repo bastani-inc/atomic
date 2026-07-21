@@ -94,9 +94,9 @@ function getUsageLine(
     usageParts.push(`${theme.fg("dim", "CH")}${theme.fg("muted", `${latestCacheHitRate.toFixed(1)}%`)}`);
   }
 
-  // Show cost with "(sub)" indicator if using OAuth subscription
+  // Kimi Coding is subscription-backed despite using API-key authentication.
   const usingSubscription = state.model
-    ? session.modelRegistry.isUsingOAuth(state.model)
+    ? state.model.provider === "kimi-coding" || session.modelRegistry.isUsingOAuth(state.model)
     : false;
   if (totalCost || usingSubscription) {
     usageParts.push(

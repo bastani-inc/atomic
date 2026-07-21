@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added Qwen Token Plan and Qwen Token Plan China to Atomic's built-in provider defaults and credential guidance, inherited from `pi-ai` 0.81.1 ([#6858](https://github.com/earendil-works/pi/pull/6858)).
+- Added the `get_available_thinking_levels` RPC command and `RpcClient.getAvailableThinkingLevels()` so headless clients can discover the active model's exact supported cycle order ([#6865](https://github.com/earendil-works/pi/pull/6865)).
+- Exported message and tool-execution lifecycle event types from the Atomic package root for extension and SDK consumers ([#6772](https://github.com/earendil-works/pi/pull/6772)).
+
+### Changed
+
+- Updated `@earendil-works/pi-agent-core`, `pi-ai`, and `pi-tui` to 0.81.1, inheriting provider, transport, model-catalog, Kimi K3 thinking, OpenAI Responses retry, Codex request-ID, terminal rendering, and queue fixes from Pi 0.81.0–0.81.1 while retaining Atomic's branding, bundled packages, Verbatim Compaction, and versionless release flow.
+- Restored persisted model catalogs without network access during service creation, then moved automatic network refresh into running interactive and RPC modes. Interactive startup computes its first footer provider count from the restored snapshot and starts network refresh only after TUI initialization.
+
+### Fixed
+
+- Fixed transient provider failures aborting Verbatim Compaction planning or branch summarization. Both now honor the configured retry policy and publish `summarization_retry_scheduled`, `summarization_retry_attempt_start`, and `summarization_retry_finished` lifecycle events to interactive, JSON, RPC, and SDK consumers ([#6901](https://github.com/earendil-works/pi/pull/6901)).
+- Fixed persisted remote model catalogs overriding newer bundled catalogs after an upgrade by comparing catalog modification times and treating legacy undated overlays as stale ([upstream commit](https://github.com/earendil-works/pi/commit/54fad505b9d8cbc8922ff55d7e2938f70cbf6a3d)).
+- Fixed steering and follow-up delivery modes being lost when queued messages were flushed as compaction finished ([#6730](https://github.com/earendil-works/pi/pull/6730)).
+- Fixed read-tool errors being syntax-highlighted as though they were successful file contents ([#6731](https://github.com/earendil-works/pi/pull/6731)).
+- Fixed `${@:-default}` and `${ARGUMENTS:-default}` prompt-template defaults, while retaining Atomic's bounded default-value parser ([#6695](https://github.com/earendil-works/pi/issues/6695)).
+- Fixed persisted sessions being read and parsed twice when opened, and adopted the shared UUIDv7 generator for new session IDs ([#6793](https://github.com/earendil-works/pi/pull/6793), [#6834](https://github.com/earendil-works/pi/pull/6834)).
+- Fixed Kimi Coding usage costs being shown without the subscription estimate indicator.
+
 ## [0.9.11-alpha.1] - 2026-07-20
 
 ### Changed

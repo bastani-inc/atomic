@@ -82,10 +82,11 @@ InteractiveModeBase.prototype.loadCopilotModelCatalog = async function(this: Int
   };
 
 InteractiveModeBase.prototype.updateAvailableProviderCount = async function(this: InteractiveModeBase): Promise<void> {
-    const models = await this.getModelCandidates();
-    const uniqueProviders = new Set(models.map((m) => m.provider));
-    this.footerDataProvider.setAvailableProviderCount(uniqueProviders.size);
-  };
+	const models = this.session.scopedModels.length > 0
+		? this.session.scopedModels.map((scoped) => scoped.model)
+		: this.session.modelRegistry.getAvailable();
+	this.footerDataProvider.setAvailableProviderCount(new Set(models.map((model) => model.provider)).size);
+};
 
 InteractiveModeBase.prototype.maybeWarnAboutAnthropicSubscriptionAuth = async function(this: InteractiveModeBase, model: Model<Api> | undefined = this.session.model, targetContainer = this.chatContainer): Promise<void> {
     if (this.settingsManager.getWarnings().anthropicExtraUsage === false) {

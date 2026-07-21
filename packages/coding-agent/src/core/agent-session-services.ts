@@ -179,6 +179,9 @@ export async function createAgentSessionServices(
 	}
 	extensionsResult.runtime.pendingProviderRegistrations = [];
 	endTimingSpan(providerSpan);
+	const catalogRestoreSpan = startTimingSpan("createAgentSessionServices.restoreModelCatalogs");
+	await modelRegistry.refresh({ allowNetwork: false });
+	endTimingSpan(catalogRestoreSpan);
 	const flagSpan = startTimingSpan("createAgentSessionServices.extensionFlagValidation");
 	diagnostics.push(...applyExtensionFlagValues(resourceLoader, options.extensionFlagValues));
 	endTimingSpan(flagSpan);

@@ -1,6 +1,7 @@
 import { InteractiveModeBase, seedStartupInput } from "./interactive-mode-base.ts";
 import { type Container, type MarkdownTheme, os, path, Markdown, Spacer, Text, spawn, APP_NAME, APP_TITLE, ENV_OFFLINE, getEnvValue, getAgentDir, VERSION, formatCodexFastModeModelLabel, shouldApplyCodexFastMode, DefaultPackageManager, isInstallTelemetryEnabled, getChangelogPath, getEntriesForVersion, getNewEntries, normalizeChangelogLinks, parseChangelog, getCwdRelativePath, getPiUserAgent, recordTimeSinceReset, ensureTool, checkForNewPiVersion, renderAtomicAnsiBanner, composeStartupIdentity, DynamicBorder, getMarkdownTheme, onThemeChange, theme } from "./interactive-mode-deps.ts";
 import { ExpandableText } from "./interactive-mode-helpers.ts";
+import { refreshCatalogsAfterTuiStartup, updateProviderCountFromSnapshot } from "./interactive-model-catalog-startup.ts";
 import { ONBOARDING_COPY } from "./interactive-onboarding.ts";
 import { onInteractiveEngineRemoteCommandsChanged, waitForInteractiveEngineBound } from "../interactive-engine/extension-ui-bridge.ts";
 import { restoreTerminalTitleAfterPackageCheck } from "./interactive-terminal-title.ts";
@@ -200,11 +201,7 @@ InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): 
       this.ui.requestRender();
     });
 
-    // Initialize available provider count for footer display without delaying first-frame startup.
-    void this.updateAvailableProviderCount().catch((error) => {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`Failed to update provider count: ${message}`);
-    });
+	updateProviderCountFromSnapshot(this);
   };
 
 InteractiveModeBase.prototype.updateTerminalTitle = function(this: InteractiveModeBase): void {
@@ -222,8 +219,9 @@ InteractiveModeBase.prototype.updateTerminalTitle = function(this: InteractiveMo
 InteractiveModeBase.prototype.run = async function(this: InteractiveModeBase): Promise<void> {
     await this.init();
 
+	if (shouldRefreshCopilotCatalogOnStartup()) void refreshCatalogsAfterTuiStartup(this);
+
 	setTimeout(() => {
-		if (shouldRefreshCopilotCatalogOnStartup()) void this.refreshCopilotModelCatalog();
     const startupNoticesContainer = this.startupNoticesContainer;
 		checkForNewPiVersion(this.version).then((newVersion) => {
 			if (newVersion) this.showNewVersionNotification(newVersion, startupNoticesContainer);

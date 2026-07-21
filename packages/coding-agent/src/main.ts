@@ -441,6 +441,7 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	if (appMode === "rpc") {
+		if (!offlineMode) void modelRegistry.refresh().catch(() => {});
 		printTimings();
 		await runRpcMode(runtime);
 	} else if (appMode === "interactive") {

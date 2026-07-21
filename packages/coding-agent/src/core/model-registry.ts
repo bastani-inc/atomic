@@ -10,7 +10,7 @@ import {
 	type ModelsRefreshResult,
 	type MutableModels,
 } from "@earendil-works/pi-ai";
-import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import { builtinProviders, getBuiltinModelDataUrl, type BuiltinProvider } from "@earendil-works/pi-ai/providers/all";
 import { type Api, type Model } from "@earendil-works/pi-ai/compat";
 import { dirname, join } from "node:path";
 import { getAgentConfigPaths } from "../config.ts";
@@ -107,7 +107,7 @@ export class ModelRegistry {
 			modelsStore: this.modelsStore,
 		});
 		for (const provider of builtinProviders()) {
-			this.providerModels.setProvider(provider.id === "radius" ? provider : withRemoteCatalog(provider));
+			this.providerModels.setProvider(provider.id === "radius" ? provider : withRemoteCatalog(provider, undefined, getBuiltinModelDataUrl(provider.id as BuiltinProvider)));
 		}
 		this.seedCopilotModelCatalogFromCache();
 		this.loadModels();

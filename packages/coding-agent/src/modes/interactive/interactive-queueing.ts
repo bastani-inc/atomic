@@ -157,9 +157,10 @@ InteractiveModeBase.prototype.flushCompactionQueue = async function(this: Intera
         await this.session.prompt(message.text);
       }
 
-      // Send first prompt (starts streaming)
+      // Start a prompt when idle, or preserve its delivery mode if a run is
+      // still winding down after compaction.
       const promptPromise = this.session
-        .prompt(firstPrompt.text)
+        .prompt(firstPrompt.text, { streamingBehavior: firstPrompt.mode })
         .catch((error) => {
           restoreQueue(error);
         });

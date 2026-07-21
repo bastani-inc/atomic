@@ -15,6 +15,7 @@ import {
 } from "./compaction/index.ts";
 import type { SessionBeforeCompactEvent, SessionBeforeCompactResult, SessionCompactEvent } from "./extensions/index.ts";
 import type { CompactionEntry } from "./session-manager.ts";
+import { createSummarizationRetryCallbacks } from "./summarization-retry.ts";
 
 function frozenCollectionMutation(): never {
 	throw new TypeError("Cannot mutate frozen compaction preparation");
@@ -75,7 +76,12 @@ export async function _applyVerbatimCompaction(
 		return undefined;
 	}
 
-	const plan: CompactionPlanOptions = { streamFn: this.agent.streamFn, sessionFilePath: this.sessionManager.getSessionFile() };
+	const plan: CompactionPlanOptions = {
+		streamFn: this.agent.streamFunction,
+		sessionFilePath: this.sessionManager.getSessionFile(),
+		retry: this.settingsManager.getRetrySettings(),
+		callbacks: createSummarizationRetryCallbacks(this, { source: "compaction", reason: options.reason }),
+	};
 	let fromExtension = false;
 	let compacted: { text: string; stats: VerbatimCompactionStats; rung: VerbatimCompactionResult["rung"] } | undefined;
 

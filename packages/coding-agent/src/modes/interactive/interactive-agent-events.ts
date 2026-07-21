@@ -3,6 +3,7 @@ import { type Message, type AgentSessionEvent, Loader, Spacer, Text, pickWhimsic
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.ts";
 import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
+import { handleSummarizationRetryEvent } from "./interactive-summarization-retry-events.ts";
 
 function createToolComponent(
   mode: InteractiveModeBase,
@@ -348,6 +349,12 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
         break;
       }
 
+
+		case "summarization_retry_scheduled":
+		case "summarization_retry_attempt_start":
+		case "summarization_retry_finished":
+			handleSummarizationRetryEvent(this, event);
+			break;
 
       case "auto_retry_start": {
         // Set up escape to abort retry

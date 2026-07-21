@@ -130,7 +130,7 @@ describe("createAgentSession OpenRouter attribution headers", () => {
 		});
 
 		try {
-			await session.agent.streamFn(
+			await session.agent.streamFunction(
 				model,
 				{ messages: [] },
 				{
