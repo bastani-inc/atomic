@@ -43,7 +43,7 @@ import {
 	findDuplicateParallelOutputPath,
 	resolveParallelTaskCwd,
 } from "./subagent-executor-worktree.ts";
-import { createForegroundControlNotifier, maybeBuildForegroundIntercomReceipt, rememberForegroundRun, replaceForegroundRunChild } from "./subagent-executor-status.ts";
+import { createForegroundControlNotifier, maybeBuildForegroundIntercomReceipt, notifyDetachedForegroundChildExit, rememberForegroundRun, replaceForegroundRunChild } from "./subagent-executor-status.ts";
 import { createDetachedCleanupBarrier } from "./detached-cleanup-barrier.ts";
 
 export async function runParallelPath(data: ExecutionContextData, deps: ResolvedExecutorDeps): Promise<SubagentToolResult> {
@@ -171,6 +171,7 @@ export async function runParallelPath(data: ExecutionContextData, deps: Resolved
 			onDetachedExit: (index, result) => {
 				try {
 					replaceForegroundRunChild(deps.state, runId, index, result);
+					notifyDetachedForegroundChildExit({ pi: deps.pi, runId, mode: "parallel", index, totalTasks: tasks.length, result });
 				} finally {
 					detachedCleanup.recover(index);
 				}
