@@ -193,3 +193,5 @@ uv run pier run \
 The Atomic Pier adapter reads `OPENROUTER_API_KEY` from the Pier process environment and passes it into the sandbox for Atomic. If your launcher does not inherit shell exports, pass it explicitly with `--agent-env OPENROUTER_API_KEY=...` instead.
 
 The Pier network allowlist automatically includes `openrouter.ai` when the model provider is `openrouter`. To use a custom OpenRouter-compatible endpoint, pass it with `--agent-env OPENROUTER_BASE_URL=...`.
+
+Kimi/Moonshot and ZAI are supported both as top-level `--model` providers and as nested workflow/subagent model assignments: the adapter forwards `KIMI_API_KEY`, `MOONSHOT_API_KEY`, `ZAI_API_KEY`, and `ZAI_CODING_CN_API_KEY` from the Pier process environment into the sandbox (alongside every other supported provider credential), and the restricted-egress allowlist includes their pi-ai base-URL domains (`api.kimi.com`, `api.moonshot.ai`, `api.moonshot.cn`, `api.z.ai`, `open.bigmodel.cn`). A stored `kimi-coding` entry in the local Atomic `auth.json` is copied into the sandbox like any other subscription credential.
