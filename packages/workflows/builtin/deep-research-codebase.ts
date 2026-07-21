@@ -18,7 +18,7 @@ import { runDeepResearchCodebase } from "./deep-research-codebase-runner.js";
 
 export default workflow({
   name: "deep-research-codebase",
-  description: "Scout + research-history chain → parallel specialist waves → aggregator for deep codebase research.",
+  description: "Heavy research for tasks requiring comprehensive, whole-repository context.",
   inputs: {
     prompt: Type.String({ description: "Research question or investigation focus for the codebase." }),
     max_partitions: Type.Number({

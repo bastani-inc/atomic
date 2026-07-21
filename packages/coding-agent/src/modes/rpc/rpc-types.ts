@@ -92,10 +92,19 @@ export type RpcCommand =
 	// Messages
 	| { id?: string; type: "get_messages" }
 
-	// Commands (available for invocation via prompt)
-	| { id?: string; type: "get_commands" };
-
+	// Commands and their live argument completions
+	| { id?: string; type: "get_commands" }
+	| { id?: string; type: "get_command_completions"; commandName: string; argumentPrefix: string };
 // ============================================================================
+// RPC Argument Completion
+// ============================================================================
+
+export interface RpcAutocompleteItem {
+	value: string;
+	label: string;
+	description?: string;
+}
+
 // RPC Slash Command (for get_commands response)
 // ============================================================================
 
@@ -105,6 +114,8 @@ export interface RpcSlashCommand {
 	name: string;
 	/** Human-readable description */
 	description?: string;
+	/** Whether the engine can evaluate argument completions for this command. */
+	hasArgumentCompletions?: boolean;
 	/** What kind of command this is */
 	source: "extension" | "prompt" | "skill";
 	/** Source metadata for the owning resource */
@@ -273,6 +284,13 @@ export type RpcResponse =
 			command: "get_commands";
 			success: true;
 			data: { commands: RpcSlashCommand[] };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_command_completions";
+			success: true;
+			data: { completions: RpcAutocompleteItem[] | null };
 	  }
 
 	// Error response (any command can fail)

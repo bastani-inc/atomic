@@ -363,6 +363,21 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "get_messages", { messages: session.messages });
 			}
 
+			case "get_command_completions": {
+				const registeredCommand = session.extensionRunner
+					.getRegisteredCommands()
+					.find((candidate) => candidate.invocationName === command.commandName);
+				const getArgumentCompletions = registeredCommand?.getArgumentCompletions;
+				if (registeredCommand === undefined || getArgumentCompletions === undefined) {
+					return createRpcSuccessResponse(id, "get_command_completions", { completions: null });
+				}
+				const completions = await runCallback(
+					{ kind: "extension.hook", name: `command-completions:${command.commandName}`, sourcePath: registeredCommand.sourceInfo.path },
+					() => getArgumentCompletions(command.argumentPrefix),
+				);
+				return createRpcSuccessResponse(id, "get_command_completions", { completions });
+			}
+
 			case "get_commands": {
 				const commands: RpcSlashCommand[] = [];
 
@@ -370,6 +385,7 @@ export function createRpcCommandHandler({
 					commands.push({
 						name: registeredCommand.invocationName,
 						description: registeredCommand.description,
+						...(registeredCommand.getArgumentCompletions !== undefined ? { hasArgumentCompletions: true } : {}),
 						source: "extension",
 						sourceInfo: registeredCommand.sourceInfo,
 					});

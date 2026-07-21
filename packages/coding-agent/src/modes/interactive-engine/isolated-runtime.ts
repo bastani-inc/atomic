@@ -7,8 +7,7 @@ import {
 import type { PromptOptions } from "../../core/agent-session-types.ts";
 import { SessionManager } from "../../core/session-manager.ts";
 import type { RpcClient } from "../rpc/rpc-client.ts";
-import type { RpcExtensionUIRequest, RpcExtensionUIResponse, RpcModelCatalog } from "../rpc/rpc-types.ts";
-import type { RpcEvent, RpcSlashCommand } from "../rpc/rpc-types.ts";
+import type { RpcAutocompleteItem, RpcExtensionUIRequest, RpcExtensionUIResponse, RpcModelCatalog, RpcEvent, RpcSlashCommand } from "../rpc/rpc-types.ts";
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
 import type { EngineKeybindingState, InteractiveEngineCommand, InteractiveEngineMessage } from "./protocol.ts";
 import { RemoteCommandCatalog, type RemoteCommandsListener } from "./remote-command-catalog.ts";
@@ -100,6 +99,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 
 	getRemoteCommands(): readonly RpcSlashCommand[] { return this.remoteCommands.getCommands(); }
 	onRemoteCommandsChanged(listener: RemoteCommandsListener): () => void { return this.remoteCommands.onChange(listener); }
+	getRemoteCommandCompletions(commandName: string, argumentPrefix: string): Promise<RpcAutocompleteItem[] | null> {
+		return this.client.getCommandCompletions(commandName, argumentPrefix);
+	}
 
 
 	async invokeRemoteShortcut(key: string): Promise<void> {

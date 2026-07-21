@@ -3,6 +3,7 @@ import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai/compat"
 import { clampThinkingLevel, isContextOverflow, modelsAreEqual } from "@earendil-works/pi-ai/compat";
 import { sleep } from "../utils/sleep.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
+import { isCodexTokenInvalidationError } from "./codex-errors.ts";
 import { isCopilotGeminiModel } from "./copilot-gemini-payload-sanitizer.ts";
 import { normalizeToolArgumentsForModel } from "./copilot-gemini-tool-arguments.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
@@ -87,6 +88,12 @@ export function _isRetryableError(this: AgentSession, message: AssistantMessage)
 	// Context overflow is handled by compaction, not retry
 	const contextWindow = this.model?.contextWindow ?? 0;
 	if (isContextOverflow(message, contextWindow)) return false;
+
+	// A definitive Codex authentication rejection is terminal. It takes
+	// precedence over transport diagnostics recorded during WebSocket-to-SSE
+	// fallback so those earlier diagnostics cannot trigger a pointless retry.
+	const provider = message.provider || this.model?.provider;
+	if (provider && isCodexTokenInvalidationError(provider, message.errorMessage)) return false;
 
 	if (hasProviderTransportDiagnostic(message) || hasProviderModelUnavailableDiagnostic(message)) return true;
 	if (!message.errorMessage) return false;

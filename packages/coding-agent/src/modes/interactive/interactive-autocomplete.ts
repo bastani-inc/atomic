@@ -1,7 +1,7 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { type Api, type Model, type AutocompleteItem, type AutocompleteProvider, type AutocompleteSuggestions, type SlashCommand, type ExtensionRunner, type ResourceDiagnostic, type SourceInfo, CombinedAutocompleteProvider, fuzzyFilter, hasSupportedCodexFastModeModel, BUILTIN_SLASH_COMMANDS, BUNDLED_EXTENSION_SLASH_COMMANDS, parseGitUrl, getModelSearchText } from "./interactive-mode-deps.ts";
 import { BUILTIN_SLASH_COMMAND_NAMES } from "./interactive-mode-helpers.ts";
-import { getInteractiveEngineRemoteCommands } from "../interactive-engine/extension-ui-bridge.ts";
+import { getInteractiveEngineRemoteCommandCompletions, getInteractiveEngineRemoteCommands } from "../interactive-engine/extension-ui-bridge.ts";
 
 const AT_MENTION_PATH_DELIMITERS = new Set([" ", "\t", '"', "'", "="]);
 
@@ -198,7 +198,16 @@ InteractiveModeBase.prototype.buildRemoteSlashCommands = function(this: Interact
       if (command.source === "skill" && !skillCommandsEnabled) continue;
       if (takenNames.has(command.name)) continue;
       takenNames.add(command.name);
-      const getArgumentCompletions = bundledArgumentCompletions.get(command.name);
+      const bundledCompletions = bundledArgumentCompletions.get(command.name);
+      const getArgumentCompletions = command.hasArgumentCompletions
+        ? async (prefix: string): Promise<AutocompleteItem[] | null> => {
+            try {
+              return await getInteractiveEngineRemoteCommandCompletions(this.runtimeHost, command.name, prefix);
+            } catch {
+              return (await bundledCompletions?.(prefix)) ?? null;
+            }
+          }
+        : bundledCompletions;
       remoteCommands.push({
         name: command.name,
         description: this.prefixAutocompleteDescription(command.description, command.sourceInfo),
