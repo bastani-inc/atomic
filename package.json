@@ -29,7 +29,7 @@
     "lint": "tsc --noEmit"
   },
   "devDependencies": {
-    "@j178/prek": "0.4.5",
+    "@j178/prek": "0.4.10",
     "@types/bun": "^1.3.14",
     "typescript": "^7.0.2"
   },

@@ -119,10 +119,16 @@ export function getReadyDbosBackendSync(): DbosDurableBackend | undefined {
 
 export async function shutdownDbos(): Promise<void> {
   if (shutdownPromise !== undefined) return await shutdownPromise;
-  if (configured === undefined) return;
+  const configuredPromise = configured;
+  if (configuredPromise === undefined) return;
   shutdownPromise = (async () => {
-    const durability = await configured;
-    if (launchPromise !== undefined) await launchPromise;
+    // A backend that never reached "ready" has nothing to flush or stop.
+    // `configured`/`launchPromise` memoize rejections, so re-awaiting them
+    // unguarded would rethrow the original provisioning failure out of every
+    // session dispose — crashing otherwise-successful runs at process exit.
+    const durability = await configuredPromise.catch(() => undefined);
+    if (durability === undefined) return;
+    if (launchPromise !== undefined) await launchPromise.catch(() => undefined);
     if (state !== "ready") return;
     state = "shutting_down";
     await durability.backend.flush();
