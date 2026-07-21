@@ -7,6 +7,10 @@
 - Added Orwell's six writing rules from “Politics and the English Language” to the core default system prompt's `Guidelines` section so every standard Atomic session receives them, while removing the bundled workflow guidance's requirement to announce an inline-or-workflow mode before the first tool call.
 - Reworked interactive startup and ordinary working motion around Atomic's revision-3 identity system: the ∀ banner assembles inward in whole-column steps before its shadow, identity, and manifesto beat land; main and workflow-stage work surfaces use a one-cell Braille A that builds cumulatively from top to bottom at pi-tui's canonical 80ms cadence, then reverses one dot at a time for a clean cycle while retaining all 453 original randomized whimsical working verbs. The inline icon and longest message fit tested standard/64-column layouts, reduced motion settles on the completed A, extension indicator frames/cadence remain unchanged, and factual status/prompt/receipt surfaces keep precedence ([#1883](https://github.com/bastani-inc/atomic/issues/1883)).
 
+### Fixed
+
+- Fixed shared and workflow-stage Atomic working animation starting from wall-clock phase or continuing after a completed turn. Every agent/turn lifecycle now resets to `⠁`, advances at the existing 80ms cadence, and invalidates stale callbacks on turn, terminal, and disposal cleanup; reduced motion remains settled at `⣵` without a timer ([#1883](https://github.com/bastani-inc/atomic/issues/1883)).
+
 ## [0.9.11-alpha.4] - 2026-07-23
 
 ### Changed

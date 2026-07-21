@@ -146,6 +146,8 @@ describe("StageChatView", () => {
     });
 
     test("agent lifecycle starts and stops the Pi-style animation tick", () => {
+        const previousReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
+        delete process.env.ATOMIC_REDUCED_MOTION;
         const store = createStore();
         setupRun(store, "run-1", "stage-a");
         const { handle, emit } = makeHandle();
@@ -159,12 +161,17 @@ describe("StageChatView", () => {
             onDetach: () => {},
             onClose: () => {},
         });
-        assert.equal(view._hasAnimationTick, false);
-        emit({ type: "agent_start" } as unknown as AgentSessionEvent);
-        assert.equal(view._hasAnimationTick, true);
-        emit({ type: "agent_end" } as unknown as AgentSessionEvent);
-        assert.equal(view._hasAnimationTick, false);
-        view.dispose();
+        try {
+            assert.equal(view._hasAnimationTick, false);
+            emit({ type: "agent_start" } as unknown as AgentSessionEvent);
+            assert.equal(view._hasAnimationTick, true);
+            emit({ type: "agent_end" } as unknown as AgentSessionEvent);
+            assert.equal(view._hasAnimationTick, false);
+        } finally {
+            view.dispose();
+            if (previousReducedMotion === undefined) delete process.env.ATOMIC_REDUCED_MOTION;
+            else process.env.ATOMIC_REDUCED_MOTION = previousReducedMotion;
+        }
     });
 
     test("Escape pauses streaming stage chat without moving it to read-only", async () => {
@@ -284,7 +291,7 @@ describe("StageChatView", () => {
             emit({ type: "message_update", message: { role: "assistant", content: [{ type: "toolCall", id: "read-1", name: "read", arguments: {} }] } } as AgentSessionEvent);
             assert.match(stripAnsi(view.render(96).join("\n")), /Schlepping\.\.\./);
             emit({ type: "turn_end" } as AgentSessionEvent);
-            assert.match(stripAnsi(view.render(96).join("\n")), /Working\.\.\./);
+            assert.doesNotMatch(stripAnsi(view.render(96).join("\n")), /Working\.\.\.|Schlepping\.\.\./);
             view.dispose();
         } finally {
             Math.random = previousRandom;

@@ -17,19 +17,9 @@ import {
 } from "./stage-chat-view-helpers.js";
 import { join, sep } from "node:path";
 import { hexToAnsi } from "../../packages/workflows/src/tui/color-utils.js";
-import {
-    ATOMIC_WORKING_FRAME_MS,
-    ATOMIC_WORKING_SETTLED_FRAME_INDEX,
-} from "../../packages/coding-agent/src/modes/interactive/components/atomic-working-status.js";
 
-function renderSettled(view: StageChatView, width: number): string[] {
-    const previousNow = Date.now;
-    Date.now = () => ATOMIC_WORKING_FRAME_MS * ATOMIC_WORKING_SETTLED_FRAME_INDEX;
-    try {
-        return view.render(width).map(stripAnsi);
-    } finally {
-        Date.now = previousNow;
-    }
+function renderLifecycleOrigin(view: StageChatView, width: number): string[] {
+    return view.render(width).map(stripAnsi);
 }
 
 describe("StageChatView", () => {
@@ -124,6 +114,8 @@ describe("StageChatView", () => {
     });
 
     test("renders pi-style spacing between a full transcript and the streaming loader", () => {
+        const previousReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
+        delete process.env.ATOMIC_REDUCED_MOTION;
         const store = createStore();
         setupRun(store, "run-1", "stage-a", "running");
         const messages = Array.from({ length: 30 }, (_, i) =>
@@ -151,21 +143,28 @@ describe("StageChatView", () => {
             onClose: () => {},
         });
 
-        const lines = renderSettled(view, 96);
-        const workingIndex = lines.findIndex((line) => line.includes("Working..."));
-        assert.ok(workingIndex > 4, "expected Atomic working icon after transcript");
-        const previousContent = lines
-            .slice(0, workingIndex - 1)
-            .findLast((line) => line.trim() !== "");
-        assert.match(previousContent ?? "", /msg-\d+/);
-        assert.equal(lines[workingIndex - 1]?.trim(), "");
-        assert.equal(lines[workingIndex]?.trimEnd(), " ⣵ Working...");
-        assert.deepEqual(lines[workingIndex]?.match(/[⠀-⣿]/g), ["⣵"]);
-        assert.equal(lines.join("\n").match(/Working\.\.\./g)?.length, 1);
-        view.dispose();
+        try {
+            const lines = renderLifecycleOrigin(view, 96);
+            const workingIndex = lines.findIndex((line) => line.includes("Working..."));
+            assert.ok(workingIndex > 4, "expected Atomic working icon after transcript");
+            const previousContent = lines
+                .slice(0, workingIndex - 1)
+                .findLast((line) => line.trim() !== "");
+            assert.match(previousContent ?? "", /msg-\d+/);
+            assert.equal(lines[workingIndex - 1]?.trim(), "");
+            assert.equal(lines[workingIndex]?.trimEnd(), " ⠁ Working...");
+            assert.deepEqual(lines[workingIndex]?.match(/[⠀-⣿]/g), ["⠁"]);
+            assert.equal(lines.join("\n").match(/Working\.\.\./g)?.length, 1);
+        } finally {
+            view.dispose();
+            if (previousReducedMotion === undefined) delete process.env.ATOMIC_REDUCED_MOTION;
+            else process.env.ATOMIC_REDUCED_MOTION = previousReducedMotion;
+        }
     });
 
     test("64-column Atomic working mark keeps its label and composer in bounds", () => {
+        const previousReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
+        delete process.env.ATOMIC_REDUCED_MOTION;
         const store = createStore();
         setupRun(store, "run-1", "stage-a", "running");
         const { handle } = makeHandle({
@@ -175,14 +174,19 @@ describe("StageChatView", () => {
             store, graphTheme: deriveGraphTheme({}), runId: "run-1", stageId: "stage-a",
             workflowName: "test-wf", handle, onDetach: () => {}, onClose: () => {},
         });
-        const lines = renderSettled(view, 64);
-        assert.equal(lines.every((line) => line.length <= 64), true);
-        const working = lines.find((line) => line.includes("Working..."));
-        assert.equal(working?.trimEnd(), " ⣵ Working...");
-        assert.deepEqual(working?.match(/[⠀-⣿]/g), ["⣵"]);
-        assert.equal(lines.some((line) => line.includes("❯")), true);
-        assert.equal(lines.some((line) => line.includes("ctrl+x")), true);
-        view.dispose();
+        try {
+            const lines = renderLifecycleOrigin(view, 64);
+            assert.equal(lines.every((line) => line.length <= 64), true);
+            const working = lines.find((line) => line.includes("Working..."));
+            assert.equal(working?.trimEnd(), " ⠁ Working...");
+            assert.deepEqual(working?.match(/[⠀-⣿]/g), ["⠁"]);
+            assert.equal(lines.some((line) => line.includes("❯")), true);
+            assert.equal(lines.some((line) => line.includes("ctrl+x")), true);
+        } finally {
+            view.dispose();
+            if (previousReducedMotion === undefined) delete process.env.ATOMIC_REDUCED_MOTION;
+            else process.env.ATOMIC_REDUCED_MOTION = previousReducedMotion;
+        }
     });
 
     test("attached live sessions render the usage ribbon, orchestrator hint, and coding-agent footer", () => {

@@ -11,7 +11,6 @@ import {
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { WHIMSICAL_WORKING_MESSAGES } from "../src/modes/interactive/whimsical-messages.ts";
 
-const originalReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
 const plain = (text: string): string => text.replace(/\u001b\[[0-9;]*m/g, "");
 const bits = (glyph: string): number => glyph.codePointAt(0)! - 0x2800;
 const bitCount = (value: number): number => value.toString(2).replaceAll("0", "").length;
@@ -24,7 +23,6 @@ function restoreEnv(name: "ATOMIC_REDUCED_MOTION", value: string | undefined): v
 
 afterEach(() => {
 	vi.useRealTimers();
-	restoreEnv("ATOMIC_REDUCED_MOTION", originalReducedMotion);
 });
 
 describe("Atomic working status", () => {
@@ -45,13 +43,19 @@ describe("Atomic working status", () => {
 	});
 
 	it("matches pi-tui's canonical 80ms loader cadence exactly", () => {
-		expect(ATOMIC_WORKING_FRAME_MS).toBe(80);
-		expect(atomicWorkingFrame(0)).toBe(0);
-		expect(atomicWorkingFrame(79)).toBe(0);
-		expect(atomicWorkingFrame(80)).toBe(1);
-		expect(atomicWorkingFrame(400)).toBe(ATOMIC_WORKING_SETTLED_FRAME_INDEX);
-		expect(atomicWorkingFrame(799)).toBe(9);
-		expect(atomicWorkingFrame(800)).toBe(0);
+		const previousReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
+		delete process.env.ATOMIC_REDUCED_MOTION;
+		try {
+			expect(ATOMIC_WORKING_FRAME_MS).toBe(80);
+			expect(atomicWorkingFrame(0)).toBe(0);
+			expect(atomicWorkingFrame(79)).toBe(0);
+			expect(atomicWorkingFrame(80)).toBe(1);
+			expect(atomicWorkingFrame(400)).toBe(ATOMIC_WORKING_SETTLED_FRAME_INDEX);
+			expect(atomicWorkingFrame(799)).toBe(9);
+			expect(atomicWorkingFrame(800)).toBe(0);
+		} finally {
+			restoreEnv("ATOMIC_REDUCED_MOTION", previousReducedMotion);
+		}
 	});
 
 	it("renders one A cell before one message row with origin/main loader geometry", () => {
@@ -118,25 +122,30 @@ describe("Atomic working status", () => {
 	});
 
 	it("ticks, stops, and resets the default loader at 80ms", () => {
+		const previousReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
 		vi.useFakeTimers();
 		delete process.env.ATOMIC_REDUCED_MOTION;
-		const requestRender = vi.fn();
-		const loader = new AtomicWorkingLoader({ requestRender } as never, String, String, "Working...");
-		expect(renderedContent(loader)).toBe(" ⠁ Working...");
-		vi.advanceTimersByTime(79);
-		expect(renderedContent(loader)).toBe(" ⠁ Working...");
-		vi.advanceTimersByTime(1);
-		expect(renderedContent(loader)).toBe(" ⠑ Working...");
-		expect(requestRender).toHaveBeenCalledTimes(1);
-		loader.stop();
-		vi.advanceTimersByTime(160);
-		expect(requestRender).toHaveBeenCalledTimes(1);
+		try {
+			const requestRender = vi.fn();
+			const loader = new AtomicWorkingLoader({ requestRender } as never, String, String, "Working...");
+			expect(renderedContent(loader)).toBe(" ⠁ Working...");
+			vi.advanceTimersByTime(79);
+			expect(renderedContent(loader)).toBe(" ⠁ Working...");
+			vi.advanceTimersByTime(1);
+			expect(renderedContent(loader)).toBe(" ⠑ Working...");
+			expect(requestRender).toHaveBeenCalledTimes(1);
+			loader.stop();
+			vi.advanceTimersByTime(160);
+			expect(requestRender).toHaveBeenCalledTimes(1);
 
-		loader.setIndicator({ frames: ["X"] });
-		expect(renderedContent(loader)).toBe(" X Working...");
-		loader.setIndicator();
-		expect(renderedContent(loader)).toBe(" ⠁ Working...");
-		loader.stop();
+			loader.setIndicator({ frames: ["X"] });
+			expect(renderedContent(loader)).toBe(" X Working...");
+			loader.setIndicator();
+			expect(renderedContent(loader)).toBe(" ⠁ Working...");
+			loader.stop();
+		} finally {
+			restoreEnv("ATOMIC_REDUCED_MOTION", previousReducedMotion);
+		}
 	});
 
 	it("preserves extension frames and cadence verbatim", () => {
@@ -161,18 +170,23 @@ describe("Atomic working status", () => {
 	});
 
 	it("settles on the final A without a default timer under reduced motion", () => {
+		const previousReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
 		vi.useFakeTimers();
 		process.env.ATOMIC_REDUCED_MOTION = "1";
-		const requestRender = vi.fn();
-		const loader = new AtomicWorkingLoader({ requestRender } as never, String, String, "Working...");
-		expect(atomicWorkingFrame(0)).toBe(ATOMIC_WORKING_SETTLED_FRAME_INDEX);
-		expect(renderedContent(loader)).toBe(" ⣵ Working...");
-		vi.advanceTimersByTime(800);
-		expect(renderedContent(loader)).toBe(" ⣵ Working...");
-		expect(requestRender).not.toHaveBeenCalled();
-		loader.start();
-		vi.advanceTimersByTime(800);
-		expect(requestRender).not.toHaveBeenCalled();
-		loader.stop();
+		try {
+			const requestRender = vi.fn();
+			const loader = new AtomicWorkingLoader({ requestRender } as never, String, String, "Working...");
+			expect(atomicWorkingFrame(0)).toBe(ATOMIC_WORKING_SETTLED_FRAME_INDEX);
+			expect(renderedContent(loader)).toBe(" ⣵ Working...");
+			vi.advanceTimersByTime(800);
+			expect(renderedContent(loader)).toBe(" ⣵ Working...");
+			expect(requestRender).not.toHaveBeenCalled();
+			loader.start();
+			vi.advanceTimersByTime(800);
+			expect(requestRender).not.toHaveBeenCalled();
+			loader.stop();
+		} finally {
+			restoreEnv("ATOMIC_REDUCED_MOTION", previousReducedMotion);
+		}
 	});
 });

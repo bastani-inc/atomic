@@ -12,6 +12,7 @@ import {
   ScrollableComponentViewport,
   type ChatTranscriptEntryLike,
 } from "./chat-transcript.ts";
+import { ATOMIC_WORKING_SETTLED_FRAME_INDEX } from "./atomic-working-status.ts";
 import type {
   ChatSessionHostCommands,
   ChatSessionHostEntry,
@@ -63,6 +64,14 @@ export class ChatSessionHostState<
   localBashRunning = false;
   sdkBusy = false;
   workingMessage: string | undefined;
+  workingFrame = process.env.ATOMIC_REDUCED_MOTION === "1"
+    ? ATOMIC_WORKING_SETTLED_FRAME_INDEX
+    : 0;
+  workingLifecycleActive: boolean;
+  animationGeneration = 0;
+  eventRenderGeneration = 0;
+  immediateEventRenderPending = false;
+  disposed = false;
   pendingSteeringMessages: readonly string[] = [];
   pendingFollowUpMessages: readonly string[] = [];
   compactionQueuedMessages: readonly string[] = [];
@@ -87,6 +96,7 @@ export class ChatSessionHostState<
     this.requestRender = opts.requestRender;
     this.getAgentSession = opts.getAgentSession;
     this.isStreamingOverride = opts.isStreaming;
+    this.workingLifecycleActive = opts.isStreaming?.() === true;
     this.isPaused = opts.isPaused;
     this.isDisabled = opts.isDisabled;
     this.isBashRunningOverride = opts.isBashRunning;
