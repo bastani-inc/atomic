@@ -464,6 +464,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
       }
 
       case "agent_continue_error": {
+        this.stopWorkingLoader();
         this.showError(event.errorMessage);
         this.ui.requestRender();
         break;

@@ -65,6 +65,11 @@ type CompactionEndEvent = {
 	midTurn?: boolean;
 };
 type AgentEndEvent = { type: "agent_end" };
+type AgentContinueErrorEvent = {
+	type: "agent_continue_error";
+	source: "post_compaction";
+	errorMessage: string;
+};
 
 const persistedContextMessages = [
 	persistedBoundary,
@@ -143,10 +148,13 @@ function makeMode(messages: AgentMessage[] = persistedContextMessages) {
 	return { mode, chatContainer, workingLoaders, entries };
 }
 
-async function emit(mode: object, event: CompactionStartEvent | CompactionEndEvent | AgentEndEvent): Promise<void> {
+async function emit(
+	mode: object,
+	event: CompactionStartEvent | CompactionEndEvent | AgentEndEvent | AgentContinueErrorEvent,
+): Promise<void> {
 	const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
 		this: object,
-		event: CompactionStartEvent | CompactionEndEvent | AgentEndEvent,
+		event: CompactionStartEvent | CompactionEndEvent | AgentEndEvent | AgentContinueErrorEvent,
 	) => Promise<void>;
 	await handleEvent.call(mode, event);
 }
@@ -230,6 +238,23 @@ describe("InteractiveMode compaction events", () => {
 		await emit(mode, { type: "agent_end" });
 		expect(workingLoaders[1]?.stop).toHaveBeenCalledOnce();
 		expect(renderedText(mode.statusContainer)).not.toContain("Working...");
+	});
+
+	it("stops the working loader when direct post-compaction continuation fails", async () => {
+		const { mode, workingLoaders } = makeMode([]);
+		mode.showWorkingLoaderNow.call(mode);
+		expect(renderedText(mode.statusContainer)).toContain("Working...");
+
+		await emit(mode, {
+			type: "agent_continue_error",
+			source: "post_compaction",
+			errorMessage: "Post-compaction continuation failed: provider failed",
+		});
+
+		expect(workingLoaders[0]?.stop).toHaveBeenCalledOnce();
+		expect(mode.loadingAnimation).toBeUndefined();
+		expect(renderedText(mode.statusContainer)).not.toContain("Working...");
+		expect(mode.showError).toHaveBeenCalledWith("Post-compaction continuation failed: provider failed");
 	});
 
 	it("does not restore the working spinner when mid-turn compaction cannot continue", async () => {
