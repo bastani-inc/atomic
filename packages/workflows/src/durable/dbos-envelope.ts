@@ -207,7 +207,7 @@ function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): Durabl
     name: env.name ?? "stage",
     replayKey: env.replayKey ?? env.checkpointId,
     ...(env.hasOutput !== false && env.output !== undefined ? { output: env.output } : {}),
-    ...(topology !== undefined ? { topology } : {}),
+    topology,
     ...(env.sessionId !== undefined ? { sessionId: env.sessionId } : {}),
     ...(env.sessionFile !== undefined ? { sessionFile: env.sessionFile } : {}),
     ...(typeof env.startedAt === "number" ? { startedAt: env.startedAt } : {}),
