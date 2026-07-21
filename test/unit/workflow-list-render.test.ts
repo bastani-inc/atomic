@@ -45,7 +45,7 @@ describe("renderWorkflowList — populated", () => {
       [
         {
           name: "deep-research-codebase",
-          description: "Partitioned, parallel research across a codebase.",
+          description: "Heavy research for tasks requiring comprehensive, whole-repository context.",
           inputs: [
             { name: "prompt", required: true },
             { name: "max_partitions", required: false },
@@ -76,7 +76,7 @@ describe("renderWorkflowList — populated", () => {
     for (const name of ["deep-research-codebase", "open-claude-design", "ralph"]) {
       assert.ok(plain.includes(name), `tag missing for ${name}`);
     }
-    assert.match(plain, /Partitioned, parallel research/);
+    assert.match(plain, /Heavy research for tasks requiring comprehensive, whole-repository context\./);
     assert.match(plain, /impeccable design skill/);
     assert.match(plain, /improvement loop/);
 

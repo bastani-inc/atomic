@@ -43,7 +43,7 @@ jobs:
             # Node is required by test/integration/installed-package-node-extensions.test.ts,
             # which smoke-tests the built npm package under the Node runtime (the
             # `atomic` bin runs via `#!/usr/bin/env node` for npm/bun installs).
-            - uses: actions/setup-node@v6
+            - uses: actions/setup-node@v7
               with:
                   node-version: 24
             - uses: dtolnay/rust-toolchain@stable

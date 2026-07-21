@@ -71,6 +71,15 @@ describe("deep-research-codebase", () => {    let tempCwd: string | undefined;
         assert.equal(def.normalizedName, "deep-research-codebase");
     });
 
+    test("reserves discovery guidance for comprehensive whole-repository research", async () => {
+        const mod =
+            await import("../../packages/workflows/builtin/deep-research-codebase.js");
+        assert.equal(
+            mod.default.description,
+            "Heavy research for tasks requiring comprehensive, whole-repository context.",
+        );
+    });
+
     test("has prompt, max_partitions, and max_concurrency inputs", async () => {
         const mod =
             await import("../../packages/workflows/builtin/deep-research-codebase.js");

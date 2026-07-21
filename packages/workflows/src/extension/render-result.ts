@@ -149,6 +149,14 @@ type ReloadResult = WorkflowReloadReport & { action: "reload"; status: "ok" | "n
 type InterruptResult = { action: "interrupt"; runId: string; status: string; message: string };
 type QuitResult = { action: "quit"; runId: string; status: string; message: string };
 type ResumeResult = { action: "resume"; runId: string; status: string; message: string };
+export interface ModelCatalogEntry {
+  provider: string;
+  id: string;
+  fullId: string;
+  isCurrent: boolean;
+  availableThinkingLevels?: readonly string[];
+}
+type ModelsResult = { action: "models"; models: ModelCatalogEntry[] };
 
 export type WorkflowToolResult =
   | ListResult
@@ -165,7 +173,8 @@ export type WorkflowToolResult =
   | ReloadResult
   | InterruptResult
   | QuitResult
-  | ResumeResult;
+  | ResumeResult
+  | ModelsResult;
 
 export interface RenderResultOpts {
   isPartial?: boolean;
@@ -430,6 +439,27 @@ export function renderResult(result: WorkflowToolResult, opts?: RenderResultOpts
     case "resume": {
       const r = result as ResumeResult;
       return renderNotice("WORKFLOW RESUME", `${r.runId}: ${r.message}`, opts, themed);
+    }
+
+    case "models": {
+      const r = result as ModelsResult;
+      if (r.models.length === 0) {
+        return renderNotice("WORKFLOW MODELS", "no models in configured catalog — configured-auth snapshot, not proof of credentials, entitlements, OAuth freshness, or live provider access.", opts, themed);
+      }
+      const currentLine = r.models.find((model) => model.isCurrent);
+      const lines = r.models.map((model) => {
+        const levels = model.availableThinkingLevels?.length
+          ? ` [levels: ${model.availableThinkingLevels.join(", ")}]`
+          : "";
+        return `${model.provider}/${model.id}${model.isCurrent ? " (current)" : ""}${levels}`;
+      }).join("; ");
+      const suffix = currentLine !== undefined ? "" : " (no current model)";
+      return renderNotice(
+        "WORKFLOW MODELS",
+        `${lines}${suffix} — configured-auth catalog snapshot, not proof of credentials, entitlements, OAuth freshness, or live provider access.`,
+        opts,
+        themed,
+      );
     }
 
     default: {

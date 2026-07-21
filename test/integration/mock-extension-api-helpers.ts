@@ -226,6 +226,8 @@ export const EXPECTED_WORKFLOW_DESCRIPTION_TOKENS = [
   "path-only by default",
   "explicit tail/limit",
   "missing transcript paths",
+  "models",
+  "configured-auth snapshot",
 ] as const;
 
 // ---------------------------------------------------------------------------

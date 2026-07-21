@@ -6,7 +6,10 @@ import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type {
 	RpcCommand,
+	RpcAutocompleteItem,
 	RpcContextWindowInfo,
+	RpcLogoutProviderResult,
+	RpcModelRefreshResult,
 	RpcResponse,
 	RpcSessionState,
 	RpcSlashCommand,
@@ -46,6 +49,13 @@ export abstract class RpcClientApi {
 	}
 	async getAvailableModels(): Promise<ModelInfo[]> {
 		return this.data<{ models: ModelInfo[] }>(await this.request({ type: "get_available_models" })).models;
+	}
+	async logoutProvider(provider: string): Promise<RpcLogoutProviderResult> {
+		return this.data(await this.request({ type: "logout_provider", provider }));
+	}
+
+	async refreshModels(options: { timeoutMs?: number; force?: boolean; allowNetwork?: boolean } = {}): Promise<RpcModelRefreshResult> {
+		return this.data(await this.request({ type: "refresh_models", ...options }));
 	}
 	async setThinkingLevel(level: ThinkingLevel): Promise<void> { await this.request({ type: "set_thinking_level", level }); }
 	async cycleThinkingLevel(): Promise<{ level: ThinkingLevel } | null> {
@@ -88,5 +98,10 @@ export abstract class RpcClientApi {
 	}
 	async getCommands(): Promise<RpcSlashCommand[]> {
 		return this.data<{ commands: RpcSlashCommand[] }>(await this.request({ type: "get_commands" })).commands;
+	}
+	async getCommandCompletions(commandName: string, argumentPrefix: string): Promise<RpcAutocompleteItem[] | null> {
+		return this.data<{ completions: RpcAutocompleteItem[] | null }>(
+			await this.request({ type: "get_command_completions", commandName, argumentPrefix }),
+		).completions;
 	}
 }

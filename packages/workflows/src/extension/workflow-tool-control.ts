@@ -9,6 +9,8 @@ import { quitAllRuns, quitRun } from "../runs/background/quit.js";
 import { store } from "../shared/store.js";
 import { getDurableBackend } from "../durable/factory.js";
 import type { WorkflowExecutionPolicy } from "../shared/types.js";
+import type { ResumableWorkflowEntry } from "../durable/types.js";
+import type { RunSnapshot } from "../shared/store-types.js";
 import type { ExtensionRuntime } from "./runtime.js";
 import type { WorkflowToolResult } from "./render-result.js";
 import type { WorkflowToolArgs } from "./public-types.js";
@@ -27,6 +29,7 @@ import {
   workflowHasPausedStages,
   workflowHasPausedState,
 } from "../runs/background/workflow-lifecycle-aggregate.js";
+import { resolveWorkflowResumeTarget } from "./workflow-durable-resume-command.js";
 
 export interface WorkflowControlActionDeps {
   reloadWorkflowResources: () => Promise<WorkflowReloadReport | void> | void;
@@ -250,14 +253,97 @@ async function resumeDurableShadow(
   };
 }
 
+async function resumePreparedDurableTarget(
+  runId: string,
+  deps: Pick<WorkflowControlActionDeps, "getRuntime" | "policy">,
+): Promise<WorkflowToolResult> {
+  try {
+    const resumed = await deps.getRuntime().resumeDurableWorkflow(runId, { policy: deps.policy });
+    return {
+      action: "resume",
+      runId: resumed.ok ? resumed.runId : runId,
+      status: resumed.ok ? "running" : "noop",
+      message: resumed.message,
+    };
+  } catch (error) {
+    return controlFailure("resume", runId, error);
+  }
+}
+async function resolveExplicitDurableTarget(
+  target: string,
+  args: WorkflowToolArgs,
+  deps: Pick<WorkflowControlActionDeps, "getRuntime" | "policy" | "ensureWorkflowResourcesLoaded">,
+  liveRuns: readonly RunSnapshot[] = [],
+): Promise<WorkflowToolResult> {
+  const runtime = deps.getRuntime();
+  let durable: readonly ResumableWorkflowEntry[];
+  try {
+    await deps.ensureWorkflowResourcesLoaded();
+    durable = await runtime.prepareDurableResumable(target);
+  } catch (error) {
+    return controlFailure("resume", target, error);
+  }
+  const resolved = resolveWorkflowResumeTarget(target, liveRuns, durable, []);
+  if (resolved.kind === "ambiguous") {
+    const matches = resolved.matches.map((match) => match.workflowId);
+    return {
+      action: "resume",
+      runId: target,
+      status: "noop",
+      message: `Ambiguous run prefix "${target}" matches: ${matches.join(", ")}`,
+    };
+  }
+  if (resolved.kind === "durable") return resumePreparedDurableTarget(resolved.workflowId, deps);
+  if (resolved.kind === "live") {
+    return workflowResumeAction({ ...args, runId: resolved.workflowId }, deps);
+  }
+  if (resolved.kind === "completed") {
+    return {
+      action: "resume",
+      runId: resolved.workflowId,
+      status: "noop",
+      message: `Workflow ${resolved.workflowId} is completed, not resumable.`,
+    };
+  }
+  const durableHandle = getDurableBackend().getWorkflow(target);
+  const isZeroProgressCandidate = durableHandle !== undefined
+    && (durableHandle.status === "paused" || durableHandle.status === "running")
+    && durableHandle.completedCheckpoints === 0
+    && durableHandle.pendingPrompts === 0;
+  if (isZeroProgressCandidate) {
+    return {
+      action: "resume",
+      runId: target,
+      status: "noop",
+      message: `Workflow ${target} has no durable checkpoint or pending prompt progress and is not resumable.`,
+    };
+  }
+  if (durableHandle !== undefined) return resumePreparedDurableTarget(target, deps);
+  return { action: "resume", runId: target, status: "noop", message: `Run not found: ${target}` };
+}
+
 export async function workflowResumeAction(
   args: WorkflowToolArgs,
   deps: Pick<WorkflowControlActionDeps, "getRuntime" | "policy" | "ensureWorkflowResourcesLoaded">,
 ): Promise<WorkflowToolResult> {
   const target = resolveToolRunTarget(args, "No active run to resume.");
   if (target.kind === "all") return { action: "resume", runId: "--all", status: "noop", message: "Resume does not support --all." };
-  if (target.kind === "ambiguous") return { action: "resume", runId: target.target, status: "noop", message: ambiguousRunMessage(target.target, target.matches) };
-  if (target.kind === "not_found") return { action: "resume", runId: target.target, status: "noop", message: target.message };
+  if (target.kind === "ambiguous") {
+    const liveMatches = store.runs().filter((run) => target.matches.includes(run.id));
+    return resolveExplicitDurableTarget(target.target, args, deps, liveMatches);
+  }
+  if (target.kind === "not_found") {
+    const explicitTarget = args.runId?.trim();
+    if (explicitTarget !== undefined && explicitTarget.length > 0) {
+      return resolveExplicitDurableTarget(explicitTarget, args, deps);
+    }
+    return { action: "resume", runId: target.target, status: "noop", message: target.message };
+  }
+  const explicitTarget = args.runId?.trim();
+  if (explicitTarget !== undefined && explicitTarget.length > 0 && explicitTarget !== target.runId) {
+    const liveMatches = store.runs().filter((run) => run.id.startsWith(explicitTarget));
+    return resolveExplicitDurableTarget(explicitTarget, args, deps, liveMatches);
+  }
   const backend = getDurableBackend();
   const exact = store.runs().find((run) => run.id === target.runId);
   const shadow = exact === undefined ? "not_shadow" : classifyDurableResumeShadow(exact, store, { backend });

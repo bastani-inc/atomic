@@ -98,6 +98,23 @@ describe("workflow-first execution routing", () => {
     }
   });
 
+  test("guides authored workflows to checkpoint workflow-owned side effects", () => {
+    const authoringGuidance = workflowGuidance.join("\n");
+    for (const phrase of [
+      "Prefer `ctx.tool(name, args, fn)`",
+      "filesystem writes",
+      "network mutations",
+      "external API actions",
+      "durably checkpointed",
+      "resume replays that result without rerunning `fn`",
+      "pure computation and side-effect-free transformations as ordinary TypeScript",
+      "Do not wrap agent-stage internals or every function call indiscriminately",
+      "side effects orchestrated directly by the workflow definition",
+    ]) {
+      expect(authoringGuidance).toContain(phrase);
+    }
+  });
+
   test("teaches documented starter patterns and concrete dynamic examples", () => {
     for (const phrase of [
       "Classify-and-act",
@@ -234,6 +251,28 @@ describe("workflow-first execution routing", () => {
       "`action: \"create\"` to create a workflow",
     ]) {
       expect(documentation).not.toContain(regressionPhrase);
+    }
+  });
+
+  test("synchronizes side-effect guidance across workflow authoring references", async () => {
+    for (const path of [
+      "packages/coding-agent/docs/workflows.md",
+      "packages/workflows/README.md",
+    ]) {
+      const documentation = await readRepositoryFile(path);
+      for (const phrase of [
+        "ctx.tool(name, args, fn)",
+        "workflow-owned",
+        "filesystem writes",
+        "network mutations",
+        "external API actions",
+        "without rerunning",
+        "pure computation",
+        "agent-stage internals",
+        "every function call",
+      ]) {
+        expect(documentation, path).toContain(phrase);
+      }
     }
   });
 });

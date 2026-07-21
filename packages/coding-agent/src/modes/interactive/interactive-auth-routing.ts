@@ -1,6 +1,20 @@
+import type { AuthStatus } from "../../core/auth-storage.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { type AuthSelectorProvider, ExtensionSelectorComponent, OAuthSelectorComponent } from "./interactive-mode-deps.ts";
 import { BEDROCK_PROVIDER_ID, isApiKeyLoginProvider } from "./interactive-mode-helpers.ts";
+
+export function formatLogoutStatus(
+  providerName: string,
+  authType: "oauth" | "api_key",
+  authStatus: AuthStatus,
+): string {
+  const action = authType === "oauth"
+    ? `Logged out of ${providerName}`
+    : `Removed stored API key for ${providerName}`;
+  return authStatus.source
+    ? `${action}. Authentication remains active through ${authStatus.label ?? authStatus.source}.`
+    : action;
+}
 
 InteractiveModeBase.prototype.getLoginProviderOptions = function(this: InteractiveModeBase, authType?: "oauth" | "api_key"): AuthSelectorProvider[] {
     const authStorage = this.session.modelRegistry.authStorage;
@@ -152,14 +166,14 @@ InteractiveModeBase.prototype.showOAuthSelector = async function(this: Interacti
           }
 
           try {
-            await this.session.modelRegistry.authStorage.logoutAsync(providerOption.id);
-            await this.session.modelRegistry.refresh();
+            const result = await this.runtimeHost.logoutProvider(providerOption.id);
             await this.updateAvailableProviderCount();
             this.setupAutocompleteProvider();
-            const message =
-              providerOption.authType === "oauth"
-                ? `Logged out of ${providerOption.name}`
-                : `Removed stored API key for ${providerOption.name}. Environment variables and models.json config are unchanged.`;
+            const message = formatLogoutStatus(
+              providerOption.name,
+              providerOption.authType,
+              result.authStatus,
+            );
             this.showStatus(message);
           } catch (error: unknown) {
             this.showError(

@@ -1,3 +1,4 @@
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
 import { inspectRun } from "../runs/background/status.js";
 import type { WorkflowExecutionPolicy } from "../shared/types.js";
 import type { ExtensionRuntime } from "./runtime.js";
@@ -63,6 +64,18 @@ export function makeExecuteWorkflowTool(
       case "get":
         await ensureWorkflowResourcesVisible();
         return workflowGetResult(getRuntime(), args);
+      case "models": {
+        const available = ctx.modelRegistry?.getAvailable() ?? [];
+        const current = ctx.model;
+        const models = available.map((m) => ({
+          provider: m.provider,
+          id: m.id,
+          fullId: `${m.provider}/${m.id}`,
+          isCurrent: current !== undefined && m.provider === current.provider && m.id === current.id,
+          availableThinkingLevels: getSupportedThinkingLevels(m),
+        }));
+        return { action: "models", models };
+      }
       case "list":
       case "inputs": {
         await ensureWorkflowResourcesVisible();

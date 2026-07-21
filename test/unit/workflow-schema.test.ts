@@ -10,6 +10,8 @@ describe("WorkflowParametersSchema", () => {
       { action: "list" },
       { action: "get", workflow: "goal" },
       { action: "inputs", workflow: "goal" },
+      { action: "models" },
+      { action: "models", format: "json" },
       { action: "status", runId: "abc123" },
       { action: "stages", runId: "abc123", statusFilter: "running" },
       { action: "stage", runId: "abc123", stageId: "review" },

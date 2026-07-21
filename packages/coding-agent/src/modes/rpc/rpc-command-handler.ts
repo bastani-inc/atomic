@@ -128,6 +128,25 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "get_available_models", { models, scopedModels: session.scopedModels });
 			}
 
+			case "logout_provider": {
+				const result = await runtimeHost.logoutProvider(command.provider);
+				return createRpcSuccessResponse(id, "logout_provider", result);
+			}
+			case "refresh_models": {
+				session.modelRegistry.authStorage.reload();
+				const result = await session.modelRegistry.refresh({
+					timeoutMs: command.timeoutMs,
+					force: command.force,
+					allowNetwork: command.allowNetwork,
+				});
+				return createRpcSuccessResponse(id, "refresh_models", {
+					aborted: result.aborted,
+					errors: [...result.errors].map(([provider, error]) => ({ provider, message: error.message })),
+					models: session.modelRegistry.getAvailable(),
+					scopedModels: session.scopedModels,
+				});
+			}
+
 			case "set_thinking_level": {
 				session.setThinkingLevel(command.level);
 				return createRpcSuccessResponse(id, "set_thinking_level");
@@ -348,6 +367,21 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "get_messages", { messages: session.messages });
 			}
 
+			case "get_command_completions": {
+				const registeredCommand = session.extensionRunner
+					.getRegisteredCommands()
+					.find((candidate) => candidate.invocationName === command.commandName);
+				const getArgumentCompletions = registeredCommand?.getArgumentCompletions;
+				if (registeredCommand === undefined || getArgumentCompletions === undefined) {
+					return createRpcSuccessResponse(id, "get_command_completions", { completions: null });
+				}
+				const completions = await runCallback(
+					{ kind: "extension.hook", name: `command-completions:${command.commandName}`, sourcePath: registeredCommand.sourceInfo.path },
+					() => getArgumentCompletions(command.argumentPrefix),
+				);
+				return createRpcSuccessResponse(id, "get_command_completions", { completions });
+			}
+
 			case "get_commands": {
 				const commands: RpcSlashCommand[] = [];
 
@@ -355,6 +389,7 @@ export function createRpcCommandHandler({
 					commands.push({
 						name: registeredCommand.invocationName,
 						description: registeredCommand.description,
+						...(registeredCommand.getArgumentCompletions !== undefined ? { hasArgumentCompletions: true } : {}),
 						source: "extension",
 						sourceInfo: registeredCommand.sourceInfo,
 					});

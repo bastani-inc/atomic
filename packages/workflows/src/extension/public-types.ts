@@ -2,6 +2,7 @@ import type {
   CreateAgentSessionOptions,
   DefaultResourceLoaderInheritanceSnapshot,
 } from "@bastani/atomic";
+import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { SessionManager } from "../shared/persistence-restore.js";
 import type { StageSessionRuntime } from "../runs/foreground/stage-runner.js";
 import type { RunStatus, StageStatus } from "../shared/store-types.js";
@@ -58,10 +59,7 @@ export interface PiCommandOptions {
   getArgumentCompletions?: (partial: string) => PiArgumentCompletionResult | Promise<PiArgumentCompletionResult>;
 }
 
-export interface PiRuntimeModel {
-  readonly provider: string;
-  readonly id: string;
-}
+export type PiRuntimeModel = Model<Api>;
 
 export interface PiRuntimeModelRegistry {
   getAvailable(): PiRuntimeModel[];
@@ -222,6 +220,7 @@ export interface WorkflowToolArgs {
   workflow?: string;
   inputs?: WorkflowInputValues;
   action?:
+    | "models"
     | "run"
     | "list"
     | "get"

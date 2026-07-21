@@ -277,6 +277,33 @@ Response contains an array of full [Model](#model) objects:
 }
 ```
 
+#### logout_provider
+
+Remove a provider's stored credential in the authoritative agent process, refresh its available-model catalog, and return the remaining authentication status and new catalog. Environment variables and `models.json` authentication are reported but are not modified.
+
+```json
+{"type": "logout_provider", "provider": "github-copilot"}
+```
+
+Response:
+
+```json
+{
+  "type": "response",
+  "command": "logout_provider",
+  "success": true,
+  "data": {
+    "provider": "github-copilot",
+    "authStatus": {"configured": false},
+    "models": [],
+    "scopedModels": []
+  }
+}
+```
+
+`models` preserves the refreshed catalog order. `scopedModels` is optional. If authentication remains through an environment variable, `authStatus.source` is `"environment"` and `authStatus.label` names the variable.
+
+
 ### Context Window
 
 #### get_available_context_windows

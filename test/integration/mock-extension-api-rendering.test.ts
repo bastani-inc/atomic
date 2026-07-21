@@ -221,6 +221,10 @@ describe("renderCall — all action branches", () => {
     assert.ok(renderCall({ runId: "run-2", action: "resume" }).includes("run-2"));
   });
 
+  test("action='models' returns models string", () => {
+    assert.equal(renderCall({ action: "models" }), "workflow: list configured models");
+  });
+
   test("defaults to 'run' when action omitted", () => {
     assert.ok(renderCall({ workflow: "wf-c" }).includes("run"));
   });
@@ -456,6 +460,29 @@ describe("renderResult — all action branches", () => {
     });
     assert.ok(out.includes("r20"));
     assert.ok(out.includes("Resume not yet implemented"));
+  });
+
+  test("action='models' empty renders empty-catalog; populated shows markers and disclaimer", () => {
+    const empty = renderResult({ action: "models", models: [] });
+    assert.ok(empty.includes("no models in configured catalog"));
+
+    const withCurrent = renderResult({
+      action: "models",
+      models: [{ provider: "openai", id: "gpt-4", fullId: "openai/gpt-4", isCurrent: true,
+        availableThinkingLevels: ["off", "low", "medium", "high", "max"] }],
+    }, { width: 240 });
+    assert.ok(withCurrent.includes("openai/gpt-4"));
+    assert.ok(withCurrent.includes("(current)"));
+    assert.ok(withCurrent.includes("[levels: off, low, medium, high, max]"));
+
+    const withoutCurrent = renderResult({
+      action: "models",
+      models: [{ provider: "anthropic", id: "claude-3", fullId: "anthropic/claude-3", isCurrent: false }],
+    }, { width: 240 });
+    assert.ok(withoutCurrent.includes("anthropic/claude-3"));
+    assert.ok(withoutCurrent.includes("no current model"));
+    assert.ok(withoutCurrent.includes("configured-auth catalog snapshot"));
+    assert.ok(withoutCurrent.includes("not proof of credentials"));
   });
 
   test("unknown action falls through to default", () => {

@@ -11,6 +11,7 @@ export interface WorkflowToolArgs {
   workflow?: string;
   inputs?: WorkflowInputValues;
   action?:
+    | "models"
     | "run"
     | "list"
     | "get"
@@ -105,6 +106,9 @@ export function renderCall(args: WorkflowToolArgs, opts: RenderCallOpts = {}): s
       break;
     case "get":
       line = name === undefined ? "workflow: get" : `workflow: get ${quoted(name)}`;
+      break;
+    case "models":
+      line = "workflow: list configured models";
       break;
     default:
       line = name === undefined ? `workflow: ${action}` : `workflow: ${action} ${quoted(name)}`;

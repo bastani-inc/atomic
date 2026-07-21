@@ -165,6 +165,8 @@ If you are drafting research, reviewer, or synthesis prompts for a workflow, use
 
 A good workflow request is explicit about stage purpose, model choice, handoff, and the decision each step must return.
 
+For workflow-owned side effects such as filesystem writes, network mutations, and external API actions, prefer \`ctx.tool(name, args, fn)\`: completed calls are durably cached, so resume returns the saved result without rerunning \`fn\`. Keep pure computation as ordinary TypeScript, and do not wrap agent-stage internals or every function call indiscriminately.
+
 Example: ask Atomic in chat with something like this:
 
 ~~~text

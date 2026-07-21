@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.11-alpha.1] - 2026-07-20
+
+### Changed
+
+- Published a synchronized Atomic 0.9.11-alpha.1 prerelease for the web-access extension; no functional web-access changes were made after 0.9.10.
+
+## [0.9.10] - 2026-07-20
+
+### Changed
+
+- Converted the reachable synchronous subprocess paths in video/YouTube extraction and the Glimpse browser-curator probe to a shared asynchronous Bun subprocess helper (`runBunSubprocess`). `ffmpeg` frame capture, `ffprobe`/`yt-dlp` duration and stream probes, and the global `npm root -g` lookup no longer block the event loop via `execFileSync`: each child now streams stdout/stderr concurrently into byte-capped buffers (binary-safe for JPEG frame output), enforces a timeout with `SIGTERM`→`SIGKILL` escalation, honors an optional caller `AbortSignal` with the same tree-kill escalation, and maps timeout/abort/non-zero-exit/`ENOENT`/output-overflow into typed errors that preserve the existing user-facing `ffmpeg`/`ffprobe`/`yt-dlp` failure messages. Video and YouTube extraction functions now thread an optional `AbortSignal` from callers that already own one, and the Glimpse module resolver caches a single in-flight global-root probe so concurrent curator opens never spawn duplicate `npm` processes.
+
+### Fixed
+
+- Fixed collapsed web-search results hardcoding `CTRL+O`; the line-count hint now uses the effective `app.tools.expand` binding and keeps its factual counts when expansion is unbound.
+- Preserved provider-owned null header suppression and credential-specific `baseUrl` overrides for search-query rewriting and summary generation ([#1875](https://github.com/bastani-inc/atomic/issues/1875)).
+
 ## [0.9.10-alpha.1] - 2026-07-19
 
 ### Changed

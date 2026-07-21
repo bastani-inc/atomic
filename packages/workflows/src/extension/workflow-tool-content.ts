@@ -219,6 +219,7 @@ export function renderWorkflowToolContent(
     case "inputs":
     case "get":
     case "run":
+    case "models":
       return stringifyWorkflowToolResult(result);
   }
 }

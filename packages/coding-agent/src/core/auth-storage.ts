@@ -208,7 +208,18 @@ export class AuthStorage {
 	 * Remove credential for a provider.
 	 */
 	remove(provider: string): void {
-		this.persistProviderChange(provider, undefined);
+		if (!this.storage.deleteProvider) {
+			this.persistProviderChange(provider, undefined);
+			return;
+		}
+		try {
+			this.data = this.parseStorageData(this.storage.deleteProvider(provider));
+			this.bumpCredentialVersion(provider);
+			this.loadError = null;
+		} catch (error) {
+			this.recordError(error);
+			throw error instanceof Error ? error : new Error(String(error));
+		}
 	}
 
 	/**
@@ -455,18 +466,20 @@ export class AuthStorage {
 				}),
 			delete: (providerId) =>
 				this.runCredentialMutation(async () => {
-					let synchronizedData: AuthStorageData | undefined;
 					try {
-						await this.storage.withLockAsync(async (current) => {
-							const data = this.parseStorageData(current);
-							delete data[providerId];
-							synchronizedData = data;
-							return { result: undefined, next: JSON.stringify(data, null, 2) };
-						});
-						if (synchronizedData) {
-							this.data = synchronizedData;
-							this.bumpCredentialVersion(providerId);
+						if (this.storage.deleteProviderAsync) {
+							this.data = this.parseStorageData(await this.storage.deleteProviderAsync(providerId));
+						} else {
+							let synchronizedData: AuthStorageData | undefined;
+							await this.storage.withLockAsync(async (current) => {
+								const data = this.parseStorageData(current);
+								delete data[providerId];
+								synchronizedData = data;
+								return { result: undefined, next: JSON.stringify(data, null, 2) };
+							});
+							if (synchronizedData) this.data = synchronizedData;
 						}
+						this.bumpCredentialVersion(providerId);
 						this.loadError = null;
 					} catch (error) {
 						this.recordError(error);

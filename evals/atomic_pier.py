@@ -88,11 +88,18 @@ class Atomic(BaseInstalledAgent):
         # repos/datasets (code lookup in restricted egress). Re-enable
         # alongside the _PROVIDER_DOMAINS entry if HF inference is needed.
         # "huggingface": ("HF_TOKEN",),
+        # Kimi/Moonshot and ZAI env keys mirror pi-ai's provider registry
+        # (getApiKeyEnvVars in @earendil-works/pi-ai env-api-keys).
+        "kimi-coding": ("KIMI_API_KEY",),
         "mistral": ("MISTRAL_API_KEY",),
+        "moonshotai": ("MOONSHOT_API_KEY",),
+        "moonshotai-cn": ("MOONSHOT_API_KEY",),
         "openai": ("OPENAI_API_KEY",),
         "openai-codex": (),
         "openrouter": ("OPENROUTER_API_KEY",),
         "xai": ("XAI_API_KEY",),
+        "zai": ("ZAI_API_KEY",),
+        "zai-coding-cn": ("ZAI_CODING_CN_API_KEY",),
     }
     _PROVIDER_AUTH_ENV_KEYS: dict[str, tuple[str, ...]] = {
         "amazon-bedrock": ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
@@ -105,10 +112,15 @@ class Atomic(BaseInstalledAgent):
             "GOOGLE_API_KEY",
         ),
         "groq": ("GROQ_API_KEY",),
+        "kimi-coding": ("KIMI_API_KEY",),
         "mistral": ("MISTRAL_API_KEY",),
+        "moonshotai": ("MOONSHOT_API_KEY",),
+        "moonshotai-cn": ("MOONSHOT_API_KEY",),
         "openai": ("OPENAI_API_KEY",),
         "openrouter": ("OPENROUTER_API_KEY",),
         "xai": ("XAI_API_KEY",),
+        "zai": ("ZAI_API_KEY",),
+        "zai-coding-cn": ("ZAI_CODING_CN_API_KEY",),
     }
     _BASE_URL_ENV_KEYS: tuple[str, ...] = (
         "ANTHROPIC_BASE_URL",
@@ -145,11 +157,22 @@ class Atomic(BaseInstalledAgent):
         "google": (".googleapis.com",),
         "groq": ("api.groq.com",),
         # "huggingface": ("huggingface.co",),  # disabled: unused provider
+        # Kimi/Moonshot and ZAI domains come from pi-ai's provider base URLs:
+        # kimi-coding -> https://api.kimi.com/coding
+        # moonshotai -> https://api.moonshot.ai/v1
+        # moonshotai-cn -> https://api.moonshot.cn/v1
+        # zai -> https://api.z.ai/api/coding/paas/v4
+        # zai-coding-cn -> https://open.bigmodel.cn/api/coding/paas/v4
+        "kimi-coding": ("api.kimi.com",),
         "mistral": ("api.mistral.ai",),
+        "moonshotai": ("api.moonshot.ai",),
+        "moonshotai-cn": ("api.moonshot.cn",),
         "openai": ("api.openai.com",),
         "openai-codex": ("chatgpt.com", "auth.openai.com"),
         "openrouter": ("openrouter.ai",),
         "xai": ("api.x.ai",),
+        "zai": ("api.z.ai",),
+        "zai-coding-cn": ("open.bigmodel.cn",),
     }
 
     CLI_FLAGS: ClassVar[list[CliFlag]] = [
@@ -466,15 +489,20 @@ class Atomic(BaseInstalledAgent):
             requested_provider,
             requested_model,
         )
+        # Forward credentials for every Atomic-supported provider, not just the
+        # top-level Pier --model provider: nested workflow/subagent model
+        # assignments can select other providers (e.g. kimi-coding under an
+        # openai-codex-led run), and the network allowlist already admits all
+        # provider domains for the same reason. Forwarding everything also keeps
+        # _provision_subscription_auth's env-credential shadowing consistent —
+        # any host env credential that suppresses a copied auth.json entry is
+        # guaranteed to be present inside the container as its replacement.
         env = {
             key: value
-            for key in (
-                *self._PROVIDER_ENV_KEYS.get(provider, ()),
-                *(
-                    ("OPENROUTER_API_KEY",)
-                    if requested_provider in {"anthropic", self._OPENAI_CODEX_PROVIDER}
-                    else ()
-                ),
+            for key in dict.fromkeys(
+                env_key
+                for env_keys in self._PROVIDER_ENV_KEYS.values()
+                for env_key in env_keys
             )
             if (value := self._get_env(key))
         }
