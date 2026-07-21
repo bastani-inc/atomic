@@ -8,7 +8,7 @@ import { IsolatedInteractiveRuntime } from "./isolated-runtime.ts";
 import { RemoteComponentController } from "./remote-component.ts";
 import { InputFormHostController } from "./input-form-host.ts";
 import { SessionPickerHostController } from "./session-picker-host.ts";
-import type { RpcExtensionUIRequest, RpcExtensionUIResponse, RpcSlashCommand } from "../rpc/rpc-types.ts";
+import type { RpcAutocompleteItem, RpcExtensionUIRequest, RpcExtensionUIResponse, RpcSlashCommand } from "../rpc/rpc-types.ts";
 
 async function handleRequest(
 	ui: ExtensionUIContext,
@@ -142,6 +142,17 @@ export function interruptBlockedInteractiveEngine(runtime: AgentSessionRuntime):
  */
 export function getInteractiveEngineRemoteCommands(runtime: AgentSessionRuntime): readonly RpcSlashCommand[] {
 	return runtime instanceof IsolatedInteractiveRuntime ? runtime.getRemoteCommands() : [];
+}
+
+/** Evaluate an engine-child command's live argument completions. */
+export function getInteractiveEngineRemoteCommandCompletions(
+	runtime: AgentSessionRuntime,
+	commandName: string,
+	argumentPrefix: string,
+): Promise<RpcAutocompleteItem[] | null> {
+	return runtime instanceof IsolatedInteractiveRuntime
+		? runtime.getRemoteCommandCompletions(commandName, argumentPrefix)
+		: Promise.resolve(null);
 }
 
 /** Subscribe to engine-child command catalog changes. No-op when not isolated. */

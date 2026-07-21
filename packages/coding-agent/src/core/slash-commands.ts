@@ -51,7 +51,7 @@ const WORKFLOW_ADMIN_COMPLETIONS: AutocompleteItem[] = [
 const BUNDLED_WORKFLOW_COMPLETION_METADATA: WorkflowCompletionMetadata[] = [
 	{
 		name: "deep-research-codebase",
-		description: "Scout + research-history chain → parallel specialist waves → aggregator for deep codebase research.",
+		description: "Heavy research for tasks requiring comprehensive, whole-repository context.",
 		inputs: {
 			prompt: { description: "Research question or investigation focus for the codebase.", kind: "string" },
 			max_partitions: { description: "Maximum number of codebase partitions to explore in parallel.", kind: "number" },

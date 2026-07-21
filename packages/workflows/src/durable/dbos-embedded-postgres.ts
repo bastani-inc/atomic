@@ -10,12 +10,23 @@
  * is started with `pg_ctl`, which daemonizes the server into its own session:
  * it survives Atomic exiting and is shared by every concurrent Atomic session.
  * Atomic never stops it.
+ *
+ * PostgreSQL refuses to run as UID 0, so a root Atomic process (containers,
+ * CI sandboxes, eval harnesses) resolves an unprivileged system account, keeps
+ * the cluster under `/var/lib/atomic-postgres` instead (a root home directory
+ * is untraversable for that account), and runs every Postgres command with
+ * dropped privileges. See dbos-embedded-postgres-root.ts.
  */
 
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { chmodSync, chownSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
-import { commandFailureDetail, delay, runLocalCommand, tcpReachable } from "./local-command.js";
+import {
+  prepareBinariesForOwner,
+  resolveEmbeddedRunContext,
+  type EmbeddedPostgresRunContext,
+} from "./dbos-embedded-postgres-root.js";
+import { commandFailureDetail, delay, tcpReachable } from "./local-command.js";
 
 const EMBEDDED_HOST = "127.0.0.1";
 const EMBEDDED_PORT = 5439;
@@ -47,17 +58,20 @@ export function ensureEmbeddedDbosPostgres(): Promise<void> {
 
 async function ensure(): Promise<void> {
   if (await tcpReachable(EMBEDDED_HOST, EMBEDDED_PORT)) return;
-  const binaries = await loadEmbeddedPostgresBinaries();
-  hydrateBinaryLibraryLinks(binaries.pg_ctl);
-  const root = join(homedir(), ".atomic", "postgres");
+  const loaded = await loadEmbeddedPostgresBinaries();
+  hydrateBinaryLibraryLinks(loaded.pg_ctl);
+  const context = await resolveEmbeddedRunContext();
+  const root = context.baseDir;
   const dataDir = join(root, `v${EMBEDDED_PG_MAJOR}`);
   const logFile = join(root, `v${EMBEDDED_PG_MAJOR}.log`);
   mkdirSync(root, { recursive: true, mode: 0o700 });
+  if (context.owner !== undefined) chownSync(root, context.owner.uid, context.owner.gid);
+  const binaries = await prepareBinariesForOwner(loaded, context);
 
   await withSetupLock(join(root, `v${EMBEDDED_PG_MAJOR}.setup-lock`), async () => {
     if (await tcpReachable(EMBEDDED_HOST, EMBEDDED_PORT)) return;
-    if (!existsSync(join(dataDir, "PG_VERSION"))) await initializeCluster(binaries.initdb, dataDir);
-    await startCluster(binaries.pg_ctl, dataDir, logFile);
+    if (!existsSync(join(dataDir, "PG_VERSION"))) await initializeCluster(binaries.initdb, dataDir, context);
+    await startCluster(binaries.pg_ctl, dataDir, logFile, context);
   });
 
   for (let attempt = 0; attempt < READY_ATTEMPTS; attempt += 1) {
@@ -67,11 +81,16 @@ async function ensure(): Promise<void> {
   throw new Error(`Embedded Postgres started but never accepted connections on ${EMBEDDED_HOST}:${EMBEDDED_PORT}; see ${logFile}.`);
 }
 
-async function initializeCluster(initdb: string, dataDir: string): Promise<void> {
+async function initializeCluster(
+  initdb: string,
+  dataDir: string,
+  context: EmbeddedPostgresRunContext,
+): Promise<void> {
   const passwordFile = join(tmpdir(), `atomic-pg-pw-${process.pid}-${crypto.randomUUID().slice(0, 8)}`);
   writeFileSync(passwordFile, `${EMBEDDED_PASSWORD}\n`, { mode: 0o600 });
   try {
-    const result = await runLocalCommand(initdb, [
+    if (context.owner !== undefined) chownSync(passwordFile, context.owner.uid, context.owner.gid);
+    const result = await context.runAsOwner(initdb, [
       "-D", dataDir,
       "-U", EMBEDDED_USER,
       "-A", "password",
@@ -87,8 +106,13 @@ async function initializeCluster(initdb: string, dataDir: string): Promise<void>
   }
 }
 
-async function startCluster(pgCtl: string, dataDir: string, logFile: string): Promise<void> {
-  const result = await runLocalCommand(pgCtl, [
+async function startCluster(
+  pgCtl: string,
+  dataDir: string,
+  logFile: string,
+  context: EmbeddedPostgresRunContext,
+): Promise<void> {
+  const result = await context.runAsOwner(pgCtl, [
     "-D", dataDir,
     "-l", logFile,
     "-o", `-p ${EMBEDDED_PORT} -c listen_addresses=${EMBEDDED_HOST}`,

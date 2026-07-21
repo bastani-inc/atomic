@@ -119,4 +119,30 @@ describe("mandatory DBOS lifecycle", () => {
     assert.equal(events.at(-1), "shutdown");
     assert.equal(events.filter((event) => event === "shutdown").length, 1);
   });
+
+  test.serial("shutdown after a configuration failure resolves without rethrowing", async () => {
+    resetDbosLifecycleForTests(async () => {
+      throw new Error("initdb: error: cannot be run as root");
+    });
+
+    await assert.rejects(getReadyDbosBackend(), DbosDurabilityError);
+    // Session dispose calls shutdownDbos unconditionally; a backend that never
+    // reached "ready" must make this a no-op instead of rethrowing the
+    // memoized provisioning failure out of process exit.
+    await shutdownDbos();
+    await shutdownDbos();
+    assert.equal(dbosLifecycleState(), "failed");
+  });
+
+  test.serial("shutdown after a launch failure resolves without rethrowing", async () => {
+    const events: string[] = [];
+    resetDbosLifecycleForTests(async () => configured(events, async () => {
+      throw new Error("postgres unavailable");
+    }));
+
+    await assert.rejects(getReadyDbosBackend(), DbosDurabilityError);
+    await shutdownDbos();
+    assert.equal(events.filter((event) => event === "shutdown").length, 0);
+    assert.equal(dbosLifecycleState(), "failed");
+  });
 });

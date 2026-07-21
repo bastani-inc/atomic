@@ -6,6 +6,7 @@ import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type {
 	RpcCommand,
+	RpcAutocompleteItem,
 	RpcContextWindowInfo,
 	RpcResponse,
 	RpcSessionState,
@@ -88,5 +89,10 @@ export abstract class RpcClientApi {
 	}
 	async getCommands(): Promise<RpcSlashCommand[]> {
 		return this.data<{ commands: RpcSlashCommand[] }>(await this.request({ type: "get_commands" })).commands;
+	}
+	async getCommandCompletions(commandName: string, argumentPrefix: string): Promise<RpcAutocompleteItem[] | null> {
+		return this.data<{ completions: RpcAutocompleteItem[] | null }>(
+			await this.request({ type: "get_command_completions", commandName, argumentPrefix }),
+		).completions;
 	}
 }

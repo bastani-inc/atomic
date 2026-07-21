@@ -95,7 +95,8 @@ Atomic will:
 
 - ask clarifying questions when stage purpose, inputs, models, or handoffs are ambiguous,
 - write a `.atomic/workflows/<name>.ts` file using `workflow({...})`,
-- pick `ctx.task` / `ctx.chain` / `ctx.parallel` / `ctx.ui` per the [WorkflowContext primitives](#workflowcontext) and [task options](#task-and-stage-options) reference, and
+- pick `ctx.task` / `ctx.chain` / `ctx.parallel` / `ctx.ui` per the [WorkflowContext primitives](#workflowcontext) and [task options](#task-and-stage-options) reference,
+- use `ctx.tool(name, args, fn)` for workflow-owned side effects so completed operations are durably checkpointed and do not run again after resume (see [`ctx.tool`](#ctxtool--durable-cached-tool-execution)),
 - run `/workflow reload` so Atomic rediscovers the workflow resource and you can launch it immediately.
 
 
@@ -304,7 +305,7 @@ For the builtin result tables below, `deep-research-codebase`, `goal`, and `ralp
 | `generate-and-filter` | Candidate fan-out → rubric dedupe/filter → optional judge → shortlist. | Explore more options than you need and select the strongest distinct few. |
 | `tournament` | Whole-task attempts → balanced pairwise judges → bracket reducer. | Compare subjective or approach-sensitive solutions. |
 | `loop-until-done` | Durable ledger → iteration/evaluator loop → success or inspectable bound exhaustion. | Continue until explicit evidence proves completion. |
-| `deep-research-codebase` | Scout + research-history chain → parallel specialist waves → aggregator. Indexes the whole repo and synthesizes findings. | Broad or cross-cutting research before you decide what to change. Prefer `/skill:research-codebase` for one subsystem. |
+| `deep-research-codebase` | Heavy research for tasks requiring comprehensive, whole-repository context. | Tasks that genuinely require comprehensive whole-repository coverage. |
 | `goal` | Persisted goal ledger → bounded worker turns → receipts → three-reviewer gate → deterministic reducer → final report → optional final-stage PR handoff after approval. | Clearly delegated autonomous work that materially benefits from a durable goal ledger, bounded worker turns, named validation, and reviewer-gated completion; optionally allow only the final `pull-request` stage to attempt PR creation with `create_pr=true` after Goal reaches `complete`. |
 | `ralph` | Raw prompt → research-prompt-refinement → codebase/online research → sub-agent orchestration → multi-model parallel review → optional final-stage PR handoff. | Clearly delegated autonomous work that materially benefits from a durable research-first pipeline, delegated implementation, and iterative review; optionally allow only the final `pull-request` stage to attempt PR creation with `create_pr=true`. |
 | `open-claude-design` | Combined discovery/init (`/skill:impeccable shape` + `/skill:impeccable init` in one `discovery` stage) → design-system/reference research (`ds-*`) → curated gallery reference-discovery using that context → separate forked `generate-*` and `user-feedback-*` chains → rich HTML handoff (`exporter` → `final-display`). The discovery stage asks what to build, the output type, and which references to emulate, then lets impeccable init detect/create/reconcile `PRODUCT.md` and `DESIGN.md` (references take precedence over project context). Renders a live `preview.html` you can iterate against in the browser (opens through impeccable `live` / the `playwright-cli` skill when available). | UI, page, component, theme, or design-token work that benefits from a guided brief, beautiful references, and generation + user feedback loops. |
@@ -746,6 +747,7 @@ Author workflows to create at least one tracked stage by calling `ctx.task()`, `
 - **Schema-backed gates** - Prefer schema-backed workflow stages (`ctx.stage(..., { schema })`, `ctx.chain` items, or `ctx.parallel` items) for review/gate decisions whenever the workflow must evaluate model output; a schema-enabled item receives the structured-output tool automatically. See [Evaluation and Quality Gates](#evaluation-and-quality-gates).
 - **Stages are model stages** - Treat atomic workflow units as language model stages, not deterministic tools.
 - **Small deterministic-gate stages** - When deterministic gates are needed, create small dedicated stages that instruct a model to run a specific tool or perform a specific check. This keeps gates adaptive to the current codebase while preserving explicit workflow structure.
+- **Checkpoint workflow-owned side effects** - Prefer `ctx.tool(name, args, fn)` for filesystem writes, network mutations, external API actions, and other side effects orchestrated directly by the workflow definition. Atomic durably caches a completed call's serializable result, so resume returns that result without rerunning `fn`. Keep pure computation and side-effect-free transformations as ordinary TypeScript. Do not wrap agent-stage internals or every function call indiscriminately.
 
 ### Context engineering guidance
 
@@ -1321,7 +1323,8 @@ The `run` function receives `ctx: WorkflowRunContext`. Prefer its high-level pri
 | Independent concurrent branches | `ctx.parallel(steps, options?)` |
 | Reusable child workflow | Call `ctx.workflow(workflowDefinition, options?)` |
 | Human input during a workflow run | `ctx.ui.input/confirm/select/editor/custom` |
-| Pure deterministic computation, parsing, or file I/O | Plain TypeScript in `run` or helpers |
+| Pure deterministic computation, parsing, or side-effect-free transformation | Plain TypeScript in `run` or helpers |
+| Workflow-owned filesystem writes, network mutations, external API actions, or other side effects | `ctx.tool(name, args, fn)` so a completed operation is durably cached and resume does not rerun it |
 | Fine-grained session control | `ctx.stage(name, options?)` |
 
 ### `ctx.inputs`
@@ -2428,11 +2431,13 @@ The readiness prompt can be answered in the attached stage UI or with `workflow(
 
 ## Durable Workflows and Cross-Session Resume
 
-Atomic workflows use **DBOS/Postgres as their sole persistent workflow backend**. Atomic configures and launches DBOS lazily on the first workflow action, reuses that process-wide instance, and awaits readiness before workflow execution, resume, inspection, or deletion can access durable state. `DBOS_SYSTEM_DATABASE_URL` may select an existing database; DBOS initialization, query, and write failures fail the workflow action and never select another backend.
+Atomic workflows use **DBOS/Postgres as their sole persistent workflow backend**. Atomic configures and launches DBOS lazily on the first workflow action, reuses that process-wide instance, and awaits readiness before workflow execution, resume, inspection, or deletion can access durable state. `DBOS_SYSTEM_DATABASE_URL` may select an existing database; DBOS query and write failures fail the workflow action and never select another backend.
 
 **Zero-configuration local database.** Without `DBOS_SYSTEM_DATABASE_URL`, Atomic runs DBOS against its own embedded Postgres built from npm-distributed binaries — no Docker daemon or system Postgres install. The cluster lives under `~/.atomic/postgres/v18` on dedicated port `5439`; the first workflow action initializes it once and starts it with `pg_ctl` as a detached daemon that survives Atomic exiting, is shared by every concurrent Atomic session, and is never stopped by Atomic.
 
-When the embedded binaries are unavailable for the platform, Atomic falls back to DBOS's reusable `dbos-db` Docker container; if neither is usable, the workflow action fails with one actionable message: set `DBOS_SYSTEM_DATABASE_URL` to an existing Postgres.
+**Running as root (Linux).** PostgreSQL refuses to run as UID 0, so a root Atomic process (containers, CI sandboxes, eval harnesses) resolves an unprivileged system account (`postgres`, `nobody`, or `daemon`), keeps the cluster under `/var/lib/atomic-postgres` instead (a root home directory is untraversable for that account), and runs every Postgres command with dropped privileges. When the embedded binaries themselves sit under an untraversable prefix (for example a root-owned `~/.nvm` global install), Atomic copies the Postgres runtime into the cluster directory once and reuses it.
+
+When the embedded binaries are unavailable for the platform, Atomic falls back to DBOS's reusable `dbos-db` Docker container. If no durable backend can be provisioned at all, workflows **degrade to a process-local in-memory backend with a loud warning** instead of refusing to run: the run executes normally, but its state does not survive the process and `/workflow resume` after exit has nothing to restore. Set `DBOS_SYSTEM_DATABASE_URL` to an existing Postgres to restore durability.
 
 **Multiple concurrent Atomic sessions.** Every Atomic process launches DBOS with a unique executor id, and running root workflows carry owner/heartbeat metadata refreshed by ordinary ≤30-second stage-timing checkpoints. **Running workflows are never resume targets**: a running row with a fresh heartbeat is hidden from every session's picker and refused by direct `/workflow resume <id>` — resuming a workflow that is executing elsewhere would double-dispatch it. Once the heartbeat goes stale (about two minutes after a crash), the workflow surfaces as a red `crashed` row.
 
@@ -2529,7 +2534,7 @@ Validation uses the final retained transcript for a repeated stage replay key, s
 
 ### Configuring DBOS/Postgres
 
-DBOS/Postgres durability requires no setup on supported local platforms. To use an existing Postgres database, set `DBOS_SYSTEM_DATABASE_URL` before starting Atomic; otherwise Atomic provisions embedded Postgres, with Docker as a platform fallback. The DBOS SDK ships with `@bastani/atomic`. If the SDK cannot load or Postgres cannot be reached or provisioned, Atomic fails the workflow action with an actionable diagnostic instead of falling back to the legacy per-workflow file store under `~/.atomic/workflow-durable`.
+DBOS/Postgres durability requires no setup on supported local platforms. To use an existing Postgres database, set `DBOS_SYSTEM_DATABASE_URL` before starting Atomic; otherwise Atomic provisions embedded Postgres (with drop-privilege support when running as root on Linux), with Docker as a platform fallback. The DBOS SDK ships with `@bastani/atomic`. If no durable backend can be provisioned, workflows run on a process-local in-memory backend with a loud non-durable warning — never on the legacy per-workflow file store under `~/.atomic/workflow-durable` — and cross-process resume is unavailable until Postgres provisioning is fixed.
 
 ```bash
 export DBOS_SYSTEM_DATABASE_URL="postgresql://user:password@localhost:5432/atomic_dbos_sys"
@@ -2599,6 +2604,8 @@ Atomic loads workflow files with [jiti](https://github.com/unjs/jiti), so TypeSc
 Run `/workflow reload` after adding, editing, renaming, or deleting workflow modules or changing workflow config. Reload rescans project and user conventional directories, legacy `.pi` locations, configured file/directory paths, and package resources without restarting Atomic. The workflow tool's `reload` action uses the same in-process path.
 
 Reload builds a complete replacement registry before publishing it. Concurrent requests are serialized and coalesced, stale discovery from an earlier session cannot overwrite newer state, and a fatal refresh failure retains the previous registry. Reload is safe while workflows are running: existing runs keep the definition and runtime snapshot they started with, while subsequent list/get/inputs/help/completion/invocation calls use the newly published registry.
+
+The `/workflow` argument-completion popup reads that same live registry. Project, user, package-provided, and built-in workflow names therefore appear immediately after reload both after `/workflow ` and after `/workflow inputs `; restarting Atomic is not required.
 
 A successful rescan may still contain per-resource diagnostics. Both reload surfaces show `CONFIG_INVALID`, `IMPORT_FAILED`, `INVALID_DEFINITION`, `PATH_NOT_FOUND`, and duplicate-name diagnostics instead of reporting bare success while silently skipping a resource. Valid sibling workflows remain available. Fix the reported source/path and reload again; no process restart is required.
 
