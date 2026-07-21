@@ -95,7 +95,8 @@ Atomic will:
 
 - ask clarifying questions when stage purpose, inputs, models, or handoffs are ambiguous,
 - write a `.atomic/workflows/<name>.ts` file using `workflow({...})`,
-- pick `ctx.task` / `ctx.chain` / `ctx.parallel` / `ctx.ui` per the [WorkflowContext primitives](#workflowcontext) and [task options](#task-and-stage-options) reference, and
+- pick `ctx.task` / `ctx.chain` / `ctx.parallel` / `ctx.ui` per the [WorkflowContext primitives](#workflowcontext) and [task options](#task-and-stage-options) reference,
+- use `ctx.tool(name, args, fn)` for workflow-owned side effects so completed operations are durably checkpointed and do not run again after resume (see [`ctx.tool`](#ctxtool--durable-cached-tool-execution)),
 - run `/workflow reload` so Atomic rediscovers the workflow resource and you can launch it immediately.
 
 
@@ -746,6 +747,7 @@ Author workflows to create at least one tracked stage by calling `ctx.task()`, `
 - **Schema-backed gates** - Prefer schema-backed workflow stages (`ctx.stage(..., { schema })`, `ctx.chain` items, or `ctx.parallel` items) for review/gate decisions whenever the workflow must evaluate model output; a schema-enabled item receives the structured-output tool automatically. See [Evaluation and Quality Gates](#evaluation-and-quality-gates).
 - **Stages are model stages** - Treat atomic workflow units as language model stages, not deterministic tools.
 - **Small deterministic-gate stages** - When deterministic gates are needed, create small dedicated stages that instruct a model to run a specific tool or perform a specific check. This keeps gates adaptive to the current codebase while preserving explicit workflow structure.
+- **Checkpoint workflow-owned side effects** - Prefer `ctx.tool(name, args, fn)` for filesystem writes, network mutations, external API actions, and other side effects orchestrated directly by the workflow definition. Atomic durably caches a completed call's serializable result, so resume returns that result without rerunning `fn`. Keep pure computation and side-effect-free transformations as ordinary TypeScript. Do not wrap agent-stage internals or every function call indiscriminately.
 
 ### Context engineering guidance
 
@@ -1321,7 +1323,8 @@ The `run` function receives `ctx: WorkflowRunContext`. Prefer its high-level pri
 | Independent concurrent branches | `ctx.parallel(steps, options?)` |
 | Reusable child workflow | Call `ctx.workflow(workflowDefinition, options?)` |
 | Human input during a workflow run | `ctx.ui.input/confirm/select/editor/custom` |
-| Pure deterministic computation, parsing, or file I/O | Plain TypeScript in `run` or helpers |
+| Pure deterministic computation, parsing, or side-effect-free transformation | Plain TypeScript in `run` or helpers |
+| Workflow-owned filesystem writes, network mutations, external API actions, or other side effects | `ctx.tool(name, args, fn)` so a completed operation is durably cached and resume does not rerun it |
 | Fine-grained session control | `ctx.stage(name, options?)` |
 
 ### `ctx.inputs`

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Updated workflow-creation guidance to prefer `ctx.tool(...)` for workflow-owned side effects, connecting durable cached results to safe resume while distinguishing pure TypeScript computation and agent-stage internals ([#1923](https://github.com/bastani-inc/atomic/issues/1923)).
+
 ## [0.9.10] - 2026-07-20
 
 ### Breaking Changes
