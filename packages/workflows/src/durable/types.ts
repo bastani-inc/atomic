@@ -110,11 +110,22 @@ export interface DurableUiCheckpoint {
 
 export const DURABLE_STAGE_TOPOLOGY_VERSION = 1 as const;
 
+/** Durable ownership metadata needed to rebuild nested workflow runs. */
+export interface DurableStageRunTopology {
+  readonly runId: string;
+  readonly runName: string;
+  readonly parentRunId?: string;
+  readonly parentStageId?: string;
+  readonly rootRunId?: string;
+}
+
 /** Versioned source-stage lineage used to reconstruct completed DAGs after restart. */
 export interface DurableStageTopology {
   readonly version: typeof DURABLE_STAGE_TOPOLOGY_VERSION;
   readonly stageId: string;
   readonly parentIds: readonly string[];
+  /** Owning run and boundary linkage for nested workflow graph reconstruction. */
+  readonly run?: DurableStageRunTopology;
 }
 
 /** A `ctx.stage(...)` / `ctx.task(...)` durable checkpoint or resumable session marker. */

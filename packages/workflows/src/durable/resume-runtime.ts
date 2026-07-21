@@ -18,7 +18,7 @@
  * top-level workflow id."
  */
 
-import type { WorkflowInputValues } from "../shared/types.js";
+import type { WorkflowDefinition, WorkflowInputValues } from "../shared/types.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import type { RunOpts } from "../runs/foreground/executor-types.js";
 import { launchDetachedUntilStartup, workflowStartupFailureMessage } from "../runs/background/startup-admission.js";
@@ -44,6 +44,8 @@ export interface ResumeDurableDeps {
   readonly baseRunOpts: RunOpts;
   /** Durable backend override (defaults to the global singleton). */
   readonly durableBackend?: DurableWorkflowBackend;
+  /** Resolve a definition from its original invocation directory after restart. */
+  readonly resolveDefinition?: (name: string, cwd: string | undefined) => Promise<WorkflowDefinition | undefined>;
   /** Job tracker used by the detached resume launch. */
   readonly jobs?: JobTracker;
 }
@@ -146,7 +148,9 @@ export async function resumeDurableWorkflow(
     return { ok: false, reason: "not_resumable", message: `Workflow ${resolved.workflowId.slice(0, 8)} is ${handle.status}, not resumable.` };
   }
 
-  const def = deps.registry.get(handle.name);
+  const def = handle.invocationCwd === undefined
+    ? deps.registry.get(handle.name)
+    : await deps.resolveDefinition?.(handle.name, handle.invocationCwd) ?? deps.registry.get(handle.name);
   if (def === undefined) {
     return { ok: false, reason: "workflow_not_found", message: `Workflow definition not found: ${handle.name}` };
   }

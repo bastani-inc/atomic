@@ -10,6 +10,7 @@ import {
 import type { DurableWorkflowBackend } from "./backend.js";
 import {
   listOpenableCompletedWorkflows,
+  completedWorkflowRunSnapshots,
   resolveCompletedWorkflow,
 } from "./completed-catalog.js";
 import type { ResumableWorkflowEntry } from "./types.js";
@@ -69,10 +70,14 @@ export function openCompletedDurableWorkflow(
       `Workflow ${resolved.snapshot.id.slice(0, 8)} is already active in this session; attach with /workflow connect ${resolved.snapshot.id.slice(0, 8)} instead.`,
     );
   }
-  const snapshot = resolved.snapshot;
-  if (existing !== undefined) deps.store.removeRun(existing.id);
-  deps.store.recordRunStart(snapshot);
-  registerCompletedChatHandles(snapshot, deps);
+  const snapshots = completedWorkflowRunSnapshots(deps.durableBackend, resolved.entry);
+  const snapshot = snapshots.find((run) => run.id === resolved.snapshot.id) ?? resolved.snapshot;
+  for (const restored of snapshots) {
+    const previous = deps.store.runs().find((run) => run.id === restored.id);
+    if (previous !== undefined) deps.store.removeRun(previous.id);
+    deps.store.recordRunStart(restored);
+    registerCompletedChatHandles(restored, deps);
+  }
   return {
     ok: true,
     runId: snapshot.id,

@@ -2450,7 +2450,7 @@ When two sessions race to resume the same paused workflow, a durable first-write
 
 - **Only `ctx.*` blocks are checkpointed**: code outside `ctx.*` is not durable.
 - **Durable side effects**: Atomic flushes `ctx.tool` and `ctx.ui` writes before exposing completed results, so resume does not repeat an already-completed effect.
-- **Durable graph operations**: stage, task, chain, parallel, and child-workflow checkpoints include current topology, timing, model, output, and retained chat-session references. Completed inspection reconstructs the graph directly from DBOS.
+- **Durable graph operations**: stage, task, chain, parallel, and child-workflow checkpoints include source-stage lineage plus owning-run/boundary metadata, timing, model, output, and retained chat-session references. Fresh-process resume and completed inspection reconstruct nested child runs and parallel DAG edges directly from DBOS.
 - **DBOS-only discovery**: `/workflow resume`, `/workflows`, completed inspection, deletion, and targeted lookup hydrate/query DBOS. Session JSONL remains only a chat transcript referenced by a current checkpoint; it is not a workflow catalog or discovery source.
 - **Current format only**: Atomic encodes and decodes one current DBOS format. Prior local files and older DBOS records are not read, converted, or cleaned up. Unsupported or malformed records are ignored as foreign data.
 - **Child side-effect scoping**: nested workflow effects are checkpointed under the durable root with stable child scopes.
@@ -2460,11 +2460,11 @@ When two sessions race to resume the same paused workflow, a durable first-write
 
 **Resume after editing a workflow.** Replay identity combines the workflow id with stable content hashes and call order. Editing, inserting, or reordering `ctx.*` calls can intentionally invalidate matches. Finish or delete retained runs before deploying incompatible workflow changes.
 
-Durable `/workflow resume` preserves completed stage metadata, active-stage elapsed time, total run elapsed time, and graph topology. While an LM stage or task is active, repeated durable checkpoints refresh its accumulated pause-adjusted duration even when its session file does not change, and refresh the run's total accumulated elapsed time alongside it; graceful quit and recoverable failure additionally persist the exact run total at the boundary.
+Durable `/workflow resume` preserves completed stage metadata, active-stage elapsed time, total run elapsed time, and graph topology. While an LM stage or task is active, repeated durable checkpoints refresh its accumulated pause-adjusted duration even when its session file does not change, and refresh the run's total accumulated elapsed time alongside it. Graceful quit forces an exact stage and run timing checkpoint even inside the ordinary 30-second update bucket; normal completion also persists the final accumulated run total.
 
-Each new Atomic process that reopens the unfinished session mid-chat starts from the latest saved baseline and uses the same continuation prompt shown above, so repeated process-boundary resumes keep status, graph, stored, and lifecycle duration cumulative without double-counting pauses from earlier process segments — a resumed mid-running stage timer continues from its previously accumulated elapsed time instead of restarting at zero, and the total workflow duration shown in the main-chat dashboard and status surfaces reports prior-session elapsed plus current-session elapsed.
+Each new Atomic process that reopens unfinished work starts from the latest saved baseline, so repeated process-boundary resumes keep status, graph, and lifecycle duration cumulative without double-counting pauses. A stage paused at ten seconds resumes at ten seconds, and the main-chat dashboard reports prior-session elapsed plus current-session elapsed. Completed inspection uses that same accumulated run timing rather than DBOS record wall-clock age.
 
-Replayed `ctx.stage`, `ctx.task`, `ctx.chain`, `ctx.parallel`, and child-workflow checkpoints keep their original summaries, timing, session/model metadata, and parallel fanout parentage instead of appearing as freshly flattened replay nodes.
+Replayed `ctx.stage`, `ctx.task`, `ctx.chain`, `ctx.parallel`, and child-workflow checkpoints keep their original summaries, timing, session/model metadata, nested owning-run boundaries, and parallel fanout parentage instead of appearing as freshly flattened replay nodes. If a project-local workflow created and reloaded during a chat is absent from a fresh process's registry, resume rediscovers it from the persisted original invocation directory.
 
 ### `ctx.tool` — durable cached tool execution
 
@@ -2497,7 +2497,7 @@ export default workflow({
 
 The `/workflow resume` command mirrors `/resume` ergonomics and `/workflows` is its alias. With no id, it builds one newest-first picker from eligible live runs and current DBOS resumable/completed records. DBOS is the authoritative catalog; selected records are hydrated and revalidated before resume or inspection. Running workflows never appear: fresh-heartbeat rows are excluded in every session to prevent double dispatch, and stale ones surface as `crashed`.
 
-Rows carry semantic colors — completed green, paused yellow, failed/blocked/crashed red — and the open picker live-updates on local run changes plus a bounded cross-session poll, so state transitions appear (and freshly running workflows disappear) without reopening it.
+Rows carry semantic colors — completed green, paused yellow, failed/blocked/crashed red — and show checkpoint progress without the redundant pending-prompt count. The open picker live-updates on local run changes plus a bounded cross-session poll, so state transitions appear (and freshly running workflows disappear) without reopening it.
 
 Ctrl+D deletes a highlighted inactive durable or completed row after confirmation. Deletion rechecks same-process activity and the authoritative DBOS status, refuses a `running` workflow, and leaves host and stage chat transcripts untouched. The history surface matches `/resume` retention semantics: eligible runs remain searchable regardless of age or count, with no automatic history garbage collection. The picker mounts before asynchronous catalog hydration completes and merges DBOS rows when ready.
 
@@ -2505,7 +2505,7 @@ Only current-format DBOS records are selectable. Atomic hides unsupported or mal
 
 Selecting a paused, failed, blocked, or crash-recovery target follows the existing resume path unchanged: Atomic re-dispatches the workflow with its cached inputs and the **original workflow id**, so previously completed `ctx.tool`, `ctx.ui`, stage/task/chain/parallel items, and child workflow boundaries replay from durable checkpoints rather than executing again. Selecting a completed target follows a separate open path.
 
-Atomic reconstructs a completed run/stage snapshot from authoritative checkpoints, remaps persisted source-stage parent references to the reconstructed stage ids in two passes, and opens the detail/chat overlay without calling the durable resume dispatcher or re-running workflow stages, tools, tasks, prompts, or workflow code.
+Atomic reconstructs completed root and nested child-run snapshots from authoritative checkpoints, remaps persisted source-stage and boundary references to reconstructed stage ids, and opens the full expanded hierarchy without calling the durable resume dispatcher or re-running workflow stages, tools, tasks, prompts, or workflow code.
 
 Completed detail state is read-only. A retained stage chat may be reopened for follow-up without resuming workflow execution or mutating its DBOS handle. Current checkpoints always include supported topology; foreign checkpoints are excluded rather than displayed with inferred edges.
 

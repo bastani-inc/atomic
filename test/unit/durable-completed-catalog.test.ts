@@ -5,12 +5,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import {
+  completedWorkflowRunSnapshots,
   completedWorkflowSnapshot,
   listCompletedFromBackend,
   listOpenableCompletedWorkflows,
   resolveCompletedWorkflow,
 } from "../../packages/workflows/src/durable/completed-catalog.js";
 import { listResumableFromBackend } from "../../packages/workflows/src/durable/resume-catalog.js";
+import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
 
 let tempDir = "";
 
@@ -213,5 +215,51 @@ describe("completed durable catalog", () => {
     });
 
     assert.deepEqual(listOpenableCompletedWorkflows(backend).map((item) => item.workflowId), ["structured-context"]);
+  });
+
+  test("reconstructs nested parallel runs and accumulated completed duration", () => {
+    const backend = new InMemoryDurableBackend();
+    const transcript = join(tempDir, "nested-child.jsonl");
+    writeSessionTranscript(transcript, "nested-child-session");
+    const runId = "completed-nested";
+    const childRunId = "completed-nested-child";
+    backend.registerWorkflow({ workflowId: runId, name: "nested-root", inputs: {}, createdAt: 1_000, updatedAt: 50_000, status: "completed" });
+    const rootRun = { runId, runName: "nested-root" } as const;
+    const childRun = { runId: childRunId, runName: "parallel-child", parentRunId: runId, parentStageId: "boundary", rootRunId: runId } as const;
+    const childOutput = { workflow: "parallel-child", runId: childRunId, status: "completed", exited: false, outputs: { value: "ok" } } as const;
+    for (const checkpoint of [
+      { checkpointId: "root-before", name: "before", replayKey: "before", output: "before", topology: { version: 1 as const, stageId: "before", parentIds: [], run: rootRun } },
+      { checkpointId: "root-boundary", name: "workflow:parallel-child", replayKey: "boundary", output: childOutput, topology: { version: 1 as const, stageId: "boundary", parentIds: ["before"], run: rootRun } },
+      { checkpointId: "child-left", name: "left", replayKey: "child:left", output: "left", sessionFile: transcript, topology: { version: 1 as const, stageId: "left", parentIds: [], run: childRun } },
+      { checkpointId: "child-right", name: "right", replayKey: "child:right", output: "right", topology: { version: 1 as const, stageId: "right", parentIds: [], run: childRun } },
+      { checkpointId: "root-after", name: "after", replayKey: "after", output: "after", topology: { version: 1 as const, stageId: "after", parentIds: ["boundary"], run: rootRun } },
+      // Prior resume attempts can leave terminal orphan child scopes and an unfinished
+      // downstream stage whose parent source id predates cached-boundary replay.
+      { checkpointId: "orphan-child", name: "orphan", replayKey: "old-child:orphan", output: "old", topology: { version: 1 as const, stageId: "orphan", parentIds: [], run: { ...childRun, runId: "old-child-run" } } },
+      { checkpointId: "abandoned-after", name: "abandoned", replayKey: "abandoned", startedAt: 2_000, topology: { version: 1 as const, stageId: "abandoned", parentIds: ["old-boundary-id"], run: rootRun } },
+    ]) {
+      backend.recordCheckpoint({ kind: "stage", workflowId: runId, completedAt: 2_000, ...checkpoint });
+    }
+    backend.recordCheckpoint({
+      kind: "tool", workflowId: runId, checkpointId: "run-timing:12345", name: "workflow-run-timing",
+      argsHash: "workflow-run-timing", output: { elapsedMs: 12_345 }, completedAt: 3_000,
+    });
+
+    const entry = listCompletedFromBackend(backend)[0]!;
+    const runs = completedWorkflowRunSnapshots(backend, entry);
+    assert.equal(runs.length, 2);
+    const root = runs.find((run) => run.id === runId)!;
+    const childSnapshot = runs.find((run) => run.id === childRunId)!;
+    assert.equal(childSnapshot.parentStageId, root.stages.find((stage) => stage.replayKey === "boundary")?.id);
+    assert.equal(completedWorkflowSnapshot(backend, entry)?.durationMs, 12_345);
+    const graph = expandWorkflowGraph({ runs, notices: [], version: 1 }, runId);
+    assert.deepEqual(graph.stages.map((stage) => stage.name), ["before", "left", "right", "after"]);
+    const before = graph.stages.find((stage) => stage.name === "before")!;
+    const left = graph.stages.find((stage) => stage.name === "left")!;
+    const right = graph.stages.find((stage) => stage.name === "right")!;
+    const after = graph.stages.find((stage) => stage.name === "after")!;
+    assert.deepEqual(left.parentIds, [before.id]);
+    assert.deepEqual(right.parentIds, [before.id]);
+    assert.deepEqual(new Set(after.parentIds), new Set([left.id, right.id]));
   });
 });

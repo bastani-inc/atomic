@@ -20,6 +20,7 @@ import {
 } from "../durable/completed-inspection.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import type { DurableWorkflowCatalogEntries } from "../durable/backend.js";
+import { discoverWorkflows } from "./discovery.js";
 
 export interface DurableResumeRuntime {
   resumeDurableWorkflow(
@@ -76,6 +77,8 @@ export function createDurableResumeRuntime(
         registry: deps.registry,
         baseRunOpts: deps.baseRunOpts(options?.policy),
         durableBackend: backend,
+        resolveDefinition: async (name, cwd) =>
+          (await discoverWorkflows({ cwd: cwd ?? deps.runtimeCwd })).registry.get(name),
         ...(deps.jobs !== undefined ? { jobs: deps.jobs } : {}),
       };
       return await resumeDurableWorkflowAdapter(workflowIdOrPrefix, adapterDeps, preparedCatalog);

@@ -5,6 +5,8 @@ import { recordStageCheckpoint, stageCheckpointWithOutput } from "../../packages
 import type { DurableCheckpoint, DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { createStore, run, test as exTest, Type, workflow } from "./executor-shared.js";
+import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
+import { completedWorkflowRunSnapshots, listCompletedFromBackend } from "../../packages/workflows/src/durable/completed-catalog.js";
 
 function isStageCheckpoint(checkpoint: DurableCheckpoint): checkpoint is DurableStageCheckpoint {
   return checkpoint.kind === "stage";
@@ -117,6 +119,113 @@ exTest("cached child replay hydrates workflowChild boundary metadata", async () 
   const boundary = store.runs()[0]?.stages.find((item) => item.name === "workflow:boundary-child");
   assert.equal(boundary?.workflowChild?.workflow, "boundary-child");
   assert.deepEqual(boundary?.workflowChild?.outputs, { value: "child-value" });
+});
+
+exTest("fresh-store cached child replay restores nested parallel hierarchy", async () => {
+  const backend = new InMemoryDurableBackend();
+  const child = workflow({
+    name: "parallel-child",
+    description: "",
+    inputs: {},
+    outputs: { value: Type.String() },
+    run: async (ctx) => {
+      const branches = await ctx.parallel([
+        { name: "left", prompt: "left" },
+        { name: "right", prompt: "right" },
+      ]);
+      return { value: branches.map((branch) => branch.text).join("+") };
+    },
+  });
+  const parent = workflow({
+    name: "nested-parent",
+    description: "",
+    inputs: {},
+    outputs: { result: Type.String() },
+    run: async (ctx) => {
+      await ctx.task("before", { prompt: "before" });
+      const nested = await ctx.workflow(child);
+      if (nested.exited) throw new Error("child exited");
+      await ctx.task("after", { prompt: nested.outputs.value });
+      return { result: nested.outputs.value };
+    },
+  });
+  const runId = "wf-nested-parallel-hydration";
+  const adapters = { prompt: { prompt: async (text: string) => `out:${text}` } };
+  assert.equal((await run(parent, {}, { runId, store: createStore(), durableBackend: backend, adapters })).status, "completed");
+
+  const childTopology = backend.listCheckpoints(runId).find((checkpoint) =>
+    checkpoint.kind === "stage" && checkpoint.name === "left" && checkpoint.topology?.run?.runName === "parallel-child"
+  );
+  assert.ok(childTopology, "child stage ownership must be persisted under the root durable run");
+  const persistedRoot = backend.listCheckpoints(runId)
+    .filter((checkpoint): checkpoint is DurableStageCheckpoint =>
+      checkpoint.kind === "stage" && checkpoint.topology?.run?.runId === runId
+    )
+    .map((checkpoint) => ({ name: checkpoint.name, stageId: checkpoint.topology!.stageId, parents: checkpoint.topology!.parentIds }));
+  assert.equal(persistedRoot.find((stage) => stage.name === "after")?.parents.length, 1);
+
+  const store = createStore();
+  assert.equal((await run(parent, {}, {
+    runId,
+    store,
+    durableBackend: backend,
+    adapters: { prompt: { prompt: async () => { throw new Error("cached work should not rerun"); } } },
+  })).status, "completed");
+  const resumedRoot = store.runs().find((candidate) => candidate.id === runId)!;
+  const resumedBoundary = resumedRoot.stages.find((stage) => stage.name === "workflow:parallel-child")!;
+  const persistedBoundary = persistedRoot.find((stage) => stage.name === "workflow:parallel-child")!;
+  const persistedAfter = persistedRoot.find((stage) => stage.name === "after")!;
+  assert.equal(persistedAfter.parents[0], persistedBoundary.stageId);
+
+  assert.equal(resumedBoundary.replayedFromStageId, persistedBoundary.stageId);
+  assert.equal(resumedRoot.stages.find((stage) => stage.name === "after")?.replayedFromStageId, persistedAfter.stageId);
+  assert.deepEqual(resumedRoot.stages.find((stage) => stage.name === "after")?.parentIds, [resumedBoundary.id]);
+  const graph = expandWorkflowGraph(store.snapshot(), runId);
+  assert.deepEqual(graph.stages.map((stage) => stage.name), ["before", "left", "right", "after"]);
+  const before = graph.stages.find((stage) => stage.name === "before")!;
+  const left = graph.stages.find((stage) => stage.name === "left")!;
+  const right = graph.stages.find((stage) => stage.name === "right")!;
+  const after = graph.stages.find((stage) => stage.name === "after")!;
+  assert.deepEqual(left.parentIds, [before.id]);
+  assert.deepEqual(right.parentIds, [before.id]);
+  assert.deepEqual(new Set(after.parentIds), new Set([left.id, right.id]));
+});
+
+exTest("mixed cached and live child resume remains inspectable after completion", async () => {
+  const backend = new InMemoryDurableBackend();
+  const child = workflow({
+    name: "partial-child", description: "", inputs: {}, outputs: { value: Type.String() },
+    run: async (ctx) => {
+      const first = await ctx.stage("first").complete("first");
+      const second = await ctx.stage("second").complete("second");
+      return { value: `${first}+${second}` };
+    },
+  });
+  const parent = workflow({
+    name: "partial-parent", description: "", inputs: {}, outputs: { result: Type.String() },
+    run: async (ctx) => {
+      await ctx.stage("before").complete("before");
+      const nested = await ctx.workflow(child);
+      if (nested.exited) throw new Error("child exited");
+      await ctx.stage("after").complete("after");
+      return { result: nested.outputs.value };
+    },
+  });
+  const runId = "wf-partial-child-resume";
+  let failSecond = true;
+  const adapters = { complete: { complete: async (text: string) => {
+    if (text === "second" && failSecond) throw new Error("first session stops in child");
+    return text;
+  } } };
+  assert.equal((await run(parent, {}, { runId, store: createStore(), durableBackend: backend, adapters })).status, "failed");
+  failSecond = false;
+  assert.equal((await run(parent, {}, { runId, store: createStore(), durableBackend: backend, adapters })).status, "completed");
+
+  const entry = listCompletedFromBackend(backend).find((candidate) => candidate.workflowId === runId)!;
+  const snapshots = completedWorkflowRunSnapshots(backend, entry);
+  assert.ok(snapshots.length >= 2, "root and resumed child reconstruct after mixed replay/live completion");
+  const graph = expandWorkflowGraph({ runs: snapshots, notices: [], version: 1 }, runId);
+  assert.deepEqual(graph.stages.map((item) => item.name), ["before", "first", "second", "after"]);
 });
 
 exTest("mixed cached and live repeated child calls keep boundary replay keys in sync", async () => {

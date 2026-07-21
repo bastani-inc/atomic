@@ -62,12 +62,7 @@ export interface DbosCheckpointEnvelope extends WorkflowSerializableObject {
   readonly topology?: WorkflowSerializableValue;
 }
 
-/**
- * Stage-kind checkpoints from older session-timing writers may omit
- * topology. The current format requires it, so default at every write
- * boundary — persisted records must match the normalized in-memory mirror or
- * a fresh process would reject them as foreign.
- */
+/** Add a compatibility root topology when a legacy/output-only writer omits it. */
 export function withCurrentStageTopology(cp: DurableCheckpoint): DurableCheckpoint {
   if (cp.kind !== "stage" || cp.topology !== undefined) return cp;
   return {
@@ -104,7 +99,12 @@ export function encodeCheckpoint(checkpoint: DurableCheckpoint): DbosCheckpointE
     ...base,
     name: s.name,
     replayKey: s.replayKey,
-    ...(s.topology !== undefined ? { topology: { version: s.topology.version, stageId: s.topology.stageId, parentIds: [...s.topology.parentIds] } } : {}),
+    ...(s.topology !== undefined ? { topology: {
+      version: s.topology.version,
+      stageId: s.topology.stageId,
+      parentIds: [...s.topology.parentIds],
+      ...(s.topology.run !== undefined ? { run: { ...s.topology.run } } : {}),
+    } } : {}),
     ...(s.sessionId !== undefined ? { sessionId: s.sessionId } : {}),
     ...(s.sessionFile !== undefined ? { sessionFile: s.sessionFile } : {}),
     ...(s.startedAt !== undefined ? { startedAt: s.startedAt } : {}),
@@ -207,7 +207,7 @@ function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): Durabl
     name: env.name ?? "stage",
     replayKey: env.replayKey ?? env.checkpointId,
     ...(env.hasOutput !== false && env.output !== undefined ? { output: env.output } : {}),
-    topology,
+    ...(topology !== undefined ? { topology } : {}),
     ...(env.sessionId !== undefined ? { sessionId: env.sessionId } : {}),
     ...(env.sessionFile !== undefined ? { sessionFile: env.sessionFile } : {}),
     ...(typeof env.startedAt === "number" ? { startedAt: env.startedAt } : {}),
@@ -227,7 +227,30 @@ function stageTopology(value: WorkflowSerializableValue | undefined): DurableSta
   const record = value as Record<string, WorkflowSerializableValue>;
   if (record["version"] !== DURABLE_STAGE_TOPOLOGY_VERSION
     || typeof record["stageId"] !== "string" || !isStringArray(record["parentIds"])) return undefined;
-  return { version: DURABLE_STAGE_TOPOLOGY_VERSION, stageId: record["stageId"], parentIds: record["parentIds"] };
+  const run = stageRunTopology(record["run"]);
+  if (record["run"] !== undefined && run === undefined) return undefined;
+  return {
+    version: DURABLE_STAGE_TOPOLOGY_VERSION,
+    stageId: record["stageId"],
+    parentIds: record["parentIds"],
+    ...(run !== undefined ? { run } : {}),
+  };
+}
+
+function stageRunTopology(value: WorkflowSerializableValue | undefined): NonNullable<DurableStageTopology["run"]> | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const run = value as Record<string, WorkflowSerializableValue>;
+  if (typeof run["runId"] !== "string" || typeof run["runName"] !== "string") return undefined;
+  for (const key of ["parentRunId", "parentStageId", "rootRunId"] as const) {
+    if (run[key] !== undefined && typeof run[key] !== "string") return undefined;
+  }
+  return {
+    runId: run["runId"],
+    runName: run["runName"],
+    ...(typeof run["parentRunId"] === "string" ? { parentRunId: run["parentRunId"] } : {}),
+    ...(typeof run["parentStageId"] === "string" ? { parentStageId: run["parentStageId"] } : {}),
+    ...(typeof run["rootRunId"] === "string" ? { rootRunId: run["rootRunId"] } : {}),
+  };
 }
 
 function isModelAttempts(value: WorkflowSerializableValue | undefined): boolean {

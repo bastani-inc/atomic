@@ -12,7 +12,7 @@ import type { GraphFrontierTracker } from "../../engine/graph-inference.js";
 import type { EngineStageRuntimeOptions } from "../../engine/options.js";
 import { createStageContext as createInnerStageContext, type InternalStageContext, type StageAdapters } from "./stage-runner.js";
 import type { StageControlRegistry } from "./stage-control-registry.js";
-import type { ParallelFailFastScope } from "./executor-types.js";
+import type { ParallelFailFastScope, StageSessionCheckpointOptions } from "./executor-types.js";
 import type { WorkflowExitManager } from "./executor-exit-manager.js";
 import type { ContinuationReplayIndex } from "./executor-continuation.js";
 import { sameStringSet } from "./executor-continuation.js";
@@ -198,12 +198,15 @@ export function createWorkflowStageFactory(input: {
     };
 
     let runtime: LiveStageRuntime;
-    const captureStageSessionMeta = (): void => {
+    const captureStageSessionMeta = (checkpointOptions?: StageSessionCheckpointOptions): unknown => {
       const meta = innerCtx.__sessionMeta();
       if (meta.sessionId !== undefined) stageSnapshot.sessionId = meta.sessionId;
       if (meta.sessionFile !== undefined) stageSnapshot.sessionFile = meta.sessionFile;
       if (meta.sessionId !== undefined || meta.sessionFile !== undefined) input.activeStore.recordStageSession(input.runId, stageId, meta);
-      void input.opts.onStageSession?.(input.runId, stageSnapshot);
+      const pending = input.opts.onStageSession?.(input.runId, stageSnapshot, checkpointOptions);
+      if (checkpointOptions?.forceDurable === true) return pending;
+      void Promise.resolve(pending).catch(() => {});
+      return undefined;
     };
     const releaseLiveHandle = async (): Promise<void> => {
       if (state.liveHandleReleased) return;

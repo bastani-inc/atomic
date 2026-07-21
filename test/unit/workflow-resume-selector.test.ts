@@ -154,6 +154,16 @@ describe("workflow resume selector row presentation", () => {
     assert.equal(byId.get("live-paused-run")?.messageColor, "warning");
   });
 
+  test("omits pending prompt counts from durable and completed rows", () => {
+    const durable = { ...entry("prompted", "paused"), pendingPrompts: 7 };
+    const completed = { ...entry("completed-prompted", "completed"), pendingPrompts: 3 };
+    const items = workflowResumeSelectorItems([], [durable], [completed]);
+    for (const item of items) {
+      assert.doesNotMatch(item.session.firstMessage, /\b\d+ prompts?\b/);
+      assert.doesNotMatch(item.session.allMessagesText, /\b\d+ prompts?\b/);
+      assert.match(item.session.firstMessage, /2 checkpoints$/);
+    }
+  });
   test("presents a stale-heartbeat running durable row as crashed, never running", () => {
     const [item] = workflowResumeSelectorItems([], [{ ...entry("d-crashed", "running"), name: "repro-flow" }], []);
     assert.match(item!.session.firstMessage, /repro-flow {2}crashed/);

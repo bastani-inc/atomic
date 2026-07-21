@@ -34,6 +34,12 @@ describe("current DBOS stage topology", () => {
     assert.deepEqual(decoded.topology, checkpoint.topology);
   });
 
+  test("rejects a marked current stage envelope with missing topology", () => {
+    const checkpoint = stage("wf-missing-topology");
+    const envelope = { ...encodeCheckpoint(checkpoint), topology: undefined };
+    assert.equal(decodeToCheckpoint(checkpoint.workflowId, checkpoint.checkpointId, envelope as never), undefined);
+  });
+
   for (const topology of [
     { version: 2, stageId: "review", parentIds: ["plan"] },
     { version: 1, stageId: "review", parentIds: "plan" },

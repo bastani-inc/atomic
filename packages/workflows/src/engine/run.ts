@@ -39,14 +39,14 @@ import { isWorkflowDefinition, workflowDefinitionRequirementMessage } from "../r
 import { getDurableBackend } from "../durable/factory.js";
 import { classifyReturnedRunStatus } from "./run-returned-status.js";
 import { createToolPrimitive, createCheckpointIdGenerator } from "../durable/tool-primitive.js";
-import { createDurableStagePrimitive, createDurableTaskPrimitive, recordStageCheckpoint, createStageReplayKeyGenerator, recordCachedStageWithTracker } from "../durable/stage-primitive.js";
-import { inheritedRunElapsedMs } from "../durable/run-timing.js";
-import type { DurableCompletedStageCheckpoint } from "../durable/stage-primitive.js";
+import { createDurableStagePrimitive, createDurableTaskPrimitive, recordStageCheckpoint, createStageReplayKeyGenerator } from "../durable/stage-primitive.js";
+import { inheritedRunElapsedMs, recordRunTimingCheckpoint } from "../durable/run-timing.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
 import { ScopedDurableBackend, type DurableScope } from "../durable/scoped-backend.js";
 import { finalizeDurableTerminalStatus } from "./run-durable-finalize.js";
 import { createDurableStageSessionRecorder } from "./run-durable-stage-session.js";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
+import { createDurableCachedStageRecorder, createDurableStageDeps } from "./run-durable-topology.js";
 
 type WorkflowRunInputArgument = Parameters<typeof resolveAndValidateInputs>[1];
 
@@ -201,13 +201,11 @@ export async function run<
   const checkpointIdGenerator = createCheckpointIdGenerator();
   const stageReplayKeyGenerator = createStageReplayKeyGenerator(runId);
   const completedStageReplayKeys = new Map<string, string>();
-  const durableStageDeps = {
-    workflowId: runId,
-    backend: durableBackend,
-    nextCheckpointId: checkpointIdGenerator,
-    nextReplayKey: stageReplayKeyGenerator,
-    replayKeyForCompletedStage: (stage: StageSnapshot) => completedStageReplayKeys.get(stage.id),
-  };
+  const durableStageDeps = createDurableStageDeps({
+    backend: durableBackend, run: runSnapshot,
+    nextCheckpointId: checkpointIdGenerator, nextReplayKey: stageReplayKeyGenerator,
+    completedReplayKeys: completedStageReplayKeys,
+  });
   const userOnStageEnd = opts.onStageEnd;
   const durableOnStageEnd = async (stageRunId: string, snapshot: StageSnapshot): Promise<void> => {
     if (stageRunId === runId && snapshot.status === "completed") {
@@ -340,18 +338,21 @@ export async function run<
 
   // Durable ctx.ui wrapper — caches completed user responses so a resumed workflow does not re-ask answered prompts.
   const durableUiDeps = { workflowId: runId, backend: durableBackend, nextCheckpointId: checkpointIdGenerator };
-  const recordCachedStage = (name: string, replayKey: string, checkpoint: DurableCompletedStageCheckpoint): void =>
-    recordCachedStageWithTracker(activeStore, tracker, runId, name, replayKey, checkpoint, completedStageReplayKeys);
+  const cachedStage = createDurableCachedStageRecorder({
+    store: activeStore, tracker, run: runSnapshot, backend: durableBackend,
+    rootBackend, completedStageReplayKeys,
+  });
   const durableTask = createDurableTaskPrimitive({
     workflowId: runId, backend: durableBackend,
     nextReplayKey: (stageName) => stageReplayKeyGenerator(stageName), task: taskRunners.task,
-    recordCachedTask: (name, replayKey, checkpoint, scope) =>
-      recordCachedStageWithTracker(activeStore, tracker, runId, name, replayKey, checkpoint, completedStageReplayKeys, scope),
+    recordCachedTask: cachedStage.record,
   });
   const durableWorkflow = createDurableChildWorkflowPrimitive({
     workflowId: runId, rootWorkflowId: opts.parentRun?.rootRunId ?? runId, backend: durableBackend,
     nextReplayKey: nextDurableChildReplayKey, setChildDurableScope: (scope) => { pendingChildDurableScope = scope; },
-    recordCachedStage, workflow,
+    recordCachedStage: cachedStage.record,
+    checkpointMetadata: cachedStage.metadata,
+    workflow,
   });
   const ctx: WorkflowRunContext<TInputs> = {
     inputs: resolvedInputs as TInputs,
@@ -380,7 +381,7 @@ export async function run<
       workflowId: runId,
       backend: durableBackend,
       nextReplayKey: (stageName) => stageReplayKeyGenerator(stageName),
-      recordCachedStage,
+      recordCachedStage: cachedStage.record,
       stage: (name, options, replayKey) => {
         const stage = runtime.stage(name, options);
         const stageId = activeStore.runs().find((r) => r.id === runId)?.stages.at(-1)?.id;
@@ -429,6 +430,7 @@ export async function run<
     const returned = classifyReturnedRunStatus(result, runSnapshot);
     const recorded = activeStore.recordRunEnd(runId, returned.status, result, returned.error, returned.metadata);
     appendRunEndWhenRecorded(opts.persistence, recorded, { runId, status: returned.status, result, ...(returned.error !== undefined ? { error: returned.error } : {}), ...(returned.metadata ?? {}), ...(runSnapshot.endedAt !== undefined ? { endedAt: runSnapshot.endedAt } : {}), ...(runSnapshot.durationMs !== undefined ? { durationMs: runSnapshot.durationMs } : {}), ts: Date.now() });
+    if (opts.parentRun === undefined) recordRunTimingCheckpoint(durableBackend, runSnapshot);
     durableBackend.setWorkflowStatus(runId, returned.status, undefined, returned.metadata?.resumable);
     await durableBackend.flush();
     return reconcileTerminalRunResult(runId, runSnapshot, activeStore, { status: returned.status, result, error: returned.error }, opts.onRunEnd);
