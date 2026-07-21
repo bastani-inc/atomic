@@ -693,7 +693,7 @@ The parent can consume `fixes.outputs`, `verification.outputs`, and `convergence
 
 ### `deep-research-codebase`
 
-Scout + research-history chain → two parallel specialist waves → aggregator. Ideal for deep investigation of a codebase topic across locator, pattern, analyzer, and ecosystem angles.
+Heavy research for tasks requiring comprehensive, whole-repository context.
 
 ```text
 /workflow deep-research-codebase prompt="How does session persistence work?"

@@ -6,9 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Embedded DBOS Postgres now works when Atomic runs as root on Linux (containers, CI sandboxes, eval harnesses): PostgreSQL refuses UID 0, so Atomic resolves an unprivileged system account (`postgres`, `nobody`, or `daemon`), keeps the cluster under `/var/lib/atomic-postgres` (a root home directory is untraversable for that account), and runs `initdb`/`pg_ctl` with dropped privileges. When the embedded binaries sit under an untraversable prefix (for example a root-owned `~/.nvm` global install), the Postgres runtime is copied into the cluster directory once and reused.
+
 ### Changed
 
 - Updated workflow-creation guidance to prefer `ctx.tool(...)` for workflow-owned side effects, connecting durable cached results to safe resume while distinguishing pure TypeScript computation and agent-stage internals ([#1923](https://github.com/bastani-inc/atomic/issues/1923)).
+- Clarified the built-in `deep-research-codebase` discovery guidance so agents reserve the heavy workflow for tasks requiring comprehensive whole-repository context ([#1925](https://github.com/bastani-inc/atomic/issues/1925)).
+- When no durable backend can be provisioned at all (no `DBOS_SYSTEM_DATABASE_URL`, embedded Postgres unavailable, and no Docker), workflows now degrade to a process-local in-memory backend with a loud non-durable warning instead of failing every workflow action. Degraded runs execute normally but do not survive the process, so `/workflow resume` after exit has nothing to restore; DBOS query and write failures on a provisioned backend still fail the workflow action.
+
+### Fixed
+
+- Fixed session teardown crashing the process (exit code 1) after DBOS durability provisioning had failed: `shutdownDbos` re-awaited the memoized rejected configuration promise and rethrew the original provisioning error out of session dispose and the `beforeExit` hook, turning otherwise-successful `--print` runs into nonzero exits (surfacing as `NonZeroAgentExitCodeError` in eval harnesses). Shutdown is now a no-op for a backend that never reached readiness, and genuine teardown failures are logged instead of thrown.
 
 ## [0.9.10] - 2026-07-20
 

@@ -16,10 +16,22 @@ import { shutdownDbos } from "../durable/dbos-lifecycle.js";
 
 let processShutdownInstalled = false;
 
+/**
+ * Session dispose and process exit must never crash on durability teardown:
+ * a genuine flush/stop failure is diagnostic, not fatal, and an unhandled
+ * rejection here turns an otherwise-successful run into a nonzero exit.
+ */
+function shutdownDbosQuietly(): Promise<void> {
+  return shutdownDbos().catch((error: unknown) => {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(`atomic-workflows: DBOS durability shutdown failed: ${detail}`);
+  });
+}
+
 function installDbosProcessShutdown(): void {
   if (processShutdownInstalled) return;
   processShutdownInstalled = true;
-  process.once("beforeExit", () => shutdownDbos());
+  process.once("beforeExit", () => void shutdownDbosQuietly());
 }
 
 export interface WorkflowLifecycleRegistrationDeps {
@@ -123,6 +135,6 @@ export function registerWorkflowLifecycleHandlers(
     deps.storeWidgetRef.current = null;
     runtimeState.resetWorkflowDiscoveryForSession();
     runtimeState.setNotificationsActive(false);
-    await shutdownDbos();
+    await shutdownDbosQuietly();
   });
 }
