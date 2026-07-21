@@ -304,6 +304,7 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		eventsPath, runId: "e2e", stepIndex: 0, agent: "worker",
 	});
 	assert.equal(result.exitCode, 0);
+	assert.match(fs.readFileSync(outputPath, "utf-8"), /FINAL-CONTENT/);
 	fs.appendFileSync(eventsPath, `${JSON.stringify({ type: "subagent.control", runId: "e2e" })}\n`);
 	const text = fs.readFileSync(eventsPath, "utf-8");
 	assert.ok(Buffer.byteLength(text) < 600 * 1024);
@@ -314,13 +315,17 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 	assert.ok(records.filter((record) => record.type === "message_update").every((record) => !("message" in record)));
 });
 
-test("spawn failure keeps its diagnostic when close races journal drain", async () => {
+test("spawn failure drains its output stream before returning its diagnostic", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-spawn-error-race-"));
 	tempRoots.push(root);
-	const result = await runPiStreaming([], root, path.join(root, "output.txt"), { PATH: "" }, path.join(root, "missing-package"), path.join(root, "missing-cli.ts"));
-	assert.equal(result.exitCode === 0, false);
-	assert.match(result.error ?? "", /failed to spawn subagent runtime/);
-	assert.match(result.error ?? "", /runtime executable was not found/);
+	for (let index = 0; index < 20; index++) {
+		const outputPath = path.join(root, `output-${index}.txt`);
+		const result = await runPiStreaming([], root, outputPath, { PATH: "" }, path.join(root, "missing-package"), path.join(root, "missing-cli.ts"));
+		assert.equal(result.exitCode === 0, false);
+		assert.match(result.error ?? "", /failed to spawn subagent runtime/);
+		assert.match(result.error ?? "", /runtime executable was not found/);
+		assert.equal(fs.existsSync(outputPath), true);
+	}
 });
 
 test("raw child stdout and stderr share the bounded telemetry budget", async () => {

@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed foreground and background subagent runs resolving before their output artifact stream had opened and flushed. Normal completion and spawn-error races now share idempotent output finalization, preserve the spawn diagnostic, and return only after the output artifact is settled, preventing late `ENOENT`/`EINVAL` host crashes and truncated output.
+
+
 ## [0.9.11-alpha.1] - 2026-07-20
 
 ### Changed

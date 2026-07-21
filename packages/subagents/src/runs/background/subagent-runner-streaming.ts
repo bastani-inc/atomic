@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
+import { finished } from "node:stream/promises";
 import type { Message } from "@earendil-works/pi-ai/compat";
 import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
 import { detectSubagentError, extractTextFromContent, extractToolArgsPreview, getFinalOutput } from "../../shared/utils.ts";
@@ -42,6 +43,18 @@ export function runPiStreaming(
 	}
 	return new Promise((resolve) => {
 		const outputStream = fs.createWriteStream(outputFile, { flags: "w" });
+		let outputFailure: Error | undefined;
+		let outputEndRequested = false;
+		const outputSettled = finished(outputStream).catch((cause) => {
+			outputFailure = cause instanceof Error ? cause : new Error(String(cause));
+		});
+		const endOutputStream = (): Promise<void> => {
+			if (!outputEndRequested) {
+				outputEndRequested = true;
+				outputStream.end();
+			}
+			return outputSettled;
+		};
 		const spawnEnv = {
 			...process.env,
 			...(env ?? {}),
@@ -256,10 +269,9 @@ export function runPiStreaming(
 			attemptWatchdog.clear();
 			if (stdoutBuf.trim()) processStdoutLine(stdoutBuf);
 			if (stderrBuf.trim()) appendChildLine("subagent.child.stderr", stderrBuf);
-			outputStream.end();
-			await childEventJournal.close();
+			await Promise.all([endOutputStream(), childEventJournal.close()]);
 			const finalOutput = getFinalOutput(messages) || rawStdoutLines.join("\n").trim();
-			const finalError = error ?? assistantError ?? spawnErrorText;
+			const finalError = error ?? assistantError ?? spawnErrorText ?? outputFailure?.message;
 			const forcedDrainAfterFinalSuccess = forcedTerminationSignal && cleanTerminalAssistantStopReceived && !finalError;
 			resolve({
 				stderr,
@@ -285,10 +297,9 @@ export function runPiStreaming(
 			clearDrainTimers();
 			clearStdioGuard();
 			attemptWatchdog.clear();
-			outputStream.end();
-			await childEventJournal.close();
+			await Promise.all([endOutputStream(), childEventJournal.close()]);
 			const finalOutput = getFinalOutput(messages) || rawStdoutLines.join("\n").trim();
-			const finalError = error ?? assistantError ?? spawnErrorText;
+			const finalError = error ?? assistantError ?? spawnErrorText ?? outputFailure?.message;
 			resolve({
 				stderr,
 				exitCode: 1,
