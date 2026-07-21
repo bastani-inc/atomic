@@ -74,6 +74,8 @@ export ANTHROPIC_API_KEY=sk-ant-...
 atomic
 ```
 
+After a successful API-key or OAuth login, Atomic refreshes provider credentials and model discovery in the active session. Newly authenticated models are immediately available in `/model` without restarting Atomic, including providers with dynamically discovered catalogs.
+
 | Provider | Environment Variable | `auth.json` key |
 |----------|----------------------|------------------|
 | Anthropic | `ANTHROPIC_API_KEY` | `anthropic` |

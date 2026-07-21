@@ -7,11 +7,12 @@ import {
 import type { PromptOptions } from "../../core/agent-session-types.ts";
 import { SessionManager } from "../../core/session-manager.ts";
 import type { RpcClient } from "../rpc/rpc-client.ts";
-import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "../rpc/rpc-types.ts";
+import type { RpcExtensionUIRequest, RpcExtensionUIResponse, RpcModelCatalog } from "../rpc/rpc-types.ts";
 import type { RpcEvent, RpcSlashCommand } from "../rpc/rpc-types.ts";
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
 import type { EngineKeybindingState, InteractiveEngineCommand, InteractiveEngineMessage } from "./protocol.ts";
 import { RemoteCommandCatalog, type RemoteCommandsListener } from "./remote-command-catalog.ts";
+import { RemoteModelCatalog } from "./remote-model-catalog.ts";
 import { sleep } from "../../utils/sleep.ts";
 
 export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
@@ -24,8 +25,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private followUpMessages: string[] = [];
 	private engineCallbackActive = false;
 	private readonly diagnosticListeners = new Set<(diagnostic: ActivityWatchdogDiagnostic) => void>();
-	private remoteModels: Model<Api>[] = [];
-	private remoteScopedModels: Array<{ model: Model<Api>; thinkingLevel?: AgentSession["thinkingLevel"] }> = [];
 	private pendingDiagnostics: ActivityWatchdogDiagnostic[] = [];
 	private lastDiagnostic: ActivityWatchdogDiagnostic | undefined;
 	private autoCompactionEnabled = true;
@@ -34,6 +33,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private remoteSessionFile: string | undefined;
 	private restartPromise: Promise<void> | undefined;
 	private readonly remoteCommands: RemoteCommandCatalog;
+	private readonly remoteModelCatalog: RemoteModelCatalog;
 
 	constructor(
 		localRuntime: AgentSessionRuntime,
@@ -49,6 +49,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		);
 		this.client = client;
 		this.remoteCommands = new RemoteCommandCatalog(client);
+		this.remoteModelCatalog = new RemoteModelCatalog(client);
 		this.client.onEvent((event) => this.observeEvent(event));
 	}
 
@@ -60,13 +61,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	async initializeFromEngine(): Promise<void> {
 		const state = await this.client.getState();
 		const session = super.session;
-		const catalog = await this.client.requestInternal<{
-			models: Model<Api>[];
-			scopedModels?: Array<{ model: Model<Api>; thinkingLevel?: AgentSession["thinkingLevel"] }>;
-		}>({ type: "get_available_models" });
-		this.remoteModels = catalog.models;
-		this.remoteScopedModels = catalog.scopedModels ?? [];
-		this.patchModelCatalog(session);
+		const catalog = await this.client.requestInternal<RpcModelCatalog>({ type: "get_available_models" });
+		this.remoteModelCatalog.apply(catalog);
+		this.remoteModelCatalog.patch(session);
 		if (state.model) session.agent.state.model = state.model;
 		session.agent.state.thinkingLevel = state.thinkingLevel;
 		session.agent.steeringMode = state.steeringMode;
@@ -433,28 +430,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		Object.defineProperty(session, "sessionManager", { configurable: true, value: refreshed });
 		this.patchSessionManager(refreshed);
 		session.agent.state.messages = refreshed.buildSessionContext().messages;
-	}
-
-	private patchModelCatalog(session: AgentSession): void {
-		const registry = session.modelRegistry;
-		Object.defineProperties(registry, {
-			getAvailable: { configurable: true, value: () => [...this.remoteModels] },
-			find: {
-				configurable: true,
-				value: (provider: string, modelId: string) =>
-					this.remoteModels.find((model) => model.provider === provider && model.id === modelId),
-			},
-			hasConfiguredAuth: {
-				configurable: true,
-				value: (model: Model<Api>) => this.remoteModels.some(
-					(candidate) => candidate.provider === model.provider && candidate.id === model.id,
-				),
-			},
-		});
-		Object.defineProperty(session, "scopedModels", {
-			configurable: true,
-			get: () => this.remoteScopedModels,
-		});
 	}
 
 	private observeEvent(event: RpcEvent): void {

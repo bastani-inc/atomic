@@ -7,6 +7,7 @@ import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.t
 import type {
 	RpcCommand,
 	RpcContextWindowInfo,
+	RpcModelRefreshResult,
 	RpcResponse,
 	RpcSessionState,
 	RpcSlashCommand,
@@ -46,6 +47,9 @@ export abstract class RpcClientApi {
 	}
 	async getAvailableModels(): Promise<ModelInfo[]> {
 		return this.data<{ models: ModelInfo[] }>(await this.request({ type: "get_available_models" })).models;
+	}
+	async refreshModels(options: { timeoutMs?: number; force?: boolean; allowNetwork?: boolean } = {}): Promise<RpcModelRefreshResult> {
+		return this.data(await this.request({ type: "refresh_models", ...options }));
 	}
 	async setThinkingLevel(level: ThinkingLevel): Promise<void> { await this.request({ type: "set_thinking_level", level }); }
 	async cycleThinkingLevel(): Promise<{ level: ThinkingLevel } | null> {

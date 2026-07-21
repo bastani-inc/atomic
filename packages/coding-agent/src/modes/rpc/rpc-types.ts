@@ -17,6 +17,16 @@ import type { SourceInfo } from "../../core/source-info.ts";
 // RPC Commands (stdin)
 // ============================================================================
 
+export interface RpcModelCatalog {
+	models: Model<Api>[];
+	scopedModels: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
+}
+
+export interface RpcModelRefreshResult extends RpcModelCatalog {
+	aborted: boolean;
+	errors: Array<{ provider: string; message: string }>;
+}
+
 export type RpcCommand =
 	// Prompting
 	| { id?: string; type: "prompt"; message: string; images?: ImageContent[]; streamingBehavior?: "steer" | "followUp" }
@@ -32,6 +42,7 @@ export type RpcCommand =
 	| { id?: string; type: "set_model"; provider: string; modelId: string }
 	| { id?: string; type: "cycle_model"; direction?: "forward" | "backward" }
 	| { id?: string; type: "get_available_models" }
+	| { id?: string; type: "refresh_models"; timeoutMs?: number; force?: boolean; allowNetwork?: boolean }
 
 	// Thinking
 	| { id?: string; type: "set_thinking_level"; level: ThinkingLevel }
@@ -161,7 +172,14 @@ export type RpcResponse =
 			type: "response";
 			command: "get_available_models";
 			success: true;
-			data: { models: Model<Api>[]; scopedModels?: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }> };
+			data: RpcModelCatalog;
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "refresh_models";
+			success: true;
+			data: RpcModelRefreshResult;
 	  }
 
 	// Thinking

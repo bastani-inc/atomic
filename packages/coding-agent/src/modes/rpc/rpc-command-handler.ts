@@ -128,6 +128,21 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "get_available_models", { models, scopedModels: session.scopedModels });
 			}
 
+			case "refresh_models": {
+				session.modelRegistry.authStorage.reload();
+				const result = await session.modelRegistry.refresh({
+					timeoutMs: command.timeoutMs,
+					force: command.force,
+					allowNetwork: command.allowNetwork,
+				});
+				return createRpcSuccessResponse(id, "refresh_models", {
+					aborted: result.aborted,
+					errors: [...result.errors].map(([provider, error]) => ({ provider, message: error.message })),
+					models: session.modelRegistry.getAvailable(),
+					scopedModels: session.scopedModels,
+				});
+			}
+
 			case "set_thinking_level": {
 				session.setThinkingLevel(command.level);
 				return createRpcSuccessResponse(id, "set_thinking_level");
