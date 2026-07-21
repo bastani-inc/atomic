@@ -5,7 +5,7 @@ All `.txt` files in this directory are direct `tmux capture-pane -p` output from
 ## Nested child + parallel fan-out (`cbaf0e31`)
 
 - `nested-before-quit.txt`: expanded root → child → parallel graph before the first quit; both branches show `14s`.
-- `nested-after-resume.txt`: same hierarchy in a fresh process; both branches continue at `34s`.
+- `nested-after-resume.txt`: same hierarchy in a fresh process; both branches continue at `39s`.
 - `nested-after-second-resume.txt`: same hierarchy after a second quit/process restart; both branches continue at `1m 17s`.
 - `nested-main-before-quit.txt` / `nested-main-after-resume.txt`: dashboard total continues from `42s` to `1m 4s`.
 - `nested-completed-live.txt`: completed nested/parallel topology with branch durations retained.
