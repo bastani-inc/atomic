@@ -13,6 +13,7 @@ import { SettingsManager } from "../../packages/coding-agent/src/core/settings-m
 import { buildSessionOptions } from "../../packages/coding-agent/src/main-session-options.js";
 import {
 	getPersistedProviderSelection,
+	getProviderModelReference,
 	PROVIDER_MODEL_REFERENCE,
 	ProviderModelSelectionError,
 	providerModelsAreExactlyEqual,
@@ -84,6 +85,25 @@ describe("Cursor host exact selection", () => {
 		assert.equal(providerModelsAreExactlyEqual(models[0], { ...models[0] }), true);
 	});
 
+
+	test("restores the current exact Cursor reference instead of caller routing or reference metadata", () => {
+		const registry = registryWithRows();
+		const current = registry.getAll().filter((model) => model.provider === "cursor")[0];
+		const currentReference = getProviderModelReference(current);
+		assert.ok(currentReference);
+		const callerModel = {
+			...current,
+			baseUrl: "https://caller.invalid",
+			headers: { "x-forged-route": "true" },
+			[PROVIDER_MODEL_REFERENCE]: { ...currentReference, data: { forged: true } },
+		};
+
+		const validated = validateSelectedProviderModel(callerModel, registry);
+
+		assert.equal(validated, current);
+		assert.equal(validated.baseUrl, "https://api2.cursor.sh");
+		assert.equal(getProviderModelReference(validated), currentReference);
+	});
 	test("provider and model ID resolves unique exact and rejects duplicate ambiguity", () => {
 		const registry = registryWithRows();
 		assert.equal(registry.resolveExactModel("cursor", "B").id, "B");

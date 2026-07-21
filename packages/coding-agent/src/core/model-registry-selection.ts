@@ -1,4 +1,5 @@
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
+import { getModelDefaultContextWindow, selectContextWindow } from "./context-window.js";
 import {
 	getPersistedProviderSelection,
 	getProviderModelReference,
@@ -47,7 +48,8 @@ export function rebindRegisteredProviderModel(
 	registeredProviders: ReadonlySet<string>,
 ): Model<Api> {
 	if (!registeredProviders.has(model.provider) || registry.requiresExactSelectionPersistence(model.provider)) return model;
-	return registry.getAll().find((candidate) => candidate.provider === model.provider && candidate.id === model.id) ?? model;
+	const authoritative = registry.getAll().find((candidate) => candidate.provider === model.provider && candidate.id === model.id);
+	return authoritative ? reapplyExplicitModelSelection(authoritative, model) : model;
 }
 
 export function validateSelectedProviderModel(
@@ -60,12 +62,30 @@ export function validateSelectedProviderModel(
 ): Model<Api> {
 	if (!registry.requiresExactSelectionPersistence(model.provider)) return model;
 	const selection = getPersistedProviderSelection(model);
-	if (selection !== undefined) return registry.restoreExactModel(model.provider, model.id, selection);
+	if (selection !== undefined) {
+		return reapplyExplicitModelSelection(registry.restoreExactModel(model.provider, model.id, selection), model);
+	}
 	if (getProviderModelReference(model)) {
 		const exact = registry.getAll().filter((candidate) => providerModelsAreExactlyEqual(candidate, model));
-		if (exact.length === 1) return exact[0];
+		if (exact.length === 1) return reapplyExplicitModelSelection(exact[0], model);
 	}
 	throw new ProviderModelSelectionError("MissingSelection", `Model ${model.provider}/${JSON.stringify(model.id)} lacks a current exact provider reference.`, model.provider, model.id);
+}
+
+/**
+ * Reapply only domain-validated caller selections to the current registry model.
+ *
+ * The registry owns identity, transport/routing (`provider`, `id`, `api`, `baseUrl`,
+ * `headers`), compatibility, capabilities, and any provider reference. A caller may
+ * carry an explicit context-window selection made from an earlier copy of that model;
+ * replay it only when the current authoritative model still advertises it. This avoids
+ * either a blanket caller spread (which could forge routing/reference state) or a
+ * wholesale registry replacement (which silently drops a valid selection).
+ */
+function reapplyExplicitModelSelection(authoritative: Model<Api>, selected: Model<Api>): Model<Api> {
+	if (selected.contextWindow === getModelDefaultContextWindow(selected)) return authoritative;
+	const replay = selectContextWindow(authoritative, selected.contextWindow);
+	return "error" in replay ? authoritative : replay.model;
 }
 
 function selectionError(

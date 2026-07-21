@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
+import { selectContextWindow } from "../src/core/context-window.ts";
 import { clearActiveCopilotModelCatalog, setActiveCopilotModelCatalog } from "../src/core/copilot-model-catalog.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
@@ -114,6 +115,52 @@ describe("AgentSession dynamic provider registration", () => {
 
 		expect(session.model?.baseUrl).toBe("http://localhost:8080/command");
 		expect(await capturePromptBaseUrl(session)).toBe("http://localhost:8080/command");
+
+		session.dispose();
+	});
+
+	it("preserves caller-selected Copilot metadata while applying a same-provider override", async () => {
+		setActiveCopilotModelCatalog(
+			new Map([["claude-opus-4.8", { contextWindow: 200_000, contextWindowOptions: [200_000, 936_000] }]]),
+		);
+		const settingsManager = SettingsManager.create(tempDir, agentDir);
+		const sessionManager = SessionManager.inMemory(tempDir);
+		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
+		authStorage.setRuntimeApiKey("github-copilot", "test-key");
+		const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
+		const registryModel = modelRegistry.find("github-copilot", "claude-opus-4.8");
+		if (!registryModel) throw new Error("Missing built-in github-copilot/claude-opus-4.8 test model");
+		const selected = selectContextWindow(registryModel, 936_000);
+		if ("error" in selected) throw new Error(selected.error);
+		const resourceLoader = new DefaultResourceLoader({
+			cwd: tempDir,
+			agentDir,
+			settingsManager,
+			extensionFactories: [
+				(pi) => {
+					pi.registerProvider("github-copilot", { baseUrl: "http://localhost:8080/copilot-proxy" });
+				},
+			],
+		});
+		await resourceLoader.reload();
+
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir,
+			model: selected.model,
+			modelRegistry,
+			settingsManager,
+			sessionManager,
+			authStorage,
+			resourceLoader,
+		});
+
+		expect(session.model?.provider).toBe("github-copilot");
+		expect(session.model?.id).toBe("claude-opus-4.8");
+		expect(session.model?.baseUrl).toBe("http://localhost:8080/copilot-proxy");
+		expect(session.model?.contextWindow).toBe(936_000);
+		expect(session.model?.defaultContextWindow).toBe(200_000);
+		expect(session.model?.contextWindowOptions).toEqual([200_000, 936_000]);
 
 		session.dispose();
 	});

@@ -20,6 +20,7 @@
 ### Fixed
 
 - Preserved structured logout and superseded-generation failures through provider request/preparation doors, fenced returned host OAuth to the credential generation that produced it even when account replacement races asynchronous conversion/refresh, and versioned authoritative preparation across runtime API-key replacement without exposing key material ([#1830](https://github.com/bastani-inc/atomic/issues/1830)).
+- Fixed direct SDK sessions dropping an explicit caller-selected context window when a top-level extension overrides the same provider. Registered routing and compatibility state now remain authoritative while valid model selections are replayed without allowing caller metadata to replace exact provider-owned references ([#1830](https://github.com/bastani-inc/atomic/issues/1830)).
 
 
 ## [0.9.11-alpha.1] - 2026-07-20
