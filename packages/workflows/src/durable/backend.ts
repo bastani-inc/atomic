@@ -37,7 +37,7 @@ export type DurableInactiveDeleteResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly reason: "not_found" | "running" };
 
-/** DBOS is the sole persistent implementation. In-memory is an explicit test seam. */
+/** DBOS is the sole persistent implementation. In-memory is a test seam and the non-durable last-resort fallback. */
 export interface DurableWorkflowBackend {
   /** Whether state survives the current process. */
   readonly persistent: boolean;
@@ -156,7 +156,7 @@ function checkpointKey(c: DurableCheckpoint): string {
   return `${c.kind}:${c.checkpointId}`;
 }
 
-/** Process-local current-interface backend for explicit test injection. */
+/** Process-local backend: explicit test injection and the loud non-durable fallback when DBOS cannot be provisioned. */
 export class InMemoryDurableBackend implements DurableWorkflowBackend {
   public readonly persistent: boolean = false;
   private readonly workflows = new Map<string, InMemoryWorkflowRecord>();

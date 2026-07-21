@@ -2427,11 +2427,13 @@ The readiness prompt can be answered in the attached stage UI or with `workflow(
 
 ## Durable Workflows and Cross-Session Resume
 
-Atomic workflows use **DBOS/Postgres as their sole persistent workflow backend**. Atomic configures and launches DBOS lazily on the first workflow action, reuses that process-wide instance, and awaits readiness before workflow execution, resume, inspection, or deletion can access durable state. `DBOS_SYSTEM_DATABASE_URL` may select an existing database; DBOS initialization, query, and write failures fail the workflow action and never select another backend.
+Atomic workflows use **DBOS/Postgres as their sole persistent workflow backend**. Atomic configures and launches DBOS lazily on the first workflow action, reuses that process-wide instance, and awaits readiness before workflow execution, resume, inspection, or deletion can access durable state. `DBOS_SYSTEM_DATABASE_URL` may select an existing database; DBOS query and write failures fail the workflow action and never select another backend.
 
 **Zero-configuration local database.** Without `DBOS_SYSTEM_DATABASE_URL`, Atomic runs DBOS against its own embedded Postgres built from npm-distributed binaries — no Docker daemon or system Postgres install. The cluster lives under `~/.atomic/postgres/v18` on dedicated port `5439`; the first workflow action initializes it once and starts it with `pg_ctl` as a detached daemon that survives Atomic exiting, is shared by every concurrent Atomic session, and is never stopped by Atomic.
 
-When the embedded binaries are unavailable for the platform, Atomic falls back to DBOS's reusable `dbos-db` Docker container; if neither is usable, the workflow action fails with one actionable message: set `DBOS_SYSTEM_DATABASE_URL` to an existing Postgres.
+**Running as root (Linux).** PostgreSQL refuses to run as UID 0, so a root Atomic process (containers, CI sandboxes, eval harnesses) resolves an unprivileged system account (`postgres`, `nobody`, or `daemon`), keeps the cluster under `/var/lib/atomic-postgres` instead (a root home directory is untraversable for that account), and runs every Postgres command with dropped privileges. When the embedded binaries themselves sit under an untraversable prefix (for example a root-owned `~/.nvm` global install), Atomic copies the Postgres runtime into the cluster directory once and reuses it.
+
+When the embedded binaries are unavailable for the platform, Atomic falls back to DBOS's reusable `dbos-db` Docker container. If no durable backend can be provisioned at all, workflows **degrade to a process-local in-memory backend with a loud warning** instead of refusing to run: the run executes normally, but its state does not survive the process and `/workflow resume` after exit has nothing to restore. Set `DBOS_SYSTEM_DATABASE_URL` to an existing Postgres to restore durability.
 
 **Multiple concurrent Atomic sessions.** Every Atomic process launches DBOS with a unique executor id, and running root workflows carry owner/heartbeat metadata refreshed by ordinary ≤30-second stage-timing checkpoints. **Running workflows are never resume targets**: a running row with a fresh heartbeat is hidden from every session's picker and refused by direct `/workflow resume <id>` — resuming a workflow that is executing elsewhere would double-dispatch it. Once the heartbeat goes stale (about two minutes after a crash), the workflow surfaces as a red `crashed` row.
 
@@ -2526,7 +2528,7 @@ Validation uses the final retained transcript for a repeated stage replay key, s
 
 ### Configuring DBOS/Postgres
 
-DBOS/Postgres durability requires no setup on supported local platforms. To use an existing Postgres database, set `DBOS_SYSTEM_DATABASE_URL` before starting Atomic; otherwise Atomic provisions embedded Postgres, with Docker as a platform fallback. The DBOS SDK ships with `@bastani/atomic`. If the SDK cannot load or Postgres cannot be reached or provisioned, Atomic fails the workflow action with an actionable diagnostic instead of falling back to the legacy per-workflow file store under `~/.atomic/workflow-durable`.
+DBOS/Postgres durability requires no setup on supported local platforms. To use an existing Postgres database, set `DBOS_SYSTEM_DATABASE_URL` before starting Atomic; otherwise Atomic provisions embedded Postgres (with drop-privilege support when running as root on Linux), with Docker as a platform fallback. The DBOS SDK ships with `@bastani/atomic`. If no durable backend can be provisioned, workflows run on a process-local in-memory backend with a loud non-durable warning — never on the legacy per-workflow file store under `~/.atomic/workflow-durable` — and cross-process resume is unavailable until Postgres provisioning is fixed.
 
 ```bash
 export DBOS_SYSTEM_DATABASE_URL="postgresql://user:password@localhost:5432/atomic_dbos_sys"
