@@ -1,0 +1,20 @@
+syntax = "proto3";
+package agent.v1;
+
+// Purpose-minimal catalog and route identity schema retained from the checked-in
+// Cursor descriptor baseline documented in README.md.
+message GetUsableModelsRequest {}
+message GetUsableModelsResponse { repeated ModelDetails models = 1; }
+message ModelDetails {
+  string model_id = 1;
+  string display_model_id = 3;
+  string display_name = 4;
+  string display_name_short = 5;
+  optional bool max_mode = 7;
+}
+message RequestedModel {
+  message ModelParameterbytes {}
+  string model_id = 1;
+  bool max_mode = 2;
+  repeated ModelParameterbytes parameters = 3;
+}

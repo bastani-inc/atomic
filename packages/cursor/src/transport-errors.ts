@@ -4,13 +4,16 @@ import {
 	sanitizeDiagnosticText,
 	type JsonObject,
 } from "./config.js";
+import type { CursorErrorRouteContext, CursorOperation } from "./errors.js";
 
-export type CursorTransportErrorCode = "Unauthorized" | "CursorApiRejected" | "Aborted" | "NetworkError" | "ProtocolError";
+export type CursorTransportErrorCode = "Authentication" | "ServerError" | "Cancelled" | "TransportError" | "Timeout" | "ProtocolMalformed" | "ProtocolError";
 
 export class CursorTransportError extends Error {
 	constructor(
 		readonly code: CursorTransportErrorCode,
 		message: string,
+		readonly operation: CursorOperation = "stream",
+		readonly route?: CursorErrorRouteContext,
 	) {
 		super(message);
 		this.name = "CursorTransportError";
@@ -18,9 +21,15 @@ export class CursorTransportError extends Error {
 }
 const textDecoder = new TextDecoder();
 
-export function sanitizeCursorTransportError(error: Error, secrets: readonly string[] = []): Error {
+export function sanitizeCursorTransportError(
+	error: Error,
+	secrets: readonly string[] = [],
+	context?: { readonly operation: CursorOperation; readonly route?: CursorErrorRouteContext },
+): Error {
 	const message = sanitizeDiagnosticText(error.message, secrets);
-	return error instanceof CursorTransportError ? new CursorTransportError(error.code, message) : new CursorTransportError("ProtocolError", message);
+	return error instanceof CursorTransportError
+		? new CursorTransportError(error.code, message, context?.operation ?? error.operation, context?.route ?? error.route)
+		: new CursorTransportError("ProtocolError", message, context?.operation, context?.route);
 }
 
 export function throwIfCursorEndStreamError(data: Uint8Array, secrets: readonly string[]): void {
@@ -30,12 +39,12 @@ export function throwIfCursorEndStreamError(data: Uint8Array, secrets: readonly 
 		if (typeof value !== "object" || value === null || Array.isArray(value)) return;
 		parsed = value as JsonObject;
 	} catch {
-		throw new CursorTransportError("ProtocolError", "Failed to parse Cursor Connect end stream.");
+		throw new CursorTransportError("ProtocolMalformed", "Failed to parse Cursor Connect end stream.");
 	}
 	const errorValue = parsed.error;
 	if (!errorValue) return;
 	if (typeof errorValue !== "object" || Array.isArray(errorValue)) {
-		throw new CursorTransportError("CursorApiRejected", `Cursor stream ended with unknown: ${sanitizeDiagnosticText(String(errorValue), secrets)}.`);
+		throw new CursorTransportError("ServerError", `Cursor stream ended with unknown: ${sanitizeDiagnosticText(String(errorValue), secrets)}.`);
 	}
 	const error = errorValue as JsonObject;
 	const code = readStringField(error, "code") ?? "unknown";
@@ -44,10 +53,11 @@ export function throwIfCursorEndStreamError(data: Uint8Array, secrets: readonly 
 }
 
 function classifyConnectErrorCode(code: string): CursorTransportErrorCode {
-	if (code === "unauthenticated") return "Unauthorized";
-	if (code === "canceled") return "Aborted";
-	if (code === "resource_exhausted" || code === "unavailable") return "NetworkError";
-	return "CursorApiRejected";
+	if (code === "unauthenticated") return "Authentication";
+	if (code === "canceled") return "Cancelled";
+	if (code === "deadline_exceeded") return "Timeout";
+	if (code === "resource_exhausted" || code === "unavailable") return "TransportError";
+	return "ServerError";
 }
 
 export function assertSuccessfulStatus(statusCode: number | undefined, body: Uint8Array, secrets: readonly string[]): void {
@@ -55,8 +65,8 @@ export function assertSuccessfulStatus(statusCode: number | undefined, body: Uin
 	const detail = sanitizeDiagnosticText(textDecoder.decode(body), secrets);
 	const versionHint = cursorClientVersionHint(statusCode);
 	const message = `Cursor API rejected request with HTTP ${statusCode}${detail ? `: ${detail}` : ""}${versionHint}`;
-	if (statusCode === 401 || statusCode === 403) throw new CursorTransportError("Unauthorized", message);
-	throw new CursorTransportError("CursorApiRejected", message);
+	if (statusCode === 401 || statusCode === 403) throw new CursorTransportError("Authentication", message);
+	throw new CursorTransportError("ServerError", message);
 }
 
 function cursorClientVersionHint(statusCode: number): string {
@@ -70,5 +80,5 @@ export function toError(error: unknown): Error {
 
 export function toTransportError(error: unknown): CursorTransportError {
 	if (error instanceof CursorTransportError) return error;
-	return new CursorTransportError("NetworkError", toError(error).message);
+	return new CursorTransportError("TransportError", toError(error).message);
 }

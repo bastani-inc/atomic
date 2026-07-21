@@ -6,6 +6,8 @@ import { resolvePath } from "../utils/paths.ts";
 import { AuthStorage } from "./auth-storage.ts";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
 import { ModelRegistry } from "./model-registry.ts";
+import { isOfflineModeEnabled } from "./package-manager-env.ts";
+import { registerPendingProvidersAndPrepare } from "./provider-preparation-lifecycle.ts";
 import {
 	DefaultResourceLoader,
 	type DefaultResourceLoaderOptions,
@@ -165,19 +167,13 @@ export async function createAgentSessionServices(
 
 	const diagnostics: AgentSessionRuntimeDiagnostic[] = [];
 	const providerSpan = startTimingSpan("createAgentSessionServices.providerRegistrations");
-	const extensionsResult = resourceLoader.getExtensions();
-	for (const { name, config, extensionPath } of extensionsResult.runtime.pendingProviderRegistrations) {
-		try {
-			modelRegistry.registerProvider(name, config);
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			diagnostics.push({
-				type: "error",
-				message: `Extension "${extensionPath}" error: ${message}`,
-			});
-		}
+	const providerDiagnostics = await registerPendingProvidersAndPrepare(resourceLoader, modelRegistry, !isOfflineModeEnabled());
+	for (const diagnostic of providerDiagnostics) {
+		diagnostics.push({
+			type: "error",
+			message: `Extension "${diagnostic.extensionPath}" error: ${diagnostic.message}`,
+		});
 	}
-	extensionsResult.runtime.pendingProviderRegistrations = [];
 	endTimingSpan(providerSpan);
 	const flagSpan = startTimingSpan("createAgentSessionServices.extensionFlagValidation");
 	diagnostics.push(...applyExtensionFlagValues(resourceLoader, options.extensionFlagValues));

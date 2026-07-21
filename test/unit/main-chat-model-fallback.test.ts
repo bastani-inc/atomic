@@ -334,3 +334,30 @@ test("main-chat fallback continuation resolution does not mark assistant errors 
   assert.equal(session.agent.state.messages.at(-1), fallbackError);
   assert.equal(events.some((event) => event.type === "model_fallback_end" && event.success === true), false);
 });
+
+test("main-chat fallback never guesses an exact-selection provider occurrence", async () => {
+  const primary = model("openai", "gpt-5-mini");
+  const cursor = model("cursor", "composer-2");
+  const session = {
+    model: primary,
+    thinkingLevel: "high" as ThinkingLevel,
+    _fallbackModels: ["cursor/composer-2"],
+    _fallbackAttemptedKeys: new Set<string>(),
+    _retryAttempt: 0,
+    settingsManager: { getDefaultProvider: () => "openai" },
+    _modelRegistry: {
+      getAvailable: () => [primary, cursor],
+      find: () => { throw new Error("exact providers must not use provider/id fallback"); },
+      hasConfiguredAuth: () => true,
+      requiresExactSelectionPersistence: (provider: string) => provider === "cursor",
+    },
+    _emit: () => undefined,
+  };
+
+  assert.equal(await _trySwitchToFallbackModel.call(session as never, retryableMessage()), false);
+  session._fallbackModels = ["composer-2"];
+  assert.equal(await _trySwitchToFallbackModel.call(session as never, retryableMessage()), false);
+  session.model = cursor;
+  session._fallbackModels = ["openai/gpt-5-mini"];
+  assert.equal(await _trySwitchToFallbackModel.call(session as never, retryableMessage()), false);
+});

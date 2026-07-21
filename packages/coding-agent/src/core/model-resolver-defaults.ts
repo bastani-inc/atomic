@@ -1,4 +1,5 @@
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
+import { getPersistedProviderSelection, getProviderModelReference } from "./provider-model-reference.ts";
 
 /** Default model IDs for each known provider */
 export const defaultModelPerProvider: Record<string, string> = {
@@ -11,7 +12,6 @@ export const defaultModelPerProvider: Record<string, string> = {
   google: "gemini-3.1-pro-preview",
   "google-vertex": "gemini-3.1-pro-preview",
   "github-copilot": "gpt-5.4",
-  cursor: "composer-2",
   openrouter: "moonshotai/kimi-k2.6",
   "vercel-ai-gateway": "zai/glm-5.1",
   xai: "grok-4.20-0309-reasoning",
@@ -46,5 +46,8 @@ export function findPreferredAvailableModel(availableModels: Model<Api>[]): Mode
     }
   }
 
-  return availableModels[0];
+  return availableModels.find((model) => {
+    const reference = getProviderModelReference(model);
+    return reference === undefined || getPersistedProviderSelection(model) !== undefined;
+  });
 }

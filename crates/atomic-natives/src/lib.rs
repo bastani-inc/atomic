@@ -104,11 +104,16 @@ struct NativeStreamState {
 
 #[napi]
 pub struct CursorH2NativeStream {
+	status_code: Option<u32>,
 	state: Arc<NativeStreamState>,
 }
 
 #[napi]
 impl CursorH2NativeStream {
+	#[napi(getter, js_name = "statusCode")]
+	pub fn status_code(&self) -> Option<u32> {
+		self.status_code
+	}
 	#[napi]
 	pub async fn write(
 		&self,
@@ -224,6 +229,7 @@ pub async fn cursor_h2_open_stream(
 					.map_err(to_napi_error)?;
 			}
 			let response = response_future.await.map_err(to_napi_error)?;
+			let status_code = Some(u32::from(response.status().as_u16()));
 			let mut body = response.into_body();
 			let (tx, rx) = mpsc::channel(32);
 			tokio::spawn(async move {
@@ -252,6 +258,7 @@ pub async fn cursor_h2_open_stream(
 				.await;
 			});
 			Ok(CursorH2NativeStream {
+				status_code,
 				state: Arc::new(NativeStreamState {
 					sender: Mutex::new(Some(send_stream)),
 					receiver: Mutex::new(rx),

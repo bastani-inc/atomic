@@ -1,13 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { create, toBinary } from "@bufbuild/protobuf";
-import type { CursorControlMessage, CursorProtocolMessage, CursorServerMessage, CursorToolResultContent } from "../transport.js";
+import type { CursorControlMessage, CursorProtocolMessage, CursorServerMessage } from "../transport.js";
 import {
 	AgentClientMessageSchema,
 	BackgroundShellSpawnResultSchema,
 	ConversationStateStructureSchema,
 	DeleteRejectedSchema,
 	DeleteResultSchema,
-	DiagnosticsResultSchema,
 	ExecClientMessageSchema,
 	FetchErrorSchema,
 	FetchResultSchema,
@@ -17,7 +16,6 @@ import {
 	LsRejectedSchema,
 	LsResultSchema,
 	McpErrorSchema,
-	McpImageContentSchema,
 	McpResultSchema,
 	McpSuccessSchema,
 	McpTextContentSchema,
@@ -40,8 +38,7 @@ import {
 	type ExecServerMessage,
 	type KvServerMessage,
 	type McpToolDefinition,
-} from "./agent_pb.js";
-import { decodeStrictBase64ImageData } from "./protobuf-codec-base64.js";
+} from "./cursor-protocol.js";
 import { decodeMcpArgsMap } from "./protobuf-codec-json.js";
 
 const NATIVE_EXEC_REJECT_REASON = "Tool not available in this environment. Use the MCP tools provided instead.";
@@ -86,8 +83,6 @@ export function decodeAgentServerMessage(message: AgentServerMessage): readonly 
 			return decodeKvServerMessage(message.message.value);
 		case "execServerMessage":
 			return decodeExecServerMessage(message.message.value);
-		case "interactionQuery":
-			return [];
 		default:
 			return [];
 	}
@@ -164,21 +159,21 @@ function createNativeExecResult(fieldNumber: number): { readonly caseName: strin
 		case 8:
 			return { caseName: "lsResult", value: create(LsResultSchema, { result: { case: "rejected", value: create(LsRejectedSchema, { path: "", reason: NATIVE_EXEC_REJECT_REASON }) } }) };
 		case 9:
-			return { caseName: "diagnosticsResult", value: create(DiagnosticsResultSchema, {}) };
+			return { caseName: "mcpResult", value: createMcpToolResult(NATIVE_EXEC_REJECT_REASON, true) };
 		case 14:
 			return { caseName: "shellStream", value: create(ShellStreamSchema, { event: { case: "rejected", value: createShellRejected() } }) };
 		case 16:
 			return { caseName: "backgroundShellSpawnResult", value: create(BackgroundShellSpawnResultSchema, { result: { case: "rejected", value: createShellRejected() } }) };
 		case 17:
-			return { caseName: "listMcpResourcesExecResult", value: create(McpResultSchema, {}) };
+			return { caseName: "listMcpResourcesExecResult", value: createMcpToolResult(NATIVE_EXEC_REJECT_REASON, true) };
 		case 18:
-			return { caseName: "readMcpResourceExecResult", value: create(McpResultSchema, {}) };
+			return { caseName: "readMcpResourceExecResult", value: createMcpToolResult(NATIVE_EXEC_REJECT_REASON, true) };
 		case 20:
 			return { caseName: "fetchResult", value: create(FetchResultSchema, { result: { case: "error", value: create(FetchErrorSchema, { url: "", error: NATIVE_EXEC_REJECT_REASON }) } }) };
 		case 21:
-			return { caseName: "recordScreenResult", value: create(McpResultSchema, {}) };
+			return { caseName: "recordScreenResult", value: createMcpToolResult(NATIVE_EXEC_REJECT_REASON, true) };
 		case 22:
-			return { caseName: "computerUseResult", value: create(McpResultSchema, {}) };
+			return { caseName: "computerUseResult", value: createMcpToolResult(NATIVE_EXEC_REJECT_REASON, true) };
 		case 23:
 			return { caseName: "writeShellStdinResult", value: create(WriteShellStdinResultSchema, { result: { case: "error", value: create(WriteShellStdinErrorSchema, { error: NATIVE_EXEC_REJECT_REASON }) } }) };
 		default:
@@ -205,44 +200,21 @@ export function encodeExecClientMessage(execNumericId: number | undefined, execI
 	return toBinary(AgentClientMessageSchema, clientMessage);
 }
 
-export function createMcpToolResult(content: string | readonly CursorToolResultContent[], isError: boolean, fallbackText = ""): ReturnType<typeof create<typeof McpResultSchema>> {
-	const text = typeof content === "string" ? content : fallbackText;
-	if (isError) {
-		return create(McpResultSchema, { result: { case: "error", value: create(McpErrorSchema, { error: text }) } });
-	}
-	return create(McpResultSchema, {
-		result: {
-			case: "success",
-			value: createMcpSuccess(content, fallbackText),
-		},
-	});
+export function createMcpToolResult(content: string, isError: boolean): ReturnType<typeof create<typeof McpResultSchema>> {
+	if (isError) return create(McpResultSchema, { result: { case: "error", value: create(McpErrorSchema, { error: content }) } });
+	return create(McpResultSchema, { result: { case: "success", value: createMcpSuccess(content) } });
 }
 
-export function createMcpToolCallResult(content: string | readonly CursorToolResultContent[], isError: boolean, fallbackText = ""): ReturnType<typeof create<typeof McpToolResultSchema>> {
-	const text = typeof content === "string" ? content : fallbackText;
-	if (isError) {
-		return create(McpToolResultSchema, { result: { case: "error", value: create(McpToolErrorSchema, { error: text }) } });
-	}
-	return create(McpToolResultSchema, { result: { case: "success", value: createMcpSuccess(content, fallbackText) } });
+export function createMcpToolCallResult(content: string, isError: boolean): ReturnType<typeof create<typeof McpToolResultSchema>> {
+	if (isError) return create(McpToolResultSchema, { result: { case: "error", value: create(McpToolErrorSchema, { error: content }) } });
+	return create(McpToolResultSchema, { result: { case: "success", value: createMcpSuccess(content) } });
 }
 
-function createMcpSuccess(content: string | readonly CursorToolResultContent[], fallbackText: string): ReturnType<typeof create<typeof McpSuccessSchema>> {
-	const items = typeof content === "string"
-		? [createTextContentItem(content)]
-		: content.map((part, index) => part.type === "text" ? createTextContentItem(part.text) : createImageContentItem(part.data, part.mimeType, index));
-	return create(McpSuccessSchema, {
-		content: items.length > 0 ? items : [createTextContentItem(fallbackText)],
-		isError: false,
-	});
+function createMcpSuccess(content: string): ReturnType<typeof create<typeof McpSuccessSchema>> {
+	return create(McpSuccessSchema, { content: [createTextContentItem(content)], isError: false });
 }
 
 function createTextContentItem(text: string): ReturnType<typeof create<typeof McpToolResultContentItemSchema>> {
 	return create(McpToolResultContentItemSchema, { content: { case: "text", value: create(McpTextContentSchema, { text }) } });
-}
-
-function createImageContentItem(data: string, mimeType: string, index: number): ReturnType<typeof create<typeof McpToolResultContentItemSchema>> {
-	return create(McpToolResultContentItemSchema, {
-		content: { case: "image", value: create(McpImageContentSchema, { data: decodeStrictBase64ImageData(data, { kind: "MCP image", mimeType, index }), mimeType }) },
-	});
 }
 

@@ -1,4 +1,4 @@
-import { type Api, type Model, modelsAreEqual } from "@earendil-works/pi-ai/compat";
+import { type Api, type Model } from "@earendil-works/pi-ai/compat";
 import {
 	Container,
 	type Focusable,
@@ -10,7 +10,9 @@ import {
 	type TUI,
 } from "@earendil-works/pi-tui";
 import type { ModelRegistry } from "../../../core/model-registry.ts";
+import { persistProviderModelDefault } from "../../../core/provider-model-default.ts";
 import { isOfflineModeEnabled } from "../../../core/package-manager-env.ts";
+import { providerModelsAreExactlyEqual } from "../../../core/provider-model-reference.ts";
 import type { SettingsManager } from "../../../core/settings-manager.ts";
 import { getModelSelectorSearchText } from "../model-search.ts";
 import { theme } from "../theme/theme.ts";
@@ -128,20 +130,13 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		// Add bottom border
 		this.addChild(new DynamicBorder());
 
-		// Show the current snapshot first, then refresh configured provider catalogs in the background.
-		void this.loadModelsFromSnapshot()
-			.then(() => {
-				if (initialSearchInput) this.filterModels(initialSearchInput);
-				else this.updateList();
-				this.tui.requestRender();
-				return this.refreshModels();
-			})
-			.catch((error) => {
-				if (this.closed) return;
-				this.refreshStatusSuccess = false;
-				this.refreshStatusMessage = `Could not refresh model catalogs: ${error instanceof Error ? error.message : String(error)}`;
-				this.tui.requestRender();
-			});
+		// Required dynamic providers must complete tracked preparation before listing.
+		void this.refreshModels().catch((error) => {
+			if (this.closed) return;
+			this.refreshStatusSuccess = false;
+			this.refreshStatusMessage = `Could not prepare model catalogs: ${error instanceof Error ? error.message : String(error)}`;
+			this.tui.requestRender();
+		});
 	}
 
 	private async loadModelsFromSnapshot(): Promise<void> {
@@ -173,7 +168,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 		this.allModels = this.sortModels(models);
 		this.scopedModels = this.scopedModels.map((scoped) => {
-			const refreshed = this.modelRegistry.find(scoped.model.provider, scoped.model.id);
+			const refreshed = this.modelRegistry.getAll().find((candidate) => providerModelsAreExactlyEqual(candidate, scoped.model));
 			return refreshed ? { ...scoped, model: refreshed } : scoped;
 		});
 		this.scopedModelItems = this.scopedModels.map((scoped) => ({
@@ -183,29 +178,21 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		}));
 		this.activeModels = this.scope === "scoped" ? this.scopedModelItems : this.allModels;
 		this.filteredModels = this.activeModels;
-		const currentIndex = this.filteredModels.findIndex((item) => modelsAreEqual(this.currentModel, item.model));
+		const currentIndex = this.filteredModels.findIndex((item) => providerModelsAreExactlyEqual(this.currentModel, item.model));
 		this.selectedIndex =
 			currentIndex >= 0 ? currentIndex : Math.min(this.selectedIndex, Math.max(0, this.filteredModels.length - 1));
 	}
 
 	private async refreshModels(): Promise<void> {
-		const result = await this.modelRegistry.refresh({
+		await this.modelRegistry.prepareRequiredProviders({
+			explicit: true,
 			allowNetwork: !isOfflineModeEnabled(),
 			signal: this.refreshAbortController.signal,
 			timeoutMs: 15_000,
 		});
 		if (this.closed) return;
-		this.refreshStatusSuccess = false;
-		if (result.aborted) {
-			this.refreshStatusMessage = "Model refresh timed out; showing cached models.";
-		} else if (result.errors.size === 1) {
-			this.refreshStatusMessage = `Could not refresh ${result.errors.keys().next().value}; showing available models.`;
-		} else if (result.errors.size > 1) {
-			this.refreshStatusMessage = `Could not refresh ${result.errors.size} model catalogs; showing available models.`;
-		} else {
-			this.refreshStatusMessage = "Model catalogs refreshed.";
-			this.refreshStatusSuccess = true;
-		}
+		this.refreshStatusMessage = "Model catalogs prepared.";
+		this.refreshStatusSuccess = true;
 		await this.loadModelsFromSnapshot();
 		this.filterModels(this.searchInput.getValue());
 		this.tui.requestRender();
@@ -220,8 +207,8 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		const sorted = [...models];
 		// Sort: current model first, then by provider
 		sorted.sort((a, b) => {
-			const aIsCurrent = modelsAreEqual(this.currentModel, a.model);
-			const bIsCurrent = modelsAreEqual(this.currentModel, b.model);
+			const aIsCurrent = providerModelsAreExactlyEqual(this.currentModel, a.model);
+			const bIsCurrent = providerModelsAreExactlyEqual(this.currentModel, b.model);
 			if (aIsCurrent && !bIsCurrent) return -1;
 			if (!aIsCurrent && bIsCurrent) return 1;
 			return a.provider.localeCompare(b.provider);
@@ -243,7 +230,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		if (this.scope === scope) return;
 		this.scope = scope;
 		this.activeModels = this.scope === "scoped" ? this.scopedModelItems : this.allModels;
-		const currentIndex = this.activeModels.findIndex((item) => modelsAreEqual(this.currentModel, item.model));
+		const currentIndex = this.activeModels.findIndex((item) => providerModelsAreExactlyEqual(this.currentModel, item.model));
 		this.selectedIndex = currentIndex >= 0 ? currentIndex : 0;
 		this.filterModels(this.searchInput.getValue());
 		if (this.scopeText) {
@@ -277,17 +264,17 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			if (!item) continue;
 
 			const isSelected = i === this.selectedIndex;
-			const isCurrent = modelsAreEqual(this.currentModel, item.model);
+			const isCurrent = providerModelsAreExactlyEqual(this.currentModel, item.model);
 
 			let line = "";
 			if (isSelected) {
 				const prefix = theme.fg("accent", "→ ");
-				const modelText = `${item.id}`;
+				const modelText = item.model.name === item.id ? item.id : `${item.id} · ${item.model.name}`;
 				const providerBadge = theme.fg("muted", `[${item.provider}]`);
 				const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
 				line = `${prefix + theme.fg("accent", modelText)} ${providerBadge}${checkmark}`;
 			} else {
-				const modelText = `  ${item.id}`;
+				const modelText = `  ${item.model.name === item.id ? item.id : `${item.id} · ${item.model.name}`}`;
 				const providerBadge = theme.fg("muted", `[${item.provider}]`);
 				const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
 				line = `${modelText} ${providerBadge}${checkmark}`;
@@ -370,7 +357,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	private handleSelect(model: Model<Api>): void {
 		this.close();
 		// Save as new default
-		this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
+		persistProviderModelDefault(this.settingsManager, this.modelRegistry, model);
 		this.onSelectCallback(model);
 	}
 

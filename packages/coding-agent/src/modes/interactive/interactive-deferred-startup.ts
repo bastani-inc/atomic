@@ -1,5 +1,5 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
-import { modelsAreEqual } from "@earendil-works/pi-ai/compat";
+import { providerModelsAreExactlyEqual } from "../../core/provider-model-reference.ts";
 import { type Container, recordTimeSinceReset, resolveModelScopeWithDiagnostics, resolveRestoredModelReference, setRegisteredThemes } from "./interactive-mode-deps.ts";
 
 export interface DeferredStartupMode {
@@ -90,14 +90,16 @@ export async function applyDeferredModelScope(mode: InteractiveModeBase): Promis
     }
 
     const currentModel = mode.session.model;
-    if (currentModel && scopedModels.some((scoped) => modelsAreEqual(scoped.model, currentModel))) {
+	if (currentModel && scopedModels.some((scoped) => providerModelsAreExactlyEqual(scoped.model, currentModel))) {
       return;
     }
 
     const savedProvider = mode.settingsManager.getDefaultProvider();
     const savedModelId = mode.settingsManager.getDefaultModel();
-    const savedModel = savedProvider && savedModelId ? mode.session.modelRegistry.find(savedProvider, savedModelId) : undefined;
-    const preferred = savedModel ? scopedModels.find((scoped) => modelsAreEqual(scoped.model, savedModel)) : undefined;
+	const savedModel = savedProvider && savedModelId
+		? await resolveRestoredModelReference(savedProvider, savedModelId, mode.session.modelRegistry, mode.settingsManager.getDefaultModelSelection())
+		: undefined;
+	const preferred = savedModel ? scopedModels.find((scoped) => providerModelsAreExactlyEqual(scoped.model, savedModel)) : undefined;
     const nextScopedModel = preferred ?? scopedModels[0];
     if (mode.session.modelRegistry.hasConfiguredAuth(nextScopedModel.model)) {
       await mode.session.setModel(nextScopedModel.model);
@@ -126,6 +128,7 @@ InteractiveModeBase.prototype.retryDeferredModelRestore = async function(this: I
         savedModel.provider,
         savedModel.modelId,
         this.session.modelRegistry,
+		savedModel.modelSelection,
       );
       if (restoredModel && this.session.modelRegistry.hasConfiguredAuth(restoredModel)) {
         await this.session.setModel(restoredModel);

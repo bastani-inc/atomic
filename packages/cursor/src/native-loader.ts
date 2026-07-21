@@ -11,6 +11,8 @@ export interface CursorH2NativeUnaryResponse {
 }
 
 export interface CursorH2NativeStream {
+	readonly statusCode?: number | null;
+	readonly status_code?: number | null;
 	write(data: Uint8Array, timeoutMs?: number | null): Promise<void>;
 	finishInput(): Promise<void>;
 	nextFrame(): Promise<Uint8Array | null>;

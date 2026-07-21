@@ -3,7 +3,7 @@
  */
 
 export { defaultModelPerProvider } from "./model-resolver-defaults.ts";
-export { resolveCliModel } from "./model-resolver-cli.ts";
+export { prepareExplicitCliModel, prepareExplicitProvider, resolveCliModel } from "./model-resolver-cli.ts";
 export { findInitialModel, resolveRestoredModelReference, restoreModelFromSession } from "./model-resolver-initial.ts";
 export { findExactModelReferenceMatch, parseModelPattern } from "./model-resolver-patterns.ts";
 export { resolveModelScope, resolveModelScopeWithDiagnostics } from "./model-resolver-scope.ts";

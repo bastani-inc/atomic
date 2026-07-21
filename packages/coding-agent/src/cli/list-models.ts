@@ -8,6 +8,7 @@ import chalk from "chalk";
 import { formatNoModelsAvailableMessage } from "../core/auth-guidance.ts";
 import { getSupportedContextWindows } from "../core/context-window.ts";
 import type { ModelRegistry } from "../core/model-registry.ts";
+import { isOfflineModeEnabled } from "../core/package-manager-env.ts";
 
 /**
  * Format a number as human-readable (e.g., 200000 -> "200K", 1000000 -> "1M")
@@ -28,6 +29,7 @@ function formatTokenCount(count: number): string {
  * List available models, optionally filtered by search pattern
  */
 export async function listModels(modelRegistry: ModelRegistry, searchPattern?: string): Promise<void> {
+	await modelRegistry.prepareRequiredProviders({ allowNetwork: !isOfflineModeEnabled(), explicit: true });
 	const loadError = modelRegistry.getError();
 	if (loadError) {
 		console.error(chalk.yellow(`Warning: errors loading models.json:\n${loadError}`));

@@ -1,8 +1,10 @@
 import type { Api, AssistantMessageEvent, Context, Model } from "@earendil-works/pi-ai/compat";
+import { cursorRouteReference } from "./cursor-test-helpers.js";
+import type { CursorRouteReference } from "../../packages/cursor/src/route-reference.js";
 
-export function model(): Model<Api> {
-	return {
-		id: "composer-2",
+export function model(routeReference: CursorRouteReference = cursorRouteReference()): Model<Api> {
+	const value: Model<Api> = {
+		id: routeReference.routeId,
 		name: "Composer 2",
 		api: "cursor-agent",
 		provider: "cursor",
@@ -14,6 +16,11 @@ export function model(): Model<Api> {
 		contextWindow: 1000,
 		maxTokens: 100,
 	};
+	Object.defineProperty(value, Symbol.for("@bastani/atomic/provider-model-reference"), {
+		value: { provider: "cursor", schemaVersion: 1, data: routeReference },
+		enumerable: true,
+	});
+	return value;
 }
 
 export function context(): Context {

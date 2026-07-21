@@ -1,4 +1,4 @@
-import { modelsAreEqual } from "@earendil-works/pi-ai/compat";
+import { providerModelsAreExactlyEqual } from "./core/provider-model-reference.ts";
 import type { Args } from "./cli/args.ts";
 import type { AgentSessionRuntimeDiagnostic } from "./core/agent-session-services.ts";
 import type { ModelRegistry } from "./core/model-registry.ts";
@@ -51,8 +51,19 @@ export function buildSessionOptions(
 		// Check if saved default is in scoped models - use it if so, otherwise first scoped model
 		const savedProvider = settingsManager.getDefaultProvider();
 		const savedModelId = settingsManager.getDefaultModel();
-		const savedModel = savedProvider && savedModelId ? modelRegistry.find(savedProvider, savedModelId) : undefined;
-		const savedInScope = savedModel ? scopedModels.find((sm) => modelsAreEqual(sm.model, savedModel)) : undefined;
+		let strictSelectionFailure = false;
+		let savedModel;
+		if (savedProvider && savedModelId) {
+			try {
+				savedModel = modelRegistry.requiresExactSelectionPersistence(savedProvider)
+					? modelRegistry.restoreExactModel(savedProvider, savedModelId, settingsManager.getDefaultModelSelection())
+					: modelRegistry.find(savedProvider, savedModelId);
+			} catch (error) {
+				strictSelectionFailure = true;
+				diagnostics.push({ type: "error", message: error instanceof Error ? error.message : String(error) });
+			}
+		}
+		const savedInScope = savedModel ? scopedModels.find((sm) => providerModelsAreExactlyEqual(sm.model, savedModel)) : undefined;
 
 		if (savedInScope) {
 			options.model = savedInScope.model;
@@ -60,7 +71,7 @@ export function buildSessionOptions(
 			if (!parsed.thinking && savedInScope.thinkingLevel) {
 				options.thinkingLevel = savedInScope.thinkingLevel;
 			}
-		} else {
+		} else if (!strictSelectionFailure) {
 			options.model = scopedModels[0].model;
 			// Use thinking level from first scoped model if explicitly set
 			if (!parsed.thinking && scopedModels[0].thinkingLevel) {

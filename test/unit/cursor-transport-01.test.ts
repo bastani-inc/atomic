@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { test, describe } from "bun:test";
 import assert from "node:assert/strict";
+import { cursorRouteReference } from "./cursor-test-helpers.js";
 import { fromBinary } from "@bufbuild/protobuf";
 import type { Api, Context, Model } from "@earendil-works/pi-ai/compat";
 import {
@@ -24,7 +25,7 @@ import {
 	ConversationStepSchema,
 	ConversationTurnStructureSchema,
 	UserMessageSchema,
-} from "../../packages/cursor/src/proto/agent_pb.js";
+} from "../../packages/cursor/src/proto/cursor-protocol.js";
 import { cursorProtoTest } from "./cursor-proto-test-helpers.js";
 
 class FakeStreamHandle implements CursorHttp2StreamHandle {
@@ -242,7 +243,13 @@ describe("Cursor HTTP2 transport boundary", () => {
 	});
 	test("protobuf codec decodes Cursor model discovery and text frames", () => {
 		const codec = new CursorProtobufProtocolCodec();
-		const encodedRun = codec.encodeRunRequest({ accessToken: "secret", requestId: "run-proto", model, resolvedModelId: "composer-2", context: contextWithUserMessage });
+		const encodedRun = codec.encodeRunRequest({ accessToken: "secret", requestId: "run-proto", model, routeReference: cursorRouteReference("composer-2"), context: contextWithUserMessage });
+		const decodedRun = fromBinary(AgentClientMessageSchema, encodedRun).message.value;
+		assert.equal(decodedRun.modelDetails.modelId, "composer-2");
+		assert.equal(decodedRun.modelDetails.maxMode, undefined);
+		assert.equal(decodedRun.requestedModel.modelId, "composer-2");
+		assert.equal(decodedRun.requestedModel.maxMode, false);
+		assert.deepEqual(decodedRun.requestedModel.parameters, []);
 		const decodedRunText = new TextDecoder().decode(encodedRun);
 		for (const inlineText of ["system prompt", "first question", "first answer", "tool-1", "README.md", "tool result text", "Read a file"]) {
 			assert.equal(decodedRunText.includes(inlineText), false, `encoded run unexpectedly inlined ${inlineText}`);
@@ -288,7 +295,7 @@ describe("Cursor HTTP2 transport boundary", () => {
 				{ role: "user", content: "next", timestamp: 3 },
 			],
 		};
-		assert.doesNotThrow(() => codec.encodeRunRequest({ accessToken: "secret", requestId: "run-orphan", model, resolvedModelId: "composer-2", context: orphanContext }));
+		assert.doesNotThrow(() => codec.encodeRunRequest({ accessToken: "secret", requestId: "run-orphan", model, routeReference: cursorRouteReference("composer-2"), context: orphanContext }));
 		const duplicateContext: Context = {
 			messages: [
 				{ role: "user", content: "first", timestamp: 1 },
@@ -298,52 +305,60 @@ describe("Cursor HTTP2 transport boundary", () => {
 				{ role: "user", content: "next", timestamp: 5 },
 			],
 		};
-		assert.doesNotThrow(() => codec.encodeRunRequest({ accessToken: "secret", requestId: "run-duplicate", model, resolvedModelId: "composer-2", context: duplicateContext }));
+		assert.doesNotThrow(() => codec.encodeRunRequest({ accessToken: "secret", requestId: "run-duplicate", model, routeReference: cursorRouteReference("composer-2"), context: duplicateContext }));
 	});
-	test("protobuf codec serializes current user images as selected context images", () => {
+	test("protobuf request never serializes current or historical image blocks", () => {
 		const codec = new CursorProtobufProtocolCodec();
-		const encodedRun = codec.encodeRunRequest({ accessToken: "secret", requestId: "request-image", model, resolvedModelId: "claude-4.5-sonnet", context: { messages: [{ role: "user", content: [{ type: "text", text: "describe image" }, { type: "image", data: "aGk=", mimeType: "image/png" }], timestamp: 1 }] } });
-		const userMessage = fromBinary(AgentClientMessageSchema, encodedRun).message.value.action.action.value.userMessage;
-		const [image] = userMessage.selectedContext.selectedImages;
-		assert.equal(userMessage.text, "describe image");
-		assert.equal(userMessage.selectedContext.selectedImages.length, 1);
-		assert.match(image.uuid, /^[0-9a-f-]{36}$/u);
-		assert.match(image.path, /^\/atomic\/inline-images\/[a-f0-9]{16}-0\.png$/u);
-		assert.deepEqual({ mimeType: image.mimeType, case: image.dataOrBlobId.case, bytes: [...image.dataOrBlobId.value] }, { mimeType: "image/png", case: "data", bytes: [104, 105] });
-	});
-	test("protobuf codec preserves historical user images in rebuilt conversation state", () => {
-		const codec = new CursorProtobufProtocolCodec();
+		const current = codec.encodeRunRequest({
+			accessToken: "secret",
+			requestId: "request-image",
+			model,
+			routeReference: cursorRouteReference("claude-4.5-sonnet"),
+			context: { messages: [{ role: "user", content: [{ type: "text", text: "describe image" }, { type: "image", data: "aGk=", mimeType: "image/png" }], timestamp: 1 }] },
+		});
+		const currentUser = fromBinary(AgentClientMessageSchema, current).message.value.action.action.value.userMessage;
+		assert.equal(currentUser.text, "describe image");
+		assert.deepEqual(currentUser.selectedContext.selectedImages, []);
+
 		const requestId = "request-history-user-image";
-		const encodedRun = codec.encodeRunRequest({ accessToken: "secret", requestId, model, resolvedModelId: "claude-4.5-sonnet", context: { messages: [{ role: "user", content: [{ type: "text", text: "describe prior image" }, { type: "image", data: "aGk=", mimeType: "image/png" }], timestamp: 1 }, { role: "user", content: "continue", timestamp: 2 }] } });
-		const turnBlobId = fromBinary(AgentClientMessageSchema, encodedRun).message.value.conversationState.turns[0];
-		assert.ok(turnBlobId instanceof Uint8Array);
+		const historical = codec.encodeRunRequest({
+			accessToken: "secret",
+			requestId,
+			model,
+			routeReference: cursorRouteReference("claude-4.5-sonnet"),
+			context: { messages: [
+				{ role: "user", content: [{ type: "text", text: "before" }, { type: "image", data: "not-even-base64", mimeType: "image/png" }, { type: "text", text: "after" }], timestamp: 1 },
+				{ role: "user", content: "continue", timestamp: 2 },
+			] },
+		});
+		const turnBlobId = fromBinary(AgentClientMessageSchema, historical).message.value.conversationState.turns[0];
 		const turn = fromBinary(ConversationTurnStructureSchema, readRunBlob(codec, requestId, turnBlobId)).turn;
-		assert.equal(turn.case, "agentConversationTurn");
-		const userMessage = fromBinary(UserMessageSchema, readRunBlob(codec, requestId, turn.value.userMessage, 92));
-		const [image] = userMessage.selectedContext.selectedImages;
-		assert.equal(userMessage.text, "describe prior image");
-		assert.equal(userMessage.selectedContext.selectedImages.length, 1);
-		assert.deepEqual({ mimeType: image.mimeType, case: image.dataOrBlobId.case, bytes: [...image.dataOrBlobId.value] }, { mimeType: "image/png", case: "data", bytes: [104, 105] });
+		const historicalUser = fromBinary(UserMessageSchema, readRunBlob(codec, requestId, turn.value.userMessage, 92));
+		assert.equal(historicalUser.text, "beforeafter");
+		assert.deepEqual(historicalUser.selectedContext.selectedImages, []);
 	});
-	test("protobuf codec rejects malformed base64 image data without leaking payloads", () => {
-		const bad = "not base64!!!";
-		const runContext = (context) => new CursorProtobufProtocolCodec().encodeRunRequest({ accessToken: "secret", requestId: "bad-image", model, resolvedModelId: "composer-2", context });
-		const assertRejects = (name, run, snippets) => {
-			let error;
-			try { run(); } catch (caught) { error = caught; }
-			assert.ok(error instanceof Error, name);
-			assert.equal(error.message.includes(bad), false, name);
-			assert.equal(error.message.includes("secret"), false, name);
-			for (const snippet of snippets) assert.ok(error.message.includes(snippet), `${name}: ${error.message}`);
-		};
-		assertRejects("current user", () => runContext({ messages: [{ role: "user", content: [{ type: "text", text: "describe" }, { type: "image", data: bad, mimeType: "image/png" }], timestamp: 1 }] }), ["selected image", "image/png", "index 0"]);
-		assertRejects("historical user", () => runContext({ messages: [{ role: "user", content: [{ type: "text", text: "prior" }, { type: "image", data: bad, mimeType: "image/jpeg" }], timestamp: 1 }, { role: "user", content: "continue", timestamp: 2 }] }), ["selected image", "image/jpeg", "index 0"]);
-		assertRejects("active tool result", () => new CursorProtobufProtocolCodec().encodeToolResult({ toolCallId: "tool-1", toolName: "Read", text: "caption", content: [{ type: "text", text: "caption" }, { type: "image", data: bad, mimeType: "image/webp" }], isError: false, execId: "exec-1", execNumericId: 7 }), ["MCP image", "image/webp", "index 1"]);
-		assertRejects("historical tool result", () => runContext({ messages: [{ role: "user", content: "inspect", timestamp: 1 }, { role: "assistant", content: [{ type: "toolCall", id: "tool-image", name: "ReadImage", arguments: { path: "screen.png" } }], timestamp: 2 }, { role: "toolResult", toolCallId: "tool-image", toolName: "ReadImage", content: [{ type: "text", text: "caption" }, { type: "image", data: bad, mimeType: "image/gif" }], isError: false, timestamp: 3 }, { role: "user", content: "continue", timestamp: 4 }] }), ["MCP image", "image/gif", "index 1"]);
+	test("exact request wire preserves Max tri-state in ModelDetails and maps absent to RequestedModel false", () => {
+		for (const maxMode of [undefined, false, true] as const) {
+			const encoded = new CursorProtobufProtocolCodec().encodeRunRequest({
+				accessToken: "secret", requestId: `route-${String(maxMode)}`, model,
+				routeReference: cursorRouteReference(" awkward/Route ID ", maxMode), context: contextWithUserMessage,
+			});
+			const run = fromBinary(AgentClientMessageSchema, encoded).message.value;
+			assert.equal(run.modelDetails.modelId, " awkward/Route ID ");
+			if (maxMode === undefined) {
+				const topRun = cursorProtoTest.readFields(encoded)[0]?.value;
+				const modelDetailsBytes = topRun instanceof Uint8Array ? cursorProtoTest.readFields(topRun).find((field) => field.fieldNumber === 3)?.value : undefined;
+				assert.ok(modelDetailsBytes instanceof Uint8Array);
+				assert.equal(cursorProtoTest.readFields(modelDetailsBytes).some((field) => field.fieldNumber === 7), false);
+			} else assert.equal(run.modelDetails.maxMode, maxMode);
+			assert.equal(run.requestedModel.modelId, " awkward/Route ID ");
+			assert.equal(run.requestedModel.maxMode, maxMode === true);
+			assert.deepEqual(run.requestedModel.parameters, []);
+		}
 	});
 	test("protobuf codec uses stable conversation ids separately from request ids", () => {
 		const codec = new CursorProtobufProtocolCodec();
-		const encodedRun = codec.encodeRunRequest({ accessToken: "secret", requestId: "request-a", conversationId: "session-stable", model, resolvedModelId: "composer-2", context });
+		const encodedRun = codec.encodeRunRequest({ accessToken: "secret", requestId: "request-a", conversationId: "session-stable", model, routeReference: cursorRouteReference("composer-2"), context });
 		const top = cursorProtoTest.readFields(encodedRun);
 		const runRequest = top[0]?.value;
 		assert.ok(runRequest instanceof Uint8Array);
@@ -357,7 +372,7 @@ describe("Cursor HTTP2 transport boundary", () => {
 			accessToken: "secret",
 			requestId: "run-tools",
 			model,
-			resolvedModelId: "composer-2",
+			routeReference: cursorRouteReference("composer-2"),
 			context: {
 				messages: [{ role: "user", content: "use tools", timestamp: 1 }],
 				tools: [
@@ -410,66 +425,33 @@ describe("Cursor HTTP2 transport boundary", () => {
 		assert.equal(new TextDecoder().decode(encoded).includes("toolResult:tool-1"), false);
 		assert.equal(new TextDecoder().decode(encoded).includes("file contents"), true);
 	});
-	test("protobuf codec preserves mixed text and image MCP tool result content", () => {
+	test("protobuf codec rejects live image tool results before any result bytes are produced", () => {
 		const codec = new CursorProtobufProtocolCodec();
-		const encoded = codec.encodeToolResult({
-			toolCallId: "tool-1",
-			toolName: "Read",
-			text: "image caption",
+		assert.throws(() => codec.encodeToolResult({
+			toolCallId: "tool-1", toolName: "Read", text: "image caption",
 			content: [{ type: "text", text: "image caption" }, { type: "image", data: "aGk=", mimeType: "image/png" }],
-			isError: false,
-			execId: "exec-1",
-			execNumericId: 7,
-		});
-		const decoded = fromBinary(AgentClientMessageSchema, encoded);
-		const execMessage = decoded.message.value;
-		const mcpResult = execMessage.message.value;
-		const success = mcpResult.result.value;
-		assert.equal(mcpResult.result.case, "success");
-		assert.equal(success.content.length, 2);
-		assert.equal(success.content[0].content.case, "text");
-		assert.equal(success.content[0].content.value.text, "image caption");
-		assert.equal(success.content[1].content.case, "image");
-		assert.equal(success.content[1].content.value.mimeType, "image/png");
-		assert.deepEqual([...success.content[1].content.value.data], [104, 105]);
+			isError: false, execId: "exec-1", execNumericId: 7,
+		}), /text-only live tool results/u);
 	});
-	test("protobuf codec preserves historical mixed text and image MCP tool result content", () => {
+	test("historical tool-result images are omitted while ordered text is preserved", () => {
 		const codec = new CursorProtobufProtocolCodec();
 		const requestId = "run-history-image";
 		const encoded = codec.encodeRunRequest({
-			accessToken: "secret",
-			requestId,
-			model,
-			resolvedModelId: "composer-2",
-			context: {
-				messages: [
-					{ role: "user", content: "inspect screenshot", timestamp: 1 },
-					{ role: "assistant", content: [{ type: "toolCall", id: "tool-image", name: "ReadImage", arguments: { path: "screen.png" } }], api: "cursor-agent", provider: "cursor", model: "composer-2", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "toolUse", timestamp: 2 },
-					{ role: "toolResult", toolCallId: "tool-image", toolName: "ReadImage", content: [{ type: "text", text: "image caption" }, { type: "image", data: "aGk=", mimeType: "image/png" }], isError: false, timestamp: 3 },
-					{ role: "user", content: "continue", timestamp: 4 },
-				],
-			},
+			accessToken: "secret", requestId, model, routeReference: cursorRouteReference("composer-2"),
+			context: { messages: [
+				{ role: "user", content: "inspect screenshot", timestamp: 1 },
+				{ role: "assistant", content: [{ type: "toolCall", id: "tool-image", name: "ReadImage", arguments: { path: "screen.png" } }], api: "cursor-agent", provider: "cursor", model: "composer-2", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "toolUse", timestamp: 2 },
+				{ role: "toolResult", toolCallId: "tool-image", toolName: "ReadImage", content: [{ type: "text", text: "before" }, { type: "image", data: "not-base64", mimeType: "image/png" }, { type: "text", text: "after" }], isError: false, timestamp: 3 },
+				{ role: "user", content: "continue", timestamp: 4 },
+			] },
 		});
-		const decoded = fromBinary(AgentClientMessageSchema, encoded);
-		const runRequest = decoded.message.value;
-		const turnBlobId = runRequest.conversationState.turns[0];
-		assert.ok(turnBlobId instanceof Uint8Array);
-		const turnStructure = fromBinary(ConversationTurnStructureSchema, readRunBlob(codec, requestId, turnBlobId));
-		assert.equal(turnStructure.turn.case, "agentConversationTurn");
-		const [stepBlobId] = turnStructure.turn.value.steps;
-		assert.ok(stepBlobId instanceof Uint8Array);
-		const step = fromBinary(ConversationStepSchema, readRunBlob(codec, requestId, stepBlobId, 92));
-		assert.equal(step.message.case, "toolCall");
-		assert.equal(step.message.value.tool.case, "mcpToolCall");
-		const mcpResult = step.message.value.tool.value.result;
-		assert.equal(mcpResult.result.case, "success");
-		const success = mcpResult.result.value;
-		assert.equal(success.content.length, 2);
+		const run = fromBinary(AgentClientMessageSchema, encoded).message.value;
+		const turn = fromBinary(ConversationTurnStructureSchema, readRunBlob(codec, requestId, run.conversationState.turns[0])).turn;
+		const step = fromBinary(ConversationStepSchema, readRunBlob(codec, requestId, turn.value.steps[0], 92));
+		const success = step.message.value.tool.value.result.result.value;
+		assert.equal(success.content.length, 1);
 		assert.equal(success.content[0].content.case, "text");
-		assert.equal(success.content[0].content.value.text, "image caption");
-		assert.equal(success.content[1].content.case, "image");
-		assert.equal(success.content[1].content.value.mimeType, "image/png");
-		assert.deepEqual([...success.content[1].content.value.data], [104, 105]);
+		assert.equal(success.content[0].content.value.text, "beforeafter");
 	});
 	test("protobuf codec skips unknown fixed32 fields while decoding known messages", () => {
 		const codec = new CursorProtobufProtocolCodec();

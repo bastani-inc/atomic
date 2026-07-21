@@ -1,31 +1,38 @@
 import { CursorTransportError } from "./transport-errors.js";
 
-export async function runWithDeadline<T>(operation: (signal: AbortSignal | undefined) => Promise<T>, timeoutMs: number, parentSignal: AbortSignal | undefined, timeoutMessage: string): Promise<T> {
-	if (parentSignal?.aborted) throw new CursorTransportError("Aborted", "Cursor request aborted.");
+export async function runWithDeadline<T>(
+	operation: (signal: AbortSignal | undefined) => Promise<T>,
+	timeoutMs: number,
+	parentSignal: AbortSignal | undefined,
+	timeoutMessage: string,
+	onLateResolve?: (value: T) => void | Promise<void>,
+): Promise<T> {
+	if (parentSignal?.aborted) throw new CursorTransportError("Cancelled", "Cursor request cancelled.");
 	const controller = new AbortController();
 	let rejectAbort: ((error: CursorTransportError) => void) | undefined;
-	const onAbort = (): void => {
-		controller.abort();
-		rejectAbort?.(new CursorTransportError("Aborted", "Cursor request aborted."));
-	};
+	const onAbort = (): void => { controller.abort(); rejectAbort?.(new CursorTransportError("Cancelled", "Cursor request cancelled.")); };
 	parentSignal?.addEventListener("abort", onAbort, { once: true });
 	let timeout: ReturnType<typeof setTimeout> | undefined;
-	const abortPromise = parentSignal ? new Promise<never>((_resolve, reject) => {
-		rejectAbort = reject;
-	}) : undefined;
+	const abortPromise = parentSignal ? new Promise<never>((_resolve, reject) => { rejectAbort = reject; }) : undefined;
 	const timeoutPromise = timeoutMs > 0 ? new Promise<never>((_resolve, reject) => {
-		timeout = setTimeout(() => {
-			controller.abort();
-			reject(new CursorTransportError("NetworkError", timeoutMessage));
-		}, timeoutMs);
+		timeout = setTimeout(() => { controller.abort(); reject(new CursorTransportError("Timeout", timeoutMessage)); }, timeoutMs);
 		timeout.unref?.();
 	}) : undefined;
+	const operationPromise = operation(controller.signal);
+	let completed = false;
+	void operationPromise.then((value) => {
+		completed = true;
+		if (controller.signal.aborted) void onLateResolve?.(value);
+	}, () => { completed = true; });
 	try {
-		return await Promise.race([operation(controller.signal), ...(abortPromise ? [abortPromise] : []), ...(timeoutPromise ? [timeoutPromise] : [])]);
+		const value = await Promise.race([operationPromise, ...(abortPromise ? [abortPromise] : []), ...(timeoutPromise ? [timeoutPromise] : [])]);
+		if (controller.signal.aborted) { await onLateResolve?.(value); throw new CursorTransportError("Cancelled", "Cursor request cancelled."); }
+		return value;
 	} finally {
 		if (timeout) clearTimeout(timeout);
 		parentSignal?.removeEventListener("abort", onAbort);
 		rejectAbort = undefined;
+		if (!completed) void operationPromise.catch(() => undefined);
 	}
 }
 
@@ -40,7 +47,7 @@ export async function withTimeout<T>(promise: Promise<T>, timeoutMs: number | un
 	if (!timeoutMs || timeoutMs <= 0) return promise;
 	let timeout: ReturnType<typeof setTimeout> | undefined;
 	const timeoutPromise = new Promise<never>((_resolve, reject) => {
-		timeout = setTimeout(() => reject(new CursorTransportError("NetworkError", timeoutMessage)), timeoutMs);
+		timeout = setTimeout(() => reject(new CursorTransportError("Timeout", timeoutMessage)), timeoutMs);
 		timeout.unref?.();
 	});
 	try {
@@ -51,7 +58,7 @@ export async function withTimeout<T>(promise: Promise<T>, timeoutMs: number | un
 }
 
 export async function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined, message: string, onLateResolve?: (value: T) => void | Promise<void>, onAbort?: () => void | Promise<void>): Promise<T> {
-	if (signal?.aborted) throw new CursorTransportError("Aborted", message);
+	if (signal?.aborted) throw new CursorTransportError("Cancelled", message);
 	if (!signal) return promise;
 	let settled = false;
 	let rejectAbort: ((error: CursorTransportError) => void) | undefined;
@@ -60,7 +67,7 @@ export async function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal 
 	});
 	const abort = (): void => {
 		void onAbort?.();
-		rejectAbort?.(new CursorTransportError("Aborted", message));
+		rejectAbort?.(new CursorTransportError("Cancelled", message));
 	};
 	signal.addEventListener("abort", abort, { once: true });
 	try {
@@ -69,7 +76,7 @@ export async function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal 
 				settled = true;
 				if (signal.aborted) {
 					if (onLateResolve) await onLateResolve(value);
-					throw new CursorTransportError("Aborted", message);
+					throw new CursorTransportError("Cancelled", message);
 				}
 				return value;
 			}),

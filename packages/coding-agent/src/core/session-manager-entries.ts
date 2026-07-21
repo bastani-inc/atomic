@@ -99,6 +99,7 @@ export function createContextWindowChangeEntry(
 export function createModelChangeEntry(
 	provider: string,
 	modelId: string,
+	modelSelection: object | undefined,
 	byId: { has(id: string): boolean },
 	parentId: string | null,
 ): ModelChangeEntry {
@@ -107,6 +108,7 @@ export function createModelChangeEntry(
 		...entryBase(byId, parentId),
 		provider,
 		modelId,
+		...(modelSelection === undefined ? {} : { modelSelection }),
 	};
 }
 

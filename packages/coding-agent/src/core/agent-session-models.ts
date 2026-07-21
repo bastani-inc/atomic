@@ -1,18 +1,22 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ProviderHeaders } from "@earendil-works/pi-ai";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
-import { clampThinkingLevel, getSupportedThinkingLevels, modelsAreEqual } from "@earendil-works/pi-ai/compat";
+import { clampThinkingLevel, getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
 import { getModelDefaultContextWindow, getSupportedContextWindows, selectContextWindow } from "./context-window.ts";
 import { formatNoApiKeyFoundMessage } from "./auth-guidance.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { COPILOT_CONTEXT_WINDOW_SELECTION_OPTIONS, THINKING_LEVELS, type ContextWindowReplayRequest, type ContextWindowReplaySource, type ModelCycleResult } from "./agent-session-types.ts";
+import { validateSelectedProviderModel } from "./model-registry-selection.ts";
+import { getPersistedProviderSelection, providerModelsAreExactlyEqual } from "./provider-model-reference.ts";
+import { persistProviderModelDefault } from "./provider-model-default.ts";
 
 export async function _getRequiredRequestAuth(this: AgentSession, model: Model<Api>): Promise<{
 	apiKey: string;
 	headers?: ProviderHeaders;
 	baseUrl?: string;
 }> {
+	validateSelectedProviderModel(model, this._modelRegistry);
 	const result = await this._modelRegistry.getApiKeyAndHeaders(model);
 	if (!result.ok) {
 		if (result.error.startsWith("No API key found")) {
@@ -49,7 +53,7 @@ export function _emitModelChanged(this: AgentSession,
 	previousModel: Model<Api> | undefined,
 	source: "set" | "cycle" | "restore" | "fallback",
 ): void {
-	if (modelsAreEqual(previousModel, nextModel)) return;
+	if (providerModelsAreExactlyEqual(previousModel, nextModel)) return;
 	this._emit({
 		type: "model_changed",
 		model: nextModel,
@@ -64,7 +68,7 @@ export async function _emitModelSelect(this: AgentSession,
 	previousModel: Model<Api> | undefined,
 	source: "set" | "cycle" | "restore" | "fallback",
 ): Promise<void> {
-	if (modelsAreEqual(previousModel, nextModel)) return;
+	if (providerModelsAreExactlyEqual(previousModel, nextModel)) return;
 	await this._extensionRunner.emit({
 		type: "model_select",
 		model: nextModel,
@@ -80,6 +84,7 @@ export async function _emitModelSelect(this: AgentSession,
  */
 
 export async function setModel(this: AgentSession, model: Model<Api>): Promise<void> {
+	model = validateSelectedProviderModel(model, this._modelRegistry);
 	if (!this._modelRegistry.hasConfiguredAuth(model)) {
 		throw new Error(`No API key for ${model.provider}/${model.id}`);
 	}
@@ -88,9 +93,9 @@ export async function setModel(this: AgentSession, model: Model<Api>): Promise<v
 	const thinkingLevel = this._getThinkingLevelForModelSwitch();
 	const nextModel = this._withContextWindowForModelSwitch(model);
 	this.agent.state.model = nextModel;
-	this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
+	this.sessionManager.appendModelChange(nextModel.provider, nextModel.id, getPersistedProviderSelection(nextModel));
 	this._appendContextWindowChangeIfChanged(previousModel, nextModel);
-	this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id);
+	persistProviderModelDefault(this.settingsManager, this._modelRegistry, nextModel);
 
 	// Re-clamp thinking level for new model's capabilities
 	this.setThinkingLevel(thinkingLevel);
@@ -120,7 +125,7 @@ export async function _cycleScopedModel(this: AgentSession, direction: "forward"
 	if (scopedModels.length <= 1) return undefined;
 
 	const currentModel = this.model;
-	let currentIndex = scopedModels.findIndex((sm) => modelsAreEqual(sm.model, currentModel));
+	let currentIndex = scopedModels.findIndex((sm) => providerModelsAreExactlyEqual(sm.model, currentModel));
 
 	if (currentIndex === -1) currentIndex = 0;
 	const len = scopedModels.length;
@@ -131,9 +136,9 @@ export async function _cycleScopedModel(this: AgentSession, direction: "forward"
 
 	// Apply model
 	this.agent.state.model = nextModel;
-	this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
+	this.sessionManager.appendModelChange(nextModel.provider, nextModel.id, getPersistedProviderSelection(nextModel));
 	this._appendContextWindowChangeIfChanged(currentModel, nextModel);
-	this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id);
+	persistProviderModelDefault(this.settingsManager, this._modelRegistry, nextModel);
 
 	// Apply thinking level.
 	// - Explicit scoped model thinking level overrides current session level
@@ -154,7 +159,7 @@ export async function _cycleAvailableModel(this: AgentSession, direction: "forwa
 	if (availableModels.length <= 1) return undefined;
 
 	const currentModel = this.model;
-	let currentIndex = availableModels.findIndex((m) => modelsAreEqual(m, currentModel));
+	let currentIndex = availableModels.findIndex((m) => providerModelsAreExactlyEqual(m, currentModel));
 
 	if (currentIndex === -1) currentIndex = 0;
 	const len = availableModels.length;
@@ -163,9 +168,9 @@ export async function _cycleAvailableModel(this: AgentSession, direction: "forwa
 
 	const thinkingLevel = this._getThinkingLevelForModelSwitch();
 	this.agent.state.model = selectedModel;
-	this.sessionManager.appendModelChange(selectedModel.provider, selectedModel.id);
+	this.sessionManager.appendModelChange(selectedModel.provider, selectedModel.id, getPersistedProviderSelection(selectedModel));
 	this._appendContextWindowChangeIfChanged(currentModel, selectedModel);
-	this.settingsManager.setDefaultModelAndProvider(selectedModel.provider, selectedModel.id);
+	persistProviderModelDefault(this.settingsManager, this._modelRegistry, selectedModel);
 
 	// Re-clamp thinking level for new model's capabilities
 	this.setThinkingLevel(thinkingLevel);

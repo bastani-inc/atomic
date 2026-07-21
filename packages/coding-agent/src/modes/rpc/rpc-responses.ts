@@ -20,7 +20,9 @@ export function createRpcErrorResponse(id: string | undefined, command: string, 
 }
 
 export function formatRpcErrorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
+	if (!(error instanceof Error)) return String(error);
+	const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
+	return code ? `${code}: ${error.message}` : error.message;
 }
 
 export function parseRpcContextWindow(value: number | string): number {

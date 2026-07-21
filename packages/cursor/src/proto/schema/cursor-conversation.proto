@@ -1,0 +1,99 @@
+syntax = "proto3";
+package agent.v1;
+import "cursor-catalog.proto";
+
+// Purpose-minimal Run, canonical history, and generic MCP context schema.
+message AgentRunRequest {
+  ConversationStateStructure conversation_state = 1;
+  ConversationAction action = 2;
+  ModelDetails model_details = 3;
+  optional string conversation_id = 5;
+  RequestedModel requested_model = 9;
+}
+message ConversationTokenDetails { uint32 used_tokens = 1; }
+message ConversationStateStructure {
+  repeated bytes root_prompt_messages_json = 1;
+  ConversationTokenDetails token_details = 5;
+  repeated bytes turns = 8;
+  optional int32 mode = 10;
+  string client_name = 22;
+}
+message ConversationAction {
+  oneof action {
+    UserMessageAction user_message_action = 1;
+    CancelAction cancel_action = 3;
+  }
+}
+message CancelAction {}
+message UserMessageAction { UserMessage user_message = 1; }
+message SelectedImage {}
+message SelectedContext { repeated SelectedImage selected_images = 1; }
+message UserMessage {
+  string text = 1;
+  string message_id = 2;
+  SelectedContext selected_context = 3;
+  int32 mode = 4;
+  bytes selected_context_blob = 10;
+  string correlation_id = 17;
+}
+message ConversationTurnStructure {
+  oneof turn { AgentConversationTurnStructure agent_conversation_turn = 1; }
+}
+message AgentConversationTurnStructure {
+  bytes user_message = 1;
+  repeated bytes steps = 2;
+  optional string request_id = 3;
+}
+message ConversationStep {
+  oneof message {
+    AssistantMessage assistant_message = 1;
+    ToolCall tool_call = 2;
+    ThinkingMessage thinking_message = 3;
+  }
+}
+message AssistantMessage { string text = 1; }
+message ThinkingMessage { string text = 1; uint32 duration_ms = 2; }
+message ToolCall { oneof tool { McpToolCall mcp_tool_call = 15; } }
+message McpToolCall { McpArgs args = 1; McpToolResult result = 2; }
+message McpArgs {
+  string name = 1;
+  map<string, bytes> args = 2;
+  string tool_call_id = 3;
+  string provider_identifier = 4;
+  string tool_name = 5;
+}
+message McpToolDefinition {
+  string name = 1;
+  string description = 2;
+  bytes input_schema = 3;
+  string provider_identifier = 4;
+  string tool_name = 5;
+}
+message McpToolError { string error = 1; }
+message McpToolResult {
+  oneof result { McpSuccess success = 1; McpToolError error = 2; }
+}
+message McpToolResultContentItem { oneof content { McpTextContent text = 1; } }
+message McpTextContent { string text = 1; }
+message McpSuccess { repeated McpToolResultContentItem content = 1; bool is_error = 2; }
+message McpError { string error = 1; }
+message McpResult { oneof result { McpSuccess success = 1; McpError error = 2; } }
+
+message CursorRule {}
+message RepositoryIndexingInfo {}
+message GitRepoInfo {}
+message LsDirectoryTreeNode {}
+message McpInstructions {}
+message CustomSubagent {}
+message RequestContext {
+  repeated CursorRule rules = 2;
+  repeated RepositoryIndexingInfo repository_info = 6;
+  repeated McpToolDefinition tools = 7;
+  repeated GitRepoInfo git_repos = 11;
+  repeated LsDirectoryTreeNode project_layouts = 13;
+  repeated McpInstructions mcp_instructions = 14;
+  map<string, string> file_contents = 20;
+  repeated CustomSubagent custom_subagents = 22;
+}
+message RequestContextSuccess { RequestContext request_context = 1; }
+message RequestContextResult { oneof result { RequestContextSuccess success = 1; } }

@@ -54,6 +54,7 @@ export { FileAuthStorageBackend, InMemoryAuthStorageBackend, type AuthStorageBac
 export class AuthStorage {
 	private data: AuthStorageData = {};
 	private runtimeOverrides: Map<string, string> = new Map();
+	private runtimeOverrideVersions: Map<string, number> = new Map();
 	private fallbackResolver?: (provider: string) => string | undefined;
 	private loadError: Error | null = null;
 	private errors: Error[] = [];
@@ -89,11 +90,17 @@ export class AuthStorage {
 	 * Used for CLI --api-key flag.
 	 */
 	setRuntimeApiKey(provider: string, apiKey: string): void {
+		if (this.runtimeOverrides.get(provider) === apiKey) return;
 		this.runtimeOverrides.set(provider, apiKey);
+		this.runtimeOverrideVersions.set(provider, this.getRuntimeApiKeyGeneration(provider) + 1);
 	}
 	/** Read a non-persisted request override without resolving stored credentials. */
 	getRuntimeApiKey(provider: string): string | undefined {
 		return this.runtimeOverrides.get(provider);
+	}
+	/** Read the non-secret generation of a provider's runtime override. */
+	getRuntimeApiKeyGeneration(provider: string): number {
+		return this.runtimeOverrideVersions.get(provider) ?? 0;
 	}
 
 
@@ -101,7 +108,8 @@ export class AuthStorage {
 	 * Remove a runtime API key override.
 	 */
 	removeRuntimeApiKey(provider: string): void {
-		this.runtimeOverrides.delete(provider);
+		if (!this.runtimeOverrides.delete(provider)) return;
+		this.runtimeOverrideVersions.set(provider, this.getRuntimeApiKeyGeneration(provider) + 1);
 	}
 
 	/**
@@ -129,13 +137,8 @@ export class AuthStorage {
 	 */
 	reload(): void {
 		try {
-			// Pure read: never take the exclusive write lock. Writers replace
-			// auth.json atomically, so a lock-free read always sees a complete
-			// snapshot. This keeps many concurrent sessions from starving each other
-			// on the lock and misreporting configured providers as unreadable under
-			// contention (issue #1431).
 			const content = this.readSnapshot();
-			this.data = this.parseStorageData(content);
+			this.replaceCredentialData(this.parseStorageData(content));
 			this.loadError = null;
 		} catch (error) {
 			this.loadError = error as Error;
@@ -164,6 +167,14 @@ export class AuthStorage {
 		this.credentialVersions.set(provider, (this.credentialVersions.get(provider) ?? 0) + 1);
 	}
 
+	private replaceCredentialData(next: AuthStorageData): void {
+		const providers = new Set([...Object.keys(this.data), ...Object.keys(next)]);
+		for (const provider of providers) {
+			if (JSON.stringify(this.data[provider]) !== JSON.stringify(next[provider])) this.bumpCredentialVersion(provider);
+		}
+		this.data = next;
+	}
+
 	private persistProviderChange(provider: string, credential: AuthCredential | undefined): void {
 		if (this.loadError) {
 			this.reload();
@@ -181,8 +192,7 @@ export class AuthStorage {
 				}
 				return { result: merged, next: JSON.stringify(merged, null, 2) };
 			});
-			this.data = persistedData;
-			this.bumpCredentialVersion(provider);
+			this.replaceCredentialData(persistedData);
 			this.loadError = null;
 		} catch (error) {
 			this.recordError(error);
@@ -195,6 +205,15 @@ export class AuthStorage {
 	 */
 	get(provider: string): AuthCredential | undefined {
 		return this.data[provider] ?? undefined;
+	}
+
+	/** Atomically snapshot a stored host credential and its in-process mutation generation. */
+	getCredentialSnapshot(provider: string): { readonly credential: AuthCredential | undefined; readonly generation: number } {
+		const credential = this.data[provider];
+		return {
+			credential: credential === undefined ? undefined : { ...credential },
+			generation: this.credentialVersions.get(provider) ?? 0,
+		};
 	}
 
 	/**
@@ -355,27 +374,19 @@ export class AuthStorage {
 				};
 			});
 
-			if (synchronizedData) this.data = synchronizedData;
+			if (synchronizedData) this.replaceCredentialData(synchronizedData);
 			this.loadError = null;
 			return result;
 		});
 	}
 
-	/**
-	 * Get API key for a provider.
-	 * Priority:
-	 * 1. Runtime override (CLI --api-key)
-	 * 2. API key from auth.json
-	 * 3. OAuth token from auth.json (auto-refreshed with locking)
-	 * 4. Environment variable
-	 * 5. Fallback resolver (models.json custom providers)
-	 */
-	async getModelAuth(providerId: string, options?: { includeFallback?: boolean }): Promise<ModelAuth | undefined> {
-		const runtimeKey = this.runtimeOverrides.get(providerId);
+	/** Resolve request authentication, optionally excluding every source except stored OAuth. */
+	async getModelAuth(providerId: string, options?: { includeFallback?: boolean; storedOAuthOnly?: boolean }): Promise<ModelAuth | undefined> {
+		const runtimeKey = options?.storedOAuthOnly ? undefined : this.runtimeOverrides.get(providerId);
 		if (runtimeKey) return { apiKey: runtimeKey };
 
 		const cred = this.data[providerId];
-		if (cred?.type === "api_key") return { apiKey: resolveConfigValue(cred.key) };
+		if (!options?.storedOAuthOnly && cred?.type === "api_key") return { apiKey: resolveConfigValue(cred.key) };
 
 		if (cred?.type === "oauth") {
 			try {
@@ -393,6 +404,7 @@ export class AuthStorage {
 				return undefined;
 			}
 		}
+		if (options?.storedOAuthOnly) return undefined;
 
 		const envKey = getEnvApiKey(providerId);
 		if (envKey) return { apiKey: envKey };
@@ -453,10 +465,7 @@ export class AuthStorage {
 							synchronizedData = merged;
 							return { result: next, next: JSON.stringify(merged, null, 2) };
 						});
-						if (synchronizedData) {
-							this.data = synchronizedData;
-							this.bumpCredentialVersion(providerId);
-						}
+						if (synchronizedData) this.replaceCredentialData(synchronizedData);
 						this.loadError = null;
 						return result;
 					} catch (error) {
@@ -468,7 +477,7 @@ export class AuthStorage {
 				this.runCredentialMutation(async () => {
 					try {
 						if (this.storage.deleteProviderAsync) {
-							this.data = this.parseStorageData(await this.storage.deleteProviderAsync(providerId));
+							this.replaceCredentialData(this.parseStorageData(await this.storage.deleteProviderAsync(providerId)));
 						} else {
 							let synchronizedData: AuthStorageData | undefined;
 							await this.storage.withLockAsync(async (current) => {
@@ -477,9 +486,8 @@ export class AuthStorage {
 								synchronizedData = data;
 								return { result: undefined, next: JSON.stringify(data, null, 2) };
 							});
-							if (synchronizedData) this.data = synchronizedData;
+							if (synchronizedData) this.replaceCredentialData(synchronizedData);
 						}
-						this.bumpCredentialVersion(providerId);
 						this.loadError = null;
 					} catch (error) {
 						this.recordError(error);

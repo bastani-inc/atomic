@@ -39,6 +39,7 @@ class RecordingTerminal implements Terminal {
 	inject(data: string): void {
 		report({ type: "input_received", data });
 		this.onInput?.(data);
+		report({ type: "input_handled", data });
 	}
 	snapshot(mode: InteractiveMode | undefined): void {
 		const runtime = mode?.runtimeHost;

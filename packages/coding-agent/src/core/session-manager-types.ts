@@ -63,6 +63,7 @@ export interface ModelChangeEntry extends SessionEntryBase {
 	type: "model_change";
 	provider: string;
 	modelId: string;
+	modelSelection?: object;
 }
 
 /** Durable compaction boundary. Active entries carry `details.strategy === "verbatim-lines"`. */
@@ -188,7 +189,7 @@ export interface SessionContext {
 	messages: AgentMessage[];
 	thinkingLevel: string;
 	contextWindow: number | undefined;
-	model: { provider: string; modelId: string } | null;
+	model: { provider: string; modelId: string; modelSelection?: object } | null;
 }
 
 export interface SessionInfo {

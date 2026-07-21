@@ -1,5 +1,6 @@
-import type { Context, Model, Api, ThinkingLevel } from "@earendil-works/pi-ai/compat";
+import type { Context, Model, Api } from "@earendil-works/pi-ai/compat";
 import type { CursorUsableModel } from "./model-mapper.js";
+import type { CursorRouteReference } from "./route-reference.js";
 
 export interface CursorTransportLifecycleSnapshot {
 	readonly openStreams: number;
@@ -12,8 +13,7 @@ export interface CursorRunRequest {
 	readonly requestId: string;
 	readonly conversationId?: string;
 	readonly model: Model<Api>;
-	readonly resolvedModelId: string;
-	readonly thinkingLevel?: ThinkingLevel;
+	readonly routeReference: CursorRouteReference;
 	readonly context: Context;
 	readonly signal?: AbortSignal;
 	readonly openTimeoutMs?: number;
@@ -67,6 +67,7 @@ export interface CursorWriteOptions {
 export interface CursorRunStream {
 	readonly id: string;
 	readonly messages: AsyncIterable<CursorServerMessage>;
+	readonly failure?: Promise<Error>;
 	writeToolResult(result: CursorToolResultMessage, options?: CursorWriteOptions): Promise<void>;
 	cancel(): Promise<void>;
 	close(): Promise<void>;
@@ -93,6 +94,7 @@ export interface CursorHttp2UnaryResponse {
 }
 
 export interface CursorHttp2StreamHandle {
+	readonly statusCode?: number;
 	readonly frames: AsyncIterable<Uint8Array>;
 	write(data: Uint8Array, options?: CursorWriteOptions): Promise<void>;
 	close(): Promise<void>;

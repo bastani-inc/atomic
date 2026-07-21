@@ -28,16 +28,18 @@ import { restoreCopilotGeminiReasoningOpaque } from "./copilot-gemini-reasoning.
 import { normalizeCopilotGeminiReplayToolArguments } from "./copilot-gemini-tool-arguments.ts";
 import { getModelDefaultContextWindow, getSupportedContextWindows, selectContextWindow } from "./context-window.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
-import type {
-  ExtensionRunner,
-} from "./extensions/index.ts";
+import type { ExtensionRunner } from "./extensions/index.ts";
 import { convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
-import { findInitialModel, resolveRestoredModelReference } from "./model-resolver.ts";
+import { findInitialModel, prepareExplicitProvider, resolveRestoredModelReference } from "./model-resolver.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
+import { validateSelectedProviderModel } from "./model-registry-selection.ts";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
+import { isOfflineModeEnabled } from "./package-manager-env.ts";
+import { registerPendingProvidersAndPrepare } from "./provider-preparation-lifecycle.ts";
+import { getPersistedProviderSelection } from "./provider-model-reference.ts";
 import { sanitizeOpenAIResponsesPayload } from "./openai-responses-payload-sanitizer.ts";
 import { scrubPreCompactionAssistantUsage } from "./provider-context-usage.ts";
 import { time } from "./timings.ts";
@@ -118,20 +120,11 @@ export async function createAgentSession(
   // and, under contention, can fail and leave an empty credential set. Reusing
   // the supplied registry's already-loaded auth avoids that race (issue #1431).
   const authPath = options.agentDir ? join(agentDir, "auth.json") : undefined;
-  const modelsPath = options.agentDir
-    ? join(agentDir, "models.json")
-    : undefined;
-  const modelRegistry =
-    options.modelRegistry ??
-    ModelRegistry.create(options.authStorage ?? AuthStorage.create(authPath), modelsPath);
-  // Restore persisted provider-owned catalogs before any synchronous model reads.
-  await modelRegistry.refresh({ allowNetwork: false });
+  const modelsPath = options.agentDir ? join(agentDir, "models.json") : undefined;
+  const modelRegistry = options.modelRegistry ?? ModelRegistry.create(options.authStorage ?? AuthStorage.create(authPath), modelsPath);
 
-  const settingsManager =
-    options.settingsManager ?? SettingsManager.create(cwd, agentDir);
-  const sessionManager =
-    options.sessionManager ??
-    SessionManager.create(cwd, getDefaultSessionDir(cwd, agentDir));
+  const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
+  const sessionManager = options.sessionManager ?? SessionManager.create(cwd, getDefaultSessionDir(cwd, agentDir));
 
   // Mark workflow-created sessions as internal so they are excluded from the
   // standard `/resume` history while remaining resumable via `/workflow resume`.
@@ -156,7 +149,12 @@ export async function createAgentSession(
     time("resourceLoader.reload");
   }
 
+  await modelRegistry.refresh({ allowNetwork: false, skipRequiredProviderExtensions: true });
+  // Direct SDK and workflow-stage sessions must cross the same tracked preparation door.
+  await registerPendingProvidersAndPrepare(resourceLoader, modelRegistry, !isOfflineModeEnabled());
+
   // Check if session has existing data to restore
+  if (options.model) await prepareExplicitProvider(options.model.provider, modelRegistry);
   const existingSession = sessionManager.buildSessionContext();
   const hasExistingSession = existingSession.messages.length > 0;
   const hasThinkingEntry = sessionManager
@@ -172,6 +170,7 @@ export async function createAgentSession(
       existingSession.model.provider,
       existingSession.model.modelId,
       modelRegistry,
+      existingSession.model.modelSelection,
     );
     if (restoredModel && modelRegistry.hasConfiguredAuth(restoredModel)) {
       model = restoredModel;
@@ -188,6 +187,7 @@ export async function createAgentSession(
       isContinuing: hasExistingSession,
       defaultProvider: settingsManager.getDefaultProvider(),
       defaultModelId: settingsManager.getDefaultModel(),
+      defaultModelSelection: settingsManager.getDefaultModelSelection(),
       defaultThinkingLevel: settingsManager.getDefaultThinkingLevel(),
       modelRegistry,
     });
@@ -198,6 +198,7 @@ export async function createAgentSession(
       modelFallbackMessage += `. Using ${model.provider}/${model.id}`;
     }
   }
+	if (model) model = validateSelectedProviderModel(model, modelRegistry);
 
   let thinkingLevel = options.thinkingLevel;
 
@@ -210,8 +211,7 @@ export async function createAgentSession(
 
   // Fall back to settings default
   if (thinkingLevel === undefined) {
-    thinkingLevel =
-      settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL;
+    thinkingLevel = settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL;
   }
 
   // Clamp to model capabilities
@@ -460,7 +460,7 @@ export async function createAgentSession(
   } else {
     // Save initial model and thinking level for new sessions so they can be restored on resume
     if (model) {
-      sessionManager.appendModelChange(model.provider, model.id);
+      sessionManager.appendModelChange(model.provider, model.id, getPersistedProviderSelection(model));
       if (
         selectedContextWindow !== undefined &&
         (explicitContextWindowSelection || selectedContextWindow !== getModelDefaultContextWindow(model))

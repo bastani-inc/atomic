@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Replaced the bundled/static Cursor catalog with authenticated exact route occurrences. Previous Cursor cache and provider/model-only selections are not migrated; missing or mismatched account/route/Max/occurrence records require reselection, duplicate bare IDs are ambiguous, and Cursor now advertises and accepts text input only ([#1830](https://github.com/bastani-inc/atomic/issues/1830)).
+
+### Added
+
+- Added tracked authoritative preparation, a token-free account/client-scoped schema-v2 catalog cache with a strict 15-minute TTL, cacheable empty results and atomic replacement, plus provider/credential/account/client/catalog/request generation fencing that prevents stale discovery or streams from publishing or continuing ([#1830](https://github.com/bastani-inc/atomic/issues/1830)).
+- Added exact dual-model request encoding with semantic empty requested parameters, structured redacted authentication/discovery/protocol/frame/transport/timeout/server/cancellation failures, deterministic cancellation, canonical text/thinking/tool history reconstruction across continuation/restart/workflow stages, and a minimal sanitized protocol fixture ledger ([#1830](https://github.com/bastani-inc/atomic/issues/1830)).
+
+### Changed
+
+- Made authenticated `GetUsableModels` the sole Cursor route authority, preserving literal route IDs—including secret-looking literal text—order, every duplicate, and absent/false/true Max state. Cache secret rejection applies to credential-bearing keys and extra values without reinterpreting named route/display fields, and malformed trailing unary framing rejects the whole catalog atomically. All routes use uniform conservative Atomic accounting bounds of 200k context and 64k output rather than family-derived metadata ([#1830](https://github.com/bastani-inc/atomic/issues/1830)).
+- Cursor requests now use only host-stored OAuth validated again after request-time synchronization/refresh and a current catalog-backed route-authority lease before direct native HTTP/2 transport; adapters without authority, fabricated/stale routes, and late-opened stale streams fail and close before `Run` ownership can leak. Atomic executes ordinary tools through its generic MCP bridge and returns typed safe errors—including a correlated MCP error for native diagnostics, whose matching result message is empty—rejects current images before `Run` and live image results before result transport, and omits historical image blocks while preserving adjacent text ([#1830](https://github.com/bastani-inc/atomic/issues/1830)).
+- Preserved every historical text/thinking block, including empty blocks and text-image-text without inserted separators, and retained orphan text tool results without synthetic calls. Same-version persisted selection metadata is ignored while named identity fields remain exact, and opaque-OAuth routes remain explicit current-session choices rather than implicit or persistable defaults ([#1830](https://github.com/bastani-inc/atomic/issues/1830)).
+
+### Fixed
+
+- Fixed direct Run transport to reject current-user images and HTTP authentication statuses before stream acceptance; preserve an independent bounded tool-batch idle handoff when general request timeouts are disabled; let malformed EOF/error detected during that validation window win without Atomic success or retained turn ownership; prevent queued provider completion or post-tool boundary messages from exposing Atomic success before terminal validation; reject bare EOF without a valid Connect end-stream as structured malformed/truncated protocol only after stopping and draining heartbeat writes, terminating the raw handle, and releasing lifecycle/codec ownership exactly once; gracefully close or abandon the raw handle before clean end-stream plus EOF is exposed as successful; serialize concurrent cancellation/pump-failure handle cleanup; choose exactly one codec discard/dispose action on malformed runs; and reject any frame after a clean end-stream, while preserving FIFO correlation for duplicate live tool-call IDs and concatenating adjacent live result text verbatim without inserted separators ([#1830](https://github.com/bastani-inc/atomic/issues/1830)).
+
+### Removed
+
+- Removed the static estimated catalog/assets, synthetic/default/grouped/family/thinking route creation, aliases and nearest-route/provider fallback, inferred image families, and historical image serialization ([#1830](https://github.com/bastani-inc/atomic/issues/1830)).
+
+
 ## [0.9.11-alpha.1] - 2026-07-20
 
 ### Changed

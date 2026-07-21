@@ -15,9 +15,10 @@ interface SettingsManagerBasicAccessors {
 	getSessionDir(): string | undefined;
 	getDefaultProvider(): string | undefined;
 	getDefaultModel(): string | undefined;
+	getDefaultModelSelection(): object | undefined;
 	setDefaultProvider(provider: string): void;
 	setDefaultModel(modelId: string): void;
-	setDefaultModelAndProvider(provider: string, modelId: string): void;
+	setDefaultModelAndProvider(provider: string, modelId: string, modelSelection?: object): void;
 	getSteeringMode(): "all" | "one-at-a-time";
 	setSteeringMode(mode: "all" | "one-at-a-time"): void;
 	getFollowUpMode(): "all" | "one-at-a-time";
@@ -123,26 +124,37 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		return settingsInternals(this).settings.defaultModel;
 	},
 
+	getDefaultModelSelection() {
+		return settingsInternals(this).settings.defaultModelSelection;
+	},
+
 	setDefaultProvider(provider) {
 		const state = settingsInternals(this);
 		state.globalSettings.defaultProvider = provider;
+		delete state.globalSettings.defaultModelSelection;
 		state.markModified("defaultProvider");
+		state.markModified("defaultModelSelection");
 		state.save();
 	},
 
 	setDefaultModel(modelId) {
 		const state = settingsInternals(this);
 		state.globalSettings.defaultModel = modelId;
+		delete state.globalSettings.defaultModelSelection;
 		state.markModified("defaultModel");
+		state.markModified("defaultModelSelection");
 		state.save();
 	},
 
-	setDefaultModelAndProvider(provider, modelId) {
+	setDefaultModelAndProvider(provider, modelId, modelSelection) {
 		const state = settingsInternals(this);
 		state.globalSettings.defaultProvider = provider;
 		state.globalSettings.defaultModel = modelId;
+		if (modelSelection === undefined) delete state.globalSettings.defaultModelSelection;
+		else state.globalSettings.defaultModelSelection = modelSelection;
 		state.markModified("defaultProvider");
 		state.markModified("defaultModel");
+		state.markModified("defaultModelSelection");
 		state.save();
 	},
 

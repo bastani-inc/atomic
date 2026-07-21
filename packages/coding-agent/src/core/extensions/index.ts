@@ -5,6 +5,12 @@
 export type { SlashCommandInfo, SlashCommandSource } from "../slash-commands.ts";
 export type { SourceInfo } from "../source-info.ts";
 export {
+	getPersistedProviderSelection,
+	getProviderModelReference,
+	providerModelsAreExactlyEqual,
+} from "../provider-model-reference.ts";
+export type { ProviderModelReference } from "../provider-model-reference.ts";
+export {
 	createExtensionRuntime,
 	discoverAndLoadExtensions,
 	loadExtensionFromFactory,

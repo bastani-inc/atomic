@@ -6,13 +6,15 @@ import type {
 	Model,
 	OpenAICompletionsCompat,
 	OpenAIResponsesCompat,
+	OAuthCredentials,
 	SimpleStreamOptions,
 } from "@earendil-works/pi-ai/compat";
 import type { ProviderHeaders } from "@earendil-works/pi-ai";
 import type { LegacyOAuthProvider } from "./oauth-provider-bridge.ts";
 import type { RefreshModelsContext } from "@earendil-works/pi-ai";
-import type { AuthStorage } from "./auth-storage.ts";
+import type { AuthCredential, AuthStorage } from "./auth-storage.ts";
 import type { ModelOverride } from "./model-registry-schemas.ts";
+import type { ProviderModelReference } from "./provider-model-reference.ts";
 
 export interface ProviderOverride {
 	baseUrl?: string;
@@ -76,6 +78,14 @@ export type ProviderCompat =
 	| OpenAIResponsesCompat
 	| AnthropicMessagesCompat;
 
+export interface ProviderRefreshModelsContext extends RefreshModelsContext {
+	/** Exact host-managed stored credential; providers must not persist or log it. */
+	readonly hostCredential?: AuthCredential;
+	readonly credentialGeneration: number;
+	readonly providerInstanceGeneration: number;
+	readonly isCurrentGeneration: () => boolean;
+}
+
 export interface ProviderConfigInput {
 	name?: string;
 	baseUrl?: string;
@@ -84,7 +94,11 @@ export interface ProviderConfigInput {
 	streamSimple?: (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream;
 	headers?: Record<string, string>;
 	authHeader?: boolean;
-	refreshModels?(context: RefreshModelsContext): Promise<NonNullable<ProviderConfigInput["models"]>>;
+	requiresPreparation?: boolean;
+	requiresExactSelectionPersistence?: boolean;
+	requiresHostOAuth?: boolean;
+	validateHostOAuth?(credential: OAuthCredentials): void;
+	refreshModels?(context: ProviderRefreshModelsContext): Promise<NonNullable<ProviderConfigInput["models"]>>;
 	oauth?: LegacyOAuthProvider;
 	models?: Array<{
 		id: string;
@@ -100,5 +114,6 @@ export interface ProviderConfigInput {
 		maxTokens: number;
 		headers?: Record<string, string>;
 		compat?: Model<Api>["compat"];
+		providerReference?: ProviderModelReference;
 	}>;
 }

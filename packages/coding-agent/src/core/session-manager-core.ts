@@ -247,8 +247,8 @@ export class SessionManager {
 	}
 
 	/** Append a model change as child of current leaf, then advance leaf. Returns entry id. */
-	appendModelChange(provider: string, modelId: string): string {
-		const entry = createModelChangeEntry(provider, modelId, this.byId, this.leafId);
+	appendModelChange(provider: string, modelId: string, modelSelection?: object): string {
+		const entry = createModelChangeEntry(provider, modelId, modelSelection, this.byId, this.leafId);
 		this._appendEntry(entry);
 		return entry.id;
 	}

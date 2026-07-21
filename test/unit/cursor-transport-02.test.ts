@@ -1,6 +1,9 @@
 // @ts-nocheck
 import { test, describe } from "bun:test";
 import assert from "node:assert/strict";
+import { cursorRouteReference } from "./cursor-test-helpers.js";
+import { fromBinary, toBinary } from "@bufbuild/protobuf";
+import { AgentClientMessageSchema, ConversationStateStructureSchema } from "../../packages/cursor/src/proto/cursor-protocol.js";
 import type { Api, Context, Model } from "@earendil-works/pi-ai/compat";
 import {
 	CursorConnectFrameDecoder,
@@ -222,39 +225,25 @@ describe("Cursor HTTP2 transport boundary", () => {
 
 		assert.deepEqual(codec.decodeRunFrame({ flags: 0, data: turnEnded, endStream: false }), []);
 	});
-	test("protobuf codec persists Cursor checkpoints and blob stores across same-session requests", () => {
+	test("protobuf codec ignores checkpoints and rebuilds every request from canonical Atomic history", () => {
 		const codec = new CursorProtobufProtocolCodec();
-		codec.encodeRunRequest({ accessToken: "secret", requestId: "run-state-1", conversationId: "session-state", model, resolvedModelId: "composer-2", context: contextWithUserMessage });
-		const blobId = new Uint8Array([1, 2, 3, 4]);
-		const blobData = new TextEncoder().encode("persisted blob");
-		const [setBlob] = codec.decodeRunFrame({ flags: 0, data: makeKvBlobSetFrame(77, blobId, blobData), endStream: false });
-		assert.ok(setBlob);
-		const setResponse = codec.encodeServerResponse(setBlob, "run-state-1");
-		assert.ok(setResponse instanceof Uint8Array);
-		const checkpoint = cursorProtoTest.concatBytes(cursorProtoTest.encodeMessageField(1, blobId), cursorProtoTest.encodeStringField(13, "checkpoint-marker"));
+		codec.encodeRunRequest({ accessToken: "secret", requestId: "run-state-1", conversationId: "session-state", model, routeReference: cursorRouteReference("composer-2"), context: contextWithUserMessage });
+		const checkpoint = cursorProtoTest.concatBytes(cursorProtoTest.encodeStringField(13, "checkpoint-marker"));
 		const [checkpointMessage] = codec.decodeRunFrame({ flags: 0, data: cursorProtoTest.encodeMessageField(3, checkpoint), endStream: false });
 		assert.ok(checkpointMessage);
 		assert.equal(codec.encodeServerResponse(checkpointMessage, "run-state-1"), undefined);
 		codec.disposeRun("run-state-1");
 
-		const encodedSecondRun = codec.encodeRunRequest({ accessToken: "secret", requestId: "run-state-2", conversationId: "session-state", model, resolvedModelId: "composer-2", context: { messages: [{ role: "user", content: "next", timestamp: 5 }] } });
-		const runRequest = cursorProtoTest.readFields(encodedSecondRun)[0]?.value;
-		assert.ok(runRequest instanceof Uint8Array);
-		const conversationState = cursorProtoTest.readFields(runRequest).find((field) => field.fieldNumber === 1)?.value;
-		assert.ok(conversationState instanceof Uint8Array);
-		assert.deepEqual([...conversationState], [...checkpoint]);
-
-		const [getBlob] = codec.decodeRunFrame({ flags: 0, data: makeKvBlobGetFrame(78, blobId), endStream: false });
-		assert.ok(getBlob);
-		const getResponse = codec.encodeServerResponse(getBlob, "run-state-2");
-		assert.ok(getResponse instanceof Uint8Array);
-		const kvClient = cursorProtoTest.readFields(getResponse).find((field) => field.fieldNumber === 3)?.value;
-		assert.ok(kvClient instanceof Uint8Array);
-		const getResult = cursorProtoTest.readFields(kvClient).find((field) => field.fieldNumber === 2)?.value;
-		assert.ok(getResult instanceof Uint8Array);
-		const returnedBlob = cursorProtoTest.readFields(getResult).find((field) => field.fieldNumber === 1)?.value;
-		assert.ok(returnedBlob instanceof Uint8Array);
-		assert.equal(new TextDecoder().decode(returnedBlob), "persisted blob");
+		const canonical: Context = { messages: [
+			{ role: "user", content: "original", timestamp: 1 },
+			{ role: "assistant", content: [{ type: "thinking", thinking: "verified thought" }, { type: "text", text: "answer" }], api: "cursor-agent", provider: "cursor", model: "composer-2", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 2 },
+			{ role: "user", content: "next", timestamp: 3 },
+		] };
+		const encodedSecondRun = codec.encodeRunRequest({ accessToken: "secret", requestId: "run-state-2", conversationId: "session-state", model, routeReference: cursorRouteReference("composer-2"), context: canonical });
+		const decoded = fromBinary(AgentClientMessageSchema, encodedSecondRun).message.value;
+		assert.notDeepEqual([...toBinary(ConversationStateStructureSchema, decoded.conversationState)], [...checkpoint]);
+		assert.equal(decoded.action.action.value.userMessage.text, "next");
+		assert.equal(decoded.conversationState.turns.length, 1);
 	});
 	test("transport discards persisted Cursor conversation state on end-stream errors", async () => {
 		const codec = new CursorProtobufProtocolCodec();
@@ -264,14 +253,14 @@ describe("Cursor HTTP2 transport boundary", () => {
 			encodeCursorConnectFrame(new TextEncoder().encode(JSON.stringify({ error: { code: "not_found", message: "Error" } })), 2),
 		]);
 		const transport = new Http2CursorAgentTransport({ client, codec });
-		const run = await transport.run({ accessToken: "secret", requestId: "run-error-state-1", conversationId: "session-error-state", model, resolvedModelId: "composer-2", context: contextWithUserMessage });
+		const run = await transport.run({ accessToken: "secret", requestId: "run-error-state-1", conversationId: "session-error-state", model, routeReference: cursorRouteReference("composer-2"), context: contextWithUserMessage });
 
 		await assert.rejects(
 			async () => { for await (const _message of run.messages) {} },
 			(error: Error) => error instanceof CursorTransportError && /not_found/u.test(error.message),
 		);
 
-		const encodedSecondRun = codec.encodeRunRequest({ accessToken: "secret", requestId: "run-error-state-2", conversationId: "session-error-state", model, resolvedModelId: "composer-2", context: { messages: [{ role: "user", content: "retry", timestamp: 6 }] } });
+		const encodedSecondRun = codec.encodeRunRequest({ accessToken: "secret", requestId: "run-error-state-2", conversationId: "session-error-state", model, routeReference: cursorRouteReference("composer-2"), context: { messages: [{ role: "user", content: "retry", timestamp: 6 }] } });
 		const runRequest = cursorProtoTest.readFields(encodedSecondRun)[0]?.value;
 		assert.ok(runRequest instanceof Uint8Array);
 		const conversationState = cursorProtoTest.readFields(runRequest).find((field) => field.fieldNumber === 1)?.value;
@@ -373,6 +362,18 @@ describe("Cursor HTTP2 transport boundary", () => {
 		assert.equal(codec.encodeServerResponse({ type: "nonMcpExec", fieldNumber: 19, execId: "exec-span", execNumericId: 7 }, "run-span"), undefined);
 		assert.equal(codec.encodeServerResponse({ type: "nonMcpExec", fieldNumber: 99 }, "run-unknown"), undefined);
 	});
+	test("every native exec case encodes a typed safe rejection", () => {
+		const codec = new CursorProtobufProtocolCodec();
+		const reason = "Tool not available in this environment. Use the MCP tools provided instead.";
+		for (const fieldNumber of [2, 3, 4, 5, 7, 8, 9, 14, 16, 17, 18, 20, 21, 22, 23]) {
+			const bytes = codec.encodeServerResponse({ type: "nonMcpExec", fieldNumber, execId: "native", execNumericId: 1 }, "run-native");
+			const message = fromBinary(AgentClientMessageSchema, bytes).message;
+			assert.equal(message.case, "execClientMessage");
+			if (message.case !== "execClientMessage") throw new Error("expected exec client message");
+			if (fieldNumber === 9) assert.equal(message.value.message.case, "mcpResult");
+			assert.match(JSON.stringify(message.value.message), new RegExp(reason.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"));
+		}
+	});
 	test("production transport defaults to the isolated protobuf codec", async () => {
 		const client = new FakeHttp2Client();
 		const modelMessage = cursorProtoTest.concatBytes(
@@ -383,8 +384,8 @@ describe("Cursor HTTP2 transport boundary", () => {
 		client.unaryBody = cursorProtoTest.encodeMessageField(1, modelMessage);
 		const transport = new Http2CursorAgentTransport({ client });
 		const models = await transport.getUsableModels("secret-token", "request-proto");
-		assert.equal(models[0]?.id, "composer-2");
-		assert.equal(models[0]?.supportsThinking, true);
+		assert.equal(models[0]?.modelId, "composer-2");
+		assert.equal(models[0]?.maxMode, undefined);
 		assert.ok(client.unaryRequests[0]?.body instanceof Uint8Array);
 	});
 });

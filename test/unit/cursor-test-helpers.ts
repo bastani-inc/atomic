@@ -1,5 +1,35 @@
 import type { CursorAgentTransport, CursorRunRequest, CursorRunStream, CursorServerMessage, CursorToolResultMessage } from "../../packages/cursor/src/transport.js";
 import type { CursorUsableModel } from "../../packages/cursor/src/model-mapper.js";
+import type { CursorRouteReference } from "../../packages/cursor/src/route-reference.js";
+
+export function cursorRouteReference(routeId = "composer-2", maxMode?: boolean): CursorRouteReference {
+	return {
+		provider: "cursor",
+		accountScope: "cursor-account-v1:test",
+		routeId,
+		maxMode,
+		occurrence: 1,
+		providerInstanceGeneration: 1,
+		credentialGeneration: 1,
+		clientVersion: "test-client",
+		catalogGeneration: 1,
+	};
+}
+
+export function cursorRouteAuthority() {
+	const expected = cursorRouteReference();
+	return {
+		acquireRequestLease(reference: CursorRouteReference) {
+			const controller = new AbortController();
+			return {
+				signal: controller.signal,
+				assertCurrent() {
+					if (JSON.stringify(reference) !== JSON.stringify(expected)) throw new Error("route is not in the test authoritative catalog");
+				},
+			};
+		},
+	};
+}
 
 export class CursorMockRunStream implements CursorRunStream {
 	readonly id: string;

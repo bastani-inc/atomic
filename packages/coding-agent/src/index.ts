@@ -177,6 +177,11 @@ export type {
 export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.ts";
 // SDK for programmatic usage
 export {
+	getPersistedProviderSelection,
+	getProviderModelReference,
+	providerModelsAreExactlyEqual,
+	type ProviderModelReference,
+	type ProviderRefreshModelsContext,
 	AgentSessionRuntime,
 	type AgentSessionRuntimeDiagnostic,
 	type AgentSessionServices,

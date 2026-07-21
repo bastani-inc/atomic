@@ -24,7 +24,7 @@ class LazyNativeHttp2CursorClient implements CursorHttp2Client {
 	private get client(): NativeHttp2CursorClient {
 		if (this.#client) return this.#client;
 		const native = loadCursorH2NativeBinding();
-		if (!native.ok) throw new CursorTransportError("NetworkError", formatCursorH2NativeLoadFailure(native));
+		if (!native.ok) throw new CursorTransportError("TransportError", formatCursorH2NativeLoadFailure(native));
 		this.#client = new NativeHttp2CursorClient(native.binding);
 		return this.#client;
 	}
@@ -46,7 +46,7 @@ class NativeHttp2CursorClient implements CursorHttp2Client {
 	constructor(readonly binding: CursorH2NativeBinding) {}
 
 	async requestUnary(request: { readonly baseUrl: string; readonly path: string; readonly headers: Record<string, string>; readonly body: Uint8Array; readonly signal?: AbortSignal; readonly timeoutMs?: number }): Promise<CursorHttp2UnaryResponse> {
-		if (request.signal?.aborted) throw new CursorTransportError("Aborted", "Cursor native HTTP/2 request aborted before start.");
+		if (request.signal?.aborted) throw new CursorTransportError("Cancelled", "Cursor native HTTP/2 request aborted before start.");
 		const operationId = nextNativeOperationId();
 		try {
 			const response = await raceWithAbort(
@@ -67,7 +67,7 @@ class NativeHttp2CursorClient implements CursorHttp2Client {
 	}
 
 	async openStream(request: { readonly baseUrl: string; readonly path: string; readonly headers: Record<string, string>; readonly signal?: AbortSignal; readonly initialBody?: Uint8Array; readonly timeoutMs?: number }): Promise<CursorHttp2StreamHandle> {
-		if (request.signal?.aborted) throw new CursorTransportError("Aborted", "Cursor native HTTP/2 stream aborted before start.");
+		if (request.signal?.aborted) throw new CursorTransportError("Cancelled", "Cursor native HTTP/2 stream aborted before start.");
 		const operationId = nextNativeOperationId();
 		try {
 			const stream = await raceWithAbort(
@@ -96,16 +96,18 @@ export function createNativeCursorHttp2ClientForTest(binding: CursorH2NativeBind
 }
 
 class NativeCursorStreamHandle implements CursorHttp2StreamHandle {
+	readonly statusCode: number | undefined;
 	readonly frames: AsyncIterable<Uint8Array>;
 	#closed = false;
 
 	constructor(readonly stream: CursorH2NativeStream) {
+		this.statusCode = nativeStatusCode(stream.statusCode ?? stream.status_code);
 		this.frames = this.createFrames();
 	}
 
 	async write(data: Uint8Array, options: CursorWriteOptions = {}): Promise<void> {
 		if (this.#closed) throw new CursorTransportError("ProtocolError", "Cannot write to a closed Cursor native stream.");
-		if (options.signal?.aborted) throw new CursorTransportError("Aborted", "Cursor native stream write aborted before start.");
+		if (options.signal?.aborted) throw new CursorTransportError("Cancelled", "Cursor native stream write aborted before start.");
 		try {
 			await raceWithAbort(
 				withTimeout(
@@ -144,8 +146,7 @@ class NativeCursorStreamHandle implements CursorHttp2StreamHandle {
 		}
 	}
 }
-
-function nativeStatusCode(value: number | undefined): number | undefined {
+function nativeStatusCode(value: number | null | undefined): number | undefined {
 	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 

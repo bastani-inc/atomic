@@ -5,7 +5,8 @@ import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 import { findPreferredAvailableModel } from "./model-resolver-defaults.ts";
 import { buildFallbackModel } from "./model-resolver-patterns.ts";
-import { resolveCliModel } from "./model-resolver-cli.ts";
+import { prepareExplicitCliModel, prepareExplicitProvider, resolveCliModel } from "./model-resolver-cli.ts";
+import { ProviderModelSelectionError } from "./provider-model-reference.ts";
 import type { InitialModelResult, ScopedModel } from "./model-resolver-types.ts";
 
 async function buildConfiguredProviderFallbackModel(
@@ -25,7 +26,16 @@ export async function resolveRestoredModelReference(
   provider: string,
   modelId: string,
   modelRegistry: ModelRegistry,
+  modelSelection: unknown = undefined,
 ): Promise<Model<Api> | undefined> {
+  await prepareExplicitProvider(provider, modelRegistry);
+  if (modelRegistry.requiresExactSelectionPersistence?.(provider) === true) {
+    const restored = modelRegistry.restoreExactModel(provider, modelId, modelSelection);
+    if (!modelRegistry.hasConfiguredAuth(restored)) {
+      throw new ProviderModelSelectionError("AuthenticationMissing", `Saved ${provider} selection requires host OAuth authentication; authenticate and select it again.`, provider, modelId);
+    }
+    return restored;
+  }
   const found = modelRegistry.find(provider, modelId);
   if (found) return modelRegistry.hasConfiguredAuth(found) ? found : undefined;
   if (!modelRegistry.canRestoreUnknownModel(provider)) return undefined;
@@ -47,6 +57,7 @@ export async function findInitialModel(options: {
   isContinuing: boolean;
   defaultProvider?: string;
   defaultModelId?: string;
+  defaultModelSelection?: unknown;
   defaultThinkingLevel?: ThinkingLevel;
   modelRegistry: ModelRegistry;
 }): Promise<InitialModelResult> {
@@ -57,6 +68,7 @@ export async function findInitialModel(options: {
     isContinuing,
     defaultProvider,
     defaultModelId,
+    defaultModelSelection,
     defaultThinkingLevel,
     modelRegistry,
   } = options;
@@ -65,6 +77,7 @@ export async function findInitialModel(options: {
   let thinkingLevel: ThinkingLevel = DEFAULT_THINKING_LEVEL;
 
   if (cliProvider && cliModel) {
+		await prepareExplicitCliModel({ cliProvider, cliModel, modelRegistry });
     const resolved = resolveCliModel({
       cliProvider,
       cliModel,
@@ -92,7 +105,10 @@ export async function findInitialModel(options: {
   }
 
   if (defaultProvider && defaultModelId) {
-    const found = modelRegistry.find(defaultProvider, defaultModelId);
+    await prepareExplicitProvider(defaultProvider, modelRegistry);
+    const found = modelRegistry.requiresExactSelectionPersistence?.(defaultProvider) === true
+      ? modelRegistry.restoreExactModel(defaultProvider, defaultModelId, defaultModelSelection)
+      : modelRegistry.find(defaultProvider, defaultModelId);
     if (found && modelRegistry.hasConfiguredAuth(found)) {
       model = found;
       if (defaultThinkingLevel) {
@@ -127,12 +143,13 @@ export async function restoreModelFromSession(
   currentModel: Model<Api> | undefined,
   shouldPrintMessages: boolean,
   modelRegistry: ModelRegistry,
+  savedModelSelection: unknown = undefined,
 ): Promise<{
   model: Model<Api> | undefined;
   fallbackMessage: string | undefined;
 }> {
   const exactRestoredModel = modelRegistry.find(savedProvider, savedModelId);
-  const restoredModel = await resolveRestoredModelReference(savedProvider, savedModelId, modelRegistry);
+  const restoredModel = await resolveRestoredModelReference(savedProvider, savedModelId, modelRegistry, savedModelSelection);
 
   if (restoredModel) {
     if (shouldPrintMessages) {

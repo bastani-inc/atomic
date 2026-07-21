@@ -1,12 +1,13 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai/compat";
-import { clampThinkingLevel, isContextOverflow, modelsAreEqual } from "@earendil-works/pi-ai/compat";
+import { clampThinkingLevel, isContextOverflow } from "@earendil-works/pi-ai/compat";
 import { sleep } from "../utils/sleep.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import { isCodexTokenInvalidationError } from "./codex-errors.ts";
 import { isCopilotGeminiModel } from "./copilot-gemini-payload-sanitizer.ts";
 import { normalizeToolArgumentsForModel } from "./copilot-gemini-tool-arguments.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { getPersistedProviderSelection, providerModelsAreExactlyEqual } from "./provider-model-reference.ts";
 
 
 const THINKING_SUFFIXES = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ThinkingLevel[];
@@ -28,14 +29,17 @@ function splitFallbackModel(value: string): { modelId: string; thinkingLevel?: T
 function resolveFallbackModel(this: AgentSession, value: string): { model: Model<Api>; thinkingLevel?: ThinkingLevel } | undefined {
 	const parsed = splitFallbackModel(value);
 	if (!parsed.modelId.includes("/")) {
-		const available = this._modelRegistry.getAvailable().filter((model) => model.id === parsed.modelId);
+		const available = this._modelRegistry.getAvailable().filter((model) =>
+			model.id === parsed.modelId && this._modelRegistry.requiresExactSelectionPersistence?.(model.provider) !== true);
 		const preferredProvider = this.model?.provider ?? this.settingsManager.getDefaultProvider();
-		const model = available.find((candidate) => candidate.provider === preferredProvider) ?? (available.length === 1 ? available[0] : undefined);
+		const preferred = available.filter((candidate) => candidate.provider === preferredProvider);
+		const model = preferred.length === 1 ? preferred[0] : available.length === 1 ? available[0] : undefined;
 		return model ? { model, thinkingLevel: parsed.thinkingLevel } : undefined;
 	}
 	const slash = parsed.modelId.indexOf("/");
 	const provider = parsed.modelId.slice(0, slash);
 	const modelId = parsed.modelId.slice(slash + 1);
+	if (this._modelRegistry.requiresExactSelectionPersistence?.(provider) === true) return undefined;
 	const model = this._modelRegistry.find(provider, modelId);
 	if (!model || !this._modelRegistry.hasConfiguredAuth(model)) return undefined;
 	return { model, thinkingLevel: parsed.thinkingLevel };
@@ -245,6 +249,7 @@ export function _isSafetyRefusal(this: AgentSession, message: AssistantMessage):
 
 export async function _trySwitchToFallbackModel(this: AgentSession, message: AssistantMessage): Promise<boolean> {
 	if (this._fallbackModels.length === 0 || !this.model) return false;
+	if (this._modelRegistry.requiresExactSelectionPersistence?.(this.model.provider) === true) return false;
 
 	this._fallbackAttemptedKeys.add(fallbackKey(this.model, this.thinkingLevel));
 	const fromModel = this.model;
@@ -258,7 +263,7 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 			nextModel,
 			candidate.thinkingLevel ?? this.settingsManager.getDefaultThinkingLevel() ?? this.thinkingLevel ?? DEFAULT_THINKING_LEVEL,
 		) as ThinkingLevel;
-		if (modelsAreEqual(candidate.model, fromModel) && nextLevel === this.thinkingLevel) continue;
+		if (providerModelsAreExactlyEqual(candidate.model, fromModel) && nextLevel === this.thinkingLevel) continue;
 		if (this._retryAttempt > 0) {
 			this._emit({
 				type: "auto_retry_end",
@@ -280,7 +285,7 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 			this.agent.state.messages = messages.slice(0, -1);
 		}
 		this.agent.state.model = nextModel;
-		this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
+		this.sessionManager.appendModelChange(nextModel.provider, nextModel.id, getPersistedProviderSelection(nextModel));
 		this._appendContextWindowChangeIfChanged(fromModel, nextModel);
 		this.agent.state.thinkingLevel = nextLevel;
 		this.sessionManager.appendThinkingLevelChange(nextLevel);

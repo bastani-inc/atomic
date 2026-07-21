@@ -2,30 +2,41 @@ import { createHash, randomUUID as nodeRandomUUID } from "node:crypto";
 import { type Api, type AssistantMessage, type AssistantMessageEventStream, calculateCost, type Context, createAssistantMessageEventStream, type Model, type SimpleStreamOptions } from "@earendil-works/pi-ai/compat";
 import { parseJsonObject, sanitizeDiagnosticText } from "./config.js";
 import { CursorConversationStateStore, type CursorConversationSnapshot } from "./conversation-state.js";
-import { resolveCursorModelVariant } from "./model-mapper.js";
+import { CursorError } from "./errors.js";
+import { getCursorRouteReference } from "./model-mapper.js";
+import { assertCurrentCursorInputIsTextOnly } from "./input-validation.js";
+import type { CursorPreparationController, CursorRequestLease } from "./preparation.js";
+import { CursorMessageReader, CursorStreamAbortError, CursorStreamTimeoutError, readNextCursorMessage } from "./stream-read.js";
 import type { CursorAgentTransport, CursorRunStream, CursorServerMessage, CursorToolCallMessage, CursorToolResultMessage } from "./transport.js";
 
 export interface CursorStreamAdapterOptions {
 	readonly transport: CursorAgentTransport; readonly conversationState?: CursorConversationStateStore; readonly uuid?: () => string;
+	readonly routeAuthority: Pick<CursorPreparationController, "acquireRequestLease">;
 	readonly pausedTurnIdleTimeoutMs?: number; readonly streamReadTimeoutMs?: number;
+	readonly toolCallBatchIdleWait?: (idleMs: number) => Promise<void>;
 }
 interface CursorStreamRuntime {
 	readonly transport: CursorAgentTransport; readonly conversationState: CursorConversationStateStore; readonly uuid: () => string;
+	readonly routeAuthority: Pick<CursorPreparationController, "acquireRequestLease">;
 	readonly pausedTurnIdleTimeoutMs: number; readonly streamReadTimeoutMs: number;
+	readonly toolCallBatchIdleWait: (idleMs: number) => Promise<void>;
 }
-
 const DEFAULT_PAUSED_TURN_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_STREAM_READ_TIMEOUT_MS = 10 * 60 * 1000;
 const TOOL_CALL_BATCH_IDLE_TIMEOUT_MS = 100;
 
-type IteratorReadResult = { readonly kind: "message"; readonly result: IteratorResult<CursorServerMessage> } | { readonly kind: "aborted" };
-type CursorReadRaceResult =
-	| { readonly kind: "message"; readonly result: IteratorResult<CursorServerMessage>; readonly read: CursorMessageReadHandle }
-	| { readonly kind: "error"; readonly error: Error; readonly read: CursorMessageReadHandle }
-	| { readonly kind: "aborted" };
-
 function defaultCursorUuid(): string {
 	return nodeRandomUUID();
+}
+class CursorToolBatchIdleError extends Error {
+	constructor() { super("Cursor tool-call batch reached its idle handoff boundary."); this.name = "CursorToolBatchIdleError"; }
+}
+
+function waitForToolCallBatchIdle(idleMs: number): Promise<void> {
+	return new Promise((resolve) => {
+		const timeout = setTimeout(resolve, idleMs);
+		timeout.unref?.();
+	});
 }
 
 export class CursorStreamAdapter {
@@ -33,12 +44,17 @@ export class CursorStreamAdapter {
 	readonly #messageReaders = new WeakMap<CursorRunStream, CursorMessageReader>();
 
 	constructor(options: CursorStreamAdapterOptions) {
+		if (!options.routeAuthority) {
+			throw new CursorError("UnsupportedSelection", "Cursor route authority is required before streaming.", { operation: "request" });
+		}
 		this.#runtime = {
 			transport: options.transport,
 			conversationState: options.conversationState ?? new CursorConversationStateStore(),
 			uuid: options.uuid ?? defaultCursorUuid,
+			routeAuthority: options.routeAuthority,
 			pausedTurnIdleTimeoutMs: options.pausedTurnIdleTimeoutMs ?? DEFAULT_PAUSED_TURN_IDLE_TIMEOUT_MS,
 			streamReadTimeoutMs: options.streamReadTimeoutMs ?? DEFAULT_STREAM_READ_TIMEOUT_MS,
+			toolCallBatchIdleWait: options.toolCallBatchIdleWait ?? waitForToolCallBatchIdle,
 		};
 	}
 
@@ -75,6 +91,7 @@ export class CursorStreamAdapter {
 		options?: SimpleStreamOptions,
 	): Promise<void> {
 		const output = createOutputMessage(model);
+		let runStreamRegistered = false;
 		stream.push({ type: "start", partial: output });
 		let runStream: CursorRunStream | undefined;
 		let activeConversationKey: string | undefined;
@@ -84,44 +101,66 @@ export class CursorStreamAdapter {
 		let sawToolCall = false;
 		const pendingToolCalls: CursorToolCallMessage[] = [];
 		const effectiveTimeoutMs = options?.timeoutMs ?? this.#runtime.streamReadTimeoutMs;
+		let requestLease: CursorRequestLease | undefined;
+		let requestSignalCleanup = (): void => undefined;
+		let requestSignalOwnedByPausedTurn = false;
+		let requestSignal = options?.signal;
 		try {
 			if (!options?.apiKey) {
 				throw new Error("Cursor OAuth credentials are required. Run /login and select Cursor.");
 			}
-			if (hasImageInput(context) && !model.input.includes("image")) {
-				throw new Error(`Cursor model ${model.id} does not support image input.`);
-			}
-			if (options.signal?.aborted) {
-				throw new CursorStreamAbortError();
-			}
+			const routeReference = getCursorRouteReference(model);
+			requestLease = this.#runtime.routeAuthority.acquireRequestLease(routeReference);
+			const combined = combineAbortSignals(options?.signal, requestLease.signal);
+			requestSignal = combined.signal;
+			requestSignalCleanup = combined.cleanup;
+			requestLease.assertCurrent("request");
+			assertCurrentCursorInputIsTextOnly(context, model.id);
+			if (requestSignal?.aborted) throw new CursorStreamAbortError();
 			const requestId = this.#runtime.uuid();
 			const conversationIdentity = deriveCursorConversationIdentity(context, options.sessionId);
 			activeConversationKey = conversationIdentity.activeKey;
-			const resolvedModelId = resolveCursorModelVariant(model.id, model.thinkingLevelMap, options.reasoning);
 			const trailingToolResults = getTrailingToolResults(context);
-			if (trailingToolResults.length > 0) {
-				runStream = await this.#runtime.conversationState.resumeTurnWithToolResults(activeConversationKey, trailingToolResults, { signal: options.signal, timeoutMs: effectiveTimeoutMs });
+			if (trailingToolResults.length > 0 && this.#runtime.conversationState.hasPausedTurn(activeConversationKey)) {
+				requestLease.assertCurrent("request");
+				runStream = await this.#runtime.conversationState.resumeTurnWithToolResults(activeConversationKey, trailingToolResults, { signal: requestSignal, timeoutMs: effectiveTimeoutMs });
+				requestLease.assertCurrent("request");
+				runStreamRegistered = true;
 			} else {
 				runStream = await this.#runtime.transport.run({
 					accessToken: options.apiKey,
 					requestId,
 					conversationId: conversationIdentity.wireConversationId,
 					model,
-					resolvedModelId,
-					thinkingLevel: options.reasoning,
+					routeReference,
 					context,
-					signal: options.signal,
+					signal: requestSignal,
 					openTimeoutMs: effectiveTimeoutMs,
 				});
-				this.#runtime.conversationState.registerTurn(activeConversationKey, runStream);
+				requestLease.assertCurrent("request");
+				this.#runtime.conversationState.registerTurn(activeConversationKey, runStream, requestLease);
+				runStreamRegistered = true;
 			}
 			const reader = this.#messageReaderFor(runStream);
 			while (true) {
-				const readTimeoutMs = pendingToolCalls.length > 0 ? Math.min(effectiveTimeoutMs, TOOL_CALL_BATCH_IDLE_TIMEOUT_MS) : effectiveTimeoutMs;
-				const next = await readNextCursorMessage(reader, options.signal, readTimeoutMs);
-				if (next.kind === "aborted") {
-					throw new CursorStreamAbortError();
+				const validatingToolBoundary = pendingToolCalls.length > 0;
+				const next = await readNextCursorMessage(
+					reader,
+					requestSignal,
+					effectiveTimeoutMs,
+					validatingToolBoundary
+						? () => this.#runtime.toolCallBatchIdleWait(TOOL_CALL_BATCH_IDLE_TIMEOUT_MS)
+						: undefined,
+					validatingToolBoundary ? runStream.failure : undefined,
+				);
+				if (next.kind === "aborted") throw new CursorStreamAbortError();
+				if (next.kind === "idle") throw new CursorToolBatchIdleError();
+				if (next.kind === "failure") {
+					try { await readNextCursorMessage(reader, undefined, 0); }
+					catch (error) { throw error; }
+					throw next.error;
 				}
+				requestLease.assertCurrent("stream");
 				if (next.result.done) {
 					break;
 				}
@@ -129,7 +168,8 @@ export class CursorStreamAdapter {
 				if (pendingToolCalls.length > 0 && message.type !== "toolCall" && message.type !== "usage") {
 					closeOpenContent(stream, output, textIndex, thinkingIndex);
 					if (!(message.type === "done" && message.reason === "toolUse")) reader.unread(next.result);
-					this.#runtime.conversationState.pauseTurnForTools(activeConversationKey, runStream, pendingToolCalls, { signal: options?.signal, idleTimeoutMs: this.#runtime.pausedTurnIdleTimeoutMs });
+					requestSignalOwnedByPausedTurn = true;
+					this.#runtime.conversationState.pauseTurnForTools(activeConversationKey, runStream, pendingToolCalls, { signal: requestSignal, signalCleanup: requestSignalCleanup, idleTimeoutMs: this.#runtime.pausedTurnIdleTimeoutMs, lease: requestLease });
 					output.stopReason = "toolUse";
 					stream.push({ type: "done", reason: "toolUse", message: output });
 					terminalEventSent = true;
@@ -137,8 +177,10 @@ export class CursorStreamAdapter {
 					break;
 				}
 				if (message.type === "textDelta") {
+					if (thinkingIndex !== undefined) { closeThinkingContent(stream, output, thinkingIndex); thinkingIndex = undefined; }
 					textIndex = appendTextDelta(stream, output, textIndex, message.text);
 				} else if (message.type === "thinkingDelta") {
+					if (textIndex !== undefined) { closeTextContent(stream, output, textIndex); textIndex = undefined; }
 					thinkingIndex = appendThinkingDelta(stream, output, thinkingIndex, message.text);
 				} else if (message.type === "toolCall") {
 					sawToolCall = true;
@@ -152,7 +194,8 @@ export class CursorStreamAdapter {
 				} else {
 					closeOpenContent(stream, output, textIndex, thinkingIndex);
 					if (pendingToolCalls.length > 0) {
-						this.#runtime.conversationState.pauseTurnForTools(activeConversationKey, runStream, pendingToolCalls, { signal: options?.signal, idleTimeoutMs: this.#runtime.pausedTurnIdleTimeoutMs });
+						requestSignalOwnedByPausedTurn = true;
+						this.#runtime.conversationState.pauseTurnForTools(activeConversationKey, runStream, pendingToolCalls, { signal: requestSignal, signalCleanup: requestSignalCleanup, idleTimeoutMs: this.#runtime.pausedTurnIdleTimeoutMs, lease: requestLease });
 						output.stopReason = "toolUse";
 						stream.push({ type: "done", reason: "toolUse", message: output });
 						runStream = undefined;
@@ -167,7 +210,8 @@ export class CursorStreamAdapter {
 			if (!terminalEventSent) {
 				closeOpenContent(stream, output, textIndex, thinkingIndex);
 				if (pendingToolCalls.length > 0 && runStream) {
-					this.#runtime.conversationState.pauseTurnForTools(activeConversationKey, runStream, pendingToolCalls, { signal: options?.signal, idleTimeoutMs: this.#runtime.pausedTurnIdleTimeoutMs });
+					requestSignalOwnedByPausedTurn = true;
+					this.#runtime.conversationState.pauseTurnForTools(activeConversationKey, runStream, pendingToolCalls, { signal: requestSignal, signalCleanup: requestSignalCleanup, idleTimeoutMs: this.#runtime.pausedTurnIdleTimeoutMs, lease: requestLease });
 					output.stopReason = "toolUse";
 					stream.push({ type: "done", reason: "toolUse", message: output });
 					runStream = undefined;
@@ -177,11 +221,19 @@ export class CursorStreamAdapter {
 				}
 			}
 		} catch (error) {
-			const aborted = error instanceof CursorStreamAbortError || options?.signal?.aborted;
 			const timedOut = error instanceof CursorStreamTimeoutError;
-			if (timedOut && pendingToolCalls.length > 0 && runStream && activeConversationKey) {
+			const toolBatchIdle = error instanceof CursorToolBatchIdleError;
+			let generationStale = (error instanceof CursorError && error.code === "StaleGeneration") ||
+				(requestLease?.signal.aborted === true && options?.signal?.aborted !== true);
+			if (!generationStale && options?.signal?.aborted !== true && (timedOut || toolBatchIdle) && pendingToolCalls.length > 0) {
+				try { requestLease?.assertCurrent("stream"); }
+				catch { generationStale = true; }
+			}
+			const aborted = !generationStale && (error instanceof CursorStreamAbortError || requestSignal?.aborted);
+			if (!aborted && !generationStale && (timedOut || toolBatchIdle) && pendingToolCalls.length > 0 && runStream && activeConversationKey) {
 				closeOpenContent(stream, output, textIndex, thinkingIndex);
-				this.#runtime.conversationState.pauseTurnForTools(activeConversationKey, runStream, pendingToolCalls, { signal: options?.signal, idleTimeoutMs: this.#runtime.pausedTurnIdleTimeoutMs });
+				requestSignalOwnedByPausedTurn = true;
+				this.#runtime.conversationState.pauseTurnForTools(activeConversationKey, runStream, pendingToolCalls, { signal: requestSignal, signalCleanup: requestSignalCleanup, idleTimeoutMs: this.#runtime.pausedTurnIdleTimeoutMs, lease: requestLease });
 				output.stopReason = "toolUse";
 				stream.push({ type: "done", reason: "toolUse", message: output });
 				terminalEventSent = true;
@@ -189,20 +241,24 @@ export class CursorStreamAdapter {
 				return;
 			}
 			output.stopReason = aborted ? "aborted" : "error";
-			output.errorMessage = aborted
-				? "Cursor stream aborted."
-				: timedOut
-					? "Cursor stream timed out while waiting for provider output."
-					: sanitizeDiagnosticText(error instanceof Error ? error.message : "Cursor stream failed.", [options?.apiKey ?? ""]);
-			stream.push({ type: "error", reason: output.stopReason, error: output });
-			if ((aborted || timedOut) && runStream && activeConversationKey) {
+			output.errorMessage = generationStale
+				? "Cursor request generation became stale."
+				: aborted
+					? "Cursor stream aborted."
+					: timedOut
+						? "Cursor stream timed out while waiting for provider output."
+						: sanitizeDiagnosticText(error instanceof Error ? error.message : "Cursor stream failed.", [options?.apiKey ?? ""]);
+			if ((aborted || timedOut || generationStale) && runStream) {
 				try {
-					await this.#runtime.conversationState.cancelTurn(activeConversationKey);
+					if (runStreamRegistered && activeConversationKey) await this.#runtime.conversationState.cancelTurn(activeConversationKey);
+					else await runStream.cancel();
 				} catch {
+					try { await runStream.close(); } catch {}
 				} finally {
 					runStream = undefined;
 				}
 			}
+			stream.push({ type: "error", reason: output.stopReason, error: output });
 		} finally {
 			try {
 				if (runStream && !options?.signal?.aborted) {
@@ -210,94 +266,11 @@ export class CursorStreamAdapter {
 					if (activeConversationKey) this.#runtime.conversationState.completeTurn(activeConversationKey);
 				}
 			} finally {
+				if (!requestSignalOwnedByPausedTurn) requestSignalCleanup();
 				stream.end(output);
 			}
 		}
 	}
-}
-class CursorStreamAbortError extends Error {
-	constructor() { super("Cursor stream aborted."); this.name = "CursorStreamAbortError"; }
-}
-class CursorStreamTimeoutError extends Error {
-	constructor() { super("Cursor stream timed out while waiting for provider output."); this.name = "CursorStreamTimeoutError"; }
-}
-interface CursorPendingMessageRead {
-	readonly promise: Promise<IteratorResult<CursorServerMessage>>;
-	consumed: boolean;
-}
-interface CursorMessageReadHandle {
-	readonly promise: Promise<IteratorResult<CursorServerMessage>>;
-	consumeResult(result: IteratorResult<CursorServerMessage>): void;
-	consumeError(error: Error): void;
-}
-type CursorBufferedMessageRead =
-	| { readonly kind: "result"; readonly result: IteratorResult<CursorServerMessage> }
-	| { readonly kind: "error"; readonly error: Error };
-class CursorMessageReader {
-	readonly #iterator: AsyncIterator<CursorServerMessage>;
-	#pending: CursorPendingMessageRead | undefined;
-	#buffered: CursorBufferedMessageRead | undefined;
-	constructor(messages: AsyncIterable<CursorServerMessage>) {
-		this.#iterator = messages[Symbol.asyncIterator]();
-	}
-	unread(result: IteratorResult<CursorServerMessage>): void {
-		if (this.#buffered) return;
-		this.#buffered = { kind: "result", result };
-	}
-	peek(): CursorMessageReadHandle {
-		if (this.#buffered) return this.peekBuffered(this.#buffered);
-		const pending = this.#pending ?? this.startRead();
-		return {
-			promise: pending.promise,
-			consumeResult: (result) => {
-				pending.consumed = true;
-				if (this.#pending === pending) this.#pending = undefined;
-				if (this.#buffered?.kind === "result" && this.#buffered.result === result) this.#buffered = undefined;
-			},
-			consumeError: (error) => {
-				pending.consumed = true;
-				if (this.#pending === pending) this.#pending = undefined;
-				if (this.#buffered?.kind === "error" && this.#buffered.error === error) this.#buffered = undefined;
-			},
-		};
-	}
-	private peekBuffered(buffered: CursorBufferedMessageRead): CursorMessageReadHandle {
-		return {
-			promise: buffered.kind === "result" ? Promise.resolve(buffered.result) : Promise.reject(buffered.error),
-			consumeResult: (result) => {
-				if (this.#buffered === buffered && buffered.kind === "result" && buffered.result === result) this.#buffered = undefined;
-			},
-			consumeError: (error) => {
-				if (this.#buffered === buffered && buffered.kind === "error" && buffered.error === error) this.#buffered = undefined;
-			},
-		};
-	}
-	private startRead(): CursorPendingMessageRead {
-		const pending: CursorPendingMessageRead = {
-			promise: this.#iterator.next().catch((error: Error) => {
-				throw normalizeCursorReadError(error);
-			}),
-			consumed: false,
-		};
-		this.#pending = pending;
-		pending.promise.then(
-			(result) => {
-				if (this.#pending !== pending) return;
-				this.#pending = undefined;
-				if (!pending.consumed) this.#buffered = { kind: "result", result };
-			},
-			(error: Error) => {
-				if (this.#pending !== pending) return;
-				this.#pending = undefined;
-				if (!pending.consumed) this.#buffered = { kind: "error", error };
-			},
-		);
-		void pending.promise.catch(() => undefined);
-		return pending;
-	}
-}
-function normalizeCursorReadError(error: Error): Error {
-	return error instanceof Error ? error : new Error(String(error));
 }
 function createOutputMessage(model: Model<Api>): AssistantMessage {
 	return {
@@ -328,7 +301,7 @@ function getTrailingToolResults(context: Context): CursorToolResultMessage[] {
 	return results;
 }
 function textFromToolResult(message: Extract<Context["messages"][number], { readonly role: "toolResult" }>): string {
-	return message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n");
+	return message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("");
 }
 function textFromMessage(message: Context["messages"][number]): string {
 	if (message.role === "user") {
@@ -380,16 +353,6 @@ function deterministicCursorConversationId(conversationKey: string): string {
 		hex.slice(20, 32),
 	].join("-");
 }
-function hasImageInput(context: Context): boolean {
-	for (const message of context.messages) {
-		if (message.role === "user") {
-			if (typeof message.content !== "string" && message.content.some((content) => content.type === "image")) return true;
-		} else if (message.role === "toolResult") {
-			if (message.content.some((content) => content.type === "image")) return true;
-		}
-	}
-	return false;
-}
 function appendTextDelta(stream: AssistantMessageEventStream, output: AssistantMessage, existingIndex: number | undefined, delta: string): number {
 	const contentIndex = existingIndex ?? output.content.length;
 	if (existingIndex === undefined) {
@@ -429,19 +392,18 @@ function appendToolCall(stream: AssistantMessageEventStream, output: AssistantMe
 		partial: output,
 	});
 }
+function closeTextContent(stream: AssistantMessageEventStream, output: AssistantMessage, index: number): void {
+	const block = output.content[index];
+	if (block?.type === "text") stream.push({ type: "text_end", contentIndex: index, content: block.text, partial: output });
+}
+
+function closeThinkingContent(stream: AssistantMessageEventStream, output: AssistantMessage, index: number): void {
+	const block = output.content[index];
+	if (block?.type === "thinking") stream.push({ type: "thinking_end", contentIndex: index, content: block.thinking, partial: output });
+}
 function closeOpenContent(stream: AssistantMessageEventStream, output: AssistantMessage, textIndex: number | undefined, thinkingIndex: number | undefined): void {
-	if (textIndex !== undefined) {
-		const block = output.content[textIndex];
-		if (block?.type === "text") {
-			stream.push({ type: "text_end", contentIndex: textIndex, content: block.text, partial: output });
-		}
-	}
-	if (thinkingIndex !== undefined) {
-		const block = output.content[thinkingIndex];
-		if (block?.type === "thinking") {
-			stream.push({ type: "thinking_end", contentIndex: thinkingIndex, content: block.thinking, partial: output });
-		}
-	}
+	if (textIndex !== undefined) closeTextContent(stream, output, textIndex);
+	if (thinkingIndex !== undefined) closeThinkingContent(stream, output, thinkingIndex);
 }
 function updateUsage(output: AssistantMessage, model: Model<Api>, message: Extract<CursorServerMessage, { readonly type: "usage" }>): void {
 	if (message.kind === "outputDelta") {
@@ -456,38 +418,21 @@ function updateUsage(output: AssistantMessage, model: Model<Api>, message: Extra
 	output.usage.totalTokens = output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 	output.usage.cost = calculateCost(model, output.usage);
 }
-async function readNextCursorMessage(reader: CursorMessageReader, signal: AbortSignal | undefined, timeoutMs: number): Promise<IteratorReadResult> {
-	if (signal?.aborted) return { kind: "aborted" };
-	let abortListener: (() => void) | undefined;
-	let timeout: ReturnType<typeof setTimeout> | undefined;
-	const abortPromise = signal ? new Promise<CursorReadRaceResult>((resolve) => {
-		abortListener = () => resolve({ kind: "aborted" });
-		signal.addEventListener("abort", abortListener, { once: true });
-	}) : undefined;
-	const timeoutPromise = timeoutMs > 0 ? new Promise<CursorReadRaceResult>((_resolve, reject) => {
-		timeout = setTimeout(() => reject(new CursorStreamTimeoutError()), timeoutMs);
-		timeout.unref?.();
-	}) : undefined;
-	const read = reader.peek();
-	const messagePromise = read.promise.then(
-		(result): CursorReadRaceResult => ({ kind: "message", result, read }),
-		(error: Error): CursorReadRaceResult => ({ kind: "error", error: normalizeCursorReadError(error), read }),
-	);
-	try {
-		const next = await Promise.race([messagePromise, ...(abortPromise ? [abortPromise] : []), ...(timeoutPromise ? [timeoutPromise] : [])]);
-		if (next.kind === "message") {
-			next.read.consumeResult(next.result);
-			return { kind: "message", result: next.result };
-		}
-		if (next.kind === "error") {
-			next.read.consumeError(next.error);
-			throw next.error;
-		}
-		return next;
-	} finally {
-		if (abortListener) signal?.removeEventListener("abort", abortListener);
-		if (timeout) clearTimeout(timeout);
+
+function combineAbortSignals(first: AbortSignal | undefined, second: AbortSignal): { signal: AbortSignal; cleanup(): void } {
+	const controller = new AbortController();
+	const abort = (): void => controller.abort();
+	for (const signal of [first, second]) {
+		if (signal?.aborted) controller.abort(signal.reason);
+		else signal?.addEventListener("abort", abort, { once: true });
 	}
+	return {
+		signal: controller.signal,
+		cleanup: () => {
+			first?.removeEventListener("abort", abort);
+			second.removeEventListener("abort", abort);
+		},
+	};
 }
 export function createCursorStreamAdapter(options: CursorStreamAdapterOptions): CursorStreamAdapter {
 	return new CursorStreamAdapter(options);

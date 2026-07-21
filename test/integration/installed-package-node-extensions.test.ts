@@ -79,6 +79,23 @@ if (!distBuilt || !nodeExe) {
 
 let tmpRoot: string | undefined;
 
+const isolatedSmokeEnvKeys = [
+  "ATOMIC_CODING_AGENT_DIR",
+  "PI_CODING_AGENT_DIR",
+  "ATOMIC_CODING_AGENT_SESSION_DIR",
+  "PI_CODING_AGENT_SESSION_DIR",
+  "ATOMIC_PACKAGE_DIR",
+  "PI_PACKAGE_DIR",
+  "ATOMIC_INTERACTIVE_ENGINE_CHILD",
+  "ATOMIC_INTERACTIVE_ENGINE_API_KEY",
+] as const;
+
+function createIsolatedSmokeEnv(homeDir: string, source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...source, HOME: homeDir, USERPROFILE: homeDir, ATOMIC_OFFLINE: "1", PI_OFFLINE: "1" };
+  for (const key of isolatedSmokeEnvKeys) delete env[key];
+  return env;
+}
+
 afterAll(() => {
   if (tmpRoot) fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
@@ -135,13 +152,18 @@ runTest(
     fs.mkdirSync(homeDir, { recursive: true });
     fs.mkdirSync(workDir, { recursive: true });
 
+    const hostileParentEnv = { ...process.env };
+    for (const key of isolatedSmokeEnvKeys) hostileParentEnv[key] = "must-not-leak";
+    const isolationProbe = createIsolatedSmokeEnv(homeDir, hostileParentEnv);
+    for (const key of isolatedSmokeEnvKeys) assert.equal(isolationProbe[key], undefined, `${key} leaked into installed smoke`);
+
     assert.ok(nodeExe, "real node executable must be resolved before the smoke runs");
     const result = spawnSync(nodeExe, [join(atomicDest, "dist", "cli.js"), "--no-session"], {
       cwd: workDir,
       input: "",
       encoding: "utf8",
       timeout: 180_000,
-      env: { ...process.env, HOME: homeDir, USERPROFILE: homeDir },
+      env: createIsolatedSmokeEnv(homeDir),
     });
 
     const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;

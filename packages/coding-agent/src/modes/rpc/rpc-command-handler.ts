@@ -2,6 +2,8 @@ import type { KeyId } from "@earendil-works/pi-tui";
 import { runCallback } from "../../core/callback-activity.ts";
 import { KeybindingsManager } from "../../core/keybindings.ts";
 import type { AgentSession } from "../../core/agent-session.ts";
+import { resolveAvailableProviderModel } from "../../core/model-registry-available-selection.ts";
+import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import {
 	createRpcErrorResponse,
@@ -109,10 +111,25 @@ export function createRpcCommandHandler({
 			}
 
 			case "set_model": {
-				const models = await session.modelRegistry.getAvailable();
-				const model = models.find((candidate) => candidate.provider === command.provider && candidate.id === command.modelId);
-				if (!model) {
-					return createRpcErrorResponse(id, "set_model", `Model not found: ${command.provider}/${command.modelId}`);
+				let model;
+				try {
+					if (session.modelRegistry.requiresProviderPreparation(command.provider)) {
+						await session.modelRegistry.prepareRequiredProviders({
+							allowNetwork: !isOfflineModeEnabled(), explicit: true, providers: new Set([command.provider]),
+						});
+					}
+					const availableModels = await session.modelRegistry.getAvailable();
+					model = resolveAvailableProviderModel(
+						availableModels,
+						command.provider,
+						command.modelId,
+						session.modelRegistry.requiresExactSelectionPersistence(command.provider),
+					);
+				} catch (error) {
+					return createRpcErrorResponse(id, "set_model", formatRpcErrorMessage(error));
+				}
+				if (!session.modelRegistry.hasConfiguredAuth(model)) {
+					return createRpcErrorResponse(id, "set_model", `Model not authenticated: ${command.provider}/${command.modelId}`);
 				}
 				await session.setModel(model);
 				return createRpcSuccessResponse(id, "set_model", session.model ?? model);
@@ -124,8 +141,13 @@ export function createRpcCommandHandler({
 			}
 
 			case "get_available_models": {
-				const models = await session.modelRegistry.getAvailable();
-				return createRpcSuccessResponse(id, "get_available_models", { models, scopedModels: session.scopedModels });
+				try {
+					await session.modelRegistry.prepareRequiredProviders({ allowNetwork: !isOfflineModeEnabled(), explicit: true });
+					const models = await session.modelRegistry.getAvailable();
+					return createRpcSuccessResponse(id, "get_available_models", { models, scopedModels: session.scopedModels });
+				} catch (error) {
+					return createRpcErrorResponse(id, "get_available_models", formatRpcErrorMessage(error));
+				}
 			}
 
 			case "logout_provider": {

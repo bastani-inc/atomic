@@ -1,4 +1,9 @@
 export * from "./agent-session-runtime.ts";
+export {
+  getPersistedProviderSelection,
+  getProviderModelReference,
+  providerModelsAreExactlyEqual,
+} from "./provider-model-reference.ts";
 export type {
   ExtensionAPI,
   ExtensionCommandContext,
@@ -6,9 +11,11 @@ export type {
   ExtensionFactory,
   SlashCommandInfo,
   SlashCommandSource,
+  ProviderModelReference,
   ToolDefinition,
 } from "./extensions/index.ts";
 export type { PromptTemplate } from "./prompt-templates.ts";
+export type { ProviderRefreshModelsContext } from "./model-registry-types.ts";
 export type { Skill } from "./skills.ts";
 export type {
   JsonObject,

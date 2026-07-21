@@ -1,16 +1,14 @@
-import { createEstimatedCursorCatalog, type CursorModelCatalog } from "./model-mapper.js";
-import { CursorTransportError, type CursorAgentTransport, type CursorTransportErrorCode } from "./transport.js";
+import { CursorError } from "./errors.js";
+import type { CursorAuthoritativeRouteRow } from "./route-reference.js";
+import { CursorTransportError, type CursorAgentTransport } from "./transport.js";
 
-export type CursorDiscoveryErrorCode = CursorTransportErrorCode | "NoUsableModels";
+export interface CursorDiscoveryResult {
+	readonly fetchedAt: number;
+	readonly rows: readonly CursorAuthoritativeRouteRow[];
+}
 
-export class CursorModelDiscoveryError extends Error {
-	constructor(
-		readonly code: CursorDiscoveryErrorCode,
-		message: string,
-	) {
-		super(message);
-		this.name = "CursorModelDiscoveryError";
-	}
+export interface CursorDiscoveryService {
+	discover(accessToken: string, requestId: string, signal?: AbortSignal): Promise<CursorDiscoveryResult>;
 }
 
 export interface CursorModelDiscoveryServiceOptions {
@@ -27,28 +25,40 @@ export class CursorModelDiscoveryService {
 		this.#now = options.now ?? Date.now;
 	}
 
-	async discover(accessToken: string, requestId: string, signal?: AbortSignal): Promise<CursorModelCatalog> {
+	async discover(accessToken: string, requestId: string, signal?: AbortSignal): Promise<CursorDiscoveryResult> {
 		try {
-			const models = await this.#transport.getUsableModels(accessToken, requestId, signal);
-			if (models.length === 0) {
-				throw new CursorModelDiscoveryError("NoUsableModels", "Cursor account has no usable models.");
-			}
-			return { source: "live", fetchedAt: this.#now(), models };
+			const rows = await this.#transport.getUsableModels(accessToken, requestId, signal);
+			return { fetchedAt: this.#now(), rows };
 		} catch (error) {
-			if (error instanceof CursorModelDiscoveryError) {
-				throw error;
-			}
+			if (error instanceof CursorError) throw error;
 			if (error instanceof CursorTransportError) {
-				throw new CursorModelDiscoveryError(error.code, error.message);
+				throw new CursorError(discoveryCode(error), error.message, {
+					operation: "discovery",
+					cause: error,
+					secrets: [accessToken],
+				});
 			}
 			if (signal?.aborted) {
-				throw new CursorModelDiscoveryError("Aborted", "Cursor model discovery was aborted.");
+				throw new CursorError("Cancelled", "Cursor model discovery was cancelled.", {
+					operation: "discovery",
+					secrets: [accessToken],
+				});
 			}
-			throw new CursorModelDiscoveryError("ProtocolError", error instanceof Error ? error.message : "Cursor model discovery failed.");
+			throw new CursorError("DiscoveryFailed", "Cursor model discovery failed.", {
+				operation: "discovery",
+				cause: error instanceof Error ? error : undefined,
+				secrets: [accessToken],
+			});
 		}
 	}
+}
 
-	fallbackCatalog(): CursorModelCatalog {
-		return createEstimatedCursorCatalog(this.#now());
-	}
+function discoveryCode(error: CursorTransportError): "AuthenticationRejected" | "Cancelled" | "ProtocolError" | "ProtocolMalformed" | "TransportError" | "Timeout" | "ServerError" {
+	if (error.code === "Authentication") return "AuthenticationRejected";
+	if (error.code === "Cancelled") return "Cancelled";
+	if (error.code === "ProtocolError") return "ProtocolError";
+	if (error.code === "ProtocolMalformed") return "ProtocolMalformed";
+	if (error.code === "Timeout") return "Timeout";
+	if (error.code === "ServerError") return "ServerError";
+	return "TransportError";
 }

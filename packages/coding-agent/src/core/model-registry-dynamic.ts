@@ -11,6 +11,7 @@ import { normalizeContextWindowOptions, validateContextWindowValue } from "./con
 import { applyModelOverride } from "./model-registry-builtins.ts";
 import type { DynamicProviderApplyInput, ProviderConfigInput } from "./model-registry-types.ts";
 import { registerLegacyOAuthProvider, unregisterLegacyOAuthProviders } from "./oauth-provider-bridge.ts";
+import { attachProviderModelReference } from "./provider-model-reference.ts";
 import { isLegacyEnvVarNameConfigValue } from "./resolve-config-value.ts";
 
 
@@ -177,6 +178,12 @@ export function validateProviderConfig(providerName: string, config: ProviderCon
 	}
 }
 
+export function mergeProviderConfig(previous: ProviderConfigInput | undefined, config: ProviderConfigInput): ProviderConfigInput {
+	const defined = Object.fromEntries(Object.entries(config).filter(([, value]) => value !== undefined)) as ProviderConfigInput;
+	if (defined.models?.length === 0 && (config.requiresPreparation ?? previous?.requiresPreparation) !== true) delete defined.models;
+	return { ...previous, ...defined };
+}
+
 export function applyProviderConfigToModels(input: DynamicProviderApplyInput): Model<Api>[] {
 	const { providerName, registrationSource, config, authStorage, modelOverrides, storeProviderRequestConfig, storeModelHeaders } = input;
 	let models = input.models;
@@ -194,7 +201,7 @@ export function applyProviderConfigToModels(input: DynamicProviderApplyInput): M
 
 	storeProviderRequestConfig(providerName, config);
 
-	if (config.models && config.models.length > 0) {
+	if (config.models && (config.models.length > 0 || config.requiresPreparation === true)) {
 		models = models.filter((m) => m.provider !== providerName);
 
 		for (const modelDef of config.models) {
@@ -205,7 +212,7 @@ export function applyProviderConfigToModels(input: DynamicProviderApplyInput): M
 				...modelOverride?.headers,
 			});
 
-			const model = {
+			const model = attachProviderModelReference({
 				id: modelDef.id,
 				name: modelDef.name,
 				api: api as Api,
@@ -224,7 +231,7 @@ export function applyProviderConfigToModels(input: DynamicProviderApplyInput): M
 				maxTokens: modelDef.maxTokens,
 				headers: undefined,
 				compat: modelDef.compat,
-			} as Model<Api>;
+			} as Model<Api>, modelDef.providerReference);
 			models.push(modelOverride ? applyModelOverride(model, modelOverride) : model);
 		}
 

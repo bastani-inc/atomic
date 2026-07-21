@@ -7,7 +7,8 @@ import type {
 	OAuthLoginCallbacks,
 	SimpleStreamOptions,
 } from "@earendil-works/pi-ai/compat";
-import type { RefreshModelsContext } from "@earendil-works/pi-ai";
+import type { ProviderRefreshModelsContext } from "../model-registry-types.ts";
+import type { ProviderModelReference } from "../provider-model-reference.ts";
 import type { ExtensionAPI } from "./api-types.ts";
 
 /** Configuration for registering a provider via pi.registerProvider(). */
@@ -26,10 +27,18 @@ export interface ProviderConfig {
 	headers?: Record<string, string>;
 	/** If true, adds Authorization: Bearer header with the resolved API key. */
 	authHeader?: boolean;
-	/** Models to register. If provided, replaces all existing models for this provider. */
+	/** Models to register. Non-empty lists replace existing rows; [] is authoritative only with requiresPreparation. */
 	models?: ProviderModelConfig[];
+	/** Require tracked authoritative preparation before this provider can be listed or resolved. */
+	requiresPreparation?: boolean;
+	/** Persist and restore the provider-owned exact selection record; provider+id restore is forbidden. */
+	requiresExactSelectionPersistence?: boolean;
+	/** Authenticate preparation and requests only with the exact host-stored OAuth credential. */
+	requiresHostOAuth?: boolean;
+	/** Validate exact stored OAuth before refresh and request-auth use. */
+	validateHostOAuth?(credentials: OAuthCredentials): void;
 	/** Refresh this provider's catalog. Successful results replace its extension-provided models. */
-	refreshModels?(context: RefreshModelsContext): Promise<ProviderModelConfig[]>;
+	refreshModels?(context: ProviderRefreshModelsContext): Promise<ProviderModelConfig[]>;
 	/** OAuth provider for /login support. The `id` is set automatically from the provider name. */
 	oauth?: {
 		/** Display name for the provider in login UI. */
@@ -73,6 +82,8 @@ export interface ProviderModelConfig {
 	headers?: Record<string, string>;
 	/** OpenAI compatibility settings. */
 	compat?: Model<Api>["compat"];
+	/** Typed provider-owned identity, carried through an official symbol side channel. */
+	providerReference?: ProviderModelReference;
 }
 
 /** Extension factory function type. Supports both sync and async initialization. */

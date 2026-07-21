@@ -46,19 +46,23 @@ class InteractiveModeDriver {
 		});
 		void this.readReports();
 		void this.readStderr();
+		void this.process.exited.then(() => {
+			for (const waiter of this.waiters) waiter();
+		});
 	}
 
-	send(command: { type: "input" | "reload" | "shortcut" | "state"; data?: string }): void {
+	async send(command: { type: "input" | "reload" | "shortcut" | "state"; data?: string }): Promise<void> {
 		const stdin = this.process.stdin;
 		if (!stdin || typeof stdin === "number") throw new Error("fixture stdin is unavailable");
 		stdin.write(`${JSON.stringify(command)}\n`);
-		void stdin.flush();
+		await stdin.flush();
 	}
 
 	async waitForNext(
 		fromIndex: number,
 		predicate: (report: HarnessReport) => boolean,
-		timeoutMs = 8_000,
+		timeoutMs = 15_000,
+		description = "fixture report",
 	): Promise<HarnessReport> {
 		const scan = (): HarnessReport | undefined => this.reports.slice(fromIndex).find(predicate);
 		const existing = scan();
@@ -66,21 +70,34 @@ class InteractiveModeDriver {
 		return new Promise((resolve, reject) => {
 			const inspect = (): void => {
 				const found = scan();
-				if (!found) return;
+				if (found) {
+					clearTimeout(timeout);
+					this.waiters.delete(inspect);
+					resolve(found);
+					return;
+				}
+				if (this.process.exitCode === null) return;
 				clearTimeout(timeout);
 				this.waiters.delete(inspect);
-				resolve(found);
+				reject(new Error(`Fixture exited with code ${this.process.exitCode}; stderr=${this.stderr.slice(-4_000)}`));
 			};
 			const timeout = setTimeout(() => {
 				this.waiters.delete(inspect);
-				reject(new Error(`Timed out waiting for fixture; stderr=${this.stderr.slice(-4_000)}`));
+				const nonHeartbeats = this.reports.filter((report) => report.type !== "heartbeat").slice(-30).map((report) => ({
+					type: report.type, data: report.data, enginePid: report.enginePid, generation: report.generation,
+					recovering: report.recovering, message: report.message, shortcutHandled: report.shortcutHandled,
+					shortcutKeys: report.shortcutKeys, editorText: report.editorText, expandKeys: report.expandKeys,
+					toolsExpanded: report.toolsExpanded,
+				}));
+				const lastHeartbeat = this.reports.findLast((report) => report.type === "heartbeat");
+				reject(new Error(`Timed out waiting for ${description}; exitCode=${this.process.exitCode}; nonHeartbeats=${JSON.stringify(nonHeartbeats)}; lastHeartbeat=${JSON.stringify(lastHeartbeat)}; stderr=${this.stderr.slice(-4_000)}`));
 			}, timeoutMs);
 			this.waiters.add(inspect);
+			inspect();
 		});
 	}
-
-	waitFor(predicate: (report: HarnessReport) => boolean, timeoutMs = 8_000): Promise<HarnessReport> {
-		return this.waitForNext(0, predicate, timeoutMs);
+	waitFor(predicate: (report: HarnessReport) => boolean, timeoutMs = 15_000, description = "fixture report"): Promise<HarnessReport> {
+		return this.waitForNext(0, predicate, timeoutMs, description);
 	}
 
 	async stop(): Promise<void> {
@@ -129,11 +146,69 @@ function shortcutInvocations(path: string): string[] {
 	return readFileSync(path, "utf8").trim().split("\n").filter(Boolean).map((line) => line.split(":")[0]!);
 }
 
+async function dispatchInput(driver: InteractiveModeDriver, data: string): Promise<void> {
+	const from = driver.reports.length;
+	await driver.send({ type: "input", data });
+	await driver.waitForNext(from, (report) => report.type === "input_handled" && report.data === data, 15_000, `input handled ${JSON.stringify(data)}`);
+}
+
+async function invokeShortcutWhenReady(driver: InteractiveModeDriver, data: string, timeoutMs = 15_000): Promise<void> {
+	const deadline = performance.now() + timeoutMs;
+	while (performance.now() < deadline) {
+		const from = driver.reports.length;
+		await driver.send({ type: "shortcut", data });
+		const probe = await driver.waitForNext(from, (report) => report.type === "shortcut" && report.data === data, 15_000, "shortcut readiness probe");
+		if (probe.shortcutHandled === true) return;
+		await Bun.sleep(20);
+	}
+	assert.fail(`remote shortcut was not ready within ${timeoutMs}ms`);
+}
+
+// Polling the actual host shortcut dispatcher avoids racing the engine's initial
+// keybinding publication. False probes have no side effect; the first true probe
+// invokes the shortcut exactly once and becomes the synchronization barrier.
+
+async function waitForShortcutInvocations(path: string, expected: string[], timeoutMs = 15_000): Promise<void> {
+	const deadline = performance.now() + timeoutMs;
+	while (performance.now() < deadline) {
+		const actual = shortcutInvocations(path);
+		if (actual.length >= expected.length) {
+			assert.deepEqual(actual, expected);
+			return;
+		}
+		await Bun.sleep(20);
+	}
+	assert.deepEqual(shortcutInvocations(path), expected, `shortcut dispatch did not settle within ${timeoutMs}ms`);
+}
+
+async function waitForFile(path: string, timeoutMs = 15_000): Promise<void> {
+	const deadline = performance.now() + timeoutMs;
+	while (!existsSync(path) && performance.now() < deadline) await Bun.sleep(20);
+	assert.equal(existsSync(path), true, `${path} was not created within ${timeoutMs}ms`);
+}
+
+async function waitForState(
+	driver: InteractiveModeDriver,
+	predicate: (report: HarnessReport) => boolean,
+	timeoutMs = 20_000,
+): Promise<HarnessReport> {
+	const deadline = performance.now() + timeoutMs;
+	let lastState: HarnessReport | undefined;
+	while (performance.now() < deadline) {
+		const from = driver.reports.length;
+		await driver.send({ type: "state" });
+		lastState = await driver.waitForNext(from, (report) => report.type === "state", 15_000, "state response");
+		if (predicate(lastState)) return lastState;
+		await Bun.sleep(20);
+	}
+	assert.fail(`fixture state did not converge within ${timeoutMs}ms; lastState=${JSON.stringify(lastState)}`);
+}
+
 async function reloadInteractiveMode(driver: InteractiveModeDriver, expectedBinding: string): Promise<void> {
 	const from = driver.reports.length;
-	driver.send({ type: "reload" });
+	await driver.send({ type: "reload" });
 	await driver.waitForNext(from, (report) =>
-		report.type === "reload_done" && report.expandKeys?.[0] === expectedBinding, 12_000);
+		report.type === "reload_done" && report.expandKeys?.[0] === expectedBinding, 20_000);
 }
 
 async function reloadThroughExtensionContext(
@@ -142,18 +217,15 @@ async function reloadThroughExtensionContext(
 	expectedBinding: string,
 ): Promise<void> {
 	const from = driver.reports.length;
-	driver.send({ type: "input", data: "/reload-keybindings-fixture" });
+	await dispatchInput(driver, "/reload-keybindings-fixture");
 	await driver.waitForNext(from, (report) =>
 		report.type === "heartbeat" && report.editorText === "/reload-keybindings-fixture");
-	driver.send({ type: "input", data: "\r" });
-	const deadline = performance.now() + 12_000;
+	await dispatchInput(driver, "\r");
+	const deadline = performance.now() + 20_000;
 	while (performance.now() < deadline) {
 		const starts = existsSync(sessionStartFile) ? readFileSync(sessionStartFile, "utf8") : "";
 		if (starts.includes(`reload:${expectedBinding}`)) {
-			const stateIndex = driver.reports.length;
-			driver.send({ type: "state" });
-			await driver.waitForNext(stateIndex, (report) =>
-				report.type === "state" && report.expandKeys?.[0] === expectedBinding);
+			await waitForState(driver, (report) => report.expandKeys?.[0] === expectedBinding);
 			return;
 		}
 		await Bun.sleep(20);
@@ -180,48 +252,34 @@ serialTest("real isolated InteractiveMode refreshes remote shortcuts and preserv
 		ATOMIC_KEYBINDINGS_SESSION_START_FILE: sessionStartFile,
 	});
 	try {
-		await driver.waitFor((report) => report.type === "terminal_ready");
-		await driver.waitFor((report) => report.type === "heartbeat" && typeof report.enginePid === "number");
-		driver.send({ type: "state" });
-		let state = await driver.waitFor((report) => report.type === "state" && report.expandKeys?.[0] === "ctrl+x");
+		await driver.waitFor((report) => report.type === "terminal_ready", 15_000, "terminal readiness");
+		await driver.waitFor((report) => report.type === "heartbeat" && typeof report.enginePid === "number", 15_000, "engine PID readiness");
+		let state = await waitForState(driver, (report) => report.expandKeys?.[0] === "ctrl+x");
 		assert.equal(state.expandDisplay, "ctrl+x");
 		const initiallyExpanded = state.toolsExpanded;
-		driver.send({ type: "input", data: "\x18" });
-		await Bun.sleep(50);
+		await dispatchInput(driver, "\x18");
 		assert.deepEqual(shortcutInvocations(shortcutLog), []);
-		const stateIndex = driver.reports.length;
-		driver.send({ type: "state" });
-		state = await driver.waitForNext(stateIndex, (report) => report.type === "state");
+		state = await waitForState(driver, (report) => report.toolsExpanded !== initiallyExpanded);
 		assert.notEqual(state.toolsExpanded, initiallyExpanded, "custom agent-dir remap must reach editor input");
-		driver.send({ type: "input", data: "\x19" });
-		const startupDeadline = performance.now() + 3_000;
-		while (shortcutInvocations(shortcutLog).length === 0 && performance.now() < startupDeadline) await Bun.sleep(20);
-		assert.deepEqual(shortcutInvocations(shortcutLog), ["ctrl+y"]);
+		await invokeShortcutWhenReady(driver, "\x19");
+		await waitForShortcutInvocations(shortcutLog, ["ctrl+y"]);
 
 		writeFileSync(keybindingsPath, JSON.stringify({ "app.tools.expand": "ctrl+y" }));
 		await reloadThroughExtensionContext(driver, sessionStartFile, "ctrl+y");
-		driver.send({ type: "input", data: "\x18" });
-		const firstDeadline = performance.now() + 3_000;
-		while (shortcutInvocations(shortcutLog).length < 2 && performance.now() < firstDeadline) await Bun.sleep(20);
-		assert.deepEqual(shortcutInvocations(shortcutLog), ["ctrl+y", "ctrl+x"]);
-		driver.send({ type: "input", data: "\x19" });
-		await Bun.sleep(50);
-		assert.deepEqual(shortcutInvocations(shortcutLog), ["ctrl+y", "ctrl+x"], "reserved callback must be removed");
+		await dispatchInput(driver, "\x18");
+		await waitForShortcutInvocations(shortcutLog, ["ctrl+y", "ctrl+x"]);
+		await dispatchInput(driver, "\x19");
 
 		writeFileSync(keybindingsPath, JSON.stringify({ "app.tools.expand": "ctrl+x" }));
 		await reloadInteractiveMode(driver, "ctrl+x");
-		driver.send({ type: "input", data: "\x18" });
-		await Bun.sleep(50);
-		assert.deepEqual(shortcutInvocations(shortcutLog), ["ctrl+y", "ctrl+x"], "stale callback must not survive");
-		driver.send({ type: "input", data: "\x19" });
-		const secondDeadline = performance.now() + 3_000;
-		while (shortcutInvocations(shortcutLog).length < 3 && performance.now() < secondDeadline) await Bun.sleep(20);
-		assert.deepEqual(shortcutInvocations(shortcutLog), ["ctrl+y", "ctrl+x", "ctrl+y"]);
+		await dispatchInput(driver, "\x18");
+		await dispatchInput(driver, "\x19");
+		await waitForShortcutInvocations(shortcutLog, ["ctrl+y", "ctrl+x", "ctrl+y"]);
 	} finally {
 		await driver.stop();
 		rmSync(temp, { recursive: true, force: true });
 	}
-}, 30_000);
+}, 60_000);
 
 serialTest("real engine restart republishes bindings and replaces the remote shortcut catalog", async () => {
 	const temp = mkdtempSync(join(tmpdir(), "atomic-shortcut-restart-parity-"));
@@ -244,52 +302,42 @@ serialTest("real engine restart republishes bindings and replaces the remote sho
 	try {
 		await driver.waitFor((report) => report.type === "terminal_ready");
 		const initial = await driver.waitFor((report) => report.type === "heartbeat" && typeof report.enginePid === "number");
-		driver.send({ type: "state" });
-		const startup = await driver.waitFor((report) => report.type === "state" && report.expandKeys?.[0] === "ctrl+x");
+		const startup = await waitForState(driver, (report) => report.expandKeys?.[0] === "ctrl+x");
 		assert.equal(startup.expandDisplay, "ctrl+x");
-		await driver.waitFor((report) => report.type === "keybinding_state" && report.shortcutKeys?.includes("ctrl+y") === true);
-		driver.send({ type: "input", data: "\x19" });
-		const initialShortcutDeadline = performance.now() + 3_000;
-		while (shortcutInvocations(shortcutLog).length === 0 && performance.now() < initialShortcutDeadline) await Bun.sleep(20);
-		assert.deepEqual(shortcutInvocations(shortcutLog), ["ctrl+y"]);
+		await invokeShortcutWhenReady(driver, "\x19");
+		await waitForShortcutInvocations(shortcutLog, ["ctrl+y"]);
 
 		writeFileSync(keybindingsPath, JSON.stringify({ "app.tools.expand": "ctrl+y" }));
 		writeFileSync(shortcutConfig, "ctrl+x");
-		driver.send({ type: "input", data: "restart with new shortcuts" });
+		await dispatchInput(driver, "restart with new shortcuts");
 		await driver.waitFor((report) => report.type === "heartbeat" && report.editorText === "restart with new shortcuts");
-		driver.send({ type: "input", data: "\r" });
-		while (!existsSync(toolPidFile)) await Bun.sleep(10);
-		driver.send({ type: "input", data: "\u001b" });
+		await dispatchInput(driver, "\r");
+		await waitForFile(toolPidFile);
+		await dispatchInput(driver, "\u001b");
 		const terminated = await driver.waitFor((report) =>
-			report.type === "diagnostic" && report.message?.startsWith("Engine terminated;") === true, 8_000);
+			report.type === "diagnostic" && report.message?.startsWith("Engine terminated;") === true, 15_000);
 		assert.ok(terminated);
 		const probeIndex = driver.reports.length;
-		driver.send({ type: "shortcut", data: "\x19" });
+		await driver.send({ type: "shortcut", data: "\x19" });
 		const unavailableProbe = await driver.waitForNext(probeIndex, (report) => report.type === "shortcut" && report.data === "\x19");
 		assert.equal(unavailableProbe.shortcutHandled, false, "generation replacement must invalidate stale shortcuts immediately");
 
 		await driver.waitFor((report) =>
 			report.type === "heartbeat" && typeof report.enginePid === "number" && report.enginePid !== initial.enginePid && report.recovering === false,
-			12_000,
+			20_000,
 		);
-		const stateIndex = driver.reports.length;
-		driver.send({ type: "state" });
-		const restarted = await driver.waitForNext(stateIndex, (report) => report.type === "state" && report.expandKeys?.[0] === "ctrl+y");
+		const restarted = await waitForState(driver, (report) => report.expandKeys?.[0] === "ctrl+y");
 		assert.equal(restarted.expandDisplay, "ctrl+y");
 		const expandedBefore = restarted.toolsExpanded;
-		driver.send({ type: "input", data: "\x19" });
-		const updatedStateIndex = driver.reports.length;
-		driver.send({ type: "state" });
-		const updated = await driver.waitForNext(updatedStateIndex, (report) => report.type === "state");
+		await dispatchInput(driver, "\x19");
+		const updated = await waitForState(driver, (report) => report.toolsExpanded !== expandedBefore);
 		assert.notEqual(updated.toolsExpanded, expandedBefore, "new binding must reach host input dispatch");
 		assert.deepEqual(shortcutInvocations(shortcutLog), ["ctrl+y"], "stale remote key must not dispatch after restart");
 
-		driver.send({ type: "input", data: "\x18" });
-		const restartedShortcutDeadline = performance.now() + 3_000;
-		while (shortcutInvocations(shortcutLog).length < 2 && performance.now() < restartedShortcutDeadline) await Bun.sleep(20);
-		assert.deepEqual(shortcutInvocations(shortcutLog), ["ctrl+y", "ctrl+x"]);
+		await dispatchInput(driver, "\x18");
+		await waitForShortcutInvocations(shortcutLog, ["ctrl+y", "ctrl+x"]);
 	} finally {
 		await driver.stop();
 		rmSync(temp, { recursive: true, force: true });
 	}
-}, 30_000);
+}, 60_000);

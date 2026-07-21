@@ -313,9 +313,9 @@ After registration, users can authenticate via `/login corporate-ai`.
 
 Existing extension OAuth definitions keep their `login`, `refreshToken`, `getApiKey`, and optional `modifyModels` methods. OAuth refresh is serialized so concurrent requests do not overwrite each other's credentials.
 
-## Dynamic model catalog refresh
+## Dynamic model catalog refresh and required preparation
 
-Providers whose catalogs change at runtime can add `refreshModels`. Atomic calls it during the asynchronous model refresh used by the model picker and authentication flows:
+Providers whose catalogs change at runtime can implement `refreshModels`. Atomic passes the current credential/network/store context and publishes the returned model list:
 
 ```typescript
 pi.registerProvider("corporate-ai", {
@@ -323,15 +323,47 @@ pi.registerProvider("corporate-ai", {
   api: "openai-responses",
   apiKey: "$CORPORATE_AI_KEY",
   models: cachedModels,
-  async refreshModels({ signal, force, credential, store }) {
-    const models = await fetchCorporateModels({ signal, force, credential });
+  async refreshModels({ signal, force, allowNetwork, credential, store }) {
+    const models = await fetchCorporateModels({ signal, force, allowNetwork, credential });
     await store.write({ models, checkedAt: Date.now() });
     return models;
   }
 });
 ```
 
-The current catalog stays readable while refresh is pending. Successful provider results are applied independently; a provider that fails, times out, or observes an aborted `signal` retains its previous list. Use the provider-scoped `store` only when the catalog should persist across sessions.
+For an ordinary dynamic provider, the previous readable list stays published while refresh is pending. A successful non-empty result replaces that provider's extension models; `[]`, failure, timeout, or an aborted `signal` retains the previous ordinary list. This preserves existing empty-array compatibility. The extension decides whether to persist through the provider-scoped `store`.
+
+Set `requiresPreparation: true` when a provider's authority must finish before startup, listing, resolution, direct SDK sessions, or workflow-stage sessions can use its models. For such a provider only, Atomic starts each preparation cycle from an authoritative empty extension catalog, waits for the current `refreshModels` result, treats successful `[]` as authoritative, and surfaces current failures instead of exposing stale routes. An initially unconfigured provider remains empty so it does not block unrelated providers.
+
+The refresh context contains:
+
+- `signal`, `force`, and `allowNetwork` for bounded cancellation and offline/forced refresh behavior;
+- `credential`, the ordinary effective provider credential;
+- `hostCredential`, the exact credential snapshot held by host `AuthStorage`;
+- `credentialGeneration`, `providerInstanceGeneration`, and `isCurrentGeneration()` for fencing stale asynchronous work; and
+- `store`, a provider-scoped persistence adapter whose conditional writes/deletes are rejected after the generation becomes stale.
+
+Never log, include in diagnostics, or persist `hostCredential`. `requiresHostOAuth: true` is the specialized policy for providers that must use only the exact host-stored OAuth credential for preparation and requests; runtime keys, environment keys, and config-key fallback are then ignored. Such a provider may supply `validateHostOAuth(credentials)` to reject malformed stored OAuth before either an expired-token refresh or request authentication. Do not set these options for ordinary API-key providers.
+
+### Exact provider-owned model identity
+
+Set `requiresExactSelectionPersistence: true` when provider plus public model ID is insufficient—for example, when an authoritative catalog may contain duplicate occurrences. Each returned `ProviderModelConfig` can carry a typed `providerReference: ProviderModelReference`:
+
+```typescript
+const providerReference: ProviderModelReference = {
+  provider: "corporate-ai",
+  schemaVersion: 1,
+  data: { routeId, variant, occurrence },
+  selection: { version: 1, provider: "corporate-ai", routeId, variant, occurrence },
+  matchesSelection(value) {
+    return isExactVersion1Selection(value, { routeId, variant, occurrence });
+  }
+};
+```
+
+The reference travels through Atomic on an official symbol side channel, so providers can distinguish models whose public `provider/id` text is identical without rewriting `id` or adding arbitrary model metadata. `selection` is the plain JSON-safe versioned record that the host may save in settings and sessions. `matchesSelection` must strictly reject old versions, missing named identity fields, and every named identity mismatch. It may permissively ignore same-version metadata that does not influence identity; unsupported records should require reselection rather than migration or fallback. Provider-owned `data` and `selection` must not contain credentials or raw private account identity.
+
+`ProviderModelReference` and the helpers `getProviderModelReference()`, `getPersistedProviderSelection()`, and `providerModelsAreExactlyEqual()` are exported from `@bastani/atomic`. Use the helpers instead of reading the symbol directly or comparing only `provider` and `id`.
 
 ### OAuthLoginCallbacks
 
@@ -595,9 +627,23 @@ interface ProviderConfig {
   /** If true, adds Authorization: Bearer header with the resolved API key. */
   authHeader?: boolean;
 
-  /** Models to register. If provided, replaces all existing models for this provider. */
+  /** Non-empty lists replace existing rows; [] is authoritative only with requiresPreparation. */
   models?: ProviderModelConfig[];
 
+  /** Await current authoritative preparation before host reads. */
+  requiresPreparation?: boolean;
+
+  /** Persist and require a provider-owned exact selection record. */
+  requiresExactSelectionPersistence?: boolean;
+
+  /** Use only the exact host-stored OAuth credential for preparation and requests. */
+  requiresHostOAuth?: boolean;
+
+  /** Validate stored OAuth before refresh and request-auth use. */
+  validateHostOAuth?(credentials: OAuthCredentials): void;
+
+  /** Refresh the catalog; [] is authoritative only for requiresPreparation providers. */
+  refreshModels?(context: ProviderRefreshModelsContext): Promise<ProviderModelConfig[]>;
   /** OAuth provider for /login support. */
   oauth?: {
     name: string;
@@ -661,6 +707,9 @@ interface ProviderModelConfig {
 
   /** Custom headers for this specific model. */
   headers?: Record<string, string>;
+
+  /** Provider-owned identity/selection side channel for exact duplicate occurrences. */
+  providerReference?: ProviderModelReference;
 
   /** API-specific provider compatibility settings. */
   compat?: {

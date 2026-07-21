@@ -3,14 +3,14 @@ import assert from "node:assert/strict";
 import type { Context } from "@earendil-works/pi-ai/compat";
 import { CursorStreamAdapter } from "../../packages/cursor/src/stream.js";
 import type { CursorAgentTransport, CursorRunRequest, CursorRunStream, CursorServerMessage, CursorToolResultMessage } from "../../packages/cursor/src/transport.js";
-import { CursorMockRunStream, CursorMockTransport } from "./cursor-test-helpers.js";
+import { CursorMockRunStream, CursorMockTransport, cursorRouteAuthority } from "./cursor-test-helpers.js";
 import type { CursorUsableModel } from "../../packages/cursor/src/model-mapper.js";
 import { collectEvents, collectEventsWithTimeout, context, deferred, model } from "./cursor-stream-helpers.js";
 
 describe("CursorStreamAdapter", () => {
 	test("uses the production UUID generator when no test UUID is injected", async () => {
 		const transport = new CursorMockTransport({ messages: [{ type: "textDelta", text: "ok" }, { type: "done", reason: "stop" }] });
-		const adapter = new CursorStreamAdapter({ transport });
+		const adapter = new CursorStreamAdapter({ transport, routeAuthority: cursorRouteAuthority() });
 
 		const events = await collectEventsWithTimeout(adapter.streamSimple(model(), context(), { apiKey: "access-secret" }));
 
@@ -19,10 +19,22 @@ describe("CursorStreamAdapter", () => {
 		assert.deepEqual(transport.getLifecycleSnapshot(), { openStreams: 0, cancelledStreams: 0, closedStreams: 1 });
 	});
 
+	test("emits exactly one successful terminal event when provider messages end cleanly", async () => {
+		const transport = new CursorMockTransport({ messages: [] });
+		const adapter = new CursorStreamAdapter({ transport, routeAuthority: cursorRouteAuthority(), uuid: () => "run-clean-eof" });
+
+		const events = await collectEventsWithTimeout(adapter.streamSimple(model(), context(), { apiKey: "access-secret" }));
+
+		assert.deepEqual(events.map((event) => event.type), ["start", "done"]);
+		assert.equal(events.at(-1)?.type, "done");
+		assert.deepEqual(transport.getLifecycleSnapshot(), { openStreams: 0, cancelledStreams: 0, closedStreams: 1 });
+	});
+
 	test("turns UUID generator failures into a terminal error event and closes the stream", async () => {
 		const transport = new CursorMockTransport({ messages: [{ type: "done", reason: "stop" }] });
 		const adapter = new CursorStreamAdapter({
 			transport,
+			routeAuthority: cursorRouteAuthority(),
 			uuid: () => {
 				throw new Error("uuid exploded access-secret");
 			},
@@ -57,13 +69,14 @@ describe("CursorStreamAdapter", () => {
 				{ type: "done", reason: "toolUse" },
 			],
 		});
-		const adapter = new CursorStreamAdapter({ transport, uuid: () => "run-1" });
+		const adapter = new CursorStreamAdapter({ transport, routeAuthority: cursorRouteAuthority(), uuid: () => "run-1" });
 		const events = await collectEvents(adapter.streamSimple(model(), context(), { apiKey: "access-secret", reasoning: "high", sessionId: "session-tools" }));
 
 		assert.deepEqual(events.map((event) => event.type), [
 			"start",
 			"thinking_start",
 			"thinking_delta",
+			"thinking_end",
 			"text_start",
 			"text_delta",
 			"text_delta",
@@ -71,7 +84,6 @@ describe("CursorStreamAdapter", () => {
 			"toolcall_delta",
 			"toolcall_end",
 			"text_end",
-			"thinking_end",
 			"done",
 		]);
 		const done = events.find((event) => event.type === "done");
@@ -82,7 +94,7 @@ describe("CursorStreamAdapter", () => {
 			assert.equal(done.message.usage.output, 5);
 			assert.equal(done.message.usage.totalTokens, 15);
 		}
-		assert.equal(transport.runs[0]?.request.resolvedModelId, "composer-2-high");
+		assert.equal(transport.runs[0]?.request.routeReference.routeId, "composer-2");
 		assert.deepEqual(transport.getLifecycleSnapshot(), { openStreams: 1, cancelledStreams: 0, closedStreams: 0 });
 		await adapter.dispose();
 	});
@@ -93,7 +105,7 @@ describe("CursorStreamAdapter", () => {
 			{ type: "textDelta", text: "still running" },
 			{ type: "done", reason: "stop" },
 		] });
-		const adapter = new CursorStreamAdapter({ transport, uuid: () => "run-non-mcp" });
+		const adapter = new CursorStreamAdapter({ transport, routeAuthority: cursorRouteAuthority(), uuid: () => "run-non-mcp" });
 
 		const events = await collectEvents(adapter.streamSimple(model(), context(), { apiKey: "access-secret" }));
 
@@ -110,7 +122,7 @@ describe("CursorStreamAdapter", () => {
 			{ type: "usage", kind: "checkpoint", outputTokens: 20 },
 			{ type: "done", reason: "stop" },
 		] });
-		const adapter = new CursorStreamAdapter({ transport, uuid: () => "run-usage" });
+		const adapter = new CursorStreamAdapter({ transport, routeAuthority: cursorRouteAuthority(), uuid: () => "run-usage" });
 		const events = await collectEvents(adapter.streamSimple(model(), context(), { apiKey: "access-secret" }));
 		const done = events.at(-1);
 		assert.equal(done?.type, "done");
@@ -123,7 +135,7 @@ describe("CursorStreamAdapter", () => {
 
 	test("ends a tool-call-only Cursor turn with toolUse", async () => {
 		const transport = new CursorMockTransport({ messages: [{ type: "toolCall", id: "tool-1", name: "Read", argumentsJson: "{\"path\":\"README.md\"}" }] });
-		const adapter = new CursorStreamAdapter({ transport, uuid: () => "run-tool" });
+		const adapter = new CursorStreamAdapter({ transport, routeAuthority: cursorRouteAuthority(), uuid: () => "run-tool" });
 		const events = await collectEvents(adapter.streamSimple(model(), context(), { apiKey: "access-secret", sessionId: "session-tool" }));
 		const done = events.at(-1);
 		assert.equal(done?.type, "done");
@@ -145,7 +157,7 @@ describe("CursorStreamAdapter", () => {
 			}
 		}
 		const transport = new WaitingToolTransport();
-		const adapter = new CursorStreamAdapter({ transport, uuid: () => "run-tool-waiting" });
+		const adapter = new CursorStreamAdapter({ transport, routeAuthority: cursorRouteAuthority(), uuid: () => "run-tool-waiting" });
 
 		const events = await collectEventsWithTimeout(adapter.streamSimple(model(), context(), { apiKey: "access-secret", sessionId: "session-tool-waiting", timeoutMs: 10_000 }), 250);
 
@@ -215,7 +227,7 @@ describe("CursorStreamAdapter", () => {
 		}
 
 		const transport = new TimeoutResumeTransport();
-		const adapter = new CursorStreamAdapter({ transport, uuid: () => "request-timeout-resume" });
+		const adapter = new CursorStreamAdapter({ transport, routeAuthority: cursorRouteAuthority(), uuid: () => "request-timeout-resume" });
 
 		const firstEvents = await collectEventsWithTimeout(adapter.streamSimple(model(), context(), { apiKey: "access-secret", sessionId: "session-timeout-resume", timeoutMs: 1 }), 250);
 
@@ -235,7 +247,7 @@ describe("CursorStreamAdapter", () => {
 			{ type: "textDelta", text: "after tool" },
 			{ type: "done", reason: "stop" },
 		] });
-		const adapter = new CursorStreamAdapter({ transport, uuid: () => "run-tool-missing-session" });
+		const adapter = new CursorStreamAdapter({ transport, routeAuthority: cursorRouteAuthority(), uuid: () => "run-tool-missing-session" });
 
 		const firstEvents = await collectEvents(adapter.streamSimple(model(), context(), { apiKey: "access-secret" }));
 		assert.deepEqual(firstEvents.map((event) => event.type), ["start", "toolcall_start", "toolcall_delta", "toolcall_end", "done"]);

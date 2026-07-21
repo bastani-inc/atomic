@@ -8,9 +8,11 @@ import {
 import { CursorProtobufProtocolCodec } from "./proto/protobuf-codec.js";
 import { assertSuccessfulStatus, CursorTransportError, sanitizeCursorTransportError, toError } from "./transport-errors.js";
 import { encodeCursorConnectFrame } from "./transport-frame.js";
+import { assertCurrentCursorInputIsTextOnly } from "./input-validation.js";
 import { createDefaultCursorHttp2Client } from "./transport-native-client.js";
 import { Http2CursorRunStream } from "./transport-run-stream.js";
 import { runWithDeadline } from "./transport-timeouts.js";
+import { assertCursorRouteReference } from "./route-reference.js";
 import type {
 	CursorAgentTransport,
 	CursorHttp2Client,
@@ -46,7 +48,7 @@ export class Http2CursorAgentTransport implements CursorAgentTransport {
 
 	async getUsableModels(accessToken: string, requestId: string, signal?: AbortSignal): Promise<readonly CursorUsableModel[]> {
 		if (signal?.aborted) {
-			throw new CursorTransportError("Aborted", "Cursor model discovery was aborted before the request started.");
+			throw new CursorTransportError("Cancelled", "Cursor model discovery was aborted before the request started.");
 		}
 		const headers = buildCursorRpcHeaders(accessToken, requestId, "application/proto");
 		try {
@@ -68,32 +70,42 @@ export class Http2CursorAgentTransport implements CursorAgentTransport {
 			// stream envelopes; pass the raw protobuf response to the codec.
 			return this.#codec.decodeGetUsableModelsResponse(response.body);
 		} catch (error) {
-			throw sanitizeCursorTransportError(toError(error), [accessToken]);
+			throw sanitizeCursorTransportError(toError(error), [accessToken], { operation: "discovery" });
 		}
 	}
 
 	async run(request: CursorRunRequest): Promise<CursorRunStream> {
+		assertCursorRouteReference(request.routeReference);
 		if (request.signal?.aborted) {
-			throw new CursorTransportError("Aborted", "Cursor stream was aborted before the request started.");
+			throw new CursorTransportError("Cancelled", "Cursor stream was aborted before the request started.");
 		}
 		const headers = {
 			...buildCursorRpcHeaders(request.accessToken, request.requestId, "application/connect+proto"),
 			"connect-protocol-version": "1",
 		};
 		try {
+			assertCurrentCursorInputIsTextOnly(request.context, request.model.id);
 			const initialBody = encodeCursorConnectFrame(this.#codec.encodeRunRequest(request));
 			const handle = await runWithDeadline(
 				(parentSignal) => this.#client.openStream({ baseUrl: this.#baseUrl, path: CURSOR_RUN_PATH, headers, signal: parentSignal, initialBody, timeoutMs: request.openTimeoutMs ?? this.#streamOpenTimeoutMs }),
 				request.openTimeoutMs ?? this.#streamOpenTimeoutMs,
 				request.signal,
 				"Cursor stream open timed out.",
+				(handle) => handle.cancel().catch(() => undefined),
 			);
+			try {
+				assertSuccessfulStatus(handle.statusCode, new Uint8Array(), [request.accessToken]);
+			} catch (error) {
+				await handle.cancel().catch(() => undefined);
+				throw error;
+			}
 			this.#openStreams += 1;
 			return new Http2CursorRunStream(
 				request.requestId,
 				handle,
 				this.#codec,
 				[request.accessToken],
+				request.routeReference,
 				this.#heartbeatIntervalMs,
 				() => {
 					this.#cancelledStreams += 1;
@@ -104,7 +116,7 @@ export class Http2CursorAgentTransport implements CursorAgentTransport {
 				},
 			);
 		} catch (error) {
-			throw sanitizeCursorTransportError(toError(error), [request.accessToken]);
+			throw sanitizeCursorTransportError(toError(error), [request.accessToken], { operation: "request", route: request.routeReference });
 		}
 	}
 

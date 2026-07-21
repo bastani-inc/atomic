@@ -9,7 +9,7 @@ import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { AuthStorage } from "./core/auth-storage.ts";
 import { getBuiltinPackagePaths } from "./core/builtin-packages.ts";
 import { configureHttpDispatcher } from "./core/http-dispatcher.ts";
-import { resolveModelScope, resolveModelScopeWithDiagnostics } from "./core/model-resolver.ts";
+import { prepareExplicitCliModel, resolveModelScope, resolveModelScopeWithDiagnostics } from "./core/model-resolver.ts";
 import { restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
 import { resolveProjectTrusted } from "./core/project-trust.ts";
 import { getMissingSessionCwdIssue, MissingSessionCwdError } from "./core/session-cwd.ts";
@@ -298,6 +298,7 @@ export async function main(args: string[], options?: MainOptions) {
 				: [];
 		const sessionArgs = isolateInteractiveHost
 			? { ...parsed, provider: undefined, model: undefined, apiKey: undefined, models: undefined } : parsed;
+		await prepareExplicitCliModel({ cliProvider: sessionArgs.provider, cliModel: sessionArgs.model, modelRegistry });
 		const {
 			options: sessionOptions,
 			cliThinkingFromModel,

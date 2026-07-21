@@ -61,7 +61,7 @@ export function buildSessionContext(
 	// Extract settings
 	let thinkingLevel = "off";
 	let contextWindow: number | undefined;
-	let model: { provider: string; modelId: string } | null = null;
+	let model: { provider: string; modelId: string; modelSelection?: object } | null = null;
 
 	for (const entry of path) {
 		if (entry.type === "thinking_level_change") {
@@ -69,9 +69,21 @@ export function buildSessionContext(
 		} else if (entry.type === "context_window_change") {
 			contextWindow = entry.contextWindow;
 		} else if (entry.type === "model_change") {
-			model = { provider: entry.provider, modelId: entry.modelId };
+			model = {
+				provider: entry.provider,
+				modelId: entry.modelId,
+				...(entry.modelSelection === undefined ? {} : { modelSelection: entry.modelSelection }),
+			};
 		} else if (entry.type === "message" && entry.message.role === "assistant") {
-			model = { provider: entry.message.provider, modelId: entry.message.model };
+			const previousModel = model as SessionContext["model"];
+			const sameSelection: object | undefined = previousModel?.provider === entry.message.provider && previousModel.modelId === entry.message.model
+				? previousModel.modelSelection
+				: undefined;
+			model = {
+				provider: entry.message.provider,
+				modelId: entry.message.model,
+				...(sameSelection === undefined ? {} : { modelSelection: sameSelection }),
+			};
 		}
 	}
 

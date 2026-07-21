@@ -1683,7 +1683,7 @@ Register or override a model provider dynamically. Useful for proxies, custom en
 
 Calls made during the extension factory function are queued and applied once the runner initialises. Calls made after that — for example from a command handler following a user setup flow — take effect immediately without requiring a `/reload`.
 
-If you need to discover models from a remote endpoint, prefer an async extension factory over deferring the fetch to `session_start`. Atomic waits for the factory before startup continues, so the registered models are available immediately, including to `atomic --list-models`.
+For one-time remote discovery that does not need host auth or refresh semantics, an async extension factory remains convenient. For an authenticated authoritative catalog, register immediately with `models: []`, `requiresPreparation: true`, and `refreshModels`; Atomic then tracks the same preparation boundary for startup, `--list-models`, model selection/resolution, direct SDK sessions, and workflow-stage sessions.
 
 ```typescript
 // Register a new provider with custom models
@@ -1734,6 +1734,12 @@ pi.registerProvider("corporate-ai", {
 });
 ```
 
+Dynamic providers can implement `refreshModels(context)`. Ordinary dynamic refresh leaves the previous list readable while work is pending and retains it on failure or a successful `[]`; a successful non-empty list replaces the provider's extension models. `requiresPreparation: true` instead makes current provider authority a prerequisite and starts each cycle from authoritative empty, so its successful `[]` is authoritative and stale routes are not readable while preparation is unresolved. An initially unconfigured required provider remains empty so unrelated providers can still start.
+
+The refresh context provides `signal`, `force`, `allowNetwork`, the ordinary effective `credential`, a provider-scoped `store`, the exact host `hostCredential`, `credentialGeneration`, `providerInstanceGeneration`, and `isCurrentGeneration()`. Never log, diagnose with, or persist `hostCredential`. `requiresHostOAuth: true` additionally forbids runtime, environment, and config-key authentication for both refresh and requests. `validateHostOAuth(credentials)` may reject malformed stored OAuth before expired-token refresh and again before request authentication.
+
+For duplicate occurrences that intentionally share a public ID, set `requiresExactSelectionPersistence: true` and return a typed `ProviderModelReference` in each model's `providerReference`. The provider-owned reference may distinguish occurrences without changing `model.id`; its optional `selection` record must be JSON-safe and versioned, and `matchesSelection` must reject stale/unsupported records explicitly. `ProviderModelReference`, `getProviderModelReference()`, `getPersistedProviderSelection()`, and `providerModelsAreExactlyEqual()` are exported from `@bastani/atomic`.
+
 **Config options:**
 - `name` - Display name for the provider in UI such as `/login`.
 - `baseUrl` - API endpoint URL. Required when defining models.
@@ -1741,7 +1747,12 @@ pi.registerProvider("corporate-ai", {
 - `api` - API type: `"anthropic-messages"`, `"openai-completions"`, `"openai-responses"`, etc.
 - `headers` - Custom headers to include in requests.
 - `authHeader` - If true, adds `Authorization: Bearer` header automatically.
-- `models` - Array of model definitions. If provided, replaces all existing models for this provider. Model definitions can set `baseUrl` to override the provider endpoint for that model.
+- `models` - Array of model definitions. Non-empty arrays replace existing provider rows; `[]` is authoritative only with `requiresPreparation`. Model definitions can set `baseUrl` per model and can carry a typed `providerReference` for provider-owned exact identity.
+- `requiresPreparation` - Await the current authoritative `refreshModels` result before host listing/resolution/session doors may use the provider.
+- `requiresExactSelectionPersistence` - Require a provider-owned exact selection record instead of provider-plus-ID restore.
+- `requiresHostOAuth` - Authenticate preparation and requests only with the exact host-stored OAuth credential.
+- `validateHostOAuth` - Validate exact stored OAuth before refresh and request-auth use.
+- `refreshModels` - Refresh the dynamic catalog with signal/network/store/credential/generation context; non-empty ordinary results replace rows, while every successful result is authoritative for `requiresPreparation` providers.
 - `oauth` - OAuth provider config for `/login` support. When provided, the provider appears in the login menu.
 - `streamSimple` - Custom streaming implementation for non-standard APIs.
 

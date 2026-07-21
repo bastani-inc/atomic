@@ -8,7 +8,8 @@ import type {
 	CursorToolResultMessage,
 	CursorWriteOptions,
 } from "./transport-types.js";
-import { CursorTransportError, throwIfCursorEndStreamError, toError } from "./transport-errors.js";
+import type { CursorErrorRouteContext } from "./errors.js";
+import { CursorTransportError, sanitizeCursorTransportError, throwIfCursorEndStreamError, toError } from "./transport-errors.js";
 import { CursorConnectFrameDecoder, encodeCursorConnectFrame } from "./transport-frame.js";
 
 const DEFAULT_CANCEL_WRITE_TIMEOUT_MS = 1_000;
@@ -21,8 +22,16 @@ export class Http2CursorRunStream implements CursorRunStream {
 	readonly messages: AsyncIterable<CursorServerMessage>;
 	#closed = false;
 	#cancelled = false;
+	#codecReleased = false;
+	#handleTerminal: Promise<void> | undefined;
+	readonly failure: Promise<Error>;
+	readonly #signalFailure: (error: Error) => void;
+	readonly #heartbeatWrites = new Set<Promise<void>>();
 	readonly #heartbeatTimer?: ReturnType<typeof setInterval>;
 	readonly #messageQueue: CursorServerMessage[] = [];
+	readonly #withheldMessages: CursorServerMessage[] = [];
+	#pendingToolResults = 0;
+	#cleanEndStreamValidated = false;
 	readonly #messageReaders: Array<{
 		readonly resolve: (value: IteratorResult<CursorServerMessage>) => void;
 		readonly reject: (error: unknown) => void;
@@ -35,34 +44,40 @@ export class Http2CursorRunStream implements CursorRunStream {
 		readonly handle: CursorHttp2StreamHandle,
 		readonly codec: CursorProtocolCodec,
 		readonly secrets: readonly string[],
+		readonly route: CursorErrorRouteContext,
 		heartbeatIntervalMs: number,
 		readonly onCancel: () => void,
 		readonly onClose: () => void,
 	) {
+		let signalFailure = (_error: Error): void => undefined;
+		this.failure = new Promise<Error>((resolve) => { signalFailure = resolve; });
+		this.#signalFailure = signalFailure;
 		this.messages = this.createMessages();
 		void this.pumpMessages();
 		if (heartbeatIntervalMs > 0) {
 			this.#heartbeatTimer = setInterval(() => {
-				this.handle.write(encodeCursorConnectFrame(this.codec.encodeHeartbeatRequest())).catch(() => {
-					this.cancel().catch(() => undefined);
-				});
+				const heartbeat = this.handle.write(encodeCursorConnectFrame(this.codec.encodeHeartbeatRequest())).catch(() => this.cancel().catch(() => undefined));
+				this.#heartbeatWrites.add(heartbeat);
+				void heartbeat.finally(() => this.#heartbeatWrites.delete(heartbeat));
 			}, heartbeatIntervalMs);
 			this.#heartbeatTimer.unref?.();
 		}
 	}
 
 	async writeToolResult(result: CursorToolResultMessage, options?: CursorWriteOptions): Promise<void> {
-		if (this.#closed) throw new CursorTransportError("ProtocolError", "Cannot write Cursor tool result to a closed stream.");
+		if (this.#closed) throw new CursorTransportError("ProtocolError", "Cannot write Cursor tool result to a closed stream.", "request", this.route);
 		try {
 			await this.handle.write(encodeCursorConnectFrame(this.codec.encodeToolResult(result)), options);
+			if (this.#pendingToolResults > 0) this.#pendingToolResults -= 1;
+			if (this.#pendingToolResults === 0) this.publishWithheldMessages();
 		} catch (error) {
 			await this.cancel().catch(() => undefined);
-			throw error;
+			throw sanitizeCursorTransportError(toError(error), this.secrets, { operation: "request", route: this.route });
 		}
 	}
 
 	async cancel(): Promise<void> {
-		if (this.#cancelled) return;
+		if (this.#cancelled || this.#closed) return;
 		this.#cancelled = true;
 		this.clearHeartbeat();
 		let cancelError: Error | undefined;
@@ -71,15 +86,18 @@ export class Http2CursorRunStream implements CursorRunStream {
 		} finally {
 			this.onCancel();
 			try {
-				await this.handle.cancel();
+				await this.terminateHandle("cancel");
 			} catch (error) {
 				cancelError = toError(error);
 			} finally {
 				this.finishMessageQueue();
 				if (!this.#closed) {
 					this.#closed = true;
-					this.codec.disposeRun?.(this.id);
-					this.onClose();
+					try {
+						this.releaseCodec();
+					} finally {
+						this.onClose();
+					}
 				}
 			}
 		}
@@ -87,36 +105,81 @@ export class Http2CursorRunStream implements CursorRunStream {
 	}
 
 	async close(): Promise<void> {
-		if (this.#closed) return;
+		if (this.#closed || this.#cancelled) return;
 		this.#closed = true;
 		this.clearHeartbeat();
+		let closeError: Error | undefined;
 		try {
-			await this.handle.close();
+			await this.closeHandleOrAbandon();
+			await this.waitForHeartbeatWrites();
+		} catch (error) {
+			closeError = sanitizeCursorTransportError(toError(error), this.secrets, { operation: "stream", route: this.route });
 		} finally {
-			this.finishMessageQueue();
-			this.codec.disposeRun?.(this.id);
-			this.onClose();
+			try {
+				this.releaseCodec();
+			} finally {
+				this.onClose();
+			}
 		}
+		if (!closeError && this.#cleanEndStreamValidated) this.publishWithheldMessages(true);
+		else this.#withheldMessages.length = 0;
+		this.finishMessageQueue(closeError);
+		if (closeError) throw closeError;
 	}
 
 	private clearHeartbeat(): void {
 		if (this.#heartbeatTimer) clearInterval(this.#heartbeatTimer);
 	}
 
+	private terminateHandle(kind: "close" | "cancel"): Promise<void> {
+		if (this.#handleTerminal) return this.#handleTerminal;
+		this.#handleTerminal = Promise.resolve().then(() => kind === "close" ? this.handle.close() : this.handle.cancel());
+		return this.#handleTerminal;
+	}
+
+	private async closeHandleOrAbandon(): Promise<void> {
+		const closeAttempt = this.terminateHandle("close");
+		try {
+			await closeAttempt;
+		} catch {
+			if (this.#handleTerminal === closeAttempt) this.#handleTerminal = undefined;
+			await this.terminateHandle("cancel");
+		}
+	}
+
+	private async waitForHeartbeatWrites(): Promise<void> {
+		while (this.#heartbeatWrites.size > 0) {
+			await Promise.allSettled([...this.#heartbeatWrites]);
+		}
+	}
+
+	private releaseCodec(discard = false): void {
+		if (this.#codecReleased) return;
+		this.#codecReleased = true;
+		if (discard && this.codec.discardRun) this.codec.discardRun(this.id);
+		else this.codec.disposeRun?.(this.id);
+	}
+
 	private async pumpMessages(): Promise<void> {
 		const decoder = new CursorConnectFrameDecoder();
+		let cleanEndStreamSeen = false;
 		try {
 			for await (const raw of this.handle.frames) {
 				if (this.#closed || this.#cancelled) break;
 				for (const frame of decoder.push(raw)) {
 					if (this.#closed || this.#cancelled) break;
+					if (cleanEndStreamSeen) {
+						this.releaseCodec(true);
+						throw new CursorTransportError("ProtocolMalformed", "Cursor stream delivered a frame after Connect end-stream.", "stream", this.route);
+					}
 					if (frame.endStream) {
 						try {
 							throwIfCursorEndStreamError(frame.data, this.secrets);
 						} catch (error) {
-							this.codec.discardRun?.(this.id);
+							this.releaseCodec(true);
 							throw error;
 						}
+						cleanEndStreamSeen = true;
 						continue;
 					}
 					for (const message of this.codec.decodeRunFrame(frame)) {
@@ -126,14 +189,68 @@ export class Http2CursorRunStream implements CursorRunStream {
 							await this.handle.write(encodeCursorConnectFrame(response));
 							continue;
 						}
-						if (!isCursorControlMessage(message)) this.enqueueMessage(message);
+						if (!isCursorControlMessage(message)) this.publishOrWithholdMessage(message);
 					}
 				}
 			}
 			decoder.finish();
-			this.finishMessageQueue();
+			if (cleanEndStreamSeen) {
+				this.#cleanEndStreamValidated = true;
+				await this.close();
+			}
+			else {
+				// Let an explicit cancellation issued as soon as run() resolves own the terminal transition.
+				await Promise.resolve();
+				if (this.#closed || this.#cancelled) return;
+				this.releaseCodec(true);
+				throw new CursorTransportError("ProtocolMalformed", "Cursor Run stream ended before a Connect end-stream terminal frame.", "stream", this.route);
+			}
 		} catch (error) {
-			this.finishMessageQueue(toError(error));
+			const failure = sanitizeCursorTransportError(toError(error), this.secrets, { operation: "stream", route: this.route });
+			this.#signalFailure(failure);
+			await this.failMessageQueue(failure);
+		}
+	}
+
+	private async failMessageQueue(error: Error): Promise<void> {
+		if (this.#closed) return;
+		const notifyCancel = !this.#cancelled;
+		this.#cancelled = true;
+		this.clearHeartbeat();
+		await this.terminateHandle("cancel").catch(() => undefined);
+		await this.waitForHeartbeatWrites();
+		if (notifyCancel) this.onCancel();
+		this.#withheldMessages.length = 0;
+		if (!this.#closed) {
+			this.#closed = true;
+			try {
+				this.releaseCodec();
+			} finally {
+				this.onClose();
+			}
+		}
+		this.finishMessageQueue(error);
+	}
+	private publishOrWithholdMessage(message: CursorServerMessage): void {
+		if (this.#withheldMessages.length > 0
+			|| message.type === "done"
+			|| (this.#pendingToolResults > 0 && message.type !== "toolCall" && message.type !== "usage")) {
+			this.#withheldMessages.push(message);
+			return;
+		}
+		if (message.type === "toolCall") this.#pendingToolResults += 1;
+		this.enqueueMessage(message);
+	}
+
+	private publishWithheldMessages(cleanTerminal = false): void {
+		while (this.#withheldMessages.length > 0) {
+			const message = this.#withheldMessages[0];
+			if (!message) return;
+			if (!cleanTerminal && (message.type === "done"
+				|| (this.#pendingToolResults > 0 && message.type !== "toolCall" && message.type !== "usage"))) return;
+			this.#withheldMessages.shift();
+			if (message.type === "toolCall") this.#pendingToolResults += 1;
+			this.enqueueMessage(message);
 		}
 	}
 

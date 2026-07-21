@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import type { Context } from "@earendil-works/pi-ai/compat";
 import { CursorStreamAdapter } from "../../packages/cursor/src/stream.js";
 import type { CursorAgentTransport, CursorRunRequest, CursorRunStream, CursorServerMessage, CursorToolResultMessage, CursorWriteOptions } from "../../packages/cursor/src/transport.js";
-import { CursorMockRunStream, CursorMockTransport } from "./cursor-test-helpers.js";
+import { CursorMockRunStream, CursorMockTransport, cursorRouteAuthority } from "./cursor-test-helpers.js";
 import type { CursorUsableModel } from "../../packages/cursor/src/model-mapper.js";
 import { collectEvents, collectEventsWithTimeout, context, deferred, model } from "./cursor-stream-helpers.js";
 
@@ -14,7 +14,7 @@ describe("CursorStreamAdapter", () => {	test("batches adjacent Cursor tool calls
 			{ type: "textDelta", text: "after tools" },
 			{ type: "done", reason: "stop" },
 		] });
-		const adapter = new CursorStreamAdapter({ transport, uuid: () => "request-multi-tool" });
+		const adapter = new CursorStreamAdapter({ transport, routeAuthority: cursorRouteAuthority(), uuid: () => "request-multi-tool" });
 
 		const firstEvents = await collectEvents(adapter.streamSimple(model(), context(), { apiKey: "access-secret", sessionId: "session-multi-tool" }));
 
@@ -38,13 +38,42 @@ describe("CursorStreamAdapter", () => {	test("batches adjacent Cursor tool calls
 		assert.equal(secondEvents.at(-1)?.type, "done");
 	});
 
+	test("preserves FIFO execution correlation for duplicate live tool-call IDs", async () => {
+		const transport = new CursorMockTransport({ messages: [
+			{ type: "toolCall", id: "same", name: "First", argumentsJson: "{}", execId: "exec-1", execNumericId: 1 },
+			{ type: "toolCall", id: "same", name: "Second", argumentsJson: "{}", execId: "exec-2", execNumericId: 2 },
+		] });
+		const adapter = new CursorStreamAdapter({ transport, routeAuthority: cursorRouteAuthority(), uuid: () => "request-duplicate-tools" });
+		await collectEvents(adapter.streamSimple(model(), context(), { apiKey: "access-secret", sessionId: "session-duplicate-tools" }));
+		const resumeContext: Context = { messages: [
+			{ role: "toolResult", toolCallId: "same", toolName: "First", content: [{ type: "text", text: "first" }], isError: false, timestamp: 2 },
+			{ role: "toolResult", toolCallId: "same", toolName: "Second", content: [{ type: "text", text: "second" }], isError: false, timestamp: 3 },
+		] };
+		await collectEvents(adapter.streamSimple(model(), resumeContext, { apiKey: "access-secret", sessionId: "session-duplicate-tools" }));
+		assert.deepEqual(transport.runs[0]?.stream.writtenToolResults.map(({ text, execId, execNumericId }) => ({ text, execId, execNumericId })), [
+			{ text: "first", execId: "exec-1", execNumericId: 1 },
+			{ text: "second", execId: "exec-2", execNumericId: 2 },
+		]);
+	});
+
+	test("preserves adjacent live tool-result text blocks verbatim", async () => {
+		const transport = new CursorMockTransport({ messages: [{ type: "toolCall", id: "tool-text", name: "Read", argumentsJson: "{}" }] });
+		const adapter = new CursorStreamAdapter({ transport, routeAuthority: cursorRouteAuthority(), uuid: () => "request-verbatim-tool" });
+		await collectEvents(adapter.streamSimple(model(), context(), { apiKey: "access-secret", sessionId: "session-verbatim-tool" }));
+		const content = [{ type: "text" as const, text: "a" }, { type: "text" as const, text: "" }, { type: "text" as const, text: "b" }];
+		const resumeContext: Context = { messages: [{ role: "toolResult", toolCallId: "tool-text", toolName: "Read", content, isError: false, timestamp: 2 }] };
+		await collectEvents(adapter.streamSimple(model(), resumeContext, { apiKey: "access-secret", sessionId: "session-verbatim-tool" }));
+		assert.equal(transport.runs[0]?.stream.writtenToolResults[0]?.text, "ab");
+		assert.deepEqual(transport.runs[0]?.stream.writtenToolResults[0]?.content, content);
+	});
+
 	test("resumes a paused Cursor tool turn with trailing tool results", async () => {
 		const transport = new CursorMockTransport({ messages: [
 			{ type: "toolCall", id: "tool-1", name: "Read", argumentsJson: "{\"path\":\"README.md\"}", execId: "exec-1", execNumericId: 7 },
 			{ type: "textDelta", text: "done" },
 			{ type: "done", reason: "stop" },
 		] });
-		const adapter = new CursorStreamAdapter({ transport, uuid: () => "request-1" });
+		const adapter = new CursorStreamAdapter({ transport, routeAuthority: cursorRouteAuthority(), uuid: () => "request-1" });
 		const firstEvents = await collectEvents(adapter.streamSimple(model(), context(), { apiKey: "access-secret", sessionId: "session-1" }));
 		assert.equal(firstEvents.at(-1)?.type, "done");
 		assert.deepEqual(transport.getLifecycleSnapshot(), { openStreams: 1, cancelledStreams: 0, closedStreams: 0 });
@@ -58,10 +87,22 @@ describe("CursorStreamAdapter", () => {	test("batches adjacent Cursor tool calls
 		assert.equal(secondEvents.at(-1)?.type, "done");
 		assert.deepEqual(transport.getLifecycleSnapshot(), { openStreams: 0, cancelledStreams: 0, closedStreams: 1 });
 	});
+	test("rejects a mixed live image tool result before writing any partial text", async () => {
+		const transport = new CursorMockTransport({ messages: [{ type: "toolCall", id: "tool-image", name: "ReadImage", argumentsJson: "{}" }] });
+		const adapter = new CursorStreamAdapter({ transport, routeAuthority: cursorRouteAuthority() });
+		await collectEvents(adapter.streamSimple(model(), context(), { apiKey: "access-secret", sessionId: "image-tool" }));
+		const resultContext: Context = { messages: [{ role: "toolResult", toolCallId: "tool-image", toolName: "ReadImage", content: [
+			{ type: "text", text: "must not be written" }, { type: "image", data: "aGk=", mimeType: "image/png" },
+		], isError: false, timestamp: 2 }] };
+		const events = await collectEvents(adapter.streamSimple(model(), resultContext, { apiKey: "access-secret", sessionId: "image-tool" }));
+		assert.equal(events.at(-1)?.type, "error");
+		assert.deepEqual(transport.runs[0]?.stream.writtenToolResults, []);
+		assert.equal(transport.runs.length, 1);
+	});
 
 	test("cancels a paused Cursor tool stream when the original request aborts", async () => {
 		const transport = new CursorMockTransport({ messages: [{ type: "toolCall", id: "tool-abort", name: "Read", argumentsJson: "{\"path\":\"README.md\"}" }] });
-		const adapter = new CursorStreamAdapter({ transport, uuid: () => "run-paused-abort" });
+		const adapter = new CursorStreamAdapter({ transport, routeAuthority: cursorRouteAuthority(), uuid: () => "run-paused-abort" });
 		const controller = new AbortController();
 		const events = await collectEvents(adapter.streamSimple(model(), context(), { apiKey: "access-secret", sessionId: "session-abort", signal: controller.signal }));
 		assert.equal(events.at(-1)?.type, "done");
@@ -75,7 +116,7 @@ describe("CursorStreamAdapter", () => {	test("batches adjacent Cursor tool calls
 
 	test("cancels a paused Cursor tool stream after the idle timeout", async () => {
 		const transport = new CursorMockTransport({ messages: [{ type: "toolCall", id: "tool-timeout", name: "Read", argumentsJson: "{\"path\":\"README.md\"}" }] });
-		const adapter = new CursorStreamAdapter({ transport, uuid: () => "run-paused-timeout", pausedTurnIdleTimeoutMs: 1 });
+		const adapter = new CursorStreamAdapter({ transport, routeAuthority: cursorRouteAuthority(), uuid: () => "run-paused-timeout", pausedTurnIdleTimeoutMs: 1 });
 		const events = await collectEvents(adapter.streamSimple(model(), context(), { apiKey: "access-secret", sessionId: "session-timeout" }));
 		assert.equal(events.at(-1)?.type, "done");
 
@@ -116,7 +157,7 @@ describe("CursorStreamAdapter", () => {	test("batches adjacent Cursor tool calls
 			getLifecycleSnapshot() { return { openStreams: this.#openStreams, cancelledStreams: this.#cancelledStreams, closedStreams: this.#closedStreams }; }
 		}
 		const transport = new FailingResumeTransport();
-		const adapter = new CursorStreamAdapter({ transport, uuid: () => "run-failing-resume" });
+		const adapter = new CursorStreamAdapter({ transport, routeAuthority: cursorRouteAuthority(), uuid: () => "run-failing-resume" });
 		await collectEvents(adapter.streamSimple(model(), context(), { apiKey: "access-secret", sessionId: "session-failing-resume" }));
 		const resumeContext: Context = { messages: [{ role: "toolResult", toolCallId: "tool-fail", toolName: "Read", content: [{ type: "text", text: "file contents" }], isError: false, timestamp: 2 }] };
 
@@ -149,7 +190,7 @@ describe("CursorStreamAdapter", () => {	test("batches adjacent Cursor tool calls
 			getLifecycleSnapshot() { return { openStreams: this.#openStreams, cancelledStreams: this.#cancelledStreams, closedStreams: this.#closedStreams }; }
 		}
 		const transport = new IdleTransport();
-		const adapter = new CursorStreamAdapter({ transport, uuid: () => "run-per-request-timeout", streamReadTimeoutMs: 10_000 });
+		const adapter = new CursorStreamAdapter({ transport, routeAuthority: cursorRouteAuthority(), uuid: () => "run-per-request-timeout", streamReadTimeoutMs: 10_000 });
 		const startedAt = Date.now();
 
 		const events = await collectEventsWithTimeout(adapter.streamSimple(model(), context(), { apiKey: "access-secret", timeoutMs: 1 }), 250);
@@ -189,7 +230,7 @@ describe("CursorStreamAdapter", () => {	test("batches adjacent Cursor tool calls
 				async dispose(): Promise<void> {}
 				getLifecycleSnapshot() { return { openStreams: this.#openStreams, cancelledStreams: this.#cancelledStreams, closedStreams: this.#closedStreams }; }
 			}
-			const adapter = new CursorStreamAdapter({ transport: new LateRejectTransport(), uuid: () => "run-late-reject" });
+			const adapter = new CursorStreamAdapter({ routeAuthority: cursorRouteAuthority(), transport: new LateRejectTransport(), uuid: () => "run-late-reject" });
 
 			const events = await collectEventsWithTimeout(adapter.streamSimple(model(), context(), { apiKey: "access-secret", timeoutMs: 1 }), 250);
 			await new Promise((resolve) => setTimeout(resolve, 25));
@@ -272,7 +313,7 @@ describe("CursorStreamAdapter", () => {	test("batches adjacent Cursor tool calls
 			getLifecycleSnapshot() { return { openStreams: this.#openStreams, cancelledStreams: this.#cancelledStreams, closedStreams: this.#closedStreams }; }
 		}
 		const transport = new StalledResumeTransport();
-		const adapter = new CursorStreamAdapter({ transport, uuid: () => "run-stalled-resume-abort" });
+		const adapter = new CursorStreamAdapter({ transport, routeAuthority: cursorRouteAuthority(), uuid: () => "run-stalled-resume-abort" });
 		await collectEvents(adapter.streamSimple(model(), context(), { apiKey: "access-secret", sessionId: "session-stalled-resume" }));
 		const resumeContext: Context = { messages: [{ role: "toolResult", toolCallId: "tool-stalled", toolName: "Read", content: [{ type: "text", text: "file contents" }], isError: false, timestamp: 2 }] };
 		const controller = new AbortController();
@@ -356,7 +397,7 @@ describe("CursorStreamAdapter", () => {	test("batches adjacent Cursor tool calls
 			getLifecycleSnapshot() { return { openStreams: this.#openStreams, cancelledStreams: this.#cancelledStreams, closedStreams: this.#closedStreams }; }
 		}
 		const transport = new DeadlineResumeTransport();
-		const adapter = new CursorStreamAdapter({ transport, uuid: () => "run-stalled-resume-deadline", streamReadTimeoutMs: 10_000 });
+		const adapter = new CursorStreamAdapter({ transport, routeAuthority: cursorRouteAuthority(), uuid: () => "run-stalled-resume-deadline", streamReadTimeoutMs: 10_000 });
 		await collectEvents(adapter.streamSimple(model(), context(), { apiKey: "access-secret", sessionId: "session-stalled-deadline" }));
 		const resumeContext: Context = { messages: [{ role: "toolResult", toolCallId: "tool-deadline", toolName: "Read", content: [{ type: "text", text: "file contents" }], isError: false, timestamp: 2 }] };
 

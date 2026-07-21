@@ -1,4 +1,5 @@
 import type { CursorConnectFrame } from "./transport-types.js";
+import { CursorTransportError } from "./transport-errors.js";
 
 const CONNECT_END_STREAM_FLAG = 0b10;
 export function encodeCursorConnectFrame(data: Uint8Array, flags = 0): Uint8Array {
@@ -40,8 +41,8 @@ export class CursorConnectFrameDecoder {
 
 	finish(): void {
 		if (this.#buffer.length === 0) return;
-		if (this.#buffer.length < 5) throw new Error("Incomplete Cursor Connect frame header.");
-		throw new Error("Incomplete Cursor Connect frame body.");
+		if (this.#buffer.length < 5) throw new CursorTransportError("ProtocolMalformed", "Incomplete Cursor Connect frame header.");
+		throw new CursorTransportError("ProtocolMalformed", "Incomplete Cursor Connect frame body.");
 	}
 }
 

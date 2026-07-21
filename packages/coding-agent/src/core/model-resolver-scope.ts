@@ -1,10 +1,11 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { modelsAreEqual } from "@earendil-works/pi-ai/compat";
+import { getPersistedProviderSelection, providerModelsAreExactlyEqual } from "./provider-model-reference.ts";
 import chalk from "chalk";
 import { minimatch } from "minimatch";
 import { isValidThinkingLevel } from "../cli/args.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 import { parseModelPattern } from "./model-resolver-patterns.ts";
+import { prepareExplicitProvider } from "./model-resolver-cli.ts";
 import type { ScopedModel } from "./model-resolver-types.ts";
 
 export interface ModelScopeDiagnostic {
@@ -50,15 +51,30 @@ export async function resolveModelScopeWithDiagnostics(
   patterns: string[],
   modelRegistry: ModelRegistry,
 ): Promise<ResolveModelScopeResult> {
+  const explicitProviders = new Set(patterns.flatMap((pattern) => {
+    const scopedPattern = parseGlobThinkingLevel(pattern).globPattern;
+    const slash = scopedPattern.indexOf("/");
+    return slash > 0 ? [scopedPattern.slice(0, slash)] : [];
+  }));
+  for (const provider of explicitProviders) await prepareExplicitProvider(provider, modelRegistry);
   const availableModels = await modelRegistry.getAvailable();
   const scopedModels: ScopedModel[] = [];
   const diagnostics: ModelScopeDiagnostic[] = [];
   for (const pattern of patterns) {
     if (hasGlobCharacters(pattern)) {
       const { globPattern, thinkingLevel } = parseGlobThinkingLevel(pattern);
-      const matchingModels = availableModels.filter((m) => {
-        const fullId = `${m.provider}/${m.id}`;
-        return minimatch(fullId, globPattern, { nocase: true }) || minimatch(m.id, globPattern, { nocase: true });
+      const slash = globPattern.indexOf("/");
+      const qualifiedProvider = slash > 0 ? globPattern.slice(0, slash) : undefined;
+      const exactPatternProvider = qualifiedProvider && modelRegistry.requiresExactSelectionPersistence?.(qualifiedProvider) === true
+        ? qualifiedProvider
+        : undefined;
+      const matchingModels = availableModels.filter((model) => {
+        const fullId = `${model.provider}/${model.id}`;
+        const exactIdentity = modelRegistry.requiresExactSelectionPersistence?.(model.provider) === true;
+        if (exactIdentity && getPersistedProviderSelection(model) === undefined) return false;
+        if (exactPatternProvider !== undefined && model.provider !== exactPatternProvider) return false;
+        const nocase = exactPatternProvider === undefined && !exactIdentity;
+        return minimatch(fullId, globPattern, { nocase }) || minimatch(model.id, globPattern, { nocase });
       });
 
       if (matchingModels.length === 0) {
@@ -67,14 +83,40 @@ export async function resolveModelScopeWithDiagnostics(
       }
 
       for (const model of matchingModels) {
-        if (!scopedModels.find((sm) => modelsAreEqual(sm.model, model))) {
+		if (!scopedModels.find((sm) => providerModelsAreExactlyEqual(sm.model, model))) {
           scopedModels.push({ model, thinkingLevel });
         }
       }
       continue;
     }
 
-    const { model, thinkingLevel, warning } = parseModelPattern(pattern, availableModels);
+		const exactBare = availableModels.filter((model) => model.id === pattern);
+		const exactProviderOwned = exactBare.filter((model) => modelRegistry.requiresExactSelectionPersistence?.(model.provider) === true);
+		if (exactProviderOwned.length > 0 && exactBare.length === 1) {
+			scopedModels.push({ model: exactBare[0] });
+			continue;
+		}
+		if (exactProviderOwned.length > 0 && exactBare.length > 1) {
+			diagnostics.push({ type: "warning", message: `Model ${JSON.stringify(pattern)} matches ${exactBare.length} exact model identities; specify the provider and an unambiguous occurrence.` });
+			continue;
+		}
+		const slashIndex = pattern.indexOf("/");
+		if (slashIndex > 0) {
+			const provider = pattern.slice(0, slashIndex);
+			const modelId = pattern.slice(slashIndex + 1);
+			if (modelRegistry.requiresExactSelectionPersistence?.(provider) === true) {
+				try {
+					const model = modelRegistry.resolveExactModel(provider, modelId);
+					scopedModels.push({ model });
+				} catch (error) {
+					diagnostics.push({ type: "warning", message: error instanceof Error ? error.message : String(error) });
+				}
+				continue;
+			}
+		}
+
+    const ordinaryModels = availableModels.filter((model) => modelRegistry.requiresExactSelectionPersistence?.(model.provider) !== true);
+    const { model, thinkingLevel, warning } = parseModelPattern(pattern, ordinaryModels);
 
     if (warning) {
       diagnostics.push({ type: "warning", message: warning });
@@ -85,7 +127,7 @@ export async function resolveModelScopeWithDiagnostics(
       continue;
     }
 
-    if (!scopedModels.find((sm) => modelsAreEqual(sm.model, model))) {
+	if (!scopedModels.find((sm) => providerModelsAreExactlyEqual(sm.model, model))) {
       scopedModels.push({ model, thinkingLevel });
     }
   }

@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Cursor selection and restoration now require the versioned provider-owned account/route/Max/occurrence record. Provider/model-only legacy records are not migrated, duplicate text references are ambiguous, and authentication or exact-selection failures no longer fall back to another Cursor route or provider ([#1830](https://github.com/bastani-inc/atomic/issues/1830)).
+
+### Added
+
+- Added provider-neutral tracked authoritative preparation across startup, listing, resolution, direct SDK sessions, and workflow-stage sessions, including host-credential/provider-instance generation context, authoritative empty replacement semantics, and optional stored-OAuth validation before refresh and request authentication ([#1830](https://github.com/bastani-inc/atomic/issues/1830)).
+- Added the exported typed `ProviderModelReference` seam and exact-reference helpers, plus settings/session/picker support for persisting and distinguishing duplicate provider occurrences without rewriting public model IDs ([#1830](https://github.com/bastani-inc/atomic/issues/1830)).
+
+### Changed
+
+- Cursor listing, selection, defaults, and restore now await current authenticated preparation and fail explicitly when its authoritative catalog cannot be prepared, while an initially unconfigured Cursor provider remains empty without blocking unrelated providers. Non-Cursor provider resolution remains unchanged ([#1830](https://github.com/bastani-inc/atomic/issues/1830)).
+- The bundled Cursor provider now exposes only exact authoritative text routes with uniform Atomic accounting bounds and host-stored OAuth; static/synthetic routes, image capability inference, aliases, compatibility migration, and generic fallback are not executable paths ([#1830](https://github.com/bastani-inc/atomic/issues/1830)).
+- Required-provider preparation now distinguishes explicit listing/CLI/RPC/scope/default/session/SDK selection from unrelated never-configured startup, preserves authenticated history across reloads so logout remains an error, fences superseded callers and credential generations, records every successful generation immediately, invalidates failed refreshes for tracked retry, leaves rejected registrations atomic, and refreshes only needed generations. Empty-model authority follows the merged current provider state, preserving ordinary transitions while allowing still-required partial registrations to clear. Exact Cursor CLI prefixes and qualified globs remain owned by the registered exact provider even when its catalog is empty; ordinary duplicate CLI/scope and RPC available-model semantics remain unchanged, while opaque exact routes are never glob-selected, silently selected as bare fallbacks, or persisted as defaults ([#1830](https://github.com/bastani-inc/atomic/issues/1830)).
+
+### Fixed
+
+- Preserved structured logout and superseded-generation failures through provider request/preparation doors, fenced returned host OAuth to the credential generation that produced it even when account replacement races asynchronous conversion/refresh, and versioned authoritative preparation across runtime API-key replacement without exposing key material ([#1830](https://github.com/bastani-inc/atomic/issues/1830)).
+
+
 ## [0.9.11-alpha.1] - 2026-07-20
 
 ### Changed

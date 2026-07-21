@@ -3,6 +3,7 @@ import { resetApiProviders } from "@earendil-works/pi-ai/compat";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { AgentSessionReloadOptions, ExtensionBindings } from "./agent-session-types.ts";
 import type { ExtensionRunner } from "./extensions/index.ts";
+import { providerModelsAreExactlyEqual } from "./provider-model-reference.ts";
 import type { ResourceExtensionPaths } from "./resource-loader.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
@@ -107,7 +108,7 @@ export function _refreshCurrentModelFromRegistry(this: AgentSession): void {
 		return;
 	}
 
-	const refreshedModel = this._modelRegistry.find(currentModel.provider, currentModel.id);
+	const refreshedModel = this._modelRegistry.getAll().find((candidate) => providerModelsAreExactlyEqual(candidate, currentModel));
 	if (!refreshedModel || refreshedModel === currentModel) {
 		return;
 	}
