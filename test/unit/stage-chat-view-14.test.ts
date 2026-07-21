@@ -154,7 +154,7 @@ describe("StageChatView streaming lifecycle", () => {
 
             assert.doesNotMatch(
                 renderText(view),
-                /On it/,
+                /Working\.\.\./,
                 `${status} stage should not render a stale working spinner`,
             );
             assert.equal(
@@ -195,7 +195,7 @@ describe("StageChatView streaming lifecycle", () => {
             });
 
             emit({ type: "agent_start" } as AgentSessionEvent);
-            assert.match(renderText(view), /On it/);
+            assert.match(renderText(view), /Working\.\.\./);
             assert.equal(view._hasAnimationTick, true);
             renderRequests = 0;
 
@@ -214,7 +214,7 @@ describe("StageChatView streaming lifecycle", () => {
             }
 
             assert.equal(renderRequests, 1);
-            assert.doesNotMatch(renderText(view), /On it/);
+            assert.doesNotMatch(renderText(view), /Working\.\.\./);
             assert.equal(view._hasAnimationTick, false);
             view.dispose();
         }
@@ -240,13 +240,13 @@ describe("StageChatView streaming lifecycle", () => {
         });
 
         emit({ type: "agent_start" } as AgentSessionEvent);
-        assert.match(renderText(view), /On it/);
+        assert.match(renderText(view), /Working\.\.\./);
         assert.equal(view._hasAnimationTick, true);
         renderRequests = 0;
         assert.equal(store.recordRunEnd("run-1", "completed"), true);
 
         assert.equal(renderRequests, 1);
-        assert.doesNotMatch(renderText(view), /On it/);
+        assert.doesNotMatch(renderText(view), /Working\.\.\./);
         assert.equal(view._hasAnimationTick, false);
         view.dispose();
     });
@@ -348,7 +348,7 @@ describe("StageChatView streaming lifecycle", () => {
         assert.equal(finalizedDetails?.workflowGraph?.currentNodeId, undefined);
         assert.equal(finalizedDetails?.workflowGraph?.nodes?.[0]?.status, "detached");
         assert.equal(finalizedDetails?.workflowGraph?.nodes?.[0]?.children?.[0]?.status, "detached");
-        assert.doesNotMatch(renderText(view), /On it/);
+        assert.doesNotMatch(renderText(view), /Working\.\.\./);
         assert.equal(view._hasAnimationTick, false);
         view.dispose();
     });
@@ -371,7 +371,7 @@ describe("StageChatView streaming lifecycle", () => {
 
             assert.doesNotMatch(
                 renderText(view),
-                /On it/,
+                /Working\.\.\./,
                 `${alias} handle should not render a stale working spinner`,
             );
             assert.equal(
@@ -406,7 +406,7 @@ describe("StageChatView streaming lifecycle", () => {
 
             assert.match(
                 renderText(view),
-                /On it/,
+                /Working\.\.\./,
                 `${status} retained stage should render genuine agent_start work`,
             );
             assert.equal(
@@ -446,7 +446,7 @@ describe("StageChatView streaming lifecycle", () => {
         emit({ type: "compaction_start", reason: "manual" } as AgentSessionEvent);
 
         assert.match(renderText(view), /Compacting context\.\.\./);
-        assert.doesNotMatch(renderText(view), /On it/);
+        assert.doesNotMatch(renderText(view), /Working\.\.\./);
         assert.equal(view.handleInput("\x1b"), true);
         await flush();
 

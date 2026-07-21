@@ -82,7 +82,7 @@ test("ChatSessionHost gives factual retry, fallback, error, cancellation, and co
     const body = host.renderBody(80, 8).join("\n");
     assert.equal(host.renderWorkingStatus(80).length, 0);
     assert.equal((body.match(new RegExp(String(factual).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) ?? []).length, 1);
-    assert.doesNotMatch(body, /Checking the machinery|On it/);
+    assert.doesNotMatch(body, /Working\.\.\.|Schlepping\.\.\./);
     host.dispose();
   }
 
@@ -90,7 +90,7 @@ test("ChatSessionHost gives factual retry, fallback, error, cancellation, and co
   compacting.applyAgentEvent({ type: "compaction_start", reason: "manual" } as never);
   const compactStatus = compacting.renderWorkingStatus(80).join("\n");
   assert.equal((compactStatus.match(/Compacting context\.\.\./g) ?? []).length, 1);
-  assert.doesNotMatch(compactStatus, /On it|Checking the machinery/);
+  assert.doesNotMatch(compactStatus, /Working\.\.\.|Schlepping\.\.\./);
   compacting.dispose();
 });
 
@@ -99,7 +99,6 @@ test("ChatSessionHost clears verification branding on error and preserves factua
   host.applyAgentEvent({ type: "agent_start" } as never);
   host.applyAgentEvent({ type: "tool_execution_start", toolCallId: "verify-1", toolName: "bash", args: { command: "bun test" } } as never);
   host.applyAgentEvent({ type: "tool_execution_end", toolCallId: "verify-1", toolName: "bash", result: { content: [{ type: "text", text: "1 test failed" }] }, isError: true } as never);
-  assert.doesNotMatch(host.renderWorkingStatus(80).join("\n"), /Demanding evidence/);
   assert.equal((host.renderBody(80, 20).join("\n").match(/1 test failed/g) ?? []).length, 1);
   host.dispose();
 });

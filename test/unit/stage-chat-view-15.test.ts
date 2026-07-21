@@ -247,7 +247,7 @@ describe("StageChatView terminal subagent cleanup regressions", () => {
         assert.equal(details?.workflowGraph?.currentNodeId, undefined);
         assert.equal(details?.workflowGraph?.nodes?.[0]?.status, "detached");
         assert.equal(details?.workflowGraph?.nodes?.[0]?.children?.[0]?.status, "detached");
-        assert.doesNotMatch(renderText(view), /On it/);
+        assert.doesNotMatch(renderText(view), /Working\.\.\./);
         assert.equal(view._hasAnimationTick, false);
         view.dispose();
     });

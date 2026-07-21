@@ -420,7 +420,7 @@ export function renderChatMessageEntry(
         messageEntry.message,
         options.hideThinkingBlock ?? false,
         markdownTheme,
-        options.hiddenThinkingLabel ?? "Questioning the defaults",
+        options.hiddenThinkingLabel ?? "Thinking...",
         options.outputPad ?? 1,
       );
     case "tool": {

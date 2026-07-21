@@ -63,7 +63,6 @@ export class ChatSessionHostState<
   localBashRunning = false;
   sdkBusy = false;
   workingMessage: string | undefined;
-  workingLabelsByToolCallId = new Map<string, string>();
   pendingSteeringMessages: readonly string[] = [];
   pendingFollowUpMessages: readonly string[] = [];
   compactionQueuedMessages: readonly string[] = [];

@@ -19,7 +19,7 @@ export class WorkingStatusComponent implements Component {
 	}
 
 	render(width: number): string[] {
-		const message = this.options.message ?? "On it";
+		const message = this.options.message ?? "Working...";
 		const spinnerColor = this.options.spinnerColor ?? ((text: string) => theme.fg("accent", text));
 		const messageColor = this.options.messageColor ?? ((text: string) => theme.fg("muted", text));
 		if (this.options.spinner !== undefined) {

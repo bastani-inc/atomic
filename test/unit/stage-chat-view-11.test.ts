@@ -247,7 +247,7 @@ describe("StageChatView", () => {
         } as unknown as AgentSessionEvent);
         assert.equal(view._transcript.at(-1)?.role, "tool");
         assert.equal(view._transcript.at(-1)?.text.includes("bash"), true);
-        assert.match(view.render(96).map(stripAnsi).join("\n"), /Demanding evidence/);
+        assert.match(view.render(96).map(stripAnsi).join("\n"), /Working\.\.\./);
 
         emit({
             type: "tool_execution_end",
@@ -256,7 +256,7 @@ describe("StageChatView", () => {
             result: { content: [{ type: "text", text: "ok" }], details: {} },
             isError: false,
         } as unknown as AgentSessionEvent);
-        assert.match(view.render(96).map(stripAnsi).join("\n"), /Demanding evidence/);
+        assert.match(view.render(96).map(stripAnsi).join("\n"), /Working\.\.\./);
         const entry = view._transcript.at(-1);
         assert.equal(entry?.role, "tool");
         assert.equal(entry?.text.includes("ok"), true);
@@ -267,25 +267,28 @@ describe("StageChatView", () => {
         view.dispose();
     });
 
-    test("working labels follow actual parallel tool lifecycle without streamed resurrection", () => {
-        const store = createStore();
-        setupRun(store, "run-1", "stage-a");
-        const { handle, emit } = makeHandle();
-        const view = new StageChatView({ store, graphTheme: deriveGraphTheme({}), runId: "run-1", stageId: "stage-a", workflowName: "test-wf", handle, onDetach: () => {}, onClose: () => {} });
-        emit({ type: "agent_start" } as AgentSessionEvent);
-        emit({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: undefined } as AgentSessionEvent);
-        emit({ type: "tool_execution_start", toolCallId: "write-1", toolName: "write", args: { path: "src/a.ts" } } as AgentSessionEvent);
-        emit({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: undefined } as AgentSessionEvent);
-        assert.match(stripAnsi(view.render(96).join("\n")), /Building assurance/);
-        emit({ type: "tool_execution_end", toolCallId: "write-1", toolName: "write", result: { content: [] }, isError: false } as AgentSessionEvent);
-        assert.match(stripAnsi(view.render(96).join("\n")), /Checking the machinery/);
-        emit({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read", result: { content: [] }, isError: false } as AgentSessionEvent);
-        emit({ type: "message_update", message: { role: "assistant", content: [{ type: "toolCall", id: "read-1", name: "read", arguments: {} }] } } as AgentSessionEvent);
-        const settled = stripAnsi(view.render(96).join("\n"));
-        assert.match(settled, /On it/);
-        assert.doesNotMatch(settled, /Checking the machinery|Building assurance/);
-        emit({ type: "tool_execution_end", toolCallId: "unknown", toolName: "read", result: { content: [] }, isError: true } as AgentSessionEvent);
-        view.dispose();
+    test("the original whimsical verb survives tool lifecycle and streamed snapshots", () => {
+        const previousRandom = Math.random;
+        Math.random = () => 0;
+        try {
+            const store = createStore();
+            setupRun(store, "run-1", "stage-a");
+            const { handle, emit } = makeHandle();
+            const view = new StageChatView({ store, graphTheme: deriveGraphTheme({}), runId: "run-1", stageId: "stage-a", workflowName: "test-wf", handle, onDetach: () => {}, onClose: () => {} });
+            emit({ type: "agent_start" } as AgentSessionEvent);
+            emit({ type: "turn_start" } as AgentSessionEvent);
+            emit({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: undefined } as AgentSessionEvent);
+            emit({ type: "tool_execution_start", toolCallId: "write-1", toolName: "write", args: { path: "src/a.ts" } } as AgentSessionEvent);
+            emit({ type: "tool_execution_end", toolCallId: "write-1", toolName: "write", result: { content: [] }, isError: false } as AgentSessionEvent);
+            emit({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read", result: { content: [] }, isError: false } as AgentSessionEvent);
+            emit({ type: "message_update", message: { role: "assistant", content: [{ type: "toolCall", id: "read-1", name: "read", arguments: {} }] } } as AgentSessionEvent);
+            assert.match(stripAnsi(view.render(96).join("\n")), /Schlepping\.\.\./);
+            emit({ type: "turn_end" } as AgentSessionEvent);
+            assert.match(stripAnsi(view.render(96).join("\n")), /Working\.\.\./);
+            view.dispose();
+        } finally {
+            Math.random = previousRandom;
+        }
     });
 
     test("does not duplicate ask_user_question output echoed as a toolResult message", () => {

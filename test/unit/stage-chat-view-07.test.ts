@@ -138,7 +138,7 @@ describe("StageChatView", () => {
         });
 
         const lines = view.render(96).map(stripAnsi);
-        const workingIndex = lines.findIndex((line) => line.includes("On it"));
+        const workingIndex = lines.findIndex((line) => line.includes("Working..."));
         assert.ok(workingIndex > 4, "expected Atomic working mark after transcript");
         const markStart = workingIndex - 1;
         const previousContent = lines
@@ -146,7 +146,7 @@ describe("StageChatView", () => {
             .findLast((line) => line.trim() !== "");
         assert.match(previousContent ?? "", /msg-\d+/);
         assert.match(lines.slice(markStart, workingIndex + 1).join("\n"), /[⠀-⣿]/);
-        assert.equal(lines.join("\n").match(/On it/g)?.length, 1);
+        assert.equal(lines.join("\n").match(/Working\.\.\./g)?.length, 1);
         view.dispose();
     });
 
@@ -162,7 +162,7 @@ describe("StageChatView", () => {
         });
         const lines = view.render(64).map(stripAnsi);
         assert.equal(lines.every((line) => line.length <= 64), true);
-        assert.match(lines.join("\n"), /On it/);
+        assert.match(lines.join("\n"), /Working\.\.\./);
         assert.equal(lines.some((line) => line.includes("❯")), true);
         assert.equal(lines.some((line) => line.includes("ctrl+x")), true);
         view.dispose();
@@ -203,10 +203,10 @@ describe("StageChatView", () => {
         const rendered = lines.join("\n");
         assert.match(rendered, /\$0\.123/);
         assert.match(rendered, /23\.4%\/200k/);
-        assert.match(rendered, /On it/);
+        assert.match(rendered, /Working\.\.\./);
         assert.doesNotMatch(rendered, /╌/);
 
-        const workingIndex = lines.findIndex((line) => line.includes("On it"));
+        const workingIndex = lines.findIndex((line) => line.includes("Working..."));
         const usageIndex = lines.findIndex((line) => line.includes("$0.123"));
         const promptIndex = lines.findIndex((line) => line.includes("❯"));
         const hintIndex = expectRightAlignedReturnHint(lines, 120);

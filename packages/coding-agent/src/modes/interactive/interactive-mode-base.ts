@@ -147,7 +147,6 @@ export class InteractiveModeBase {
   loadingAnimation: Loader | AtomicWorkingLoader | undefined = undefined;
 
 
-  workingLabelsByToolCallId = new Map<string, string>();
   workingMessage: string | undefined = undefined;
 
 
@@ -158,10 +157,10 @@ export class InteractiveModeBase {
     undefined;
 
 
-  readonly defaultWorkingMessage = "On it";
+  readonly defaultWorkingMessage = "Working...";
 
 
-  readonly defaultHiddenThinkingLabel = "Questioning the defaults";
+  readonly defaultHiddenThinkingLabel = "Thinking...";
 
 
   hiddenThinkingLabel = this.defaultHiddenThinkingLabel;
