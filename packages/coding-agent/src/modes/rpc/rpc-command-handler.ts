@@ -128,6 +128,11 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "get_available_models", { models, scopedModels: session.scopedModels });
 			}
 
+			case "logout_provider": {
+				const result = await runtimeHost.logoutProvider(command.provider);
+				return createRpcSuccessResponse(id, "logout_provider", result);
+			}
+
 			case "set_thinking_level": {
 				session.setThinkingLevel(command.level);
 				return createRpcSuccessResponse(id, "set_thinking_level");

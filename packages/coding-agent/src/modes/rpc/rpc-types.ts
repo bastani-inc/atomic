@@ -8,6 +8,7 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai/compat";
 import type { AgentSessionEvent, SessionStats } from "../../core/agent-session.ts";
+import type { AuthStatus } from "../../core/auth-storage.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
@@ -32,6 +33,7 @@ export type RpcCommand =
 	| { id?: string; type: "set_model"; provider: string; modelId: string }
 	| { id?: string; type: "cycle_model"; direction?: "forward" | "backward" }
 	| { id?: string; type: "get_available_models" }
+	| { id?: string; type: "logout_provider"; provider: string }
 
 	// Thinking
 	| { id?: string; type: "set_thinking_level"; level: ThinkingLevel }
@@ -125,6 +127,13 @@ export interface RpcContextWindowInfo {
 	supportsSelection: boolean;
 }
 
+export interface RpcLogoutProviderResult {
+	provider: string;
+	authStatus: AuthStatus;
+	models: Model<Api>[];
+	scopedModels?: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
+}
+
 // ============================================================================
 // RPC Responses (stdout)
 // ============================================================================
@@ -162,6 +171,13 @@ export type RpcResponse =
 			command: "get_available_models";
 			success: true;
 			data: { models: Model<Api>[]; scopedModels?: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }> };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "logout_provider";
+			success: true;
+			data: RpcLogoutProviderResult;
 	  }
 
 	// Thinking

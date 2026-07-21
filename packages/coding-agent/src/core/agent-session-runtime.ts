@@ -1,5 +1,7 @@
 import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { resolvePath } from "../utils/paths.ts";
 import type { AgentSession } from "./agent-session.ts";
 import type { AgentSessionRuntimeDiagnostic, AgentSessionServices } from "./agent-session-services.ts";
@@ -13,6 +15,7 @@ import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { CreateAgentSessionResult } from "./sdk.ts";
 import { assertSessionCwdExists } from "./session-cwd.ts";
 import { SessionManager } from "./session-manager.ts";
+import type { AuthStatus } from "./auth-storage.ts";
 
 /**
  * Result returned by runtime creation.
@@ -23,6 +26,13 @@ import { SessionManager } from "./session-manager.ts";
 export interface CreateAgentSessionRuntimeResult extends CreateAgentSessionResult {
 	services: AgentSessionServices;
 	diagnostics: AgentSessionRuntimeDiagnostic[];
+}
+
+export interface LogoutProviderResult {
+	provider: string;
+	authStatus: AuthStatus;
+	models: Model<Api>[];
+	scopedModels?: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
 }
 
 /**
@@ -113,6 +123,19 @@ export class AgentSessionRuntime {
 
 	get modelFallbackMessage(): string | undefined {
 		return this._modelFallbackMessage;
+	}
+
+	async logoutProvider(provider: string): Promise<LogoutProviderResult> {
+		const registry = this.session.modelRegistry;
+		await registry.authStorage.logoutAsync(provider);
+		await registry.refresh({ allowNetwork: false });
+		this.session.refreshCurrentModelFromRegistry();
+		return {
+			provider,
+			authStatus: registry.getProviderAuthStatus(provider),
+			models: registry.getAvailable(),
+			scopedModels: [...this.session.scopedModels],
+		};
 	}
 
 	setRebindSession(rebindSession?: (session: AgentSession) => Promise<void>): void {

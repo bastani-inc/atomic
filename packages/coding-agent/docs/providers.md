@@ -20,7 +20,7 @@ Use `/login` in interactive mode, then select a provider:
 - GitHub Copilot
 - Cursor (experimental)
 
-Use `/logout` to clear credentials. Tokens are stored in `~/.atomic/agent/auth.json` and auto-refresh when expired.
+Use `/logout` to clear credentials. Logout immediately invalidates authentication in the active interactive engine and removes the selected provider from both `~/.atomic/agent/auth.json` and any effective legacy `~/.pi/agent/auth.json`, so the provider remains logged out after restart. Environment variables, command-line credentials, and `models.json` configuration cannot be cleared by Atomic; when one of those sources still authenticates the provider, the logout status names the remaining source. Stored tokens auto-refresh when expired.
 
 ### OpenAI Codex
 
