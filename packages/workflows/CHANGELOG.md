@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.11-alpha.2] - 2026-07-21
+
 ### Fixed
 
 - Fixed fresh-process workflow resume and completed-run inspection losing nested child-workflow and parallel stage hierarchy. DBOS stage checkpoints now retain owning-run and boundary topology, replay restores source parentage and child runs, graceful quit persists exact sub-30-second stage timing, completed runs persist and display accumulated run duration, and project-local workflows reloaded during a chat are rediscovered from their original invocation directory. The `/workflow resume` and `/workflows` picker rows also no longer display the redundant `N prompts` segment.

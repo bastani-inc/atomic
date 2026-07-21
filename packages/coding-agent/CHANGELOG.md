@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.11-alpha.2] - 2026-07-21
+
 ### Added
 
 - Added Qwen Token Plan and Qwen Token Plan China to Atomic's built-in provider defaults and credential guidance, inherited from `pi-ai` 0.81.1 ([#6858](https://github.com/earendil-works/pi/pull/6858)).
