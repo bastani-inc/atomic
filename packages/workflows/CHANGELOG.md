@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Clarified the built-in `deep-research-codebase` discovery guidance so agents reserve the heavy workflow for tasks requiring comprehensive whole-repository context ([#1925](https://github.com/bastani-inc/atomic/issues/1925)).
+
 ## [0.9.10] - 2026-07-20
 
 ### Breaking Changes

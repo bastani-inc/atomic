@@ -191,7 +191,10 @@ describe("MockExtensionAPI — tool registration", () => {
     assert.equal(r.details?.action, "get");
     assert.equal(r.details?.status, "completed");
     assert.equal(r.details?.output?.workflow, "deep-research-codebase");
-    assert.ok(r.details?.output?.description?.includes("Scout"));
+    assert.equal(
+      r.details?.output?.description,
+      "Heavy research for tasks requiring comprehensive, whole-repository context.",
+    );
     assert.ok(r.details?.output?.inputs?.some((input) => input.name === "prompt" && input.required === true));
   });
 
