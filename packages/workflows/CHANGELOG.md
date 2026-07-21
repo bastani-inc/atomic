@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.11-alpha.1] - 2026-07-20
+
 ### Added
 
 - Embedded DBOS Postgres now works when Atomic runs as root on Linux (containers, CI sandboxes, eval harnesses): PostgreSQL refuses UID 0, so Atomic resolves an unprivileged system account (`postgres`, `nobody`, or `daemon`), keeps the cluster under `/var/lib/atomic-postgres` (a root home directory is untraversable for that account), and runs `initdb`/`pg_ctl` with dropped privileges. When the embedded binaries sit under an untraversable prefix (for example a root-owned `~/.nvm` global install), the Postgres runtime is copied into the cluster directory once and reused.

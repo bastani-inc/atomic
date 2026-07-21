@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.11-alpha.1] - 2026-07-20
+
 ### Changed
 
 - Clarified the bundled `deep-research-codebase` discovery guidance so agents reserve the heavy workflow for tasks requiring comprehensive whole-repository context ([#1925](https://github.com/bastani-inc/atomic/issues/1925)).
