@@ -219,7 +219,7 @@ InteractiveModeBase.prototype.updateTerminalTitle = function(this: InteractiveMo
 InteractiveModeBase.prototype.run = async function(this: InteractiveModeBase): Promise<void> {
     await this.init();
 
-	if (shouldRefreshCopilotCatalogOnStartup()) refreshCatalogsAfterTuiStartup(this);
+	if (shouldRefreshCopilotCatalogOnStartup()) void refreshCatalogsAfterTuiStartup(this);
 
 	setTimeout(() => {
     const startupNoticesContainer = this.startupNoticesContainer;
