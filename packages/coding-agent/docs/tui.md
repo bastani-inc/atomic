@@ -815,11 +815,11 @@ ctx.ui.setWorkingIndicator({
 // Hide the indicator entirely
 ctx.ui.setWorkingIndicator({ frames: [] });
 
-// Restore Atomic's default spinner
+// Restore Atomic's default cumulative G1 mark
 ctx.ui.setWorkingIndicator();
 ```
 
-This only affects the normal streaming working indicator. Compaction and retry loaders keep their built-in styling. During successful post-tool autocompaction, Atomic temporarily replaces the working indicator with the compaction loader and restores the working indicator before the same stream continues; no additional user input is required. Custom frames are rendered verbatim, so extensions must add their own colors when needed.
+This only affects the normal streaming working indicator. With no extension override, Atomic renders a two-row Braille-packed derivative of the cumulative G1 ∀ at 240ms per phase: the complete mark lands before `-`, `--`, and `--*`, followed by two rest frames, and the deterministic activity label appears once. The full surface is proven at standard and 64-column widths and hides atomically in workflow stages that cannot allocate both rows. Factual status copy takes precedence. Compaction and retry loaders keep their plain built-in styling. During successful post-tool autocompaction, Atomic temporarily replaces the working indicator with the compaction loader and restores the working indicator before the same stream continues; no additional user input is required. Custom frames are rendered verbatim, so extensions must add their own colors when needed.
 
 **Examples:** [working-indicator.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/working-indicator.ts)
 

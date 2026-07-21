@@ -66,6 +66,43 @@ test("ChatSessionHost clears busy state when model fallback fails", () => {
   assert.equal(host.hasAnimationTick(), false);
   host.dispose();
 });
+
+test("ChatSessionHost gives factual retry, fallback, error, cancellation, and compaction copy precedence", () => {
+  const cases = [
+    [{ type: "auto_retry_start", attempt: 1, maxAttempts: 2, delayMs: 1, errorMessage: "network" }, "retrying…"],
+    [{ type: "model_fallback_start", from: "a", to: "b", reason: "quota", attempt: 1 }, "switching model…"],
+    [{ type: "agent_continue_error", source: "post_compaction", errorMessage: "provider failed" }, "provider failed"],
+    [{ type: "agent_continue_error", source: "post_compaction", errorMessage: "Operation cancelled" }, "Operation cancelled"],
+  ];
+  for (const [event, factual] of cases) {
+    const host = makeHost();
+    host.applyAgentEvent({ type: "agent_start" } as never);
+    host.applyAgentEvent({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: {} } as never);
+    host.applyAgentEvent(event as never);
+    const body = host.renderBody(80, 8).join("\n");
+    assert.equal(host.renderWorkingStatus(80).length, 0);
+    assert.equal((body.match(new RegExp(String(factual).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) ?? []).length, 1);
+    assert.doesNotMatch(body, /Checking the machinery|On it/);
+    host.dispose();
+  }
+
+  const compacting = makeHost();
+  compacting.applyAgentEvent({ type: "compaction_start", reason: "manual" } as never);
+  const compactStatus = compacting.renderWorkingStatus(80).join("\n");
+  assert.equal((compactStatus.match(/Compacting context\.\.\./g) ?? []).length, 1);
+  assert.doesNotMatch(compactStatus, /On it|Checking the machinery/);
+  compacting.dispose();
+});
+
+test("ChatSessionHost clears verification branding on error and preserves factual receipt text", () => {
+  const host = makeHost();
+  host.applyAgentEvent({ type: "agent_start" } as never);
+  host.applyAgentEvent({ type: "tool_execution_start", toolCallId: "verify-1", toolName: "bash", args: { command: "bun test" } } as never);
+  host.applyAgentEvent({ type: "tool_execution_end", toolCallId: "verify-1", toolName: "bash", result: { content: [{ type: "text", text: "1 test failed" }] }, isError: true } as never);
+  assert.doesNotMatch(host.renderWorkingStatus(80).join("\n"), /Demanding evidence/);
+  assert.equal((host.renderBody(80, 20).join("\n").match(/1 test failed/g) ?? []).length, 1);
+  host.dispose();
+});
 test("ChatSessionHost preserves compaction queued messages when flush fails", async () => {
   const statusMessages: string[] = [];
   const host = makeHost({

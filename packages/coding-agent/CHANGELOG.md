@@ -5,6 +5,7 @@
 ### Changed
 
 - Added Orwell's six writing rules from “Politics and the English Language” to the core default system prompt's `Guidelines` section so every standard Atomic session receives them, while removing the bundled workflow guidance's requirement to announce an inline-or-workflow mode before the first tool call.
+- Reworked interactive startup and ordinary working motion around Atomic's revision-3 identity system: the ∀ banner assembles inward in whole-column steps before its shadow, identity, and manifesto beat land; main and workflow-stage work surfaces use a two-row Braille-packed G1 derivative that builds at 240ms per phase, completes the ∀ before extending `-`, `--`, and `--*`, then rests for two frames. Deterministic activity labels now follow actual tool start/end ordering, production tool schemas and aliases classify correctly, completed calls cannot be resurrected by streamed snapshots, the full surface fits tested standard/64-column layouts or hides atomically at short stage heights, extension overrides remain unchanged, and factual status/prompt/receipt surfaces keep precedence ([#1883](https://github.com/bastani-inc/atomic/issues/1883)).
 
 ## [0.9.11-alpha.4] - 2026-07-23
 
@@ -81,6 +82,7 @@
 
 - Fixed newly authenticated providers remaining unavailable in the model selector until Atomic restarted. API-key and OAuth login now reload the isolated engine's credentials and refresh its authoritative model catalog immediately, including credential-dependent dynamic discovery ([#1918](https://github.com/bastani-inc/atomic/issues/1918)).
 - Added actionable `/logout` and `/login` recovery guidance when OpenAI Codex invalidates or revokes a locally unexpired OAuth token, and prevented an earlier WebSocket-to-SSE transport diagnostic from making the definitive authentication rejection retryable ([#1922](https://github.com/bastani-inc/atomic/issues/1922)).
+
 
 ## [0.9.10] - 2026-07-20
 

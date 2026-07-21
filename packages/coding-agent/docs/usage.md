@@ -15,6 +15,12 @@ The interface has four main areas:
 
 The editor can be replaced temporarily by built-in UI such as `/settings` or by custom extension UI.
 
+### Startup and Working Identity
+
+On an interactive TTY, the startup ∀ assembles from two separated halves in whole-column steps, lands its shadow and session identity, then reveals the one-time manifesto beat. Any key completes the sequence immediately and still reaches the focused editor. Quiet startup suppresses the sequence; a mounted interactive UI without a TTY, or with `ATOMIC_REDUCED_MOTION=1`, starts in the complete settled state.
+
+While ordinary agent work is active, a two-row Braille-packed derivative of the selected G1 ∀ builds cumulatively on a 240ms phase cadence, completes the mark, then extends `-`, `--`, and `--*` before two rest frames. Its deterministic labels are `Questioning the defaults` (reasoning/thinking), `Checking the machinery` (inspection/fetch tools), `Building assurance` (source edit/write), `Demanding evidence` (test/typecheck/lint verification), `Proving the path` (workflow dispatch/progress), `Making it inspectable` (docs/spec/report artifacts), and `On it` (fallback). The complete mark and one label fit standard and 64-column chat surfaces; a workflow stage hides the whole mark rather than showing a partial prefix when two rows are unavailable. Factual retry, fallback, error, cancellation, and compaction status suppresses the thematic indicator, while blocker and human-approval/prompt surfaces hide ordinary work chrome and factual receipts remain verbatim.
+
 ### Editor Features
 
 | Feature | How |
@@ -302,6 +308,7 @@ atomic --tools read,search,find,ls -p "Review the code"
 | `ATOMIC_CODING_AGENT_DIR` | Override config directory; default is `~/.atomic/agent`. Bundled intercom runtime/config files live under its `intercom/` subdirectory |
 | `ATOMIC_CODING_AGENT_SESSION_DIR` | Override session storage directory; overridden by `--session-dir` |
 | `ATOMIC_PACKAGE_DIR` | Override package directory, useful for Nix/Guix store paths |
+| `ATOMIC_REDUCED_MOTION` | Set to `1` to skip startup and working choreography and render the settled identity immediately |
 | `ATOMIC_OFFLINE` | Disable startup network operations, including update checks, package update checks, and install/update telemetry |
 | `ATOMIC_SKIP_VERSION_CHECK` | Skip the Atomic version update check at startup. This prevents the latest-version request |
 | `ATOMIC_TELEMETRY` | Override install/update telemetry: `1`/`true`/`yes` or `0`/`false`/`no`. This does not disable update checks |

@@ -1,11 +1,12 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
-import { type Message, type AgentSessionEvent, Loader, Spacer, Text, pickWhimsicalWorkingMessage, AssistantMessageComponent, CountdownTimer, keyText, ToolExecutionComponent, theme } from "./interactive-mode-deps.ts";
+import { type Message, type AgentSessionEvent, Loader, Spacer, Text, AssistantMessageComponent, CountdownTimer, keyText, ToolExecutionComponent, theme } from "./interactive-mode-deps.ts";
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.ts";
 import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import { handleSummarizationRetryEvent } from "./interactive-summarization-retry-events.ts";
 import { CACHE_TTL_MS, detectCacheMiss } from "../../core/cache-stats.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
+import { completeWorkingActivity, startWorkingActivity, workingLabelForActivity, workingLabelForTool } from "./components/atomic-working-status.ts";
 
 function createToolComponent(
   mode: InteractiveModeBase,
@@ -40,6 +41,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
     switch (event.type) {
       case "agent_start":
         this.pendingTools.clear();
+        this.workingLabelsByToolCallId?.clear();
         if (this.settingsManager.getShowTerminalProgress()) {
           this.ui.terminal.setProgress(true);
         }
@@ -70,7 +72,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
         break;
 
       case "turn_start": {
-        this.workingMessage = pickWhimsicalWorkingMessage();
+        this.workingMessage = workingLabelForActivity({ type: "turn" });
         if (this.loadingAnimation) {
           this.loadingAnimation.setMessage(this.workingMessage);
         }
@@ -156,8 +158,13 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
           this.streamingMessage = event.message;
           this.streamingComponent.updateContent(this.streamingMessage);
 
-          for (const content of this.streamingMessage.content) {
-            if (content.type === "toolCall") {
+		  const streamType = String((event as { assistantMessageEvent?: { type?: string } }).assistantMessageEvent?.type ?? "");
+		  if (streamType.includes("thinking")) {
+			this.workingMessage = workingLabelForActivity({ type: "thinking" });
+			this.loadingAnimation?.setMessage(this.workingMessage);
+		  }
+		  for (const content of this.streamingMessage.content) {
+			if (content.type === "toolCall") {
               if (!this.pendingTools.has(content.id)) {
                 const component = createToolComponent(this, content.name, content.id, content.arguments);
                 component.setExpanded(this.toolOutputExpanded);
@@ -230,6 +237,9 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
         break;
 
       case "tool_execution_start": {
+		const active = this.workingLabelsByToolCallId ??= new Map();
+		this.workingMessage = startWorkingActivity(active, event.toolCallId, workingLabelForTool(event.toolName, event.args));
+		this.loadingAnimation?.setMessage(this.workingMessage);
         let component = this.pendingTools.get(event.toolCallId);
         if (!component) {
           component = createToolComponent(this, event.toolName, event.toolCallId, event.args);
@@ -255,6 +265,9 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
       }
 
       case "tool_execution_end": {
+		const active = this.workingLabelsByToolCallId ??= new Map();
+		this.workingMessage = completeWorkingActivity(active, event.toolCallId, event.isError);
+		this.loadingAnimation?.setMessage(this.workingMessage ?? this.defaultWorkingMessage);
         const component = this.pendingTools.get(event.toolCallId);
         if (component) {
           component.updateResult({ ...event.result, isError: event.isError });
@@ -280,6 +293,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
           this.streamingMessage = undefined;
         }
         this.pendingTools.clear();
+        this.workingLabelsByToolCallId?.clear();
         if (this.compactionQueuedMessages.length > 0) {
           void this.session.agent.waitForIdle().then(() => this.flushCompactionQueue({ willRetry: false }));
         }

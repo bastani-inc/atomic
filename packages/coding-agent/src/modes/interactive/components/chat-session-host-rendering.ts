@@ -24,7 +24,6 @@ import { isChatSessionStreaming } from "./chat-session-host-runtime.ts";
 import {
   cacheKey,
   isChatMessageEntry,
-  spinnerFrame,
   stripAnsi,
   tailStreamingText,
 } from "./chat-session-host-utils.ts";
@@ -80,12 +79,16 @@ export function renderChatSessionWorkingStatus<
   TExtraEntry extends ChatTranscriptEntryLike,
 >(state: ChatSessionHostState<TExtraEntry>, width: number): string[] {
   if (!isChatSessionStreaming(state)) return [];
-  const message = state.compacting
-    ? state.statusMessage || "Compacting context..."
-    : state.workingMessage ?? "Working...";
+  if (state.statusMessage && !state.compacting) return [];
+  if (state.compacting) {
+    return new WorkingStatusComponent({
+      spinner: "",
+      message: state.statusMessage || "Compacting context...",
+      messageColor: (text) => state.style.textMuted(text),
+    }).render(width);
+  }
   return new WorkingStatusComponent({
-    spinner: spinnerFrame(),
-    message,
+    message: state.workingMessage ?? "On it",
     spinnerColor: (text) => state.style.accentBold(text),
     messageColor: (text) => state.style.textMuted(text),
   }).render(width);

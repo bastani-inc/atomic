@@ -289,6 +289,7 @@ describe("InteractiveMode compaction events", () => {
 		expect(renderedText(chatContainer).match(/✻ Context compacted/g)).toHaveLength(1);
 	});
 
+
 	it("preserves steering behavior when flushing into an active agent run", async () => {
 		const fakeThis = {
 			compactionQueuedMessages: [{ text: "change direction", mode: "steer" as const }],
@@ -312,6 +313,51 @@ describe("InteractiveMode compaction events", () => {
 		expect(fakeThis.session.prompt).toHaveBeenCalledWith("change direction", { streamingBehavior: "steer" });
 		expect(fakeThis.compactionQueuedMessages).toEqual([]);
 		expect(fakeThis.showError).not.toHaveBeenCalled();
+	});
+
+	it("main working labels follow ordered tool execution and error-aware completion", async () => {
+		const { mode } = makeMode([]);
+		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (this: object, event: object) => Promise<void>;
+		const send = async (event: object): Promise<void> => handleEvent.call(mode, event);
+		await send({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: undefined });
+		await send({ type: "tool_execution_start", toolCallId: "write-1", toolName: "write", args: { path: "src/a.ts" } });
+		await send({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: undefined });
+		expect(mode.workingMessage).toBe("Building assurance");
+		await send({ type: "tool_execution_end", toolCallId: "write-1", toolName: "write", result: { content: [] }, isError: false });
+		expect(mode.workingMessage).toBe("Checking the machinery");
+		await send({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read", result: { content: [] }, isError: false });
+		expect(mode.workingMessage).toBeUndefined();
+		await send({ type: "tool_execution_start", toolCallId: "verify-1", toolName: "bash", args: { command: "bun test" } });
+		await send({ type: "tool_execution_end", toolCallId: "verify-1", toolName: "bash", result: { content: [] }, isError: false });
+		expect(mode.workingMessage).toBe("Demanding evidence");
+		await send({ type: "tool_execution_start", toolCallId: "verify-2", toolName: "bash", args: { command: "bun test" } });
+		await send({ type: "tool_execution_end", toolCallId: "verify-2", toolName: "bash", result: { content: [] }, isError: true });
+		expect(mode.workingMessage).toBeUndefined();
+		await expect(send({ type: "tool_execution_end", toolCallId: "unknown", toolName: "read", result: { content: [] }, isError: false })).resolves.toBeUndefined();
+	});
+
+	it("renders the interactive hidden-thinking default through the production event path", async () => {
+		const { mode, chatContainer } = makeMode([]);
+		mode.hideThinkingBlock = true;
+		(mode as { hiddenThinkingLabel?: string }).hiddenThinkingLabel = undefined;
+		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (this: object, event: object) => Promise<void>;
+		await handleEvent.call(mode, {
+			type: "message_start",
+			message: {
+				role: "assistant",
+				content: [{ type: "thinking", thinking: "private reasoning" }],
+				api: "anthropic-messages",
+				provider: "test",
+				model: "test",
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+				stopReason: "stop",
+				timestamp: 1,
+			},
+		});
+		const rendered = renderedText(chatContainer);
+		expect(rendered.match(/Questioning the defaults/g)).toHaveLength(1);
+		expect(rendered).not.toContain("Thinking...");
+		expect(rendered).not.toContain("private reasoning");
 	});
 });
 

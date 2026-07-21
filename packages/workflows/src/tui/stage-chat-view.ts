@@ -126,7 +126,7 @@ export class StageChatView implements Component, Focusable {
     const readOnlyArchive = isReadOnlyArchive(ctx, stage);
 
     const customUiLines = customUiActive ? renderCustomUi(ctx, w) : [];
-    const chatChromeHidden = customUiActive || promptActive || readOnlyArchive;
+    const chatChromeHidden = customUiActive || promptActive || readOnlyArchive || blocked;
     const pendingLines = chatChromeHidden ? [] : this.chatHost.renderPendingMessages(w);
     const workingLines = chatChromeHidden ? [] : this.chatHost.renderWorkingStatus(w);
     const usageLines = chatChromeHidden ? [] : this.chatHost.renderUsage(w);

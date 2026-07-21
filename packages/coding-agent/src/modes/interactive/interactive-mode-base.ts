@@ -10,6 +10,7 @@ import { shouldRenderEngineDiagnosticAsChatError } from "../interactive-engine/a
 import { attachInteractiveEngineHost } from "../interactive-engine/extension-ui-bridge.ts";
 import type { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import { KeybindingsReloadCoordinator } from "../rpc/rpc-keybindings-reload.ts";
+import type { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 
 function isCommandLikeStartupInput(text: string): boolean {
   const trimmed = text.trimStart();
@@ -143,9 +144,10 @@ export class InteractiveModeBase {
   deferredRenderedUserInputComponents = new Map<string, Component[][]>();
 
 
-  loadingAnimation: Loader | undefined = undefined;
+  loadingAnimation: Loader | AtomicWorkingLoader | undefined = undefined;
 
 
+  workingLabelsByToolCallId = new Map<string, string>();
   workingMessage: string | undefined = undefined;
 
 
@@ -156,10 +158,10 @@ export class InteractiveModeBase {
     undefined;
 
 
-  readonly defaultWorkingMessage = "Working...";
+  readonly defaultWorkingMessage = "On it";
 
 
-  readonly defaultHiddenThinkingLabel = "Thinking...";
+  readonly defaultHiddenThinkingLabel = "Questioning the defaults";
 
 
   hiddenThinkingLabel = this.defaultHiddenThinkingLabel;

@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Strengthened the existing Goal and Ralph reviewer prompts with a conditional contract-probe playbook for exact external-consumer APIs, build/feature matrices, schema optionality, state transitions, configuration precedence, low-level feature-flag independence, and permissive inputs. Reviewers now record independent probe outcomes in existing evidence fields and withhold approval when a material literal clause remains unverified, without changing reviewer counts, schemas, or convergence semantics. ([#1973](https://github.com/bastani-inc/atomic/issues/1973))
 - Strengthened model-visible workflow routing guidance with a pre-launch requirement/risk/evidence coverage pass, a one-launch composition commitment, concrete graph-selection signals, and bounded skeptical-reviewer loops whose model-selected probes are executed authoritatively through durable `ctx.tool(...)` verifier gates rather than model self-report ([#1974](https://github.com/bastani-inc/atomic/issues/1974)).
+- Changed workflow stage chat to render the two-row Atomic working mark atomically under constrained height and suppress ordinary working chrome for blocked or prompt states, preventing partial marks from displacing factual status or the composer.
 
 ## [0.9.11-alpha.4] - 2026-07-23
 
@@ -53,6 +54,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Fixed `workflow({ action: "resume", runId })` returning `Run not found` for eligible durably paused workflows after session-local run state was cleared. Explicit tool resume now resolves exact IDs and unique or ambiguous prefixes through the authoritative DBOS catalog before refusing the target, preserves original workflow IDs and checkpoint replay, and surfaces resource or durable lookup failures without making ordinary status listing hydrate durable history. ([#1924](https://github.com/bastani-inc/atomic/issues/1924))
 - Fixed session teardown crashing the process (exit code 1) after DBOS durability provisioning had failed: `shutdownDbos` re-awaited the memoized rejected configuration promise and rethrew the original provisioning error out of session dispose and the `beforeExit` hook, turning otherwise-successful `--print` runs into nonzero exits (surfacing as `NonZeroAgentExitCodeError` in eval harnesses). Shutdown is now a no-op for a backend that never reached readiness, and genuine teardown failures are logged instead of thrown.
+
 
 ## [0.9.10] - 2026-07-20
 

@@ -4,7 +4,14 @@ import { ENV_CODEX_FAST_MODE } from "../src/config.ts";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import { FastModeSelectorComponent } from "../src/modes/interactive/components/fast-mode-selector.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
+import {
+	STARTUP_ASSEMBLY_GAPS,
+	composeStartupIdentity,
+	renderAtomicAssemblyBanner,
+	renderStartupManifesto,
+} from "../src/modes/interactive/components/atomic-banner.ts";
+import { StartupIdentityComponent, startupStateAtElapsed } from "../src/modes/interactive/components/startup-identity.ts";
 
 function plain(text: string): string {
 	return text.replace(/\u001b\[[0-9;]*m/g, "");
@@ -120,6 +127,56 @@ describe("InteractiveMode startup banner", () => {
 		expect(rendered).toContain("/tmp/project");
 	});
 
+	it("assembles in exact whole-column steps before landing shadow", () => {
+		initTheme("dark");
+		expect(STARTUP_ASSEMBLY_GAPS).toEqual([10, 8, 6, 4, 3, 2, 1, 1, 0]);
+		for (const gap of STARTUP_ASSEMBLY_GAPS.slice(0, -1)) {
+			const frame = renderAtomicAssemblyBanner(gap, theme, "off").map(plain);
+			expect(frame).toHaveLength(11);
+			expect(frame.every((line) => line.length === 36)).toBe(true);
+			expect(frame.join(""), `gap ${gap}`).not.toContain("░");
+		}
+		expect(renderAtomicAssemblyBanner(0, theme, "off").map(plain).join("")).toContain("░");
+	});
+
+	it("holds the landed identity before three 80ms manifesto phrases", () => {
+		expect([0, 80, 160, 240, 320, 400, 480, 560, 640].map((ms) => startupStateAtElapsed(ms).gap))
+			.toEqual([10, 8, 6, 4, 3, 2, 1, 1, 0]);
+		expect(startupStateAtElapsed(799).manifestoPhase).toBe(0);
+		expect(startupStateAtElapsed(800).manifestoPhase).toBe(1);
+		expect(startupStateAtElapsed(880).manifestoPhase).toBe(2);
+		expect(startupStateAtElapsed(960).manifestoPhase).toBe(3);
+		expect(startupStateAtElapsed(1040)).toEqual({ gap: 0, manifestoPhase: 4, complete: true });
+	});
+	it("settles immediately without consuming input and renders the complete reduced-motion state", () => {
+		const requestRender = vi.fn();
+		const component = new StartupIdentityComponent(
+			{ requestRender } as never,
+			(_width, state) => JSON.stringify(state),
+			true,
+		);
+		expect(component.settle()).toBe(true);
+		expect(component.settle()).toBe(false);
+		expect(component.render(64).join("\n")).toContain('"manifestoPhase":4');
+		expect(requestRender).toHaveBeenCalled();
+		const staticComponent = new StartupIdentityComponent(
+			{ requestRender } as never,
+			(_width, state) => JSON.stringify(state),
+			false,
+		);
+		expect(staticComponent.render(64).join("\n")).toContain('"complete":true');
+	});
+	it("hands the landed identity into manifesto beats and stacks at 64 columns", () => {
+		initTheme("dark");
+		const mark = renderAtomicAssemblyBanner(0, theme, "off");
+		const meta = ["Atomic v0.0.0", "(openai) model", "/tmp/project"];
+		expect(plain(composeStartupIdentity(mark, meta, 120, renderStartupManifesto(0)))).not.toContain("We question,");
+		expect(plain(composeStartupIdentity(mark, meta, 120, renderStartupManifesto(1)))).toContain("We question,");
+		expect(plain(composeStartupIdentity(mark, meta, 120, renderStartupManifesto(2)))).toContain("we break away from what is accepted.");
+		const final = plain(composeStartupIdentity(mark, meta, 64, renderStartupManifesto(4)));
+		expect(final).toContain("Engineering matters.");
+		expect(final.split("\n").every((line) => line.length <= 64)).toBe(true);
+	});
 	it("refreshes the banner and inherited child fast-mode state when /fast changes", async () => {
 		initTheme("dark");
 		const previous = process.env[ENV_CODEX_FAST_MODE];

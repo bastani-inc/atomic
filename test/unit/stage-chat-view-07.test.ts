@@ -138,19 +138,33 @@ describe("StageChatView", () => {
         });
 
         const lines = view.render(96).map(stripAnsi);
-        const workingIndex = lines.findIndex((line) =>
-            line.includes("Working"),
-        );
-        assert.ok(
-            workingIndex > 1,
-            "expected working spinner after transcript",
-        );
+        const workingIndex = lines.findIndex((line) => line.includes("On it"));
+        assert.ok(workingIndex > 4, "expected Atomic working mark after transcript");
+        const markStart = workingIndex - 1;
         const previousContent = lines
-            .slice(0, workingIndex)
+            .slice(0, markStart)
             .findLast((line) => line.trim() !== "");
         assert.match(previousContent ?? "", /msg-\d+/);
-        assert.equal(lines[workingIndex - 1]?.trim(), "");
-        assert.match(lines[workingIndex] ?? "", /^\s+\S Working/);
+        assert.match(lines.slice(markStart, workingIndex + 1).join("\n"), /[⠀-⣿]/);
+        assert.equal(lines.join("\n").match(/On it/g)?.length, 1);
+        view.dispose();
+    });
+
+    test("64-column Atomic working mark keeps its label and composer in bounds", () => {
+        const store = createStore();
+        setupRun(store, "run-1", "stage-a", "running");
+        const { handle } = makeHandle({
+            promptCalls: [], steerCalls: [], followUpCalls: [], pauseCalls: 0, resumeCalls: [], isStreaming: true,
+        });
+        const view = new StageChatView({
+            store, graphTheme: deriveGraphTheme({}), runId: "run-1", stageId: "stage-a",
+            workflowName: "test-wf", handle, onDetach: () => {}, onClose: () => {},
+        });
+        const lines = view.render(64).map(stripAnsi);
+        assert.equal(lines.every((line) => line.length <= 64), true);
+        assert.match(lines.join("\n"), /On it/);
+        assert.equal(lines.some((line) => line.includes("❯")), true);
+        assert.equal(lines.some((line) => line.includes("ctrl+x")), true);
         view.dispose();
     });
 
@@ -189,12 +203,10 @@ describe("StageChatView", () => {
         const rendered = lines.join("\n");
         assert.match(rendered, /\$0\.123/);
         assert.match(rendered, /23\.4%\/200k/);
-        assert.match(rendered, /Working/);
+        assert.match(rendered, /On it/);
         assert.doesNotMatch(rendered, /╌/);
 
-        const workingIndex = lines.findIndex((line) =>
-            line.includes("Working"),
-        );
+        const workingIndex = lines.findIndex((line) => line.includes("On it"));
         const usageIndex = lines.findIndex((line) => line.includes("$0.123"));
         const promptIndex = lines.findIndex((line) => line.includes("❯"));
         const hintIndex = expectRightAlignedReturnHint(lines, 120);

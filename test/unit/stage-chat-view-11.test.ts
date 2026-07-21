@@ -65,6 +65,7 @@ describe("StageChatView", () => {
             onClose: () => {},
         });
 
+        emit({ type: "agent_start" } as unknown as AgentSessionEvent);
         emit({
             type: "message_start",
             message: { role: "assistant", content: [] },
@@ -110,6 +111,7 @@ describe("StageChatView", () => {
         );
         assert.match(view.render(96).join("\n"), /I will inspect it/);
         assert.match(view.render(96).join("\n"), /read/);
+        assert.doesNotMatch(view.render(96).map(stripAnsi).join("\n"), /Checking the machinery/);
         view.dispose();
     });
 
@@ -225,7 +227,6 @@ describe("StageChatView", () => {
         const store = createStore();
         setupRun(store, "run-1", "stage-a");
         const { handle, emit } = makeHandle();
-        let renders = 0;
         const view = new StageChatView({
             store,
             graphTheme: deriveGraphTheme({}),
@@ -235,19 +236,18 @@ describe("StageChatView", () => {
             handle,
             onDetach: () => {},
             onClose: () => {},
-            requestRender: () => {
-                renders += 1;
-            },
         });
 
+        emit({ type: "agent_start" } as unknown as AgentSessionEvent);
         emit({
             type: "tool_execution_start",
             toolCallId: "t1",
             toolName: "bash",
-            args: { command: "ls" },
+            args: { command: "bun test" },
         } as unknown as AgentSessionEvent);
         assert.equal(view._transcript.at(-1)?.role, "tool");
         assert.equal(view._transcript.at(-1)?.text.includes("bash"), true);
+        assert.match(view.render(96).map(stripAnsi).join("\n"), /Demanding evidence/);
 
         emit({
             type: "tool_execution_end",
@@ -256,15 +256,35 @@ describe("StageChatView", () => {
             result: { content: [{ type: "text", text: "ok" }], details: {} },
             isError: false,
         } as unknown as AgentSessionEvent);
-
-        assert.equal(renders, 2);
+        assert.match(view.render(96).map(stripAnsi).join("\n"), /Demanding evidence/);
         const entry = view._transcript.at(-1);
         assert.equal(entry?.role, "tool");
         assert.equal(entry?.text.includes("ok"), true);
         const renderedLines = view.render(96);
         assert.match(renderedLines.join("\n"), /ok/);
-        const toolLine = renderedLines.find((line) => line.includes("$ ls"));
+        const toolLine = renderedLines.find((line) => line.includes("$ bun test"));
         assert.notEqual(toolLine, undefined);
+        view.dispose();
+    });
+
+    test("working labels follow actual parallel tool lifecycle without streamed resurrection", () => {
+        const store = createStore();
+        setupRun(store, "run-1", "stage-a");
+        const { handle, emit } = makeHandle();
+        const view = new StageChatView({ store, graphTheme: deriveGraphTheme({}), runId: "run-1", stageId: "stage-a", workflowName: "test-wf", handle, onDetach: () => {}, onClose: () => {} });
+        emit({ type: "agent_start" } as AgentSessionEvent);
+        emit({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: undefined } as AgentSessionEvent);
+        emit({ type: "tool_execution_start", toolCallId: "write-1", toolName: "write", args: { path: "src/a.ts" } } as AgentSessionEvent);
+        emit({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: undefined } as AgentSessionEvent);
+        assert.match(stripAnsi(view.render(96).join("\n")), /Building assurance/);
+        emit({ type: "tool_execution_end", toolCallId: "write-1", toolName: "write", result: { content: [] }, isError: false } as AgentSessionEvent);
+        assert.match(stripAnsi(view.render(96).join("\n")), /Checking the machinery/);
+        emit({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read", result: { content: [] }, isError: false } as AgentSessionEvent);
+        emit({ type: "message_update", message: { role: "assistant", content: [{ type: "toolCall", id: "read-1", name: "read", arguments: {} }] } } as AgentSessionEvent);
+        const settled = stripAnsi(view.render(96).join("\n"));
+        assert.match(settled, /On it/);
+        assert.doesNotMatch(settled, /Checking the machinery|Building assurance/);
+        emit({ type: "tool_execution_end", toolCallId: "unknown", toolName: "read", result: { content: [] }, isError: true } as AgentSessionEvent);
         view.dispose();
     });
 

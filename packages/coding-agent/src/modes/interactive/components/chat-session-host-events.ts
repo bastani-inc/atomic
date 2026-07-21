@@ -10,7 +10,7 @@ import {
   isVerbatimCompactionMessage,
   type CustomMessage,
 } from "../../../core/messages.ts";
-import { pickWhimsicalWorkingMessage } from "../whimsical-messages.ts";
+import { completeWorkingActivity, startWorkingActivity, workingLabelForActivity, workingLabelForTool } from "./atomic-working-status.ts";
 import { flushChatSessionCompactionQueue } from "./chat-session-host-actions.ts";
 import {
   afterChatSessionEvent,
@@ -133,9 +133,33 @@ export function applyChatSessionAgentEvent<
       }
     }
   }
+  if (type === "message_update") {
+    const streamType = String((event as { assistantMessageEvent?: { type?: string } }).assistantMessageEvent?.type ?? "");
+    if (streamType.includes("thinking")) state.workingMessage = workingLabelForActivity({ type: "thinking" });
+  }
   if (isSharedLiveChatEvent(type)) {
     const changed = state.liveChat.applyEvent(event);
     const toolCallEvent = assistantToolCallEvent(event);
+	if (type === "tool_execution_start") {
+		const direct = event as { toolCallId?: string; toolName?: string; args?: unknown };
+		if (direct.toolCallId && direct.toolName) {
+			state.workingMessage = startWorkingActivity(
+				state.workingLabelsByToolCallId,
+				direct.toolCallId,
+				workingLabelForTool(direct.toolName, direct.args),
+			);
+		}
+	}
+	if (type === "tool_execution_end") {
+		const direct = event as { toolCallId?: string; isError?: boolean };
+		if (direct.toolCallId) {
+			state.workingMessage = completeWorkingActivity(
+				state.workingLabelsByToolCallId,
+				direct.toolCallId,
+				direct.isError === true,
+			);
+		}
+	}
     const changedByToolCall = toolCallEvent !== undefined
       ? state.liveChat.applyEvent(toolCallEvent)
       : false;
@@ -147,6 +171,7 @@ export function applyChatSessionAgentEvent<
     case "agent_start":
       state.sdkBusy = true;
       state.liveChat.clearPendingTools();
+      state.workingLabelsByToolCallId.clear();
       state.statusMessage = "";
       changed = true;
       break;
@@ -154,6 +179,7 @@ export function applyChatSessionAgentEvent<
       state.sdkBusy = false;
       state.workingMessage = undefined;
       state.liveChat.clearPendingTools();
+      state.workingLabelsByToolCallId.clear();
       state.statusMessage = "";
       changed = true;
       if (state.compactionQueuedMessages.length > 0) {
@@ -162,7 +188,7 @@ export function applyChatSessionAgentEvent<
       }
       break;
     case "turn_start":
-      state.workingMessage = pickWhimsicalWorkingMessage();
+      state.workingMessage = workingLabelForActivity({ type: "turn" });
       changed = true;
       break;
     case "turn_end":
@@ -182,13 +208,29 @@ export function applyChatSessionAgentEvent<
     }
     case "tool_call":
     case "tool_use":
-      changed = state.liveChat.applyEvent(legacyToolStartEvent(event));
+		{
+			const toolStart = legacyToolStartEvent(event);
+			state.workingMessage = startWorkingActivity(
+				state.workingLabelsByToolCallId,
+				toolStart.toolCallId,
+				workingLabelForTool(toolStart.toolName, toolStart.args),
+			);
+			changed = state.liveChat.applyEvent(toolStart);
+		}
       break;
-    case "tool_result":
-      changed = state.liveChat.applyEvent(legacyToolResultEvent(event));
+    case "tool_result": {
+      const toolResult = legacyToolResultEvent(event);
+      state.workingMessage = completeWorkingActivity(
+        state.workingLabelsByToolCallId,
+        toolResult.toolCallId,
+        toolResult.isError,
+      );
+      changed = state.liveChat.applyEvent(toolResult);
       break;
+    }
     case "thinking_delta":
     case "thinking":
+      state.workingMessage = workingLabelForActivity({ type: "thinking" });
       changed = state.liveChat.applyEvent(legacyThinkingEvent(event));
       break;
     case "compaction_start": {

@@ -268,4 +268,15 @@ describe("StageChatView", () => {
         view.dispose();
     });
 
+    test("short stage height hides the compact mark atomically and retains composer", () => {
+        const store = createStore();
+        setupRun(store, "run-1", "stage-a");
+        const { handle } = makeHandle({ promptCalls: [], steerCalls: [], followUpCalls: [], pauseCalls: 0, resumeCalls: [], isStreaming: true });
+        const view = new StageChatView({ store, graphTheme: deriveGraphTheme({}), runId: "run-1", stageId: "stage-a", workflowName: "test-wf", handle, onDetach: () => {}, onClose: () => {}, getViewportRows: () => 7 });
+        const rendered = view.render(64).map(stripAnsi).join("\n");
+        assert.match(rendered, /❯/);
+        assert.doesNotMatch(rendered, /On it|[⠀-⣿]/);
+        view.dispose();
+    });
+
 });

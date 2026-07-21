@@ -1,7 +1,9 @@
 import { InteractiveModeBase, seedStartupInput } from "./interactive-mode-base.ts";
-import { type Container, type MarkdownTheme, os, path, Markdown, Spacer, Text, spawn, APP_NAME, APP_TITLE, ENV_OFFLINE, getEnvValue, getAgentDir, VERSION, formatCodexFastModeModelLabel, shouldApplyCodexFastMode, DefaultPackageManager, isInstallTelemetryEnabled, getChangelogPath, getEntriesForVersion, getNewEntries, normalizeChangelogLinks, parseChangelog, getCwdRelativePath, getPiUserAgent, recordTimeSinceReset, ensureTool, checkForNewPiVersion, renderAtomicAnsiBanner, composeStartupIdentity, DynamicBorder, getMarkdownTheme, onThemeChange, theme } from "./interactive-mode-deps.ts";
+import { type Container, type MarkdownTheme, os, path, Markdown, Spacer, Text, spawn, APP_NAME, APP_TITLE, ENV_OFFLINE, getEnvValue, getAgentDir, VERSION, formatCodexFastModeModelLabel, shouldApplyCodexFastMode, DefaultPackageManager, isInstallTelemetryEnabled, getChangelogPath, getEntriesForVersion, getNewEntries, normalizeChangelogLinks, parseChangelog, getCwdRelativePath, getPiUserAgent, recordTimeSinceReset, ensureTool, checkForNewPiVersion, composeStartupIdentity, DynamicBorder, getMarkdownTheme, onThemeChange, theme } from "./interactive-mode-deps.ts";
 import { ExpandableText } from "./interactive-mode-helpers.ts";
 import { refreshCatalogsAfterTuiStartup, updateProviderCountFromSnapshot } from "./interactive-model-catalog-startup.ts";
+import { renderAtomicAssemblyBanner, renderStartupManifesto } from "./components/atomic-banner.ts";
+import { StartupIdentityComponent } from "./components/startup-identity.ts";
 import { ONBOARDING_COPY } from "./interactive-onboarding.ts";
 import { onInteractiveEngineRemoteCommandsChanged, waitForInteractiveEngineBound } from "../interactive-engine/extension-ui-bridge.ts";
 import { restoreTerminalTitleAfterPackageCheck } from "./interactive-terminal-title.ts";
@@ -151,13 +153,10 @@ InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): 
 
     // Add the quiet startup identity unless silenced.
     if (this.options.verbose || !this.settingsManager.getQuietStartup()) {
-      this.builtInHeader = new ExpandableText(
-        (width) => this.getStartupIdentityText(width),
-        (width) => this.getStartupIdentityText(width),
-        this.getStartupExpansionState(),
-        1,
-        0,
-      );
+		this.builtInHeader = new StartupIdentityComponent(
+			this.ui,
+			(width, state) => this.getStartupIdentityText(width, state.gap, state.manifestoPhase),
+		);
 
       this.headerContainer.addChild(new Spacer(1));
       this.headerContainer.addChild(this.builtInHeader);
@@ -476,22 +475,23 @@ InteractiveModeBase.prototype.getStartupModelLabel = function(this: InteractiveM
     return formatCodexFastModeModelLabel(modelLabel, fastModeEnabled);
   };
 
-InteractiveModeBase.prototype.getStartupIdentityText = function(this: InteractiveModeBase, maxWidth?: number): string {
-    const appLabel = APP_NAME.length > 0
-      ? `${APP_NAME[0]!.toUpperCase()}${APP_NAME.slice(1)}`
-      : "Atomic";
-    const title = `${theme.bold(theme.fg("text", appLabel))} ${theme.fg("muted", `v${this.version}`)}`;
-    const model = this.session.state.model;
-    const provider = model ? theme.fg("dim", `(${model.provider})`) : theme.fg("dim", "(no-provider)");
-    const modelLine = `${provider} ${theme.fg("muted", this.getStartupModelLabel())}`;
-    const cwd = theme.fg("muted", this.formatDisplayPath(this.sessionManager.getCwd()));
-    const metaLines = [title, modelLine, cwd];
-    return composeStartupIdentity(this.getAtomicAnsiMarkLines(), metaLines, maxWidth);
-  };
+InteractiveModeBase.prototype.getStartupIdentityText = function(this: InteractiveModeBase, maxWidth?: number, gap = 0, manifestoPhase = 4): string {
+	const appLabel = APP_NAME.length > 0
+		? `${APP_NAME[0]!.toUpperCase()}${APP_NAME.slice(1)}`
+		: "Atomic";
+	const title = `${theme.bold(theme.fg("text", appLabel))} ${theme.fg("muted", `v${this.version}`)}`;
+	const model = this.session.state.model;
+	const provider = model ? theme.fg("dim", `(${model.provider})`) : theme.fg("dim", "(no-provider)");
+	const modelLine = `${provider} ${theme.fg("muted", this.getStartupModelLabel())}`;
+	const metaLines = gap === 0
+		? [title, modelLine, theme.fg("muted", this.formatDisplayPath(this.sessionManager.getCwd()))]
+		: [];
+	return composeStartupIdentity(this.getAtomicAnsiMarkLines(gap), metaLines, maxWidth, gap === 0 ? renderStartupManifesto(manifestoPhase) : []);
+};
 
-InteractiveModeBase.prototype.getAtomicAnsiMarkLines = function(this: InteractiveModeBase): string[] {
-    return renderAtomicAnsiBanner(theme, this.session.thinkingLevel || "off");
-  };
+InteractiveModeBase.prototype.getAtomicAnsiMarkLines = function(this: InteractiveModeBase, gap = 0): string[] {
+	return renderAtomicAssemblyBanner(gap, theme, this.session.thinkingLevel || "off");
+};
 
 InteractiveModeBase.prototype.getStartupExpansionState = function(this: InteractiveModeBase): boolean {
     return this.options.verbose || this.toolOutputExpanded;
