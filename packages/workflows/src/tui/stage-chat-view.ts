@@ -149,7 +149,9 @@ export class StageChatView implements Component, Focusable {
       footerRows: footerLines.length,
     });
     const visiblePendingLines = takeRows(pendingLines, plan.pendingRows);
-    const visibleWorkingLines = takeRows(workingLines, plan.workingRows);
+    const visibleWorkingLines = workingLines.slice(
+      Math.max(0, workingLines.length - plan.workingRows),
+    );
     const visibleUsageLines = takeRows(usageLines, plan.usageRows);
     const editorSlotLines = customUiActive ? customUiLines : editorLines;
     const visibleEditorLines = takeRows(editorSlotLines, plan.editorRows);

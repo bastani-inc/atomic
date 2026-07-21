@@ -3,7 +3,7 @@ import { theme } from "../theme/theme.ts";
 import { atomicWorkingFrame, AtomicWorkingStatusComponent } from "./atomic-working-status.ts";
 
 export interface WorkingStatusComponentOptions {
-	/** Explicit extension-owned one-cell indicator; omitted uses Atomic G1. */
+	/** Explicit caller-owned indicator frame; omitted uses Atomic's one-cell A. */
 	spinner?: string;
 	frame?: number;
 	message?: string;

@@ -815,11 +815,11 @@ ctx.ui.setWorkingIndicator({
 // Hide the indicator entirely
 ctx.ui.setWorkingIndicator({ frames: [] });
 
-// Restore Atomic's default cumulative G1 mark
+// Restore Atomic's default cumulative one-cell A
 ctx.ui.setWorkingIndicator();
 ```
 
-This only affects the normal streaming working indicator. With no extension override, Atomic renders a two-row Braille-packed derivative of the cumulative G1 ∀ at 240ms per phase: the complete mark lands before `-`, `--`, and `--*`, followed by two rest frames, and one of Atomic's original randomized whimsical working verbs appears once per turn. The full surface fits standard and 64-column widths and hides atomically in workflow stages that cannot allocate both rows. Factual status copy takes precedence. Compaction and retry loaders keep their plain built-in styling. During successful post-tool autocompaction, Atomic temporarily replaces the working indicator with the compaction loader and restores the working indicator before the same stream continues; no additional user input is required. Custom frames are rendered verbatim, so extensions must add their own colors when needed.
+This only affects the normal streaming working indicator. With no extension override, Atomic renders a one-cell Braille A immediately before one of its 453 original randomized whimsical working verbs, selected once per turn. The A builds cumulatively dot by dot from top to bottom at pi-tui's canonical 80ms cadence, then reverses one dot at a time for a clean cycle without changing the ordinary loader footprint. `ATOMIC_REDUCED_MOTION=1` shows the settled A without animation. The icon and longest message fit standard and 64-column widths. Factual status copy takes precedence. Compaction and retry loaders keep their plain built-in styling. During successful post-tool autocompaction, Atomic temporarily replaces the working indicator with the compaction loader and restores it before the same stream continues; no additional user input is required. Custom extension frames and intervals remain unchanged and frames render verbatim, so extensions must add their own colors when needed.
 
 **Examples:** [working-indicator.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/working-indicator.ts)
 

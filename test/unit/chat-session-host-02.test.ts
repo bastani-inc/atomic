@@ -10,6 +10,10 @@ import {
 import type { Component, EditorTheme } from "@earendil-works/pi-tui";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { createVerbatimCompactionMessage, VERBATIM_COMPACTION_PREFIX } from "../../packages/coding-agent/src/core/messages.ts";
+import {
+  ATOMIC_WORKING_FRAME_MS,
+  ATOMIC_WORKING_SETTLED_FRAME_INDEX,
+} from "../../packages/coding-agent/src/modes/interactive/components/atomic-working-status.ts";
 
 beforeAll(() => {
   initTheme("dark", false);
@@ -66,6 +70,39 @@ test("ChatSessionHost clears busy state when model fallback fails", () => {
   assert.equal(host.hasAnimationTick(), false);
   host.dispose();
 });
+test("ChatSessionHost renders the settled one-cell Atomic A in ordinary loader geometry", () => {
+  const host = makeHost();
+  host.applyAgentEvent({ type: "agent_start" } as never);
+  const previousNow = Date.now;
+  Date.now = () => ATOMIC_WORKING_FRAME_MS * ATOMIC_WORKING_SETTLED_FRAME_INDEX;
+  try {
+    const lines = host.renderWorkingStatus(64);
+    assert.equal(lines.length, 2);
+    assert.equal(lines[0], "");
+    assert.equal(lines[1]?.trimEnd(), " ⣵ Working...");
+    assert.deepEqual(lines[1]?.match(/[⠀-⣿]/g), ["⣵"]);
+  } finally {
+    Date.now = previousNow;
+    host.dispose();
+  }
+});
+test("ChatSessionHost settles the Atomic A without a workflow animation tick under reduced motion", () => {
+  const previousReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
+  process.env.ATOMIC_REDUCED_MOTION = "1";
+  const host = makeHost();
+  try {
+    host.applyAgentEvent({ type: "agent_start" } as never);
+    assert.equal(host.hasAnimationTick(), false);
+    const lines = host.renderWorkingStatus(64);
+    assert.equal(lines[1]?.trimEnd(), " ⣵ Working...");
+  } finally {
+    host.dispose();
+    if (previousReducedMotion === undefined) delete process.env.ATOMIC_REDUCED_MOTION;
+    else process.env.ATOMIC_REDUCED_MOTION = previousReducedMotion;
+  }
+});
+
+
 
 test("ChatSessionHost gives factual retry, fallback, error, cancellation, and compaction copy precedence", () => {
   const cases = [

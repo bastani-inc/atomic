@@ -17,6 +17,20 @@ import {
 } from "./stage-chat-view-helpers.js";
 import { join, sep } from "node:path";
 import { hexToAnsi } from "../../packages/workflows/src/tui/color-utils.js";
+import {
+    ATOMIC_WORKING_FRAME_MS,
+    ATOMIC_WORKING_SETTLED_FRAME_INDEX,
+} from "../../packages/coding-agent/src/modes/interactive/components/atomic-working-status.js";
+
+function renderSettled(view: StageChatView, width: number): string[] {
+    const previousNow = Date.now;
+    Date.now = () => ATOMIC_WORKING_FRAME_MS * ATOMIC_WORKING_SETTLED_FRAME_INDEX;
+    try {
+        return view.render(width).map(stripAnsi);
+    } finally {
+        Date.now = previousNow;
+    }
+}
 
 describe("StageChatView", () => {
     test("failed resume keeps the local paused state", async () => {
@@ -137,15 +151,16 @@ describe("StageChatView", () => {
             onClose: () => {},
         });
 
-        const lines = view.render(96).map(stripAnsi);
+        const lines = renderSettled(view, 96);
         const workingIndex = lines.findIndex((line) => line.includes("Working..."));
-        assert.ok(workingIndex > 4, "expected Atomic working mark after transcript");
-        const markStart = workingIndex - 1;
+        assert.ok(workingIndex > 4, "expected Atomic working icon after transcript");
         const previousContent = lines
-            .slice(0, markStart)
+            .slice(0, workingIndex - 1)
             .findLast((line) => line.trim() !== "");
         assert.match(previousContent ?? "", /msg-\d+/);
-        assert.match(lines.slice(markStart, workingIndex + 1).join("\n"), /[⠀-⣿]/);
+        assert.equal(lines[workingIndex - 1]?.trim(), "");
+        assert.equal(lines[workingIndex]?.trimEnd(), " ⣵ Working...");
+        assert.deepEqual(lines[workingIndex]?.match(/[⠀-⣿]/g), ["⣵"]);
         assert.equal(lines.join("\n").match(/Working\.\.\./g)?.length, 1);
         view.dispose();
     });
@@ -160,9 +175,11 @@ describe("StageChatView", () => {
             store, graphTheme: deriveGraphTheme({}), runId: "run-1", stageId: "stage-a",
             workflowName: "test-wf", handle, onDetach: () => {}, onClose: () => {},
         });
-        const lines = view.render(64).map(stripAnsi);
+        const lines = renderSettled(view, 64);
         assert.equal(lines.every((line) => line.length <= 64), true);
-        assert.match(lines.join("\n"), /Working\.\.\./);
+        const working = lines.find((line) => line.includes("Working..."));
+        assert.equal(working?.trimEnd(), " ⣵ Working...");
+        assert.deepEqual(working?.match(/[⠀-⣿]/g), ["⣵"]);
         assert.equal(lines.some((line) => line.includes("❯")), true);
         assert.equal(lines.some((line) => line.includes("ctrl+x")), true);
         view.dispose();

@@ -44,9 +44,10 @@ export function decrementOptimisticUserSignature<
 export function syncChatSessionAnimationTick<
   TExtraEntry extends ChatTranscriptEntryLike,
 >(state: ChatSessionHostState<TExtraEntry>): void {
-  const shouldAnimate =
+  const shouldAnimate = process.env.ATOMIC_REDUCED_MOTION !== "1" && (
     isChatSessionStreaming(state) ||
-    (state.sdkBusy && state.liveChat.pendingToolIds().length > 0);
+    (state.sdkBusy && state.liveChat.pendingToolIds().length > 0)
+  );
   if (shouldAnimate && !state.animationTimer) {
     state.animationTimer = setInterval(() => {
       state.requestRender?.();

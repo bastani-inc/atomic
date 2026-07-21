@@ -57,8 +57,7 @@ export function planStageChatFrame(input: StageChatFramePlanInput): StageChatFra
   // normal chat surface after the body gives up its space.
   const pendingRows = Math.min(Math.max(0, input.pendingRows), remaining);
   remaining -= pendingRows;
-  const requestedWorkingRows = Math.max(0, input.workingRows);
-  const workingRows = remaining >= requestedWorkingRows ? requestedWorkingRows : 0;
+  const workingRows = Math.min(Math.max(0, input.workingRows), remaining);
   remaining -= workingRows;
   const usageRows = Math.min(Math.max(0, input.usageRows), remaining);
   remaining -= usageRows;
