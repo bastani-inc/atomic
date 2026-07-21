@@ -30,7 +30,7 @@
     "prepublish:native": "napi prepublish --npm-dir npm --tag-style npm --no-gh-release"
   },
   "devDependencies": {
-    "@napi-rs/cli": "3.7.2"
+    "@napi-rs/cli": "3.7.3"
   },
   "engines": {
     "bun": ">=1.3.14",

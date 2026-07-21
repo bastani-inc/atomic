@@ -2,6 +2,7 @@ import { disposeSessionAsyncJobManager } from "./async/session-manager.js";
 import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Message, TextContent } from "@earendil-works/pi-ai/compat";
 import { cleanupSessionResources } from "@earendil-works/pi-ai/compat";
+import { formatCodexProviderError } from "./codex-errors.ts";
 import { formatCopilotProviderError } from "./copilot-errors.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { customMessageExcludesContext, isSingleGenericAbortTextContent, replacementAbortContent, type AgentSessionEvent, type AgentSessionEventListener } from "./agent-session-types.ts";
@@ -240,9 +241,9 @@ export function _applyProviderErrorGuidance(this: AgentSession, event: AgentEven
 	const assistantMessage = event.message as AssistantMessage;
 	if (assistantMessage.stopReason !== "error" || !assistantMessage.errorMessage) return;
 
-	assistantMessage.errorMessage = formatCopilotProviderError(
+	assistantMessage.errorMessage = formatCodexProviderError(
 		assistantMessage.provider,
-		assistantMessage.errorMessage,
+		formatCopilotProviderError(assistantMessage.provider, assistantMessage.errorMessage),
 	);
 }
 

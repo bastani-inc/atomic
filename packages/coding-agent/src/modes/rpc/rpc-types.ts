@@ -18,6 +18,16 @@ import type { SourceInfo } from "../../core/source-info.ts";
 // RPC Commands (stdin)
 // ============================================================================
 
+export interface RpcModelCatalog {
+	models: Model<Api>[];
+	scopedModels: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
+}
+
+export interface RpcModelRefreshResult extends RpcModelCatalog {
+	aborted: boolean;
+	errors: Array<{ provider: string; message: string }>;
+}
+
 export type RpcCommand =
 	// Prompting
 	| { id?: string; type: "prompt"; message: string; images?: ImageContent[]; streamingBehavior?: "steer" | "followUp" }
@@ -34,6 +44,7 @@ export type RpcCommand =
 	| { id?: string; type: "cycle_model"; direction?: "forward" | "backward" }
 	| { id?: string; type: "get_available_models" }
 	| { id?: string; type: "logout_provider"; provider: string }
+	| { id?: string; type: "refresh_models"; timeoutMs?: number; force?: boolean; allowNetwork?: boolean }
 
 	// Thinking
 	| { id?: string; type: "set_thinking_level"; level: ThinkingLevel }
@@ -83,10 +94,19 @@ export type RpcCommand =
 	// Messages
 	| { id?: string; type: "get_messages" }
 
-	// Commands (available for invocation via prompt)
-	| { id?: string; type: "get_commands" };
-
+	// Commands and their live argument completions
+	| { id?: string; type: "get_commands" }
+	| { id?: string; type: "get_command_completions"; commandName: string; argumentPrefix: string };
 // ============================================================================
+// RPC Argument Completion
+// ============================================================================
+
+export interface RpcAutocompleteItem {
+	value: string;
+	label: string;
+	description?: string;
+}
+
 // RPC Slash Command (for get_commands response)
 // ============================================================================
 
@@ -96,6 +116,8 @@ export interface RpcSlashCommand {
 	name: string;
 	/** Human-readable description */
 	description?: string;
+	/** Whether the engine can evaluate argument completions for this command. */
+	hasArgumentCompletions?: boolean;
 	/** What kind of command this is */
 	source: "extension" | "prompt" | "skill";
 	/** Source metadata for the owning resource */
@@ -170,7 +192,14 @@ export type RpcResponse =
 			type: "response";
 			command: "get_available_models";
 			success: true;
-			data: { models: Model<Api>[]; scopedModels?: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }> };
+			data: RpcModelCatalog;
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "refresh_models";
+			success: true;
+			data: RpcModelRefreshResult;
 	  }
 	| {
 			id?: string;
@@ -271,6 +300,13 @@ export type RpcResponse =
 			command: "get_commands";
 			success: true;
 			data: { commands: RpcSlashCommand[] };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_command_completions";
+			success: true;
+			data: { completions: RpcAutocompleteItem[] | null };
 	  }
 
 	// Error response (any command can fail)

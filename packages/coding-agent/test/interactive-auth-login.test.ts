@@ -1,3 +1,4 @@
+import { getModel, type Api, type Model } from "@earendil-works/pi-ai/compat";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { LoginDialogComponent } from "../src/modes/interactive/components/login-dialog.ts";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
@@ -53,4 +54,49 @@ describe("interactive API-key login persistence failures", () => {
 		);
 		expect(harness.editorContainer.addChild).toHaveBeenLastCalledWith(editor);
 	});
+});
+
+describe("post-login model refresh", () => {
+	for (const scenario of [
+		{ provider: "kimi-coding", name: "Kimi For Coding", authType: "api_key" as const, modelId: "kimi-for-coding" },
+		{ provider: "anthropic", name: "Anthropic", authType: "oauth" as const, modelId: "claude-opus-4-8" },
+	]) {
+		it(`selects the ${scenario.provider} default immediately after ${scenario.authType} login`, async () => {
+			const model = getModel(scenario.provider, scenario.modelId);
+			expect(model).toBeDefined();
+			const refresh = vi.fn(async () => ({ aborted: false, errors: new Map() }));
+			const getAvailable = vi.fn(() => [model as Model<Api>]);
+			const setModel = vi.fn(async () => {});
+			const updateAvailableProviderCount = vi.fn(async () => {});
+			const setupAutocompleteProvider = vi.fn();
+			const showStatus = vi.fn();
+			const harness = {
+				session: { modelRegistry: { refresh, getAvailable }, setModel },
+				updateAvailableProviderCount,
+				setupAutocompleteProvider,
+				footer: { invalidate: vi.fn() },
+				updateEditorBorderColor: vi.fn(),
+				showStatus,
+				showError: vi.fn(),
+				maybeWarnAboutAnthropicSubscriptionAuth: vi.fn(),
+				checkDaxnutsEasterEgg: vi.fn(),
+			};
+			const complete = InteractiveModeBase.prototype.completeProviderAuthentication as (
+				this: typeof harness,
+				providerId: string,
+				providerName: string,
+				authType: "oauth" | "api_key",
+				previousModel: Model<Api> | undefined,
+			) => Promise<void>;
+
+			const loggedOutModel = { provider: "unknown", id: "unknown", api: "unknown" } as Model<Api>;
+			await complete.call(harness, scenario.provider, scenario.name, scenario.authType, loggedOutModel);
+
+			expect(refresh).toHaveBeenCalledOnce();
+			expect(setModel).toHaveBeenCalledWith(model);
+			expect(refresh.mock.invocationCallOrder[0]).toBeLessThan(getAvailable.mock.invocationCallOrder[0]!);
+			expect(setModel.mock.invocationCallOrder[0]).toBeLessThan(updateAvailableProviderCount.mock.invocationCallOrder[0]!);
+			expect(showStatus).toHaveBeenCalledWith(expect.stringContaining(`Selected ${scenario.modelId}`));
+		});
+	}
 });

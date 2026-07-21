@@ -53,6 +53,11 @@ describe("/atomic guide command", () => {
     assert.match(workflows, /Default to workflows for non-trivial work and requests with inherent structure plus a verifiable objective/);
     assert.match(workflows, /classify-and-act routing, dynamic fan-out and synthesis, adversarial verification/);
     assert.match(workflows, /\/workflow quit <run-id>/);
+    assert.match(workflows, /prefer `ctx\.tool\(name, args, fn\)`/);
+    assert.match(workflows, /filesystem writes, network mutations, and external API actions/);
+    assert.match(workflows, /durably cached, so resume returns the saved result without rerunning `fn`/);
+    assert.match(workflows, /Keep pure computation as ordinary TypeScript/);
+    assert.match(workflows, /do not wrap agent-stage internals or every function call indiscriminately/);
 
     for (const regressionPolicy of [
       "Multiple steps, files, tests, validation, or parallelism alone do not require a workflow",

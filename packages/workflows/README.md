@@ -62,6 +62,10 @@ When a stage human-in-the-loop prompt is answered from the workflow TUI/stage ch
 
 ## Authoring API
 
+### Workflow-owned side effects
+
+Prefer `ctx.tool(name, args, fn)` for workflow-owned TypeScript operations with side effects, including filesystem writes, network mutations, external API actions, and similar deterministic operations orchestrated directly by the workflow definition. Atomic durably caches a completed call's serializable result, so resume returns that result without rerunning `fn` or repeating the side effect. Keep pure computation and side-effect-free transformations as ordinary TypeScript. Do not wrap agent-stage internals or every function call indiscriminately.
+
 ### Example 1 — Single task
 
 ```typescript
@@ -689,7 +693,7 @@ The parent can consume `fixes.outputs`, `verification.outputs`, and `convergence
 
 ### `deep-research-codebase`
 
-Scout + research-history chain → two parallel specialist waves → aggregator. Ideal for deep investigation of a codebase topic across locator, pattern, analyzer, and ecosystem angles.
+Heavy research for tasks requiring comprehensive, whole-repository context.
 
 ```text
 /workflow deep-research-codebase prompt="How does session persistence work?"

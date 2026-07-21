@@ -11,16 +11,25 @@ export interface LocalCommandResult {
 
 const OUTPUT_LIMIT_BYTES = 16_384;
 
+export interface LocalCommandOptions {
+  readonly env?: Readonly<Record<string, string>>;
+  /** POSIX drop-privilege identity for the spawned process (root only). */
+  readonly uid?: number;
+  readonly gid?: number;
+}
+
 export function runLocalCommand(
   command: string,
   args: readonly string[],
-  env?: Readonly<Record<string, string>>,
+  options?: LocalCommandOptions,
 ): Promise<LocalCommandResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, [...args], {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
-      ...(env !== undefined ? { env: { ...process.env, ...env } } : {}),
+      ...(options?.env !== undefined ? { env: { ...process.env, ...options.env } } : {}),
+      ...(options?.uid !== undefined ? { uid: options.uid } : {}),
+      ...(options?.gid !== undefined ? { gid: options.gid } : {}),
     });
     let stdout = "";
     let stderr = "";

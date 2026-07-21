@@ -27,6 +27,8 @@ Use `/logout` to clear credentials. Logout immediately invalidates authenticatio
 - Requires ChatGPT Plus or Pro subscription
 - Officially endorsed by OpenAI: [Codex for OSS](https://developers.openai.com/community/codex-for-oss)
 
+If the Codex backend reports that an OAuth/auth token was invalidated or revoked, retry the request once in case the rejection is transient. If it persists, run `/logout` and select **OpenAI ChatGPT Plus/Pro**, then run `/login`, authenticate that subscription again, and retry the request. Atomic displays these recovery steps with the provider error; it does not automatically delete the stored credential or repeatedly retry a definitive authentication rejection.
+
 ### Codex Fast Mode
 
 Run `/fast` in interactive mode to enable OpenAI priority service tier separately for normal chat and workflow-stage sessions. The command is shown only when the current model scope includes a supported `openai/*` or `openai-codex/*` model. Workflow stages use the workflow setting, not the chat setting. When enabled for the active supported model, the UI appends `fast` after the model name in the chat footer and workflow stage model labels. Fast mode intentionally does not apply to `github-copilot/*`, Azure OpenAI, OpenRouter, or custom OpenAI-compatible providers. Use workflow fast mode deliberately because parallel workflow fan-out can multiply priority-tier usage.
@@ -73,6 +75,8 @@ Use `/login` in interactive mode and select a provider to store an API key in `a
 export ANTHROPIC_API_KEY=sk-ant-...
 atomic
 ```
+
+After a successful API-key or OAuth login, Atomic refreshes provider credentials and model discovery in the active session. Newly authenticated models are immediately available in `/model` without restarting Atomic, including providers with dynamically discovered catalogs.
 
 | Provider | Environment Variable | `auth.json` key |
 |----------|----------------------|------------------|

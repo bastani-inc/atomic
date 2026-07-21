@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Clarified the bundled `deep-research-codebase` discovery guidance so agents reserve the heavy workflow for tasks requiring comprehensive whole-repository context ([#1925](https://github.com/bastani-inc/atomic/issues/1925)).
+
+### Fixed
+
+- Fixed newly authenticated providers remaining unavailable in the model selector until Atomic restarted. API-key and OAuth login now reload the isolated engine's credentials and refresh its authoritative model catalog immediately, including credential-dependent dynamic discovery ([#1918](https://github.com/bastani-inc/atomic/issues/1918)).
+- Added actionable `/logout` and `/login` recovery guidance when OpenAI Codex invalidates or revokes a locally unexpired OAuth token, and prevented an earlier WebSocket-to-SSE transport diagnostic from making the definitive authentication rejection retryable ([#1922](https://github.com/bastani-inc/atomic/issues/1922)).
+
 ## [0.9.10] - 2026-07-20
 
 ### Breaking Changes
@@ -35,6 +44,7 @@
 ### Fixed
 
 - Fixed `/logout` leaving GitHub Copilot and other providers authenticated in the isolated interactive engine until restart. Logout now invalidates the authoritative child immediately, refreshes the host model projection, prevents provider transport with the removed credential, and deletes effective legacy auth-file entries so credentials do not reappear after restart ([#1919](https://github.com/bastani-inc/atomic/issues/1919)).
+- Fixed custom project, user, and package-provided workflow names being omitted from `/workflow <name>` and `/workflow inputs <name>` argument completion under the isolated interactive engine. The host now evaluates completion callbacks in the engine child against the live workflow registry, so `/workflow reload` updates the completion popup immediately while retaining bundled administrative-command fallback completion ([#1921](https://github.com/bastani-inc/atomic/issues/1921)).
 
 - Fixed the repository `publish-release` workflow to reconcile an exact release PR merged externally while required checks are pending. It preserves identity/refs/SHA; correlates workflow-qualified Actions reruns by name plus workflow; and supports empty-workflow `StatusContext` and GitHub App `CheckRun` evidence. Linked reruns group by inferred kind/name across URL changes; linkless rows inspect both external kinds, accept all-passing candidates, block any pending/failure, and exclude nonempty-workflow Actions. Duplicate aliases reuse exact passing evidence. It rechecks after merge and validates merge/branch evidence. Tag recovery proves `verified merge → tag parent → current base`; exhaustive history avoids GitHub's 1,000-result ceiling; protected coordination retains its lock through ambiguous dispatch visibility; and recovered success requires exact-SHA integrity evidence.
 - Fixed shared extension chat compaction rendering so manual, threshold, and overflow compaction use the animated working spinner with reason-aware copy instead of a duplicate plain status row plus generic `Working...`; successful compaction now falls back to the existing typed `✻ Context compacted` message when a refreshed live session snapshot is unavailable, while preserving durable session reconstruction and avoiding duplicate boundaries.
