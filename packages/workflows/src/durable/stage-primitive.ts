@@ -272,13 +272,13 @@ function stageOutput(stage: StageSnapshot): WorkflowSerializableValue {
   return { status: stage.status, stageId: stage.id };
 }
 
-
 function taskCheckpointMetadata(result: WorkflowTaskResult): Partial<DurableStageCheckpoint> {
   return {
     result: result.text,
     ...(result.sessionId !== undefined ? { sessionId: result.sessionId } : {}),
     ...(result.sessionFile !== undefined ? { sessionFile: result.sessionFile } : {}),
     ...(result.model !== undefined ? { model: result.model } : {}),
+    ...(result.thinkingLevel !== undefined ? { thinkingLevel: result.thinkingLevel } : {}),
     ...(result.fastMode !== undefined ? { fastMode: result.fastMode } : {}),
     ...(result.attemptedModels !== undefined ? { attemptedModels: [...result.attemptedModels] } : {}),
     ...(result.modelAttempts !== undefined ? { modelAttempts: [...result.modelAttempts] } : {}),
@@ -322,6 +322,7 @@ function mergeCheckpointHydrationMetadata(
     ...(replayValueCheckpoint.sessionId === undefined ? metadataValue(checkpoints, "sessionId") : {}),
     ...(replayValueCheckpoint.sessionFile === undefined ? metadataValue(checkpoints, "sessionFile") : {}),
     ...(replayValueCheckpoint.model === undefined ? metadataValue(checkpoints, "model") : {}),
+    ...(replayValueCheckpoint.thinkingLevel === undefined ? metadataValue(checkpoints, "thinkingLevel") : {}),
     ...(replayValueCheckpoint.fastMode === undefined ? metadataValue(checkpoints, "fastMode") : {}),
     ...(replayValueCheckpoint.attemptedModels === undefined ? metadataValue(checkpoints, "attemptedModels") : {}),
     ...(replayValueCheckpoint.modelAttempts === undefined ? metadataValue(checkpoints, "modelAttempts") : {}),
@@ -428,6 +429,7 @@ export function recordCachedStageIntoStore(
     ...(checkpoint?.sessionId !== undefined ? { sessionId: checkpoint.sessionId } : {}),
     ...(checkpoint?.sessionFile !== undefined ? { sessionFile: checkpoint.sessionFile } : {}),
     ...(checkpoint?.model !== undefined ? { model: checkpoint.model } : {}),
+    ...(checkpoint?.thinkingLevel !== undefined ? { thinkingLevel: checkpoint.thinkingLevel } : {}),
     ...(checkpoint?.fastMode !== undefined ? { fastMode: checkpoint.fastMode } : {}),
     ...(checkpoint?.attemptedModels !== undefined ? { attemptedModels: checkpoint.attemptedModels } : {}),
     ...(checkpoint?.modelAttempts !== undefined ? { modelAttempts: checkpoint.modelAttempts } : {}),

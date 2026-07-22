@@ -399,6 +399,7 @@ function stageSnapshotFromDraft(
     ...(draft.sessionId !== undefined ? { sessionId: draft.sessionId } : {}),
     ...(draft.sessionFile !== undefined ? { sessionFile: draft.sessionFile } : {}),
     ...(draft.model !== undefined ? { model: draft.model } : {}),
+    ...(draft.thinkingLevel !== undefined ? { thinkingLevel: draft.thinkingLevel } : {}),
     ...(draft.fastMode !== undefined ? { fastMode: draft.fastMode } : {}),
     ...(draft.attemptedModels !== undefined ? { attemptedModels: draft.attemptedModels } : {}),
     ...(draft.modelAttempts !== undefined ? { modelAttempts: draft.modelAttempts } : {}),
