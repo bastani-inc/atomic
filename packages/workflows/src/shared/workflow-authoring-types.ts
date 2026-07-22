@@ -74,6 +74,7 @@ export interface AuthoredWorkflowSpec<
   TRunContext = unknown,
 > {
   readonly name?: string;
+  readonly autoAttach?: boolean;
   readonly description: string;
   readonly inputs?: TInputs;
   readonly outputs: TOutputs;

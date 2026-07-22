@@ -110,7 +110,7 @@ Then list and run it like any other workflow:
 /workflow <name> key=value ...
 ```
 
-Named workflow runs are background-oriented. After launch, expect a run id and monitor it with `/workflow status <run-id>`, F2, or `/workflow connect <run-id>`.
+Named workflow runs are background-oriented. By default, after launch expect a run id and monitor it with `/workflow status <run-id>`, F2, or `/workflow connect <run-id>`. A definition with `autoAttach: true` instead opens the graph overlay as soon as an interactive top-level named launch through `/workflow <name>` or the registered `workflow` tool is accepted. Headless launches, direct runs, and nested `ctx.workflow(...)` calls remain detached.
 
 ### Or hand-write the TypeScript
 
@@ -1206,6 +1206,7 @@ Authoring basics:
 - `workflow({ ... })` returns the workflow definition directly for discovery; there is no builder terminal step.
 - Workflow names normalize for lookup: trim, lowercase, convert whitespace/underscore to hyphen, remove other punctuation, and collapse hyphens.
 - `description` sets the listing text.
+- `autoAttach: true` opens the graph overlay when an interactive top-level named launch through `/workflow <name>` or the registered `workflow` tool is accepted; omission and `false` preserve detached launch behavior.
 - `inputs` declares typed user inputs.
 - `worktreeFromInputs` optionally maps input names to workflow-wide reusable Git worktree defaults.
 - `outputs` declares typed outputs that parent workflows receive from `ctx.workflow(childWorkflow, ...)`.

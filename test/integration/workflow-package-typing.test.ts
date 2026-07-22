@@ -103,6 +103,7 @@ declare const extensionUiForTypes: ExtensionUIContext;
 const authoredWorkflow = workflow({
   name: "Standalone Typing Fixture",
   description: "Verifies package export types without declare module shims",
+  autoAttach: true,
   inputs: {
     message: Type.String(),
     mode: Type.Literal("fast", { default: "fast" }),
