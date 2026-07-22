@@ -38,8 +38,8 @@ from pier.utils.trajectory_utils import (
 )
 from prerequisites import (
     agent_install_command,
+    atomic_runtime_environment_command,
     root_install_command,
-    runtime_environment_command,
 )
 
 
@@ -236,11 +236,7 @@ class Atomic(BaseInstalledAgent):
 
     @override
     def get_version_command(self) -> str | None:
-        return (
-            f"{runtime_environment_command()}; "
-            "if [ -s ~/.nvm/nvm.sh ]; then . ~/.nvm/nvm.sh; fi; "
-            "atomic --version"
-        )
+        return f"{atomic_runtime_environment_command()}; atomic --version"
 
     @override
     def parse_version(self, stdout: str) -> str:
@@ -531,8 +527,7 @@ class Atomic(BaseInstalledAgent):
             f"{self._agent_state_setup_command()}"
             f"{self._session_sync_trap_command(session_dir, log_session_dir)}"
             f"{copilot_config_command}"
-            f"{runtime_environment_command()} && "
-            "if [ -s ~/.nvm/nvm.sh ]; then . ~/.nvm/nvm.sh; fi && "
+            f"{atomic_runtime_environment_command()} && "
             f"atomic --print --mode json --session-dir {session_dir} "
             f"--provider {shlex.quote(provider)} --model {shlex.quote(model)} "
             f"{cli_flags}"
