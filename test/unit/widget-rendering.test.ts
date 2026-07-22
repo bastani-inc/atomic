@@ -32,22 +32,8 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeStage(
-	id: string,
-	name: string,
-	status: StageSnapshot["status"],
-	extra?: { model?: string; thinkingLevel?: string; fastMode?: boolean },
-): StageSnapshot {
-	return {
-		id,
-		name,
-		status,
-		parentIds: [],
-		toolEvents: [],
-		...(extra?.model !== undefined ? { model: extra.model } : {}),
-		...(extra?.thinkingLevel !== undefined ? { thinkingLevel: extra.thinkingLevel } : {}),
-		...(extra?.fastMode !== undefined ? { fastMode: extra.fastMode } : {}),
-	};
+function makeStage(id: string, name: string, status: StageSnapshot["status"]): StageSnapshot {
+	return { id, name, status, parentIds: [], toolEvents: [] };
 }
 
 function makeRun(
