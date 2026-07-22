@@ -71,6 +71,8 @@ describe("createStageContext — reasoning suffix retry behavior", () => {
 		// background-run widgets can show the same model + thinking identity as
 		// the main session footer.
 		assert.equal(result.meta.thinkingLevel, "medium");
+		// The fallback model — not the failed primary — is surfaced to graph UIs.
+		assert.equal(result.meta.model, "openai/fallback");
 	});
 
 	test("chain-step retry uses the next candidate reasoning level", async () => {
