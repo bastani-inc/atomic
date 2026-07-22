@@ -11,6 +11,7 @@ import type { DurableWorkflowBackend } from "./backend.js";
 import type { DurableScope } from "./scoped-backend.js";
 import { recordCheckpointDurably } from "./tool-primitive.js";
 import { stageCheckpointWithOutput, type DurableCompletedStageCheckpoint } from "./stage-primitive.js";
+import type { DurableStageCheckpoint } from "./types.js";
 
 export function createDurableChildWorkflowPrimitive(input: {
   readonly workflowId: string;
@@ -18,6 +19,7 @@ export function createDurableChildWorkflowPrimitive(input: {
   readonly backend: DurableWorkflowBackend;
   readonly nextReplayKey: (name: string) => string;
   readonly recordCachedStage: (name: string, replayKey: string, checkpoint: DurableCompletedStageCheckpoint) => void;
+  readonly checkpointMetadata: (replayKey: string) => Partial<DurableStageCheckpoint>;
   /**
    * Publish the durable scope computed for the next child invocation so the
    * child runner can consume it and route its internal side-effect checkpoints
@@ -66,6 +68,7 @@ export function createDurableChildWorkflowPrimitive(input: {
       output: result as WorkflowSerializableValue,
       completedAt: Date.now(),
       result: result.status,
+      ...input.checkpointMetadata(replayKey),
     });
     return result as WorkflowChildResult<TChildOutputs>;
   };

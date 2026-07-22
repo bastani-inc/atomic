@@ -1,5 +1,5 @@
 import type { EventBus } from "./event-bus.ts";
-import type { ExtensionFactory, LoadExtensionsResult } from "./extensions/types.ts";
+import type { InlineExtension, LoadExtensionsResult } from "./extensions/types.ts";
 import type { PathMetadata, ResolvedResource } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import type { SettingsManager, PackageSource } from "./settings-manager.ts";
@@ -53,7 +53,7 @@ export interface DefaultResourceLoaderInheritanceSnapshot {
 	readonly additionalPromptTemplatePaths?: readonly string[];
 	readonly additionalThemePaths?: readonly string[];
 	readonly builtinPackagePaths?: readonly PackageSource[];
-	readonly extensionFactories?: readonly ExtensionFactory[];
+	readonly extensionFactories?: readonly InlineExtension[];
 	readonly noExtensions?: boolean;
 	readonly noSkills?: boolean;
 	readonly noPromptTemplates?: boolean;
@@ -75,7 +75,7 @@ export interface DefaultResourceLoaderOptions {
 	additionalPromptTemplatePaths?: string[];
 	additionalThemePaths?: string[];
 	builtinPackagePaths?: PackageSource[];
-	extensionFactories?: ExtensionFactory[];
+	extensionFactories?: InlineExtension[];
 	noExtensions?: boolean;
 	noSkills?: boolean;
 	noPromptTemplates?: boolean;

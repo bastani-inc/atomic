@@ -8,6 +8,7 @@ import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import { isOfflineModeEnabled } from "./package-manager-env.ts";
 import { registerPendingProvidersAndPrepare } from "./provider-preparation-lifecycle.ts";
+import type { ModelRuntime } from "./model-runtime.ts";
 import {
 	DefaultResourceLoader,
 	type DefaultResourceLoaderOptions,
@@ -48,6 +49,7 @@ export interface CreateAgentSessionServicesOptions {
 	authStorage?: AuthStorage;
 	settingsManager?: SettingsManager;
 	modelRegistry?: ModelRegistry;
+	modelRuntime?: ModelRuntime;
 	extensionFlagValues?: Map<string, boolean | string>;
 	resourceLoaderOptions?: Omit<DefaultResourceLoaderOptions, "cwd" | "agentDir" | "settingsManager">;
 	resourceLoaderReloadOptions?: ResourceLoaderReloadOptions;
@@ -150,14 +152,14 @@ export async function createAgentSessionServices(
 	const cwd = resolvePath(options.cwd);
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getAgentDir();
 	const authStorageSpan = startTimingSpan("createAgentSessionServices.authStorage");
-	const authStorage = options.authStorage ?? AuthStorage.create(join(agentDir, "auth.json"));
+	const authStorage = options.modelRuntime?.authStorage ?? options.authStorage ?? AuthStorage.create(join(agentDir, "auth.json"));
 	endTimingSpan(authStorageSpan);
 	const settingsSpan = startTimingSpan("createAgentSessionServices.settingsManager");
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
 	endTimingSpan(settingsSpan);
 	const modelRegistrySpan = startTimingSpan("createAgentSessionServices.modelRegistry");
 	const modelsJsonPaths = agentDir === getAgentDir() ? getAgentConfigPaths("models.json") : join(agentDir, "models.json");
-	const modelRegistry = options.modelRegistry ?? ModelRegistry.create(authStorage, modelsJsonPaths);
+	const modelRegistry = options.modelRuntime?.modelRegistry ?? options.modelRegistry ?? ModelRegistry.create(authStorage, modelsJsonPaths);
 	endTimingSpan(modelRegistrySpan);
 	const resourceLoader = new DefaultResourceLoader({
 		...(options.resourceLoaderOptions ?? {}),
@@ -169,6 +171,7 @@ export async function createAgentSessionServices(
 	await resourceLoader.reload(options.resourceLoaderReloadOptions);
 	endTimingSpan(reloadSpan);
 
+
 	const diagnostics: AgentSessionRuntimeDiagnostic[] = [];
 	const providerSpan = startTimingSpan("createAgentSessionServices.providerRegistrations");
 	const providerDiagnostics = await registerPendingProvidersAndPrepare(resourceLoader, modelRegistry, !isOfflineModeEnabled());
@@ -179,6 +182,13 @@ export async function createAgentSessionServices(
 		});
 	}
 	endTimingSpan(providerSpan);
+	const catalogRestoreSpan = startTimingSpan("createAgentSessionServices.restoreModelCatalogs");
+	// Native providers must be registered before their persisted catalogs can be restored.
+	// Exclude legacy extension callbacks; session construction refreshes those after option resolution.
+	await modelRegistry.refresh({ allowNetwork: false, registeredProviders: new Set() });
+	endTimingSpan(catalogRestoreSpan);
+
+
 	const flagSpan = startTimingSpan("createAgentSessionServices.extensionFlagValidation");
 	diagnostics.push(...applyExtensionFlagValues(resourceLoader, options.extensionFlagValues));
 	endTimingSpan(flagSpan);

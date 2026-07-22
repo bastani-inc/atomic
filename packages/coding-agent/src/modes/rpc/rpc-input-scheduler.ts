@@ -3,6 +3,7 @@ import type { RpcExtensionUIResponse } from "./rpc-types.ts";
 
 const INTERRUPT_COMMANDS: ReadonlySet<string> = new Set([
 	"abort",
+	"cancel_login_provider",
 	"abort_compaction",
 	"abort_retry",
 	"abort_bash",

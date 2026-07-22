@@ -1,4 +1,4 @@
-import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai/compat";
+import type { ImageContent, Message, TextContent, Usage } from "@earendil-works/pi-ai/compat";
 import { join } from "path";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
@@ -210,6 +210,7 @@ export function createBranchSummaryEntry(
 	branchFromId: string | null,
 	summary: string,
 	details: unknown,
+	usage: Usage | undefined,
 	fromHook: boolean | undefined,
 	byId: { has(id: string): boolean },
 ): BranchSummaryEntry {
@@ -219,6 +220,7 @@ export function createBranchSummaryEntry(
 		fromId: branchFromId ?? "root",
 		summary,
 		details,
+		usage,
 		fromHook,
 	};
 }

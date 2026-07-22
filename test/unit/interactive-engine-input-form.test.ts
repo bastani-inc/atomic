@@ -100,6 +100,8 @@ describe("engine input form protocol", () => {
 	test("strictly round-trips valid forms and rejects malformed fields/results", () => {
 		const open = { type: "engine_input_form_open", componentId: "f1", title: "demo", fields: fields() } as const;
 		assert.deepEqual(parseInteractiveEngineMessage(serializeInteractiveEngineFrame(open)), open);
+		const close = { type: "engine_input_form_close", componentId: "f1" } as const;
+		assert.deepEqual(parseInteractiveEngineMessage(serializeInteractiveEngineFrame(close)), close);
 		const submit = { type: "engine_input_form_submit", componentId: "f1", values: { prompt: "x", enabled: "true" } } as const;
 		assert.deepEqual(parseInteractiveEngineCommand(serializeInteractiveEngineFrame(submit)), submit);
 		assert.equal(parseInteractiveEngineMessage(JSON.stringify({ ...open, fields: [{ name: "x", type: "wat", initialValue: "" }] })), undefined);
@@ -151,8 +153,9 @@ describe("host-native input form", () => {
 		formTui.setFocus(component);
 		formTui.addInputListener((data) => routeGlobalClearInput(data, {
 			matchesClear: (candidate) => keybindings.matches(candidate, "app.clear"),
-			hasOverlay: false,
-			blockingInlineCustomUiActive: true,
+			hasOverlay: () => false,
+			blockingInlineCustomUiActive: () => true,
+			editorOwnsInput: () => true,
 			onClear: () => { globalClears += 1; },
 			requestRender: () => {},
 		}));
@@ -169,8 +172,9 @@ describe("host-native input form", () => {
 		});
 		editorTui.addInputListener((data) => routeGlobalClearInput(data, {
 			matchesClear: (candidate) => keybindings.matches(candidate, "app.clear"),
-			hasOverlay: false,
-			blockingInlineCustomUiActive: false,
+			hasOverlay: () => false,
+			blockingInlineCustomUiActive: () => false,
+			editorOwnsInput: () => true,
 			onClear: () => { globalClears += 1; },
 			requestRender: () => {},
 		}));
@@ -343,6 +347,19 @@ describe("host-native input form", () => {
 		await flush();
 		assert.equal(bridge.childCommands.length, before, "restart teardown must not signal the fresh child");
 		assert.deepEqual(bridge.workingVisibility, [false, true, false, true]);
+		bridge.controller.dispose();
+	});
+
+	test("aborting a child form closes the host mount and resolves cancellation", async () => {
+		const bridge = makeBridge();
+		const controller = new AbortController();
+		const result = bridge.child.open({ title: "login", fields: fields() }, controller.signal);
+		await flush();
+		controller.abort();
+		assert.equal(await result, undefined);
+		assert.equal(bridge.hostMessages.some((message) => message.type === "engine_input_form_close"), true);
+		await flush();
+		assert.equal(bridge.workingVisibility.at(-1), true);
 		bridge.controller.dispose();
 	});
 });

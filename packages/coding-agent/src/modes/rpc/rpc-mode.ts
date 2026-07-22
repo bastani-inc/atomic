@@ -113,6 +113,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		output,
 		keybindings,
 		reloadCoordinator,
+		inputForm,
 	});
 
 	async function shutdown(exitCode = 0, signal?: NodeJS.Signals): Promise<never> {

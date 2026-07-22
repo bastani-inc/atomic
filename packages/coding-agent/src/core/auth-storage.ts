@@ -18,6 +18,7 @@ import { findEnvKeys, getEnvApiKey } from "@earendil-works/pi-ai/compat";
 import { join } from "path";
 import { getAgentConfigPaths, getAgentDir } from "../config.ts";
 import { FileAuthStorageBackend, InMemoryAuthStorageBackend, type AuthStorageBackend } from "./auth-storage-backends.ts";
+import type { AuthCredential, AuthStatus, AuthStorageData } from "./auth-storage-types.ts";
 import {
 	type AtomicOAuthLoginCallbacks,
 	getOAuthProviderDescriptors,
@@ -27,26 +28,14 @@ import {
 } from "./oauth-provider-bridge.ts";
 import { resolveConfigValue } from "./resolve-config-value.ts";
 
-export type ApiKeyCredential = {
-	type: "api_key";
-	key: string;
-};
-
-export type OAuthCredential = {
-	type: "oauth";
-} & OAuthCredentials;
-
-export type AuthCredential = ApiKeyCredential | OAuthCredential;
-
-export type AuthStorageData = Record<string, AuthCredential>;
-
-export type AuthStatus = {
-	configured: boolean;
-	source?: "stored" | "runtime" | "environment" | "fallback" | "models_json_key" | "models_json_command";
-	label?: string;
-};
+export type { ApiKeyCredential, AuthCredential, AuthStatus, AuthStorageData, OAuthCredential } from "./auth-storage-types.ts";
 
 export { FileAuthStorageBackend, InMemoryAuthStorageBackend, type AuthStorageBackend } from "./auth-storage-backends.ts";
+
+/** Read one persisted provider credential using Atomic's layered config paths. */
+export function readStoredCredential(providerId: string, authPath?: string | string[]): Credential | undefined {
+	return AuthStorage.create(authPath).get(providerId) as Credential | undefined;
+}
 
 /**
  * Credential storage backed by a JSON file.
@@ -386,7 +375,7 @@ export class AuthStorage {
 		if (runtimeKey) return { apiKey: runtimeKey };
 
 		const cred = this.data[providerId];
-		if (!options?.storedOAuthOnly && cred?.type === "api_key") return { apiKey: resolveConfigValue(cred.key) };
+		if (!options?.storedOAuthOnly && cred?.type === "api_key" && cred.key) return { apiKey: resolveConfigValue(cred.key) };
 
 		if (cred?.type === "oauth") {
 			try {

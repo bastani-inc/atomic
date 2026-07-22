@@ -25,6 +25,7 @@ export interface AppKeybindings {
 	"app.editor.external": true;
 	"app.message.followUp": true;
 	"app.message.dequeue": true;
+	"app.message.copy": true;
 	"app.clipboard.pasteImage": true;
 	"app.session.new": true;
 	"app.session.tree": true;
@@ -103,9 +104,10 @@ export const KEYBINDINGS = {
 		defaultKeys: "alt+up",
 		description: "Restore queued messages",
 	},
+	"app.message.copy": { defaultKeys: "ctrl+x", description: "Copy last agent message" },
 	"app.clipboard.pasteImage": {
 		defaultKeys: process.platform === "win32" ? "alt+v" : "ctrl+v",
-		description: "Paste image from clipboard",
+		description: "Paste image from clipboard (text fallback)",
 	},
 	"app.session.new": { defaultKeys: [], description: "Start a new session" },
 	"app.session.tree": { defaultKeys: [], description: "Open session tree" },
@@ -247,6 +249,7 @@ const KEYBINDING_NAME_MIGRATIONS = {
 	externalEditor: "app.editor.external",
 	followUp: "app.message.followUp",
 	dequeue: "app.message.dequeue",
+	copyLastMessage: "app.message.copy",
 	pasteImage: "app.clipboard.pasteImage",
 	newSession: "app.session.new",
 	tree: "app.session.tree",

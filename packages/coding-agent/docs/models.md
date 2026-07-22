@@ -140,18 +140,22 @@ The `baseUrl` is required when adding custom models to the `google-generative-ai
 
 Set `api` at provider level (default for all models) or model level (override per model).
 
+These four values are the generic custom-provider APIs supported by `models.json`. Atomic's installed native provider runtime also implements provider-owned APIs including `mistral-conversations`, `azure-openai-responses`, `openai-codex-responses`, `bedrock-converse-stream`, `google-vertex`, and `pi-messages`; those native APIs are not implied to be stable generic custom-provider contracts.
+
 ## Provider Configuration
 
 | Field            | Description                                                      |
 | ---------------- | ---------------------------------------------------------------- |
-| `baseUrl`        | API endpoint URL                                                 |
-| `api`            | API type (see above)                                             |
-| `apiKey`         | API key (see value resolution below)                             |
+| `baseUrl`        | API endpoint or gateway URL                                      |
+| `api`            | Generic custom-provider API type (see above)                     |
+| `apiKey`         | Optional API key (see value resolution below); omit when auth comes from `/login`, `auth.json`, or `--api-key` |
+| `oauth`          | Dynamic OAuth provider type. Currently `"radius"`; requires the gateway `baseUrl` |
 | `headers`        | Custom headers (see value resolution below)                      |
 | `authHeader`     | Set `true` to add `Authorization: Bearer <apiKey>` automatically |
 | `models`         | Array of model configurations                                    |
 | `modelOverrides` | Per-model overrides for matching built-in or extension-registered models on this provider |
 
+For a custom Radius gateway, set `"oauth": "radius"` and its `baseUrl`. Atomic uses Radius OAuth credentials and the gateway's dynamic `pi-messages` catalog.
 ### Value Resolution
 
 The `apiKey` and `headers` fields support three formats:
@@ -212,6 +216,7 @@ If your command is slow, expensive, rate-limited, or should keep using a previou
 | `maxTokens`        | No       | `16384`           | Maximum output tokens                                                                                      |
 | `cost`             | No       | all zeros         | Complete base rates per million tokens plus optional request-wide `tiers` (see below)                    |
 | `compat`           | No       | provider `compat` | Provider compatibility overrides. Merged with provider-level `compat` when both are set.                   |
+| `deferredToolsMode` | No | omitted | Deferred tool-loading protocol; set to `"kimi"` for Kimi-compatible deferred tools |
 
 Current behavior:
 - `/model`, `--list-models`, and the interactive footer display entries by model `id`.

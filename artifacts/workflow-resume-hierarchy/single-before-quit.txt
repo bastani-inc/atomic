@@ -1,0 +1,50 @@
+
+ ╭──────────────╮
+ │ ORCHESTRATOR │  resume-single-e2e                                                                                                                       ● 1
+ ╰──────────────╯
+
+
+
+                                                                  ╭──── single-wait ─────╮
+                                                                  │         25s          │
+                                                                  │      ● running       │
+                                                                  │         root         │
+                                                                  ╰──────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ╭───────╮
+ │ GRAPH │                                                                     ctrl+x return to main chat  ·  ↵ open stage chat  ·  ↑↓←→ navigate  ·  / stages
+ ╰───────╯
+

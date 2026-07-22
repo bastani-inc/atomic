@@ -73,6 +73,12 @@ describe("Cursor v2 provider registration", () => {
 			providerInstanceGeneration: 1,
 			allowNetwork: true,
 		}), /host OAuth credentials are required/u);
+		await assert.rejects(config.refreshModels({
+			hostCredential: { type: "api_key", env: { CURSOR_METADATA_ONLY: "configured" } },
+			credentialGeneration: 2,
+			providerInstanceGeneration: 1,
+			allowNetwork: true,
+		}), /host OAuth credentials are required/u);
 		await runtime.dispose();
 	});
 });

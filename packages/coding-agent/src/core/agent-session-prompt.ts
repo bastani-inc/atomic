@@ -217,6 +217,11 @@ export async function _runAgentPrompt(
 		await this._awaitPendingPostCompactionContinuation();
 	} finally {
 		this._systemPromptOverride = undefined;
+		await this._agentEventQueue;
+		if (typeof this._extensionRunner?.emit === "function") {
+			await this._extensionRunner.emit({ type: "agent_settled" });
+		}
+		this._emit?.({ type: "agent_settled" });
 	}
 }
 

@@ -7,6 +7,7 @@ import {
   priorRunElapsedMs,
   recordRunTimingCheckpoint,
 } from "../../packages/workflows/src/durable/run-timing.js";
+import { recordStageSessionCheckpoint } from "../../packages/workflows/src/durable/stage-primitive.js";
 import { classifyCheckpointPayload, encodeCheckpoint } from "../../packages/workflows/src/durable/dbos-envelope.js";
 import { getDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { finalizeDurableTerminalStatus } from "../../packages/workflows/src/engine/run-durable-finalize.js";
@@ -135,6 +136,39 @@ describe("durable run-timing checkpoints", () => {
   });
 });
 
+
+describe("stage timing durability boundaries", () => {
+  test("forced sub-30-second checkpoint records exact elapsed and topology", async () => {
+    const backend = makeBackend();
+    const deps = {
+      workflowId: RUN_ID,
+      backend,
+      nextCheckpointId: () => "unused",
+      nextReplayKey: () => "stage:work:1",
+      now: () => 10_000,
+      runTopology: { runId: RUN_ID, runName: "timing" },
+    };
+    const stage = {
+      id: "work-source", name: "work", replayKey: "stage:work:1", status: "paused" as const,
+      parentIds: ["plan-source"], startedAt: 0, pausedAt: 10_000,
+      sessionFile: "/tmp/work.jsonl", toolEvents: [],
+    };
+    assert.equal(await recordStageSessionCheckpoint(deps, stage), true);
+    deps.now = () => 20_000;
+    stage.pausedAt = 20_000;
+    assert.equal(await recordStageSessionCheckpoint(deps, stage), false, "ordinary updates remain bucketed");
+    assert.equal(await recordStageSessionCheckpoint(deps, stage, { force: true }), true);
+    const restored = backend.getStageSession(RUN_ID, "stage:work:1");
+    assert.equal(restored?.durationMs, 20_000);
+    const latest = backend.listCheckpoints(RUN_ID).filter((checkpoint) => checkpoint.kind === "stage").at(-1);
+    assert.deepEqual(latest?.topology, {
+      version: 1,
+      stageId: "work-source",
+      parentIds: ["plan-source"],
+      run: { runId: RUN_ID, runName: "timing" },
+    });
+  });
+});
 describe("resumed runs inherit elapsed time", () => {
   test("durable resume seeds run total and mid-running stage timers", async () => {
     const runId = "wf-durable-resume-timing";

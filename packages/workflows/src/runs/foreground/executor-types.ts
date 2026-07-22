@@ -24,6 +24,9 @@ export interface RunContinuationOpts {
   readonly resumeFromStageId: string;
 }
 
+export interface StageSessionCheckpointOptions {
+  readonly forceDurable?: boolean;
+}
 export interface RunOpts extends Omit<AuthoringContract.RunOpts, "adapters" | "store" | "cancellation" | "overlay" | "registry" | "stageControlRegistry" | "continuation" | "onRunStart" | "onStageStart" | "onStageEnd" | "onRunEnd" | "ui"> {
   adapters?: StageAdapters;
   /** Invocation working directory exposed to workflow definitions as ctx.cwd. */
@@ -104,7 +107,7 @@ export interface RunOpts extends Omit<AuthoringContract.RunOpts, "adapters" | "s
   onRunStart?: (snapshot: RunSnapshot) => void;
   onStageStart?: (runId: string, snapshot: StageSnapshot) => void;
   onStageEnd?: (runId: string, snapshot: StageSnapshot) => unknown;
-  onStageSession?: (runId: string, snapshot: StageSnapshot) => unknown;
+  onStageSession?: (runId: string, snapshot: StageSnapshot, options?: StageSessionCheckpointOptions) => unknown;
   onRunEnd?: (runId: string, status: RunStatus, result?: WorkflowOutputValues, error?: string, exitReason?: string) => void;
 }
 

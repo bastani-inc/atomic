@@ -9,12 +9,13 @@ import type {
 	OAuthCredentials,
 	SimpleStreamOptions,
 } from "@earendil-works/pi-ai/compat";
-import type { ProviderHeaders } from "@earendil-works/pi-ai";
+import type { Provider, ProviderHeaders } from "@earendil-works/pi-ai";
 import type { LegacyOAuthProvider } from "./oauth-provider-bridge.ts";
 import type { RefreshModelsContext } from "@earendil-works/pi-ai";
 import type { AuthCredential, AuthStorage } from "./auth-storage.ts";
 import type { ModelOverride } from "./model-registry-schemas.ts";
 import type { ProviderModelReference } from "./provider-model-reference.ts";
+import type { ProviderApiKeyAuth } from "./extensions/provider-types.ts";
 
 export interface ProviderOverride {
 	baseUrl?: string;
@@ -25,6 +26,7 @@ export interface ProviderRequestConfig {
 	apiKey?: string;
 	headers?: Record<string, string>;
 	authHeader?: boolean;
+	auth?: { apiKey?: ProviderApiKeyAuth };
 }
 
 export type ResolvedRequestAuth =
@@ -48,6 +50,7 @@ export interface CustomModelsResult {
 	providerRequestConfigs: Map<string, ProviderRequestConfig>;
 	modelRequestHeaders: Map<string, Record<string, string>>;
 	modelRequestHeaderSources: Map<string, ModelRequestHeaderSource>;
+	configuredProviders: Map<string, Provider>;
 	error: string | undefined;
 }
 
@@ -56,6 +59,7 @@ export interface ModelRegistryLoadResult {
 	modelOverrides: Map<string, Map<string, ModelOverride>>;
 	providerRequestConfigs: Map<string, ProviderRequestConfig>;
 	modelRequestHeaders: Map<string, Record<string, string>>;
+	configuredProviders: Map<string, Provider>;
 	builtInProviders: Set<string>;
 	customOpenAICompatibleProviders: Set<string>;
 	loadError: string | undefined;
@@ -99,6 +103,7 @@ export interface ProviderConfigInput {
 	requiresHostOAuth?: boolean;
 	validateHostOAuth?(credential: OAuthCredentials): void;
 	refreshModels?(context: ProviderRefreshModelsContext): Promise<NonNullable<ProviderConfigInput["models"]>>;
+	auth?: { apiKey?: ProviderApiKeyAuth };
 	oauth?: LegacyOAuthProvider;
 	models?: Array<{
 		id: string;

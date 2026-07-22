@@ -10,6 +10,7 @@ import {
 } from "../../intercom/result-intercom.ts";
 import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
 import { formatControlIntercomMessage, formatControlNoticeMessage, shouldNotifyControlEvent } from "../shared/subagent-control.ts";
+import { deliverLocalCompletionNotification } from "../background/completion-notification.ts";
 import { updateForegroundNestedProjection } from "../shared/nested-events.ts";
 import {
 	SUBAGENT_CONTROL_EVENT,
@@ -213,6 +214,39 @@ function resultSummaryForIntercom(result: SingleResult): string {
 		return output ? `${result.error}\n\nOutput:\n${output}` : result.error;
 	}
 	return output || result.error || "(no output)";
+}
+
+/**
+ * Deliver a completion notice to the parent session for a foreground child
+ * that detached for intercom coordination and later exited. Foreground runs
+ * normally return their results inline in the tool result, but a detached
+ * child outlives that tool call, so without this the parent never learns the
+ * child finished (see run history: detached parallel runs completed silently).
+ * Reuses the async completion pipeline (dedupe, ordering barrier, triggerTurn).
+ */
+export function notifyDetachedForegroundChildExit(input: {
+	pi: ExtensionAPI;
+	runId: string;
+	mode: SubagentRunMode;
+	index: number;
+	totalTasks?: number;
+	result: SingleResult;
+}): void {
+	const { pi, runId, index, result } = input;
+	void deliverLocalCompletionNotification(pi.events, {
+		id: runId,
+		runId,
+		agent: result.agent,
+		success: result.exitCode === 0 && !result.interrupted && !result.error,
+		summary: resultSummaryForIntercom(result),
+		exitCode: result.exitCode,
+		...(result.interrupted ? { state: "paused" } : {}),
+		timestamp: Date.now(),
+		...(result.progressSummary?.durationMs !== undefined ? { durationMs: result.progressSummary.durationMs } : {}),
+		...(result.sessionFile ? { sessionFile: result.sessionFile } : {}),
+		...(input.totalTasks !== undefined && input.totalTasks > 1 ? { taskIndex: index, totalTasks: input.totalTasks } : {}),
+		noticeLabel: "Detached subagent task",
+	}, `foreground-detach-${runId}-${index}`);
 }
 
 async function emitForegroundResultIntercom(input: {

@@ -218,6 +218,22 @@ export function applyChatSessionAgentEvent<
       changed = true;
       break;
     }
+    case "summarization_retry_scheduled":
+      state.sdkBusy = true;
+      state.statusMessage = "retrying summary…";
+      changed = true;
+      break;
+    case "summarization_retry_attempt_start": {
+      const retry = event as Extract<AgentSessionEvent, { type: "summarization_retry_attempt_start" }>;
+      state.sdkBusy = true;
+      state.statusMessage = retry.source === "branchSummary" ? "summarizing branch…" : compactionStatusMessage(retry.reason);
+      changed = true;
+      break;
+    }
+    case "summarization_retry_finished":
+      state.statusMessage = state.compacting ? "Compacting context..." : "";
+      changed = true;
+      break;
     case "auto_retry_start":
       state.sdkBusy = true;
       state.statusMessage = "retrying…";

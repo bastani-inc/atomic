@@ -5,14 +5,25 @@ export {
   providerModelsAreExactlyEqual,
 } from "./provider-model-reference.ts";
 export type {
+  AgentSettledEvent,
+  BeforeProviderHeadersEvent,
+  EntryRenderer,
+  EntryRenderOptions,
   ExtensionAPI,
   ExtensionCommandContext,
   ExtensionContext,
   ExtensionFactory,
+  InlineExtension,
+  MessageEndEvent,
+  MessageStartEvent,
+  MessageUpdateEvent,
   SlashCommandInfo,
   SlashCommandSource,
   ProviderModelReference,
   ToolDefinition,
+  ToolExecutionEndEvent,
+  ToolExecutionStartEvent,
+  ToolExecutionUpdateEvent,
 } from "./extensions/index.ts";
 export type { PromptTemplate } from "./prompt-templates.ts";
 export type { ProviderRefreshModelsContext } from "./model-registry-types.ts";

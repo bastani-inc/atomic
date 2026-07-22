@@ -44,6 +44,7 @@ interface SubagentResult {
 	results?: ChainStepResult[];
 	taskIndex?: number;
 	totalTasks?: number;
+	noticeLabel?: string;
 }
 
 interface TerminalPreludeMessage {
@@ -194,8 +195,9 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 					: undefined;
 
 		const displaySummary = summary.trim() ? summary : "(no output)";
+		const noticeLabel = typeof result.noticeLabel === "string" && result.noticeLabel.trim() ? result.noticeLabel.trim() : "Background task";
 		const content = [
-			`Background task ${status}: **${agent}**${taskInfo}`,
+			`${noticeLabel} ${status}: **${agent}**${taskInfo}`,
 			"",
 			displaySummary,
 			sessionLine ? "" : undefined,

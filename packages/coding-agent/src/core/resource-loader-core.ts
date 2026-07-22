@@ -1,7 +1,7 @@
 import { resolvePath } from "../utils/paths.ts";
 import { createEventBus, type EventBus } from "./event-bus.ts";
 import { createExtensionRuntime } from "./extensions/loader.ts";
-import type { ExtensionFactory, LoadExtensionsResult } from "./extensions/types.ts";
+import type { InlineExtension, LoadExtensionsResult } from "./extensions/types.ts";
 import { DefaultPackageManager, type ResolvedResource } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import { SettingsManager, type PackageSource } from "./settings-manager.ts";
@@ -38,7 +38,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private additionalPromptTemplatePaths: string[];
 	private additionalThemePaths: string[];
 	private builtinPackagePaths: PackageSource[];
-	private extensionFactories: ExtensionFactory[];
+	private extensionFactories: InlineExtension[];
 	private noExtensions: boolean;
 	private noSkills: boolean;
 	private noPromptTemplates: boolean;

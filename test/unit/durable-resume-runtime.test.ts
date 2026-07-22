@@ -181,6 +181,31 @@ describe("resumeDurableWorkflow", () => {
     assert.equal(result.reason, "workflow_not_found");
   });
 
+  test("rediscovers an on-the-fly project workflow from its persisted invocation cwd", async () => {
+    const definition = makeDef();
+    const conflicting = workflow({
+      name: definition.name, description: "wrong current project", inputs: { topic: Type.String() },
+      outputs: { wrong: Type.Boolean() }, run: async () => ({ wrong: true }),
+    }) as unknown as WorkflowDefinition;
+    backend.registerWorkflow({
+      workflowId: "wf-reloaded-project", name: definition.name, inputs: { topic: "fresh" },
+      createdAt: 1, status: "paused", completedCheckpoints: 1,
+      invocationCwd: "/persisted/project",
+    });
+    let resolvedCwd: string | undefined;
+    const result = await resumeDurableWorkflow("wf-reloaded-project", {
+      ...deps(),
+      registry: makeRegistryWith(conflicting),
+      resolveDefinition: async (name, cwd) => {
+        resolvedCwd = cwd;
+        return name === definition.name ? definition : undefined;
+      },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(resolvedCwd, "/persisted/project");
+    await jobs.get("wf-reloaded-project")?.promise;
+  });
+
   test("returns invalid_inputs when cached inputs fail schema validation", async () => {
     backend.registerWorkflow({ workflowId: "wf-bad-in-1", name: "resumable-pipeline", inputs: {}, createdAt: 1, status: "paused", completedCheckpoints: 1 });
     const result = await resumeDurableWorkflow("wf-bad-in-1", deps());

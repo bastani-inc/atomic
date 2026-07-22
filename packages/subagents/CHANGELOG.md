@@ -7,6 +7,12 @@
 - Fixed foreground and background subagent runs resolving before their output artifact stream had opened and flushed. Normal completion and spawn-error races now share idempotent output finalization, preserve the spawn diagnostic, and return only after the output artifact is settled, preventing late `ENOENT`/`EINVAL` host crashes and truncated output.
 
 
+## [0.9.11-alpha.3] - 2026-07-21
+
+### Fixed
+
+- Fixed foreground subagent runs that detached for intercom coordination completing silently. When a foreground single, chain, or parallel child detaches (for example after asking its supervisor a question) and later exits, the parent session now receives a "Detached subagent task" completion/failure/paused notice through the same deduplicated, turn-triggering delivery pipeline used for background completion notifications, including per-child `(n/m)` attribution for parallel groups. Previously the detached child's final result was only recorded in remembered run state, so the orchestrating session had to poll `subagent status` to discover that a detached run had finished.
+
 ## [0.9.11-alpha.1] - 2026-07-20
 
 ### Changed

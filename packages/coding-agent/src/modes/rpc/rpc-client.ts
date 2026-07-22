@@ -62,6 +62,7 @@ export interface RpcClientOptions {
  */
 const LONG_LIVED_COMMANDS: ReadonlySet<string> = new Set<string>([
 	"prompt",
+	"login_provider",
 	"steer",
 	"follow_up",
 	"bash",

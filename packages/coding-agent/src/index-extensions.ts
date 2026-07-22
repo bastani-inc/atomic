@@ -1,6 +1,7 @@
 // Extension system
 export type {
 	AgentEndEvent,
+	AgentSettledEvent,
 	AgentStartEvent,
 	AgentToolResult,
 	AgentToolUpdateCallback,
@@ -10,6 +11,7 @@ export type {
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
 	BeforeProviderRequestEvent,
+	BeforeProviderHeadersEvent,
 	BeforeProviderRequestEventResult,
 	BuildSystemPromptOptions,
 	CompactOptions,
@@ -17,6 +19,8 @@ export type {
 	ContextUsage,
 	CustomToolCallEvent,
 	EditToolCallEvent,
+	EntryRenderer,
+	EntryRenderOptions,
 	ExecOptions,
 	ExecResult,
 	Extension,
@@ -30,6 +34,7 @@ export type {
 	ExtensionError,
 	ExtensionEvent,
 	ExtensionFactory,
+	InlineExtension,
 	ExtensionFlag,
 	ExtensionHandler,
 	ExtensionRuntime,

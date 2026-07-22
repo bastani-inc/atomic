@@ -442,6 +442,7 @@ describe("Pi 0.80.10 model auth compatibility", () => {
 					{ ...baseline, id: "persisted-dynamic", name: "Persisted Dynamic" },
 				],
 				checkedAt: Date.now(),
+				lastModified: Date.now() + 60_000,
 			});
 			writeFileSync(join(directory, "models.json"), JSON.stringify({
 				providers: { anthropic: { baseUrl: "https://proxy.example/v1" } },
@@ -466,6 +467,7 @@ describe("Pi 0.80.10 model auth compatibility", () => {
 			await new FileModelsStore(join(directory, "models-store.json")).write("anthropic", {
 				models: [{ ...baseline, id: "cached-dynamic", name: "Cached Dynamic" }],
 				checkedAt: 0,
+				lastModified: Date.now() + 60_000,
 			});
 			vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Promise<Response>(() => {}));
 			const registry = ModelRegistry.create(storage, join(directory, "models.json"));

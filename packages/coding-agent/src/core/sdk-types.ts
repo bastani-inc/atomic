@@ -2,6 +2,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { AuthStorage } from "./auth-storage.ts";
 import type { ModelRegistry } from "./model-registry.ts";
+import type { ModelRuntime } from "./model-runtime.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import type { SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
@@ -18,6 +19,8 @@ export interface CreateAgentSessionOptions {
   authStorage?: AuthStorage;
   /** Model registry. Default: ModelRegistry.create(authStorage, agentDir/models.json) */
   modelRegistry?: ModelRegistry;
+  /** Canonical model/auth facade. Takes precedence over modelRegistry and authStorage. */
+  modelRuntime?: ModelRuntime;
 
   /** Model to use. Default: from settings, else first available */
   model?: Model<Api>;

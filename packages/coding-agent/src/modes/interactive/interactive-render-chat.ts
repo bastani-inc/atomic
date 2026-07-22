@@ -2,8 +2,12 @@ import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { type AgentMessage, type Component, type VerbatimCompactionResult, type SessionContext, type TruncationResult, type ChatMessageEntry, type ChatMessageRenderOptions, Spacer, Text, parseSkillBlock, AssistantMessageComponent, BashExecutionComponent, BranchSummaryMessageComponent, chatEntriesFromAgentMessages, renderChatMessageEntry, addChatTranscriptEntry, CompactionBoundaryMessageComponent, CustomMessageComponent, SkillInvocationMessageComponent, ToolExecutionComponent, UserMessageComponent, recordTimeSinceReset, theme } from "./interactive-mode-deps.ts";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import { VERBATIM_COMPACTION_PREFIX } from "../../core/messages.ts";
+import { buildContextEntries, sessionEntryToContextMessages, type SessionEntry } from "../../core/session-manager.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.ts";
 import { RemoteCustomMessageComponent, RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
+import type { CustomEntry } from "../../core/session-manager.ts";
+import { CustomEntryComponent } from "./components/custom-entry.ts";
+import { CACHE_TTL_MS, collectCacheMisses } from "../../core/cache-stats.ts";
 
 InteractiveModeBase.prototype.showStatus = function(this: InteractiveModeBase, message: string): void {
     const children = this.chatContainer.children;
@@ -119,6 +123,19 @@ InteractiveModeBase.prototype.addCompactionBoundaryToChat = function(this: Inter
     component.setExpanded(this.toolOutputExpanded);
     this.chatContainer.addChild(component);
   };
+
+InteractiveModeBase.prototype.addCustomEntryToChat = function(this: InteractiveModeBase, entry: CustomEntry): void {
+  const renderer = this.session.extensionRunner.getEntryRenderer(entry.customType);
+  if (!renderer) return;
+  const component = new CustomEntryComponent(entry, renderer);
+  component.setExpanded(this.toolOutputExpanded);
+  if (!component.hasContent()) return;
+  const streamingIndex = this.streamingComponent
+    ? this.chatContainer.children.indexOf(this.streamingComponent)
+    : -1;
+  if (streamingIndex >= 0) this.chatContainer.children.splice(streamingIndex, 0, component);
+  else this.chatContainer.addChild(component);
+};
 
 InteractiveModeBase.prototype.addMessageToChat = function(this: InteractiveModeBase, message: AgentMessage, options?: { populateHistory?: boolean }): void {
     switch (message.role) {
@@ -257,6 +274,54 @@ InteractiveModeBase.prototype.renderSessionContext = function(this: InteractiveM
     this.ui.requestRender();
   };
 
+InteractiveModeBase.prototype.renderSessionEntries = function(
+  this: InteractiveModeBase,
+  sessionEntries: SessionEntry[],
+  options: { updateFooter?: boolean; populateHistory?: boolean; suppressCompactionBoundary?: VerbatimCompactionResult } = {},
+): void {
+  this.pendingTools.clear();
+  const deferredInputs = [...this.deferredRenderedUserInputs];
+  this.deferredRenderedUserInputs = [];
+  this.deferredRenderedUserInputComponents.clear();
+  if (options.updateFooter) {
+    this.footer.invalidate();
+    this.updateEditorBorderColor();
+  }
+  let messageBuffer: AgentMessage[] = [];
+  let firstMessage = true;
+  const flushMessages = (): void => {
+    if (options.suppressCompactionBoundary && firstMessage && isSynthesizedCompactionBoundary(messageBuffer[0], options.suppressCompactionBoundary)) {
+      messageBuffer = messageBuffer.slice(1);
+    }
+    firstMessage = false;
+    for (const entry of chatEntriesFromAgentMessages(messageBuffer)) {
+      const component = this.addRenderedChatEntry(entry);
+      if (entry.kind === "tool" && entry.isPartial !== false && component instanceof ToolExecutionComponent) {
+        this.pendingTools.set(entry.toolCallId, component);
+      }
+      if (options.populateHistory && entry.kind === "user") this.editor.addToHistory?.(entry.text);
+    }
+    messageBuffer = [];
+  };
+  for (const entry of sessionEntries) {
+    if (entry.type === "custom") {
+      flushMessages();
+      this.addCustomEntryToChat(entry);
+    } else {
+      messageBuffer.push(...sessionEntryToContextMessages(entry));
+    }
+  }
+  flushMessages();
+  if (this.settingsManager.getShowCacheMissNotices()) {
+    for (const miss of collectCacheMisses(sessionEntries, { getModel: (provider, model) => this.session.modelRegistry.find(provider, model) }).values()) {
+      const cause = miss.modelChanged ? " after model switch" : miss.idleMs >= CACHE_TTL_MS ? " after cache TTL expiry" : "";
+      this.chatContainer.addChild(new Text(theme.fg("warning", `Prompt cache miss${cause}: ${miss.missedTokens.toLocaleString()} tokens re-billed ($${miss.missedCost.toFixed(3)})`), 1, 0));
+    }
+  }
+  for (const input of deferredInputs) this.renderDeferredUserInput(input);
+  this.ui.requestRender();
+};
+
 InteractiveModeBase.prototype.attachStartupNoticesContainer = function(this: InteractiveModeBase, options: { resetDetached?: boolean } = {}): void {
     const isAttached = this.chatContainer.children.includes(this.startupNoticesContainer);
     if (isAttached) return;
@@ -268,13 +333,11 @@ InteractiveModeBase.prototype.attachStartupNoticesContainer = function(this: Int
 
 InteractiveModeBase.prototype.renderInitialMessages = function(this: InteractiveModeBase): void {
     this.attachStartupNoticesContainer({ resetDetached: true });
-    // Get aligned messages and entries from session context
-    const context = this.sessionManager.buildSessionContext();
-    this.renderSessionContext(context, {
-      updateFooter: true,
-      populateHistory: true,
-    });
-
+    const entries = buildContextEntries(
+      this.sessionManager.getEntries(),
+      this.sessionManager.getLeafId(),
+    );
+    this.renderSessionEntries(entries, { updateFooter: true, populateHistory: true });
   };
 
 InteractiveModeBase.prototype.getUserInput = async function(this: InteractiveModeBase): Promise<string> {
@@ -327,12 +390,11 @@ InteractiveModeBase.prototype.rebuildChatFromMessages = function(
 ): void {
     this.chatContainer.clear();
     this.attachStartupNoticesContainer();
-    let context = this.sessionManager.buildSessionContext();
-    const synthesizedBoundary = options.suppressCompactionBoundary;
-    if (synthesizedBoundary && isSynthesizedCompactionBoundary(context.messages[0], synthesizedBoundary)) {
-      context = { ...context, messages: context.messages.slice(1) };
-    }
-    this.renderSessionContext(context);
+    const entries = buildContextEntries(
+      this.sessionManager.getEntries(),
+      this.sessionManager.getLeafId(),
+    );
+    this.renderSessionEntries(entries, { suppressCompactionBoundary: options.suppressCompactionBoundary });
   };
 
 function isSynthesizedCompactionBoundary(

@@ -2,13 +2,14 @@ import chalk from "chalk";
 import { parseArgs, printHelp } from "./cli/args.ts";
 import { listModels } from "./cli/list-models.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
-import { ENV_OFFLINE, ENV_SESSION_DIR, ENV_SKIP_VERSION_CHECK, ENV_STARTUP_BENCHMARK, expandTildePath, getAgentDir, getEnvValue, setEnvValue, VERSION } from "./config.ts";
+import { runFirstTimeSetup } from "./main-first-time-setup.ts";
+import { ENV_OFFLINE, ENV_SESSION_DIR, ENV_SKIP_VERSION_CHECK, ENV_STARTUP_BENCHMARK, expandTildePath, getAgentDir, getEnvValue, getPackageDir, setEnvValue, VERSION } from "./config.ts";
 import type { CreateAgentSessionRuntimeFactory } from "./core/agent-session-runtime.ts";
 import { type AgentSessionRuntimeDiagnostic, createAgentSessionFromServices, createAgentSessionServices } from "./core/agent-session-services.ts";
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { AuthStorage } from "./core/auth-storage.ts";
 import { getBuiltinPackagePaths } from "./core/builtin-packages.ts";
-import { configureHttpDispatcher } from "./core/http-dispatcher.ts";
+import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { prepareExplicitCliModel, resolveModelScope, resolveModelScopeWithDiagnostics } from "./core/model-resolver.ts";
 import { restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
 import { resolveProjectTrusted } from "./core/project-trust.ts";
@@ -18,6 +19,7 @@ import { SettingsManager } from "./core/settings-manager.ts";
 import { endTimingSpan, printTimings, resetTimings, startTimingSpan, time } from "./core/timings.ts";
 import { hasProjectTrustInputs, ProjectTrustStore } from "./core/trust-manager.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
+import { builtInExtensions } from "./extensions/index.ts";
 import { type AppMode, isPlainRuntimeMetadataCommand, isReadOnlyRuntimeMetadataCommand, prepareInitialMessage, resolveAppMode, resolveCliPaths, resolveExcludedToolsForAppMode, toPrintOutputMode } from "./main-app-mode.ts";
 import { type EarlyInputCapture, startEarlyInputCapture } from "./main-early-input.ts";
 import { computeDeferExtensions, computeStartupInputCaptureEnabled, formatScopedModelList } from "./main-deferred-startup.ts";
@@ -29,30 +31,29 @@ import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts"
 import { startInteractiveEngineLiveness } from "./modes/interactive-engine/engine-child-liveness.ts";
 import { createRuntimeForMode } from "./modes/interactive-engine/create-isolated-runtime.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
-import type { MainOptions } from "./main-types.ts";
-import { normalizePath } from "./utils/paths.ts";
+import type { MainOptions } from "./main-types.ts"; import { normalizePath } from "./utils/paths.ts"; import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
 export type { AppMode } from "./main-app-mode.ts"; export { resolveExcludedToolsForAppMode } from "./main-app-mode.ts";
 export type { MainOptions } from "./main-types.ts";
-
 export async function main(args: string[], options?: MainOptions) {
-	resetTimings();
+	resetTimings(); const extensionFactories = [...builtInExtensions, ...(options?.extensionFactories ?? [])];
 	const offlineMode = args.includes("--offline") || isTruthyEnvFlag(getEnvValue(ENV_OFFLINE));
 	if (offlineMode) {
 		setEnvValue(ENV_OFFLINE, "1");
 		setEnvValue(ENV_SKIP_VERSION_CHECK, "1");
 	}
-
-	if (await handlePackageCommand(args, { extensionFactories: options?.extensionFactories })) {
+	if (process.platform === "win32") cleanupWindowsSelfUpdateQuarantine(getPackageDir());
+	const cwd = process.cwd(), agentDir = getAgentDir();
+	const bootstrapSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
+	applyHttpProxySettings(bootstrapSettingsManager.getGlobalSettings().httpProxy); configureHttpDispatcher();
+	if (await handlePackageCommand(args, { extensionFactories })) {
 		const exitCode = process.exitCode ?? 0;
 		await drainProcessStdio();
 		process.exit(exitCode);
 		return;
 	}
-
-	if (await handleConfigCommand(args, { extensionFactories: options?.extensionFactories })) {
+	if (await handleConfigCommand(args, { extensionFactories })) {
 		return;
 	}
-
 	const parsed = parseArgs(args);
 	if (process.env.ATOMIC_INTERACTIVE_ENGINE_CHILD === "1" && process.env.ATOMIC_INTERACTIVE_ENGINE_API_KEY) parsed.apiKey = process.env.ATOMIC_INTERACTIVE_ENGINE_API_KEY;
 	if (parsed.diagnostics.length > 0) {
@@ -65,7 +66,6 @@ export async function main(args: string[], options?: MainOptions) {
 		}
 	}
 	time("parseArgs");
-
 	if (parsed.version) {
 		console.log(VERSION);
 		process.exit(0);
@@ -103,8 +103,6 @@ export async function main(args: string[], options?: MainOptions) {
 	validateForkFlags(parsed);
 	validateSessionIdFlags(parsed);
 
-	const cwd = process.cwd();
-	const agentDir = getAgentDir();
 	const projectTrustStore = new ProjectTrustStore(agentDir);
 	const startupHasTrustInputs = hasProjectTrustInputs(cwd);
 	const startupStoredProjectTrust = startupHasTrustInputs ? projectTrustStore.get(cwd) : null;
@@ -277,7 +275,7 @@ export async function main(args: string[], options?: MainOptions) {
 				noContextFiles: parsed.noContextFiles,
 				systemPrompt: parsed.systemPrompt,
 				appendSystemPrompt: parsed.appendSystemPrompt,
-				extensionFactories: isolateInteractiveHost ? undefined : options?.extensionFactories,
+				extensionFactories: isolateInteractiveHost ? undefined : extensionFactories,
 			},
 		});
 		const { settingsManager, modelRegistry, resourceLoader } = services;
@@ -373,8 +371,8 @@ export async function main(args: string[], options?: MainOptions) {
 	endTimingSpan(runtimeCreationSpan);
 	const { services, session, modelFallbackMessage } = runtime;
 	const { settingsManager, modelRegistry, resourceLoader } = services;
+	applyHttpProxySettings(settingsManager.getGlobalSettings().httpProxy);
 	configureHttpDispatcher(settingsManager.getHttpIdleTimeoutMs());
-
 	if (parsed.help) {
 		const extensionFlags = resourceLoader
 			.getExtensions()
@@ -411,6 +409,7 @@ export async function main(args: string[], options?: MainOptions) {
 		stdinContent,
 	);
 	time("prepareInitialMessage");
+	startupEarlyInputCapture = await runFirstTimeSetup(appMode, settingsManager, startupEarlyInputCapture);
 	initTheme(settingsManager.getTheme(), appMode === "interactive");
 	time("initTheme");
 
@@ -442,6 +441,7 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	if (appMode === "rpc") {
+		if (!offlineMode) void modelRegistry.refresh().catch(() => {});
 		printTimings();
 		await runRpcMode(runtime);
 	} else if (appMode === "interactive") {

@@ -26,6 +26,7 @@ describe("interactive API-key login persistence failures", () => {
 				model: undefined,
 				modelRegistry: {
 					authStorage: { set: vi.fn(() => { throw saveError; }) },
+					getCustomApiKeyAuth: () => undefined,
 				},
 			},
 			ui: { setFocus: vi.fn(), requestRender: vi.fn() },

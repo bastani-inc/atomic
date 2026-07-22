@@ -1,4 +1,5 @@
 import { randomUUID as nodeRandomUUID } from "node:crypto";
+import type { Credential } from "@earendil-works/pi-ai";
 import type {
 	Api,
 	AssistantMessageEventStream,
@@ -34,7 +35,7 @@ export interface CursorProviderOAuthConfig {
 }
 
 interface CursorRefreshContext {
-	readonly hostCredential?: { readonly type: "api_key"; readonly key: string } | ({ readonly type: "oauth" } & OAuthCredentials);
+	readonly hostCredential?: Credential;
 	readonly credentialGeneration: number;
 	readonly providerInstanceGeneration: number;
 	readonly isCurrentGeneration?: () => boolean;

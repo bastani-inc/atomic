@@ -147,6 +147,9 @@ describe("replayed durable stage graph lineage (issue #1498)", () => {
         kind: "stage", workflowId: WORKFLOW_ID, checkpointId: `task:stage:task:${name}:1`, name,
         replayKey: `stage:task:${name}:1`, output: { name, stageName: name, text: `${name} done` },
         completedAt: 1200, result: `${name} done`,
+        topology: name === "review-a"
+          ? { version: 1, stageId: cpStageId(name), parentIds: [] }
+          : { version: 1, stageId: cpStageId(name), parentIds: ["missing-source-parent"], run: { runId: WORKFLOW_ID, runName: "wf" } },
       };
       recordCachedStageWithTracker(store, tracker, WORKFLOW_ID, name, cp.replayKey, cp, completedKeys, parallelScope);
     }
@@ -157,6 +160,8 @@ describe("replayed durable stage graph lineage (issue #1498)", () => {
     for (const reviewer of reviewers) assert.deepEqual([...reviewer.parentIds], [setupId]);
   });
 
+
+  function cpStageId(name: string): string { return `checkpoint-only:${name}`; }
   test("cached replay hydrates persisted stage timing, result, session, and model metadata", () => {
     const store = createStore();
     store.recordRunStart({ id: WORKFLOW_ID, name: "wf", inputs: {}, status: "running", stages: [], startedAt: Date.now() });

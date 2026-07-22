@@ -13,9 +13,11 @@ import {
 	type RpcOutput,
 } from "./rpc-responses.ts";
 import type { KeybindingsReloadCoordinator } from "./rpc-keybindings-reload.ts";
+import { handleProviderLogin, type ProviderLoginInput } from "./rpc-provider-login.ts";
 import type { RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand } from "./rpc-types.ts";
 
 export type RpcCommandHandler = (command: RpcCommand) => Promise<RpcResponse | undefined>;
+
 
 interface RpcCommandHandlerOptions {
 	runtimeHost: AgentSessionRuntime;
@@ -24,6 +26,7 @@ interface RpcCommandHandlerOptions {
 	output: RpcOutput;
 	keybindings?: KeybindingsManager;
 	reloadCoordinator?: KeybindingsReloadCoordinator<AgentSession>;
+	inputForm?: ProviderLoginInput;
 }
 
 export function createRpcCommandHandler({
@@ -33,8 +36,10 @@ export function createRpcCommandHandler({
 	output,
 	keybindings,
 	reloadCoordinator,
+	inputForm,
 }: RpcCommandHandlerOptions): RpcCommandHandler {
 	let fallbackShortcutKeybindings: KeybindingsManager | undefined;
+	const providerLoginControllers = new Map<string, AbortController>();
 	const getShortcutBindings = () => {
 		if (keybindings) return keybindings.getEffectiveConfig();
 		if (fallbackShortcutKeybindings) fallbackShortcutKeybindings.reload();
@@ -144,10 +149,22 @@ export function createRpcCommandHandler({
 				try {
 					await session.modelRegistry.prepareRequiredProviders({ allowNetwork: !isOfflineModeEnabled(), explicit: true });
 					const models = await session.modelRegistry.getAvailable();
-					return createRpcSuccessResponse(id, "get_available_models", { models, scopedModels: session.scopedModels });
+					return createRpcSuccessResponse(id, "get_available_models", {
+						models,
+						scopedModels: session.scopedModels,
+						customAuthProviders: session.modelRegistry.getCustomApiKeyAuthProviders(),
+					});
 				} catch (error) {
 					return createRpcErrorResponse(id, "get_available_models", formatRpcErrorMessage(error));
 				}
+			}
+
+			case "login_provider":
+				return handleProviderLogin(command, session, inputForm, providerLoginControllers);
+
+			case "cancel_login_provider": {
+				providerLoginControllers.get(command.provider)?.abort();
+				return createRpcSuccessResponse(id, "cancel_login_provider");
 			}
 
 			case "logout_provider": {
@@ -167,6 +184,7 @@ export function createRpcCommandHandler({
 					errors: [...result.errors].map(([provider, error]) => ({ provider, message: error.message })),
 					models: session.modelRegistry.getAvailable(),
 					scopedModels: session.scopedModels,
+					customAuthProviders: session.modelRegistry.getCustomApiKeyAuthProviders(),
 				});
 			}
 
@@ -178,6 +196,12 @@ export function createRpcCommandHandler({
 			case "cycle_thinking_level": {
 				const level = session.cycleThinkingLevel();
 				return createRpcSuccessResponse(id, "cycle_thinking_level", level ? { level } : null);
+			}
+
+			case "get_available_thinking_levels": {
+				return createRpcSuccessResponse(id, "get_available_thinking_levels", {
+					levels: session.getAvailableThinkingLevels(),
+				});
 			}
 
 			case "set_context_window": {

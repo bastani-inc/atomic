@@ -2,6 +2,7 @@ import type { BranchSummaryEntry } from "./session-manager.ts";
 import { collectEntriesForBranchSummary, generateBranchSummary } from "./compaction/index.ts";
 import type { SessionBeforeTreeResult, TreePreparation } from "./extensions/index.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { createSummarizationRetryCallbacks } from "./summarization-retry.ts";
 
 export function setSessionName(this: AgentSession, name: string): void {
 	this.sessionManager.appendSessionInfo(name);
@@ -109,6 +110,7 @@ export async function navigateTree(this: AgentSession,
 		// Run default summarizer if needed
 		let summaryText: string | undefined;
 		let summaryDetails: unknown;
+		let summaryUsage: import("@earendil-works/pi-ai/compat").Usage | undefined;
 		if (options.summarize && entriesToSummarize.length > 0 && !extensionSummary) {
 			const model = this.model!;
 			const { apiKey, headers, baseUrl } = await this._getRequiredRequestAuth(model);
@@ -122,7 +124,9 @@ export async function navigateTree(this: AgentSession,
 				customInstructions,
 				replaceInstructions,
 				reserveTokens: branchSummarySettings.reserveTokens,
-				streamFn: this.agent.streamFn,
+				streamFn: this.agent.streamFunction,
+				retry: this.settingsManager.getRetrySettings(),
+				callbacks: createSummarizationRetryCallbacks(this, { source: "branchSummary" }),
 			});
 			if (result.aborted) {
 				return { cancelled: true, aborted: true };
@@ -131,6 +135,7 @@ export async function navigateTree(this: AgentSession,
 				throw new Error(result.error);
 			}
 			summaryText = result.summary;
+			summaryUsage = result.usage;
 			summaryDetails = {
 				readFiles: result.readFiles || [],
 				modifiedFiles: result.modifiedFiles || [],
@@ -173,6 +178,7 @@ export async function navigateTree(this: AgentSession,
 				summaryText,
 				summaryDetails,
 				fromExtension,
+				summaryUsage,
 			);
 			summaryEntry = this.sessionManager.getEntry(summaryId) as BranchSummaryEntry;
 

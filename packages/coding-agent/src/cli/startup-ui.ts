@@ -1,9 +1,12 @@
 import { ProcessTerminal, setKeybindings, TUI } from "@earendil-works/pi-tui";
+import { existsSync } from "node:fs";
+import { ENV_AGENT_DIR, getEnvValue, getSettingsPath } from "../config.ts";
 import { KeybindingsManager } from "../core/keybindings.ts";
 import type { SettingsManager } from "../core/settings-manager.ts";
 import { ExtensionInputComponent } from "../modes/interactive/components/extension-input.ts";
 import { ExtensionSelectorComponent } from "../modes/interactive/components/extension-selector.ts";
-import { initTheme } from "../modes/interactive/theme/theme.ts";
+import { FirstTimeSetupComponent, type FirstTimeSetupResult } from "../modes/interactive/components/first-time-setup.ts";
+import { detectTerminalBackgroundTheme, initTheme, setTheme, type TerminalTheme } from "../modes/interactive/theme/theme.ts";
 
 function createStartupTui(settingsManager: SettingsManager): TUI {
 	initTheme(settingsManager.getTheme());
@@ -17,6 +20,52 @@ async function clearStartupTui(ui: TUI): Promise<void> {
 	ui.clear();
 	ui.requestRender();
 	await new Promise((resolve) => setTimeout(resolve, 25));
+}
+
+async function detectStartupTheme(ui: TUI): Promise<TerminalTheme> {
+	try {
+		const scheme = await ui.queryTerminalColorScheme({ timeoutMs: 100 });
+		if (scheme) return scheme;
+	} catch {}
+	return (await detectTerminalBackgroundTheme({ ui, timeoutMs: 100 })).theme;
+}
+
+/** First-run setup is eligible only in the default agent directory before settings.json exists. */
+export function shouldRunFirstTimeSetup(settingsPath: string = getSettingsPath()): boolean {
+	return !getEnvValue(ENV_AGENT_DIR) && !existsSync(settingsPath);
+}
+
+export async function showFirstTimeSetup(settingsManager: SettingsManager): Promise<void> {
+	const ui = createStartupTui(settingsManager);
+	return new Promise((resolve) => {
+		let settled = false;
+		const finish = async (result: FirstTimeSetupResult | undefined) => {
+			if (settled) return;
+			settled = true;
+			if (result) {
+				settingsManager.setTheme(result.theme);
+				settingsManager.setEnableAnalytics(result.shareAnalytics);
+				await settingsManager.flush();
+			}
+			await clearStartupTui(ui);
+			ui.stop();
+			resolve();
+		};
+		void (async () => {
+			ui.start();
+			const detectedTheme = await detectStartupTheme(ui);
+			setTheme(detectedTheme);
+			const setup = new FirstTimeSetupComponent({
+				detectedTheme,
+				onThemePreview: (name) => { setTheme(name); ui.requestRender(); },
+				onSubmit: (result) => { void finish(result); },
+				onCancel: () => { void finish(undefined); },
+			});
+			ui.addChild(setup);
+			ui.setFocus(setup);
+			ui.requestRender();
+		})();
+	});
 }
 
 export async function showStartupSelector<T>(

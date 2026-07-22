@@ -76,6 +76,7 @@ export class SessionManager {
 		sessionFile: string | undefined,
 		persist: boolean,
 		newSessionOptions?: NewSessionOptions,
+		preloadedFileEntries?: FileEntry[],
 	) {
 		this.cwd = resolvePath(cwd);
 		this.sessionDir = normalizePath(sessionDir);
@@ -85,7 +86,7 @@ export class SessionManager {
 		}
 
 		if (sessionFile) {
-			this.setSessionFile(sessionFile);
+			this._setSessionFile(sessionFile, preloadedFileEntries);
 		} else {
 			this.newSession(newSessionOptions);
 		}
@@ -93,9 +94,13 @@ export class SessionManager {
 
 	/** Switch to a different session file (used for resume and branching) */
 	setSessionFile(sessionFile: string): void {
+		this._setSessionFile(sessionFile);
+	}
+
+	private _setSessionFile(sessionFile: string, preloadedFileEntries?: FileEntry[]): void {
 		this.sessionFile = resolvePath(sessionFile);
 		if (existsSync(this.sessionFile)) {
-			this.fileEntries = loadEntriesFromFile(this.sessionFile);
+			this.fileEntries = preloadedFileEntries ?? loadEntriesFromFile(this.sessionFile);
 
 			// If file was empty, initialize it with a valid session header. If it was non-empty but did not parse as a pi session, fail without modifying it.
 			if (this.fileEntries.length === 0) {
@@ -382,12 +387,12 @@ export class SessionManager {
 	}
 
 	/** Start a new branch with a summary of the abandoned path. */
-	branchWithSummary(branchFromId: string | null, summary: string, details?: unknown, fromHook?: boolean): string {
+	branchWithSummary(branchFromId: string | null, summary: string, details?: unknown, fromHook?: boolean, usage?: import("@earendil-works/pi-ai/compat").Usage): string {
 		if (branchFromId !== null && !this.byId.has(branchFromId)) {
 			throw new Error(`Entry ${branchFromId} not found`);
 		}
 		this.leafId = branchFromId;
-		const entry: BranchSummaryEntry = createBranchSummaryEntry(branchFromId, summary, details, fromHook, this.byId);
+		const entry: BranchSummaryEntry = createBranchSummaryEntry(branchFromId, summary, details, usage, fromHook, this.byId);
 		this._appendEntry(entry);
 		return entry.id;
 	}
@@ -431,7 +436,7 @@ export class SessionManager {
 		const header = entries.find((entry) => entry.type === "session") as SessionHeader | undefined;
 		const cwd = cwdOverride ?? header?.cwd ?? process.cwd();
 		const dir = sessionDir ? normalizePath(sessionDir) : resolve(resolvedPath, "..");
-		return new SessionManager(cwd, dir, resolvedPath, true);
+		return new SessionManager(cwd, dir, resolvedPath, true, undefined, entries);
 	}
 
 	/** Continue the most recent session (skips internal workflow sessions unless `includeInternal: true`). */

@@ -10,7 +10,7 @@ import { getBaseDirsForScope, resolvePathFromBase } from "./package-manager-path
 import { createAccumulator, addResource, getTargetMap, toResolvedPaths } from "./package-manager-resource-accumulator.ts";
 import { collectPackageResources, resolveLocalEntries } from "./package-manager-resource-collector.ts";
 import { resolveExtensionEntries } from "./package-manager-resource-files.ts";
-import { dedupePackages, getPackageSourceString, parseSource } from "./package-manager-source.ts";
+import { dedupePackages, getPackageIdentity, getPackageSourceString, parseSource } from "./package-manager-source.ts";
 import { installParsedSource } from "./package-manager-operations.ts";
 import type {
 	MissingSourceAction,
@@ -105,11 +105,14 @@ async function resolvePackageSources(
 	for (const { pkg, scope } of sources) {
 		const sourceStr = getPackageSourceString(pkg);
 		const filter = typeof pkg === "object" ? pkg : undefined;
-		const parsed = parseSource(sourceStr);
+		const deltaBase = findAutoloadDeltaBase(context, pkg, scope, sources);
+		const resolvedSource = deltaBase?.source ?? sourceStr;
+		const resolvedScope = deltaBase?.scope ?? scope;
+		const parsed = parseSource(resolvedSource);
 		const metadata: PathMetadata = { source: sourceStr, scope, origin: "package" };
 
 		if (parsed.type === "local") {
-			for (const baseDir of getBaseDirsForScope(context, scope)) {
+			for (const baseDir of getBaseDirsForScope(context, resolvedScope)) {
 				await resolveLocalExtensionSource(parsed, accumulator, filter, { ...metadata, baseDir }, baseDir, {
 					includeProjectLocalResources: options?.includeProjectLocalResources === true,
 				});
@@ -120,26 +123,26 @@ async function resolvePackageSources(
 		const installMissing = async (): Promise<boolean> => {
 			if (isOfflineModeEnabled()) return false;
 			if (!onMissing) {
-				if (context.driver) await context.driver.installParsedSource(parsed, scope);
-				else await installParsedSource(context, parsed, scope);
+				if (context.driver) await context.driver.installParsedSource(parsed, resolvedScope);
+				else await installParsedSource(context, parsed, resolvedScope);
 				return true;
 			}
 			const action = await onMissing(sourceStr);
 			if (action === "skip") return false;
 			if (action === "error") throw new Error(`Missing source: ${sourceStr}`);
-			if (context.driver) await context.driver.installParsedSource(parsed, scope);
-			else await installParsedSource(context, parsed, scope);
+			if (context.driver) await context.driver.installParsedSource(parsed, resolvedScope);
+			else await installParsedSource(context, parsed, resolvedScope);
 			return true;
 		};
 
 		if (parsed.type === "npm") {
-			let installedPath = getExistingNpmInstallPath(context, parsed, scope);
+			let installedPath = getExistingNpmInstallPath(context, parsed, resolvedScope);
 			const needsInstall =
 				!installedPath || !(await installedNpmMatchesConfiguredVersion(context, parsed, installedPath));
 			if (needsInstall) {
 				const installed = await installMissing();
 				if (!installed) continue;
-				installedPath = getExistingNpmInstallPath(context, parsed, scope);
+				installedPath = getExistingNpmInstallPath(context, parsed, resolvedScope);
 				if (!installedPath || !(await installedNpmMatchesConfiguredVersion(context, parsed, installedPath))) {
 					continue;
 				}
@@ -150,17 +153,30 @@ async function resolvePackageSources(
 			continue;
 		}
 
-		let installedPath = getExistingGitInstallPath(context, parsed, scope) ?? getGitInstallPath(context, parsed, scope);
+		let installedPath = getExistingGitInstallPath(context, parsed, resolvedScope) ?? getGitInstallPath(context, parsed, resolvedScope);
 		if (!(await exists(installedPath))) {
 			const installed = await installMissing();
 			if (!installed) continue;
-		} else if (scope === "temporary" && !parsed.pinned && !isOfflineModeEnabled()) {
+		} else if (resolvedScope === "temporary" && !parsed.pinned && !isOfflineModeEnabled()) {
 			if (context.driver) await context.driver.refreshTemporaryGitSource(parsed, sourceStr);
 			else await refreshTemporaryGitSource(context, parsed, sourceStr);
 		}
 		metadata.baseDir = installedPath;
 		await collectPackageResources(installedPath, accumulator, filter, metadata);
 	}
+}
+
+function findAutoloadDeltaBase(
+	context: PackageManagerContext,
+	pkg: PackageSource,
+	scope: SourceScope,
+	sources: Array<{ pkg: PackageSource; scope: SourceScope }>,
+): { source: string; scope: SourceScope } | undefined {
+	if (scope !== "project" || typeof pkg !== "object" || pkg.autoload !== false) return undefined;
+	const identity = getPackageIdentity(context, pkg.source, scope);
+	const userEntry = sources.find((entry) => entry.scope === "user"
+		&& getPackageIdentity(context, getPackageSourceString(entry.pkg), "user") === identity);
+	return userEntry ? { source: getPackageSourceString(userEntry.pkg), scope: "user" } : undefined;
 }
 
 async function resolveLocalExtensionSource(

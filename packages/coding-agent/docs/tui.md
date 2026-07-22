@@ -934,9 +934,9 @@ class VimEditor extends CustomEditor {
 
 export default function (pi: ExtensionAPI) {
   pi.on("session_start", (_event, ctx) => {
-    // Factory receives theme and keybindings from the app
+    // Factory receives the TUI, theme, and keybindings from the app
     ctx.ui.setEditorComponent((tui, theme, keybindings) =>
-      new VimEditor(theme, keybindings)
+      new VimEditor(tui, theme, keybindings)
     );
   });
 }

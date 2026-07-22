@@ -1,4 +1,5 @@
 import { type Api, type BuiltinProvider, getModels, getProviders, type Model } from "@earendil-works/pi-ai/compat";
+import { radiusProvider } from "@earendil-works/pi-ai/providers/all";
 import { existsSync, readFileSync } from "fs";
 import { normalizeContextWindowOptions, validateContextWindowValue } from "./context-window.ts";
 import { mergeCompat, mergeCustomModels } from "./model-registry-builtins.ts";
@@ -28,6 +29,7 @@ function emptyCustomModelsResult(error?: string): CustomModelsResult {
 		providerRequestConfigs: new Map(),
 		modelRequestHeaders: new Map(),
 		modelRequestHeaderSources: new Map(),
+		configuredProviders: new Map(),
 		error,
 	};
 }
@@ -88,6 +90,7 @@ function mergeCustomModelResults(base: CustomModelsResult, incoming: CustomModel
 		providerRequestConfigs: new Map([...base.providerRequestConfigs, ...incoming.providerRequestConfigs]),
 		modelRequestHeaders: mergedHeaders.headers,
 		modelRequestHeaderSources: mergedHeaders.sources,
+		configuredProviders: new Map([...base.configuredProviders, ...incoming.configuredProviders]),
 		error: undefined,
 	};
 }
@@ -268,11 +271,19 @@ function loadCustomModels(modelsJsonPath: string): CustomModelsResult {
 		const providerRequestConfigs = new Map<string, ProviderRequestConfig>();
 		const modelRequestHeaders = new Map<string, Record<string, string>>();
 		const modelRequestHeaderSources = new Map<string, ModelRequestHeaderSource>();
+		const configuredProviders = new Map<string, ReturnType<typeof radiusProvider>>();
 
 		for (const [providerName, providerConfig] of Object.entries(config.providers)) {
-			if (providerConfig.baseUrl || providerConfig.compat) {
+			if (providerConfig.oauth === "radius" && providerConfig.baseUrl) {
+				configuredProviders.set(providerName, radiusProvider({
+					id: providerName,
+					name: providerConfig.name ?? providerName,
+					gateway: providerConfig.baseUrl.replace(/\/v1\/?$/u, ""),
+				}));
+			}
+			if ((providerConfig.baseUrl && providerConfig.oauth !== "radius") || providerConfig.compat) {
 				overrides.set(providerName, {
-					baseUrl: providerConfig.baseUrl,
+					baseUrl: providerConfig.oauth === "radius" ? undefined : providerConfig.baseUrl,
 					compat: providerConfig.compat as Model<Api>["compat"],
 				});
 			}
@@ -301,6 +312,7 @@ function loadCustomModels(modelsJsonPath: string): CustomModelsResult {
 			providerRequestConfigs,
 			modelRequestHeaders,
 			modelRequestHeaderSources,
+			configuredProviders,
 			error: undefined,
 		};
 	} catch (error) {

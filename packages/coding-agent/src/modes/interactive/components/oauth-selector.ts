@@ -40,16 +40,17 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 	private mode: "login" | "logout";
 	private authStorage: AuthStorage;
 	private getAuthStatus: (providerId: string) => AuthStatus;
-	private onSelectCallback: (providerId: string) => void;
+	private onSelectCallback: (providerId: string, authType: AuthSelectorProvider["authType"]) => void;
 	private onCancelCallback: () => void;
 
 	constructor(
 		mode: "login" | "logout",
 		authStorage: AuthStorage,
 		providers: AuthSelectorProvider[],
-		onSelect: (providerId: string) => void,
+		onSelect: (providerId: string, authType: AuthSelectorProvider["authType"]) => void,
 		onCancel: () => void,
 		getAuthStatus?: (providerId: string) => AuthStatus,
+		initialSearchInput = "",
 	) {
 		super();
 
@@ -71,10 +72,11 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 		this.addChild(new Spacer(1));
 
 		this.searchInput = new Input();
+		this.searchInput.setValue(initialSearchInput);
 		this.searchInput.onSubmit = () => {
 			const selectedProvider = this.filteredProviders[this.selectedIndex];
 			if (selectedProvider) {
-				this.onSelectCallback(selectedProvider.id);
+				this.onSelectCallback(selectedProvider.id, selectedProvider.authType);
 			}
 		};
 		this.addChild(this.searchInput);
@@ -90,7 +92,7 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 		this.addChild(new DynamicBorder());
 
 		// Initial render
-		this.filterProviders("");
+		this.filterProviders(initialSearchInput);
 	}
 
 	private filterProviders(query: string): void {
@@ -118,13 +120,18 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 			const isSelected = i === this.selectedIndex;
 
 			const statusIndicator = this.formatStatusIndicator(provider);
+			const hasMultipleMethods = this.allProviders.some(
+				(other) => other.id === provider.id && other.authType !== provider.authType,
+			);
+			const methodLabel = provider.authType === "oauth" ? "subscription" : "API key";
+			const providerLabel = hasMultipleMethods ? `${provider.name} · ${methodLabel}` : provider.name;
 			let line = "";
 			if (isSelected) {
 				const prefix = theme.fg("accent", "→ ");
-				const text = theme.fg("accent", provider.name);
+				const text = theme.fg("accent", providerLabel);
 				line = prefix + text + statusIndicator;
 			} else {
-				const text = `  ${theme.fg("text", provider.name)}`;
+				const text = `  ${theme.fg("text", providerLabel)}`;
 				line = text + statusIndicator;
 			}
 
@@ -192,7 +199,7 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 		else if (kb.matches(keyData, "tui.select.confirm")) {
 			const selectedProvider = this.filteredProviders[this.selectedIndex];
 			if (selectedProvider) {
-				this.onSelectCallback(selectedProvider.id);
+				this.onSelectCallback(selectedProvider.id, selectedProvider.authType);
 			}
 		}
 		// Escape or Ctrl+C

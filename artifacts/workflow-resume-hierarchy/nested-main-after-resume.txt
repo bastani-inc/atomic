@@ -1,0 +1,50 @@
+
+   ██████▙                  ▟██████    Atomic v0.0.0
+    ██████▙                ▟██████░░   (anthropic) claude-fable-5 high
+     ██████▙              ▟██████░░    ~/Documents/projects/atomic-worktrees/workflow-resume-hierarchy
+      ██████▙            ▟██████░░
+       ████████████████████████░░
+        ██████▛░░░░░░░░▜██████░░
+         ██████▛      ▜██████░░
+          ██████▛    ▜██████░░
+           ██████▛  ▜██████░░
+            ░████████████░░░
+              ░░░░░░░░░░░░
+
+RESOURCES AGENTS.md · 18 skills · 14 prompts
+
+
+ Warning: Anthropic subscription auth is active. Third-party harness usage draws from extra usage and is billed per token, not your Claude plan limits. Manage
+ extra usage at https://claude.ai/settings/usage.
+
+ Resuming durable workflow "resume-hierarchy-e2e" (cbaf0e31) — completed checkpoints will be replayed.
+
+                                                                                                                                 $0.000 (sub) • 0.0%/1.0M (auto)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+(anthropic) claude-fable-5 high • ~/Documents/projects/atomic-worktrees/workflow-resume-hierarchy
+
+╭ BACKGROUND  1 run  ● 1 running ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   ●  cbaf0e  resume-hierarchy-e2e                                                                                                                            │
+│     chain · 1/2 · 1m 4s                                                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

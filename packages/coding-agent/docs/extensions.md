@@ -573,15 +573,17 @@ The `systemPromptOptions` field gives extensions access to the same structured d
 
 Inside `before_agent_start`, `event.systemPrompt` and `ctx.getSystemPrompt()` both reflect the chained system prompt as of the current handler. Later `before_agent_start` handlers can still modify it again.
 
-#### agent_start / agent_end
+#### agent_start / agent_end / agent_settled
 
-Fired once per user prompt.
+`agent_start` begins a low-level run. `agent_end` fires when that run ends, but Atomic may still retry, compact and retry, or deliver queued follow-ups. Use `agent_settled` when a status integration needs to know Atomic has no automatic continuation left.
 
 ```typescript
 pi.on("agent_start", async (_event, ctx) => {});
-
 pi.on("agent_end", async (event, ctx) => {
-  // event.messages - messages from this prompt
+  // event.messages - messages from this low-level run
+});
+pi.on("agent_settled", async (_event, ctx) => {
+  // ctx.isIdle() is true unless another extension started a run.
 });
 ```
 
@@ -668,6 +670,17 @@ pi.on("context", async (event, ctx) => {
   // event.messages - deep copy, safe to modify
   const filtered = event.messages.filter(m => !shouldPrune(m));
   return { messages: filtered };
+});
+```
+
+#### before_provider_headers
+
+Fires after outgoing HTTP headers are assembled. Mutate `event.headers` to add, override, or remove headers. The event also identifies the provider and model.
+
+```typescript
+pi.on("before_provider_headers", (event, ctx) => {
+  event.headers["x-session-id"] = ctx.sessionManager.getSessionId();
+  delete event.headers["x-remove-me"];
 });
 ```
 
@@ -1471,6 +1484,21 @@ pi.on("session_start", async (_event, ctx) => {
 });
 ```
 
+Appending emits `entry_appended` with the durable entry. This lets extensions react to session entries without polling.
+
+### pi.registerEntryRenderer(customType, renderer)
+
+Register a TUI renderer for durable custom entries created by `pi.appendEntry()`. These entries render in the transcript but do not enter model context.
+
+```typescript
+import { Text } from "@earendil-works/pi-tui";
+
+pi.registerEntryRenderer("status-card", (entry, { expanded }, theme) =>
+  new Text(theme.fg("accent", `${expanded ? "Details" : "Status"}: ${JSON.stringify(entry.data)}`), 0, 0)
+);
+```
+
+
 ### pi.setSessionName(name)
 
 Set the session display name (shown in session selector instead of first message).
@@ -1677,6 +1705,10 @@ pi.events.on("my:event", (data) => { ... });
 pi.events.emit("my:event", { ... });
 ```
 
+### Native providers
+
+In addition to `registerProvider(name, config)`, extensions can register a complete native `Provider` from `@earendil-works/pi-ai` with `pi.registerProvider(provider)`. Use the native overload for provider-owned authentication, catalog refresh, and transport behavior; use the config overload for ordinary proxies and custom endpoints.
+
 ### pi.registerProvider(name, config)
 
 Register or override a model provider dynamically. Useful for proxies, custom endpoints, or team-wide model configurations.
@@ -1732,6 +1764,25 @@ pi.registerProvider("corporate-ai", {
     }
   }
 });
+
+// Register provider-owned API-key setup for /login
+pi.registerProvider("local-server", {
+  name: "Local Server",
+  auth: {
+    apiKey: {
+      name: "Local server connection",
+      async login({ signal, prompt }) {
+        const baseUrl = await prompt({
+          type: "text",
+          message: "Server URL",
+          placeholder: "http://localhost:8080"
+        });
+        if (signal.aborted) throw new Error("Login cancelled");
+        return { type: "api_key", env: { LOCAL_SERVER_URL: baseUrl } };
+      }
+    }
+  }
+});
 ```
 
 Dynamic providers can implement `refreshModels(context)`. Ordinary dynamic refresh leaves the previous list readable while work is pending and retains it on failure or a successful `[]`; a successful non-empty list replaces the provider's extension models. `requiresPreparation: true` instead makes current provider authority a prerequisite and starts each cycle from authoritative empty, so its successful `[]` is authoritative and stale routes are not readable while preparation is unresolved. An initially unconfigured required provider remains empty so unrelated providers can still start.
@@ -1754,6 +1805,7 @@ For duplicate occurrences that intentionally share a public ID, set `requiresExa
 - `validateHostOAuth` - Validate exact stored OAuth before refresh and request-auth use.
 - `refreshModels` - Refresh the dynamic catalog with signal/network/store/credential/generation context; non-empty ordinary results replace rows, while every successful result is authoritative for `requiresPreparation` providers.
 - `oauth` - OAuth provider config for `/login` support. When provided, the provider appears in the login menu.
+- `auth.apiKey` - Provider-owned API-key or connection setup for `/login`. Its `name` appears in the provider list and `login({ signal, prompt })` returns the credential Atomic persists. Extension providers registered only in the isolated interactive engine child are synchronized into the host's `/login` list; their login callback and credential-dependent model refresh still execute in the child, while prompts are rendered by the terminal host.
 - `streamSimple` - Custom streaming implementation for non-standard APIs.
 
 See [Custom providers](/custom-provider) for advanced topics: custom streaming APIs, OAuth details, model definition reference.
@@ -2549,8 +2601,8 @@ class VimEditor extends CustomEditor {
 
 export default function (pi: ExtensionAPI) {
   pi.on("session_start", (_event, ctx) => {
-    ctx.ui.setEditorComponent((_tui, theme, keybindings) =>
-      new VimEditor(theme, keybindings)
+    ctx.ui.setEditorComponent((tui, theme, keybindings) =>
+      new VimEditor(tui, theme, keybindings)
     );
   });
 }
@@ -2559,7 +2611,7 @@ export default function (pi: ExtensionAPI) {
 **Key points:**
 - Extend `CustomEditor` (not base `Editor`) to get app keybindings (escape to abort, ctrl+d, model switching)
 - Call `super.handleInput(data)` for keys you don't handle
-- Factory receives `theme` and `keybindings` from the app
+- Factory receives `tui`, `theme`, and `keybindings` from the app
 - Use `ctx.ui.getEditorComponent()` before `setEditorComponent()` to wrap the previously configured custom editor
 - Pass `undefined` to restore default: `ctx.ui.setEditorComponent(undefined)`
 

@@ -134,6 +134,9 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
         ) ?? false;
         if (!stillActive) runtime.activeStore.recordRunPaused(runtime.runId);
       }
+      // Graceful pause/quit is an exact durability boundary. Force the latest
+      // pause-adjusted stage elapsed time even inside the normal 30s bucket.
+      await runtime.captureStageSessionMeta({ forceDurable: true });
     },
     async resume(message?: string) {
       runtime.throwIfStageMutationBlocked();

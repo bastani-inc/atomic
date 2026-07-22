@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, Model, SimpleStreamOptions } from "@earendil-works/pi-ai/compat";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_COMPACTION_SETTINGS, estimateContextTokens } from "../src/core/compaction/compaction.js";
 import { getKeptTailTokenEstimate, prepareCompactionBoundary } from "../src/core/compaction/compaction-boundary.js";
 import { runVerbatimCompaction, targetKeepLines } from "../src/core/compaction/compaction-runner.js";
@@ -252,6 +252,37 @@ describe("one-pass range planner", () => {
 		}
 	});
 
+
+	it("retries transient provider errors with the configured lifecycle callbacks", async () => {
+		const prep = preparation();
+		const faux = createFauxStreamFn([{ error: "terminated" }, "1,20\n"]);
+		const callbacks = {
+			onRetryScheduled: vi.fn(),
+			onRetryAttemptStart: vi.fn(),
+			onRetryFinished: vi.fn(),
+		};
+		const ranges = await planDeletedLineRanges(
+			prep.region,
+			prep.parameters,
+			model,
+			{ apiKey: "key" },
+			undefined,
+			"off",
+			prep.settings.reserveTokens,
+			10,
+			{
+				streamFn: faux.streamFn,
+				retry: { enabled: true, maxRetries: 2, baseDelayMs: 0 },
+				callbacks,
+			},
+		);
+
+		expect(ranges).toEqual([{ start: 1, end: 20 }]);
+		expect(faux.state.callCount).toBe(2);
+		expect(callbacks.onRetryScheduled).toHaveBeenCalledWith(1, 2, 0, "terminated");
+		expect(callbacks.onRetryAttemptStart).toHaveBeenCalledOnce();
+		expect(callbacks.onRetryFinished).toHaveBeenCalledOnce();
+	});
 });
 
 describe("single planned compaction rung", () => {

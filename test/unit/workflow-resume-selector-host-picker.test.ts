@@ -463,6 +463,7 @@ describe("workflow resume selector host-picker end-to-end (real engine bridge)",
 		const rendered = bridge.component().render(120).join("\n");
 		assert.ok(rendered.includes("paused-workflow"), "durable row visible after hydrate update");
 		assert.ok(rendered.includes("live-workflow"), "live row retained after merge");
+		assert.doesNotMatch(rendered, /\b\d+ prompts?\b/, "picker rows omit prompt counts");
 
 		// Arrow-key navigation is host-local: zero child-bound commands.
 		const commandsBefore = bridge.childCommands.length;

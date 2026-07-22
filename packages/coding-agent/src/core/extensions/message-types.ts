@@ -1,6 +1,7 @@
 import type { Component } from "@earendil-works/pi-tui";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import type { CustomMessage } from "../messages.ts";
+import type { CustomEntry } from "../session-manager.ts";
 
 export type CustomMessageDelivery = "steer" | "followUp" | "nextTurn" | "interrupt";
 
@@ -43,6 +44,16 @@ export type SendMessagesOptions = Omit<SendMessageOptions, "deliverAs" | "interr
 export interface MessageRenderOptions {
 	expanded: boolean;
 }
+
+export interface EntryRenderOptions {
+	expanded: boolean;
+}
+
+export type EntryRenderer<T = unknown> = (
+	entry: CustomEntry<T>,
+	options: EntryRenderOptions,
+	theme: Theme,
+) => Component | undefined;
 
 /**
  * Custom message renderer.

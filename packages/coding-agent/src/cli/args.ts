@@ -254,8 +254,8 @@ ${chalk.bold("Commands:")}
   ${APP_NAME} uninstall <source> [-l]   Alias for remove
   ${APP_NAME} update [source|self|${APP_NAME}] [--all]   Update ${APP_NAME} (use --all for ${APP_NAME} and extensions)
   ${APP_NAME} list                      List installed extensions from settings
-  ${APP_NAME} config                    Open TUI to enable/disable package resources
-  ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list
+  ${APP_NAME} config [-l]               Open resource TUI (Tab switches global/project scope)
+  ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list/config
 
 ${chalk.bold("Options:")}
   --provider <name>              Provider name (default: google)
@@ -386,6 +386,8 @@ ${chalk.bold("Environment Variables:")}
   CLOUDFLARE_API_KEY               - Cloudflare API token (Workers AI and AI Gateway)
   CLOUDFLARE_ACCOUNT_ID            - Cloudflare account id (required for both)
   CLOUDFLARE_GATEWAY_ID            - Cloudflare AI Gateway slug (required for AI Gateway)
+  QWEN_TOKEN_PLAN_API_KEY          - Qwen Token Plan API key (international region)
+  QWEN_TOKEN_PLAN_CN_API_KEY       - Qwen Token Plan API key (China region)
   XIAOMI_API_KEY                   - Xiaomi MiMo API key (api.xiaomimimo.com billing)
   XIAOMI_TOKEN_PLAN_CN_API_KEY     - Xiaomi MiMo Token Plan API key (China region)
   XIAOMI_TOKEN_PLAN_AMS_API_KEY    - Xiaomi MiMo Token Plan API key (Amsterdam region)

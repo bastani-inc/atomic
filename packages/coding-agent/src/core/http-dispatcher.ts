@@ -17,9 +17,13 @@ export const HTTP_IDLE_TIMEOUT_CHOICES = [
 ] as const;
 
 export function parseHttpIdleTimeoutMs(value: unknown): number | undefined {
-	if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
-		return undefined;
+	if (typeof value === "string") {
+		const trimmed = value.trim();
+		if (trimmed.toLowerCase() === "disabled") return 0;
+		if (trimmed.length === 0) return undefined;
+		return parseHttpIdleTimeoutMs(Number(trimmed));
 	}
+	if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return undefined;
 	return Math.floor(value);
 }
 
@@ -29,6 +33,13 @@ export function formatHttpIdleTimeoutMs(timeoutMs: number): string {
 		return choice.label;
 	}
 	return `${timeoutMs / 1000} sec`;
+}
+
+export function applyHttpProxySettings(httpProxy: string | undefined): void {
+	const proxy = httpProxy?.trim();
+	if (!proxy) return;
+	process.env.HTTP_PROXY ??= proxy;
+	process.env.HTTPS_PROXY ??= proxy;
 }
 
 export function createHttpDispatcherOptions(timeoutMs: number): ConstructorParameters<typeof undici.EnvHttpProxyAgent>[0] {

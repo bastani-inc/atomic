@@ -63,6 +63,7 @@ for (const scenario of [
 				errors: [],
 				models: childRegistry.getAvailable(),
 				scopedModels: [],
+				customAuthProviders: [],
 			});
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });

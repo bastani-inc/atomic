@@ -1,4 +1,5 @@
 import type { StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { retryAssistantCall, type RetryCallbacks, type RetryPolicy } from "@earendil-works/pi-ai";
 import type { ProviderHeaders } from "@earendil-works/pi-ai";
 import type { Api, AssistantMessage, Model, SimpleStreamOptions } from "@earendil-works/pi-ai/compat";
 import { isContextOverflow } from "@earendil-works/pi-ai/compat";
@@ -45,6 +46,8 @@ export interface RangePlannerOptions {
 	streamFn: StreamFn;
 	/** Absolute path of the persisted session file. Undefined for in-memory sessions. */
 	sessionFilePath?: string;
+	retry?: RetryPolicy;
+	callbacks?: RetryCallbacks;
 }
 
 /**
@@ -175,7 +178,12 @@ export async function planDeletedLineRanges(
 	};
 	let response: AssistantMessage;
 	try {
-		response = await (await options.streamFn(model, context, request)).result();
+		response = await retryAssistantCall(
+			async () => (await options.streamFn(model, context, request)).result(),
+			options.retry,
+			signal,
+			options.callbacks,
+		);
 	} catch (error) {
 		if (signal?.aborted) throw new Error("Compaction cancelled");
 		const message = error instanceof Error ? error.message : String(error);

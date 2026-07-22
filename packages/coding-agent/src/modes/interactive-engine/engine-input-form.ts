@@ -19,21 +19,28 @@ export class EngineInputFormService {
 		this.write = write;
 	}
 
-	open(request: HostInputFormRequest): Promise<Record<string, string> | undefined> {
+	open(request: HostInputFormRequest, signal?: AbortSignal): Promise<Record<string, string> | undefined> {
+		if (signal?.aborted) return Promise.resolve(undefined);
 		const componentId = `input_form_${++this.nextId}`;
 		let resolveResult!: (values: Record<string, string> | undefined) => void;
 		const result = new Promise<Record<string, string> | undefined>((resolve) => { resolveResult = resolve; });
+		const onAbort = () => {
+			this.send({ type: "engine_input_form_close", componentId });
+			record.resolve(undefined);
+		};
 		const record: ActiveForm = {
 			settled: false,
 			resolve: (values) => {
 				if (record.settled) return;
 				record.settled = true;
+				signal?.removeEventListener("abort", onAbort);
 				this.active.delete(componentId);
 				resolveResult(values);
 			},
 		};
+		signal?.addEventListener("abort", onAbort, { once: true });
 		this.active.set(componentId, record);
-		this.send({ type: "engine_input_form_open", componentId, title: request.title, fields: request.fields.map((field) => ({ ...field, choices: field.choices ? [...field.choices] : undefined })) });
+		this.send({ type: "engine_input_form_open", componentId, title: request.title, fields: request.fields.map((field) => ({ ...field, choices: field.choices ? [...field.choices] : undefined })), ...(request.heading !== undefined ? { heading: request.heading } : {}), ...(request.submitLabel !== undefined ? { submitLabel: request.submitLabel } : {}) });
 		return result;
 	}
 

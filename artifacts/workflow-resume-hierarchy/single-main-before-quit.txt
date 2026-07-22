@@ -1,0 +1,50 @@
+
+   ██████▙                  ▟██████    Atomic v0.0.0
+    ██████▙                ▟██████░░   (anthropic) claude-fable-5 high
+     ██████▙              ▟██████░░    ~/Documents/projects/atomic-worktrees/workflow-resume-hierarchy/.tmp-e2e
+      ██████▙            ▟██████░░
+       ████████████████████████░░
+        ██████▛░░░░░░░░▜██████░░
+         ██████▛      ▜██████░░
+          ██████▛    ▜██████░░
+           ██████▛  ▜██████░░
+            ░████████████░░░
+              ░░░░░░░░░░░░
+
+RESOURCES ~/Documents/projects/atomic-worktrees/workflow-resume-hierarchy/AGENTS.md · 18 skills · 14 prompts
+
+
+ Warning: Anthropic subscription auth is active. Third-party harness usage draws from extra usage and is billed per token, not your Claude plan limits. Manage
+ extra usage at https://claude.ai/settings/usage.
+
+ Reloaded workflow resources. 13 workflow(s), generation 2.
+
+╭ DISPATCHED ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ●  342bb0fa  resume-single-e2e  ● running                                                                                                                    │
+│   started in background                                                                                                                                      │
+│                                                                                                                                                              │
+│  ▸ /workflow connect 342bb0fa  see agents working · chat with and steer each stage                                                                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Connected to 342bb0fa. h hide · ctrl+x leave graph · return to main chat · esc close.
+
+                                                                                                                                 $0.000 (sub) • 0.0%/1.0M (auto)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+(anthropic) claude-fable-5 high • ~/Documents/projects/atomic-worktrees/workflow-resume-hierarchy/.tmp-e2e
+
+╭ BACKGROUND  1 run  ● 1 running ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   ●  342bb0  resume-single-e2e                                                                                                                               │
+│     single · 0/1 · 34s                                                                                                                                       │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+

@@ -25,6 +25,58 @@
 - Fixed Cursor conversations losing prior turn context after a clean turn, so a second Cursor request (for example a follow-up that references an earlier answer) behaved as a fresh conversation and could not recall previous user or assistant messages. The Cursor protocol codec now retains each conversation's latest server checkpoint and its referenced KV blob graph and reuses them for the next request. Retention is gated on a validated clean Connect end-stream: mid-stream connection resets or decode failures, malformed/errored EOF, explicit cancellation, and session discard all drop the continuation so a checkpoint from an incomplete or cancelled generation can never survive into the next turn, which then rebuilds from canonical history. Request generation and exact route validation are unchanged ([#1830](https://github.com/bastani-inc/atomic/issues/1830)).
 
 
+## [0.9.11-alpha.3] - 2026-07-21
+
+### Added
+
+- Added a built-in, hidden llama.cpp router provider with `/login llama.cpp`, `LLAMA_BASE_URL`/`LLAMA_API_KEY` configuration, loaded-model discovery, and the `/llama` manager for load, unload, cancellation, reconnect, and Hugging Face GGUF download workflows.
+- Added provider-metadata-driven `/login` choices, direct `/login <provider>` routing and autocomplete, provider-owned login information links, API-key login for Qwen Token Plan, Radius, and GitHub Copilot, plus preferred defaults for Radius, NVIDIA, and ZAI Coding Plan China.
+- Added global `httpProxy`, duration-string and `"disabled"` HTTP idle timeouts, package `autoload: false` project deltas, Kimi deferred-tool compatibility, `oauth: "radius"` custom gateways, and global/project scope switching in `atomic config` (`-l` starts in project scope).
+- Added extension lifecycle hooks `before_provider_headers` and `agent_settled`, durable `entry_appended` events and `registerEntryRenderer()`, complete native `Provider` registration, and named/hidden `InlineExtension` descriptors.
+- Added the public `ModelRuntime` facade and associated option types, `readStoredCredential`, `InlineExtension`, entry-renderer/event types, and session context conversion helpers to the SDK/package-root surface. Atomic intentionally continues to expose Search rather than adding obsolete grep compatibility aliases.
+- Added Ctrl+X copy-last-message, clipboard text fallback when image paste finds no image, restored footer branch/session/experimental/extension-status segments, Output padding and Cache miss notices settings, and clear-on-shrink idle placeholders.
+- Added durable cache-miss attribution and waste totals, complete per-model session usage/cost breakdowns including tool and summary work, and optional live/resumed cache-miss transcript notices.
+- Added Atomic's first-run theme preview and explicit analytics opt-in. Analytics settings and a local tracking identifier are persisted only when selected; this change does not transmit analytics data.
+
+### Changed
+
+- Login provider discovery now follows registered provider authentication capabilities instead of using display names as an allowlist, so newly installed native providers automatically expose their supported OAuth and API-key methods.
+- Dynamic provider catalogs, including Radius `pi-messages`, are restored and refreshed through the provider-owned model store; documentation now distinguishes generic custom-provider APIs from the broader installed native API surface.
+- Package self-update now honors advisory release notes, pins the exact advertised package and version, reports version transitions, and cleans stale Windows native-dependency quarantine data during ordinary startup.
+- Interactive session diagnostics now show cache hit rate, wasted cache cost, and provider/model usage costs; the footer includes usage spent by tool results and summaries.
+
+### Fixed
+
+- Fixed Qwen Token Plan global/China, Radius API-key, and GitHub Copilot token methods being hidden from first-time `/login`, which kept otherwise installed models out of `/model` and `--list-models`.
+- Fixed package-manager self-update helpers rejecting the legacy string target form while retaining exact-version install targets.
+- Fixed `/login` omitting extension-registered custom-auth providers in isolated interactive mode. Provider metadata now synchronizes from the engine child, and provider-owned login prompts, credential persistence, cancellation, and post-login model refresh execute across the existing isolated-engine bridge.
+- Fixed project package overrides being unable to selectively subtract or include resources from a matching global package without replacing the complete declaration.
+- Fixed Ctrl+V reporting an image error when the clipboard contained usable text, and made Ctrl+X invoke the same copy-last-assistant behavior as `/copy`.
+- Fixed a single Ctrl+C not dismissing the `/login` popups (auth-method selector, provider selector, and login dialogs), even though Escape worked and the on-screen hint promised `esc/ctrl+c cancel`. The global Ctrl+C clear/exit handler consumed the key before the focused popup could see it, so the first press silently cleared the hidden editor and a second press within the double-press window exited the entire CLI. The global handler now defers whenever an inline popup owns input (and its overlay/custom-UI guards are evaluated live instead of once at startup), so Ctrl+C reaches the focused component and cancels exactly like Escape while editor clearing and double-press exit continue to work when the editor has focus.
+
+## [0.9.11-alpha.2] - 2026-07-21
+
+### Added
+
+- Added Qwen Token Plan and Qwen Token Plan China to Atomic's built-in provider defaults and credential guidance, inherited from `pi-ai` 0.81.1 ([#6858](https://github.com/earendil-works/pi/pull/6858)).
+- Added the `get_available_thinking_levels` RPC command and `RpcClient.getAvailableThinkingLevels()` so headless clients can discover the active model's exact supported cycle order ([#6865](https://github.com/earendil-works/pi/pull/6865)).
+- Exported message and tool-execution lifecycle event types from the Atomic package root for extension and SDK consumers ([#6772](https://github.com/earendil-works/pi/pull/6772)).
+
+### Changed
+
+- Updated `@earendil-works/pi-agent-core`, `pi-ai`, and `pi-tui` to 0.81.1, inheriting provider, transport, model-catalog, Kimi K3 thinking, OpenAI Responses retry, Codex request-ID, terminal rendering, and queue fixes from Pi 0.81.0–0.81.1 while retaining Atomic's branding, bundled packages, Verbatim Compaction, and versionless release flow.
+- Restored persisted model catalogs without network access during service creation, then moved automatic network refresh into running interactive and RPC modes. Interactive startup computes its first footer provider count from the restored snapshot and starts network refresh only after TUI initialization.
+
+### Fixed
+
+- Fixed transient provider failures aborting Verbatim Compaction planning or branch summarization. Both now honor the configured retry policy and publish `summarization_retry_scheduled`, `summarization_retry_attempt_start`, and `summarization_retry_finished` lifecycle events to interactive, JSON, RPC, and SDK consumers ([#6901](https://github.com/earendil-works/pi/pull/6901)).
+- Fixed persisted remote model catalogs overriding newer bundled catalogs after an upgrade by comparing catalog modification times and treating legacy undated overlays as stale ([upstream commit](https://github.com/earendil-works/pi/commit/54fad505b9d8cbc8922ff55d7e2938f70cbf6a3d)).
+- Fixed steering and follow-up delivery modes being lost when queued messages were flushed as compaction finished ([#6730](https://github.com/earendil-works/pi/pull/6730)).
+- Fixed read-tool errors being syntax-highlighted as though they were successful file contents ([#6731](https://github.com/earendil-works/pi/pull/6731)).
+- Fixed `${@:-default}` and `${ARGUMENTS:-default}` prompt-template defaults, while retaining Atomic's bounded default-value parser ([#6695](https://github.com/earendil-works/pi/issues/6695)).
+- Fixed persisted sessions being read and parsed twice when opened, and adopted the shared UUIDv7 generator for new session IDs ([#6793](https://github.com/earendil-works/pi/pull/6793), [#6834](https://github.com/earendil-works/pi/pull/6834)).
+- Fixed Kimi Coding usage costs being shown without the subscription estimate indicator.
+
 ## [0.9.11-alpha.1] - 2026-07-20
 
 ### Changed

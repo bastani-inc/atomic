@@ -15,12 +15,13 @@ export async function registerPendingProvidersAndPrepare(
 	const extensions = resourceLoader.getExtensions();
 	const pending = extensions.runtime.pendingProviderRegistrations;
 	const diagnostics: ProviderRegistrationDiagnostic[] = [];
-	for (const { name, config, extensionPath } of pending) {
+	for (const registration of pending) {
 		try {
-			modelRegistry.registerProvider(name, config);
+			if ("provider" in registration) modelRegistry.registerProvider(registration.provider);
+			else modelRegistry.registerProvider(registration.name, registration.config);
 		} catch (error) {
 			diagnostics.push({
-				extensionPath,
+				extensionPath: registration.extensionPath,
 				message: error instanceof Error ? error.message : String(error),
 			});
 		}

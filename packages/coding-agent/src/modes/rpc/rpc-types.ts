@@ -21,12 +21,21 @@ import type { SourceInfo } from "../../core/source-info.ts";
 export interface RpcModelCatalog {
 	models: Model<Api>[];
 	scopedModels: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
+	customAuthProviders: Array<{ id: string; name: string }>;
 }
 
 export interface RpcModelRefreshResult extends RpcModelCatalog {
 	aborted: boolean;
 	errors: Array<{ provider: string; message: string }>;
 }
+
+export type RpcLoginProviderResult =
+	| (RpcModelCatalog & {
+			provider: string;
+			cancelled: false;
+			credential: import("../../core/auth-storage.ts").ApiKeyCredential;
+	  })
+	| { provider: string; cancelled: true };
 
 export type RpcCommand =
 	// Prompting
@@ -43,12 +52,15 @@ export type RpcCommand =
 	| { id?: string; type: "set_model"; provider: string; modelId: string }
 	| { id?: string; type: "cycle_model"; direction?: "forward" | "backward" }
 	| { id?: string; type: "get_available_models" }
+	| { id?: string; type: "login_provider"; provider: string }
+	| { id?: string; type: "cancel_login_provider"; provider: string }
 	| { id?: string; type: "logout_provider"; provider: string }
 	| { id?: string; type: "refresh_models"; timeoutMs?: number; force?: boolean; allowNetwork?: boolean }
 
 	// Thinking
 	| { id?: string; type: "set_thinking_level"; level: ThinkingLevel }
 	| { id?: string; type: "cycle_thinking_level" }
+	| { id?: string; type: "get_available_thinking_levels" }
 
 	// Context Window
 	| { id?: string; type: "set_context_window"; contextWindow: number | string }
@@ -204,6 +216,14 @@ export type RpcResponse =
 	| {
 			id?: string;
 			type: "response";
+			command: "login_provider";
+			success: true;
+			data: RpcLoginProviderResult;
+	  }
+	| { id?: string; type: "response"; command: "cancel_login_provider"; success: true }
+	| {
+			id?: string;
+			type: "response";
 			command: "logout_provider";
 			success: true;
 			data: RpcLogoutProviderResult;
@@ -217,6 +237,13 @@ export type RpcResponse =
 			command: "cycle_thinking_level";
 			success: true;
 			data: { level: ThinkingLevel } | null;
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_available_thinking_levels";
+			success: true;
+			data: { levels: ThinkingLevel[] };
 	  }
 
 	// Context Window

@@ -1,5 +1,5 @@
 import type { StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { ProviderHeaders } from "@earendil-works/pi-ai";
+import type { ProviderHeaders, RetryCallbacks, RetryPolicy } from "@earendil-works/pi-ai";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { getKeptTailTokenEstimate } from "./compaction-boundary.js";
 import { reconstructCompactedTranscript, validateDeletedRanges } from "./deleted-ranges.js";
@@ -10,6 +10,8 @@ export interface CompactionPlanOptions {
 	streamFn: StreamFn;
 	/** Absolute path of the persisted session file. Undefined for in-memory sessions. */
 	sessionFilePath?: string;
+	retry?: RetryPolicy;
+	callbacks?: RetryCallbacks;
 }
 
 export type CompactionRungResult = CompactedTranscript & { rung: "planned" };
@@ -58,7 +60,12 @@ export async function runVerbatimCompaction(
 		thinkingLevel,
 		preparation.settings.reserveTokens,
 		targetKeepLines(preparation),
-		{ streamFn: options.streamFn, sessionFilePath: options.sessionFilePath },
+		{
+			streamFn: options.streamFn,
+			sessionFilePath: options.sessionFilePath,
+			retry: options.retry,
+			callbacks: options.callbacks,
+		},
 	);
 	if (signal?.aborted) throw new Error("Compaction cancelled");
 	return withWholeContextStats(

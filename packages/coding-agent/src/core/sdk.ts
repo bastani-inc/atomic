@@ -1,9 +1,5 @@
 import { join } from "node:path";
-import {
-  Agent,
-  type AgentMessage,
-  type ThinkingLevel,
-} from "@earendil-works/pi-agent-core";
+import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@earendil-works/pi-agent-core";
 import {
   clampThinkingLevel,
   type Api,
@@ -26,7 +22,7 @@ import { restoreAnthropicReplayThinkingBlocks } from "./anthropic-thinking-guard
 import { sanitizeCopilotGeminiPayload } from "./copilot-gemini-payload-sanitizer.ts";
 import { restoreCopilotGeminiReasoningOpaque } from "./copilot-gemini-reasoning.ts";
 import { normalizeCopilotGeminiReplayToolArguments } from "./copilot-gemini-tool-arguments.ts";
-import { getModelDefaultContextWindow, getSupportedContextWindows, selectContextWindow } from "./context-window.ts";
+import { getModelDefaultContextWindow, selectContextWindow } from "./context-window.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ExtensionRunner } from "./extensions/index.ts";
 import { convertToLlm } from "./messages.ts";
@@ -44,29 +40,25 @@ import { sanitizeOpenAIResponsesPayload } from "./openai-responses-payload-sanit
 import { scrubPreCompactionAssistantUsage } from "./provider-context-usage.ts";
 import { time } from "./timings.ts";
 import { defaultToolNames } from "./tools/index.ts";
+import { COPILOT_CONTEXT_WINDOW_SELECTION_OPTIONS, getAlreadyAppliedContextWindow } from "./sdk-context-window.ts";
 
 import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "./sdk-types.ts";
 export type { CreateAgentSessionOptions, CreateAgentSessionResult } from "./sdk-types.ts";
 
 export * from "./sdk-exports.ts";
+
+// Preserve the pre-0.81 fallback for extensions that construct Agent instances
+// or invoke low-level agent loops without supplying streamFn.
+setDefaultStreamFn(streamSimple);
+
+// Helper Functions
+
 function getDefaultAgentDir(): string {
   return getAgentDir();
 }
 
 type ContextWindowRequestSource = "explicit" | "incoming-model" | "session" | "model-settings" | "global-settings";
 
-const COPILOT_CONTEXT_WINDOW_SELECTION_OPTIONS = { allowCopilotLongContextFallback: true } as const;
-
-function getAlreadyAppliedContextWindow(model: Model<Api>): number | undefined {
-  const defaultContextWindow = getModelDefaultContextWindow(model);
-  if (model.contextWindow === defaultContextWindow) {
-    return undefined;
-  }
-
-  return getSupportedContextWindows(model).includes(model.contextWindow)
-    ? model.contextWindow
-    : undefined;
-}
 
 /**
  * Create an AgentSession with the specified options.
@@ -122,7 +114,11 @@ async function createAgentSessionInternal(
   // the supplied registry's already-loaded auth avoids that race (issue #1431).
   const authPath = options.agentDir ? join(agentDir, "auth.json") : undefined;
   const modelsPath = options.agentDir ? join(agentDir, "models.json") : undefined;
-  const modelRegistry = options.modelRegistry ?? ModelRegistry.create(options.authStorage ?? AuthStorage.create(authPath), modelsPath);
+  const modelRegistry =
+    options.modelRuntime?.modelRegistry ??
+    options.modelRegistry ??
+    ModelRegistry.create(options.authStorage ?? AuthStorage.create(authPath), modelsPath);
+
 
   const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
   const sessionManager = options.sessionManager ?? SessionManager.create(cwd, getDefaultSessionDir(cwd, agentDir));
@@ -149,9 +145,14 @@ async function createAgentSessionInternal(
     await resourceLoader.reload();
     time("resourceLoader.reload");
   }
-  const pendingProviderNames = new Set(resourceLoader.getExtensions().runtime.pendingProviderRegistrations.map(({ name }) => name));
-  await modelRegistry.refresh({ allowNetwork: false, skipRequiredProviderExtensions: true });
+  const pendingProviderNames = new Set(
+    resourceLoader.getExtensions().runtime.pendingProviderRegistrations.map((registration) =>
+      "provider" in registration ? registration.provider.id : registration.name,
+    ),
+  );
   if (!requiredProvidersPrepared) await registerPendingProvidersAndPrepare(resourceLoader, modelRegistry, !isOfflineModeEnabled());
+  // Restore native and ordinary catalogs after registration without re-preparing required providers.
+  await modelRegistry.refresh({ allowNetwork: false, skipRequiredProviderExtensions: true });
   // Check if session has existing data to restore
   if (options.model) await prepareExplicitProvider(options.model.provider, modelRegistry);
   const existingSession = sessionManager.buildSessionContext();
@@ -352,13 +353,12 @@ async function createAgentSessionInternal(
       const timeoutMs = streamOptions?.timeoutMs ?? providerRetrySettings.timeoutMs ?? effectiveTimeoutMs;
       const websocketConnectTimeoutMs =
         streamOptions?.websocketConnectTimeoutMs ?? settingsManager.getWebSocketConnectTimeoutMs();
-      const attributionHeaders = mergeProviderAttributionHeaders(
-        model,
-        settingsManager,
-        streamOptions?.sessionId,
-        auth.headers,
-        streamOptions?.headers,
+      const mergedHeaders = mergeProviderAttributionHeaders(
+        model, settingsManager, streamOptions?.sessionId, auth.headers, streamOptions?.headers,
       );
+      const headerRunner = extensionRunnerRef.current;
+      const attributionHeaders = headerRunner?.hasHandlers("before_provider_headers")
+        ? await headerRunner.emitBeforeProviderHeaders(mergedHeaders ?? {}) : mergedHeaders;
       const fastModeEnabled = isCodexFastModeEnabled(model);
       const codexFastModeStreamOptions = withCodexFastModeStreamOptions(
         {

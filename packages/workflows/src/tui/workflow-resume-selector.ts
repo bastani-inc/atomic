@@ -103,7 +103,6 @@ function durableWorkflowSession(
   kind: "durable" | "completed",
 ): WorkflowResumeSelectorItem {
   const checkpointText = `${entry.completedCheckpoints} checkpoints`;
-  const promptText = `${entry.pendingPrompts} prompts`;
   const presentation = workflowStatusPresentation(entry.status, kind);
   return {
     result: { kind, workflowId: entry.workflowId },
@@ -114,8 +113,8 @@ function durableWorkflowSession(
       created: new Date(entry.createdAt),
       modified: new Date(entry.updatedAt),
       messageCount: entry.completedCheckpoints,
-      firstMessage: `${entry.name}  ${presentation.label}  ${checkpointText}  ${promptText}`,
-      allMessagesText: `${entry.workflowId} ${entry.name} ${presentation.label} ${checkpointText} ${promptText}`,
+      firstMessage: `${entry.name}  ${presentation.label}  ${checkpointText}`,
+      allMessagesText: `${entry.workflowId} ${entry.name} ${presentation.label} ${checkpointText}`,
       ...(presentation.color !== undefined ? { messageColor: presentation.color } : {}),
     },
   };

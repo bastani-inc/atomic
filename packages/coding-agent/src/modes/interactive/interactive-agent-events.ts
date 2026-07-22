@@ -3,6 +3,9 @@ import { type Message, type AgentSessionEvent, Loader, Spacer, Text, pickWhimsic
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.ts";
 import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
+import { handleSummarizationRetryEvent } from "./interactive-summarization-retry-events.ts";
+import { CACHE_TTL_MS, detectCacheMiss } from "../../core/cache-stats.ts";
+import { mountIdleStatus } from "./components/idle-status.ts";
 
 function createToolComponent(
   mode: InteractiveModeBase,
@@ -110,6 +113,15 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
         this.ui.requestRender();
         break;
 
+      case "entry_appended":
+        if (event.entry.type === "custom") this.addCustomEntryToChat(event.entry);
+        this.ui.requestRender();
+        break;
+
+      case "agent_settled":
+        await this.checkShutdownRequested();
+        break;
+
       case "message_start":
         if (event.message.role === "custom") {
           appendNewChildrenBeforeAttachedChild(
@@ -207,6 +219,13 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
           this.streamingMessage = undefined;
           this.footer.invalidate();
         }
+        if (event.message.role === "assistant" && this.settingsManager.getShowCacheMissNotices()) {
+          const miss = detectCacheMiss(this.sessionManager.getEntries(), event.message, { getModel: (provider, model) => this.session.modelRegistry.find(provider, model) });
+          if (miss) {
+            const cause = miss.modelChanged ? " after model switch" : miss.idleMs >= CACHE_TTL_MS ? " after cache TTL expiry" : "";
+            this.chatContainer.addChild(new Text(theme.fg("warning", `Prompt cache miss${cause}: ${miss.missedTokens.toLocaleString()} tokens re-billed ($${miss.missedCost.toFixed(3)})`), 1, 0));
+          }
+        }
         this.ui.requestRender();
         break;
 
@@ -253,6 +272,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
           this.loadingAnimation.stop();
           this.loadingAnimation = undefined;
           this.statusContainer.clear();
+          mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
         }
         if (this.streamingComponent) {
           this.chatContainer.removeChild(this.streamingComponent);
@@ -316,6 +336,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
           this.autoCompactionLoader.stop();
           this.autoCompactionLoader = undefined;
           this.statusContainer.clear();
+          mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
         }
         if (event.aborted) {
           if (event.reason === "manual") {
@@ -348,6 +369,12 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
         break;
       }
 
+
+		case "summarization_retry_scheduled":
+		case "summarization_retry_attempt_start":
+		case "summarization_retry_finished":
+			handleSummarizationRetryEvent(this, event);
+			break;
 
       case "auto_retry_start": {
         // Set up escape to abort retry
@@ -405,6 +432,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
           this.fallbackLoader = undefined;
         }
         this.statusContainer.clear();
+        mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
         this.ui.requestRender();
         break;
       }
@@ -423,6 +451,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
           this.retryLoader.stop();
           this.retryLoader = undefined;
           this.statusContainer.clear();
+          mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
         }
         // Show error only on final failure (success shows normal response)
         if (!event.success) {
