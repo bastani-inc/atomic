@@ -52,10 +52,13 @@ function mergeHeaders(base?: ProviderHeaders, override?: ProviderHeaders): Provi
 
 /** Canonical model/auth facade for SDK consumers. */
 export class ModelRuntime implements Models {
-  constructor(
-    readonly modelRegistry: ModelRegistry,
-    readonly authStorage: AuthStorage = modelRegistry.authStorage,
-  ) {}
+  readonly modelRegistry: ModelRegistry;
+  readonly authStorage: AuthStorage;
+
+  constructor(modelRegistry: ModelRegistry, authStorage: AuthStorage = modelRegistry.authStorage) {
+    this.modelRegistry = modelRegistry;
+    this.authStorage = authStorage;
+  }
 
   static async create(options: CreateModelRuntimeOptions = {}): Promise<ModelRuntime> {
     const authStorage = options.authStorage ?? AuthStorage.create(options.authPath);

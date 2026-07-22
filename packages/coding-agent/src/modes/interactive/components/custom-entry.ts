@@ -9,11 +9,13 @@ export class CustomEntryComponent extends Container {
   private customComponent?: Component;
   private expanded = false;
 
-  constructor(
-    private readonly entry: CustomEntry<unknown>,
-    private readonly renderer: EntryRenderer,
-  ) {
+  private readonly entry: CustomEntry<unknown>;
+  private readonly renderer: EntryRenderer;
+
+  constructor(entry: CustomEntry<unknown>, renderer: EntryRenderer) {
     super();
+    this.entry = entry;
+    this.renderer = renderer;
     this.rebuild();
   }
 

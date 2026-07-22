@@ -18,8 +18,10 @@ export class FirstTimeSetupComponent extends Container {
 	private step: "theme" | "analytics" = "theme";
 	private themeIndex: number;
 	private analyticsIndex = 0;
-	constructor(private readonly options: FirstTimeSetupOptions) {
+	private readonly options: FirstTimeSetupOptions;
+	constructor(options: FirstTimeSetupOptions) {
 		super();
+		this.options = options;
 		this.themeIndex = Math.max(0, THEMES.findIndex((option) => option.value === options.detectedTheme));
 		this.update();
 	}
