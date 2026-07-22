@@ -2,6 +2,17 @@
 
 Utilities and adapters for running Atomic against evaluation suites such as Deep SWE through Pier.
 
+## Tests
+
+Run the eval bootstrap and adapter regression tests from this directory:
+
+```bash
+uv run pytest
+```
+
+The shell-level bootstrap tests execute the generated NVM setup command with
+isolated fake NVM installations, so they do not modify the host Node setup.
+
 ## Run Pier with Atomic
 
 Run commands from this `evals/` directory. Choose one provider configuration below, then pass `atomic_pier:Atomic` as the agent import path.

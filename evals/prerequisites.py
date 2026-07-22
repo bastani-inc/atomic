@@ -53,6 +53,17 @@ def _validate_version_spec(version_spec: str) -> None:
         raise ValueError(f"Unsafe Atomic npm version specifier: {version_spec!r}")
 
 
+def atomic_runtime_environment_command() -> str:
+    """Load eval environment and NVM without trusting nvm.sh's exit status."""
+    return (
+        'export PATH="$HOME/.local/bin:$PATH"; '
+        'if [ -f "$HOME/.atomic-eval-env" ]; then . "$HOME/.atomic-eval-env"; fi; '
+        'if [ -s "$HOME/.nvm/nvm.sh" ]; then . "$HOME/.nvm/nvm.sh" || true; fi; '
+        "command -v nvm >/dev/null 2>&1 || command -v atomic >/dev/null 2>&1 || "
+        "{ echo 'Error: neither NVM nor Atomic is available' >&2; exit 1; }"
+    )
+
+
 def runtime_environment_command() -> str:
     """Load installer-persisted environment in non-login eval runtime shells."""
     return (
@@ -61,10 +72,9 @@ def runtime_environment_command() -> str:
     )
 
 
-def agent_install_command(version_spec: str) -> str:
-    """Install Atomic and playwright-cli, then configure Chromium."""
-    _validate_version_spec(version_spec)
-    node_setup = (
+def _node_setup_command() -> str:
+    """Configure distribution Node on Alpine or NVM-managed Node elsewhere."""
+    return (
         "if command -v apk >/dev/null 2>&1; then "
         "node -e 'if (+process.versions.node.split(`.`)[0] < 18) process.exit(1)' || "
         "{ echo 'Error: Alpine nodejs must be Node.js 18 or newer' >&2; exit 1; }; "
@@ -72,10 +82,16 @@ def agent_install_command(version_spec: str) -> str:
         'else export NVM_DIR="$HOME/.nvm"; '
         'if [ ! -s "$NVM_DIR/nvm.sh" ]; then '
         "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash; fi; "
-        '. "$NVM_DIR/nvm.sh"; '
+        '. "$NVM_DIR/nvm.sh" || true; '
         "command -v nvm >/dev/null 2>&1 || { echo 'Error: NVM failed to load' >&2; exit 1; }; "
         "nvm install 22; nvm alias default 22; fi"
     )
+
+
+def agent_install_command(version_spec: str) -> str:
+    """Install Atomic and playwright-cli, then configure Chromium."""
+    _validate_version_spec(version_spec)
+    node_setup = _node_setup_command()
     browser_setup = (
         'env_tmp="$HOME/.atomic-eval-env.tmp"; '
         "printf '%s\\n' 'export PLAYWRIGHT_MCP_BROWSER=chromium' "

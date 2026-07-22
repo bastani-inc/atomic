@@ -130,6 +130,12 @@ Treat exported and shared sessions as sensitive: transcripts can contain source 
 atomic [options] [@files...] [messages...]
 ```
 
+Use `--` to end option parsing when positional prompt text begins with `-`, `--`, or `@`. Every argument after the terminator is treated as literal message text rather than an option or file argument:
+
+```bash
+atomic --print -- "- leading-dash prompt"
+```
+
 ### Package Commands
 
 ```bash

@@ -15,8 +15,8 @@ from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 from prerequisites import (
     agent_install_command,
+    atomic_runtime_environment_command,
     root_install_command,
-    runtime_environment_command,
 )
 
 
@@ -103,7 +103,7 @@ class Atomic(BaseInstalledAgent):
 
     @override
     def get_version_command(self) -> str | None:
-        return f"{runtime_environment_command()}; . ~/.nvm/nvm.sh; atomic --version"
+        return f"{atomic_runtime_environment_command()}; atomic --version"
 
     @override
     def parse_version(self, stdout: str) -> str:
@@ -371,12 +371,11 @@ class Atomic(BaseInstalledAgent):
                 f"rm -rf {session_dir} {log_session_dir} && mkdir -p {session_dir} && "
                 f"{self._agent_state_setup_command()}"
                 f"{self._session_sync_trap_command(session_dir, log_session_dir)}"
-                f"{runtime_environment_command()} && "
-                f". ~/.nvm/nvm.sh && "
+                f"{atomic_runtime_environment_command()} && "
                 f"atomic --print --mode json --session-dir {session_dir} "
                 f"{model_args}"
                 f"{cli_flags}"
-                f"{escaped_instruction} "
+                f"-- {escaped_instruction} "
                 "2>&1 </dev/null | grep -v '\"type\":\"message_update\"' | "
                 f"stdbuf -oL tee /logs/agent/{self._OUTPUT_FILENAME}; status=$?; "
                 "exit $status"
