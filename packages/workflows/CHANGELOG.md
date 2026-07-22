@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
-- Workflow prompt guidance now instructs agents to give each workflow invocation its own intercom group by default — unless the user requests otherwise — via `group` at run-level `context` or per stage. A run-scoped literal name (e.g. `myflow-<runId>`) is preferred when every stage of the invocation should share one group; `group: true`/`"auto"` mints one shared UUID group per `ctx.parallel(...)` set but a fresh UUID per non-parallel stage. This keeps stage and subagent intercom chatter isolated from the parent chat and other concurrent runs, since ungrouped sessions all share the `"default"` group; subagent inheritance, capability gating, and cross-group `contact_supervisor` escalation are unchanged.
+- Workflow prompt guidance now instructs agents to give each workflow invocation its own intercom group by default — unless the user requests otherwise — by minting one invocation-scoped literal group name inside the workflow's `run` function (e.g. `"myflow-" + randomUUID()`) and passing it via the `group` option on each stage, task, or parallel step that should share it; `group: true`/`"auto"` mints one shared UUID group per `ctx.parallel(...)` set but a fresh UUID per non-parallel stage. This keeps stage and subagent intercom chatter isolated from the parent chat and other concurrent runs, since ungrouped sessions all share the `"default"` group; subagent inheritance, capability gating, and cross-group `contact_supervisor` escalation are unchanged.
 
 ## [0.9.11-alpha.2] - 2026-07-21
 
