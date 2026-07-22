@@ -87,6 +87,7 @@ export class StageChatView implements Component, Focusable {
   private piEditorFactory!: StageChatViewContext["piEditorFactory"];
   private getToolsExpanded!: StageChatViewContext["getToolsExpanded"];
   private setToolsExpanded!: StageChatViewContext["setToolsExpanded"];
+  private footerData!: StageChatViewContext["footerData"];
   private chatHost!: StageChatViewContext["chatHost"];
   private stageUiBroker!: StageChatViewContext["stageUiBroker"];
   private canSubmitPrompt!: StageChatViewContext["canSubmitPrompt"];
@@ -103,6 +104,7 @@ export class StageChatView implements Component, Focusable {
   private seenNoticeIds!: StageChatViewContext["seenNoticeIds"];
   private _unsubscribeStore!: StageChatViewContext["_unsubscribeStore"];
   private _unsubscribeHandle!: StageChatViewContext["_unsubscribeHandle"];
+  private _unsubscribeFooterData!: StageChatViewContext["_unsubscribeFooterData"];
   private _unregisterStageUiHost!: StageChatViewContext["_unregisterStageUiHost"];
 
   constructor(opts: StageChatViewOpts) {
@@ -222,6 +224,7 @@ export class StageChatView implements Component, Focusable {
     void this.piEditorFactory;
     void this.getToolsExpanded;
     void this.setToolsExpanded;
+    void this.footerData;
     void this.stageUiBroker;
     void this.canSubmitPrompt;
     void this.mountingRequestId;
@@ -234,6 +237,7 @@ export class StageChatView implements Component, Focusable {
     void this.seenNoticeIds;
     void this._unsubscribeStore;
     void this._unsubscribeHandle;
+    void this._unsubscribeFooterData;
     void this._unregisterStageUiHost;
     return this as unknown as StageChatViewContext;
   }

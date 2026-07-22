@@ -136,7 +136,11 @@ export function renderChatSessionFooter<TExtraEntry extends ChatTranscriptEntryL
 ): string[] {
   const agentSession = state.getAgentSession?.();
   if (agentSession && state.footerData) {
-    return new FooterComponent(agentSession, state.footerData).render(width);
+    return new FooterComponent(agentSession, state.footerData, {
+      dim: (text) => state.style.dim(text),
+      muted: (text) => state.style.textMuted(text),
+      warning: (text) => state.style.accent(text),
+    }).render(width);
   }
   return [];
 }

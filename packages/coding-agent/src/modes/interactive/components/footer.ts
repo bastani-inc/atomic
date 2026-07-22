@@ -14,6 +14,18 @@ import { areExperimentalFeaturesEnabled } from "../../../core/experimental.ts";
 import { addUsageToTotals, createUsageTotals } from "../../../core/usage-totals.ts";
 import { theme } from "../theme/theme.ts";
 
+export interface FooterRenderStyle {
+  dim(text: string): string;
+  muted(text: string): string;
+  warning(text: string): string;
+}
+
+const defaultFooterRenderStyle: FooterRenderStyle = {
+  dim: (text) => theme.fg("dim", text),
+  muted: (text) => theme.fg("muted", text),
+  warning: (text) => theme.fg("warning", text),
+};
+
 function sanitizeStatusText(text: string): string {
   // Replace newlines, tabs, carriage returns with space, then collapse
   // multiple spaces (pi parity). ANSI/SGR sequences must survive intact:
@@ -184,13 +196,16 @@ export class UsageMeterComponent implements Component {
 export class FooterComponent implements Component {
   declare private session: AgentSession;
   declare private footerData: ReadonlyFooterDataProvider;
+  declare private readonly renderStyle: FooterRenderStyle;
 
   constructor(
     session: AgentSession,
     footerData: ReadonlyFooterDataProvider,
+    renderStyle: FooterRenderStyle = defaultFooterRenderStyle,
   ) {
     this.session = session;
     this.footerData = footerData;
+    this.renderStyle = renderStyle;
 	}
 
   setSession(session: AgentSession): void {
@@ -248,15 +263,15 @@ export class FooterComponent implements Component {
     }
 
     const liveState = this.session.isStreaming
-      ? theme.fg("muted", "esc to interrupt")
+      ? this.renderStyle.muted("esc to interrupt")
       : undefined;
     let statusText = liveState ??
-      `${theme.fg("dim", modelLabel)} ${theme.fg("dim", "•")} ${theme.fg("muted", pwd)}`;
-    if (areExperimentalFeaturesEnabled()) statusText += ` ${theme.fg("warning", "xp")}`;
-    const lines = [truncateToWidth(statusText, width, theme.fg("dim", "..."))];
+      `${this.renderStyle.dim(modelLabel)} ${this.renderStyle.dim("•")} ${this.renderStyle.muted(pwd)}`;
+    if (areExperimentalFeaturesEnabled()) statusText += ` ${this.renderStyle.warning("xp")}`;
+    const lines = [truncateToWidth(statusText, width, this.renderStyle.dim("..."))];
     const statuses = [...this.footerData.getExtensionStatuses()].sort(([a], [b]) => a.localeCompare(b));
     if (statuses.length > 0) {
-      lines.push(truncateToWidth(statuses.map(([, text]) => sanitizeStatusText(text)).join(" "), width, theme.fg("dim", "...")));
+      lines.push(truncateToWidth(statuses.map(([, text]) => sanitizeStatusText(text)).join(" "), width, this.renderStyle.dim("...")));
     }
     return lines;
   }

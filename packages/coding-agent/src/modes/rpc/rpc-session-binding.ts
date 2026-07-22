@@ -1,5 +1,6 @@
 import type { AgentSession } from "../../core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
+import { FooterDataProvider } from "../../core/footer-data-provider.ts";
 import { waitForRawStdoutBackpressure } from "../../core/output-guard.ts";
 import type { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
 import type { EngineInputFormService } from "../interactive-engine/engine-input-form.ts";
@@ -35,6 +36,7 @@ export class RpcSessionBinding {
 	private readonly requestShutdown: () => void;
 	private readonly reloadCoordinator: KeybindingsReloadCoordinator<AgentSession> | undefined;
 
+	private footerDataProvider: FooterDataProvider | undefined;
 	constructor({ runtimeHost, output, pendingExtensionRequests, requestShutdown, customUi, renderService, sessionPicker, inputForm, reloadCoordinator }: RpcSessionBindingOptions) {
 		this.runtimeHost = runtimeHost;
 		this.output = output;
@@ -54,8 +56,10 @@ export class RpcSessionBinding {
 
 	async rebindSession(): Promise<void> {
 		this.session = this.runtimeHost.session;
+		this.disposeSubscriptions();
 		const session = this.session;
 		this.renderService?.bindSession(session);
+		this.footerDataProvider = new FooterDataProvider(session.sessionManager.getCwd());
 
 		await session.bindExtensions({
 			uiContext: createRpcExtensionUIContext({
@@ -64,6 +68,7 @@ export class RpcSessionBinding {
 				customUi: this.customUi,
 				sessionPicker: this.sessionPicker,
 				inputForm: this.inputForm,
+				footerDataProvider: this.footerDataProvider,
 			}),
 			mode: this.customUi ? "tui" : "rpc",
 			commandContextActions: {
@@ -99,8 +104,8 @@ export class RpcSessionBinding {
 				this.output({ type: "extension_error", extensionPath: err.extensionPath, event: err.event, error: err.error });
 			},
 		});
+		this.footerDataProvider.startGitWatcher();
 
-		this.disposeSubscriptions();
 		this.unsubscribe = session.subscribe((event) => {
 			this.output(event);
 		});
@@ -113,7 +118,9 @@ export class RpcSessionBinding {
 	disposeSubscriptions(): void {
 		this.unsubscribe?.();
 		this.unsubscribeBackpressure?.();
+		this.footerDataProvider?.dispose();
 		this.unsubscribe = undefined;
 		this.unsubscribeBackpressure = undefined;
+		this.footerDataProvider = undefined;
 	}
 }

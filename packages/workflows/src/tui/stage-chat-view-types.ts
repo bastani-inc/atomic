@@ -145,6 +145,7 @@ export interface StageChatViewContext {
   piEditorFactory: StageChatViewOpts["piEditorFactory"] | undefined;
   getToolsExpanded: (() => boolean) | undefined;
   setToolsExpanded: ((expanded: boolean) => void) | undefined;
+  footerData: ReadonlyFooterDataProvider | undefined;
   chatHost: ChatSessionHost<NoticeEntry>;
   stageUiBroker: StageUiBroker;
   canSubmitPrompt: ((runId: string, stageId: string, promptId: string) => boolean) | undefined;
@@ -163,5 +164,6 @@ export interface StageChatViewContext {
   seenNoticeIds: Set<string>;
   _unsubscribeStore: (() => void) | null;
   _unsubscribeHandle: (() => void) | null;
+  _unsubscribeFooterData: (() => void) | null;
   _unregisterStageUiHost: (() => void) | null;
 }

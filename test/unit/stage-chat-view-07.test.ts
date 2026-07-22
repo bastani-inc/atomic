@@ -15,6 +15,7 @@ import {
     assistantTextMessage,
     type StageControlHandle,
 } from "./stage-chat-view-helpers.js";
+import { hexToAnsi } from "../../packages/workflows/src/tui/color-utils.js";
 
 describe("StageChatView", () => {
     test("failed resume keeps the local paused state", async () => {
@@ -224,6 +225,74 @@ describe("StageChatView", () => {
             /pageup\/pagedown|follow-up|steer/,
         );
         view.dispose();
+    });
+
+    test("idle footer shows themed cwd, branch, and live MCP extension status", () => {
+        const home = process.env.HOME;
+        assert.ok(home, "test requires HOME for main-footer parity");
+        const store = createStore();
+        setupRun(store, "run-1", "stage-a", "running");
+        const agentSession = fakeFooterAgentSession(false);
+        Object.assign(agentSession.sessionManager, {
+            getCwd: () => `${home}/Documents/projects/atomic`,
+        });
+        const { handle } = makeHandle(undefined, [], "running", agentSession);
+        const statuses = new Map([
+            ["mcp", "MCP: 1/1 servers connected (3 tools)"],
+        ]);
+        let branch = "main";
+        let branchChanged: (() => void) | undefined;
+        let renderRequests = 0;
+        let unsubscribed = false;
+        const graphTheme = deriveGraphTheme({
+            dim: "#654321",
+            textMuted: "#123456",
+        });
+        const view = new StageChatView({
+            store,
+            graphTheme,
+            runId: "run-1",
+            stageId: "stage-a",
+            workflowName: "test-wf",
+            handle,
+            footerData: {
+                getGitBranch: () => branch,
+                getExtensionStatuses: () => statuses,
+                getAvailableProviderCount: () => 2,
+                onBranchChange: (listener) => {
+                    branchChanged = listener;
+                    return () => {
+                        unsubscribed = true;
+                    };
+                },
+            },
+            requestRender: () => {
+                renderRequests += 1;
+            },
+            onDetach: () => {},
+            onClose: () => {},
+        });
+
+        const initialRaw = view.render(120).join("\n");
+        const initial = stripAnsi(initialRaw);
+        assert.match(initial, /~\/Documents\/projects\/atomic \(main\)/);
+        assert.match(initial, /MCP: 1\/1 servers connected \(3 tools\)/);
+        assert.ok(
+            initialRaw.includes(`${hexToAnsi(graphTheme.textMuted)}~/Documents/projects/atomic (main)`),
+            "cwd and branch should use the workflow chat's muted text theme",
+        );
+
+        branch = "feature/footer-parity";
+        statuses.set("mcp", "MCP: 0/1 servers");
+        branchChanged?.();
+        assert.equal(renderRequests, 1);
+        const updated = view.render(120).map(stripAnsi).join("\n");
+        assert.match(updated, /~\/Documents\/projects\/atomic \(feature\/footer-parity\)/);
+        assert.match(updated, /MCP: 0\/1 servers/);
+        assert.doesNotMatch(updated, /MCP: 1\/1 servers connected/);
+
+        view.dispose();
+        assert.equal(unsubscribed, true);
     });
 
     test("footer keeps model context and Ctrl+X hierarchy hint on one line", () => {
