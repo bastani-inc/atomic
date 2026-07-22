@@ -162,7 +162,7 @@ describe("replayed durable stage graph lineage (issue #1498)", () => {
 
 
   function cpStageId(name: string): string { return `checkpoint-only:${name}`; }
-  test("cached replay hydrates persisted stage timing, result, session, and model metadata", () => {
+  test("cached replay hydrates persisted stage timing, result, session, and model + thinking metadata", () => {
     const store = createStore();
     store.recordRunStart({ id: WORKFLOW_ID, name: "wf", inputs: {}, status: "running", stages: [], startedAt: Date.now() });
     const completedKeys = new Map<string, string>();
@@ -171,6 +171,7 @@ describe("replayed durable stage graph lineage (issue #1498)", () => {
       replayKey: "stage:hydrate:1", output: { structured: true }, completedAt: 2500,
       startedAt: 1000, endedAt: 2500, durationMs: 1500, result: "persisted summary",
       sessionId: "sid", sessionFile: "/tmp/session.jsonl", model: "gpt-test", fastMode: true,
+      thinkingLevel: "high",
       attemptedModels: ["gpt-test"], modelAttempts: [{ model: "gpt-test", success: true }],
     };
 
@@ -183,6 +184,7 @@ describe("replayed durable stage graph lineage (issue #1498)", () => {
     assert.equal(stage.sessionId, "sid");
     assert.equal(stage.sessionFile, "/tmp/session.jsonl");
     assert.equal(stage.model, "gpt-test");
+    assert.equal(stage.thinkingLevel, "high");
     assert.equal(stage.fastMode, true);
     assert.deepEqual(stage.attemptedModels, ["gpt-test"]);
     assert.equal(stage.modelAttempts?.[0]?.success, true);

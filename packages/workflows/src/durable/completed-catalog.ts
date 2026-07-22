@@ -30,6 +30,7 @@ interface StageDraft {
   readonly endedAt?: number;
   readonly durationMs?: number;
   readonly model?: string;
+  readonly thinkingLevel?: string;
   readonly fastMode?: boolean;
   readonly attemptedModels?: readonly string[];
   readonly modelAttempts?: DurableStageCheckpoint["modelAttempts"];
@@ -254,6 +255,7 @@ function mergeStageDraft(
     ...valueOrExisting("endedAt", checkpoint, existing),
     ...valueOrExisting("durationMs", checkpoint, existing),
     ...valueOrExisting("model", checkpoint, existing),
+    ...valueOrExisting("thinkingLevel", checkpoint, existing),
     ...valueOrExisting("fastMode", checkpoint, existing),
     ...valueOrExisting("attemptedModels", checkpoint, existing),
     ...valueOrExisting("modelAttempts", checkpoint, existing),
@@ -325,6 +327,7 @@ function stageSnapshotFromDraft(
     ...(draft.sessionId !== undefined ? { sessionId: draft.sessionId } : {}),
     ...(draft.sessionFile !== undefined ? { sessionFile: draft.sessionFile } : {}),
     ...(draft.model !== undefined ? { model: draft.model } : {}),
+    ...(draft.thinkingLevel !== undefined ? { thinkingLevel: draft.thinkingLevel } : {}),
     ...(draft.fastMode !== undefined ? { fastMode: draft.fastMode } : {}),
     ...(draft.attemptedModels !== undefined ? { attemptedModels: draft.attemptedModels } : {}),
     ...(draft.modelAttempts !== undefined ? { modelAttempts: draft.modelAttempts } : {}),

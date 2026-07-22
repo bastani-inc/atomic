@@ -34,6 +34,21 @@ describe("current DBOS stage topology", () => {
     assert.deepEqual(decoded.topology, checkpoint.topology);
   });
 
+  test("round-trips stage model + thinking-level metadata through the DBOS envelope", () => {
+    const checkpoint: DurableStageCheckpoint = {
+      ...stage("wf-stage-thinking"),
+      model: "anthropic/claude-opus-4.8",
+      thinkingLevel: "high",
+      fastMode: true,
+    };
+    const envelope = encodeCheckpoint(checkpoint);
+    const decoded = decodeToCheckpoint(checkpoint.workflowId, checkpoint.checkpointId, envelope);
+    assert.ok(decoded?.kind === "stage");
+    assert.equal(decoded.model, "anthropic/claude-opus-4.8");
+    assert.equal(decoded.thinkingLevel, "high");
+    assert.equal(decoded.fastMode, true);
+  });
+
   test("rejects a marked current stage envelope with missing topology", () => {
     const checkpoint = stage("wf-missing-topology");
     const envelope = { ...encodeCheckpoint(checkpoint), topology: undefined };
