@@ -27,6 +27,7 @@
 
 import type { StageSnapshot, StageStatus } from "../shared/store-types.js";
 import { elapsedStageMs } from "../shared/timing.js";
+import { codexFastModeLabel } from "./codex-fast-label.js";
 import { BOLD, hexBg, hexToAnsi, lerpColor, paint, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { NODE_H, NODE_W } from "./layout.js";
@@ -134,17 +135,27 @@ function metaText(stage: StageSnapshot): string {
 
 /**
  * Compact model label for the card's dedicated model row. The card is only
- * ~22 cells wide, so the provider prefix is dropped (`anthropic/claude-opus-4.8`
- * → `claude-opus-4.8`) and the thinking level is appended when set (omitted when
- * off), mirroring the main-session footer. `—` when no model is resolved yet.
+ * ~22 cells wide, so the provider prefix is dropped
+ * (`anthropic/claude-opus-4.8` → `claude-opus-4.8`), the thinking level is
+ * appended when set (omitted when off), and the Codex fast tier is appended
+ * via the shared footer helper (`… fast`), mirroring the main-session footer.
+ * When model + level + fast would overflow the card, the level is dropped so
+ * the fast marker is never truncated away. `—` when no model is resolved yet.
  */
-function modelText(stage: StageSnapshot): string {
+function modelText(stage: StageSnapshot, innerWidth: number): string {
 	const model = stage.model;
 	if (model === undefined || model === "") return "—";
 	const slash = model.lastIndexOf("/");
 	const short = slash >= 0 ? model.slice(slash + 1) : model;
 	const level = stage.thinkingLevel;
-	return level !== undefined && level !== "" && level !== "off" ? `${short} · ${level}` : short;
+	const showLevel = level !== undefined && level !== "" && level !== "off";
+	const fast = stage.fastMode === true;
+	const withLevel = showLevel ? `${short} · ${level}` : short;
+	const full = codexFastModeLabel(withLevel, fast);
+	if (fast && showLevel && visibleWidth(full) > innerWidth) {
+		return codexFastModeLabel(short, true);
+	}
+	return full;
 }
 
 function workflowChildRunRows(stage: StageSnapshot, width: number): string[] {
@@ -314,7 +325,7 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
 
 	const contentRows = Math.max(0, height - 2);
 	const metaLine = `${bg}${bc}│${RESET}${centreColored(metaText(stage), innerWidth, theme.dim, bg)}${bg}${bc}│${RESET}`;
-	const modelLine = `${bg}${bc}│${RESET}${centreColored(modelText(stage), innerWidth, theme.textMuted, bg)}${bg}${bc}│${RESET}`;
+	const modelLine = `${bg}${bc}│${RESET}${centreColored(modelText(stage, innerWidth), innerWidth, theme.textMuted, bg)}${bg}${bc}│${RESET}`;
 	const childRunLines = workflowChildRunRows(stage, innerWidth).map(
 		(row) => `${bg}${bc}│${RESET}${centreColored(row, innerWidth, theme.dim, bg)}${bg}${bc}│${RESET}`,
 	);

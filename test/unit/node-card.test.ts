@@ -547,14 +547,51 @@ describe("renderNodeCard — metadata line", () => {
 		}
 	});
 
-	test("stages omit the fast mode marker from dependency metadata", () => {
-		const lines = renderNodeCard(makeStage({ status: "completed", model: "openai/gpt-5.1-codex", fastMode: true }), {
-			theme,
-		});
-		const rendered = stripAnsi(lines.join("\n"));
+	test("shows the fast tier on the model row, not the deps row", () => {
+		const lines = renderNodeCard(
+			makeStage({ status: "completed", model: "openai/gpt-5.1-codex", fastMode: true }),
+			{ theme },
+		);
 
-		assert.doesNotMatch(rendered, /openai\/gpt-5\.1-codex fast/);
-		assert.equal(stripAnsi(lines[4]!).slice(1, -1).trim(), "root");
+		// Model row: provider stripped, fast marker appended (footer parity).
+		assert.match(stripAnsi(lines[3]!), /gpt-5\.1-codex fast/);
+		assert.doesNotMatch(stripAnsi(lines[3]!), /openai\//);
+		// Deps row is now just the dependency text — the fast marker moved up.
+		assert.match(stripAnsi(lines[4]!), /root/);
+		assert.doesNotMatch(stripAnsi(lines[4]!), /fast/);
+	});
+
+	test("model row keeps both the thinking level and the fast marker when they fit", () => {
+		const lines = renderNodeCard(
+			makeStage({
+				status: "running",
+				startedAt: Date.now() - 500,
+				model: "openai/gpt-5",
+				thinkingLevel: "high",
+				fastMode: true,
+			}),
+			{ theme },
+		);
+		assert.match(stripAnsi(lines[3]!), /gpt-5 · high fast/);
+	});
+
+	test("model row drops the thinking level to preserve the fast marker when the card would overflow", () => {
+		const lines = renderNodeCard(
+			makeStage({
+				status: "running",
+				startedAt: Date.now() - 500,
+				model: "openai/gpt-5.1-codex",
+				thinkingLevel: "high",
+				fastMode: true,
+			}),
+			{ theme },
+		);
+		const modelRow = stripAnsi(lines[3]!);
+		// `gpt-5.1-codex · high fast` (25) overflows the ~22-cell card, so the level
+		// is dropped to guarantee the fast marker is never truncated away.
+		assert.match(modelRow, /gpt-5\.1-codex fast/);
+		assert.doesNotMatch(modelRow, /high/);
+		assert.doesNotMatch(modelRow, /…/);
 	});
 
 	test("model row appends thinking level and shows an em-dash when absent", () => {
@@ -579,6 +616,25 @@ describe("renderNodeCard — metadata line", () => {
 
 		const noModel = renderNodeCard(makeStage({ status: "pending" }), { theme });
 		assert.equal(stripAnsi(noModel[3]!).slice(1, -1).trim(), "—");
+	});
+
+	test("model row reflects a fallback swapping the stage's model mid-run", () => {
+		// Render from a live snapshot, then apply the model a fallback resolved
+		// (applyModelFallbackMeta mutates this same snapshot). The card must show
+		// the model actually running now — not the failed primary.
+		const stage = makeStage({
+			status: "running",
+			startedAt: Date.now() - 800,
+			model: "anthropic/primary",
+			thinkingLevel: "high",
+		});
+		assert.match(stripAnsi(renderNodeCard(stage, { theme })[3]!), /primary/);
+
+		stage.model = "openai/fallback";
+		stage.thinkingLevel = "low";
+		const after = stripAnsi(renderNodeCard(stage, { theme })[3]!);
+		assert.match(after, /fallback · low/);
+		assert.doesNotMatch(after, /primary/);
 	});
 });
 
