@@ -32,6 +32,7 @@ import { fmtDuration, statusIcon } from "./status-helpers.js";
 import { lerpColor, hexToAnsi, hexBg, paint, RESET, BOLD } from "./color-utils.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 import { NODE_W, NODE_H } from "./layout.js";
+import { codexFastModeLabel } from "./codex-fast-label.js";
 
 export interface NodeCardOpts {
   width?: number;
@@ -121,23 +122,32 @@ function durationText(stage: StageSnapshot): string {
 function metaText(stage: StageSnapshot): string {
   if (stage.topologyState === "unavailable") return "topology unavailable";
   const deps = stage.parentIds.length;
-  const dependencyText = deps === 0 ? "root" : deps === 1 ? "1 dep" : `${deps} deps`;
-  return stage.fastMode === true ? `${dependencyText} · fast` : dependencyText;
+  return deps === 0 ? "root" : deps === 1 ? "1 dep" : `${deps} deps`;
 }
 
 /**
  * Compact model label for the card's dedicated model row. The card is only
- * ~22 cells wide, so the provider prefix is dropped (`anthropic/claude-opus-4.8`
- * → `claude-opus-4.8`) and the thinking level is appended when set (omitted when
- * off), mirroring the main-session footer. `—` when no model is resolved yet.
+ * ~22 cells wide, so the provider prefix is dropped
+ * (`anthropic/claude-opus-4.8` → `claude-opus-4.8`), the thinking level is
+ * appended when set (omitted when off), and the Codex fast tier is appended
+ * via the shared footer helper (`… fast`), mirroring the main-session footer.
+ * When model + level + fast would overflow the card, the level is dropped so
+ * the fast marker is never truncated away. `—` when no model is resolved yet.
  */
-function modelText(stage: StageSnapshot): string {
+function modelText(stage: StageSnapshot, innerWidth: number): string {
   const model = stage.model;
   if (model === undefined || model === "") return "—";
   const slash = model.lastIndexOf("/");
   const short = slash >= 0 ? model.slice(slash + 1) : model;
   const level = stage.thinkingLevel;
-  return level !== undefined && level !== "" && level !== "off" ? `${short} · ${level}` : short;
+  const showLevel = level !== undefined && level !== "" && level !== "off";
+  const fast = stage.fastMode === true;
+  const withLevel = showLevel ? `${short} · ${level}` : short;
+  const full = codexFastModeLabel(withLevel, fast);
+  if (fast && showLevel && visibleWidth(full) > innerWidth) {
+    return codexFastModeLabel(short, true);
+  }
+  return full;
 }
 
 function shortRunId(runId: string): string {
@@ -317,7 +327,7 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
     `${bg}${bc}│${RESET}`;
   const modelLine =
     `${bg}${bc}│${RESET}` +
-    centreColored(modelText(stage), innerWidth, theme.textMuted, bg) +
+    centreColored(modelText(stage, innerWidth), innerWidth, theme.textMuted, bg) +
     `${bg}${bc}│${RESET}`;
 
   const interior: string[] =
