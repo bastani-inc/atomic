@@ -93,11 +93,8 @@ export class Http2CursorRunStream implements CursorRunStream {
 				this.finishMessageQueue();
 				if (!this.#closed) {
 					this.#closed = true;
-					try {
-						this.releaseCodec();
-					} finally {
-						this.onClose();
-					}
+					this.releaseCodec(true);
+					this.onClose();
 				}
 			}
 		}
@@ -116,7 +113,9 @@ export class Http2CursorRunStream implements CursorRunStream {
 			closeError = sanitizeCursorTransportError(toError(error), this.secrets, { operation: "stream", route: this.route });
 		} finally {
 			try {
-				this.releaseCodec();
+				// Retain continuation only for a validated clean end-stream; any other
+				// termination (including a close-time failure) discards it.
+				this.releaseCodec(!(this.#cleanEndStreamValidated && closeError === undefined));
 			} finally {
 				this.onClose();
 			}
@@ -224,7 +223,8 @@ export class Http2CursorRunStream implements CursorRunStream {
 		if (!this.#closed) {
 			this.#closed = true;
 			try {
-				this.releaseCodec();
+				// A generic mid-stream transport failure discards continuation state.
+				this.releaseCodec(true);
 			} finally {
 				this.onClose();
 			}

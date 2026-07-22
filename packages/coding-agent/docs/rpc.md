@@ -277,6 +277,16 @@ Response contains an array of full [Model](#model) objects:
 }
 ```
 
+#### refresh_models
+
+Reload credentials and refresh model catalogs in the authoritative RPC process.
+
+```json
+{"type": "refresh_models", "allowNetwork": true, "force": false}
+```
+
+The response includes `aborted`, provider errors, the available models, and scoped models. If refresh replaces the active provider generation, Atomic rebinds the session's current model to the refreshed matching identity before returning. Exact provider-owned selections remain exact; an unavailable identity is not replaced by a fallback.
+
 #### logout_provider
 
 Remove a provider's stored credential in the authoritative agent process, refresh its available-model catalog, and return the remaining authentication status and new catalog. Environment variables and `models.json` authentication are reported but are not modified.

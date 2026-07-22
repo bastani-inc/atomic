@@ -161,6 +161,7 @@ export function createRpcCommandHandler({
 					force: command.force,
 					allowNetwork: command.allowNetwork,
 				});
+				session.refreshCurrentModelFromRegistry();
 				return createRpcSuccessResponse(id, "refresh_models", {
 					aborted: result.aborted,
 					errors: [...result.errors].map(([provider, error]) => ({ provider, message: error.message })),

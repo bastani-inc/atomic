@@ -255,7 +255,7 @@ describe("Cursor unterminated data-frame EOF", () => {
 			(event) => {
 				if (event.type !== "error") return;
 				assert.deepEqual(transport.counts, {
-					rawCancel: 1, rawClose: 0, discard: 0, dispose: 1,
+					rawCancel: 1, rawClose: 0, discard: 1, dispose: 0,
 					lifecycleCancel: 1, lifecycleClose: 1, open: 0,
 				});
 				assert.equal(adapter.getLifecycleSnapshot().activeTurns, 0);
@@ -271,7 +271,7 @@ describe("Cursor unterminated data-frame EOF", () => {
 		assert.equal(errors.length, 1);
 		if (errors[0]?.type === "error") assert.equal(errors[0].error.errorMessage, "Cursor request generation became stale.");
 		assert.deepEqual(transport.counts, {
-			rawCancel: 1, rawClose: 0, discard: 0, dispose: 1,
+			rawCancel: 1, rawClose: 0, discard: 1, dispose: 0,
 			lifecycleCancel: 1, lifecycleClose: 1, open: 0,
 		});
 		assert.equal(adapter.getLifecycleSnapshot().activeTurns, 0);

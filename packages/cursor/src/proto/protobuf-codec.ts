@@ -27,8 +27,16 @@ import { createMcpToolResult, decodeAgentServerMessage, encodeExecClientMessage,
 
 
 
+interface CursorConversationContinuation {
+	checkpoint?: Uint8Array;
+	readonly blobStore: Map<string, Uint8Array>;
+}
+
 export class CursorProtobufProtocolCodec implements CursorProtocolCodec {
-	readonly #blobStores = new Map<string, Map<string, Uint8Array>>();
+	// Continuation state is keyed by conversation, not request, so a clean turn's
+	// server checkpoint and its referenced KV blobs survive into the next turn.
+	readonly #conversations = new Map<string, CursorConversationContinuation>();
+	readonly #requestConversations = new Map<string, string>();
 	readonly #toolDefinitions = new Map<string, readonly McpToolDefinition[]>();
 
 	encodeGetUsableModelsRequest(): Uint8Array {
@@ -50,6 +58,8 @@ export class CursorProtobufProtocolCodec implements CursorProtocolCodec {
 
 	encodeRunRequest(request: CursorRunRequest): Uint8Array {
 		const conversationIdValue = request.conversationId ?? request.requestId;
+		const continuation = this.continuationFor(conversationIdValue);
+		this.#requestConversations.set(request.requestId, conversationIdValue);
 		const last = request.context.messages.at(-1);
 		const historicalMessages = last?.role === "user" ? request.context.messages.slice(0, -1) : request.context.messages;
 		const payload = buildCursorRequest(
@@ -58,8 +68,9 @@ export class CursorProtobufProtocolCodec implements CursorProtocolCodec {
 			extractCurrentActionText(request),
 			parseHistoricalTurns(historicalMessages),
 			conversationIdValue,
+			continuation.checkpoint,
 		);
-		this.#blobStores.set(request.requestId, payload.blobStore);
+		for (const [key, value] of payload.blobStore) continuation.blobStore.set(key, value);
 		this.#toolDefinitions.set(request.requestId, buildMcpToolDefinitions(request));
 		return payload.requestBytes;
 	}
@@ -74,16 +85,19 @@ export class CursorProtobufProtocolCodec implements CursorProtocolCodec {
 	}
 
 	encodeServerResponse(message: CursorProtocolMessage, requestId: string): Uint8Array | undefined {
+		const continuation = this.continuationForRequest(requestId);
 		if (message.type === "kvGetBlob") {
-			const data = this.#blobStores.get(requestId)?.get(blobKey(message.blobId));
+			const data = continuation?.blobStore.get(blobKey(message.blobId));
 			return encodeKvClientMessage(message.id, "getBlobResult", create(GetBlobResultSchema, data ? { blobData: data } : {}));
 		}
 		if (message.type === "kvSetBlob") {
-			const store = this.#blobStores.get(requestId);
-			if (store) store.set(blobKey(message.blobId), message.blobData);
+			if (continuation) continuation.blobStore.set(blobKey(message.blobId), message.blobData);
 			return encodeKvClientMessage(message.id, "setBlobResult", create(SetBlobResultSchema, {}));
 		}
-		if (message.type === "conversationCheckpoint") return undefined;
+		if (message.type === "conversationCheckpoint") {
+			if (continuation) continuation.checkpoint = message.checkpoint;
+			return undefined;
+		}
 		if (message.type === "requestContext") {
 			return encodeRequestContextResult(message, this.#toolDefinitions.get(requestId) ?? []);
 		}
@@ -93,15 +107,40 @@ export class CursorProtobufProtocolCodec implements CursorProtocolCodec {
 		return undefined;
 	}
 
-	disposeRun(requestId: string): void { this.cleanupRun(requestId); }
-
-	discardRun(requestId: string): void { this.cleanupRun(requestId); }
-
-	discardConversation(_conversationId: string): void {}
-
-	private cleanupRun(requestId: string): void {
-		this.#blobStores.delete(requestId);
+	// A clean turn releases only its request binding; the conversation's
+	// checkpoint and blob graph remain available for the next turn.
+	disposeRun(requestId: string): void {
+		this.#requestConversations.delete(requestId);
 		this.#toolDefinitions.delete(requestId);
+	}
+
+	// An errored/discarded turn destroys the whole conversation continuation.
+	discardRun(requestId: string): void {
+		const conversationId = this.#requestConversations.get(requestId);
+		if (conversationId !== undefined) this.#conversations.delete(conversationId);
+		this.#requestConversations.delete(requestId);
+		this.#toolDefinitions.delete(requestId);
+	}
+
+	discardConversation(conversationId: string): void {
+		this.#conversations.delete(conversationId);
+		for (const [requestId, boundConversationId] of this.#requestConversations) {
+			if (boundConversationId === conversationId) this.#requestConversations.delete(requestId);
+		}
+	}
+
+	private continuationFor(conversationId: string): CursorConversationContinuation {
+		let continuation = this.#conversations.get(conversationId);
+		if (!continuation) {
+			continuation = { blobStore: new Map<string, Uint8Array>() };
+			this.#conversations.set(conversationId, continuation);
+		}
+		return continuation;
+	}
+
+	private continuationForRequest(requestId: string): CursorConversationContinuation | undefined {
+		const conversationId = this.#requestConversations.get(requestId);
+		return conversationId === undefined ? undefined : this.#conversations.get(conversationId);
 	}
 
 	encodeToolResult(result: CursorToolResultMessage): Uint8Array {

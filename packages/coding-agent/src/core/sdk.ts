@@ -49,9 +49,6 @@ import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "./sdk-
 export type { CreateAgentSessionOptions, CreateAgentSessionResult } from "./sdk-types.ts";
 
 export * from "./sdk-exports.ts";
-
-// Helper Functions
-
 function getDefaultAgentDir(): string {
   return getAgentDir();
 }
@@ -106,8 +103,12 @@ function getAlreadyAppliedContextWindow(model: Model<Api>): number | undefined {
  * });
  * ```
  */
-export async function createAgentSession(
-  options: CreateAgentSessionOptions = {},
+export const createAgentSession = (options: CreateAgentSessionOptions = {}): Promise<CreateAgentSessionResult> => createAgentSessionInternal(options, false);
+export const createAgentSessionFromPreparedServices = (options: CreateAgentSessionOptions): Promise<CreateAgentSessionResult> => createAgentSessionInternal(options, true);
+
+async function createAgentSessionInternal(
+  options: CreateAgentSessionOptions,
+  requiredProvidersPrepared: boolean,
 ): Promise<CreateAgentSessionResult> {
   const cwd = resolvePath(options.cwd ?? options.sessionManager?.getCwd() ?? process.cwd());
   const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
@@ -148,10 +149,9 @@ export async function createAgentSession(
     await resourceLoader.reload();
     time("resourceLoader.reload");
   }
-  await modelRegistry.refresh({ allowNetwork: false, skipRequiredProviderExtensions: true });
-  // Direct SDK and workflow-stage sessions must cross the same tracked preparation door.
   const pendingProviderNames = new Set(resourceLoader.getExtensions().runtime.pendingProviderRegistrations.map(({ name }) => name));
-  await registerPendingProvidersAndPrepare(resourceLoader, modelRegistry, !isOfflineModeEnabled());
+  await modelRegistry.refresh({ allowNetwork: false, skipRequiredProviderExtensions: true });
+  if (!requiredProvidersPrepared) await registerPendingProvidersAndPrepare(resourceLoader, modelRegistry, !isOfflineModeEnabled());
   // Check if session has existing data to restore
   if (options.model) await prepareExplicitProvider(options.model.provider, modelRegistry);
   const existingSession = sessionManager.buildSessionContext();

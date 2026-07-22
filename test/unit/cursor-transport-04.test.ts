@@ -390,8 +390,9 @@ describe("Cursor HTTP2 transport boundary", () => {
 		await cancelling;
 
 		assert.equal(handle.cancelCount, 1);
-		assert.deepEqual(codec.disposedRunIds, ["run-cancel-race"]);
-		assert.deepEqual(codec.discardedRunIds, []);
+		// Cancellation discards conversation continuation rather than retaining it.
+		assert.deepEqual(codec.disposedRunIds, []);
+		assert.deepEqual(codec.discardedRunIds, ["run-cancel-race"]);
 		assert.deepEqual(transport.getLifecycleSnapshot(), { openStreams: 0, cancelledStreams: 1, closedStreams: 1 });
 	});
 	test("classifies non-2xx Cursor responses without leaking credentials", async () => {

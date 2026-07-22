@@ -149,6 +149,8 @@ This is the same layer used by the built-in interactive, print, and RPC modes.
 
 `createAgentSessionRuntime()` takes a runtime factory plus the initial cwd/session target. The factory closes over process-global fixed inputs, recreates cwd-bound services for the effective cwd, resolves session options against those services, and returns a full runtime result.
 
+`createAgentSessionServices()` registers extension providers and prepares required authoritative catalogs for that cwd before it returns. Resolve explicit/default/scoped model options against those services, apply any late runtime credential, then pass the same services to `createAgentSessionFromServices()`. Session construction performs the ordinary-provider offline refresh but does not repeat provider registration or required preparation; provider-scoped refresh generations keep skipped required routes current. Direct `createAgentSession()` calls still perform their complete initialization path.
+
 ```typescript
 import {
   type CreateAgentSessionRuntimeFactory,

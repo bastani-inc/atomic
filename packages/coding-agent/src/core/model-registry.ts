@@ -53,6 +53,7 @@ export class ModelRegistry {
 	private customOpenAICompatibleProviders: Set<string> = new Set();
 	private loadError: string | undefined = undefined;
 	private refreshGeneration = 0;
+	private providerRefreshGenerations: Map<string, number> = new Map();
 	private readonly registrationSource = `atomic:model-registry:${++nextRegistryRegistrationId}`;
 	declare private readonly modelsStore: CodingAgentModelsStore;
 	declare private readonly credentialStore: CredentialStore;
@@ -82,7 +83,6 @@ export class ModelRegistry {
 		this.loadModels();
 	}
 
-
 	static create(
 		authStorage: AuthStorage,
 		modelsJsonPath: string | string[] = getAgentConfigPaths("models.json"),
@@ -102,9 +102,9 @@ export class ModelRegistry {
 		this.loadError = undefined;
 		this.rebuildProviderModels();
 		for (const [provider, config] of this.registeredProviders) {
-			if (providerIsInRefreshScope(provider, config, options) && config.requiresPreparation) {
-				this.registeredProviders.set(provider, { ...config, models: [] });
-			}
+			if (!providerIsInRefreshScope(provider, config, options)) continue;
+			this.providerRefreshGenerations.set(provider, (this.providerRefreshGenerations.get(provider) ?? 0) + 1);
+			if (config.requiresPreparation) this.registeredProviders.set(provider, { ...config, models: [] });
 		}
 		this.rebuildProviderModels();
 
@@ -155,11 +155,12 @@ export class ModelRegistry {
 				.map(async ([providerName, config]) => {
 				if (!config.refreshModels) return;
 				const providerInstanceGeneration = this.providerInstanceGenerations.get(providerName) ?? 0;
+				const providerRefreshGeneration = this.providerRefreshGenerations.get(providerName) ?? 0;
 				const runtimeCredentialGeneration = config.requiresHostOAuth ? 0 : this.authStorage.getRuntimeApiKeyGeneration(providerName);
 				let hostCredentialGeneration: number | undefined;
 				let currentConfig = config;
 				const isCurrentExtensionRefresh = () => !controller.signal.aborted
-					&& generation === this.refreshGeneration
+					&& (this.providerRefreshGenerations.get(providerName) ?? 0) === providerRefreshGeneration
 					&& this.registeredProviders.get(providerName) === currentConfig
 					&& (this.providerInstanceGenerations.get(providerName) ?? 0) === providerInstanceGeneration
 					&& (hostCredentialGeneration === undefined || this.authStorage.getCredentialSnapshot(providerName).generation === hostCredentialGeneration)

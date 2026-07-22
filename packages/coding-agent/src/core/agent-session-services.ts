@@ -14,7 +14,11 @@ import {
 	type ResourceLoader,
 	type ResourceLoaderReloadOptions,
 } from "./resource-loader.ts";
-import { type CreateAgentSessionOptions, type CreateAgentSessionResult, createAgentSession } from "./sdk.ts";
+import {
+	type CreateAgentSessionOptions,
+	type CreateAgentSessionResult,
+	createAgentSessionFromPreparedServices,
+} from "./sdk.ts";
 import type { SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { endTimingSpan, startTimingSpan } from "./timings.ts";
@@ -200,7 +204,7 @@ export async function createAgentSessionServices(
 export async function createAgentSessionFromServices(
 	options: CreateAgentSessionFromServicesOptions,
 ): Promise<CreateAgentSessionResult> {
-	return createAgentSession({
+	return createAgentSessionFromPreparedServices({
 		cwd: options.services.cwd,
 		agentDir: options.services.agentDir,
 		authStorage: options.services.authStorage,

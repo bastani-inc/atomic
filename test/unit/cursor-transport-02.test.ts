@@ -225,26 +225,6 @@ describe("Cursor HTTP2 transport boundary", () => {
 
 		assert.deepEqual(codec.decodeRunFrame({ flags: 0, data: turnEnded, endStream: false }), []);
 	});
-	test("protobuf codec ignores checkpoints and rebuilds every request from canonical Atomic history", () => {
-		const codec = new CursorProtobufProtocolCodec();
-		codec.encodeRunRequest({ accessToken: "secret", requestId: "run-state-1", conversationId: "session-state", model, routeReference: cursorRouteReference("composer-2"), context: contextWithUserMessage });
-		const checkpoint = cursorProtoTest.concatBytes(cursorProtoTest.encodeStringField(13, "checkpoint-marker"));
-		const [checkpointMessage] = codec.decodeRunFrame({ flags: 0, data: cursorProtoTest.encodeMessageField(3, checkpoint), endStream: false });
-		assert.ok(checkpointMessage);
-		assert.equal(codec.encodeServerResponse(checkpointMessage, "run-state-1"), undefined);
-		codec.disposeRun("run-state-1");
-
-		const canonical: Context = { messages: [
-			{ role: "user", content: "original", timestamp: 1 },
-			{ role: "assistant", content: [{ type: "thinking", thinking: "verified thought" }, { type: "text", text: "answer" }], api: "cursor-agent", provider: "cursor", model: "composer-2", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 2 },
-			{ role: "user", content: "next", timestamp: 3 },
-		] };
-		const encodedSecondRun = codec.encodeRunRequest({ accessToken: "secret", requestId: "run-state-2", conversationId: "session-state", model, routeReference: cursorRouteReference("composer-2"), context: canonical });
-		const decoded = fromBinary(AgentClientMessageSchema, encodedSecondRun).message.value;
-		assert.notDeepEqual([...toBinary(ConversationStateStructureSchema, decoded.conversationState)], [...checkpoint]);
-		assert.equal(decoded.action.action.value.userMessage.text, "next");
-		assert.equal(decoded.conversationState.turns.length, 1);
-	});
 	test("transport discards persisted Cursor conversation state on end-stream errors", async () => {
 		const codec = new CursorProtobufProtocolCodec();
 		const checkpoint = cursorProtoTest.concatBytes(cursorProtoTest.encodeStringField(13, "stale-checkpoint"));

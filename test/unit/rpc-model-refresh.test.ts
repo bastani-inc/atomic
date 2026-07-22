@@ -39,7 +39,7 @@ for (const scenario of [
 			const authPath = join(tempDir, "auth.json");
 			const childAuth = AuthStorage.create(authPath);
 			const childRegistry = ModelRegistry.create(childAuth, join(tempDir, "models.json"));
-			const session = { modelRegistry: childRegistry, scopedModels: [] } as unknown as AgentSession;
+			const session = { modelRegistry: childRegistry, scopedModels: [], refreshCurrentModelFromRegistry() {} } as unknown as AgentSession;
 			const handle = createRpcCommandHandler({
 				runtimeHost: { services: { agentDir: tempDir } } as unknown as AgentSessionRuntime,
 				getSession: () => session,
@@ -89,7 +89,7 @@ test("refresh_models uses a newly persisted credential for dynamic model discove
 				return observedKey ? [{ ...template, provider: "dynamic-login", id: "discovered-after-login" }] : [];
 			},
 		});
-		const session = { modelRegistry: childRegistry, scopedModels: [] } as unknown as AgentSession;
+		const session = { modelRegistry: childRegistry, scopedModels: [], refreshCurrentModelFromRegistry() {} } as unknown as AgentSession;
 		const handle = createRpcCommandHandler({
 			runtimeHost: { services: { agentDir: tempDir } } as unknown as AgentSessionRuntime,
 			getSession: () => session,

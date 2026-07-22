@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { create, toBinary } from "@bufbuild/protobuf";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { parseJsonObject, type JsonObject } from "../config.js";
 import type { CursorRunRequest } from "../transport.js";
 import {
@@ -65,11 +65,17 @@ export function buildCursorRequest(
 	userText: string,
 	turns: readonly ParsedTurn[],
 	conversationId: string,
+	retainedCheckpoint?: Uint8Array,
 ): { readonly requestBytes: Uint8Array; readonly blobStore: Map<string, Uint8Array> } {
 	const blobStore = new Map<string, Uint8Array>();
 	const systemBlobId = storeAsBlob(textEncoder.encode(JSON.stringify({ role: "system", content: systemPrompt })), blobStore);
 	const selectedContextBlob = storeAsBlob(buildSelectedContextBlob([systemBlobId], CURSOR_PROTO_CLIENT_NAME), blobStore);
-	const conversationState = buildConversationState(turns, blobStore, systemBlobId, selectedContextBlob);
+	// A retained server checkpoint is the authoritative continuation state: reuse
+	// it verbatim (its referenced KV blobs are kept alongside it) instead of
+	// rebuilding conversation turns from canonical history.
+	const conversationState = retainedCheckpoint !== undefined
+		? fromBinary(ConversationStateStructureSchema, retainedCheckpoint)
+		: buildConversationState(turns, blobStore, systemBlobId, selectedContextBlob);
 	const userMessage = createUserMessage(userText, selectedContextBlob);
 	const action = create(ConversationActionSchema, {
 		action: { case: "userMessageAction", value: create(UserMessageActionSchema, { userMessage }) },
