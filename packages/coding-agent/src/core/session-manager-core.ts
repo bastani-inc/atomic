@@ -387,12 +387,12 @@ export class SessionManager {
 	}
 
 	/** Start a new branch with a summary of the abandoned path. */
-	branchWithSummary(branchFromId: string | null, summary: string, details?: unknown, fromHook?: boolean): string {
+	branchWithSummary(branchFromId: string | null, summary: string, details?: unknown, fromHook?: boolean, usage?: import("@earendil-works/pi-ai/compat").Usage): string {
 		if (branchFromId !== null && !this.byId.has(branchFromId)) {
 			throw new Error(`Entry ${branchFromId} not found`);
 		}
 		this.leafId = branchFromId;
-		const entry: BranchSummaryEntry = createBranchSummaryEntry(branchFromId, summary, details, fromHook, this.byId);
+		const entry: BranchSummaryEntry = createBranchSummaryEntry(branchFromId, summary, details, usage, fromHook, this.byId);
 		this._appendEntry(entry);
 		return entry.id;
 	}

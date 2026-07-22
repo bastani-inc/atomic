@@ -35,6 +35,8 @@ function isEditable(field: HostInputFormField): boolean {
 /** Host-owned form: all key handling and mutable editing state stay in the terminal process. */
 export class HostInputFormComponent implements Component, Focusable {
 	private readonly title: string;
+	private readonly heading: string;
+	private readonly submitLabel: string;
 	private readonly fields: HostInputFormField[];
 	private readonly values: string[];
 	private readonly editors: Array<Editable | undefined>;
@@ -54,6 +56,8 @@ export class HostInputFormComponent implements Component, Focusable {
 		delegate: HostInputFormDelegate,
 	) {
 		this.title = request.title;
+		this.heading = request.heading ?? "";
+		this.submitLabel = request.submitLabel ?? "[ Submit ]";
 		this.tui = tui;
 		this.theme = theme;
 		this.keybindings = keybindings;
@@ -262,11 +266,12 @@ export class HostInputFormComponent implements Component, Focusable {
 
 	/** Submit control rendered as a button pill; filled accent when focused, quiet outline otherwise. */
 	private submitRow(): string {
+		const label = this.submitLabel;
 		const active = this.focusedIndex === this.fields.length;
 		const marker = active ? this.theme.fg("accent", "▸") : " ";
 		const pill = active
-			? this.theme.bg("selectedBg", this.theme.bold(this.theme.fg("accent", "[ Run workflow ]")))
-			: this.theme.fg("dim", "[ Run workflow ]");
+			? this.theme.bg("selectedBg", this.theme.bold(this.theme.fg("accent", label)))
+			: this.theme.fg("dim", label);
 		return `${marker} ${pill}`;
 	}
 
@@ -286,7 +291,7 @@ export class HostInputFormComponent implements Component, Focusable {
 	 */
 	private frame(body: readonly string[], inner: number, cw: number): string[] {
 		const border = (glyph: string): string => this.theme.fg("border", glyph);
-		const title = ` ${this.theme.fg("accent", this.theme.bold("WORKFLOW INPUTS"))} `;
+		const title = this.heading ? ` ${this.theme.fg("accent", this.theme.bold(this.heading))} ` : "";
 		const top = `${border("╭")}${title}${border("─".repeat(Math.max(0, inner - visibleWidth(title))))}${border("╮")}`;
 		const rows = body.map((line) => {
 			const clipped = visibleWidth(line) > cw ? truncateToWidth(line, cw, "…") : line;

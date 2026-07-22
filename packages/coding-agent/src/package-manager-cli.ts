@@ -1,9 +1,11 @@
 import { join } from "node:path";
 import chalk from "chalk";
 import { selectConfig } from "./cli/config-selector.ts";
+import { parseConfigCommand } from "./config-command-parser.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
 import {
 	APP_NAME,
+	CONFIG_DIR_NAME,
 	detectInstallMethod,
 	getAgentConfigPaths,
 	getAgentDir,
@@ -12,10 +14,11 @@ import {
 	getSelfUpdateUnavailableInstruction,
 	PACKAGE_NAME,
 	type SelfUpdateCommand,
+	type SelfUpdateTarget,
 	VERSION,
 } from "./config.ts";
 import { AuthStorage } from "./core/auth-storage.ts";
-import type { ExtensionFactory } from "./core/extensions/types.ts";
+import type { InlineExtension } from "./core/extensions/types.ts";
 import { DefaultPackageManager } from "./core/package-manager.ts";
 import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
 import { DefaultResourceLoader } from "./core/resource-loader.ts";
@@ -23,7 +26,7 @@ import { ModelRegistry } from "./core/model-registry.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { hasProjectTrustInputs, ProjectTrustStore } from "./core/trust-manager.ts";
 import { spawnProcess } from "./utils/child-process.ts";
-import { getLatestPiRelease, isNewerPackageVersion } from "./utils/version-check.ts";
+import { renderSelfUpdateNote, resolveSelfUpdatePlan } from "./self-update-plan.ts";
 import {
 	cleanupWindowsSelfUpdateQuarantine,
 	quarantineWindowsNativeDependencies,
@@ -50,7 +53,7 @@ function updateTargetIncludesExtensions(target: UpdateTarget): boolean {
 
 export async function refreshModelCatalogs(
 	agentDir: string,
-	options: { cwd?: string; settingsManager?: SettingsManager; extensionFactories?: ExtensionFactory[] } = {},
+	options: { cwd?: string; settingsManager?: SettingsManager; extensionFactories?: InlineExtension[] } = {},
 ): Promise<void> {
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), 15_000);
@@ -81,8 +84,9 @@ export async function refreshModelCatalogs(
 			const details = extensionsResult.errors.map(({ path, error }) => `${path}: ${error}`).join("; ");
 			throw new Error(`Could not load extensions for model catalog refresh: ${details}`);
 		}
-		for (const { name, config } of extensionsResult.runtime.pendingProviderRegistrations) {
-			modelRegistry.registerProvider(name, config);
+		for (const registration of extensionsResult.runtime.pendingProviderRegistrations) {
+			if ("provider" in registration) modelRegistry.registerProvider(registration.provider);
+			else modelRegistry.registerProvider(registration.name, registration.config);
 		}
 		const refresh = modelRegistry.refresh({ allowNetwork: true, force: true, signal: controller.signal });
 		const result = await Promise.race([refresh, aborted]);
@@ -96,10 +100,9 @@ export async function refreshModelCatalogs(
 	}
 }
 
-function printSelfUpdateUnavailable(npmCommand?: string[], updatePackageName = PACKAGE_NAME): void {
+function printSelfUpdateUnavailable(npmCommand: string[] | undefined, updateTarget: SelfUpdateTarget): void {
 	console.error(`error: ${APP_NAME} cannot self-update this installation.`);
-	console.error(getSelfUpdateUnavailableInstruction(PACKAGE_NAME, npmCommand, updatePackageName));
-
+	console.error(getSelfUpdateUnavailableInstruction(PACKAGE_NAME, npmCommand, updateTarget));
 	const entrypoint = process.argv[1];
 	if (entrypoint) {
 		console.error("");
@@ -111,28 +114,12 @@ function printSelfUpdateFallback(command: SelfUpdateCommand): void {
 	console.error(chalk.dim(`If this keeps failing, run this command yourself: ${command.display}`));
 }
 
-interface SelfUpdatePlan {
-	packageName: string;
-	shouldRun: boolean;
-}
-
-async function getSelfUpdatePlan(force: boolean): Promise<SelfUpdatePlan> {
-	if (force) {
-		return { packageName: PACKAGE_NAME, shouldRun: true };
-	}
-
-	try {
-		const latestRelease = await getLatestPiRelease();
-		const packageName = latestRelease?.packageName ?? PACKAGE_NAME;
-		if (!latestRelease || packageName !== PACKAGE_NAME || isNewerPackageVersion(latestRelease.version, VERSION)) {
-			return { packageName, shouldRun: true };
-		}
-	} catch {
-		return { packageName: PACKAGE_NAME, shouldRun: true };
-	}
-
-	console.log(chalk.green(`${APP_NAME} is already up to date (v${VERSION})`));
-	return { packageName: PACKAGE_NAME, shouldRun: false };
+function printSelfUpdateNote(note: string): void {
+	const rendered = renderSelfUpdateNote(note);
+	if (!rendered) return;
+	console.log(`\n${chalk.bold(chalk.yellow("Update note"))}`);
+	console.log(rendered);
+	console.log();
 }
 
 async function runSelfUpdate(command: SelfUpdateCommand): Promise<void> {
@@ -168,20 +155,9 @@ function prepareWindowsNpmSelfUpdate(): void {
 	quarantineWindowsNativeDependencies(packageDir);
 }
 
-function parseProjectTrustOverride(args: readonly string[]): boolean | undefined {
-	let trustOverride: boolean | undefined;
-	for (const arg of args) {
-		if (arg === "--approve" || arg === "-a") {
-			trustOverride = true;
-		} else if (arg === "--no-approve" || arg === "-na") {
-			trustOverride = false;
-		}
-	}
-	return trustOverride;
-}
 
 export interface PackageCommandRuntimeOptions {
-	extensionFactories?: ExtensionFactory[];
+	extensionFactories?: InlineExtension[];
 	refreshModelCatalogs?: (agentDir: string) => Promise<void>;
 }
 
@@ -204,7 +180,7 @@ async function createCommandSettingsManager(options: {
 	cwd: string;
 	agentDir: string;
 	projectTrustOverride?: boolean;
-	extensionFactories?: ExtensionFactory[];
+	extensionFactories?: InlineExtension[];
 }): Promise<CommandSettingsResult> {
 	const settingsManager = SettingsManager.create(options.cwd, options.agentDir, { projectTrusted: false });
 	const projectTrustWarnings: string[] = [];
@@ -244,30 +220,41 @@ export async function handleConfigCommand(
 	args: string[],
 	runtimeOptions: PackageCommandRuntimeOptions = {},
 ): Promise<boolean> {
-	if (args[0] !== "config") {
-		return false;
+	const options = parseConfigCommand(args);
+	if (!options) return false;
+	const usage = `${APP_NAME} config [-l] [--approve|--no-approve]`;
+	if (options.help) {
+		console.log(`${chalk.bold("Usage:")}\n  ${usage}\n\nOpen the resource configuration TUI. Without -l, starts in global settings (~/${CONFIG_DIR_NAME}/agent/settings.json).\n\n${chalk.bold("Options:")}\n  -l, --local       Start in project-local settings\n  -a, --approve     Trust this project\n  -na, --no-approve Do not trust this project\n  -h, --help        Show this help`);
+		return true;
 	}
-
+	if (options.invalidOption || options.invalidArgument) {
+		const message = options.invalidOption ? `Unknown option ${options.invalidOption} for "config".` : `Unexpected argument ${options.invalidArgument}.`;
+		console.error(chalk.red(message));
+		console.error(chalk.dim(`Usage: ${usage}`));
+		process.exitCode = 1;
+		return true;
+	}
 	const cwd = process.cwd();
 	const agentDir = getAgentDir();
 	const { settingsManager, projectTrustWarnings } = await createCommandSettingsManager({
-		cwd,
-		agentDir,
-		projectTrustOverride: parseProjectTrustOverride(args),
-		extensionFactories: runtimeOptions.extensionFactories,
+		cwd, agentDir, projectTrustOverride: options.projectTrustOverride, extensionFactories: runtimeOptions.extensionFactories,
 	});
 	reportProjectTrustWarnings(projectTrustWarnings);
+	if (options.local && !settingsManager.isProjectTrusted()) {
+		console.error(chalk.red("Project is not trusted. Use --approve to modify local resource config."));
+		process.exitCode = 1;
+		return true;
+	}
 	reportSettingsErrors(settingsManager, "config command");
-	const packageManager = new DefaultPackageManager({ cwd, agentDir, settingsManager });
-	const resolvedPaths = await packageManager.resolve();
-
+	const globalManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
+	const global = await new DefaultPackageManager({ cwd, agentDir, settingsManager: globalManager }).resolve();
+	const project = settingsManager.isProjectTrusted()
+		? await new DefaultPackageManager({ cwd, agentDir, settingsManager }).resolve()
+		: global;
 	await selectConfig({
-		resolvedPaths,
-		settingsManager,
-		cwd,
-		agentDir,
+		resolvedPaths: { global, project }, settingsManager, cwd, agentDir,
+		writeScope: options.local ? "project" : "global", projectModeAvailable: settingsManager.isProjectTrusted(),
 	});
-
 	process.exit(0);
 }
 
@@ -276,22 +263,17 @@ export async function handlePackageCommand(
 	runtimeOptions: PackageCommandRuntimeOptions = {},
 ): Promise<boolean> {
 	const options = parsePackageCommand(args);
-	if (!options) {
-		return false;
-	}
-
+	if (!options) return false;
 	if (options.help) {
 		printPackageCommandHelp(options.command);
 		return true;
 	}
-
 	if (options.invalidOption) {
 		console.error(chalk.red(`Unknown option ${options.invalidOption} for "${options.command}".`));
 		console.error(chalk.dim(`Use "${APP_NAME} --help" or "${getPackageCommandUsage(options.command)}".`));
 		process.exitCode = 1;
 		return true;
 	}
-
 	if (options.missingOptionValue) {
 		console.error(chalk.red(`Missing value for ${options.missingOptionValue}.`));
 		console.error(chalk.dim(`Usage: ${getPackageCommandUsage(options.command)}`));
@@ -431,8 +413,9 @@ export async function handlePackageCommand(
 					}
 				}
 				if (updateTargetIncludesSelf(target)) {
-					const selfUpdatePlan = await getSelfUpdatePlan(options.force);
+					const selfUpdatePlan = await resolveSelfUpdatePlan(options.force);
 					if (!selfUpdatePlan.shouldRun) {
+						console.log(chalk.green(`${APP_NAME} is already up to date (v${VERSION})`));
 						return true;
 					}
 					const installMethod = detectInstallMethod();
@@ -444,16 +427,17 @@ export async function handlePackageCommand(
 						process.exitCode = 1;
 						return true;
 					}
-					const selfUpdateCommand = getSelfUpdateCommand(
-						PACKAGE_NAME,
-						selfUpdateNpmCommand,
-						selfUpdatePlan.packageName,
-					);
+					const selfUpdateTarget = {
+						packageName: selfUpdatePlan.packageName,
+						installSpec: selfUpdatePlan.installSpec,
+					};
+					const selfUpdateCommand = getSelfUpdateCommand(PACKAGE_NAME, selfUpdateNpmCommand, selfUpdateTarget);
 					if (!selfUpdateCommand) {
-						printSelfUpdateUnavailable(selfUpdateNpmCommand, selfUpdatePlan.packageName);
+						printSelfUpdateUnavailable(selfUpdateNpmCommand, selfUpdateTarget);
 						process.exitCode = 1;
 						return true;
 					}
+					if (selfUpdatePlan.note) printSelfUpdateNote(selfUpdatePlan.note);
 					try {
 						if (installMethod === "npm") {
 							prepareWindowsNpmSelfUpdate();
@@ -466,7 +450,7 @@ export async function handlePackageCommand(
 						process.exitCode = 1;
 						return true;
 					}
-					console.log(chalk.green(`Updated ${APP_NAME}`));
+					console.log(chalk.green(`Updated ${APP_NAME} from ${VERSION} to ${selfUpdatePlan.version}`));
 				}
 				return true;
 			}

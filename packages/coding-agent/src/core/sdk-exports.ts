@@ -1,9 +1,14 @@
 export * from "./agent-session-runtime.ts";
 export type {
+  AgentSettledEvent,
+  BeforeProviderHeadersEvent,
+  EntryRenderer,
+  EntryRenderOptions,
   ExtensionAPI,
   ExtensionCommandContext,
   ExtensionContext,
   ExtensionFactory,
+  InlineExtension,
   MessageEndEvent,
   MessageStartEvent,
   MessageUpdateEvent,

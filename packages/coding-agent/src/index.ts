@@ -65,6 +65,7 @@ export {
 	FileAuthStorageBackend,
 	InMemoryAuthStorageBackend,
 	type OAuthCredential,
+	readStoredCredential,
 } from "./core/auth-storage.ts";
 import "./core/oauth-compat.js";
 export {
@@ -148,6 +149,7 @@ export { createAskUserQuestionToolDefinition } from "./core/tools/index.ts";
 export type { ReadonlyFooterDataProvider } from "./core/footer-data-provider.ts";
 export { convertToLlm } from "./core/messages.ts";
 export { ModelRegistry } from "./core/model-registry.ts";
+export { ModelRuntime, type CreateModelRuntimeOptions, type ModelRuntimeAuthOverrides } from "./core/model-runtime.ts";
 export type { DefaultProjectTrust } from "./core/settings-manager.ts";
 export {
 	hasProjectTrustInputs,
@@ -224,8 +226,11 @@ export {
 } from "./core/session-manager-classification.ts";
 export {
 	type BranchSummaryEntry,
+	buildContextEntries,
 	buildSessionContext,
+	sessionEntryToContextMessages,
 	CURRENT_SESSION_VERSION,
+	type CompactionEntry,
 	type CustomEntry,
 	type CustomMessageEntry,
 	type FileEntry,
@@ -363,6 +368,7 @@ export {
 	type ChatTranscriptRole,
 	BranchSummaryMessageComponent,
 	CustomEditor,
+	CustomEntryComponent,
 	CustomMessageComponent,
 	DynamicBorder,
 	ExtensionEditorComponent,

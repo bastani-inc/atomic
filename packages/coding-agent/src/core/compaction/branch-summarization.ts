@@ -7,7 +7,7 @@
 
 import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
 import { retryAssistantCall, type ProviderHeaders, type RetryCallbacks, type RetryPolicy } from "@earendil-works/pi-ai";
-import type { Api, Model, SimpleStreamOptions } from "@earendil-works/pi-ai/compat";
+import type { Api, Model, SimpleStreamOptions, Usage } from "@earendil-works/pi-ai/compat";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
 import { formatCopilotProviderError } from "../copilot-errors.ts";
 import { convertToLlm, createBranchSummaryMessage, createCustomMessage } from "../messages.ts";
@@ -31,6 +31,7 @@ export interface BranchSummaryResult {
 	summary?: string;
 	readFiles?: string[];
 	modifiedFiles?: string[];
+	usage?: Usage;
 	aborted?: boolean;
 	error?: string;
 }
@@ -393,6 +394,7 @@ export async function generateBranchSummary(
 
 	return {
 		summary: summary || "No summary generated",
+		usage: response.usage,
 		readFiles,
 		modifiedFiles,
 	};

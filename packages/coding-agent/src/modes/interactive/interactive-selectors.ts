@@ -79,6 +79,8 @@ InteractiveModeBase.prototype.showSettingsSelector = function(this: InteractiveM
           treeFilterMode: this.settingsManager.getTreeFilterMode(),
           showHardwareCursor: this.settingsManager.getShowHardwareCursor(),
           editorPaddingX: this.settingsManager.getEditorPaddingX(),
+		  outputPad: this.settingsManager.getOutputPad(),
+		  showCacheMissNotices: this.settingsManager.getShowCacheMissNotices(),
           autocompleteMaxVisible:
             this.settingsManager.getAutocompleteMaxVisible(),
           quietStartup: this.settingsManager.getQuietStartup(),
@@ -188,6 +190,14 @@ InteractiveModeBase.prototype.showSettingsSelector = function(this: InteractiveM
               this.editor.setPaddingX(padding);
             }
           },
+		  onOutputPadChange: (padding) => {
+			this.settingsManager.setOutputPad(padding);
+			this.outputPad = padding;
+			this.rebuildChatFromMessages();
+		  },
+		  onShowCacheMissNoticesChange: (enabled) => {
+			this.settingsManager.setShowCacheMissNotices(enabled);
+		  },
           onAutocompleteMaxVisibleChange: (maxVisible) => {
             this.settingsManager.setAutocompleteMaxVisible(maxVisible);
             this.defaultEditor.setAutocompleteMaxVisible(maxVisible);

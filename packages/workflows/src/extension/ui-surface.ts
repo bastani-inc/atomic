@@ -193,6 +193,10 @@ export interface PiHostInputFormField {
 export interface PiHostInputFormRequest {
   title: string;
   fields: PiHostInputFormField[];
+  /** Optional panel heading label rendered on the form border. */
+  heading?: string;
+  /** Optional submit button label. */
+  submitLabel?: string;
 }
 
 export type PiHostInputFormFunction = (

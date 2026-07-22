@@ -29,7 +29,9 @@ import { resolveConfigValue } from "./resolve-config-value.ts";
 
 export type ApiKeyCredential = {
 	type: "api_key";
-	key: string;
+	key?: string;
+	/** Provider-scoped configuration persisted alongside the credential. */
+	env?: Record<string, string>;
 };
 
 export type OAuthCredential = {
@@ -47,6 +49,11 @@ export type AuthStatus = {
 };
 
 export { FileAuthStorageBackend, InMemoryAuthStorageBackend, type AuthStorageBackend } from "./auth-storage-backends.ts";
+
+/** Read one persisted provider credential using Atomic's layered config paths. */
+export function readStoredCredential(providerId: string, authPath?: string | string[]): Credential | undefined {
+	return AuthStorage.create(authPath).get(providerId) as Credential | undefined;
+}
 
 /**
  * Credential storage backed by a JSON file.
@@ -375,7 +382,7 @@ export class AuthStorage {
 		if (runtimeKey) return { apiKey: runtimeKey };
 
 		const cred = this.data[providerId];
-		if (cred?.type === "api_key") return { apiKey: resolveConfigValue(cred.key) };
+		if (cred?.type === "api_key" && cred.key) return { apiKey: resolveConfigValue(cred.key) };
 
 		if (cred?.type === "oauth") {
 			try {

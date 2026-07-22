@@ -9,29 +9,29 @@ import type { ToolHtmlRenderer } from "./export-html/index.ts";
 import { CURRENT_SESSION_VERSION, getLatestCompactionBoundaryEntry, type SessionHeader } from "./session-manager.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { SessionStats } from "./agent-session-types.ts";
+import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
 
 export function getSessionStats(this: AgentSession): SessionStats {
-	const state = this.state;
-	const userMessages = state.messages.filter((m) => m.role === "user").length;
-	const assistantMessages = state.messages.filter((m) => m.role === "assistant").length;
-	const toolResults = state.messages.filter((m) => m.role === "toolResult").length;
-
+	let userMessages = 0;
+	let assistantMessages = 0;
+	let toolResults = 0;
+	let totalMessages = 0;
 	let toolCalls = 0;
-	let totalInput = 0;
-	let totalOutput = 0;
-	let totalCacheRead = 0;
-	let totalCacheWrite = 0;
-	let totalCost = 0;
-
-	for (const message of state.messages) {
-		if (message.role === "assistant") {
-			const assistantMsg = message as AssistantMessage;
-			toolCalls += assistantMsg.content.filter((c) => c.type === "toolCall").length;
-			totalInput += assistantMsg.usage.input;
-			totalOutput += assistantMsg.usage.output;
-			totalCacheRead += assistantMsg.usage.cacheRead;
-			totalCacheWrite += assistantMsg.usage.cacheWrite;
-			totalCost += assistantMsg.usage.cost.total;
+	const totals = createUsageTotals();
+	for (const entry of this.sessionManager.getEntries()) {
+		if (entry.type === "branch_summary" && entry.usage) addUsageToTotals(totals, entry.usage);
+		if (entry.type !== "message") continue;
+		totalMessages++;
+		const message = entry.message;
+		if (message.role === "user") userMessages++;
+		else if (message.role === "toolResult") {
+			toolResults++;
+			if ("usage" in message && message.usage) addUsageToTotals(totals, message.usage);
+		} else if (message.role === "assistant") {
+			assistantMessages++;
+			const assistant = message as AssistantMessage;
+			toolCalls += assistant.content.filter((content) => content.type === "toolCall").length;
+			addUsageToTotals(totals, assistant.usage);
 		}
 	}
 
@@ -42,15 +42,15 @@ export function getSessionStats(this: AgentSession): SessionStats {
 		assistantMessages,
 		toolCalls,
 		toolResults,
-		totalMessages: state.messages.length,
+		totalMessages,
 		tokens: {
-			input: totalInput,
-			output: totalOutput,
-			cacheRead: totalCacheRead,
-			cacheWrite: totalCacheWrite,
-			total: totalInput + totalOutput + totalCacheRead + totalCacheWrite,
+			input: totals.input,
+			output: totals.output,
+			cacheRead: totals.cacheRead,
+			cacheWrite: totals.cacheWrite,
+			total: totals.input + totals.output + totals.cacheRead + totals.cacheWrite,
 		},
-		cost: totalCost,
+		cost: totals.cost,
 		contextUsage: this.getContextUsage(),
 	};
 }

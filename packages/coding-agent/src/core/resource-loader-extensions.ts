@@ -103,11 +103,13 @@ export async function loadExtensionFactories(
 	const extensions: Extension[] = [];
 	const errors: Array<{ path: string; error: string }> = [];
 
-	for (const [index, factory] of state.extensionFactories.entries()) {
+	for (const [index, inlineExtension] of state.extensionFactories.entries()) {
 		if (index > 0) {
 			await yieldToEventLoop();
 		}
-		const extensionPath = `<inline:${index + 1}>`;
+		const descriptor = typeof inlineExtension === "function" ? undefined : inlineExtension;
+		const factory = typeof inlineExtension === "function" ? inlineExtension : inlineExtension.factory;
+		const extensionPath = `<inline:${descriptor?.name ?? index + 1}>`;
 		try {
 			const extension = await loadExtensionFromFactory(
 				factory,
@@ -118,6 +120,7 @@ export async function loadExtensionFactories(
 				workflowResourceProvider,
 				inheritanceSnapshotProvider,
 			);
+			extension.hidden = descriptor?.hidden;
 			extensions.push(extension);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "failed to load extension";

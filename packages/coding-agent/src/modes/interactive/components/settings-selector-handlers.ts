@@ -72,6 +72,9 @@ export function createSettingsChangeHandler(callbacks: SettingsCallbacks): (id: 
 			case "editor-padding":
 				callbacks.onEditorPaddingXChange(parseInt(newValue, 10));
 				break;
+			case "output-padding":
+				callbacks.onOutputPadChange(newValue === "0" ? 0 : 1);
+				break;
 			case "autocomplete-max-visible":
 				callbacks.onAutocompleteMaxVisibleChange(parseInt(newValue, 10));
 				break;
@@ -80,6 +83,9 @@ export function createSettingsChangeHandler(callbacks: SettingsCallbacks): (id: 
 				break;
 			case "terminal-progress":
 				callbacks.onShowTerminalProgressChange(newValue === "true");
+				break;
+			case "cache-miss-notices":
+				callbacks.onShowCacheMissNoticesChange(newValue === "true");
 				break;
 			case "theme":
 				callbacks.onThemeChange(newValue);

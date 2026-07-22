@@ -45,7 +45,7 @@ import {
 	getUpdateInstructionForRuntime,
 	type SelfUpdateRuntime,
 } from "./config-self-update.ts";
-export type { InstallMethod, SelfUpdateCommand } from "./config-self-update.ts";
+export type { InstallMethod, SelfUpdateCommand, SelfUpdateTarget } from "./config-self-update.ts";
 
 function selfUpdateRuntime(): SelfUpdateRuntime {
 	return {
@@ -63,17 +63,17 @@ export function detectInstallMethod(): import("./config-self-update.ts").Install
 export function getSelfUpdateCommand(
 	packageName: string,
 	npmCommand?: string[],
-	updatePackageName = packageName,
+	updateTarget: import("./config-self-update.ts").SelfUpdateTarget = { packageName, installSpec: packageName },
 ): import("./config-self-update.ts").SelfUpdateCommand | undefined {
-	return getSelfUpdateCommandForRuntime(selfUpdateRuntime(), packageName, npmCommand, updatePackageName);
+	return getSelfUpdateCommandForRuntime(selfUpdateRuntime(), packageName, npmCommand, updateTarget);
 }
 
 export function getSelfUpdateUnavailableInstruction(
 	packageName: string,
 	npmCommand?: string[],
-	updatePackageName = packageName,
+	updateTarget: import("./config-self-update.ts").SelfUpdateTarget = { packageName, installSpec: packageName },
 ): string {
-	return getSelfUpdateUnavailableInstructionForRuntime(selfUpdateRuntime(), packageName, npmCommand, updatePackageName);
+	return getSelfUpdateUnavailableInstructionForRuntime(selfUpdateRuntime(), packageName, npmCommand, updateTarget);
 }
 
 export function getUpdateInstruction(packageName: string): string {

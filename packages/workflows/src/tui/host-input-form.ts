@@ -54,7 +54,7 @@ export async function openHostInputsForm(
     ...(field.placeholder !== undefined ? { placeholder: field.placeholder } : {}),
   }));
   try {
-    const raw = await open.call(ui, { title: options.workflowName, fields });
+    const raw = await open.call(ui, { title: options.workflowName, fields, heading: "WORKFLOW INPUTS", submitLabel: "[ Run workflow ]" });
     return raw === undefined ? { kind: "cancel" } : { kind: "run", values: coerceValues(options.fields, raw) };
   } catch {
     return { kind: "unsupported" };

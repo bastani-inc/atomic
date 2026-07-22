@@ -127,6 +127,7 @@ InteractiveModeBase.prototype.setupKeyHandlers = function(this: InteractiveModeB
     this.defaultEditor.onAction("app.message.dequeue", () =>
       this.handleDequeue(),
     );
+    this.defaultEditor.onAction("app.message.copy", () => { void this.handleCopyCommand(); });
     this.defaultEditor.onAction("app.session.new", () =>
       this.handleClearCommand(),
     );
@@ -364,9 +365,9 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function(this: Interact
         this.editor.setText("");
         return;
       }
-      if (text === "/login") {
-        this.showOAuthSelector("login");
+      if (/^\/login(?:\s|$)/.test(text)) {
         this.editor.setText("");
+        await this.handleLoginCommand(text.slice("/login".length).trim() || undefined);
         return;
       }
       if (text === "/logout") {

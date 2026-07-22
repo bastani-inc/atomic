@@ -1,6 +1,7 @@
 import type { ModelsRefreshResult } from "@earendil-works/pi-ai";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { AgentSession } from "../../core/agent-session.ts";
+import type { ProviderApiKeyAuth } from "../../core/extensions/provider-types.ts";
 import type { RpcClient } from "../rpc/rpc-client.ts";
 import type { RpcModelCatalog } from "../rpc/rpc-types.ts";
 
@@ -15,6 +16,7 @@ export class RemoteModelCatalog {
 	private readonly client: RpcClient;
 	private models: Model<Api>[] = [];
 	private scopedModels: Array<{ model: Model<Api>; thinkingLevel?: AgentSession["thinkingLevel"] }> = [];
+	private customAuthProviders = new Map<string, string>();
 	private refreshGeneration = 0;
 
 	constructor(client: RpcClient) {
@@ -22,12 +24,19 @@ export class RemoteModelCatalog {
 	}
 
 	apply(catalog: RpcModelCatalog): void {
+		this.applyModels(catalog);
+		this.customAuthProviders = new Map(catalog.customAuthProviders.map(({ id, name }) => [id, name]));
+	}
+
+	applyModels(catalog: Pick<RpcModelCatalog, "models" | "scopedModels">): void {
 		this.models = catalog.models;
 		this.scopedModels = catalog.scopedModels;
 	}
 
 	patch(session: AgentSession): void {
 		const registry = session.modelRegistry;
+		const localGetCustomAuth = registry.getCustomApiKeyAuth?.bind(registry) ?? (() => undefined);
+		const localGetDisplayName = registry.getProviderDisplayName?.bind(registry) ?? ((provider: string) => provider);
 		Object.defineProperties(registry, {
 			refresh: { configurable: true, value: (options = {}) => this.refresh(options) },
 			getAvailable: { configurable: true, value: () => [...this.models] },
@@ -41,6 +50,30 @@ export class RemoteModelCatalog {
 				value: (model: Model<Api>) => this.models.some(
 					(candidate) => candidate.provider === model.provider && candidate.id === model.id,
 				),
+			},
+			getCustomApiKeyAuthProviders: {
+				configurable: true,
+				value: () => [...this.customAuthProviders].map(([id, name]) => ({ id, name })),
+			},
+			getProviderDisplayName: {
+				configurable: true,
+				value: (provider: string) => this.customAuthProviders.get(provider) ?? localGetDisplayName(provider),
+			},
+			getCustomApiKeyAuth: {
+				configurable: true,
+				value: (provider: string): ProviderApiKeyAuth | undefined => {
+					const name = this.customAuthProviders.get(provider);
+					if (!name) return localGetCustomAuth(provider);
+					return {
+						name,
+						login: async ({ signal }) => {
+							const result = await this.client.loginProvider(provider, signal);
+							if (result.cancelled) throw new Error("Login cancelled");
+							this.apply(result);
+							return result.credential;
+						},
+					};
+				},
 			},
 		});
 		Object.defineProperty(session, "scopedModels", {

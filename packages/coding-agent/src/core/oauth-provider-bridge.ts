@@ -1,4 +1,5 @@
 import {
+	type AuthInfoLink,
 	type AuthInteraction,
 	type ModelAuth,
 	type OAuthAuth,
@@ -25,6 +26,7 @@ export interface OAuthProviderDescriptor extends LegacyOAuthProvider {
 
 export interface AtomicOAuthLoginCallbacks extends OAuthLoginCallbacks {
 	onManualCodeCancel?(): void;
+	onInfo?(message: string, links: readonly AuthInfoLink[]): void;
 }
 
 const GLOBAL_LEGACY_SOURCE = "atomic:legacy-global";
@@ -50,7 +52,7 @@ function builtinOAuth(providerId: string): OAuthAuth | undefined {
 	return builtinProviders().find((provider) => provider.id === providerId)?.auth.oauth;
 }
 
-function toInteraction(callbacks: AtomicOAuthLoginCallbacks): AuthInteraction {
+export function createAuthInteraction(callbacks: AtomicOAuthLoginCallbacks): AuthInteraction {
 	return {
 		signal: callbacks.signal,
 		prompt: async (prompt) => {
@@ -83,8 +85,10 @@ function toInteraction(callbacks: AtomicOAuthLoginCallbacks): AuthInteraction {
 					callbacks.onDeviceCode(event);
 					break;
 				case "progress":
-				case "info":
 					callbacks.onProgress?.(event.message);
+					break;
+				case "info":
+					callbacks.onInfo?.(event.message, event.links ?? []);
 					break;
 			}
 		},
@@ -146,7 +150,7 @@ export function getOAuthProviderDescriptors(): OAuthProviderDescriptor[] {
 			name: oauth.name,
 			loginLabel: oauth.loginLabel,
 			usesCallbackServer: CALLBACK_SERVER_PROVIDERS.has(provider.id),
-			login: async (callbacks) => oauth.login(toInteraction(callbacks)),
+			login: async (callbacks) => oauth.login(createAuthInteraction(callbacks)),
 			refreshToken: async (credentials) => oauth.refresh({ ...credentials, type: "oauth" }),
 			getApiKey: (credentials) => credentials.access,
 		});
@@ -166,7 +170,7 @@ export async function loginOAuthProvider(
 	if (legacy) return { type: "oauth", ...(await legacy.login(callbacks)) };
 	const oauth = builtinOAuth(providerId);
 	if (!oauth) throw new Error(`Unknown OAuth provider: ${providerId}`);
-	return oauth.login(toInteraction(callbacks));
+	return oauth.login(createAuthInteraction(callbacks));
 }
 
 export async function refreshOAuthProvider(

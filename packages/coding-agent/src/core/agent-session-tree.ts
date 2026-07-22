@@ -110,6 +110,7 @@ export async function navigateTree(this: AgentSession,
 		// Run default summarizer if needed
 		let summaryText: string | undefined;
 		let summaryDetails: unknown;
+		let summaryUsage: import("@earendil-works/pi-ai/compat").Usage | undefined;
 		if (options.summarize && entriesToSummarize.length > 0 && !extensionSummary) {
 			const model = this.model!;
 			const { apiKey, headers, baseUrl } = await this._getRequiredRequestAuth(model);
@@ -134,6 +135,7 @@ export async function navigateTree(this: AgentSession,
 				throw new Error(result.error);
 			}
 			summaryText = result.summary;
+			summaryUsage = result.usage;
 			summaryDetails = {
 				readFiles: result.readFiles || [],
 				modifiedFiles: result.modifiedFiles || [],
@@ -176,6 +178,7 @@ export async function navigateTree(this: AgentSession,
 				summaryText,
 				summaryDetails,
 				fromExtension,
+				summaryUsage,
 			);
 			summaryEntry = this.sessionManager.getEntry(summaryId) as BranchSummaryEntry;
 

@@ -185,7 +185,9 @@ export function _bindExtensionCore(this: AgentSession, runner: ExtensionRunner):
 				});
 			},
 			appendEntry: (customType, data) => {
-				this.sessionManager.appendCustomEntry(customType, data);
+				const id = this.sessionManager.appendCustomEntry(customType, data);
+				const entry = this.sessionManager.getEntry(id);
+				if (entry) this._emit({ type: "entry_appended", entry });
 			},
 			setSessionName: (name) => {
 				this.setSessionName(name);
@@ -239,8 +241,9 @@ export function _bindExtensionCore(this: AgentSession, runner: ExtensionRunner):
 			getSystemPromptOptions: () => this._baseSystemPromptOptions,
 		},
 		{
-			registerProvider: (name, config) => {
-				this._modelRegistry.registerProvider(name, config);
+			registerProvider: (providerOrName, config) => {
+				if (typeof providerOrName === "string") this._modelRegistry.registerProvider(providerOrName, config!);
+				else this._modelRegistry.registerProvider(providerOrName);
 				this.refreshCurrentModelFromRegistry();
 			},
 			unregisterProvider: (name) => {

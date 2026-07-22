@@ -1,5 +1,6 @@
 /** Method surface installed onto InteractiveModeBase by sibling modules. */
 import type { AgentMessage, Api, Message, Model, OAuthSelectPrompt, AutocompleteProvider, SlashCommand, Keybinding, MarkdownTheme, OverlayHandle, OverlayOptions, Component, LoaderIndicatorOptions, AgentSession, AgentSessionEvent, EditorFactory, ExtensionCommandContext, ExtensionRunner, ExtensionUIContext, ExtensionUIDialogOptions, HostCustomUiState, HostCustomUiStateListener, ProjectTrustContext, ExtensionWidgetOptions, ReadonlyFooterDataProvider, AppKeybinding, VerbatimCompactionResult, ResourceDiagnostic, SessionContext, SourceInfo, ChatMessageEntry, ChatMessageRenderOptions, AuthSelectorProvider, Container, TUI, Theme, Loader, MissingSessionCwdError, KeybindingsManager, LoginDialogComponent } from "./interactive-mode-deps.ts";
+import type { CustomEntry, SessionEntry } from "../../core/session-manager.ts";
 
 declare module "./interactive-mode-base.ts" {
   interface InteractiveModeBase {
@@ -168,7 +169,9 @@ declare module "./interactive-mode-base.ts" {
   addRenderedChatEntry(entry: ChatMessageEntry): Component;
   addCompactionBoundaryToChat(result: VerbatimCompactionResult): void;
   addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): void;
+  addCustomEntryToChat(entry: CustomEntry): void;
   renderSessionContext(sessionContext: SessionContext, options?: { updateFooter?: boolean; populateHistory?: boolean }): void;
+  renderSessionEntries(entries: SessionEntry[], options?: { updateFooter?: boolean; populateHistory?: boolean; suppressCompactionBoundary?: VerbatimCompactionResult }): void;
   renderInitialMessages(): void;
   attachStartupNoticesContainer(options?: { resetDetached?: boolean }): void;
   getUserInput(): Promise<string>;
@@ -238,8 +241,10 @@ declare module "./interactive-mode-base.ts" {
   handleResumeSession(sessionPath: string, options?: Parameters<ExtensionCommandContext["switchSession"]>[1]): Promise<{ cancelled: boolean }>;
   getLoginProviderOptions(authType?: "oauth" | "api_key"): AuthSelectorProvider[];
   getLogoutProviderOptions(): AuthSelectorProvider[];
-  showLoginAuthTypeSelector(): void;
-  showLoginProviderSelector(authType: "oauth" | "api_key"): void;
+  handleLoginCommand(providerRef?: string): Promise<void>;
+  startProviderLogin(providerOption: AuthSelectorProvider): Promise<void>;
+  showLoginAuthTypeSelector(providerOptions?: AuthSelectorProvider[]): void;
+  showLoginProviderSelector(authType?: "oauth" | "api_key", initialSearchInput?: string): void;
   showOAuthSelector(mode: "login" | "logout"): Promise<void>;
   completeProviderAuthentication(providerId: string, providerName: string, authType: "oauth" | "api_key", previousModel: Model<Api> | undefined): Promise<void>;
   showBedrockSetupDialog(providerId: string, providerName: string): void;

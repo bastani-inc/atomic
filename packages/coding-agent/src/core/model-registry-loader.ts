@@ -17,6 +17,7 @@ export function loadModelRegistryModels(
 		modelOverrides,
 		providerRequestConfigs,
 		modelRequestHeaders,
+		configuredProviders,
 		error,
 	} = loadCustomModelsFromPaths(modelsJsonPaths);
 
@@ -41,6 +42,7 @@ export function loadModelRegistryModels(
 		models: combined,
 		providerRequestConfigs,
 		modelRequestHeaders,
+		configuredProviders,
 		builtInProviders,
 		customOpenAICompatibleProviders,
 		loadError: error,

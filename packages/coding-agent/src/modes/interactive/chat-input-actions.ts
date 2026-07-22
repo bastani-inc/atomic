@@ -8,6 +8,7 @@ import {
   extensionForImageMimeType,
   readClipboardImage,
 } from "../../utils/clipboard-image.ts";
+import { readClipboardText } from "../../utils/clipboard.ts";
 import { APP_NAME } from "../../config.ts";
 
 export interface ExternalEditorHost {
@@ -135,7 +136,15 @@ export async function pasteClipboardImageToEditor(
   try {
     cleanupStaleClipboardFiles();
     const image = await readClipboardImage();
-    if (!image) return false;
+    if (!image) {
+      const text = await readClipboardText();
+      if (!text) return false;
+      if (editor.insertTextAtCursor) editor.insertTextAtCursor(text);
+      else if (editor.getText && editor.setText) editor.setText(`${editor.getText()}${text}`);
+      else return false;
+      requestRender?.();
+      return true;
+    }
 
     const ext = extensionForImageMimeType(image.mimeType) ?? "png";
     const fileName = `${appTempPrefix("clipboard")}${crypto.randomUUID()}.${ext}`;

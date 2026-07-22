@@ -1,5 +1,5 @@
 import type { EventBus } from "./event-bus.ts";
-import type { ExtensionFactory, ExtensionRuntime, LoadExtensionsResult } from "./extensions/types.ts";
+import type { InlineExtension, ExtensionRuntime, LoadExtensionsResult } from "./extensions/types.ts";
 import type { WorkflowResourceProvider } from "./extensions/loader.ts";
 import type { DefaultPackageManager, ResolvedResource } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
@@ -21,7 +21,7 @@ export interface ResourceLoaderInternals {
 	additionalPromptTemplatePaths: string[];
 	additionalThemePaths: string[];
 	builtinPackagePaths: PackageSource[];
-	extensionFactories: ExtensionFactory[];
+	extensionFactories: InlineExtension[];
 	noExtensions: boolean;
 	noSkills: boolean;
 	noPromptTemplates: boolean;

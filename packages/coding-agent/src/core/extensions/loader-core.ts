@@ -37,6 +37,7 @@ function createExtension(extensionPath: string, resolvedPath: string): Extension
     handlers: new Map(),
     tools: new Map(),
     messageRenderers: new Map(),
+    entryRenderers: new Map(),
     commands: new Map(),
     flags: new Map(),
     shortcuts: new Map(),

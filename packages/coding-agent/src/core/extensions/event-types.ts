@@ -1,8 +1,10 @@
 import type {
 	AfterProviderResponseEvent,
 	AgentEndEvent,
+	AgentSettledEvent,
 	AgentStartEvent,
 	BeforeAgentStartEvent,
+	BeforeProviderHeadersEvent,
 	BeforeProviderRequestEvent,
 	ContextEvent,
 	InputEvent,
@@ -28,10 +30,12 @@ export type ExtensionEvent =
 	| SessionEvent
 	| ContextEvent
 	| BeforeProviderRequestEvent
+	| BeforeProviderHeadersEvent
 	| AfterProviderResponseEvent
 	| BeforeAgentStartEvent
 	| AgentStartEvent
 	| AgentEndEvent
+	| AgentSettledEvent
 	| TurnStartEvent
 	| TurnEndEvent
 	| MessageStartEvent

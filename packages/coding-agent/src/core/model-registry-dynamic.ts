@@ -158,8 +158,8 @@ export function validateProviderConfig(providerName: string, config: ProviderCon
 	if (!config.baseUrl) {
 		throw new Error(`Provider ${providerName}: "baseUrl" is required when defining models.`);
 	}
-	if (!config.apiKey && !config.oauth) {
-		throw new Error(`Provider ${providerName}: "apiKey" or "oauth" is required when defining models.`);
+	if (!config.apiKey && !config.oauth && !config.auth?.apiKey) {
+		throw new Error(`Provider ${providerName}: "apiKey", "oauth", or "auth.apiKey" is required when defining models.`);
 	}
 
 	for (const modelDef of config.models) {

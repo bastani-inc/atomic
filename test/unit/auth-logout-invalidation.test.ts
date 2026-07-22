@@ -234,7 +234,7 @@ describe("logout credential invalidation (#1919)", () => {
 				messageCount: 0,
 				pendingMessageCount: 0,
 			}),
-			requestInternal: async () => ({ models: [model], scopedModels: [] }),
+			requestInternal: async () => ({ models: [model], scopedModels: [], customAuthProviders: [] }),
 			logoutProvider: async () => ({
 				provider: "github-copilot",
 				authStatus: { configured: false },

@@ -10,7 +10,17 @@ import {
   shouldApplyCodexFastMode,
 } from "../../../core/codex-fast-mode.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
+import { areExperimentalFeaturesEnabled } from "../../../core/experimental.ts";
+import { addUsageToTotals, createUsageTotals } from "../../../core/usage-totals.ts";
 import { theme } from "../theme/theme.ts";
+
+function sanitizeStatusText(text: string): string {
+  // Replace newlines, tabs, carriage returns with space, then collapse
+  // multiple spaces (pi parity). ANSI/SGR sequences must survive intact:
+  // extension statuses are frequently theme-colored, and stripping only the
+  // ESC byte would leave the rest of the sequence as visible literal text.
+  return text.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim();
+}
 
 /**
  * Format token counts (similar to web-ui)
@@ -43,24 +53,20 @@ function getUsageLine(
   const state = session.state;
 
   // Calculate cumulative usage from ALL session entries (not just post-compaction messages)
-  let totalInput = 0;
-  let totalOutput = 0;
-  let totalCacheRead = 0;
-  let totalCacheWrite = 0;
-  let totalCost = 0;
+  const totals = createUsageTotals();
   let latestCacheHitRate: number | undefined;
 
   for (const entry of session.sessionManager.getEntries()) {
     if (entry.type === "message" && entry.message.role === "assistant") {
-      totalInput += entry.message.usage.input;
-      totalOutput += entry.message.usage.output;
-      totalCacheRead += entry.message.usage.cacheRead;
-      totalCacheWrite += entry.message.usage.cacheWrite;
-      totalCost += entry.message.usage.cost.total;
+      addUsageToTotals(totals, entry.message.usage);
 
       const latestPromptTokens =
         entry.message.usage.input + entry.message.usage.cacheRead + entry.message.usage.cacheWrite;
       latestCacheHitRate = latestPromptTokens > 0 ? (entry.message.usage.cacheRead / latestPromptTokens) * 100 : undefined;
+    } else if (entry.type === "branch_summary" && entry.usage) {
+      addUsageToTotals(totals, entry.usage);
+    } else if (entry.type === "message" && entry.message.role === "toolResult" && "usage" in entry.message && entry.message.usage) {
+      addUsageToTotals(totals, entry.message.usage);
     }
   }
 
@@ -74,23 +80,23 @@ function getUsageLine(
     contextUsage?.percent !== null ? contextPercentValue.toFixed(1) : "?";
 
   const usageParts = [];
-  if (totalInput)
+  if (totals.input)
     usageParts.push(
-      `${theme.fg("dim", "↑")}${theme.fg("muted", formatTokens(totalInput))}`,
+      `${theme.fg("dim", "↑")}${theme.fg("muted", formatTokens(totals.input))}`,
     );
-  if (totalOutput)
+  if (totals.output)
     usageParts.push(
-      `${theme.fg("dim", "↓")}${theme.fg("muted", formatTokens(totalOutput))}`,
+      `${theme.fg("dim", "↓")}${theme.fg("muted", formatTokens(totals.output))}`,
     );
-  if (totalCacheRead)
+  if (totals.cacheRead)
     usageParts.push(
-      `${theme.fg("dim", "R")}${theme.fg("muted", formatTokens(totalCacheRead))}`,
+      `${theme.fg("dim", "R")}${theme.fg("muted", formatTokens(totals.cacheRead))}`,
     );
-  if (totalCacheWrite)
+  if (totals.cacheWrite)
     usageParts.push(
-      `${theme.fg("dim", "W")}${theme.fg("muted", formatTokens(totalCacheWrite))}`,
+      `${theme.fg("dim", "W")}${theme.fg("muted", formatTokens(totals.cacheWrite))}`,
     );
-  if ((totalCacheRead > 0 || totalCacheWrite > 0) && latestCacheHitRate !== undefined) {
+  if ((totals.cacheRead > 0 || totals.cacheWrite > 0) && latestCacheHitRate !== undefined) {
     usageParts.push(`${theme.fg("dim", "CH")}${theme.fg("muted", `${latestCacheHitRate.toFixed(1)}%`)}`);
   }
 
@@ -98,9 +104,9 @@ function getUsageLine(
   const usingSubscription = state.model
     ? state.model.provider === "kimi-coding" || session.modelRegistry.isUsingOAuth(state.model)
     : false;
-  if (totalCost || usingSubscription) {
+  if (totals.cost || usingSubscription) {
     usageParts.push(
-      `${theme.fg("muted", `$${totalCost.toFixed(3)}`)}${usingSubscription ? ` ${theme.fg("dim", "(sub)")}` : ""}`,
+      `${theme.fg("muted", `$${totals.cost.toFixed(3)}`)}${usingSubscription ? ` ${theme.fg("dim", "(sub)")}` : ""}`,
     );
   }
 
@@ -213,7 +219,13 @@ export class FooterComponent implements Component {
 
   render(width: number): string[] {
     const state = this.session.state;
-    const pwd = replaceHome(this.session.sessionManager.getCwd());
+    let pwd = replaceHome(this.session.sessionManager.getCwd());
+    const branch = this.footerData.getGitBranch();
+    if (branch) pwd += ` (${branch})`;
+    const sessionName = typeof this.session.sessionManager.getSessionName === "function"
+      ? this.session.sessionManager.getSessionName()
+      : undefined;
+    if (sessionName) pwd += ` • ${sessionName}`;
 
     const modelName = state.model?.id || "no-model";
     const fastModeSettings = this.session.settingsManager.getCodexFastModeSettings();
@@ -238,9 +250,14 @@ export class FooterComponent implements Component {
     const liveState = this.session.isStreaming
       ? theme.fg("muted", "esc to interrupt")
       : undefined;
-    const statusText =
-      liveState ??
+    let statusText = liveState ??
       `${theme.fg("dim", modelLabel)} ${theme.fg("dim", "•")} ${theme.fg("muted", pwd)}`;
-    return [truncateToWidth(statusText, width, theme.fg("dim", "..."))];
+    if (areExperimentalFeaturesEnabled()) statusText += ` ${theme.fg("warning", "xp")}`;
+    const lines = [truncateToWidth(statusText, width, theme.fg("dim", "..."))];
+    const statuses = [...this.footerData.getExtensionStatuses()].sort(([a], [b]) => a.localeCompare(b));
+    if (statuses.length > 0) {
+      lines.push(truncateToWidth(statuses.map(([, text]) => sanitizeStatusText(text)).join(" "), width, theme.fg("dim", "...")));
+    }
+    return lines;
   }
 }

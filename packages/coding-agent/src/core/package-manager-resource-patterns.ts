@@ -146,3 +146,23 @@ export function applyPatterns(allPaths: string[], patterns: string[], baseDir: s
 
 	return new Set(result);
 }
+
+export function applyAutoloadDisabledPatterns(
+	allPaths: string[],
+	patterns: string[],
+	baseDir: string,
+): Map<string, boolean> {
+	const result = new Map<string, boolean>();
+	for (const pattern of patterns) {
+		const prefixed = pattern.startsWith("+") || pattern.startsWith("-") || pattern.startsWith("!");
+		const target = prefixed ? pattern.slice(1) : pattern;
+		const enabled = !pattern.startsWith("-") && !pattern.startsWith("!");
+		const exact = pattern.startsWith("+") || pattern.startsWith("-");
+		for (const filePath of allPaths) {
+			if (exact ? matchesAnyExactPattern(filePath, [target], baseDir) : matchesAnyPattern(filePath, [target], baseDir)) {
+				result.set(filePath, enabled);
+			}
+		}
+	}
+	return result;
+}

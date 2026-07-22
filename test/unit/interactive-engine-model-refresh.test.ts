@@ -25,6 +25,7 @@ test("isolated host refresh atomically applies the engine model catalog without 
 		errors: [{ provider: "dynamic-provider", message: "catalog unavailable" }],
 		models: [model],
 		scopedModels,
+		customAuthProviders: [{ id: "dynamic-provider", name: "Dynamic Provider" }],
 	};
 	const client = {
 		onEvent: () => () => {},
@@ -39,11 +40,21 @@ test("isolated host refresh atomically applies the engine model catalog without 
 			messageCount: 0,
 			pendingMessageCount: 0,
 		}),
-		requestInternal: async () => ({ models: [], scopedModels: [] }),
+		requestInternal: async () => ({
+			models: [], scopedModels: [],
+			customAuthProviders: [{ id: "extension-provider", name: "Extension Provider" }],
+		}),
 		refreshModels: async (options: { timeoutMs?: number; force?: boolean; allowNetwork?: boolean }) => {
 			observedOptions = options;
 			return refreshResult;
 		},
+		loginProvider: async () => ({
+			provider: "extension-provider",
+			cancelled: false as const,
+			credential: { type: "api_key" as const, key: "remote-key" },
+			models: [], scopedModels: [], customAuthProviders: [],
+		}),
+		cancelLoginProvider: async () => {},
 		getCommands: async () => [],
 	} as unknown as RpcClient;
 	const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
@@ -64,6 +75,14 @@ test("isolated host refresh atomically applies the engine model catalog without 
 	await runtime.initializeFromEngine();
 
 	assert.deepEqual(registry.getAvailable(), []);
+	assert.deepEqual(registry.getCustomApiKeyAuthProviders(), [{ id: "extension-provider", name: "Extension Provider" }]);
+	assert.equal(registry.getProviderDisplayName("extension-provider"), "Extension Provider");
+	const remoteAuth = registry.getCustomApiKeyAuth("extension-provider");
+	assert.ok(remoteAuth);
+	assert.equal(remoteAuth.name, "Extension Provider");
+	assert.deepEqual(await remoteAuth.login({ signal: new AbortController().signal, prompt: async () => "unused" }), {
+		type: "api_key", key: "remote-key",
+	});
 	const result = await registry.refresh({ allowNetwork: false, force: true, timeoutMs: 321 });
 
 	assert.deepEqual(observedOptions, { allowNetwork: false, force: true, timeoutMs: 321 });
@@ -87,7 +106,7 @@ test("an aborted isolated refresh does not replace the current model catalog", a
 			steeringMode: "all" as const, followUpMode: "all" as const,
 			sessionId: "test-session", autoCompactionEnabled: true, messageCount: 0, pendingMessageCount: 0,
 		}),
-		requestInternal: async () => ({ models: [], scopedModels: [] }),
+		requestInternal: async () => ({ models: [], scopedModels: [], customAuthProviders: [] }),
 		refreshModels: async () => pending,
 		getCommands: async () => [],
 	} as unknown as RpcClient;
@@ -105,7 +124,7 @@ test("an aborted isolated refresh does not replace the current model catalog", a
 	controller.abort();
 
 	assert.deepEqual(await refresh, { aborted: true, errors: new Map() });
-	resolveRefresh({ aborted: false, errors: [], models: [model], scopedModels: [{ model }] });
+	resolveRefresh({ aborted: false, errors: [], models: [model], scopedModels: [{ model }], customAuthProviders: [] });
 	await Bun.sleep(0);
 	assert.deepEqual(registry.getAvailable(), []);
 	assert.deepEqual(session.scopedModels, []);
