@@ -120,7 +120,7 @@ export function createReplayStageContext(input: {
 			return replaySource.model as never;
 		},
 		get thinkingLevel() {
-			return undefined as never;
+			return replaySource.thinkingLevel as never;
 		},
 		get messages() {
 			return [] as never;
@@ -144,6 +144,7 @@ export function createReplayStageContext(input: {
 		__pendingMessageCount: () => 0,
 		__modelFallbackMeta: () => ({
 			...(replaySource.model !== undefined ? { model: replaySource.model } : {}),
+			...(replaySource.thinkingLevel !== undefined ? { thinkingLevel: replaySource.thinkingLevel } : {}),
 			...(replaySource.fastMode === true ? { fastMode: replaySource.fastMode } : {}),
 			...(replaySource.attemptedModels !== undefined ? { attemptedModels: replaySource.attemptedModels } : {}),
 			...(replaySource.modelAttempts !== undefined ? { modelAttempts: replaySource.modelAttempts } : {}),
