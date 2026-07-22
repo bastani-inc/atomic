@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.11-alpha.3] - 2026-07-21
+
 ### Added
 
 - Added a built-in, hidden llama.cpp router provider with `/login llama.cpp`, `LLAMA_BASE_URL`/`LLAMA_API_KEY` configuration, loaded-model discovery, and the `/llama` manager for load, unload, cancellation, reconnect, and Hugging Face GGUF download workflows.
