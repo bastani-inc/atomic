@@ -1592,6 +1592,8 @@ Sets the stage session's [Intercom](/intercom) home group so orchestrated stages
 
 The builtin `goal` and `ralph` workflows use this to isolate each reviewer level into its own group (`goal-reviewers-turn-N` / `ralph-reviewers-iter-N`): same-level reviewers coordinate with each other but cannot reach the worker, orchestrator, parent chat, or other levels, which also keeps reviewer intercom chatter out of the main/parent context window.
 
+**Recommended default:** unless the user requests otherwise, give each workflow invocation its own intercom group (set `group` at the run-level `context`, or per stage/parallel step). Ungrouped sessions all collapse into the shared `"default"` group, so an ungrouped workflow's stage and subagent intercom traffic — including async subagent-result notices — can reach the parent chat and other concurrent runs. The shipped workflow prompt guidance instructs agents to isolate invocations this way by default.
+
 ### `model`
 
 ```typescript
