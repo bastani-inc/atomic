@@ -536,7 +536,7 @@ class Atomic(BaseInstalledAgent):
             f"atomic --print --mode json --session-dir {session_dir} "
             f"--provider {shlex.quote(provider)} --model {shlex.quote(model)} "
             f"{cli_flags}"
-            f"{shlex.quote(instruction)} "
+            f"-- {shlex.quote(instruction)} "
             "2>&1 </dev/null | grep -v '\"type\":\"message_update\"' | "
             f"stdbuf -oL tee {output_file}; status=$?; "
             "exit $status"

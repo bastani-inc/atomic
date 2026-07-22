@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed positional prompts beginning with `-`, `--`, or `@` being parsed as options or file arguments by supporting the conventional `--` end-of-options terminator ([#1950](https://github.com/bastani-inc/atomic/issues/1950)).
+
 ## [0.9.11-alpha.3] - 2026-07-21
 
 ### Added

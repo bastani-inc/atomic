@@ -82,6 +82,11 @@ export function parseArgs(args: string[]): Args {
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i];
 
+		if (arg === "--") {
+			result.messages.push(...args.slice(i + 1));
+			break;
+		}
+
 		if (arg === "--help" || arg === "-h") {
 			result.help = true;
 		} else if (arg === "--version" || arg === "-v") {

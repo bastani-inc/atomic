@@ -376,7 +376,7 @@ class Atomic(BaseInstalledAgent):
                 f"atomic --print --mode json --session-dir {session_dir} "
                 f"{model_args}"
                 f"{cli_flags}"
-                f"{escaped_instruction} "
+                f"-- {escaped_instruction} "
                 "2>&1 </dev/null | grep -v '\"type\":\"message_update\"' | "
                 f"stdbuf -oL tee /logs/agent/{self._OUTPUT_FILENAME}; status=$?; "
                 "exit $status"
