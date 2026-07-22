@@ -155,6 +155,7 @@ export interface DurableStageCheckpoint {
   readonly result?: string;
   /** Completed stage/task model metadata used to hydrate replayed snapshots. */
   readonly model?: string;
+  readonly thinkingLevel?: string;
   readonly fastMode?: boolean;
   readonly attemptedModels?: readonly string[];
   readonly modelAttempts?: readonly WorkflowModelAttempt[];

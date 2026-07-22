@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a model row to the `/workflow connect` graph node cards. Each stage card now shows the running stage's model, thinking level, and Codex `fast` tier (provider prefix dropped and thinking omitted when off to fit the ~22-cell card; the fast marker is kept over the thinking level when space is tight), on a dedicated row beneath the status line while keeping the existing duration, status, and dependency (`root`/`N deps`) fields. The row reflects live model fallbacks — when a stage falls back to another model it updates to the model actually running. Node card height grows from 5 to 6 rows. The effective thinking level is carried on the run snapshot (`StageSnapshot.thinkingLevel`) alongside the existing `model` field and persisted through DBOS durability so resumed runs (`/workflow resume`) restore the same model + thinking identity.
+
 ### Fixed
 
 - Fixed positional prompts beginning with `-`, `--`, or `@` being parsed as options or file arguments by supporting the conventional `--` end-of-options terminator ([#1950](https://github.com/bastani-inc/atomic/issues/1950)).

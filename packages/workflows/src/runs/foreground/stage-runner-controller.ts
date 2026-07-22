@@ -178,8 +178,10 @@ export class StageSessionController {
     const attemptedModels = this.modelAttempts.map((attempt) => attempt.model);
     const model = this.selectedModel ?? workflowModelId(this.session?.model);
     const fastMode = this.isWorkflowFastModeEnabled();
+    const thinkingLevel = this.session?.thinkingLevel ?? this.pendingThinkingLevel;
     return {
       ...(model !== undefined ? { model } : {}),
+      ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
       ...(fastMode !== undefined ? { fastMode } : {}),
       ...(attemptedModels.length > 0 ? { attemptedModels } : {}),
       ...(this.modelAttempts.length > 0 ? { modelAttempts: [...this.modelAttempts] } : {}),
@@ -485,16 +487,12 @@ export class StageSessionController {
   private notifyModelFallbackMetaChange(): void { this.opts.onModelFallbackMetaChange?.(this.currentModelFallbackMeta()); }
 
   private applyCandidateThinking(candidate: WorkflowResolvedModelCandidate | undefined): void {
-    this.pendingThinkingLevel = candidate === undefined
-      ? this.effectiveStageOptions?.thinkingLevel
-      : effectiveCandidateReasoning(candidate, this.effectiveStageOptions?.thinkingLevel);
+    this.pendingThinkingLevel = candidate === undefined ? this.effectiveStageOptions?.thinkingLevel : effectiveCandidateReasoning(candidate, this.effectiveStageOptions?.thinkingLevel);
   }
   private isWorkflowFastModeEnabled(): boolean | undefined {
     const model = this.session?.model;
     const settingsManager = this.sessionSettingsManager ?? this.effectiveStageOptions?.settingsManager;
-    return model === undefined || settingsManager === undefined
-      ? undefined
-      : shouldApplyCodexFastModeForScope(model, settingsManager.getCodexFastModeSettings(), "workflow");
+    return model === undefined || settingsManager === undefined ? undefined : shouldApplyCodexFastModeForScope(model, settingsManager.getCodexFastModeSettings(), "workflow");
   }
   private throwUnresolvedContextOverflowIfPresent(): void { const message = this.unresolvedContextOverflowMessage; this.unresolvedContextOverflowMessage = undefined; if (message !== undefined) throw unresolvedContextOverflowFailure(message); }
 }

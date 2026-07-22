@@ -209,6 +209,14 @@ export interface StageSnapshot {
   sessionFile?: string;
   /** Effective model id selected for this stage after fallback resolution. */
   model?: string;
+  /**
+   * Effective reasoning/thinking level in force for this stage's session
+   * (e.g. "off", "low", "high"). Populated on the live snapshot alongside
+   * {@link model} so background-run surfaces can show the same model +
+   * thinking identity the main session footer shows. Optional: absent for
+   * restored runs and stages whose model has no reasoning control.
+   */
+  thinkingLevel?: string;
   /** True when Codex fast mode applied to this workflow stage. */
   fastMode?: boolean;
   /** Ordered model ids attempted by fallback orchestration. */

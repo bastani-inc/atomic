@@ -108,7 +108,7 @@ export function createReplayStageContext(input: {
     cycleThinkingLevel: () => rejectReplayMutation("cycle thinking level"),
     get agent() { return undefined as never; },
     get model() { return replaySource.model as never; },
-    get thinkingLevel() { return undefined as never; },
+    get thinkingLevel() { return replaySource.thinkingLevel as never; },
     get messages() { return [] as never; },
     get isStreaming() { return false; },
     navigateTree: async () => rejectReplayMutation("navigate conversation tree"),
@@ -127,6 +127,7 @@ export function createReplayStageContext(input: {
     __pendingMessageCount: () => 0,
     __modelFallbackMeta: () => ({
       ...(replaySource.model !== undefined ? { model: replaySource.model } : {}),
+      ...(replaySource.thinkingLevel !== undefined ? { thinkingLevel: replaySource.thinkingLevel } : {}),
       ...(replaySource.fastMode === true ? { fastMode: replaySource.fastMode } : {}),
       ...(replaySource.attemptedModels !== undefined ? { attemptedModels: replaySource.attemptedModels } : {}),
       ...(replaySource.modelAttempts !== undefined ? { modelAttempts: replaySource.modelAttempts } : {}),

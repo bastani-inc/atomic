@@ -118,6 +118,8 @@ export function createWorkflowStageFactory(input: {
 
     const applyModelFallbackMeta = (meta: ReturnType<InternalStageContext["__modelFallbackMeta"]>): void => {
       if (meta.model !== undefined) stageSnapshot.model = meta.model;
+      if (meta.thinkingLevel !== undefined) stageSnapshot.thinkingLevel = meta.thinkingLevel;
+      else delete stageSnapshot.thinkingLevel;
       if (meta.fastMode !== undefined) {
         if (meta.fastMode) stageSnapshot.fastMode = true;
         else delete stageSnapshot.fastMode;

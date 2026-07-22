@@ -5,7 +5,7 @@
 import type { StageSnapshot } from "../shared/store-types.js";
 
 export const NODE_W = 24;
-export const NODE_H = 5;
+export const NODE_H = 6;
 
 export interface LayoutNode {
   stage: StageSnapshot;
