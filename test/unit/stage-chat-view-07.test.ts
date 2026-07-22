@@ -152,8 +152,8 @@ describe("StageChatView", () => {
                 .findLast((line) => line.trim() !== "");
             assert.match(previousContent ?? "", /msg-\d+/);
             assert.equal(lines[workingIndex - 1]?.trim(), "");
-            assert.equal(lines[workingIndex]?.trimEnd(), " ⠁ Working...");
-            assert.deepEqual(lines[workingIndex]?.match(/[⠀-⣿]/g), ["⠁"]);
+            assert.equal(lines[workingIndex]?.trimEnd(), " ∀ Working...");
+            assert.deepEqual(lines[workingIndex]?.match(/∀/g), ["∀"]);
             assert.equal(lines.join("\n").match(/Working\.\.\./g)?.length, 1);
         } finally {
             view.dispose();
@@ -178,8 +178,8 @@ describe("StageChatView", () => {
             const lines = renderLifecycleOrigin(view, 64);
             assert.equal(lines.every((line) => line.length <= 64), true);
             const working = lines.find((line) => line.includes("Working..."));
-            assert.equal(working?.trimEnd(), " ⠁ Working...");
-            assert.deepEqual(working?.match(/[⠀-⣿]/g), ["⠁"]);
+            assert.equal(working?.trimEnd(), " ∀ Working...");
+            assert.deepEqual(working?.match(/∀/g), ["∀"]);
             assert.equal(lines.some((line) => line.includes("❯")), true);
             assert.equal(lines.some((line) => line.includes("ctrl+x")), true);
         } finally {

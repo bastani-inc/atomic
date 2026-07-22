@@ -275,7 +275,7 @@ describe("StageChatView", () => {
         const view = new StageChatView({ store, graphTheme: deriveGraphTheme({}), runId: "run-1", stageId: "stage-a", workflowName: "test-wf", handle, onDetach: () => {}, onClose: () => {}, getViewportRows: () => 7 });
         const rendered = view.render(64).map(stripAnsi).join("\n");
         assert.match(rendered, /❯/);
-        assert.match(rendered, /[⠀-⣿] Working\.\.\./);
+        assert.match(rendered, /∀ Working\.\.\./);
         view.dispose();
     });
 

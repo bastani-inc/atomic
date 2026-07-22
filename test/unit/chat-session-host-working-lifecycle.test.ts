@@ -15,6 +15,10 @@ import {
 } from "./chat-session-host-working-lifecycle-fixture.ts";
 
 const originalReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
+const pulseStyle = {
+  ...plainStyle,
+  accentBold: (text: string) => `<bold>${text}</bold>`,
+};
 
 beforeAll(() => {
   initTheme("dark", false);
@@ -25,27 +29,13 @@ afterEach(() => {
   else process.env.ATOMIC_REDUCED_MOTION = originalReducedMotion;
 });
 
-test("ChatSessionHost starts ordinary Atomic work at frame zero independent of wall clock", () => {
-  delete process.env.ATOMIC_REDUCED_MOTION;
-  const previousNow = Date.now;
-  Date.now = () => 720;
-  const host = new ChatSessionHost<never>({ style: plainStyle, editorTheme });
-  try {
-    host.applyAgentEvent({ type: "agent_start" } as never);
-    assert.equal(workingLine(host), " ⠁ Working...");
-  } finally {
-    host.dispose();
-    Date.now = previousNow;
-  }
-});
 
-
-test("ChatSessionHost advances the exact Atomic cycle every lifecycle-relative 80ms", () => {
+test("ChatSessionHost advances the exact Atomic weight pulse every lifecycle-relative 80ms", () => {
   delete process.env.ATOMIC_REDUCED_MOTION;
   const timers = installLifecycleFakeClock();
   let renderRequests = 0;
   const host = new ChatSessionHost<never>({
-    style: plainStyle,
+    style: pulseStyle,
     editorTheme,
     requestRender: () => {
       renderRequests += 1;
@@ -56,31 +46,27 @@ test("ChatSessionHost advances the exact Atomic cycle every lifecycle-relative 8
     assert.equal(ATOMIC_WORKING_FRAME_MS, 80);
     host.applyAgentEvent({ type: "agent_start" } as never);
 
-    assert.equal(renderRequests, 1, "agent_start requests one immediate frame-zero paint");
+    assert.equal(renderRequests, 1, "agent_start requests one immediate paint");
     assert.deepEqual(timers.intervalDelays(), [80]);
     assert.deepEqual(timers.timeoutDelays(), [], "a genuine start bypasses event throttling");
     assert.equal(timers.intervalCount(), 1);
     assert.equal(timers.timeoutCount(), 0);
-    assert.equal(workingLine(host), " ⠁ Working...", "0ms");
+    assert.equal(workingLine(host), " ∀ Working...", "0ms regular");
 
     timers.advanceBy(79);
-    assert.equal(workingLine(host), " ⠁ Working...", "79ms");
+    assert.equal(workingLine(host), " ∀ Working...", "79ms regular");
     assert.equal(renderRequests, 1);
     timers.advanceBy(1);
-    assert.equal(workingLine(host), " ⠑ Working...", "80ms");
+    assert.equal(workingLine(host), " <bold>∀</bold> Working...", "80ms bold");
     assert.equal(renderRequests, 2);
     timers.advanceBy(79);
-    assert.equal(workingLine(host), " ⠑ Working...", "159ms");
+    assert.equal(workingLine(host), " <bold>∀</bold> Working...", "159ms bold");
     assert.equal(renderRequests, 2);
-    timers.advanceBy(241);
-    assert.equal(workingLine(host), " ⣵ Working...", "400ms");
-    assert.equal(renderRequests, 6);
-    timers.advanceBy(399);
-    assert.equal(workingLine(host), " ⠑ Working...", "799ms");
-    assert.equal(renderRequests, 10);
     timers.advanceBy(1);
-    assert.equal(workingLine(host), " ⠁ Working...", "800ms");
-    assert.equal(renderRequests, 11, "one immediate request plus one request per tick");
+    assert.equal(workingLine(host), " ∀ Working...", "160ms regular");
+    assert.equal(renderRequests, 3);
+    timers.advanceBy(80);
+    assert.equal(renderRequests, 4, "one immediate request plus one request per tick");
   } finally {
     host.dispose();
     timers.restore();
@@ -88,7 +74,7 @@ test("ChatSessionHost advances the exact Atomic cycle every lifecycle-relative 8
 });
 
 
-test("ChatSessionHost resets each literal turn once and stops between turns", () => {
+test("ChatSessionHost resets pulse phase and cadence on every turn start", () => {
   delete process.env.ATOMIC_REDUCED_MOTION;
   const previousRandom = Math.random;
   let selections = 0;
@@ -97,46 +83,31 @@ test("ChatSessionHost resets each literal turn once and stops between turns", ()
     return 0;
   };
   const timers = installLifecycleFakeClock();
-  let renderRequests = 0;
-  const host = new ChatSessionHost<never>({
-    style: plainStyle,
-    editorTheme,
-    requestRender: () => {
-      renderRequests += 1;
-    },
-  });
+  const host = new ChatSessionHost<never>({ style: pulseStyle, editorTheme });
   try {
     host.applyAgentEvent({ type: "agent_start" } as never);
-    assert.equal(renderRequests, 1);
-    timers.animationTick();
-    timers.animationTick();
-    assert.equal(workingLine(host), " ⠕ Working...");
+    const agentTimer = timers.capturedAnimationCallbacks()[0]!;
+    timers.advanceBy(80);
+    assert.equal(workingLine(host), " <bold>∀</bold> Working...");
 
-    const beforeFirstTurn = renderRequests;
     host.applyAgentEvent({ type: "turn_start" } as never);
-    assert.equal(renderRequests, beforeFirstTurn + 1, "turn_start requests frame zero exactly once");
-    assert.equal(timers.timeoutCount(), 0);
     assert.equal(selections, 1);
-    assert.equal(workingLine(host), " ⠁ Schlepping...");
-    assert.equal(timers.intervalCount(), 1);
-    timers.animationTick();
-    assert.equal(selections, 1);
-    assert.equal(workingLine(host), " ⠑ Schlepping...");
+    assert.equal(workingLine(host), " ∀ Schlepping...");
+    assert.equal(timers.intervalCount(), 1, "turn_start replaces rather than duplicates the timer");
+    const turnTimer = timers.capturedAnimationCallbacks()[1]!;
 
-    const beforeTurnEnd = renderRequests;
+    const beforeStaleTick = workingLine(host);
+    agentTimer();
+    assert.equal(workingLine(host), beforeStaleTick, "the replaced timer cannot advance the new turn");
+    timers.advanceBy(79);
+    assert.equal(workingLine(host), " ∀ Schlepping...");
+    timers.advanceBy(1);
+    assert.equal(workingLine(host), " <bold>∀</bold> Schlepping...");
+
     host.applyAgentEvent({ type: "turn_end" } as never);
-    assert.equal(renderRequests, beforeTurnEnd + 1, "turn_end cleanup repaints exactly once");
-    assert.equal(timers.timeoutCount(), 0);
     assert.equal(host.hasAnimationTick(), false);
+    turnTimer();
     assert.equal(workingLine(host), undefined);
-
-    const beforeNextTurn = renderRequests;
-    host.applyAgentEvent({ type: "turn_start" } as never);
-    assert.equal(renderRequests, beforeNextTurn + 1);
-    assert.equal(timers.timeoutCount(), 0);
-    assert.equal(selections, 2);
-    assert.equal(workingLine(host), " ⠁ Schlepping...");
-    assert.equal(host.hasAnimationTick(), true);
   } finally {
     host.dispose();
     timers.restore();
@@ -145,7 +116,7 @@ test("ChatSessionHost resets each literal turn once and stops between turns", ()
 });
 
 
-test("ChatSessionHost ignores stale prior-generation and disposed callbacks", () => {
+test("ChatSessionHost ignores callbacks from replaced timers and after disposal", () => {
   delete process.env.ATOMIC_REDUCED_MOTION;
   const timers = installLifecycleFakeClock();
   let renderRequests = 0;
@@ -158,30 +129,30 @@ test("ChatSessionHost ignores stale prior-generation and disposed callbacks", ()
   });
   try {
     host.applyAgentEvent({ type: "agent_start" } as never);
-    const firstGenerationTick = timers.capturedAnimationCallbacks()[0]!;
-    firstGenerationTick();
+    const replacedTick = timers.capturedAnimationCallbacks()[0]!;
+    replacedTick();
     host.applyAgentEvent({ type: "auto_retry_start" } as never);
     host.applyAgentEvent({ type: "queue_update", steering: ["queued"] } as never);
     const staleEventRender = timers.capturedEventRenderCallbacks()[0]!;
     assert.deepEqual(timers.timeoutDelays(), [80]);
     host.applyAgentEvent({ type: "auto_retry_end", success: true } as never);
     host.applyAgentEvent({ type: "turn_start" } as never);
-    const currentGenerationTick = timers.capturedAnimationCallbacks()[1]!;
+    const activeTick = timers.capturedAnimationCallbacks()[1]!;
     timers.flushEventRender();
     const baseline = renderRequests;
-    const resetLine = workingLine(host);
+    const activeLine = workingLine(host);
 
-    firstGenerationTick();
-    assert.equal(workingLine(host), resetLine);
+    replacedTick();
+    assert.equal(workingLine(host), activeLine);
     assert.equal(renderRequests, baseline);
 
-    currentGenerationTick();
-    assert.match(workingLine(host) ?? "", /^ ⠑ /);
+    activeTick();
+    assert.match(workingLine(host) ?? "", /^ ∀ /);
     assert.equal(renderRequests, baseline + 1);
 
     host.dispose();
     const afterDispose = renderRequests;
-    currentGenerationTick();
+    activeTick();
     staleEventRender();
     host.applyAgentEvent({ type: "agent_start" } as never);
     assert.equal(renderRequests, afterDispose);
@@ -248,7 +219,7 @@ test("ChatSessionHost terminal cleanup stops ordinary and compaction animation w
   }
 });
 
-test("ChatSessionHost reduced motion settles each lifecycle at the completed A without animation ticks", () => {
+test("ChatSessionHost reduced motion keeps each lifecycle at an un-emphasized identity without animation ticks", () => {
   process.env.ATOMIC_REDUCED_MOTION = "1";
   const timers = installLifecycleFakeClock();
   let renderRequests = 0;
@@ -261,7 +232,7 @@ test("ChatSessionHost reduced motion settles each lifecycle at the completed A w
     },
   });
   try {
-    assert.equal(workingLine(host), " ⣵ Working...");
+    assert.equal(workingLine(host), " ∀ Working...");
     assert.equal(host.hasAnimationTick(), false);
     host.applyAgentEvent({ type: "agent_start" } as never);
     host.applyAgentEvent({ type: "turn_start" } as never);
@@ -272,7 +243,7 @@ test("ChatSessionHost reduced motion settles each lifecycle at the completed A w
     } as never);
 
     assert.equal(host.entries().length, 1, "reduced-motion content updates before its throttled paint");
-    assert.match(workingLine(host) ?? "", /^ ⣵ /);
+    assert.match(workingLine(host) ?? "", /^ ∀ /);
     assert.equal(host.hasAnimationTick(), false);
     assert.equal(timers.intervalCount(), 0);
     assert.equal(timers.capturedAnimationCallbacks().length, 0);
@@ -281,7 +252,7 @@ test("ChatSessionHost reduced motion settles each lifecycle at the completed A w
     assert.equal(renderRequests, beforeContentEvent);
     timers.advanceBy(1);
     assert.equal(renderRequests, beforeContentEvent + 1, "content repaints at 80ms without animation");
-    assert.match(workingLine(host) ?? "", /^ ⣵ /);
+    assert.match(workingLine(host) ?? "", /^ ∀ /);
 
     host.applyAgentEvent({ type: "turn_end" } as never);
     assert.deepEqual(host.renderWorkingStatus(64), []);

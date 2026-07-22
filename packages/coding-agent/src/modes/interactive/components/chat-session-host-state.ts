@@ -12,7 +12,6 @@ import {
   ScrollableComponentViewport,
   type ChatTranscriptEntryLike,
 } from "./chat-transcript.ts";
-import { ATOMIC_WORKING_SETTLED_FRAME_INDEX } from "./atomic-working-status.ts";
 import type {
   ChatSessionHostCommands,
   ChatSessionHostEntry,
@@ -64,12 +63,8 @@ export class ChatSessionHostState<
   localBashRunning = false;
   sdkBusy = false;
   workingMessage: string | undefined;
-  workingFrame = process.env.ATOMIC_REDUCED_MOTION === "1"
-    ? ATOMIC_WORKING_SETTLED_FRAME_INDEX
-    : 0;
+  workingFrame = 0;
   workingLifecycleActive: boolean;
-  animationGeneration = 0;
-  eventRenderGeneration = 0;
   immediateEventRenderPending = false;
   disposed = false;
   pendingSteeringMessages: readonly string[] = [];

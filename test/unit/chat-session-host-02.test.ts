@@ -66,7 +66,7 @@ test("ChatSessionHost clears busy state when model fallback fails", () => {
   assert.equal(host.hasAnimationTick(), false);
   host.dispose();
 });
-test("ChatSessionHost renders the lifecycle-origin one-cell Atomic A in ordinary loader geometry", () => {
+test("ChatSessionHost renders the lifecycle-origin one-cell Atomic identity in ordinary loader geometry", () => {
   const previousReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
   delete process.env.ATOMIC_REDUCED_MOTION;
   const host = makeHost();
@@ -75,15 +75,15 @@ test("ChatSessionHost renders the lifecycle-origin one-cell Atomic A in ordinary
     const lines = host.renderWorkingStatus(64);
     assert.equal(lines.length, 2);
     assert.equal(lines[0], "");
-    assert.equal(lines[1]?.trimEnd(), " ⠁ Working...");
-    assert.deepEqual(lines[1]?.match(/[⠀-⣿]/g), ["⠁"]);
+    assert.equal(lines[1]?.trimEnd(), " ∀ Working...");
+    assert.deepEqual(lines[1]?.match(/∀/g), ["∀"]);
   } finally {
     host.dispose();
     if (previousReducedMotion === undefined) delete process.env.ATOMIC_REDUCED_MOTION;
     else process.env.ATOMIC_REDUCED_MOTION = previousReducedMotion;
   }
 });
-test("ChatSessionHost settles the Atomic A without a workflow animation tick under reduced motion", () => {
+test("ChatSessionHost keeps the Atomic identity static without a workflow animation tick under reduced motion", () => {
   const previousReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
   process.env.ATOMIC_REDUCED_MOTION = "1";
   const host = makeHost();
@@ -91,7 +91,7 @@ test("ChatSessionHost settles the Atomic A without a workflow animation tick und
     host.applyAgentEvent({ type: "agent_start" } as never);
     assert.equal(host.hasAnimationTick(), false);
     const lines = host.renderWorkingStatus(64);
-    assert.equal(lines[1]?.trimEnd(), " ⣵ Working...");
+    assert.equal(lines[1]?.trimEnd(), " ∀ Working...");
   } finally {
     host.dispose();
     if (previousReducedMotion === undefined) delete process.env.ATOMIC_REDUCED_MOTION;

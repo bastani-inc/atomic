@@ -8,25 +8,18 @@ import {
 import { theme } from "../theme/theme.ts";
 
 /**
- * One-cell Atomic A. The first six frames add one Braille dot at a time from
- * top to bottom; the remaining frames remove one dot at a time so the cycle
- * never changes by more than one pixel between adjacent frames.
- *
- * Settled 2×4 cell (`⣵`):
- *   ● ·
- *   · ●
- *   ● ●
- *   ● ●
+ * Atomic's ordinary working pulse keeps the exact one-cell `∀` identity fixed
+ * while weight alone moves through regular → bold → regular.
  */
-export const ATOMIC_WORKING_FRAMES = ["⠁", "⠑", "⠕", "⠵", "⡵", "⣵", "⡵", "⠵", "⠕", "⠑"] as const;
-export const ATOMIC_WORKING_SETTLED_FRAME_INDEX = 5;
+export const ATOMIC_WORKING_FRAMES = ["∀", "∀", "∀"] as const;
+export const ATOMIC_WORKING_BOLD_PHASES = [false, true, false] as const;
 export const ATOMIC_WORKING_FRAME_MS = 80;
-
 
 export interface AtomicWorkingStatusOptions {
 	frame?: number;
 	message?: string;
 	spinnerColor?: (text: string) => string;
+	spinnerBoldColor?: (text: string) => string;
 	messageColor?: (text: string) => string;
 }
 
@@ -42,11 +35,16 @@ export class AtomicWorkingStatusComponent implements Component {
 	}
 
 	render(width: number): string[] {
-		const frame = ATOMIC_WORKING_FRAMES[normalizedFrameIndex(this.options.frame ?? 0)];
-		const color = this.options.spinnerColor ?? ((text: string) => theme.bold(theme.fg("accent", text)));
+		const frameIndex = process.env.ATOMIC_REDUCED_MOTION === "1"
+			? 0
+			: normalizedFrameIndex(this.options.frame ?? 0);
+		const frame = ATOMIC_WORKING_FRAMES[frameIndex];
+		const color = this.options.spinnerColor ?? ((text: string) => theme.fg("accent", text));
+		const boldColor = this.options.spinnerBoldColor ?? ((text: string) => theme.bold(color(text)));
 		const messageColor = this.options.messageColor ?? ((text: string) => theme.fg("muted", text));
 		const message = this.options.message ?? "Working...";
-		return ["", ...new Text(`${color(frame)} ${messageColor(message)}`, 1, 0).render(width)];
+		const icon = ATOMIC_WORKING_BOLD_PHASES[frameIndex] ? boldColor(frame) : color(frame);
+		return ["", ...new Text(`${icon} ${messageColor(message)}`, 1, 0).render(width)];
 	}
 	invalidate(): void {}
 }
@@ -85,14 +83,13 @@ export class AtomicWorkingLoader implements Component {
 			return;
 		}
 		this.stop();
-		if (process.env.ATOMIC_REDUCED_MOTION === "1") {
-			this.frame = ATOMIC_WORKING_SETTLED_FRAME_INDEX;
-			return;
-		}
-		this.timer = setInterval(() => {
+		if (process.env.ATOMIC_REDUCED_MOTION === "1") return;
+		const timer = setInterval(() => {
+			if (this.timer !== timer || this.delegate) return;
 			this.frame = (this.frame + 1) % ATOMIC_WORKING_FRAMES.length;
 			this.ui.requestRender();
 		}, ATOMIC_WORKING_FRAME_MS);
+		this.timer = timer;
 		this.timer.unref?.();
 	}
 
@@ -111,14 +108,16 @@ export class AtomicWorkingLoader implements Component {
 	setIndicator(indicator?: LoaderIndicatorOptions): void {
 		this.stop();
 		this.delegate = indicator ? new Loader(this.ui, this.spinnerColor, this.messageColor, this.message, indicator) : undefined;
-		this.frame = process.env.ATOMIC_REDUCED_MOTION === "1" ? ATOMIC_WORKING_SETTLED_FRAME_INDEX : 0;
-		if (!this.delegate) this.start();
+		if (!this.delegate) {
+			this.frame = 0;
+			this.start();
+		}
 	}
 
 	invalidate(): void {}
 }
 
 export function atomicWorkingFrame(now = Date.now()): number {
-	if (process.env.ATOMIC_REDUCED_MOTION === "1") return ATOMIC_WORKING_SETTLED_FRAME_INDEX;
+	if (process.env.ATOMIC_REDUCED_MOTION === "1") return 0;
 	return Math.floor(now / ATOMIC_WORKING_FRAME_MS) % ATOMIC_WORKING_FRAMES.length;
 }

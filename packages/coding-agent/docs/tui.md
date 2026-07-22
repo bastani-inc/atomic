@@ -815,11 +815,11 @@ ctx.ui.setWorkingIndicator({
 // Hide the indicator entirely
 ctx.ui.setWorkingIndicator({ frames: [] });
 
-// Restore Atomic's default cumulative one-cell A
+// Restore Atomic's default one-cell identity pulse
 ctx.ui.setWorkingIndicator();
 ```
 
-This only affects the normal streaming working indicator. With no extension override, Atomic renders a one-cell Braille A immediately before one of its 453 original randomized whimsical working verbs, selected once per turn. Every agent lifecycle and SDK turn starts from the first `⠁` frame, independent of wall-clock time; the A then builds cumulatively dot by dot from top to bottom at pi-tui's canonical 80ms cadence and reverses one dot at a time for a clean cycle. Turn completion and terminal cleanup stop that lifecycle, so a later turn starts from `⠁` instead of inheriting an earlier phase. `ATOMIC_REDUCED_MOTION=1` shows the settled `⣵` A without an animation timer. The icon and longest message fit standard and 64-column widths. Factual status copy takes precedence. Compaction and retry loaders keep their plain built-in styling. During successful post-tool autocompaction, Atomic temporarily replaces the working indicator with the compaction loader and restores it before the same stream continues; no additional user input is required. Custom extension frames and intervals remain unchanged and frames render verbatim, so extensions must add their own colors when needed.
+This only affects the normal streaming working indicator. With no extension override, Atomic renders the exact one-cell `∀` immediately before one of its 453 original randomized whimsical working verbs, selected once per turn. Every agent and SDK turn starts at regular weight with a fresh lifecycle-relative 80ms cadence, then pulses regular → bold → regular without changing glyph or geometry. Turn completion and terminal cleanup stop the timer cleanly. Restoring Atomic's default after an extension override also restarts at regular weight; custom extension frames and intervals remain unchanged and render verbatim. `ATOMIC_REDUCED_MOTION=1` shows a static un-emphasized `∀` without an animation timer. The icon and longest message fit standard and 64-column widths. Factual status copy takes precedence. Compaction and retry loaders keep their plain built-in styling. During successful post-tool autocompaction, Atomic temporarily replaces the working indicator with the compaction loader and restores it before the same stream continues; no additional user input is required.
 
 **Examples:** [working-indicator.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/working-indicator.ts)
 

@@ -3,11 +3,12 @@ import { theme } from "../theme/theme.ts";
 import { atomicWorkingFrame, AtomicWorkingStatusComponent } from "./atomic-working-status.ts";
 
 export interface WorkingStatusComponentOptions {
-	/** Explicit caller-owned indicator frame; omitted uses Atomic's one-cell A. */
+	/** Explicit caller-owned indicator frame; omitted uses Atomic's one-cell identity. */
 	spinner?: string;
 	frame?: number;
 	message?: string;
 	spinnerColor?: (text: string) => string;
+	spinnerBoldColor?: (text: string) => string;
 	messageColor?: (text: string) => string;
 }
 
@@ -30,6 +31,7 @@ export class WorkingStatusComponent implements Component {
 			frame: this.options.frame ?? atomicWorkingFrame(),
 			message,
 			spinnerColor,
+			spinnerBoldColor: this.options.spinnerBoldColor,
 			messageColor,
 		}).render(width);
 	}

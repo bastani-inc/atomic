@@ -1,7 +1,4 @@
-import {
-  ATOMIC_WORKING_FRAMES,
-  ATOMIC_WORKING_SETTLED_FRAME_INDEX,
-} from "./atomic-working-status.ts";
+import { ATOMIC_WORKING_FRAMES } from "./atomic-working-status.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.ts";
 import type { ChatSessionHostState } from "./chat-session-host-state.ts";
 import { finalizeTerminalWorkflowToolEntries } from "./chat-session-host-terminal-cleanup.ts";
@@ -49,13 +46,11 @@ export function startChatSessionWorkingLifecycle<
   TExtraEntry extends ChatTranscriptEntryLike,
 >(state: ChatSessionHostState<TExtraEntry>): void {
   if (state.disposed) return;
-  invalidateChatSessionAnimation(state);
-  invalidateChatSessionEventRender(state);
+  clearChatSessionAnimation(state);
+  clearChatSessionEventRender(state);
   state.immediateEventRenderPending = true;
   state.workingLifecycleActive = true;
-  state.workingFrame = process.env.ATOMIC_REDUCED_MOTION === "1"
-    ? ATOMIC_WORKING_SETTLED_FRAME_INDEX
-    : 0;
+  state.workingFrame = 0;
 }
 
 export function stopChatSessionWorkingLifecycle<
@@ -65,24 +60,22 @@ export function stopChatSessionWorkingLifecycle<
   immediateEventRender = true,
 ): void {
   state.workingLifecycleActive = false;
-  invalidateChatSessionAnimation(state);
-  invalidateChatSessionEventRender(state);
+  clearChatSessionAnimation(state);
+  clearChatSessionEventRender(state);
   state.immediateEventRenderPending = !state.disposed && immediateEventRender;
 }
 
-function invalidateChatSessionAnimation<
+function clearChatSessionAnimation<
   TExtraEntry extends ChatTranscriptEntryLike,
 >(state: ChatSessionHostState<TExtraEntry>): void {
-  state.animationGeneration += 1;
   if (!state.animationTimer) return;
   clearInterval(state.animationTimer);
   state.animationTimer = undefined;
 }
 
-function invalidateChatSessionEventRender<
+function clearChatSessionEventRender<
   TExtraEntry extends ChatTranscriptEntryLike,
 >(state: ChatSessionHostState<TExtraEntry>): void {
-  state.eventRenderGeneration += 1;
   if (!state.renderThrottleTimer) return;
   clearTimeout(state.renderThrottleTimer);
   state.renderThrottleTimer = undefined;
@@ -95,11 +88,10 @@ export function syncChatSessionAnimationTick<
     process.env.ATOMIC_REDUCED_MOTION !== "1" &&
     (state.workingLifecycleActive || state.compacting);
   if (shouldAnimate && !state.animationTimer) {
-    const generation = state.animationGeneration;
-    state.animationTimer = setInterval(() => {
+    const timer = setInterval(() => {
       if (
         state.disposed ||
-        generation !== state.animationGeneration ||
+        state.animationTimer !== timer ||
         (!state.workingLifecycleActive && !state.compacting)
       ) {
         return;
@@ -109,12 +101,11 @@ export function syncChatSessionAnimationTick<
       }
       state.requestRender?.();
     }, ANIMATION_FRAME_MS);
+    state.animationTimer = timer;
     state.animationTimer.unref?.();
     return;
   }
-  if (!shouldAnimate && state.animationTimer) {
-    invalidateChatSessionAnimation(state);
-  }
+  if (!shouldAnimate) clearChatSessionAnimation(state);
 }
 
 export function clearChatSessionBusyForTerminalWorkflowStage<
@@ -214,11 +205,11 @@ function requestChatSessionEventRender<
   }
   if (state.animationTimer) return;
   if (state.renderThrottleTimer) return;
-  const generation = state.eventRenderGeneration;
-  state.renderThrottleTimer = setTimeout(() => {
-    if (state.disposed || generation !== state.eventRenderGeneration) return;
+  const timer = setTimeout(() => {
+    if (state.disposed || state.renderThrottleTimer !== timer) return;
     state.renderThrottleTimer = undefined;
     state.requestRender?.();
   }, STREAMING_RENDER_THROTTLE_MS);
+  state.renderThrottleTimer = timer;
   state.renderThrottleTimer.unref?.();
 }

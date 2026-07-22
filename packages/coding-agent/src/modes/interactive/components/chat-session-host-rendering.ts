@@ -91,7 +91,8 @@ export function renderChatSessionWorkingStatus<
   return new WorkingStatusComponent({
     frame: state.workingFrame,
     message: state.workingMessage ?? "Working...",
-    spinnerColor: (text) => state.style.accentBold(text),
+    spinnerColor: (text) => state.style.accent(text),
+    spinnerBoldColor: (text) => state.style.accentBold(text),
     messageColor: (text) => state.style.textMuted(text),
   }).render(width);
 }

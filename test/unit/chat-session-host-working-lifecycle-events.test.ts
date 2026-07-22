@@ -71,14 +71,14 @@ test("successful retry and fallback stay ordinary-inactive until a genuine lifec
       factual: "retrying…",
       end: { type: "auto_retry_end", success: true, attempt: 1 },
       restart: { type: "agent_start" },
-      restartedLine: " ⠁ Working...",
+      restartedLine: " ∀ Working...",
     },
     {
       start: { type: "model_fallback_start", from: "a", to: "b", reason: "quota", attempt: 1 },
       factual: "switching model…",
       end: { type: "model_fallback_end", success: true, from: "a", to: "b" },
       restart: { type: "turn_start" },
-      restartedLine: " ⠁ Schlepping...",
+      restartedLine: " ∀ Schlepping...",
     },
   ] as const;
 
@@ -95,7 +95,7 @@ test("successful retry and fallback stay ordinary-inactive until a genuine lifec
         host.applyAgentEvent({ type: "agent_start" } as never);
         host.applyAgentEvent({ type: "turn_start" } as never);
         timers.advanceBy(80);
-        assert.equal(host.renderWorkingStatus(64)[1]?.trimEnd(), " ⠑ Schlepping...");
+        assert.equal(host.renderWorkingStatus(64)[1]?.trimEnd(), " ∀ Schlepping...");
 
         const beforeFactualStart = renderRequests;
         host.applyAgentEvent(transition.start as never);
@@ -157,14 +157,14 @@ test("ordinary assistant start coalesces into the active turn animation paint", 
 
     assert.equal(host.entries().length, 1, "the assistant transcript entry updates immediately");
     assert.equal(host.entries()[0]?.role, "assistant");
-    assert.deepEqual(paintedFrames, [" ⠁ Working...", " ⠁ Schlepping..."]);
+    assert.deepEqual(paintedFrames, [" ∀ Working...", " ∀ Schlepping..."]);
     timers.advanceBy(79);
     assert.equal(paintedFrames.length, 2, "the active cadence retains its 80ms latency ceiling");
     timers.advanceBy(1);
 
     assert.deepEqual(
       paintedFrames,
-      [" ⠁ Working...", " ⠁ Schlepping...", " ⠑ Schlepping..."],
+      [" ∀ Working...", " ∀ Schlepping...", " ∀ Schlepping..."],
       "the 80ms turn tick owns the single next-frame repaint",
     );
     assert.deepEqual(timers.timeoutDelays(), [], "no parallel event throttle is registered");
@@ -249,7 +249,7 @@ test("a stale lifecycle throttle cannot detach a newer current throttle", () => 
   }
 });
 
-test("non-reduced in-flight host construction first renders the frame-zero A", () => {
+test("non-reduced in-flight host construction first renders the regular pulse phase", () => {
   const previousReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
   delete process.env.ATOMIC_REDUCED_MOTION;
   const timers = installLifecycleFakeClock();
@@ -261,11 +261,11 @@ test("non-reduced in-flight host construction first renders the frame-zero A", (
     },
   });
   try {
-    assert.equal(host.renderWorkingStatus(64)[1]?.trimEnd(), " ⠁ Working...");
+    assert.equal(host.renderWorkingStatus(64)[1]?.trimEnd(), " ∀ Working...");
     assert.deepEqual(timers.intervalDelays(), [80]);
     assert.equal(renderRequests, 0, "construction is not a synthetic lifecycle event");
     timers.advanceBy(80);
-    assert.equal(host.renderWorkingStatus(64)[1]?.trimEnd(), " ⠑ Working...");
+    assert.equal(host.renderWorkingStatus(64)[1]?.trimEnd(), " ∀ Working...");
     assert.equal(renderRequests, 1);
   } finally {
     host.dispose();
