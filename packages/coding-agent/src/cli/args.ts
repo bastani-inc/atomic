@@ -71,6 +71,19 @@ export function isValidThinkingLevel(level: string): level is ThinkingLevel {
 	return VALID_THINKING_LEVELS.includes(level as ThinkingLevel);
 }
 
+/**
+ * Insert forced option arguments (e.g. a dedicated entry point's `--mode rpc`)
+ * immediately before the first `--` end-of-options terminator, or append them
+ * when no terminator is present. Keeps the forced options parsed as options
+ * (never literal message text) while preserving last-option-wins semantics,
+ * since caller options can only appear before the terminator.
+ */
+export function insertForcedOptionsBeforeTerminator(args: string[], forced: string[]): string[] {
+	const terminatorIndex = args.indexOf("--");
+	const insertAt = terminatorIndex === -1 ? args.length : terminatorIndex;
+	return [...args.slice(0, insertAt), ...forced, ...args.slice(insertAt)];
+}
+
 export function parseArgs(args: string[]): Args {
 	const result: Args = {
 		messages: [],
