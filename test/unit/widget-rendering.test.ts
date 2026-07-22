@@ -39,7 +39,7 @@ function makeStage(
   id: string,
   name: string,
   status: StageSnapshot["status"],
-  extra?: { model?: string; thinkingLevel?: string },
+  extra?: { model?: string; thinkingLevel?: string; fastMode?: boolean },
 ): StageSnapshot {
   return {
     id,
@@ -49,6 +49,7 @@ function makeStage(
     toolEvents: [],
     ...(extra?.model !== undefined ? { model: extra.model } : {}),
     ...(extra?.thinkingLevel !== undefined ? { thinkingLevel: extra.thinkingLevel } : {}),
+    ...(extra?.fastMode !== undefined ? { fastMode: extra.fastMode } : {}),
   };
 }
 
@@ -406,60 +407,6 @@ describe("renderWidgetLines — standard form", () => {
         );
       }
     }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// renderWidgetLines — model + thinking-level transparency
-// ---------------------------------------------------------------------------
-
-describe("renderWidgetLines — model + thinking level", () => {
-  test("running single-stage task shows the active stage's model", () => {
-    const run = makeRun("t1xxxxxx", "wf-model", "running", [
-      makeStage("s1", "task", "running", { model: "openai/gpt-5" }),
-    ]);
-    const metaLine = renderWidgetLines(makeSnap([run]), 120).map(stripAnsi)[2]!;
-    assert.ok(metaLine.includes("single"), "keeps the mode segment");
-    assert.ok(metaLine.includes("openai/gpt-5"), `model shown, got: ${metaLine}`);
-  });
-
-  test("appends the thinking level after the model when set", () => {
-    const run = makeRun("t2xxxxxx", "wf-think", "running", [
-      makeStage("s1", "task", "running", { model: "openai/gpt-5", thinkingLevel: "high" }),
-    ]);
-    const metaLine = renderWidgetLines(makeSnap([run]), 120).map(stripAnsi)[2]!;
-    assert.ok(metaLine.includes("openai/gpt-5 high"), `model + thinking shown, got: ${metaLine}`);
-  });
-
-  test("omits the thinking level when off (mirrors main footer)", () => {
-    const run = makeRun("t3xxxxxx", "wf-off", "running", [
-      makeStage("s1", "task", "running", { model: "openai/gpt-5", thinkingLevel: "off" }),
-    ]);
-    const metaLine = renderWidgetLines(makeSnap([run]), 120).map(stripAnsi)[2]!;
-    assert.ok(metaLine.includes("openai/gpt-5"), "model still shown");
-    assert.ok(!metaLine.includes("off"), `"off" level is not rendered, got: ${metaLine}`);
-  });
-
-  test("chain surfaces the currently running stage's model", () => {
-    const run = makeRun("t4xxxxxx", "wf-chain", "running", [
-      makeStage("s1", "scout", "completed", { model: "anthropic/haiku" }),
-      makeStage("s2", "worker", "running", { model: "anthropic/opus", thinkingLevel: "medium" }),
-      makeStage("s3", "finish", "pending"),
-    ]);
-    const metaLine = renderWidgetLines(makeSnap([run]), 160).map(stripAnsi)[2]!;
-    assert.ok(metaLine.includes("chain"), "reads as a chain");
-    assert.ok(metaLine.includes("anthropic/opus medium"), `running stage model wins, got: ${metaLine}`);
-    assert.ok(!metaLine.includes("haiku"), "does not show a completed earlier stage's model");
-  });
-
-  test("omits the model segment entirely when no stage has recorded one", () => {
-    const run = makeRun("t5xxxxxx", "wf-none", "running", [
-      makeStage("s1", "task", "running"),
-    ]);
-    const metaLine = renderWidgetLines(makeSnap([run]), 120).map(stripAnsi)[2]!;
-    // Unchanged shape: mode (· progress) · duration, no stray separators.
-    assert.ok(metaLine.includes("single"), "still shows mode");
-    assert.doesNotMatch(metaLine, /· ·/, "no empty model segment");
   });
 });
 

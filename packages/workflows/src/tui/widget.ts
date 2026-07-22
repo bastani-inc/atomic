@@ -25,7 +25,6 @@
 import type {
   StoreSnapshot,
   RunSnapshot,
-  StageSnapshot,
 } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
@@ -37,6 +36,7 @@ import { deriveGraphTheme } from "./graph-theme.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { hexToAnsi, RESET, BOLD } from "./color-utils.js";
 import { statusIcon } from "./status-helpers.js";
+import { runModelLabel } from "./widget-model-label.js";
 
 // ---------------------------------------------------------------------------
 // Tunables
@@ -223,7 +223,9 @@ function statusFg(run: RunSnapshot, theme: GraphTheme): string {
 }
 
 function modeLabel(run: RunSnapshot): string {
-  return run.stages.length > 1 ? "chain" : "single";
+  if (run.stages.length <= 1) return "single";
+  const running = run.stages.filter((s) => s.status === "running").length;
+  return running > 1 ? "parallel" : "chain";
 }
 
 function progressLabel(run: RunSnapshot): string | undefined {
@@ -246,34 +248,6 @@ function elapsedLabel(run: RunSnapshot, now: number): string {
   }
   if (run.startedAt != null) return formatDuration(elapsedRunMs(run, now));
   return "";
-}
-
-/**
- * The stage whose model best answers "which model is running right now".
- * Prefer the actively running stage; otherwise fall back to the most recent
- * stage that recorded an effective model (covers a chain paused between
- * stages, and single-stage direct tasks).
- */
-function activeModelStage(run: RunSnapshot): StageSnapshot | undefined {
-  const running = run.stages.find((s) => s.status === "running" && s.model);
-  if (running) return running;
-  for (let i = run.stages.length - 1; i >= 0; i--) {
-    if (run.stages[i]!.model) return run.stages[i];
-  }
-  return undefined;
-}
-
-/**
- * `<model> <thinking>` for the active stage, mirroring the main-session footer
- * (thinking level is omitted when off/absent). Returns undefined when no stage
- * has recorded a model yet, so the widget simply skips the segment.
- */
-function runModelLabel(run: RunSnapshot): string | undefined {
-  const stage = activeModelStage(run);
-  const model = stage?.model;
-  if (!model) return undefined;
-  const level = stage?.thinkingLevel;
-  return level && level !== "off" ? `${model} ${level}` : model;
 }
 
 function metaLine(run: RunSnapshot, now: number): string {
