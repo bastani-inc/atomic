@@ -46,8 +46,9 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function(this: Interacti
 InteractiveModeBase.prototype.setupKeyHandlers = function(this: InteractiveModeBase): void {
     this.ui.addInputListener((data) => routeGlobalClearInput(data, {
       matchesClear: (candidate) => this.keybindings.matches(candidate, "app.clear"),
-      hasOverlay: this.ui.hasOverlay(),
-      blockingInlineCustomUiActive: this.blockingInlineCustomUiDepth > 0,
+      hasOverlay: () => this.ui.hasOverlay(),
+      blockingInlineCustomUiActive: () => this.blockingInlineCustomUiDepth > 0,
+      editorOwnsInput: () => this.editorContainer.children.includes(this.editor),
       onClear: () => this.handleCtrlC(),
       requestRender: () => this.ui.requestRender(),
     }));

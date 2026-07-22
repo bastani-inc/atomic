@@ -153,8 +153,9 @@ describe("host-native input form", () => {
 		formTui.setFocus(component);
 		formTui.addInputListener((data) => routeGlobalClearInput(data, {
 			matchesClear: (candidate) => keybindings.matches(candidate, "app.clear"),
-			hasOverlay: false,
-			blockingInlineCustomUiActive: true,
+			hasOverlay: () => false,
+			blockingInlineCustomUiActive: () => true,
+			editorOwnsInput: () => true,
 			onClear: () => { globalClears += 1; },
 			requestRender: () => {},
 		}));
@@ -171,8 +172,9 @@ describe("host-native input form", () => {
 		});
 		editorTui.addInputListener((data) => routeGlobalClearInput(data, {
 			matchesClear: (candidate) => keybindings.matches(candidate, "app.clear"),
-			hasOverlay: false,
-			blockingInlineCustomUiActive: false,
+			hasOverlay: () => false,
+			blockingInlineCustomUiActive: () => false,
+			editorOwnsInput: () => true,
 			onClear: () => { globalClears += 1; },
 			requestRender: () => {},
 		}));

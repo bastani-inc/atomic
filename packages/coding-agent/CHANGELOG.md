@@ -26,6 +26,7 @@
 - Fixed `/login` omitting extension-registered custom-auth providers in isolated interactive mode. Provider metadata now synchronizes from the engine child, and provider-owned login prompts, credential persistence, cancellation, and post-login model refresh execute across the existing isolated-engine bridge.
 - Fixed project package overrides being unable to selectively subtract or include resources from a matching global package without replacing the complete declaration.
 - Fixed Ctrl+V reporting an image error when the clipboard contained usable text, and made Ctrl+X invoke the same copy-last-assistant behavior as `/copy`.
+- Fixed a single Ctrl+C not dismissing the `/login` popups (auth-method selector, provider selector, and login dialogs), even though Escape worked and the on-screen hint promised `esc/ctrl+c cancel`. The global Ctrl+C clear/exit handler consumed the key before the focused popup could see it, so the first press silently cleared the hidden editor and a second press within the double-press window exited the entire CLI. The global handler now defers whenever an inline popup owns input (and its overlay/custom-UI guards are evaluated live instead of once at startup), so Ctrl+C reaches the focused component and cancels exactly like Escape while editor clearing and double-press exit continue to work when the editor has focus.
 
 ## [0.9.11-alpha.2] - 2026-07-21
 
