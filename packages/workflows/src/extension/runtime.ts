@@ -135,10 +135,12 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
   const jobs = opts.jobs;
   const runtimeCwd = opts.cwd ?? process.cwd();
   const resolveDefaultStageSessionDir = opts.resolveDefaultStageSessionDir;
-  let dbosReady: Promise<void> | undefined;
   const ensureDbosReady = async (): Promise<void> => {
-    dbosReady ??= initializeDurableBackend().then(() => undefined);
-    await dbosReady;
+    // Deliberately not memoized: the factory revalidates its memoized backend
+    // against the current DBOS lifecycle generation, so caching a permanently
+    // resolved promise here could mask a backend stopped after a
+    // host-session replacement (issue #1957).
+    await initializeDurableBackend();
   };
 
   function runOptions(policy?: WorkflowExecutionPolicy): RunOpts {
