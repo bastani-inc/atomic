@@ -15,7 +15,8 @@ export type DbosLifecycleState =
   | "launching"
   | "ready"
   | "failed"
-  | "shutting_down";
+  | "shutting_down"
+  | "shut_down";
 
 export class DbosDurabilityError extends Error {
   constructor(message: string, options?: ErrorOptions) {
@@ -28,6 +29,16 @@ export class DbosNotReadyError extends DbosDurabilityError {
   constructor() {
     super("DBOS workflow durability is not ready. Await initializeDurableBackend() before accessing workflows.");
     this.name = "DbosNotReadyError";
+  }
+}
+
+export class DbosShutdownError extends DbosDurabilityError {
+  constructor() {
+    super(
+      "DBOS workflow durability has been shut down in this process. "
+      + "Durable workflows can no longer start; restart Atomic to restore durability.",
+    );
+    this.name = "DbosShutdownError";
   }
 }
 type DbosConfigurator = () => Promise<ConfiguredDbosDurability>;
@@ -78,6 +89,10 @@ export async function configureDbosOnce(): Promise<ConfiguredDbosDurability> {
 
 export async function launchDbosOnce(): Promise<void> {
   if (failure !== undefined) throw failure;
+  // The executor is process-scoped and stops exactly once, at process exit.
+  // Post-shutdown launches must fail loudly instead of returning a backend
+  // whose SDK launched marker has been cleared.
+  if (state === "shutting_down" || state === "shut_down") throw new DbosShutdownError();
   const durability = await configureDbosOnce();
   launchPromise ??= (async () => {
     state = "launching";
@@ -133,12 +148,23 @@ export async function shutdownDbos(): Promise<void> {
     state = "shutting_down";
     await durability.backend.flush();
     await durability.shutdown();
+    state = "shut_down";
   })().catch((error: unknown) => {
     failure = durabilityFailure("shutdown", error);
     state = "failed";
     throw failure;
   });
   await shutdownPromise;
+}
+
+/**
+ * Flush queued durable writes without stopping the process-scoped executor.
+ * Used at process-preserving host-session boundaries (`/new`, `/resume`,
+ * `/fork`, `/reload`) where the DBOS executor must stay launched.
+ */
+export async function flushDbos(): Promise<void> {
+  if (state !== "ready" || active === undefined) return;
+  await active.backend.flush();
 }
 
 export function dbosLifecycleState(): DbosLifecycleState {

@@ -62,9 +62,13 @@ jobs:
             - name: Mintlify docs validation
               if: runner.os == 'Linux' && github.event_name == 'pull_request'
               working-directory: packages/coding-agent/docs
+              # Pinned: mintlify@4.2.732 depends on @mintlify/editor@0.0.246,
+              # which is missing from the npm registry (404) and breaks
+              # `bunx mintlify@latest` for every PR. Unpin once upstream
+              # publishes a resolvable release.
               run: |
-                  bunx --bun mintlify@latest validate
-                  bunx --bun mintlify@latest broken-links
+                  bunx --bun mintlify@4.2.731 validate
+                  bunx --bun mintlify@4.2.731 broken-links
             - name: Build @bastani/atomic package
               working-directory: packages/coding-agent
               run: bun run build

@@ -26,9 +26,11 @@ export {
 export {
   DbosDurabilityError,
   DbosNotReadyError,
+  DbosShutdownError,
   configureDbosOnce,
   launchDbosOnce,
   getReadyDbosBackend,
+  flushDbos,
   shutdownDbos,
 } from "./dbos-lifecycle.js";
 export {

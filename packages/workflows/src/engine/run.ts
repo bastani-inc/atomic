@@ -47,6 +47,7 @@ import { finalizeDurableTerminalStatus } from "./run-durable-finalize.js";
 import { createDurableStageSessionRecorder } from "./run-durable-stage-session.js";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { createDurableCachedStageRecorder, createDurableStageDeps } from "./run-durable-topology.js";
+import { admitDurableRootRun, durableRootRegistrationForRun } from "./run-durable-admission.js";
 
 type WorkflowRunInputArgument = Parameters<typeof resolveAndValidateInputs>[1];
 
@@ -312,18 +313,11 @@ export async function run<
     },
     runWorkflow: run,
   });
-  const durableRootWorkflowRegistration = {
-    workflowId: runId,
-    name: def.name,
-    inputs: resolvedInputs as Record<string, import("../shared/types.js").WorkflowSerializableValue>,
-    createdAt: runSnapshot.startedAt,
-    status: "running" as const,
-    rootWorkflowId: runId,
-    resumable: true,
-    ...(opts.persistence !== undefined ? { sessionFile: undefined } : {}),
-  };
-  const shouldRegisterDurableRoot = opts.parentRun === undefined
-    && (opts.continuation === undefined || opts.continuation.source.id !== runId);
+  const durableRootRegistration = durableRootRegistrationForRun({
+    runId, name: def.name, inputs: resolvedInputs, createdAt: runSnapshot.startedAt,
+    hasPersistence: opts.persistence !== undefined, isChildRun: opts.parentRun !== undefined,
+    continuationSourceId: opts.continuation?.source.id,
+  });
   const tool = createToolPrimitive({
     workflowId: runId,
     backend: durableBackend,
@@ -408,11 +402,11 @@ export async function run<
       }
     }
 
-    if (shouldRegisterDurableRoot) {
-      durableBackend.registerWorkflow({ ...durableRootWorkflowRegistration, ...workflowInvocationMetadata(inputRuntimeDefaults, workflowInvocationCwd, gitWorktreeSetupCache) });
-    } else if (opts.parentRun === undefined) {
-      durableBackend.setWorkflowStatus(runId, "running");
-    }
+    await admitDurableRootRun({
+      backend: durableBackend, runId, isChildRun: opts.parentRun !== undefined,
+      registration: durableRootRegistration === undefined ? undefined
+        : { ...durableRootRegistration, ...workflowInvocationMetadata(inputRuntimeDefaults, workflowInvocationCwd, gitWorktreeSetupCache) },
+    });
     if (opts.deferWorkflowStart === true) opts.onWorkflowStartReady?.();
     const rawResult = await runWorkflowDefinitionCallback(def.name, runId, () => def.run(ctx));
     if (ownController.signal.aborted) {

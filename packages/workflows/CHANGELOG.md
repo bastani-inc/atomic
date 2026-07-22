@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Workflow prompt guidance now instructs agents to give each workflow invocation its own intercom group by default — unless the user requests otherwise — by minting one invocation-scoped literal group name inside the workflow's `run` function (e.g. `"myflow-" + randomUUID()`) and passing it via the `group` option on each stage, task, or parallel step that should share it; `group: true`/`"auto"` mints one shared UUID group per `ctx.parallel(...)` set but a fresh UUID per non-parallel stage. This keeps stage and subagent intercom chatter isolated from the parent chat and other concurrent runs, since ungrouped sessions all share the `"default"` group; subagent inheritance, capability gating, and cross-group `contact_supervisor` escalation are unchanged.
 
+### Fixed
+
+- Fixed host-session replacement (`/new`, `/resume`, `/fork`, `/reload`) leaving the process-global DBOS executor stopped so every subsequent workflow run in the same Atomic process failed at its first durable checkpoint with `` `DBOS.launch()` must be called before running workflows ``. The DBOS executor lifetime is now process-scoped: process-preserving session boundaries flush pending durable writes but keep the executor launched, and SDK shutdown is reserved for actual process exit (`quit`/`beforeExit`), which still flushes and shuts down exactly once. Defense in depth: the durable-backend factory revalidates its memoized backend against the current DBOS lifecycle generation and never hands out a stopped backend (post-shutdown initialization fails loudly instead of silently degrading to a non-durable backend), the extension runtime no longer caches a permanently resolved readiness promise across lifecycle generations, and root workflow registration is durably flushed before startup admission so a stopped or unhealthy backend fails before workflow code executes any side effects. ([#1957](https://github.com/bastani-inc/atomic/issues/1957))
+
 ## [0.9.11-alpha.2] - 2026-07-21
 
 ### Fixed

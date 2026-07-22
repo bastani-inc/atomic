@@ -12,7 +12,7 @@ import type { ExtensionAPI } from "./public-types.js";
 import type { WorkflowExtensionRuntimeState } from "./extension-runtime-state.js";
 import { deAdvertiseAskUserQuestionWhenHeadless, formatStartupDiagnostics } from "./workflow-command-surfaces.js";
 import { inFlightRunCount } from "./workflow-targets.js";
-import { shutdownDbos } from "../durable/dbos-lifecycle.js";
+import { flushDbos, shutdownDbos } from "../durable/dbos-lifecycle.js";
 
 let processShutdownInstalled = false;
 
@@ -25,6 +25,19 @@ function shutdownDbosQuietly(): Promise<void> {
   return shutdownDbos().catch((error: unknown) => {
     const detail = error instanceof Error ? error.message : String(error);
     console.error(`atomic-workflows: DBOS durability shutdown failed: ${detail}`);
+  });
+}
+
+/**
+ * Process-preserving host-session boundaries (`/new`, `/resume`, `/fork`,
+ * `/reload`) must NOT stop the process-scoped DBOS executor: the replacement
+ * session reuses it for subsequent workflow runs. Flush pending durable
+ * writes instead, and reserve SDK shutdown for actual process exit.
+ */
+function flushDbosQuietly(): Promise<void> {
+  return flushDbos().catch((error: unknown) => {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(`atomic-workflows: DBOS durability flush failed: ${detail}`);
   });
 }
 
@@ -135,6 +148,7 @@ export function registerWorkflowLifecycleHandlers(
     deps.storeWidgetRef.current = null;
     runtimeState.resetWorkflowDiscoveryForSession();
     runtimeState.setNotificationsActive(false);
-    await shutdownDbosQuietly();
+    if (reason === "quit") await shutdownDbosQuietly();
+    else await flushDbosQuietly();
   });
 }

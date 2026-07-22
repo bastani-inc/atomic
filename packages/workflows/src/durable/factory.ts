@@ -3,6 +3,8 @@
 import { InMemoryDurableBackend, type DurableWorkflowBackend } from "./backend.js";
 import {
   DbosNotReadyError,
+  DbosShutdownError,
+  dbosLifecycleState,
   getReadyDbosBackend,
   getReadyDbosBackendSync,
 } from "./dbos-lifecycle.js";
@@ -11,9 +13,22 @@ let injectedBackend: DurableWorkflowBackend | undefined;
 let initializedBackend: DurableWorkflowBackend | undefined;
 let initializing: Promise<DurableWorkflowBackend> | undefined;
 
+/**
+ * A memoized backend is only reusable while its lifecycle generation is
+ * healthy. The in-memory degraded backend has no external lifecycle; a
+ * persistent (DBOS) backend is usable only while the process-scoped DBOS
+ * executor is still `ready` — never after shutdown.
+ */
+function isMemoizedBackendUsable(backend: DurableWorkflowBackend): boolean {
+  return !backend.persistent || dbosLifecycleState() === "ready";
+}
+
 /** Return the injected test backend or the process-wide initialized backend. */
 export function getDurableBackend(): DurableWorkflowBackend {
-  const backend = injectedBackend ?? initializedBackend ?? getReadyDbosBackendSync();
+  const memoized = initializedBackend !== undefined && isMemoizedBackendUsable(initializedBackend)
+    ? initializedBackend
+    : undefined;
+  const backend = injectedBackend ?? memoized ?? getReadyDbosBackendSync();
   if (backend === undefined) throw new DbosNotReadyError();
   return backend;
 }
@@ -44,9 +59,20 @@ export function createInMemoryTestBackend(): InMemoryDurableBackend {
  */
 export async function initializeDurableBackend(): Promise<DurableWorkflowBackend> {
   if (injectedBackend !== undefined) return injectedBackend;
-  if (initializedBackend !== undefined) return initializedBackend;
+  if (initializedBackend !== undefined) {
+    if (isMemoizedBackendUsable(initializedBackend)) return initializedBackend;
+    // Never hand out a backend from a stopped lifecycle generation.
+    initializedBackend = undefined;
+    initializing = undefined;
+  }
   initializing ??= getReadyDbosBackend()
-    .catch((error: unknown) => degradeToNonDurableBackend(error))
+    .catch((error: unknown) => {
+      // Post-shutdown initialization is a process-exit race, not a
+      // provisioning failure: fail loudly instead of silently degrading to a
+      // non-durable backend.
+      if (error instanceof DbosShutdownError) throw error;
+      return degradeToNonDurableBackend(error);
+    })
     .then((backend) => {
       initializedBackend = backend;
       return backend;
