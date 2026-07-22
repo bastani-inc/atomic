@@ -122,6 +122,7 @@ export async function createAgentSession(
     ? join(agentDir, "models.json")
     : undefined;
   const modelRegistry =
+    options.modelRuntime?.modelRegistry ??
     options.modelRegistry ??
     ModelRegistry.create(options.authStorage ?? AuthStorage.create(authPath), modelsPath);
   // Restore persisted provider-owned catalogs before any synchronous model reads.
@@ -352,13 +353,12 @@ export async function createAgentSession(
       const timeoutMs = streamOptions?.timeoutMs ?? providerRetrySettings.timeoutMs ?? effectiveTimeoutMs;
       const websocketConnectTimeoutMs =
         streamOptions?.websocketConnectTimeoutMs ?? settingsManager.getWebSocketConnectTimeoutMs();
-      const attributionHeaders = mergeProviderAttributionHeaders(
-        model,
-        settingsManager,
-        streamOptions?.sessionId,
-        auth.headers,
-        streamOptions?.headers,
+      const mergedHeaders = mergeProviderAttributionHeaders(
+        model, settingsManager, streamOptions?.sessionId, auth.headers, streamOptions?.headers,
       );
+      const headerRunner = extensionRunnerRef.current;
+      const attributionHeaders = headerRunner?.hasHandlers("before_provider_headers")
+        ? await headerRunner.emitBeforeProviderHeaders(mergedHeaders ?? {}) : mergedHeaders;
       const fastModeEnabled = isCodexFastModeEnabled(model);
       const codexFastModeStreamOptions = withCodexFastModeStreamOptions(
         {

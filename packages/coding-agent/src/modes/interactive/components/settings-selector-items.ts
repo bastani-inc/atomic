@@ -68,6 +68,13 @@ function insertUiToggles(items: SettingItem[], config: SettingsConfig): void {
 		values: ["0", "1", "2", "3"],
 	});
 	insertAfter(items, "editor-padding", {
+		id: "output-padding",
+		label: "Output padding",
+		description: "Horizontal padding for rendered chat output (0-1)",
+		currentValue: String(config.outputPad),
+		values: ["0", "1"],
+	});
+	insertAfter(items, "output-padding", {
 		id: "autocomplete-max-visible",
 		label: "Autocomplete max items",
 		description: "Max visible items in autocomplete dropdown (3-20)",
@@ -86,6 +93,13 @@ function insertUiToggles(items: SettingItem[], config: SettingsConfig): void {
 		label: "Terminal progress",
 		description: "Show OSC 9;4 progress indicators in the terminal tab bar",
 		currentValue: config.showTerminalProgress ? "true" : "false",
+		values: ["true", "false"],
+	});
+	insertAfter(items, "terminal-progress", {
+		id: "cache-miss-notices",
+		label: "Cache miss notices",
+		description: "Show notices when a large prompt cache miss is detected",
+		currentValue: config.showCacheMissNotices ? "true" : "false",
 		values: ["true", "false"],
 	});
 }

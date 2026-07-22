@@ -1,4 +1,5 @@
 import type {
+	EntryRenderer,
 	Extension,
 	ExtensionFlag,
 	MessageRenderer,
@@ -60,6 +61,14 @@ export function findMessageRenderer(extensions: Extension[], customType: string)
 		if (renderer) {
 			return renderer;
 		}
+	}
+	return undefined;
+}
+
+export function findEntryRenderer(extensions: Extension[], customType: string): EntryRenderer | undefined {
+	for (const ext of extensions) {
+		const renderer = ext.entryRenderers.get(customType);
+		if (renderer) return renderer;
 	}
 	return undefined;
 }

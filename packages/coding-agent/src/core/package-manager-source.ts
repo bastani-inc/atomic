@@ -127,20 +127,24 @@ export function dedupePackages(
 	context: PackageManagerContext,
 	packages: Array<{ pkg: PackageSource; scope: SourceScope }>,
 ): Array<{ pkg: PackageSource; scope: SourceScope }> {
-	const seen = new Map<string, { pkg: PackageSource; scope: SourceScope }>();
-
+	const result: Array<{ pkg: PackageSource; scope: SourceScope }> = [];
+	const seen = new Map<string, number>();
 	for (const entry of packages) {
-		const sourceStr = getPackageSourceString(entry.pkg);
-		const identity = getPackageIdentity(context, sourceStr, entry.scope);
-		const existing = seen.get(identity);
-		if (!existing) {
-			seen.set(identity, entry);
-		} else if (entry.scope === "project" && existing.scope === "user") {
-			seen.set(identity, entry);
+		const identity = getPackageIdentity(context, getPackageSourceString(entry.pkg), entry.scope);
+		const index = seen.get(identity);
+		if (index === undefined) {
+			seen.set(identity, result.length);
+			result.push(entry);
+			continue;
+		}
+		const existing = result[index];
+		if (existing?.scope === "project" && entry.scope === "user") {
+			if (typeof existing.pkg === "object" && existing.pkg.autoload === false) result.push(entry);
+		} else if (entry.scope === "project") {
+			result[index] = entry;
 		}
 	}
-
-	return Array.from(seen.values());
+	return result;
 }
 
 export function buildNoMatchingPackageMessage(

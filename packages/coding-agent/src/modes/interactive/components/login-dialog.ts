@@ -1,4 +1,4 @@
-import type { OAuthDeviceCodeInfo } from "@earendil-works/pi-ai";
+import type { AuthInfoLink, OAuthDeviceCodeInfo } from "@earendil-works/pi-ai";
 import { getOAuthProviderDescriptors } from "../../../core/oauth-provider-bridge.ts";
 import { Container, type Focusable, getKeybindings, Input, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
 import { openBrowser } from "../../../utils/open-browser.ts";
@@ -210,18 +210,26 @@ export class LoginDialogComponent extends Container implements Focusable {
 		});
 	}
 
-	/**
-	 * Show informational text without prompting for input.
-	 */
-	showInfo(lines: string[]): void {
+	/** Show static informational details and a close hint. */
+	showDetails(lines: string[]): void {
 		this.contentContainer.clear();
 		this.authCancelHint = undefined;
 		this.contentContainer.addChild(new Spacer(1));
-		for (const line of lines) {
-			this.contentContainer.addChild(new Text(line, 1, 0));
-		}
+		for (const line of lines) this.contentContainer.addChild(new Text(line, 1, 0));
 		this.contentContainer.addChild(new Spacer(1));
 		this.contentContainer.addChild(new Text(`(${keyHint("tui.select.cancel", "Close")})`, 1, 0));
+		this.tui.requestRender();
+	}
+
+	/** Show provider-owned information and terminal hyperlinks. */
+	showInfo(message: string, links: readonly AuthInfoLink[] = []): void {
+		this.contentContainer.addChild(new Spacer(1));
+		this.contentContainer.addChild(new Text(theme.fg("text", message), 1, 0));
+		for (const link of links) {
+			const text = link.label ? `${link.label}: ${link.url}` : link.url;
+			const hyperlink = `\x1b]8;;${link.url}\x07${text}\x1b]8;;\x07`;
+			this.contentContainer.addChild(new Text(theme.fg("accent", hyperlink), 1, 0));
+		}
 		this.tui.requestRender();
 	}
 

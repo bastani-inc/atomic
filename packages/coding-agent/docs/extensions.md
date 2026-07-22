@@ -573,15 +573,17 @@ The `systemPromptOptions` field gives extensions access to the same structured d
 
 Inside `before_agent_start`, `event.systemPrompt` and `ctx.getSystemPrompt()` both reflect the chained system prompt as of the current handler. Later `before_agent_start` handlers can still modify it again.
 
-#### agent_start / agent_end
+#### agent_start / agent_end / agent_settled
 
-Fired once per user prompt.
+`agent_start` begins a low-level run. `agent_end` fires when that run ends, but Atomic may still retry, compact and retry, or deliver queued follow-ups. Use `agent_settled` when a status integration needs to know Atomic has no automatic continuation left.
 
 ```typescript
 pi.on("agent_start", async (_event, ctx) => {});
-
 pi.on("agent_end", async (event, ctx) => {
-  // event.messages - messages from this prompt
+  // event.messages - messages from this low-level run
+});
+pi.on("agent_settled", async (_event, ctx) => {
+  // ctx.isIdle() is true unless another extension started a run.
 });
 ```
 
@@ -668,6 +670,17 @@ pi.on("context", async (event, ctx) => {
   // event.messages - deep copy, safe to modify
   const filtered = event.messages.filter(m => !shouldPrune(m));
   return { messages: filtered };
+});
+```
+
+#### before_provider_headers
+
+Fires after outgoing HTTP headers are assembled. Mutate `event.headers` to add, override, or remove headers. The event also identifies the provider and model.
+
+```typescript
+pi.on("before_provider_headers", (event, ctx) => {
+  event.headers["x-session-id"] = ctx.sessionManager.getSessionId();
+  delete event.headers["x-remove-me"];
 });
 ```
 
@@ -1471,6 +1484,21 @@ pi.on("session_start", async (_event, ctx) => {
 });
 ```
 
+Appending emits `entry_appended` with the durable entry. This lets extensions react to session entries without polling.
+
+### pi.registerEntryRenderer(customType, renderer)
+
+Register a TUI renderer for durable custom entries created by `pi.appendEntry()`. These entries render in the transcript but do not enter model context.
+
+```typescript
+import { Text } from "@earendil-works/pi-tui";
+
+pi.registerEntryRenderer("status-card", (entry, { expanded }, theme) =>
+  new Text(theme.fg("accent", `${expanded ? "Details" : "Status"}: ${JSON.stringify(entry.data)}`), 0, 0)
+);
+```
+
+
 ### pi.setSessionName(name)
 
 Set the session display name (shown in session selector instead of first message).
@@ -1676,6 +1704,10 @@ Shared event bus for communication between extensions:
 pi.events.on("my:event", (data) => { ... });
 pi.events.emit("my:event", { ... });
 ```
+
+### Native providers
+
+In addition to `registerProvider(name, config)`, extensions can register a complete native `Provider` from `@earendil-works/pi-ai` with `pi.registerProvider(provider)`. Use the native overload for provider-owned authentication, catalog refresh, and transport behavior; use the config overload for ordinary proxies and custom endpoints.
 
 ### pi.registerProvider(name, config)
 

@@ -6,6 +6,7 @@ import { resolvePath } from "../utils/paths.ts";
 import { AuthStorage } from "./auth-storage.ts";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
 import { ModelRegistry } from "./model-registry.ts";
+import type { ModelRuntime } from "./model-runtime.ts";
 import {
 	DefaultResourceLoader,
 	type DefaultResourceLoaderOptions,
@@ -42,6 +43,7 @@ export interface CreateAgentSessionServicesOptions {
 	authStorage?: AuthStorage;
 	settingsManager?: SettingsManager;
 	modelRegistry?: ModelRegistry;
+	modelRuntime?: ModelRuntime;
 	extensionFlagValues?: Map<string, boolean | string>;
 	resourceLoaderOptions?: Omit<DefaultResourceLoaderOptions, "cwd" | "agentDir" | "settingsManager">;
 	resourceLoaderReloadOptions?: ResourceLoaderReloadOptions;
@@ -144,14 +146,14 @@ export async function createAgentSessionServices(
 	const cwd = resolvePath(options.cwd);
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getAgentDir();
 	const authStorageSpan = startTimingSpan("createAgentSessionServices.authStorage");
-	const authStorage = options.authStorage ?? AuthStorage.create(join(agentDir, "auth.json"));
+	const authStorage = options.modelRuntime?.authStorage ?? options.authStorage ?? AuthStorage.create(join(agentDir, "auth.json"));
 	endTimingSpan(authStorageSpan);
 	const settingsSpan = startTimingSpan("createAgentSessionServices.settingsManager");
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
 	endTimingSpan(settingsSpan);
 	const modelRegistrySpan = startTimingSpan("createAgentSessionServices.modelRegistry");
 	const modelsJsonPaths = agentDir === getAgentDir() ? getAgentConfigPaths("models.json") : join(agentDir, "models.json");
-	const modelRegistry = options.modelRegistry ?? ModelRegistry.create(authStorage, modelsJsonPaths);
+	const modelRegistry = options.modelRuntime?.modelRegistry ?? options.modelRegistry ?? ModelRegistry.create(authStorage, modelsJsonPaths);
 	endTimingSpan(modelRegistrySpan);
 	const resourceLoader = new DefaultResourceLoader({
 		...(options.resourceLoaderOptions ?? {}),
@@ -166,14 +168,15 @@ export async function createAgentSessionServices(
 	const diagnostics: AgentSessionRuntimeDiagnostic[] = [];
 	const providerSpan = startTimingSpan("createAgentSessionServices.providerRegistrations");
 	const extensionsResult = resourceLoader.getExtensions();
-	for (const { name, config, extensionPath } of extensionsResult.runtime.pendingProviderRegistrations) {
+	for (const registration of extensionsResult.runtime.pendingProviderRegistrations) {
 		try {
-			modelRegistry.registerProvider(name, config);
+			if ("provider" in registration) modelRegistry.registerProvider(registration.provider);
+			else modelRegistry.registerProvider(registration.name, registration.config);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			diagnostics.push({
 				type: "error",
-				message: `Extension "${extensionPath}" error: ${message}`,
+				message: `Extension "${registration.extensionPath}" error: ${message}`,
 			});
 		}
 	}

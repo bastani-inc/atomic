@@ -31,6 +31,8 @@ export interface SettingsConfig {
 	treeFilterMode: TreeFilterMode;
 	showHardwareCursor: boolean;
 	editorPaddingX: number;
+	outputPad: 0 | 1;
+	showCacheMissNotices: boolean;
 	autocompleteMaxVisible: number;
 	quietStartup: boolean;
 	defaultProjectTrust: DefaultProjectTrust;
@@ -61,6 +63,8 @@ export interface SettingsCallbacks {
 	onTreeFilterModeChange: (mode: TreeFilterMode) => void;
 	onShowHardwareCursorChange: (enabled: boolean) => void;
 	onEditorPaddingXChange: (padding: number) => void;
+	onOutputPadChange: (padding: 0 | 1) => void;
+	onShowCacheMissNoticesChange: (enabled: boolean) => void;
 	onAutocompleteMaxVisibleChange: (maxVisible: number) => void;
 	onQuietStartupChange: (enabled: boolean) => void;
 	onDefaultProjectTrustChange: (defaultProjectTrust: DefaultProjectTrust) => void;

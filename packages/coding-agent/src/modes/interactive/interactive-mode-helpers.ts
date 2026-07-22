@@ -1,4 +1,5 @@
-import { APP_NAME, BUILT_IN_PROVIDER_DISPLAY_NAMES, BUILTIN_SLASH_COMMANDS, defaultModelPerProvider, fs, getProviders, SessionManager, Text, type Api, type Model } from "./interactive-mode-deps.ts";
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import { APP_NAME, BUILTIN_SLASH_COMMANDS, defaultModelPerProvider, fs, SessionManager, Text, type Api, type Model } from "./interactive-mode-deps.ts";
 import type { Expandable } from "./interactive-mode-types.ts";
 
 export function isExpandable(obj: unknown): obj is Expandable {
@@ -121,18 +122,12 @@ export function hasDefaultModelProvider(
 
 export const BEDROCK_PROVIDER_ID = "amazon-bedrock";
 
-const BUILT_IN_MODEL_PROVIDERS = new Set<string>(getProviders());
-
+/** @deprecated Login options are now built directly from provider auth metadata. */
 export function isApiKeyLoginProvider(
   providerId: string,
   oauthProviderIds: ReadonlySet<string>,
-  builtInProviderIds: ReadonlySet<string> = BUILT_IN_MODEL_PROVIDERS,
+  _builtInProviderIds?: ReadonlySet<string>,
 ): boolean {
-  if (BUILT_IN_PROVIDER_DISPLAY_NAMES[providerId]) {
-    return true;
-  }
-  if (builtInProviderIds.has(providerId)) {
-    return false;
-  }
-  return !oauthProviderIds.has(providerId);
+  const builtin = builtinProviders().find((provider) => provider.id === providerId);
+  return builtin ? builtin.auth.apiKey !== undefined : !oauthProviderIds.has(providerId);
 }

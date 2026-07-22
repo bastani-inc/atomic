@@ -20,6 +20,7 @@ export function isDevVersion(version: string): boolean {
 export interface LatestPiRelease {
 	version: string;
 	packageName?: string;
+	note?: string;
 }
 
 export function comparePackageVersions(leftVersion: string, rightVersion: string): number | undefined {
@@ -52,12 +53,11 @@ export async function getLatestPiRelease(
 	});
 	if (!response.ok) return undefined;
 
-	const data = (await response.json()) as { name?: unknown; version?: unknown };
-	if (typeof data.version !== "string" || !data.version.trim()) {
-		return undefined;
-	}
+	const data = (await response.json()) as { name?: unknown; version?: unknown; note?: unknown };
+	if (typeof data.version !== "string" || !data.version.trim()) return undefined;
 	const packageName = typeof data.name === "string" && data.name.trim() ? data.name.trim() : undefined;
-	return { version: data.version.trim(), packageName };
+	const note = typeof data.note === "string" && data.note.trim() ? data.note.trim() : undefined;
+	return { version: data.version.trim(), packageName, ...(note ? { note } : {}) };
 }
 
 export async function getLatestPiVersion(

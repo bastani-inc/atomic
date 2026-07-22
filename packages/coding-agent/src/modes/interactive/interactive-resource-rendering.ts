@@ -25,7 +25,7 @@ InteractiveModeBase.prototype.showLoadedResources = function(this: InteractiveMo
       options?.extensions ??
       this.session.resourceLoader
         .getExtensions()
-        .extensions.map((extension) => ({
+        .extensions.filter((extension) => extension.hidden !== true).map((extension) => ({
           path: extension.path,
           sourceInfo: extension.sourceInfo,
         }));

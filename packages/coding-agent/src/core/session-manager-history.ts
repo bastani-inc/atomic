@@ -16,6 +16,41 @@ export function getLatestCompactionBoundaryEntry(
 	return null;
 }
 
+/** Convert one durable session entry into the messages it contributes to model context. */
+export function sessionEntryToContextMessages(entry: SessionEntry): AgentMessage[] {
+	if (entry.type === "message") return [normalizeMessageContent(entry.message)];
+	if (entry.type === "custom_message") {
+		return [createCustomMessage(entry.customType, entry.content, entry.display, entry.details, entry.timestamp, entry.excludeFromContext)];
+	}
+	if (entry.type === "branch_summary" && entry.summary.length > 0) {
+		return [createBranchSummaryMessage(entry.summary, entry.fromId, entry.timestamp)];
+	}
+	if (entry.type === "compaction") {
+		const details = (entry as CompactionEntry<{ strategy?: string }>).details;
+		if (details?.strategy === "verbatim-lines") {
+			return [createVerbatimCompactionMessage(entry.summary, entry.tokensBefore, entry.timestamp, entry.details as VerbatimCompactionDetails)];
+		}
+	}
+	return [];
+}
+
+/** Return the active branch entries after applying the latest compaction boundary. */
+export function buildContextEntries(
+	entries: SessionEntry[],
+	leafId?: string | null,
+	byId = new Map(entries.map((entry) => [entry.id, entry])),
+): SessionEntry[] {
+	if (leafId === null) return [];
+	const leaf = leafId ? byId.get(leafId) : entries[entries.length - 1];
+	if (!leaf) return [];
+	const path = normalizeDerivedSessionEntries(getBranchPath(leaf.id, byId));
+	const boundary = getLatestCompactionBoundaryEntry(path);
+	if (!boundary) return path;
+	const boundaryIndex = path.findIndex((entry) => entry.id === boundary.id);
+	const firstKeptIndex = path.findIndex((entry, index) => index < boundaryIndex && entry.id === boundary.firstKeptEntryId);
+	return [boundary, ...(firstKeptIndex >= 0 ? path.slice(firstKeptIndex, boundaryIndex) : []), ...path.slice(boundaryIndex + 1)];
+}
+
 
 /**
  * Build the session context from entries using tree traversal.

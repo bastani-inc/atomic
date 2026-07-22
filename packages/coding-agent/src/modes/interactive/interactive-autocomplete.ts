@@ -2,6 +2,7 @@ import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { type Api, type Model, type AutocompleteItem, type AutocompleteProvider, type AutocompleteSuggestions, type SlashCommand, type ExtensionRunner, type ResourceDiagnostic, type SourceInfo, CombinedAutocompleteProvider, fuzzyFilter, hasSupportedCodexFastModeModel, BUILTIN_SLASH_COMMANDS, BUNDLED_EXTENSION_SLASH_COMMANDS, parseGitUrl, getModelSearchText } from "./interactive-mode-deps.ts";
 import { BUILTIN_SLASH_COMMAND_NAMES } from "./interactive-mode-helpers.ts";
 import { getInteractiveEngineRemoteCommandCompletions, getInteractiveEngineRemoteCommands } from "../interactive-engine/extension-ui-bridge.ts";
+import { getLoginProviderCompletions } from "./login-provider-options.ts";
 
 const AT_MENTION_PATH_DELIMITERS = new Set([" ", "\t", '"', "'", "="]);
 
@@ -223,6 +224,7 @@ InteractiveModeBase.prototype.createBaseAutocompleteProvider = function(this: In
       (command) => command.name !== "fast" || this.hasCodexFastModeSupportedModels(),
     ).map((command) => ({
       name: command.name,
+      argumentHint: command.argumentHint,
       description: command.description,
       getArgumentCompletions: command.getArgumentCompletions,
     }));
@@ -261,6 +263,12 @@ InteractiveModeBase.prototype.createBaseAutocompleteProvider = function(this: In
           description: item.provider,
         }));
       };
+    }
+
+    const loginCommand = slashCommands.find((command) => command.name === "login");
+    if (loginCommand) {
+      loginCommand.getArgumentCompletions = (prefix: string) =>
+        getLoginProviderCompletions(this.getLoginProviderOptions(), prefix);
     }
 
     // Convert prompt templates to SlashCommand format for autocomplete

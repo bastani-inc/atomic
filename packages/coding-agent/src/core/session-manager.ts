@@ -1,5 +1,5 @@
 export { SessionManager } from "./session-manager-core.ts";
-export { buildSessionContext, getLatestCompactionBoundaryEntry } from "./session-manager-history.ts";
+export { buildContextEntries, buildSessionContext, getLatestCompactionBoundaryEntry, sessionEntryToContextMessages } from "./session-manager-history.ts";
 export { migrateSessionEntries, parseSessionEntries } from "./session-manager-migrations.ts";
 export { getDefaultSessionDir } from "./session-manager-paths.ts";
 export { findMostRecentSession, isInternalHeader, loadEntriesFromFile } from "./session-manager-storage.ts";

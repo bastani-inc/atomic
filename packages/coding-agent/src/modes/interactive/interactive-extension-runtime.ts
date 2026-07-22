@@ -1,5 +1,6 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { type KeyId, type Component, type LoaderIndicatorOptions, type ExtensionContext, type ExtensionRunner, type ExtensionWidgetOptions, Container, Loader, matchesKey, Text, TUI, AssistantMessageComponent, keyText, Theme, theme } from "./interactive-mode-deps.ts";
+import { mountIdleStatus } from "./components/idle-status.ts";
 
 InteractiveModeBase.prototype.setupExtensionShortcuts = function(this: InteractiveModeBase, extensionRunner: ExtensionRunner): void {
     const shortcuts = extensionRunner.getShortcuts(
@@ -78,11 +79,13 @@ InteractiveModeBase.prototype.createWorkingLoader = function(this: InteractiveMo
   };
 
 InteractiveModeBase.prototype.stopWorkingLoader = function(this: InteractiveModeBase): void {
+    const hadLoader = this.loadingAnimation !== undefined;
     if (this.loadingAnimation) {
       this.loadingAnimation.stop();
       this.loadingAnimation = undefined;
     }
     this.statusContainer.clear();
+    if (hadLoader) mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
   };
 
 InteractiveModeBase.prototype.showWorkingLoaderNow = function(this: InteractiveModeBase): void {

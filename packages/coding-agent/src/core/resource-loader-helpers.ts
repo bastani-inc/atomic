@@ -17,6 +17,7 @@ function clonePackageSource(source: PackageSource): PackageSource {
 	}
 	return {
 		source: source.source,
+		...(source.autoload === undefined ? {} : { autoload: source.autoload }),
 		...(source.extensions === undefined ? {} : { extensions: [...source.extensions] }),
 		...(source.skills === undefined ? {} : { skills: [...source.skills] }),
 		...(source.prompts === undefined ? {} : { prompts: [...source.prompts] }),

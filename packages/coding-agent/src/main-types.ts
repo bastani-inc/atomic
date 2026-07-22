@@ -1,9 +1,9 @@
 import type { Terminal } from "@earendil-works/pi-tui";
-import type { ExtensionFactory } from "./core/extensions/types.ts";
+import type { InlineExtension } from "./core/extensions/types.ts";
 import type { InteractiveMode } from "./modes/index.ts";
 
 export interface MainOptions {
-	extensionFactories?: ExtensionFactory[];
+	extensionFactories?: InlineExtension[];
 	builtinPackagePaths?: string[];
 	internalInteractiveHarness?: {
 		forceInteractive: true;

@@ -1,3 +1,4 @@
+import { mountIdleStatus } from "./components/idle-status.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { type ExtensionCommandContext, Loader, Spacer, APP_NAME, MissingSessionCwdError, SessionManager, keyText, SessionSelectorComponent, TreeSelectorComponent, TrustSelectorComponent, hasTrustRequiringProjectResources, ProjectTrustStore, theme } from "./interactive-mode-deps.ts";
 
@@ -190,6 +191,7 @@ InteractiveModeBase.prototype.showTreeSelector = async function(this: Interactiv
             if (summaryLoader) {
               summaryLoader.stop();
               this.statusContainer.clear();
+              mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
             }
             this.defaultEditor.onEscape = originalOnEscape;
           }
@@ -267,6 +269,7 @@ InteractiveModeBase.prototype.handleResumeSession = async function(this: Interac
       this.loadingAnimation = undefined;
     }
     this.statusContainer.clear();
+    mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
     try {
       const result = await this.runtimeHost.switchSession(sessionPath, {
         withSession: options?.withSession,

@@ -28,6 +28,8 @@ import type { VerbatimCompactionResult } from "./compaction/index.ts";
 
 export type AgentSessionEvent =
 	| AgentEvent
+	| { type: "agent_settled" }
+	| { type: "entry_appended"; entry: import("./session-manager.ts").SessionEntry }
 	| {
 			type: "queue_update";
 			steering: readonly string[];

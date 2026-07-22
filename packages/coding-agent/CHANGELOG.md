@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a built-in, hidden llama.cpp router provider with `/login llama.cpp`, `LLAMA_BASE_URL`/`LLAMA_API_KEY` configuration, loaded-model discovery, and the `/llama` manager for load, unload, cancellation, reconnect, and Hugging Face GGUF download workflows.
+- Added provider-metadata-driven `/login` choices, direct `/login <provider>` routing and autocomplete, provider-owned login information links, API-key login for Qwen Token Plan, Radius, and GitHub Copilot, plus preferred defaults for Radius, NVIDIA, and ZAI Coding Plan China.
+- Added global `httpProxy`, duration-string and `"disabled"` HTTP idle timeouts, package `autoload: false` project deltas, Kimi deferred-tool compatibility, `oauth: "radius"` custom gateways, and global/project scope switching in `atomic config` (`-l` starts in project scope).
+- Added extension lifecycle hooks `before_provider_headers` and `agent_settled`, durable `entry_appended` events and `registerEntryRenderer()`, complete native `Provider` registration, and named/hidden `InlineExtension` descriptors.
+- Added the public `ModelRuntime` facade and associated option types, `readStoredCredential`, `InlineExtension`, entry-renderer/event types, and session context conversion helpers to the SDK/package-root surface. Atomic intentionally continues to expose Search rather than adding obsolete grep compatibility aliases.
+- Added Ctrl+X copy-last-message, clipboard text fallback when image paste finds no image, restored footer branch/session/experimental/extension-status segments, Output padding and Cache miss notices settings, and clear-on-shrink idle placeholders.
+- Added durable cache-miss attribution and waste totals, complete per-model session usage/cost breakdowns including tool and summary work, and optional live/resumed cache-miss transcript notices.
+- Added Atomic's first-run theme preview and explicit analytics opt-in. Analytics settings and a local tracking identifier are persisted only when selected; this change does not transmit analytics data.
+
+### Changed
+
+- Login provider discovery now follows registered provider authentication capabilities instead of using display names as an allowlist, so newly installed native providers automatically expose their supported OAuth and API-key methods.
+- Dynamic provider catalogs, including Radius `pi-messages`, are restored and refreshed through the provider-owned model store; documentation now distinguishes generic custom-provider APIs from the broader installed native API surface.
+- Package self-update now honors advisory release notes, pins the exact advertised package and version, reports version transitions, and cleans stale Windows native-dependency quarantine data during ordinary startup.
+- Interactive session diagnostics now show cache hit rate, wasted cache cost, and provider/model usage costs; the footer includes usage spent by tool results and summaries.
+
+### Fixed
+
+- Fixed Qwen Token Plan global/China, Radius API-key, and GitHub Copilot token methods being hidden from first-time `/login`, which kept otherwise installed models out of `/model` and `--list-models`.
+- Fixed project package overrides being unable to selectively subtract or include resources from a matching global package without replacing the complete declaration.
+- Fixed Ctrl+V reporting an image error when the clipboard contained usable text, and made Ctrl+X invoke the same copy-last-assistant behavior as `/copy`.
+
 ## [0.9.11-alpha.2] - 2026-07-21
 
 ### Added

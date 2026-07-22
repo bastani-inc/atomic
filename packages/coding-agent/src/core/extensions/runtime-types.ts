@@ -1,4 +1,5 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { Provider } from "@earendil-works/pi-ai";
 import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai/compat";
 import type { KeyId } from "@earendil-works/pi-tui";
 import type { CustomMessage } from "../messages.ts";
@@ -13,7 +14,7 @@ import type {
 	ExtensionContext,
 	ReplacedSessionContext,
 } from "./context-types.ts";
-import type { MessageRenderer, SendMessageOptions, SendMessagesOptions } from "./message-types.ts";
+import type { EntryRenderer, MessageRenderer, SendMessageOptions, SendMessagesOptions } from "./message-types.ts";
 import type { ProviderConfig } from "./provider-types.ts";
 import type { ToolDefinition, ToolInfo } from "./tool-types.ts";
 
@@ -85,7 +86,7 @@ export type SetLabelHandler = (entryId: string, label: string | undefined) => vo
 export interface ExtensionRuntimeState {
 	flagValues: Map<string, boolean | string>;
 	/** Provider registrations queued during extension loading, processed when runner binds */
-	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; extensionPath: string }>;
+	pendingProviderRegistrations: Array<{ provider: Provider; extensionPath: string } | { name: string; config: ProviderConfig; extensionPath: string }>;
 	/** Throws when this extension instance is stale after runtime replacement. */
 	assertActive: () => void;
 	/** Marks this extension instance as stale after runtime replacement or reload. */
@@ -96,7 +97,7 @@ export interface ExtensionRuntimeState {
 	 * Before bindCore(): queues registrations / removes from queue.
 	 * After bindCore(): calls ModelRegistry directly for immediate effect.
 	 */
-	registerProvider: (name: string, config: ProviderConfig, extensionPath?: string) => void;
+	registerProvider: ((name: string, config: ProviderConfig, extensionPath?: string) => void) & ((provider: Provider, extensionPath?: string) => void);
 	unregisterProvider: (name: string, extensionPath?: string) => void;
 }
 
@@ -175,11 +176,13 @@ export interface ExtensionRuntime extends ExtensionRuntimeState, ExtensionAction
 /** Loaded extension with all registered items. */
 export interface Extension {
 	path: string;
+	hidden?: boolean;
 	resolvedPath: string;
 	sourceInfo: SourceInfo;
 	handlers: Map<string, HandlerFn[]>;
 	tools: Map<string, RegisteredTool>;
 	messageRenderers: Map<string, MessageRenderer>;
+	entryRenderers: Map<string, EntryRenderer>;
 	commands: Map<string, RegisteredCommand>;
 	flags: Map<string, ExtensionFlag>;
 	shortcuts: Map<KeyId, ExtensionShortcut>;
