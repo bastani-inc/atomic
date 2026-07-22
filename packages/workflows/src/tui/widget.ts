@@ -34,7 +34,6 @@ import { deriveGraphTheme } from "./graph-theme.js";
 import { renderRunIdentityRows } from "./run-identity-rows.js";
 import { statusColor, statusIcon } from "./status-helpers.js";
 import type { PiTheme } from "./store-widget-installer.js";
-import { runModelLabel } from "./widget-model-label.js";
 
 // ---------------------------------------------------------------------------
 // Tunables
@@ -191,9 +190,7 @@ function statusFg(run: RunSnapshot, theme: GraphTheme, allRuns: readonly RunSnap
 }
 
 function modeLabel(run: RunSnapshot): string {
-	if (run.stages.length <= 1) return "single";
-	const running = run.stages.filter((stage) => stage.status === "running").length;
-	return running > 1 ? "parallel" : "chain";
+	return run.stages.length > 1 ? "chain" : "single";
 }
 
 function progressLabel(run: RunSnapshot): string | undefined {
@@ -225,8 +222,6 @@ function metaLine(run: RunSnapshot, now: number): string {
 	if (isQuitRun(run)) return "quit · resumable via /workflow resume";
 	if (effectiveRunStatus(run) === "blocked") return "blocked · resumable via /workflow resume";
 	const parts: string[] = [modeLabel(run)];
-	const model = runModelLabel(run);
-	if (model) parts.push(model);
 	const prog = progressLabel(run);
 	if (prog) parts.push(prog);
 	const elapsed = elapsedLabel(run, now);
