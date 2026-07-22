@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { VerbatimCompactionResult } from "../src/core/compaction/index.ts";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
+import type { SessionEntry } from "../src/core/session-manager.ts";
 import { createVerbatimCompactionMessage, VERBATIM_COMPACTION_PREFIX } from "../src/core/messages.ts";
 import { CompactionBoundaryMessageComponent } from "../src/modes/interactive/components/compaction-boundary-message.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
@@ -71,6 +72,13 @@ const persistedContextMessages = [
 ];
 
 function makeMode(messages: AgentMessage[] = persistedContextMessages) {
+	const entries: SessionEntry[] = messages.map((message, index) => ({
+		type: "message",
+		id: `m${index}`,
+		parentId: index === 0 ? null : `m${index - 1}`,
+		timestamp: new Date(index).toISOString(),
+		message,
+	}));
 	const workingLoaders: Array<Text & { stop: ReturnType<typeof vi.fn> }> = [];
 	const chatContainer = new Container();
 	const startupNoticesContainer = new Container();
@@ -97,10 +105,14 @@ function makeMode(messages: AgentMessage[] = persistedContextMessages) {
 		sessionManager: {
 			getCwd: () => process.cwd(),
 			buildSessionContext: () => ({ messages, thinkingLevel: "off", model: null }),
+			getEntries: () => entries,
+			getLeafId: () => entries.at(-1)?.id ?? null,
 		},
 		session: { abortCompaction: vi.fn(), extensionRunner: { getMessageRenderer: () => undefined } },
 		settingsManager: {
 			getShowTerminalProgress: () => false,
+			getClearOnShrink: () => false,
+			getShowCacheMissNotices: () => false,
 			getShowImages: () => false,
 			getImageWidthCells: () => 80,
 		},
@@ -121,13 +133,14 @@ function makeMode(messages: AgentMessage[] = persistedContextMessages) {
 		showWorkingLoaderNow: Reflect.get(InteractiveMode.prototype, "showWorkingLoaderNow"),
 		attachStartupNoticesContainer: Reflect.get(InteractiveMode.prototype, "attachStartupNoticesContainer"),
 		renderSessionContext: vi.fn(Reflect.get(InteractiveMode.prototype, "renderSessionContext")),
+		renderSessionEntries: vi.fn(Reflect.get(InteractiveMode.prototype, "renderSessionEntries")),
 		addRenderedChatEntry: Reflect.get(InteractiveMode.prototype, "addRenderedChatEntry"),
 		chatMessageRenderOptions: Reflect.get(InteractiveMode.prototype, "chatMessageRenderOptions"),
 		renderDeferredUserInput: Reflect.get(InteractiveMode.prototype, "renderDeferredUserInput"),
 		rebuildChatFromMessages: Reflect.get(InteractiveMode.prototype, "rebuildChatFromMessages"),
 		addCompactionBoundaryToChat: vi.fn(Reflect.get(InteractiveMode.prototype, "addCompactionBoundaryToChat")),
 	};
-	return { mode, chatContainer, workingLoaders };
+	return { mode, chatContainer, workingLoaders, entries };
 }
 
 async function emit(mode: object, event: CompactionStartEvent | CompactionEndEvent | AgentEndEvent): Promise<void> {
@@ -256,12 +269,11 @@ describe("InteractiveMode compaction events", () => {
 			display: false,
 			timestamp: 3,
 		} as AgentMessage;
-		const { mode, chatContainer } = makeMode([persistedBoundary, retainedAlias, hiddenAlias]);
+		const { mode, chatContainer, entries } = makeMode([persistedBoundary, retainedAlias, hiddenAlias]);
 
 		await emit(mode, { type: "compaction_end", reason: "threshold", result, aborted: false, willRetry: false });
 
-		const renderedContext = mode.renderSessionContext.mock.calls[0]?.[0];
-		expect(renderedContext?.messages).toEqual([retainedAlias, hiddenAlias]);
+		expect(mode.renderSessionEntries).toHaveBeenCalledWith(entries, { suppressCompactionBoundary: result });
 		expect(visibleBoundaries(chatContainer)).toHaveLength(1);
 		expect(renderedText(chatContainer).match(/✻ Context compacted/g)).toHaveLength(1);
 		expect(renderedText(chatContainer)).toContain("extension-owned state");

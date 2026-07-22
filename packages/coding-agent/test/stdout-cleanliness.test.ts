@@ -21,12 +21,14 @@ async function runCliInProject(
 	args: string[],
 	options: { agentDir: string; projectDir: string },
 ): Promise<{ stdout: string; stderr: string; code: number | null }> {
+	const env = { ...process.env };
+	delete env.ATOMIC_INTERACTIVE_ENGINE_CHILD;
+	delete env.ATOMIC_INTERACTIVE_ENGINE_HOST_PID;
+	delete env.ATOMIC_INTERACTIVE_ENGINE_GUARD_FILE;
+	delete env.ATOMIC_INTERACTIVE_ENGINE_API_KEY;
 	return await runCliProcess(args, {
 		cwd: options.projectDir,
-		env: {
-			...process.env,
-			[ENV_AGENT_DIR]: options.agentDir,
-		},
+		env: { ...env, [ENV_AGENT_DIR]: options.agentDir },
 	});
 }
 

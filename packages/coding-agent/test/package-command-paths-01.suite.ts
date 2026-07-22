@@ -68,10 +68,6 @@ describe("package commands", () => {
     expect(process.exitCode ?? 0).toBe(0);
   }
 
-  function getNewerPatchVersion(): string {
-    const [major = "0", minor = "0", patch = "0"] = VERSION.split(".");
-    return `${major}.${minor}.${Number.parseInt(patch, 10) + 1}`;
-  }
 
   beforeEach(() => {
     tempDir = join(
@@ -362,7 +358,7 @@ describe("package commands", () => {
       errorSpy.mockRestore();
     }
   });
-  it("uses global npmCommand and current package name for forced self updates without checking the api", async () => {
+  it("uses the update check version for forced self updates even when current", async () => {
     const globalPrefix = join(tempDir, "global-prefix");
     const projectPrefix = join(tempDir, "project-prefix");
     const selfPackageDir = join(
@@ -413,7 +409,7 @@ else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
       value: join(selfPackageDir, "dist", "cli.js"),
       configurable: true,
     });
-    const fetchMock = vi.fn(async () => Response.json({}));
+    const fetchMock = vi.fn(async () => Response.json({ version: VERSION }));
     vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
 
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -426,70 +422,16 @@ else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
 
       expectSuccessfulExitCode();
       expect(errorSpy).not.toHaveBeenCalled();
-      expect(fetchMock).not.toHaveBeenCalled();
-      const recordedArgs = JSON.parse(
-        readFileSync(recordPath, "utf-8"),
-      ) as string[];
-      expect(recordedArgs).toContain(globalPrefix);
-      expect(recordedArgs).toContain(PACKAGE_NAME);
-      expect(recordedArgs).not.toContain(projectPrefix);
-    } finally {
-      logSpy.mockRestore();
-      errorSpy.mockRestore();
-    }
-  });
-  it("uses the current package name when the update check omits packageName", async () => {
-    const globalPrefix = join(tempDir, "global-prefix");
-    const selfPackageDir = join(
-      globalPrefix,
-      "lib",
-      "node_modules",
-      "@bastani",
-      "atomic",
-    );
-    const fakeNpmPath = join(tempDir, "fake-npm.cjs");
-    const recordPath = join(tempDir, "self-update.json");
-    mkdirSync(selfPackageDir, { recursive: true });
-    writeFileSync(
-      fakeNpmPath,
-      `const fs=require("node:fs"),path=require("node:path"),args=process.argv.slice(2),prefix=args[args.indexOf("--prefix")+1];
-if(args.includes("root")) console.log(path.join(prefix,"lib","node_modules"));
-else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
-`,
-    );
-    writeFileSync(
-      join(agentDir, "settings.json"),
-      JSON.stringify(
-        {
-          npmCommand: [originalExecPath, fakeNpmPath, "--prefix", globalPrefix],
-        },
-        null,
-        2,
-      ),
-    );
-    process.env.ATOMIC_PACKAGE_DIR = selfPackageDir;
-    Object.defineProperty(process, "execPath", {
-      value: join(selfPackageDir, "dist", "cli.js"),
-      configurable: true,
-    });
-    const fetchMock = vi.fn(async () =>
-      Response.json({ version: getNewerPatchVersion() }),
-    );
-    vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
-
-    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-    try {
-      await expect(main(["update", "--self"])).resolves.toBeUndefined();
-
-      expectSuccessfulExitCode();
-      expect(errorSpy).not.toHaveBeenCalled();
       expect(fetchMock).toHaveBeenCalledOnce();
       const recordedArgs = JSON.parse(
         readFileSync(recordPath, "utf-8"),
       ) as string[];
-      expect(recordedArgs).toContain(PACKAGE_NAME);
+      expect(recordedArgs).toContain(globalPrefix);
+      expect(recordedArgs).toContain(`${PACKAGE_NAME}@${VERSION}`);
+      expect(recordedArgs).not.toContain(PACKAGE_NAME);
+      expect(recordedArgs).not.toContain(projectPrefix);
+      const stdout = logSpy.mock.calls.map(([message]) => String(message)).join("\n");
+      expect(stdout).toContain(`Updated atomic from ${VERSION} to ${VERSION}`);
     } finally {
       logSpy.mockRestore();
       errorSpy.mockRestore();

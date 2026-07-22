@@ -12,7 +12,12 @@ export type ConfigWriteScope = "global" | "project";
 export type ScopedResolvedPaths = Record<ConfigWriteScope, ResolvedPaths>;
 
 class ConfigSelectorHeader implements Component {
-	constructor(private writeScope: ConfigWriteScope, private readonly projectModeAvailable: boolean) {}
+	private writeScope: ConfigWriteScope;
+	private readonly projectModeAvailable: boolean;
+	constructor(writeScope: ConfigWriteScope, projectModeAvailable: boolean) {
+		this.writeScope = writeScope;
+		this.projectModeAvailable = projectModeAvailable;
+	}
 	setWriteScope(scope: ConfigWriteScope): void { this.writeScope = scope; }
 	invalidate(): void {}
 	render(width: number): string[] {

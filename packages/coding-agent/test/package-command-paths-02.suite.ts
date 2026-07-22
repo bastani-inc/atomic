@@ -183,7 +183,7 @@ else {
       ) as string[][];
       expect(recordedCalls).toEqual([
         expect.arrayContaining(["uninstall", "-g", PACKAGE_NAME]),
-        expect.arrayContaining(["install", "-g", activePackageName]),
+        expect.arrayContaining(["install", "-g", `${activePackageName}@0.73.0`]),
       ]);
     } finally {
       logSpy.mockRestore();
@@ -258,7 +258,7 @@ if(args.includes("install")) process.exit(23);
       ) as string[][];
       expect(recordedCalls).toEqual([
         expect.arrayContaining(["uninstall", "-g", PACKAGE_NAME]),
-        expect.arrayContaining(["install", "-g", activePackageName]),
+        expect.arrayContaining(["install", "-g", `${activePackageName}@0.73.0`]),
       ]);
     } finally {
       logSpy.mockRestore();
@@ -295,6 +295,49 @@ if(args.includes("install")) process.exit(23);
     } finally {
       errorSpy.mockRestore();
       logSpy.mockRestore();
+    }
+  });
+  it("uses the current package name when the update check omits packageName", async () => {
+    const targetVersion = getNewerPatchVersion();
+    const globalPrefix = join(tempDir, "global-prefix");
+    const selfPackageDir = join(globalPrefix, "lib", "node_modules", "@bastani", "atomic");
+    const fakeNpmPath = join(tempDir, "fake-npm.cjs");
+    const recordPath = join(tempDir, "self-update.json");
+    mkdirSync(selfPackageDir, { recursive: true });
+    writeFileSync(
+      fakeNpmPath,
+      `const fs=require("node:fs"),path=require("node:path"),args=process.argv.slice(2),prefix=args[args.indexOf("--prefix")+1];
+if(args.includes("root")) console.log(path.join(prefix,"lib","node_modules"));
+else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
+`,
+    );
+    writeFileSync(
+      join(agentDir, "settings.json"),
+      JSON.stringify({ npmCommand: [originalExecPath, fakeNpmPath, "--prefix", globalPrefix] }, null, 2),
+    );
+    process.env.ATOMIC_PACKAGE_DIR = selfPackageDir;
+    Object.defineProperty(process, "execPath", {
+      value: join(selfPackageDir, "dist", "cli.js"),
+      configurable: true,
+    });
+    const fetchMock = vi.fn(async () => Response.json({ version: targetVersion }));
+    vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await expect(main(["update", "--self"])).resolves.toBeUndefined();
+      expectSuccessfulExitCode();
+      expect(errorSpy).not.toHaveBeenCalled();
+      expect(fetchMock).toHaveBeenCalledOnce();
+      const recordedArgs = JSON.parse(readFileSync(recordPath, "utf-8")) as string[];
+      expect(recordedArgs).toContain(`${PACKAGE_NAME}@${targetVersion}`);
+      expect(recordedArgs).not.toContain(PACKAGE_NAME);
+      const stdout = logSpy.mock.calls.map(([message]) => String(message)).join("\n");
+      expect(stdout).toContain(`Updated atomic from ${VERSION} to ${targetVersion}`);
+    } finally {
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
     }
   });
 });

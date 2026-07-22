@@ -44,9 +44,12 @@ function sessionWithFastMode(
 	} as unknown as AgentSession;
 }
 
-const footerData = {
+const footerData: ReadonlyFooterDataProvider = {
+	getGitBranch: () => null,
+	getExtensionStatuses: () => new Map(),
 	getAvailableProviderCount: () => 1,
-} as unknown as ReadonlyFooterDataProvider;
+	onBranchChange: () => () => {},
+};
 
 describe("FooterComponent Codex fast mode indicator", () => {
 	it("shows fast after the model name when chat fast mode applies", () => {

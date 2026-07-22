@@ -218,6 +218,22 @@ describe("detectInstallMethod", () => {
 		});
 	});
 
+	test("self-updates exact npm versions without uninstalling the current package", () => {
+		const { prefix } = createNpmPrefixInstall();
+		const installSpec = "@bastani/atomic@1.2.3";
+
+		const command = getSelfUpdateCommand("@bastani/atomic", undefined, {
+			packageName: "@bastani/atomic",
+			installSpec,
+		});
+
+		expect(command).toEqual({
+			command: "npm",
+			args: ["--prefix", prefix, "install", "-g", "--ignore-scripts", "--min-release-age=0", installSpec],
+			display: `npm --prefix ${prefix} install -g --ignore-scripts --min-release-age=0 ${installSpec}`,
+		});
+	});
+
 	test("self-update respects configured npmCommand", () => {
 		const { prefix } = createNpmPrefixInstall();
 
