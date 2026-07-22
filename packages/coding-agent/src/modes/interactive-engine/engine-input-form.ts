@@ -40,7 +40,7 @@ export class EngineInputFormService {
 		};
 		signal?.addEventListener("abort", onAbort, { once: true });
 		this.active.set(componentId, record);
-		this.send({ type: "engine_input_form_open", componentId, title: request.title, fields: request.fields.map((field) => ({ ...field, choices: field.choices ? [...field.choices] : undefined })) });
+		this.send({ type: "engine_input_form_open", componentId, title: request.title, fields: request.fields.map((field) => ({ ...field, choices: field.choices ? [...field.choices] : undefined })), ...(request.heading !== undefined ? { heading: request.heading } : {}), ...(request.submitLabel !== undefined ? { submitLabel: request.submitLabel } : {}) });
 		return result;
 	}
 

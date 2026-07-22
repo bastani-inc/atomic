@@ -34,7 +34,7 @@ export class InputFormHostController {
 			return;
 		}
 		if (message.type === "engine_input_form_open") {
-			this.open(message.componentId, { title: message.title, fields: message.fields });
+			this.open(message.componentId, { title: message.title, fields: message.fields, ...(message.heading !== undefined ? { heading: message.heading } : {}), ...(message.submitLabel !== undefined ? { submitLabel: message.submitLabel } : {}) });
 		}
 	}
 

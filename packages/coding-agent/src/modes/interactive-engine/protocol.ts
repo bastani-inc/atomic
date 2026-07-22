@@ -66,7 +66,7 @@ export type InteractiveEngineMessage =
 	| { type: "engine_session_picker_update"; componentId: string; sessions: HostSessionPickerRow[] }
 	| { type: "engine_session_picker_error"; componentId: string; message: string }
 	| { type: "engine_session_picker_close"; componentId: string }
-	| { type: "engine_input_form_open"; componentId: string; title: string; fields: HostInputFormField[] }
+	| { type: "engine_input_form_open"; componentId: string; title: string; fields: HostInputFormField[]; heading?: string; submitLabel?: string }
 	| { type: "engine_input_form_close"; componentId: string };
 export type InteractiveEngineCommand =
 	| { type: "engine_custom_render"; componentId: string; requestId: number; width: number; rows: number }
@@ -269,7 +269,14 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 		case "engine_input_form_open": {
 			const fields = parseInputFormFields(value.fields);
 			return typeof value.componentId === "string" && typeof value.title === "string" && fields
-				? { type: value.type, componentId: value.componentId, title: value.title, fields } : undefined;
+				? {
+					type: value.type,
+					componentId: value.componentId,
+					title: value.title,
+					fields,
+					...(typeof value.heading === "string" ? { heading: value.heading } : {}),
+					...(typeof value.submitLabel === "string" ? { submitLabel: value.submitLabel } : {}),
+				} : undefined;
 		}
 		default: return undefined;
 	}

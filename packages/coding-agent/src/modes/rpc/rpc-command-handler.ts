@@ -155,8 +155,10 @@ export function createRpcCommandHandler({
 						prompt: async (prompt) => {
 							const values = await inputForm.open({
 								title: prompt.message,
+								heading: "PROVIDER LOGIN",
+								submitLabel: "[ Submit ]",
 								fields: [{
-									name: "value", type: "string", required: true, initialValue: "",
+									name: "value", type: "string", required: false, initialValue: "",
 									placeholder: prompt.placeholder,
 								}],
 							}, controller.signal);

@@ -86,6 +86,10 @@ export interface HostInputFormField {
 export interface HostInputFormRequest {
 	title: string;
 	fields: HostInputFormField[];
+	/** Panel heading label. Defaults to "WORKFLOW INPUTS". */
+	heading?: string;
+	/** Submit button label. Defaults to "[ Run workflow ]". */
+	submitLabel?: string;
 }
 
 /**
