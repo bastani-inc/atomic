@@ -14,6 +14,7 @@ import {
 } from "./rpc-responses.ts";
 import type { KeybindingsReloadCoordinator } from "./rpc-keybindings-reload.ts";
 import { handleProviderLogin, type ProviderLoginInput } from "./rpc-provider-login.ts";
+import { toRpcModel, toRpcScopedModels } from "./rpc-model.ts";
 import type { RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand } from "./rpc-types.ts";
 
 export type RpcCommandHandler = (command: RpcCommand) => Promise<RpcResponse | undefined>;
@@ -99,7 +100,7 @@ export function createRpcCommandHandler({
 
 			case "get_state": {
 				const state: RpcSessionState = {
-					model: session.model,
+					model: session.model ? toRpcModel(session.model) : undefined,
 					thinkingLevel: session.thinkingLevel,
 					isStreaming: session.isStreaming,
 					isCompacting: session.isCompacting,
@@ -129,6 +130,7 @@ export function createRpcCommandHandler({
 						command.provider,
 						command.modelId,
 						session.modelRegistry.requiresExactSelectionPersistence(command.provider),
+						command.providerSelection,
 					);
 				} catch (error) {
 					return createRpcErrorResponse(id, "set_model", formatRpcErrorMessage(error));
@@ -137,12 +139,12 @@ export function createRpcCommandHandler({
 					return createRpcErrorResponse(id, "set_model", `Model not authenticated: ${command.provider}/${command.modelId}`);
 				}
 				await session.setModel(model);
-				return createRpcSuccessResponse(id, "set_model", session.model ?? model);
+				return createRpcSuccessResponse(id, "set_model", toRpcModel(session.model ?? model));
 			}
 
 			case "cycle_model": {
 				const result = await session.cycleModel(command.direction);
-				return createRpcSuccessResponse(id, "cycle_model", result ?? null);
+				return createRpcSuccessResponse(id, "cycle_model", result ? { ...result, model: toRpcModel(result.model) } : null);
 			}
 
 			case "get_available_models": {
@@ -150,8 +152,8 @@ export function createRpcCommandHandler({
 					await session.modelRegistry.prepareRequiredProviders({ allowNetwork: !isOfflineModeEnabled(), explicit: true });
 					const models = await session.modelRegistry.getAvailable();
 					return createRpcSuccessResponse(id, "get_available_models", {
-						models,
-						scopedModels: session.scopedModels,
+						models: models.map(toRpcModel),
+						scopedModels: toRpcScopedModels(session.scopedModels),
 						customAuthProviders: session.modelRegistry.getCustomApiKeyAuthProviders(),
 					});
 				} catch (error) {
@@ -169,7 +171,11 @@ export function createRpcCommandHandler({
 
 			case "logout_provider": {
 				const result = await runtimeHost.logoutProvider(command.provider);
-				return createRpcSuccessResponse(id, "logout_provider", result);
+				return createRpcSuccessResponse(id, "logout_provider", {
+					...result,
+					models: result.models.map(toRpcModel),
+					...(result.scopedModels ? { scopedModels: toRpcScopedModels(result.scopedModels) } : {}),
+				});
 			}
 			case "refresh_models": {
 				session.modelRegistry.authStorage.reload();
@@ -182,8 +188,8 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "refresh_models", {
 					aborted: result.aborted,
 					errors: [...result.errors].map(([provider, error]) => ({ provider, message: error.message })),
-					models: session.modelRegistry.getAvailable(),
-					scopedModels: session.scopedModels,
+					models: session.modelRegistry.getAvailable().map(toRpcModel),
+					scopedModels: toRpcScopedModels(session.scopedModels),
 					customAuthProviders: session.modelRegistry.getCustomApiKeyAuthProviders(),
 				});
 			}

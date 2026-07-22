@@ -223,6 +223,19 @@ Switch to a specific model.
 {"type": "set_model", "provider": "anthropic", "modelId": "claude-sonnet-4-20250514"}
 ```
 
+Models that require provider-owned exact identity include a JSON-safe `providerSelection` record in model-bearing RPC responses. Return that record unchanged when selecting the model:
+
+```json
+{
+  "type": "set_model",
+  "provider": "cursor",
+  "modelId": "claude-4-sonnet",
+  "providerSelection": {"version": 1, "provider": "cursor", "accountScope": "...", "routeId": "claude-4-sonnet", "maxMode": "absent", "occurrence": 2}
+}
+```
+
+The server treats `providerSelection` only as an identity claim and resolves it against the current authenticated catalog; clients cannot override model routing or transport metadata. Omitting it remains backward compatible for ordinary providers and unique exact-provider rows, but duplicate exact rows are rejected as ambiguous.
+
 Response contains the full [Model](#model) object:
 ```json
 {
@@ -276,6 +289,8 @@ Response contains an array of full [Model](#model) objects:
   }
 }
 ```
+
+Each listed model may contain the optional `providerSelection` identity record described under [`set_model`](#set_model). The same projection is used by `get_state`, `set_model`, `cycle_model`, `refresh_models`, `login_provider`, `logout_provider`, and `model_changed` events, so exact identity survives every model-bearing RPC round trip. This record may be transient for the lifetime of the current authenticated catalog and must not be persisted by clients.
 
 #### refresh_models
 
@@ -1478,6 +1493,8 @@ Source files and installed definitions:
 ```
 
 `contextWindow` is the active/effective token budget used by Atomic's local budgeting, footer/stats, and compaction logic. `defaultContextWindow` is the model's scalar default before a session/runtime override, and `contextWindowOptions` lists selectable token budgets when the model supports more than one size. RPC clients can read/select the active runtime budget with `get_available_context_windows` and `set_context_window`; the runtime command does not persist context-window defaults to settings.
+
+RPC model objects may also include `providerSelection`, a provider-owned, versioned JSON object that distinguishes otherwise identical catalog rows. Treat it as opaque and return it unchanged to `set_model`; Atomic validates it against the current authoritative catalog before selection.
 
 ### UserMessage
 

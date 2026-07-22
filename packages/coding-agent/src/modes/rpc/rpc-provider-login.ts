@@ -1,5 +1,6 @@
 import type { AgentSession } from "../../core/agent-session.ts";
 import type { HostInputFormRequest } from "../../core/extensions/ui-types.ts";
+import { toRpcModel, toRpcScopedModels } from "./rpc-model.ts";
 import { createRpcSuccessResponse } from "./rpc-responses.ts";
 import type { RpcCommand, RpcResponse } from "./rpc-types.ts";
 
@@ -42,8 +43,8 @@ export async function handleProviderLogin(
 			provider: command.provider,
 			cancelled: false,
 			credential,
-			models: session.modelRegistry.getAvailable(),
-			scopedModels: session.scopedModels,
+			models: session.modelRegistry.getAvailable().map(toRpcModel),
+			scopedModels: toRpcScopedModels(session.scopedModels),
 			customAuthProviders: session.modelRegistry.getCustomApiKeyAuthProviders(),
 		});
 	} catch (error) {

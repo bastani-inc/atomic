@@ -5,6 +5,7 @@ import {
 	getProviderModelReference,
 	ProviderModelSelectionError,
 	providerReferenceMatchesSelection,
+	providerReferenceMatchesTransportSelection,
 	providerModelsAreExactlyEqual,
 } from "./provider-model-reference.js";
 
@@ -13,6 +14,7 @@ export function resolveProviderModelSelection(input: {
 	readonly provider: string;
 	readonly modelId: string;
 	readonly selection?: unknown;
+	readonly selectionKind?: "persisted" | "transport";
 	readonly requirePersistedSelection: boolean;
 	readonly restoring: boolean;
 }): Model<Api> {
@@ -31,12 +33,16 @@ export function resolveProviderModelSelection(input: {
 		if (input.selection === undefined) throw selectionError("MissingSelection", input, `Saved ${input.provider} model lacks the required exact selection record; select a model again.`);
 	}
 	if (input.selection !== undefined) {
-		const exact = matches.filter((model) => providerReferenceMatchesSelection(model, input.selection));
+		const matchesSelection = input.selectionKind === "transport"
+			? providerReferenceMatchesTransportSelection
+			: providerReferenceMatchesSelection;
+		const exact = matches.filter((model) => matchesSelection(model, input.selection));
+		const selectionLabel = input.selectionKind === "transport" ? "Provider selection" : "Saved provider selection";
 		if (exact.length === 1) return exact[0];
 		if (exact.length > 1) {
-			throw selectionError("AmbiguousSelection", input, `Saved ${input.provider} selection matches multiple current occurrences; select a model again.`);
+			throw selectionError("AmbiguousSelection", input, `${selectionLabel} matches multiple current occurrences; select a model again.`);
 		}
-		throw selectionError("MismatchedSelection", input, `Saved ${input.provider} selection is not present in the current authenticated catalog; select a model again.`);
+		throw selectionError("MismatchedSelection", input, `${selectionLabel} is not present in the current authenticated catalog; select a model again.`);
 	}
 	if (matches.length === 1) return matches[0];
 	throw selectionError("AmbiguousSelection", input, `Model ${input.provider}/${JSON.stringify(input.modelId)} matches ${matches.length} exact occurrences; select an occurrence explicitly.`);

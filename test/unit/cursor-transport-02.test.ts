@@ -2,8 +2,8 @@
 import { test, describe } from "bun:test";
 import assert from "node:assert/strict";
 import { cursorRouteReference } from "./cursor-test-helpers.js";
-import { fromBinary, toBinary } from "@bufbuild/protobuf";
-import { AgentClientMessageSchema, ConversationStateStructureSchema } from "../../packages/cursor/src/proto/cursor-protocol.js";
+import { fromBinary } from "@bufbuild/protobuf";
+import { AgentClientMessageSchema } from "../../packages/cursor/src/proto/cursor-protocol.js";
 import type { Api, Context, Model } from "@earendil-works/pi-ai/compat";
 import {
 	CursorConnectFrameDecoder,

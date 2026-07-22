@@ -1,9 +1,10 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Api, ImageContent, Model } from "@earendil-works/pi-ai/compat";
+import type { ImageContent } from "@earendil-works/pi-ai/compat";
 import type { SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
+import type { RpcModel } from "./rpc-model.ts";
 import type {
 	RpcCommand,
 	RpcAutocompleteItem,
@@ -24,6 +25,7 @@ export interface ModelInfo {
 	id: string;
 	contextWindow: number;
 	reasoning: boolean;
+	providerSelection?: object;
 }
 
 export abstract class RpcClientApi {
@@ -40,11 +42,11 @@ export abstract class RpcClientApi {
 		return this.data(await this.request({ type: "new_session", parentSession }));
 	}
 	async getState(): Promise<RpcSessionState> { return this.data(await this.request({ type: "get_state" })); }
-	async setModel(provider: string, modelId: string): Promise<{ provider: string; id: string }> {
-		return this.data(await this.request({ type: "set_model", provider, modelId }));
+	async setModel(provider: string, modelId: string, providerSelection?: object): Promise<RpcModel> {
+		return this.data(await this.request({ type: "set_model", provider, modelId, providerSelection }));
 	}
 	async cycleModel(direction?: "forward" | "backward"): Promise<{
-		model: Model<Api>; thinkingLevel: ThinkingLevel; isScoped: boolean;
+		model: RpcModel; thinkingLevel: ThinkingLevel; isScoped: boolean;
 	} | null> {
 		return this.data(await this.request({ type: "cycle_model", direction }));
 	}

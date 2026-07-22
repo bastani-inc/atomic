@@ -2,6 +2,7 @@ export * from "./agent-session-runtime.ts";
 export {
   getPersistedProviderSelection,
   getProviderModelReference,
+  getProviderTransportSelection,
   providerModelsAreExactlyEqual,
 } from "./provider-model-reference.ts";
 export type {

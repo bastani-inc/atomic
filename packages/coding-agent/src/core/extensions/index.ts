@@ -7,6 +7,7 @@ export type { SourceInfo } from "../source-info.ts";
 export {
 	getPersistedProviderSelection,
 	getProviderModelReference,
+	getProviderTransportSelection,
 	providerModelsAreExactlyEqual,
 } from "../provider-model-reference.ts";
 export type { ProviderModelReference } from "../provider-model-reference.ts";

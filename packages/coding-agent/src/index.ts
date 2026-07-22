@@ -181,6 +181,7 @@ export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-
 export {
 	getPersistedProviderSelection,
 	getProviderModelReference,
+	getProviderTransportSelection,
 	providerModelsAreExactlyEqual,
 	type ProviderModelReference,
 	type ProviderRefreshModelsContext,
@@ -342,6 +343,7 @@ export {
 	type RpcEventListener,
 	type RpcExtensionUIRequest,
 	type RpcExtensionUIResponse,
+	type RpcModel,
 	type RpcResponse,
 	type RpcSessionState,
 	runPrintMode,

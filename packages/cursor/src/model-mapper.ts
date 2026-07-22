@@ -31,8 +31,10 @@ export interface CursorProviderReference {
 	readonly provider: "cursor";
 	readonly schemaVersion: typeof CURSOR_PROVIDER_REFERENCE_VERSION;
 	readonly data: Omit<CursorRouteReference, "provider">;
+	readonly transportSelection: CursorSelectionRecord;
 	readonly selection?: CursorSelectionRecord;
 	readonly matchesSelection: (value: unknown) => boolean;
+	readonly matchesTransportSelection: (value: unknown) => boolean;
 }
 
 export interface CursorProviderModelDefinition {
@@ -76,6 +78,11 @@ export function mapCursorCatalogToProviderModels(catalog: CursorModelCatalog): C
 	return catalog.rows.map((row, index) => {
 		const reference = references[index];
 		if (!reference) throw protocolError("Cursor catalog occurrence construction failed.");
+		const transportSelection = toCursorSelectionRecord(reference);
+		const matchesTransportSelection = (value: unknown) => {
+			const record = parseCursorSelectionRecord(value);
+			return record !== undefined && selectionRecordMatchesReference(record, reference);
+		};
 		return {
 			id: row.modelId,
 			name: presentationName(row, reference),
@@ -99,11 +106,10 @@ export function mapCursorCatalogToProviderModels(catalog: CursorModelCatalog): C
 					credentialGeneration: reference.credentialGeneration,
 					clientVersion: reference.clientVersion,
 				},
-				...(catalog.selectionPersistence === false ? {} : { selection: toCursorSelectionRecord(reference) }),
-				matchesSelection: (value) => {
-					const record = parseCursorSelectionRecord(value);
-					return record !== undefined && selectionRecordMatchesReference(record, reference);
-				},
+				transportSelection,
+				...(catalog.selectionPersistence === false ? {} : { selection: transportSelection }),
+				matchesSelection: matchesTransportSelection,
+				matchesTransportSelection,
 			},
 		};
 	});

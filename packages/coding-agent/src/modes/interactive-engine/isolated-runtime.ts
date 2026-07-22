@@ -3,6 +3,7 @@ import type { AgentSession, AgentSessionEvent } from "../../core/agent-session.t
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../../core/agent-session-runtime.ts";
 import type { PromptOptions } from "../../core/agent-session-types.ts";
 import { SessionManager } from "../../core/session-manager.ts";
+import { getProviderTransportSelection } from "../../core/provider-model-reference.ts";
 import type { RpcClient } from "../rpc/rpc-client.ts";
 import type { RpcAutocompleteItem, RpcExtensionUIRequest, RpcExtensionUIResponse, RpcModelCatalog, RpcEvent, RpcSlashCommand } from "../rpc/rpc-types.ts";
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
@@ -60,7 +61,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		const catalog = await this.client.requestInternal<RpcModelCatalog>({ type: "get_available_models" });
 		this.remoteModelCatalog.apply(catalog);
 		this.remoteModelCatalog.patch(session);
-		if (state.model) session.agent.state.model = state.model;
+		if (state.model) session.agent.state.model = this.remoteModelCatalog.resolve(state.model);
 		session.agent.state.thinkingLevel = state.thinkingLevel;
 		session.agent.steeringMode = state.steeringMode;
 		session.agent.followUpMode = state.followUpMode;
@@ -295,8 +296,12 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			setModel: {
 				configurable: true,
 				value: async (model: Model<Api>) => {
-					const selected = await this.client.setModel(model.provider, model.id);
-					session.agent.state.model = session.modelRegistry.find(selected.provider, selected.id) ?? model;
+					const selected = await this.client.setModel(
+						model.provider,
+						model.id,
+						getProviderTransportSelection(model),
+					);
+					session.agent.state.model = this.remoteModelCatalog.resolve(selected);
 				},
 			},
 			setThinkingLevel: {
@@ -311,7 +316,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				value: async (direction?: "forward" | "backward") => {
 					const result = await this.client.cycleModel(direction);
 					if (!result) return undefined;
-					const model = session.modelRegistry.find(result.model.provider, result.model.id) ?? result.model;
+					const model = this.remoteModelCatalog.resolve(result.model);
 					session.agent.state.model = model;
 					session.agent.state.thinkingLevel = result.thinkingLevel;
 					return { ...result, model };
@@ -459,7 +464,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				this.followUpMessages = [...event.followUp];
 				break;
 			case "model_changed":
-				session.agent.state.model = event.model;
+				session.agent.state.model = this.remoteModelCatalog.resolve(event.model);
 				break;
 			case "thinking_level_changed":
 				session.agent.state.thinkingLevel = event.level;

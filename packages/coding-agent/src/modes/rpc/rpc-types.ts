@@ -6,21 +6,22 @@
  */
 
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Api, ImageContent, Model } from "@earendil-works/pi-ai/compat";
-import type { AgentSessionEvent, SessionStats } from "../../core/agent-session.ts";
+import type { ImageContent } from "@earendil-works/pi-ai/compat";
+import type { SessionStats } from "../../core/agent-session.ts";
 import type { AuthStatus } from "../../core/auth-storage.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
+import type { RpcModel } from "./rpc-model.ts";
 
 // ============================================================================
 // RPC Commands (stdin)
 // ============================================================================
 
 export interface RpcModelCatalog {
-	models: Model<Api>[];
-	scopedModels: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
+	models: RpcModel[];
+	scopedModels: Array<{ model: RpcModel; thinkingLevel?: ThinkingLevel }>;
 	customAuthProviders: Array<{ id: string; name: string }>;
 }
 
@@ -49,7 +50,7 @@ export type RpcCommand =
 	| { id?: string; type: "get_state" }
 
 	// Model
-	| { id?: string; type: "set_model"; provider: string; modelId: string }
+	| { id?: string; type: "set_model"; provider: string; modelId: string; providerSelection?: object }
 	| { id?: string; type: "cycle_model"; direction?: "forward" | "backward" }
 	| { id?: string; type: "get_available_models" }
 	| { id?: string; type: "login_provider"; provider: string }
@@ -141,7 +142,7 @@ export interface RpcSlashCommand {
 // ============================================================================
 
 export interface RpcSessionState {
-	model?: Model<Api>;
+	model?: RpcModel;
 	thinkingLevel: ThinkingLevel;
 	isStreaming: boolean;
 	isCompacting: boolean;
@@ -164,8 +165,8 @@ export interface RpcContextWindowInfo {
 export interface RpcLogoutProviderResult {
 	provider: string;
 	authStatus: AuthStatus;
-	models: Model<Api>[];
-	scopedModels?: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
+	models: RpcModel[];
+	scopedModels?: Array<{ model: RpcModel; thinkingLevel?: ThinkingLevel }>;
 }
 
 // ============================================================================
@@ -190,14 +191,14 @@ export type RpcResponse =
 			type: "response";
 			command: "set_model";
 			success: true;
-			data: Model<Api>;
+			data: RpcModel;
 	  }
 	| {
 			id?: string;
 			type: "response";
 			command: "cycle_model";
 			success: true;
-			data: { model: Model<Api>; thinkingLevel: ThinkingLevel; isScoped: boolean } | null;
+			data: { model: RpcModel; thinkingLevel: ThinkingLevel; isScoped: boolean } | null;
 	  }
 	| {
 			id?: string;
@@ -344,7 +345,7 @@ export type RpcResponse =
 // ============================================================================
 
 /** Events streamed by RPC mode as session activity occurs. */
-export type RpcEvent = AgentSessionEvent;
+export type { RpcEvent, RpcModel } from "./rpc-model.ts";
 
 // ============================================================================
 // Extension UI Events (stdout)

@@ -5,9 +5,15 @@ import type { AgentSession } from "../../packages/coding-agent/src/core/agent-se
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.ts";
 import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.ts";
+import {
+	getPersistedProviderSelection,
+	getProviderTransportSelection,
+} from "../../packages/coding-agent/src/core/provider-model-reference.ts";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
 import { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
 import type { RpcClient } from "../../packages/coding-agent/src/modes/rpc/rpc-client.ts";
-import type { RpcModelRefreshResult } from "../../packages/coding-agent/src/modes/rpc/rpc-types.ts";
+import type { RpcEvent, RpcModelRefreshResult } from "../../packages/coding-agent/src/modes/rpc/rpc-types.ts";
+import type { RpcModel } from "../../packages/coding-agent/src/modes/rpc/rpc-model.ts";
 
 function kimiModel(): Model<Api> {
 	const auth = AuthStorage.inMemory({ "kimi-coding": { type: "api_key", key: "fake-kimi-key" } });
@@ -93,6 +99,73 @@ test("isolated host refresh atomically applies the engine model catalog without 
 	assert.equal(result.aborted, false);
 	assert.ok(result.errors instanceof Map);
 	assert.equal(result.errors.get("dynamic-provider")?.message, "catalog unavailable");
+});
+
+test("isolated host returns an exact catalog selection to set_model", async () => {
+	const wireModel = (name: string, occurrence: number): RpcModel => ({
+		...kimiModel(),
+		id: "same",
+		name,
+		provider: "cursor",
+		providerSelection: { version: 1, provider: "cursor", routeId: "same", occurrence },
+	});
+	const first = wireModel("First", 1);
+	const second = wireModel("Second", 2);
+	let sentSelection: object | undefined;
+	let eventListener: ((event: RpcEvent) => void) | undefined;
+	const client = {
+		onEvent: (listener: (event: RpcEvent) => void) => {
+			eventListener = listener;
+			return () => {};
+		},
+		getState: async () => ({
+			model: first,
+			thinkingLevel: "off" as const,
+			isStreaming: false,
+			isCompacting: false,
+			steeringMode: "all" as const,
+			followUpMode: "all" as const,
+			sessionId: "test-session",
+			autoCompactionEnabled: true,
+			messageCount: 0,
+			pendingMessageCount: 0,
+		}),
+		requestInternal: async () => ({ models: [first, second], scopedModels: [], customAuthProviders: [] }),
+		setModel: async (_provider: string, _modelId: string, providerSelection?: object) => {
+			sentSelection = providerSelection;
+			return second;
+		},
+		getCommands: async () => [],
+	} as unknown as RpcClient;
+	const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+	const session = {
+		modelRegistry: registry,
+		scopedModels: [],
+		sessionManager: SessionManager.inMemory(),
+		sessionFile: undefined,
+		agent: {
+			state: { model: undefined, thinkingLevel: "off", messages: [] },
+			steeringMode: "all",
+			followUpMode: "all",
+		},
+	} as unknown as AgentSession;
+	const createRuntime = (async () => { throw new Error("not used"); }) as CreateAgentSessionRuntimeFactory;
+	const localRuntime = new AgentSessionRuntime(
+		session,
+		{ cwd: process.cwd(), agentDir: process.cwd() } as never,
+		createRuntime,
+	);
+	const runtime = new IsolatedInteractiveRuntime(localRuntime, createRuntime, client);
+	await runtime.initializeFromEngine();
+	const remoteModels = await registry.getAvailable();
+
+	assert.equal(getPersistedProviderSelection(remoteModels[1]), undefined);
+	assert.deepEqual(getProviderTransportSelection(remoteModels[1]), second.providerSelection);
+	eventListener?.({ type: "model_changed", model: second, previousModel: first, source: "restore" });
+	assert.deepEqual(getProviderTransportSelection(session.agent.state.model), second.providerSelection);
+	await runtime.session.setModel(remoteModels[1]!);
+	assert.deepEqual(sentSelection, second.providerSelection);
+	assert.deepEqual(getProviderTransportSelection(session.agent.state.model), second.providerSelection);
 });
 
 test("an aborted isolated refresh does not replace the current model catalog", async () => {

@@ -49,3 +49,26 @@ test("exact equality honors the provider selection matcher and ignores harmless 
 	const mismatched = attachProviderModelReference({ provider: "cursor", id: "A" }, reference({ ...base, occurrence: 2 }));
 	assert.equal(providerModelsAreExactlyEqual(left, mismatched), false);
 });
+
+test("exact equality falls back to stable identity when transient selectors rotate", () => {
+	const reference = (transportToken: string, stableRoute: string) => ({
+		provider: "cursor",
+		schemaVersion: 1,
+		data: { transportToken },
+		transportSelection: { version: 1, transportToken },
+		selection: { version: 1, stableRoute },
+		matchesTransportSelection: (value: unknown) =>
+			typeof value === "object" && value !== null &&
+			(value as { transportToken?: unknown }).transportToken === transportToken,
+		matchesSelection: (value: unknown) =>
+			typeof value === "object" && value !== null &&
+			(value as { stableRoute?: unknown }).stableRoute === stableRoute,
+	});
+	const current = attachProviderModelReference({ provider: "cursor", id: "same" }, reference("old", "stable"));
+	const refreshed = attachProviderModelReference({ provider: "cursor", id: "same" }, reference("new", "stable"));
+	const different = attachProviderModelReference({ provider: "cursor", id: "same" }, reference("newer", "other"));
+
+	assert.equal(providerModelsAreExactlyEqual(current, refreshed), true);
+	assert.equal([refreshed].find((candidate) => providerModelsAreExactlyEqual(candidate, current)), refreshed);
+	assert.equal(providerModelsAreExactlyEqual(current, different), false);
+});

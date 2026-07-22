@@ -2,7 +2,9 @@ import type { ModelsRefreshResult } from "@earendil-works/pi-ai";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { AgentSession } from "../../core/agent-session.ts";
 import type { ProviderApiKeyAuth } from "../../core/extensions/provider-types.ts";
+import { providerModelsAreExactlyEqual } from "../../core/provider-model-reference.ts";
 import type { RpcClient } from "../rpc/rpc-client.ts";
+import { fromRpcModel, fromRpcScopedModels, type RpcModel } from "../rpc/rpc-model.ts";
 import type { RpcModelCatalog } from "../rpc/rpc-types.ts";
 
 interface RemoteModelRefreshOptions {
@@ -29,8 +31,13 @@ export class RemoteModelCatalog {
 	}
 
 	applyModels(catalog: Pick<RpcModelCatalog, "models" | "scopedModels">): void {
-		this.models = catalog.models;
-		this.scopedModels = catalog.scopedModels;
+		this.models = catalog.models.map(fromRpcModel);
+		this.scopedModels = fromRpcScopedModels(catalog.scopedModels);
+	}
+
+	resolve(model: RpcModel): Model<Api> {
+		const hydrated = fromRpcModel(model);
+		return this.models.find((candidate) => providerModelsAreExactlyEqual(candidate, hydrated)) ?? hydrated;
 	}
 
 	patch(session: AgentSession): void {

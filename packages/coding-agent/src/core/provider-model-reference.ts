@@ -2,10 +2,14 @@ export interface ProviderModelReference<TData extends object = object> {
 	readonly provider: string;
 	readonly schemaVersion: number;
 	readonly data: TData;
+	/** Plain, JSON-safe identity used only for current-catalog transport round trips. */
+	readonly transportSelection?: object;
 	/** Plain, JSON-safe, versioned record persisted by host settings/sessions. */
 	readonly selection?: object;
 	/** Provider-owned strict parser/matcher for a persisted record. */
 	readonly matchesSelection?: (value: unknown) => boolean;
+	/** Provider-owned strict parser/matcher for a transport selection. */
+	readonly matchesTransportSelection?: (value: unknown) => boolean;
 }
 
 export type ProviderModelSelectionErrorCode = "AmbiguousSelection" | "UnsupportedSelection" | "MissingSelection" | "MismatchedSelection" | "AuthenticationMissing" | "PersistenceUnavailable";
@@ -48,10 +52,23 @@ export function getPersistedProviderSelection(value: object | null | undefined):
 	return getProviderModelReference(value)?.selection;
 }
 
+export function getProviderTransportSelection(value: object | null | undefined): object | undefined {
+	const reference = getProviderModelReference(value);
+	return reference?.transportSelection ?? reference?.selection;
+}
+
 export function providerReferenceMatchesSelection(value: object, selection: unknown): boolean {
 	const reference = getProviderModelReference(value);
 	if (!reference) return false;
 	return reference.matchesSelection?.(selection) ?? exactJsonEqual(reference.selection, selection);
+}
+
+export function providerReferenceMatchesTransportSelection(value: object, selection: unknown): boolean {
+	const reference = getProviderModelReference(value);
+	if (!reference) return false;
+	return reference.matchesTransportSelection?.(selection) ??
+		reference.matchesSelection?.(selection) ??
+		exactJsonEqual(reference.transportSelection ?? reference.selection, selection);
 }
 
 export function providerModelsAreExactlyEqual(left: object | null | undefined, right: object | null | undefined): boolean {
@@ -61,11 +78,24 @@ export function providerModelsAreExactlyEqual(left: object | null | undefined, r
 	if (leftReference === undefined && rightReference === undefined) return modelLikeIdentity(left) === modelLikeIdentity(right);
 	if (leftReference === undefined || rightReference === undefined) return false;
 	if (leftReference.provider !== rightReference.provider || leftReference.schemaVersion !== rightReference.schemaVersion) return false;
-	if (leftReference.selection !== undefined || rightReference.selection !== undefined) {
-		if (leftReference.selection === undefined || rightReference.selection === undefined) return false;
-		const leftMatches = leftReference.matchesSelection?.(rightReference.selection) ?? exactJsonEqual(leftReference.selection, rightReference.selection);
-		const rightMatches = rightReference.matchesSelection?.(leftReference.selection) ?? exactJsonEqual(rightReference.selection, leftReference.selection);
-		return leftMatches && rightMatches;
+	const leftTransport = leftReference.transportSelection;
+	const rightTransport = rightReference.transportSelection;
+	if (leftTransport !== undefined && rightTransport !== undefined) {
+		const leftMatches = leftReference.matchesTransportSelection?.(rightTransport) ??
+			leftReference.matchesSelection?.(rightTransport) ?? exactJsonEqual(leftTransport, rightTransport);
+		const rightMatches = rightReference.matchesTransportSelection?.(leftTransport) ??
+			rightReference.matchesSelection?.(leftTransport) ?? exactJsonEqual(rightTransport, leftTransport);
+		if (leftMatches && rightMatches) return true;
+	}
+	const leftPersisted = leftReference.selection;
+	const rightPersisted = rightReference.selection;
+	if (leftPersisted !== undefined && rightPersisted !== undefined) {
+		const leftMatches = leftReference.matchesSelection?.(rightPersisted) ?? exactJsonEqual(leftPersisted, rightPersisted);
+		const rightMatches = rightReference.matchesSelection?.(leftPersisted) ?? exactJsonEqual(rightPersisted, leftPersisted);
+		if (leftMatches && rightMatches) return true;
+	}
+	if (leftTransport !== undefined || rightTransport !== undefined || leftPersisted !== undefined || rightPersisted !== undefined) {
+		return false;
 	}
 	return leftReference.provider === rightReference.provider &&
 		leftReference.schemaVersion === rightReference.schemaVersion &&

@@ -350,20 +350,25 @@ Never log, include in diagnostics, or persist `hostCredential`. `requiresHostOAu
 Set `requiresExactSelectionPersistence: true` when provider plus public model ID is insufficient—for example, when an authoritative catalog may contain duplicate occurrences. Each returned `ProviderModelConfig` can carry a typed `providerReference: ProviderModelReference`:
 
 ```typescript
+const transportSelection = { version: 1, provider: "corporate-ai", routeId, variant, occurrence };
 const providerReference: ProviderModelReference = {
   provider: "corporate-ai",
   schemaVersion: 1,
   data: { routeId, variant, occurrence },
-  selection: { version: 1, provider: "corporate-ai", routeId, variant, occurrence },
+  transportSelection,
+  selection: stableAccountScope ? transportSelection : undefined,
+  matchesTransportSelection(value) {
+    return isExactVersion1Selection(value, { routeId, variant, occurrence });
+  },
   matchesSelection(value) {
     return isExactVersion1Selection(value, { routeId, variant, occurrence });
   }
 };
 ```
 
-The reference travels through Atomic on an official symbol side channel, so providers can distinguish models whose public `provider/id` text is identical without rewriting `id` or adding arbitrary model metadata. `selection` is the plain JSON-safe versioned record that the host may save in settings and sessions. `matchesSelection` must strictly reject old versions, missing named identity fields, and every named identity mismatch. It may permissively ignore same-version metadata that does not influence identity; unsupported records should require reselection rather than migration or fallback. Provider-owned `data` and `selection` must not contain credentials or raw private account identity.
+The reference travels through Atomic on an official symbol side channel, so providers can distinguish models whose public `provider/id` text is identical without rewriting `id` or adding arbitrary model metadata. `transportSelection` is a plain JSON-safe versioned record used only to preserve exact identity across current-catalog RPC and isolated-TUI round trips; Atomic never saves it. `selection` is the optional stable record that the host may persist in settings and sessions. A runtime-only provider can therefore expose `transportSelection` while omitting `selection`. The corresponding matchers must strictly reject old versions, missing named identity fields, and every named identity mismatch. They may permissively ignore same-version metadata that does not influence identity; unsupported records should require reselection rather than migration or fallback. Provider-owned `data`, `transportSelection`, and `selection` must not contain credentials or raw private account identity.
 
-`ProviderModelReference` and the helpers `getProviderModelReference()`, `getPersistedProviderSelection()`, and `providerModelsAreExactlyEqual()` are exported from `@bastani/atomic`. Use the helpers instead of reading the symbol directly or comparing only `provider` and `id`.
+`ProviderModelReference` and the helpers `getProviderModelReference()`, `getProviderTransportSelection()`, `getPersistedProviderSelection()`, and `providerModelsAreExactlyEqual()` are exported from `@bastani/atomic`. Use the helpers instead of reading the symbol directly or comparing only `provider` and `id`.
 
 ### OAuthLoginCallbacks
 
