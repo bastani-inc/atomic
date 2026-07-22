@@ -24,7 +24,7 @@
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { runIndicatorStatus } from "../shared/run-indicator-status.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
-import type { RunSnapshot, StageSnapshot, StoreSnapshot } from "../shared/store-types.js";
+import type { RunSnapshot, StoreSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import type { FlatBandBadge } from "./chat-surface.js";
 import { renderRoundedBoxLines } from "./chat-surface.js";
@@ -34,6 +34,7 @@ import { deriveGraphTheme } from "./graph-theme.js";
 import { renderRunIdentityRows } from "./run-identity-rows.js";
 import { statusColor, statusIcon } from "./status-helpers.js";
 import type { PiTheme } from "./store-widget-installer.js";
+import { runModelLabel } from "./widget-model-label.js";
 
 // ---------------------------------------------------------------------------
 // Tunables
@@ -190,7 +191,9 @@ function statusFg(run: RunSnapshot, theme: GraphTheme, allRuns: readonly RunSnap
 }
 
 function modeLabel(run: RunSnapshot): string {
-	return run.stages.length > 1 ? "chain" : "single";
+	if (run.stages.length <= 1) return "single";
+	const running = run.stages.filter((stage) => stage.status === "running").length;
+	return running > 1 ? "parallel" : "chain";
 }
 
 function progressLabel(run: RunSnapshot): string | undefined {
@@ -213,34 +216,6 @@ function elapsedLabel(run: RunSnapshot, now: number): string {
 	}
 	if (run.startedAt != null) return formatDuration(elapsedRunMs(run, now));
 	return "";
-}
-
-/**
- * The stage whose model best answers "which model is running right now".
- * Prefer the actively running stage; otherwise fall back to the most recent
- * stage that recorded an effective model (covers a chain paused between
- * stages, and single-stage direct tasks).
- */
-function activeModelStage(run: RunSnapshot): StageSnapshot | undefined {
-	const running = run.stages.find((stage) => stage.status === "running" && stage.model);
-	if (running) return running;
-	for (let index = run.stages.length - 1; index >= 0; index--) {
-		if (run.stages[index]!.model) return run.stages[index];
-	}
-	return undefined;
-}
-
-/**
- * `<model> <thinking>` for the active stage, mirroring the main-session footer
- * (thinking level is omitted when off/absent). Returns undefined when no stage
- * has recorded a model yet, so the widget simply skips the segment.
- */
-function runModelLabel(run: RunSnapshot): string | undefined {
-	const stage = activeModelStage(run);
-	const model = stage?.model;
-	if (!model) return undefined;
-	const level = stage?.thinkingLevel;
-	return level && level !== "off" ? `${model} ${level}` : model;
 }
 
 function metaLine(run: RunSnapshot, now: number): string {
