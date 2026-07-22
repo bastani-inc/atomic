@@ -151,5 +151,10 @@ def test_pier_and_harbor_use_shared_bootstrap_and_runtime_guard() -> None:
     for adapter_name in ("atomic_pier.py", "atomic_harbor.py"):
         source = (evals_dir / adapter_name).read_text(encoding="utf-8")
         assert "agent_install_command(version_spec)" in source
-        assert source.count("atomic_runtime_environment_command()") == 2
+        # Both the version-detection path and the runtime-launch path must use
+        # the shared guarded environment loader. Assert the key call sites are
+        # present rather than an exact count so additional safe call sites do
+        # not break this test.
+        assert "{atomic_runtime_environment_command()}; atomic --version" in source
+        assert "{atomic_runtime_environment_command()} && " in source
         assert ". ~/.nvm/nvm.sh" not in source
