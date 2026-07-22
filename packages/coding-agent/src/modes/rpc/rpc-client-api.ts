@@ -8,6 +8,7 @@ import type {
 	RpcCommand,
 	RpcAutocompleteItem,
 	RpcContextWindowInfo,
+	RpcLoginProviderResult,
 	RpcLogoutProviderResult,
 	RpcModelRefreshResult,
 	RpcResponse,
@@ -49,6 +50,19 @@ export abstract class RpcClientApi {
 	}
 	async getAvailableModels(): Promise<ModelInfo[]> {
 		return this.data<{ models: ModelInfo[] }>(await this.request({ type: "get_available_models" })).models;
+	}
+	async loginProvider(provider: string, signal?: AbortSignal): Promise<RpcLoginProviderResult> {
+		if (signal?.aborted) return { provider, cancelled: true };
+		const cancel = () => { void this.cancelLoginProvider(provider).catch(() => {}); };
+		signal?.addEventListener("abort", cancel, { once: true });
+		try {
+			return this.data(await this.request({ type: "login_provider", provider }));
+		} finally {
+			signal?.removeEventListener("abort", cancel);
+		}
+	}
+	async cancelLoginProvider(provider: string): Promise<void> {
+		await this.request({ type: "cancel_login_provider", provider });
 	}
 	async logoutProvider(provider: string): Promise<RpcLogoutProviderResult> {
 		return this.data(await this.request({ type: "logout_provider", provider }));

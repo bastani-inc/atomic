@@ -15,6 +15,13 @@ import type { RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand } from "
 
 export type RpcCommandHandler = (command: RpcCommand) => Promise<RpcResponse | undefined>;
 
+interface ProviderLoginInput {
+	open(
+		request: import("../../core/extensions/ui-types.ts").HostInputFormRequest,
+		signal?: AbortSignal,
+	): Promise<Record<string, string> | undefined>;
+}
+
 interface RpcCommandHandlerOptions {
 	runtimeHost: AgentSessionRuntime;
 	getSession: () => AgentSession;
@@ -22,6 +29,7 @@ interface RpcCommandHandlerOptions {
 	output: RpcOutput;
 	keybindings?: KeybindingsManager;
 	reloadCoordinator?: KeybindingsReloadCoordinator<AgentSession>;
+	inputForm?: ProviderLoginInput;
 }
 
 export function createRpcCommandHandler({
@@ -31,8 +39,10 @@ export function createRpcCommandHandler({
 	output,
 	keybindings,
 	reloadCoordinator,
+	inputForm,
 }: RpcCommandHandlerOptions): RpcCommandHandler {
 	let fallbackShortcutKeybindings: KeybindingsManager | undefined;
+	const providerLoginControllers = new Map<string, AbortController>();
 	const getShortcutBindings = () => {
 		if (keybindings) return keybindings.getEffectiveConfig();
 		if (fallbackShortcutKeybindings) fallbackShortcutKeybindings.reload();
@@ -125,7 +135,57 @@ export function createRpcCommandHandler({
 
 			case "get_available_models": {
 				const models = await session.modelRegistry.getAvailable();
-				return createRpcSuccessResponse(id, "get_available_models", { models, scopedModels: session.scopedModels });
+				return createRpcSuccessResponse(id, "get_available_models", {
+					models,
+					scopedModels: session.scopedModels,
+					customAuthProviders: session.modelRegistry.getCustomApiKeyAuthProviders(),
+				});
+			}
+
+			case "login_provider": {
+				const customAuth = session.modelRegistry.getCustomApiKeyAuth(command.provider);
+				if (!customAuth) throw new Error(`Provider does not support custom API-key login: ${command.provider}`);
+				if (!inputForm) throw new Error("Provider login requires an interactive input host");
+				if (providerLoginControllers.has(command.provider)) throw new Error(`Login already in progress: ${command.provider}`);
+				const controller = new AbortController();
+				providerLoginControllers.set(command.provider, controller);
+				try {
+					const credential = await customAuth.login({
+						signal: controller.signal,
+						prompt: async (prompt) => {
+							const values = await inputForm.open({
+								title: prompt.message,
+								fields: [{
+									name: "value", type: "string", required: true, initialValue: "",
+									placeholder: prompt.placeholder,
+								}],
+							}, controller.signal);
+							if (!values || controller.signal.aborted) throw new Error("Login cancelled");
+							return values.value ?? "";
+						},
+					});
+					if (controller.signal.aborted) return createRpcSuccessResponse(id, "login_provider", { provider: command.provider, cancelled: true });
+					session.modelRegistry.authStorage.set(command.provider, credential);
+					await session.modelRegistry.refresh();
+					return createRpcSuccessResponse(id, "login_provider", {
+						provider: command.provider, cancelled: false, credential,
+						models: session.modelRegistry.getAvailable(),
+						scopedModels: session.scopedModels,
+						customAuthProviders: session.modelRegistry.getCustomApiKeyAuthProviders(),
+					});
+				} catch (error) {
+					if (controller.signal.aborted || (error instanceof Error && error.message === "Login cancelled")) {
+						return createRpcSuccessResponse(id, "login_provider", { provider: command.provider, cancelled: true });
+					}
+					throw error;
+				} finally {
+					if (providerLoginControllers.get(command.provider) === controller) providerLoginControllers.delete(command.provider);
+				}
+			}
+
+			case "cancel_login_provider": {
+				providerLoginControllers.get(command.provider)?.abort();
+				return createRpcSuccessResponse(id, "cancel_login_provider");
 			}
 
 			case "logout_provider": {
@@ -144,6 +204,7 @@ export function createRpcCommandHandler({
 					errors: [...result.errors].map(([provider, error]) => ({ provider, message: error.message })),
 					models: session.modelRegistry.getAvailable(),
 					scopedModels: session.scopedModels,
+					customAuthProviders: session.modelRegistry.getCustomApiKeyAuthProviders(),
 				});
 			}
 

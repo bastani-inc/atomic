@@ -1764,6 +1764,25 @@ pi.registerProvider("corporate-ai", {
     }
   }
 });
+
+// Register provider-owned API-key setup for /login
+pi.registerProvider("local-server", {
+  name: "Local Server",
+  auth: {
+    apiKey: {
+      name: "Local server connection",
+      async login({ signal, prompt }) {
+        const baseUrl = await prompt({
+          type: "text",
+          message: "Server URL",
+          placeholder: "http://localhost:8080"
+        });
+        if (signal.aborted) throw new Error("Login cancelled");
+        return { type: "api_key", env: { LOCAL_SERVER_URL: baseUrl } };
+      }
+    }
+  }
+});
 ```
 
 **Config options:**
@@ -1775,6 +1794,7 @@ pi.registerProvider("corporate-ai", {
 - `authHeader` - If true, adds `Authorization: Bearer` header automatically.
 - `models` - Array of model definitions. If provided, replaces all existing models for this provider. Model definitions can set `baseUrl` to override the provider endpoint for that model.
 - `oauth` - OAuth provider config for `/login` support. When provided, the provider appears in the login menu.
+- `auth.apiKey` - Provider-owned API-key or connection setup for `/login`. Its `name` appears in the provider list and `login({ signal, prompt })` returns the credential Atomic persists. Extension providers registered only in the isolated interactive engine child are synchronized into the host's `/login` list; their login callback and credential-dependent model refresh still execute in the child, while prompts are rendered by the terminal host.
 - `streamSimple` - Custom streaming implementation for non-standard APIs.
 
 See [Custom providers](/custom-provider) for advanced topics: custom streaming APIs, OAuth details, model definition reference.

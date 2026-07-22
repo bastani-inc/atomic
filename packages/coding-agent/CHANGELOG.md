@@ -23,6 +23,7 @@
 ### Fixed
 
 - Fixed Qwen Token Plan global/China, Radius API-key, and GitHub Copilot token methods being hidden from first-time `/login`, which kept otherwise installed models out of `/model` and `--list-models`.
+- Fixed `/login` omitting extension-registered custom-auth providers in isolated interactive mode. Provider metadata now synchronizes from the engine child, and provider-owned login prompts, credential persistence, cancellation, and post-login model refresh execute across the existing isolated-engine bridge.
 - Fixed project package overrides being unable to selectively subtract or include resources from a matching global package without replacing the complete declaration.
 - Fixed Ctrl+V reporting an image error when the clipboard contained usable text, and made Ctrl+X invoke the same copy-last-assistant behavior as `/copy`.
 

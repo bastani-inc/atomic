@@ -28,8 +28,14 @@ export class InputFormHostController {
 			this.disposeAll();
 			return;
 		}
-		if (message.type !== "engine_input_form_open") return;
-		this.open(message.componentId, { title: message.title, fields: message.fields });
+		if (message.type === "engine_input_form_close") {
+			this.mounted.get(message.componentId)?.close();
+			this.mounted.delete(message.componentId);
+			return;
+		}
+		if (message.type === "engine_input_form_open") {
+			this.open(message.componentId, { title: message.title, fields: message.fields });
+		}
 	}
 
 	private open(componentId: string, request: HostInputFormRequest): void {
