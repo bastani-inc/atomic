@@ -116,6 +116,10 @@ describe("executor.run", () => {
             parent,
             {},
             {
+                // Isolate this run from the shared singleton store: without an
+                // explicit store, the failed run would leak into other test
+                // files that assert on the default store's contents.
+                store: createStore(),
                 adapters: {
                     prompt: {
                         prompt: async (text) => {
