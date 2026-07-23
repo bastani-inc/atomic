@@ -15,6 +15,7 @@ import {
     assistantTextMessage,
     type StageControlHandle,
 } from "./stage-chat-view-helpers.js";
+import { join, sep } from "node:path";
 import { hexToAnsi } from "../../packages/workflows/src/tui/color-utils.js";
 
 describe("StageChatView", () => {
@@ -228,13 +229,18 @@ describe("StageChatView", () => {
     });
 
     test("idle footer shows themed cwd, branch, and live MCP extension status", () => {
-        const home = process.env.HOME;
-        assert.ok(home, "test requires HOME for main-footer parity");
+        // Match production replaceHome() exactly: HOME on POSIX, USERPROFILE on
+        // Windows. Build the cwd and expectation with native separators so the
+        // test passes on both platforms.
+        const home = process.env.HOME || process.env.USERPROFILE;
+        assert.ok(home, "test requires HOME or USERPROFILE for main-footer parity");
+        const cwd = join(home, "Documents", "projects", "atomic");
+        const shortCwd = ["~", "Documents", "projects", "atomic"].join(sep);
         const store = createStore();
         setupRun(store, "run-1", "stage-a", "running");
         const agentSession = fakeFooterAgentSession(false);
         Object.assign(agentSession.sessionManager, {
-            getCwd: () => `${home}/Documents/projects/atomic`,
+            getCwd: () => cwd,
         });
         const { handle } = makeHandle(undefined, [], "running", agentSession);
         const statuses = new Map([
@@ -275,10 +281,10 @@ describe("StageChatView", () => {
 
         const initialRaw = view.render(120).join("\n");
         const initial = stripAnsi(initialRaw);
-        assert.match(initial, /~\/Documents\/projects\/atomic \(main\)/);
+        assert.ok(initial.includes(`${shortCwd} (main)`), "expected home-shortened cwd and branch");
         assert.match(initial, /MCP: 1\/1 servers connected \(3 tools\)/);
         assert.ok(
-            initialRaw.includes(`${hexToAnsi(graphTheme.textMuted)}~/Documents/projects/atomic (main)`),
+            initialRaw.includes(`${hexToAnsi(graphTheme.textMuted)}${shortCwd} (main)`),
             "cwd and branch should use the workflow chat's muted text theme",
         );
 
@@ -287,7 +293,7 @@ describe("StageChatView", () => {
         branchChanged?.();
         assert.equal(renderRequests, 1);
         const updated = view.render(120).map(stripAnsi).join("\n");
-        assert.match(updated, /~\/Documents\/projects\/atomic \(feature\/footer-parity\)/);
+        assert.ok(updated.includes(`${shortCwd} (feature/footer-parity)`), "expected updated branch after invalidation");
         assert.match(updated, /MCP: 0\/1 servers/);
         assert.doesNotMatch(updated, /MCP: 1\/1 servers connected/);
 
