@@ -109,7 +109,7 @@ describe("goal create_pr", () => {
         await d.run(ctx);
 
         const intermediatePrompts = [
-            ctx.calls.prompts["work-turn-1"]?.[0] ?? "",
+            ctx.calls.prompts["orchestrator-1"]?.[0] ?? "",
             ctx.calls.prompts["completion-reviewer-1"]?.[0] ?? "",
         ];
         for (const prompt of intermediatePrompts) {
@@ -152,6 +152,6 @@ describe("goal create_pr", () => {
         const prReads = readPaths(ctx.calls.taskOptions["pull-request"]?.[0]);
         assert.ok(prReads.includes(result["ledger_path"] as string));
         assert.ok(prReads.includes(result["review_report_path"] as string));
-        assert.ok(prReads.some((path) => path.endsWith("worker-receipt.md")));
+        assert.ok(prReads.some((path) => path.endsWith("orchestrator-receipt.md")));
     });
 });

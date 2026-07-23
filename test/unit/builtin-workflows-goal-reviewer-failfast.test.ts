@@ -6,7 +6,7 @@ import type { WorkflowDefinition } from "../../packages/workflows/src/types.js";
 import { makeMockCtx } from "./builtin-workflows-helpers.js";
 
 describe("goal reviewer failure fail-fast", () => {
-  test("reviewer fallback exhaustion stops as needs_human without another worker turn", async () => {
+  test("reviewer fallback exhaustion stops as needs_human without another orchestrator turn", async () => {
     const mod = await import("../../packages/workflows/builtin/goal.js");
     const d = mod.default as unknown as WorkflowDefinition;
     const ctx = makeMockCtx(
@@ -26,7 +26,7 @@ describe("goal reviewer failure fail-fast", () => {
     assert.equal(result["status"], "needs_human");
     assert.equal(result["approved"], false);
     assert.equal(result["turns_completed"], 1);
-    assert.deepEqual(ctx.calls.task, ["work-turn-1"]);
+    assert.deepEqual(ctx.calls.task, ["orchestrator-1"]);
     assert.equal(ctx.calls.parallel.length, 1);
     assert.equal(ctx.calls.parallelOptions[0]?.failFast, true);
     assert.match(String(result["remaining_work"]), /Recover reviewer execution/);

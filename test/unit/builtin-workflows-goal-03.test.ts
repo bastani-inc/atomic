@@ -239,7 +239,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
 
         assert.equal(result["status"], "blocked");
         assert.equal(result["turns_completed"], 3);
-        assert.ok(ctx.calls.task.includes("work-turn-2"));
+        assert.ok(ctx.calls.task.includes("orchestrator-2"));
         const ledger = JSON.parse(
             readFileSync(result["ledger_path"] as string, "utf8"),
         ) as {
@@ -321,22 +321,22 @@ describe("goal", () => {    type ReviewJsonFinding = {
         assert.equal(result["status"], "needs_human");
         assert.equal(result["approved"], false);
         assert.equal(result["turns_completed"], 2);
-        assert.equal(ctx.calls.task.includes("work-turn-3"), false);
-        assert.doesNotMatch(ctx.calls.prompts["work-turn-1"]?.[0] ?? "", /Turn: \d/);
+        assert.equal(ctx.calls.task.includes("orchestrator-3"), false);
+        assert.doesNotMatch(ctx.calls.prompts["orchestrator-1"]?.[0] ?? "", /Turn: \d/);
         assert.match(
             String(result["remaining_work"]),
             /published docs proof missing/,
         );
     });
 
-    test("worker failures stop with needs_human and persist a decision", async () => {
+    test("orchestrator failures stop with needs_human and persist a decision", async () => {
         const mod = await import("../../packages/workflows/builtin/goal.js");
         const d = mod.default as unknown as WorkflowDefinition;
         const ctx = makeMockCtx(
             { objective: "Finish documentation" },
             {
                 task: (name) => {
-                    if (name === "work-turn-1") {
+                    if (name === "orchestrator-1") {
                         throw new Error("provider outage");
                     }
                     return undefined;
@@ -433,14 +433,14 @@ describe("goal", () => {    type ReviewJsonFinding = {
         );
     });
 
-    test("worker failures clear stale reviewer reports from earlier turns", async () => {
+    test("orchestrator failures clear stale reviewer reports from earlier turns", async () => {
         const mod = await import("../../packages/workflows/builtin/goal.js");
         const d = mod.default as unknown as WorkflowDefinition;
         const ctx = makeMockCtx(
             { objective: "Finish documentation" },
             {
                 task: (name) => {
-                    if (name === "work-turn-2") {
+                    if (name === "orchestrator-2") {
                         throw new Error("provider outage on second turn");
                     }
                     if (

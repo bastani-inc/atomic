@@ -45,7 +45,7 @@ export async function writeReviewRoundArtifact(
 ): Promise<string> {
   const artifactPath = join(artifactDir, "review-round-latest.json");
   const visibleReviews = reviews.map(withoutTurn);
-  // Deduplicated cross-reviewer findings batch so the next worker turn can
+  // Deduplicated cross-reviewer findings batch so the next orchestrator turn can
   // plan and repair the round's findings together instead of one at a time.
   const consolidatedFindings = consolidateFindingsBatch(
     reviews.map((review) => ({

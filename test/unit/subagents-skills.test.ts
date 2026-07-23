@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -15,6 +15,11 @@ const builtinSubagentsSkillsRoot = join(
     "packages",
     "subagents",
     "skills",
+);
+const builtinSubagentSkillPath = join(
+    builtinSubagentsSkillsRoot,
+    "subagent",
+    "SKILL.md",
 );
 
 let previousAtomicAgentDir: string | undefined;
@@ -115,5 +120,36 @@ describe("subagent skill resolution", () => {
 
         assert.deepEqual(result.resolved, []);
         assert.deepEqual(result.missing, ["subagent"]);
+    });
+
+    test("documents the debugger model, skills, tools, and coordination", () => {
+        const guidance = readFileSync(builtinSubagentSkillPath, "utf8");
+
+        const debuggerRow = guidance
+            .split("\n")
+            .find((line) => line.startsWith("| `debugger`"));
+        assert.ok(debuggerRow, "missing debugger guidance row");
+        assert.match(debuggerRow, /`openai-codex\/gpt-5\.6-sol:xhigh`/);
+        for (const capability of [
+            "intercom",
+            "contact_supervisor",
+            "todo",
+        ]) {
+            assert.match(debuggerRow, new RegExp(`\\b${capability}\\b`));
+        }
+        assert.doesNotMatch(debuggerRow, /browser/);
+        assert.match(guidance, /`tdd`, `playwright-cli`, and `tmux` skills/);
+        assert.match(
+            guidance,
+            /debugger` and `worker` agents declare both `intercom` and `contact_supervisor`/,
+        );
+        assert.doesNotMatch(
+            guidance,
+            /None of the builtin specialists carry the `intercom` tool/,
+        );
+        assert.doesNotMatch(
+            guidance,
+            /Builtin specialists do not have `intercom`/,
+        );
     });
 });

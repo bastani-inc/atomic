@@ -37,7 +37,7 @@ Atomic turns non-trivial work into executable, inspectable workflows. Default to
 | Workflow | When to use | How to run |
 |---|---|---|
 | \`deep-research-codebase\` | broad repo or cross-cutting research before you decide what to change (for one area, use \`/skill:research-codebase\`; this indexes the whole repo) | \`/workflow deep-research-codebase prompt="How do payment retries work end to end?"\` |
-| \`goal\` | autonomous work that benefits from a durable goal ledger, bounded worker turns, named validation, and reviewer-gated completion; add \`create_pr=true\` only for final PR handoff after approval | \`/workflow goal objective="Implement specs/<date>-<topic>.md, run focused tests, and validate the changed behavior"\` |
+| \`goal\` | autonomous work that benefits from a durable goal ledger, bounded sub-agent orchestration turns, named validation, and reviewer-gated completion; add \`create_pr=true\` only for final PR handoff after approval | \`/workflow goal objective="Implement specs/<date>-<topic>.md, run focused tests, and validate the changed behavior"\` |
 | \`ralph\` | autonomous work that benefits from a durable research-first pipeline, delegated implementation, and iterative review | \`/workflow ralph prompt="Migrate the database layer to Drizzle" create_pr=true\` |
 | \`open-claude-design\` | UI and design-system work that benefits from generation and refinement loops | \`/workflow open-claude-design prompt="Refresh the settings page hierarchy"\` |
 
@@ -105,7 +105,7 @@ Skip this if the implementation request is already precise.
 
 Default to a workflow for non-trivial implementation and review. Use direct chat only for tiny deterministic low-risk edits; use focused subagents inside workflow stages or for bounded specialist passes. Choose an installed workflow when it fits, or author a custom TypeScript workflow inline from the starter patterns when the task needs a richer graph.
 
-For work that fits a durable goal ledger, bounded worker turns, and reviewer-gated completion, use \`goal\`:
+For work that fits a durable goal ledger, bounded sub-agent orchestration turns, and reviewer-gated completion, use \`goal\`:
 
 \`/workflow goal objective="Implement specs/<date>-<topic>.md, run focused tests, and finish when the documented behavior is validated"\`
 
@@ -151,7 +151,7 @@ Workflow-first is not builtin-only or monolithic. Atomic can author custom TypeS
 | Workflow | When to use | How to run |
 |---|---|---|
 | \`deep-research-codebase\` | broad repo or cross-cutting research before you decide what to change (for one area, use \`/skill:research-codebase\`; this indexes the whole repo) | \`/workflow deep-research-codebase prompt="How do payment retries work end to end?"\` |
-| \`goal\` | autonomous work that benefits from a durable goal ledger, bounded worker turns, named validation, and reviewer-gated completion; add \`create_pr=true\` only for final PR handoff after approval | \`/workflow goal objective="Update the CLI docs, include one usage example, and verify the docs build passes"\` |
+| \`goal\` | autonomous work that benefits from a durable goal ledger, bounded sub-agent orchestration turns, named validation, and reviewer-gated completion; add \`create_pr=true\` only for final PR handoff after approval | \`/workflow goal objective="Update the CLI docs, include one usage example, and verify the docs build passes"\` |
 | \`ralph\` | autonomous work that benefits from a durable research-first pipeline, delegated implementation, and iterative review | \`/workflow ralph prompt="Migrate the database layer to Drizzle" create_pr=true\` |
 | \`open-claude-design\` | frontend and product design work | \`/workflow open-claude-design prompt="Refresh the settings page hierarchy"\` |
 

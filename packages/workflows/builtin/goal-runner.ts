@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import type { WorkflowParallelOptions, WorkflowTaskOptions, WorkflowTaskResult, WorkflowTaskStep } from "../src/shared/types.js";
-import { reviewerModelConfig, workerModelConfig } from "./goal-models.js";
+import { orchestratorModelConfig, reviewerModelConfig } from "./goal-models.js";
 import {
   DEFAULT_BLOCKER_THRESHOLD,
   DEFAULT_MAX_TURNS,
@@ -23,13 +23,10 @@ import {
 } from "./goal-review.js";
 import { reviewerFailureText } from "./review-convergence.js";
 import {
-  WORKER_PREFLIGHT_CONTRACT,
-  WORKER_RECEIPT_CONTRACT,
-  renderForkedGoalWorkerPrompt,
-  renderGoalContinuationPrompt,
-  renderReviewerPrompt,
-  taggedPrompt,
-} from "./goal-prompts.js";
+  renderForkedGoalOrchestratorPrompt,
+  renderGoalOrchestratorPrompt,
+} from "./goal-orchestrator-prompts.js";
+import { renderReviewerPrompt, taggedPrompt } from "./goal-prompts.js";
 
 function positiveInteger(value: number | undefined, fallback: number): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
@@ -118,50 +115,41 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
     let latestReviewArtifactPaths: string[] = [];
     let latestReviewReportPath: string | undefined;
     let terminalRemainingWork: string | undefined;
-    let previousWorkerSessionFile: string | undefined;
+    let previousOrchestratorSessionFile: string | undefined;
 
     for (let turn = 1; turn <= maxTurns && ledger.status === "active"; turn += 1) {
-      appendLifecycleEvent(ledger, "work_turn_started", "Worker started.", turn);
+      appendLifecycleEvent(ledger, "work_turn_started", "Orchestrator started.", turn);
       await writeGoalLedger(ledgerPath, ledger);
 
-      const workTurnPath = join(artifactDir, "worker-receipt.md");
-      const workerForkOptions = forkContinuationOptions(previousWorkerSessionFile);
-      const workerPrompt = workerForkOptions.forkFromSessionFile === undefined
-        ? [
-            renderGoalContinuationPrompt(
-              ledger,
-              ledgerPath,
-              blockerThreshold,
-              latestReviewArtifactPaths,
-            ),
-            "",
-            "Project setup guidance:",
-            WORKER_PREFLIGHT_CONTRACT,
-            "",
-            "Guidance:",
-            WORKER_RECEIPT_CONTRACT,
-            "",
-            "Return Markdown with headings: Progress made, Files changed, Commands run, Evidence, Blockers, Ready for review, Remaining work.",
-          ].join("\n")
-        : renderForkedGoalWorkerPrompt(
+      const orchestratorReceiptPath = join(artifactDir, "orchestrator-receipt.md");
+      const orchestratorForkOptions = forkContinuationOptions(previousOrchestratorSessionFile);
+      const orchestratorPrompt = orchestratorForkOptions.forkFromSessionFile === undefined
+        ? renderGoalOrchestratorPrompt({
+            ledger,
+            ledgerPath,
+            blockerThreshold,
+            latestReviewArtifactPaths,
+            workflowStartCwd,
+          })
+        : renderForkedGoalOrchestratorPrompt(
             ledger,
             ledgerPath,
             latestReviewArtifactPaths,
           );
 
-      let worker: WorkflowTaskResult;
+      let orchestrator: WorkflowTaskResult;
       try {
-        worker = await ctx.task(`work-turn-${turn}`, {
-          prompt: workerPrompt,
+        orchestrator = await ctx.task(`orchestrator-${turn}`, {
+          prompt: orchestratorPrompt,
           reads: [ledgerPath, ...latestReviewArtifactPaths],
-          output: workTurnPath,
+          output: orchestratorReceiptPath,
           outputMode: "file-only",
-          ...workerModelConfig,
-          ...workerForkOptions,
+          ...orchestratorModelConfig,
+          ...orchestratorForkOptions,
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        terminalRemainingWork = `Worker failed before producing a receipt: ${message}`;
+        terminalRemainingWork = `Orchestrator failed before producing a receipt: ${message}`;
         latestReviews = [];
         latestReviewArtifactPaths = [];
         latestReviewReportPath = undefined;
@@ -185,15 +173,15 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         break;
       }
 
-      previousWorkerSessionFile = worker.sessionFile;
+      previousOrchestratorSessionFile = orchestrator.sessionFile;
       ledger.turns = turn;
       ledger.receipts.push({
         turn,
-        stage: worker.name ?? worker.stageName,
-        artifact_path: workTurnPath,
-        summary: `Worker receipt artifact: ${workTurnPath}`,
+        stage: orchestrator.name ?? orchestrator.stageName,
+        artifact_path: orchestratorReceiptPath,
+        summary: `Orchestrator receipt artifact: ${orchestratorReceiptPath}`,
       });
-      appendLifecycleEvent(ledger, "receipt_recorded", "Worker receipt recorded.", turn);
+      appendLifecycleEvent(ledger, "receipt_recorded", "Orchestrator receipt recorded.", turn);
       await writeGoalLedger(ledgerPath, ledger);
 
       const reviewerStep = (
@@ -207,13 +195,13 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           focus,
           objective,
           ledgerPath,
-          workTurnPath,
+          orchestratorReceiptPath,
           comparisonBaseBranch,
           reviewQuorum,
           blockerThreshold,
           createPr,
         }),
-        reads: [ledgerPath, workTurnPath],
+        reads: [ledgerPath, orchestratorReceiptPath],
         ...reviewerModelConfig,
       });
 
@@ -281,7 +269,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         return record;
       }));
       latestReviewReportPath = await writeReviewRoundArtifact(artifactDir, latestReviews);
-      // Consolidated round artifact leads so the next worker turn plans the full findings batch first.
+      // Consolidated round artifact leads so the next orchestrator turn plans the full findings batch first.
       latestReviewArtifactPaths = [latestReviewReportPath, ...latestReviews.map((review) => review.artifact_path)];
       ledger.reviews.push(...latestReviews);
       appendLifecycleEvent(
@@ -413,7 +401,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           ],
         ]),
         reads: prReads,
-        ...workerModelConfig,
+        ...orchestratorModelConfig,
       });
       finalPrReport = prResult.text;
     }
