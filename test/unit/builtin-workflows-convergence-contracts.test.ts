@@ -61,12 +61,44 @@ const WORKER_CONTRACT_PATTERNS = [
 const REVIEWER_CONTRACT_PATTERNS = [
     /<independent_verification>/,
     /Before relying on the worker receipt, worker-authored tests, or any prior reviewer output, derive your own adversarial check list/i,
+    /minimal external-consumer compile or typecheck probe/i,
+    /names, parameter types, return types, field types, pointer\/value identity, and method shapes/i,
+    /every named positive and negative build-tag, feature, or configuration variant/i,
+    /authoritative schema/i,
+    /omitted and zero-value fields/i,
+    /false→false, false→true, true→false, and true→true/i,
+    /temporary or injected paths, changed working directories, and relevant environment or configuration overrides/i,
+    /direct loaders, parsers, or validators with the surrounding feature both enabled and disabled/i,
+    /omitted, empty, zero, duplicate, aliased, or unusual value/i,
+    /Select only the risk classes supported by the literal objective and repository context/i,
+    /Repository-local or worker-authored tests are not sufficient evidence for an exact API, build, or schema clause/i,
+    /missing, blocked, or failed/i,
+    /stop_review_loop=false/i,
+    /command or scenario and its observed result/i,
+    /overall_explanation/i,
+    /requirements_traceability/i,
+    /reviewer_error/i,
     /never substitute for them/i,
     /contract-permitted-input probes/i,
     /Hunt over-implementation as seriously as gaps/i,
     /<regression_evidence>/,
     /<evidence_closure>/,
     /required_by_objective finding at any priority \(P3 included/i,
+] as const;
+
+const PRE_VERDICT_SELF_AUDIT_PATTERNS = [
+    /Pre-verdict self-audit/i,
+    /overall_correctness is patch is correct/i,
+    /every objective-relevant implementation and validation requirements_traceability entry is proven/i,
+    /no blocking objective-aligned finding remains/i,
+    /exact API, build, schema, state, configuration, and feature-flag risk/i,
+    /reviewer_error is null or omitted/i,
+] as const;
+
+const GOAL_EVIDENCE_FIELD_PATTERNS = [
+    /overall_explanation, receipt_assessment, verification_remaining, and requirements_traceability/i,
+    /goal_oracle_satisfied is true/i,
+    /verification_remaining reports no objective-relevant verification gap/i,
 ] as const;
 
 describe("goal convergence contracts", () => {
@@ -127,13 +159,39 @@ describe("goal convergence contracts", () => {
 
         await d.run(ctx);
 
-        const reviewerPrompt = ctx.calls.prompts["completion-reviewer-1"]?.[0] ?? "";
-        for (const pattern of REVIEWER_CONTRACT_PATTERNS) {
-            assert.match(reviewerPrompt, pattern, String(pattern));
+        const completionPrompt = ctx.calls.prompts["completion-reviewer-1"]?.[0] ?? "";
+        const evidencePrompt = ctx.calls.prompts["evidence-reviewer-1"]?.[0] ?? "";
+        const riskPrompt = ctx.calls.prompts["risk-reviewer-1"]?.[0] ?? "";
+        for (const [reviewer, reviewerPrompt] of [
+            ["completion", completionPrompt],
+            ["evidence", evidencePrompt],
+            ["risk", riskPrompt],
+        ] as const) {
+            for (const pattern of REVIEWER_CONTRACT_PATTERNS) {
+                assert.match(reviewerPrompt, pattern, `${reviewer}: ${pattern}`);
+            }
+            for (const pattern of PRE_VERDICT_SELF_AUDIT_PATTERNS) {
+                assert.match(reviewerPrompt, pattern, `${reviewer} self-audit: ${pattern}`);
+            }
+            for (const pattern of GOAL_EVIDENCE_FIELD_PATTERNS) {
+                assert.match(reviewerPrompt, pattern, `${reviewer} evidence field: ${pattern}`);
+            }
         }
         assert.match(
-            reviewerPrompt,
-            /derive your independent adversarial check list \(see independent_verification\) before opening the worker receipt/i,
+            completionPrompt,
+            /owns clause-by-clause contract fidelity.*exact exported API, type, and build requirements.*literal examples/is,
+        );
+        assert.match(
+            evidencePrompt,
+            /owns evidence validity.*current checkout.*independently derived contract probes actually ran/is,
+        );
+        assert.match(
+            riskPrompt,
+            /owns adversarial boundary checks.*transition matrices.*configuration precedence.*feature-flag coupling.*permissive inputs.*over-implementation/is,
+        );
+        assert.match(
+            completionPrompt,
+            /derive the applicable checks from the conditional contract-probe playbook in independent_verification before opening the worker receipt/i,
         );
     });
 
@@ -244,12 +302,23 @@ describe("ralph convergence contracts", () => {
         }
         for (const reviewer of ["reviewer-a", "reviewer-b"] as const) {
             const reviewerPrompt = ctx.calls.prompts[reviewer]?.[0] ?? "";
+            for (const pattern of PRE_VERDICT_SELF_AUDIT_PATTERNS) {
+                assert.match(reviewerPrompt, pattern, `${reviewer} self-audit: ${pattern}`);
+            }
+            assert.match(
+                reviewerPrompt,
+                /name each independent probe executed and its outcome/i,
+            );
+            assert.match(
+                reviewerPrompt,
+                /material literal clause remains unverified/i,
+            );
             for (const pattern of REVIEWER_CONTRACT_PATTERNS) {
                 assert.match(reviewerPrompt, pattern, `${reviewer}: ${pattern}`);
             }
             assert.match(
                 reviewerPrompt,
-                /derive your independent adversarial check list \(see independent_verification\) before opening the implementation notes/i,
+                /derive the applicable checks from the conditional contract-probe playbook in independent_verification before opening the implementation notes/i,
             );
         }
     });

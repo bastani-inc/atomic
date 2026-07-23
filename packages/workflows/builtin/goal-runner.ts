@@ -220,18 +220,18 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
       const reviewerSteps = [
         reviewerStep(
           `completion-reviewer-${turn}`,
-          "Completion Reviewer: verify the full objective and every explicit requirement are satisfied by current state.",
-          "Map the objective to concrete requirements. Mark complete only if every required deliverable, invariant, command, artifact, and referenced spec item is proven by current evidence.",
+          "Completion Reviewer: owns clause-by-clause contract fidelity, especially exact exported API, type, and build requirements and literal examples.",
+          "Map every objective clause to a concrete independent check. Verify exact exported API/type/build contracts and literal examples directly; mark complete only when every required deliverable, invariant, command, artifact, and referenced spec item is proven by current evidence.",
         ),
         reviewerStep(
           `evidence-reviewer-${turn}`,
-          "Evidence Reviewer: validate receipts, commands, tests, and artifacts rather than trusting summaries.",
-          "Inspect whether receipts are current, relevant, and broad enough. Mark continue when validation is missing, stale, indirect, or narrower than the objective.",
+          "Evidence Reviewer: owns evidence validity for the current checkout and proves independently derived contract probes actually ran.",
+          "Validate receipts, commands, tests, and artifacts rather than trusting summaries. Confirm evidence is current, relevant, broad enough, tied to this checkout, and includes the command/scenario and observed outcome for each applicable independent probe; mark continue when it is missing, stale, indirect, or narrower than the objective.",
         ),
         reviewerStep(
           `risk-reviewer-${turn}`,
-          "Risk Reviewer: hunt for hidden gaps, regressions, unresolved blockers, and unsafe completion claims.",
-          "Look for untested edge cases, scope shrinkage, repository convention violations, unsafe assumptions, and blockers that are real repeated impasses rather than ordinary remaining work.",
+          "Risk Reviewer: owns adversarial boundary checks across transition matrices, configuration precedence, feature-flag coupling, permissive inputs, and over-implementation.",
+          "Probe state transitions, configuration paths and precedence, low-level API behavior across feature flags, and contract-permitted edge inputs. Also hunt for regressions, scope shrinkage, repository convention violations, unsafe assumptions, and blockers that are real repeated impasses rather than ordinary remaining work.",
         ),
       ];
 

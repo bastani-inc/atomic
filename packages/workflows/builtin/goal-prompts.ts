@@ -372,14 +372,14 @@ export function renderReviewerPrompt(args: {
     [
       "required_actions_before_tool_call",
       [
-        "1. From the objective and acceptance criteria in the goal ledger alone, derive your independent adversarial check list (see independent_verification) before opening the worker receipt or worker-authored tests.",
+        "1. From the objective and acceptance criteria in the goal ledger alone, derive the applicable checks from the conditional contract-probe playbook in independent_verification before opening the worker receipt or worker-authored tests.",
         "2. Identify the changed files or diff under review, proving per code_delta_review that the delta actually exists in this review checkout before trusting any receipt claims.",
-        "3. Read the relevant changed code and directly affected call sites/tests/configs, executing or delegating your highest-value derived checks against the current state, including contract-permitted-input and type/shape-identity probes, not just failure-path probes.",
-        "4. Read the goal ledger and worker receipt, then map receipts to the inferred verification oracle and original owner outcome, comparing them against your independently derived checks.",
+        "3. Read the relevant changed code and directly affected call sites/tests/configs, executing or delegating every applicable material independent probe against the current state, including contract-permitted-input and type/shape-identity probes, not just failure-path probes.",
+        "4. Name each independent probe's command or scenario and observed result, then read the goal ledger and worker receipt and map receipts to the inferred verification oracle and original owner outcome.",
         "5. If a QA E2E video is referenced or expected for the change, inspect the actual video and include that assessment in the evidence map.",
         "6. Run or delegate focused validation when needed to resolve uncertainty, and check that fixes for previously reproduced findings carry durable regression evidence.",
-        "7. Decide whether the receipt/evidence map proves completion; if evidence is uncertain, indirect, stale, missing, or narrower than the requested outcome, set goal_oracle_satisfied=false and stop_review_loop=false.",
-        "8. If you cannot inspect receipts, video evidence, or validate enough to approve safely, populate reviewer_error and set stop_review_loop=false.",
+        "7. Decide whether the receipt/evidence map proves completion; if an applicable material probe or other evidence is uncertain, indirect, stale, missing, blocked, failed, or narrower than the requested outcome, use the existing traceability/error/finding fields, set goal_oracle_satisfied=false, and set stop_review_loop=false.",
+        "8. If tools or dependencies prevent necessary verification after reasonable recovery, populate reviewer_error and set stop_review_loop=false rather than approving around the limitation.",
       ].join("\n"),
     ],
     [
@@ -394,6 +394,7 @@ export function renderReviewerPrompt(args: {
     [
       "evidence_expectations",
       [
+        "Record every applicable independent probe's command or scenario and observed result in overall_explanation, receipt_assessment, verification_remaining, and requirements_traceability; do not cite a passing worker-authored test alone for an exact API, build, or schema clause.",
         "The overall_explanation should briefly mention what was inspected and what validation was run or why validation was not completed.",
         "The receipt_assessment should map concrete receipts, files, commands, artifacts, or reviewer checks back to the original owner outcome and verification oracle.",
         "The verification_remaining field should clearly state whether any objective-relevant verification remains.",
@@ -408,6 +409,7 @@ export function renderReviewerPrompt(args: {
         "Always return findings as an array; use [] when there are no findings and never invent placeholder findings.",
         "Always return requirements_traceability as a non-empty array that enumerates every explicit objective and acceptance-criteria clause. Traceability and findings are audit evidence for humans and later stages; the harness gates approval on your stop_review_loop boolean alone, so derive that flag from them carefully.",
         "When setting stop_review_loop=true, every implementation/validation requirements_traceability entry must be proven, goal_oracle_satisfied must be true, verification_remaining must say no objective-relevant implementation or validation remains, and reviewer_error must be null or omitted.",
+        "Goal-specific pre-verdict self-audit: before stop_review_loop=true, confirm goal_oracle_satisfied is true and verification_remaining reports no objective-relevant verification gap, in addition to the correctness, traceability, findings, applicable-risk evidence, and reviewer-error checks in independent_verification.",
         "Clauses that only the workflow process can satisfy — reviewer quorum/approval-count clauses, and (when create_pr is enabled) the post-approval PR/MR/review creation final action — are never implementation gaps: record them as final-action/process items and do not let them hold stop_review_loop at false.",
         "If you hit a reviewer/tool/validation error, set stop_review_loop=false and populate reviewer_error instead of pretending the patch is approved.",
       ].join("\n"),

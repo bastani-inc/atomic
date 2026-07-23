@@ -87,10 +87,24 @@ export const REVIEWER_INTERCOM_COORDINATION_PROTOCOL = [
 
 export const REVIEWER_INDEPENDENT_VERIFICATION_CONTRACT = [
   "Independent verification derivation:",
-  "- Before relying on the worker receipt, worker-authored tests, or any prior reviewer output, derive your own adversarial check list from the literal objective and acceptance criteria alone: per-clause observable checks plus boundary, edge, negative, and invalid-input probes; contract-permitted-input probes (permissive inputs the implementation might wrongly reject: optional fields omitted, duplicates or aliases present, unusual-but-allowed values) and exact type/shape/text-identity probes for anything the contract names; and state/transition/invariant probes for stateful behavior.",
-  "- Execute or delegate the highest-value derived checks against the current repository state before mapping worker evidence to requirements.",
-  "- Worker-authored tests, snapshots, and receipts corroborate your derived checks; they never substitute for them. Passing worker-authored tests is circular evidence for the clauses those tests were written from.",
-  "- Keep derived checks inside the literal contract's scope; do not manufacture requirements beyond the objective/acceptance criteria.",
+  "- Before relying on the worker receipt, worker-authored tests, or any prior reviewer output, derive your own adversarial check list from the literal objective and acceptance criteria alone: per-clause observable checks plus boundary, edge, negative, and invalid-input probes; contract-permitted-input probes; exact type/shape/text-identity probes; and state/transition/invariant probes.",
+  "- Apply this conditional contract-probe playbook when supported by the contract and repository:",
+  "  - Exact public API/type contracts: create a minimal external-consumer compile or typecheck probe using the names, parameter types, return types, field types, pointer/value identity, and method shapes stated by the objective.",
+  "  - Build tags/features/configuration variants: exercise every named positive and negative build-tag, feature, or configuration variant; prove required symbols compile and forbidden symbols are unavailable.",
+  "  - Schemas and generated artifacts: regenerate or inspect the authoritative schema, probe omitted and zero-value fields, and verify required-versus-optional behavior and downstream representation match the literal contract.",
+  "  - Stateful behavior: enumerate relevant states and mutation paths and exercise the transition matrix, not only happy-path end states; for boolean membership or predicate behavior this includes false→false, false→true, true→false, and true→true when applicable.",
+  "  - Configurable paths and precedence: use temporary or injected paths, changed working directories, and relevant environment or configuration overrides; verify initialization and defaults do not overwrite caller-controlled state.",
+  "  - Low-level APIs versus feature flags: exercise direct loaders, parsers, or validators with the surrounding feature both enabled and disabled unless the literal low-level API contract explicitly makes that flag authoritative.",
+  "  - Permissive inputs and over-implementation: probe at least one contract-permitted omitted, empty, zero, duplicate, aliased, or unusual value that an implementation may have made unnecessarily invalid.",
+  "- Select only the risk classes supported by the literal objective and repository context. These are generic risk classes, not hidden test cases; do not manufacture requirements outside the literal contract.",
+  "- Execute or delegate every applicable material probe against the current repository state before mapping worker evidence to requirements. Name each command or scenario and its observed result in the existing narrative and requirements_traceability fields.",
+  "- Worker-authored tests, snapshots, and receipts corroborate your derived checks; they never substitute for them. Passing worker-authored tests is circular evidence for the clauses those tests were written from. Repository-local or worker-authored tests are not sufficient evidence for an exact API, build, or schema clause without the applicable independent compile, type, build-variant, or schema probe.",
+  "- A compile, type, build, or schema requirement without its applicable independent probe remains unverified: keep its requirements_traceability status missing, explain the gap, add an objective-aligned finding when the patch is materially deficient, and set stop_review_loop=false.",
+  "- When an applicable material probe is missing, blocked, or failed, record the command or scenario and its observed result or limitation in overall_explanation and requirements_traceability, use the workflow's existing remaining-verification or finding fields, and set stop_review_loop=false. When tools or dependencies prevent necessary verification after reasonable recovery, populate the existing reviewer_error field instead of approving around the limitation.",
+  "",
+  "Pre-verdict self-audit:",
+  "- Before returning stop_review_loop=true, confirm overall_correctness is patch is correct; every objective-relevant implementation and validation requirements_traceability entry is proven; no blocking objective-aligned finding remains; every applicable exact API, build, schema, state, configuration, and feature-flag risk has direct evidence or a clear explanation of why it does not apply; and reviewer_error is null or omitted.",
+  "- If any item in this self-audit is false or unverified, set stop_review_loop=false and report the gap through the existing fields; never make the structured verdict internally inconsistent.",
 ].join("\n");
 
 export const REGRESSION_EVIDENCE_CONTRACT = [
