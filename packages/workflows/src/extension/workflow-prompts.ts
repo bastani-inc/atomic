@@ -29,13 +29,6 @@ export const DEFAULT_PROMPT_GUIDANCE: string[] = [
   - Budget reconnaissance: once workflow fit is clear, keep pre-workflow exploration to a few quick reads that sharpen the objective and validation criteria. Put deep research, upstream/design comparison, and behavior probing inside the workflow. Pass large context through files/artifacts and \`reads\` rather than injecting it into prompts.
   - Course-correct instead of drifting: after roughly ten exploratory tool calls with no artifact, edit, or commit, or repeated "let me verify one more thing" loops, stop, write findings to a context file, and hand the task to the best-fit named or custom workflow. Sunk inline research transfers through files; it is not a reason to stay inline.
   - Only skip workflows for tiny, deterministic, low-risk answers or direct edits where stage tracking clearly costs more than it adds, typically a single-file/no-test/no-review change or a simple answer.`,
-  `**Communication**: Follow Orwell's six rules from "Politics and the English Language":
-  1. Never use a familiar printed metaphor, simile, or figure of speech.
-  2. Never use a long word where a short one will do.
-  3. Cut every word that can be cut.
-  4. Use active rather than passive voice where possible.
-  5. Prefer everyday English to foreign phrases, scientific terms, and jargon.
-  6. Break any rule rather than say anything outright barbarous.`,
   `**Workflow discovery and lifecycle**:
   - For unfamiliar named workflows, discover with \`action: "list"\`, inspect with \`action: "get"\` or \`action: "inputs"\`, and run with \`action: "run"\`, \`workflow\`, and validated \`inputs\`; do not invent workflow names or input keys.
   - In interactive chat, named workflow launches run in the background. Run \`/workflow connect <run>\` to see agents working and chat with and steer each stage. Inspection and control calls (\`status\`, \`stages\`, \`stage\`, \`transcript\`, \`send\`, \`pause\`, \`resume\`, \`interrupt\`, \`quit\`) remain available while work runs.

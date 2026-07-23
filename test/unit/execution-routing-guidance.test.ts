@@ -53,17 +53,21 @@ describe("workflow-first execution routing", () => {
     }
   });
 
-  test("makes Orwell's six communication rules model-visible in order", () => {
+  test("keeps all six core communication rules out of workflow promptGuidelines", () => {
     const modelVisibleWorkflowGuidance = workflowGuidance.join("\n");
-    const expectedCommunicationGuidance = `**Communication**: Follow Orwell's six rules from "Politics and the English Language":
-  1. Never use a familiar printed metaphor, simile, or figure of speech.
-  2. Never use a long word where a short one will do.
-  3. Cut every word that can be cut.
-  4. Use active rather than passive voice where possible.
-  5. Prefer everyday English to foreign phrases, scientific terms, and jargon.
-  6. Break any rule rather than say anything outright barbarous.`;
+    const coreCommunicationRules = [
+      "Never use a familiar printed metaphor, simile, or figure of speech.",
+      "Never use a long word where a short one will do.",
+      "Cut every word that can be cut.",
+      "Use active rather than passive voice where possible.",
+      "Prefer everyday English to foreign phrases, scientific terms, and jargon.",
+      "Break any rule rather than say anything outright barbarous.",
+    ];
 
-    expect(modelVisibleWorkflowGuidance).toContain(expectedCommunicationGuidance);
+    expect(modelVisibleWorkflowGuidance).not.toContain("**Communication**:");
+    for (const rule of coreCommunicationRules) {
+      expect(modelVisibleWorkflowGuidance).not.toContain(rule);
+    }
   });
 
   test("treats loop and stop-condition phrasing as a strong workflow signal", () => {

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Added Orwell's six writing rules from “Politics and the English Language” to the core default system prompt's `Guidelines` section so every standard Atomic session receives them, while removing the bundled workflow guidance's requirement to announce an inline-or-workflow mode before the first tool call.
+
 ## [0.9.11-alpha.4] - 2026-07-23
 
 ### Changed

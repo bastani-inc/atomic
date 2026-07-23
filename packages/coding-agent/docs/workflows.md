@@ -174,15 +174,6 @@ Rich custom workflows can compose the [common workflow patterns](#common-workflo
 
 If inline work drifts past roughly ten exploratory tool calls without an artifact, edit, or commit, or repeats a "verify one more thing" loop, save the findings to a context file and hand the task to the best-fit named or custom workflow through `reads`. Sunk research is transferable, not a reason to continue inline.
 
-The workflow tool's model-visible communication guidance follows Orwell's six rules from “Politics and the English Language”:
-
-1. Never use a familiar printed metaphor, simile, or figure of speech.
-2. Never use a long word where a short one will do.
-3. Cut every word that can be cut.
-4. Use active rather than passive voice where possible.
-5. Prefer everyday English to foreign phrases, scientific terms, and jargon.
-6. Break any rule rather than say anything outright barbarous.
-
 | User goal | Use |
 |-----------|-----|
 | Run, inspect, connect to, pause, interrupt, quit, resume, or check status for an existing workflow | `/workflow ...` or `workflow({ action: ... })` |

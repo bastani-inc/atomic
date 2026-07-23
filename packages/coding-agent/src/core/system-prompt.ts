@@ -16,6 +16,15 @@ const DEFAULT_PROMPT_TOOLS = [
   "todo",
 ] as const;
 
+const DEFAULT_COMMUNICATION_GUIDELINES = [
+  "Never use a familiar printed metaphor, simile, or figure of speech.",
+  "Never use a long word where a short one will do.",
+  "Cut every word that can be cut.",
+  "Use active rather than passive voice where possible.",
+  "Prefer everyday English to foreign phrases, scientific terms, and jargon.",
+  "Break any rule rather than say anything outright barbarous.",
+] as const;
+
 export interface SystemPromptModel {
   /** Provider identifier for the selected model. */
   provider: string;
@@ -171,6 +180,10 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
   }
 
   // Always include these
+  for (const guideline of DEFAULT_COMMUNICATION_GUIDELINES) {
+    addGuideline(guideline);
+  }
+
   addGuideline("Be concise in your responses");
   addGuideline("Show file paths clearly when working with files");
 
