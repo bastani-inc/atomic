@@ -1,7 +1,6 @@
 import { join } from "node:path";
-import type { WorkflowModelCatalogPort, WorkflowParallelOptions, WorkflowTaskOptions, WorkflowTaskResult, WorkflowTaskStep } from "../src/shared/types.js";
+import type { WorkflowParallelOptions, WorkflowTaskOptions, WorkflowTaskResult, WorkflowTaskStep } from "../src/shared/types.js";
 import { reviewerModelConfig, workerModelConfig } from "./goal-models.js";
-import { resolveWorkerModels } from "./worker-model-resolution.js";
 import {
   DEFAULT_BLOCKER_THRESHOLD,
   DEFAULT_MAX_TURNS,
@@ -68,7 +67,6 @@ function normalizeBranchInput(
 }
 type GoalRunnerContext = {
   readonly inputs: GoalWorkflowInputs;
-  readonly models?: WorkflowModelCatalogPort;
   task(name: string, options: WorkflowTaskOptions): Promise<WorkflowTaskResult>;
   parallel(steps: readonly WorkflowTaskStep[], options: WorkflowParallelOptions): Promise<WorkflowTaskResult[]>;
 };
@@ -121,7 +119,6 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
     let latestReviewReportPath: string | undefined;
     let terminalRemainingWork: string | undefined;
     let previousWorkerSessionFile: string | undefined;
-    const resolvedWorkerModelConfig = resolveWorkerModels(workerModelConfig, ctx.models?.currentModel);
 
     for (let turn = 1; turn <= maxTurns && ledger.status === "active"; turn += 1) {
       appendLifecycleEvent(ledger, "work_turn_started", "Worker started.", turn);
@@ -159,7 +156,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           reads: [ledgerPath, ...latestReviewArtifactPaths],
           output: workTurnPath,
           outputMode: "file-only",
-          ...resolvedWorkerModelConfig,
+          ...workerModelConfig,
           ...workerForkOptions,
         });
       } catch (err) {
@@ -416,7 +413,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           ],
         ]),
         reads: prReads,
-        ...resolvedWorkerModelConfig,
+        ...workerModelConfig,
       });
       finalPrReport = prResult.text;
     }
