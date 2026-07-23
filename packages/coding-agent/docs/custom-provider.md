@@ -583,6 +583,8 @@ pi.registerProvider("my-provider", {
 });
 ```
 
+SDK and workflow-stage sessions dispatch `streamSimple` through the `ModelRegistry` that owns the session. The handler must be registered for the request model's exact `provider`, and the provider registration's `api` must equal the model's `api`; another provider or session that happens to use the same API cannot borrow or replace that handler. Standard providers without a custom handler continue through Atomic's built-in streaming path. Process-global API registration remains available for legacy low-level `pi-ai` callers that do not supply a session registry.
+
 ## Testing Your Implementation
 
 Test your provider against focused tests that mirror Atomic's provider contract. If you are working from the source checkout, note that provider internals come from `@earendil-works/pi-ai`; this monorepo does not contain a `packages/ai/test` directory to copy from directly:

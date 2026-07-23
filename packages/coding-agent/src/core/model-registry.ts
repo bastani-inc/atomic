@@ -465,16 +465,15 @@ export class ModelRegistry {
 	registerProvider(providerOrName: Provider | string, config?: ProviderConfigInput): void {
 		registerModelProvider(this.providerRegistrationHost(), providerOrName, config);
 	}
-	/**
-	 * Check whether extensions have registered custom streamSimple dispatch for an API.
-	 */
+	/** Resolve this registry's exact provider-owned custom stream handler. */
+	getRegisteredStreamSimple(model: Model<Api>): ProviderConfigInput["streamSimple"] {
+		const config = this.registeredProviders.get(model.provider);
+		return config?.api === model.api ? config.streamSimple : undefined;
+	}
+
+	/** Check whether this registry has custom stream dispatch for an API. */
 	hasRegisteredStreamSimpleForApi(api: Api): boolean {
-		for (const config of this.registeredProviders.values()) {
-			if (config.api === api && config.streamSimple) {
-				return true;
-			}
-		}
-		return false;
+		return [...this.registeredProviders.values()].some((config) => config.api === api && Boolean(config.streamSimple));
 	}
 
 	/** Unregister a previously registered provider. */

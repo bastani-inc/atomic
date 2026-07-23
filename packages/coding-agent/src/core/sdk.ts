@@ -373,9 +373,8 @@ async function createAgentSessionInternal(
         },
         fastModeEnabled,
       );
-      if (modelRegistry.hasRegisteredStreamSimpleForApi(requestModel.api)) {
-        return streamSimple(requestModel, context, codexFastModeStreamOptions);
-      }
+      const registeredStreamSimple = modelRegistry.getRegisteredStreamSimple(requestModel);
+      if (registeredStreamSimple) return registeredStreamSimple(requestModel, context, codexFastModeStreamOptions);
       return streamWithCodexFastMode(requestModel, context, codexFastModeStreamOptions);
     },
     onPayload: async (payload, model) => {
