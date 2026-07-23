@@ -48,13 +48,11 @@ import {
   reviewerAModelConfig,
   reviewerBModelConfig,
 } from "./ralph-models.js";
-import { resolveWorkerModels } from "./worker-model-resolution.js";
 export async function runRalphWorkflow(
   ctx: WorkflowRunContext<RalphInputs>,
   options: RalphWorkflowOptions,
 ): Promise<RalphWorkflowResult> {
   const { prompt, acceptanceCriteria, maxLoops, comparisonBaseBranch, workflowStartCwd, createPr } = options;
-  const resolvedOrchestratorModelConfig = resolveWorkerModels(orchestratorModelConfig, ctx.models?.currentModel);
   let latestReviewReportPath: string | undefined;
   let finalPlan = "";
   let finalPlanPath = "";
@@ -231,7 +229,7 @@ export async function runRalphWorkflow(
       reads: [researchPath, implementationNotesPath],
       output: orchestratorReportPath,
       outputMode: "file-only",
-      ...resolvedOrchestratorModelConfig,
+      ...orchestratorModelConfig,
       ...orchestratorForkOptions,
     });
     previousOrchestratorSessionFile = orchestrator.sessionFile;
@@ -415,7 +413,7 @@ export async function runRalphWorkflow(
         implementationNotesPath,
         ...(latestReviewReportPath === undefined ? [] : [latestReviewReportPath]),
       ],
-      ...resolvedOrchestratorModelConfig,
+      ...orchestratorModelConfig,
     });
     finalPrReport = prResult.text;
   }

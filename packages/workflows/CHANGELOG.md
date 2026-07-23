@@ -9,7 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - Added the opt-in `autoAttach` workflow-definition field, which opens the graph overlay when an interactive top-level named workflow is launched through `/workflow <name>` or the registered `workflow` tool without changing headless launches, nested workflow composition, or the existing input-form launch path.
-- `WorkflowRunContext` now optionally exposes the host session's model catalog as `ctx.models` (including `currentModel`, the user-selected session model). The builtin `goal` worker/`pull-request` stages and `ralph` orchestrator/`pull-request` stages use it to lead their model chains with the invoking session's current model — running at the session's default thinking level — while the curated chains are retained as ordered fallbacks, so a session's configured model and reasoning level reach the implementation stages instead of being shadowed by pinned chain entries. Reviewer chains stay curated so reviewers remain decorrelated from the session model. When the host does not expose a catalog, the curated configs are used verbatim.
+- `WorkflowRunContext` now optionally exposes the host session's model catalog as `ctx.models` (including `currentModel`, the user-selected session model, and `listModels()`). Custom workflow definitions can use it to select stage models from the live catalog; the field is absent when the host provides no catalog, and builtin workflow model chains are unchanged.
 
 ### Changed
 
