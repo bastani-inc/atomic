@@ -171,25 +171,6 @@ export async function runRalphWorkflow(
           ].join("\n"),
         ],
         [
-          "delegated_subagent_policy",
-          [
-            "By default, omit the subagent tool's explicit `model` argument so each named agent uses its declared configured model and fallback policy.",
-            "The sole automatic exception is a delegated agent that has no preconfigured or default model policy.",
-            "For that no-policy exception only, read `packages/coding-agent/docs/models/model-selection.md` and select by its documented Pareto-efficiency and role-based recommendations.",
-            "Before pinning a model on that exception path, call `workflow({ action: \"models\" })` and use only an available model's returned `fullId`.",
-            "Append a thinking suffix only when the exact recommended level appears in that same model entry's `availableThinkingLevels`.",
-            "If no recommended model intersects with the configured catalog, leave the delegation unpinned, record the limitation in the running implementation notes, and ask the user only when the task truly requires an explicit model.",
-            "If the catalog is empty, leave the delegation unpinned and state in the running implementation notes that no configured models were returned.",
-            "Do not inspect credentials or infer why a model is absent from the catalog.",
-            "Outside that sole automatic no-policy exception, use a model override only when the user explicitly requests that exact override or when a documented task-specific requirement makes it necessary.",
-            `Before launching a subagent with a model override, record the exact override and reason in the running implementation notes at ${implementationNotesPath}.`,
-            "Never invent or select an ad hoc model ID solely for diversity.",
-            "Before the first delegation, create one invocation-specific literal Intercom group name that is not `default`.",
-            "Pass that same group name as the explicit `group` argument to every delegated subagent for this workflow run, including parallel and follow-up delegations; never leave delegates in the `default` group.",
-            "Preserve escalation through `contact_supervisor`; it remains available to delegated children and can reach the supervisor across Intercom group boundaries.",
-          ].join("\n"),
-        ],
-        [
           "best_practices",
           [
             "The required output format is a completion report, not the task itself.",
