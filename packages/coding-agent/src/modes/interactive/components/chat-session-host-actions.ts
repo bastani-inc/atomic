@@ -11,6 +11,7 @@ import {
   notifyChatSessionStatus,
   notifyChatSessionWarning,
   requiredChatSessionCommand,
+  stopChatSessionWorkingLifecycle,
   syncChatSessionAnimationTick,
 } from "./chat-session-host-runtime.ts";
 import type { ChatSessionHostState } from "./chat-session-host-state.ts";
@@ -27,6 +28,7 @@ export async function interruptChatSession<
     restoreQueuedMessagesToEditor(state);
     state.sdkBusy = false;
     state.workingMessage = undefined;
+    stopChatSessionWorkingLifecycle(state, false);
     await state.commands.interrupt?.();
   } catch (err) {
     state.statusMessage = errorMessage(err);

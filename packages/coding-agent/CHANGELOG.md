@@ -9,7 +9,7 @@
 
 ### Fixed
 
-- Fixed shared, main, and workflow-stage Atomic working animation lifecycle safety. Every agent/turn starts from phase zero on a fresh cadence, restoring the ordinary indicator after an extension override resets its phase/cadence, and turn, terminal, error, replacement, and disposal cleanup fence both built-in and delegated timer callbacks without leaks or stale repaint. Reduced motion remains a static regular accent `∀` without a timer ([#1883](https://github.com/bastani-inc/atomic/issues/1883)).
+- Fixed shared, main, and workflow-stage Atomic working animation lifecycle safety. Every agent/turn starts from phase zero on a fresh cadence, restoring the ordinary indicator after an extension override resets its phase/cadence, and turn, interrupt/pause, terminal, error, replacement, and disposal cleanup fence both built-in and delegated timer callbacks without leaks or stale repaint. Reduced motion remains a static regular accent `∀` without a timer ([#1883](https://github.com/bastani-inc/atomic/issues/1883)).
 
 ## [0.9.11-alpha.4] - 2026-07-23
 

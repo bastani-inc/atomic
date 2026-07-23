@@ -70,6 +70,7 @@ export interface LifecycleFakeClock {
   animationTick(): void;
   flushEventRender(): void;
   intervalCount(): number;
+  activeIntervalDelays(): readonly number[];
   timeoutCount(): number;
   capturedAnimationCallbacks(): readonly (() => void)[];
   capturedEventRenderCallbacks(): readonly (() => void)[];
@@ -152,6 +153,7 @@ export function installLifecycleFakeClock(): LifecycleFakeClock {
       }
     },
     intervalCount: () => [...scheduled.values()].filter((timer) => timer.repeat).length,
+    activeIntervalDelays: () => [...scheduled.values()].filter((timer) => timer.repeat).map(({ delay }) => delay),
     timeoutCount: () => [...scheduled.values()].filter((timer) => !timer.repeat).length,
     capturedAnimationCallbacks: () => capturedIntervals.map(({ callback }) => callback),
     capturedEventRenderCallbacks: () => capturedTimeouts.map(({ callback }) => callback),

@@ -12,6 +12,7 @@ import {
     type AgentSession,
     type AgentSessionEvent,
 } from "./stage-chat-view-helpers.js";
+import { installLifecycleFakeClock } from "./chat-session-host-working-lifecycle-fixture.ts";
 
 describe("StageChatView", () => {
     test("requests render and accumulates SDK thinking deltas", () => {
@@ -228,6 +229,63 @@ describe("StageChatView", () => {
         assert.doesNotMatch(rendered, /READ-ONLY SESSION/);
         assert.match(rendered, /❯/);
         view.dispose();
+    });
+
+    test("Escape pause stops and fences the workflow-stage working timer without store cleanup", async () => {
+        const previousReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
+        delete process.env.ATOMIC_REDUCED_MOTION;
+        const timers = installLifecycleFakeClock();
+        const store = createStore();
+        setupRun(store, "run-1", "stage-a");
+        const { handle, emit, state } = makeHandle({
+            promptCalls: [],
+            steerCalls: [],
+            followUpCalls: [],
+            pauseCalls: 0,
+            resumeCalls: [],
+            isStreaming: true,
+        });
+        let renderRequests = 0;
+        const view = new StageChatView({
+            store,
+            graphTheme: deriveGraphTheme({}),
+            runId: "run-1",
+            stageId: "stage-a",
+            workflowName: "test-wf",
+            handle,
+            onDetach: () => {},
+            onClose: () => {},
+            requestRender: () => {
+                renderRequests += 1;
+            },
+        });
+        try {
+            emit({ type: "agent_start" } as AgentSessionEvent);
+            assert.equal(view._hasAnimationTick, true);
+            assert.equal(timers.activeIntervalDelays().includes(88), true);
+            assert.match(stripAnsi(view.render(96).join("\n")), /Working/);
+            const animationIndex = timers.intervalDelays().lastIndexOf(88);
+            const interruptedTick = timers.capturedAnimationCallbacks()[animationIndex]!;
+
+            view.handleInput("\x1b");
+            await flush();
+            await flush();
+
+            assert.equal(state.pauseCalls, 1);
+            assert.equal(store.runs()[0]?.stages[0]?.status, "running", "store cleanup must not mask interrupt cleanup");
+            assert.equal(view._hasAnimationTick, false);
+            assert.equal(timers.activeIntervalDelays().includes(88), false);
+            assert.doesNotMatch(stripAnsi(view.render(96).join("\n")), /Working/);
+            const afterInterrupt = renderRequests;
+            interruptedTick();
+            timers.advanceBy(176);
+            assert.equal(renderRequests, afterInterrupt, "paused-stage callback cannot repaint invisibly");
+        } finally {
+            view.dispose();
+            timers.restore();
+            if (previousReducedMotion === undefined) delete process.env.ATOMIC_REDUCED_MOTION;
+            else process.env.ATOMIC_REDUCED_MOTION = previousReducedMotion;
+        }
     });
 
     test("tracks SDK tool execution events by toolCallId", () => {

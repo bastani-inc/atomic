@@ -178,6 +178,48 @@ test("ordinary assistant start coalesces into the active turn animation paint", 
   }
 });
 
+test("public interrupt stops the working lifecycle and fences its captured callback", async () => {
+  const previousReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
+  delete process.env.ATOMIC_REDUCED_MOTION;
+  const timers = installLifecycleFakeClock();
+  let streaming = true;
+  let renderRequests = 0;
+  const host = makeLifecycleHost({
+    isStreaming: () => streaming,
+    commands: {
+      interrupt: async () => {
+        streaming = false;
+      },
+    },
+    requestRender: () => {
+      renderRequests += 1;
+    },
+  });
+  try {
+    host.applyAgentEvent({ type: "agent_start" } as never);
+    assert.equal(host.hasAnimationTick(), true);
+    assert.deepEqual(timers.activeIntervalDelays(), [88]);
+    assert.match(workingLine(host) ?? "", /^ ∀ /);
+    const interruptedTick = timers.capturedAnimationCallbacks().at(-1)!;
+
+    await host.interrupt();
+
+    assert.equal(host.isStreaming(), false);
+    assert.equal(host.hasAnimationTick(), false);
+    assert.deepEqual(timers.activeIntervalDelays(), []);
+    assert.deepEqual(host.renderWorkingStatus(64), []);
+    const afterInterrupt = renderRequests;
+    interruptedTick();
+    timers.advanceBy(176);
+    assert.equal(renderRequests, afterInterrupt, "interrupted lifecycle callback cannot repaint");
+  } finally {
+    host.dispose();
+    timers.restore();
+    if (previousReducedMotion === undefined) delete process.env.ATOMIC_REDUCED_MOTION;
+    else process.env.ATOMIC_REDUCED_MOTION = previousReducedMotion;
+  }
+});
+
 test("turn and terminal stops immediately repaint and fence stale event throttles", () => {
   const stopCases = [
     { name: "turn_end", stop: (host) => host.applyAgentEvent({ type: "turn_end" } as never) },
