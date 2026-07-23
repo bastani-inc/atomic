@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { WORKFLOW_STAGE_SUBAGENT_GUARD_ENV } from "@bastani/atomic";
 import type {
   ExtensionAPI,
   PiToolOpts,
@@ -23,6 +24,7 @@ type RegisteredWorkflowTool = PiToolOpts<WorkflowToolArgs, WorkflowToolResult>;
 let fixtureDirectory: string;
 let fixturePath: string;
 const capturedCallGroups: CapturedCustomCall[][] = [];
+const previousWorkflowStageGuard = process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
 
 async function createFactoryHost() {
   const events = new Map<string, ExtensionEventHandler[]>();
@@ -79,6 +81,7 @@ async function settleDetachedJobs() {
 }
 
 beforeAll(async () => {
+  delete process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
   fixtureDirectory = await mkdtemp(join(tmpdir(), "atomic-workflow-auto-attach-"));
   fixturePath = join(fixtureDirectory, "auto-attach-workflows.ts");
   await writeFile(
@@ -128,6 +131,11 @@ afterAll(async () => {
   await settleDetachedJobs();
   singletonStore.clear();
   await rm(fixtureDirectory, { recursive: true, force: true });
+  if (previousWorkflowStageGuard === undefined) {
+    delete process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
+  } else {
+    process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV] = previousWorkflowStageGuard;
+  }
 });
 
 describe("workflow auto-attach host entrypoints", () => {
