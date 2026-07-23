@@ -1,9 +1,12 @@
 import { expect, test } from "vitest";
+import { createEventBus } from "../src/core/event-bus.ts";
+import { createExtensionAPI } from "../src/core/extensions/loader-api.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader-runtime.ts";
-import { collectRegisteredTools } from "../src/core/extensions/runner-registries.ts";
-import type { Extension, RegisteredTool } from "../src/core/extensions/types.ts";
+import { ExtensionRunner } from "../src/core/extensions/runner.ts";
+import type { Extension } from "../src/core/extensions/types.ts";
+import { resolveInheritedExtensionOverlaps } from "../src/core/resource-loader-extensions.ts";
 
-function extension(path: string, origin: "atomic" | "inherited-pi"): Extension {
+function extension(path: string, origin: "bundled" | "inherited-pi"): Extension {
 	return {
 		path,
 		resolvedPath: path,
@@ -18,27 +21,136 @@ function extension(path: string, origin: "atomic" | "inherited-pi"): Extension {
 	};
 }
 
-function tool(name: string): RegisteredTool {
-	return { definition: { name } as never, extensionPath: "test", sourceInfo: {} as never };
+for (const origin of ["inherited-pi", "bundled"] as const) {
+	test(`keeps unique ${origin} registrations synchronous`, async () => {
+		const runtime = createExtensionRuntime();
+		const candidate = extension(origin, origin);
+		runtime.getAllTools = () => [...candidate.tools.values()].map(({ definition, sourceInfo }) => ({ ...definition, sourceInfo }));
+		runtime.getCommands = () => [...candidate.commands.values()].map((command) => ({ ...command, source: "extension" }));
+		let activeTools: string[] = [];
+		const registryTools = new Set<string>();
+		runtime.getActiveTools = () => [...activeTools];
+		runtime.setActiveTools = (names) => { activeTools = [...names]; };
+		runtime.refreshTools = () => {
+			const additions = [...candidate.tools.keys()].filter((name) => !registryTools.has(name));
+			for (const name of candidate.tools.keys()) registryTools.add(name);
+			activeTools = [...new Set([...activeTools, ...additions])];
+		};
+		const pi = createExtensionAPI(candidate, runtime, "/tmp", createEventBus());
+		let sawTool = false;
+		let sawCommand = false;
+		let sawActiveTool = false;
+		pi.on("session_start", async () => {
+			pi.registerFlag("unique-flag", { type: "string", default: "ready" });
+			pi.registerTool({ name: "unique-tool", parameters: {} as never, execute: async () => ({ content: [] }) });
+			pi.registerCommand("unique-command", { handler: async () => {} });
+			sawTool = pi.getAllTools().some((tool) => tool.name === "unique-tool");
+			sawCommand = pi.getCommands().some((command) => command.name === "unique-command");
+			sawActiveTool = pi.getActiveTools().includes("unique-tool");
+			pi.setActiveTools([]);
+			pi.registerTool({ name: "tool-after-selection", parameters: {} as never, execute: async () => ({ content: [] }) });
+			sawActiveTool = sawActiveTool && pi.getActiveTools().includes("tool-after-selection");
+			if (pi.getFlag("unique-flag") === "ready") pi.registerCommand("conditional-command", { handler: async () => {} });
+		});
+		const result = { extensions: [candidate], errors: [], runtime };
+		resolveInheritedExtensionOverlaps(result);
+		const runner = new ExtensionRunner(result.extensions, runtime, "/tmp", {} as never, {} as never);
+		await runner.emit({ type: "session_start", reason: "startup" });
+		expect(runtime.flagValues.get("unique-flag")).toBe("ready");
+		expect([sawTool, sawCommand, sawActiveTool]).toEqual([true, true, true]);
+		expect(activeTools).toEqual(["tool-after-selection"]);
+		expect(candidate.commands.has("conditional-command")).toBe(true);
+		expect(result.overlaps).toEqual([]);
+	});
 }
 
-test("explicit refreshes hide pending inherited tools across nested registration batches", () => {
+test("keeps original event order while committing only the bundled collision winner", async () => {
 	const runtime = createExtensionRuntime();
 	const inherited = extension("inherited", "inherited-pi");
-	const atomic = extension("atomic", "atomic");
-	const extensions = [inherited, atomic];
-	const snapshots: string[][] = [];
-	runtime.refreshTools = () => snapshots.push(collectRegisteredTools(extensions).map((entry) => entry.definition.name));
+	const bundled = extension("bundled", "bundled");
+	const trace: string[] = [];
+	let inheritedObserved: boolean | string | undefined;
+	for (const candidate of [inherited, bundled]) {
+		const pi = createExtensionAPI(candidate, runtime, "/tmp", createEventBus());
+		pi.on("session_start", async () => {
+			trace.push(candidate.sourceInfo.configurationOrigin ?? "missing");
+			pi.registerFlag("shared", { type: "string", default: candidate.path });
+			if (candidate === inherited) inheritedObserved = pi.getFlag("shared");
+			pi.registerCommand("shared", { handler: async () => {} });
+		});
+	}
+	const result = { extensions: [inherited, bundled], errors: [], runtime };
+	resolveInheritedExtensionOverlaps(result);
+	const runner = new ExtensionRunner(result.extensions, runtime, "/tmp", {} as never, {} as never);
+	await runner.emit({ type: "session_start", reason: "startup" });
+	expect(trace).toEqual(["inherited-pi", "bundled"]);
+	expect(inheritedObserved).toBe("inherited");
+	expect(inherited.flags.has("shared")).toBe(false);
+	expect(inherited.commands.has("shared")).toBe(false);
+	expect(runtime.flagValues.get("shared")).toBe("bundled");
+	expect(result.overlaps?.map((overlap) => overlap.resourceType).sort()).toEqual(["command", "flag"]);
+});
 
-	runtime.beginResourceRegistrationBatch?.();
-	inherited.tools.set("pending-inherited", tool("pending-inherited"));
-	runtime.refreshToolsAfterRegistration?.(inherited, "pending-inherited", true);
-	runtime.beginResourceRegistrationBatch?.();
-	atomic.tools.set("atomic-now", tool("atomic-now"));
-	runtime.refreshToolsAfterRegistration?.(atomic, "atomic-now", false);
-	runtime.endResourceRegistrationBatch?.();
+test("preserves first-registration views across pending inherited duplicates", async () => {
+	const runtime = createExtensionRuntime();
+	const first = extension("first", "inherited-pi");
+	const second = extension("second", "inherited-pi");
+	const extensions = [first, second];
+	runtime.getAllTools = () => [];
+	runtime.getCommands = () => [];
+	let secondView: Array<boolean | string | undefined> = [];
+	for (const candidate of extensions) {
+		const pi = createExtensionAPI(candidate, runtime, "/tmp", createEventBus());
+		pi.on("session_start", async () => {
+			pi.registerFlag("shared", { type: "string", default: candidate.path });
+			pi.registerTool({ name: "shared", description: candidate.path, parameters: {} as never, execute: async () => ({ content: [] }) });
+			pi.registerCommand("shared", { description: candidate.path, handler: async () => {} });
+			if (candidate === first) {
+				pi.registerFlag("repeated", { type: "string", default: "first-default" });
+				pi.registerFlag("repeated", { type: "string", default: "second-default" });
+			} else {
+				secondView = [
+					pi.getFlag("shared"),
+					pi.getAllTools().find((tool) => tool.name === "shared")?.description,
+					pi.getCommands().find((command) => command.name === "shared")?.description,
+				];
+			}
+		});
+	}
+	const result = { extensions, errors: [], runtime };
+	resolveInheritedExtensionOverlaps(result);
+	const runner = new ExtensionRunner(extensions, runtime, "/tmp", {} as never, {} as never);
+	await runner.emit({ type: "session_start", reason: "startup" });
+	expect(secondView).toEqual(["first", "first", "first"]);
+	expect(runtime.flagValues.get("repeated")).toBe("first-default");
+});
 
-	expect(snapshots).toEqual([["atomic-now"]]);
-	runtime.endResourceRegistrationBatch?.();
-	expect(snapshots).toEqual([["atomic-now"], ["pending-inherited", "atomic-now"]]);
+test("replays the latest mixed-origin active-tool selection after staged commit", async () => {
+	const runtime = createExtensionRuntime();
+	const inherited = extension("inherited-active", "inherited-pi");
+	const bundled = extension("bundled-active", "bundled");
+	const extensions = [inherited, bundled];
+	let activeTools: string[] = [];
+	runtime.getAllTools = () => extensions.flatMap((candidate) => [...candidate.tools.values()]
+		.map(({ definition, sourceInfo }) => ({ ...definition, sourceInfo })));
+	runtime.getActiveTools = () => [...activeTools];
+	runtime.setActiveTools = (names) => { activeTools = [...names]; };
+	runtime.refreshTools = () => {
+		activeTools = [...new Set([...activeTools, ...extensions.flatMap((candidate) => [...candidate.tools.keys()])])];
+	};
+	const inheritedApi = createExtensionAPI(inherited, runtime, "/tmp", createEventBus());
+	const bundledApi = createExtensionAPI(bundled, runtime, "/tmp", createEventBus());
+	inheritedApi.on("session_start", async () => {
+		inheritedApi.registerTool({ name: "inherited-tool", parameters: {} as never, execute: async () => ({ content: [] }) });
+		inheritedApi.setActiveTools([]);
+	});
+	bundledApi.on("session_start", async () => {
+		bundledApi.registerTool({ name: "bundled-tool", parameters: {} as never, execute: async () => ({ content: [] }) });
+		bundledApi.setActiveTools(["bundled-tool"]);
+	});
+	const result = { extensions, errors: [], runtime };
+	resolveInheritedExtensionOverlaps(result);
+	const runner = new ExtensionRunner(extensions, runtime, "/tmp", {} as never, {} as never);
+	await runner.emit({ type: "session_start", reason: "startup" });
+	expect(activeTools).toEqual(["bundled-tool"]);
 });

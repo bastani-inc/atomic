@@ -95,9 +95,20 @@ export interface ExtensionRuntimeState {
 	canRegisterResource?: (extension: Extension, resourceType: ResourceOverlap["resourceType"], name: string) => boolean;
 	beginResourceRegistrationBatch?: () => void;
 	endResourceRegistrationBatch?: () => void;
-	refreshToolsAfterRegistration?: (extension?: Extension, toolName?: string, deferUntilBatchEnd?: boolean) => void;
-	applyFlagDefaultAfterRegistration?: (name: string, ownerPath: string, value: boolean | string, deferUntilBatchEnd?: boolean) => void;
+	refreshToolsAfterRegistration?: () => void;
+	applyFlagDefaultAfterRegistration?: (name: string, ownerPath: string, value: boolean | string) => void;
+	stageToolRegistration?: (extension: Extension, name: string, registration: RegisteredTool) => boolean;
+	stageCommandRegistration?: (extension: Extension, name: string, registration: RegisteredCommand) => boolean;
+	stageFlagRegistration?: (extension: Extension, name: string, registration: ExtensionFlag, defaultValue?: boolean | string) => boolean;
+	stageShortcutRegistration?: (extension: Extension, name: KeyId, registration: ExtensionShortcut) => boolean;
+	hasPendingResourceRegistration?: (extension: Extension, resourceType: ResourceOverlap["resourceType"], name: string) => boolean;
+	deletePendingResourceRegistration?: (extension: Extension, resourceType: ResourceOverlap["resourceType"], name: string) => void;
+	getPendingFlagDefault?: (ownerPath: string, name: string) => boolean | string | undefined;
+	getAllToolsAfterRegistration?: (extension: Extension) => ToolInfo[];
+	getCommandsAfterRegistration?: (extension: Extension) => SlashCommandInfo[];
 	/** Throws when this extension instance is stale after runtime replacement. */
+	getActiveToolsAfterRegistration?: (extension: Extension) => string[];
+	setActiveToolsAfterRegistration?: (extension: Extension, toolNames: string[]) => boolean;
 	assertActive: () => void;
 	/** Marks this extension instance as stale after runtime replacement or reload. */
 	invalidate: (message?: string) => void;

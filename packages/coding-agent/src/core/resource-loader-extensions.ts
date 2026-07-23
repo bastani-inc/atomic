@@ -176,25 +176,35 @@ function installRegistrationPolicy(extensionsResult: LoadExtensionsResult): void
 		if (resourceType === "prompt") return true;
 		if (extension.sourceInfo.configurationOrigin === "inherited-pi") {
 			const bundledOwner = extensionsResult.extensions.find((candidate) =>
-				candidate.sourceInfo.configurationOrigin === "bundled" && hasRegistration(candidate, resourceType, name));
+				candidate.sourceInfo.configurationOrigin === "bundled"
+				&& hasActiveOrPendingRegistration(extensionsResult.runtime, candidate, resourceType, name));
 			if (!bundledOwner) return true;
 			recordOverlap(extensionsResult, resourceType, name, bundledOwner, extension);
 			return false;
 		}
-		if (extension.sourceInfo.configurationOrigin !== "bundled") return true;
+		const isBundled = extension.sourceInfo.configurationOrigin === "bundled";
 		for (const inherited of extensionsResult.extensions) {
-			if (inherited.sourceInfo.configurationOrigin !== "inherited-pi" || !hasRegistration(inherited, resourceType, name)) continue;
+			if (inherited.sourceInfo.configurationOrigin !== "inherited-pi"
+				|| !hasActiveOrPendingRegistration(extensionsResult.runtime, inherited, resourceType, name)) continue;
 			if (resourceType === "flag" && flagOwners.get(name) === inherited.path) {
 				flagOwners.delete(name);
-				if (!extensionsResult.runtime.explicitFlagNames?.has(name)) {
-					extensionsResult.runtime.flagValues.delete(name);
-				}
+				if (!extensionsResult.runtime.explicitFlagNames?.has(name)) extensionsResult.runtime.flagValues.delete(name);
 			}
-			deleteRegistration(inherited, resourceType, name);
-			recordOverlap(extensionsResult, resourceType, name, extension, inherited);
+			deleteRegistration(extensionsResult.runtime, inherited, resourceType, name);
+			if (isBundled) recordOverlap(extensionsResult, resourceType, name, extension, inherited);
 		}
 		return true;
 	};
+}
+
+function hasActiveOrPendingRegistration(
+	runtime: ExtensionRuntime,
+	extension: Extension,
+	resourceType: Exclude<OverlappingResourceType, "prompt">,
+	name: string,
+): boolean {
+	return hasRegistration(extension, resourceType, name)
+		|| runtime.hasPendingResourceRegistration?.(extension, resourceType, name) === true;
 }
 
 function hasRegistration(extension: Extension, resourceType: Exclude<OverlappingResourceType, "prompt">, name: string): boolean {
@@ -206,7 +216,13 @@ function hasRegistration(extension: Extension, resourceType: Exclude<Overlapping
 	}
 }
 
-function deleteRegistration(extension: Extension, resourceType: Exclude<OverlappingResourceType, "prompt">, name: string): void {
+function deleteRegistration(
+	runtime: ExtensionRuntime,
+	extension: Extension,
+	resourceType: Exclude<OverlappingResourceType, "prompt">,
+	name: string,
+): void {
+	runtime.deletePendingResourceRegistration?.(extension, resourceType, name);
 	switch (resourceType) {
 		case "tool": extension.tools.delete(name); break;
 		case "command": extension.commands.delete(name); break;

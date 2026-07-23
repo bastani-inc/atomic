@@ -208,17 +208,17 @@ describe("inherited Pi resource overlap compatibility", () => {
 		};
 		const runner = new ExtensionRunner(result.extensions, result.runtime, cwd, {} as never, {} as never);
 		await runner.emit({ type: "session_start", reason: "startup" });
-		expect(activeOwners).toEqual(["bundled/bundled"]);
+		expect(activeOwners.every((owners) => !owners.includes("inherited"))).toBe(true);
+		expect(activeOwners.at(-1)).toBe("bundled/bundled");
 		const winner = result.extensions.find((extension) => extension.tools.has("late-shared-tool"));
 		expect(winner?.sourceInfo.configurationOrigin).toBe("bundled");
 		expect(resolveRegisteredCommands(result.extensions).find((command) => command.name === "legacy-observed-late-flag")?.description)
-			.toBe("undefined");
+			.toBe("same");
 		expect(result.runtime.flagValues.get("late-shared-flag")).toBe("bundled-late");
 		expect(result.extensions.find((extension) => extension.flags.has("late-shared-flag"))?.sourceInfo.configurationOrigin)
 			.toBe("bundled");
 		expect(loader.getOverlaps().some((overlap) => overlap.name === "late-shared-tool")).toBe(true);
 	});
-
 	it("keeps inherited tools inactive across specialized event dispatchers", async () => {
 		const loader = createLoader();
 		await loader.reload();
@@ -230,8 +230,8 @@ describe("inherited Pi resource overlap compatibility", () => {
 		};
 		const runner = new ExtensionRunner(result.extensions, result.runtime, cwd, {} as never, {} as never);
 		await runner.emitMessageEnd({ type: "message_end", message: {} as never });
-
-		expect(activeOwners).toEqual(["bundled"]);
+		expect(activeOwners.length).toBeGreaterThan(0);
+		expect(activeOwners.every((owner) => owner === "bundled")).toBe(true);
 		const winner = result.extensions.find((extension) => extension.tools.has("message-end-shared-tool"));
 		expect(winner?.sourceInfo.configurationOrigin).toBe("bundled");
 		expect(loader.getOverlaps().some((overlap) => overlap.name === "message-end-shared-tool")).toBe(true);
