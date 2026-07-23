@@ -4,6 +4,7 @@ import { getKeybindings, Key, type KeyId, parseKey, setKeybindings } from "@eare
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { routeGlobalClearInput } from "../../packages/coding-agent/src/modes/interactive/interactive-global-clear.ts";
 import { ExtensionSelectorComponent } from "../../packages/coding-agent/src/modes/interactive/components/extension-selector.ts";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 
 /**
  * pi-tui exposes key parsing (raw bytes -> KeyId) but no encoder, so tests
@@ -76,6 +77,11 @@ test("global clear guards are evaluated live, not at registration time", () => {
 test("a single ctrl+c cancels the login auth-method selector once input reaches it", () => {
 	const previous = getKeybindings();
 	setKeybindings(new KeybindingsManager());
+	// ExtensionSelectorComponent reads the global theme at construction time.
+	// Initialize it here so this file does not depend on another test file
+	// having called initTheme() earlier in the same process (file execution
+	// order is not stable across platforms).
+	initTheme("dark");
 	try {
 		let cancelled = 0;
 		const selector = new ExtensionSelectorComponent(
