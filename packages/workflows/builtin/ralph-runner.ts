@@ -171,6 +171,18 @@ export async function runRalphWorkflow(
           ].join("\n"),
         ],
         [
+          "delegated_subagent_policy",
+          [
+            "By default, omit the subagent tool's explicit `model` argument so each named agent uses its declared configured model and fallback policy.",
+            "Use a model override only when the user explicitly requests that exact override or when a documented task-specific requirement makes it necessary.",
+            `Before launching a subagent with a model override, record the exact override and reason in the running implementation notes at ${implementationNotesPath}.`,
+            "Never invent or select an ad hoc model ID solely for diversity.",
+            "Before the first delegation, create one invocation-specific literal Intercom group name that is not `default`.",
+            "Pass that same group name as the explicit `group` argument to every delegated subagent for this workflow run, including parallel and follow-up delegations; never leave delegates in the `default` group.",
+            "Preserve escalation through `contact_supervisor`; it remains available to delegated children and can reach the supervisor across Intercom group boundaries.",
+          ].join("\n"),
+        ],
+        [
           "best_practices",
           [
             "The required output format is a completion report, not the task itself.",
