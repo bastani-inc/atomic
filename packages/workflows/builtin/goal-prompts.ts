@@ -6,11 +6,13 @@ import {
   FINDINGS_CONSOLIDATION_CONTRACT,
   LITERAL_OBJECTIVE_CONTRACT,
   REGRESSION_EVIDENCE_CONTRACT,
+  REVIEW_CODE_DELTA_CONTRACT,
   REVIEWER_INDEPENDENT_VERIFICATION_CONTRACT,
   REVIEWER_INTERCOM_COORDINATION_PROTOCOL,
   REVIEWER_OVERIMPLEMENTATION_GUARD,
   REVIEWER_SPEC_VS_OBJECTIVE_GUARD,
   WORKER_PREFLIGHT_CONTRACT,
+  WORKTREE_DISCIPLINE_CONTRACT,
   renderE2eQaVideoReviewGuidance,
 } from "./shared-prompts.js";
 import type { GoalLedger } from "./goal-types.js";
@@ -193,6 +195,7 @@ export function renderGoalContinuationPrompt(
     ["regression_evidence", REGRESSION_EVIDENCE_CONTRACT],
     ["evidence_closure", EVIDENCE_CLOSURE_POLICY],
     ["literal_contract", LITERAL_OBJECTIVE_CONTRACT],
+    ["worktree_discipline", WORKTREE_DISCIPLINE_CONTRACT],
     ["pr_handoff_policy", INTERMEDIATE_PR_HANDOFF_GUARDRAIL],
     ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
   ]);
@@ -212,7 +215,7 @@ export function renderForkedGoalWorkerPrompt(
       "goal_context",
       [
         "Continue the same goal-runner worker thread.",
-        "All previously established guidance still applies unchanged: the goal invariants, project preflight, worker receipt contract, completion audit, blocked audit, literal objective contract, acceptance matrix, adversarial divergence audit, findings batch, regression evidence, evidence closure, PR handoff policy, E2E verification guidance, and the receipt output format.",
+        "All previously established guidance still applies unchanged: the goal invariants, project preflight, worker receipt contract, completion audit, blocked audit, literal objective contract, acceptance matrix, adversarial divergence audit, findings batch, regression evidence, evidence closure, worktree discipline, PR handoff policy, E2E verification guidance, and the receipt output format.",
         "Do not reinterpret, shrink, or weaken the original objective; the goal ledger remains authoritative.",
         "",
         `Goal ledger artifact: ${ledgerPath}`,
@@ -257,6 +260,7 @@ export function renderReviewerPrompt(args: {
     ["review_guidance", args.focus],
     ["literal_contract", LITERAL_OBJECTIVE_CONTRACT],
     ["independent_verification", REVIEWER_INDEPENDENT_VERIFICATION_CONTRACT],
+    ["code_delta_review", REVIEW_CODE_DELTA_CONTRACT],
     ["reviewer_coordination", REVIEWER_INTERCOM_COORDINATION_PROTOCOL],
     ["regression_evidence", REGRESSION_EVIDENCE_CONTRACT],
     ["evidence_closure", EVIDENCE_CLOSURE_POLICY],
@@ -367,7 +371,7 @@ export function renderReviewerPrompt(args: {
     [
       "required_actions_before_tool_call",
       [
-        "1. Identify the changed files or diff under review.",
+        "1. Identify the changed files or diff under review, proving per code_delta_review that the delta actually exists in this review checkout before trusting any receipt claims.",
         "2. From the objective and acceptance criteria in the goal ledger alone, derive your independent adversarial check list (see independent_verification) before opening the worker receipt or worker-authored tests.",
         "3. Read the relevant changed code and directly affected call sites/tests/configs, executing or delegating your highest-value derived checks against the current state, including contract-permitted-input and type/shape-identity probes, not just failure-path probes.",
         "4. Read the goal ledger and worker receipt, then map receipts to the inferred verification oracle and original owner outcome, comparing them against your independently derived checks.",

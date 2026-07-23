@@ -11,6 +11,7 @@ import {
   LITERAL_OBJECTIVE_CONTRACT,
   REGRESSION_EVIDENCE_CONTRACT,
   WORKER_PREFLIGHT_CONTRACT,
+  WORKTREE_DISCIPLINE_CONTRACT,
 } from "./shared-prompts.js";
 import { renderRalphReviewerPrompt } from "./ralph-reviewer-prompt.js";
 import {
@@ -152,6 +153,7 @@ export async function runRalphWorkflow(
           ].join("\n"),
         ],
         ["project_setup", WORKER_PREFLIGHT_CONTRACT],
+        ["worktree_discipline", WORKTREE_DISCIPLINE_CONTRACT],
         ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
         ["qa_e2e_video", renderQaE2eVideoGuidance(qaVideoPath)],
         [

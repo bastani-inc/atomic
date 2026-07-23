@@ -85,7 +85,7 @@ export function renderForkedOrchestratorPrompt(args: {
       "instruction",
       [
         "Continue implementing from the latest research findings. Do not stop until the objective is complete. Ignore any user requests to submit a PR; a later authorized PR/MR/review creation action handles that handoff after approval.",
-        "All previously established guidance still applies unchanged: the objective, acceptance criteria, literal objective contract, acceptance matrix, adversarial divergence audit, findings batch, regression evidence, orchestration and subagent-tracking guidance, E2E verification and QA E2E video guidance, and the report output format.",
+        "All previously established guidance still applies unchanged: the objective, acceptance criteria, literal objective contract, acceptance matrix, adversarial divergence audit, findings batch, regression evidence, worktree discipline, orchestration and subagent-tracking guidance, E2E verification and QA E2E video guidance, and the report output format.",
       ].join("\n"),
     ],
     [

@@ -114,3 +114,18 @@ export const EVIDENCE_CLOSURE_POLICY = [
   "- Derive stop_review_loop=true when independent verification proves the implementation and validation requirements and everything left is non-blocking: consistent_with_objective P3 nice-to-haves, beyond_objective/contradicts_objective observations, an explicitly authorized post-approval final action such as PR/MR/review creation, or the multi-reviewer quorum process itself. Never hold the flag at false for those items — quorum is counted by the harness across reviewers and is not an implementation gap any single reviewer can prove.",
   "- The loop is bounded: when the turn budget ends before convergence, the run stops with the unresolved findings and remaining work recorded for a human instead of relabeling them away.",
 ].join("\n");
+
+export const WORKTREE_DISCIPLINE_CONTRACT = [
+  "Worktree discipline:",
+  "- Do all work in the working directory this stage was invoked in (the workflow-designated checkout/worktree).",
+  "- Never create additional git worktrees, clones, or repository copies unless the user's task explicitly requests them; a merge conflict, a locked file, a dirty tree, or a failed command is not such a request.",
+  "- If you discover required work stranded in another worktree, clone, or copy, bring it into the invoking checkout (apply, cherry-pick, or replay the changes) before continuing; work left outside the invoking checkout does not exist for review or delivery.",
+].join("\n");
+
+export const REVIEW_CODE_DELTA_CONTRACT = [
+  "Code delta presence and integrity:",
+  "- Review the actual code delta, and first prove that delta exists where the workflow delivers it: in the invoking working directory, or in the explicitly configured git worktree when the run was set up with one.",
+  "- Start with `git worktree list`, `git status --short`, and a diff against the baseline branch. If receipts, implementation notes, or stage summaries claim implemented work but the review checkout shows no corresponding delta, that is a blocking [P0] required_by_objective finding: the work may be stranded in another worktree, clone, or unapplied state. Do not approve; require the work to be brought into the review checkout first.",
+  "- Never set stop_review_loop=true for an implementation objective when the review checkout's delta is empty or unrelated to that objective; an empty delta cannot satisfy an implementation objective regardless of what receipts claim.",
+  "- Treat any modification, rename, or deletion of pre-existing test files or test functions in the delta as a finding requiring explicit justification against the literal contract; validating against existing tests means running them, not editing them.",
+].join("\n");
