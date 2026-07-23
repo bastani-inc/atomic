@@ -69,10 +69,10 @@ Atomic currently bundles these agents from `@bastani/subagents`:
 | `codebase-research-locator` | Locate prior `research/` and `specs/` documents related to the task. | No |
 | `codebase-research-analyzer` | Extract decisions, constraints, and still-relevant conclusions from prior local docs. | No |
 | `codebase-online-researcher` | Research official docs, ecosystem behavior, and open-source source references online. | Can write research notes |
-| `debugger` | Reproduce, diagnose, and fix failures or unexpected behavior. | Yes |
+| `debugger` | Reproduce, prove the root cause, apply the smallest code or content fix, and rerun the failing scenario. It has the same write-capable tools as `worker`. | Yes |
 | `code-simplifier` | Clean up recently changed code while preserving behavior. | Yes |
 
-Read-oriented agents should inspect and report. `debugger` and `code-simplifier` can edit files, so run them with an explicit scope and validation target.
+Read-oriented agents should inspect and report. `debugger` and `code-simplifier` can edit files, so run them with an explicit scope and validation target. The debugger should finish an in-scope diagnosis by applying and validating the fix, not stop at a proposed patch.
 
 ## Review compositions
 
