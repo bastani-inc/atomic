@@ -17,7 +17,7 @@ import {
 	type ThemeBg,
 	type ThemeColor,
 } from "../src/modes/interactive/theme/theme.ts";
-import { loadThemeFromContent, loadThemeJson } from "../src/modes/interactive/theme/theme-loading.ts";
+import { loadTheme, loadThemeFromContent, loadThemeJson } from "../src/modes/interactive/theme/theme-loading.ts";
 import { WHIMSICAL_WORKING_MESSAGES } from "../src/modes/interactive/whimsical-messages.ts";
 
 const plain = (text: string): string => text.replace(/\u001b\[[0-9;]*m/g, "");
@@ -74,8 +74,8 @@ describe("Atomic working status", () => {
 		expect(rendered.map((line) => line.includes("\u001b[1m"))).toEqual(ATOMIC_WORKING_BOLD_PHASES);
 	});
 
-	it("matches the approved high-contrast Catppuccin Mocha role ramp", () => {
-		initTheme("catppuccin-mocha");
+	it("matches the approved high-contrast Catppuccin Mocha role ramp in truecolor", () => {
+		setThemeInstance(loadTheme("catppuccin-mocha", "truecolor"));
 		const colors = ATOMIC_WORKING_FRAMES.map((_, frame) =>
 			rgb(new AtomicWorkingStatusComponent({ frame, messageColor: String }).render(64)[1]!),
 		);
@@ -125,9 +125,9 @@ describe("Atomic working status", () => {
 
 	it("uses live dark and light theme roles and follows dynamic theme changes", () => {
 		const components = [0, 3].map((frame) => new AtomicWorkingStatusComponent({ frame }));
-		initTheme("dark");
+		setThemeInstance(loadTheme("dark", "truecolor"));
 		const dark = components.map((component) => rgb(component.render(64)[1]!));
-		initTheme("light");
+		setThemeInstance(loadTheme("light", "truecolor"));
 		const light = components.map((component) => rgb(component.render(64)[1]!));
 		expect(dark).toEqual(["#666666", "#8abeb7"]);
 		expect(light).toEqual(["#767676", "#5a8080"]);
