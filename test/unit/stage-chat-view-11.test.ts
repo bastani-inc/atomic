@@ -234,6 +234,52 @@ describe("StageChatView", () => {
         const store = createStore();
         setupRun(store, "run-1", "stage-a");
         const { handle, emit } = makeHandle();
+        let renders = 0;
+        const view = new StageChatView({
+            store,
+            graphTheme: deriveGraphTheme({}),
+            runId: "run-1",
+            stageId: "stage-a",
+            workflowName: "test-wf",
+            handle,
+            onDetach: () => {},
+            onClose: () => {},
+            requestRender: () => {
+                renders += 1;
+            },
+        });
+
+        emit({
+            type: "tool_execution_start",
+            toolCallId: "t1",
+            toolName: "bash",
+            args: { command: "bun test" },
+        } as unknown as AgentSessionEvent);
+        assert.equal(view._transcript.at(-1)?.role, "tool");
+        assert.equal(view._transcript.at(-1)?.text.includes("bash"), true);
+
+        emit({
+            type: "tool_execution_end",
+            toolCallId: "t1",
+            toolName: "bash",
+            result: { content: [{ type: "text", text: "ok" }], details: {} },
+            isError: false,
+        } as unknown as AgentSessionEvent);
+        assert.equal(renders, 2);
+        const entry = view._transcript.at(-1);
+        assert.equal(entry?.role, "tool");
+        assert.equal(entry?.text.includes("ok"), true);
+        const renderedLines = view.render(96);
+        assert.match(renderedLines.join("\n"), /ok/);
+        const toolLine = renderedLines.find((line) => line.includes("$ bun test"));
+        assert.notEqual(toolLine, undefined);
+        view.dispose();
+    });
+
+    test("renders the working surface throughout active SDK tool execution", () => {
+        const store = createStore();
+        setupRun(store, "run-1", "stage-a");
+        const { handle, emit } = makeHandle();
         const view = new StageChatView({
             store,
             graphTheme: deriveGraphTheme({}),
@@ -245,15 +291,13 @@ describe("StageChatView", () => {
             onClose: () => {},
         });
 
-        emit({ type: "agent_start" } as unknown as AgentSessionEvent);
+        emit({ type: "agent_start" } as AgentSessionEvent);
         emit({
             type: "tool_execution_start",
             toolCallId: "t1",
             toolName: "bash",
             args: { command: "bun test" },
-        } as unknown as AgentSessionEvent);
-        assert.equal(view._transcript.at(-1)?.role, "tool");
-        assert.equal(view._transcript.at(-1)?.text.includes("bash"), true);
+        } as AgentSessionEvent);
         assert.match(view.render(96).map(stripAnsi).join("\n"), /Working\.\.\./);
 
         emit({
@@ -262,15 +306,8 @@ describe("StageChatView", () => {
             toolName: "bash",
             result: { content: [{ type: "text", text: "ok" }], details: {} },
             isError: false,
-        } as unknown as AgentSessionEvent);
+        } as AgentSessionEvent);
         assert.match(view.render(96).map(stripAnsi).join("\n"), /Working\.\.\./);
-        const entry = view._transcript.at(-1);
-        assert.equal(entry?.role, "tool");
-        assert.equal(entry?.text.includes("ok"), true);
-        const renderedLines = view.render(96);
-        assert.match(renderedLines.join("\n"), /ok/);
-        const toolLine = renderedLines.find((line) => line.includes("$ bun test"));
-        assert.notEqual(toolLine, undefined);
         view.dispose();
     });
 

@@ -89,3 +89,126 @@ test("turn_start resets extension cadence and fences delegate callbacks after re
     timers.restore();
   }
 });
+
+test("turn_end removes the main Atomic loader and fences its 88ms callback before the next turn", async () => {
+  const timers = installLifecycleFakeClock();
+  let renders = 0;
+  const children: object[] = [];
+  const ui = { requestRender() { renders += 1; } } as never;
+  let mode: InteractiveModeBase;
+  const createWorkingLoader = (): AtomicWorkingLoader =>
+    new AtomicWorkingLoader(ui, undefined, String, mode.workingMessage ?? "Working...");
+  mode = {
+    isInitialized: true,
+    footer: { invalidate() {} },
+    ui,
+    workingVisible: true,
+    workingMessage: undefined,
+    loadingAnimation: undefined,
+    settingsManager: { getClearOnShrink: () => false },
+    statusContainer: {
+      clear() { children.length = 0; },
+      addChild(child: object) { children.push(child); },
+    },
+    createWorkingLoader,
+    stopWorkingLoader: InteractiveModeBase.prototype.stopWorkingLoader,
+    showWorkingLoaderNow: InteractiveModeBase.prototype.showWorkingLoaderNow,
+  } as unknown as InteractiveModeBase;
+  mode.loadingAnimation = createWorkingLoader();
+  children.push(mode.loadingAnimation);
+
+  try {
+    await InteractiveModeBase.prototype.handleEvent.call(mode, { type: "turn_start" } as never);
+    assert.equal(timers.intervalCount(), 1);
+    const completedTurnTick = timers.capturedAnimationCallbacks().at(-1)!;
+    const beforeEnd = renders;
+
+    await InteractiveModeBase.prototype.handleEvent.call(mode, { type: "turn_end" } as never);
+
+    assert.equal(mode.loadingAnimation, undefined);
+    assert.equal(timers.intervalCount(), 0);
+    assert.equal(renders, beforeEnd + 1, "turn_end requests one immediate cleanup repaint");
+    completedTurnTick();
+    assert.equal(renders, beforeEnd + 1, "completed-turn callback cannot repaint");
+
+    await InteractiveModeBase.prototype.handleEvent.call(mode, { type: "turn_start" } as never);
+    const nextLoader = mode.loadingAnimation as AtomicWorkingLoader;
+    assert.match(workingLine(nextLoader), /\u001b\[38;2;69;71;90m∀/);
+    assert.equal(timers.intervalCount(), 1);
+    const afterRestart = renders;
+    completedTurnTick();
+    assert.equal(renders, afterRestart, "prior-turn callback stays fenced after restart");
+    timers.advanceBy(87);
+    assert.equal(renders, afterRestart);
+    timers.advanceBy(1);
+    assert.equal(renders, afterRestart + 1);
+    assert.match(workingLine(nextLoader), /\u001b\[38;2;108;112;134m∀/);
+  } finally {
+    mode.loadingAnimation?.stop();
+    timers.restore();
+  }
+});
+
+test("turn_end removes a delegated extension loader and fences its callback before the next turn", async () => {
+  const timers = installLifecycleFakeClock();
+  let renders = 0;
+  const children: object[] = [];
+  const ui = { requestRender() { renders += 1; } } as never;
+  const indicator = { frames: ["X", "Y"], intervalMs: 137 };
+  let mode: InteractiveModeBase;
+  const createWorkingLoader = (): AtomicWorkingLoader =>
+    new AtomicWorkingLoader(ui, String, String, mode.workingMessage ?? "Working...", indicator);
+  mode = {
+    isInitialized: true,
+    footer: { invalidate() {} },
+    ui,
+    workingVisible: true,
+    workingMessage: undefined,
+    loadingAnimation: undefined,
+    settingsManager: { getClearOnShrink: () => false },
+    statusContainer: {
+      clear() { children.length = 0; },
+      addChild(child: object) { children.push(child); },
+    },
+    createWorkingLoader,
+    stopWorkingLoader: InteractiveModeBase.prototype.stopWorkingLoader,
+    showWorkingLoaderNow: InteractiveModeBase.prototype.showWorkingLoaderNow,
+  } as unknown as InteractiveModeBase;
+  mode.loadingAnimation = createWorkingLoader();
+  children.push(mode.loadingAnimation);
+
+  try {
+    await InteractiveModeBase.prototype.handleEvent.call(mode, { type: "turn_start" } as never);
+    assert.match(workingLine(mode.loadingAnimation as AtomicWorkingLoader), /^ X /);
+    assert.equal(timers.intervalCount(), 1);
+    assert.equal(timers.intervalDelays().at(-1), 137);
+    const completedTurnTick = timers.capturedAnimationCallbacks().at(-1)!;
+    const beforeEnd = renders;
+
+    await InteractiveModeBase.prototype.handleEvent.call(mode, { type: "turn_end" } as never);
+
+    assert.equal(mode.loadingAnimation, undefined);
+    assert.equal(timers.intervalCount(), 0);
+    assert.equal(renders, beforeEnd + 1, "turn_end requests one immediate delegated cleanup repaint");
+    completedTurnTick();
+    assert.equal(renders, beforeEnd + 1, "completed delegated callback cannot repaint");
+
+    await InteractiveModeBase.prototype.handleEvent.call(mode, { type: "turn_start" } as never);
+    const nextLoader = mode.loadingAnimation as AtomicWorkingLoader;
+    assert.match(workingLine(nextLoader), /^ X /);
+    assert.equal(timers.intervalCount(), 1);
+    assert.equal(timers.intervalDelays().at(-1), 137);
+    const afterRestart = renders;
+    completedTurnTick();
+    assert.equal(renders, afterRestart, "prior delegated callback stays fenced after restart");
+    timers.advanceBy(136);
+    assert.match(workingLine(nextLoader), /^ X /);
+    assert.equal(renders, afterRestart);
+    timers.advanceBy(1);
+    assert.match(workingLine(nextLoader), /^ Y /);
+    assert.equal(renders, afterRestart + 1);
+  } finally {
+    mode.loadingAnimation?.stop();
+    timers.restore();
+  }
+});

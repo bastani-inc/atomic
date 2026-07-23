@@ -74,15 +74,16 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
         if (this.loadingAnimation) {
           if ("resetForTurn" in this.loadingAnimation) this.loadingAnimation.resetForTurn(this.workingMessage);
           else this.loadingAnimation.setMessage(this.workingMessage);
+        } else {
+          this.showWorkingLoaderNow();
         }
         break;
       }
 
       case "turn_end": {
         this.workingMessage = undefined;
-        if (this.loadingAnimation) {
-          this.loadingAnimation.setMessage(this.defaultWorkingMessage);
-        }
+        this.stopWorkingLoader();
+        this.ui.requestRender();
         break;
       }
 
