@@ -72,7 +72,7 @@ InteractiveModeBase.prototype.getWorkingLoaderMessage = function(this: Interacti
 InteractiveModeBase.prototype.createWorkingLoader = function(this: InteractiveModeBase): AtomicWorkingLoader {
 	return new AtomicWorkingLoader(
 		this.ui,
-		(spinner) => theme.fg("accent", spinner),
+		undefined,
 		(text) => theme.fg("muted", text),
 		this.getWorkingLoaderMessage(),
 		this.workingIndicatorOptions,

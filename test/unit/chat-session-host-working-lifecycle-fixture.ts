@@ -40,8 +40,17 @@ export function makeLifecycleHost(
   });
 }
 
-export function workingLine(host: ChatSessionHost<never>): string | undefined {
+export function stripAnsi(text: string): string {
+  return text.replace(/\u001b\[[0-9;]*m/g, "");
+}
+
+export function rawWorkingLine(host: ChatSessionHost<never>): string | undefined {
   return host.renderWorkingStatus(64)[1]?.trimEnd();
+}
+
+export function workingLine(host: ChatSessionHost<never>): string | undefined {
+  const line = rawWorkingLine(host);
+  return line === undefined ? undefined : stripAnsi(line);
 }
 
 interface CapturedTimer {

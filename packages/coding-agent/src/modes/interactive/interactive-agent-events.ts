@@ -72,7 +72,8 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
       case "turn_start": {
         this.workingMessage = pickWhimsicalWorkingMessage();
         if (this.loadingAnimation) {
-          this.loadingAnimation.setMessage(this.workingMessage);
+          if ("resetForTurn" in this.loadingAnimation) this.loadingAnimation.resetForTurn(this.workingMessage);
+          else this.loadingAnimation.setMessage(this.workingMessage);
         }
         break;
       }

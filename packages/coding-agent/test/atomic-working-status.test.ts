@@ -4,95 +4,174 @@ import {
 	ATOMIC_WORKING_BOLD_PHASES,
 	ATOMIC_WORKING_FRAME_MS,
 	ATOMIC_WORKING_FRAMES,
+	ATOMIC_WORKING_PHASES,
 	AtomicWorkingLoader,
 	AtomicWorkingStatusComponent,
 	atomicWorkingFrame,
 } from "../src/modes/interactive/components/atomic-working-status.ts";
-import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
+import { WorkingStatusComponent } from "../src/modes/interactive/components/working-status.ts";
+import {
+	initTheme,
+	setThemeInstance,
+	Theme,
+	type ThemeBg,
+	type ThemeColor,
+} from "../src/modes/interactive/theme/theme.ts";
+import { loadThemeFromContent, loadThemeJson } from "../src/modes/interactive/theme/theme-loading.ts";
 import { WHIMSICAL_WORKING_MESSAGES } from "../src/modes/interactive/whimsical-messages.ts";
 
 const plain = (text: string): string => text.replace(/\u001b\[[0-9;]*m/g, "");
 const renderedContent = (loader: AtomicWorkingLoader): string => plain(loader.render(64)[1]!).trimEnd();
+const rgb = (text: string): string | undefined => {
+	const match = /\u001b\[38;2;(\d+);(\d+);(\d+)m/.exec(text);
+	return match ? `#${match.slice(1).map((value) => Number(value).toString(16).padStart(2, "0")).join("")}` : undefined;
+};
 
-function restoreEnv(name: "ATOMIC_REDUCED_MOTION", value: string | undefined): void {
+function restoreEnv(name: "ATOMIC_REDUCED_MOTION" | "NO_COLOR", value: string | undefined): void {
 	if (value === undefined) delete process.env[name];
 	else process.env[name] = value;
 }
 
+function customTheme(): Theme {
+	return new Theme(
+		{ dim: "#303030", accent: "#4080c0", text: "#f0f0f0" } as Record<ThemeColor, string>,
+		{ selectedBg: "#101010" } as Record<ThemeBg, string>,
+		"truecolor",
+		{ name: "spinner-test" },
+	);
+}
+
 afterEach(() => {
 	vi.useRealTimers();
+	delete process.env.ATOMIC_REDUCED_MOTION;
+	delete process.env.NO_COLOR;
+	initTheme("dark");
 });
 
 describe("Atomic working status", () => {
-	it("keeps the exact one-cell identity fixed through regular, bold, regular phases", () => {
-		initTheme("dark");
-		expect(ATOMIC_WORKING_FRAMES).toEqual(["∀", "∀", "∀"]);
-		expect(ATOMIC_WORKING_BOLD_PHASES).toEqual([false, true, false]);
-		expect(ATOMIC_WORKING_FRAMES.map(visibleWidth)).toEqual([1, 1, 1]);
-
-		const rendered = [0, 1, 2].map((frame) =>
-			new AtomicWorkingStatusComponent({
-				frame,
-				spinnerColor: String,
-				spinnerBoldColor: (text) => `\u001b[1m${text}\u001b[22m`,
-				messageColor: String,
-			}).render(64)[1]!,
-		);
-		expect(rendered).toHaveLength(3);
-		expect(rendered.map((line) => plain(line).trimEnd())).toEqual([
-			" ∀ Working...",
-			" ∀ Working...",
-			" ∀ Working...",
+	it("keeps exact literal one-cell identity through the approved ten-phase ramp", () => {
+		expect(ATOMIC_WORKING_FRAMES).toEqual(Array(10).fill("∀"));
+		expect(ATOMIC_WORKING_FRAMES.map(visibleWidth)).toEqual(Array(10).fill(1));
+		expect(ATOMIC_WORKING_BOLD_PHASES).toEqual([
+			false, false, false, false, true, true, true, false, false, false,
 		]);
-		expect(rendered[0]).not.toContain("\u001b[1m");
-		expect(rendered[1]).toContain("\u001b[1m");
-		expect(rendered[2]).not.toContain("\u001b[1m");
+		expect(ATOMIC_WORKING_PHASES).toEqual([
+			"dark", "lift", "muted", "accent", "bright",
+			"peak", "bright", "accent", "muted", "lift",
+		]);
 	});
 
-	it("uses an exact 80ms cadence with a three-phase cycle", () => {
-		const previousReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
-		delete process.env.ATOMIC_REDUCED_MOTION;
-		try {
-			expect(ATOMIC_WORKING_FRAME_MS).toBe(80);
-			expect(atomicWorkingFrame(0)).toBe(0);
-			expect(atomicWorkingFrame(79)).toBe(0);
-			expect(atomicWorkingFrame(80)).toBe(1);
-			expect(atomicWorkingFrame(159)).toBe(1);
-			expect(atomicWorkingFrame(160)).toBe(2);
-			expect(atomicWorkingFrame(239)).toBe(2);
-			expect(atomicWorkingFrame(240)).toBe(0);
-		} finally {
-			restoreEnv("ATOMIC_REDUCED_MOTION", previousReducedMotion);
-		}
+	it("interpolates a custom theme dark to accent to bright and back with a bold peak", () => {
+		setThemeInstance(customTheme());
+		const rendered = ATOMIC_WORKING_FRAMES.map((_, frame) =>
+			new AtomicWorkingStatusComponent({ frame, messageColor: String }).render(64)[1]!,
+		);
+		expect(rendered.map(rgb)).toEqual([
+			"#101010", "#1c2c3c", "#2d537a", "#4080c0", "#a1beda",
+			"#f0f0f0", "#a1beda", "#4080c0", "#2d537a", "#1c2c3c",
+		]);
+		expect(rendered.map((line) => plain(line).trimEnd())).toEqual(Array(10).fill(" ∀ Working..."));
+		expect(rendered.map((line) => line.includes("\u001b[1m"))).toEqual(ATOMIC_WORKING_BOLD_PHASES);
 	});
 
-	it("renders one literal identity cell before one message row with origin/main loader geometry", () => {
+	it("matches the approved high-contrast Catppuccin Mocha role ramp", () => {
+		initTheme("catppuccin-mocha");
+		const colors = ATOMIC_WORKING_FRAMES.map((_, frame) =>
+			rgb(new AtomicWorkingStatusComponent({ frame, messageColor: String }).render(64)[1]!),
+		);
+		expect(colors).toEqual([
+			"#45475a", "#6c7086", "#789bd0", "#89b4fa", "#b8d2ff",
+			"#eef4ff", "#b8d2ff", "#89b4fa", "#789bd0", "#6c7086",
+		]);
+	});
+
+	it("reads a supplied caller palette lazily on every render", () => {
+		let palette = {
+			dark: "#101010", lift: "#202020", muted: "#303030",
+			accent: "#4080c0", bright: "#a0c0e0", peak: "#f0f0f0",
+		};
+		const component = new AtomicWorkingStatusComponent({ frame: 0, palette: () => palette });
+		expect(rgb(component.render(64)[1]!)).toBe("#101010");
+		palette = { ...palette, dark: "#202020" };
+		expect(rgb(component.render(64)[1]!)).toBe("#202020");
+	});
+
+	it("accepts partial working-indicator palettes and derives omitted tones", () => {
+		const source = {
+			...loadThemeJson("catppuccin-mocha"),
+			name: "partial-spinner",
+			workingIndicator: { accent: "#ff0000" },
+		};
+		setThemeInstance(loadThemeFromContent("partial-spinner.json", JSON.stringify(source), "truecolor"));
+		const accent = new AtomicWorkingStatusComponent({ frame: 3, messageColor: String }).render(64)[1]!;
+		const muted = new AtomicWorkingStatusComponent({ frame: 2, messageColor: String }).render(64)[1]!;
+		expect(rgb(accent)).toBe("#ff0000");
+		expect(rgb(muted)).toBe("#b51c24");
+	});
+
+	it("preserves configured ANSI indices 0 through 15 exactly", () => {
+		const source = {
+			...loadThemeJson("dark"),
+			name: "indexed-spinner",
+			workingIndicator: { dark: 1, lift: 2, muted: 3, accent: 4, bright: 5, peak: 6 },
+		};
+		setThemeInstance(loadThemeFromContent("indexed-spinner.json", JSON.stringify(source), "256"));
+		const expected = [1, 2, 3, 4, 5, 6, 5, 4, 3, 2];
+		const rendered = ATOMIC_WORKING_FRAMES.map((_, frame) =>
+			new AtomicWorkingStatusComponent({ frame, messageColor: String }).render(64)[1]!,
+		);
+		expect(rendered.map((line, index) => line.includes(`\u001b[38;5;${expected[index]}m∀`))).toEqual(Array(10).fill(true));
+	});
+
+	it("uses live dark and light theme roles and follows dynamic theme changes", () => {
+		const components = [0, 3].map((frame) => new AtomicWorkingStatusComponent({ frame }));
 		initTheme("dark");
-		for (const width of [100, 64]) {
-			const lines = new AtomicWorkingStatusComponent({
-				frame: 0,
-				message: "Schlepping...",
-				spinnerColor: String,
-				messageColor: String,
-			}).render(width).map(plain);
-			expect(lines).toHaveLength(2);
-			expect(lines[0]).toBe("");
-			expect(lines[1]!.trimEnd()).toBe(" ∀ Schlepping...");
-			expect(lines[1]!.match(/∀/g)).toEqual(["∀"]);
-			expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
-		}
+		const dark = components.map((component) => rgb(component.render(64)[1]!));
+		initTheme("light");
+		const light = components.map((component) => rgb(component.render(64)[1]!));
+		expect(dark).toEqual(["#666666", "#8abeb7"]);
+		expect(light).toEqual(["#767676", "#5a8080"]);
+		expect(light).not.toEqual(dark);
 	});
 
-	it("fits all 453 restored whimsical messages at 64 columns", () => {
+	it("preserves explicit legacy regular and bold styling options", () => {
+		const regular = new WorkingStatusComponent({
+			frame: 0,
+			spinnerColor: (text) => `<regular>${text}</regular>`,
+			spinnerBoldColor: (text) => `<bold>${text}</bold>`,
+			messageColor: String,
+		}).render(64)[1]!;
+		const bold = new WorkingStatusComponent({
+			frame: 4,
+			spinnerColor: (text) => `<regular>${text}</regular>`,
+			spinnerBoldColor: (text) => `<bold>${text}</bold>`,
+			messageColor: String,
+		}).render(64)[1]!;
+		expect(regular.trimEnd()).toBe(" <regular>∀</regular> Working...");
+		expect(bold.trimEnd()).toBe(" <bold>∀</bold> Working...");
+	});
+
+	it("uses an exact 88ms cadence with a ten-phase 880ms cycle", () => {
+		expect(ATOMIC_WORKING_FRAME_MS).toBe(88);
+		expect(atomicWorkingFrame(0)).toBe(0);
+		expect(atomicWorkingFrame(87)).toBe(0);
+		expect(atomicWorkingFrame(88)).toBe(1);
+		expect(atomicWorkingFrame(439)).toBe(4);
+		expect(atomicWorkingFrame(440)).toBe(5);
+		expect(atomicWorkingFrame(879)).toBe(9);
+		expect(atomicWorkingFrame(880)).toBe(0);
+	});
+
+	it("renders one identity cell and keeps every randomized message in 64 columns", () => {
 		expect(WHIMSICAL_WORKING_MESSAGES).toHaveLength(453);
 		const longest = WHIMSICAL_WORKING_MESSAGES.reduce((current, message) =>
 			visibleWidth(message) > visibleWidth(current) ? message : current);
 		expect(longest).toBe("Archeologically analyzing the architecture...");
 		for (const message of WHIMSICAL_WORKING_MESSAGES) {
-			const lines = new AtomicWorkingStatusComponent({ frame: 0, message, spinnerColor: String, messageColor: String })
-				.render(64).map(plain);
+			const lines = new AtomicWorkingStatusComponent({ frame: 5, message, messageColor: String }).render(64).map(plain);
 			expect(lines).toHaveLength(2);
 			expect(lines[1]!.trimEnd()).toBe(` ∀ ${message}`);
+			expect(lines[1]!.match(/∀/g)).toEqual(["∀"]);
 			expect(lines.every((line) => visibleWidth(line) <= 64)).toBe(true);
 		}
 	});
@@ -100,55 +179,31 @@ describe("Atomic working status", () => {
 	it("keeps the main status container compact beside existing history", () => {
 		const root = new Container();
 		root.addChild(new Text("history-1\nhistory-2", 0, 0));
-		root.addChild(new AtomicWorkingStatusComponent({ frame: 0, message: "Schlepping...", spinnerColor: String, messageColor: String }));
+		root.addChild(new AtomicWorkingStatusComponent({ frame: 0, message: "Schlepping...", messageColor: String }));
 		const lines = root.render(64).map(plain);
 		expect(lines.slice(0, 2).map((line) => line.trimEnd())).toEqual(["history-1", "history-2"]);
 		expect(lines.slice(2).map((line) => line.trimEnd())).toEqual(["", " ∀ Schlepping..."]);
 	});
 
-	it("routes the glyph and message through their supplied theme colorizers", () => {
-		const spinnerColor = vi.fn((text: string) => `\u001b[31m${text}\u001b[39m`);
-		const messageColor = vi.fn((text: string) => `\u001b[2m${text}\u001b[22m`);
-		const lines = new AtomicWorkingStatusComponent({ frame: 0, message: "Working...", spinnerColor, messageColor }).render(64);
-		expect(spinnerColor).toHaveBeenCalledWith("∀");
-		expect(messageColor).toHaveBeenCalledWith("Working...");
-		expect(plain(lines[1]!).trimEnd()).toBe(" ∀ Working...");
-	});
-
-	it("restores the default at regular phase zero with a fresh 80ms cadence after an override", () => {
-		const previousReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
+	it("restores phase zero with a fresh 88ms cadence after an extension override", () => {
 		vi.useFakeTimers();
-		delete process.env.ATOMIC_REDUCED_MOTION;
-		const activeTheme = (globalThis as Record<symbol, typeof theme>)[Symbol.for("@bastani/atomic:theme")]!;
-		const bold = vi.spyOn(activeTheme, "bold").mockImplementation((text) => `<bold>${text}</bold>`);
-		try {
-			const requestRender = vi.fn();
-			const loader = new AtomicWorkingLoader({ requestRender } as never, String, String, "Working...");
-			expect(renderedContent(loader)).toBe(" ∀ Working...");
-			vi.advanceTimersByTime(80);
-			expect(renderedContent(loader)).toBe(" <bold>∀</bold> Working...");
-
-			loader.setIndicator({ frames: ["X"] });
-			expect(renderedContent(loader)).toBe(" X Working...");
-			const callsAfterReplacement = requestRender.mock.calls.length;
-			vi.advanceTimersByTime(160);
-			expect(requestRender).toHaveBeenCalledTimes(callsAfterReplacement);
-
-			loader.setIndicator();
-			expect(renderedContent(loader)).toBe(" ∀ Working...");
-			vi.advanceTimersByTime(79);
-			expect(renderedContent(loader)).toBe(" ∀ Working...");
-			expect(requestRender).toHaveBeenCalledTimes(callsAfterReplacement);
-			vi.advanceTimersByTime(1);
-			expect(renderedContent(loader)).toBe(" <bold>∀</bold> Working...");
-			expect(requestRender).toHaveBeenCalledTimes(callsAfterReplacement + 1);
-			loader.stop();
-			vi.advanceTimersByTime(160);
-			expect(requestRender).toHaveBeenCalledTimes(callsAfterReplacement + 1);
-		} finally {
-			bold.mockRestore();
-			restoreEnv("ATOMIC_REDUCED_MOTION", previousReducedMotion);
-		}
+		const requestRender = vi.fn();
+		const loader = new AtomicWorkingLoader({ requestRender } as never, undefined, String, "Working...");
+		expect(renderedContent(loader)).toBe(" ∀ Working...");
+		vi.advanceTimersByTime(352);
+		expect(loader.render(64)[1]).toContain("\u001b[1m");
+		loader.setIndicator({ frames: ["X"] });
+		expect(renderedContent(loader)).toBe(" X Working...");
+		const callsAfterReplacement = requestRender.mock.calls.length;
+		vi.advanceTimersByTime(176);
+		expect(requestRender).toHaveBeenCalledTimes(callsAfterReplacement);
+		loader.setIndicator();
+		expect(loader.render(64)[1]).not.toContain("\u001b[1m");
+		vi.advanceTimersByTime(87);
+		expect(requestRender).toHaveBeenCalledTimes(callsAfterReplacement);
+		vi.advanceTimersByTime(1);
+		expect(requestRender).toHaveBeenCalledTimes(callsAfterReplacement + 1);
+		loader.stop();
 	});
 
 	it("preserves extension frames and cadence verbatim", () => {
@@ -172,15 +227,26 @@ describe("Atomic working status", () => {
 		loader.stop();
 	});
 
-	it("shows a static un-emphasized identity without a timer under reduced motion", () => {
+	it("keeps regular/bold activity under NO_COLOR without foreground escapes", () => {
+		process.env.NO_COLOR = "";
+		const rendered = ATOMIC_WORKING_FRAMES.map((_, frame) =>
+			new AtomicWorkingStatusComponent({ frame }).render(64)[1]!,
+		);
+		expect(rendered.every((line) => !line.includes("\u001b[38;"))).toBe(true);
+		expect(rendered.every((line) => plain(line).trimEnd() === " ∀ Working...")).toBe(true);
+		expect(rendered.map((line) => line.includes("\u001b[1m"))).toEqual(ATOMIC_WORKING_BOLD_PHASES);
+	});
+
+	it("renders a static regular accent identity with no timer under reduced motion", () => {
 		const previousReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
 		vi.useFakeTimers();
 		process.env.ATOMIC_REDUCED_MOTION = "1";
+		setThemeInstance(customTheme());
 		try {
 			const requestRender = vi.fn();
-			const loader = new AtomicWorkingLoader({ requestRender } as never, String, String, "Working...");
-			expect(atomicWorkingFrame(80)).toBe(0);
-			expect(renderedContent(loader)).toBe(" ∀ Working...");
+			const loader = new AtomicWorkingLoader({ requestRender } as never, undefined, String, "Working...");
+			expect(atomicWorkingFrame(800)).toBe(3);
+			expect(rgb(loader.render(64)[1]!)).toBe("#4080c0");
 			expect(loader.render(64)[1]).not.toContain("\u001b[1m");
 			expect(vi.getTimerCount()).toBe(0);
 			loader.start();

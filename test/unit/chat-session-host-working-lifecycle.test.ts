@@ -11,14 +11,31 @@ import {
   editorTheme,
   installLifecycleFakeClock,
   plainStyle,
+  rawWorkingLine,
   workingLine,
 } from "./chat-session-host-working-lifecycle-fixture.ts";
 
 const originalReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
 const pulseStyle = {
   ...plainStyle,
-  accentBold: (text: string) => `<bold>${text}</bold>`,
+  workingIndicatorPalette: () => ({
+    dark: "#101010",
+    lift: "#1c2c3c",
+    muted: "#2d537a",
+    accent: "#4080c0",
+    bright: "#a1beda",
+    peak: "#f0f0f0",
+  }),
 };
+
+function renderedRgb(host: ChatSessionHost<never>): string | undefined {
+  const match = /\u001b\[38;2;(\d+);(\d+);(\d+)m/.exec(rawWorkingLine(host) ?? "");
+  return match ? `#${match.slice(1).map((value) => Number(value).toString(16).padStart(2, "0")).join("")}` : undefined;
+}
+
+function isBold(host: ChatSessionHost<never>): boolean {
+  return (rawWorkingLine(host) ?? "").includes("\u001b[1m");
+}
 
 beforeAll(() => {
   initTheme("dark", false);
@@ -30,7 +47,7 @@ afterEach(() => {
 });
 
 
-test("ChatSessionHost advances the exact Atomic weight pulse every lifecycle-relative 80ms", () => {
+test("ChatSessionHost advances the exact luminous ramp every lifecycle-relative 88ms", () => {
   delete process.env.ATOMIC_REDUCED_MOTION;
   const timers = installLifecycleFakeClock();
   let renderRequests = 0;
@@ -41,32 +58,56 @@ test("ChatSessionHost advances the exact Atomic weight pulse every lifecycle-rel
       renderRequests += 1;
     },
   });
+  const assertPhase = (color: string, bold: boolean, label: string): void => {
+    assert.equal(workingLine(host), " ∀ Working...", label);
+    assert.equal(renderedRgb(host), color, `${label} color`);
+    assert.equal(isBold(host), bold, `${label} weight`);
+  };
   try {
-    assert.equal(ANIMATION_FRAME_MS, 80);
-    assert.equal(ATOMIC_WORKING_FRAME_MS, 80);
+    assert.equal(ANIMATION_FRAME_MS, 80, "unrelated canonical loader cadence stays unchanged");
+    assert.equal(ATOMIC_WORKING_FRAME_MS, 88);
     host.applyAgentEvent({ type: "agent_start" } as never);
-
     assert.equal(renderRequests, 1, "agent_start requests one immediate paint");
-    assert.deepEqual(timers.intervalDelays(), [80]);
+    assert.deepEqual(timers.intervalDelays(), [88]);
     assert.deepEqual(timers.timeoutDelays(), [], "a genuine start bypasses event throttling");
     assert.equal(timers.intervalCount(), 1);
-    assert.equal(timers.timeoutCount(), 0);
-    assert.equal(workingLine(host), " ∀ Working...", "0ms regular");
+    assertPhase("#101010", false, "0ms deep neutral");
+    timers.advanceBy(88);
+    assertPhase("#1c2c3c", false, "88ms lifting");
+    timers.advanceBy(176);
+    assertPhase("#4080c0", false, "264ms accent");
+    timers.advanceBy(88);
+    assertPhase("#a1beda", true, "352ms bright");
+    timers.advanceBy(88);
+    assertPhase("#f0f0f0", true, "440ms peak");
+    timers.advanceBy(176);
+    assertPhase("#4080c0", false, "616ms falling accent");
+    timers.advanceBy(264);
+    assertPhase("#101010", false, "880ms wrapped deep neutral");
+    assert.equal(renderRequests, 11, "one immediate request plus one request per tick");
+  } finally {
+    host.dispose();
+    timers.restore();
+  }
+});
 
-    timers.advanceBy(79);
-    assert.equal(workingLine(host), " ∀ Working...", "79ms regular");
-    assert.equal(renderRequests, 1);
-    timers.advanceBy(1);
-    assert.equal(workingLine(host), " <bold>∀</bold> Working...", "80ms bold");
-    assert.equal(renderRequests, 2);
-    timers.advanceBy(79);
-    assert.equal(workingLine(host), " <bold>∀</bold> Working...", "159ms bold");
-    assert.equal(renderRequests, 2);
-    timers.advanceBy(1);
-    assert.equal(workingLine(host), " ∀ Working...", "160ms regular");
-    assert.equal(renderRequests, 3);
-    timers.advanceBy(80);
-    assert.equal(renderRequests, 4, "one immediate request plus one request per tick");
+test("ChatSessionHost preserves caller-owned accent styling without a palette", () => {
+  delete process.env.ATOMIC_REDUCED_MOTION;
+  const timers = installLifecycleFakeClock();
+  const host = new ChatSessionHost<never>({
+    style: {
+      ...plainStyle,
+      accent: (text) => `<red>${text}</red>`,
+      accentBold: (text) => `<red-bold>${text}</red-bold>`,
+    },
+    editorTheme,
+  });
+  try {
+    host.applyAgentEvent({ type: "agent_start" } as never);
+    timers.advanceBy(264);
+    assert.equal(rawWorkingLine(host), " <red>∀</red> Working...");
+    timers.advanceBy(88);
+    assert.equal(rawWorkingLine(host), " <red-bold>∀</red-bold> Working...");
   } finally {
     host.dispose();
     timers.restore();
@@ -74,7 +115,7 @@ test("ChatSessionHost advances the exact Atomic weight pulse every lifecycle-rel
 });
 
 
-test("ChatSessionHost resets pulse phase and cadence on every turn start", () => {
+test("ChatSessionHost resets luminous phase and cadence on every turn start", () => {
   delete process.env.ATOMIC_REDUCED_MOTION;
   const previousRandom = Math.random;
   let selections = 0;
@@ -87,22 +128,25 @@ test("ChatSessionHost resets pulse phase and cadence on every turn start", () =>
   try {
     host.applyAgentEvent({ type: "agent_start" } as never);
     const agentTimer = timers.capturedAnimationCallbacks()[0]!;
-    timers.advanceBy(80);
-    assert.equal(workingLine(host), " <bold>∀</bold> Working...");
+    timers.advanceBy(352);
+    assert.equal(isBold(host), true);
 
     host.applyAgentEvent({ type: "turn_start" } as never);
     assert.equal(selections, 1);
     assert.equal(workingLine(host), " ∀ Schlepping...");
+    assert.equal(renderedRgb(host), "#101010", "turn reset returns to deep neutral");
+    assert.equal(isBold(host), false, "turn reset returns to regular weight");
     assert.equal(timers.intervalCount(), 1, "turn_start replaces rather than duplicates the timer");
     const turnTimer = timers.capturedAnimationCallbacks()[1]!;
 
-    const beforeStaleTick = workingLine(host);
+    const beforeStaleTick = rawWorkingLine(host);
     agentTimer();
-    assert.equal(workingLine(host), beforeStaleTick, "the replaced timer cannot advance the new turn");
-    timers.advanceBy(79);
-    assert.equal(workingLine(host), " ∀ Schlepping...");
+    assert.equal(rawWorkingLine(host), beforeStaleTick, "the replaced timer cannot advance the new turn");
+    timers.advanceBy(87);
+    assert.equal(renderedRgb(host), "#101010");
     timers.advanceBy(1);
-    assert.equal(workingLine(host), " <bold>∀</bold> Schlepping...");
+    assert.equal(renderedRgb(host), "#1c2c3c");
+    assert.equal(isBold(host), false);
 
     host.applyAgentEvent({ type: "turn_end" } as never);
     assert.equal(host.hasAnimationTick(), false);

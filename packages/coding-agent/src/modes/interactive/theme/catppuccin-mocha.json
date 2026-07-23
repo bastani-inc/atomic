@@ -82,6 +82,14 @@
 		"thinkingXhigh": "pink",
 		"bashMode": "green"
 	},
+	"workingIndicator": {
+		"dark": "surface_1",
+		"lift": "overlay_0",
+		"muted": "#789bd0",
+		"accent": "blue",
+		"bright": "#b8d2ff",
+		"peak": "#eef4ff"
+	},
 	"export": {
 		"pageBg": "bg",
 		"cardBg": "surface_0",

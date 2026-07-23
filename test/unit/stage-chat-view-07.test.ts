@@ -1,4 +1,5 @@
 import { describe, test } from "bun:test";
+import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import {
     assert,
     createStore,
@@ -186,6 +187,32 @@ describe("StageChatView", () => {
             view.dispose();
             if (previousReducedMotion === undefined) delete process.env.ATOMIC_REDUCED_MOTION;
             else process.env.ATOMIC_REDUCED_MOTION = previousReducedMotion;
+        }
+    });
+
+    test("mounted stage working identity follows live host theme changes", () => {
+        const store = createStore();
+        setupRun(store, "run-1", "stage-a", "running");
+        const { handle } = makeHandle({
+            promptCalls: [], steerCalls: [], followUpCalls: [], pauseCalls: 0, resumeCalls: [], isStreaming: true,
+        });
+        const view = new StageChatView({
+            store, graphTheme: deriveGraphTheme({}), runId: "run-1", stageId: "stage-a",
+            workflowName: "test-wf", handle, onDetach: () => {}, onClose: () => {}, piTheme: theme,
+        });
+        const workingColor = (): string | undefined => {
+            const line = view.render(64).find((candidate) => candidate.includes("Working...")) ?? "";
+            const match = /\u001b\[38;2;(\d+);(\d+);(\d+)m∀/.exec(line);
+            return match ? match.slice(1).join(",") : undefined;
+        };
+        try {
+            initTheme("catppuccin-mocha", false);
+            assert.equal(workingColor(), "69,71,90");
+            initTheme("light", false);
+            assert.notEqual(workingColor(), "69,71,90");
+        } finally {
+            view.dispose();
+            initTheme("dark", false);
         }
     });
 

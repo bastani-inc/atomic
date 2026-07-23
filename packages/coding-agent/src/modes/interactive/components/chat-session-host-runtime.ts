@@ -1,4 +1,4 @@
-import { ATOMIC_WORKING_FRAMES } from "./atomic-working-status.ts";
+import { ATOMIC_WORKING_FRAME_MS, ATOMIC_WORKING_FRAMES } from "./atomic-working-status.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.ts";
 import type { ChatSessionHostState } from "./chat-session-host-state.ts";
 import { finalizeTerminalWorkflowToolEntries } from "./chat-session-host-terminal-cleanup.ts";
@@ -88,6 +88,9 @@ export function syncChatSessionAnimationTick<
     process.env.ATOMIC_REDUCED_MOTION !== "1" &&
     (state.workingLifecycleActive || state.compacting);
   if (shouldAnimate && !state.animationTimer) {
+    const intervalMs = state.workingLifecycleActive
+      ? ATOMIC_WORKING_FRAME_MS
+      : ANIMATION_FRAME_MS;
     const timer = setInterval(() => {
       if (
         state.disposed ||
@@ -100,7 +103,7 @@ export function syncChatSessionAnimationTick<
         state.workingFrame = (state.workingFrame + 1) % ATOMIC_WORKING_FRAMES.length;
       }
       state.requestRender?.();
-    }, ANIMATION_FRAME_MS);
+    }, intervalMs);
     state.animationTimer = timer;
     state.animationTimer.unref?.();
     return;

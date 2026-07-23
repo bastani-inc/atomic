@@ -88,11 +88,14 @@ export function renderChatSessionWorkingStatus<
     }).render(width);
   }
   if (!state.workingLifecycleActive) return [];
+  const palette = state.style.workingIndicatorPalette;
+  const useCallerStyling = !palette && state.style.workingIndicatorUseGlobalTheme !== true && process.env.NO_COLOR === undefined;
   return new WorkingStatusComponent({
     frame: state.workingFrame,
     message: state.workingMessage ?? "Working...",
-    spinnerColor: (text) => state.style.accent(text),
-    spinnerBoldColor: (text) => state.style.accentBold(text),
+    palette,
+    spinnerColor: useCallerStyling ? (text) => state.style.accent(text) : undefined,
+    spinnerBoldColor: useCallerStyling ? (text) => state.style.accentBold(text) : undefined,
     messageColor: (text) => state.style.textMuted(text),
   }).render(width);
 }

@@ -6,7 +6,15 @@ import { resolveStageChatViewportRows } from "./stage-chat-layout.js";
 import { createPromptCardState } from "./prompt-card.js";
 import { hideMountedCustomUi, releaseMountedCustomUi, showCustomUi } from "./stage-chat-view-custom-ui.js";
 import { editorRuleColor } from "./stage-chat-view-footer-status.js";
-import { blankLine, cursorBlock, editorThemeFromGraphTheme, paint, setEditorBorderColor, setEditorPlaceholder } from "./stage-chat-view-render-helpers.js";
+import {
+  blankLine,
+  cursorBlock,
+  editorThemeFromGraphTheme,
+  paint,
+  setEditorBorderColor,
+  setEditorPlaceholder,
+  workingIndicatorPalette,
+} from "./stage-chat-view-render-helpers.js";
 import {
   HEADER_ROWS,
   SEP_ROWS,
@@ -188,7 +196,6 @@ function createChatHost(
     renderExtraEntry: (entry) => noticeRow(entry, ctx.theme),
   });
 }
-
 function chatHostStyle(ctx: StageChatViewContext): ChatSessionHostStyle {
   return {
     dim: (text) => paint(text, ctx.theme.dim),
@@ -196,6 +203,8 @@ function chatHostStyle(ctx: StageChatViewContext): ChatSessionHostStyle {
     textMuted: (text) => paint(text, ctx.theme.textMuted),
     accent: (text) => paint(text, ctx.theme.accent),
     accentBold: (text) => paint(text, ctx.theme.accent, { bold: true }),
+    workingIndicatorPalette: ctx.piTheme === undefined ? () => workingIndicatorPalette(ctx.theme) : undefined,
+    workingIndicatorUseGlobalTheme: ctx.piTheme !== undefined,
     rule: (hex, text) => hexToAnsi(hex) + text + RESET,
     cursor: () => cursorBlock(),
     blank: (width) => blankLine(width),

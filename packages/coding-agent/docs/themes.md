@@ -135,13 +135,22 @@ vim ~/.atomic/agent/themes/my-theme.json
     "muted": "gray",
     "text": "",
     ...
+  },
+  "workingIndicator": {
+    "dark": "#45475a",
+    "lift": "#6c7086",
+    "muted": "#789bd0",
+    "accent": "blue",
+    "bright": "#b8d2ff",
+    "peak": "#eef4ff"
   }
 }
 ```
 
 - `name` is required, must be unique, and must not contain `/`.
-- `vars` is optional. Define reusable colors here, then reference them in `colors`.
+- `vars` is optional. Define reusable colors here, then reference them in `colors` or `workingIndicator`.
 - `colors` must define all 51 required tokens.
+- `workingIndicator` is optional and may override any subset of the six tones in the outward half of the ordinary `∀` ramp; Atomic derives omitted tones from selected background, accent, and text roles, then mirrors the palette back after `peak`. Numeric values from 0 through 255 remain exact terminal palette indices. Both explicit and derived tones update on theme hot reload.
 
 The `$schema` field enables editor auto-completion and validation.
 

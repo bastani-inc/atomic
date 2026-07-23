@@ -84,7 +84,7 @@ Preview content is rendered as markdown in a monospace box. Multi-line text with
 			// Suspend the animated working loader for the lifetime of the blocking dialog.
 			//
 			// The questionnaire mounts inline, directly below the status/working-loader row.
-			// That loader ticks every ~80ms and calls `requestRender()` on each frame. On a
+			// That loader ticks every ~88ms and calls `requestRender()` on each frame. On a
 			// short terminal the (tall) side-by-side dialog pushes the loader line above the
 			// viewport top, so pi-tui's differential renderer sees `firstChanged < viewportTop`
 			// and falls back to a full clear+replay (`\x1b[2J\x1b[H\x1b[3J`) on every tick. The

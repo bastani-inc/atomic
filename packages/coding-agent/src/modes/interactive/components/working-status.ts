@@ -1,6 +1,10 @@
 import { Text, type Component } from "@earendil-works/pi-tui";
 import { theme } from "../theme/theme.ts";
-import { atomicWorkingFrame, AtomicWorkingStatusComponent } from "./atomic-working-status.ts";
+import {
+	atomicWorkingFrame,
+	type AtomicWorkingPalette,
+	AtomicWorkingStatusComponent,
+} from "./atomic-working-status.ts";
 
 export interface WorkingStatusComponentOptions {
 	/** Explicit caller-owned indicator frame; omitted uses Atomic's one-cell identity. */
@@ -9,6 +13,7 @@ export interface WorkingStatusComponentOptions {
 	message?: string;
 	spinnerColor?: (text: string) => string;
 	spinnerBoldColor?: (text: string) => string;
+	palette?: AtomicWorkingPalette | (() => AtomicWorkingPalette);
 	messageColor?: (text: string) => string;
 }
 
@@ -30,8 +35,9 @@ export class WorkingStatusComponent implements Component {
 		return new AtomicWorkingStatusComponent({
 			frame: this.options.frame ?? atomicWorkingFrame(),
 			message,
-			spinnerColor,
+			spinnerColor: this.options.spinnerColor,
 			spinnerBoldColor: this.options.spinnerBoldColor,
+			palette: this.options.palette,
 			messageColor,
 		}).render(width);
 	}

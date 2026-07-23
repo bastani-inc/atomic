@@ -296,6 +296,19 @@
 			},
 			"additionalProperties": false
 		},
+		"workingIndicator": {
+			"type": "object",
+			"description": "Optional partial six-tone palette for Atomic's ordinary working identity",
+			"properties": {
+				"dark": { "$ref": "#/$defs/colorValue" },
+				"lift": { "$ref": "#/$defs/colorValue" },
+				"muted": { "$ref": "#/$defs/colorValue" },
+				"accent": { "$ref": "#/$defs/colorValue" },
+				"bright": { "$ref": "#/$defs/colorValue" },
+				"peak": { "$ref": "#/$defs/colorValue" }
+			},
+			"additionalProperties": false
+		},
 		"export": {
 			"type": "object",
 			"description": "Optional colors for HTML export (defaults derived from userMessageBg if not specified)",

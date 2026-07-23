@@ -5,6 +5,7 @@ import { initTheme } from "../../packages/coding-agent/src/modes/interactive/the
 import {
   installLifecycleFakeClock,
   makeLifecycleHost,
+  workingLine,
 } from "./chat-session-host-working-lifecycle-fixture.ts";
 
 beforeAll(() => {
@@ -94,8 +95,8 @@ test("successful retry and fallback stay ordinary-inactive until a genuine lifec
       try {
         host.applyAgentEvent({ type: "agent_start" } as never);
         host.applyAgentEvent({ type: "turn_start" } as never);
-        timers.advanceBy(80);
-        assert.equal(host.renderWorkingStatus(64)[1]?.trimEnd(), " ∀ Schlepping...");
+        timers.advanceBy(88);
+        assert.equal(workingLine(host), " ∀ Schlepping...");
 
         const beforeFactualStart = renderRequests;
         host.applyAgentEvent(transition.start as never);
@@ -117,7 +118,7 @@ test("successful retry and fallback stay ordinary-inactive until a genuine lifec
         assert.equal(renderRequests, afterSuccessfulEnd);
 
         host.applyAgentEvent(transition.restart as never);
-        assert.equal(host.renderWorkingStatus(64)[1]?.trimEnd(), transition.restartedLine);
+        assert.equal(workingLine(host), transition.restartedLine);
         assert.equal(host.hasAnimationTick(), true);
       } finally {
         host.dispose();
@@ -141,7 +142,7 @@ test("ordinary assistant start coalesces into the active turn animation paint", 
   let host: ReturnType<typeof makeLifecycleHost>;
   host = makeLifecycleHost({
     requestRender: () => {
-      paintedFrames.push(host.renderWorkingStatus(64)[1]?.trimEnd());
+      paintedFrames.push(workingLine(host));
     },
   });
   try {
@@ -158,14 +159,14 @@ test("ordinary assistant start coalesces into the active turn animation paint", 
     assert.equal(host.entries().length, 1, "the assistant transcript entry updates immediately");
     assert.equal(host.entries()[0]?.role, "assistant");
     assert.deepEqual(paintedFrames, [" ∀ Working...", " ∀ Schlepping..."]);
-    timers.advanceBy(79);
-    assert.equal(paintedFrames.length, 2, "the active cadence retains its 80ms latency ceiling");
+    timers.advanceBy(87);
+    assert.equal(paintedFrames.length, 2, "the active cadence retains its 88ms latency ceiling");
     timers.advanceBy(1);
 
     assert.deepEqual(
       paintedFrames,
       [" ∀ Working...", " ∀ Schlepping...", " ∀ Schlepping..."],
-      "the 80ms turn tick owns the single next-frame repaint",
+      "the 88ms turn tick owns the single next-frame repaint",
     );
     assert.deepEqual(timers.timeoutDelays(), [], "no parallel event throttle is registered");
   } finally {
@@ -261,11 +262,11 @@ test("non-reduced in-flight host construction first renders the regular pulse ph
     },
   });
   try {
-    assert.equal(host.renderWorkingStatus(64)[1]?.trimEnd(), " ∀ Working...");
-    assert.deepEqual(timers.intervalDelays(), [80]);
+    assert.equal(workingLine(host), " ∀ Working...");
+    assert.deepEqual(timers.intervalDelays(), [88]);
     assert.equal(renderRequests, 0, "construction is not a synthetic lifecycle event");
-    timers.advanceBy(80);
-    assert.equal(host.renderWorkingStatus(64)[1]?.trimEnd(), " ∀ Working...");
+    timers.advanceBy(88);
+    assert.equal(workingLine(host), " ∀ Working...");
     assert.equal(renderRequests, 1);
   } finally {
     host.dispose();
