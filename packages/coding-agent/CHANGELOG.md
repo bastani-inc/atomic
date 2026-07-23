@@ -6,6 +6,12 @@
 
 - Fixed inherited `.pi` extensions conflicting with Atomic-bundled resources: exact-name tool, command, prompt, flag, and shortcut overlaps now keep Atomic's bundled registration without disabling unrelated extension features, interactive startup consolidates overlaps into one warning, and isolated TUI discovery again matches print/RPC while preserving explicit `.atomic` overrides and agent-directory isolation ([#1955](https://github.com/bastani-inc/atomic/issues/1955)).
 
+## [0.9.11-alpha.5] - 2026-07-23
+
+### Changed
+
+- Added Orwell's six writing rules from “Politics and the English Language” to the core default system prompt's `Guidelines` section so every standard Atomic session receives them, while removing the bundled workflow guidance's requirement to announce an inline-or-workflow mode before the first tool call.
+
 ## [0.9.11-alpha.4] - 2026-07-23
 
 ### Changed

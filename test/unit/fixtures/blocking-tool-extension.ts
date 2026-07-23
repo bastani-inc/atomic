@@ -96,6 +96,11 @@ export default function blockingToolExtension(api: ExtensionAPI): void {
 	}
 
 	api.on("session_start", async (event, ctx) => {
+		const startupGateFile = process.env.ATOMIC_KEYBINDINGS_SESSION_START_GATE_FILE;
+		if (startupGateFile) {
+			writeFileSync(startupGateFile, "waiting");
+			while (!existsSync(`${startupGateFile}.release`)) await Bun.sleep(10);
+		}
 		const sessionStartFile = process.env.ATOMIC_KEYBINDINGS_SESSION_START_FILE;
 		if (sessionStartFile) appendFileSync(sessionStartFile, `${event.reason}:${keyText("app.tools.expand")}\n`);
 		if (process.env.ATOMIC_KEYBINDINGS_CUSTOM_UI === "1") {

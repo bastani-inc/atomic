@@ -135,10 +135,14 @@ async function runHost(): Promise<void> {
 					mode = created;
 					if (created.runtimeHost instanceof IsolatedInteractiveRuntime) {
 						created.runtimeHost.onDiagnostic((diagnostic) => report({ type: "diagnostic", message: diagnostic.message }));
-						created.runtimeHost.onKeybindingState((state) => report({
-							type: "keybinding_state",
-							shortcutKeys: state.shortcuts.map((shortcut) => shortcut.key),
-						}));
+						created.runtimeHost.onKeybindingState((state) => {
+							const expandBinding = state.effectiveBindings["app.tools.expand"];
+							report({
+								type: "keybinding_state",
+								shortcutKeys: state.shortcuts.map((shortcut) => shortcut.key),
+								expandKeys: expandBinding === undefined ? [] : Array.isArray(expandBinding) ? expandBinding : [expandBinding],
+							});
+						});
 					}
 					created.session.subscribe((event) => report({ type: "session_event", eventType: event.type }));
 				},

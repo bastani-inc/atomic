@@ -114,12 +114,13 @@ The extension ships with builtin agents you can use immediately.
 | `researcher` | Web/docs research with sources: official docs, specs, benchmarks, recent changes, and a concise research brief. |
 | `planner` | A concrete implementation plan from existing context. It should read and plan, not edit code. |
 | `worker` | Implementation work, including approved oracle handoffs. It edits files, validates, and escalates unapproved decisions instead of guessing. |
+| `debugger` | Reproduction, root-cause diagnosis, and the smallest validated fix. It has the same write-capable tool set as `worker`, edits the code or content after diagnosis, and reruns the failing scenario. |
 | `reviewer` | Code review and small fixes. It checks the implementation against the task/plan, tests, edge cases, and simplicity. |
 | `context-builder` | A stronger setup pass before planning: gathers code context and writes handoff material such as `context.md` and `meta-prompt.md`. |
 | `oracle` | A second opinion before acting. It challenges assumptions, catches drift, and recommends the safest next move without editing. |
 | `delegate` | A lightweight general delegate when you want a child agent that behaves close to the parent session. |
 
-A simple rule of thumb: use `scout` before you understand the code, `researcher` before you trust external facts, `planner` before a bigger change, `worker` to implement, `reviewer` to check, and `oracle` when the decision itself feels risky.
+A simple rule of thumb: use `scout` before you understand the code, `researcher` before you trust external facts, `planner` before a bigger change, `worker` to implement, `debugger` to diagnose and fix a failure, `reviewer` to check, and `oracle` when the decision itself feels risky.
 
 ## Changing a builtin agent's model
 
@@ -148,6 +149,14 @@ For a persistent override, edit settings. This example pins the reviewer everywh
 ```
 
 Use `~/.atomic/agent/settings.json` for a user override or `.atomic/settings.json` for a project override; legacy `~/.pi/agent/settings.json` and `.pi/settings.json` paths are also checked for compatibility. The same `agentOverrides` block can change `tools`, `skills`, inherited context, prompt text, or disable a builtin. If you want a totally different agent, create a user or project agent with the same name; for normal tweaks, prefer overrides.
+
+### Orchestrator defaults
+
+Any parent chat or workflow stage that orchestrates subagents should omit the explicit `model` argument when the named agent already declares a model or fallback policy. Override it only for the user's exact model request or a documented task-specific need, and record the reason before launch; diversity alone does not justify an ad hoc model.
+
+When an agent declares no model or fallback policy, consult `packages/coding-agent/docs/models/model-selection.md`, then call `workflow({ action: "models" })` when available. Use only a catalog-returned `fullId` and only a thinking level listed for that entry. If the catalog tool is unavailable, returns no models, or has no recommended model for the role, leave the child unpinned and report the limitation instead of inventing a model or inspecting credentials.
+
+Give every workflow or other orchestrator invocation one literal, invocation-specific Intercom group other than `default`, and pass that same group to all delegated children, including parallel and follow-up calls. `contact_supervisor` remains available across group boundaries.
 
 ## Where running subagents show up
 

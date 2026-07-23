@@ -109,6 +109,15 @@ Use context files for project conventions, commands, safety rules, and preferenc
 
 ### System Prompt Files
 
+Atomic's default `Guidelines` section applies Orwell's six writing rules to every standard session:
+
+1. Never use a familiar printed metaphor, simile, or figure of speech.
+2. Never use a long word where a short one will do.
+3. Cut every word that can be cut.
+4. Use active rather than passive voice where possible.
+5. Prefer everyday English to foreign phrases, scientific terms, and jargon.
+6. Break any rule rather than say anything outright barbarous.
+
 Replace the default system prompt with:
 
 - `.atomic/SYSTEM.md` for a project

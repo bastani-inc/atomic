@@ -69,10 +69,10 @@ Atomic currently bundles these agents from `@bastani/subagents`:
 | `codebase-research-locator` | Locate prior `research/` and `specs/` documents related to the task. | No |
 | `codebase-research-analyzer` | Extract decisions, constraints, and still-relevant conclusions from prior local docs. | No |
 | `codebase-online-researcher` | Research official docs, ecosystem behavior, and open-source source references online. | Can write research notes |
-| `debugger` | Reproduce, diagnose, and fix failures or unexpected behavior. | Yes |
+| `debugger` | Reproduce, prove the root cause, apply the smallest code or content fix, and rerun the failing scenario. It has the same write-capable tools as `worker`. | Yes |
 | `code-simplifier` | Clean up recently changed code while preserving behavior. | Yes |
 
-Read-oriented agents should inspect and report. `debugger` and `code-simplifier` can edit files, so run them with an explicit scope and validation target.
+Read-oriented agents should inspect and report. `debugger` and `code-simplifier` can edit files, so run them with an explicit scope and validation target. The debugger should finish an in-scope diagnosis by applying and validating the fix, not stop at a proposed patch.
 
 ## Review compositions
 
@@ -132,6 +132,14 @@ Terminal background notifications preserve each child’s accepted Intercom orde
 Inside workflow stages, completion delivery observes the stage generation boundary. A completion received before the boundary closes is queued through the stage AgentSession and processed before the stage publishes its terminal snapshot. A detached completion that arrives after close is routed once to the parent/main chat and cannot automatically reopen or append to the completed stage transcript. Producers that are still running do not hold the stage open, so background work remains non-blocking; explicit post-mortem stage chat is still available separately.
 
 When a workflow graph overlay is open, Atomic also publishes the live async subagent summary into the shared status surface. The below-editor async widget remains available when the workflow overlay is hidden, and the overlay statusline keeps the run count/state visible while the graph fills the terminal.
+
+## Orchestrator model and group policy
+
+Atomic applies the same delegation policy to any parent chat or workflow stage that orchestrates subagents. A named agent uses the model and fallback chain declared by its agent definition, so the orchestrator normally omits the subagent tool's explicit `model` argument. An override needs either the user's exact model request or a documented task-specific reason recorded before launch; model diversity alone is not enough.
+
+If an agent declares no model or fallback policy, the orchestrator consults the role guidance in [Model selection](/models/model-selection), then calls `workflow({ action: "models" })` when that tool is available. It may pin only a returned `fullId` and may add a thinking suffix only when the model entry lists that level. When the catalog tool is unavailable, the catalog is empty, or no recommended model is present, the child stays unpinned and the orchestrator reports the limit instead of inventing a model or inspecting credentials.
+
+Each workflow or other orchestrator invocation also uses one invocation-specific, non-`default` Intercom group for all of its children, including parallel and follow-up work. This keeps unrelated runs and the main chat isolated while `contact_supervisor` retains its authorized cross-group route.
 
 ## Context and execution modes
 

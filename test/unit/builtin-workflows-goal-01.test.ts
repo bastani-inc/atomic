@@ -223,11 +223,12 @@ describe("goal", () => {    type ReviewJsonFinding = {
 
         await d.run(ctx);
 
-        const prompt = ctx.calls.prompts["work-turn-1"]?.[0] ?? "";
+        const prompt = ctx.calls.prompts["orchestrator-1"]?.[0] ?? "";
         assert.match(
             prompt,
             /Continue working toward the active thread goal\./,
         );
+        assert.match(prompt, /You are a sub-agent orchestrator[\s\S]*primary implementation tool is the `subagent` tool[\s\S]*You are not the direct implementer[\s\S]*All non-trivial operations must be delegated to subagents[\s\S]*Use the `todo` tool as your active control ledger/);
         assert.match(prompt, /<goal_context>/);
         assert.match(prompt, /<\/goal_context>/);
         assert.match(
@@ -335,13 +336,13 @@ describe("goal", () => {    type ReviewJsonFinding = {
         const result = await d.run(ctx);
 
         assert.equal(ctx.calls.task.includes("planner-1"), false);
-        assert.equal(ctx.calls.task.includes("orchestrator-1"), false);
         assert.equal(ctx.calls.task.includes("code-simplifier-1"), false);
         assert.equal(ctx.calls.task.includes("pull-request"), false);
         assert.equal(ctx.calls.task.includes("prompt-refinement"), false);
-        assert.ok(ctx.calls.task.includes("work-turn-1"));
+        assert.equal(ctx.calls.task.includes("work-turn-1"), false);
+        assert.ok(ctx.calls.task.includes("orchestrator-1"));
         assert.equal(
-            ctx.calls.taskOptions["work-turn-1"]?.[0]?.outputMode,
+            ctx.calls.taskOptions["orchestrator-1"]?.[0]?.outputMode,
             "file-only",
         );
         assert.ok(
@@ -425,7 +426,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
         );
         assert.match(
             normalizePathSeparators(ledger.receipts[0]!.artifact_path),
-            /worker-receipt\.md$/,
+            /orchestrator-receipt\.md$/,
         );
         assert.equal(existsSync(ledger.receipts[0]!.artifact_path), true);
     });

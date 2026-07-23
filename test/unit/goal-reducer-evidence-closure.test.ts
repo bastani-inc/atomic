@@ -149,7 +149,7 @@ describe("goal reducer boolean convergence", () => {
     assert.equal(outcome.status, "needs_human");
     assert.match(
       outcome.decision.reason,
-      /Worker attempt budget reached without reviewer quorum/,
+      /Orchestrator attempt budget reached without reviewer quorum/,
     );
     assert.match(outcome.decision.reason, /Unproven contract clause/);
   });
