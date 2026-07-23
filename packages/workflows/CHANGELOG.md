@@ -12,6 +12,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Strengthened model-visible workflow routing guidance with a pre-launch requirement/risk/evidence coverage pass, a one-launch composition commitment, concrete graph-selection signals, and bounded skeptical-reviewer loops whose model-selected probes are executed authoritatively through durable `ctx.tool(...)` verifier gates rather than model self-report ([#1974](https://github.com/bastani-inc/atomic/issues/1974)).
 - Changed workflow stage chat to render Atomic's exact one-cell `∀` with a pronounced, theme-aware dark → accent → bright/bold → accent → dark luminance ramp at 88ms and the ordinary one-row working geometry, while preserving `NO_COLOR` weight activity, reduced-motion static accent styling, blocked/prompt chrome suppression, composer space, and factual-state precedence.
 
+### Fixed
+
+- Fixed workflow-supplied working-indicator palettes to quantize through Atomic's detected terminal color mode, preserving the intended phase progression in 256-color and conhost-like environments instead of forcing truecolor output.
+
 ## [0.9.11-alpha.4] - 2026-07-23
 
 ### Added

@@ -40,16 +40,22 @@ function shadowGrid(): string[] {
 	});
 }
 
+function noColorRequested(): boolean {
+	return process.env.NO_COLOR !== undefined;
+}
+
 export function renderAtomicAssemblyBanner(
 	gap: number,
 	activeTheme: Theme,
 	thinkingLevel: ThinkingLevel,
 ): string[] {
 	const colorize = activeTheme.getThinkingBorderColor(thinkingLevel);
-	const solid = (text: string) => activeTheme.bold(colorize(text));
+	const solid = (text: string) => activeTheme.bold(noColorRequested() ? text : colorize(text));
 	if (gap <= 0) {
 		return shadowGrid().map((line) => [...line].map((char) =>
-			char === SHADOW_CHAR ? activeTheme.fg("dim", char) : solid(char),
+			char === SHADOW_CHAR
+				? (noColorRequested() ? char : activeTheme.fg("dim", char))
+				: solid(char),
 		).join(""));
 	}
 	const width = ATOMIC_FORALL_BANNER_LINES[0]!.length;
@@ -78,6 +84,7 @@ export function renderAtomicAnsiBanner(
 export function renderStartupManifesto(phase: number): string[] {
 	return STARTUP_MANIFESTO.map((text, index) => {
 		if (phase <= index) return "";
+		if (noColorRequested()) return index === 2 && phase >= 4 ? theme.bold(text) : text;
 		if (index === 2 && phase >= 4) return theme.bold(theme.fg("text", text));
 		return theme.fg(phase === index + 1 ? "dim" : "muted", text);
 	});

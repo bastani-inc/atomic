@@ -26,6 +26,10 @@ const rgb = (text: string): string | undefined => {
 	const match = /\u001b\[38;2;(\d+);(\d+);(\d+)m/.exec(text);
 	return match ? `#${match.slice(1).map((value) => Number(value).toString(16).padStart(2, "0")).join("")}` : undefined;
 };
+const indexed = (text: string): number | undefined => {
+	const match = /\u001b\[38;5;(\d+)m/.exec(text);
+	return match ? Number(match[1]) : undefined;
+};
 
 function restoreEnv(name: "ATOMIC_REDUCED_MOTION" | "NO_COLOR", value: string | undefined): void {
 	if (value === undefined) delete process.env[name];
@@ -80,12 +84,13 @@ describe("Atomic working status", () => {
 			rgb(new AtomicWorkingStatusComponent({ frame, messageColor: String }).render(64)[1]!),
 		);
 		expect(colors).toEqual([
-			"#45475a", "#6c7086", "#789bd0", "#89b4fa", "#b8d2ff",
-			"#eef4ff", "#b8d2ff", "#89b4fa", "#789bd0", "#6c7086",
+			"#6c7086", "#7f849c", "#789bd0", "#89b4fa", "#b8d2ff",
+			"#eef4ff", "#b8d2ff", "#89b4fa", "#789bd0", "#7f849c",
 		]);
 	});
 
 	it("reads a supplied caller palette lazily on every render", () => {
+		setThemeInstance(loadTheme("dark", "truecolor"));
 		let palette = {
 			dark: "#101010", lift: "#202020", muted: "#303030",
 			accent: "#4080c0", bright: "#a0c0e0", peak: "#f0f0f0",
@@ -94,6 +99,17 @@ describe("Atomic working status", () => {
 		expect(rgb(component.render(64)[1]!)).toBe("#101010");
 		palette = { ...palette, dark: "#202020" };
 		expect(rgb(component.render(64)[1]!)).toBe("#202020");
+	});
+
+	it("quantizes caller-supplied workflow palettes to the detected 256-color mode", () => {
+		setThemeInstance(loadTheme("dark", "256color"));
+		const palette = {
+			dark: "#45475a", lift: "#6c7086", muted: "#789bd0",
+			accent: "#89b4fa", bright: "#b8d2ff", peak: "#eef4ff",
+		};
+		const rendered = new AtomicWorkingStatusComponent({ frame: 0, palette, messageColor: String }).render(64)[1]!;
+		expect(indexed(rendered)).toBe(59);
+		expect(rgb(rendered)).toBeUndefined();
 	});
 
 	it("accepts partial working-indicator palettes and derives omitted tones", () => {
@@ -115,12 +131,40 @@ describe("Atomic working status", () => {
 			name: "indexed-spinner",
 			workingIndicator: { dark: 1, lift: 2, muted: 3, accent: 4, bright: 5, peak: 6 },
 		};
-		setThemeInstance(loadThemeFromContent("indexed-spinner.json", JSON.stringify(source), "256"));
+		setThemeInstance(loadThemeFromContent("indexed-spinner.json", JSON.stringify(source), "256color"));
 		const expected = [1, 2, 3, 4, 5, 6, 5, 4, 3, 2];
 		const rendered = ATOMIC_WORKING_FRAMES.map((_, frame) =>
 			new AtomicWorkingStatusComponent({ frame, messageColor: String }).render(64)[1]!,
 		);
 		expect(rendered.map((line, index) => line.includes(`\u001b[38;5;${expected[index]}m∀`))).toEqual(Array(10).fill(true));
+	});
+
+	it("derives omitted tones from standard ANSI indices while preserving explicit indices", () => {
+		const derivedMuted = (accent: number): { accent: number | undefined; muted: string | undefined } => {
+			const source = {
+				...loadThemeJson("catppuccin-mocha"),
+				name: `partial-index-${accent}`,
+				workingIndicator: { accent },
+			};
+			setThemeInstance(loadThemeFromContent("partial-index.json", JSON.stringify(source), "truecolor"));
+			return {
+				accent: indexed(new AtomicWorkingStatusComponent({ frame: 3, messageColor: String }).render(64)[1]!),
+				muted: rgb(new AtomicWorkingStatusComponent({ frame: 2, messageColor: String }).render(64)[1]!),
+			};
+		};
+		const red = derivedMuted(1);
+		const blue = derivedMuted(4);
+		expect(red.accent).toBe(1);
+		expect(blue.accent).toBe(4);
+		expect(red.muted).not.toBe(blue.muted);
+	});
+
+	it("keeps the Catppuccin outward pulse readable after 256-color quantization", () => {
+		setThemeInstance(loadTheme("catppuccin-mocha", "256color"));
+		const colors = ATOMIC_WORKING_FRAMES.slice(0, 6).map((_, frame) =>
+			indexed(new AtomicWorkingStatusComponent({ frame, messageColor: String }).render(64)[1]!),
+		);
+		expect(colors).toEqual([60, 103, 104, 111, 153, 231]);
 	});
 
 	it("uses live dark and light theme roles and follows dynamic theme changes", () => {

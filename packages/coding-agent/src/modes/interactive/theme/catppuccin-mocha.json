@@ -1,5 +1,5 @@
 {
-	"$schema": "https://raw.githubusercontent.com/earendil-works/pi-mono/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
+	"$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
 	"name": "catppuccin-mocha",
 	"vars": {
 		"bg": "#1e1e2e",
@@ -83,8 +83,8 @@
 		"bashMode": "green"
 	},
 	"workingIndicator": {
-		"dark": "surface_1",
-		"lift": "overlay_0",
+		"dark": "overlay_0",
+		"lift": "overlay_1",
 		"muted": "#789bd0",
 		"accent": "blue",
 		"bright": "#b8d2ff",

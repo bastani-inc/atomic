@@ -54,7 +54,7 @@ function ansiToHex(ansi: string): string | undefined {
 	const indexed = /\x1b\[(?:38|48);5;(\d{1,3})m/.exec(ansi);
 	if (!indexed) return undefined;
 	const index = Number(indexed[1]);
-	return index >= 16 ? ansi256ToHex(index) : undefined;
+	return ansi256ToHex(index);
 }
 
 function mixHex(from: string, to: string, amount: number): string {
@@ -102,7 +102,7 @@ function colorizePhase(
 	const tone = ATOMIC_WORKING_PHASES[frameIndex]!;
 	if (noColorRequested()) return text;
 	const palette = typeof paletteOption === "function" ? paletteOption() : paletteOption;
-	if (palette) return `${fgAnsi(palette[tone], "truecolor")}${text}\x1b[39m`;
+	if (palette) return `${fgAnsi(palette[tone], theme.getColorMode())}${text}\x1b[39m`;
 	const configured = theme.getWorkingIndicatorAnsi(tone);
 	if (configured) return `${configured}${text}\x1b[39m`;
 	const derived = derivedThemePhaseHex(tone);
