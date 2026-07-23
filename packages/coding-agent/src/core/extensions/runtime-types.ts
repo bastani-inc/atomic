@@ -6,6 +6,7 @@ import type { CustomMessage } from "../messages.ts";
 import type { SessionManager } from "../session-manager.ts";
 import type { SlashCommandInfo } from "../slash-commands.ts";
 import type { SourceInfo } from "../source-info.ts";
+import type { ResourceOverlap } from "../diagnostics.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import type { RegisteredCommand } from "./command-types.ts";
 import type {
@@ -85,8 +86,16 @@ export type SetLabelHandler = (entryId: string, label: string | undefined) => vo
  */
 export interface ExtensionRuntimeState {
 	flagValues: Map<string, boolean | string>;
+	explicitFlagNames: Set<string>;
+	/** Extension path that owns each active flag registration. */
+	flagOwners: Map<string, string>;
 	/** Provider registrations queued during extension loading, processed when runner binds */
 	pendingProviderRegistrations: Array<{ provider: Provider; extensionPath: string } | { name: string; config: ProviderConfig; extensionPath: string }>;
+	/** Resource-level compatibility gate installed after extension provenance is resolved. */
+	canRegisterResource: (extension: Extension, resourceType: ResourceOverlap["resourceType"], name: string) => boolean;
+	beginResourceRegistrationBatch: () => void;
+	endResourceRegistrationBatch: () => void;
+	refreshToolsAfterRegistration: () => void;
 	/** Throws when this extension instance is stale after runtime replacement. */
 	assertActive: () => void;
 	/** Marks this extension instance as stale after runtime replacement or reload. */
@@ -192,6 +201,8 @@ export interface Extension {
 export interface LoadExtensionsResult {
 	extensions: Extension[];
 	errors: Array<{ path: string; error: string }>;
+	overlaps?: ResourceOverlap[];
+
 	/** Shared runtime - actions are throwing stubs until runner.initialize() */
 	runtime: ExtensionRuntime;
 }

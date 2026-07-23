@@ -47,15 +47,17 @@ export function createExtensionAPI(
 
     registerTool(tool: ToolDefinition): void {
       runtime.assertActive();
+      if (!runtime.canRegisterResource(extension, "tool", tool.name)) return;
       extension.tools.set(tool.name, {
         definition: tool,
         sourceInfo: extension.sourceInfo,
       });
-      runtime.refreshTools();
+      runtime.refreshToolsAfterRegistration();
     },
 
     registerCommand(name: string, options: Omit<RegisteredCommand, "name" | "sourceInfo">): void {
       runtime.assertActive();
+      if (!runtime.canRegisterResource(extension, "command", name)) return;
       extension.commands.set(name, {
         name,
         sourceInfo: extension.sourceInfo,
@@ -71,6 +73,7 @@ export function createExtensionAPI(
       },
     ): void {
       runtime.assertActive();
+      if (!runtime.canRegisterResource(extension, "shortcut", shortcut)) return;
       extension.shortcuts.set(shortcut, {
         shortcut,
         extensionPath: extension.path,
@@ -87,12 +90,15 @@ export function createExtensionAPI(
       },
     ): void {
       runtime.assertActive();
+      if (!runtime.canRegisterResource(extension, "flag", name)) return;
       extension.flags.set(name, {
         name,
         extensionPath: extension.path,
         ...options,
       });
-      if (options.default !== undefined && !runtime.flagValues.has(name)) {
+      if (!runtime.flagOwners.has(name)) runtime.flagOwners.set(name, extension.path);
+      const ownsFlag = runtime.flagOwners.get(name) === extension.path;
+      if (ownsFlag && options.default !== undefined && !runtime.flagValues.has(name)) {
         runtime.flagValues.set(name, options.default);
       }
     },

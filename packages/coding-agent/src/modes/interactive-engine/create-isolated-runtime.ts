@@ -1,5 +1,6 @@
 import { basename } from "node:path";
 import type { Args } from "../../cli/args.ts";
+import { ENV_AGENT_DIR, getEnvValue } from "../../config.ts";
 import {
 	createAgentSessionRuntime,
 	type AgentSessionRuntime,
@@ -25,13 +26,14 @@ export async function createIsolatedInteractiveRuntime(options: {
 	let isolatedRuntime: IsolatedInteractiveRuntime | undefined;
 	const pendingDiagnostics: ActivityWatchdogDiagnostic[] = [];
 	let callbackActive = false;
+	const explicitAgentDir = getEnvValue(ENV_AGENT_DIR);
 	const client = new RpcClient({
 		cliPath,
 		cwd: options.sessionManager.getCwd(),
 		runtimeExecutable: process.execPath,
 		args: buildInteractiveEngineArgs(options.parsed, options.sessionManager, options.resources),
 		env: {
-			ATOMIC_CODING_AGENT_DIR: options.localRuntime.services.agentDir,
+			...(explicitAgentDir !== undefined ? { [ENV_AGENT_DIR]: explicitAgentDir } : {}),
 			...(options.parsed.apiKey ? { ATOMIC_INTERACTIVE_ENGINE_API_KEY: options.parsed.apiKey } : {}),
 		},
 		interactiveEngine: {

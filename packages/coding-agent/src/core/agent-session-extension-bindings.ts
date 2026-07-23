@@ -4,6 +4,7 @@ import type { AgentSessionInternalSurface as AgentSession } from "./agent-sessio
 import type { AgentSessionReloadOptions, ExtensionBindings } from "./agent-session-types.ts";
 import type { ExtensionRunner } from "./extensions/index.ts";
 import type { ResourceExtensionPaths } from "./resource-loader.ts";
+import type { PathMetadata } from "./package-manager.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 
@@ -58,18 +59,25 @@ export async function extendResourcesFromExtensions(this: AgentSession, reason: 
 
 export function buildExtensionResourcePaths(this: AgentSession, entries: Array<{ path: string; extensionPath: string }>): Array<{
 	path: string;
-	metadata: { source: string; scope: "temporary"; origin: "top-level"; baseDir?: string };
+	metadata: PathMetadata;
 }> {
 	return entries.map((entry) => {
-		const source = this.getExtensionSourceLabel(entry.extensionPath);
-		const baseDir = entry.extensionPath.startsWith("<") ? undefined : dirname(entry.extensionPath);
+		const extensions = this._resourceLoader?.getExtensions().extensions ?? [];
+		const extension = extensions.find((candidate) =>
+			candidate.path === entry.extensionPath
+			|| candidate.resolvedPath === entry.extensionPath
+			|| candidate.sourceInfo.path === entry.extensionPath);
+		const sourceInfo = extension?.sourceInfo;
+		const source = sourceInfo?.source ?? this.getExtensionSourceLabel(entry.extensionPath);
+		const baseDir = sourceInfo?.baseDir ?? (entry.extensionPath.startsWith("<") ? undefined : dirname(entry.extensionPath));
 		return {
 			path: entry.path,
 			metadata: {
 				source,
-				scope: "temporary",
-				origin: "top-level",
+				scope: sourceInfo?.scope ?? "temporary",
+				origin: sourceInfo?.origin ?? "top-level",
 				baseDir,
+				configurationOrigin: sourceInfo?.configurationOrigin,
 			},
 		};
 	});
@@ -257,7 +265,7 @@ export function _bindExtensionCore(this: AgentSession, runner: ExtensionRunner):
 
 export async function reload(this: AgentSession, options?: AgentSessionReloadOptions): Promise<void> {
 	const reason = options?.reason ?? "reload";
-	const previousFlagValues = this._extensionRunner.getFlagValues();
+	const previousFlagValues = this._extensionRunner.getExplicitFlagValues();
 	if (reason === "reload") {
 		await emitSessionShutdownEvent(this._extensionRunner, { type: "session_shutdown", reason: "reload" });
 	}

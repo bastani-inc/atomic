@@ -82,8 +82,12 @@ export async function addAutoDiscoveredResources(
 		for (const path of paths) addResource(target, path, metadata, isEnabledByOverrides(path, overrides, baseDir));
 	};
 	if (projectTrusted) {
-		for (const configDir of projectConfigDirs) {
-			const metadata: PathMetadata = { ...projectMetadata, baseDir: configDir };
+		for (const [index, configDir] of projectConfigDirs.entries()) {
+			const metadata: PathMetadata = {
+				...projectMetadata,
+				baseDir: configDir,
+				configurationOrigin: index === 0 ? "atomic" : "inherited-pi",
+			};
 			addResources("extensions", await collectAutoExtensionEntries(join(configDir, "extensions")), metadata, projectOverrides.extensions, configDir);
 			addResources("skills", await collectAutoSkillEntries(join(configDir, "skills"), "pi"), metadata, projectOverrides.skills, configDir);
 			addResources("prompts", await collectAutoPromptEntries(join(configDir, "prompts")), metadata, projectOverrides.prompts, configDir);
@@ -95,8 +99,12 @@ export async function addAutoDiscoveredResources(
 		const agentsBaseDir = dirname(agentsSkillsDir);
 		addResources("skills", await collectAutoSkillEntries(agentsSkillsDir, "agents"), { ...projectMetadata, baseDir: agentsBaseDir }, projectOverrides.skills, agentsBaseDir);
 	}
-	for (const configDir of userConfigDirs) {
-		const metadata: PathMetadata = { ...userMetadata, baseDir: configDir };
+	for (const [index, configDir] of userConfigDirs.entries()) {
+		const metadata: PathMetadata = {
+			...userMetadata,
+			baseDir: configDir,
+			configurationOrigin: index === 0 ? "atomic" : "inherited-pi",
+		};
 		addResources("extensions", await collectAutoExtensionEntries(join(configDir, "extensions")), metadata, userOverrides.extensions, configDir);
 		addResources("skills", await collectAutoSkillEntries(join(configDir, "skills"), "pi"), metadata, userOverrides.skills, configDir);
 		addResources("prompts", await collectAutoPromptEntries(join(configDir, "prompts")), metadata, userOverrides.prompts, configDir);

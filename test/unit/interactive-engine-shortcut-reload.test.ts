@@ -150,6 +150,7 @@ async function reloadThroughExtensionContext(
 	while (performance.now() < deadline) {
 		const starts = existsSync(sessionStartFile) ? readFileSync(sessionStartFile, "utf8") : "";
 		if (starts.includes(`reload:${expectedBinding}`)) {
+			await driver.waitForNext(from, (report) => report.type === "keybinding_state");
 			const stateIndex = driver.reports.length;
 			driver.send({ type: "state" });
 			await driver.waitForNext(stateIndex, (report) =>
@@ -193,6 +194,7 @@ serialTest("real isolated InteractiveMode refreshes remote shortcuts and preserv
 		driver.send({ type: "state" });
 		state = await driver.waitForNext(stateIndex, (report) => report.type === "state");
 		assert.notEqual(state.toolsExpanded, initiallyExpanded, "custom agent-dir remap must reach editor input");
+		await driver.waitFor((report) => report.type === "keybinding_state" && report.shortcutKeys?.includes("ctrl+y") === true);
 		driver.send({ type: "input", data: "\x19" });
 		const startupDeadline = performance.now() + 3_000;
 		while (shortcutInvocations(shortcutLog).length === 0 && performance.now() < startupDeadline) await Bun.sleep(20);

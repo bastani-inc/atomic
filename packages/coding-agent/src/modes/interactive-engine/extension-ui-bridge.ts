@@ -1,5 +1,6 @@
 import { matchesKey, type KeyId } from "@earendil-works/pi-tui";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
+import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import type { KeybindingsManager } from "../../core/keybindings.ts";
 import type { ExtensionUIContext } from "../../core/extensions/index.ts";
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
@@ -142,6 +143,10 @@ export function interruptBlockedInteractiveEngine(runtime: AgentSessionRuntime):
  */
 export function getInteractiveEngineRemoteCommands(runtime: AgentSessionRuntime): readonly RpcSlashCommand[] {
 	return runtime instanceof IsolatedInteractiveRuntime ? runtime.getRemoteCommands() : [];
+}
+
+export function getInteractiveEngineResourceOverlaps(runtime: AgentSessionRuntime): readonly ResourceOverlap[] {
+	return runtime instanceof IsolatedInteractiveRuntime ? runtime.getResourceOverlaps() : [];
 }
 
 /** Evaluate an engine-child command's live argument completions. */

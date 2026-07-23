@@ -7,7 +7,7 @@ import type { PromptTemplate } from "./prompt-templates.ts";
 import { SettingsManager, type PackageSource } from "./settings-manager.ts";
 import type { Skill } from "./skills.ts";
 import type { SourceInfo } from "./source-info.ts";
-import type { ResourceDiagnostic } from "./diagnostics.ts";
+import type { ResourceDiagnostic, ResourceOverlap } from "./diagnostics.ts";
 import type { Theme } from "../modes/interactive/theme/theme.ts";
 import { updatePromptsFromPathsAsync, updateSkillsFromPathsAsync, updateThemesFromPathsAsync } from "./resource-loader-assets.ts";
 import { clonePackageSources, mergeInheritedStrings } from "./resource-loader-helpers.ts";
@@ -171,6 +171,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 	getThemes(): { themes: Theme[]; diagnostics: ResourceDiagnostic[] } {
 		return { themes: this.themes, diagnostics: this.themeDiagnostics };
+	}
+
+	getOverlaps(): ResourceOverlap[] {
+		return [...(this.extensionsResult.overlaps ?? [])];
 	}
 
 	getAgentsFiles(): { agentsFiles: Array<{ path: string; content: string }> } {

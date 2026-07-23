@@ -8,7 +8,7 @@ import type { PathMetadata, ResolvedPaths } from "./package-manager.ts";
 import { resetTimings, startTimingSpan, endTimingSpan } from "./timings.ts";
 import { loadProjectContextFiles, resolvePromptInput } from "./resource-loader-context-files.ts";
 import { discoverAppendSystemPromptFile, discoverSystemPromptFile } from "./resource-loader-discovery.ts";
-import { loadExtensionFactories, loadFinalExtensionSet } from "./resource-loader-extensions.ts";
+import { loadExtensionFactories, loadFinalExtensionSet, resolveInheritedExtensionOverlaps } from "./resource-loader-extensions.ts";
 import { resourceInternals } from "./resource-loader-internals.ts";
 import type { DefaultResourceLoader } from "./resource-loader-core.ts";
 import {
@@ -250,6 +250,7 @@ export async function reloadDefaultResourceLoader(
 	}
 	state.extensionsResult = state.extensionsOverride ? state.extensionsOverride(extensionsResult) : extensionsResult;
 	applyExtensionSourceInfo(loader, state.extensionsResult.extensions, metadataByPath);
+	resolveInheritedExtensionOverlaps(state.extensionsResult);
 
 	const skillPaths = state.noSkills
 		? mergeResourcePaths(state.cwd, cliEnabledSkills, state.additionalSkillPaths)

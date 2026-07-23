@@ -1,5 +1,14 @@
 import type { ExtensionRuntime } from "./types.ts";
 
+export async function runResourceRegistrationBatch<T>(runtime: ExtensionRuntime, run: () => Promise<T>): Promise<T> {
+  runtime.beginResourceRegistrationBatch();
+  try {
+    return await run();
+  } finally {
+    runtime.endResourceRegistrationBatch();
+  }
+}
+
 /**
  * Create a runtime with throwing stubs for action methods.
  * Runner.bindCore() replaces these with real implementations.
@@ -11,6 +20,8 @@ export function createExtensionRuntime(): ExtensionRuntime {
     );
   };
   const state: { staleMessage?: string } = {};
+  let resourceRegistrationBatchDepth = 0;
+  let toolRefreshPending = false;
   const assertActive = () => {
     if (state.staleMessage) {
       throw new Error(state.staleMessage);
@@ -34,7 +45,27 @@ export function createExtensionRuntime(): ExtensionRuntime {
     getThinkingLevel: notInitialized,
     setThinkingLevel: notInitialized,
     flagValues: new Map(),
+    explicitFlagNames: new Set(),
+    flagOwners: new Map(),
     pendingProviderRegistrations: [],
+    canRegisterResource: () => true,
+    beginResourceRegistrationBatch: () => {
+      resourceRegistrationBatchDepth += 1;
+    },
+    endResourceRegistrationBatch: () => {
+      resourceRegistrationBatchDepth -= 1;
+      if (resourceRegistrationBatchDepth === 0 && toolRefreshPending) {
+        toolRefreshPending = false;
+        runtime.refreshTools();
+      }
+    },
+    refreshToolsAfterRegistration: () => {
+      if (resourceRegistrationBatchDepth > 0) {
+        toolRefreshPending = true;
+      } else {
+        runtime.refreshTools();
+      }
+    },
     assertActive,
     invalidate: (message) => {
       state.staleMessage ??=

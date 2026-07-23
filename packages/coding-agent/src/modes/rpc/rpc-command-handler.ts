@@ -114,6 +114,7 @@ export function createRpcCommandHandler({
 					autoCompactionEnabled: session.autoCompactionEnabled,
 					messageCount: session.messages.length,
 					pendingMessageCount: session.pendingMessageCount,
+					resourceOverlaps: session.resourceLoader.getExtensions().overlaps ?? [],
 				};
 				return createRpcSuccessResponse(id, "get_state", state);
 			}
