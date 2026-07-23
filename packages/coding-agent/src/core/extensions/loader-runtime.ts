@@ -57,6 +57,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
     flagValues: new Map(),
     explicitFlagNames: new Set(),
     flagOwners: new Map(),
+    flagOwnerOrigins: new Map(),
     pendingProviderRegistrations: [],
     canRegisterResource: () => true,
     beginResourceRegistrationBatch: () => { batchDepth += 1; },
@@ -68,7 +69,8 @@ export function createExtensionRuntime(): ExtensionRuntime {
       for (const pending of pendingCommands.values()) pending.extension.commands.set(pending.name, pending.registration);
       for (const pending of pendingFlags.values()) {
         pending.extension.flags.set(pending.name, pending.registration);
-        if (runtime.flagOwners?.get(pending.name) === pending.extension.path
+        const ownerOrigin = runtime.flagOwnerOrigins?.get(pending.name);
+        if (ownerOrigin === pending.extension.sourceInfo.configurationOrigin
           && pending.defaultValue !== undefined && !runtime.flagValues.has(pending.name)) {
           runtime.flagValues.set(pending.name, pending.defaultValue);
         }
@@ -99,7 +101,11 @@ export function createExtensionRuntime(): ExtensionRuntime {
       const firstDefault = pendingFlags.get(key)?.defaultValue;
       pendingFlags.set(key, { extension, name, registration, defaultValue: firstDefault ?? defaultValue });
       const owners = runtime.flagOwners ??= new Map();
-      if (!owners.has(name)) owners.set(name, extension.path);
+      const ownerOrigins = runtime.flagOwnerOrigins ??= new Map();
+      if (!owners.has(name)) {
+        owners.set(name, extension.path);
+        ownerOrigins.set(name, extension.sourceInfo.configurationOrigin);
+      }
       return true;
     },
     stageShortcutRegistration: (extension, name, registration) => {
@@ -124,7 +130,8 @@ export function createExtensionRuntime(): ExtensionRuntime {
     },
     getPendingFlagDefault: (ownerPath, name) => {
       if (!pendingFlags.has(`${ownerPath}\0${name}`)) return undefined;
-      return [...pendingFlags.values()].find((pending) => pending.name === name)?.defaultValue;
+      return [...pendingFlags.values()]
+        .find((pending) => pending.name === name && pending.defaultValue !== undefined)?.defaultValue;
     },
     getAllToolsAfterRegistration: (extension) => {
       const tools = runtime.getAllTools();
@@ -139,22 +146,29 @@ export function createExtensionRuntime(): ExtensionRuntime {
       return tools;
     },
     getCommandsAfterRegistration: (extension) => {
-      const commands = runtime.getCommands();
-      if (extension.sourceInfo.configurationOrigin !== "inherited-pi") return commands;
-      const names = new Set(commands.map((command) => command.name));
-      for (const pending of pendingCommands.values()) {
-        if (names.has(pending.name)) continue;
-        commands.push({ name: pending.registration.name, description: pending.registration.description, source: "extension", sourceInfo: pending.registration.sourceInfo });
-        names.add(pending.name);
+      if (extension.sourceInfo.configurationOrigin !== "inherited-pi") return runtime.getCommands();
+      const active = [...pendingCommands.values()].map((pending) => ({
+        ...pending,
+        previous: pending.extension.commands.get(pending.name),
+      }));
+      for (const pending of active) pending.extension.commands.set(pending.name, pending.registration);
+      try {
+        return runtime.getCommands();
+      } finally {
+        for (const pending of active) {
+          if (pending.previous) pending.extension.commands.set(pending.name, pending.previous);
+          else pending.extension.commands.delete(pending.name);
+        }
       }
-      return commands;
     },
     refreshToolsAfterRegistration: () => {
       runtime.refreshTools();
       if (batchDepth > 0 && pendingActiveToolNames) pendingActiveToolNames = runtime.getActiveTools();
     },
-    applyFlagDefaultAfterRegistration: (name, ownerPath, value) => {
-      if (runtime.flagOwners?.get(name) === ownerPath && !runtime.flagValues.has(name)) runtime.flagValues.set(name, value);
+    applyFlagDefaultAfterRegistration: (name, _ownerPath, value, configurationOrigin) => {
+      if (runtime.flagOwnerOrigins?.get(name) === configurationOrigin && !runtime.flagValues.has(name)) {
+        runtime.flagValues.set(name, value);
+      }
     },
     getActiveToolsAfterRegistration: (extension) => {
       const active = runtime.getActiveTools();

@@ -285,7 +285,7 @@ export default function(pi) {
 		expect(tools.some((tool) => tool.definition.name === "legacy-only-tool")).toBe(true);
 		expect(result.runtime.flagValues.get("late-shared-flag")).toBe("same");
 		expect(result.runtime.flagValues.has("late-no-default-flag")).toBe(false);
-
+		expect(result.runtime.flagOwnerOrigins?.get("late-no-default-flag")).toBe("atomic");
 		const runner = new ExtensionRunner(result.extensions, result.runtime, cwd, {} as never, {} as never);
 		await runner.emit({ type: "session_start", reason: "startup" });
 		expect(result.runtime.flagValues.get("late-shared-flag")).toBe("same");

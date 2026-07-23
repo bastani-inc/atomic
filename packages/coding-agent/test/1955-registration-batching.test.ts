@@ -3,10 +3,11 @@ import { createEventBus } from "../src/core/event-bus.ts";
 import { createExtensionAPI } from "../src/core/extensions/loader-api.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader-runtime.ts";
 import { ExtensionRunner } from "../src/core/extensions/runner.ts";
+import { resolveRegisteredCommands } from "../src/core/extensions/runner-registries.ts";
 import type { Extension } from "../src/core/extensions/types.ts";
 import { resolveInheritedExtensionOverlaps } from "../src/core/resource-loader-extensions.ts";
 
-function extension(path: string, origin: "bundled" | "inherited-pi"): Extension {
+function extension(path: string, origin: "atomic" | "bundled" | "inherited-pi"): Extension {
 	return {
 		path,
 		resolvedPath: path,
@@ -97,8 +98,14 @@ test("preserves first-registration views across pending inherited duplicates", a
 	const second = extension("second", "inherited-pi");
 	const extensions = [first, second];
 	runtime.getAllTools = () => [];
-	runtime.getCommands = () => [];
+	runtime.getCommands = () => resolveRegisteredCommands(extensions).map((command) => ({
+		name: command.invocationName,
+		description: command.description,
+		source: "extension",
+		sourceInfo: command.sourceInfo,
+	}));
 	let secondView: Array<boolean | string | undefined> = [];
+	let secondCommands: string[] = [];
 	for (const candidate of extensions) {
 		const pi = createExtensionAPI(candidate, runtime, "/tmp", createEventBus());
 		pi.on("session_start", async () => {
@@ -112,8 +119,9 @@ test("preserves first-registration views across pending inherited duplicates", a
 				secondView = [
 					pi.getFlag("shared"),
 					pi.getAllTools().find((tool) => tool.name === "shared")?.description,
-					pi.getCommands().find((command) => command.name === "shared")?.description,
+					pi.getCommands().find((command) => command.description === "first")?.description,
 				];
+				secondCommands = pi.getCommands().map((command) => `${command.name}:${command.description}`);
 			}
 		});
 	}
@@ -122,9 +130,34 @@ test("preserves first-registration views across pending inherited duplicates", a
 	const runner = new ExtensionRunner(extensions, runtime, "/tmp", {} as never, {} as never);
 	await runner.emit({ type: "session_start", reason: "startup" });
 	expect(secondView).toEqual(["first", "first", "first"]);
+	expect(secondCommands).toEqual(["shared:1:first", "shared:2:second"]);
 	expect(runtime.flagValues.get("repeated")).toBe("first-default");
 });
 
+
+for (const origin of ["inherited-pi", "atomic"] as const) {
+	test(`uses the first defined default across duplicate ${origin} flags`, async () => {
+		const runtime = createExtensionRuntime();
+		const first = extension(`${origin}-first`, origin);
+		const second = extension(`${origin}-second`, origin);
+		let observed: boolean | string | undefined;
+		const firstApi = createExtensionAPI(first, runtime, "/tmp", createEventBus());
+		const secondApi = createExtensionAPI(second, runtime, "/tmp", createEventBus());
+		firstApi.on("session_start", async () => firstApi.registerFlag("later-default", { type: "string" }));
+		secondApi.on("session_start", async () => {
+			secondApi.registerFlag("later-default", { type: "string", default: "ready" });
+			observed = secondApi.getFlag("later-default");
+			if (observed === "ready") secondApi.registerCommand("conditional", { handler: async () => {} });
+		});
+		const result = { extensions: [first, second], errors: [], runtime };
+		resolveInheritedExtensionOverlaps(result);
+		const runner = new ExtensionRunner(result.extensions, runtime, "/tmp", {} as never, {} as never);
+		await runner.emit({ type: "session_start", reason: "startup" });
+		expect([observed, runtime.flagValues.get("later-default"), second.commands.has("conditional")])
+			.toEqual(["ready", "ready", true]);
+		expect(result.overlaps).toEqual([]);
+	});
+}
 test("replays the latest mixed-origin active-tool selection after staged commit", async () => {
 	const runtime = createExtensionRuntime();
 	const inherited = extension("inherited-active", "inherited-pi");

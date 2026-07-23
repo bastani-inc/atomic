@@ -89,6 +89,8 @@ export interface ExtensionRuntimeState {
 	explicitFlagNames?: Set<string>;
 	/** Extension path that owns each active flag registration. */
 	flagOwners?: Map<string, string>;
+	/** Configuration origin of each active flag owner. */
+	flagOwnerOrigins?: Map<string, Extension["sourceInfo"]["configurationOrigin"]>;
 	/** Provider registrations queued during extension loading, processed when runner binds */
 	pendingProviderRegistrations: Array<{ provider: Provider; extensionPath: string } | { name: string; config: ProviderConfig; extensionPath: string }>;
 	/** Resource-level compatibility gate installed after extension provenance is resolved. */
@@ -96,7 +98,12 @@ export interface ExtensionRuntimeState {
 	beginResourceRegistrationBatch?: () => void;
 	endResourceRegistrationBatch?: () => void;
 	refreshToolsAfterRegistration?: () => void;
-	applyFlagDefaultAfterRegistration?: (name: string, ownerPath: string, value: boolean | string) => void;
+	applyFlagDefaultAfterRegistration?: (
+		name: string,
+		ownerPath: string,
+		value: boolean | string,
+		configurationOrigin?: Extension["sourceInfo"]["configurationOrigin"],
+	) => void;
 	stageToolRegistration?: (extension: Extension, name: string, registration: RegisteredTool) => boolean;
 	stageCommandRegistration?: (extension: Extension, name: string, registration: RegisteredCommand) => boolean;
 	stageFlagRegistration?: (extension: Extension, name: string, registration: ExtensionFlag, defaultValue?: boolean | string) => boolean;

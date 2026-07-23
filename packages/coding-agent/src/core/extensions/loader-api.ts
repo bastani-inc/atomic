@@ -91,11 +91,19 @@ export function createExtensionAPI(
       if (runtime.stageFlagRegistration?.(extension, name, registration, options.default)) return;
       extension.flags.set(name, registration);
       const flagOwners = runtime.flagOwners ??= new Map();
-      if (!flagOwners.has(name)) flagOwners.set(name, extension.path);
-      const ownsFlag = flagOwners.get(name) === extension.path;
-      if (ownsFlag && options.default !== undefined && !runtime.flagValues.has(name)) {
+      const flagOwnerOrigins = runtime.flagOwnerOrigins ??= new Map();
+      if (!flagOwners.has(name)) {
+        flagOwners.set(name, extension.path);
+        flagOwnerOrigins.set(name, extension.sourceInfo.configurationOrigin);
+      }
+      if (options.default !== undefined && !runtime.flagValues.has(name)) {
         if (runtime.applyFlagDefaultAfterRegistration) {
-          runtime.applyFlagDefaultAfterRegistration(name, extension.path, options.default);
+          runtime.applyFlagDefaultAfterRegistration(
+            name,
+            extension.path,
+            options.default,
+            extension.sourceInfo.configurationOrigin,
+          );
         } else {
           runtime.flagValues.set(name, options.default);
         }

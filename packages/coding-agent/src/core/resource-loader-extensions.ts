@@ -172,6 +172,7 @@ function removeInheritedRegistrations<K extends string, V>(
 
 function installRegistrationPolicy(extensionsResult: LoadExtensionsResult): void {
 	const flagOwners = extensionsResult.runtime.flagOwners ??= new Map();
+	const flagOwnerOrigins = extensionsResult.runtime.flagOwnerOrigins ??= new Map();
 	extensionsResult.runtime.canRegisterResource = (extension, resourceType, name) => {
 		if (resourceType === "prompt") return true;
 		if (extension.sourceInfo.configurationOrigin === "inherited-pi") {
@@ -188,6 +189,7 @@ function installRegistrationPolicy(extensionsResult: LoadExtensionsResult): void
 				|| !hasActiveOrPendingRegistration(extensionsResult.runtime, inherited, resourceType, name)) continue;
 			if (resourceType === "flag" && flagOwners.get(name) === inherited.path) {
 				flagOwners.delete(name);
+				flagOwnerOrigins.delete(name);
 				if (!extensionsResult.runtime.explicitFlagNames?.has(name)) extensionsResult.runtime.flagValues.delete(name);
 			}
 			deleteRegistration(extensionsResult.runtime, inherited, resourceType, name);
@@ -246,12 +248,19 @@ function recordOverlap(
 function rebuildFlagDefaults(extensionsResult: LoadExtensionsResult): void {
 	extensionsResult.runtime.flagValues.clear();
 	const flagOwners = extensionsResult.runtime.flagOwners ??= new Map();
+	const flagOwnerOrigins = extensionsResult.runtime.flagOwnerOrigins ??= new Map();
 	flagOwners.clear();
+	flagOwnerOrigins.clear();
 	for (const extension of extensionsResult.extensions) {
 		for (const [name, flag] of extension.flags) {
-			if (flagOwners.has(name)) continue;
-			flagOwners.set(name, extension.path);
-			if (flag.default !== undefined) extensionsResult.runtime.flagValues.set(name, flag.default);
+			if (!flagOwners.has(name)) {
+				flagOwners.set(name, extension.path);
+				flagOwnerOrigins.set(name, extension.sourceInfo.configurationOrigin);
+			}
+			if (flagOwnerOrigins.get(name) === extension.sourceInfo.configurationOrigin
+				&& flag.default !== undefined && !extensionsResult.runtime.flagValues.has(name)) {
+				extensionsResult.runtime.flagValues.set(name, flag.default);
+			}
 		}
 	}
 }
