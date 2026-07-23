@@ -420,6 +420,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
                 "work_turn_started",
                 "receipt_recorded",
                 "reviews_recorded",
+                "commit_gate",
                 "status_decided",
             ],
         );

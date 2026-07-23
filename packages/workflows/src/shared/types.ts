@@ -409,6 +409,13 @@ export interface WorkflowRunContext<
    * cross-ref: issue #1498 — DBOS-backed cross-session resumability.
    */
   tool: WorkflowToolPrimitive;
+  /**
+   * Model catalog port for the invoking session, when the host provides one.
+   * `models.currentModel` is the user-selected session model; leading a stage's
+   * model chain with it (bare, without a reasoning suffix) runs the stage at
+   * the session's model and default thinking level.
+   */
+  readonly models?: WorkflowModelCatalogPort;
 }
 
 /**

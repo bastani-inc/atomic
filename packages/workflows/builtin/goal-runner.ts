@@ -1,6 +1,15 @@
 import { join } from "node:path";
-import type { WorkflowParallelOptions, WorkflowTaskOptions, WorkflowTaskResult, WorkflowTaskStep } from "../src/shared/types.js";
+import type { WorkflowModelCatalogPort, WorkflowParallelOptions, WorkflowTaskOptions, WorkflowTaskResult, WorkflowTaskStep, WorkflowToolPrimitive } from "../src/shared/types.js";
 import { reviewerModelConfig, workerModelConfig } from "./goal-models.js";
+import { resolveWorkerModels } from "./worker-model-resolution.js";
+import {
+  commitGateHeldOutcome,
+  commitOptOutRequested,
+  describeCommitGateBlock,
+  describeCommitGatePass,
+  describeCommitGateSkip,
+  inspectWorktreeCommitState,
+} from "./goal-commit-gate.js";
 import {
   DEFAULT_BLOCKER_THRESHOLD,
   DEFAULT_MAX_TURNS,
@@ -67,8 +76,10 @@ function normalizeBranchInput(
 }
 type GoalRunnerContext = {
   readonly inputs: GoalWorkflowInputs;
+  readonly models?: WorkflowModelCatalogPort;
   task(name: string, options: WorkflowTaskOptions): Promise<WorkflowTaskResult>;
   parallel(steps: readonly WorkflowTaskStep[], options: WorkflowParallelOptions): Promise<WorkflowTaskResult[]>;
+  tool: WorkflowToolPrimitive;
 };
 
 type GoalWorkflowOptions = {
@@ -119,6 +130,8 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
     let latestReviewReportPath: string | undefined;
     let terminalRemainingWork: string | undefined;
     let previousWorkerSessionFile: string | undefined;
+    let pendingCommitDirective: string | undefined;
+    const resolvedWorkerModelConfig = resolveWorkerModels(workerModelConfig, ctx.models?.currentModel);
 
     for (let turn = 1; turn <= maxTurns && ledger.status === "active"; turn += 1) {
       appendLifecycleEvent(ledger, "work_turn_started", "Worker started.", turn);
@@ -126,7 +139,9 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
 
       const workTurnPath = join(artifactDir, "worker-receipt.md");
       const workerForkOptions = forkContinuationOptions(previousWorkerSessionFile);
-      const workerPrompt = workerForkOptions.forkFromSessionFile === undefined
+      const commitDirective = pendingCommitDirective;
+      pendingCommitDirective = undefined;
+      const baseWorkerPrompt = workerForkOptions.forkFromSessionFile === undefined
         ? [
             renderGoalContinuationPrompt(
               ledger,
@@ -148,6 +163,9 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
             ledgerPath,
             latestReviewArtifactPaths,
           );
+      const workerPrompt = commitDirective === undefined
+        ? baseWorkerPrompt
+        : `${baseWorkerPrompt}\n\n<commit_required>\n${commitDirective}\n</commit_required>`;
 
       let worker: WorkflowTaskResult;
       try {
@@ -156,7 +174,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           reads: [ledgerPath, ...latestReviewArtifactPaths],
           output: workTurnPath,
           outputMode: "file-only",
-          ...workerModelConfig,
+          ...resolvedWorkerModelConfig,
           ...workerForkOptions,
         });
       } catch (err) {
@@ -305,13 +323,41 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         break;
       }
 
-      const reducerOutcome = reduceGoalDecision(ledger, latestReviews, {
+      let reducerOutcome = reduceGoalDecision(ledger, latestReviews, {
         turn,
         maxTurns,
         reviewQuorum,
         blockerThreshold,
         nextActionOnComplete: createPr ? "pull-request" : "finish",
       });
+      if (reducerOutcome.status === "complete") {
+        const optOut = commitOptOutRequested(objective, acceptanceCriteria);
+        const worktreeState = await ctx.tool(
+          "goal-commit-gate",
+          { turn, cwd: workflowStartCwd },
+          async () => inspectWorktreeCommitState(workflowStartCwd),
+        );
+        if (worktreeState.kind === "dirty" && !optOut) {
+          const blockMessage = describeCommitGateBlock(worktreeState);
+          appendLifecycleEvent(ledger, "commit_gate", blockMessage, turn);
+          pendingCommitDirective = blockMessage;
+          reducerOutcome = commitGateHeldOutcome({
+            turn,
+            maxTurns,
+            reviewQuorum,
+            reviews: latestReviews,
+            message: blockMessage,
+          });
+          if (reducerOutcome.status === "needs_human") {
+            terminalRemainingWork = blockMessage;
+          }
+        } else {
+          const note = worktreeState.kind === "clean"
+            ? describeCommitGatePass(worktreeState)
+            : describeCommitGateSkip(worktreeState, optOut);
+          appendLifecycleEvent(ledger, "commit_gate", note, turn);
+        }
+      }
       if (reducerOutcome.blockerObservation !== undefined) {
         ledger.blockers.push(reducerOutcome.blockerObservation);
       }
@@ -413,7 +459,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           ],
         ]),
         reads: prReads,
-        ...workerModelConfig,
+        ...resolvedWorkerModelConfig,
       });
       finalPrReport = prResult.text;
     }

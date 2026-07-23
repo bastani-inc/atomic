@@ -455,6 +455,10 @@ Passing worker-authored tests or snapshots alone is circular evidence unless tie
 
 The worker may claim readiness, but it cannot finalize completion. Before implementing, Goal prompts the worker to derive an observable acceptance/contract matrix from the literal objective/acceptance criteria (one row per clause, each mapped to the concrete check that proves it) and to model states, transitions, and invariants explicitly when the work is stateful.
 
+Reviewer quorum alone no longer finalizes completion when delivery is missing: before the reducer's `complete` is finalized, Goal runs a durable commit gate (`ctx.tool` git inspection of the run's working directory). A dirty worktree converts the approval into another worker turn whose highest-priority directive is committing (or intentionally discarding) the outstanding changes, bounded by `max_turns`; an exhausted budget ends `needs_human`, never a false `complete`. Objectives whose text explicitly forbids committing opt out, non-git directories and git inspection failures skip the gate with a recorded note, and every gate decision is recorded as a `commit_gate` lifecycle event in the ledger (including the clean HEAD commit on pass). Worker prompts carry the matching obligation: commit with a descriptive message before claiming readiness and report the commit SHA in the receipt.
+
+Goal's worker and final `pull-request` stages lead their model chain with the invoking session's current model (running at the session's default thinking level) when the host exposes it, with the curated worker chain retained as ordered fallbacks; reviewer chains stay curated so reviewers remain decorrelated from the session model.
+
 Goal consolidates the latest reviewer findings into a deduplicated cross-reviewer batch persisted in the round artifact (`consolidated_findings` in `review-round-latest.json`), and the next worker prompt instructs the worker to plan and repair the whole batch — with durable regression evidence for reproduced findings — rather than fixing one finding per turn. Goal prompts workers and reviewers to verify user-visible behavior end-to-end when practical, using `playwright-cli`-skilled subagents for web/frontend flows that may depend on backend/API behavior and tmux-skilled subagents for TUI or terminal-app scenarios.
 
 They must assume credentials/auth/environment access exists until concrete checks plus an actual app/flow launch attempt prove otherwise; reviewers accept skipped E2E only when the worker records the exact attempted commands and observed failure output. Goal reviewers also look for any QA E2E video referenced by the ledger or receipt and must inspect the actual video before treating it as proof.
@@ -518,6 +522,8 @@ Run examples:
 Each `ralph` run uses the raw `prompt` exactly as supplied as the operative objective for research, orchestration, and review, and stores `acceptance_criteria` as the immutable literal contract (defaulting to the prompt when omitted). Shared literal-contract prompt language forbids adding behaviors, restrictions, or error conditions beyond the prompt/acceptance criteria and requires surfacing conflicts with external knowledge; Ralph does not run an initial prompt-refinement stage.
 
 Each iteration transforms that raw prompt with `/skill:prompt-engineer Transform the following user request into a codebase and online research question which can be thoroughly explored: ...` (`research-prompt-refinement`), researches that transformed question with `/skill:research-codebase ...`, and writes the findings under `research/`. The research, orchestrator, and reviewer prompts carry `acceptance_criteria` next to the literal contract, so orchestrators should pass the ORIGINAL task text when launching follow-up Ralph runs from reviewer findings.
+
+Ralph's orchestrator and final `pull-request` stages lead their model chain with the invoking session's current model (running at the session's default thinking level) when the host exposes it, with the curated orchestrator chain retained as ordered fallbacks; reviewer chains stay curated so reviewers remain decorrelated from the session model.
 
 Before implementing, Ralph prompts the orchestrator to derive an observable acceptance/contract matrix from the literal prompt/acceptance criteria (one row per clause mapped to the concrete observable check that proves it) and to model states, transitions, and invariants explicitly when the work is stateful.
 
@@ -1342,6 +1348,14 @@ readonly cwd?: string;
 ```
 
 Invocation working directory for workflow-owned artifacts. It defaults to the host process cwd when omitted.
+
+### `ctx.models`
+
+```typescript
+readonly models?: WorkflowModelCatalogPort;
+```
+
+Model catalog port for the invoking session, when the host provides one. `models.currentModel` is the user-selected session model; leading a stage's model chain with it (bare, without a `:thinking` suffix) runs the stage at the session's model and default thinking level. `models.listModels()` returns the available catalog. The field is absent when no host catalog exists (for example some detached executions), so definitions should treat it as optional and fall back to their own model configuration.
 
 ### `ctx.task(name, options)`
 

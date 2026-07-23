@@ -267,6 +267,12 @@ export function makeMockCtx<TInputs extends WorkflowInputValues>(
             calls.tool.push(name);
             const override = responders.tool?.(name, args, calls);
             if (override !== undefined) return override as T;
+            // Hermetic default for the goal commit gate: unit tests run inside
+            // this repository's (potentially dirty) checkout, so executing the
+            // real git inspection would couple test outcomes to local git
+            // state. Tests that exercise the gate override it via
+            // responders.tool.
+            if (name === "goal-commit-gate") return { kind: "non_git" } as unknown as T;
             return fn();
         },
     };
