@@ -147,7 +147,7 @@ export function reduceGoalDecision(
         ...reducerSummary(turnReviews, false, "needs_human"),
         turn: options.turn,
         decision: "needs_human",
-        reason: `Worker attempt budget reached without reviewer quorum. Remaining work: ${collectRemainingWork(turnReviews)}`,
+        reason: `Orchestrator attempt budget reached without reviewer quorum. Remaining work: ${collectRemainingWork(turnReviews)}`,
         complete_votes: completeVotes,
         review_quorum: options.reviewQuorum,
         ...(observation ? { blocker: observation.blocker } : {}),

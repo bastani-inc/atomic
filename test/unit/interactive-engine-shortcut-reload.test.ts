@@ -21,6 +21,7 @@ interface HarnessReport {
 	expandKeys?: string[];
 	expandDisplay?: string;
 	toolsExpanded?: boolean;
+	streaming?: boolean;
 }
 
 class InteractiveModeDriver {
@@ -60,6 +61,7 @@ class InteractiveModeDriver {
 		fromIndex: number,
 		predicate: (report: HarnessReport) => boolean,
 		timeoutMs = 8_000,
+		description = "fixture report",
 	): Promise<HarnessReport> {
 		const scan = (): HarnessReport | undefined => this.reports.slice(fromIndex).find(predicate);
 		const existing = scan();
@@ -74,14 +76,40 @@ class InteractiveModeDriver {
 			};
 			const timeout = setTimeout(() => {
 				this.waiters.delete(inspect);
-				reject(new Error(`Timed out waiting for fixture; stderr=${this.stderr.slice(-4_000)}`));
+				const observed = this.reports.slice(fromIndex);
+				const observedTypes = [...new Set(observed.map((report) => report.type ?? "unknown"))];
+				const diagnostics = observed
+					.filter((report) => report.type === "diagnostic")
+					.slice(-4)
+					.map((report) => report.message);
+				reject(new Error(
+					`Timed out waiting for ${description}; observed=${observedTypes.join(",")}; diagnostics=${JSON.stringify(diagnostics)}; stderr=${this.stderr.slice(-4_000)}`,
+				));
 			}, timeoutMs);
 			this.waiters.add(inspect);
 		});
 	}
 
-	waitFor(predicate: (report: HarnessReport) => boolean, timeoutMs = 8_000): Promise<HarnessReport> {
-		return this.waitForNext(0, predicate, timeoutMs);
+	waitFor(
+		predicate: (report: HarnessReport) => boolean,
+		timeoutMs = 8_000,
+		description = "fixture report",
+	): Promise<HarnessReport> {
+		return this.waitForNext(0, predicate, timeoutMs, description);
+	}
+
+	async waitUntilShortcutReady(shortcut: string, fromIndex = 0): Promise<HarnessReport> {
+		return Promise.race([
+			this.waitForNext(
+				fromIndex,
+				(report) => report.type === "keybinding_state" && report.shortcutKeys?.includes(shortcut) === true,
+				8_000,
+				`${shortcut} shortcut readiness`,
+			),
+			this.process.exited.then((exitCode) => {
+				throw new Error(`Fixture exited before ${shortcut} became ready (exit=${exitCode}); stderr=${this.stderr.slice(-4_000)}`);
+			}),
+		]);
 	}
 	async waitUntilEngineBound(shortcut: string): Promise<HarnessReport> {
 		const bound = await Promise.race([
@@ -167,10 +195,20 @@ async function reloadThroughExtensionContext(
 	while (performance.now() < deadline) {
 		const starts = existsSync(sessionStartFile) ? readFileSync(sessionStartFile, "utf8") : "";
 		if (starts.includes(`reload:${expectedBinding}`)) {
+			await driver.waitForNext(
+				from,
+				(report) => report.type === "keybinding_state" && report.expandKeys?.[0] === expectedBinding,
+				8_000,
+				`committed ${expectedBinding} keybinding state`,
+			);
 			const stateIndex = driver.reports.length;
 			driver.send({ type: "state" });
-			await driver.waitForNext(stateIndex, (report) =>
-				report.type === "state" && report.expandKeys?.[0] === expectedBinding);
+			await driver.waitForNext(
+				stateIndex,
+				(report) => report.type === "state" && report.expandKeys?.[0] === expectedBinding,
+				8_000,
+				`host ${expectedBinding} keybinding state`,
+			);
 			return;
 		}
 		await Bun.sleep(20);
@@ -240,6 +278,45 @@ serialTest("real isolated InteractiveMode refreshes remote shortcuts and preserv
 		rmSync(temp, { recursive: true, force: true });
 	}
 }, 30_000);
+
+serialTest("startup shortcut dispatch waits for extension binding", async () => {
+	const temp = mkdtempSync(join(tmpdir(), "atomic-shortcut-gated-bind-"));
+	const agentDir = join(temp, "custom-agent");
+	const shortcutConfig = join(temp, "shortcut.txt");
+	const shortcutLog = join(temp, "shortcut.log");
+	const startupGate = join(temp, "session-start.gate");
+	const keybindingsPath = join(agentDir, "keybindings.json");
+	const extension = join(import.meta.dir, "fixtures", "blocking-tool-extension.ts");
+	mkdirSync(agentDir, { recursive: true });
+	writeFileSync(shortcutConfig, "ctrl+y");
+	writeFileSync(keybindingsPath, JSON.stringify({ "app.tools.expand": "ctrl+x" }));
+	const driver = new InteractiveModeDriver(fixtureArgs(extension), {
+		ATOMIC_CODING_AGENT_DIR: agentDir,
+		ATOMIC_KEYBINDINGS_SHORTCUT_CONFIG_FILE: shortcutConfig,
+		ATOMIC_KEYBINDINGS_SHORTCUT_LOG_FILE: shortcutLog,
+		ATOMIC_KEYBINDINGS_SESSION_START_GATE_FILE: startupGate,
+	});
+	try {
+		await driver.waitFor((report) => report.type === "terminal_ready");
+		await driver.waitFor((report) => report.type === "heartbeat" && typeof report.enginePid === "number");
+		while (!existsSync(startupGate)) await Bun.sleep(10);
+		assert.equal(
+			driver.reports.some((report) => report.type === "keybinding_state" && report.shortcutKeys?.includes("ctrl+y") === true),
+			false,
+			"remote shortcut must remain unavailable while extension binding is gated",
+		);
+		const readinessIndex = driver.reports.length;
+		writeFileSync(`${startupGate}.release`, "release");
+		await driver.waitUntilShortcutReady("ctrl+y", readinessIndex);
+		driver.send({ type: "input", data: "\x19" });
+		const dispatchDeadline = performance.now() + 3_000;
+		while (shortcutInvocations(shortcutLog).length === 0 && performance.now() < dispatchDeadline) await Bun.sleep(20);
+		assert.deepEqual(shortcutInvocations(shortcutLog), ["ctrl+y"]);
+	} finally {
+		await driver.stop();
+		rmSync(temp, { recursive: true, force: true });
+	}
+}, 12_000);
 
 serialTest("post-bind shortcut readiness survives delayed extension session startup", async () => {
 	const temp = mkdtempSync(join(tmpdir(), "atomic-shortcut-delayed-bind-"));
@@ -312,9 +389,19 @@ serialTest("real engine restart republishes bindings and replaces the remote sho
 		await driver.waitFor((report) => report.type === "heartbeat" && report.editorText === "restart with new shortcuts");
 		driver.send({ type: "input", data: "\r" });
 		while (!existsSync(toolPidFile)) await Bun.sleep(10);
+		const interruptReadyIndex = driver.reports.length;
+		await driver.waitForNext(
+			interruptReadyIndex,
+			(report) => report.type === "heartbeat" && report.streaming === true,
+			8_000,
+			"host streaming interrupt readiness",
+		);
 		driver.send({ type: "input", data: "\u001b" });
 		const terminated = await driver.waitFor((report) =>
-			report.type === "diagnostic" && report.message?.startsWith("Engine terminated;") === true, 8_000);
+			report.type === "diagnostic" && report.message?.startsWith("Engine terminated;") === true,
+			8_000,
+			"engine termination diagnostic",
+		);
 		assert.ok(terminated);
 		const probeIndex = driver.reports.length;
 		driver.send({ type: "shortcut", data: "\x19" });

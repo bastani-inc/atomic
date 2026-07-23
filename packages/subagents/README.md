@@ -114,12 +114,13 @@ The extension ships with builtin agents you can use immediately.
 | `researcher` | Web/docs research with sources: official docs, specs, benchmarks, recent changes, and a concise research brief. |
 | `planner` | A concrete implementation plan from existing context. It should read and plan, not edit code. |
 | `worker` | Implementation work, including approved oracle handoffs. It edits files, validates, and escalates unapproved decisions instead of guessing. |
+| `debugger` | Reproduction, root-cause diagnosis, and the smallest validated fix. It has the same write-capable tool set as `worker`, edits the code or content after diagnosis, and reruns the failing scenario. |
 | `reviewer` | Code review and small fixes. It checks the implementation against the task/plan, tests, edge cases, and simplicity. |
 | `context-builder` | A stronger setup pass before planning: gathers code context and writes handoff material such as `context.md` and `meta-prompt.md`. |
 | `oracle` | A second opinion before acting. It challenges assumptions, catches drift, and recommends the safest next move without editing. |
 | `delegate` | A lightweight general delegate when you want a child agent that behaves close to the parent session. |
 
-A simple rule of thumb: use `scout` before you understand the code, `researcher` before you trust external facts, `planner` before a bigger change, `worker` to implement, `reviewer` to check, and `oracle` when the decision itself feels risky.
+A simple rule of thumb: use `scout` before you understand the code, `researcher` before you trust external facts, `planner` before a bigger change, `worker` to implement, `debugger` to diagnose and fix a failure, `reviewer` to check, and `oracle` when the decision itself feels risky.
 
 ## Changing a builtin agent's model
 

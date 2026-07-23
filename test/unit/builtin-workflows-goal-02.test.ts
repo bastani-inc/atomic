@@ -173,7 +173,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
         );
     });
 
-    test("carries receipts and reviewer gaps into the next worker continuation", async () => {
+    test("carries receipts and reviewer gaps into the next orchestrator continuation", async () => {
         const mod = await import("../../packages/workflows/builtin/goal.js");
         const d = mod.default as unknown as WorkflowDefinition;
         const ctx = makeMockCtx(
@@ -185,7 +185,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
                         name.startsWith("evidence-reviewer-")
                     ) {
                         const firstRound =
-                            calls.task.includes("work-turn-2") === false;
+                            calls.task.includes("orchestrator-2") === false;
                         return firstRound
                             ? reviewJson("continue", {
                                   gaps: ["migration tests are missing"],
@@ -207,7 +207,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
 
         const result = await d.run(ctx);
 
-        assert.ok(ctx.calls.task.includes("work-turn-2"));
+        assert.ok(ctx.calls.task.includes("orchestrator-2"));
         assert.equal(result["status"], "complete");
         assert.equal(result["turns_completed"], 2);
         const ledger = JSON.parse(
@@ -223,7 +223,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
         assert.equal(ledger.blockers.length, 0);
     });
 
-    test("forks later worker turns from the prior worker session without forking reviewers", async () => {
+    test("forks later orchestrator turns from the prior orchestrator session without forking reviewers", async () => {
         const mod = await import("../../packages/workflows/builtin/goal.js");
         const d = mod.default as unknown as WorkflowDefinition;
         const ctx = makeMockCtx(
@@ -236,7 +236,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
                         name.startsWith("evidence-reviewer-")
                     ) {
                         const firstRound =
-                            calls.task.includes("work-turn-2") === false;
+                            calls.task.includes("orchestrator-2") === false;
                         return firstRound
                             ? reviewJson("continue", {
                                   gaps: ["migration tests are missing"],
@@ -260,27 +260,27 @@ describe("goal", () => {    type ReviewJsonFinding = {
 
         assert.equal(result["status"], "complete");
         assert.equal(
-            ctx.calls.taskOptions["work-turn-1"]?.[0]?.context,
+            ctx.calls.taskOptions["orchestrator-1"]?.[0]?.context,
             undefined,
         );
         assert.equal(
-            ctx.calls.taskOptions["work-turn-1"]?.[0]?.forkFromSessionFile,
+            ctx.calls.taskOptions["orchestrator-1"]?.[0]?.forkFromSessionFile,
             undefined,
         );
         assert.equal(
-            ctx.calls.taskOptions["work-turn-2"]?.[0]?.context,
+            ctx.calls.taskOptions["orchestrator-2"]?.[0]?.context,
             "fork",
         );
         assert.equal(
-            ctx.calls.taskOptions["work-turn-2"]?.[0]?.forkFromSessionFile,
-            "/tmp/goal-work-turn-1.jsonl",
+            ctx.calls.taskOptions["orchestrator-2"]?.[0]?.forkFromSessionFile,
+            "/tmp/goal-orchestrator-1.jsonl",
         );
         assert.match(
-            ctx.calls.prompts["work-turn-2"]?.[0] ?? "",
-            /Continue the same goal-runner worker thread/i,
+            ctx.calls.prompts["orchestrator-2"]?.[0] ?? "",
+            /Continue the same goal-runner orchestrator thread/i,
         );
         assert.doesNotMatch(
-            ctx.calls.prompts["work-turn-2"]?.[0] ?? "",
+            ctx.calls.prompts["orchestrator-2"]?.[0] ?? "",
             /project_initialization_preflight/,
         );
 
@@ -302,7 +302,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
         }
     });
 
-    test("passes only latest reviewer artifacts into later worker continuation", async () => {
+    test("passes only latest reviewer artifacts into later orchestrator continuation", async () => {
         const mod = await import("../../packages/workflows/builtin/goal.js");
         const d = mod.default as unknown as WorkflowDefinition;
         const ctx = makeMockCtx(
@@ -315,7 +315,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
                         name.startsWith("risk-reviewer-")
                     ) {
                         const reviewingFinalTurn =
-                            calls.task.includes("work-turn-3");
+                            calls.task.includes("orchestrator-3");
                         return reviewingFinalTurn
                             ? reviewJson("complete", {
                                   evidence: [`${name} final evidence`],
@@ -329,7 +329,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
 
         await d.run(ctx);
 
-        const thirdTurnPrompt = ctx.calls.prompts["work-turn-3"]?.[0] ?? "";
+        const thirdTurnPrompt = ctx.calls.prompts["orchestrator-3"]?.[0] ?? "";
         assert.doesNotMatch(thirdTurnPrompt, /completion-reviewer-1 gap/);
         assert.doesNotMatch(thirdTurnPrompt, /risk-reviewer-2 gap/);
         assert.match(
@@ -337,7 +337,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
             /Latest available review artifacts/,
         );
         const thirdTurnReads = readPaths(
-            ctx.calls.taskOptions["work-turn-3"]?.[0],
+            ctx.calls.taskOptions["orchestrator-3"]?.[0],
         );
         assert.equal(
             thirdTurnReads.filter((path) =>
@@ -483,7 +483,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
 
         assert.equal(result["status"], "blocked");
         assert.equal(result["turns_completed"], 3);
-        assert.equal(ctx.calls.task.includes("work-turn-4"), false);
+        assert.equal(ctx.calls.task.includes("orchestrator-4"), false);
         assert.match(
             String(result["remaining_work"]),
             /missing production credentials/,

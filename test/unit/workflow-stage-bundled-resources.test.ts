@@ -149,7 +149,8 @@ describe("workflow stage bundled resources", () => {
       process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
       delete process.env.PI_CODING_AGENT_DIR;
 
-      const builtinNames = new Set(discoverAgentsAll(cwd).builtin.map((agent) => agent.name));
+      const builtinAgents = discoverAgentsAll(cwd).builtin;
+      const builtinNames = new Set(builtinAgents.map((agent) => agent.name));
       for (const name of [
         "code-simplifier",
         "codebase-analyzer",
@@ -159,9 +160,18 @@ describe("workflow stage bundled resources", () => {
         "codebase-research-analyzer",
         "codebase-research-locator",
         "debugger",
+        "worker",
       ]) {
         assert.ok(builtinNames.has(name), `expected bundled subagent ${name}`);
       }
+      const debuggerAgent = builtinAgents.find((agent) => agent.name === "debugger");
+      const workerAgent = builtinAgents.find((agent) => agent.name === "worker");
+      assert.ok(debuggerAgent, "expected bundled debugger definition");
+      assert.ok(workerAgent, "expected bundled worker definition");
+      assert.deepEqual(debuggerAgent.tools, workerAgent.tools);
+      assert.ok(debuggerAgent.tools?.includes("edit"));
+      assert.ok(debuggerAgent.tools?.includes("write"));
+      assert.match(debuggerAgent.systemPrompt, /apply the necessary code or content fix/i);
     } finally {
       restoreEnv(snapshot);
     }

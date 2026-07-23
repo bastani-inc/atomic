@@ -2,9 +2,12 @@
 
 ## [Unreleased]
 
+## [0.9.11-alpha.5] - 2026-07-23
+
 ### Changed
 
 - Generalized model-visible subagent orchestration guidance across parent chats and workflow stages. Orchestrators now preserve each agent's declared model and fallback policy by default; agents without a policy use only catalog-available, role-appropriate Pareto recommendations and otherwise remain unpinned. Explicit overrides require an exact user request or documented task need, and every workflow or orchestrator invocation shares one invocation-specific, non-default Intercom group across its delegated children while retaining `contact_supervisor` escalation.
+- Made the builtin debugger write-capable with the same tool list as `worker`, updated its prompt to apply the smallest in-scope code or content fix after proving the root cause, and synchronized the bundled subagent skill with its GPT-5.6 xhigh model, `tdd`/`playwright-cli`/`tmux` skills, and Intercom coordination support.
 
 ## [0.9.11-alpha.3] - 2026-07-21
 

@@ -1,8 +1,8 @@
 /**
  * Builtin workflow: goal
  *
- * Goal Runner workflow: persist an objective ledger, run bounded LM work turns,
- * gate completion through independent reviewers, and let plain TypeScript
+ * Goal Runner workflow: persist an objective ledger, run bounded orchestrator
+ * turns, gate completion through independent reviewers, and let plain TypeScript
  * reduce the final state.
  */
 
@@ -13,13 +13,13 @@ import { DEFAULT_MAX_TURNS } from "./goal-types.js";
 
 export default workflow({
   name: "goal",
-  description: "Goal Runner workflow with bounded LM turns, immutable acceptance criteria, ledger artifacts, parallel reviewers, and reducer-gated completion. When launching follow-up goal runs from review findings, pass the ORIGINAL task text as acceptance_criteria so deltas cannot drift from the literal contract. If the task includes submitting a pull request (or MR/review), remove that final action from the objective text and set create_pr=true instead when preparing the workflow inputs.",
+  description: "Goal Runner workflow with bounded sub-agent orchestration turns, immutable acceptance criteria, ledger artifacts, parallel reviewers, and reducer-gated completion. When launching follow-up goal runs from review findings, pass the ORIGINAL task text as acceptance_criteria so deltas cannot drift from the literal contract. If the task includes submitting a pull request (or MR/review), remove that final action from the objective text and set create_pr=true instead when preparing the workflow inputs.",
   inputs: {
     objective: Type.String({ description: "The objective or delta for this Goal Runner workflow run. Do not include PR/MR submission instructions here; strip them from the task text and request them via create_pr=true instead." }),
     acceptance_criteria: Type.Optional(Type.String({ description: "Original immutable task contract this run must remain consistent with. Defaults to objective. Orchestrators launching follow-up runs from reviewer findings should pass the ORIGINAL task text here." })),
     max_turns: Type.Number({
       default: DEFAULT_MAX_TURNS,
-      description: "Maximum worker/review turns before Goal Runner stops as needs_human.",
+      description: "Maximum orchestrator/review turns before Goal Runner stops as needs_human.",
     }),
     base_branch: Type.String({
       default: "origin/main",
@@ -47,14 +47,14 @@ export default workflow({
     objective: Type.Optional(Type.String({ description: "Raw goal objective used by the run." })),
     acceptance_criteria: Type.Optional(Type.String({ description: "Immutable acceptance criteria used by the run." })),
     ledger_path: Type.Optional(Type.String({ description: "OS-temp path to goal-ledger.json with receipts, reviewer decisions, blockers, and lifecycle events." })),
-    turns_completed: Type.Optional(Type.Number({ description: "Worker/review turns completed." })),
-    iterations_completed: Type.Optional(Type.Number({ description: "Worker/review turns completed, retained for status summaries." })),
+    turns_completed: Type.Optional(Type.Number({ description: "Orchestrator/review turns completed." })),
+    iterations_completed: Type.Optional(Type.Number({ description: "Orchestrator/review turns completed, retained for status summaries." })),
     receipts: Type.Optional(Type.Array(Type.Object({
       turn: Type.Number(),
       stage: Type.String(),
       artifact_path: Type.String(),
       summary: Type.String(),
-    }), { description: "Ledger receipt summaries and worker artifact paths." })),
+    }), { description: "Ledger receipt summaries and orchestrator artifact paths." })),
     remaining_work: Type.Optional(Type.String({ description: "Remaining gaps or blockers when incomplete, or none." })),
     review_report: Type.Optional(Type.String({ description: "Compact report pointing to the latest reviewer decision artifacts used by the reducer." })),
     review_report_path: Type.Optional(Type.String({ description: "JSON artifact path for the latest reviewer decision round." })),
