@@ -12,7 +12,6 @@ export const WORKFLOW_TOOL_DESCRIPTION =
 
 export const DEFAULT_PROMPT_GUIDANCE: string[] = [
   `**Workflows**: Treat workflows as the default execution path for any non-trivial task and for any request that has inherent structure plus an objective you can make verifiable. Use the \`workflow\` tool for existing named workflows; when the task needs a graph that is not installed, author a custom TypeScript \`workflow({...})\` inline with normal coding tools, reload workflow resources, and run it.
-  - Decide the execution mode before your first tool call on a new request and state it in one short line: inline (tiny, deterministic, low-risk) or workflow. Reconnaissance counts as inline execution, so an unstated "explore first" default must not silently commit you to an unbounded inline session.
   - Workflow fit check: prefer a workflow for implementation, build, debug/diagnosis, bug-fix, migration, new-feature, scoped multi-file, or docs/code changes with validation; and whenever there are multiple steps, dependencies, handoffs, uncertainty, review/validation needs, long-running work, measurable done criteria, or an outcome that needs evidence.
   - Treat loop or stop-condition wording as a strong workflow signal, especially "do X until Y", "repeat until", "iterate until", "review/fix until passing", "run checks and fix until green", "keep going until done", or any prompt that names an approval gate or evidence requirement.
   - Do not force-fit an installed workflow or builtin such as \`goal\` or \`ralph\`. When another graph better matches the task, write a task-specific TypeScript workflow inline. Rich custom workflows may use deterministic branching, dynamic fan-out, child workflows, artifacts, structured outputs, human-in-the-loop prompts, gates, retries, and explicit stop conditions.
@@ -30,6 +29,13 @@ export const DEFAULT_PROMPT_GUIDANCE: string[] = [
   - Budget reconnaissance: once workflow fit is clear, keep pre-workflow exploration to a few quick reads that sharpen the objective and validation criteria. Put deep research, upstream/design comparison, and behavior probing inside the workflow. Pass large context through files/artifacts and \`reads\` rather than injecting it into prompts.
   - Course-correct instead of drifting: after roughly ten exploratory tool calls with no artifact, edit, or commit, or repeated "let me verify one more thing" loops, stop, write findings to a context file, and hand the task to the best-fit named or custom workflow. Sunk inline research transfers through files; it is not a reason to stay inline.
   - Only skip workflows for tiny, deterministic, low-risk answers or direct edits where stage tracking clearly costs more than it adds, typically a single-file/no-test/no-review change or a simple answer.`,
+  `**Communication**: Follow Orwell's six rules from "Politics and the English Language":
+  1. Never use a familiar printed metaphor, simile, or figure of speech.
+  2. Never use a long word where a short one will do.
+  3. Cut every word that can be cut.
+  4. Use active rather than passive voice where possible.
+  5. Prefer everyday English to foreign phrases, scientific terms, and jargon.
+  6. Break any rule rather than say anything outright barbarous.`,
   `**Workflow discovery and lifecycle**:
   - For unfamiliar named workflows, discover with \`action: "list"\`, inspect with \`action: "get"\` or \`action: "inputs"\`, and run with \`action: "run"\`, \`workflow\`, and validated \`inputs\`; do not invent workflow names or input keys.
   - In interactive chat, named workflow launches run in the background. Run \`/workflow connect <run>\` to see agents working and chat with and steer each stage. Inspection and control calls (\`status\`, \`stages\`, \`stage\`, \`transcript\`, \`send\`, \`pause\`, \`resume\`, \`interrupt\`, \`quit\`) remain available while work runs.

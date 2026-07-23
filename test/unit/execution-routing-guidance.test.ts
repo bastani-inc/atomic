@@ -36,16 +36,34 @@ describe("workflow-first execution routing", () => {
     }
   });
 
-  test("requires an early routing decision and prevents inline drift", () => {
+  test("keeps early routing guidance without forcing a mode announcement", () => {
     for (const phrase of [
-      "Decide the execution mode before your first tool call",
-      "Reconnaissance counts as inline execution",
       "Budget reconnaissance",
       "roughly ten exploratory tool calls",
       "Sunk inline research transfers through files",
     ]) {
       expect(modelVisibleRouting).toContain(phrase);
     }
+
+    for (const forcedAnnouncement of [
+      "Decide the execution mode before your first tool call",
+      "state it in one short line: inline",
+    ]) {
+      expect(modelVisibleRouting).not.toContain(forcedAnnouncement);
+    }
+  });
+
+  test("makes Orwell's six communication rules model-visible in order", () => {
+    const modelVisibleWorkflowGuidance = workflowGuidance.join("\n");
+    const expectedCommunicationGuidance = `**Communication**: Follow Orwell's six rules from "Politics and the English Language":
+  1. Never use a familiar printed metaphor, simile, or figure of speech.
+  2. Never use a long word where a short one will do.
+  3. Cut every word that can be cut.
+  4. Use active rather than passive voice where possible.
+  5. Prefer everyday English to foreign phrases, scientific terms, and jargon.
+  6. Break any rule rather than say anything outright barbarous.`;
+
+    expect(modelVisibleWorkflowGuidance).toContain(expectedCommunicationGuidance);
   });
 
   test("treats loop and stop-condition phrasing as a strong workflow signal", () => {
