@@ -169,6 +169,7 @@ export function workflow<
     name,
     normalizedName,
     description: spec.description,
+    ...(spec.autoAttach === true ? { autoAttach: true } : {}),
     inputs: frozenInputs,
     outputs: frozenOutputs,
     ...(inputBindings !== undefined ? { inputBindings } : {}),

@@ -115,6 +115,24 @@ describe("workflow-first execution routing", () => {
     }
   });
 
+  test("requires consulting the model-selection guide and configured catalog when pinning stage models", () => {
+    const authoringGuidance = workflowGuidance.join("\n");
+    for (const phrase of [
+      "packages/coding-agent/docs/models/model-selection.md",
+      'workflow({ action: "models" })',
+      "returned `fullId` values as model strings",
+      "availableThinkingLevels",
+      "treat an absent or empty `availableThinkingLevels` as no suffix support",
+      "try another guide-recommended model that is present in the catalog",
+      "leave the stage unpinned rather than inventing a substitute",
+      "state that no configured models were returned, and do not fabricate model IDs",
+      "Do not inspect or infer credentials, environment variables, auth files, token validity, entitlements",
+      "`isCurrent` marks the active selection, not a quality recommendation",
+    ]) {
+      expect(authoringGuidance).toContain(phrase);
+    }
+  });
+
   test("teaches documented starter patterns and concrete dynamic examples", () => {
     for (const phrase of [
       "Classify-and-act",

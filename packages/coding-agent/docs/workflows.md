@@ -110,7 +110,7 @@ List and run it like any other workflow:
 /workflow <name> key=value ...
 ```
 
-Named workflow runs execute in the background. After launch, expect a run id and monitor it with `/workflow status <run-id>`, F2, or `/workflow connect <run-id>`.
+Named workflow runs execute in the background. By default, after launch expect a run id and monitor it with `/workflow status <run-id>`, F2, or `/workflow connect <run-id>`. A definition with `autoAttach: true` instead opens the graph overlay as soon as an interactive top-level named launch through `/workflow <name>` or the registered `workflow` tool is accepted. This option does not affect headless launches or nested `ctx.workflow(...)` calls, and existing input-form launch behavior is unchanged.
 
 While a workflow is running, the visible below-editor `BACKGROUND` panel advances its elapsed label every second from the moment the run starts; it does not require opening or switching to the orchestrator. Updates repaint the existing mounted panel in place, paused timers stay frozen, and terminal cards retain their short recent-run expiry.
 
@@ -734,6 +734,7 @@ Authoring basics:
 - `workflow({ ... })` returns the workflow definition directly for discovery; there is no builder terminal step.
 - Workflow names normalize for lookup: trim, lowercase, convert whitespace/underscore to hyphen, remove other punctuation, and collapse hyphens.
 - `description` sets the listing text.
+- `autoAttach: true` opens the graph overlay when an interactive top-level named launch through `/workflow <name>` or the registered `workflow` tool is accepted. Only exact `true` is retained on the compiled definition; omission and `false` do not opt a definition into auto-attachment. Existing input-form launch behavior is unchanged.
 - `inputs` declares typed user inputs.
 - `worktreeFromInputs` optionally maps input names to workflow-wide reusable Git worktree defaults.
 - `outputs` declares typed outputs that parent workflows receive from `ctx.workflow(childWorkflow, ...)`.
@@ -1232,6 +1233,14 @@ readonly description: string;
 
 Discovery and inspection surfaces show this required listing text. The compiled definition preserves it unchanged.
 
+### `autoAttach`
+
+```typescript
+readonly autoAttach?: boolean;
+```
+
+Exact `true` opts interactive top-level named launches through `/workflow <name>` and the registered `workflow` tool into opening the graph overlay immediately. Omission and `false` do not opt in. This option does not affect headless launches, nested `ctx.workflow(...)` calls, or the existing input-form launch path. Compiled definitions retain this field only as literal `true`.
+
 ### `inputs`
 
 ```typescript
@@ -1307,6 +1316,7 @@ interface WorkflowDefinition<
   readonly name: string;
   readonly normalizedName: string;
   readonly description: string;
+  readonly autoAttach?: true;
   readonly inputs: WorkflowInputSchemaMap;
   readonly outputs?: WorkflowOutputSchemaMap;
   readonly inputBindings?: { readonly worktree?: WorkflowWorktreeInputBinding };

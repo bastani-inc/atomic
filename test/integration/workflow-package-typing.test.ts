@@ -104,6 +104,7 @@ declare const extensionUiForTypes: ExtensionUIContext;
 const authoredWorkflow = workflow({
   name: "Standalone Typing Fixture",
   description: "Verifies package export types without declare module shims",
+  autoAttach: true,
   inputs: {
     message: Type.String(),
     mode: Type.Literal("fast", { default: "fast" }),
@@ -259,6 +260,7 @@ const authoredWorkflow = workflow({
     return { summary: chained.at(-1)?.text ?? "", maybe: nickname };
   },
 }); const summarySchema = authoredWorkflow.outputs.summary; void summarySchema;
+const autoAttachTypeCheck: true | undefined = authoredWorkflow.autoAttach; void autoAttachTypeCheck;
 const optionalOutputWorkflow = workflow({
   name: "Optional Output Fixture",
   description: "",

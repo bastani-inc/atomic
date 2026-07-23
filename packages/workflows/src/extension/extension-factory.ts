@@ -20,6 +20,7 @@ import type { PostMortemHandleResolution } from "../tui/workflow-attach-pane-typ
 import { registerWorkflowTool } from "./workflow-tool-registration.js";
 import { registerWorkflowSlashCommand } from "./workflow-command-registration.js";
 import { installInputInterceptor, type WorkflowCommandHandler } from "./workflow-command-utils.js";
+import { workflowPolicyFromContext } from "./workflow-policy.js";
 import { overlaySurfaceFromContext } from "./workflow-targets.js";
 
 function registerWorkflowMessageRenderers(pi: ExtensionAPI): void {
@@ -91,8 +92,22 @@ function factory(pi: ExtensionAPI): void {
     runtimeState.ensureWorkflowResourcesLoaded,
     { resolvePostMortemDeps: (runId) => postMortemDepsForRun(runId, postMortemResolverDeps) },
   );
+  const executeWorkflowToolWithAutoAttach: typeof executeWorkflowTool = async (args, ctx) => {
+    const result = await executeWorkflowTool(args, ctx);
+    if (
+      workflowPolicyFromContext(ctx).mode === "interactive" &&
+      typeof args.workflow === "string" &&
+      result.action === "run" &&
+      result.status === "running" &&
+      result.runId.length > 0 &&
+      runtimeState.runtimeProxy.registry.get(args.workflow)?.autoAttach === true
+    ) {
+      overlay.open(result.runId, overlaySurfaceFromContext(ctx));
+    }
+    return result;
+  };
 
-  registerWorkflowTool(pi, executeWorkflowTool, runtimeState.runWithLifecycleSuppressedForPolicy);
+  registerWorkflowTool(pi, executeWorkflowToolWithAutoAttach, runtimeState.runWithLifecycleSuppressedForPolicy);
   registerWorkflowSlashCommand(pi, workflowCommands, {
     runtimeProxy: runtimeState.runtimeProxy,
     runtimeForContext: runtimeState.runtimeForContext,

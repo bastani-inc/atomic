@@ -205,6 +205,34 @@ describe("workflow authoring door", () => {
     });
   });
 
+  test("retains only autoAttach true on frozen definitions", () => {
+    const enabled = workflow({
+      name: "auto-attach-enabled",
+      autoAttach: true,
+      description: "",
+      outputs: {},
+      run: () => ({}),
+    });
+    const disabled = workflow({
+      name: "auto-attach-disabled",
+      autoAttach: false,
+      description: "",
+      outputs: {},
+      run: () => ({}),
+    });
+    const omitted = workflow({
+      name: "auto-attach-omitted",
+      description: "",
+      outputs: {},
+      run: () => ({}),
+    });
+
+    assert.equal(Object.isFrozen(enabled), true);
+    assert.equal(enabled.autoAttach, true);
+    assert.equal(disabled.autoAttach, undefined);
+    assert.equal(omitted.autoAttach, undefined);
+  });
+
   test("multiple inputs accumulate with inferred serializable input types", () => {
     const defaultedNumber = Type.Number({ default: 4 });
     const def = workflow({

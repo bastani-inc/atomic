@@ -173,6 +173,7 @@ export interface WorkflowDefinition<
   readonly name: string;
   readonly normalizedName: string;
   readonly description: string;
+  readonly autoAttach?: true;
   readonly inputs: WorkflowInputSchemaMap;
   readonly outputs?: WorkflowOutputSchemaMap;
   readonly inputBindings?: WorkflowInputBindings;

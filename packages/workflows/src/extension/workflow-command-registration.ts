@@ -247,7 +247,10 @@ async function workflowSlashHandler(
     return;
   }
   emitChatSurface(pi, { kind: "dispatch", workflowName, runId: runResult.runId, inputs: mergedInputs });
-  if (pickerWasShown && typeof ctx.ui?.custom === "function") {
+  if (
+    (pickerWasShown && typeof ctx.ui?.custom === "function") ||
+    deps.runtimeProxy.registry.get(workflowName)?.autoAttach === true
+  ) {
     deps.overlay.open(runResult.runId, overlaySurfaceFromContext(ctx));
   }
 }
