@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added the opt-in `autoAttach` workflow-definition field, which opens the graph overlay when an interactive top-level named workflow is launched through `/workflow <name>` or the registered `workflow` tool without changing headless launches, nested workflow composition, or the existing input-form launch path.
+
 ### Changed
 
 - Workflow prompt guidance now instructs agents to give each workflow invocation its own intercom group by default — unless the user requests otherwise — by minting one invocation-scoped literal group name inside the workflow's `run` function (e.g. `"myflow-" + randomUUID()`) and passing it via the `group` option on each stage, task, or parallel step that should share it; `group: true`/`"auto"` mints one shared UUID group per `ctx.parallel(...)` set but a fresh UUID per non-parallel stage. This keeps stage and subagent intercom chatter isolated from the parent chat and other concurrent runs, since ungrouped sessions all share the `"default"` group; subagent inheritance, capability gating, and cross-group `contact_supervisor` escalation are unchanged.
