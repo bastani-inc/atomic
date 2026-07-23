@@ -159,7 +159,7 @@ Builtin agents load at the lowest priority. Project agents override user agents,
 | `codebase-research-analyzer` | Extract decisions and constraints from prior docs                 | `openai/gpt-5.5`      | low      | read, search, find, ls, bash                                                             | Read-only. Filters aggressively for what still applies today.                                              |
 | `codebase-online-researcher` | Web research with authoritative sources                           | `openai/gpt-5.5`      | low      | read, search, find, ls, bash, write, web_search, fetch_content, get_search_content       | Has the `browser` skill. Persists keepers to `research/web/`.                                       |
 | `code-simplifier`            | Clean up recently changed code without changing behavior          | `openai/gpt-5.5`      | low      | read, edit, write, search, find, ls, bash                                                | **Writer.** Scopes to recently modified code by default; preserves all observable behavior.                |
-| `debugger`                   | Reproduce, diagnose, and fix failing behavior                     | `openai/gpt-5.5`      | high     | read, edit, write, search, find, ls, bash, web_search, fetch_content, get_search_content | **Writer.** Has the `tdd` and `browser` skills. Inspect-only mode requires an explicit instruction. |
+| `debugger`                   | Reproduce, diagnose, and fix failing behavior                     | `openai-codex/gpt-5.6-sol:xhigh` | xhigh | read, edit, write, search, find, ls, bash, web_search, fetch_content, get_search_content, intercom, contact_supervisor, todo | **Writer.** Has the `tdd`, `playwright-cli`, and `tmux` skills. Can coordinate with the parent; inspect-only mode requires an explicit instruction. |
 
 Each builtin declares an explicit `model` and `fallbackModels` chain (typically `github-copilot/<same>`, then `anthropic/claude-opus-4-8`, then `github-copilot/claude-opus-4.7`). The current user-selected model is automatically appended as the last fallback and de-duplicated. Override per run with inline config:
 
@@ -169,7 +169,7 @@ Each builtin declares an explicit `model` and `fallbackModels` chain (typically 
 
 For persistent tweaks, edit `subagents.agentOverrides` in user or project settings. User overrides apply everywhere. Project overrides apply only in that repo and win over user overrides.
 
-None of the builtin specialists carry the `intercom` tool. They cannot call `contact_supervisor` to coordinate back to the parent mid-run — they finish their pass and return. Custom agents that declare `intercom` (or that the runtime bridge injects `contact_supervisor` into) can still coordinate; see [Subagent + Intercom Coordination](#subagent--intercom-coordination).
+The builtin `debugger` and `worker` agents declare both `intercom` and `contact_supervisor`, so they can send progress or ask the parent for a decision when the bridge is active. Other builtin specialists finish their pass and return without live coordination. Custom agents can coordinate when they declare `intercom` or when the runtime bridge injects `contact_supervisor`; see [Subagent + Intercom Coordination](#subagent--intercom-coordination).
 
 ## Prompting specialist subagents
 
@@ -397,7 +397,7 @@ subagent({
 })
 ```
 
-If the run already has an active intercom bridge target, needs-attention notifications can also prepare a compact intercom ping for the orchestrator. When a child route is available, the ping tells the orchestrator which agent needs attention and includes the exact `intercom({ action: "send", to: "..." })` target for a nudge. Do not invent a target or ask the child to self-report when no bridge exists. The builtin specialists do not carry `intercom`, so they will not produce coordination pings; the parent must check status explicitly.
+If the run already has an active intercom bridge target, needs-attention notifications can also prepare a compact intercom ping for the orchestrator. When a child route is available, the ping tells the orchestrator which agent needs attention and includes the exact `intercom({ action: "send", to: "..." })` target for a nudge. Do not invent a target or ask the child to self-report when no bridge exists. Coordination depends on the resolved agent's tools and an active bridge route: the builtin `debugger` and `worker` declare `intercom` and `contact_supervisor`, while the other builtin specialists rely on the parent checking status.
 
 ## Non-Interactive Execution
 
@@ -425,7 +425,7 @@ subagent({
 
 Atomic subagents work without intercom. When Atomic's bundled intercom companion or upstream `pi-intercom` is installed and enabled, the bridge can give eligible child agents a private coordination tool back to the parent session without connecting either session automatically. If a child may need live coordination, invoke `intercom({ action: "status" })` in the parent before launching it; the child connects when it first invokes `contact_supervisor` or `intercom`.
 
-The builtin specialists in this skill do not declare the `intercom` tool, so they finish their pass and return without coordinating. They cannot pause to ask the parent for a decision mid-run; if you need that, write a custom agent that lists `intercom` (or that the runtime bridge can inject `contact_supervisor` into).
+The builtin `debugger` and `worker` agents declare `intercom` and `contact_supervisor`. With an active bridge route, they can send progress or pause to ask the parent for a decision. Other builtin specialists finish their pass and return without live coordination; use a custom agent with bridge tools when another role needs that ability.
 
 Custom agents that do have the bridge tool can ask the parent for a decision:
 
@@ -551,7 +551,7 @@ If a prompt-template extension is installed, additional user prompt templates ca
 - **Forked runs inherit parent history.** They are branched threads, not fresh filtered contexts. Use fresh context for adversarial review unless the user explicitly asks for forked context.
 - **Default subagent nesting depth is 5.** Deeper recursive delegation is blocked, and configured values above 5 are clamped to the hard ceiling.
 - **Attention signals are not lifecycle state.** `needs_attention` means no activity has been observed past the configured threshold. `paused` means the child turn was intentionally interrupted or is awaiting direction; it is not the same as `failed`.
-- **Builtin specialists do not have `intercom`.** They cannot escalate decisions mid-run. Decide what the child should do up front, or use a custom agent with bridge tools when mid-run coordination is required.
+- **Builtin coordination varies by agent.** `debugger` and `worker` declare `intercom` and `contact_supervisor`; the other builtin specialists do not. For agents without bridge tools, decide the task up front or use a custom agent when mid-run coordination is required.
 - **Intercom asks are blocking.** A session can only maintain one pending outbound ask wait state at a time.
 - **Keep conversational authority clear.** Advisory specialists should not silently become second decision-makers.
 
@@ -586,7 +586,7 @@ Give subagents specific tasks rather than vague mandates.
 
 ### Escalate decisions upward
 
-The builtin specialists return on completion rather than pausing for parent decisions, so resolve scope/product/architecture questions before launching a writer. If the parent realizes mid-run that the scope is wrong, soft-interrupt rather than waiting for the writer to finish.
+Most builtin specialists return on completion rather than pausing for parent decisions. The builtin `debugger` and `worker` can use `contact_supervisor` when an active bridge route exists, but resolve known scope, product, and architecture questions before launching any writer. If the parent realizes mid-run that the scope is wrong, steer a reachable writer or soft-interrupt it.
 
 ### Intervene only on clear control signals
 
