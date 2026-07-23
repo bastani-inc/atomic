@@ -289,7 +289,7 @@ export class ExtensionRunner {
 
 	setFlagValue(name: string, value: boolean | string): void {
 		this.runtime.flagValues.set(name, value);
-		this.runtime.explicitFlagNames.add(name);
+		(this.runtime.explicitFlagNames ??= new Set()).add(name);
 	}
 
 	getFlagValues(): Map<string, boolean | string> {
@@ -297,7 +297,8 @@ export class ExtensionRunner {
 	}
 
 	getExplicitFlagValues(): Map<string, boolean | string> {
-		return new Map([...this.runtime.flagValues].filter(([name]) => this.runtime.explicitFlagNames.has(name)));
+		const explicitFlagNames = this.runtime.explicitFlagNames ?? new Set<string>();
+		return new Map([...this.runtime.flagValues].filter(([name]) => explicitFlagNames.has(name)));
 	}
 
 	getShortcuts(resolvedKeybindings: KeybindingsConfig): Map<KeyId, ExtensionShortcut> {

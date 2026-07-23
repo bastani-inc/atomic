@@ -9,15 +9,57 @@ function formatList(values: string[]): string {
   return `${values.slice(0, -1).join(", ")}, and ${values.at(-1)}`;
 }
 
+function getShortestUniqueSourceLabels(sources: string[], reservedLabels: ReadonlySet<string>): Map<string, string> {
+  const partsBySource = new Map(sources.map((source) => [
+    source,
+    source.replace(/\\/g, "/").split("/").filter(Boolean),
+  ]));
+  const depthBySource = new Map(sources.map((source) => [source, 1]));
+  while (true) {
+    const groups = new Map<string, string[]>();
+    for (const source of sources) {
+      const parts = partsBySource.get(source) ?? [source];
+      const depth = depthBySource.get(source) ?? 1;
+      const label = parts.slice(-depth).join("/") || source;
+      groups.set(label, [...(groups.get(label) ?? []), source]);
+    }
+    const duplicates = [...groups].filter(([label, group]) => group.length > 1 || reservedLabels.has(label));
+    if (duplicates.length === 0) {
+      return new Map(sources.map((source) => {
+        const parts = partsBySource.get(source) ?? [source];
+        return [source, parts.slice(-(depthBySource.get(source) ?? 1)).join("/") || source];
+      }));
+    }
+    let expanded = false;
+    for (const [, group] of duplicates) {
+      for (const source of group) {
+        const maxDepth = partsBySource.get(source)?.length ?? 1;
+        const depth = depthBySource.get(source) ?? 1;
+        if (depth < maxDepth) {
+          depthBySource.set(source, depth + 1);
+          expanded = true;
+        }
+      }
+    }
+    if (!expanded) return new Map(sources.map((source) => [source, source]));
+  }
+}
+
 function getOverlapLabels(mode: InteractiveModeBase, overlaps: readonly ResourceOverlap[]): string[] {
   const labels = new Set<string>();
+  const localPackageSources = new Set<string>();
   for (const overlap of overlaps) {
     const sourceInfo = overlap.inherited;
-    const label = mode.isPackageSource(sourceInfo)
+    if (sourceInfo.origin === "package" && !mode.isPackageSource(sourceInfo)) {
+      localPackageSources.add(sourceInfo.source);
+      continue;
+    }
+    const label = sourceInfo.origin === "package"
       ? mode.getCompactPackageSourceLabel(sourceInfo)
       : mode.getCompactPathLabel(sourceInfo.path, sourceInfo);
     if (label) labels.add(label);
   }
+  for (const label of getShortestUniqueSourceLabels([...localPackageSources], labels).values()) labels.add(label);
   return [...labels];
 }
 const displayedOverlapFingerprints = new WeakMap<InteractiveModeBase, string>();

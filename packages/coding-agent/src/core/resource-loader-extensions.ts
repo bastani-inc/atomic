@@ -121,6 +121,7 @@ export async function loadExtensionFactories(
 				inheritanceSnapshotProvider,
 			);
 			extension.hidden = descriptor?.hidden;
+			if (descriptor?.bundled) extension.sourceInfo.configurationOrigin = "bundled";
 			extensions.push(extension);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "failed to load extension";
@@ -170,6 +171,7 @@ function removeInheritedRegistrations<K extends string, V>(
 }
 
 function installRegistrationPolicy(extensionsResult: LoadExtensionsResult): void {
+	const flagOwners = extensionsResult.runtime.flagOwners ??= new Map();
 	extensionsResult.runtime.canRegisterResource = (extension, resourceType, name) => {
 		if (resourceType === "prompt") return true;
 		if (extension.sourceInfo.configurationOrigin === "inherited-pi") {
@@ -182,9 +184,9 @@ function installRegistrationPolicy(extensionsResult: LoadExtensionsResult): void
 		if (extension.sourceInfo.configurationOrigin !== "bundled") return true;
 		for (const inherited of extensionsResult.extensions) {
 			if (inherited.sourceInfo.configurationOrigin !== "inherited-pi" || !hasRegistration(inherited, resourceType, name)) continue;
-			if (resourceType === "flag" && extensionsResult.runtime.flagOwners.get(name) === inherited.path) {
-				extensionsResult.runtime.flagOwners.delete(name);
-				if (!extensionsResult.runtime.explicitFlagNames.has(name)) {
+			if (resourceType === "flag" && flagOwners.get(name) === inherited.path) {
+				flagOwners.delete(name);
+				if (!extensionsResult.runtime.explicitFlagNames?.has(name)) {
 					extensionsResult.runtime.flagValues.delete(name);
 				}
 			}
@@ -227,11 +229,12 @@ function recordOverlap(
 
 function rebuildFlagDefaults(extensionsResult: LoadExtensionsResult): void {
 	extensionsResult.runtime.flagValues.clear();
-	extensionsResult.runtime.flagOwners.clear();
+	const flagOwners = extensionsResult.runtime.flagOwners ??= new Map();
+	flagOwners.clear();
 	for (const extension of extensionsResult.extensions) {
 		for (const [name, flag] of extension.flags) {
-			if (extensionsResult.runtime.flagOwners.has(name)) continue;
-			extensionsResult.runtime.flagOwners.set(name, extension.path);
+			if (flagOwners.has(name)) continue;
+			flagOwners.set(name, extension.path);
 			if (flag.default !== undefined) extensionsResult.runtime.flagValues.set(name, flag.default);
 		}
 	}

@@ -58,6 +58,10 @@ InteractiveModeBase.prototype.getCompactPackageSourceLabel = function(this: Inte
       return gitSource.path || source;
     }
 
+    if (sourceInfo?.origin === "package") {
+      return path.basename(source) || source;
+    }
+
     return source;
   };
 

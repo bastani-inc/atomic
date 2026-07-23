@@ -47,17 +47,18 @@ export function createExtensionAPI(
 
     registerTool(tool: ToolDefinition): void {
       runtime.assertActive();
-      if (!runtime.canRegisterResource(extension, "tool", tool.name)) return;
+      if (runtime.canRegisterResource?.(extension, "tool", tool.name) === false) return;
       extension.tools.set(tool.name, {
         definition: tool,
         sourceInfo: extension.sourceInfo,
       });
-      runtime.refreshToolsAfterRegistration();
+      if (runtime.refreshToolsAfterRegistration) runtime.refreshToolsAfterRegistration();
+      else runtime.refreshTools();
     },
 
     registerCommand(name: string, options: Omit<RegisteredCommand, "name" | "sourceInfo">): void {
       runtime.assertActive();
-      if (!runtime.canRegisterResource(extension, "command", name)) return;
+      if (runtime.canRegisterResource?.(extension, "command", name) === false) return;
       extension.commands.set(name, {
         name,
         sourceInfo: extension.sourceInfo,
@@ -73,7 +74,7 @@ export function createExtensionAPI(
       },
     ): void {
       runtime.assertActive();
-      if (!runtime.canRegisterResource(extension, "shortcut", shortcut)) return;
+      if (runtime.canRegisterResource?.(extension, "shortcut", shortcut) === false) return;
       extension.shortcuts.set(shortcut, {
         shortcut,
         extensionPath: extension.path,
@@ -90,14 +91,15 @@ export function createExtensionAPI(
       },
     ): void {
       runtime.assertActive();
-      if (!runtime.canRegisterResource(extension, "flag", name)) return;
+      if (runtime.canRegisterResource?.(extension, "flag", name) === false) return;
       extension.flags.set(name, {
         name,
         extensionPath: extension.path,
         ...options,
       });
-      if (!runtime.flagOwners.has(name)) runtime.flagOwners.set(name, extension.path);
-      const ownsFlag = runtime.flagOwners.get(name) === extension.path;
+      const flagOwners = runtime.flagOwners ??= new Map();
+      if (!flagOwners.has(name)) flagOwners.set(name, extension.path);
+      const ownsFlag = flagOwners.get(name) === extension.path;
       if (ownsFlag && options.default !== undefined && !runtime.flagValues.has(name)) {
         runtime.flagValues.set(name, options.default);
       }

@@ -182,7 +182,7 @@ export function _buildRuntime(this: AgentSession, options: {
 	if (options.flagValues) {
 		for (const [name, value] of options.flagValues) {
 			extensionsResult.runtime.flagValues.set(name, value);
-			extensionsResult.runtime.explicitFlagNames.add(name);
+			(extensionsResult.runtime.explicitFlagNames ??= new Set()).add(name);
 		}
 	}
 

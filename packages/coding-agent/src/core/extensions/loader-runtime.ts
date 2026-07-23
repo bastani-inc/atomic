@@ -1,6 +1,7 @@
 import type { ExtensionRuntime } from "./types.ts";
 
 export async function runResourceRegistrationBatch<T>(runtime: ExtensionRuntime, run: () => Promise<T>): Promise<T> {
+  if (!runtime.beginResourceRegistrationBatch || !runtime.endResourceRegistrationBatch) return run();
   runtime.beginResourceRegistrationBatch();
   try {
     return await run();

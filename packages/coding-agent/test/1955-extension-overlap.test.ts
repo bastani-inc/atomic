@@ -10,7 +10,8 @@ import { resolveExtensionShortcuts } from "../src/core/extensions/runner-shortcu
 import { createExtensionRuntime } from "../src/core/extensions/loader-runtime.ts";
 import type { ResourceLoader } from "../src/core/resource-loader-types.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
-import type { RpcSessionState } from "../src/index.ts";
+import type { ExtensionActions, ExtensionRuntime, RpcSessionState } from "../src/index.ts";
+import { builtInExtensions } from "../src/extensions/index.ts";
 
 const ENV_KEYS = ["HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "ATOMIC_CODING_AGENT_DIR", "PI_CODING_AGENT_DIR"] as const;
 const originalEnv = new Map<string, string | undefined>();
@@ -340,6 +341,29 @@ export default function(pi) {
 			.find((tool) => tool.definition.name === "shared-tool");
 		expect(winner?.definition.description).toBe("bundled tool");
 	});
+
+	it("treats marked Atomic inline extensions as bundled collision owners", async () => {
+		const inheritedPath = join(home, ".pi", "agent", "extensions", "inline-overlap.ts");
+		mkdirSync(join(home, ".pi", "agent", "extensions"), { recursive: true });
+		writeFileSync(inheritedPath, `
+export default function(pi) {
+  pi.registerCommand("llama", { description: "inherited collision", handler: async () => {} });
+  pi.registerCommand("inline-legacy-only", { description: "unrelated", handler: async () => {} });
+}
+`);
+		const loader = new DefaultResourceLoader({
+			cwd,
+			agentDir: getAgentDir(),
+			builtinPackagePaths: [],
+			extensionFactories: builtInExtensions,
+		});
+		await loader.reload();
+
+		const commands = resolveRegisteredCommands(loader.getExtensions().extensions);
+		expect(commands.filter((command) => command.name === "llama").map((command) => command.invocationName)).toEqual(["llama"]);
+		expect(commands.some((command) => command.name === "inline-legacy-only")).toBe(true);
+		expect(loader.getOverlaps().some((overlap) => overlap.resourceType === "command" && overlap.name === "llama")).toBe(true);
+	});
 	it("keeps overlap reporting optional for existing custom resource loaders", () => {
 		const customLoader: ResourceLoader = {
 			getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
@@ -369,5 +393,18 @@ export default function(pi) {
 			pendingMessageCount: 0,
 		};
 		expect(previousConsumerState.resourceOverlaps ?? []).toEqual([]);
+	});
+
+	it("keeps the exported extension runtime source compatible with prior custom runtimes", () => {
+		const createLegacyRuntime = (actions: ExtensionActions): ExtensionRuntime => ({
+			...actions,
+			flagValues: new Map<string, boolean | string>(),
+			pendingProviderRegistrations: [],
+			assertActive: () => {},
+			invalidate: () => {},
+			registerProvider: (() => {}) as ExtensionRuntime["registerProvider"],
+			unregisterProvider: () => {},
+		});
+		expect(typeof createLegacyRuntime).toBe("function");
 	});
 });
