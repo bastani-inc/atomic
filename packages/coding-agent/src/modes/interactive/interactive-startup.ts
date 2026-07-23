@@ -1,6 +1,5 @@
 import { InteractiveModeBase, seedStartupInput } from "./interactive-mode-base.ts";
 import { type Container, type MarkdownTheme, os, path, Markdown, Spacer, Text, spawn, APP_NAME, APP_TITLE, ENV_OFFLINE, getEnvValue, getAgentDir, VERSION, formatCodexFastModeModelLabel, shouldApplyCodexFastMode, DefaultPackageManager, isInstallTelemetryEnabled, getChangelogPath, getEntriesForVersion, getNewEntries, normalizeChangelogLinks, parseChangelog, getCwdRelativePath, getPiUserAgent, recordTimeSinceReset, ensureTool, checkForNewPiVersion, composeStartupIdentity, DynamicBorder, getMarkdownTheme, onThemeChange, theme } from "./interactive-mode-deps.ts";
-import { ExpandableText } from "./interactive-mode-helpers.ts";
 import { refreshCatalogsAfterTuiStartup, updateProviderCountFromSnapshot } from "./interactive-model-catalog-startup.ts";
 import { renderAtomicAssemblyBanner, renderStartupManifesto } from "./components/atomic-banner.ts";
 import { StartupIdentityComponent } from "./components/startup-identity.ts";

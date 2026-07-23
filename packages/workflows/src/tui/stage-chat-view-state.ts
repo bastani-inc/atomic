@@ -1,20 +1,11 @@
-import { ChatSessionHost, type ChatSessionHostStyle } from "@bastani/atomic";
+import { ChatSessionHost } from "@bastani/atomic";
 import { Editor, type EditorComponent } from "@earendil-works/pi-tui";
 import type { PendingPrompt, RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import { stageUiBroker } from "../shared/stage-ui-broker.js";
 import { resolveStageChatViewportRows } from "./stage-chat-layout.js";
 import { createPromptCardState } from "./prompt-card.js";
 import { hideMountedCustomUi, releaseMountedCustomUi, showCustomUi } from "./stage-chat-view-custom-ui.js";
-import { editorRuleColor } from "./stage-chat-view-footer-status.js";
-import {
-  blankLine,
-  cursorBlock,
-  editorThemeFromGraphTheme,
-  paint,
-  setEditorBorderColor,
-  setEditorPlaceholder,
-  workingIndicatorPalette,
-} from "./stage-chat-view-render-helpers.js";
+import { editorThemeFromGraphTheme, setEditorBorderColor, setEditorPlaceholder } from "./stage-chat-view-render-helpers.js";
 import {
   HEADER_ROWS,
   SEP_ROWS,
@@ -28,7 +19,7 @@ import {
 import { noticeRow, noticeSummary } from "./stage-chat-view-transcript.js";
 import { applyStageChatLiveHandleEvent } from "./stage-chat-view-live-events.js";
 import { replayPendingToolExecutions } from "./stage-chat-view-pending-tools.js";
-import { stageChatRenderSettings } from "./stage-chat-view-render-settings.js";
+import { chatHostStyle, stageChatRenderSettings } from "./stage-chat-view-render-settings.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
 import {
   isTerminalOrNonStreamingStageChatStatus,
@@ -195,22 +186,6 @@ function createChatHost(
     footerData: opts.footerData,
     renderExtraEntry: (entry) => noticeRow(entry, ctx.theme),
   });
-}
-function chatHostStyle(ctx: StageChatViewContext): ChatSessionHostStyle {
-  return {
-    dim: (text) => paint(text, ctx.theme.dim),
-    text: (text) => paint(text, ctx.theme.text),
-    textMuted: (text) => paint(text, ctx.theme.textMuted),
-    accent: (text) => paint(text, ctx.theme.accent),
-    accentBold: (text) => paint(text, ctx.theme.accent, { bold: true }),
-    workingIndicatorPalette: ctx.piTheme === undefined ? () => workingIndicatorPalette(ctx.theme) : undefined,
-    workingIndicatorUseGlobalTheme: ctx.piTheme !== undefined,
-    rule: (hex, text) => hexToAnsi(hex) + text + RESET,
-    cursor: () => cursorBlock(),
-    blank: (width) => blankLine(width),
-    editorRuleColor: (disabled, agentSession, state) =>
-      editorRuleColor(ctx, disabled, agentSession, state),
-  };
 }
 
 function handleStoreUpdate(ctx: StageChatViewContext): void {
