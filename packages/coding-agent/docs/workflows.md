@@ -414,12 +414,12 @@ Inputs:
 
 | Input | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `objective` | text | yes | — | Goal-runner objective or delta. Include the desired end state, expected outcome, testing/validation instructions, and any explicit done criteria. |
+| `objective` | text | yes | — | Goal-runner objective or delta. Include the desired end state, expected outcome, testing/validation instructions, and any explicit done criteria. Do not include PR/MR submission instructions here; strip them from the task text and request them via `create_pr=true` instead. |
 | `acceptance_criteria` | text | no | objective | Original immutable task contract that the run must remain consistent with. When launching a follow-up `goal` run from review findings, pass the ORIGINAL task text here so reviewer suggestions cannot drift or contradict the literal contract. |
 | `max_turns` | number | no | `10` | Maximum worker/review turns before human follow-up is needed. |
 | `base_branch` | string | no | `origin/main` | Branch reviewers and the optional final stage compare the current code delta against; also used to create a missing worktree. |
-| `git_worktree_dir` | string | no | `""` | Optional reusable Git worktree root. Empty runs in the invoking checkout; non-empty values run Goal stages in the created/reused worktree. |
-| `create_pr` | boolean | no | `false` | Safe-by-default PR creation flag. Omitted or `false` skips the final `pull-request` stage and omits `pr_report`; prompt text alone does not opt in, and only strict `true` authorizes the final `pull-request` stage to attempt provider-appropriate PR/MR/review creation after Goal reaches `complete`. |
+| `git_worktree_dir` | string | no | `""` | Optional reusable Git worktree root. Empty runs in the invoking checkout; non-empty values run Goal stages in the created/reused worktree. Set it only when the user explicitly requested worktree isolation — worker stages are instructed never to create git worktrees, clones, or repository copies on their own. |
+| `create_pr` | boolean | no | `false` | Safe-by-default PR creation flag. Omitted or `false` skips the final `pull-request` stage and omits `pr_report`; prompt text alone does not opt in, and only strict `true` authorizes the final `pull-request` stage to attempt provider-appropriate PR/MR/review creation after Goal reaches `complete`. If the delegated task asks to submit a PR/MR/review, remove that instruction from `objective` and set `create_pr=true` instead. |
 
 `goal` defaults to 10 worker/review turns. Reviewer quorum is fixed internally at 2 reviewer `complete` votes, and approval is deterministic on each reviewer's self-reported `stop_review_loop` boolean: a reviewer approves exactly when it returns `stop_review_loop=true` with no `reviewer_error` (schema-parse failures count as non-approval), and the reducer completes the run when quorum of those booleans is met without recomputing approval from findings arrays or traceability statuses. The repeated-blocker threshold defaults to 3 consecutive same-blocker turns and is clamped to `max_turns` when you run fewer than 3 turns.
 
@@ -429,7 +429,7 @@ Run examples:
 /workflow goal objective="Implement specs/2026-03-rate-limit.md, add the requested regression tests, run bun test packages/api/rate-limit.test.ts, and finish only when burst traffic returns 429 with Retry-After"
 /workflow goal objective="Update the CLI docs to describe the new --json flag, include one usage example, and verify the docs build still passes" max_turns=3
 /workflow goal objective="Fix the settings form validation bug; add/adjust the focused test and consider it done when invalid emails show the inline error without submitting"
-/workflow goal objective="Implement the focused docs fix, run the docs validation command, and open a PR when complete" create_pr=true
+/workflow goal objective="Implement the focused docs fix and run the docs validation command" create_pr=true
 /workflow goal objective="Fix the flaky package install test in an isolated worktree and run the focused regression" git_worktree_dir=../atomic-goal-install-wt base_branch=main
 ```
 
@@ -449,11 +449,15 @@ Goal worker/reviewer prompts treat the objective and acceptance criteria as the 
 
 Reviewer findings carry `objective_alignment` (`required_by_objective`, `consistent_with_objective`, `beyond_objective`, or `contradicts_objective`); `beyond_objective` and `contradicts_objective` findings are reported but do not block completion and must not be promoted into follow-up objectives without reconciling them against the acceptance criteria. Severity labels alone never dismiss objective-relevant findings: `required_by_objective` findings block at any priority (P3 included), while `consistent_with_objective` P3 nice-to-haves stay non-blocking.
 
-Review decisions also include `requirements_traceability`, a clause-by-clause evidence map over every explicit objective/acceptance-criteria requirement. Findings and traceability are audit evidence that drive how each reviewer derives its authoritative `stop_review_loop` boolean; the harness gates approval on that boolean alone, and Goal tells reviewers that process-only clauses (reviewer quorum/approval counts, and the authorized post-approval PR/MR/review final action when `create_pr=true`) must never hold the flag at `false`.
+Review decisions also include `requirements_traceability`, a clause-by-clause evidence map over every explicit objective/acceptance-criteria requirement. Findings and traceability are audit evidence that drive how each reviewer derives its authoritative `stop_review_loop` boolean; the harness gates approval on that boolean alone, and Goal tells reviewers that process-only clauses (reviewer quorum/approval counts, and the authorized post-approval PR/MR/review final action when `create_pr=true`) must never hold the flag at `false`. Reviewers must also first prove the code delta actually exists in the review checkout (the invoking cwd or explicitly configured worktree): receipts claiming implemented work over an empty or unrelated delta are a blocking finding rather than grounds for approval, and modifications, renames, or deletions of pre-existing tests require explicit justification.
 
 Passing worker-authored tests or snapshots alone is circular evidence unless tied to independent current-state proof.
 
 The worker may claim readiness, but it cannot finalize completion. Before implementing, Goal prompts the worker to derive an observable acceptance/contract matrix from the literal objective/acceptance criteria (one row per clause, each mapped to the concrete check that proves it) and to model states, transitions, and invariants explicitly when the work is stateful.
+
+Delivery is part of readiness: unless the objective or acceptance criteria explicitly forbid committing, worker prompts require committing the work in the current checkout with a descriptive message before claiming readiness — verifying a clean working tree with the repository's version-control status command — and reporting the commit identifier in the receipt. Reviewers back this with the code-delta contract: uncommitted work at claimed readiness is remaining work, and a checkout whose delta is empty or unrelated to the objective can never be approved regardless of what receipts claim. Verification stays with prompts and reviewers using the repository's own version-control tooling, so no single VCS provider is hardcoded into the runner.
+
+Goal's worker and final `pull-request` stages lead their model chain with the invoking session's current model (running at the session's default thinking level) when the host exposes it, with the curated worker chain retained as ordered fallbacks; reviewer chains stay curated so reviewers remain decorrelated from the session model.
 
 Goal consolidates the latest reviewer findings into a deduplicated cross-reviewer batch persisted in the round artifact (`consolidated_findings` in `review-round-latest.json`), and the next worker prompt instructs the worker to plan and repair the whole batch — with durable regression evidence for reproduced findings — rather than fixing one finding per turn. Goal prompts workers and reviewers to verify user-visible behavior end-to-end when practical, using `playwright-cli`-skilled subagents for web/frontend flows that may depend on backend/API behavior and tmux-skilled subagents for TUI or terminal-app scenarios.
 
@@ -500,12 +504,12 @@ Inputs:
 
 | Input | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `prompt` | text | yes | — | Task, feature request, issue summary, or spec path to research, execute, refine, and review. |
+| `prompt` | text | yes | — | Task, feature request, issue summary, or spec path to research, execute, refine, and review. Do not include PR/MR submission instructions here; strip them from the task text and request them via `create_pr=true` instead. |
 | `acceptance_criteria` | text | no | prompt | Original immutable task contract that the run must remain consistent with. When launching a follow-up `ralph` run from review findings, pass the ORIGINAL task text here so reviewer suggestions cannot drift or contradict the literal contract. |
 | `max_loops` | number | no | `10` | Maximum research/orchestrate/review iterations before the workflow completes or reports the remaining work without reviewer approval. |
 | `base_branch` | string | no | `origin/main` | Branch reviewers and the optional final stage compare the current code delta against; also used to create a missing worktree. |
-| `git_worktree_dir` | string | no | `""` | Optional reusable Git worktree root. Empty runs in the invoking checkout; non-empty values run Ralph stages in the created/reused worktree. |
-| `create_pr` | boolean | no | `false` | Safe-by-default PR creation flag. Omitted or `false` skips the final `pull-request` stage and omits `pr_report`; prompt text alone does not opt in, and only strict `true` authorizes the final `pull-request` stage to attempt provider-appropriate PR/MR/review creation. |
+| `git_worktree_dir` | string | no | `""` | Optional reusable Git worktree root. Empty runs in the invoking checkout; non-empty values run Ralph stages in the created/reused worktree. Set it only when the user explicitly requested worktree isolation — orchestrator stages are instructed never to create git worktrees, clones, or repository copies on their own. |
+| `create_pr` | boolean | no | `false` | Safe-by-default PR creation flag. Omitted or `false` skips the final `pull-request` stage and omits `pr_report`; prompt text alone does not opt in, and only strict `true` authorizes the final `pull-request` stage to attempt provider-appropriate PR/MR/review creation. If the delegated task asks to submit a PR/MR/review, remove that instruction from `prompt` and set `create_pr=true` instead. |
 
 Run examples:
 
@@ -518,6 +522,8 @@ Run examples:
 Each `ralph` run uses the raw `prompt` exactly as supplied as the operative objective for research, orchestration, and review, and stores `acceptance_criteria` as the immutable literal contract (defaulting to the prompt when omitted). Shared literal-contract prompt language forbids adding behaviors, restrictions, or error conditions beyond the prompt/acceptance criteria and requires surfacing conflicts with external knowledge; Ralph does not run an initial prompt-refinement stage.
 
 Each iteration transforms that raw prompt with `/skill:prompt-engineer Transform the following user request into a codebase and online research question which can be thoroughly explored: ...` (`research-prompt-refinement`), researches that transformed question with `/skill:research-codebase ...`, and writes the findings under `research/`. The research, orchestrator, and reviewer prompts carry `acceptance_criteria` next to the literal contract, so orchestrators should pass the ORIGINAL task text when launching follow-up Ralph runs from reviewer findings.
+
+Ralph's orchestrator and final `pull-request` stages lead their model chain with the invoking session's current model (running at the session's default thinking level) when the host exposes it, with the curated orchestrator chain retained as ordered fallbacks; reviewer chains stay curated so reviewers remain decorrelated from the session model.
 
 Before implementing, Ralph prompts the orchestrator to derive an observable acceptance/contract matrix from the literal prompt/acceptance criteria (one row per clause mapped to the concrete observable check that proves it) and to model states, transitions, and invariants explicitly when the work is stateful.
 
@@ -533,7 +539,7 @@ If reviewers find issues, the next `research-prompt-refinement` and research sta
 
 Ralph findings include the same `objective_alignment` classification used by Goal, and each reviewer derives a single authoritative `stop_review_loop` boolean from that evidence: `required_by_objective` findings mean `false` at any priority (P3 included, because severity labels alone never dismiss objective-relevant findings), `consistent_with_objective` P0/P1/P2 findings mean `false` while P3 remains a non-blocking nice-to-have, and `beyond_objective`/`contradicts_objective` findings are surfaced but non-blocking so they are not silently converted into new requirements.
 
-The loop gate approves deterministically on `stop_review_loop=true` plus a null `reviewer_error` (parse failures count as non-approval) without recomputing approval from the findings arrays. Ralph review decisions also include `requirements_traceability`, a clause-by-clause evidence map over every explicit prompt/acceptance-criteria requirement kept as audit evidence for deriving the flag; reviewers are explicitly told that process-only clauses (reviewer quorum, and the authorized post-approval PR/MR/review final action when `create_pr=true`) must never hold the flag at `false`.
+The loop gate approves deterministically on `stop_review_loop=true` plus a null `reviewer_error` (parse failures count as non-approval) without recomputing approval from the findings arrays. Ralph review decisions also include `requirements_traceability`, a clause-by-clause evidence map over every explicit prompt/acceptance-criteria requirement kept as audit evidence for deriving the flag; reviewers are explicitly told that process-only clauses (reviewer quorum, and the authorized post-approval PR/MR/review final action when `create_pr=true`) must never hold the flag at `false`. Reviewers must also first prove the code delta actually exists in the review checkout (the invoking cwd or explicitly configured worktree): receipts claiming implemented work over an empty or unrelated delta are a blocking finding rather than grounds for approval, and modifications, renames, or deletions of pre-existing tests require explicit justification.
 
 Passing worker-authored tests or snapshots is circular evidence unless tied to independent current-state proof. By default Ralph does not start the final `pull-request` stage, and `pr_report` is omitted. Prompt text alone does not opt in. Pass `create_pr=true` only when you explicitly want the final `pull-request` stage to inspect provider credentials and attempt provider-appropriate PR/MR/review creation, such as GitHub `gh`, Azure Repos `az repos pr create`, or Sapling/Phabricator tooling; Ralph's own PR-creation instructions live in that final stage and run only after approval.
 
@@ -1352,6 +1358,14 @@ readonly cwd?: string;
 ```
 
 Invocation working directory for workflow-owned artifacts. It defaults to the host process cwd when omitted.
+
+### `ctx.models`
+
+```typescript
+readonly models?: WorkflowModelCatalogPort;
+```
+
+Model catalog port for the invoking session, when the host provides one. `models.currentModel` is the user-selected session model; leading a stage's model chain with it (bare, without a `:thinking` suffix) runs the stage at the session's model and default thinking level. `models.listModels()` returns the available catalog. The field is absent when no host catalog exists (for example some detached executions), so definitions should treat it as optional and fall back to their own model configuration.
 
 ### `ctx.task(name, options)`
 

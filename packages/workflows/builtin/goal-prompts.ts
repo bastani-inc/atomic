@@ -6,11 +6,13 @@ import {
   FINDINGS_CONSOLIDATION_CONTRACT,
   LITERAL_OBJECTIVE_CONTRACT,
   REGRESSION_EVIDENCE_CONTRACT,
+  REVIEW_CODE_DELTA_CONTRACT,
   REVIEWER_INDEPENDENT_VERIFICATION_CONTRACT,
   REVIEWER_INTERCOM_COORDINATION_PROTOCOL,
   REVIEWER_OVERIMPLEMENTATION_GUARD,
   REVIEWER_SPEC_VS_OBJECTIVE_GUARD,
   WORKER_PREFLIGHT_CONTRACT,
+  WORKTREE_DISCIPLINE_CONTRACT,
   renderE2eQaVideoReviewGuidance,
 } from "./shared-prompts.js";
 import type { GoalLedger } from "./goal-types.js";
@@ -72,6 +74,7 @@ export const WORKER_RECEIPT_CONTRACT = [
   "Classify evidence honestly: proves completion, contradicts completion, shows incomplete work, is too weak or indirect, is merely consistent with completion, or is missing.",
   "Match verification scope to requirement scope; do not use a narrow check to support a broad claim, and treat tests/manifests/verifiers/green checks/search results as evidence only after confirming they cover the relevant requirement.",
   "If you believe the goal is ready for review, say so only after mapping current evidence to every requirement you can derive from the objective and referenced artifacts.",
+  "Unless the objective or acceptance criteria explicitly forbid committing, commit your work in the current checkout with a descriptive message before claiming readiness for review, verify the working tree is clean with the repository's version-control status command (for git: `git status --porcelain`), and include the commit identifier in your receipt. Reviewers treat uncommitted work at readiness as remaining work. Never leave committing as a follow-up action for a later turn.",
   "Return a receipt with files changed, commands run and outcomes, evidence gathered, blockers encountered, residual risks, and verification still needed.",
 ].join("\n");
 
@@ -193,6 +196,7 @@ export function renderGoalContinuationPrompt(
     ["regression_evidence", REGRESSION_EVIDENCE_CONTRACT],
     ["evidence_closure", EVIDENCE_CLOSURE_POLICY],
     ["literal_contract", LITERAL_OBJECTIVE_CONTRACT],
+    ["worktree_discipline", WORKTREE_DISCIPLINE_CONTRACT],
     ["pr_handoff_policy", INTERMEDIATE_PR_HANDOFF_GUARDRAIL],
     ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
   ]);
@@ -212,7 +216,7 @@ export function renderForkedGoalWorkerPrompt(
       "goal_context",
       [
         "Continue the same goal-runner worker thread.",
-        "All previously established guidance still applies unchanged: the goal invariants, project preflight, worker receipt contract, completion audit, blocked audit, literal objective contract, acceptance matrix, adversarial divergence audit, findings batch, regression evidence, evidence closure, PR handoff policy, E2E verification guidance, and the receipt output format.",
+        "All previously established guidance still applies unchanged: the goal invariants, project preflight, worker receipt contract, completion audit, blocked audit, literal objective contract, acceptance matrix, adversarial divergence audit, findings batch, regression evidence, evidence closure, worktree discipline, PR handoff policy, E2E verification guidance, and the receipt output format.",
         "Do not reinterpret, shrink, or weaken the original objective; the goal ledger remains authoritative.",
         "",
         `Goal ledger artifact: ${ledgerPath}`,
@@ -257,6 +261,7 @@ export function renderReviewerPrompt(args: {
     ["review_guidance", args.focus],
     ["literal_contract", LITERAL_OBJECTIVE_CONTRACT],
     ["independent_verification", REVIEWER_INDEPENDENT_VERIFICATION_CONTRACT],
+    ["code_delta_review", REVIEW_CODE_DELTA_CONTRACT],
     ["reviewer_coordination", REVIEWER_INTERCOM_COORDINATION_PROTOCOL],
     ["regression_evidence", REGRESSION_EVIDENCE_CONTRACT],
     ["evidence_closure", EVIDENCE_CLOSURE_POLICY],
@@ -367,8 +372,8 @@ export function renderReviewerPrompt(args: {
     [
       "required_actions_before_tool_call",
       [
-        "1. Identify the changed files or diff under review.",
-        "2. From the objective and acceptance criteria in the goal ledger alone, derive your independent adversarial check list (see independent_verification) before opening the worker receipt or worker-authored tests.",
+        "1. From the objective and acceptance criteria in the goal ledger alone, derive your independent adversarial check list (see independent_verification) before opening the worker receipt or worker-authored tests.",
+        "2. Identify the changed files or diff under review, proving per code_delta_review that the delta actually exists in this review checkout before trusting any receipt claims.",
         "3. Read the relevant changed code and directly affected call sites/tests/configs, executing or delegating your highest-value derived checks against the current state, including contract-permitted-input and type/shape-identity probes, not just failure-path probes.",
         "4. Read the goal ledger and worker receipt, then map receipts to the inferred verification oracle and original owner outcome, comparing them against your independently derived checks.",
         "5. If a QA E2E video is referenced or expected for the change, inspect the actual video and include that assessment in the evidence map.",

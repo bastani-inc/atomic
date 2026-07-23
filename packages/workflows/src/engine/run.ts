@@ -388,6 +388,7 @@ export async function run<
     parallel: createParallelPrimitive({ runtime, task: durableTask }),
     workflow: durableWorkflow,
     tool,
+    ...(opts.models !== undefined ? { models: opts.models } : {}),
   };
 
   try {
