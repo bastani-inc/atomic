@@ -4,6 +4,7 @@
 
 ### Changed
 
+- Installed builds now ship the builtin workflows extension as a single prebundled ESM file. Loading it previously resolved and transpiled a ~300-file TypeScript module graph per launch, which dominated interactive-engine startup on Windows (~7 s on a test VM, now ~1.1 s, ~6x faster) ([#1962](https://github.com/bastani-inc/atomic/issues/1962)). Source checkouts still load the raw TypeScript sources.
 - Interactive TUI startup on Windows is dramatically faster: the CLI now enables Node's persistent on-disk V8 compile cache (Node >= 22.8) and flushes it before spawning the isolated interactive engine, so both the host and the engine child reuse compiled module bytecode across runs and within the same launch ([#1962](https://github.com/bastani-inc/atomic/issues/1962)).
 
 ### Fixed
