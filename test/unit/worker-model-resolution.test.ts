@@ -6,10 +6,6 @@ import { makeMockCtx } from "./builtin-workflows-helpers.js";
 import { workerModelConfig } from "../../packages/workflows/builtin/goal-models.js";
 import { orchestratorModelConfig } from "../../packages/workflows/builtin/ralph-models.js";
 import { resolveWorkerModels } from "../../packages/workflows/builtin/worker-model-resolution.js";
-import {
-    commitOptOutRequested,
-    describeCommitGateBlock,
-} from "../../packages/workflows/builtin/goal-commit-gate.js";
 
 function goalReviewJson(decision: "complete" | "continue") {
     return JSON.stringify({
@@ -95,103 +91,5 @@ describe("goal worker model inheritance", () => {
         const options = ctx.calls.taskOptions["work-turn-1"]?.[0];
         assert.equal(options.model, workerModelConfig.model);
         assert.deepEqual(options.fallbackModels, workerModelConfig.fallbackModels);
-    });
-});
-
-describe("goal commit gate", () => {
-    test("a dirty worktree holds completion, directs the next turn to commit, then completes when clean", async () => {
-        const d = await loadGoal();
-        const ctx = makeMockCtx(
-            { objective: "Finish the migration" },
-            {
-                sessionFile: (name) => `/tmp/goal-${name}.jsonl`,
-                task: approveAllReviewers,
-                tool: (name, args) => {
-                    if (name !== "goal-commit-gate") return undefined;
-                    return args.turn === 1
-                        ? { kind: "dirty", dirtyPaths: ["M src/index.ts"], headSha: "abc123" }
-                        : { kind: "clean", headSha: "def456" };
-                },
-            },
-        );
-
-        const outputs = await d.run(ctx);
-
-        assert.equal(outputs.status, "complete");
-        assert.equal(outputs.turns_completed, 2);
-        const secondTurnPrompt = ctx.calls.prompts["work-turn-2"]?.[0] ?? "";
-        assert.match(secondTurnPrompt, /<commit_required>/);
-        assert.match(secondTurnPrompt, /uncommitted change/i);
-        assert.match(secondTurnPrompt, /report the commit SHA/i);
-    });
-
-    test("a dirty worktree with the turn budget exhausted ends needs_human, never a false complete", async () => {
-        const d = await loadGoal();
-        const ctx = makeMockCtx(
-            { objective: "Finish the migration", max_turns: 1 },
-            {
-                task: approveAllReviewers,
-                tool: (name) =>
-                    name === "goal-commit-gate"
-                        ? { kind: "dirty", dirtyPaths: ["M src/index.ts"] }
-                        : undefined,
-            },
-        );
-
-        const outputs = await d.run(ctx);
-
-        assert.equal(outputs.status, "needs_human");
-        assert.match(outputs.remaining_work ?? "", /uncommitted change/i);
-    });
-
-    test("an objective that explicitly forbids committing opts out of the gate", async () => {
-        const d = await loadGoal();
-        const ctx = makeMockCtx(
-            { objective: "Audit the migration but do not commit anything", max_turns: 1 },
-            {
-                task: approveAllReviewers,
-                tool: (name) =>
-                    name === "goal-commit-gate"
-                        ? { kind: "dirty", dirtyPaths: ["M src/index.ts"] }
-                        : undefined,
-            },
-        );
-
-        const outputs = await d.run(ctx);
-
-        assert.equal(outputs.status, "complete");
-    });
-
-    test("non-git working directories and git failures skip the gate instead of blocking", async () => {
-        const d = await loadGoal();
-        for (const state of [{ kind: "non_git" }, { kind: "git_error", detail: "git missing" }]) {
-            const ctx = makeMockCtx(
-                { objective: "Finish the migration", max_turns: 1 },
-                {
-                    task: approveAllReviewers,
-                    tool: (name) => (name === "goal-commit-gate" ? state : undefined),
-                },
-            );
-
-            const outputs = await d.run(ctx);
-
-            assert.equal(outputs.status, "complete", state.kind);
-        }
-    });
-});
-
-describe("commit gate helpers", () => {
-    test("commitOptOutRequested matches explicit no-commit phrasing only", () => {
-        assert.equal(commitOptOutRequested("do not commit anything", ""), true);
-        assert.equal(commitOptOutRequested("", "leave the changes uncommitted for review"), true);
-        assert.equal(commitOptOutRequested("commit the fix and run tests", ""), false);
-        assert.equal(commitOptOutRequested("finish the migration", "run the full suite"), false);
-    });
-
-    test("describeCommitGateBlock names the dirty paths and the required action", () => {
-        const message = describeCommitGateBlock({ kind: "dirty", dirtyPaths: ["M a.ts", "?? b.ts"] });
-        assert.match(message, /2 uncommitted change/);
-        assert.match(message, /M a\.ts, \?\? b\.ts/);
-        assert.match(message, /commit SHA/i);
     });
 });

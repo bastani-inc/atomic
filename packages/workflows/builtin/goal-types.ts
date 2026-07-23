@@ -104,8 +104,7 @@ export type GoalLifecycleEvent = {
     | "work_turn_started"
     | "receipt_recorded"
     | "reviews_recorded"
-    | "status_decided"
-    | "commit_gate";
+    | "status_decided";
   readonly status: GoalStatus;
   readonly at: string;
   readonly summary: string;

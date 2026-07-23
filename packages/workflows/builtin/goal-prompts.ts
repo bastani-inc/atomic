@@ -74,7 +74,7 @@ export const WORKER_RECEIPT_CONTRACT = [
   "Classify evidence honestly: proves completion, contradicts completion, shows incomplete work, is too weak or indirect, is merely consistent with completion, or is missing.",
   "Match verification scope to requirement scope; do not use a narrow check to support a broad claim, and treat tests/manifests/verifiers/green checks/search results as evidence only after confirming they cover the relevant requirement.",
   "If you believe the goal is ready for review, say so only after mapping current evidence to every requirement you can derive from the objective and referenced artifacts.",
-  "Unless the objective or acceptance criteria explicitly forbid committing, commit your work in the current worktree with a descriptive message before claiming readiness for review, verify `git status --porcelain` is clean, and include the commit SHA in your receipt; the workflow verifies the worktree is clean before it can complete. Never leave committing as a follow-up action for a later turn.",
+  "Unless the objective or acceptance criteria explicitly forbid committing, commit your work in the current checkout with a descriptive message before claiming readiness for review, verify the working tree is clean with the repository's version-control status command (for git: `git status --porcelain`), and include the commit identifier in your receipt. Reviewers treat uncommitted work at readiness as remaining work. Never leave committing as a follow-up action for a later turn.",
   "Return a receipt with files changed, commands run and outcomes, evidence gathered, blockers encountered, residual risks, and verification still needed.",
 ].join("\n");
 
