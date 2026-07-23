@@ -137,7 +137,7 @@ vim ~/.atomic/agent/themes/my-theme.json
     ...
   },
   "workingIndicator": {
-    "dark": "#6c7086",
+    "dark": "#70759f",
     "lift": "#7f849c",
     "muted": "#789bd0",
     "accent": "blue",

@@ -102,11 +102,11 @@ export class SessionManager {
 		if (existsSync(this.sessionFile)) {
 			this.fileEntries = preloadedFileEntries ?? loadEntriesFromFile(this.sessionFile);
 
-			// If file was empty, initialize it with a valid session header. If it was non-empty but did not parse as a pi session, fail without modifying it.
+			// If file was empty, initialize it with a valid session header. If it was non-empty but did not parse as an Atomic session, fail without modifying it.
 			if (this.fileEntries.length === 0) {
 				const explicitPath = this.sessionFile;
 				if (statSync(explicitPath).size > 0) {
-					throw new Error(`Session file is not a valid pi session: ${explicitPath}`);
+					throw new Error(`Session file is not a valid Atomic session: ${explicitPath}`);
 				}
 				this.newSession();
 				this.sessionFile = explicitPath;

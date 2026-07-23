@@ -207,9 +207,9 @@ describe("StageChatView", () => {
         };
         try {
             initTheme("catppuccin-mocha", false);
-            assert.equal(workingColor(), "69,71,90");
+            assert.equal(workingColor(), "112,117,159");
             initTheme("light", false);
-            assert.notEqual(workingColor(), "69,71,90");
+            assert.notEqual(workingColor(), "112,117,159");
         } finally {
             view.dispose();
             initTheme("dark", false);

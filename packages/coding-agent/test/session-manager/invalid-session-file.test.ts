@@ -12,7 +12,7 @@ describe("SessionManager.open rejects invalid non-empty session files", () => {
 		writeFileSync(sessionFile, originalContent);
 
 		expect(() => SessionManager.open(sessionFile, tempDir)).toThrow(
-			`Session file is not a valid pi session: ${sessionFile}`,
+			`Session file is not a valid Atomic session: ${sessionFile}`,
 		);
 		// The invalid file must not be modified or truncated.
 		expect(readFileSync(sessionFile, "utf8")).toBe(originalContent);

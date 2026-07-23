@@ -83,7 +83,7 @@
 		"bashMode": "green"
 	},
 	"workingIndicator": {
-		"dark": "overlay_0",
+		"dark": "#70759f",
 		"lift": "overlay_1",
 		"muted": "#789bd0",
 		"accent": "blue",

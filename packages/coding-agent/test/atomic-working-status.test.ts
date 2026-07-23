@@ -18,6 +18,7 @@ import {
 	type ThemeColor,
 } from "../src/modes/interactive/theme/theme.ts";
 import { loadTheme, loadThemeFromContent, loadThemeJson } from "../src/modes/interactive/theme/theme-loading.ts";
+import { ansi256ToHex, fgAnsi } from "../src/modes/interactive/theme/color-utils.ts";
 import { WHIMSICAL_WORKING_MESSAGES } from "../src/modes/interactive/whimsical-messages.ts";
 
 const plain = (text: string): string => text.replace(/\u001b\[[0-9;]*m/g, "");
@@ -29,6 +30,26 @@ const rgb = (text: string): string | undefined => {
 const indexed = (text: string): number | undefined => {
 	const match = /\u001b\[38;5;(\d+)m/.exec(text);
 	return match ? Number(match[1]) : undefined;
+};
+
+const luminance = (hex: string): number => {
+	const channels = hex.slice(1).match(/../g)?.map((value) => Number.parseInt(value, 16) / 255);
+	if (!channels || channels.length !== 3) throw new Error(`Invalid hex color: ${hex}`);
+	const [red, green, blue] = channels.map((value) => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+	return 0.2126 * red! + 0.7152 * green! + 0.0722 * blue!;
+};
+
+const contrastRatio = (foreground: string, background: string): number => {
+	const foregroundLuminance = luminance(foreground);
+	const backgroundLuminance = luminance(background);
+	return (Math.max(foregroundLuminance, backgroundLuminance) + 0.05)
+		/ (Math.min(foregroundLuminance, backgroundLuminance) + 0.05);
+};
+
+const quantizedHex = (hex: string): string => {
+	const match = /\u001b\[38;5;(\d+)m/.exec(fgAnsi(hex, "256color"));
+	if (!match) throw new Error(`Could not quantize color: ${hex}`);
+	return ansi256ToHex(Number(match[1]));
 };
 
 function restoreEnv(name: "ATOMIC_REDUCED_MOTION" | "NO_COLOR", value: string | undefined): void {
@@ -84,7 +105,7 @@ describe("Atomic working status", () => {
 			rgb(new AtomicWorkingStatusComponent({ frame, messageColor: String }).render(64)[1]!),
 		);
 		expect(colors).toEqual([
-			"#6c7086", "#7f849c", "#789bd0", "#89b4fa", "#b8d2ff",
+			"#70759f", "#7f849c", "#789bd0", "#89b4fa", "#b8d2ff",
 			"#eef4ff", "#b8d2ff", "#89b4fa", "#789bd0", "#7f849c",
 		]);
 	});
@@ -159,12 +180,28 @@ describe("Atomic working status", () => {
 		expect(red.muted).not.toBe(blue.muted);
 	});
 
-	it("keeps the Catppuccin outward pulse readable after 256-color quantization", () => {
+	it("keeps every outward Catppuccin pulse phase above 3:1 with increasing contrast", () => {
+		const background = "#1e1e2e";
+		setThemeInstance(loadTheme("catppuccin-mocha", "truecolor"));
+		const truecolor = ATOMIC_WORKING_FRAMES.slice(0, 6).map((_, frame) => {
+			const color = rgb(new AtomicWorkingStatusComponent({ frame, messageColor: String }).render(64)[1]!);
+			if (!color) throw new Error(`Missing truecolor phase ${frame}`);
+			return color;
+		});
+
 		setThemeInstance(loadTheme("catppuccin-mocha", "256color"));
-		const colors = ATOMIC_WORKING_FRAMES.slice(0, 6).map((_, frame) =>
-			indexed(new AtomicWorkingStatusComponent({ frame, messageColor: String }).render(64)[1]!),
-		);
-		expect(colors).toEqual([60, 103, 104, 111, 153, 231]);
+		const quantized = ATOMIC_WORKING_FRAMES.slice(0, 6).map((_, frame) => {
+			const color = indexed(new AtomicWorkingStatusComponent({ frame, messageColor: String }).render(64)[1]!);
+			if (color === undefined) throw new Error(`Missing indexed phase ${frame}`);
+			return ansi256ToHex(color);
+		});
+		expect(quantized).toEqual(["#5f87af", "#8787af", "#8787d7", "#87afff", "#afd7ff", "#ffffff"]);
+
+		for (const [colors, phaseBackground] of [[truecolor, background], [quantized, background], [quantized, quantizedHex(background)]] as const) {
+			const ratios = colors.map((color) => contrastRatio(color, phaseBackground));
+			expect(ratios.every((ratio) => ratio >= 3)).toBe(true);
+			expect(ratios.slice(1).every((ratio, index) => ratio > ratios[index]!)).toBe(true);
+		}
 	});
 
 	it("uses live dark and light theme roles and follows dynamic theme changes", () => {
