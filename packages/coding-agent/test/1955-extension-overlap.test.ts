@@ -289,6 +289,7 @@ export default function(pi) {
 		expect(collectFlags(result.extensions).get("late-no-default-flag")?.extensionPath)
 			.toBe(join(atomicExtensionDir, "override.ts"));
 		expect(loader.getOverlaps().some((overlap) => overlap.name === "late-shared-flag")).toBe(true);
+		expect(loader.getOverlaps().some((overlap) => overlap.name === "late-no-default-flag")).toBe(true);
 	});
 
 	it("keeps same-relative Atomic extensions explicit when inherited settings also resolve under Pi", async () => {
