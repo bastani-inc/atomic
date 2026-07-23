@@ -196,19 +196,42 @@ The shapes, cheapest first:
 | **Custom workflow** | A task-specific TypeScript `workflow({...})` authored inline, composing the common workflow patterns. | Exactly the control flow the task needs: runtime branching, dynamic fan-out, custom gates, tournaments, bounded loops. | Authoring and reload time; you own the design quality. |
 | **Composed/nested workflows** | A custom parent that imports proven definitions and calls `ctx.workflow(child)`. | Reuse of hardened children (research, review loops) inside custom control flow, within `maxDepth`. | Parent/child input-output contracts must be mapped deliberately. |
 
-#### The self-prompt
+#### The self-prompt: pre-launch workflow architecture
 
-Ask these questions in order and stop at the first shape that satisfies every remaining requirement. Decide before the first tool call and state the decision; reconnaissance already counts as inline execution.
+For every non-trivial workflow task, perform a short workflow-architecture pass before the first launch. Decide before the first tool call and state the execution mode; reconnaissance already counts as inline execution. Derive the task's implementation lifecycle needs, whole-codebase research needs, independent work slices, competing strategies, exact API/type/build contracts, schema or generated-artifact contracts, state-transition/lifecycle behavior, deterministic stop conditions, and required evidence.
+
+Use this compact coverage matrix internally (it may stay concise for a straightforward task), and let every unresolved material row change the graph choice:
+
+```text
+requirement/risk | required evidence | workflow/stage that produces it | gap
+```
+
+Compare candidate workflow **guarantees**, not only broad descriptions. A named graph fits only when it covers the task's lifecycle **and** produces the evidence required for every material requirement/risk. A generic implementation workflow can cover the lifecycle while missing exact API/type/build contracts, schemas/generated artifacts, state transitions, or domain-specific gates. **Do not treat "has reviewers" as proof that a task-specific risk is covered.**
+
+Ask these questions in order and stop at the cheapest shape that satisfies every remaining coverage row:
 
 1. **Is the outcome provable?** If success can be stated as evidence (tests green, artifact exists, behavior demonstrated, reviewer approves), the task fits a workflow. If no proof is possible or needed, inline is probably fine.
 2. **Is there structure?** Multiple subtasks, dependencies, handoffs, or parallel slices rule out inline execution. A single focused evidence-gathering pass does not.
 3. **Is there a loop or gate?** Any "until Y", "fix until passing", review/approval gate, or unknown-length repair cycle requires a workflow that enforces the stop condition, never an improvised inline retry loop or a stretched subagent chain.
 4. **Is it one task or a queue of tasks?** "Address all open issues" or "fix every ticket assigned to me" is a factory request, not one workflow. Enumerate and dependency-classify the items first, then follow [Task queues and software factories](#task-queues-and-software-factories): independent items become separate per-item runs; dependent items share one composed graph.
-5. **Does an installed graph already fit?** If a named workflow's objective and inputs cover essentially the whole task, run it. Do not force-fit a partial match ([When to Use Workflows](#when-to-use-workflows)).
-6. **Does the control flow need shapes builtins don't offer?** Runtime classification, per-item dynamic fan-out, generate-and-filter, tournaments, or domain-specific gates mean authoring a custom workflow from the common workflow patterns.
-7. **Does a proven graph already solve a sub-problem?** Nest it with `ctx.workflow(...)` instead of re-authoring its prompts and gates. Use composition instead of duplication whenever you can cleanly map the child's input/output contract.
-8. **Is it only specialist evidence-gathering?** If the parent keeps control, no completion gate is needed, and the work is bounded (a debug pass, a parallel research fanout, one noisy investigation), inline subagents are enough — and cheaper than a workflow.
-9. **Is it truly tiny?** Deterministic, low-risk, single-file/no-test/no-review — answer or edit inline and stop.
+5. **Does an installed graph supply complete coverage?** Run a named workflow only if its objective, inputs, lifecycle, and produced evidence cover every material row. Do not force-fit a broad-but-partial match ([When to Use Workflows](#when-to-use-workflows)).
+6. **What routing signals shape the graph?** Broad repository uncertainty points to `deep-research-codebase`; independent slices to Fan-out-and-synthesize; plausible-but-wrong contract risk to Adversarial verification or a task-specific verification stage; competing architectures or implementations to Generate-and-filter or Tournament; an explicit repeat-until condition to Loop until done; implementation lifecycle to Goal or Ralph, potentially as a child; and exact API/build/schema requirements to dedicated deterministic gates.
+7. **Does a proven graph solve only part of the task?** Author one custom parent and nest that definition with `ctx.workflow(...)`, placing the missing research, verification, or deterministic gates around it instead of re-authoring its prompts and gates.
+8. **Is it only specialist evidence-gathering?** If the parent keeps control, no completion gate is needed, and the work is bounded (a debug pass, a parallel research fanout, one noisy investigation), inline subagents are enough—and cheaper than a workflow.
+9. **Is it truly tiny?** Deterministic, low-risk, single-file/no-test/no-review—answer or edit inline and stop.
+
+A first named workflow launch commits the execution shape for the turn, and the parent ends its turn after launch. Do not plan to casually chain unrelated top-level workflow launches afterward. When the task needs multiple workflow capabilities, design composition **before** launch: author one custom parent, import project/package definitions or builtins from `@bastani/workflows/builtin`, and call `ctx.workflow(...)`. Nested children preserve their stages and guarantees within the expanded graph up to `maxDepth`.
+
+Choose the cheapest complete graph. Routing cues are not a reason to add decorative stages: avoid duplicated research and review loops. Before launch, state the selected graph, why one broad builtin is sufficient or insufficient, the evidence each major stage produces, and the stop/repair conditions. A simple direct match can be one sentence; a composed graph should briefly name its children and task-specific gates.
+
+When an arbitrary task-specific workflow has plausible-but-wrong contract risk, design a bounded evidence-backed adversarial loop:
+
+1. Give a fresh-context, grumpy/skeptical-but-fair reviewer the literal objective. It should aggressively seek realistic counterexamples without inventing requirements or accepting hand-waving and circular worker-authored evidence, then emit a structured verifier plan: exact probe, inputs, command/assertion, expected success condition, and requirement/risk covered.
+2. For known contracts, author direct task-specific `ctx.tool(...)` gates up front. For adversarially discovered risks, let the model select high-value probes in structured output, but execute the selected compile, test, schema generation/validation, runtime, and artifact-inspection checks authoritatively through durable workflow-owned `ctx.tool(...)` calls. The model must not self-report outcomes.
+3. Feed the actual tool results to a skeptical evaluation stage. It classifies failures and emits one consolidated, evidence-backed, bounded repair payload for the implementation child.
+4. After repair, rerun the deterministic verifier tools until the declared pass condition succeeds or the iteration budget is exhausted. Define pass, repair, failure, and iteration-limit conditions before launch.
+
+Use `ctx.tool` for workflow-owned external checks and side effects that benefit from durable checkpointing. Leave pure transformations as ordinary TypeScript; do not wrap every model-stage action in a tool call. A custom-loop pre-launch declaration must name the skeptical reviewer, deterministic verifier gates, how model-selected plans become tool executions, how evidence reaches evaluation/repair, and the bounded success/failure condition.
 
 #### Scoring rubric
 
@@ -3728,9 +3751,10 @@ Builtin definition and contracts: [Six composable pattern builtins](#six-composa
 ```
 
 Best practices:
-- Give verifiers fresh context and a concrete rubric with pass/fail evidence requirements.
-- Separate implementation or generation from independent judgment to reduce a model's bias toward its own output.
-- Ask verifiers to find blockers and not rewrite the candidate unless you explicitly assign them to repair it.
+- Give verifiers fresh context and a concrete rubric with pass/fail evidence requirements. For task-specific contract risk, use a grumpy/skeptical-but-fair persona that seeks realistic counterexamples, stays within the literal objective, rejects hand-waving and circular worker-authored evidence, and reports only actionable evidence-backed defects.
+- Separate adversarial probe design from authoritative execution. Require a structured verifier plan with each exact probe, inputs, command/assertion, expected success condition, and covered requirement/risk; then run selected compile, test, schema generation/validation, runtime, or artifact checks through durable workflow-owned `ctx.tool(...)` calls. Actual tool results—not model self-report—feed judgment and consolidated repair.
+- Known contracts may use direct task-specific `ctx.tool(...)` gates designed before launch; uncertain risks may use model-selected probes executed by those deterministic tools. Rerun the tools after repair until the declared pass condition or iteration limit.
+- Ask verifiers to find blockers and not rewrite the candidate unless you explicitly assign them to repair it. Keep pure transformations as ordinary TypeScript rather than wrapping every model-stage action in `ctx.tool`.
 
 ##### 4. Generate-and-filter
 

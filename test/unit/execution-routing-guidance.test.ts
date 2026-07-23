@@ -151,6 +151,99 @@ describe("workflow-first execution routing", () => {
     }
   });
 
+  test("requires a pre-launch coverage pass and one composed execution shape", () => {
+    for (const phrase of [
+      "workflow-architecture pass",
+      "implementation lifecycle needs",
+      "whole-codebase research needs",
+      "exact API/type/build contracts",
+      "schema or generated-artifact contracts",
+      "state transitions/lifecycle behavior",
+      "requirement/risk | required evidence | workflow/stage that produces it | gap",
+      "covers the lifecycle and produces evidence for every material requirement/risk",
+      'Do not treat "has reviewers" as proof that a task-specific risk is covered',
+      "first named workflow launch commits the execution shape for the turn",
+      "chain unrelated top-level workflow launches",
+      "design one custom parent before launch",
+      "Choose the cheapest graph",
+      "Avoid decorative composition and duplicated research or review loops",
+      "state the selected graph",
+      "why one broad builtin is sufficient or insufficient",
+      "evidence each major stage produces",
+      "stop/repair conditions",
+      "simple direct match may use one sentence",
+    ]) {
+      expect(modelVisibleRouting).toContain(phrase);
+    }
+  });
+
+  test("retains every risk-based routing signal in model-visible guidance", () => {
+    for (const phrase of [
+      "broad repository uncertainty",
+      "`deep-research-codebase`",
+      "independent slices → Fan-out-and-synthesize",
+      "plausible-but-wrong contract risk → Adversarial verification",
+      "competing architectures or implementations → Generate-and-filter or Tournament",
+      "explicit repeat-until condition → Loop until done",
+      "implementation lifecycle → `goal` or `ralph`, potentially as a child",
+      "exact API/build/schema requirements → dedicated deterministic gates",
+    ]) {
+      expect(modelVisibleRouting).toContain(phrase);
+    }
+  });
+
+  test("requires skeptical reviewer plans and authoritative verifier loops", () => {
+    for (const phrase of [
+      "fresh-context grumpy/skeptical-but-fair reviewer",
+      "without invented requirements",
+      "structured verifier plan",
+      "exact probe, inputs, command/assertion, expected success condition, and requirement/risk covered",
+      "direct task-specific `ctx.tool(...)` gates",
+      "model select high-value probes through structured output",
+      "compile, test, schema generation/validation, runtime, or artifact-inspection checks",
+      "Actual tool results—not model self-report",
+      "consolidated evidence-backed repair findings",
+      "implementation child repairs them",
+      "bounded pass, repair, failure, and iteration-limit conditions",
+      "keep pure transformations as ordinary TypeScript",
+      "do not wrap every model-stage action in a tool call",
+      "how model-selected plans become tool executions",
+      "how failures reach bounded repair",
+    ]) {
+      expect(modelVisibleRouting).toContain(phrase);
+    }
+  });
+
+  test("mirrors risk/evidence routing and verifier-loop guidance in workflow docs", async () => {
+    const documentation = await readRepositoryFile("packages/coding-agent/docs/workflows.md");
+
+    for (const phrase of [
+      "pre-launch workflow architecture",
+      "requirement/risk | required evidence | workflow/stage that produces it | gap",
+      'Do not treat "has reviewers" as proof that a task-specific risk is covered',
+      "Does an installed graph supply complete coverage?",
+      "Broad repository uncertainty points to `deep-research-codebase`",
+      "implementation lifecycle to Goal or Ralph, potentially as a child",
+      "first named workflow launch commits the execution shape for the turn",
+      "one custom parent",
+      "Choose the cheapest complete graph",
+      "grumpy/skeptical-but-fair reviewer",
+      "without inventing requirements",
+      "structured verifier plan",
+      "direct task-specific `ctx.tool(...)` gates",
+      "model select high-value probes in structured output",
+      "The model must not self-report outcomes",
+      "actual tool results",
+      "consolidated, evidence-backed, bounded repair payload",
+      "rerun the deterministic verifier tools",
+      "pure transformations as ordinary TypeScript",
+      "do not wrap every model-stage action in a tool call",
+      "custom-loop pre-launch declaration",
+    ]) {
+      expect(documentation).toContain(phrase);
+    }
+  });
+
   test("routes worktree isolation through declared named-workflow inputs", () => {
     for (const phrase of [
       "Natural-language instructions to create or use a worktree do not enable runner isolation",

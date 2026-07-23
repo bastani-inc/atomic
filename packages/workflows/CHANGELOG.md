@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - Strengthened the existing Goal and Ralph reviewer prompts with a conditional contract-probe playbook for exact external-consumer APIs, build/feature matrices, schema optionality, state transitions, configuration precedence, low-level feature-flag independence, and permissive inputs. Reviewers now record independent probe outcomes in existing evidence fields and withhold approval when a material literal clause remains unverified, without changing reviewer counts, schemas, or convergence semantics. ([#1973](https://github.com/bastani-inc/atomic/issues/1973))
+- Strengthened model-visible workflow routing guidance with a pre-launch requirement/risk/evidence coverage pass, a one-launch composition commitment, concrete graph-selection signals, and bounded skeptical-reviewer loops whose model-selected probes are executed authoritatively through durable `ctx.tool(...)` verifier gates rather than model self-report ([#1974](https://github.com/bastani-inc/atomic/issues/1974)).
 
 ## [0.9.11-alpha.4] - 2026-07-23
 
