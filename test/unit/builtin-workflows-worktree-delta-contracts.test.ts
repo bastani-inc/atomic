@@ -116,21 +116,22 @@ describe("ralph worktree and code-delta contracts", () => {
         }
     });
 
-    const approvingRalphReview = JSON.stringify({
+    const ralphReviewJson = (decision: "complete" | "continue") => JSON.stringify({
         findings: [],
-        overall_correctness: "patch is correct",
-        overall_explanation: "all requirements proven",
+        overall_correctness: decision === "complete" ? "patch is correct" : "patch is incorrect",
+        overall_explanation: `${decision} decision from test reviewer`,
         overall_confidence_score: 0.9,
         requirements_traceability: [
             {
                 requirement: "complete requested task",
-                status: "proven",
-                evidence: "current state proves the task",
+                status: decision === "complete" ? "proven" : "missing",
+                evidence: decision === "complete" ? "current state proves the task" : "work remains",
             },
         ],
-        stop_review_loop: true,
+        stop_review_loop: decision === "complete",
         reviewer_error: null,
     });
+    const approvingRalphReview = ralphReviewJson("complete");
 
     test("orchestrator prompts carry worktree discipline and reviewer prompts carry code-delta review", async () => {
         if (tempCwd === undefined) throw new Error("expected Ralph temp cwd");
@@ -163,6 +164,46 @@ describe("ralph worktree and code-delta contracts", () => {
         assert.match(
             reviewerPrompt,
             /proving per code_delta_review that the delta actually exists in this review checkout/i,
+        );
+    });
+
+    test("forked orchestrator continuations reference worktree discipline without repeating the contract", async () => {
+        if (tempCwd === undefined) throw new Error("expected Ralph temp cwd");
+        const mod = await import("../../packages/workflows/builtin/ralph.js");
+        const ctx = makeMockCtx(
+            {
+                prompt: "Add a small feature",
+                max_loops: 2,
+                base_branch: "main",
+                git_worktree_dir: "",
+                create_pr: false,
+            },
+            {
+                sessionFile: (name) => `/tmp/ralph-${name}.jsonl`,
+                task: (name, _options, calls) => {
+                    if (!name.startsWith("reviewer-")) return undefined;
+                    return calls.task.includes("orchestrator-2")
+                        ? ralphReviewJson("complete")
+                        : ralphReviewJson("continue");
+                },
+            },
+        );
+
+        await mod.default.run({ ...ctx, cwd: tempCwd });
+
+        const forkedOrchestratorPrompt = ctx.calls.prompts["orchestrator-2"]?.[0] ?? "";
+        assert.notEqual(forkedOrchestratorPrompt, "", "expected a second orchestrator turn");
+        for (const pattern of WORKTREE_DISCIPLINE_PATTERNS) {
+            assert.doesNotMatch(
+                forkedOrchestratorPrompt,
+                pattern,
+                `forked orchestrator repeats: ${pattern}`,
+            );
+        }
+        assert.match(forkedOrchestratorPrompt, /worktree discipline/i);
+        assert.match(
+            forkedOrchestratorPrompt,
+            /previously established guidance still applies unchanged/i,
         );
     });
 });

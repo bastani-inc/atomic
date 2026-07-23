@@ -372,8 +372,8 @@ export function renderReviewerPrompt(args: {
     [
       "required_actions_before_tool_call",
       [
-        "1. Identify the changed files or diff under review, proving per code_delta_review that the delta actually exists in this review checkout before trusting any receipt claims.",
-        "2. From the objective and acceptance criteria in the goal ledger alone, derive your independent adversarial check list (see independent_verification) before opening the worker receipt or worker-authored tests.",
+        "1. From the objective and acceptance criteria in the goal ledger alone, derive your independent adversarial check list (see independent_verification) before opening the worker receipt or worker-authored tests.",
+        "2. Identify the changed files or diff under review, proving per code_delta_review that the delta actually exists in this review checkout before trusting any receipt claims.",
         "3. Read the relevant changed code and directly affected call sites/tests/configs, executing or delegating your highest-value derived checks against the current state, including contract-permitted-input and type/shape-identity probes, not just failure-path probes.",
         "4. Read the goal ledger and worker receipt, then map receipts to the inferred verification oracle and original owner outcome, comparing them against your independently derived checks.",
         "5. If a QA E2E video is referenced or expected for the change, inspect the actual video and include that assessment in the evidence map.",
