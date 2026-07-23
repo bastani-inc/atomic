@@ -61,11 +61,11 @@ const BUNDLED_WORKFLOW_COMPLETION_METADATA: WorkflowCompletionMetadata[] = [
 	},
 	{
 		name: "goal",
-		description: "Goal Runner workflow with bounded LM turns, acceptance criteria, ledger artifacts, reviewers, and reducer-gated completion.",
+		description: "Goal Runner workflow with bounded sub-agent orchestration turns, acceptance criteria, ledger artifacts, reviewers, and reducer-gated completion.",
 		inputs: {
 			objective: { description: "The objective or delta for this Goal Runner workflow run.", kind: "string" },
 			acceptance_criteria: { description: "Original immutable task contract this run must remain consistent with.", kind: "string" },
-			max_turns: { description: "Maximum worker/review turns before Goal Runner stops as needs_human.", kind: "number" },
+			max_turns: { description: "Maximum orchestrator/review turns before Goal Runner stops as needs_human.", kind: "number" },
 			base_branch: { description: "Optional branch reviewers compare the current code delta against.", kind: "string" },
 			git_worktree_dir: { description: "Optional Git worktree path.", kind: "string" },
 			create_pr: { description: "Whether to run the final pull-request creation stage after approval.", kind: "boolean" },

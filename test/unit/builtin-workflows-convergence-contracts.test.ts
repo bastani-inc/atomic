@@ -43,7 +43,12 @@ function goalReviewJson(decision: "complete" | "continue", findings = []) {
     });
 }
 
-const WORKER_CONTRACT_PATTERNS = [
+const ORCHESTRATOR_CONTRACT_PATTERNS = [
+    /<orchestration_guidance>/,
+    /You are not the direct implementer/i,
+    /All non-trivial operations must be delegated to subagents via the `subagent` tool/i,
+    /<subagent_tracking>/,
+    /Use the `todo` tool as your active control ledger/i,
     /<acceptance_matrix>/,
     /derive an observable acceptance matrix from the literal objective/i,
     /Stateful behavior modeling:/,
@@ -60,7 +65,7 @@ const WORKER_CONTRACT_PATTERNS = [
 
 const REVIEWER_CONTRACT_PATTERNS = [
     /<independent_verification>/,
-    /Before relying on the worker receipt, worker-authored tests, or any prior reviewer output, derive your own adversarial check list/i,
+    /Before relying on the implementation receipt, implementation-authored tests, or any prior reviewer output, derive your own adversarial check list/i,
     /minimal external-consumer compile or typecheck probe/i,
     /names, parameter types, return types, field types, pointer\/value identity, and method shapes/i,
     /every named positive and negative build-tag, feature, or configuration variant/i,
@@ -71,7 +76,7 @@ const REVIEWER_CONTRACT_PATTERNS = [
     /direct loaders, parsers, or validators with the surrounding feature both enabled and disabled/i,
     /omitted, empty, zero, duplicate, aliased, or unusual value/i,
     /Select only the risk classes supported by the literal objective and repository context/i,
-    /Repository-local or worker-authored tests are not sufficient evidence for an exact API, build, or schema clause/i,
+    /Repository-local or implementation-authored tests are not sufficient evidence for an exact API, build, or schema clause/i,
     /missing, blocked, or failed/i,
     /stop_review_loop=false/i,
     /command or scenario and its observed result/i,
@@ -102,7 +107,7 @@ const GOAL_EVIDENCE_FIELD_PATTERNS = [
 ] as const;
 
 describe("goal convergence contracts", () => {
-    test("worker prompts carry the acceptance matrix, batching, regression, and closure contracts", async () => {
+    test("orchestrator prompts carry delegation, acceptance, batching, regression, and closure contracts", async () => {
         const mod = await import("../../packages/workflows/builtin/goal.js");
         const d = mod.default as unknown as WorkflowDefinition;
         const ctx = makeMockCtx(
@@ -111,7 +116,7 @@ describe("goal convergence contracts", () => {
                 sessionFile: (name) => `/tmp/goal-${name}.jsonl`,
                 task: (name, _options, calls) => {
                     if (/^(completion|evidence|risk)-reviewer-/.test(name)) {
-                        return calls.task.includes("work-turn-2")
+                        return calls.task.includes("orchestrator-2")
                             ? goalReviewJson("complete")
                             : goalReviewJson("continue", [finding()]);
                     }
@@ -122,29 +127,29 @@ describe("goal convergence contracts", () => {
 
         await d.run(ctx);
 
-        const freshWorkerPrompt = ctx.calls.prompts["work-turn-1"]?.[0] ?? "";
-        const forkedWorkerPrompt = ctx.calls.prompts["work-turn-2"]?.[0] ?? "";
-        for (const pattern of WORKER_CONTRACT_PATTERNS) {
-            assert.match(freshWorkerPrompt, pattern, `fresh worker: ${pattern}`);
-            // Forked continuations inherit the contracts from the forked
+        const freshOrchestratorPrompt = ctx.calls.prompts["orchestrator-1"]?.[0] ?? "";
+        const forkedOrchestratorPrompt = ctx.calls.prompts["orchestrator-2"]?.[0] ?? "";
+        for (const pattern of ORCHESTRATOR_CONTRACT_PATTERNS) {
+            assert.match(freshOrchestratorPrompt, pattern, `fresh orchestrator: ${pattern}`);
+            // Forked continuations inherit the contracts from the orchestrator
             // session history and must not repeat them.
             assert.doesNotMatch(
-                forkedWorkerPrompt,
+                forkedOrchestratorPrompt,
                 pattern,
-                `forked worker repeats: ${pattern}`,
+                `forked orchestrator repeats: ${pattern}`,
             );
         }
         assert.match(
-            forkedWorkerPrompt,
+            forkedOrchestratorPrompt,
             /previously established guidance still applies unchanged/i,
         );
         assert.match(
-            forkedWorkerPrompt,
+            forkedOrchestratorPrompt,
             /consolidated_findings batch is listed, read it first/i,
         );
     });
 
-    test("reviewer prompts require independently derived adversarial checks before worker-authored evidence", async () => {
+    test("reviewer prompts require independently derived adversarial checks before orchestrator evidence", async () => {
         const mod = await import("../../packages/workflows/builtin/goal.js");
         const d = mod.default as unknown as WorkflowDefinition;
         const ctx = makeMockCtx(
@@ -191,11 +196,11 @@ describe("goal convergence contracts", () => {
         );
         assert.match(
             completionPrompt,
-            /derive the applicable checks from the conditional contract-probe playbook in independent_verification before opening the worker receipt/i,
+            /derive the applicable checks from the conditional contract-probe playbook in independent_verification before opening the orchestrator receipt/i,
         );
     });
 
-    test("the review round artifact carries a consolidated findings batch the next worker turn reads first", async () => {
+    test("the review round artifact carries a consolidated findings batch the next orchestrator turn reads first", async () => {
         const mod = await import("../../packages/workflows/builtin/goal.js");
         const d = mod.default as unknown as WorkflowDefinition;
         const sharedFinding = finding({ title: "[P2] Missing boundary check" });
@@ -228,7 +233,7 @@ describe("goal convergence contracts", () => {
         const result = await d.run(ctx);
 
         assert.equal(result["status"], "needs_human");
-        const secondTurnReads = readPaths(ctx.calls.taskOptions["work-turn-2"]?.[0]);
+        const secondTurnReads = readPaths(ctx.calls.taskOptions["orchestrator-2"]?.[0]);
         const roundPath = secondTurnReads.find((path) =>
             normalizePathSeparators(path).endsWith("review-round-latest.json"),
         );

@@ -149,7 +149,7 @@ describe("goal objective-drift workflow behavior", () => {
     const ledger = JSON.parse(readFileSync(result["ledger_path"] as string, "utf8"));
     assert.match(
       ledger.decisions[0].reason,
-      /Worker attempt budget reached without reviewer quorum/,
+      /Orchestrator attempt budget reached without reviewer quorum/,
     );
   });
 });

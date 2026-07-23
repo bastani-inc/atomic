@@ -43,7 +43,7 @@ function goalReviewJson(decision: "complete" | "continue") {
 }
 
 describe("goal worktree and code-delta contracts", () => {
-    test("worker prompts carry worktree discipline and forked continuations reference it without repeating it", async () => {
+    test("orchestrator prompts carry worktree discipline and forked continuations reference it without repeating it", async () => {
         const mod = await import("../../packages/workflows/builtin/goal.js");
         const d = mod.default as unknown as WorkflowDefinition;
         const ctx = makeMockCtx(
@@ -52,7 +52,7 @@ describe("goal worktree and code-delta contracts", () => {
                 sessionFile: (name) => `/tmp/goal-${name}.jsonl`,
                 task: (name, _options, calls) => {
                     if (/^(completion|evidence|risk)-reviewer-/.test(name)) {
-                        return calls.task.includes("work-turn-2")
+                        return calls.task.includes("orchestrator-2")
                             ? goalReviewJson("complete")
                             : goalReviewJson("continue");
                     }
@@ -63,17 +63,17 @@ describe("goal worktree and code-delta contracts", () => {
 
         await d.run(ctx);
 
-        const freshWorkerPrompt = ctx.calls.prompts["work-turn-1"]?.[0] ?? "";
-        const forkedWorkerPrompt = ctx.calls.prompts["work-turn-2"]?.[0] ?? "";
+        const freshOrchestratorPrompt = ctx.calls.prompts["orchestrator-1"]?.[0] ?? "";
+        const forkedOrchestratorPrompt = ctx.calls.prompts["orchestrator-2"]?.[0] ?? "";
         for (const pattern of WORKTREE_DISCIPLINE_PATTERNS) {
-            assert.match(freshWorkerPrompt, pattern, `fresh worker: ${pattern}`);
+            assert.match(freshOrchestratorPrompt, pattern, `fresh orchestrator: ${pattern}`);
             assert.doesNotMatch(
-                forkedWorkerPrompt,
+                forkedOrchestratorPrompt,
                 pattern,
-                `forked worker repeats: ${pattern}`,
+                `forked orchestrator repeats: ${pattern}`,
             );
         }
-        assert.match(forkedWorkerPrompt, /worktree discipline/i);
+        assert.match(forkedOrchestratorPrompt, /worktree discipline/i);
     });
 
     test("reviewer prompts require proving the code delta exists in the review checkout", async () => {

@@ -23,7 +23,7 @@ export function renderE2eQaVideoReviewGuidance(
   knownVideoPath?: string,
 ): string {
   const target = knownVideoPath === undefined || knownVideoPath.length === 0
-    ? "Look for QA E2E video references in the goal ledger, worker receipt, implementation notes, orchestrator report, or other review context artifacts."
+    ? "Look for QA E2E video references in the goal ledger, implementation receipt, implementation notes, orchestrator report, or other review context artifacts."
     : `Known QA E2E video path for this run: ${knownVideoPath}`;
   return [
     target,
@@ -31,7 +31,7 @@ export function renderE2eQaVideoReviewGuidance(
     "Use available video/file tooling such as `fetch_content` on the local video path with a prompt focused on whether the recording proves the required user scenario, or inspect representative frames/metadata when full video analysis is unavailable.",
     "Check that the video reflects the current repository/application state, exercises the objective-relevant user path, shows the expected final behavior, and does not visibly hide errors, stale UI, broken loading states, or skipped steps.",
     "For UI-applicable or full-stack changes, treat a missing, stale, unreadable, or inconclusive QA video as missing E2E evidence unless the receipt or implementation notes justify why no video applies and provide adequate alternate end-to-end proof.",
-    "Treat skipped E2E due to assumed-missing credentials, auth, or environment access as missing evidence unless the worker actually checked credential/auth state, attempted the launch/flow, and reported exact commands plus observed failure output.",
+    "Treat skipped E2E due to assumed-missing credentials, auth, or environment access as missing evidence unless the implementation agent actually checked credential/auth state, attempted the launch/flow, and reported exact commands plus observed failure output.",
   ].join("\n");
 }
 
@@ -55,7 +55,7 @@ export const REVIEWER_SPEC_VS_OBJECTIVE_GUARD =
   "Do not use external spec/standard conformance alone to flag a wide trigger surface for an error condition the objective/acceptance criteria enumerate; the contract prefers loud errors over silent reinterpretation of ambiguous inputs, so classify such spec-vs-objective tension as beyond_objective rather than a blocking defect.";
 
 export const REVIEWER_OVERIMPLEMENTATION_GUARD =
-  "Hunt over-implementation as seriously as gaps: any validation error, required field, uniqueness/format constraint, immutability wrapper, or normalization the contract does not require is a defect that rejects inputs or produces shapes the contract permits — classify it required_by_objective. Probe at least one contract-permitted input the worker's own tests do not exercise before approving.";
+  "Hunt over-implementation as seriously as gaps: any validation error, required field, uniqueness/format constraint, immutability wrapper, or normalization the contract does not require is a defect that rejects inputs or produces shapes the contract permits — classify it required_by_objective. Probe at least one contract-permitted input the implementation's own tests do not exercise before approving.";
 
 export const ACCEPTANCE_MATRIX_CONTRACT = [
   "Acceptance/contract matrix:",
@@ -87,7 +87,7 @@ export const REVIEWER_INTERCOM_COORDINATION_PROTOCOL = [
 
 export const REVIEWER_INDEPENDENT_VERIFICATION_CONTRACT = [
   "Independent verification derivation:",
-  "- Before relying on the worker receipt, worker-authored tests, or any prior reviewer output, derive your own adversarial check list from the literal objective and acceptance criteria alone: per-clause observable checks plus boundary, edge, negative, and invalid-input probes; contract-permitted-input probes; exact type/shape/text-identity probes; and state/transition/invariant probes.",
+  "- Before relying on the implementation receipt, implementation-authored tests, or any prior reviewer output, derive your own adversarial check list from the literal objective and acceptance criteria alone: per-clause observable checks plus boundary, edge, negative, and invalid-input probes; contract-permitted-input probes; exact type/shape/text-identity probes; and state/transition/invariant probes.",
   "- Apply this conditional contract-probe playbook when supported by the contract and repository:",
   "  - Exact public API/type contracts: create a minimal external-consumer compile or typecheck probe using the names, parameter types, return types, field types, pointer/value identity, and method shapes stated by the objective.",
   "  - Build tags/features/configuration variants: exercise every named positive and negative build-tag, feature, or configuration variant; prove required symbols compile and forbidden symbols are unavailable.",
@@ -97,8 +97,8 @@ export const REVIEWER_INDEPENDENT_VERIFICATION_CONTRACT = [
   "  - Low-level APIs versus feature flags: exercise direct loaders, parsers, or validators with the surrounding feature both enabled and disabled unless the literal low-level API contract explicitly makes that flag authoritative.",
   "  - Permissive inputs and over-implementation: probe at least one contract-permitted omitted, empty, zero, duplicate, aliased, or unusual value that an implementation may have made unnecessarily invalid.",
   "- Select only the risk classes supported by the literal objective and repository context. These are generic risk classes, not hidden test cases; do not manufacture requirements outside the literal contract.",
-  "- Execute or delegate every applicable material probe against the current repository state before mapping worker evidence to requirements. Name each command or scenario and its observed result in the existing narrative and requirements_traceability fields.",
-  "- Worker-authored tests, snapshots, and receipts corroborate your derived checks; they never substitute for them. Passing worker-authored tests is circular evidence for the clauses those tests were written from. Repository-local or worker-authored tests are not sufficient evidence for an exact API, build, or schema clause without the applicable independent compile, type, build-variant, or schema probe.",
+  "- Execute or delegate every applicable material probe against the current repository state before mapping implementation evidence to requirements. Name each command or scenario and its observed result in the existing narrative and requirements_traceability fields.",
+  "- Implementation-authored tests, snapshots, and receipts corroborate your derived checks; they never substitute for them. Passing implementation-authored tests is circular evidence for the clauses those tests were written from. Repository-local or implementation-authored tests are not sufficient evidence for an exact API, build, or schema clause without the applicable independent compile, type, build-variant, or schema probe.",
   "- A compile, type, build, or schema requirement without its applicable independent probe remains unverified: keep its requirements_traceability status missing, explain the gap, add an objective-aligned finding when the patch is materially deficient, and set stop_review_loop=false.",
   "- When an applicable material probe is missing, blocked, or failed, record the command or scenario and its observed result or limitation in overall_explanation and requirements_traceability, use the workflow's existing remaining-verification or finding fields, and set stop_review_loop=false. When tools or dependencies prevent necessary verification after reasonable recovery, populate the existing reviewer_error field instead of approving around the limitation.",
   "",
@@ -141,6 +141,6 @@ export const REVIEW_CODE_DELTA_CONTRACT = [
   "- Review the actual code delta, and first prove that delta exists where the workflow delivers it: in the invoking working directory, or in the explicitly configured git worktree when the run was set up with one.",
   "- Use the repository's version-control tooling to inspect state (for git: `git worktree list`, `git status --short`, and a diff against the baseline branch; use the equivalent commands for other systems). If receipts, implementation notes, or stage summaries claim implemented work but the review checkout shows no corresponding delta, that is a blocking [P0] required_by_objective finding: the work may be stranded in another worktree, clone, or unapplied state. Do not approve; require the work to be brought into the review checkout first.",
   "- Never set stop_review_loop=true for an implementation objective when the review checkout's delta is empty or unrelated to that objective; an empty delta cannot satisfy an implementation objective regardless of what receipts claim.",
-  "- Unless the objective explicitly forbids committing, treat uncommitted work at claimed readiness as remaining work: require the worker to commit (or intentionally discard) outstanding changes so the delivered state is durable.",
+  "- Unless the objective explicitly forbids committing, treat uncommitted work at claimed readiness as remaining work: require the implementation to be committed (or outstanding changes intentionally discarded) so the delivered state is durable.",
   "- Treat any modification, rename, or deletion of pre-existing test files or test functions in the delta as a finding requiring explicit justification against the literal contract; validating against existing tests means running them, not editing them.",
 ].join("\n");

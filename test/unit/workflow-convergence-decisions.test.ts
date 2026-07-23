@@ -114,7 +114,7 @@ describe("goal convergence decision artifacts", () => {
     const ledger = JSON.parse(readFileSync(result["ledger_path"] as string, "utf8"));
 
     assert.equal(result["status"], "complete");
-    assert.equal(ctx.calls.task.includes("work-turn-2"), false);
+    assert.equal(ctx.calls.task.includes("orchestrator-2"), false);
     assert.equal(ctx.calls.task.includes("pull-request"), true);
     assert.deepEqual(ledger.decisions[0].diagnostics, []);
     assert.equal(ledger.decisions[0].parsed, true);
@@ -135,7 +135,7 @@ describe("goal convergence decision artifacts", () => {
     const ledger = JSON.parse(readFileSync(result["ledger_path"] as string, "utf8"));
 
     assert.equal(result["status"], "complete");
-    assert.equal(ctx.calls.task.includes("work-turn-2"), false);
+    assert.equal(ctx.calls.task.includes("orchestrator-2"), false);
     assert.equal(ctx.calls.task.includes("pull-request"), true);
     assert.equal(ledger.reviews[0].convergence_decision.finalActionRemaining, true);
     assert.equal(ledger.reviews[0].convergence_decision.nextAction, "pull-request");
