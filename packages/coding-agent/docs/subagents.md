@@ -133,6 +133,14 @@ Inside workflow stages, completion delivery observes the stage generation bounda
 
 When a workflow graph overlay is open, Atomic also publishes the live async subagent summary into the shared status surface. The below-editor async widget remains available when the workflow overlay is hidden, and the overlay statusline keeps the run count/state visible while the graph fills the terminal.
 
+## Orchestrator model and group policy
+
+Atomic applies the same delegation policy to any parent chat or workflow stage that orchestrates subagents. A named agent uses the model and fallback chain declared by its agent definition, so the orchestrator normally omits the subagent tool's explicit `model` argument. An override needs either the user's exact model request or a documented task-specific reason recorded before launch; model diversity alone is not enough.
+
+If an agent declares no model or fallback policy, the orchestrator consults the role guidance in [Model selection](/models/model-selection), then calls `workflow({ action: "models" })` when that tool is available. It may pin only a returned `fullId` and may add a thinking suffix only when the model entry lists that level. When the catalog tool is unavailable, the catalog is empty, or no recommended model is present, the child stays unpinned and the orchestrator reports the limit instead of inventing a model or inspecting credentials.
+
+Each workflow or other orchestrator invocation also uses one invocation-specific, non-`default` Intercom group for all of its children, including parallel and follow-up work. This keeps unrelated runs and the main chat isolated while `contact_supervisor` retains its authorized cross-group route.
+
 ## Context and execution modes
 
 Subagents can run with fresh or forked context:

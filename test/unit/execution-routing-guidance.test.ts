@@ -330,6 +330,29 @@ describe("workflow-first execution routing", () => {
     }
   });
 
+  test("applies model and Intercom policy to every subagent orchestrator", () => {
+    const guidance = subagentGuidance.join("\n");
+
+    for (const phrase of [
+      "each named agent use its declared model and fallback policy",
+      "omit the explicit model argument",
+      "documented task requirement",
+      "Do not choose an ad hoc model merely for diversity",
+      "packages/coding-agent/docs/models/model-selection.md",
+      'workflow({ action: "models" })',
+      "Pin only a returned fullId",
+      "thinking level listed for that entry",
+      "leave the child unpinned",
+      "Do not inspect credentials",
+      "each workflow or orchestrator invocation",
+      "one invocation-scoped literal Intercom group that is not default",
+      "including parallel and follow-up work",
+      "contact_supervisor available for cross-group escalation",
+    ]) {
+      expect(guidance).toContain(phrase);
+    }
+  });
+
   test("restores Ralph's builtin subagent-orchestrator prompts", async () => {
     const ralphPrompts = (await Promise.all([
       "packages/workflows/builtin/ralph-core.ts",
