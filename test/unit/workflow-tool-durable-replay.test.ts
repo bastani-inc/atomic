@@ -1,4 +1,4 @@
-import { afterEach, describe, test } from "bun:test";
+import { afterEach, beforeEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -23,6 +23,13 @@ class TrackingHydrationBackend extends InMemoryDurableBackend {
     this.hydrationCalls += 1;
   }
 }
+
+beforeEach(() => {
+  // Other test files may run workflows against the shared singleton store;
+  // clear it so the durable-only replay assertions below start from a clean
+  // slate regardless of cross-file execution order.
+  store.clear();
+});
 
 afterEach(async () => {
   stageControlRegistry.clear();
