@@ -8,6 +8,7 @@ import type {
 	HostSessionPickerRequest,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
+import type { FooterDataProvider } from "../../core/footer-data-provider.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import type { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
 import type { EngineInputFormService } from "../interactive-engine/engine-input-form.ts";
@@ -28,6 +29,7 @@ interface CreateRpcExtensionUIContextOptions {
 	customUi?: EngineCustomUiService;
 	sessionPicker?: EngineSessionPickerService;
 	inputForm?: EngineInputFormService;
+	footerDataProvider?: FooterDataProvider;
 }
 
 interface DialogPromiseOptions<T> extends CreateRpcExtensionUIContextOptions {
@@ -91,6 +93,7 @@ export function createRpcExtensionUIContext({
 	customUi,
 	sessionPicker,
 	inputForm,
+	footerDataProvider,
 }: CreateRpcExtensionUIContextOptions): ExtensionUIContext {
 	const unsupportedWarnings = new Set<string>();
 	let toolsExpanded = false;
@@ -156,6 +159,11 @@ export function createRpcExtensionUIContext({
 		},
 
 		setStatus(key: string, text: string | undefined): void {
+			footerDataProvider?.setExtensionStatus(key, text);
+			// Isolated custom UI components (e.g. an attached stage-chat footer)
+			// re-render only after an engine_custom_invalidate; without this the
+			// mirrored status text goes stale until an unrelated repaint occurs.
+			customUi?.requestRender();
 			emitExtensionUIRequest(output, { method: "setStatus", statusKey: key, statusText: text });
 		},
 
@@ -258,7 +266,7 @@ export function createRpcExtensionUIContext({
 		},
 
 		getFooterDataProvider() {
-			return {
+			return footerDataProvider ?? {
 				getGitBranch: () => null,
 				getExtensionStatuses: () => new Map(),
 				getAvailableProviderCount: () => 1,

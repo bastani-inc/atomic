@@ -6,14 +6,7 @@ import { resolveStageChatViewportRows } from "./stage-chat-layout.js";
 import { createPromptCardState } from "./prompt-card.js";
 import { hideMountedCustomUi, releaseMountedCustomUi, showCustomUi } from "./stage-chat-view-custom-ui.js";
 import { editorRuleColor } from "./stage-chat-view-footer-status.js";
-import {
-  blankLine,
-  cursorBlock,
-  editorThemeFromGraphTheme,
-  paint,
-  setEditorBorderColor,
-  setEditorPlaceholder,
-} from "./stage-chat-view-render-helpers.js";
+import { blankLine, cursorBlock, editorThemeFromGraphTheme, paint, setEditorBorderColor, setEditorPlaceholder } from "./stage-chat-view-render-helpers.js";
 import {
   HEADER_ROWS,
   SEP_ROWS,
@@ -58,6 +51,7 @@ export function initializeStageChatView(
   ctx.piEditorFactory = opts.piEditorFactory;
   ctx.getToolsExpanded = opts.getToolsExpanded;
   ctx.setToolsExpanded = opts.setToolsExpanded;
+  ctx.footerData = opts.footerData;
   ctx.stageUiBroker = opts.stageUiBroker ?? stageUiBroker;
   ctx.canSubmitPrompt = opts.canSubmitPrompt;
   ctx.mountedCustomUi = null;
@@ -75,6 +69,7 @@ export function initializeStageChatView(
   ctx.seenNoticeIds = new Set<string>();
   ctx._unsubscribeStore = null;
   ctx._unsubscribeHandle = null;
+  ctx._unsubscribeFooterData = null;
   ctx._unregisterStageUiHost = null;
   installFocusHold(ctx);
   ctx.chatHost = createChatHost(ctx, opts);
@@ -101,6 +96,7 @@ export function initializeStageChatView(
   syncPromptState(ctx, initialStage?.pendingPrompt);
   if (isTerminalStageChatState(initialRun?.status) || isTerminalStageChatState(initialStage?.status)) ctx.chatHost.clearBusyForTerminalWorkflowStage();
   ctx._unsubscribeStore = ctx.store.subscribe(() => handleStoreUpdate(ctx));
+  ctx._unsubscribeFooterData = ctx.footerData?.onBranchChange(() => ctx.requestRender?.()) ?? null;
 
   if (ctx.handle) {
     ctx._unsubscribeHandle = ctx.handle.subscribe((event) => applyStageChatLiveHandleEvent(ctx, event));
@@ -488,6 +484,8 @@ export function disposeStageChatView(ctx: StageChatViewContext): void {
   ctx._unsubscribeStore = null;
   ctx._unsubscribeHandle?.();
   ctx._unsubscribeHandle = null;
+  ctx._unsubscribeFooterData?.();
+  ctx._unsubscribeFooterData = null;
   releaseMountedCustomUi(ctx);
   disposePromptEditor(ctx);
   ctx._unregisterStageUiHost?.();
