@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.11-alpha.5] - 2026-07-23
+
 ### Changed
 
 - Strengthened the existing Goal and Ralph reviewer prompts with a conditional contract-probe playbook for exact external-consumer APIs, build/feature matrices, schema optionality, state transitions, configuration precedence, low-level feature-flag independence, and permissive inputs. Reviewers now record independent probe outcomes in existing evidence fields and withhold approval when a material literal clause remains unverified, without changing reviewer counts, schemas, or convergence semantics. ([#1973](https://github.com/bastani-inc/atomic/issues/1973))
