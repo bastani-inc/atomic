@@ -1,31 +1,31 @@
-import type { StageSnapshot } from "../shared/store-types.js";
-import type { WorkflowPersistencePort } from "../shared/types.js";
-import type { DurableWorkflowBackend } from "../durable/backend.js";
-import { persistDurableCacheEntry } from "../durable/resume-catalog.js";
+import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import { recordStageSessionCheckpoint, type DurableStageDeps } from "../durable/stage-primitive.js";
+import type { StageSessionCheckpointOptions } from "../runs/foreground/executor-types.js";
+import { recordRunTimingCheckpoint } from "../durable/run-timing.js";
 
 export interface DurableStageSessionRecorderInput {
   readonly runId: string;
   readonly deps: DurableStageDeps;
-  readonly backend: DurableWorkflowBackend;
-  readonly persistence?: WorkflowPersistencePort;
-  readonly onStageSession?: (runId: string, snapshot: StageSnapshot) => unknown;
+  readonly onStageSession?: (runId: string, snapshot: StageSnapshot, options?: StageSessionCheckpointOptions) => unknown;
+  /**
+   * Live root-run snapshot. When present, stage-session checkpoints also
+   * refresh the debounced run-level elapsed record so a durable resume can
+   * seed the total workflow duration. Omitted for child runs — run timing is
+   * only tracked for the root workflow.
+   */
+  readonly runSnapshot?: RunSnapshot;
 }
 
 export function createDurableStageSessionRecorder(
   input: DurableStageSessionRecorderInput,
-): (stageRunId: string, snapshot: StageSnapshot) => void {
-  return (stageRunId, snapshot) => {
+): (stageRunId: string, snapshot: StageSnapshot, options?: StageSessionCheckpointOptions) => Promise<void> {
+  return async (stageRunId, snapshot, options) => {
     if (stageRunId === input.runId) {
-      void recordStageSessionCheckpoint(input.deps, snapshot).then((recorded) => {
-        if (!recorded || !input.persistence || !input.backend.persistent) return;
-        const cacheEntry = input.backend.toCacheEntry(input.runId);
-        if (cacheEntry) persistDurableCacheEntry(input.persistence, cacheEntry);
-      }).catch((error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        console.warn(`atomic-workflows: durable stage session checkpoint failed: ${message}`);
-      });
+      await recordStageSessionCheckpoint(input.deps, snapshot, { force: options?.forceDurable === true });
+      if (input.runSnapshot !== undefined) {
+        recordRunTimingCheckpoint(input.deps.backend, input.runSnapshot, { debounce: options?.forceDurable !== true });
+      }
     }
-    void input.onStageSession?.(stageRunId, snapshot);
+    await input.onStageSession?.(stageRunId, snapshot, options);
   };
 }

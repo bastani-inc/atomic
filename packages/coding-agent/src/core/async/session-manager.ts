@@ -1,4 +1,3 @@
-import type { CustomMessage } from "../messages.js";
 import type { SendMessageOptions } from "../extensions/index.js";
 import { AsyncJobManager } from "./job-manager.js";
 import type { AsyncJobDeliveryHandler, AsyncJobDeliveryMessage } from "./types.js";
@@ -9,43 +8,12 @@ export interface SessionAsyncJobManagerHandle {
 	sessionId: symbol;
 }
 interface AsyncDeliverySession {
-	readonly isStreaming?: boolean;
-	sendCustomMessage<T>(
-		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
+	sendCustomMessage(
+		message: AsyncJobDeliveryMessage,
 		options?: SendMessageOptions,
 	): Promise<void>;
 }
 
-const STREAMING_DELIVERY_POLL_MS = 10;
-
-function scheduleBoundaryCheck(callback: () => void): NodeJS.Timeout {
-	const timer = setTimeout(callback, STREAMING_DELIVERY_POLL_MS);
-	timer.unref?.();
-	return timer;
-}
-
-function waitForStreamingBoundary(session: AsyncDeliverySession, isStale: () => boolean): Promise<"ready" | "stale"> {
-	return new Promise((resolve) => {
-		let timer: NodeJS.Timeout | undefined;
-		const settle = (value: "ready" | "stale") => {
-			if (timer) clearTimeout(timer);
-			resolve(value);
-		};
-		const check = () => {
-			timer = undefined;
-			if (isStale()) {
-				settle("stale");
-				return;
-			}
-			if (session.isStreaming !== true) {
-				settle("ready");
-				return;
-			}
-			timer = scheduleBoundaryCheck(check);
-		};
-		check();
-	});
-}
 
 export function createSessionAsyncDeliveryHandler(session: AsyncDeliverySession, manager?: AsyncJobManager, sessionId?: symbol): AsyncJobDeliveryHandler {
 	return async (message: AsyncJobDeliveryMessage) => {
@@ -53,9 +21,12 @@ export function createSessionAsyncDeliveryHandler(session: AsyncDeliverySession,
 			manager?.disposed === true ||
 			manager?.isDeliverySuppressed(message.details.jobId) === true ||
 			(sessionId !== undefined && manager?.isSessionDisposed(sessionId) === true);
-		if (await waitForStreamingBoundary(session, isStale) === "stale") return;
 		if (isStale()) return;
-		await session.sendCustomMessage(message, { deliverAs: "followUp", triggerTurn: true });
+		await session.sendCustomMessage(message, {
+			deliverAs: "followUp",
+			triggerTurn: true,
+			stageAdmissionKey: `async-job:${message.details.jobId}`,
+		});
 	};
 }
 

@@ -1,3 +1,4 @@
+import { runCallback, runSynchronousCallback } from "@bastani/atomic";
 import type { Store } from "../../shared/store.js";
 import type { StageSnapshot } from "../../shared/store-types.js";
 import type { StageOptions } from "../../shared/types.js";
@@ -11,7 +12,7 @@ import type { GraphFrontierTracker } from "../../engine/graph-inference.js";
 import type { EngineStageRuntimeOptions } from "../../engine/options.js";
 import { createStageContext as createInnerStageContext, type InternalStageContext, type StageAdapters } from "./stage-runner.js";
 import type { StageControlRegistry } from "./stage-control-registry.js";
-import type { ParallelFailFastScope } from "./executor-types.js";
+import type { ParallelFailFastScope, StageSessionCheckpointOptions } from "./executor-types.js";
 import type { WorkflowExitManager } from "./executor-exit-manager.js";
 import type { ContinuationReplayIndex } from "./executor-continuation.js";
 import { sameStringSet } from "./executor-continuation.js";
@@ -24,7 +25,8 @@ import type { LiveStageMutableState, LiveStageRuntime, StageContextWithMeta, Sta
 import { createStageControlHandle } from "./executor-stage-control.js";
 import { createTrackedStageCaller } from "./executor-stage-call.js";
 import { createStageContext } from "./executor-stage-context.js";
-import { stageOptionsWithGitWorktree, stageOptionsWithInputDefaults } from "./executor-direct-helpers.js";
+import { stageOptionsWithGitWorktree, stageOptionsWithInputDefaults, type GitWorktreeSetupCache } from "./executor-direct-helpers.js";
+import { createQueuedUserMessageConsumptionWatcher } from "./executor-queued-user-message.js";
 
 export function createWorkflowStageFactory(input: {
   readonly runId: string;
@@ -38,6 +40,7 @@ export function createWorkflowStageFactory(input: {
   readonly limiter: ConcurrencyLimiter;
   readonly inputRuntimeDefaults: Partial<StageOptions>;
   readonly workflowInvocationCwd: string;
+  readonly gitWorktreeSetupCache: GitWorktreeSetupCache;
   readonly stageRegistry: StageControlRegistry;
   readonly exit: WorkflowExitManager;
   readonly classifyExecutorFailure: (error: unknown) => WorkflowFailure;
@@ -45,7 +48,7 @@ export function createWorkflowStageFactory(input: {
 }): (name: string, options?: StageOptions, stageFailFastScope?: ParallelFailFastScope) => StageContextWithMeta {
   return (name: string, options?: StageOptions, stageFailFastScope?: ParallelFailFastScope): StageContextWithMeta => {
     input.exit.throwIfWorkflowExitSelected();
-    options = stageOptionsWithGitWorktree(stageOptionsWithInputDefaults(options, input.inputRuntimeDefaults), input.workflowInvocationCwd);
+    options = stageOptionsWithGitWorktree(stageOptionsWithInputDefaults(options, input.inputRuntimeDefaults), input.workflowInvocationCwd, input.gitWorktreeSetupCache);
     const stageId = crypto.randomUUID();
     const provisionalParentIds = input.tracker.onSpawn(stageId, name);
     const scopedParentIds = input.opts.continuation === undefined ? stageFailFastScope?.parentIds : undefined;
@@ -54,7 +57,7 @@ export function createWorkflowStageFactory(input: {
       input.tracker.replaceParents(stageId, scopedParentIds);
     }
 
-    const replayKey = `stage:${name}`;
+    const replayKey = options?.durableReplayKey ?? `stage:${name}`;
     const replayDecision = input.replayIndex.decide({
       displayName: name,
       replayKey,
@@ -144,6 +147,7 @@ export function createWorkflowStageFactory(input: {
       askUserQuestionObservedThisTurn: false,
       chatAnswerObservedThisTurn: false,
       resumeContinuationPending: false,
+      waitingForStageChatTurn: false,
       liveHandleReleased: false,
       stageClosedByWorkflowExit: false,
       stageFinalized: false,
@@ -177,9 +181,15 @@ export function createWorkflowStageFactory(input: {
         stageUiBroker.clearStagePrompt(input.runId, stageId);
       }
     });
+    const unsubscribeQueuedUserMessageWatcher = innerCtx.subscribe(
+      createQueuedUserMessageConsumptionWatcher(() => {
+        state.resumeContinuationPending = "queued-user-message";
+      }),
+    );
 
     const disposeInnerContext = async (): Promise<void> => {
       unsubscribeAskUserQuestionWatcher();
+      unsubscribeQueuedUserMessageWatcher();
       activeAskUserQuestionCalls.clear();
       state.activeAskUserQuestionAnonymousCalls = 0;
       input.activeStore.recordStageAwaitingInput(input.runId, stageId, false);
@@ -188,12 +198,15 @@ export function createWorkflowStageFactory(input: {
     };
 
     let runtime: LiveStageRuntime;
-    const captureStageSessionMeta = (): void => {
+    const captureStageSessionMeta = (checkpointOptions?: StageSessionCheckpointOptions): unknown => {
       const meta = innerCtx.__sessionMeta();
       if (meta.sessionId !== undefined) stageSnapshot.sessionId = meta.sessionId;
       if (meta.sessionFile !== undefined) stageSnapshot.sessionFile = meta.sessionFile;
       if (meta.sessionId !== undefined || meta.sessionFile !== undefined) input.activeStore.recordStageSession(input.runId, stageId, meta);
-      void input.opts.onStageSession?.(input.runId, stageSnapshot);
+      const pending = input.opts.onStageSession?.(input.runId, stageSnapshot, checkpointOptions);
+      if (checkpointOptions?.forceDurable === true) return pending;
+      void Promise.resolve(pending).catch(() => {});
+      return undefined;
     };
     const releaseLiveHandle = async (): Promise<void> => {
       if (state.liveHandleReleased) return;
@@ -211,6 +224,9 @@ export function createWorkflowStageFactory(input: {
         throw new Error(`atomic-workflows: stage "${name}" skipped by workflow exit`);
       }
       input.exit.throwIfWorkflowExitSelected();
+      if (input.signal.aborted) {
+        throw input.signal.reason ?? new DOMException("workflow killed", "AbortError");
+      }
     };
 
     let stageStartEntryAppended = false;
@@ -243,7 +259,12 @@ export function createWorkflowStageFactory(input: {
       applyModelFallbackMeta(innerCtx.__modelFallbackMeta());
       input.activeStore.recordStageEnd(input.runId, stageSnapshot);
       stageUiBroker.cancelStagePrompt(input.runId, stageId, new Error(`atomic-workflows: stage ${stageId} completed with pending custom UI`));
-      await input.opts.onStageEnd?.(input.runId, stageSnapshot);
+      if (input.opts.onStageEnd) {
+        await runCallback(
+          { kind: "workflow.stage_adapter", name: `onStageEnd:${name}`, runId: input.runId, stageId },
+          () => input.opts.onStageEnd!(input.runId, stageSnapshot),
+        );
+      }
       if (input.opts.persistence) {
         appendStageStartOnce();
         appendStageEnd(input.opts.persistence, {
@@ -317,7 +338,12 @@ export function createWorkflowStageFactory(input: {
     runtime.unregisterStageHandle = input.stageRegistry.register(handle);
 
     input.activeStore.recordStageStart(input.runId, stageSnapshot);
-    input.opts.onStageStart?.(input.runId, stageSnapshot);
+    if (input.opts.onStageStart) {
+      runSynchronousCallback(
+        { kind: "workflow.stage_adapter", name: `onStageStart:${name}`, runId: input.runId, stageId },
+        () => input.opts.onStageStart!(input.runId, stageSnapshot),
+      );
+    }
     const blockedBy = input.scheduler.blockingAncestorFor(stageSnapshot);
     if (blockedBy !== undefined) input.scheduler.blockStageUntilCascadeRelease(stageSnapshot, blockedBy);
 
@@ -329,20 +355,24 @@ export function createWorkflowStageFactory(input: {
     const skipForParallelFailFast = async (): Promise<void> => {
       if (isTerminalStage(stageSnapshot)) return;
       markSkippedForParallelFailFast();
-      await finalizeStageSnapshot();
+      innerCtx.__sealGeneration();
       await innerCtx.abort().catch(() => {});
+      await innerCtx.__closeGeneration();
+      await finalizeStageSnapshot();
       await dropStageControlForCompletion().catch(() => {});
     };
     stageFailFastScope?.activeStages.set(stageId, { skip: skipForParallelFailFast });
     runtime.unregisterWorkflowExitCleanup = input.exit.registerWorkflowExitCleanup(stageId, {
       async skipForWorkflowExit(reason?: string): Promise<void> {
         state.stageClosedByWorkflowExit = true;
+        innerCtx.__sealGeneration();
+        await innerCtx.abort().catch(() => {});
+        await innerCtx.__closeGeneration();
         if (!isTerminalStage(stageSnapshot)) {
           stageSnapshot.status = "skipped";
           stageSnapshot.skippedReason = input.exit.workflowExitSkippedReason(reason);
           await finalizeStageSnapshot();
         }
-        await innerCtx.abort().catch(() => {});
         await releaseLiveHandle().catch(() => {});
       },
     });

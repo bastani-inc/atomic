@@ -45,6 +45,9 @@ describe("withWorkflowDefaults — empty config applies all defaults", () => {
       WORKFLOW_CONFIG_DEFAULTS.workflowNotifications,
     );
   });
+  test("worktree symlink directories default to node_modules", () => {
+    assert.deepEqual(withWorkflowDefaults({}).worktree.symlinkDirectories, ["node_modules"]);
+  });
 
   test("workflows is undefined when absent from config", () => {
     assert.equal(withWorkflowDefaults({}).workflows, undefined);
@@ -83,6 +86,11 @@ describe("withWorkflowDefaults — explicit values are preserved", () => {
       enabled: false,
       notifyOn: ["failed"],
     });
+  });
+  test("worktree symlink directory overrides are preserved", () => {
+    assert.deepEqual(withWorkflowDefaults({
+      worktree: { symlinkDirectories: ["vendor", ".cache"] },
+    }).worktree.symlinkDirectories, ["vendor", ".cache"]);
   });
 
   test("workflows map is passed through unchanged", () => {

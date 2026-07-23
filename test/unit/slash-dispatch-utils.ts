@@ -32,6 +32,8 @@ import {
     createExtensionRuntime,
     type ExtensionRuntime,
 } from "../../packages/workflows/src/extension/runtime.js";
+import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import type { ChatSurfacePayload } from "../../packages/workflows/src/tui/chat-surface-message.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
 import {
@@ -58,7 +60,6 @@ import {
 } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { stageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { buildStagePromptAdapter } from "../../packages/workflows/src/shared/stage-prompt.js";
-
 
 export {
     assert,
@@ -111,11 +112,12 @@ export type {
     StageControlHandle,
 };
 
-beforeEach(() => {
+export function resetSlashDispatchTestStateBeforeEach(): void {
     delete process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
-});
+    setDurableBackend(new InMemoryDurableBackend());
+}
 
-afterEach(async () => {
+export async function cleanupSlashDispatchTestStateAfterEach(): Promise<void> {
     delete process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
     stageControlRegistry.clear();
     killAllRuns({ store, cancellation: cancellationRegistry });
@@ -123,7 +125,13 @@ afterEach(async () => {
         jobTracker.runIds().map((runId) => jobTracker.get(runId)?.promise),
     );
     store.clear();
-});
+    setDurableBackend(undefined);
+}
+
+export function installSlashDispatchTestHooks(): void {
+    beforeEach(resetSlashDispatchTestStateBeforeEach);
+    afterEach(cleanupSlashDispatchTestStateAfterEach);
+}
 
 export async function writeWorkflowFixture(
     filePath: string,
@@ -144,12 +152,6 @@ export default workflow({
         "utf8",
     );
 }
-
-// ---------------------------------------------------------------------------
-// parseWorkflowArgs
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 
 export interface RegisteredCommand {
     name: string;
@@ -314,6 +316,7 @@ export function registerTestStageHandle(
     runId: string,
     stageId: string,
     status: StageControlHandle["status"] = "running",
+    controls: Partial<Pick<StageControlHandle, "pause" | "resume">> = {},
 ): void {
     const handle: StageControlHandle = {
         runId,
@@ -328,8 +331,8 @@ export function registerTestStageHandle(
         async prompt(): Promise<void> {},
         async steer(): Promise<void> {},
         async followUp(): Promise<void> {},
-        async pause(): Promise<void> {},
-        async resume(): Promise<void> {},
+        pause: controls.pause ?? (async () => {}),
+        resume: controls.resume ?? (async () => {}),
         subscribe: () => () => {},
     };
     stageControlRegistry.register(handle);

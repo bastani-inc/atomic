@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import type { WorkflowParallelOptions, WorkflowTaskOptions, WorkflowTaskResult, WorkflowTaskStep } from "../src/shared/types.js";
-import { reviewDecisionSchema } from "./goal-schemas.js";
+import { reviewerModelConfig, workerModelConfig } from "./goal-models.js";
 import {
   DEFAULT_BLOCKER_THRESHOLD,
   DEFAULT_MAX_TURNS,
@@ -8,8 +8,9 @@ import {
   type GoalWorkflowInputs,
   type GoalWorkflowOutputs,
   type ReviewRecord,
+  type ReducerDecision,
 } from "./goal-types.js";
-import { writeReviewArtifact, writeReviewRoundArtifact } from "./goal-artifacts.js";
+import { artifactSafeName, writeReviewArtifact, writeReviewRoundArtifact } from "./goal-artifacts.js";
 import { appendLifecycleEvent, createGoalLedger, writeGoalLedger } from "./goal-ledger.js";
 import {
   collectRemainingWork,
@@ -17,14 +18,13 @@ import {
 } from "./goal-reducer.js";
 import { formatReviewReport, renderFinalReport } from "./goal-reports.js";
 import {
-  reviewDecisionFromResult,
-  reviewerErrorDecision,
+  parsedReviewDecisionFromResult,
   reviewDecisionToRecord,
 } from "./goal-review.js";
+import { reviewerFailureText } from "./review-convergence.js";
 import {
   WORKER_PREFLIGHT_CONTRACT,
   WORKER_RECEIPT_CONTRACT,
-  goalRunnerTools,
   renderForkedGoalWorkerPrompt,
   renderGoalContinuationPrompt,
   renderReviewerPrompt,
@@ -76,6 +76,27 @@ type GoalWorkflowOptions = {
   readonly workflowStartCwd: string;
 };
 
+function reviewerExecutionFailedDecision(input: {
+  readonly turn: number;
+  readonly reviewQuorum: number;
+  readonly reviews: readonly ReviewRecord[];
+  readonly reason: string;
+}): ReducerDecision {
+  return {
+    turn: input.turn,
+    decision: "needs_human",
+    reason: input.reason,
+    complete_votes: input.reviews.filter((review) => review.decision === "complete").length,
+    review_quorum: input.reviewQuorum,
+    parsed: input.reviews.every((review) => review.parsed),
+    approved: false,
+    stopReviewLoop: false,
+    nextAction: "needs_human",
+    finalActionRemaining: false,
+    diagnostics: input.reviews.flatMap((review) => review.parse_diagnostics),
+  };
+}
+
 export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkflowOptions): Promise<GoalWorkflowOutputs> {
     const inputs = ctx.inputs;
     const createPr = options.createPr;
@@ -92,46 +113,6 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
     const blockerThreshold = Math.min(DEFAULT_BLOCKER_THRESHOLD, maxTurns);
     const comparisonBaseBranch = normalizeBranchInput(inputs.base_branch, "origin/main");
     const { ledger, ledgerPath, artifactDir } = await createGoalLedger(objective, acceptanceCriteria);
-
-    // Chains curated from Atomic's agentic-coding benchmark (see
-    // ralph-models.ts for the frontier data and drop rationale).
-    const workerModelConfig = {
-      model: "openai-codex/gpt-5.5:medium",
-      fallbackModels: [
-          "github-copilot/gpt-5.5:medium",
-          "openai/gpt-5.5:medium",
-          "anthropic/claude-fable-5:low",
-          "github-copilot/claude-opus-4.8 (1m):medium",
-          "anthropic/claude-opus-4-8:medium",
-          "zai/glm-5.2:high",
-          "zai-coding-cn/glm-5.2:high",
-          "openrouter/openai/gpt-5.5:medium",
-          "openrouter/anthropic/claude-fable-5:low",
-          "openrouter/anthropic/claude-opus-4-8:medium",
-          "openrouter/z-ai/glm-5.2:xhigh"
-      ],
-      tools: goalRunnerTools,
-    };
-
-    const reviewerModelConfig = {
-      model: "anthropic/claude-fable-5:high",
-      fallbackModels: [
-          "openai-codex/gpt-5.5:xhigh",
-          "github-copilot/gpt-5.5:xhigh",
-          "openai/gpt-5.5:xhigh",
-          "github-copilot/claude-opus-4.8 (1m):high",
-          "anthropic/claude-opus-4-8:high",
-          "zai/glm-5.2:xhigh",
-          "zai-coding-cn/glm-5.2:xhigh",
-          "openrouter/anthropic/claude-fable-5:high",
-          "openrouter/sakana/fugu-ultra:high",
-          "openrouter/openai/gpt-5.5:xhigh",
-          "openrouter/anthropic/claude-opus-4-8:high",
-          "openrouter/z-ai/glm-5.2:xhigh"
-      ],
-      tools: goalRunnerTools,
-      schema: reviewDecisionSchema,
-    };
 
     let latestReviews: ReviewRecord[] = [];
     let latestReviewArtifactPaths: string[] = [];
@@ -165,7 +146,6 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         : renderForkedGoalWorkerPrompt(
             ledger,
             ledgerPath,
-            blockerThreshold,
             latestReviewArtifactPaths,
           );
 
@@ -193,6 +173,12 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           reason: terminalRemainingWork,
           complete_votes: 0,
           review_quorum: reviewQuorum,
+          parsed: false,
+          approved: false,
+          stopReviewLoop: false,
+          nextAction: "needs_human",
+          finalActionRemaining: false,
+          diagnostics: [terminalRemainingWork],
         });
         appendLifecycleEvent(ledger, "status_decided", terminalRemainingWork, turn);
         await writeGoalLedger(ledgerPath, ledger);
@@ -225,6 +211,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           comparisonBaseBranch,
           reviewQuorum,
           blockerThreshold,
+          createPr,
         }),
         reads: [ledgerPath, workTurnPath],
         ...reviewerModelConfig,
@@ -249,48 +236,53 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
       ];
 
       let reviewResults: WorkflowTaskResult[];
+      let reviewerBatchFailed = false;
       try {
         reviewResults = await ctx.parallel(reviewerSteps, {
           task: objective,
-          failFast: false,
+          failFast: true,
+          group: `goal-reviewers-turn-${turn}`,
         });
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        const structured = reviewerErrorDecision(message);
+        reviewerBatchFailed = true;
         reviewResults = [
           {
             name: "reviewer-error",
             stageName: "reviewer-error",
-            text: JSON.stringify(structured, null, 2),
-            structured,
+            text: reviewerFailureText(err),
           },
         ];
       }
 
       latestReviews = await Promise.all(reviewResults.map(async (result) => {
         const reviewerName = result.name ?? result.stageName;
-        const parsed = reviewDecisionFromResult(result) ??
-          reviewerErrorDecision(
-            `Reviewer ${reviewerName} returned no structured decision.`,
-          );
-        const reviewArtifactPath = await writeReviewArtifact(
+        const normalizedReviewerName = reviewerName.replace(/-\d+$/u, "");
+        const parsed = parsedReviewDecisionFromResult(result, reviewerName);
+        const reviewArtifactPath = join(
           artifactDir,
-          reviewerName.replace(/-\d+$/u, ""),
-          parsed,
-          result.text,
+          `review-${artifactSafeName(normalizedReviewerName)}.json`,
         );
-        return reviewDecisionToRecord({
+        const record = reviewDecisionToRecord({
           turn,
-          reviewer: reviewerName.replace(/-\d+$/u, ""),
+          reviewer: normalizedReviewerName,
           artifactPath: reviewArtifactPath,
-          decision: parsed,
+          decision: parsed.decision,
+          parsed: parsed.parsed,
+          diagnostics: parsed.diagnostics,
+          allowFinalActionRemaining: createPr,
         });
+        await writeReviewArtifact(
+          artifactDir,
+          normalizedReviewerName,
+          parsed.decision,
+          result.text,
+          record.convergence_decision,
+        );
+        return record;
       }));
-      latestReviewArtifactPaths = latestReviews.map((review) => review.artifact_path);
-      latestReviewReportPath = await writeReviewRoundArtifact(
-        artifactDir,
-        latestReviews,
-      );
+      latestReviewReportPath = await writeReviewRoundArtifact(artifactDir, latestReviews);
+      // Consolidated round artifact leads so the next worker turn plans the full findings batch first.
+      latestReviewArtifactPaths = [latestReviewReportPath, ...latestReviews.map((review) => review.artifact_path)];
       ledger.reviews.push(...latestReviews);
       appendLifecycleEvent(
         ledger,
@@ -298,12 +290,27 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         `Recorded ${latestReviews.length} reviewer decisions.`,
         turn,
       );
+      if (reviewerBatchFailed) {
+        terminalRemainingWork = collectRemainingWork(latestReviews);
+        const reason = `Reviewer execution failed before quorum could be established. Remaining work: ${terminalRemainingWork}`;
+        ledger.decisions.push(reviewerExecutionFailedDecision({
+          turn,
+          reviewQuorum,
+          reviews: latestReviews,
+          reason,
+        }));
+        ledger.status = "needs_human";
+        appendLifecycleEvent(ledger, "status_decided", reason, turn);
+        await writeGoalLedger(ledgerPath, ledger);
+        break;
+      }
 
       const reducerOutcome = reduceGoalDecision(ledger, latestReviews, {
         turn,
         maxTurns,
         reviewQuorum,
         blockerThreshold,
+        nextActionOnComplete: createPr ? "pull-request" : "finish",
       });
       if (reducerOutcome.blockerObservation !== undefined) {
         ledger.blockers.push(reducerOutcome.blockerObservation);

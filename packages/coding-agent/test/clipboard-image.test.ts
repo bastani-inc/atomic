@@ -160,15 +160,21 @@ describe("readClipboardImage", () => {
 		expect(Array.from(result?.bytes ?? [])).toEqual([7]);
 	});
 
-	test("Non-Wayland: returns null when clipboard has no image", async () => {
-		mocks.spawnSync.mockImplementation(() => {
-			throw new Error("spawnSync should not be called for non-Wayland sessions");
-		});
-
+	test("Non-Wayland: falls back to xclip when native clipboard has no image", async () => {
 		mocks.clipboard.hasImage.mockReturnValue(false);
+		mocks.spawnSync.mockImplementation((command, args) => {
+			if (command === "xclip" && args.includes("TARGETS")) {
+				return spawnOk(Buffer.from("image/png\n", "utf-8"));
+			}
+			if (command === "xclip" && args.includes("image/png")) {
+				return spawnOk(Buffer.from([6, 7]));
+			}
+			throw new Error(`Unexpected spawnSync call: ${command} ${args.join(" ")}`);
+		});
 
 		const { readClipboardImage } = await import("../src/utils/clipboard-image.ts");
 		const result = await readClipboardImage({ platform: "linux", env: {} });
-		expect(result).toBeNull();
+		expect(result?.mimeType).toBe("image/png");
+		expect(Array.from(result?.bytes ?? [])).toEqual([6, 7]);
 	});
 });

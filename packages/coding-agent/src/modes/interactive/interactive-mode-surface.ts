@@ -1,5 +1,6 @@
 /** Method surface installed onto InteractiveModeBase by sibling modules. */
-import type { AgentMessage, Api, Message, Model, OAuthSelectPrompt, AutocompleteProvider, Keybinding, MarkdownTheme, OverlayHandle, OverlayOptions, Component, LoaderIndicatorOptions, AgentSession, AgentSessionEvent, EditorFactory, ExtensionCommandContext, ExtensionRunner, ExtensionUIContext, ExtensionUIDialogOptions, HostCustomUiState, HostCustomUiStateListener, ProjectTrustContext, ExtensionWidgetOptions, ReadonlyFooterDataProvider, AppKeybinding, ContextCompactionResult, ResourceDiagnostic, SessionContext, SourceInfo, ChatMessageEntry, ChatMessageRenderOptions, AuthSelectorProvider, Container, TUI, Theme, Loader, MissingSessionCwdError, KeybindingsManager, LoginDialogComponent } from "./interactive-mode-deps.ts";
+import type { AgentMessage, Api, Message, Model, OAuthSelectPrompt, AutocompleteProvider, SlashCommand, Keybinding, MarkdownTheme, OverlayHandle, OverlayOptions, Component, LoaderIndicatorOptions, AgentSession, AgentSessionEvent, EditorFactory, ExtensionCommandContext, ExtensionRunner, ExtensionUIContext, ExtensionUIDialogOptions, HostCustomUiState, HostCustomUiStateListener, ProjectTrustContext, ExtensionWidgetOptions, ReadonlyFooterDataProvider, AppKeybinding, VerbatimCompactionResult, ResourceDiagnostic, SessionContext, SourceInfo, ChatMessageEntry, ChatMessageRenderOptions, AuthSelectorProvider, Container, TUI, Theme, Loader, MissingSessionCwdError, KeybindingsManager, LoginDialogComponent } from "./interactive-mode-deps.ts";
+import type { CustomEntry, SessionEntry } from "../../core/session-manager.ts";
 
 declare module "./interactive-mode-base.ts" {
   interface InteractiveModeBase {
@@ -9,6 +10,7 @@ declare module "./interactive-mode-base.ts" {
   getCodexFastModeCandidateModels(): Model<Api>[];
   hasCodexFastModeSupportedModels(): boolean;
   createBaseAutocompleteProvider(): AutocompleteProvider;
+  buildRemoteSlashCommands(localCommands: SlashCommand[]): SlashCommand[];
   setupAutocompleteProvider(): void;
   showStartupNoticesIfNeeded(targetContainer?: Container): void;
   hadLastChangelogVersionAtStartup: boolean;
@@ -31,7 +33,7 @@ declare module "./interactive-mode-base.ts" {
   formatExtensionDisplayPath(path: string): string;
   formatContextPath(p: string): string;
   getStartupModelLabel(): string;
-  getStartupIdentityText(): string;
+  getStartupIdentityText(maxWidth?: number): string;
   getAtomicAnsiMarkLines(): string[];
   getStartupExpansionState(): boolean;
   getShortPath(fullPath: string, sourceInfo?: SourceInfo): string;
@@ -155,15 +157,21 @@ declare module "./interactive-mode-base.ts" {
   setupKeyHandlers(): void;
   handleClipboardImagePaste(): Promise<void>;
   setupEditorSubmitHandler(): void;
+  deliverStartupReplayPrompt(text: string): void;
+  recoverCookedStartupInput(): boolean;
+  drainStartupReplayCommands(): Promise<void>;
+  advanceStartupInputReplay(submittedText: string): void;
   subscribeToAgent(): void;
   handleEvent(event: AgentSessionEvent): Promise<void>;
   getUserMessageText(message: Message): string;
   showStatus(message: string): void;
   chatMessageRenderOptions(): ChatMessageRenderOptions;
   addRenderedChatEntry(entry: ChatMessageEntry): Component;
-  addContextCompactionSummaryToChat(result: ContextCompactionResult): void;
+  addCompactionBoundaryToChat(result: VerbatimCompactionResult): void;
   addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): void;
+  addCustomEntryToChat(entry: CustomEntry): void;
   renderSessionContext(sessionContext: SessionContext, options?: { updateFooter?: boolean; populateHistory?: boolean }): void;
+  renderSessionEntries(entries: SessionEntry[], options?: { updateFooter?: boolean; populateHistory?: boolean; suppressCompactionBoundary?: VerbatimCompactionResult }): void;
   renderInitialMessages(): void;
   attachStartupNoticesContainer(options?: { resetDetached?: boolean }): void;
   getUserInput(): Promise<string>;
@@ -172,7 +180,7 @@ declare module "./interactive-mode-base.ts" {
   consumeDeferredRenderedUserInput(text: string): boolean;
   discardDeferredRenderedUserInput(text: string): void;
   ensureDeferredStartupComplete(): Promise<void>;
-  rebuildChatFromMessages(): void;
+  rebuildChatFromMessages(options?: { suppressCompactionBoundary?: VerbatimCompactionResult }): void;
   handleCtrlC(): void;
   interruptActiveOperation(): boolean;
   handleCtrlD(): void;
@@ -224,17 +232,19 @@ declare module "./interactive-mode-base.ts" {
   showModelSelector(initialSearchInput?: string): void;
   showContextWindowSelector(model: Model<Api>): void;
   showModelsSelector(): Promise<void>;
-  showUserMessageSelector(): void;
+  showUserMessageSelector(): Promise<void>;
   handleCloneCommand(): Promise<void>;
   maybeSaveImplicitProjectTrustAfterReload(): boolean;
   showTrustSelector(): void;
-  showTreeSelector(initialSelectedId?: string): void;
+  showTreeSelector(initialSelectedId?: string): Promise<void>;
   showSessionSelector(): void;
   handleResumeSession(sessionPath: string, options?: Parameters<ExtensionCommandContext["switchSession"]>[1]): Promise<{ cancelled: boolean }>;
   getLoginProviderOptions(authType?: "oauth" | "api_key"): AuthSelectorProvider[];
   getLogoutProviderOptions(): AuthSelectorProvider[];
-  showLoginAuthTypeSelector(): void;
-  showLoginProviderSelector(authType: "oauth" | "api_key"): void;
+  handleLoginCommand(providerRef?: string): Promise<void>;
+  startProviderLogin(providerOption: AuthSelectorProvider): Promise<void>;
+  showLoginAuthTypeSelector(providerOptions?: AuthSelectorProvider[]): void;
+  showLoginProviderSelector(authType?: "oauth" | "api_key", initialSearchInput?: string): void;
   showOAuthSelector(mode: "login" | "logout"): Promise<void>;
   completeProviderAuthentication(providerId: string, providerName: string, authType: "oauth" | "api_key", previousModel: Model<Api> | undefined): Promise<void>;
   showBedrockSetupDialog(providerId: string, providerName: string): void;

@@ -2,6 +2,102 @@
 
 ## [Unreleased]
 
+## [0.9.11-alpha.1] - 2026-07-20
+
+### Changed
+
+- Published a synchronized Atomic 0.9.11-alpha.1 prerelease for the native transport package; no native transport changes were made after 0.9.9.
+
+## [0.9.10] - 2026-07-20
+
+### Changed
+
+- Published the stable Atomic 0.9.10 release for the native transport package; no native transport changes were made after 0.9.9.
+
+## [0.9.10-alpha.1] - 2026-07-19
+
+### Changed
+
+- Published a synchronized Atomic 0.9.10-alpha.1 prerelease for the native transport package; no native transport changes were made after 0.9.9.
+
+## [0.9.9] - 2026-07-15
+
+### Changed
+
+- Refreshed the native Rust lockfile to `rustls` 0.23.42, `bytes` 1.12.1, Rust `ignore` 0.4.28, `napi-derive` 3.5.10 (with `napi-derive-backend` 5.1.2), and `tree-sitter` 0.26.11; no native API or source changes were required.
+
+## [0.9.9-alpha.4] - 2026-07-15
+
+### Changed
+
+- Published a synchronized Atomic 0.9.9-alpha.4 prerelease for the native transport package; no native transport changes were made after 0.9.9-alpha.3.
+
+## [0.9.9-alpha.3] - 2026-07-14
+
+### Changed
+
+- Published a synchronized Atomic 0.9.9-alpha.3 prerelease for the native transport package; no native transport changes were made after 0.9.9-alpha.2.
+
+## [0.9.9-alpha.2] - 2026-07-14
+
+### Changed
+
+- Refreshed the native Rust lockfile to `rustls` 0.23.42, `bytes` 1.12.1, Rust `ignore` 0.4.28, `napi-derive` 3.5.10 (with `napi-derive-backend` 5.1.2), and `tree-sitter` 0.26.11; no native API or source changes were required.
+
+## [0.9.9-alpha.1] - 2026-07-14
+
+### Changed
+
+- Published a synchronized Atomic 0.9.9-alpha.1 prerelease for the native transport package; no native transport changes were made after 0.9.8.
+
+## [0.9.8] - 2026-07-12
+
+### Changed
+
+- Published the stable Atomic 0.9.8 release for the native transport package; no native transport changes were made after 0.9.7.
+
+## [0.9.8-alpha.1] - 2026-07-12
+
+### Changed
+
+- Published a synchronized Atomic 0.9.8-alpha.1 prerelease for the native transport package; no native transport changes were made after 0.9.7.
+
+## [0.9.7] - 2026-07-12
+
+### Changed
+
+- Published the stable Atomic 0.9.7 release for the native transport package; no native transport changes were made after 0.9.6.
+
+## [0.9.7-alpha.1] - 2026-07-12
+
+### Changed
+
+- Published a synchronized Atomic 0.9.7-alpha.1 prerelease for the native transport package; no native transport changes were made after 0.9.6.
+
+## [0.9.6] - 2026-07-12
+
+### Changed
+
+- Published the stable Atomic 0.9.6 release for the native transport package; no native transport changes were made after 0.9.5.
+
+## [0.9.6-alpha.1] - 2026-07-12
+
+### Changed
+
+- Published a synchronized Atomic 0.9.6-alpha.1 prerelease for the native transport package; no native transport changes were made after 0.9.5.
+
+## [0.9.5] - 2026-07-11
+
+### Changed
+
+- Published the stable Atomic 0.9.5 release for the native transport package; no native transport changes were made after 0.9.4.
+
+## [0.9.5-alpha.10] - 2026-07-11
+
+### Changed
+
+- Published a synchronized Atomic 0.9.5-alpha.10 prerelease for the native transport package; no native transport changes were made after 0.9.4.
+
 ## [0.9.4] - 2026-07-03
 
 ### Changed

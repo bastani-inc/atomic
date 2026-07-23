@@ -32,6 +32,15 @@ function emitOsc52(text: string): boolean {
 	return true;
 }
 
+export async function readClipboardText(source: { getText(): Promise<string> } | null = clipboard): Promise<string | null> {
+	try {
+		if (!source) return null;
+		return await source.getText();
+	} catch {
+		return null;
+	}
+}
+
 export async function copyToClipboard(text: string): Promise<void> {
 	let copied = false;
 

@@ -6,14 +6,7 @@ import { resolveStageChatViewportRows } from "./stage-chat-layout.js";
 import { createPromptCardState } from "./prompt-card.js";
 import { hideMountedCustomUi, releaseMountedCustomUi, showCustomUi } from "./stage-chat-view-custom-ui.js";
 import { editorRuleColor } from "./stage-chat-view-footer-status.js";
-import {
-  blankLine,
-  cursorBlock,
-  editorThemeFromGraphTheme,
-  paint,
-  setEditorBorderColor,
-  setEditorPlaceholder,
-} from "./stage-chat-view-render-helpers.js";
+import { blankLine, cursorBlock, editorThemeFromGraphTheme, paint, setEditorBorderColor, setEditorPlaceholder } from "./stage-chat-view-render-helpers.js";
 import {
   HEADER_ROWS,
   SEP_ROWS,
@@ -45,6 +38,7 @@ export function initializeStageChatView(
   ctx.stageId = opts.stageId;
   ctx.workflowName = opts.workflowName;
   ctx.handle = opts.handle;
+  ctx.postMortemUnavailableReason = opts.postMortemUnavailableReason;
   ctx.onDetach = opts.onDetach;
   ctx.onClose = opts.onClose;
   ctx.requestRender = opts.requestRender;
@@ -57,6 +51,7 @@ export function initializeStageChatView(
   ctx.piEditorFactory = opts.piEditorFactory;
   ctx.getToolsExpanded = opts.getToolsExpanded;
   ctx.setToolsExpanded = opts.setToolsExpanded;
+  ctx.footerData = opts.footerData;
   ctx.stageUiBroker = opts.stageUiBroker ?? stageUiBroker;
   ctx.canSubmitPrompt = opts.canSubmitPrompt;
   ctx.mountedCustomUi = null;
@@ -74,9 +69,13 @@ export function initializeStageChatView(
   ctx.seenNoticeIds = new Set<string>();
   ctx._unsubscribeStore = null;
   ctx._unsubscribeHandle = null;
+  ctx._unsubscribeFooterData = null;
   ctx._unregisterStageUiHost = null;
   installFocusHold(ctx);
   ctx.chatHost = createChatHost(ctx, opts);
+  if (opts.initialComposerDraft !== undefined) {
+    ctx.chatHost.setInputText(opts.initialComposerDraft);
+  }
   ctx._unregisterStageUiHost = ctx.stageUiBroker.registerHost(ctx.runId, ctx.stageId, {
     showCustomUi: (request) => {
       void showCustomUi(ctx, request);
@@ -97,6 +96,7 @@ export function initializeStageChatView(
   syncPromptState(ctx, initialStage?.pendingPrompt);
   if (isTerminalStageChatState(initialRun?.status) || isTerminalStageChatState(initialStage?.status)) ctx.chatHost.clearBusyForTerminalWorkflowStage();
   ctx._unsubscribeStore = ctx.store.subscribe(() => handleStoreUpdate(ctx));
+  ctx._unsubscribeFooterData = ctx.footerData?.onBranchChange(() => ctx.requestRender?.()) ?? null;
 
   if (ctx.handle) {
     ctx._unsubscribeHandle = ctx.handle.subscribe((event) => applyStageChatLiveHandleEvent(ctx, event));
@@ -107,11 +107,8 @@ export function initializeStageChatView(
 function installFocusHold(ctx: StageChatViewContext): void {
   if (!ctx.requestFocus) return;
   ctx.focusHoldTimer = setInterval(() => {
-    // Hold focus on the overlay whenever there is something to interact with:
-    // a mounted custom UI (ask_user_question / readiness gate) must stay
-    // answerable even mid-turn, and an idle composer should keep focus. During
-    // a pure streaming continuation (no custom UI mounted) we leave focus alone
-    // so we never reclaim it out from under the agent's live output.
+    // Keep interactive custom UI and idle composer focus without reclaiming it
+    // from a streaming continuation.
     if (ctx.mountedCustomUi !== null || !isStreaming(ctx)) ctx.requestFocus?.();
   }, 150);
 }
@@ -458,7 +455,7 @@ async function handleSlashCommand(ctx: StageChatViewContext, text: string): Prom
       if (!handle) return false;
       await handle.ensureAttached();
       if (!handle.agentSession) return false;
-      await handle.agentSession.compact();
+      try { await handle.agentSession.compact(); } catch { /* compaction_end owns cancellation/failure UI. */ }
       return true;
     }
     case "/quit":
@@ -487,6 +484,8 @@ export function disposeStageChatView(ctx: StageChatViewContext): void {
   ctx._unsubscribeStore = null;
   ctx._unsubscribeHandle?.();
   ctx._unsubscribeHandle = null;
+  ctx._unsubscribeFooterData?.();
+  ctx._unsubscribeFooterData = null;
   releaseMountedCustomUi(ctx);
   disposePromptEditor(ctx);
   ctx._unregisterStageUiHost?.();

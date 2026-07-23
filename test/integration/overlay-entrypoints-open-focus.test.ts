@@ -111,9 +111,9 @@ describe("buildGraphOverlayAdapter — open with pi.ui.custom", () => {
     const adapter = buildGraphOverlayAdapter({ ui }, store);
 
     adapter.open("run-abc");
-    // `q` on an empty store completes without throwing — the input is
-    // accepted by the GraphView even when there is no live run to kill.
-    assert.doesNotThrow(() => calls[0]!.component.handleInput?.("q"));
+    // Ctrl+X on an empty store completes without throwing — hierarchical
+    // navigation remains available even when there is no live run.
+    assert.doesNotThrow(() => calls[0]!.component.handleInput?.("\x18"));
   });
 
   test("mock pi overlay render scrolls a tall graph with arrow input", () => {
@@ -306,7 +306,7 @@ describe("buildGraphOverlayAdapter — open with pi.ui.custom", () => {
   // restore keyboard focus. pi-tui only dispatches key events to the focused
   // component, so without this the retargeted overlay (e.g. brought to a
   // stage-scoped HIL prompt / readiness gate) appears frozen — arrows, Enter,
-  // Ctrl+D and `q` all dead.
+  // Ctrl+X all dead.
   test("retargeting a visible mounted overlay restores keyboard focus (#1120)", () => {
     const { ui, calls } = buildMockUi();
     const store = createStore();

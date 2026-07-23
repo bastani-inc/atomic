@@ -8,14 +8,16 @@ import {
 	getEnvValue,
 	type CodexFastModeResolvedSettings,
 	type CodexFastModeScope,
+	type SessionWorkflowMetadata,
+	WORKFLOW_SESSION_METADATA_ENV,
 } from "@bastani/atomic";
 import { encodeNestedPathEnv, parseNestedPathEnv, type NestedPathEntry } from "./nested-path.ts";
 import { resolveMcpDirectToolNames } from "./mcp-direct-tool-allowlist.ts";
 import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV } from "./structured-output.ts";
 import type { JsonSchemaObject } from "../../shared/types.ts";
 import { MAX_SUBAGENT_NESTING_DEPTH } from "../../shared/types-runtime.ts";
+import { THINKING_LEVELS } from "../../shared/model-info.ts";
 
-const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"];
 const TASK_ARG_LIMIT = 8000;
 export const SUBAGENT_PARENT_MAX_DEPTH = MAX_SUBAGENT_NESTING_DEPTH;
 export const PROMPT_RUNTIME_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "subagent-prompt-runtime.ts");
@@ -38,6 +40,10 @@ export const SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV = `${ENV_PREFIX}_SUBAGENT_PARE
 export const SUBAGENT_INHERIT_PROJECT_CONTEXT_ENV = `${ENV_PREFIX}_SUBAGENT_INHERIT_PROJECT_CONTEXT`;
 export const SUBAGENT_INHERIT_SKILLS_ENV = `${ENV_PREFIX}_SUBAGENT_INHERIT_SKILLS`;
 export const SUBAGENT_INTERCOM_SESSION_NAME_ENV = `${ENV_PREFIX}_SUBAGENT_INTERCOM_SESSION_NAME`;
+export const SUBAGENT_SUPERVISOR_CAPABILITY_ENV = `${ENV_PREFIX}_SUBAGENT_SUPERVISOR_CAPABILITY`;
+export const SUBAGENT_SUPERVISOR_SESSION_ID_ENV = `${ENV_PREFIX}_SUBAGENT_SUPERVISOR_SESSION_ID`;
+/** Intercom home-group env key (not a _SUBAGENT_ key); resolves ATOMIC_/PI_ variants. */
+export const INTERCOM_GROUP_ENV = `${ENV_PREFIX}_INTERCOM_GROUP`;
 const STRUCTURED_OUTPUT_TOOL_NAME = "structured_output";
 
 interface BuildPiArgsInput {
@@ -59,6 +65,8 @@ interface BuildPiArgsInput {
 	promptFileStem?: string;
 	intercomSessionName?: string;
 	orchestratorIntercomTarget?: string;
+	intercomGroup?: string;
+	supervisorAuthorization?: { capability: string; supervisorSessionId: string };
 	runId?: string;
 	childAgentName?: string;
 	childIndex?: number;
@@ -72,6 +80,7 @@ interface BuildPiArgsInput {
 	parentCapabilityToken?: string;
 	codexFastModeSettings?: CodexFastModeResolvedSettings;
 	codexFastModeScope?: CodexFastModeScope;
+	workflowSessionMetadata?: SessionWorkflowMetadata;
 	structuredOutput?: {
 		schema: JsonSchemaObject;
 		schemaPath: string;
@@ -88,7 +97,7 @@ interface BuildPiArgsResult {
 export function applyThinkingSuffix(model: string | undefined, thinking: string | undefined): string | undefined {
 	if (!model || !thinking || thinking === "off") return model;
 	const colonIdx = model.lastIndexOf(":");
-	if (colonIdx !== -1 && THINKING_LEVELS.includes(model.substring(colonIdx + 1))) return model;
+	if (colonIdx !== -1 && THINKING_LEVELS.some((level) => level === model.substring(colonIdx + 1))) return model;
 	return `${model}:${thinking}`;
 }
 
@@ -201,6 +210,9 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	const env: Record<string, string | undefined> = {};
 	env[SUBAGENT_CHILD_ENV] = "1";
 	env[SUBAGENT_FANOUT_CHILD_ENV] = fanoutAuthorized ? "1" : "0";
+	if (input.workflowSessionMetadata) {
+		env[WORKFLOW_SESSION_METADATA_ENV] = JSON.stringify(input.workflowSessionMetadata);
+	}
 	if (input.codexFastModeSettings) {
 		env[ENV_CODEX_FAST_MODE] = serializeChildCodexFastModeSettings(
 			mapChildCodexFastModeSettings(input.codexFastModeSettings, input.codexFastModeScope ?? "chat"),
@@ -255,6 +267,16 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	}
 	if (input.orchestratorIntercomTarget) {
 		env[SUBAGENT_ORCHESTRATOR_TARGET_ENV] = input.orchestratorIntercomTarget;
+	}
+	// Always override inherited capability metadata: a child must never pass its
+	// own supervisor authority to a descendant that lacks a freshly issued grant.
+	env[SUBAGENT_SUPERVISOR_CAPABILITY_ENV] = input.supervisorAuthorization?.capability ?? "";
+	env[SUBAGENT_SUPERVISOR_SESSION_ID_ENV] = input.supervisorAuthorization?.supervisorSessionId ?? "";
+	// Only assign an intercom group when the child actually has intercom access
+	// (peer intercom session name OR contact_supervisor orchestrator target).
+	const hasIntercomAccess = Boolean(input.intercomSessionName || input.orchestratorIntercomTarget);
+	if (input.intercomGroup && hasIntercomAccess) {
+		env[INTERCOM_GROUP_ENV] = input.intercomGroup;
 	}
 	if (input.runId) {
 		env[SUBAGENT_RUN_ID_ENV] = input.runId;

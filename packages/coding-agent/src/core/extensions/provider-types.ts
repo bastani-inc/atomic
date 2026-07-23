@@ -7,8 +7,36 @@ import type {
 	OAuthLoginCallbacks,
 	SimpleStreamOptions,
 } from "@earendil-works/pi-ai/compat";
+import type { RefreshModelsContext } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "./api-types.ts";
 
+export interface ApiKeyAuthPrompt {
+	type: "text" | "secret";
+	message: string;
+	placeholder?: string;
+}
+
+export interface ApiKeyAuthInteraction {
+	prompt(prompt: ApiKeyAuthPrompt): Promise<string>;
+	signal: AbortSignal;
+}
+
+export interface ProviderApiKeyAuthContext {
+	env(name: string): Promise<string | undefined>;
+}
+
+export interface ProviderApiKeyAuthResult {
+	auth: { apiKey?: string; baseUrl?: string; headers?: Record<string, string> };
+	env?: Record<string, string>;
+	source?: string;
+}
+
+export interface ProviderApiKeyAuth {
+	name: string;
+	login(interaction: ApiKeyAuthInteraction): Promise<import("../auth-storage.ts").ApiKeyCredential>;
+	check?(input: { ctx: ProviderApiKeyAuthContext; credential?: import("../auth-storage.ts").ApiKeyCredential }): Promise<{ type: "api_key"; source?: string } | undefined>;
+	resolve?(input: { ctx: ProviderApiKeyAuthContext; credential?: import("../auth-storage.ts").ApiKeyCredential }): Promise<ProviderApiKeyAuthResult | undefined>;
+}
 /** Configuration for registering a provider via pi.registerProvider(). */
 export interface ProviderConfig {
 	/** Display name for the provider in UI. */
@@ -27,6 +55,10 @@ export interface ProviderConfig {
 	authHeader?: boolean;
 	/** Models to register. If provided, replaces all existing models for this provider. */
 	models?: ProviderModelConfig[];
+	/** Refresh this provider's catalog. Successful results replace its extension-provided models. */
+	refreshModels?(context: RefreshModelsContext): Promise<ProviderModelConfig[]>;
+	/** Optional provider-directed API-key authentication flow. */
+	auth?: { apiKey?: ProviderApiKeyAuth };
 	/** OAuth provider for /login support. The `id` is set automatically from the provider name. */
 	oauth?: {
 		/** Display name for the provider in login UI. */
@@ -58,8 +90,8 @@ export interface ProviderModelConfig {
 	thinkingLevelMap?: Model<Api>["thinkingLevelMap"];
 	/** Supported input types. */
 	input: ("text" | "image")[];
-	/** Cost per token (for tracking, can be 0). */
-	cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+	/** Request pricing, including optional request-wide long-context tiers. */
+	cost: Model<Api>["cost"];
 	/** Default/effective context window size in tokens. */
 	contextWindow: number;
 	/** Selectable context-window sizes in tokens; omit when the model has only one supported window. */
@@ -74,3 +106,8 @@ export interface ProviderModelConfig {
 
 /** Extension factory function type. Supports both sync and async initialization. */
 export type ExtensionFactory = (pi: ExtensionAPI) => void | Promise<void>;
+
+/** Inline extension factory, optionally carrying a stable name and display visibility. */
+export type InlineExtension =
+	| ExtensionFactory
+	| { name: string; factory: ExtensionFactory; hidden?: boolean };

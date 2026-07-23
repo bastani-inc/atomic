@@ -6,7 +6,7 @@
  *  - Mounts in graph mode by default.
  *  - Pressing Enter on a graph node swaps the interior to stage chat
  *    without remounting the popup.
- *  - Ctrl+D in chat mode swaps back to graph with the same focused
+ *  - Ctrl+X in chat mode swaps back to graph with the same focused
  *    stage id preserved.
  *  - When a `uiStatus.setStatus` surface is provided, attach/detach
  *    flips the `pi-workflows` tag through `<workflow>/<stage>`.
@@ -267,7 +267,7 @@ describe("WorkflowAttachPane", () => {
         pane.dispose();
     });
 
-    test("Ctrl+D in stage-chat mode swaps back to graph with same stage focused", () => {
+    test("Ctrl+X in stage-chat mode swaps back to graph with same stage focused", () => {
         const store = createStore();
         setupRun(store, "run-1", [
             { id: "stage-a", name: "A" },
@@ -284,16 +284,20 @@ describe("WorkflowAttachPane", () => {
         });
         pane.handleInput(Key.enter);
         assert.equal(pane._mode, "stage-chat");
-        // Ctrl+D returns to graph.
-        pane.handleInput(Key.ctrl("d"));
+        for (const ch of "unsent draft") pane.handleInput(ch);
+        // Ctrl+X returns to graph.
+        pane.handleInput(Key.ctrl("x"));
         assert.equal(pane._mode, "graph");
         assert.equal(pane._hasChatView, false);
-        // Stage id is preserved so re-attach lands on the same node.
+        // Stage id and unsent composer draft are preserved for re-attach.
         assert.equal(pane._lastAttachedStageId, "stage-a");
+        pane.handleInput(Key.enter);
+        assert.equal(pane._mode, "stage-chat");
+        assert.equal(pane._chatInputBuffer, "unsent draft");
         pane.dispose();
     });
 
-    test("Ctrl+D in paused stage-chat mode returns to graph", () => {
+    test("Ctrl+X in paused stage-chat mode returns to graph", () => {
         const store = createStore();
         setupRun(store, "run-1", [
             { id: "stage-a", name: "A", status: "paused" },
@@ -319,7 +323,7 @@ describe("WorkflowAttachPane", () => {
             initialAttachStageId: "stage-a",
         });
         assert.equal(pane._mode, "stage-chat");
-        pane.handleInput(Key.ctrl("d"));
+        pane.handleInput(Key.ctrl("x"));
         assert.equal(closed, 0);
         assert.equal(hidden, 0);
         assert.equal(pane._mode, "graph");

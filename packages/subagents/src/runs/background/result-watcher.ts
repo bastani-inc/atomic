@@ -1,85 +1,47 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { buildCompletionKey, markSeenWithTtl } from "./completion-dedupe.ts";
-import { createFileCoalescer } from "../../shared/file-coalescer.ts";
-import {
-	SUBAGENT_ASYNC_COMPLETE_EVENT,
-	type IntercomEventBus,
-	type NestedRunSummary,
-	type SubagentResultIntercomChild,
-	type SubagentState,
-} from "../../shared/types.ts";
-import {
-	attachNestedChildrenToResultChildren,
-	buildSubagentResultIntercomPayload,
-	compactNestedResultChildren,
-	deliverSubagentResultIntercomEvent,
-	resolveSubagentResultStatus,
-} from "../../intercom/result-intercom.ts";
-import { projectNestedRegistryForRoot, sanitizeSummary } from "../shared/nested-events.ts";
+import { isSafeFsWatchPathError, watchWithErrorHandler } from "@bastani/atomic";
+import { createFileCoalescer } from "../../shared/file-coalescer.js";
+import type { IntercomEventBus, SubagentState } from "../../shared/types.js";
+import { processResultEntry, type ResultProcessorFs } from "./result-delivery-processor.js";
+import { claimIdFromScheduleKey, claimScheduleKey, listResultClaims } from "./result-file-claims.js";
+import { createRetryScheduler } from "./result-retry-scheduler.js";
+import type { ResultFileData } from "./result-watcher-data.js";
 
 const WATCHER_RESTART_DELAY_MS = 3000;
 const POLL_INTERVAL_MS = 3000;
+const DIRECTORY_RESCAN_DELAY_MS = 50;
+const STATUS_RECHECK_BASE_MS = 250;
+const STATUS_RECHECK_MAX_MS = 30_000;
+const DELIVERY_RETRY_BASE_MS = 1000;
+const DELIVERY_RETRY_MAX_MS = 30_000;
 
-type ResultWatcherFs = Pick<typeof fs, "existsSync" | "readFileSync" | "unlinkSync" | "readdirSync" | "mkdirSync" | "watch">;
-
+type ResultWatcherFs = ResultProcessorFs & Pick<typeof fs, "existsSync" | "readdirSync" | "mkdirSync" | "watch">;
 type ResultWatcherTimers = {
 	setTimeout: typeof setTimeout;
 	clearTimeout: typeof clearTimeout;
 	setInterval: typeof setInterval;
 	clearInterval: typeof clearInterval;
 };
+type ResultWatcherSafeWatch = typeof watchWithErrorHandler;
 
 type ResultWatcherDeps = {
 	fs?: ResultWatcherFs;
 	timers?: ResultWatcherTimers;
+	safeWatch?: ResultWatcherSafeWatch;
+	statusRecheckBaseMs?: number;
+	statusRecheckMaxMs?: number;
+	deliveryRetryBaseMs?: number;
+	deliveryRetryMaxMs?: number;
+	maxNoProgressFailures?: number;
+	intercomTimeoutMs?: number | false;
+	allowedStatusRoots?: string[];
+	maxStatusBytes?: number;
 };
-
-type ResultFileChild = {
-	agent?: string;
-	output?: string;
-	error?: string;
-	success?: boolean;
-	sessionFile?: string;
-	artifactPaths?: { outputPath?: string };
-	intercomTarget?: string;
-	children?: unknown;
-};
-
-type ResultFileData = {
-	id?: string;
-	runId?: string;
-	agent?: string;
-	success?: boolean;
-	state?: string;
-	mode?: string;
-	summary?: string;
-	results?: ResultFileChild[];
-	nestedChildren?: unknown;
-	sessionId?: string;
-	cwd?: string;
-	sessionFile?: string;
-	asyncDir?: string;
-	intercomTarget?: string;
-};
-
-function sanitizeNestedResultChildren(value: unknown, resultPath: string, label: string): NestedRunSummary[] | undefined {
-	if (value === undefined) return undefined;
-	if (!Array.isArray(value)) {
-		console.error(`Ignoring invalid nested children in subagent result file '${resultPath}' at ${label}: expected an array.`);
-		return undefined;
-	}
-	const children = value.map((child) => sanitizeSummary(child)).filter((child): child is NestedRunSummary => Boolean(child));
-	if (children.length !== value.length) {
-		console.error(`Ignoring ${value.length - children.length} invalid nested child record(s) in subagent result file '${resultPath}' at ${label}.`);
-	}
-	return children.length ? children : undefined;
-}
 
 function getErrorCode(error: unknown): string | undefined {
 	return typeof error === "object" && error !== null && "code" in error
-		? (error as NodeJS.ErrnoException).code
-		: undefined;
+		? (error as NodeJS.ErrnoException).code : undefined;
 }
 
 function isNotFoundError(error: unknown): boolean {
@@ -88,7 +50,7 @@ function isNotFoundError(error: unknown): boolean {
 
 function shouldFallBackToPolling(error: unknown): boolean {
 	const code = getErrorCode(error);
-	return code === "EMFILE" || code === "ENOSPC";
+	return code === "EMFILE" || code === "ENOSPC" || isSafeFsWatchPathError(error);
 }
 
 export function createResultWatcher(
@@ -97,211 +59,193 @@ export function createResultWatcher(
 	resultsDir: string,
 	completionTtlMs: number,
 	deps: ResultWatcherDeps = {},
-): {
-	startResultWatcher: () => void;
-	primeExistingResults: () => void;
-	stopResultWatcher: () => void;
-} {
+): { startResultWatcher: () => void; primeExistingResults: () => void; stopResultWatcher: () => void } {
 	const fsApi = deps.fs ?? fs;
 	const timers = deps.timers ?? { setTimeout, clearTimeout, setInterval, clearInterval };
+	const safeWatch = deps.safeWatch ?? watchWithErrorHandler;
+	let directoryRescanTimer: ReturnType<typeof setTimeout> | null = null;
+	let stopped = false;
+	let processingEpoch = 0;
+	let watcherInstallation = 0;
+	let activeWatcherInstallation = 0;
+	const inFlight = new Set<string>();
+	const rerunAfterFlight = new Set<string>();
+	const statusRetries = createRetryScheduler(timers, deps.statusRecheckBaseMs ?? STATUS_RECHECK_BASE_MS, deps.statusRecheckMaxMs ?? STATUS_RECHECK_MAX_MS);
+	const deliveryRetries = createRetryScheduler(timers, deps.deliveryRetryBaseMs ?? DELIVERY_RETRY_BASE_MS, deps.deliveryRetryMaxMs ?? DELIVERY_RETRY_MAX_MS);
+	const isEpochActive = (epoch: number): boolean => !stopped && epoch === processingEpoch;
+	const entryExists = (entry: string): boolean => {
+		const claimId = claimIdFromScheduleKey(entry);
+		return claimId ? Boolean(listResultClaims(resultsDir, fsApi).some((claim) => claim.id === claimId))
+			: fsApi.existsSync(path.join(resultsDir, entry));
+	};
+	const ownsResult = (data: ResultFileData): boolean => !stopped
+		&& (!data.sessionId || data.sessionId === state.currentSessionId)
+		&& Boolean(data.sessionId || !data.cwd || (state.baseCwd && data.cwd === state.baseCwd));
 
-	const handleResult = async (file: string) => {
-		const resultPath = path.join(resultsDir, file);
-		if (!fsApi.existsSync(resultPath)) return;
+	const coalescerKey = (entry: string, epoch: number): string => `${epoch}\0${entry}`;
+	const parseCoalescerKey = (key: string): { epoch: number; entry: string } => {
+		const split = key.indexOf("\0");
+		return { epoch: Number(key.slice(0, split)), entry: key.slice(split + 1) };
+	};
+	const scheduleResultEntry = (entry: string, delay = 0, epoch = processingEpoch): boolean => {
+		if (!isEpochActive(epoch) || statusRetries.has(entry) || deliveryRetries.has(entry)) return false;
+		return state.resultFileCoalescer.schedule(coalescerKey(entry, epoch), delay);
+	};
+	const scheduleStatusRecheck = (entry: string, epoch: number) => {
+		if (!isEpochActive(epoch)) return;
+		statusRetries.schedule(entry, () => {
+			if (!isEpochActive(epoch) || !entryExists(entry)) { statusRetries.clear(entry); return; }
+			scheduleResultEntry(entry, 0, epoch);
+		});
+	};
+	const scheduleDeliveryRetry = (entry: string, epoch: number) => {
+		if (!isEpochActive(epoch)) return;
+		deliveryRetries.schedule(entry, () => {
+			if (!isEpochActive(epoch) || !entryExists(entry)) { deliveryRetries.clear(entry); return; }
+			scheduleResultEntry(entry, 0, epoch);
+		});
+	};
+
+	const handleResult = async (entry: string, epoch: number) => {
+		if (!isEpochActive(epoch)) return;
+		const flightKey = coalescerKey(entry, epoch);
+		if (inFlight.has(flightKey)) { rerunAfterFlight.add(flightKey); return; }
+		inFlight.add(flightKey);
 		try {
-			const data = JSON.parse(fsApi.readFileSync(resultPath, "utf-8")) as ResultFileData;
-			if (data.sessionId && data.sessionId !== state.currentSessionId) return;
-			if (!data.sessionId && data.cwd && (!state.baseCwd || data.cwd !== state.baseCwd)) return;
-
-			const runId = data.runId ?? data.id ?? file.replace(/\.json$/i, "");
-			const hasExplicitNestedChildren = data.nestedChildren !== undefined;
-			let nestedChildren = compactNestedResultChildren(sanitizeNestedResultChildren(data.nestedChildren, resultPath, "nestedChildren"));
-			if (!nestedChildren?.length && !hasExplicitNestedChildren) {
-				try {
-					nestedChildren = compactNestedResultChildren(projectNestedRegistryForRoot(runId)?.children);
-				} catch (error) {
-					console.error(`Failed to enrich subagent result file '${resultPath}' with nested registry children; will retry later:`, error);
-					return;
-				}
-			}
-			const now = Date.now();
-			const completionKey = buildCompletionKey(data, `result:${file}`);
-			if (markSeenWithTtl(state.completionSeen, completionKey, now, completionTtlMs)) {
-				fsApi.unlinkSync(resultPath);
-				return;
-			}
-
-			const hasResultChildren = Array.isArray(data.results) && data.results.length > 0;
-			const resultChildren = hasResultChildren
-				? data.results!
-				: [{
-					agent: data.agent,
-					output: data.summary,
-					success: data.success,
-				}];
-			const normalizedChildren = attachNestedChildrenToResultChildren(runId, resultChildren.map((result = {}, index): SubagentResultIntercomChild => {
-				const baseOutput = result.output ?? data.summary;
-				const hasRealOutput = typeof baseOutput === "string" && baseOutput.trim().length > 0;
-				const output = hasRealOutput ? baseOutput : "(no output)";
-				const summary = result.success === false && result.error
-					? `${result.error}${hasRealOutput ? `\n\nOutput:\n${baseOutput}` : ""}`
-					: output;
-				const sessionPath = result.sessionFile ?? (resultChildren.length === 1 ? data.sessionFile : undefined);
-				const childNestedChildren = sanitizeNestedResultChildren(result.children, resultPath, `results[${index}].children`);
-				return {
-					agent: result.agent ?? data.agent ?? `step-${index + 1}`,
-					status: resolveSubagentResultStatus({
-						success: result.success,
-						state: data.state === "paused" || typeof result.success !== "boolean" ? data.state : undefined,
-					}),
-					summary,
-					index,
-					artifactPath: result.artifactPaths?.outputPath,
-					...(typeof sessionPath === "string" && fsApi.existsSync(sessionPath) ? { sessionPath } : {}),
-					...(result.intercomTarget ? { intercomTarget: result.intercomTarget } : {}),
-					...(childNestedChildren ? { children: childNestedChildren } : {}),
-				};
-			}), nestedChildren);
-
-			const intercomTarget = data.intercomTarget?.trim();
-			if (intercomTarget) {
-				const mode = data.mode === "single" || data.mode === "parallel" || data.mode === "chain"
-					? data.mode
-					: resultChildren.length > 1 ? "chain" : "single";
-				const payload = buildSubagentResultIntercomPayload({
-					to: intercomTarget,
-					runId,
-					mode,
-					source: "async",
-					children: normalizedChildren,
-					asyncId: data.id,
-					asyncDir: data.asyncDir,
-				});
-				const delivered = await deliverSubagentResultIntercomEvent(pi.events, payload);
-				if (!delivered) {
-					console.error(`Subagent async grouped result intercom delivery was not acknowledged for '${resultPath}'.`);
-				}
-			}
-
-			pi.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
-				...data,
-				runId,
-				...(nestedChildren?.length ? { nestedChildren } : {}),
-				...(Array.isArray(data.results) ? {
-					results: hasResultChildren
-						? normalizedChildren.map((child, index) => ({
-							...data.results![index],
-							agent: child.agent,
-							status: child.status,
-							summary: child.summary,
-							index: child.index,
-							artifactPath: child.artifactPath,
-							sessionPath: child.sessionPath,
-							children: child.children,
-						}))
-						: [],
-				} : {}),
+			const outcome = await processResultEntry(entry, {
+				pi, state, resultsDir, completionTtlMs, fsApi,
+				allowedStatusRoots: deps.allowedStatusRoots,
+				maxStatusBytes: deps.maxStatusBytes,
+				maxNoProgressFailures: deps.maxNoProgressFailures,
+				intercomTimeoutMs: deps.intercomTimeoutMs,
+				isActive: () => isEpochActive(epoch),
+				ownsResult: (data) => isEpochActive(epoch) && ownsResult(data),
 			});
-			fsApi.unlinkSync(resultPath);
+			const nextEntry = outcome.entry ?? entry;
+			if (outcome.status === "status-pending") scheduleStatusRecheck(nextEntry, epoch);
+			else if (outcome.status === "delivery-retry") scheduleDeliveryRetry(nextEntry, epoch);
+			else { statusRetries.clear(entry); deliveryRetries.clear(entry); }
 		} catch (error) {
-			if (isNotFoundError(error)) return;
-			console.error(`Failed to process subagent result file '${resultPath}':`, error);
+			if (!isNotFoundError(error)) {
+				console.error(`Failed to process subagent result entry '${entry}':`, error);
+				if (isEpochActive(epoch) && entryExists(entry)) scheduleDeliveryRetry(entry, epoch);
+			}
+		} finally {
+			inFlight.delete(flightKey);
+			if (rerunAfterFlight.delete(flightKey) && entryExists(entry)) scheduleResultEntry(entry, 0, epoch);
 		}
 	};
 
-	state.resultFileCoalescer = createFileCoalescer((file) => {
-		void handleResult(file);
-	}, 50);
+	state.resultFileCoalescer = createFileCoalescer((key) => {
+		const { epoch, entry } = parseCoalescerKey(key);
+		void handleResult(entry, epoch);
+	}, 50, { setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout });
 
 	const primeExistingResults = () => {
+		if (stopped) return;
+		const epoch = processingEpoch;
 		try {
-			fsApi.readdirSync(resultsDir)
-				.filter((f) => f.endsWith(".json"))
-				.forEach((file) => state.resultFileCoalescer.schedule(file, 0));
+			for (const file of fsApi.readdirSync(resultsDir)) if (file.endsWith(".json")) scheduleResultEntry(file, 0, epoch);
+			for (const claim of listResultClaims(resultsDir, fsApi)) scheduleResultEntry(claimScheduleKey(claim.id), 0, epoch);
 		} catch (error) {
-			if (isNotFoundError(error)) return;
-			console.error(`Failed to scan subagent result directory '${resultsDir}':`, error);
+			if (!isNotFoundError(error)) console.error(`Failed to scan subagent result directory '${resultsDir}':`, error);
 		}
 	};
+	const scheduleDirectoryRescan = (epoch: number) => {
+		if (!isEpochActive(epoch)) return;
+		if (directoryRescanTimer) timers.clearTimeout(directoryRescanTimer);
+		directoryRescanTimer = timers.setTimeout(() => {
+			directoryRescanTimer = null;
+			if (isEpochActive(epoch)) primeExistingResults();
+		}, DIRECTORY_RESCAN_DELAY_MS);
+		directoryRescanTimer.unref?.();
+	};
 
-	const startPollingFallback = (reason: unknown) => {
+	const startPollingFallback = (reason: unknown, epoch: number, installation?: number) => {
+		if (!isEpochActive(epoch) || (installation !== undefined && installation !== activeWatcherInstallation)) return;
 		state.watcher?.close();
 		state.watcher = null;
+		activeWatcherInstallation = 0;
 		if (state.watcherRestartTimer) return;
-
-		console.error(
-			`Subagent result watcher for '${resultsDir}' fell back to polling because native fs.watch is unavailable (${getErrorCode(reason) ?? "unknown error"}).`,
-		);
+		console.error(`Subagent result watcher for '${resultsDir}' fell back to polling because native fs.watch is unavailable (${getErrorCode(reason) ?? "unknown error"}).`);
 		primeExistingResults();
-		state.watcherRestartTimer = timers.setInterval(primeExistingResults, POLL_INTERVAL_MS);
+		state.watcherRestartTimer = timers.setInterval(() => { if (isEpochActive(epoch)) primeExistingResults(); }, POLL_INTERVAL_MS);
 		state.watcherRestartTimer.unref?.();
 	};
 
-	const scheduleRestart = () => {
-		if (state.watcherRestartTimer) return;
-		state.watcherRestartTimer = timers.setTimeout(() => {
+	function scheduleRestart(epoch: number): void {
+		if (!isEpochActive(epoch) || state.watcherRestartTimer) return;
+		let timer!: ReturnType<typeof setTimeout>;
+		timer = timers.setTimeout(() => {
+			if (state.watcherRestartTimer !== timer || !isEpochActive(epoch)) return;
 			state.watcherRestartTimer = null;
-			try {
-				fsApi.mkdirSync(resultsDir, { recursive: true });
-				startResultWatcher();
-			} catch (error) {
-				if (shouldFallBackToPolling(error)) {
-					startPollingFallback(error);
-					return;
-				}
-				console.error(`Failed to restart subagent result watcher for '${resultsDir}':`, error);
-				scheduleRestart();
+			try { fsApi.mkdirSync(resultsDir, { recursive: true }); openResultWatcher(epoch); }
+			catch (error) {
+				if (!isEpochActive(epoch)) return;
+				if (shouldFallBackToPolling(error)) startPollingFallback(error, epoch);
+				else { console.error(`Failed to restart subagent result watcher for '${resultsDir}':`, error); scheduleRestart(epoch); }
 			}
 		}, WATCHER_RESTART_DELAY_MS);
-		state.watcherRestartTimer.unref?.();
-	};
+		state.watcherRestartTimer = timer;
+		timer.unref?.();
+	}
+
+	function openResultWatcher(epoch: number): void {
+		if (!isEpochActive(epoch) || state.watcher) return;
+		const installation = ++watcherInstallation;
+		let handle: fs.FSWatcher | null = null;
+		let pendingSynchronousError: Error | undefined;
+		const handleWatcherError = (error: Error) => {
+			if (!handle) { pendingSynchronousError = error; return; }
+			if (!isEpochActive(epoch) || installation !== activeWatcherInstallation || state.watcher !== handle) return;
+			if (shouldFallBackToPolling(error)) { startPollingFallback(error, epoch, installation); return; }
+			console.error(`Subagent result watcher failed for '${resultsDir}':`, error);
+			handle.close();
+			if (state.watcher === handle) state.watcher = null;
+			activeWatcherInstallation = 0;
+			scheduleRestart(epoch);
+		};
+		try {
+			handle = safeWatch(resultsDir, (_event, file) => {
+				if (!isEpochActive(epoch) || installation !== activeWatcherInstallation) return;
+				if (file) { const name = file.toString(); if (name.endsWith(".json")) scheduleResultEntry(name, 50, epoch); }
+				scheduleDirectoryRescan(epoch);
+			}, handleWatcherError, { watch: fsApi.watch, realpathSyncNative: fsApi.realpathSync?.native });
+			if (!handle) throw pendingSynchronousError ?? new Error("Result watcher installation returned no handle");
+			if (!isEpochActive(epoch)) { handle.close(); return; }
+			state.watcher = handle;
+			activeWatcherInstallation = installation;
+			handle.unref?.();
+			if (pendingSynchronousError) handleWatcherError(pendingSynchronousError);
+		} catch (error) {
+			handle?.close();
+			if (state.watcher === handle) state.watcher = null;
+			activeWatcherInstallation = 0;
+			if (!isEpochActive(epoch)) return;
+			if (shouldFallBackToPolling(error)) startPollingFallback(error, epoch);
+			else { console.error(`Failed to start subagent result watcher for '${resultsDir}':`, error); scheduleRestart(epoch); }
+		}
+	}
 
 	const startResultWatcher = () => {
-		if (state.watcher) return;
+		stopped = false;
+		processingEpoch += 1;
 		if (state.watcherRestartTimer) {
-			timers.clearTimeout(state.watcherRestartTimer);
-			timers.clearInterval(state.watcherRestartTimer);
-			state.watcherRestartTimer = null;
+			timers.clearTimeout(state.watcherRestartTimer); timers.clearInterval(state.watcherRestartTimer); state.watcherRestartTimer = null;
 		}
-		try {
-			state.watcher = fsApi.watch(resultsDir, (ev, file) => {
-				if (ev !== "rename" || !file) return;
-				const fileName = file.toString();
-				if (!fileName.endsWith(".json")) return;
-				state.resultFileCoalescer.schedule(fileName);
-			});
-			state.watcher.on("error", (error) => {
-				if (shouldFallBackToPolling(error)) {
-					startPollingFallback(error);
-					return;
-				}
-				console.error(`Subagent result watcher failed for '${resultsDir}':`, error);
-				state.watcher?.close();
-				state.watcher = null;
-				scheduleRestart();
-			});
-			state.watcher.unref?.();
-		} catch (error) {
-			if (shouldFallBackToPolling(error)) {
-				startPollingFallback(error);
-				return;
-			}
-			console.error(`Failed to start subagent result watcher for '${resultsDir}':`, error);
-			state.watcher = null;
-			scheduleRestart();
-		}
+		openResultWatcher(processingEpoch);
 	};
-
 	const stopResultWatcher = () => {
+		stopped = true;
+		processingEpoch += 1;
 		state.watcher?.close();
 		state.watcher = null;
-		if (state.watcherRestartTimer) {
-			timers.clearTimeout(state.watcherRestartTimer);
-			timers.clearInterval(state.watcherRestartTimer);
-		}
+		activeWatcherInstallation = 0;
+		if (state.watcherRestartTimer) { timers.clearTimeout(state.watcherRestartTimer); timers.clearInterval(state.watcherRestartTimer); }
 		state.watcherRestartTimer = null;
-		state.resultFileCoalescer.clear();
+		if (directoryRescanTimer) timers.clearTimeout(directoryRescanTimer);
+		directoryRescanTimer = null;
+		statusRetries.clearAll(); deliveryRetries.clearAll(); state.resultFileCoalescer.clear();
 	};
-
 	return { startResultWatcher, primeExistingResults, stopResultWatcher };
 }

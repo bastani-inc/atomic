@@ -82,11 +82,26 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
     fallbackModels: [
       "github-copilot/claude-opus-4.8 (1m):high",
       "anthropic/claude-opus-4-8:high",
+      "cursor/claude-fable-5:high",
+      "cursor/claude-opus-4-8-thinking:high",
+      "kimi-coding/k3:max",
+      "moonshotai/kimi-k3:max",
+      "moonshotai-cn/kimi-k3:max",
+      "openai-codex/gpt-5.6-sol:xhigh",
+      "github-copilot/gpt-5.6-sol:xhigh",
+      "openai/gpt-5.6-sol:xhigh",
+      "cursor/gpt-5.6-sol:xhigh",
+      "xai/grok-4.5:high",
+      "cursor/grok-4.5:high",
       "zai/glm-5.2:xhigh",
       "zai-coding-cn/glm-5.2:xhigh",
+      "cursor/glm-5.2",
       "openrouter/anthropic/claude-fable-5:high",
       "openrouter/anthropic/claude-opus-4-8:high",
+      "openrouter/moonshotai/kimi-k3:max",
+      "openrouter/openai/gpt-5.6-sol:xhigh",
       "openrouter/sakana/fugu-ultra:high",
+      "openrouter/x-ai/grok-4.5",
       "openrouter/z-ai/glm-5.2:xhigh"
     ],
   };
@@ -152,7 +167,7 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
         ["role", "You are an opinionated staff design engineer."],
         [
           "objective",
-          `Audit the project UI constraints that must shape: ${designBrief}. Independently scan the repository and evaluate the evidence you find against impeccable's six dimensions of design quality. Also capture/parse any user-provided references in this same pass. This runs in PARALLEL with the locator and pattern passes, so do your own scan rather than relying on their output.`,
+          `Audit the project UI constraints that must shape: ${designBrief}. Independently scan the repository and evaluate the evidence you find against impeccable's six dimensions of design quality. Also capture/parse any user-provided references in this same pass. Do your own scan; do not assume any other stage's output is available.`,
         ],
         [
           "impeccable_skill",
@@ -193,7 +208,7 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
         ["role", "You are an opinionated staff design engineer."],
         [
           "objective",
-          `Extract reusable patterns and anti-patterns for: ${designBrief}. Apply the impeccable \`extract\` sub-skill to find design patterns to reuse and anti-patterns to avoid. Also parse/capture user references inside this same pass, translating them into reusable generation patterns. This runs in PARALLEL with the locator and auditor passes, so scan the codebase yourself rather than depending on their output.`,
+          `Extract reusable patterns and anti-patterns for: ${designBrief}. Apply the impeccable \`extract\` sub-skill to find design patterns to reuse and anti-patterns to avoid. Also parse/capture user references inside this same pass, translating them into reusable generation patterns. Do your own scan; do not assume any other stage's output is available.`,
         ],
         ["user_references", userReferenceContext],
         ["reference_handling", referenceHandlingRules],

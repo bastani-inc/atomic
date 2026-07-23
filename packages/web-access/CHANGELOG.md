@@ -4,6 +4,130 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.11-alpha.1] - 2026-07-20
+
+### Changed
+
+- Published a synchronized Atomic 0.9.11-alpha.1 prerelease for the web-access extension; no functional web-access changes were made after 0.9.10.
+
+## [0.9.10] - 2026-07-20
+
+### Changed
+
+- Converted the reachable synchronous subprocess paths in video/YouTube extraction and the Glimpse browser-curator probe to a shared asynchronous Bun subprocess helper (`runBunSubprocess`). `ffmpeg` frame capture, `ffprobe`/`yt-dlp` duration and stream probes, and the global `npm root -g` lookup no longer block the event loop via `execFileSync`: each child now streams stdout/stderr concurrently into byte-capped buffers (binary-safe for JPEG frame output), enforces a timeout with `SIGTERM`→`SIGKILL` escalation, honors an optional caller `AbortSignal` with the same tree-kill escalation, and maps timeout/abort/non-zero-exit/`ENOENT`/output-overflow into typed errors that preserve the existing user-facing `ffmpeg`/`ffprobe`/`yt-dlp` failure messages. Video and YouTube extraction functions now thread an optional `AbortSignal` from callers that already own one, and the Glimpse module resolver caches a single in-flight global-root probe so concurrent curator opens never spawn duplicate `npm` processes.
+
+### Fixed
+
+- Fixed collapsed web-search results hardcoding `CTRL+O`; the line-count hint now uses the effective `app.tools.expand` binding and keeps its factual counts when expansion is unbound.
+- Preserved provider-owned null header suppression and credential-specific `baseUrl` overrides for search-query rewriting and summary generation ([#1875](https://github.com/bastani-inc/atomic/issues/1875)).
+
+## [0.9.10-alpha.1] - 2026-07-19
+
+### Changed
+
+- Converted the reachable synchronous subprocess paths in video/YouTube extraction and the Glimpse browser-curator probe to a shared asynchronous Bun subprocess helper (`runBunSubprocess`). `ffmpeg` frame capture, `ffprobe`/`yt-dlp` duration and stream probes, and the global `npm root -g` lookup no longer block the event loop via `execFileSync`: each child now streams stdout/stderr concurrently into byte-capped buffers (binary-safe for JPEG frame output), enforces a timeout with `SIGTERM`→`SIGKILL` escalation, honors an optional caller `AbortSignal` with the same tree-kill escalation, and maps timeout/abort/non-zero-exit/`ENOENT`/output-overflow into typed errors that preserve the existing user-facing `ffmpeg`/`ffprobe`/`yt-dlp` failure messages. Video and YouTube extraction functions now thread an optional `AbortSignal` from callers that already own one, and the Glimpse module resolver caches a single in-flight global-root probe so concurrent curator opens never spawn duplicate `npm` processes.
+
+### Fixed
+
+- Fixed collapsed web-search results hardcoding `CTRL+O`; the line-count hint now uses the effective `app.tools.expand` binding and keeps its factual counts when expansion is unbound.
+- Preserved provider-owned null header suppression and credential-specific `baseUrl` overrides for search-query rewriting and summary generation ([#1875](https://github.com/bastani-inc/atomic/issues/1875)).
+
+## [0.9.9] - 2026-07-15
+
+### Changed
+
+- Aligned the web-access extension peer dependency with `@earendil-works/pi-tui` `^0.80.7` as part of the consolidated Pi v0.80.7 dependency update; no web-access source changes were needed.
+- Updated `linkedom` from 0.18.12 to 0.18.13 and refreshed its selector dependency graph.
+
+## [0.9.9-alpha.4] - 2026-07-15
+
+### Changed
+
+- Published a synchronized Atomic 0.9.9-alpha.4 prerelease for the web-access extension; no functional web-access changes were made after 0.9.9-alpha.3.
+
+## [0.9.9-alpha.3] - 2026-07-14
+
+### Changed
+
+- Published a synchronized Atomic 0.9.9-alpha.3 prerelease for the web-access extension; no functional web-access changes were made after 0.9.9-alpha.2.
+
+## [0.9.9-alpha.2] - 2026-07-14
+
+### Changed
+
+- Aligned the web-access extension peer dependency with `@earendil-works/pi-tui` `^0.80.7` as part of the consolidated Pi v0.80.7 dependency update; no web-access source changes were needed.
+- Updated `linkedom` from 0.18.12 to 0.18.13 and refreshed its selector dependency graph.
+
+## [0.9.9-alpha.1] - 2026-07-14
+
+### Changed
+
+- Published a synchronized Atomic 0.9.9-alpha.1 prerelease for the web-access extension; no functional web-access changes were made after 0.9.8.
+
+## [0.9.8] - 2026-07-12
+
+### Changed
+
+- Published the stable Atomic 0.9.8 release for the web-access extension; no functional web-access changes were made after 0.9.7.
+
+## [0.9.8-alpha.1] - 2026-07-12
+
+### Changed
+
+- Published a synchronized Atomic 0.9.8-alpha.1 prerelease for the web-access extension; no functional web-access changes were made after 0.9.7.
+
+## [0.9.7] - 2026-07-12
+
+### Changed
+
+- Published the stable Atomic 0.9.7 release for the web-access extension; no functional web-access changes were made after 0.9.6.
+
+## [0.9.7-alpha.1] - 2026-07-12
+
+### Changed
+
+- Published a synchronized Atomic 0.9.7-alpha.1 prerelease for the web-access extension; no functional web-access changes were made after 0.9.6.
+
+## [0.9.6] - 2026-07-12
+
+### Changed
+
+- Published the stable Atomic 0.9.6 release for the web-access extension; no functional web-access changes were made after 0.9.5.
+
+## [0.9.6-alpha.1] - 2026-07-12
+
+### Changed
+
+- Published a synchronized Atomic 0.9.6-alpha.1 prerelease for the web-access extension; no functional web-access changes were made after 0.9.5.
+
+## [0.9.5] - 2026-07-11
+
+### Changed
+
+- Aligned the web-access extension peer dependency with upstream `pi-tui` `^0.80.6` as part of the consolidated Pi sync; no web-access source behavior changed ([#1703](https://github.com/bastani-inc/atomic/issues/1703)).
+
+### Fixed
+
+- Retry failed lazy initialization and initial or later-generation lifecycle replays before a subsequent `web_search` or `fetch_content` executes, while concurrent cold/retry callers share one attempt ([#1704](https://github.com/bastani-inc/atomic/issues/1704)).
+- Fixed native Bun loading of the heavy web-access graph by resolving pi-ai compatibility helpers from the installed `@earendil-works/pi-ai/compat` package, so `web_search`, `code_search`, `fetch_content`, and `get_search_content` initialize through their lazy wrappers ([#1728](https://github.com/bastani-inc/atomic/issues/1728)).
+- Made lazy lifecycle replay generation-safe and session-leased: replay is committed only after successful dispatch, lifecycle changes during replay advance to the latest snapshot, shutdown does not report completion until retired replay/initializer cleanup settles, calls spanning teardown reject, and replacement wrappers cannot be mutated by late old cleanup.
+- Recheck each invocation's abort signal after shared lazy initialization and provider/curator execution, preserving the exact host abort reason without cancelling initialization for other callers while keeping explicit curator user cancellation result-shaped.
+- Classify non-empty all-failed search/fetch batches as host-visible tool errors with provider/fetch stage diagnostics while retaining per-item payloads and keeping partial successes successful.
+
+## [0.9.5-alpha.10] - 2026-07-11
+
+### Changed
+
+- Aligned the web-access extension peer dependency with upstream `pi-tui` `^0.80.6` as part of the consolidated Pi sync; no web-access source behavior changed ([#1703](https://github.com/bastani-inc/atomic/issues/1703)).
+
+### Fixed
+
+- Retry failed lazy initialization and initial or later-generation lifecycle replays before a subsequent `web_search` or `fetch_content` executes, while concurrent cold/retry callers share one attempt ([#1704](https://github.com/bastani-inc/atomic/issues/1704)).
+- Fixed native Bun loading of the heavy web-access graph by resolving pi-ai compatibility helpers from the installed `@earendil-works/pi-ai/compat` package, so `web_search`, `code_search`, `fetch_content`, and `get_search_content` initialize through their lazy wrappers ([#1728](https://github.com/bastani-inc/atomic/issues/1728)).
+- Made lazy lifecycle replay generation-safe and session-leased: replay is committed only after successful dispatch, lifecycle changes during replay advance to the latest snapshot, shutdown does not report completion until retired replay/initializer cleanup settles, calls spanning teardown reject, and replacement wrappers cannot be mutated by late old cleanup.
+- Recheck each invocation's abort signal after shared lazy initialization and provider/curator execution, preserving the exact host abort reason without cancelling initialization for other callers while keeping explicit curator user cancellation result-shaped.
+- Classify non-empty all-failed search/fetch batches as host-visible tool errors with provider/fetch stage diagnostics while retaining per-item payloads and keeping partial successes successful.
+
 ## [0.9.4] - 2026-07-03
 
 ### Changed

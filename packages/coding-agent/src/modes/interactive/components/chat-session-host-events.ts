@@ -1,4 +1,15 @@
-import type { AgentSessionEvent } from "../../../core/agent-session.ts";
+import type { AgentSession, AgentSessionEvent } from "../../../core/agent-session.ts";
+import {
+  VERBATIM_COMPACTION_PROMPT_VERSION,
+  VERBATIM_COMPACTION_STRATEGY,
+  type VerbatimCompactionDetails,
+  type VerbatimCompactionResult,
+} from "../../../core/compaction/index.ts";
+import {
+  createVerbatimCompactionMessage,
+  isVerbatimCompactionMessage,
+  type CustomMessage,
+} from "../../../core/messages.ts";
 import { pickWhimsicalWorkingMessage } from "../whimsical-messages.ts";
 import { flushChatSessionCompactionQueue } from "./chat-session-host-actions.ts";
 import {
@@ -13,6 +24,96 @@ import {
   isUserMessageLike,
   userMessageSignature,
 } from "./chat-session-host-utils.ts";
+
+type CompactionReason = "manual" | "threshold" | "overflow";
+
+function compactionStatusMessage(reason: CompactionReason): string {
+  switch (reason) {
+    case "manual":
+      return "Compacting context...";
+    case "threshold":
+      return "Auto-compacting...";
+    case "overflow":
+      return "Context overflow detected. Auto-compacting...";
+  }
+}
+
+function hasVerbatimCompactionMessage(messages: AgentSession["messages"]): boolean {
+  return messages.some(
+    (message) => message.role === "custom" && isVerbatimCompactionMessage(message),
+  );
+}
+
+function isCompleteCompactionResult(result: VerbatimCompactionResult): boolean {
+  return (
+    typeof result.compactedText === "string" &&
+    typeof result.tokensBefore === "number" &&
+    result.stats !== undefined &&
+    result.parameters !== undefined &&
+    result.promptVersion === VERBATIM_COMPACTION_PROMPT_VERSION &&
+    (result.rung === "planned" || result.rung === "extension")
+  );
+}
+
+function boundaryMessageFromResult(
+  result: VerbatimCompactionResult,
+): CustomMessage<VerbatimCompactionDetails> | undefined {
+  if (!isCompleteCompactionResult(result)) return undefined;
+  const details = {
+    strategy: VERBATIM_COMPACTION_STRATEGY,
+    promptVersion: result.promptVersion,
+    parameters: result.parameters,
+    stats: result.stats,
+    rung: result.rung,
+    ...(result.backupPath === undefined ? {} : { backupPath: result.backupPath }),
+  } satisfies VerbatimCompactionDetails;
+  return createVerbatimCompactionMessage(
+    result.compactedText,
+    result.tokensBefore,
+    new Date().toISOString(),
+    details,
+  ) as CustomMessage<VerbatimCompactionDetails>;
+}
+
+function customMessageText(message: CustomMessage): string {
+  if (typeof message.content === "string") return message.content;
+  return message.content
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("\n");
+}
+
+function transcriptHasBoundaryForResult(
+  transcript: readonly ChatTranscriptEntryLike[],
+  result: VerbatimCompactionResult,
+): boolean {
+  return transcript.some((entry) => {
+    const candidate = entry as ChatTranscriptEntryLike & {
+      readonly kind?: string;
+      readonly message?: CustomMessage;
+    };
+    return (
+      candidate.kind === "custom" &&
+      candidate.message?.role === "custom" &&
+      isVerbatimCompactionMessage(candidate.message) &&
+      customMessageText(candidate.message).endsWith(result.compactedText)
+    );
+  });
+}
+
+function refreshCompactedTranscript<TExtraEntry extends ChatTranscriptEntryLike>(
+  state: ChatSessionHostState<TExtraEntry>,
+  result: VerbatimCompactionResult,
+): void {
+  const compactedMessages = state.getAgentSession?.()?.messages;
+  if (compactedMessages && hasVerbatimCompactionMessage(compactedMessages)) {
+    state.liveChat.replaceMessages(compactedMessages, state.extraEntries);
+    return;
+  }
+  if (transcriptHasBoundaryForResult(state.transcript, result)) return;
+  const boundary = boundaryMessageFromResult(result);
+  if (boundary) state.liveChat.appendMessages([boundary]);
+}
 
 export function applyChatSessionAgentEvent<
   TExtraEntry extends ChatTranscriptEntryLike,
@@ -55,6 +156,10 @@ export function applyChatSessionAgentEvent<
       state.liveChat.clearPendingTools();
       state.statusMessage = "";
       changed = true;
+      if (state.compactionQueuedMessages.length > 0) {
+        const idle = state.getAgentSession?.()?.agent.waitForIdle() ?? Promise.resolve();
+        void idle.then(() => flushChatSessionCompactionQueue(state));
+      }
       break;
     case "turn_start":
       state.workingMessage = pickWhimsicalWorkingMessage();
@@ -86,40 +191,69 @@ export function applyChatSessionAgentEvent<
     case "thinking":
       changed = state.liveChat.applyEvent(legacyThinkingEvent(event));
       break;
-    case "compaction_start":
-    case "context_compaction_start":
+    case "compaction_start": {
+      const compaction = event as Extract<AgentSessionEvent, { type: "compaction_start" }>;
       state.compacting = true;
       state.sdkBusy = true;
-      state.statusMessage = "compacting context…";
+      state.statusMessage = compactionStatusMessage(compaction.reason);
       changed = true;
       break;
+    }
     case "compaction_end": {
       const compaction = event as Extract<AgentSessionEvent, { type: "compaction_end" }>;
       state.compacting = false;
-      state.sdkBusy = false;
+      state.sdkBusy = compaction.midTurn === true;
       state.statusMessage = compaction.errorMessage ?? "";
-      if (!compaction.aborted && !compaction.errorMessage && state.compactionQueuedMessages.length > 0) {
+      if (!compaction.aborted && !compaction.errorMessage && compaction.result) {
+        refreshCompactedTranscript(state, compaction.result);
+      }
+      if (
+        !compaction.midTurn &&
+        !compaction.aborted &&
+        !compaction.errorMessage &&
+        state.compactionQueuedMessages.length > 0
+      ) {
         void flushChatSessionCompactionQueue(state);
       }
       changed = true;
       break;
     }
-    case "context_compaction_end": {
-      const compaction = event as Extract<AgentSessionEvent, { type: "context_compaction_end" }>;
-      state.compacting = false;
-      state.sdkBusy = false;
-      state.statusMessage = compaction.errorMessage ?? "";
-      if (!compaction.aborted && !compaction.errorMessage && state.compactionQueuedMessages.length > 0) {
-        void flushChatSessionCompactionQueue(state);
-      }
+    case "summarization_retry_scheduled":
+      state.sdkBusy = true;
+      state.statusMessage = "retrying summary…";
+      changed = true;
+      break;
+    case "summarization_retry_attempt_start": {
+      const retry = event as Extract<AgentSessionEvent, { type: "summarization_retry_attempt_start" }>;
+      state.sdkBusy = true;
+      state.statusMessage = retry.source === "branchSummary" ? "summarizing branch…" : compactionStatusMessage(retry.reason);
       changed = true;
       break;
     }
+    case "summarization_retry_finished":
+      state.statusMessage = state.compacting ? "Compacting context..." : "";
+      changed = true;
+      break;
     case "auto_retry_start":
       state.sdkBusy = true;
       state.statusMessage = "retrying…";
       changed = true;
       break;
+    case "model_fallback_start":
+      state.sdkBusy = true;
+      state.statusMessage = "switching model…";
+      changed = true;
+      break;
+    case "model_fallback_end": {
+      const fallback = event as Extract<AgentSessionEvent, { type: "model_fallback_end" }>;
+      state.statusMessage = fallback.success ? "" : (fallback.finalError ?? "model fallback failed");
+      if (!fallback.success) {
+        state.sdkBusy = false;
+        state.workingMessage = undefined;
+      }
+      changed = true;
+      break;
+    }
     case "auto_retry_end": {
       const retry = event as Extract<AgentSessionEvent, { type: "auto_retry_end" }>;
       state.statusMessage = "";

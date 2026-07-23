@@ -1,4 +1,5 @@
-import { APP_NAME, BUILT_IN_PROVIDER_DISPLAY_NAMES, BUILTIN_SLASH_COMMANDS, defaultModelPerProvider, fs, getProviders, SessionManager, Text, type Api, type Model } from "./interactive-mode-deps.ts";
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import { APP_NAME, BUILTIN_SLASH_COMMANDS, defaultModelPerProvider, fs, SessionManager, Text, type Api, type Model } from "./interactive-mode-deps.ts";
 import type { Expandable } from "./interactive-mode-types.ts";
 
 export function isExpandable(obj: unknown): obj is Expandable {
@@ -12,13 +13,15 @@ export function isExpandable(obj: unknown): obj is Expandable {
 
 export class ExpandableText extends Text implements Expandable {
   private expanded: boolean;
+  private contentWidth: number | undefined;
+  private readonly textPaddingX: number;
 
-  declare private readonly getCollapsedText: () => string;
-  declare private readonly getExpandedText: () => string;
+  declare private readonly getCollapsedText: (width?: number) => string;
+  declare private readonly getExpandedText: (width?: number) => string;
 
   constructor(
-    getCollapsedText: () => string,
-    getExpandedText: () => string,
+    getCollapsedText: (width?: number) => string,
+    getExpandedText: (width?: number) => string,
     expanded = false,
     paddingX = 0,
     paddingY = 0,
@@ -31,6 +34,7 @@ export class ExpandableText extends Text implements Expandable {
     this.getCollapsedText = getCollapsedText;
     this.getExpandedText = getExpandedText;
     this.expanded = expanded;
+    this.textPaddingX = paddingX;
   }
 
   setExpanded(expanded: boolean): void {
@@ -39,7 +43,22 @@ export class ExpandableText extends Text implements Expandable {
   }
 
   refresh(): void {
-    this.setText(this.expanded ? this.getExpandedText() : this.getCollapsedText());
+    const width = this.contentWidth;
+    this.setText(
+      this.expanded ? this.getExpandedText(width) : this.getCollapsedText(width),
+    );
+  }
+
+  override render(width: number): string[] {
+    // Text getters may adapt their layout to the available content width
+    // (e.g. the startup banner drops its side-by-side meta column on narrow
+    // terminals), so refresh whenever the render width changes.
+    const contentWidth = Math.max(1, width - this.textPaddingX * 2);
+    if (contentWidth !== this.contentWidth) {
+      this.contentWidth = contentWidth;
+      this.refresh();
+    }
+    return super.render(width);
   }
 }
 
@@ -103,18 +122,12 @@ export function hasDefaultModelProvider(
 
 export const BEDROCK_PROVIDER_ID = "amazon-bedrock";
 
-const BUILT_IN_MODEL_PROVIDERS = new Set<string>(getProviders());
-
+/** @deprecated Login options are now built directly from provider auth metadata. */
 export function isApiKeyLoginProvider(
   providerId: string,
   oauthProviderIds: ReadonlySet<string>,
-  builtInProviderIds: ReadonlySet<string> = BUILT_IN_MODEL_PROVIDERS,
+  _builtInProviderIds?: ReadonlySet<string>,
 ): boolean {
-  if (BUILT_IN_PROVIDER_DISPLAY_NAMES[providerId]) {
-    return true;
-  }
-  if (builtInProviderIds.has(providerId)) {
-    return false;
-  }
-  return !oauthProviderIds.has(providerId);
+  const builtin = builtinProviders().find((provider) => provider.id === providerId);
+  return builtin ? builtin.auth.apiKey !== undefined : !oauthProviderIds.has(providerId);
 }

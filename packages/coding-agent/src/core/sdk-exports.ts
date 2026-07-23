@@ -1,12 +1,23 @@
 export * from "./agent-session-runtime.ts";
 export type {
+  AgentSettledEvent,
+  BeforeProviderHeadersEvent,
+  EntryRenderer,
+  EntryRenderOptions,
   ExtensionAPI,
   ExtensionCommandContext,
   ExtensionContext,
   ExtensionFactory,
+  InlineExtension,
+  MessageEndEvent,
+  MessageStartEvent,
+  MessageUpdateEvent,
   SlashCommandInfo,
   SlashCommandSource,
   ToolDefinition,
+  ToolExecutionEndEvent,
+  ToolExecutionStartEvent,
+  ToolExecutionUpdateEvent,
 } from "./extensions/index.ts";
 export type { PromptTemplate } from "./prompt-templates.ts";
 export type { Skill } from "./skills.ts";

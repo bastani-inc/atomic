@@ -119,6 +119,7 @@ function durationText(stage: StageSnapshot): string {
 }
 
 function metaText(stage: StageSnapshot): string {
+  if (stage.topologyState === "unavailable") return "topology unavailable";
   const deps = stage.parentIds.length;
   const dependencyText = deps === 0 ? "root" : deps === 1 ? "1 dep" : `${deps} deps`;
   return stage.fastMode === true ? `${dependencyText} · fast` : dependencyText;

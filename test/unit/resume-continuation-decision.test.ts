@@ -7,13 +7,16 @@ import {
 
 describe("resume continuation decision", () => {
   test("uses the exact deterministic continuation prompt", () => {
-    assert.equal(RESUME_CONTINUATION_PROMPT, "Continue where you left off.");
+    assert.equal(
+      RESUME_CONTINUATION_PROMPT,
+      "Continue where you left off. If you believe you are finished with your original task (or a redefined task if the user told you), stop.",
+    );
   });
 
   test("resume + gate enabled + not aborted injects", () => {
     assert.equal(
       shouldInjectResumeContinuation({
-        resumeOccurred: true,
+        reason: "resume",
         gateEnabled: true,
         aborted: false,
       }),
@@ -21,10 +24,10 @@ describe("resume continuation decision", () => {
     );
   });
 
-  test("gate disabled is a no-op", () => {
+  test("resume reason with gate disabled is a no-op", () => {
     assert.equal(
       shouldInjectResumeContinuation({
-        resumeOccurred: true,
+        reason: "resume",
         gateEnabled: false,
         aborted: false,
       }),
@@ -32,10 +35,21 @@ describe("resume continuation decision", () => {
     );
   });
 
+  test("queued user message reason does not require the readiness gate", () => {
+    assert.equal(
+      shouldInjectResumeContinuation({
+        reason: "queued-user-message",
+        gateEnabled: false,
+        aborted: false,
+      }),
+      true,
+    );
+  });
+
   test("aborted run is a no-op", () => {
     assert.equal(
       shouldInjectResumeContinuation({
-        resumeOccurred: true,
+        reason: "resume",
         gateEnabled: true,
         aborted: true,
       }),
@@ -46,7 +60,7 @@ describe("resume continuation decision", () => {
   test("no resume is a no-op", () => {
     assert.equal(
       shouldInjectResumeContinuation({
-        resumeOccurred: false,
+        reason: false,
         gateEnabled: true,
         aborted: false,
       }),

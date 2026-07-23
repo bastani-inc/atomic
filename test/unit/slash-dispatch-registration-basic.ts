@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { describe, test } from "bun:test";
 import {
+    installSlashDispatchTestHooks,
     assert,
     parseWorkflowArgs,
     tokenizeWorkflowArgs,
@@ -62,6 +63,12 @@ import type {
     StageSessionRuntime,
     StageControlHandle,
 } from "./slash-dispatch-utils.js";
+import {
+    BUNDLED_EXTENSION_SLASH_COMMANDS,
+    getBundledWorkflowArgumentCompletions,
+} from "../../packages/coding-agent/src/core/slash-commands.js";
+
+installSlashDispatchTestHooks();
 
 describe("factory command registration (real factory)", () => {
     /** Import factory and call it with a mock pi whose registry contains known workflows. */
@@ -80,10 +87,12 @@ describe("factory command registration (real factory)", () => {
         );
     });
 
-    test.serial("base /workflow command registered", async () => {
+    test.serial("base /workflow command registers quit without kill help", async () => {
         const commands = await runFactoryWithMock();
-        const names = commands.map((c) => c.name);
-        assert.ok(names.includes("workflow"));
+        const workflowCommand = commands.find((command) => command.name === "workflow");
+        assert.notEqual(workflowCommand, undefined);
+        assert.match(workflowCommand!.options.description, /quit/);
+        assert.doesNotMatch(workflowCommand!.options.description, /kill/);
     });
 });
 
@@ -107,7 +116,8 @@ describe("getArgumentCompletions includes workflow names", () => {
         assert.ok(labels.includes("status"));
         assert.ok(labels.includes("connect"));
         assert.ok(labels.includes("interrupt"));
-        assert.ok(labels.includes("kill"));
+        assert.ok(labels.includes("quit"));
+        assert.equal(labels.includes("kill"), false);
         assert.ok(labels.includes("resume"));
         assert.ok(labels.includes("inputs"));
         assert.ok(labels.includes("reload"));
@@ -141,9 +151,28 @@ describe("getArgumentCompletions includes workflow names", () => {
             workflowCmd!.options.getArgumentCompletions?.("interrupt -") ?? [];
         assert.ok(completions.some((c) => c.value === "interrupt -y "));
 
-        const killCompletions =
-            workflowCmd!.options.getArgumentCompletions?.("kill -") ?? [];
-        assert.ok(killCompletions.some((c) => c.value === "kill -y "));
+        const quitCompletions =
+            workflowCmd!.options.getArgumentCompletions?.("quit -") ?? [];
+        assert.ok(quitCompletions.some((c) => c.value === "quit --all "));
+        assert.equal(quitCompletions.some((c) => c.label === "-y" || c.label === "--yes"), false);
+        assert.equal(quitCompletions.some((c) => c.value.includes("kill")), false);
+
+        const bundledQuit = getBundledWorkflowArgumentCompletions("quit -") ?? [];
+        assert.ok(bundledQuit.some((c) => c.value === "quit --all "));
+        assert.equal(bundledQuit.some((c) => c.label === "-y" || c.label === "--yes"), false);
+    });
+
+    test("bundled fallback completion and description expose quit without kill", () => {
+        const completions = getBundledWorkflowArgumentCompletions("") ?? [];
+        const labels = completions.map((completion) => completion.label);
+        assert.ok(labels.includes("quit"));
+        assert.equal(labels.includes("kill"), false);
+
+        const workflowCommand = BUNDLED_EXTENSION_SLASH_COMMANDS.find(
+            (command) => command.name === "workflow",
+        );
+        assert.match(workflowCommand?.description ?? "", /quit/);
+        assert.doesNotMatch(workflowCommand?.description ?? "", /kill/);
     });
 
     test.serial("trailing-space completion does not throw on empty subcommand", async () => {
@@ -158,11 +187,8 @@ describe("getArgumentCompletions includes workflow names", () => {
 
         const workflowCmd = commands.find((c) => c.name === "workflow");
         let completions: PiArgumentCompletion[] | null | undefined;
-        assert.doesNotThrow(() => {
-            completions = workflowCmd!.options.getArgumentCompletions?.(" ") as
-                | PiArgumentCompletion[]
-                | null
-                | undefined;
+        await assert.doesNotReject(async () => {
+            completions = (await workflowCmd!.options.getArgumentCompletions?.(" ")) ?? null;
         });
         const labels = (completions ?? []).map((c) => c.label);
         assert.ok(labels.includes("list"), "admin subcommands offered");

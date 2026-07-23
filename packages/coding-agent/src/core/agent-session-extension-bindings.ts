@@ -1,7 +1,7 @@
 import { basename, dirname } from "node:path";
 import { resetApiProviders } from "@earendil-works/pi-ai/compat";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
-import type { ExtensionBindings } from "./agent-session-types.ts";
+import type { AgentSessionReloadOptions, ExtensionBindings } from "./agent-session-types.ts";
 import type { ExtensionRunner } from "./extensions/index.ts";
 import type { ResourceExtensionPaths } from "./resource-loader.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
@@ -154,13 +154,26 @@ export function _bindExtensionCore(this: AgentSession, runner: ExtensionRunner):
 	runner.bindCore(
 		{
 			sendMessage: (message, options) => {
-				this.sendCustomMessage(message, options).catch((err) => {
+				const delivery = this.sendCustomMessage(message, options);
+				void delivery.catch((err) => {
 					runner.emitError({
 						extensionPath: "<runtime>",
 						event: "send_message",
 						error: err instanceof Error ? err.message : String(err),
 					});
 				});
+				return delivery;
+			},
+			sendMessages: (messages, options) => {
+				const delivery = this.sendCustomMessages(messages, options);
+				void delivery.catch((err) => {
+					runner.emitError({
+						extensionPath: "<runtime>",
+						event: "send_messages",
+						error: err instanceof Error ? err.message : String(err),
+					});
+				});
+				return delivery;
 			},
 			sendUserMessage: (content, options) => {
 				this.sendUserMessage(content, options).catch((err) => {
@@ -172,7 +185,9 @@ export function _bindExtensionCore(this: AgentSession, runner: ExtensionRunner):
 				});
 			},
 			appendEntry: (customType, data) => {
-				this.sessionManager.appendCustomEntry(customType, data);
+				const id = this.sessionManager.appendCustomEntry(customType, data);
+				const entry = this.sessionManager.getEntry(id);
+				if (entry) this._emit({ type: "entry_appended", entry });
 			},
 			setSessionName: (name) => {
 				this.setSessionName(name);
@@ -226,8 +241,9 @@ export function _bindExtensionCore(this: AgentSession, runner: ExtensionRunner):
 			getSystemPromptOptions: () => this._baseSystemPromptOptions,
 		},
 		{
-			registerProvider: (name, config) => {
-				this._modelRegistry.registerProvider(name, config);
+			registerProvider: (providerOrName, config) => {
+				if (typeof providerOrName === "string") this._modelRegistry.registerProvider(providerOrName, config!);
+				else this._modelRegistry.registerProvider(providerOrName);
 				this.refreshCurrentModelFromRegistry();
 			},
 			unregisterProvider: (name) => {
@@ -239,7 +255,7 @@ export function _bindExtensionCore(this: AgentSession, runner: ExtensionRunner):
 }
 
 
-export async function reload(this: AgentSession, options?: { reason?: "startup" | "reload" }): Promise<void> {
+export async function reload(this: AgentSession, options?: AgentSessionReloadOptions): Promise<void> {
 	const reason = options?.reason ?? "reload";
 	const previousFlagValues = this._extensionRunner.getFlagValues();
 	if (reason === "reload") {
@@ -253,6 +269,10 @@ export async function reload(this: AgentSession, options?: { reason?: "startup" 
 		flagValues: previousFlagValues,
 		includeAllExtensionTools: true,
 	});
+
+	// Runtime-dependent state must be refreshed here so newly loaded extensions
+	// observe it during session_start rather than only after reload() resolves.
+	await options?.beforeSessionStart?.();
 
 	const hasBindings =
 		this._extensionUIContext ||

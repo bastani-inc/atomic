@@ -26,6 +26,7 @@ import { runSinglePath } from "./subagent-executor-single.ts";
 import {
 	foregroundStatusResult,
 	getForegroundControl,
+	retainedForegroundStatusResult,
 } from "./subagent-executor-status.ts";
 import type {
 	ExecutorDeps,
@@ -91,6 +92,8 @@ async function handleManagementRequest(input: {
 				if (resolved?.kind === "foreground") {
 					const foreground = getForegroundControl(deps.state, resolved.id);
 					if (foreground) return foregroundStatusResult(foreground);
+					const retained = retainedForegroundStatusResult(deps.state, resolved.id);
+					if (retained) return retained;
 				}
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
@@ -224,7 +227,7 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 		const prepared = built.prepared!;
 		let nestedForegroundStarted = false;
 		try {
-			const asyncResult = runAsyncPath(prepared.execData, deps);
+			const asyncResult = await runAsyncPath(prepared.execData, deps);
 			if (asyncResult) return withForkContext(asyncResult, prepared.effectiveParams.context);
 			if (prepared.foregroundControl) {
 				prepared.writeNestedForegroundEvent("subagent.nested.started");

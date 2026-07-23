@@ -26,6 +26,7 @@
  */
 
 import type { AgentSession, AgentSessionEvent } from "@bastani/atomic";
+import type { StageUserMessageDeliveryAction } from "./stage-runner-types.js";
 
 export type StageControlStatus =
   | "pending"
@@ -63,6 +64,12 @@ export interface StageControlHandle {
   pendingToolExecutionEvents?(): readonly AgentSessionEvent[];
   /** Ensure the SDK session exists. Cheap when already attached. */
   ensureAttached(): Promise<void>;
+  /** Deliver through the idle-aware session primitive and report the actual action. */
+  sendUserMessage?(
+    text: string,
+    options?: { readonly deliverAs?: "steer" | "followUp" },
+  ): Promise<StageUserMessageDeliveryAction>;
+
   /** Send a prompt. Use only when the stage is idle / not streaming. */
   prompt(text: string): Promise<void>;
   /** Steer the current streaming operation (interrupt mid-turn). */
@@ -79,7 +86,7 @@ export interface StageControlHandle {
    * Release a paused stage. If `message` is provided it is sent as the
    * next user message before resuming.
    */
-  resume(message?: string): Promise<void>;
+  resume(message?: string): Promise<void | StageUserMessageDeliveryAction>;
   /**
    * Subscribe to AgentSession events. The pending-listener semantics
    * from `InternalStageContext.subscribe` apply: listeners registered
@@ -123,6 +130,18 @@ export interface StageControlRegistry {
    * keep using its direct handle reference.
    */
   register(handle: StageControlHandle): () => void;
+  /**
+   * Atomically resolve an existing non-disposed handle for `runId + stageId`
+   * or create one via `create`, register it, and immediately detach it from
+   * run-level pause/resume control. Used by the post-mortem stage-chat
+   * resolver so repeated attach/send calls single-flight onto one detached
+   * writer per real stage instead of racing competing sessions.
+   */
+  getOrCreateDetached(
+    runId: string,
+    stageId: string,
+    create: () => StageControlHandle,
+  ): StageControlHandle;
   /**
    * Remove this stage from run-level pause/resume aggregates while keeping
    * `get()` chat attachment live until the registration disposer runs.
@@ -251,6 +270,24 @@ export function createStageControlRegistry(): StageControlRegistry {
         }
         if (existing.size === 0) _byRun.delete(handle.runId);
       };
+    },
+    getOrCreateDetached(
+      runId: string,
+      stageId: string,
+      create: () => StageControlHandle,
+    ): StageControlHandle {
+      const runMap = ensureRun(runId);
+      const existing = runMap.get(stageId);
+      if (existing !== undefined && existing.handle.isDisposed !== true) return existing.handle;
+      if (existing !== undefined) {
+        runMap.delete(stageId);
+        void Promise.resolve(existing.handle.dispose?.()).catch((err: unknown) => {
+          console.warn("atomic-workflows: stale stage handle dispose failed", err);
+        });
+      }
+      const handle = create();
+      runMap.set(handle.stageId, { handle, controlsDependencies: false });
+      return handle;
     },
     detachControl(runId: string, stageId: string, handle?: StageControlHandle): boolean {
       const entry = _byRun.get(runId)?.get(stageId);

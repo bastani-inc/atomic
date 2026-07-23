@@ -65,10 +65,23 @@ export interface Args {
 	diagnostics: Array<{ type: "warning" | "error"; message: string }>;
 }
 
-const VALID_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+const VALID_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 export function isValidThinkingLevel(level: string): level is ThinkingLevel {
 	return VALID_THINKING_LEVELS.includes(level as ThinkingLevel);
+}
+
+/**
+ * Insert forced option arguments (e.g. a dedicated entry point's `--mode rpc`)
+ * immediately before the first `--` end-of-options terminator, or append them
+ * when no terminator is present. Keeps the forced options parsed as options
+ * (never literal message text) while preserving last-option-wins semantics,
+ * since caller options can only appear before the terminator.
+ */
+export function insertForcedOptionsBeforeTerminator(args: string[], forced: string[]): string[] {
+	const terminatorIndex = args.indexOf("--");
+	const insertAt = terminatorIndex === -1 ? args.length : terminatorIndex;
+	return [...args.slice(0, insertAt), ...forced, ...args.slice(insertAt)];
 }
 
 export function parseArgs(args: string[]): Args {
@@ -81,6 +94,11 @@ export function parseArgs(args: string[]): Args {
 
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i];
+
+		if (arg === "--") {
+			result.messages.push(...args.slice(i + 1));
+			break;
+		}
 
 		if (arg === "--help" || arg === "-h") {
 			result.help = true;
@@ -254,8 +272,8 @@ ${chalk.bold("Commands:")}
   ${APP_NAME} uninstall <source> [-l]   Alias for remove
   ${APP_NAME} update [source|self|${APP_NAME}] [--all]   Update ${APP_NAME} (use --all for ${APP_NAME} and extensions)
   ${APP_NAME} list                      List installed extensions from settings
-  ${APP_NAME} config                    Open TUI to enable/disable package resources
-  ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list
+  ${APP_NAME} config [-l]               Open resource TUI (Tab switches global/project scope)
+  ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list/config
 
 ${chalk.bold("Options:")}
   --provider <name>              Provider name (default: google)
@@ -281,7 +299,7 @@ ${chalk.bold("Options:")}
                                  Applies to built-in, extension, and custom tools
   --exclude-tools, -xt <tools>   Comma-separated denylist of tool names to disable
                                  Applies to built-in, extension, and custom tools
-  --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh
+  --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh, max
   --context-window <tokens>      Select context window when supported (e.g., 400k, 1m, 1000000)
   --extension, -e <path>         Load an extension file (can be used multiple times)
   --no-extensions, -ne           Disable extension discovery (explicit -e paths still work)
@@ -386,6 +404,8 @@ ${chalk.bold("Environment Variables:")}
   CLOUDFLARE_API_KEY               - Cloudflare API token (Workers AI and AI Gateway)
   CLOUDFLARE_ACCOUNT_ID            - Cloudflare account id (required for both)
   CLOUDFLARE_GATEWAY_ID            - Cloudflare AI Gateway slug (required for AI Gateway)
+  QWEN_TOKEN_PLAN_API_KEY          - Qwen Token Plan API key (international region)
+  QWEN_TOKEN_PLAN_CN_API_KEY       - Qwen Token Plan API key (China region)
   XIAOMI_API_KEY                   - Xiaomi MiMo API key (api.xiaomimimo.com billing)
   XIAOMI_TOKEN_PLAN_CN_API_KEY     - Xiaomi MiMo Token Plan API key (China region)
   XIAOMI_TOKEN_PLAN_AMS_API_KEY    - Xiaomi MiMo Token Plan API key (Amsterdam region)

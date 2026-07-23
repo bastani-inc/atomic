@@ -2,6 +2,8 @@
 
 Add custom providers and models (Ollama, vLLM, LM Studio, proxies) via `~/.atomic/agent/models.json` (legacy `~/.pi/agent/models.json` is also read).
 
+When both files exist, Atomic reads the legacy `.pi` file first and the primary `.atomic` file second. For `modelOverrides`, entries are layered by provider and model ID: disjoint legacy entries remain available, while an exact primary provider/model entry replaces the complete legacy override entry. Atomic does not field-merge one override entry across files; use `{}` in the primary file to restore the built-in model values for that exact entry.
+
 Built-in subscription providers such as Cursor (experimental) are selected with the same `provider/model` syntax, for example `cursor/composer-2`. Cursor image input is scoped to known multimodal Cursor Claude, Composer, Gemini, GPT, and Kimi model families (`claude-`, `composer-`, `gemini-`, `gpt-`, `kimi-`), plus `grok-4.3`; text-only Cursor models still reject images. Cursor image payloads must be non-empty standard base64, with MIME-style line wrapping whitespace accepted and stripped before serialization. Live private-API model metadata may fall back to estimated labels. Because Cursor support targets undocumented private endpoints with Cursor CLI-compatible headers, maintainers and users should explicitly accept the risk that it may conflict with Cursor's terms, break without notice, or affect the Cursor account used to authenticate.
 
 When Cursor omits token limits, Atomic derives them from its bundled `@earendil-works/pi-ai` model catalog and treats explicit `1M` Cursor labels as a 1,000,000-token context floor; unmatched Cursor-only models keep conservative estimates instead of disappearing from `/model`.
@@ -13,6 +15,7 @@ When Cursor omits token limits, Atomic derives them from its bundled `@earendil-
 - [Supported APIs](#supported-apis)
 - [Provider Configuration](#provider-configuration)
 - [Model Configuration](#model-configuration)
+- [Request-wide Cost Tiers](#request-wide-cost-tiers)
 - [Overriding Built-in Providers](#overriding-built-in-providers)
 - [Per-model Overrides](#per-model-overrides)
 - [Anthropic Messages Compatibility](#anthropic-messages-compatibility)
@@ -133,18 +136,22 @@ The `baseUrl` is required when adding custom models to the `google-generative-ai
 
 Set `api` at provider level (default for all models) or model level (override per model).
 
+These four values are the generic custom-provider APIs supported by `models.json`. Atomic's installed native provider runtime also implements provider-owned APIs including `mistral-conversations`, `azure-openai-responses`, `openai-codex-responses`, `bedrock-converse-stream`, `google-vertex`, and `pi-messages`; those native APIs are not implied to be stable generic custom-provider contracts.
+
 ## Provider Configuration
 
 | Field            | Description                                                      |
 | ---------------- | ---------------------------------------------------------------- |
-| `baseUrl`        | API endpoint URL                                                 |
-| `api`            | API type (see above)                                             |
-| `apiKey`         | API key (see value resolution below)                             |
+| `baseUrl`        | API endpoint or gateway URL                                      |
+| `api`            | Generic custom-provider API type (see above)                     |
+| `apiKey`         | Optional API key (see value resolution below); omit when auth comes from `/login`, `auth.json`, or `--api-key` |
+| `oauth`          | Dynamic OAuth provider type. Currently `"radius"`; requires the gateway `baseUrl` |
 | `headers`        | Custom headers (see value resolution below)                      |
 | `authHeader`     | Set `true` to add `Authorization: Bearer <apiKey>` automatically |
 | `models`         | Array of model configurations                                    |
-| `modelOverrides` | Per-model overrides for built-in models on this provider         |
+| `modelOverrides` | Per-model overrides for matching built-in or extension-registered models on this provider |
 
+For a custom Radius gateway, set `"oauth": "radius"` and its `baseUrl`. Atomic uses Radius OAuth credentials and the gateway's dynamic `pi-messages` catalog.
 ### Value Resolution
 
 The `apiKey` and `headers` fields support three formats:
@@ -203,16 +210,65 @@ If your command is slow, expensive, rate-limited, or should keep using a previou
 | `contextWindow`    | No       | `128000`          | Default/effective context window size in tokens                                                            |
 | `contextWindowOptions` | No   | omitted           | Additional/selectable context windows in tokens (see below)                                                |
 | `maxTokens`        | No       | `16384`           | Maximum output tokens                                                                                      |
-| `cost`             | No       | all zeros         | `{"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}` (per million tokens)                          |
+| `cost`             | No       | all zeros         | Complete base rates per million tokens plus optional request-wide `tiers` (see below)                    |
 | `compat`           | No       | provider `compat` | Provider compatibility overrides. Merged with provider-level `compat` when both are set.                   |
+| `deferredToolsMode` | No | omitted | Deferred tool-loading protocol; set to `"kimi"` for Kimi-compatible deferred tools |
 
 Current behavior:
 - `/model`, `--list-models`, and the interactive footer display entries by model `id`.
 - The configured `name` is used for model matching and secondary model detail text. It does not replace the footer/status-bar model id.
 
+### Request-wide Cost Tiers
+
+Custom models can declare request-wide long-context pricing under `cost.tiers`. The base `cost` and every tier must provide all four rates: `input`, `output`, `cacheRead`, and `cacheWrite`, in cost per million tokens. Each tier also requires `inputTokensAbove`.
+
+```json
+{
+  "id": "long-context-model",
+  "cost": {
+    "input": 1,
+    "output": 2,
+    "cacheRead": 0.25,
+    "cacheWrite": 0.5,
+    "tiers": [
+      {
+        "inputTokensAbove": 272000,
+        "input": 2,
+        "output": 3,
+        "cacheRead": 0.5,
+        "cacheWrite": 1
+      }
+    ]
+  }
+}
+```
+
+Atomic chooses one rate set for the entire request. It calculates aggregate input as `input + cacheRead + cacheWrite`, selects only tiers whose threshold is **strictly exceeded**, and uses the matching tier with the highest `inputTokensAbove`. Exactly 272,000 aggregate input tokens in the example still use the base rates; 272,001 use every rate from the tier, including the tier's output rate.
+
+For `modelOverrides`, `cost` is partial: any supplied scalar rate replaces that scalar while omitted scalar rates remain inherited. A scalar-only cost override also preserves inherited tiers. Supplying `tiers` replaces the whole inherited tier array; use `"tiers": []` to clear it explicitly. Every supplied replacement tier must still be complete.
+
+```json
+{
+  "providers": {
+    "openai": {
+      "modelOverrides": {
+        "gpt-5.6-sol": {
+          "cost": {
+            "input": 4,
+            "tiers": []
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+This override changes only the base input rate, retains the model's other base rates, and clears its inherited long-context tiers.
+
 ### Thinking Level Map
 
-Use `thinkingLevelMap` on a model to describe model-specific thinking controls. Keys are Atomic thinking levels: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`.
+Use `thinkingLevelMap` on a model to describe model-specific thinking controls. Keys are Atomic thinking levels: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. A level is selectable only when the active model supports it; `xhigh` and `max` are not universal provider capabilities.
 
 Values are tristate:
 
@@ -233,7 +289,8 @@ Example for a model that only supports off, high, and max reasoning:
     "low": null,
     "medium": null,
     "high": "high",
-    "xhigh": "max"
+    "xhigh": null,
+    "max": "max"
   }
 }
 ```
@@ -366,7 +423,7 @@ Merge semantics:
 
 ## Per-model Overrides
 
-Use `modelOverrides` to customize specific built-in models without replacing the provider's full model list.
+Use `modelOverrides` to customize specific models without replacing the provider's full model list. Overrides apply to matching built-in models and to models later registered by an extension through `pi.registerProvider()`.
 
 ```json
 {
@@ -387,13 +444,20 @@ Use `modelOverrides` to customize specific built-in models without replacing the
 }
 ```
 
-`modelOverrides` supports these fields per model: `name`, `reasoning`, `input`, `cost` (partial), `contextWindow`, `contextWindowOptions`, `maxTokens`, `headers`, `compat`.
+`modelOverrides` supports these fields per model: `name`, `reasoning`, `thinkingLevelMap`, `input`, `cost` (partial scalar rates plus optional full tier-array replacement), `contextWindow`, `contextWindowOptions`, `maxTokens`, `headers`, `compat`.
+
+When both `~/.pi/agent/models.json` and `~/.atomic/agent/models.json` define `modelOverrides`, Atomic merges their nested provider/model maps in that order. Different model IDs survive from both files. For the same provider and model ID, the primary `.atomic` entry replaces the entire legacy `.pi` override entry rather than deep-merging individual fields. This complete-entry rule includes `headers`: a primary exact override without headers removes headers that came from the legacy override, but does not erase a surviving custom model definition's own headers. An empty primary override (`{}`) therefore restores the model's built-in values for that entry.
+
+Within a single file, custom model definitions replace matching built-in entries after built-in overrides are applied. `modelOverrides` composes only with built-in and extension-registered models; it does not modify a same-ID custom model definition.
 
 Behavior notes:
-- `modelOverrides` are applied to built-in provider models.
-- Unknown model IDs are ignored.
-- You can combine provider-level `baseUrl`/`headers` with `modelOverrides`.
-- If `models` is also defined for a provider, custom models are merged after built-in overrides. A custom model with the same `id` replaces the overridden built-in model entry.
+- Atomic retains the parsed override map even when an extension registers the matching provider/model after `models.json` is loaded.
+- Layered primary/legacy compatibility merges override maps by provider and model ID; disjoint entries survive, while a primary exact entry replaces the complete legacy entry without cross-file field-level merging.
+- For matching built-in and extension-registered models, the model definition is the base and `modelOverrides` wins configured fields. Extension-registered model headers are shallow-merged with override headers, with override headers winning duplicate names. A same-ID custom model replaces the built-in override result, including its complete header record.
+- A scalar-only `cost` override preserves inherited tiers. Supplying `cost.tiers` replaces the complete tier array, including `[]` to clear it; omitted scalar cost fields remain inherited.
+- Provider-level request headers remain a separate provider layer and are combined at request time.
+- Unknown model IDs are ignored unless a matching model is subsequently registered by an extension.
+- If `models` is also defined for a provider in `models.json`, those custom models are merged after built-in overrides. A custom model with the same `id` replaces the overridden built-in model entry.
 
 ## Anthropic Messages Compatibility
 

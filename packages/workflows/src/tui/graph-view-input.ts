@@ -1,9 +1,15 @@
 import { expandedStageTarget } from "../shared/expanded-workflow-graph.js";
 import {
+  GRAPH_SCROLL_STEP_COLS,
   GRAPH_SCROLL_STEP_ROWS,
 } from "./graph-view-constants.js";
 import { GraphViewRenderer } from "./graph-view-render.js";
 import { isKeybindingsLike, type KeybindingsLike } from "./keybindings-adapter.js";
+import {
+  isTerminalLeftMousePress,
+  parseTerminalMouseInput,
+  terminalMouseWheelDirection,
+} from "./mouse-input.js";
 import {
   defaultResponseFor,
   handlePromptCardInput,
@@ -11,17 +17,20 @@ import {
 import { filterStages, type SwitcherState } from "./switcher.js";
 import { Key, matchesKey } from "./text-helpers.js";
 
-interface SgrMouseEvent {
-  buttonCode: number;
-  col: number;
-  row: number;
-  final: "M" | "m";
+
+interface MouseWheelDelta {
+  cols: number;
+  rows: number;
 }
 
 /** Keyboard, mouse, switcher, prompt, and focus navigation handling. */
 export abstract class GraphViewInputController extends GraphViewRenderer {
   /** Returns true if consumed. */
   handleInput(data: string): boolean {
+    if (this._isReturnToMainChatInput(data)) {
+      this._returnToMainChat();
+      return true;
+    }
     if (this.switcherOpen) {
       return this._handleSwitcherInput(data);
     }
@@ -46,10 +55,16 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
   }
 
   private _isNonTextGraphControlBeforePrompt(data: string): boolean {
-    return (
-      this._mouseWheelDeltaRows(data) !== 0 ||
-      matchesKey(data, Key.ctrl("d"))
-    );
+    return this._mouseWheelDelta(data) !== null;
+  }
+
+  private _isReturnToMainChatInput(data: string): boolean {
+    return matchesKey(data, Key.ctrl("x"));
+  }
+
+  private _returnToMainChat(): void {
+    if (this.onDetach) this.onDetach();
+    else this.onHide?.();
   }
 
   private _handlePromptInput(data: string): boolean {
@@ -81,9 +96,10 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 
   private _handleGraphInput(data: string): boolean {
     const stageCount = this.cachedLayout.length;
-    const wheelDeltaRows = this._mouseWheelDeltaRows(data);
-    if (wheelDeltaRows !== 0) {
-      this._scrollGraphBy(wheelDeltaRows);
+    const wheelDelta = this._mouseWheelDelta(data);
+    if (wheelDelta) {
+      if (wheelDelta.rows !== 0) this._scrollGraphBy(wheelDelta.rows);
+      if (wheelDelta.cols !== 0) this._scrollGraphHorizontallyBy(wheelDelta.cols);
       return true;
     }
 
@@ -132,27 +148,6 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
     }
     if (matchesKey(data, Key.enter)) {
       this._activateFocusedNode();
-      return true;
-    }
-    // `ctrl+d` detaches the whole popup (host hides the overlay). This
-    // is the graph-mode counterpart of the in-chat back affordance.
-    if (matchesKey(data, Key.ctrl("d"))) {
-      if (this.onDetach) {
-        this.onDetach();
-      } else if (this.onHide) {
-        this.onHide();
-      }
-      return true;
-    }
-    // `q` quits/detaches the orchestrator view without authoritatively
-    // killing the workflow. The workflow remains resumable via
-    // `/workflow resume`; use `/workflow kill` for non-resumable disposal.
-    if (matchesKey(data, "q")) {
-      const run = this._getCurrentRun();
-      if (run && run.endedAt === undefined && this.onQuit) {
-        this.onQuit(run.id);
-      }
-      this.onClose?.();
       return true;
     }
     if (matchesKey(data, "h") && this.onHide) {
@@ -308,6 +303,11 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
     this.graphScrollOffset = Math.max(0, this.graphScrollOffset + deltaRows);
   }
 
+  private _scrollGraphHorizontallyBy(deltaCols: number): void {
+    this.pendingEnsureFocusedVisible = false;
+    this.graphScrollColOffset = Math.max(0, this.graphScrollColOffset + deltaCols);
+  }
+
   private _graphNodeIndexForClick(data: string): number | null | undefined {
     const click = this._sgrLeftMousePress(data);
     if (!click) return undefined;
@@ -327,49 +327,21 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
     return null;
   }
 
-  private _parseSgrMouse(data: string): SgrMouseEvent | null {
-    const sgr = data.match(/^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/);
-    if (!sgr) return null;
-    const oneBasedCol = Number.parseInt(sgr[2]!, 10);
-    const oneBasedRow = Number.parseInt(sgr[3]!, 10);
-    const final = sgr[4];
-    if (oneBasedCol < 1 || oneBasedRow < 1) return null;
-    if (final !== "M" && final !== "m") return null;
-    return {
-      buttonCode: Number.parseInt(sgr[1]!, 10),
-      col: oneBasedCol - 1,
-      row: oneBasedRow - 1,
-      final,
-    };
-  }
-
   private _sgrLeftMousePress(data: string): { col: number; row: number } | null {
-    const sgr = this._parseSgrMouse(data);
-    if (!sgr || sgr.final !== "M") return null;
-    const buttonCode = sgr.buttonCode;
-    if ((buttonCode & 64) !== 0 || (buttonCode & 32) !== 0 || (buttonCode & 3) !== 0) {
-      return null;
-    }
-    return { col: sgr.col, row: sgr.row };
+    const event = parseTerminalMouseInput(data);
+    if (!event || event.protocol !== "sgr" || !isTerminalLeftMousePress(event)) return null;
+    return { col: event.col, row: event.row };
   }
 
-  private _mouseWheelDeltaRows(data: string): number {
-    const sgr = this._parseSgrMouse(data);
-    if (sgr && sgr.final === "M") {
-      return this._wheelDeltaForButtonCode(sgr.buttonCode);
-    }
-    if (data.startsWith("\x1b[M") && data.length >= 6) {
-      return this._wheelDeltaForButtonCode(data.charCodeAt(3) - 32);
-    }
-    return 0;
-  }
-
-  private _wheelDeltaForButtonCode(code: number): number {
-    if ((code & 64) === 0) return 0;
-    const direction = code & 3;
-    if (direction === 0) return -GRAPH_SCROLL_STEP_ROWS;
-    if (direction === 1) return GRAPH_SCROLL_STEP_ROWS;
-    return 0;
+  private _mouseWheelDelta(data: string): MouseWheelDelta | null {
+    const event = parseTerminalMouseInput(data);
+    if (!event) return null;
+    const direction = terminalMouseWheelDirection(event);
+    if (direction === "up") return { cols: 0, rows: -GRAPH_SCROLL_STEP_ROWS };
+    if (direction === "down") return { cols: 0, rows: GRAPH_SCROLL_STEP_ROWS };
+    if (direction === "left") return { cols: -GRAPH_SCROLL_STEP_COLS, rows: 0 };
+    if (direction === "right") return { cols: GRAPH_SCROLL_STEP_COLS, rows: 0 };
+    return null;
   }
 
   // ---- test seams ----

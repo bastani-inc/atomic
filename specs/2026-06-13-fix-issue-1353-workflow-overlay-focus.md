@@ -8,7 +8,7 @@
 
 ## Summary
 
-Issue #1353 exposed a focus conflict between the full-screen workflow graph overlay and parent/main-chat `ask_user_question` prompts. The selected UX is **graph-overlay-first**: while the graph overlay is visible, keyboard focus stays on the graph so navigation, stage attachment, Ctrl+D hide, and graph recovery shortcuts remain usable. A parent/main-chat question is allowed to mount, but its focus is deferred and the graph shows a status hint telling the user to exit/hide the graph to answer it.
+Issue #1353 exposed a focus conflict between the full-screen workflow graph overlay and parent/main-chat `ask_user_question` prompts. The selected UX is **graph-overlay-first**: while the graph overlay is visible, keyboard focus stays on the graph so navigation, stage attachment, Ctrl+X leave-to-main-chat, and graph recovery shortcuts remain usable. A parent/main-chat question is allowed to mount, but its focus is deferred and the graph shows a status hint telling the user to leave or hide the graph to answer it.
 
 This is better than hiding or yielding the graph automatically because it avoids making the overlay appear frozen, preserves the user's current graph context, and keeps the user in control of when to leave graph mode.
 
@@ -45,7 +45,7 @@ Inline custom UI requests acquire host state only after the pre-abort check. If 
 
 The workflow graph overlay opens with `deferInlineCustomUiFocus: true`. While that deferral is active, main-chat inline custom UI can mount, but `InteractiveMode` stores it as pending focus instead of calling `setFocus(component)`.
 
-When the overlay is hidden via Ctrl+D/toggle/setHidden, the deferral is released and `focusHostInlineCustomUi()` focuses the pending main-chat question.
+When the overlay is hidden via Ctrl+X/toggle/setHidden, the deferral is released and `focusHostInlineCustomUi()` focuses the pending main-chat question.
 
 ### 3. Graph remains interactive while the question is pending
 

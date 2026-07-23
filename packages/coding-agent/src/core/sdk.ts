@@ -1,9 +1,5 @@
 import { join } from "node:path";
-import {
-  Agent,
-  type AgentMessage,
-  type ThinkingLevel,
-} from "@earendil-works/pi-agent-core";
+import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@earendil-works/pi-agent-core";
 import {
   clampThinkingLevel,
   type Api,
@@ -33,7 +29,7 @@ import type {
 } from "./extensions/index.ts";
 import { convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
-import { findInitialModel, resolveSavedModelReference } from "./model-resolver.ts";
+import { findInitialModel, resolveRestoredModelReference } from "./model-resolver.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
@@ -47,6 +43,10 @@ import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "./sdk-
 export type { CreateAgentSessionOptions, CreateAgentSessionResult } from "./sdk-types.ts";
 
 export * from "./sdk-exports.ts";
+
+// Preserve the pre-0.81 fallback for extensions that construct Agent instances
+// or invoke low-level agent loops without supplying streamFn.
+setDefaultStreamFn(streamSimple);
 
 // Helper Functions
 
@@ -122,8 +122,11 @@ export async function createAgentSession(
     ? join(agentDir, "models.json")
     : undefined;
   const modelRegistry =
+    options.modelRuntime?.modelRegistry ??
     options.modelRegistry ??
     ModelRegistry.create(options.authStorage ?? AuthStorage.create(authPath), modelsPath);
+  // Restore persisted provider-owned catalogs before any synchronous model reads.
+  await modelRegistry.refresh({ allowNetwork: false });
 
   const settingsManager =
     options.settingsManager ?? SettingsManager.create(cwd, agentDir);
@@ -166,7 +169,7 @@ export async function createAgentSession(
 
   // If session has data, try to restore model from it
   if (!model && hasExistingSession && existingSession.model) {
-    const restoredModel = await resolveSavedModelReference(
+    const restoredModel = await resolveRestoredModelReference(
       existingSession.model.provider,
       existingSession.model.modelId,
       modelRegistry,
@@ -339,6 +342,9 @@ export async function createAgentSession(
       if (!auth.ok) {
         throw new Error(auth.error);
       }
+      const requestModel = auth.baseUrl !== undefined && auth.baseUrl !== model.baseUrl
+        ? { ...model, baseUrl: auth.baseUrl }
+        : model;
       const providerRetrySettings = settingsManager.getProviderRetrySettings();
       const httpIdleTimeoutMs = settingsManager.getHttpIdleTimeoutMs();
       // SDKs treat timeout=0 as 0ms (immediate timeout), not "no timeout".
@@ -347,13 +353,12 @@ export async function createAgentSession(
       const timeoutMs = streamOptions?.timeoutMs ?? providerRetrySettings.timeoutMs ?? effectiveTimeoutMs;
       const websocketConnectTimeoutMs =
         streamOptions?.websocketConnectTimeoutMs ?? settingsManager.getWebSocketConnectTimeoutMs();
-      const attributionHeaders = mergeProviderAttributionHeaders(
-        model,
-        settingsManager,
-        streamOptions?.sessionId,
-        auth.headers,
-        streamOptions?.headers,
+      const mergedHeaders = mergeProviderAttributionHeaders(
+        model, settingsManager, streamOptions?.sessionId, auth.headers, streamOptions?.headers,
       );
+      const headerRunner = extensionRunnerRef.current;
+      const attributionHeaders = headerRunner?.hasHandlers("before_provider_headers")
+        ? await headerRunner.emitBeforeProviderHeaders(mergedHeaders ?? {}) : mergedHeaders;
       const fastModeEnabled = isCodexFastModeEnabled(model);
       const codexFastModeStreamOptions = withCodexFastModeStreamOptions(
         {
@@ -368,10 +373,10 @@ export async function createAgentSession(
         },
         fastModeEnabled,
       );
-      if (modelRegistry.hasRegisteredStreamSimpleForApi(model.api)) {
-        return streamSimple(model, context, codexFastModeStreamOptions);
+      if (modelRegistry.hasRegisteredStreamSimpleForApi(requestModel.api)) {
+        return streamSimple(requestModel, context, codexFastModeStreamOptions);
       }
-      return streamWithCodexFastMode(model, context, codexFastModeStreamOptions);
+      return streamWithCodexFastMode(requestModel, context, codexFastModeStreamOptions);
     },
     onPayload: async (payload, model) => {
       const fastModeEnabled = isCodexFastModeEnabled(model);
@@ -472,6 +477,7 @@ export async function createAgentSession(
     settingsManager,
     cwd,
     scopedModels: options.scopedModels,
+    fallbackModels: options.fallbackModels ?? settingsManager.getFallbackModels(),
     resourceLoader,
     customTools: options.customTools,
     modelRegistry,

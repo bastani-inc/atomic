@@ -186,7 +186,7 @@ export default function (pi: ExtensionAPI) {
 			];
 
 			const response = await complete(
-				model,
+				auth.baseUrl === undefined ? model : { ...model, baseUrl: auth.baseUrl },
 				{ messages: summaryMessages },
 				{
 					apiKey: auth.apiKey,

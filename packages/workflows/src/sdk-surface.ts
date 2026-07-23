@@ -26,7 +26,7 @@ export { INTERACTIVE_WORKFLOW_POLICY, NON_INTERACTIVE_WORKFLOW_POLICY } from "./
 export type { AuthoredWorkflowDefinition, AuthoredWorkflowSpec, WorkflowInputsFromSchemas, WorkflowOutputsFromSchemas, WorkflowProvidedInputsFromSchemas } from "./authoring/workflow.js";
 export type { WorkflowRegistry } from "./workflows/registry.js";
 
-export { run, runTask, runParallel, runChain, resolveInputs } from "./runs/foreground/executor.js";
+export { run, resolveInputs } from "./runs/foreground/executor.js";
 export type { RunOpts, RunResult, ResolvedInputs } from "./runs/foreground/executor.js";
 export type { AgentSessionAdapter, StageAdapters } from "./runs/foreground/stage-runner.js";
 export { GraphFrontierTracker } from "./engine/graph-inference.js";

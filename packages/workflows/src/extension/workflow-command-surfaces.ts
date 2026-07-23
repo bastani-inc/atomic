@@ -7,6 +7,7 @@ import type { DiscoveryResult } from "./discovery.js";
 import type { WorkflowToolResult } from "./render-result.js";
 import type { ExtensionAPI } from "./public-types.js";
 import { isRunStatus } from "./workflow-targets.js";
+import type { WorkflowReloadReport } from "./workflow-reload-report.js";
 
 function fallbackRunDetailFromResult(
   workflowName: string,
@@ -45,6 +46,37 @@ export function emitTerminalRunDetailSurface(
   emitChatSurface(pi, { kind: "detail", detail }, { content: renderRunDetail(detail, { width: 100 }) });
 }
 
+
+export function formatWorkflowResourceLoadWarning(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return [
+    "Workflow discovery diagnostics: workflow resources could not be fully refreshed.",
+    `- [error DISCOVERY_FAILED] workflow discovery: ${message}`,
+    "Using the currently loaded workflow registry; run `/workflow reload` after fixing the issue.",
+  ].join("\n");
+}
+
+export function formatWorkflowReloadReport(report: WorkflowReloadReport, reason?: string): string {
+  const reasonSuffix = reason?.trim() ? ` (${reason.trim()})` : "";
+  const legacySuccess = report.generation === 0 && report.workflowCount === 0 && report.diagnostics.length === 0;
+  const headline = report.outcome === "applied"
+    ? legacySuccess
+      ? `Reloaded workflow resources${reasonSuffix}.`
+      : `Reloaded workflow resources${reasonSuffix}. ${report.workflowCount} workflow(s), generation ${report.generation}.`
+    : report.outcome === "failed"
+      ? `Workflow resources could not be refreshed; the current registry was retained: ${report.error}`
+      : "Workflow reload was superseded by a newer session; no stale resources were applied.";
+  if (report.diagnostics.length === 0) return headline;
+
+  const lines = report.diagnostics.map((diagnostic) =>
+    `- [${diagnostic.level} ${diagnostic.code}] ${diagnostic.source ?? `workflow ${diagnostic.phase}`}: ${diagnostic.message}`
+  );
+  return [
+    headline,
+    `Workflow discovery diagnostics (${report.diagnostics.length}): some resources were skipped or need attention.`,
+    ...lines,
+  ].join("\n");
+}
 export function formatStartupDiagnostics(
   configResult: ConfigLoadResult | null,
   discoveryResult: DiscoveryResult | null,

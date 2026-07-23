@@ -4,9 +4,56 @@ import { getEffectiveInputBudget } from "./context-window.ts";
 import { parseCopilotPromptLimitError } from "./copilot-errors.ts";
 import { calculateContextTokens, estimateContextTokens, shouldCompact } from "./compaction/index.ts";
 import { getLatestCompactionBoundaryEntry } from "./session-manager.ts";
+import { MIN_RESPONSES_MAX_OUTPUT_TOKENS } from "./openai-responses-payload-sanitizer.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 
+/**
+ * Upper bound on consecutive automatic continuations of a response that was
+ * truncated at the output-token cap ("length") while the context is still
+ * below the compaction budget. Each continuation regenerates the cut-off turn,
+ * so a model that insists on emitting more than its per-turn output cap can
+ * still terminate instead of looping forever.
+ */
+export const MAX_LENGTH_CONTINUATION_ATTEMPTS = 3;
+
+export const MAX_OUTPUT_BUDGET_ERROR_CONTINUATION_ATTEMPTS = 1;
+
+type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+type ProviderErrorDetails = {
+	message?: string;
+	code?: string;
+	param?: string;
+};
+
+const OUTPUT_BUDGET_PARAMETER_PATTERN = /\bmax_output_tokens\b/;
+const OUTPUT_BUDGET_UNDERFLOW_PATTERN = new RegExp(
+	`(?:integer\\s+below\\s+minimum\\s+value|expected\\s+(?:a\\s+)?value\\s*>=\\s*${MIN_RESPONSES_MAX_OUTPUT_TOKENS}|got\\s+1\\s+instead)`,
+);
+
 export async function _checkCompaction(this: AgentSession, assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<void> {
+	if (this._pendingPostToolCompactionGuard) {
+		const { result } = this._pendingPostToolCompactionGuard;
+		this._pendingPostToolCompactionGuard = undefined;
+		this._emit({
+			type: "compaction_end",
+			reason: "threshold",
+			result,
+			aborted: true,
+			willRetry: false,
+			midTurn: true,
+		});
+	}
+	if (
+		this._postToolCompactionPreflightError !== undefined &&
+		assistantMessage.errorMessage === this._postToolCompactionPreflightError
+	) {
+		this._postToolCompactionPreflightError = undefined;
+		return;
+	}
+	// The agent_end path passes skipAbortedCheck=true; the pre-prompt path passes
+	// false. Only the live turn-completion path may auto-continue a truncated
+	// response — before a fresh user prompt we must not resume the old turn.
+	const isLiveTurnCompletion = skipAbortedCheck;
 	const settings = this.settingsManager.getCompactionSettings();
 	if (!settings.enabled) return;
 
@@ -54,6 +101,7 @@ export async function _checkCompaction(this: AgentSession, assistantMessage: Ass
 				result: undefined,
 				aborted: false,
 				willRetry: false,
+				unresolvedOverflow: true,
 				errorMessage:
 					"Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.",
 			});
@@ -92,14 +140,40 @@ export async function _checkCompaction(this: AgentSession, assistantMessage: Ass
 		}
 		contextTokens = estimate.tokens;
 	} else {
-		contextTokens = calculateContextTokens(assistantMessage.usage);
+		contextTokens = calculateContextTokens(assistantMessage.usage, assistantMessage.api);
 	}
 	// Compact against the effective input budget (the hard prompt cap for providers like Copilot
 	// that advertise a larger total window) so we compact before overrunning the server-side limit
 	// rather than relying on reactive overflow recovery near the cap.
 	const compactionBudget = this.model ? getEffectiveInputBudget(this.model) : contextWindow;
 	if (shouldCompact(contextTokens, compactionBudget, settings)) {
-		await this._runAutoCompaction("threshold", shouldRetryAfterThresholdCompaction(assistantMessage));
+		const willRetry = shouldRetryAfterThresholdCompaction(assistantMessage);
+		if (willRetry && isRetryWorthyOutputBudgetError(assistantMessage)) {
+			if (this._outputBudgetErrorContinuationAttempts >= MAX_OUTPUT_BUDGET_ERROR_CONTINUATION_ATTEMPTS) {
+				this._emit({
+					type: "compaction_end",
+					reason: "threshold",
+					result: undefined,
+					aborted: false,
+					willRetry: false,
+					errorMessage:
+						"Output-budget recovery stopped after a compact-and-retry attempt. Try reducing context or switching to a larger-context model.",
+				});
+				return;
+			}
+			this._outputBudgetErrorContinuationAttempts += 1;
+		}
+		await this._runAutoCompaction("threshold", willRetry);
+		return;
+	}
+
+	// A response truncated at the output-token cap ("length") with the context
+	// still below the compaction budget is genuine work cut off mid-flight, not a
+	// context overflow. Compaction would not free any room, so continue the
+	// generation directly instead of dead-ending on the truncation and leaving
+	// the task half-finished.
+	if (isLiveTurnCompletion && isRetryWorthyLengthStop(assistantMessage)) {
+		this._resumeAfterLengthTruncation();
 	}
 }
 
@@ -114,8 +188,71 @@ export function _isCopilotServerCapBelowSelectedContextWindow(this: AgentSession
 	return promptLimitError !== undefined && getEffectiveInputBudget(this.model) > promptLimitError.limitTokens;
 }
 
-export function shouldRetryAfterThresholdCompaction(assistantMessage: AssistantMessage): boolean {
+export function isRetryWorthyLengthStop(assistantMessage: AssistantMessage): boolean {
 	return assistantMessage.stopReason === "length" && assistantMessage.usage.output > 0;
+}
+
+function isJsonRecord(value: JsonValue): value is { [key: string]: JsonValue } {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringField(record: { [key: string]: JsonValue }, key: string): string | undefined {
+	const value = record[key];
+	return typeof value === "string" ? value : undefined;
+}
+
+function parseProviderErrorDetails(errorMessage: string): ProviderErrorDetails | undefined {
+	const start = errorMessage.indexOf("{");
+	const end = errorMessage.lastIndexOf("}");
+	if (start === -1 || end <= start) return undefined;
+
+	try {
+		const parsed = JSON.parse(errorMessage.slice(start, end + 1)) as JsonValue;
+		if (!isJsonRecord(parsed)) return undefined;
+
+		const nestedError = parsed.error;
+		if (nestedError !== undefined && isJsonRecord(nestedError)) {
+			return {
+				message: stringField(nestedError, "message"),
+				code: stringField(nestedError, "code") ?? stringField(parsed, "code"),
+				param: stringField(nestedError, "param") ?? stringField(parsed, "param"),
+			};
+		}
+
+		return {
+			message: stringField(parsed, "message"),
+			code: stringField(parsed, "code"),
+			param: stringField(parsed, "param"),
+		};
+	} catch {
+		return undefined;
+	}
+}
+
+function isOutputBudgetUnderflowText(text: string): boolean {
+	const message = text.toLowerCase();
+	return OUTPUT_BUDGET_PARAMETER_PATTERN.test(message) && OUTPUT_BUDGET_UNDERFLOW_PATTERN.test(message);
+}
+
+function isStructuredOutputBudgetUnderflow(details: ProviderErrorDetails): boolean {
+	const message = details.message?.toLowerCase() ?? "";
+	const param = details.param?.toLowerCase();
+	if (!OUTPUT_BUDGET_UNDERFLOW_PATTERN.test(message)) return false;
+	return param !== undefined ? OUTPUT_BUDGET_PARAMETER_PATTERN.test(param) : OUTPUT_BUDGET_PARAMETER_PATTERN.test(message);
+}
+
+export function isRetryWorthyOutputBudgetError(assistantMessage: AssistantMessage): boolean {
+	if (assistantMessage.stopReason !== "error" || !assistantMessage.errorMessage) return false;
+	if (assistantMessage.api !== "openai-responses") return false;
+
+	const structuredDetails = parseProviderErrorDetails(assistantMessage.errorMessage);
+	if (structuredDetails && isStructuredOutputBudgetUnderflow(structuredDetails)) return true;
+
+	return isOutputBudgetUnderflowText(assistantMessage.errorMessage);
+}
+
+export function shouldRetryAfterThresholdCompaction(assistantMessage: AssistantMessage): boolean {
+	return isRetryWorthyLengthStop(assistantMessage) || isRetryWorthyOutputBudgetError(assistantMessage);
 }
 
 /**
@@ -140,13 +277,32 @@ export function _schedulePostAutoCompactionContinuationProbe(this: AgentSession,
 	_reason: "overflow" | "threshold",
 	willRetry: boolean,
 ): void {
+	if (willRetry) {
+		const token = this._postCompactionContinuationToken + 1;
+		this._postCompactionContinuationToken = token;
+		let pending: Promise<void>;
+		pending = new Promise<void>((resolve) => {
+			setTimeout(() => {
+				void (async () => {
+					try {
+						if (this._postCompactionContinuationToken !== token) return;
+						if (this.isCompacting || this.isStreaming) return;
+						await this._resumeAfterAutoCompaction();
+					} finally {
+						if (this._pendingPostCompactionContinuation === pending) {
+							this._pendingPostCompactionContinuation = undefined;
+						}
+						resolve();
+					}
+				})();
+			}, 100);
+		});
+		this._pendingPostCompactionContinuation = pending;
+		return;
+	}
+
 	setTimeout(() => {
 		if (this.isCompacting || this.isStreaming) {
-			return;
-		}
-
-		if (willRetry) {
-			this._resumeAfterAutoCompaction();
 			return;
 		}
 
@@ -154,28 +310,55 @@ export function _schedulePostAutoCompactionContinuationProbe(this: AgentSession,
 			return;
 		}
 
-		this._resumeAfterAutoCompaction();
+		void this._resumeAfterAutoCompaction();
 	}, 100);
+}
+
+export async function _awaitPendingPostCompactionContinuation(this: AgentSession): Promise<void> {
+	const pending = this._pendingPostCompactionContinuation;
+	if (pending === undefined) return;
+	await pending;
 }
 
 /**
  * Internal: resume generation after successful auto-compaction only when active work remains.
  */
 
-export function _resumeAfterAutoCompaction(this: AgentSession): void {
-	void this._runAgentContinue().catch((error) => {
+export async function _resumeAfterAutoCompaction(this: AgentSession): Promise<void> {
+	try {
+		await this._runAgentContinue();
+	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		this._emit({
 			type: "agent_continue_error",
 			source: "post_compaction",
 			errorMessage: `Post-compaction continuation failed: ${message}`,
 		});
-	});
+	}
 }
 
 /**
- * Internal: Run auto-compaction with events.
+ * Internal: resume a response that was truncated at the output-token cap
+ * ("length") when the context does not warrant compaction. The generation is
+ * continued directly so the model finishes the work it was cut off from, rather
+ * than dead-ending on the truncation. Bounded by MAX_LENGTH_CONTINUATION_ATTEMPTS
+ * so a turn that keeps exceeding the per-turn output cap can still terminate.
  */
+
+export function _resumeAfterLengthTruncation(this: AgentSession): void {
+	if (this._lengthContinuationAttempts >= MAX_LENGTH_CONTINUATION_ATTEMPTS) return;
+	this._lengthContinuationAttempts += 1;
+	// agent.continue() rejects an assistant tail; drop the incomplete
+	// length-stopped message so the preceding user/tool-result anchors the
+	// continuation. It remains persisted in session history.
+	this._dropTrailingAutoCompactionRetryAssistantIfPresent();
+	this._schedulePostAutoCompactionContinuationProbe("threshold", true);
+}
+
+
+function overflowUnresolved(reason: "overflow" | "threshold", aborted = false): boolean | undefined {
+	return reason === "overflow" && !aborted ? true : undefined;
+}
 
 export async function _runAutoCompaction(this: AgentSession, reason: "overflow" | "threshold", willRetry: boolean): Promise<void> {
 	this._emit({ type: "compaction_start", reason });
@@ -189,24 +372,23 @@ export async function _runAutoCompaction(this: AgentSession, reason: "overflow" 
 				result: undefined,
 				aborted: false,
 				willRetry: false,
+				unresolvedOverflow: overflowUnresolved(reason),
 			});
 			return;
 		}
 
-		// Auth is resolved lazily: only called when the planner fallback is needed.
-		// This allows extension-provided deletion requests to run before auth is checked,
-		// enabling local extension compaction even when API credentials are unavailable.
-		// Auto-mode resolver returns undefined (rather than throwing) when auth is missing;
-		// overflow recovery then falls back to deterministic no-auth eviction, while
-		// threshold compaction keeps the previous no-op behavior.
+		// Resolve auth only after extension hooks have had an opportunity to cancel
+		// compaction or provide compacted text, so local extension compaction does not
+		// require provider credentials. Missing auth then fails model-driven compaction
+		// before persistence or continuation, matching other provider-call failures.
 		const model = this.model;
-		const result = await this._applyContextVerbatimCompaction({
+		const result = await this._applyVerbatimCompaction({
 			resolvePlannerAuth: async () => {
 				const authResult = await this._modelRegistry.getApiKeyAndHeaders(model);
 				if (!authResult.ok || !authResult.apiKey) {
 					return undefined;
 				}
-				return { apiKey: authResult.apiKey, headers: authResult.headers };
+				return { apiKey: authResult.apiKey, headers: authResult.headers, baseUrl: authResult.baseUrl };
 			},
 			abortController: this._autoCompactionAbortController,
 			backupLabel: reason === "overflow" ? "overflow-auto-compact" : "auto-compact",
@@ -219,6 +401,7 @@ export async function _runAutoCompaction(this: AgentSession, reason: "overflow" 
 				result: undefined,
 				aborted: false,
 				willRetry: false,
+				unresolvedOverflow: overflowUnresolved(reason),
 			});
 			return;
 		}
@@ -238,6 +421,7 @@ export async function _runAutoCompaction(this: AgentSession, reason: "overflow" 
 			result: undefined,
 			aborted,
 			willRetry: false,
+			unresolvedOverflow: overflowUnresolved(reason, aborted),
 			errorMessage: aborted
 				? undefined
 				: reason === "overflow"
@@ -254,10 +438,12 @@ export async function _runAutoCompaction(this: AgentSession, reason: "overflow" 
  */
 
 export const agentSessionAutoCompactionMethods = {
+	_awaitPendingPostCompactionContinuation,
 	_checkCompaction,
 	_isCopilotServerCapBelowSelectedContextWindow,
 	_dropTrailingAutoCompactionRetryAssistantIfPresent,
 	_schedulePostAutoCompactionContinuationProbe,
 	_resumeAfterAutoCompaction,
+	_resumeAfterLengthTruncation,
 	_runAutoCompaction,
 };

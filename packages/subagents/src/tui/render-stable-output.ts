@@ -76,6 +76,7 @@ export function subagentResultRenderKey(
 		options.expanded ? "expanded" : "compact",
 		details.mode,
 		details.currentStepIndex ?? "",
+		details.asyncId ?? "",
 		details.totalSteps ?? "",
 		progressRenderKey(details.progressSummary),
 		progressKeys.join("|"),

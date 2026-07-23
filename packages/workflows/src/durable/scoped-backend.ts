@@ -12,17 +12,17 @@
  * remaps every checkpoint identity to the root workflow id, prefixed by a stable
  * child boundary key, so the same side effects are recovered on resume.
  *
- * Only checkpoint read/write methods are scoped. Lifecycle methods
- * (`registerWorkflow`, `setWorkflowStatus`, `listResumableWorkflows`,
- * `toCacheEntry`, `getWorkflow`) are no-ops for scoped children because child
- * runs are never independently resumable — only the root workflow is resumed.
+ * Only checkpoint read/write methods are scoped. Root lifecycle, catalog,
+ * metadata, and deletion methods are no-ops because child runs are not
+ * independently addressable.
  *
  * cross-ref: issue #1498 — child side effects under the root durable workflow.
  */
 
 import type { DurableCheckpoint, DurableWorkflowStatus, ResumableWorkflowEntry } from "./types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
-import type { DurableWorkflowBackend, WorkflowRegistrationInput } from "./backend.js";
+import type { DurableInactiveDeleteResult, DurableWorkflowBackend, DurableWorkflowCatalogEntries, WorkflowRegistrationInput } from "./backend.js";
+import { claimDurablePromptToken, durablePromptScope, releaseDurablePrompt, reserveDurablePrompt, type PromptReservationToken } from "./prompt-reservations.js";
 
 /**
  * Durable scope for a child workflow run.
@@ -62,16 +62,11 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
   }
 
   async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
-    if (this.inner.recordCheckpointAsync !== undefined) {
-      await this.inner.recordCheckpointAsync(this.remap(checkpoint));
-      return;
-    }
-    this.inner.recordCheckpoint(this.remap(checkpoint));
-    await this.inner.flush?.();
+    await this.inner.recordCheckpointAsync(this.remap(checkpoint));
   }
 
   flush(): Promise<void> {
-    return this.inner.flush?.() ?? Promise.resolve();
+    return this.inner.flush();
   }
 
   getToolOutput(_workflowId: string, argsHash: string): WorkflowSerializableValue | undefined {
@@ -86,13 +81,18 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
     return this.inner.getStageOutput(this.scope.rootWorkflowId, this.scopeKey(replayKey));
   }
 
-  getStageSession(_workflowId: string, replayKey: string): { sessionId?: string; sessionFile?: string } | undefined {
+  getStageSession(_workflowId: string, replayKey: string): {
+    sessionId?: string;
+    sessionFile?: string;
+    startedAt?: number;
+    durationMs?: number;
+  } | undefined {
     return this.inner.getStageSession(this.scope.rootWorkflowId, this.scopeKey(replayKey));
   }
 
   listCheckpoints(_workflowId: string): readonly DurableCheckpoint[] {
     const all = this.inner.listCheckpoints(this.scope.rootWorkflowId);
-    const prefix = `${this.scope.scopePrefix}:`;
+    const prefix = `${this.effectivePromptScope().scope}:`;
     // Checkpoints are stored with their scope prefix already embedded in their
     // ids (see remap()). Filter by the stored id directly — NOT by re-prefixing
     // — so sibling scopes (e.g. "workflow:child:1") are excluded when the
@@ -106,16 +106,70 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
     return undefined;
   }
 
+  getLoadableWorkflow(_workflowId: string): undefined {
+    return undefined;
+  }
+
   setWorkflowStatus(_workflowId: string, _status: DurableWorkflowStatus, _pendingPrompts?: number, _resumable?: boolean): void {
     // No-op: child status is reflected via the root workflow boundary.
+  }
+
+  async transitionWorkflowStatus(
+    _workflowId: string,
+    _expectedStatuses: readonly DurableWorkflowStatus[],
+    _status: DurableWorkflowStatus,
+    _pendingPrompts?: number,
+    _resumable?: boolean,
+  ): Promise<boolean> {
+    return false;
+  }
+
+  adjustPendingPrompts(_workflowId: string, delta: number): void {
+    this.inner.adjustPendingPrompts(this.scope.rootWorkflowId, delta);
+  }
+
+  promptReservationScope(_workflowId: string): { readonly rootWorkflowId: string; readonly scope: string } {
+    return this.effectivePromptScope();
+  }
+
+  pendingPromptToken(_workflowId: string, reservationId: string): PromptReservationToken | undefined {
+    return claimDurablePromptToken(this.inner, this.scope.rootWorkflowId, reservationId);
+  }
+
+  reservePendingPrompt(_workflowId: string, reservationId: string): PromptReservationToken {
+    return reserveDurablePrompt(this.inner, this.scope.rootWorkflowId, reservationId);
+  }
+
+  releasePendingPrompt(_workflowId: string, reservationId: string, token: PromptReservationToken): void {
+    releaseDurablePrompt(this.inner, this.scope.rootWorkflowId, reservationId, token);
   }
 
   listResumableWorkflows(): readonly ResumableWorkflowEntry[] {
     return [];
   }
 
-  toCacheEntry(_workflowId: string): undefined {
+  listCompletedWorkflows(): readonly ResumableWorkflowEntry[] {
+    return [];
+  }
+
+  async prepareWorkflowCatalog(): Promise<DurableWorkflowCatalogEntries> {
+    return { resumable: [], completed: [] };
+  }
+
+  toMetadata(_workflowId: string): undefined {
     return undefined;
+  }
+
+  async deleteWorkflow(_workflowId: string): Promise<void> {
+    // No-op: scoped children never own or delete root durable state.
+  }
+
+  async deleteWorkflowIfInactive(_workflowId: string): Promise<DurableInactiveDeleteResult> {
+    return { ok: false, reason: "not_found" };
+  }
+
+  isWorkflowLoadable(_workflowId: string): boolean {
+    return false;
   }
 
   reset(): void {
@@ -128,6 +182,17 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
 
   hydrateResumableWorkflows(): Promise<void> {
     return Promise.resolve();
+  }
+
+  private effectivePromptScope(): { readonly rootWorkflowId: string; readonly scope: string } {
+    const parent = durablePromptScope(this.inner, this.scope.rootWorkflowId);
+    const scope = parent.scope === "root"
+      ? this.scope.scopePrefix
+      : `${parent.scope}:${this.scope.scopePrefix}`;
+    return {
+      rootWorkflowId: parent.rootWorkflowId,
+      scope,
+    };
   }
 
   private scopeKey(key: string): string {

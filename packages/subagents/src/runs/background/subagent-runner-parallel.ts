@@ -95,6 +95,7 @@ export async function runParallelGroup(state: RunnerExecutionState, group: Paral
 				piArgv1: config.piArgv1,
 				childIntercomTarget: config.childIntercomTargets?.[fi],
 				orchestratorIntercomTarget: config.controlIntercomTarget,
+				supervisorAuthorization: config.supervisorAuthorizations?.[fi],
 				nestedRoute: config.nestedRoute,
 				registerInterrupt: (interrupt) => {
 					state.activeChildInterrupt = interrupt;

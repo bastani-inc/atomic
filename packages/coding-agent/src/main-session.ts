@@ -7,6 +7,7 @@ import {
 	formatMissingSessionCwdPrompt,
 	type SessionCwdIssue,
 } from "./core/session-cwd.ts";
+import { workflowSessionMetadataFromEnv } from "./core/session-manager-classification.ts";
 import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
 import { KeybindingsManager } from "./core/keybindings.ts";
 import type { SettingsManager } from "./core/settings-manager.ts";
@@ -135,6 +136,15 @@ function openSessionOrExit(path: string, sessionDir?: string): SessionManager {
 	}
 }
 
+export function applyInheritedWorkflowSessionClassification(
+	sessionManager: SessionManager,
+	env: Record<string, string | undefined> = process.env,
+): SessionManager {
+	const metadata = workflowSessionMetadataFromEnv(env);
+	if (metadata) sessionManager.markSessionInternal(metadata);
+	return sessionManager;
+}
+
 export async function createSessionManager(
 	parsed: Args,
 	cwd: string,
@@ -218,6 +228,7 @@ export async function createSessionManager(
 		if (existingSession) {
 			return openSessionOrExit(existingSession.path, sessionDir);
 		}
+		console.error(chalk.yellow(`No session found with id '${parsed.sessionId}'; creating a new session.`));
 	}
 
 	return SessionManager.create(cwd, sessionDir, { id: parsed.sessionId });

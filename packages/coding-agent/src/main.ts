@@ -1,24 +1,17 @@
-/**
- * Main entry point for the coding agent CLI.
- *
- * This file handles CLI argument parsing and translates them into
- * createAgentSession() options. The SDK does the heavy lifting.
- */
-
 import chalk from "chalk";
 import { parseArgs, printHelp } from "./cli/args.ts";
 import { listModels } from "./cli/list-models.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
-import { ENV_OFFLINE, ENV_SESSION_DIR, ENV_SKIP_VERSION_CHECK, ENV_STARTUP_BENCHMARK, expandTildePath, getAgentDir, getEnvValue, setEnvValue, VERSION } from "./config.ts";
-import { type CreateAgentSessionRuntimeFactory, createAgentSessionRuntime } from "./core/agent-session-runtime.ts";
+import { runFirstTimeSetup } from "./main-first-time-setup.ts";
+import { ENV_OFFLINE, ENV_SESSION_DIR, ENV_SKIP_VERSION_CHECK, ENV_STARTUP_BENCHMARK, expandTildePath, getAgentDir, getEnvValue, getPackageDir, setEnvValue, VERSION } from "./config.ts";
+import type { CreateAgentSessionRuntimeFactory } from "./core/agent-session-runtime.ts";
 import { type AgentSessionRuntimeDiagnostic, createAgentSessionFromServices, createAgentSessionServices } from "./core/agent-session-services.ts";
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { AuthStorage } from "./core/auth-storage.ts";
 import { getBuiltinPackagePaths } from "./core/builtin-packages.ts";
-import { configureHttpDispatcher } from "./core/http-dispatcher.ts";
-import type { ExtensionFactory } from "./core/extensions/types.ts";
+import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { resolveModelScope, resolveModelScopeWithDiagnostics } from "./core/model-resolver.ts";
-import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
+import { restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
 import { resolveProjectTrusted } from "./core/project-trust.ts";
 import { getMissingSessionCwdIssue, MissingSessionCwdError } from "./core/session-cwd.ts";
 import { SessionManager } from "./core/session-manager.ts";
@@ -26,43 +19,43 @@ import { SettingsManager } from "./core/settings-manager.ts";
 import { endTimingSpan, printTimings, resetTimings, startTimingSpan, time } from "./core/timings.ts";
 import { hasProjectTrustInputs, ProjectTrustStore } from "./core/trust-manager.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
+import { builtInExtensions } from "./extensions/index.ts";
 import { type AppMode, isPlainRuntimeMetadataCommand, isReadOnlyRuntimeMetadataCommand, prepareInitialMessage, resolveAppMode, resolveCliPaths, resolveExcludedToolsForAppMode, toPrintOutputMode } from "./main-app-mode.ts";
-import { computeDeferExtensions, formatScopedModelList } from "./main-deferred-startup.ts";
-import { createSessionManager, promptForMissingSessionCwd, validateForkFlags, validateSessionIdFlags } from "./main-session.ts";
+import { type EarlyInputCapture, startEarlyInputCapture } from "./main-early-input.ts";
+import { computeDeferExtensions, computeStartupInputCaptureEnabled, formatScopedModelList } from "./main-deferred-startup.ts";
+import { applyInheritedWorkflowSessionClassification, createSessionManager, promptForMissingSessionCwd, validateForkFlags, validateSessionIdFlags } from "./main-session.ts";
 import { buildSessionOptions } from "./main-session-options.ts";
 import { collectSettingsDiagnostics, drainProcessStdio, isTruthyEnvFlag, readPipedStdin, reportDiagnostics } from "./main-stdio.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
+import { startInteractiveEngineLiveness } from "./modes/interactive-engine/engine-child-liveness.ts";
+import { createRuntimeForMode } from "./modes/interactive-engine/create-isolated-runtime.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
-import { normalizePath } from "./utils/paths.ts";
-
+import type { MainOptions } from "./main-types.ts"; import { normalizePath } from "./utils/paths.ts"; import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
 export type { AppMode } from "./main-app-mode.ts"; export { resolveExcludedToolsForAppMode } from "./main-app-mode.ts";
-
-export interface MainOptions {
-	extensionFactories?: ExtensionFactory[];
-	builtinPackagePaths?: string[];
-}
-
+export type { MainOptions } from "./main-types.ts";
 export async function main(args: string[], options?: MainOptions) {
-	resetTimings();
+	resetTimings(); const extensionFactories = [...builtInExtensions, ...(options?.extensionFactories ?? [])];
 	const offlineMode = args.includes("--offline") || isTruthyEnvFlag(getEnvValue(ENV_OFFLINE));
 	if (offlineMode) {
 		setEnvValue(ENV_OFFLINE, "1");
 		setEnvValue(ENV_SKIP_VERSION_CHECK, "1");
 	}
-
-	if (await handlePackageCommand(args, { extensionFactories: options?.extensionFactories })) {
+	if (process.platform === "win32") cleanupWindowsSelfUpdateQuarantine(getPackageDir());
+	const cwd = process.cwd(), agentDir = getAgentDir();
+	const bootstrapSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
+	applyHttpProxySettings(bootstrapSettingsManager.getGlobalSettings().httpProxy); configureHttpDispatcher();
+	if (await handlePackageCommand(args, { extensionFactories })) {
 		const exitCode = process.exitCode ?? 0;
 		await drainProcessStdio();
 		process.exit(exitCode);
 		return;
 	}
-
-	if (await handleConfigCommand(args, { extensionFactories: options?.extensionFactories })) {
+	if (await handleConfigCommand(args, { extensionFactories })) {
 		return;
 	}
-
 	const parsed = parseArgs(args);
+	if (process.env.ATOMIC_INTERACTIVE_ENGINE_CHILD === "1" && process.env.ATOMIC_INTERACTIVE_ENGINE_API_KEY) parsed.apiKey = process.env.ATOMIC_INTERACTIVE_ENGINE_API_KEY;
 	if (parsed.diagnostics.length > 0) {
 		for (const d of parsed.diagnostics) {
 			const color = d.type === "error" ? chalk.red : chalk.yellow;
@@ -93,14 +86,16 @@ export async function main(args: string[], options?: MainOptions) {
 		console.log(`Exported to: ${result}`);
 		process.exit(0);
 	}
-
-	let appMode = resolveAppMode(parsed, process.stdin.isTTY, process.stdout.isTTY);
+	let appMode = options?.internalInteractiveHarness?.forceInteractive
+		? "interactive"
+		: resolveAppMode(parsed, process.stdin.isTTY, process.stdout.isTTY);
+	const isolateInteractiveHost = appMode === "interactive" && !isPlainRuntimeMetadataCommand(parsed) && process.env.ATOMIC_INTERACTIVE_ENGINE_CHILD !== "1";
 	const shouldTakeOverStdout = appMode !== "interactive";
 	const shouldRestoreStdoutForMetadata = isPlainRuntimeMetadataCommand(parsed);
 	if (shouldTakeOverStdout) {
 		takeOverStdout();
 	}
-
+	if (process.env.ATOMIC_INTERACTIVE_ENGINE_CHILD === "1") startInteractiveEngineLiveness(writeRawStdout).ready();
 	if (parsed.mode === "rpc" && parsed.fileArgs.length > 0) {
 		console.error(chalk.red("Error: @file arguments are not supported in RPC mode"));
 		process.exit(1);
@@ -109,21 +104,27 @@ export async function main(args: string[], options?: MainOptions) {
 	validateForkFlags(parsed);
 	validateSessionIdFlags(parsed);
 
-	const cwd = process.cwd();
-	const agentDir = getAgentDir();
 	const projectTrustStore = new ProjectTrustStore(agentDir);
 	const startupHasTrustInputs = hasProjectTrustInputs(cwd);
 	const startupStoredProjectTrust = startupHasTrustInputs ? projectTrustStore.get(cwd) : null;
 	const startupGlobalSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
 	const startupDefaultProjectTrust = startupGlobalSettingsManager.getDefaultProjectTrust();
 	const startupProjectTrusted = parsed.projectTrustOverride ?? startupStoredProjectTrust ?? (!startupHasTrustInputs || startupDefaultProjectTrust === "always");
-
+	const resolvedExtensionPaths = resolveCliPaths(cwd, parsed.extensions), resolvedSkillPaths = resolveCliPaths(cwd, parsed.skills);
+	const resolvedPromptTemplatePaths = resolveCliPaths(cwd, parsed.promptTemplates), resolvedThemePaths = resolveCliPaths(cwd, parsed.themes);
+	let startupEarlyInputCapture: EarlyInputCapture | undefined = startEarlyInputCapture({ enabled: computeStartupInputCaptureEnabled({
+		appMode, stdinIsTTY: process.stdin.isTTY === true, parsed, sessionCwd: cwd, projectTrustStore, resolvedExtensionPathCount: resolvedExtensionPaths?.length ?? 0,
+		resolvedResourcePathCount: (resolvedSkillPaths?.length ?? 0) + (resolvedPromptTemplatePaths?.length ?? 0) + (resolvedThemePaths?.length ?? 0), deprecationWarningCount: 0,
+	}) });
 	// Run migrations after computing startup project trust so project-local migrations
 	// cannot read or mutate untrusted project config before approval.
 	const { migratedAuthProviders: migratedProviders, deprecationWarnings } = runMigrations(cwd, {
 		projectTrusted: startupProjectTrusted,
 	});
 	time("runMigrations");
+	if (deprecationWarnings.length > 0) {
+		startupEarlyInputCapture?.consume(); startupEarlyInputCapture = undefined;
+	}
 
 	const startupSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: startupProjectTrusted });
 	reportDiagnostics(collectSettingsDiagnostics(startupSettingsManager, "startup session lookup"));
@@ -138,9 +139,10 @@ export async function main(args: string[], options?: MainOptions) {
 		(parsed.sessionDir ? normalizePath(parsed.sessionDir) : undefined) ??
 		(envSessionDir ? expandTildePath(envSessionDir) : undefined) ??
 		startupSettingsManager.getSessionDir();
-	let sessionManager = await createSessionManager(parsed, cwd, sessionDir, startupSettingsManager);
+	let sessionManager = applyInheritedWorkflowSessionClassification(await createSessionManager(parsed, cwd, sessionDir, startupSettingsManager));
 	const missingSessionCwdIssue = getMissingSessionCwdIssue(sessionManager, cwd);
 	if (missingSessionCwdIssue) {
+		startupEarlyInputCapture?.consume(); startupEarlyInputCapture = undefined;
 		if (appMode === "interactive") {
 			const selectedCwd = await promptForMissingSessionCwd(missingSessionCwdIssue, startupSettingsManager);
 			if (!selectedCwd) {
@@ -166,17 +168,11 @@ export async function main(args: string[], options?: MainOptions) {
 	const autoTrustOnReloadCwd =
 		parsed.projectTrustOverride === undefined && !hasProjectTrustInputs(sessionCwd) ? sessionCwd : undefined;
 
-	const resolvedExtensionPaths = resolveCliPaths(cwd, parsed.extensions);
-	const resolvedSkillPaths = resolveCliPaths(cwd, parsed.skills);
-	const resolvedPromptTemplatePaths = resolveCliPaths(cwd, parsed.promptTemplates);
-	const resolvedThemePaths = resolveCliPaths(cwd, parsed.themes);
 	const builtinPackagePaths = options?.builtinPackagePaths ?? getBuiltinPackagePaths();
 	const authStorage = AuthStorage.create();
 	const trustPromptMode: AppMode = parsed.help || parsed.listModels !== undefined ? "print" : appMode;
 	const projectTrustByCwd = new Map<string, boolean>();
 	const borrowedExtensionSourceTrustByPath = new Map<string, boolean>();
-	// When true, the initial runtime was created without loading extension code so the
-	// TUI can paint immediately; InteractiveMode completes the load in the background.
 	let deferredExtensionLoad = false;
 	const createRuntime: CreateAgentSessionRuntimeFactory = async ({
 		cwd,
@@ -192,9 +188,7 @@ export async function main(args: string[], options?: MainOptions) {
 		const shouldResolveProjectTrust =
 			parsed.projectTrustOverride === undefined && cachedProjectTrust === undefined && hasTrustInputs;
 		const runtimeSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: initialProjectTrusted });
-		// Defer extension loading to after first paint only when nothing before the TUI
-		// starts needs extensions. Model scopes can be resolved again after extensions load.
-		const deferExtensions = computeDeferExtensions({
+		const deferExtensions = isolateInteractiveHost ? false : computeDeferExtensions({
 			appMode,
 			stdinIsTTY: process.stdin.isTTY === true,
 			hasSessionStartEvent: sessionStartEvent !== undefined,
@@ -211,6 +205,7 @@ export async function main(args: string[], options?: MainOptions) {
 		});
 		if (sessionStartEvent === undefined) {
 			deferredExtensionLoad = deferExtensions;
+			startupEarlyInputCapture ??= startEarlyInputCapture({ enabled: deferExtensions && deprecationWarnings.length === 0 });
 		}
 		const getProjectTrustContext = () =>
 			projectTrustContext ??
@@ -269,19 +264,19 @@ export async function main(args: string[], options?: MainOptions) {
 						}
 					: undefined,
 			resourceLoaderOptions: {
-				additionalExtensionPaths: resolvedExtensionPaths,
+				additionalExtensionPaths: isolateInteractiveHost ? undefined : resolvedExtensionPaths,
 				additionalSkillPaths: resolvedSkillPaths,
 				additionalPromptTemplatePaths: resolvedPromptTemplatePaths,
 				additionalThemePaths: resolvedThemePaths,
 				builtinPackagePaths,
-				noExtensions: parsed.noExtensions,
+				noExtensions: isolateInteractiveHost || parsed.noExtensions,
 				noSkills: parsed.noSkills,
 				noPromptTemplates: parsed.noPromptTemplates,
 				noThemes: parsed.noThemes,
 				noContextFiles: parsed.noContextFiles,
 				systemPrompt: parsed.systemPrompt,
 				appendSystemPrompt: parsed.appendSystemPrompt,
-				extensionFactories: options?.extensionFactories,
+				extensionFactories: isolateInteractiveHost ? undefined : extensionFactories,
 			},
 		});
 		const { settingsManager, modelRegistry, resourceLoader } = services;
@@ -293,20 +288,21 @@ export async function main(args: string[], options?: MainOptions) {
 				message: `Failed to load extension "${path}": ${error}`,
 			})),
 		];
-
-		const modelPatterns = parsed.models ?? settingsManager.getEnabledModels();
+		const modelPatterns = isolateInteractiveHost ? undefined : (parsed.models ?? settingsManager.getEnabledModels());
 		const scopedModels =
 			modelPatterns && modelPatterns.length > 0
 				? deferredExtensionLoad
 					? (await resolveModelScopeWithDiagnostics(modelPatterns, modelRegistry)).scopedModels
 					: await resolveModelScope(modelPatterns, modelRegistry)
 				: [];
+		const sessionArgs = isolateInteractiveHost
+			? { ...parsed, provider: undefined, model: undefined, apiKey: undefined, models: undefined } : parsed;
 		const {
 			options: sessionOptions,
 			cliThinkingFromModel,
 			diagnostics: sessionOptionDiagnostics,
 		} = buildSessionOptions(
-			parsed,
+			sessionArgs,
 			scopedModels,
 			sessionManager.buildSessionContext().messages.length > 0,
 			modelRegistry,
@@ -314,7 +310,7 @@ export async function main(args: string[], options?: MainOptions) {
 		);
 		diagnostics.push(...sessionOptionDiagnostics);
 
-		if (parsed.apiKey) {
+		if (parsed.apiKey && !isolateInteractiveHost) {
 			if (!sessionOptions.model) {
 				diagnostics.push({
 					type: "error",
@@ -369,16 +365,14 @@ export async function main(args: string[], options?: MainOptions) {
 	};
 	time("createRuntimeFactory");
 	const runtimeCreationSpan = startTimingSpan("createAgentSessionRuntime");
-	const runtime = await createAgentSessionRuntime(createRuntime, {
-		cwd: sessionManager.getCwd(),
-		agentDir,
-		sessionManager,
+	const runtime = await createRuntimeForMode(createRuntime, sessionManager.getCwd(), agentDir, sessionManager, isolateInteractiveHost, (options?.extensionFactories?.length ?? 0) > 0, parsed, {
+		extensions: resolvedExtensionPaths, skills: resolvedSkillPaths, promptTemplates: resolvedPromptTemplatePaths, themes: resolvedThemePaths,
 	});
 	endTimingSpan(runtimeCreationSpan);
 	const { services, session, modelFallbackMessage } = runtime;
 	const { settingsManager, modelRegistry, resourceLoader } = services;
+	applyHttpProxySettings(settingsManager.getGlobalSettings().httpProxy);
 	configureHttpDispatcher(settingsManager.getHttpIdleTimeoutMs());
-
 	if (parsed.help) {
 		const extensionFlags = resourceLoader
 			.getExtensions()
@@ -401,7 +395,7 @@ export async function main(args: string[], options?: MainOptions) {
 
 	// Read piped stdin content (if any) - skip for RPC mode which uses stdin for JSON-RPC
 	let stdinContent: string | undefined;
-	if (appMode !== "rpc") {
+	if (appMode !== "rpc" && !options?.internalInteractiveHarness) {
 		stdinContent = await readPipedStdin();
 		if (stdinContent !== undefined && appMode === "interactive") {
 			appMode = "print";
@@ -415,6 +409,7 @@ export async function main(args: string[], options?: MainOptions) {
 		stdinContent,
 	);
 	time("prepareInitialMessage");
+	startupEarlyInputCapture = await runFirstTimeSetup(appMode, settingsManager, startupEarlyInputCapture);
 	initTheme(settingsManager.getTheme(), appMode === "interactive");
 	time("initTheme");
 
@@ -427,22 +422,26 @@ export async function main(args: string[], options?: MainOptions) {
 	time("resolveModelScope");
 	reportDiagnostics(runtime.diagnostics);
 	if (runtime.diagnostics.some((diagnostic) => diagnostic.type === "error")) {
+		startupEarlyInputCapture?.consume();
 		process.exit(1);
 	}
 	time("createAgentSession");
 
 	if (appMode !== "interactive" && !session.model) {
 		console.error(chalk.red(formatNoModelsAvailableMessage()));
+		startupEarlyInputCapture?.consume();
 		process.exit(1);
 	}
 
 	const startupBenchmark = isTruthyEnvFlag(getEnvValue(ENV_STARTUP_BENCHMARK));
 	if (startupBenchmark && appMode !== "interactive") {
 		console.error(chalk.red(`Error: ${ENV_STARTUP_BENCHMARK} only supports interactive mode`));
+		startupEarlyInputCapture?.consume();
 		process.exit(1);
 	}
 
 	if (appMode === "rpc") {
+		if (!offlineMode) void modelRegistry.refresh().catch(() => {});
 		printTimings();
 		await runRpcMode(runtime);
 	} else if (appMode === "interactive") {
@@ -459,13 +458,16 @@ export async function main(args: string[], options?: MainOptions) {
 			initialMessages: parsed.messages,
 			verbose: parsed.verbose,
 			deferredExtensionLoad,
+			startupInputCapture: startupEarlyInputCapture,
 			deferredModelScopePatterns: deferredExtensionLoad ? (parsed.models ?? settingsManager.getEnabledModels()) : undefined,
 			deferredModelScopePreserveThinking: parsed.thinking !== undefined,
+			terminal: options?.internalInteractiveHarness?.terminal,
 		});
+		options?.internalInteractiveHarness?.onMode?.(interactiveMode);
 		if (startupBenchmark) {
 			await interactiveMode.init();
 			time("interactiveMode.init");
-			await interactiveMode.deferredStartupPromise;
+			await interactiveMode.ensureDeferredStartupComplete();
 			printTimings();
 			interactiveMode.stop();
 			stopThemeWatcher();

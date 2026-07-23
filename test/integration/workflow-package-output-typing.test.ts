@@ -106,8 +106,8 @@ function writePackageFixture(fixtureRoot: string): void {
           allowImportingTsExtensions: true,
           allowArbitraryExtensions: true,
           ignoreDeprecations: "6.0",
-          baseUrl: ".",
           typeRoots: [join(repoRoot, "node_modules", "@types")],
+          types: ["bun"],
           paths: {
             "@bastani/atomic": [join(repoRoot, "packages", "coding-agent", "src", "index.ts")],
             "@earendil-works/pi-tui": [join(repoRoot, "node_modules", "@earendil-works", "pi-tui", "dist", "index.d.ts")],

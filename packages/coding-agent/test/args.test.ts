@@ -151,6 +151,11 @@ describe("parseArgs", () => {
 			expect(result.thinking).toBe("high");
 		});
 
+		test("parses the max thinking level", () => {
+			const result = parseArgs(["--thinking", "max"]);
+			expect(result.thinking).toBe("max");
+		});
+
 		test("parses --context-window compact values", () => {
 			const result = parseArgs(["--context-window", "1m"]);
 			expect(result.contextWindow).toBe(1_000_000);

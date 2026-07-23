@@ -56,6 +56,7 @@ export class AsyncJobManager {
 	#timer: NodeJS.Timeout | undefined;
 	#disposed = false;
 	#runningDeliveryLoop = false;
+	#disposeWhenUnused = false;
 
 	constructor(options: AsyncJobManagerOptions) {
 		this.#onJobComplete = options.onJobComplete;
@@ -88,7 +89,21 @@ export class AsyncJobManager {
 		session.disposed = true;
 		this.acknowledgeDeliveries([...session.activeJobIds]);
 		this.#sessions.delete(sessionId);
-		if (this.#sessions.size === 0) this.dispose();
+		if (this.#sessions.size === 0) this.#disposeWhenUnused = true;
+		this.#disposeIfUnused();
+	}
+
+
+	transferSessionDeliveries(sourceId: symbol, targetId: symbol, handler: AsyncJobDeliveryHandler): void {
+		const source = this.#sessions.get(sourceId);
+		const target = this.#sessions.get(targetId);
+		if (!source || !target || target.disposed) return;
+		for (const jobId of source.activeJobIds) {
+			source.activeJobIds.delete(jobId);
+			target.activeJobIds.add(jobId);
+			this.#jobSessions.set(jobId, targetId);
+			this.#deliveryHandlers.set(jobId, handler);
+		}
 	}
 
 	isSessionDisposed(sessionId: symbol): boolean {
@@ -166,7 +181,7 @@ export class AsyncJobManager {
 		for (let index = this.#deliveries.length - 1; index >= 0; index -= 1) if (this.#deliveries[index]?.jobId === job.jobId) this.#deliveries.splice(index, 1);
 		this.#deliveries.push({ jobId: job.jobId, message: formatAsyncResultForFollowUp(job), attempt: 0, nextAttemptAt: Date.now() });
 		this.#pruneRetention();
-		this.#scheduleDeliveryLoop(25);
+		void this.#runDeliveryLoop();
 	}
 
 
@@ -174,6 +189,11 @@ export class AsyncJobManager {
 		const sessionId = this.#jobSessions.get(jobId);
 		if (sessionId !== undefined) this.#sessions.get(sessionId)?.activeJobIds.delete(jobId);
 		this.#jobSessions.delete(jobId);
+	}
+	#disposeIfUnused(): void {
+		if (!this.#disposeWhenUnused || this.#sessions.size > 0 || this.#inFlightDeliveries.size > 0) return;
+		this.dispose();
+		if (AsyncJobManager.#instance === this) AsyncJobManager.#instance = undefined;
 	}
 	#pruneRetention(now = Date.now()): void {
 		for (const [jobId, job] of this.#jobs) {
@@ -253,6 +273,7 @@ export class AsyncJobManager {
 				this.#inFlightDeliveries.delete(delivery.jobId);
 				this.#pruneRetention();
 				this.#scheduleNextDelivery();
+				this.#disposeIfUnused();
 			});
 	}
 

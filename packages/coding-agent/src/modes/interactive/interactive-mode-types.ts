@@ -1,4 +1,6 @@
 import type { ImageContent } from "./interactive-mode-deps.ts";
+import type { EarlyInputCapture } from "../../main-early-input.ts";
+import type { Terminal } from "@earendil-works/pi-tui";
 
 /** Interface for components that can be expanded/collapsed. */
 export interface Expandable {
@@ -34,4 +36,8 @@ export interface InteractiveModeOptions {
   deferredModelScopePatterns?: string[];
   /** Preserve an explicit CLI thinking level when applying deferred model-scope suffixes. */
   deferredModelScopePreserveThinking?: boolean;
+  /** Raw terminal input capture active until the TUI prompt is ready to take over stdin. */
+  startupInputCapture?: EarlyInputCapture;
+  /** Internal deterministic terminal seam used by default-main integration tests. */
+  terminal?: Terminal;
 }

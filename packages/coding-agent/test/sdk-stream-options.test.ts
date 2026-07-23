@@ -105,7 +105,7 @@ describe("createAgentSession stream options", () => {
 		});
 
 		try {
-			await session.agent.streamFn(model, { messages: [] }, requestOptions);
+			await session.agent.streamFunction(model, { messages: [] }, requestOptions);
 			return capturedOptions;
 		} finally {
 			session.dispose();
@@ -177,7 +177,7 @@ describe("createAgentSession stream options", () => {
 		});
 
 		try {
-			await session.agent.streamFn(model, { messages: [] });
+			await session.agent.streamFunction(model, { messages: [] });
 			expect(capturedOptions?.headers?.["X-GitHub-Api-Version"]).toBe("2026-06-01");
 		} finally {
 			session.dispose();
@@ -221,7 +221,7 @@ describe("createAgentSession stream options", () => {
 		});
 
 		try {
-			await session.agent.streamFn(model, { messages: [] }, { headers: { "x-github-api-version": "request-version" } });
+			await session.agent.streamFunction(model, { messages: [] }, { headers: { "x-github-api-version": "request-version" } });
 			expect(capturedOptions?.headers?.["x-github-api-version"]).toBe("request-version");
 			expect(capturedOptions?.headers?.["X-GitHub-Api-Version"]).toBeUndefined();
 			expect(
@@ -241,5 +241,116 @@ describe("createAgentSession stream options", () => {
 		);
 
 		expect(options?.websocketConnectTimeoutMs).toBe(0);
+	});
+
+	it("dispatches with the credential-specific Copilot baseUrl", async () => {
+		const authStorage = AuthStorage.inMemory({
+			"github-copilot": {
+				type: "oauth",
+				refresh: "github-token",
+				access: "tid=example;proxy-ep=proxy.enterprise.example.com;",
+				expires: Date.now() + 60_000,
+			},
+		});
+		const modelRegistry = ModelRegistry.inMemory(authStorage);
+		const model = modelRegistry.getAll().find((candidate) => candidate.provider === "github-copilot")!;
+		let dispatchedBaseUrl: string | undefined;
+		modelRegistry.registerProvider(model.provider, {
+			api: model.api,
+			streamSimple: (requestModel) => {
+				dispatchedBaseUrl = requestModel.baseUrl;
+				return createDoneStream(model.api);
+			},
+		});
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			model,
+			authStorage,
+			modelRegistry,
+			settingsManager: SettingsManager.inMemory(),
+			sessionManager: SessionManager.inMemory(cwd),
+		});
+
+		try {
+			await session.agent.streamFunction(model, { messages: [] });
+			expect(dispatchedBaseUrl).toBe("https://api.enterprise.example.com");
+		} finally {
+			session.dispose();
+			modelRegistry.unregisterProvider(model.provider);
+		}
+	});
+
+	it("preserves an empty credential baseUrl during SDK dispatch", async () => {
+		const authStorage = AuthStorage.inMemory();
+		const modelRegistry = ModelRegistry.inMemory(authStorage);
+		const model = modelRegistry.getAll()[0]!;
+		let dispatchedBaseUrl: string | undefined;
+		modelRegistry.getApiKeyAndHeaders = async () => ({ ok: true, apiKey: "key", baseUrl: "" });
+		modelRegistry.registerProvider(model.provider, {
+			api: model.api,
+			streamSimple: (requestModel) => {
+				dispatchedBaseUrl = requestModel.baseUrl;
+				return createDoneStream(model.api);
+			},
+		});
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			model,
+			authStorage,
+			modelRegistry,
+			settingsManager: SettingsManager.inMemory(),
+			sessionManager: SessionManager.inMemory(cwd),
+		});
+
+		try {
+			await session.agent.streamFunction(model, { messages: [] });
+			expect(dispatchedBaseUrl).toBe("");
+		} finally {
+			session.dispose();
+			modelRegistry.unregisterProvider(model.provider);
+		}
+	});
+
+	it("resolves provider-owned null headers from a runtime API key through stream dispatch", async () => {
+		const previousAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
+		const previousGateway = process.env.CLOUDFLARE_GATEWAY_ID;
+		process.env.CLOUDFLARE_ACCOUNT_ID = "account-id";
+		process.env.CLOUDFLARE_GATEWAY_ID = "gateway-id";
+		const authStorage = AuthStorage.inMemory();
+		authStorage.setRuntimeApiKey("cloudflare-ai-gateway", "runtime-cf-key");
+		const modelRegistry = ModelRegistry.inMemory(authStorage);
+		const model = modelRegistry.getAll().find((candidate) => candidate.provider === "cloudflare-ai-gateway")!;
+		let dispatchedHeaders: SimpleStreamOptions["headers"];
+		modelRegistry.registerProvider(model.provider, {
+			api: model.api,
+			streamSimple: (_requestModel, _context, options) => {
+				dispatchedHeaders = options?.headers;
+				return createDoneStream(model.api);
+			},
+		});
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			model,
+			authStorage,
+			modelRegistry,
+			settingsManager: SettingsManager.inMemory(),
+			sessionManager: SessionManager.inMemory(cwd),
+		});
+
+		try {
+			await session.agent.streamFunction(model, { messages: [] });
+			expect(dispatchedHeaders?.["cf-aig-authorization"]).toBe("Bearer runtime-cf-key");
+			expect(dispatchedHeaders?.Authorization).toBeNull();
+			expect(dispatchedHeaders?.["x-api-key"]).toBeNull();
+		} finally {
+			session.dispose();
+			if (previousAccount === undefined) delete process.env.CLOUDFLARE_ACCOUNT_ID;
+			else process.env.CLOUDFLARE_ACCOUNT_ID = previousAccount;
+			if (previousGateway === undefined) delete process.env.CLOUDFLARE_GATEWAY_ID;
+			else process.env.CLOUDFLARE_GATEWAY_ID = previousGateway;
+		}
 	});
 });

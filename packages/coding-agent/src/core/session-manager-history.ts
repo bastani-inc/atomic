@@ -1,262 +1,63 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { createBranchSummaryMessage, createCustomMessage } from "./messages.ts";
-import { contentArrayHasAssistantThinkingBlock } from "./thinking-blocks.ts";
-import { reconcilePersistedToolDependencyFilters } from "./session-manager-tool-dependencies.ts";
-import type {
-	ContextCompactionEntry,
-	ContextDeletionFilters,
-	FileEntry,
-	SessionContext,
-	SessionEntry,
-	SessionMessageEntry,
-	SessionTreeNode,
-} from "./session-manager-types.ts";
+import { createBranchSummaryMessage, createCustomMessage, createVerbatimCompactionMessage, normalizeMessageContent } from "./messages.ts";
+import { normalizeDerivedSessionEntries } from "./session-entry-normalization.ts";
+import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
+import type { CompactionEntry, FileEntry, SessionContext, SessionEntry, SessionTreeNode } from "./session-manager-types.ts";
 
-export function getLatestCompactionBoundaryEntry(entries: SessionEntry[]): ContextCompactionEntry | null {
+export function getLatestCompactionBoundaryEntry(
+	entries: SessionEntry[],
+): CompactionEntry<VerbatimCompactionDetails> | null {
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const entry = entries[i];
-		if (entry.type === "context_compaction") {
-			return entry;
-		}
+		if (entry.type !== "compaction") continue;
+		const details = (entry as CompactionEntry<{ strategy?: string }>).details;
+		if (details?.strategy === "verbatim-lines") return entry as CompactionEntry<VerbatimCompactionDetails>;
 	}
 	return null;
 }
 
-/**
- * Build raw deletion filters from persisted context_compaction entries.
- *
- * These raw filters do not apply replay-safety repair for latest assistant
- * thinking/redacted_thinking blocks or their paired tool results. Production
- * context rebuild paths should prefer `buildEffectiveContextDeletionFilters`
- * or `buildContextDeletionFilteredPath(path)` unless they intentionally need
- * the un-repaired historical deletion plan for diagnostics.
- */
-export function buildContextDeletionFilters(path: SessionEntry[]): ContextDeletionFilters {
-	const deletedEntryIds = new Set<string>();
-	const deletedContentBlocks = new Map<string, Set<number>>();
-
-	for (const entry of path) {
-		if (entry.type !== "context_compaction") continue;
-		for (const target of entry.deletedTargets) {
-			if (target.kind === "entry") {
-				deletedEntryIds.add(target.entryId);
-				continue;
-			}
-			const existing = deletedContentBlocks.get(target.entryId) ?? new Set<number>();
-			existing.add(target.blockIndex);
-			deletedContentBlocks.set(target.entryId, existing);
+/** Convert one durable session entry into the messages it contributes to model context. */
+export function sessionEntryToContextMessages(entry: SessionEntry): AgentMessage[] {
+	if (entry.type === "message") return [normalizeMessageContent(entry.message)];
+	if (entry.type === "custom_message") {
+		return [createCustomMessage(entry.customType, entry.content, entry.display, entry.details, entry.timestamp, entry.excludeFromContext)];
+	}
+	if (entry.type === "branch_summary" && entry.summary.length > 0) {
+		return [createBranchSummaryMessage(entry.summary, entry.fromId, entry.timestamp)];
+	}
+	if (entry.type === "compaction") {
+		const details = (entry as CompactionEntry<{ strategy?: string }>).details;
+		if (details?.strategy === "verbatim-lines") {
+			return [createVerbatimCompactionMessage(entry.summary, entry.tokensBefore, entry.timestamp, entry.details as VerbatimCompactionDetails)];
 		}
 	}
-
-	return { deletedEntryIds, deletedContentBlocks };
+	return [];
 }
 
-function getToolCallContentBlockId(block: unknown): string | undefined {
-	if (!block || typeof block !== "object") return undefined;
-	const candidate = block as { type?: unknown; id?: unknown };
-	return candidate.type === "toolCall" && typeof candidate.id === "string" ? candidate.id : undefined;
-}
-
-function getToolResultCallId(message: AgentMessage): string | undefined {
-	if (message.role !== "toolResult") return undefined;
-	const toolCallId = (message as { toolCallId?: unknown }).toolCallId;
-	return typeof toolCallId === "string" ? toolCallId : undefined;
-}
-
-function collectToolCallContentBlockIds(content: readonly unknown[]): Set<string> {
-	const toolCallIds = new Set<string>();
-	for (const block of content) {
-		const toolCallId = getToolCallContentBlockId(block);
-		if (toolCallId) toolCallIds.add(toolCallId);
-	}
-	return toolCallIds;
-}
-
-function addDeletionTarget(filters: ContextDeletionFilters, target: ContextCompactionEntry["deletedTargets"][number]): void {
-	if (target.kind === "entry") {
-		filters.deletedEntryIds.add(target.entryId);
-		return;
-	}
-	const existing = filters.deletedContentBlocks.get(target.entryId) ?? new Set<number>();
-	existing.add(target.blockIndex);
-	filters.deletedContentBlocks.set(target.entryId, existing);
-}
-
-function buildToolResultEntryIdsByCallId(path: SessionEntry[]): Map<string, Set<string>> {
-	const toolResultEntryIdsByCallId = new Map<string, Set<string>>();
-	for (const entry of path) {
-		if (entry.type !== "message") continue;
-		const toolCallId = getToolResultCallId(entry.message);
-		if (!toolCallId) continue;
-		const existing = toolResultEntryIdsByCallId.get(toolCallId) ?? new Set<string>();
-		existing.add(entry.id);
-		toolResultEntryIdsByCallId.set(toolCallId, existing);
-	}
-	return toolResultEntryIdsByCallId;
-}
-
-function findRetainedThinkingAssistants(
-	path: SessionEntry[],
-	deletedEntryIds: ReadonlySet<string>,
-): SessionMessageEntry[] {
-	return path.filter((entry): entry is SessionMessageEntry => {
-		if (entry.type !== "message") return false;
-		if (deletedEntryIds.has(entry.id)) return false;
-		if (entry.message.role !== "assistant") return false;
-		return contentArrayHasAssistantThinkingBlock(entry.message.content);
-	});
-}
-
-export function buildEffectiveContextDeletionFilters(path: SessionEntry[]): ContextDeletionFilters {
-	const filters = buildContextDeletionFilters(path);
-	if (!path.some((entry) => entry.type === "context_compaction")) return filters;
-
-	const rawDeletedEntryIds = new Set<string>();
-	for (const compaction of path) {
-		if (compaction.type !== "context_compaction") continue;
-		for (const target of compaction.deletedTargets) {
-			if (target.kind === "entry") rawDeletedEntryIds.add(target.entryId);
-		}
-	}
-	const retainedThinkingAssistants = findRetainedThinkingAssistants(path, rawDeletedEntryIds);
-	const retainedThinkingAssistantIds = new Set(retainedThinkingAssistants.map((entry) => entry.id));
-	const retainedThinkingAssistantById = new Map(retainedThinkingAssistants.map((entry) => [entry.id, entry]));
-	const toolResultEntryIdsByCallId = buildToolResultEntryIdsByCallId(path);
-	const effectiveFilters: ContextDeletionFilters = {
-		deletedEntryIds: new Set<string>(),
-		deletedContentBlocks: new Map<string, Set<number>>(),
-	};
-	const allRestoredToolResultEntryIds = new Set<string>();
-
-	for (const compaction of path) {
-		if (compaction.type !== "context_compaction") continue;
-		for (const target of compaction.deletedTargets) {
-			if (target.kind !== "content_block") continue;
-			const retainedThinkingAssistant = retainedThinkingAssistantById.get(target.entryId);
-			if (!retainedThinkingAssistant) continue;
-			const content = (retainedThinkingAssistant.message as { content: readonly unknown[] }).content;
-			for (const toolCallId of collectToolCallContentBlockIds(content)) {
-				for (const entryId of toolResultEntryIdsByCallId.get(toolCallId) ?? []) {
-					allRestoredToolResultEntryIds.add(entryId);
-				}
-			}
-		}
-	}
-
-	for (const compaction of path) {
-		if (compaction.type !== "context_compaction") continue;
-		let restoresRetainedThinkingAssistant = false;
-		for (const target of compaction.deletedTargets) {
-			if (target.kind === "content_block" && retainedThinkingAssistantIds.has(target.entryId)) {
-				restoresRetainedThinkingAssistant = true;
-				break;
-			}
-		}
-
-		for (const target of compaction.deletedTargets) {
-			if (target.kind === "content_block" && retainedThinkingAssistantIds.has(target.entryId)) {
-				continue;
-			}
-			// When a stale persisted plan tried to partially filter a retained
-			// thinking-bearing assistant, treat the same compaction entry as one
-			// unsafe unit and restore its paired tool results. Later compaction
-			// entries may still trim those restored multi-block results normally,
-			// but whole-entry deletion of those paired results remains unsafe in any
-			// later compaction because the assistant tool call is retained.
-			if (restoresRetainedThinkingAssistant && allRestoredToolResultEntryIds.has(target.entryId)) continue;
-			if (target.kind === "entry" && allRestoredToolResultEntryIds.has(target.entryId)) continue;
-			addDeletionTarget(effectiveFilters, target);
-		}
-	}
-
-	return reconcilePersistedToolDependencyFilters(path, effectiveFilters);
-}
-
-function filterContentArray<T>(content: T[], deletedBlocks: ReadonlySet<number>): T[] {
-	return content.filter((_, index) => !deletedBlocks.has(index));
-}
-
-function filterMessageContentBlocks(
-	message: AgentMessage,
-	deletedBlocks: ReadonlySet<number> | undefined,
-): AgentMessage | undefined {
-	if (!deletedBlocks || deletedBlocks.size === 0) return message;
-
-	switch (message.role) {
-		case "user": {
-			if (!Array.isArray(message.content)) return message;
-			const content = filterContentArray(message.content, deletedBlocks);
-			if (content.length === 0) return undefined;
-			return { ...message, content };
-		}
-		case "assistant": {
-			const content = filterContentArray(message.content, deletedBlocks);
-			if (content.length === 0) return undefined;
-			return { ...message, content };
-		}
-		case "toolResult": {
-			if (!Array.isArray(message.content)) return message;
-			const content = filterContentArray(message.content, deletedBlocks);
-			if (content.length === 0) return undefined;
-			return { ...message, content };
-		}
-		case "custom": {
-			if (!Array.isArray(message.content)) return message;
-			const content = filterContentArray(message.content, deletedBlocks);
-			if (content.length === 0) return undefined;
-			return { ...message, content };
-		}
-		case "bashExecution":
-		case "branchSummary":
-			return message;
-	}
-}
-
-/**
- * Return the active branch path after applying logical context-deletion entries.
- * Whole-entry deletions remove the entry from the path. Content-block deletions
- * clone only affected message/custom-message entries so retained blocks stay verbatim.
- * The optional filters parameter is for callers that already computed effective
- * filters with `buildEffectiveContextDeletionFilters(path)` and want to avoid
- * repeating the repair pass.
- */
-export function buildContextDeletionFilteredPath(
-	path: SessionEntry[],
-	effectiveFilters: ContextDeletionFilters = buildEffectiveContextDeletionFilters(path),
+/** Return the active branch entries after applying the latest compaction boundary. */
+export function buildContextEntries(
+	entries: SessionEntry[],
+	leafId?: string | null,
+	byId = new Map(entries.map((entry) => [entry.id, entry])),
 ): SessionEntry[] {
-	const filteredPath: SessionEntry[] = [];
-
-	for (const entry of path) {
-		if (effectiveFilters.deletedEntryIds.has(entry.id)) continue;
-
-		const deletedBlocks = effectiveFilters.deletedContentBlocks.get(entry.id);
-		if (!deletedBlocks || deletedBlocks.size === 0) {
-			filteredPath.push(entry);
-			continue;
-		}
-
-		if (entry.type === "message") {
-			const message = filterMessageContentBlocks(entry.message, deletedBlocks);
-			if (message) filteredPath.push({ ...entry, message });
-			continue;
-		}
-
-		if (entry.type === "custom_message" && Array.isArray(entry.content)) {
-			const content = filterContentArray(entry.content, deletedBlocks);
-			if (content.length > 0) filteredPath.push({ ...entry, content });
-			continue;
-		}
-
-		filteredPath.push(entry);
-	}
-
-	return filteredPath;
+	if (leafId === null) return [];
+	const leaf = leafId ? byId.get(leafId) : entries[entries.length - 1];
+	if (!leaf) return [];
+	const path = normalizeDerivedSessionEntries(getBranchPath(leaf.id, byId));
+	const boundary = getLatestCompactionBoundaryEntry(path);
+	if (!boundary) return path;
+	const boundaryIndex = path.findIndex((entry) => entry.id === boundary.id);
+	const firstKeptIndex = path.findIndex((entry, index) => index < boundaryIndex && entry.id === boundary.firstKeptEntryId);
+	return [boundary, ...(firstKeptIndex >= 0 ? path.slice(firstKeptIndex, boundaryIndex) : []), ...path.slice(boundaryIndex + 1)];
 }
+
 
 /**
  * Build the session context from entries using tree traversal.
  * If leafId is provided, walks from that entry to root.
- * Applies context-deletion filtering and includes branch summaries along the path.
+ * Emits the latest verbatim compaction boundary (compacted string as a custom-role
+ * boundary message) followed by the kept tail when firstKeptEntryId is non-null,
+ * and includes branch summaries along the path.
  */
 export function buildSessionContext(
 	entries: SessionEntry[],
@@ -290,7 +91,7 @@ export function buildSessionContext(
 	}
 
 	// Walk from leaf to root, collecting path
-	const path = getBranchPath(leaf.id, byId);
+	const path = normalizeDerivedSessionEntries(getBranchPath(leaf.id, byId));
 
 	// Extract settings
 	let thinkingLevel = "off";
@@ -309,16 +110,11 @@ export function buildSessionContext(
 		}
 	}
 
-	const filteredPath = buildContextDeletionFilteredPath(path);
-
-	// Build active context messages from the filtered path. Legacy "compaction"
-	// entries are archival metadata and intentionally inert here.
 	const messages: AgentMessage[] = [];
-
-	const appendMessage = (entry: SessionEntry) => {
+	const appendMessage = (entry: SessionEntry): void => {
 		let message: AgentMessage | undefined;
 		if (entry.type === "message") {
-			message = entry.message;
+			message = normalizeMessageContent(entry.message);
 		} else if (entry.type === "custom_message") {
 			message = createCustomMessage(
 				entry.customType,
@@ -328,16 +124,27 @@ export function buildSessionContext(
 				entry.timestamp,
 				entry.excludeFromContext,
 			);
-		} else if (entry.type === "branch_summary" && entry.summary) {
+		} else if (entry.type === "branch_summary" && typeof entry.summary === "string" && entry.summary.length > 0) {
 			message = createBranchSummaryMessage(entry.summary, entry.fromId, entry.timestamp);
 		}
-
 		if (message) messages.push(message);
 	};
 
-	for (const entry of filteredPath) {
-		appendMessage(entry);
+	const boundary = getLatestCompactionBoundaryEntry(path);
+	if (!boundary) {
+		for (const entry of path) appendMessage(entry);
+		return { messages, thinkingLevel, contextWindow, model };
 	}
+
+	const boundaryIndex = path.findIndex((entry) => entry.id === boundary.id);
+	messages.push(createVerbatimCompactionMessage(boundary.summary, boundary.tokensBefore, boundary.timestamp, boundary.details));
+	const firstKeptIndex = path.findIndex(
+		(entry, index) => index < boundaryIndex && entry.id === boundary.firstKeptEntryId,
+	);
+	if (firstKeptIndex >= 0) {
+		for (let i = firstKeptIndex; i < boundaryIndex; i++) appendMessage(path[i]);
+	}
+	for (let i = boundaryIndex + 1; i < path.length; i++) appendMessage(path[i]);
 
 	return { messages, thinkingLevel, contextWindow, model };
 }

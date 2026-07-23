@@ -38,56 +38,101 @@ describe("GraphView keyboard navigation", () => {
     view.dispose();
   });
 
-  it("Ctrl+D variants detach in overlay graph mode", () => {
-    const ctrlDVariants = [
-      "\x04",
-      "\x1b[100;5u",
-      "\x1b[100;5:1u",
-      "\x1b[27;5;100~",
+  it("pans a wide graph horizontally without moving focus or vertical scroll", () => {
+    const stages = [
+      makeStage("root"),
+      makeStage("child-0", ["root"]),
+      makeStage("child-1", ["root"]),
+      makeStage("child-2", ["root"]),
+      makeStage("child-3", ["root"]),
+      makeStage("child-4", ["root"]),
+      makeStage("child-5", ["root"]),
     ];
+    const view = new GraphView({
+      mode: "overlay",
+      runId: "run-1",
+      store: makeStore(makeSnap(stages)),
+      graphTheme: defaultTheme,
+      getViewportRows: () => 32,
+    });
 
-    for (const key of ctrlDVariants) {
-      const snap = makeSnap([makeStage("A")]);
-      const store = makeStore(snap);
-      let detached = 0;
-      const view = new GraphView({
-        mode: "overlay",
-        runId: "run-1",
-        store,
-        graphTheme: defaultTheme,
-        onDetach: () => {
-          detached += 1;
-        },
-      });
-      view.handleInput(key);
-      assert.equal(detached, 1, JSON.stringify(key));
-      view.dispose();
+    const beforePan = visibleText(view.render(48));
+    while (view._graphScrollColOffset > 0) {
+      assert.equal(view.handleInput("\x1b[<66;10;10M"), true);
     }
+    const verticalOffset = view._graphScrollOffset;
+
+    assert.equal(view.handleInput("\x1b[<67;10;10M"), true);
+    assert.ok(view._graphScrollColOffset > 0);
+    assert.equal(view._graphScrollOffset, verticalOffset);
+    assert.equal(view._focusedIndex, 0);
+    const afterPan = visibleText(view.render(48));
+    assert.ok(view._graphScrollColOffset > 0);
+    assert.notEqual(afterPan, beforePan);
+
+    assert.equal(view.handleInput("\x1b[<66;10;10M"), true);
+    assert.equal(view._graphScrollColOffset, 0);
+
+    const legacyWheelRight = `\x1b[M${String.fromCharCode(67 + 32)}**`;
+    assert.equal(view.handleInput(legacyWheelRight), true);
+    assert.ok(view._graphScrollColOffset > 0);
+    assert.equal(view._graphScrollOffset, verticalOffset);
+    assert.notEqual(visibleText(view.render(48)), beforePan);
+
+    const legacyWheelLeft = `\x1b[M${String.fromCharCode(66 + 32)}**`;
+    assert.equal(view.handleInput(legacyWheelLeft), true);
+    assert.equal(view._graphScrollColOffset, 0);
+    assert.equal(view._graphScrollOffset, verticalOffset);
+    assert.equal(view._focusedIndex, 0);
+    view.dispose();
+  });
+
+  it("keeps horizontal graph panning live while a run-level prompt is active", () => {
+    const stages = [
+      makeStage("root"),
+      ...Array.from({ length: 6 }, (_, index) =>
+        makeStage(`child-${index}`, ["root"]),
+      ),
+    ];
+    const store = makeStore(
+      makeRunPromptSnap(stages, makePendingPrompt({ id: "legacy-prompt" })),
+    );
+    const resolved: h.PromptResolution[] = [];
+    const view = new GraphView({
+      mode: "overlay",
+      runId: "run-1",
+      store,
+      graphTheme: defaultTheme,
+      getViewportRows: () => 32,
+      onPromptResolve: (runId, promptId, response) => {
+        resolved.push({ runId, promptId, response });
+      },
+    });
+
+    const beforePan = visibleText(view.render(48));
+    assert.equal(view.handleInput("\x1b[<67;10;10M"), true);
+    const afterPan = visibleText(view.render(48));
+    assert.ok(view._graphScrollColOffset > 0);
+    assert.notEqual(afterPan, beforePan);
+    assert.deepEqual(resolved, []);
+
+    typeIntoView(view, "answer");
+    view.handleInput("\r");
+    assert.deepEqual(resolved, [
+      { runId: "run-1", promptId: "legacy-prompt", response: "answer" },
+    ]);
+    view.dispose();
   });
 
   it("render returns lines in overlay mode", () => {
     const stages = [makeStage("A"), makeStage("B", ["A"])];
     const view = makeView(stages);
-    const lines = view.render(80);
+    const lines = view.render(120);
     assert.equal(Array.isArray(lines), true);
     assert.ok(lines.length > 0);
-    view.dispose();
-  });
-
-  it("render shows orchestrator chrome and graph mode pill", () => {
-    const stages = [makeStage("A"), makeStage("B", ["A"])];
-    const view = makeView(stages);
-    const text = view.render(96).join("\n");
-    // Header pill carries the ORCHESTRATOR label in all caps.
-    assert.match(text, /ORCHESTRATOR/);
-    // Bottom statusline carries the GRAPH mode pill.
-    assert.match(text, /GRAPH/);
-    // Hints reflect the new vocabulary (navigate / attach / stages /
-    // detach / quit) rather than the legacy j\/k focus row.
-    assert.match(text, /navigate/);
-    assert.match(text, /attach/);
-    assert.match(text, /stages/);
-    assert.match(text, /detach/);
+    const text = visibleText(lines);
+    assert.match(text, /↵ open stage chat/);
+    assert.doesNotMatch(text, /↵ attach/);
     view.dispose();
   });
 
@@ -381,7 +426,7 @@ describe("GraphView keyboard navigation", () => {
     view.handleInput("\r");
     assert.deepEqual(onStageAttach.mock.calls[0], ["run-1", "question"]);
 
-    view.handleInput("\x04");
+    view.handleInput("\x18");
     assert.equal(detached, 1);
     view.dispose();
   });

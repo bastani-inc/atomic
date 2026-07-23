@@ -23,6 +23,7 @@ import type {
   StageSessionCreateOptions,
   StageSessionRuntime,
 } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
+import { unresolvedContextOverflowFailure } from "../../packages/workflows/src/runs/foreground/stage-runner-unresolved-overflow.js";
 
 interface FakeSessionConfig {
   /** Model object the session reports via `.model` (drives workflowModelId). */
@@ -69,14 +70,17 @@ function makeFakeStageSession(config: FakeSessionConfig): StageSessionRuntime {
     },
     async compact() {
       return {
-        promptVersion: 1,
+        compactedText: "[User]: retained",
+        firstKeptEntryId: "kept",
+        tokensBefore: 0,
+        promptVersion: 3,
         parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "auto-detected" },
-        deletedTargets: [],
-        protectedEntryIds: [],
+        rung: "planned" as const,
         stats: {
-          objectsBefore: 0,
-          objectsAfter: 0,
-          objectsDeleted: 0,
+          linesBefore: 0,
+          linesDeleted: 0,
+          linesKept: 0,
+          rangeCount: 0,
           tokensBefore: 0,
           tokensAfter: 0,
           percentReduction: 0,
@@ -95,7 +99,7 @@ function makeFakeStageSession(config: FakeSessionConfig): StageSessionRuntime {
 
 const A = { provider: "anthropic", id: "model-a" };
 const B = { provider: "anthropic", id: "model-b" };
-
+const C = { provider: "anthropic", id: "model-c" };
 interface CreateRecord {
   readonly model: unknown;
   readonly hasSessionManager: boolean;
@@ -197,6 +201,76 @@ describe("reattached follow-up resumes on the last working model (#1431 follow-u
     );
   });
 });
+describe("reattached context overflow resumes fallback after the restored tier", () => {
+  function threeCandidateOpts(
+    create: (options: StageSessionCreateOptions) => StageSessionRuntime,
+    createdWith: CreateRecord[],
+  ): StageRunnerOpts {
+    return {
+      stageId: "stage-overflow-resume",
+      stageName: "Reviewer",
+      runId: "run-overflow-resume",
+      stageOptions: {
+        model: "anthropic/model-a",
+        fallbackModels: ["anthropic/model-b", "anthropic/model-c"],
+      },
+      adapters: {
+        agentSession: {
+          async create(options: StageSessionCreateOptions) {
+            createdWith.push({ model: options?.model, hasSessionManager: options?.sessionManager !== undefined });
+            return create(options);
+          },
+        },
+      },
+    };
+  }
+
+  test("resumed middle-tier unresolved overflow advances to the next candidate", async () => {
+    const createdWith: CreateRecord[] = [];
+    const opts = threeCandidateOpts((options) => {
+      if ((options?.model as unknown) === undefined) {
+        return makeFakeStageSession({ model: B, promptError: unresolvedContextOverflowFailure("context exhausted") });
+      }
+      return makeFakeStageSession({ model: C });
+    }, createdWith);
+
+    const ctx = createStageContext(opts);
+    await ctx.__ensureSessionFromFile("/tmp/does-not-exist-overflow-middle.jsonl");
+    await ctx.prompt("follow up");
+    await ctx.__dispose();
+
+    assert.deepEqual(
+      createdWith.map((r) => r.model),
+      [undefined, "anthropic/model-c"],
+      "resumed overflow on model-b must continue with model-c, not replay model-a",
+    );
+    assert.deepEqual((ctx.__modelFallbackMeta().modelAttempts ?? []).map((a) => ({ model: a.model, success: a.success })), [
+      { model: "anthropic/model-b", success: false },
+      { model: "anthropic/model-c", success: true },
+    ]);
+  });
+
+  test("resumed final-tier unresolved overflow throws terminally without replaying primary", async () => {
+    const createdWith: CreateRecord[] = [];
+    const opts = threeCandidateOpts((options) => {
+      if ((options?.model as unknown) === undefined) {
+        return makeFakeStageSession({ model: C, promptError: unresolvedContextOverflowFailure("context exhausted") });
+      }
+      return makeFakeStageSession({ model: A });
+    }, createdWith);
+
+    const ctx = createStageContext(opts);
+    await ctx.__ensureSessionFromFile("/tmp/does-not-exist-overflow-final.jsonl");
+    await assert.rejects(() => ctx.prompt("follow up"), /context exhausted/);
+    await ctx.__dispose();
+
+    assert.deepEqual(createdWith.map((r) => r.model), [undefined], "final resumed overflow must not replay primary");
+    assert.deepEqual((ctx.__modelFallbackMeta().modelAttempts ?? []).map((a) => ({ model: a.model, success: a.success })), [
+      { model: "anthropic/model-c", success: false },
+    ]);
+  });
+});
+
 
 describe("live (retained-session) follow-up resumes on the settled model (#1431 follow-up)", () => {
   function liveOpts(

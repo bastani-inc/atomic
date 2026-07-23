@@ -49,6 +49,10 @@ describe("ralph", () => {    let tempCwd: string | undefined;
         return tempCwd;
     }
 
+    const approvingRalphReview = JSON.stringify({ findings: [], overall_correctness: "patch is correct", overall_explanation: "all requirements proven", overall_confidence_score: 0.9, requirements_traceability: [{ requirement: "complete requested task", status: "proven", evidence: "current state proves the task" }], stop_review_loop: true, reviewer_error: null });
+
+    const approveReviewers = (name: string): string | undefined => name.startsWith("reviewer-") ? approvingRalphReview : undefined;
+
     function assertEveryRalphStageCwd(
         ctx: { readonly calls: MockCalls },
         expectedCwd: string | undefined,
@@ -260,7 +264,7 @@ describe("ralph", () => {    let tempCwd: string | undefined;
             base_branch: "main",
             git_worktree_dir: "",
             create_pr: true,
-        });
+        }, { task: approveReviewers });
 
         await mod.default.run({ ...ctx, cwd });
 
@@ -403,7 +407,7 @@ describe("ralph", () => {    let tempCwd: string | undefined;
             base_branch: "main",
             git_worktree_dir: "",
             create_pr: true,
-        });
+        }, { task: approveReviewers });
 
         const result = await mod.default.run({
             ...ctx,
@@ -455,7 +459,7 @@ describe("ralph", () => {    let tempCwd: string | undefined;
             base_branch: "main",
             git_worktree_dir: "",
             create_pr: true,
-        });
+        }, { task: approveReviewers });
 
         const result = await mod.default.run({
             ...ctx,
@@ -475,7 +479,7 @@ describe("ralph", () => {    let tempCwd: string | undefined;
             base_branch: "main",
             git_worktree_dir: "",
             create_pr: true,
-        });
+        }, { task: approveReviewers });
 
         await mod.default.run({ ...ctx, cwd: requireRalphTempCwd() });
 

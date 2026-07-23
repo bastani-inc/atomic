@@ -6,7 +6,7 @@
  *  - Mounts in graph mode by default.
  *  - Pressing Enter on a graph node swaps the interior to stage chat
  *    without remounting the popup.
- *  - Ctrl+D in chat mode swaps back to graph with the same focused
+ *  - Ctrl+X in chat mode swaps back to graph with the same focused
  *    stage id preserved.
  *  - When a `uiStatus.setStatus` surface is provided, attach/detach
  *    flips the `pi-workflows` tag through `<workflow>/<stage>`.
@@ -350,7 +350,7 @@ describe("WorkflowAttachPane", () => {
         pane.dispose();
     });
 
-    test("editor prompt drafts survive Ctrl+D detach and reattach", async () => {
+    test("editor prompt drafts survive Ctrl+X detach and reattach", async () => {
         const store = createStore();
         setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
         const registry = createStageControlRegistry();
@@ -389,7 +389,7 @@ describe("WorkflowAttachPane", () => {
         assert.equal(pane._mode, "stage-chat");
         assert.equal(editors.at(-1)?.getText(), "seed");
         for (const ch of "-draft") pane.handleInput(ch);
-        pane.handleInput(Key.ctrl("d"));
+        pane.handleInput(Key.ctrl("x"));
 
         assert.equal(pane._mode, "graph");
         assert.equal(store.getStagePromptDraft("run-1", "stage-a", prompt.id), "seed-draft");

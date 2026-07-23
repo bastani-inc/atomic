@@ -6,7 +6,7 @@
 import type {
   AgentSession,
   AgentSessionEvent,
-  ContextCompactionResult,
+  VerbatimCompactionResult,
   CreateAgentSessionOptions,
   ModelCycleResult,
   PromptOptions,
@@ -19,7 +19,7 @@ import type * as AuthoringContract from "./authoring-contract.js";
 
 export type { TSchema };
 
-export type { AgentSessionEvent, ContextCompactionResult, ModelCycleResult, PromptOptions };
+export type { AgentSessionEvent, VerbatimCompactionResult, ModelCycleResult, PromptOptions };
 
 export type StageUserMessageContent = Parameters<AgentSession["sendUserMessage"]>[0];
 
@@ -191,6 +191,8 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
   resumeFromSessionFile?: string;
   /** Internal durable replay key used to map a live LM session to durable resume state. */
   durableReplayKey?: string;
+  /** Internal durable timing baseline accumulated before a process-boundary resume. */
+  durableAccumulatedDurationMs?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -214,6 +216,8 @@ export interface StageExecutionMeta {
   signal?: AbortSignal;
   /** Runtime execution mode for policy-aware child sessions. */
   executionMode?: WorkflowExecutionMode;
+  /** Internal stage-generation context reused across model-fallback sessions. */
+  orchestrationContext?: CreateAgentSessionOptions["orchestrationContext"];
 }
 
 export interface CompleteStageOpts extends WorkflowModelFallbackFields {
@@ -287,12 +291,6 @@ export type WorkflowAction = AuthoringContract.WorkflowAction;
 export type WorkflowDetails = Mutable<AuthoringContract.WorkflowDetails>;
 export type WorkflowTaskSessionFields = Mutable<AuthoringContract.WorkflowTaskSessionFields>;
 export type WorkflowTaskSessionOptions = StageOptions & WorkflowTaskSessionFields;
-export interface WorkflowDirectTaskItem extends WorkflowTaskOptions, Omit<Mutable<AuthoringContract.WorkflowDirectTaskItem>, keyof AuthoringContract.WorkflowTaskOptions> {}
-export interface WorkflowParallelChainStep extends Omit<AuthoringContract.WorkflowParallelChainStep, "parallel"> {
-  readonly parallel: readonly WorkflowDirectTaskItem[];
-}
-export type WorkflowChainStep = WorkflowDirectTaskItem | WorkflowParallelChainStep;
-export interface WorkflowDirectOptions extends StageOptions, Omit<Mutable<AuthoringContract.WorkflowDirectOptions>, keyof AuthoringContract.StageOptions> {}
 
 // ---------------------------------------------------------------------------
 // Stage context (provided to ctx.stage() calls)
@@ -352,7 +350,7 @@ export interface StageContext<TSchemaDef extends TSchema | undefined = undefined
   ): Promise<{ editorText?: string; cancelled: boolean }>;
 
   /** Compaction. */
-  compact(): Promise<ContextCompactionResult>;
+  compact(): Promise<VerbatimCompactionResult>;
   abortCompaction(): void;
 
   /** Abort current operation. */

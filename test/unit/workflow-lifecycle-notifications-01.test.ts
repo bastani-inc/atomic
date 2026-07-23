@@ -111,7 +111,7 @@ describe("installWorkflowLifecycleNotifications", () => {
     store.recordNotice({ id: "nudge", level: "info", message: "force notify", createdAt: 3 });
 
     assert.equal(sent.length, 1);
-    assert.deepEqual(options, [{ triggerTurn: true, deliverAs: "steer" }]);
+    assert.deepEqual(options, [{ triggerTurn: true, deliverAs: "steer", persistWhenStreaming: true }]);
     assert.equal(sent[0]?.customType, LIFECYCLE_NOTICE_CUSTOM_TYPE);
     assert.equal(sent[0]?.display, true);
     assert.equal(sent[0]?.details?.kind, "completed");
@@ -132,6 +132,51 @@ describe("installWorkflowLifecycleNotifications", () => {
     assert.equal(sent[0]?.details?.error, "checks are still pending");
     assert.match(sent[0]?.content ?? "", /ended blocked.*checks are still pending/u);
     assert.doesNotMatch(sent[0]?.content ?? "", /✓/u);
+  });
+
+  test("uses blocked lifecycle notices for legacy completed runs whose returned status needs human", () => {
+    const { store, sent } = install();
+    startRun(store, "run-needs-human", "goal");
+
+    assert.equal(store.recordRunEnd("run-needs-human", "completed", {
+      status: "needs_human",
+      remaining_work: "Worker failed before producing a receipt: No API key for provider: github-copilot",
+    }), true);
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0]?.details?.kind, "blocked");
+    assert.equal(sent[0]?.details?.status, "blocked");
+    assert.match(sent[0]?.details?.error ?? "", /No API key for provider: github-copilot/u);
+    assert.doesNotMatch(sent[0]?.content ?? "", /completed/u);
+    assert.match(sent[0]?.content ?? "", /ended blocked.*No API key for provider: github-copilot/u);
+  });
+
+  test("uses blocked lifecycle notices for structured recoverable stage failures without returned status", () => {
+    const { store, sent } = install();
+    startRun(store, "run-structured-auth", "goal");
+    const failure = { failureKind: "auth" as const, failureCode: "missing_api_key" as const, failureRecoverability: "recoverable" as const, failureDisposition: "active_blocked" as const, failureMessage: "No API key for provider: github-copilot" };
+    const reviewer = runningStage({ id: "reviewer-a", name: "reviewer-a" });
+    store.recordStageStart("run-structured-auth", reviewer);
+    store.recordStageEnd("run-structured-auth", {
+      ...reviewer,
+      ...failure,
+      status: "failed",
+      error: "A required model provider API key is missing. Configure the provider credentials and resume the workflow.",
+      endedAt: 2,
+    });
+
+    assert.equal(store.recordRunEnd("run-structured-auth", "completed", { remaining_work: "Reviewer execution failed" }, undefined, {
+      ...failure,
+      failedStageId: "reviewer-a",
+      resumable: true,
+    }), true);
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0]?.details?.kind, "blocked");
+    assert.equal(sent[0]?.details?.status, "blocked");
+    assert.match(sent[0]?.details?.error ?? "", /No API key for provider: github-copilot/u);
+    assert.doesNotMatch(sent[0]?.content ?? "", /completed/u);
+    assert.match(sent[0]?.content ?? "", /ended blocked.*No API key for provider: github-copilot/u);
   });
 
   test("includes ctx.exit blocked reasons in lifecycle notices", () => {
@@ -180,7 +225,7 @@ describe("installWorkflowLifecycleNotifications", () => {
     assert.equal(store.recordRunEnd("run-2", "failed", undefined, longError, { failedStageId: "stage-2" }), true);
 
     assert.equal(sent.length, 1);
-    assert.deepEqual(options, [{ triggerTurn: true, deliverAs: "steer" }]);
+    assert.deepEqual(options, [{ triggerTurn: true, deliverAs: "steer", persistWhenStreaming: true }]);
     assert.equal(sent[0]?.details?.kind, "failed");
     assert.equal(sent[0]?.details?.stageName, "publish");
     assert.equal(sent[0]?.details?.error?.length, LIFECYCLE_NOTICE_SNIPPET_LIMIT);

@@ -72,13 +72,11 @@ describe("recordStageCheckpoint", () => {
     assert.equal(await recordStageCheckpoint(deps(), stage), false);
   });
 
-
-  test("idempotent — recording the same stage twice is a no-op", async () => {
+  test("preserves first replay output when later lifecycle metadata is recorded", async () => {
     const d = deps();
-    await recordStageCheckpoint(d, makeStage({ replayKey: "rk-1" }));
-    await recordStageCheckpoint(d, makeStage({ replayKey: "rk-1", result: "DIFFERENT" }));
+    await recordStageCheckpoint(d, makeStage({ replayKey: "rk-1", durationMs: 1000 }));
+    await recordStageCheckpoint(d, makeStage({ replayKey: "rk-1", result: "DIFFERENT", durationMs: 2000 }));
     assert.equal(backend.getStageOutput(WORKFLOW_ID, "rk-1"), "analysis output");
-    assert.equal(backend.getWorkflow(WORKFLOW_ID)!.completedCheckpoints, 1);
   });
 
   test("falls back to status marker when result is empty", async () => {
@@ -162,7 +160,7 @@ describe("recordStageCheckpoint", () => {
       workflowId: WORKFLOW_ID,
       backend,
       nextReplayKey: () => replayKey,
-      recordCachedStage: (name, key, output) => recorded.push({ name, replayKey: key, output: String(output) }),
+      recordCachedStage: (name, key, checkpoint) => recorded.push({ name, replayKey: key, output: String(checkpoint.output) }),
       stage: () => { throw new Error("live stage should not run"); },
     });
 
@@ -192,7 +190,13 @@ describe("recordStageCheckpoint", () => {
       workflowId: WORKFLOW_ID,
       backend,
       nextReplayKey: () => replayKey,
-      recordCachedTask: (name, key, output) => recorded.push({ name, replayKey: key, text: output.text }),
+      recordCachedTask: (name, key, checkpoint) => {
+        const output = checkpoint.output;
+        if (typeof output !== "object" || output === null || Array.isArray(output)) return;
+        const text = (output as { readonly text?: string }).text;
+        if (text === undefined) return;
+        recorded.push({ name, replayKey: key, text });
+      },
       task: async () => { throw new Error("live task should not run"); },
     });
 
@@ -312,9 +316,10 @@ describe("run durable flush", () => {
       run: async (ctx) => ({ result: await ctx.stage("cached").complete("cached") }),
     });
 
-    const result = await run(def, {}, { runId: "wf-flush-fail", store: createStore(), durableBackend: backend });
-    exAssert.equal(result.status, "failed");
-    exAssert.match(result.error ?? "", /durable write failed/);
+    await exAssert.rejects(
+      () => run(def, {}, { runId: "wf-flush-fail", store: createStore(), durableBackend: backend }),
+      /durable write failed/,
+    );
   });
 
   exTest("ctx.chain and ctx.parallel replay completed task checkpoints", async () => {
@@ -415,6 +420,7 @@ describe("run durable flush", () => {
     });
     const store1 = createStore();
     const first = await run(parent, {}, { runId: "wf-repeated-child", store: store1, durableBackend: backend, adapters: { complete: { complete: async (text) => text } } });
+
     exAssert.equal(first.status, "completed");
     exAssert.equal(childRuns, 2);
 

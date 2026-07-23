@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import chalk from "chalk";
 import { getAgentDir, getAgentDirs } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
@@ -39,6 +39,20 @@ function loadContextFileFromDir(dir: string): { path: string; content: string } 
 	return null;
 }
 
+export function getAncestorDirectories(
+	startDir: string,
+	parentOf: (path: string) => string = dirname,
+): string[] {
+	const directories: string[] = [];
+	let currentDir = startDir;
+	while (true) {
+		directories.push(currentDir);
+		const parentDir = parentOf(currentDir);
+		if (parentDir === currentDir) return directories;
+		currentDir = parentDir;
+	}
+}
+
 export function loadProjectContextFiles(options: {
 	cwd: string;
 	agentDir: string;
@@ -66,21 +80,12 @@ export function loadProjectContextFiles(options: {
 		return contextFiles;
 	}
 
-	let currentDir = resolvedCwd;
-	const root = resolve("/");
-
-	while (true) {
+	for (const currentDir of getAncestorDirectories(resolvedCwd)) {
 		const contextFile = loadContextFileFromDir(currentDir);
 		if (contextFile && !seenPaths.has(contextFile.path)) {
 			ancestorContextFiles.unshift(contextFile);
 			seenPaths.add(contextFile.path);
 		}
-
-		if (currentDir === root) break;
-
-		const parentDir = resolve(currentDir, "..");
-		if (parentDir === currentDir) break;
-		currentDir = parentDir;
 	}
 
 	contextFiles.push(...ancestorContextFiles);

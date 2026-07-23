@@ -6,7 +6,7 @@ import { Container, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { spawn } from "child_process";
 import { type Static, Type } from "typebox";
 import { APP_NAME } from "../../config.ts";
-import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
+import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.ts";
 import { truncateToVisualLines } from "../../modes/interactive/components/visual-truncate.ts";
 import { theme } from "../../modes/interactive/theme/theme.ts";
 import { waitForChildProcess } from "../../utils/child-process.ts";
@@ -31,6 +31,13 @@ const bashBaseSchema = Type.Object({ command: Type.String({ description: "Shell 
 const bashSchema = Type.Object({ ...bashBaseSchema.properties, async: Type.Optional(Type.Boolean({ description: "Run as a background job." })) }, { additionalProperties: false });
 export type BashToolInput = Static<typeof bashSchema>;
 export interface BashToolDetails { truncation?: TruncationResult; fullOutputPath?: string; exitCode?: number | null; async?: { jobId: string; type: "bash"; state: "running" | "completed" | "failed"; command?: string; status?: "running" | "completed" | "failed" }; timeoutSeconds?: number; requestedTimeoutSeconds?: number; wallTimeMs?: number }
+const DEFAULT_TIMEOUT_SECONDS = 300, MAX_TIMEOUT_SECONDS = 3600;
+function validateExplicitTimeoutSeconds(timeout: number): void { if (!Number.isFinite(timeout) || timeout <= 0 || timeout > MAX_TIMEOUT_SECONDS) throw new Error(`Invalid timeout ${String(timeout)}: timeout must be a finite number greater than 0 and no more than ${MAX_TIMEOUT_SECONDS} seconds`); }
+function normalizeTimeoutSeconds(timeout: number | undefined): number {
+	if (timeout === undefined) return DEFAULT_TIMEOUT_SECONDS;
+	validateExplicitTimeoutSeconds(timeout); return Math.max(1, Math.floor(timeout));
+}
+
 export interface BashOperations {
 	exec: (
 		command: string,
@@ -47,6 +54,8 @@ export interface BashOperations {
 export function createLocalBashOperations(options?: { shellPath?: string }): BashOperations {
 	return {
 		exec: async (command, cwd, { onData, signal, timeout, env, pty }) => {
+			if (timeout !== undefined) validateExplicitTimeoutSeconds(timeout);
+
 			if (pty && process.env.PI_NO_PTY !== "1" && process.env.ATOMIC_NO_PTY !== "1") {
 				try { return await executeNativePty(command, cwd, { onData, signal, timeout, env, shellPath: options?.shellPath }); }
 				catch (error) { const message = String(error instanceof Error ? error.message : error); if (!message.includes("Native PTY") && !message.includes("PtySession")) throw error; }
@@ -137,13 +146,6 @@ export interface BashToolOptions {
 	asyncJobSessionId?: symbol;
 }
 const BASH_PREVIEW_LINES = 5, BASH_UPDATE_THROTTLE_MS = 100;
-const DEFAULT_TIMEOUT_SECONDS = 300;
-const MIN_TIMEOUT_SECONDS = 1;
-const MAX_TIMEOUT_SECONDS = 3600;
-function normalizeTimeoutSeconds(timeout: number | undefined): number {
-	if (timeout === undefined || !Number.isFinite(timeout)) return DEFAULT_TIMEOUT_SECONDS;
-	return Math.max(MIN_TIMEOUT_SECONDS, Math.min(MAX_TIMEOUT_SECONDS, Math.floor(timeout)));
-}
 function bashResultToToolResult(result: BashResult): { content: Array<{ type: "text"; text: string }>; details: BashToolDetails | undefined } {
 	const details: BashToolDetails | undefined = result.truncated ? { fullOutputPath: result.fullOutputPath } : undefined;
 	const status = result.cancelled ? "Command aborted" : result.exitCode && result.exitCode !== 0 ? `Command exited with code ${result.exitCode}` : undefined;
@@ -222,9 +224,7 @@ function rebuildBashResultRenderComponent(
 						state.cachedWidth = width;
 					}
 					if (state.cachedSkipped && state.cachedSkipped > 0) {
-						const hint =
-							theme.fg("muted", `... (${state.cachedSkipped} earlier lines,`) +
-							` ${keyHint("app.tools.expand", "Expand")}${theme.fg("muted", ")")}`;
+						const hint = theme.fg("muted", "... ") + parenthesizedKeyHint("app.tools.expand", "Expand", `${state.cachedSkipped} earlier lines`);
 						return ["", truncateToWidth(hint, width, "..."), ...(state.cachedLines ?? [])];
 					}
 					return ["", ...(state.cachedLines ?? [])];

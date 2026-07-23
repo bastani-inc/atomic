@@ -3,7 +3,11 @@ import { APP_NAME, CONFIG_DIR_NAME } from "./config.ts";
 
 export type PackageCommand = "install" | "remove" | "update" | "list";
 
-export type UpdateTarget = { type: "all" } | { type: "self" } | { type: "extensions"; source?: string };
+export type UpdateTarget =
+	| { type: "all" }
+	| { type: "self" }
+	| { type: "extensions"; source?: string }
+	| { type: "models" };
 
 interface PackageCommandOptions {
 	command: PackageCommand;
@@ -27,7 +31,7 @@ export function getPackageCommandUsage(command: PackageCommand): string {
 		case "remove":
 			return `${APP_NAME} remove <source> [-l] [--approve|--no-approve]`;
 		case "update":
-			return `${APP_NAME} update [source|self|${APP_NAME}] [--self|--extensions|--all] [--extension <source>] [--approve|--no-approve] [--force]`;
+			return `${APP_NAME} update [source|self|${APP_NAME}] [--self|--extensions|--models|--all] [--extension <source>] [--approve|--no-approve] [--force]`;
 		case "list":
 			return `${APP_NAME} list [--approve|--no-approve]`;
 	}
@@ -78,11 +82,12 @@ Examples:
 			console.log(`${chalk.bold("Usage:")}
   ${getPackageCommandUsage("update")}
 
-Update ${APP_NAME} and installed packages.
+Update ${APP_NAME}, installed packages, or model catalogs.
 
 Options:
   --self                  Update ${APP_NAME} only (default when no target is given)
   --extensions            Update installed packages only
+  --models                Force-refresh configured provider model catalogs only
   --all                   Update ${APP_NAME} and installed packages
   --extension <source>    Update one package only
   -a, --approve           Trust project-local files for this command
@@ -92,6 +97,7 @@ Options:
 Short forms:
   ${APP_NAME} update                Update ${APP_NAME} only
   ${APP_NAME} update --all          Update ${APP_NAME} and all extensions
+  ${APP_NAME} update --models       Force-refresh configured provider model catalogs
   ${APP_NAME} update <source>       Update one package
   ${APP_NAME} update ${APP_NAME}    Update ${APP_NAME} only (self works as an alias)
 `);
@@ -134,6 +140,7 @@ export function parsePackageCommand(args: string[]): PackageCommandOptions | und
 	let source: string | undefined;
 	let selfFlag = false;
 	let extensionsFlag = false;
+	let modelsFlag = false;
 	let allFlag = false;
 	let extensionFlagSource: string | undefined;
 
@@ -168,6 +175,12 @@ export function parsePackageCommand(args: string[]): PackageCommandOptions | und
 			} else {
 				invalidOption = invalidOption ?? arg;
 			}
+			continue;
+		}
+
+		if (arg === "--models") {
+			if (command === "update") modelsFlag = true;
+			else invalidOption = invalidOption ?? arg;
 			continue;
 		}
 
@@ -233,15 +246,22 @@ export function parsePackageCommand(args: string[]): PackageCommandOptions | und
 	let updateTarget: UpdateTarget | undefined;
 	let showExtensionsSkippedNote = false;
 	if (command === "update") {
-		if (allFlag && (selfFlag || extensionsFlag || extensionFlagSource)) {
+		if (allFlag && (selfFlag || extensionsFlag || modelsFlag || extensionFlagSource)) {
 			conflictingOptions =
-				conflictingOptions ?? "--all cannot be combined with --self, --extensions, or --extension";
+				conflictingOptions ?? "--all cannot be combined with --self, --extensions, --models, or --extension";
 		}
 		if (allFlag && source) {
 			conflictingOptions = conflictingOptions ?? "--all cannot be combined with a positional source";
 		}
 
-		if (extensionFlagSource) {
+		if (modelsFlag) {
+			if (selfFlag || extensionsFlag || allFlag || extensionFlagSource) {
+				conflictingOptions =
+					conflictingOptions ?? "--models cannot be combined with --self, --extensions, --all, or --extension";
+			}
+			if (source) conflictingOptions = conflictingOptions ?? "--models cannot be combined with a positional source";
+			updateTarget = { type: "models" };
+		} else if (extensionFlagSource) {
 			if (selfFlag || extensionsFlag || allFlag) {
 				conflictingOptions =
 					conflictingOptions ?? "--extension cannot be combined with --self, --extensions, or --all";

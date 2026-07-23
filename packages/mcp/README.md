@@ -65,7 +65,11 @@ Precedence is:
 3. `.mcp.json`
 4. `.pi/mcp.json`
 
-Servers are **lazy by default** — they won't connect until you actually call one of their tools. The adapter caches tool metadata so search and describe work without live connections.
+Servers are **lazy by default** — they won't connect until you actually call one of their tools. The adapter caches tool metadata so search and describe work without live connections when a valid cache exists; on a cold cache, explicit proxy search/describe/server-list requests may connect lazy server(s) once to hydrate metadata on demand. `describe` narrows cold-cache hydration to an explicitly requested server or the server identified by the configured tool-name prefix before falling back to broader discovery. Unscoped `search` intentionally hydrates every configured lazy server that lacks cached metadata so the search can see all available tools.
+
+MCP startup and first-use calls share one initialization attempt per session. If background initialization fails, the next proxy, direct-tool, `/mcp`, or `/mcp-auth` use retries it; concurrent callers join that retry rather than starting duplicates, and a stale attempt cannot publish after session shutdown or context disposal. Replacement sessions normally wait for retired initialization, state, and OAuth cleanup; teardown uses a finite deadline so a non-abortable SDK producer cannot permanently block later sessions, while late settlement stays observed and fenced from publication. Shared lazy server connections and auto-authentication flows use the same caller-local cancellation rule: a pre-cancelled call starts nothing, while cancelling one waiter promptly rejects that call with its exact host reason without cancelling the producer needed by surviving callers. Session restart/shutdown deterministically rejects retired OAuth callers with retry guidance and clears old ownership before replacement authentication begins. Direct tools, proxy modes, metadata hydration, and readiness-critical commands revalidate the exact session lease after lifecycle-spanning waits and before SDK calls or state mutation; a UI runtime produced after caller cancellation is closed rather than orphaned. Direct and proxy resource/tool requests still forward the call's abort signal to the MCP SDK; protocol-level remote cancellation remains advisory.
+
+For MCP Apps tools, host cancellation sends one terminal `tool-cancelled` event after tool input and before session teardown, then rejects with the exact host abort reason even when the SDK wraps cancellation or the browser notification fails. A successful `tool-result` is mutually exclusive with that cancellation event. Non-UI tools and resource reads do not participate in the Apps lifecycle.
 
 ```
 mcp({ search: "screenshot" })
@@ -110,7 +114,8 @@ Pi-specific files are the write targets for imported or shared global servers wh
       "command": "npx",
       "args": ["-y", "some-mcp-server"],
       "lifecycle": "lazy",
-      "idleTimeout": 10
+      "idleTimeout": 10,
+      "timeoutMs": 30000
     }
   }
 }
@@ -129,14 +134,17 @@ Pi-specific files are the write targets for imported or shared global servers wh
 | `bearerToken` / `bearerTokenEnv` | Token or env var name; `bearerToken` supports `${VAR}` and `$env:VAR` interpolation |
 | `lifecycle` | `"lazy"` (default), `"eager"`, or `"keep-alive"` |
 | `idleTimeout` | Minutes before idle disconnect (overrides global) |
+| `timeoutMs` | Per-tool-call inactivity timeout in milliseconds for local or remote servers; omit to use the MCP SDK default |
 | `exposeResources` | Expose MCP resources as tools (default: true) |
 | `directTools` | `true`, `string[]`, or `false` — register tools individually instead of through proxy |
 | `excludeTools` | `string[]` of tool names to hide (matches original names like `get_screenshot` and prefixed names like `figma_get_screenshot`) |
 | `debug` | Show server stderr (default: false) |
 
+`timeoutMs` is an **inactivity timeout**, not a total wall-clock limit. Each MCP progress notification resets the timer, so a tool that continues reporting progress can run indefinitely. The value must be a finite number greater than zero; invalid values produce a configuration error when the MCP config loads.
+
 ### Lifecycle Modes
 
-- **`lazy`** (default) — Don't connect at startup. Connect on first tool call. Disconnect after idle timeout. Cached metadata keeps search/list working without connections.
+- **`lazy`** (default) — Don't connect at startup. Connect on first tool call or explicit cold-cache proxy metadata request (`search`, `describe`, or `server` list). Disconnect after idle timeout. Cached metadata keeps search/list working without connections.
 - **`eager`** — Connect at startup but don't auto-reconnect if the connection drops. No idle timeout by default (set `idleTimeout` explicitly to enable).
 - **`keep-alive`** — Connect at startup. Auto-reconnect via health checks. No idle timeout. Use for servers you always need available.
 
@@ -232,7 +240,7 @@ To exclude specific tools while still using `directTools: true`, add `excludeToo
 
 Each direct tool costs ~150-300 tokens in the system prompt (name + description + schema). Good for targeted sets of 5-20 tools. For servers with 75+ tools, stick with the proxy or pick specific tools with a `string[]`.
 
-Direct tools register from the metadata cache in the Pi agent dir (`~/.pi/agent/mcp-cache.json` by default, or `$PI_CODING_AGENT_DIR/mcp-cache.json` when set), so no server connections are needed at startup. On the first session after adding `directTools` to a new server, the cache won't exist yet — tools fall back to proxy-only and the cache populates in the background. To force it: `/mcp reconnect <server>`.
+Direct tools register from the metadata cache in the Pi agent dir (`~/.pi/agent/mcp-cache.json` by default, or `$PI_CODING_AGENT_DIR/mcp-cache.json` when set), so no server connections are needed at startup when the cache is warm. On the first session after adding `directTools` to a new server, or when a child/subagent selects tools through `MCP_DIRECT_TOOLS`, the cache may not exist yet — tools fall back to proxy-only while the selected/configured direct-tool servers populate in the background, then the extension refreshes tool registration so the warmed direct tools become available in the current session. To force it immediately: `/mcp reconnect <server>`.
 
 When you change direct-tool toggles in `/mcp` or write new config through `/mcp setup`, the extension triggers Pi's normal reload flow automatically. That refreshes extensions, prompts, skills, and MCP tool registration in one shot, so newly configured direct tools can appear without a manual restart.
 
@@ -332,7 +340,7 @@ Prefer `.mcp.json` for project-local shared MCP config. Use `.pi/mcp.json` only 
 | Connect | `mcp({ connect: "server-name" })` |
 | UI messages | `mcp({ action: "ui-messages" })` |
 
-MCP proxy and direct-tool results render compactly by default: long text shows the first three lines plus a `CTRL+O Expand` hint, while the full result remains available when expanded and is still returned unchanged to the model.
+MCP proxy and direct-tool results render compactly by default: long text shows the first three lines plus a `ctrl+o Expand` hint, while the full result remains available when expanded and is still returned unchanged to the model.
 
 Search includes both MCP tools and Pi tools (from extensions). Pi tools appear first with `[pi tool]` prefix. Space-separated words are OR'd.
 
@@ -358,8 +366,8 @@ In interactive sessions, you can also authenticate from `/mcp` with `CTRL+A` or 
 ## How It Works
 
 - One `mcp` tool in context (~200 tokens) instead of hundreds
-- Servers are lazy by default — they connect on first tool call, not at startup
-- Tool metadata is cached to disk so search/list/describe work without live connections
+- Servers are lazy by default — they connect on first tool call or explicit cold-cache proxy metadata request, not at startup
+- Tool metadata is cached to disk so search/list/describe work without live connections when the cache is valid; cold-cache explicit search/describe/server-list requests hydrate metadata on demand
 - Idle servers disconnect after 10 minutes (configurable), reconnect automatically on next use
 - npx-based servers resolve to direct binary paths, skipping the ~143 MB npm parent process
 - MCP server validates arguments, not the adapter

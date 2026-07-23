@@ -64,7 +64,11 @@ describe("AsyncJobManager", () => {
 		expect(captured[0]?.message.customType).toBe("async-job-result");
 		expect(captured[0]?.message.display).toBe(true);
 		expect(captured[0]?.message.content).toContain("session done");
-		expect(captured[0]?.options).toEqual({ deliverAs: "followUp", triggerTurn: true });
+		expect(captured[0]?.options).toEqual({
+			deliverAs: "followUp",
+			triggerTurn: true,
+			stageAdmissionKey: `async-job:${captured[0]?.message.details.jobId}`,
+		});
 	});
 
 	it("routes shared singleton jobs to the session that started each job", async () => {
@@ -123,7 +127,7 @@ describe("AsyncJobManager", () => {
 		expect(AsyncJobManager.instance()).toBeUndefined();
 	});
 
-	it("releases disposed non-owner streaming handlers without blocking other sessions", async () => {
+	it("preserves a streaming delivery admitted before its session is disposed without blocking other sessions", async () => {
 		const staleCaptured: CapturedCustomMessage[] = [];
 		const liveCaptured: CapturedCustomMessage[] = [];
 		const ownerSession = createCapturedSession([]);
@@ -141,18 +145,18 @@ describe("AsyncJobManager", () => {
 		});
 
 		await makeBash("stale", staleHandle, staleSession).execute("bash-stale", { command: "echo stale", async: true });
-		await waitFor(() => staleHandle.manager.deliveryState().delivering === true || staleHandle.manager.deliveryState().queued === 0);
+		await waitFor(() => staleCaptured.length === 1);
 		disposeSessionAsyncJobManager(staleHandle.manager, staleHandle.sessionId);
 		await waitFor(() => staleHandle.manager.deliveryState().delivering === false);
 		await makeBash("live", liveHandle, liveSession).execute("bash-live", { command: "echo live", async: true });
 
 		await waitFor(() => liveCaptured.length === 1);
-		expect(staleCaptured).toHaveLength(0);
+		expect(staleCaptured[0]?.message.content).toContain("stale");
 		expect(liveCaptured[0]?.message.content).toContain("live");
 		expect(ownerHandle.manager.disposed).toBe(false);
 		disposeSessionAsyncJobManager(ownerHandle.manager, ownerHandle.sessionId);
 		disposeSessionAsyncJobManager(liveHandle.manager, liveHandle.sessionId);
-		expect(ownerHandle.manager.disposed).toBe(true);
+		await waitFor(() => ownerHandle.manager.disposed);
 	});
 
 	it("does not let one live streaming session block unrelated async delivery", async () => {
@@ -173,11 +177,11 @@ describe("AsyncJobManager", () => {
 		});
 
 		await makeBash("streaming blocks", streamingHandle, streamingSession).execute("bash-streaming-blocker", { command: "echo streaming blocks", async: true });
-		await waitFor(() => streamingHandle.manager.deliveryState().delivering === true);
+		await waitFor(() => streamingCaptured.length === 1);
 		await makeBash("live proceeds", liveHandle, liveSession).execute("bash-live-proceeds", { command: "echo live proceeds", async: true });
 
 		await waitFor(() => liveCaptured.length === 1);
-		expect(streamingCaptured).toHaveLength(0);
+		expect(streamingCaptured[0]?.message.content).toContain("streaming blocks");
 		expect(liveCaptured[0]?.message.content).toContain("live proceeds");
 		disposeSessionAsyncJobManager(streamingHandle.manager, streamingHandle.sessionId);
 		disposeSessionAsyncJobManager(liveHandle.manager, liveHandle.sessionId);
@@ -233,7 +237,7 @@ describe("AsyncJobManager", () => {
 		manager.dispose();
 	});
 
-	it("acknowledges completed jobs when polled before queued delivery runs", async () => {
+	it("polling after receipt does not duplicate an admitted delivery", async () => {
 		const delivered: AsyncJobDeliveryMessage[] = [];
 		const manager = new AsyncJobManager({ onJobComplete: (message) => { delivered.push(message); } });
 		let releaseExec: (() => void) | undefined;
@@ -246,19 +250,18 @@ describe("AsyncJobManager", () => {
 		const started = await bash.execute("bash-async", { command: "echo polled", async: true });
 		const jobId = requireJobId(started.details?.async?.jobId);
 		releaseExec?.();
-		await waitFor(() => manager.deliveryState().queued === 1);
+		await waitFor(() => delivered.length === 1);
 		const polled = await bash.execute("bash-poll", { command: `__atomic_bash_job ${jobId}` });
 		expect(text(polled)).toContain("polled");
 		expect(manager.isDeliverySuppressed(jobId)).toBe(true);
 		await new Promise((resolve) => setTimeout(resolve, 60));
-		expect(delivered).toHaveLength(0);
+		expect(delivered).toHaveLength(1);
 		manager.dispose();
 	});
 
-	it("drops a streaming-staged delivery when the job is acknowledged before the session boundary", async () => {
+	it("polling cannot retract a streaming delivery admitted at receipt", async () => {
 		const captured: CapturedCustomMessage[] = [];
-		let streaming = true;
-		const session = createCapturedSession(captured, { get isStreaming() { return streaming; } });
+		const session = createCapturedSession(captured, { isStreaming: true });
 		const manager = new AsyncJobManager({ onJobComplete: createSessionAsyncDeliveryHandler(session) });
 		const handler = createSessionAsyncDeliveryHandler(session, manager);
 		const bash = createBashToolDefinition(process.cwd(), {
@@ -269,15 +272,16 @@ describe("AsyncJobManager", () => {
 		});
 		const started = await bash.execute("bash-stream-stale", { command: "echo queued then polled", async: true });
 		const jobId = requireJobId(started.details?.async?.jobId);
-		await waitFor(async () => text(await bash.execute("bash-poll", { command: `__atomic_bash_job ${jobId}` })).includes("queued then polled"));
-		streaming = false;
+		await waitFor(() => captured.length === 1);
+		const polled = await bash.execute("bash-poll", { command: `__atomic_bash_job ${jobId}` });
+		expect(text(polled)).toContain("queued then polled");
 		await new Promise((resolve) => setTimeout(resolve, 60));
-		expect(captured).toHaveLength(0);
+		expect(captured).toHaveLength(1);
 		expect(manager.isDeliverySuppressed(jobId)).toBe(true);
 		manager.dispose();
 	});
 
-	it("settles delayed streaming delivery without sending after manager disposal", async () => {
+	it("a delivery admitted before manager disposal still settles exactly once", async () => {
 		const captured: CapturedCustomMessage[] = [];
 		const session = createCapturedSession(captured, { isStreaming: true });
 		const manager = new AsyncJobManager({ onJobComplete: () => undefined });
@@ -299,7 +303,7 @@ describe("AsyncJobManager", () => {
 
 		expect(settled).toBe(true);
 		expect(manager.disposed).toBe(true);
-		expect(captured).toHaveLength(0);
+		expect(captured).toHaveLength(1);
 	});
 	it("retries delivery failures", async () => {
 		const delivered: AsyncJobDeliveryMessage[] = [];
@@ -398,7 +402,7 @@ describe("AsyncJobManager", () => {
 		manager.dispose();
 	});
 
-	it("bounds retained jobs, suppressions, handlers, and queued deliveries", () => {
+	it("bounds retained jobs, suppressions, handlers, and queued deliveries", async () => {
 		const manager = new AsyncJobManager({ onJobComplete: () => undefined, maxRetainedJobs: 2, completedJobTtlMs: 60_000 });
 		const now = Date.now();
 		for (let index = 0; index < 4; index += 1) {
@@ -407,6 +411,7 @@ describe("AsyncJobManager", () => {
 			manager.completeBashJob(job);
 			manager.acknowledgeDeliveries([job.jobId]);
 		}
+		await waitFor(() => manager.retentionState().queued === 0);
 		expect(manager.retentionState()).toEqual({ jobs: 2, suppressions: 2, handlers: 0, queued: 0, sessions: 0 });
 		manager.dispose();
 	});

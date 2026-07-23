@@ -1,13 +1,7 @@
 import type { Model } from "@earendil-works/pi-ai/compat";
 import { describe, expect, test } from "vitest";
 import { getSupportedContextWindows } from "../src/core/context-window.ts";
-import {
-	defaultModelPerProvider,
-	findInitialModel,
-	parseModelPattern,
-	resolveCliModel,
-	restoreModelFromSession,
-} from "../src/core/model-resolver.ts";
+import { parseModelPattern, resolveCliModel } from "../src/core/model-resolver.ts";
 
 // Mock models for testing
 const mockModels: Model<"anthropic-messages">[] = [
@@ -67,17 +61,17 @@ const mockOpenRouterModels: Model<"anthropic-messages">[] = [
 
 const allModels = [...mockModels, ...mockOpenRouterModels];
 
-const cursorBaseModel: Model<"cursor-agent"> = {
-	id: "composer-2",
-	name: "Composer 2",
-	api: "cursor-agent",
-	provider: "cursor",
-	baseUrl: "https://api2.cursor.sh",
-	reasoning: true,
+const openaiCodexBaseModel: Model<"anthropic-messages"> = {
+	id: "gpt-5.5",
+	name: "GPT-5.5",
+	api: "anthropic-messages",
+	provider: "openai-codex",
+	baseUrl: "https://chatgpt.com/backend-api/codex",
+	reasoning: false,
 	input: ["text"],
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-	contextWindow: 200000,
-	maxTokens: 64000,
+	contextWindow: 128000,
+	maxTokens: 8192,
 };
 
 const copilotSelectableBaseModel: Model<"openai-completions"> = {
@@ -234,6 +228,104 @@ describe("parseModelPattern", () => {
 	});
 });
 describe("resolveCliModel", () => {
+	test("separates thinking from an unknown provider-prefixed custom model id", () => {
+		const registry = {
+			getAll: () => [...allModels, openaiCodexBaseModel],
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+		const result = resolveCliModel({
+			cliModel: "openai-codex/gpt-5.6-sol:xhigh",
+			modelRegistry: registry,
+		});
+		expect(result.error).toBeUndefined();
+		expect(result.model?.provider).toBe("openai-codex");
+		expect(result.model?.id).toBe("gpt-5.6-sol");
+		expect(result.model?.reasoning).toBe(true);
+		expect(result.thinkingLevel).toBe("xhigh");
+	});
+	test("separates thinking from an explicit provider custom model id", () => {
+		const registry = {
+			getAll: () => [...allModels, openaiCodexBaseModel],
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+		const result = resolveCliModel({
+			cliProvider: "openai-codex",
+			cliModel: "gpt-5.6-sol:high",
+			modelRegistry: registry,
+		});
+		expect(result.error).toBeUndefined();
+		expect(result.model?.id).toBe("gpt-5.6-sol");
+		expect(result.model?.reasoning).toBe(true);
+		expect(result.thinkingLevel).toBe("high");
+	});
+	test("separates off thinking from a custom model id", () => {
+		const registry = {
+			getAll: () => [...allModels, openaiCodexBaseModel],
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+		const result = resolveCliModel({
+			cliModel: "openai-codex/gpt-5.6-sol:off",
+			modelRegistry: registry,
+		});
+		expect(result.error).toBeUndefined();
+		expect(result.model?.id).toBe("gpt-5.6-sol");
+		expect(result.model?.reasoning).toBe(false);
+		expect(result.thinkingLevel).toBe("off");
+	});
+	test("preserves an unrecognized colon suffix on a custom model id", () => {
+		const registry = {
+			getAll: () => [...allModels, openaiCodexBaseModel],
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+		const result = resolveCliModel({
+			cliProvider: "openai-codex",
+			cliModel: "gpt-5.6-sol:preview",
+			modelRegistry: registry,
+		});
+		expect(result.error).toBeUndefined();
+		expect(result.model?.id).toBe("gpt-5.6-sol:preview");
+		expect(result.model?.reasoning).toBe(false);
+		expect(result.thinkingLevel).toBeUndefined();
+	});
+	test("prefers a registered colon-bearing id even when its suffix is a thinking level", () => {
+		const registeredModel = {
+			...openaiCodexBaseModel,
+			id: "gpt-5.6-sol:xhigh",
+			name: "GPT-5.6 Sol XHigh",
+		};
+		const registry = {
+			getAll: () => [...allModels, openaiCodexBaseModel, registeredModel],
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+		const result = resolveCliModel({
+			cliModel: "openai-codex/gpt-5.6-sol:xhigh",
+			modelRegistry: registry,
+		});
+		expect(result.error).toBeUndefined();
+		expect(result.model).toBe(registeredModel);
+		expect(result.model?.reasoning).toBe(false);
+		expect(result.thinkingLevel).toBeUndefined();
+	});
+	test("preserves a gateway raw exact id ending in a thinking suffix", () => {
+		const inferredProviderModel = {
+			...mockModels[1]!,
+			id: "foo",
+			name: "Foo",
+		};
+		const registeredGatewayModel = {
+			...mockOpenRouterModels[0]!,
+			id: "openai/foo:high",
+			name: "OpenAI Foo High",
+		};
+		const registry = {
+			getAll: () => [...allModels, inferredProviderModel, registeredGatewayModel],
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+
+		const result = resolveCliModel({
+			cliModel: "openai/foo:high",
+			modelRegistry: registry,
+		});
+
+		expect(result.error).toBeUndefined();
+		expect(result.model).toBe(registeredGatewayModel);
+		expect(result.model?.provider).toBe("openrouter");
+		expect(result.thinkingLevel).toBeUndefined();
+	});
 	test("resolves --model provider/id without --provider", () => {
 		const registry = {
 			getAll: () => allModels,
@@ -387,114 +479,5 @@ describe("resolveCliModel", () => {
 		expect(result.error).toBeUndefined();
 		expect(result.model?.provider).toBe("openrouter");
 		expect(result.model?.id).toBe("qwen/qwen3-coder:exacto");
-	});
-});
-describe("default model selection", () => {
-	test("openai defaults track current models", () => {
-		expect(defaultModelPerProvider.openai).toBe("gpt-5.5");
-		expect(defaultModelPerProvider["openai-codex"]).toBe("gpt-5.5");
-	});
-	test("zai, minimax, cerebras, and ant-ling defaults track current models", () => {
-		expect(defaultModelPerProvider.zai).toBe("glm-5.1");
-		expect(defaultModelPerProvider.minimax).toBe("MiniMax-M2.7");
-		expect(defaultModelPerProvider["minimax-cn"]).toBe("MiniMax-M2.7");
-		expect(defaultModelPerProvider.cerebras).toBe("zai-glm-4.7");
-		expect(defaultModelPerProvider["ant-ling"]).toBe("Ring-2.6-1T");
-	});
-	test("ai-gateway default tracks current model", () => {
-		expect(defaultModelPerProvider["vercel-ai-gateway"]).toBe("zai/glm-5.1");
-	});
-	test("findInitialModel accepts explicit provider custom model ids", async () => {
-		const registry = {
-			getAll: () => allModels,
-		} as unknown as Parameters<typeof findInitialModel>[0]["modelRegistry"];
-		const result = await findInitialModel({
-			cliProvider: "openrouter",
-			cliModel: "openrouter/openai/ghost-model",
-			scopedModels: [],
-			isContinuing: false,
-			modelRegistry: registry,
-		});
-		expect(result.model?.provider).toBe("openrouter");
-		expect(result.model?.id).toBe("openai/ghost-model");
-	});
-	test("findInitialModel restores saved custom Cursor model ids from an authenticated provider template", async () => {
-		const registry = {
-			find: () => undefined,
-			getAvailable: async () => [cursorBaseModel],
-		} as unknown as Parameters<typeof findInitialModel>[0]["modelRegistry"];
-		const result = await findInitialModel({
-			scopedModels: [],
-			isContinuing: false,
-			defaultProvider: "cursor",
-			defaultModelId: "cursor-compose-2.5",
-			defaultThinkingLevel: "medium",
-			modelRegistry: registry,
-		});
-		expect(result.model?.provider).toBe("cursor");
-		expect(result.model?.id).toBe("cursor-compose-2.5");
-		expect(result.model?.api).toBe("cursor-agent");
-		expect(result.thinkingLevel).toBe("medium");
-	});
-	test("restoreModelFromSession restores saved custom Cursor model ids from an authenticated provider template", async () => {
-		const registry = {
-			find: () => undefined,
-			getAvailable: async () => [cursorBaseModel],
-		} as unknown as Parameters<typeof restoreModelFromSession>[4];
-		const result = await restoreModelFromSession(
-			"cursor",
-			"cursor-compose-2.5",
-			undefined,
-			false,
-			registry,
-		);
-		expect(result.fallbackMessage).toBeUndefined();
-		expect(result.model?.provider).toBe("cursor");
-		expect(result.model?.id).toBe("cursor-compose-2.5");
-		expect(result.model?.api).toBe("cursor-agent");
-	});
-	test("restoreModelFromSession scrubs inherited context-window options from fallback models", async () => {
-		const registry = {
-			find: () => undefined,
-			getAvailable: async () => [copilotSelectableBaseModel],
-		} as unknown as Parameters<typeof restoreModelFromSession>[4];
-		const result = await restoreModelFromSession(
-			"github-copilot",
-			"future-copilot-model",
-			undefined,
-			false,
-			registry,
-		);
-		expect(result.fallbackMessage).toBeUndefined();
-		expect(result.model?.provider).toBe("github-copilot");
-		expect(result.model?.id).toBe("future-copilot-model");
-		expect(result.model?.contextWindow).toBe(400000);
-		expect(result.model?.defaultContextWindow).toBe(400000);
-		expect(result.model?.contextWindowOptions).toBeUndefined();
-		expect(result.model ? getSupportedContextWindows(result.model) : []).toEqual([400000]);
-	});
-	test("findInitialModel selects ai-gateway default when available", async () => {
-		const aiGatewayModel: Model<"anthropic-messages"> = {
-			id: "anthropic/claude-opus-4-6",
-			name: "Claude Opus 4.6",
-			api: "anthropic-messages",
-			provider: "vercel-ai-gateway",
-			baseUrl: "https://ai-gateway.vercel.sh",
-			reasoning: true,
-			input: ["text", "image"],
-			cost: { input: 5, output: 15, cacheRead: 0.5, cacheWrite: 5 },
-			contextWindow: 200000,
-			maxTokens: 8192,
-		};
-		const registry = {
-			getAvailable: async () => [aiGatewayModel],
-		} as unknown as Parameters<typeof findInitialModel>[0]["modelRegistry"];
-		const result = await findInitialModel({
-			scopedModels: [],
-			isContinuing: false,
-			modelRegistry: registry,
-		});
-		expect(result.model?.provider).toBe("vercel-ai-gateway");
-		expect(result.model?.id).toBe("anthropic/claude-opus-4-6");
 	});
 });

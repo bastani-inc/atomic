@@ -45,6 +45,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	private currentLoading = false;
 	private allLoading = false;
 	private allLoadSeq = 0;
+	private disposed = false;
 
 	private mode: "list" | "rename" = "list";
 	private renameInput = new Input();
@@ -89,6 +90,13 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			renameSession?: (sessionPath: string, currentName: string | undefined) => Promise<void>;
 			showRenameHint?: boolean;
 			keybindings?: KeybindingsManager;
+			/**
+			 * Rows to display in the first rendered frame before the async loader
+			 * resolves (e.g. cheap in-memory live workflow runs). Seeding lets the
+			 * selector mount and stay interactive while durable/on-disk rows load,
+			 * and keeps live rows visible if the loader later errors.
+			 */
+			initialSessions?: SessionInfo[];
 		},
 		currentSessionFilePath?: string,
 	) {
@@ -104,15 +112,21 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		this.canRename = !!renameSession;
 		this.header.setShowRenameHint(options?.showRenameHint ?? this.canRename);
 
-		// Create session list (starts empty, will be populated after load)
+		// Create the session list. Seed with any provided initial rows so the very
+		// first frame is populated (kept minimal/in-memory by the caller) while the
+		// async loader resolves the full catalog off the host hot path.
+		const initialSessions = options?.initialSessions;
 		this.sessionList = new SessionList(
-			[],
+			initialSessions ?? [],
 			false,
 			this.sortMode,
 			this.nameFilter,
 			this.keybindings,
 			currentSessionFilePath,
 		);
+		if (initialSessions !== undefined) {
+			this.currentSessions = initialSessions;
+		}
 
 		this.buildBaseLayout(this.sessionList);
 
@@ -268,6 +282,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		this.requestRender();
 
 		const onProgress = (loaded: number, total: number) => {
+			if (this.disposed) return;
 			if (scope !== this.scope) return;
 			if (seq !== undefined && seq !== this.allLoadSeq) return;
 			this.header.setProgress(loaded, total);
@@ -287,6 +302,9 @@ export class SessionSelectorComponent extends Container implements Focusable {
 				this.allLoading = false;
 			}
 
+			// Stale-result guards: ignore a resolved load after the selector was
+			// closed, the visible scope changed, or a newer all-scope load started.
+			if (this.disposed) return;
 			if (scope !== this.scope) return;
 			if (seq !== undefined && seq !== this.allLoadSeq) return;
 
@@ -304,6 +322,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 				this.allLoading = false;
 			}
 
+			if (this.disposed) return;
 			if (scope !== this.scope) return;
 			if (seq !== undefined && seq !== this.allLoadSeq) return;
 
@@ -311,7 +330,11 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			this.header.setLoading(false);
 			this.header.setStatusMessage({ type: "error", message: `Failed to load sessions: ${message}` }, 4000);
 
-			if (reason === "initial") {
+			// Only blank the list on the initial load when there is nothing already
+			// on screen. Seeded live rows must survive a loader failure so errors
+			// render inside the still-usable picker (contract §2).
+			const seeded = scope === "current" ? this.currentSessions : this.allSessions;
+			if (reason === "initial" && (seeded === null || seeded.length === 0)) {
 				this.sessionList.setSessions([], showCwd);
 			}
 			this.requestRender();
@@ -364,5 +387,18 @@ export class SessionSelectorComponent extends Container implements Focusable {
 
 	getSessionList(): SessionList {
 		return this.sessionList;
+	}
+
+	/**
+	 * Mark the selector closed so any in-flight or late-resolving loads are
+	 * ignored (stale-result guard) and status timeouts are cleared. Idempotent;
+	 * safe to call from close/select/cancel/dispose paths.
+	 */
+	dispose(): void {
+		if (this.disposed) return;
+		this.disposed = true;
+		// Invalidate any pending all-scope load so its seq check fails on resolve.
+		this.allLoadSeq += 1;
+		this.header.setStatusMessage(null);
 	}
 }

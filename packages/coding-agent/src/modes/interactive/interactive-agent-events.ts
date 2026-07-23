@@ -1,5 +1,28 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
-import { type Message, type AgentSessionEvent, type ContextCompactionResult, Loader, Spacer, Text, pickWhimsicalWorkingMessage, AssistantMessageComponent, CountdownTimer, keyText, ToolExecutionComponent, theme } from "./interactive-mode-deps.ts";
+import { type Message, type AgentSessionEvent, Loader, Spacer, Text, pickWhimsicalWorkingMessage, AssistantMessageComponent, CountdownTimer, keyText, ToolExecutionComponent, theme } from "./interactive-mode-deps.ts";
+import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
+import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.ts";
+import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
+import { handleSummarizationRetryEvent } from "./interactive-summarization-retry-events.ts";
+import { CACHE_TTL_MS, detectCacheMiss } from "../../core/cache-stats.ts";
+import { mountIdleStatus } from "./components/idle-status.ts";
+
+function createToolComponent(
+  mode: InteractiveModeBase,
+  toolName: string,
+  toolCallId: string,
+  args: unknown,
+): ToolExecutionComponent | RemoteToolExecutionComponent {
+  const options = {
+    showImages: mode.settingsManager.getShowImages(),
+    imageWidthCells: mode.settingsManager.getImageWidthCells(),
+  };
+  return mode.runtimeHost instanceof IsolatedInteractiveRuntime
+    ? new RemoteToolExecutionComponent(toolName, toolCallId, args, options, mode.runtimeHost, () => mode.ui.requestRender())
+    : new ToolExecutionComponent(
+        toolName, toolCallId, args, options, mode.getRegisteredToolDefinition(toolName), mode.ui, mode.sessionManager.getCwd(),
+      );
+}
 
 InteractiveModeBase.prototype.subscribeToAgent = function(this: InteractiveModeBase): void {
     this.unsubscribe = this.session.subscribe(async (event) => {
@@ -33,6 +56,10 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
         if (this.retryLoader) {
           this.retryLoader.stop();
           this.retryLoader = undefined;
+        }
+        if (this.fallbackLoader) {
+          this.fallbackLoader.stop();
+          this.fallbackLoader = undefined;
         }
         this.stopWorkingLoader();
         if (this.workingVisible) {
@@ -86,9 +113,22 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
         this.ui.requestRender();
         break;
 
+      case "entry_appended":
+        if (event.entry.type === "custom") this.addCustomEntryToChat(event.entry);
+        this.ui.requestRender();
+        break;
+
+      case "agent_settled":
+        await this.checkShutdownRequested();
+        break;
+
       case "message_start":
         if (event.message.role === "custom") {
-          this.addMessageToChat(event.message);
+          appendNewChildrenBeforeAttachedChild(
+            this.chatContainer,
+            this.streamingComponent,
+            () => this.addMessageToChat(event.message),
+          );
           this.ui.requestRender();
         } else if (event.message.role === "user") {
           if (!this.consumeDeferredRenderedUserInput(this.getUserMessageText(event.message))) {
@@ -119,18 +159,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
           for (const content of this.streamingMessage.content) {
             if (content.type === "toolCall") {
               if (!this.pendingTools.has(content.id)) {
-                const component = new ToolExecutionComponent(
-                  content.name,
-                  content.id,
-                  content.arguments,
-                  {
-                    showImages: this.settingsManager.getShowImages(),
-                    imageWidthCells: this.settingsManager.getImageWidthCells(),
-                  },
-                  this.getRegisteredToolDefinition(content.name),
-                  this.ui,
-                  this.sessionManager.getCwd(),
-                );
+                const component = createToolComponent(this, content.name, content.id, content.arguments);
                 component.setExpanded(this.toolOutputExpanded);
                 this.chatContainer.addChild(component);
                 this.pendingTools.set(content.id, component);
@@ -190,24 +219,20 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
           this.streamingMessage = undefined;
           this.footer.invalidate();
         }
+        if (event.message.role === "assistant" && this.settingsManager.getShowCacheMissNotices()) {
+          const miss = detectCacheMiss(this.sessionManager.getEntries(), event.message, { getModel: (provider, model) => this.session.modelRegistry.find(provider, model) });
+          if (miss) {
+            const cause = miss.modelChanged ? " after model switch" : miss.idleMs >= CACHE_TTL_MS ? " after cache TTL expiry" : "";
+            this.chatContainer.addChild(new Text(theme.fg("warning", `Prompt cache miss${cause}: ${miss.missedTokens.toLocaleString()} tokens re-billed ($${miss.missedCost.toFixed(3)})`), 1, 0));
+          }
+        }
         this.ui.requestRender();
         break;
 
       case "tool_execution_start": {
         let component = this.pendingTools.get(event.toolCallId);
         if (!component) {
-          component = new ToolExecutionComponent(
-            event.toolName,
-            event.toolCallId,
-            event.args,
-            {
-              showImages: this.settingsManager.getShowImages(),
-              imageWidthCells: this.settingsManager.getImageWidthCells(),
-            },
-            this.getRegisteredToolDefinition(event.toolName),
-            this.ui,
-            this.sessionManager.getCwd(),
-          );
+          component = createToolComponent(this, event.toolName, event.toolCallId, event.args);
           component.setExpanded(this.toolOutputExpanded);
           this.chatContainer.addChild(component);
           this.pendingTools.set(event.toolCallId, component);
@@ -247,6 +272,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
           this.loadingAnimation.stop();
           this.loadingAnimation = undefined;
           this.statusContainer.clear();
+          mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
         }
         if (this.streamingComponent) {
           this.chatContainer.removeChild(this.streamingComponent);
@@ -254,6 +280,9 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
           this.streamingMessage = undefined;
         }
         this.pendingTools.clear();
+        if (this.compactionQueuedMessages.length > 0) {
+          void this.session.agent.waitForIdle().then(() => this.flushCompactionQueue({ willRetry: false }));
+        }
 
 		if (this.pendingLoadedResourcesDisclosure) {
 			this.pendingLoadedResourcesDisclosure = false;
@@ -261,6 +290,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
 			this.showLoadedResources({ force: true, showDiagnosticsWhenQuiet: true, targetContainer: this.startupNoticesContainer });
 			// Keep the subscription warning after the RESOURCES disclosure.
 			void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
+			this.showStartupNoticesIfNeeded(this.startupNoticesContainer);
 		}
         await this.checkShutdownRequested();
 
@@ -276,7 +306,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
         this.defaultEditor.onEscape = () => {
           this.session.abortCompaction();
         };
-        this.statusContainer.clear();
+        this.stopWorkingLoader();
         const cancelHint = `(${keyText("app.interrupt")} Cancel)`;
         const isOverflowAutoCompaction = event.reason === "overflow";
         const label =
@@ -306,6 +336,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
           this.autoCompactionLoader.stop();
           this.autoCompactionLoader = undefined;
           this.statusContainer.clear();
+          mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
         }
         if (event.aborted) {
           if (event.reason === "manual") {
@@ -313,10 +344,10 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
           } else {
             this.showStatus("Auto-compaction cancelled");
           }
-        } else if (event.result) {
+        } else if (event.result && !event.errorMessage) {
           this.chatContainer.clear();
-          this.rebuildChatFromMessages();
-          this.addContextCompactionSummaryToChat(event.result as ContextCompactionResult);
+          this.rebuildChatFromMessages({ suppressCompactionBoundary: event.result });
+          this.addCompactionBoundaryToChat(event.result);
           this.footer.invalidate();
         } else if (event.errorMessage) {
           if (event.reason === "manual") {
@@ -328,59 +359,22 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
             );
           }
         }
-        void this.flushCompactionQueue({ willRetry: event.willRetry });
+        // Post-tool compaction resumes the same active run, so no new
+        // agent_start event will recreate the working loader.
+        if (event.midTurn && event.result && !event.aborted && !event.errorMessage) {
+          this.showWorkingLoaderNow();
+        }
+        if (!event.midTurn) void this.flushCompactionQueue({ willRetry: event.willRetry });
         this.ui.requestRender();
         break;
       }
 
-      case "context_compaction_start": {
-        if (this.settingsManager.getShowTerminalProgress()) {
-          this.ui.terminal.setProgress(true);
-        }
-        this.autoCompactionEscapeHandler = this.defaultEditor.onEscape;
-        this.defaultEditor.onEscape = () => {
-          this.session.abortCompaction();
-        };
-        this.statusContainer.clear();
-        const cancelHint = `(${keyText("app.interrupt")} Cancel)`;
-        this.autoCompactionLoader = new Loader(
-          this.ui,
-          (spinner) => theme.fg("accent", spinner),
-          (text) => theme.fg("muted", text),
-          `Compacting context... ${cancelHint}`,
-        );
-        this.statusContainer.addChild(this.autoCompactionLoader);
-        this.ui.requestRender();
-        break;
-      }
 
-      case "context_compaction_end": {
-        if (this.settingsManager.getShowTerminalProgress()) {
-          this.ui.terminal.setProgress(false);
-        }
-        if (this.autoCompactionEscapeHandler) {
-          this.defaultEditor.onEscape = this.autoCompactionEscapeHandler;
-          this.autoCompactionEscapeHandler = undefined;
-        }
-        if (this.autoCompactionLoader) {
-          this.autoCompactionLoader.stop();
-          this.autoCompactionLoader = undefined;
-          this.statusContainer.clear();
-        }
-        if (event.aborted) {
-          this.showError("Context compaction cancelled");
-        } else if (event.result) {
-          this.chatContainer.clear();
-          this.rebuildChatFromMessages();
-          this.addContextCompactionSummaryToChat(event.result);
-          this.footer.invalidate();
-        } else if (event.errorMessage) {
-          this.showError(event.errorMessage);
-        }
-        void this.flushCompactionQueue({ willRetry: event.willRetry });
-        this.ui.requestRender();
-        break;
-      }
+		case "summarization_retry_scheduled":
+		case "summarization_retry_attempt_start":
+		case "summarization_retry_finished":
+			handleSummarizationRetryEvent(this, event);
+			break;
 
       case "auto_retry_start": {
         // Set up escape to abort retry
@@ -414,6 +408,34 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
         break;
       }
 
+
+      case "model_fallback_start": {
+        this.statusContainer.clear();
+        if (this.fallbackLoader) {
+          this.fallbackLoader.stop();
+          this.fallbackLoader = undefined;
+        }
+        this.fallbackLoader = new Loader(
+          this.ui,
+          (spinner) => theme.fg("warning", spinner),
+          (text) => theme.fg("muted", text),
+          `Falling back from ${event.from} to ${event.to}...`,
+        );
+        this.statusContainer.addChild(this.fallbackLoader);
+        this.ui.requestRender();
+        break;
+      }
+
+      case "model_fallback_end": {
+        if (this.fallbackLoader) {
+          this.fallbackLoader.stop();
+          this.fallbackLoader = undefined;
+        }
+        this.statusContainer.clear();
+        mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
+        this.ui.requestRender();
+        break;
+      }
       case "auto_retry_end": {
         // Restore escape handler
         if (this.retryEscapeHandler) {
@@ -429,6 +451,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
           this.retryLoader.stop();
           this.retryLoader = undefined;
           this.statusContainer.clear();
+          mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
         }
         // Show error only on final failure (success shows normal response)
         if (!event.success) {

@@ -2,6 +2,8 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { defineConfig, type AliasOptions } from "vitest/config";
 
+const atomicSrcIndex = fileURLToPath(new URL("./src/index.ts", import.meta.url));
+
 const aiSrcIndex = fileURLToPath(new URL("../ai/src/index.ts", import.meta.url));
 const aiSrcOAuth = fileURLToPath(new URL("../ai/src/oauth.ts", import.meta.url));
 const agentSrcIndex = fileURLToPath(new URL("../agent/src/index.ts", import.meta.url));
@@ -56,6 +58,6 @@ export default defineConfig({
 		},
 	},
 	resolve: {
-		alias: workspaceSourceAliases,
+		alias: [{ find: /^@bastani\/atomic$/, replacement: atomicSrcIndex }, ...workspaceSourceAliases],
 	},
 });

@@ -1,6 +1,9 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { type Component, fs, os, path, Container, Markdown, Spacer, Text, spawn, spawnSync, getShareViewerUrl, SessionImportFileNotFoundError, MissingSessionCwdError, getChangelogPath, normalizeChangelogLinks, parseChangelog, copyToClipboard, BorderedLoader, DynamicBorder, setRegisteredThemes, theme } from "./interactive-mode-deps.ts";
 import { isExpandable } from "./interactive-mode-helpers.ts";
+import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.ts";
+import { computeCacheWaste } from "../../core/cache-stats.ts";
+import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
 
 InteractiveModeBase.prototype.handleReloadCommand = async function(this: InteractiveModeBase): Promise<void> {
     if (this.session.isStreaming) {
@@ -48,8 +51,8 @@ InteractiveModeBase.prototype.handleReloadCommand = async function(this: Interac
     };
 
     try {
-      await this.session.reload();
-      this.keybindings.reload();
+      if (this.runtimeHost instanceof IsolatedInteractiveRuntime) await this.session.reload();
+      else await this.reloadCoordinator.reload(this.session);
       const activeHeader = this.customHeader ?? this.builtInHeader;
       if (isExpandable(activeHeader)) {
         activeHeader.setExpanded(this.toolOutputExpanded);
@@ -380,10 +383,20 @@ InteractiveModeBase.prototype.handleSessionCommand = function(this: InteractiveM
       info += `${theme.fg("dim", "Cache Write:")} ${stats.tokens.cacheWrite.toLocaleString()}\n`;
     }
     info += `${theme.fg("dim", "Total:")} ${stats.tokens.total.toLocaleString()}\n`;
+    const entries = this.sessionManager.getEntries();
+    const assistantEntries = entries.filter((entry) => entry.type === "message" && entry.message.role === "assistant");
+    const promptTokens = assistantEntries.reduce((sum, entry) => sum + (entry.type === "message" && entry.message.role === "assistant" ? entry.message.usage.input + entry.message.usage.cacheRead + entry.message.usage.cacheWrite : 0), 0);
+    const cacheRead = assistantEntries.reduce((sum, entry) => sum + (entry.type === "message" && entry.message.role === "assistant" ? entry.message.usage.cacheRead : 0), 0);
+    if (promptTokens > 0) info += `${theme.fg("dim", "Cache Hit Rate:")} ${((cacheRead / promptTokens) * 100).toFixed(1)}%\n`;
+    const waste = computeCacheWaste(entries, { getModel: (provider, model) => this.session.modelRegistry.find(provider, model) });
+    if (waste.missCount > 0) info += `${theme.fg("dim", "Wasted Cache Cost:")} $${waste.missedCost.toFixed(4)} (${waste.missCount} misses)\n`;
 
     if (stats.cost > 0) {
       info += `\n${theme.bold("Cost")}\n`;
       info += `${theme.fg("dim", "Total:")} ${stats.cost.toFixed(4)}`;
+      for (const item of getUsageCostBreakdown(entries)) {
+        info += `\n${theme.fg("dim", `${item.key}:`)} $${item.cost.toFixed(4)}`;
+      }
     }
 
     this.chatContainer.addChild(new Spacer(1));

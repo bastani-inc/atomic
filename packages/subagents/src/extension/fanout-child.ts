@@ -15,6 +15,7 @@ import { getArtifactsDir } from "../shared/artifacts.ts";
 import { type Details, type SubagentState } from "../shared/types.ts";
 import { loadConfig } from "./config.ts";
 import { SubagentParams } from "./schemas.ts";
+import { beginApiLifecycle } from "./api-lifecycle.ts";
 
 function getSubagentSessionRoot(parentSessionFile: string | null): string {
 	if (parentSessionFile) {
@@ -192,56 +193,48 @@ export function startNestedControlInboxListener(pi: ExtensionAPI, state: Subagen
 export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): void {
 	if (getEnvValue(SUBAGENT_CHILD_ENV) !== "1" || getEnvValue(SUBAGENT_FANOUT_CHILD_ENV) !== "1") return;
 
-	const globalStore = globalThis as Record<string, unknown>;
-	const registeredKey = "__atomicSubagentFanoutChildRegisteredApis";
-	const cleanupKey = "__atomicSubagentFanoutChildRuntimeCleanup";
-	const registeredApis = globalStore[registeredKey] instanceof WeakSet
-		? globalStore[registeredKey] as WeakSet<ExtensionAPI>
-		: new WeakSet<ExtensionAPI>();
-	globalStore[registeredKey] = registeredApis;
-	if (registeredApis.has(pi)) return;
-	const previousRuntimeCleanup = globalStore[cleanupKey];
-	if (typeof previousRuntimeCleanup === "function") {
-		try {
-			previousRuntimeCleanup();
-		} catch {
-			// Best effort cleanup for stale fanout-child timers from an older reload.
-		}
+	const lifecycle = beginApiLifecycle(pi);
+
+	try {
+		const config = loadConfig();
+		const state = createChildSafeState();
+		lifecycle.setCleanup(() => {
+			for (const timer of state.cleanupTimers.values()) clearInterval(timer);
+			state.cleanupTimers.clear();
+		});
+		const executor = createSubagentExecutor({
+			pi,
+			state,
+			config,
+			asyncByDefault: config.asyncByDefault === true,
+			tempArtifactsDir: getArtifactsDir(null),
+			getSubagentSessionRoot,
+			expandTilde,
+			discoverAgents,
+			allowMutatingManagementActions: false,
+		});
+
+		const tool: ToolDefinition<typeof SubagentParams, Details> = {
+			name: "subagent",
+			label: "Subagent",
+			description: [
+				"Delegate to subagents from child-safe fanout mode.",
+				"Execution calls always start non-interactively.",
+				"Allowed management/control actions: list, get, status, interrupt, resume, doctor.",
+				"Agent config mutation actions create, update, and delete are blocked in this mode.",
+			].join("\n"),
+			parameters: SubagentParams,
+			execute(id, params, signal, onUpdate, ctx) {
+				const executionSignal = signal ?? ctx.signal ?? new AbortController().signal;
+				return executor.execute(id, params as SubagentParamsLike, executionSignal, onUpdate, ctx);
+			},
+		};
+
+		pi.registerTool(tool);
+		startNestedControlInboxListener(pi, state);
+		pi.on?.("session_shutdown", () => lifecycle.dispose());
+	} catch (error) {
+		lifecycle.dispose();
+		throw error;
 	}
-	registeredApis.add(pi);
-
-	const config = loadConfig();
-	const state = createChildSafeState();
-	const executor = createSubagentExecutor({
-		pi,
-		state,
-		config,
-		asyncByDefault: config.asyncByDefault === true,
-		tempArtifactsDir: getArtifactsDir(null),
-		getSubagentSessionRoot,
-		expandTilde,
-		discoverAgents,
-		allowMutatingManagementActions: false,
-	});
-
-	const tool: ToolDefinition<typeof SubagentParams, Details> = {
-		name: "subagent",
-		label: "Subagent",
-		description: [
-			"Delegate to subagents from child-safe fanout mode.",
-			"Allowed management/control actions: list, get, status, interrupt, resume, doctor.",
-			"Agent config mutation actions create, update, and delete are blocked in this mode.",
-		].join("\n"),
-		parameters: SubagentParams,
-		execute(id, params, signal, onUpdate, ctx) {
-			return executor.execute(id, params as SubagentParamsLike, signal, onUpdate, ctx);
-		},
-	};
-
-	pi.registerTool(tool);
-	startNestedControlInboxListener(pi, state);
-	globalStore[cleanupKey] = () => {
-		for (const timer of state.cleanupTimers.values()) clearInterval(timer);
-		state.cleanupTimers.clear();
-	};
 }

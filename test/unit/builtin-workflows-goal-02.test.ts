@@ -30,6 +30,7 @@ import {
     readPathEndsWith,
     readPaths,
 } from "./builtin-workflows-helpers.js";
+import { assertReviewerIntercomCoordination } from "./reviewer-intercom-prompt-assertions.js";
 
 describe("goal", () => {    type ReviewJsonFinding = {
         readonly title: string;
@@ -196,6 +197,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
                     if (name.startsWith("risk-reviewer-")) {
                         return reviewJson("continue", {
                             gaps: ["risk review noted no blocker"],
+                            findings: [],
                         });
                     }
                     return undefined;
@@ -246,6 +248,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
                     if (name.startsWith("risk-reviewer-")) {
                         return reviewJson("continue", {
                             gaps: ["risk reviewer noted no blocker"],
+                            findings: [],
                         });
                     }
                     return undefined;
@@ -274,7 +277,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
         );
         assert.match(
             ctx.calls.prompts["work-turn-2"]?.[0] ?? "",
-            /Continue the same goal-runner worker thread from the previous worker session/i,
+            /Continue the same goal-runner worker thread/i,
         );
         assert.doesNotMatch(
             ctx.calls.prompts["work-turn-2"]?.[0] ?? "",
@@ -428,11 +431,23 @@ describe("goal", () => {    type ReviewJsonFinding = {
             ctx.calls.taskOptions["completion-reviewer-1"]?.[0];
         assert.notEqual(reviewerOptions?.schema, undefined);
         assert.equal(reviewerOptions?.customTools, undefined);
-        assert.equal(reviewerOptions?.tools?.includes("review_decision"), false);
+        assert.equal(reviewerOptions?.tools, undefined);
+        assert.deepEqual(reviewerOptions?.excludedTools, ["ask_user_question"]);
         assert.match(
             ctx.calls.prompts["completion-reviewer-1"]?.[0] ?? "",
             /echo the prior blocker string/i,
         );
+        for (const reviewerName of [
+            "completion-reviewer-1",
+            "evidence-reviewer-1",
+            "risk-reviewer-1",
+        ]) {
+            assertReviewerIntercomCoordination(
+                ctx.calls.prompts[reviewerName]?.[0] ?? "",
+                reviewerName,
+            );
+        }
+
         const reviewerPrompt = ctx.calls.prompts["completion-reviewer-1"]?.[0] ?? "";
         assert.doesNotMatch(reviewerPrompt, /structured_output/i);
         assert.match(reviewerPrompt, /stop_review_loop=true/);

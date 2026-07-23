@@ -1,96 +1,91 @@
-/**
- * Durable backend factory.
- *
- * Resolves which backend to use based on configuration:
- * - Explicit override (for testing)
- * - DBOS/Postgres when `DBOS_SYSTEM_DATABASE_URL` is set and durability is not opted out
- * - File-backed fallback (default; zero infrastructure)
- *
- * cross-ref: issue #1498
- */
+/** DBOS-first durable backend factory with a non-durable last-resort fallback. */
 
-import type { DurableWorkflowBackend } from "./backend.js";
-import { InMemoryDurableBackend } from "./backend.js";
-import { FileDurableBackend, WorkflowFileDurableBackend, defaultDurableStateDir, durableStateFileFor } from "./file-backend.js";
-import { createDbosDurableBackend } from "./dbos-backend.js";
+import { InMemoryDurableBackend, type DurableWorkflowBackend } from "./backend.js";
+import {
+  DbosNotReadyError,
+  DbosShutdownError,
+  dbosLifecycleState,
+  getReadyDbosBackend,
+  getReadyDbosBackendSync,
+} from "./dbos-lifecycle.js";
 
-let globalBackend: DurableWorkflowBackend | undefined;
-let dbosInit: Promise<DurableWorkflowBackend | undefined> | undefined;
-
-const DURABLE_OPT_OUT_ENV = "ATOMIC_WORKFLOW_DURABLE";
+let injectedBackend: DurableWorkflowBackend | undefined;
+let initializedBackend: DurableWorkflowBackend | undefined;
+let initializing: Promise<DurableWorkflowBackend> | undefined;
 
 /**
- * Get the singleton durable backend. Creates one lazily on first call.
- * - If a backend was explicitly set via {@link setDurableBackend}, returns it.
- * - If `DBOS_SYSTEM_DATABASE_URL` is configured and durability was not opted
- *   out, the extension runtime upgrades to a DBOS-backed backend on launch.
- * - Otherwise returns the zero-infrastructure per-workflow file backend rooted
- *   under `~/.atomic/workflow-durable`, so cross-session resume is available by
- *   default without an opt-in environment variable. Set
- *   `ATOMIC_WORKFLOW_DURABLE=0` (or `false`/`off`/`memory`) to fail closed to
- *   process-local in-memory durability for sensitive environments.
+ * A memoized backend is only reusable while its lifecycle generation is
+ * healthy. The in-memory degraded backend has no external lifecycle; a
+ * persistent (DBOS) backend is usable only while the process-scoped DBOS
+ * executor is still `ready` — never after shutdown.
  */
+function isMemoizedBackendUsable(backend: DurableWorkflowBackend): boolean {
+  return !backend.persistent || dbosLifecycleState() === "ready";
+}
+
+/** Return the injected test backend or the process-wide initialized backend. */
 export function getDurableBackend(): DurableWorkflowBackend {
-  if (globalBackend) return globalBackend;
-  if (isDurabilityOptedOut()) {
-    globalBackend = createInMemoryBackend();
-    return globalBackend;
-  }
-  // Always enable cross-session durability by default. DBOS initialization is
-  // async because the SDK is optional; the file backend is the durable baseline
-  // and remains the safe fallback if DBOS is unavailable.
-  globalBackend = createDefaultFileBackend();
-  return globalBackend;
+  const memoized = initializedBackend !== undefined && isMemoizedBackendUsable(initializedBackend)
+    ? initializedBackend
+    : undefined;
+  const backend = injectedBackend ?? memoized ?? getReadyDbosBackendSync();
+  if (backend === undefined) throw new DbosNotReadyError();
+  return backend;
 }
 
-/**
- * Explicitly set the durable backend. Used by tests and by the extension
- * runtime when it initializes DBOS.
- */
+/** Internal injection seam. Production initialization uses DBOS. */
 export function setDurableBackend(backend: DurableWorkflowBackend | undefined): void {
-  globalBackend = backend;
+  injectedBackend = backend;
+  if (backend === undefined) {
+    initializedBackend = undefined;
+    initializing = undefined;
+  }
 }
 
-/**
- * Create a fresh in-memory backend (for tests).
- */
-export function createInMemoryBackend(): InMemoryDurableBackend {
+/** Create an isolated current-interface backend for tests only. */
+export function createInMemoryTestBackend(): InMemoryDurableBackend {
   return new InMemoryDurableBackend();
 }
 
-/** Initialize and install the DBOS backend when DBOS_SYSTEM_DATABASE_URL is set. */
-export async function initializeDbosDurableBackendFromEnv(): Promise<DurableWorkflowBackend | undefined> {
-  if (isDurabilityOptedOut()) return undefined;
-  const dbosUrl = process.env.DBOS_SYSTEM_DATABASE_URL;
-  if (dbosUrl === undefined || dbosUrl.length === 0) return undefined;
-  dbosInit ??= createDbosDurableBackend({ systemDatabaseUrl: dbosUrl }).then((backend) => {
-    setDurableBackend(backend);
-    return backend;
-  });
-  return dbosInit;
-}
-
 /**
- * Create the default durable backend. If no user home directory can be resolved,
- * fail closed to the process-local in-memory backend instead of writing to /tmp.
+ * Configure, register, launch, and install the DBOS backend.
+ *
+ * When no durable backend can be provisioned (no `DBOS_SYSTEM_DATABASE_URL`,
+ * embedded Postgres unavailable — e.g. running as root without an
+ * unprivileged account — and no Docker), workflows degrade to a process-local
+ * in-memory backend with a loud warning instead of refusing to run at all.
+ * Non-durable runs execute normally but do not survive the process:
+ * `/workflow resume` after exit has nothing to restore.
  */
-export function createDefaultFileBackend(): DurableWorkflowBackend {
-  const dir = defaultDurableStateDir();
-  if (dir === undefined) return createInMemoryBackend();
-  return new WorkflowFileDurableBackend(dir);
+export async function initializeDurableBackend(): Promise<DurableWorkflowBackend> {
+  if (injectedBackend !== undefined) return injectedBackend;
+  if (initializedBackend !== undefined) {
+    if (isMemoizedBackendUsable(initializedBackend)) return initializedBackend;
+    // Never hand out a backend from a stopped lifecycle generation.
+    initializedBackend = undefined;
+    initializing = undefined;
+  }
+  initializing ??= getReadyDbosBackend()
+    .catch((error: unknown) => {
+      // Post-shutdown initialization is a process-exit race, not a
+      // provisioning failure: fail loudly instead of silently degrading to a
+      // non-durable backend.
+      if (error instanceof DbosShutdownError) throw error;
+      return degradeToNonDurableBackend(error);
+    })
+    .then((backend) => {
+      initializedBackend = backend;
+      return backend;
+    });
+  return await initializing;
 }
 
-/**
- * Create a file-backed backend for a specific workflow id.
- * Each workflow gets its own state file for fast load/save.
- */
-export function createWorkflowFileBackend(workflowId: string): DurableWorkflowBackend {
-  const dir = defaultDurableStateDir();
-  if (dir === undefined) return createInMemoryBackend();
-  return new FileDurableBackend(durableStateFileFor(dir, workflowId));
-}
-
-function isDurabilityOptedOut(): boolean {
-  const value = process.env[DURABLE_OPT_OUT_ENV]?.toLowerCase();
-  return value === "0" || value === "false" || value === "off" || value === "memory" || value === "in-memory";
+function degradeToNonDurableBackend(error: unknown): DurableWorkflowBackend {
+  const detail = error instanceof Error ? error.message : String(error);
+  console.error(
+    "atomic-workflows: durable backend unavailable — continuing NON-DURABLY with an in-memory backend. "
+    + "Workflow runs will execute, but their state will not survive this process and `/workflow resume` "
+    + `after exit will not work. Restore durability by fixing Postgres provisioning: ${detail}`,
+  );
+  return new InMemoryDurableBackend();
 }

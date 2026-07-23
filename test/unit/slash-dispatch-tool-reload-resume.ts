@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { describe, test } from "bun:test";
 import {
+    installSlashDispatchTestHooks,
     assert,
     parseWorkflowArgs,
     tokenizeWorkflowArgs,
@@ -15,7 +16,6 @@ import {
     store,
     restoreOnSessionStart,
     WORKFLOW_STAGE_SUBAGENT_GUARD_ENV,
-    WORKFLOW_INVALID_PROVIDER_CREDENTIALS_MESSAGE,
     LIFECYCLE_NOTICE_CUSTOM_TYPE,
     stageControlRegistry,
     stageUiBroker,
@@ -63,13 +63,14 @@ import type {
     StageControlHandle,
 } from "./slash-dispatch-utils.js";
 
+installSlashDispatchTestHooks();
+
 describe("tool run-control actions", () => {
     function makeToolHandler() {
         const registry = createRegistry([]);
         const runtime = createExtensionRuntime({ registry });
         return makeExecuteWorkflowTool(
             runtime,
-            () => undefined,
             () => undefined,
         );
     }
@@ -94,7 +95,6 @@ describe("tool run-control actions", () => {
         return {
             handler: makeExecuteWorkflowTool(
                 runtime,
-                () => undefined,
                 () => undefined,
             ),
             wasDispatched: () => dispatched,
@@ -127,7 +127,6 @@ describe("tool run-control actions", () => {
         let reloads = 0;
         const handler = makeExecuteWorkflowTool(
             runtime,
-            () => undefined,
             async () => {
                 reloads += 1;
             },
@@ -205,9 +204,9 @@ describe("tool run-control actions", () => {
             );
             assert.ok(workflowCmd, "expected workflow command registration");
             const completions =
-                workflowCmd.options.getArgumentCompletions?.(
-                    "tool-refresh-added",
-                ) ?? [];
+                (await workflowCmd.options.getArgumentCompletions?.(
+                    "tool-refresh-add",
+                )) ?? [];
             assert.equal(
                 completions.some(
                     (completion) => completion.label === "tool-refresh-added",
@@ -224,7 +223,6 @@ describe("tool run-control actions", () => {
         const runtime = createExtensionRuntime({ registry });
         const handler = makeExecuteWorkflowTool(
             runtime,
-            () => undefined,
             () => undefined,
         );
 
@@ -243,18 +241,18 @@ describe("tool run-control actions", () => {
         assert.equal(reload.message, "Reloaded workflow resources.");
     });
 
-    test.serial("makeExecuteWorkflowTool reload is skipped while workflows are in flight", async () => {
+    test.serial("makeExecuteWorkflowTool reload stays available while workflows are in flight", async () => {
         const registry = createRegistry([]);
         const runtime = createExtensionRuntime({ registry });
         let reloads = 0;
         const handler = makeExecuteWorkflowTool(
             runtime,
-            () => undefined,
             () => {
                 reloads += 1;
             },
         );
-        store.recordRunStart(makeInflightRun(`reload-blocked-${Date.now()}`));
+        const runId = `reload-inflight-${Date.now()}`;
+        store.recordRunStart(makeInflightRun(runId));
 
         const result = await handler(
             { action: "reload", reason: "test" },
@@ -267,9 +265,10 @@ describe("tool run-control actions", () => {
             status: string;
             message: string;
         };
-        assert.equal(reload.status, "noop");
-        assert.match(reload.message, /still in flight/);
-        assert.equal(reloads, 0);
+        assert.equal(reload.status, "ok");
+        assert.match(reload.message, /Reloaded workflow resources/);
+        assert.equal(reloads, 1);
+        assert.equal(store.runs().find((run) => run.id === runId)?.endedAt, undefined);
     });
 
     test.serial("makeExecuteWorkflowTool reload surfaces callback failures as noop", async () => {
@@ -277,7 +276,6 @@ describe("tool run-control actions", () => {
         const runtime = createExtensionRuntime({ registry });
         const handler = makeExecuteWorkflowTool(
             runtime,
-            () => undefined,
             async () => {
                 throw new Error("bad workflow config");
             },
@@ -304,11 +302,11 @@ describe("tool run-control actions", () => {
         const handler = makeToolHandler();
 
         const result = await handler(
-            { action: "kill", runId: "ambiguous-run" },
+            { action: "quit", runId: "ambiguous-run" },
             {} as never,
         );
 
-        assert.equal(result.action, "kill");
+        assert.equal(result.action, "quit");
         const r = result as { action: string; status: string; message: string };
         assert.equal(r.status, "noop");
         assert.match(r.message, /Ambiguous run prefix/);
@@ -370,24 +368,6 @@ describe("tool run-control actions", () => {
         assert.equal(r.runId, runId);
     });
 
-    test.serial("runtime runDirect classifies direct pre-run model auth failures", async () => {
-        const runtime = createExtensionRuntime({
-            registry: createRegistry([]),
-            models: {
-                async listModels() {
-                    throw { message: "request failed", status: 401 };
-                },
-            },
-        });
-
-        const result = await runtime.runDirect({
-            task: { name: "scout", task: "inspect repo", model: "openai/gpt" },
-            async: true,
-        });
-
-        assert.equal(result.status, "failed");
-        assert.equal(result.error, WORKFLOW_INVALID_PROVIDER_CREDENTIALS_MESSAGE);
-    });
 
     test.serial("makeExecuteWorkflowTool resume rejects ambiguous stage prefixes", async () => {
         const runId = `resume-tool-ambiguous-stage-${Date.now()}`;

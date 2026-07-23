@@ -10,6 +10,8 @@ import type {
 } from "../../shared/types.js";
 import type { PendingPrompt, CustomPromptIdentitySource } from "../../shared/store-types.js";
 import { selectPromptCallsiteFrame } from "../shared/prompt-callsite.js";
+import { currentPromptCallerStack } from "../../shared/prompt-callsite-context.js";
+import type { ResumeContinuationReason } from "./executor-stage-types.js";
 
 export type PrimitivePromptDescriptor =
   | { readonly kind: "input"; readonly message: string; readonly initial?: string }
@@ -83,7 +85,7 @@ export function promptReplayKey(descriptor: PromptDescriptor): string {
 }
 
 function promptCallsiteHash(): string {
-  const frame = selectPromptCallsiteFrame(new Error().stack ?? "") ?? "unknown";
+  const frame = selectPromptCallsiteFrame(currentPromptCallerStack() ?? new Error().stack ?? "") ?? "unknown";
   return stableHash(frame);
 }
 
@@ -263,7 +265,7 @@ const READINESS_GATE_ADVANCE_NORMALIZED = READINESS_GATE_ADVANCE_LABEL.trim().to
 export const READINESS_GATE_QUESTION_PARAMS = {
   questions: [
     {
-      question: "Any additional points to explore before moving on?",
+      question: "Are you ready to move on to the next stage?",
       header: "Continue?",
       options: [
         {
@@ -310,14 +312,15 @@ export function toolResultHasChatAnswer(result: unknown): boolean {
   );
 }
 
-export const RESUME_CONTINUATION_PROMPT = "Continue where you left off.";
+export { RESUME_CONTINUATION_PROMPT } from "../../shared/resume-continuation.js";
 
 export function shouldInjectResumeContinuation(state: {
-  readonly resumeOccurred: boolean;
+  readonly reason: ResumeContinuationReason | false;
   readonly gateEnabled: boolean;
   readonly aborted: boolean;
 }): boolean {
-  return state.resumeOccurred && state.gateEnabled && !state.aborted;
+  if (state.reason === false || state.aborted) return false;
+  return state.reason === "queued-user-message" || state.gateEnabled;
 }
 
 let cachedReadinessGateTool: ReturnType<typeof createAskUserQuestionToolDefinition> | undefined;

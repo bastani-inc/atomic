@@ -411,7 +411,7 @@ describe("runtime tunables — defaultConcurrency", () => {
     while (!stageIds.has("second")) await flushMicrotasks();
     const runId = store.runs()[0]!.id;
     const secondId = stageIds.get("second")!;
-    const pauseResult = pauseRun(runId, { store, stageControlRegistry: registry, stageId: secondId });
+    const pauseResult = await pauseRun(runId, { store, stageControlRegistry: registry, stageId: secondId });
     assert.equal(pauseResult.ok, true);
     await flushMicrotasks();
     assert.equal(store.runs()[0]?.stages.find((stage) => stage.id === secondId)?.status, "paused");
@@ -419,7 +419,7 @@ describe("runtime tunables — defaultConcurrency", () => {
     await sleep(20);
     assert.deepEqual(promptCalls, ["first"]);
     assert.equal(store.runs()[0]?.stages.find((stage) => stage.id === secondId)?.status, "paused");
-    const resumeResult = resumeRun(runId, { store, stageControlRegistry: registry, stageId: secondId });
+    const resumeResult = await resumeRun(runId, { store, stageControlRegistry: registry, stageId: secondId });
     assert.equal(resumeResult.ok, true);
     const result = await runPromise;
     assert.equal(result.status, "completed");

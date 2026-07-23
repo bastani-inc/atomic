@@ -13,6 +13,7 @@ import {
     resumeRun,
     pauseRun,
     interruptRun,
+    inspectRun,
 } from "../../packages/workflows/src/runs/background/status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
@@ -147,6 +148,24 @@ describe("statusRuns", () => {
         assert.equal(result[0]!.status, "completed");
     });
 
+    test("normalizes legacy completed snapshots with incomplete returned status", () => {
+        const st = createStore();
+        st.recordRunStart(makeRun({ id: "legacy-needs-human" }));
+        st.recordRunEnd("legacy-needs-human", "completed", {
+            status: "needs_human",
+            remaining_work: "No API key for provider: github-copilot",
+        });
+
+        const result = statusRuns({ store: st });
+        const inspected = inspectRun("legacy-needs-human", { store: st });
+
+        assert.equal(result[0]!.status, "blocked");
+        assert.equal(inspected.ok, true);
+        if (!inspected.ok) throw new Error("narrowing");
+        assert.equal(inspected.detail.status, "blocked");
+        assert.match(inspected.detail.error ?? "", /No API key for provider: github-copilot/);
+    });
+
     test("treats all as a compatibility no-op", () => {
         const st = createStore();
         st.recordRunStart(makeRun({ id: "active" }));
@@ -201,7 +220,7 @@ describe("statusRuns", () => {
     });
 });
 describe("killRun", () => {
-    test("returns ok:false reason:not_found for unknown runId", () => {
+    test("returns ok:false reason:not_found for unknown runId", async () => {
         const st = createStore();
         const result = killRun("nonexistent", { store: st });
         assert.equal(result.ok, false);
@@ -262,11 +281,11 @@ describe("killAllRuns", () => {
     });
 });
 describe("interruptRun", () => {
-    test("returns no_active_stages honestly when no stage handle exists", () => {
+    test("returns no_active_stages honestly when no stage handle exists", async () => {
         const st = createStore();
         st.recordRunStart(makeRun({ id: "r1" }));
 
-        const result = interruptRun("r1", { store: st });
+        const result = await interruptRun("r1", { store: st });
 
         assert.equal(result.ok, false);
         if (!result.ok) assert.equal(result.reason, "no_active_stages");
@@ -275,17 +294,17 @@ describe("interruptRun", () => {
     });
 });
 describe("resumeRun", () => {
-    test("returns ok:false reason:not_found for unknown runId", () => {
+    test("returns ok:false reason:not_found for unknown runId", async () => {
         const st = createStore();
-        const result = resumeRun("nonexistent", { store: st });
+        const result = await resumeRun("nonexistent", { store: st });
         assert.equal(result.ok, false);
         if (!result.ok) assert.equal(result.reason, "not_found");
     });
 
-    test("returns ok:true with snapshot for still-active run", () => {
+    test("returns ok:true with snapshot for still-active run", async () => {
         const st = createStore();
         st.recordRunStart(makeRun({ id: "r1", name: "my-wf" }));
-        const result = resumeRun("r1", { store: st });
+        const result = await resumeRun("r1", { store: st });
         assert.equal(result.ok, true);
         if (result.ok) {
             assert.equal(result.runId, "r1");
@@ -294,11 +313,11 @@ describe("resumeRun", () => {
         }
     });
 
-    test("returns ok:true with snapshot for ended run", () => {
+    test("returns ok:true with snapshot for ended run", async () => {
         const st = createStore();
         st.recordRunStart(makeRun({ id: "r1", name: "my-wf" }));
         st.recordRunEnd("r1", "completed");
-        const result = resumeRun("r1", { store: st });
+        const result = await resumeRun("r1", { store: st });
         assert.equal(result.ok, true);
         if (result.ok) {
             assert.equal(result.runId, "r1");
@@ -307,11 +326,11 @@ describe("resumeRun", () => {
         }
     });
 
-    test("returned snapshot is a deep copy (not a reference)", () => {
+    test("returned snapshot is a deep copy (not a reference)", async () => {
         const st = createStore();
         st.recordRunStart(makeRun({ id: "r1" }));
         st.recordRunEnd("r1", "failed");
-        const result = resumeRun("r1", { store: st });
+        const result = await resumeRun("r1", { store: st });
         if (result.ok) {
             // Mutating the snapshot should not affect the store
             (result.snapshot as { name: string }).name = "mutated";
@@ -320,7 +339,7 @@ describe("resumeRun", () => {
         }
     });
 
-    test("failed resumable terminal run returns snapshot mode for continuation callers", () => {
+    test("failed resumable terminal run returns snapshot mode for continuation callers", async () => {
         const st = createStore();
         st.recordRunStart(makeRun({ id: "r1" }));
         st.recordRunEnd("r1", "failed", undefined, "boom", {
@@ -328,7 +347,7 @@ describe("resumeRun", () => {
             failedStageId: "s1",
             resumable: true,
         });
-        const result = resumeRun("r1", { store: st });
+        const result = await resumeRun("r1", { store: st });
         assert.equal(result.ok, true);
         if (result.ok) {
             assert.equal(result.mode, "snapshot");
@@ -337,7 +356,7 @@ describe("resumeRun", () => {
         }
     });
 
-    test("failed non-resumable terminal run returns a clear non-resumable snapshot mode", () => {
+    test("failed non-resumable terminal run returns a clear non-resumable snapshot mode", async () => {
         const st = createStore();
         st.recordRunStart(makeRun({ id: "r1" }));
         st.recordRunEnd("r1", "failed", undefined, "boom", {
@@ -348,7 +367,7 @@ describe("resumeRun", () => {
             failedStageId: "s1",
             resumable: false,
         });
-        const result = resumeRun("r1", { store: st });
+        const result = await resumeRun("r1", { store: st });
         assert.equal(result.ok, true);
         if (result.ok) {
             assert.equal(result.mode, "not_resumable");
@@ -357,7 +376,7 @@ describe("resumeRun", () => {
         }
     });
 
-    test("killed run returns not_resumable even without explicit resumable metadata", () => {
+    test("killed run returns not_resumable even without explicit resumable metadata", async () => {
         const st = createStore();
         st.recordRunStart(makeRun({ id: "r1" }));
         st.recordRunEnd("r1", "killed", undefined, "bad key", {
@@ -368,7 +387,7 @@ describe("resumeRun", () => {
             failedStageId: "s1",
             resumable: false,
         });
-        const result = resumeRun("r1", { store: st });
+        const result = await resumeRun("r1", { store: st });
         assert.equal(result.ok, true);
         if (result.ok) {
             assert.equal(result.mode, "not_resumable");
@@ -377,7 +396,7 @@ describe("resumeRun", () => {
         }
     });
 
-    test("active blocked recoverable run returns a resumable snapshot message", () => {
+    test("active blocked recoverable run returns a resumable snapshot message", async () => {
         const st = createStore();
         st.recordRunStart(makeRun({ id: "r1" }));
         st.recordStageStart("r1", {
@@ -404,7 +423,7 @@ describe("resumeRun", () => {
             blockedAt: 1234,
         });
 
-        const result = resumeRun("r1", { store: st });
+        const result = await resumeRun("r1", { store: st });
         assert.equal(result.ok, true);
         if (result.ok) {
             assert.equal(result.mode, "snapshot");

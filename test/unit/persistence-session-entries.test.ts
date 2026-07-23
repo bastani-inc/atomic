@@ -2,7 +2,6 @@
  * Unit tests for shared/persistence-session-entries.ts
  * cross-ref: spec §5.6
  */
-
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import {
@@ -14,11 +13,9 @@ import {
   appendRunBlocked,
 } from "../../packages/workflows/src/shared/persistence-session-entries.js";
 import type { PersistenceAPI } from "../../packages/workflows/src/shared/persistence-session-entries.js";
-
 // ---------------------------------------------------------------------------
 // Mock PersistenceAPI
 // ---------------------------------------------------------------------------
-
 interface AppendedEntry {
   type: string;
   payload: Record<string, unknown>;
@@ -370,10 +367,13 @@ describe("appendRunEnd", () => {
     assert.equal(p["status"], "failed");
     assert.equal(p["ts"], 123);
   });
-  test("includes result when provided", () => {
+  test("includes result and timing when provided", () => {
     const api = makeMockApi();
-    appendRunEnd(api, { runId: "r1", status: "completed", result: { out: 42 }, ts: 1 });
-    assert.equal((api._entries[0]!.payload["result"] as Record<string, unknown>)["out"], 42);
+    appendRunEnd(api, { runId: "r1", status: "completed", result: { out: 42 }, endedAt: 5000, durationMs: 4000, ts: 1 });
+    const p = api._entries[0]!.payload;
+    assert.equal((p["result"] as Record<string, unknown>)["out"], 42);
+    assert.equal(p["endedAt"], 5000);
+    assert.equal(p["durationMs"], 4000);
   });
   test("includes optional run failure metadata when provided", () => {
     const api = makeMockApi();

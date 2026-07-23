@@ -156,13 +156,20 @@ export class ToolExecutionComponent extends Container {
 		this.updateDisplay();
 	}
 
+	// markExecutionStarted / setArgsComplete are idempotent: re-seeding an
+	// already-started component must not schedule another render, or the
+	// remote-renderer bridge (EngineRenderService) turns every repeated
+	// engine_tool_render into a fresh invalidate → render ping-pong (TUI
+	// flicker while a workflow stage streams).
 	markExecutionStarted(): void {
+		if (this.executionStarted) return;
 		this.executionStarted = true;
 		this.updateDisplay();
 		this.ui.requestRender();
 	}
 
 	setArgsComplete(): void {
+		if (this.argsComplete) return;
 		this.argsComplete = true;
 		this.updateDisplay();
 		this.ui.requestRender();

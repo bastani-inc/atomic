@@ -88,6 +88,27 @@ const CONFORMANCE_FIXTURES: readonly Fixture[] = [
   { label: "message model not found", failure: new Error("model not found: foo/bar"), kind: "model_unavailable", retryable: true },
   { label: "code etimedout", failure: { code: "ETIMEDOUT", message: "socket timed out" }, kind: "network_timeout", retryable: true },
   { label: "message overloaded", failure: new Error("provider is overloaded (529)"), kind: "provider_unavailable", retryable: true },
+  // Quota/usage-limit exhaustion (retryable so configured fallbackModels can
+  // advance to a candidate provider/model with remaining headroom).
+  { label: "message usage limit reached", failure: new Error("Codex error: The usage limit has been reached"), kind: "rate_limit", retryable: true },
+  { label: "session usage limit errorMessage", failure: { stopReason: "error", errorMessage: "Codex error: The usage limit has been reached" }, kind: "rate_limit", retryable: true },
+  { label: "usage limit cause under stage wrapper", failure: { message: "stage session failed", cause: { message: "Codex error: The usage limit has been reached" } }, kind: "rate_limit", retryable: true },
+  { label: "code usage_limit_reached", failure: { code: "usage_limit_reached", message: "localized" }, kind: "rate_limit", retryable: true },
+  { label: "code insufficient_quota", failure: { code: "insufficient_quota", message: "localized" }, kind: "rate_limit", retryable: true },
+  // Cancellation nested under a usage-limit wrapper must stay non-retryable.
+  { label: "abort cause under usage limit wrapper", failure: { errorMessage: "Codex error: The usage limit has been reached", cause: { name: "AbortError", message: "aborted by user" } }, kind: "cancelled", retryable: false },
+  // Regression: providers frequently flatten the machine token into the free-text
+  // message (not a structured code). The message matcher must tolerate the same
+  // space/underscore/hyphen/joined separators the code path and main-chat matcher
+  // already accept, or workflow-stage/subagent fallbacks dead-end where main-chat
+  // would advance. See test/unit/model-fallback-usage-limit.test.ts.
+  { label: "message usage_limit_reached token", failure: new Error("usage_limit_reached: retry later"), kind: "rate_limit", retryable: true },
+  { label: "message usage-limit hyphen", failure: new Error("provider usage-limit exceeded"), kind: "rate_limit", retryable: true },
+  { label: "message USAGE_LIMIT_EXCEEDED upper", failure: new Error("USAGE_LIMIT_EXCEEDED"), kind: "rate_limit", retryable: true },
+  { label: "message usagelimit joined", failure: new Error("usagelimit reached"), kind: "rate_limit", retryable: true },
+  // Negative guard: an unrelated "limit" that is not a usage/quota limit must not
+  // become retryable when the separator class is broadened.
+  { label: "message unrelated index limit not usage", failure: new Error("array index limit reached"), kind: "unknown", retryable: false },
   // Non-retryable terminal failures.
   { label: "message tests failed", failure: new Error("tests failed: 3 failures"), kind: "task_failure", retryable: false },
   { label: "message interrupted", failure: new Error("interrupted by user"), kind: "cancelled", retryable: false },

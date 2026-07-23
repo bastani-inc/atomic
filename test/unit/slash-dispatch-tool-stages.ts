@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { describe, test } from "bun:test";
 import {
+    installSlashDispatchTestHooks,
     assert,
     parseWorkflowArgs,
     tokenizeWorkflowArgs,
@@ -63,13 +64,14 @@ import type {
     StageControlHandle,
 } from "./slash-dispatch-utils.js";
 
+installSlashDispatchTestHooks();
+
 describe("tool run-control actions", () => {
     function makeToolHandler() {
         const registry = createRegistry([]);
         const runtime = createExtensionRuntime({ registry });
         return makeExecuteWorkflowTool(
             runtime,
-            () => undefined,
             () => undefined,
         );
     }
@@ -94,7 +96,6 @@ describe("tool run-control actions", () => {
         return {
             handler: makeExecuteWorkflowTool(
                 runtime,
-                () => undefined,
                 () => undefined,
             ),
             wasDispatched: () => dispatched,
@@ -254,6 +255,29 @@ describe("tool run-control actions", () => {
             renderResult(ambiguous, { plain: true }),
             /Ambiguous run prefix/,
         );
+    });
+
+    test.serial("workflow status rejects an ambiguous run ID exactly as abbreviated in its list", async () => {
+        const firstId = "abc123-first-full-run-id";
+        const secondId = "abc123-second-full-run-id";
+        store.recordRunStart(makeInflightRun(firstId));
+        store.recordRunStart(makeInflightRun(secondId));
+        const handler = makeToolHandler();
+
+        const listed = await handler({ action: "status" }, {} as never);
+        const rendered = renderResult(listed, { plain: true });
+        assert.match(rendered, /abc123/);
+
+        const detail = await handler(
+            { action: "status", runId: "abc123" },
+            {} as never,
+        );
+        assert.equal(detail.action, "statusDetail");
+        const statusDetail = detail as { action: string; runId: string; error?: string };
+        assert.equal(statusDetail.runId, "abc123");
+        assert.match(statusDetail.error ?? "", /Ambiguous run prefix/);
+        assert.match(statusDetail.error ?? "", new RegExp(firstId.slice(0, 12)));
+        assert.match(statusDetail.error ?? "", new RegExp(secondId.slice(0, 12)));
     });
 
     test.serial("makeExecuteWorkflowTool returns chronologically final snapshot result after tools", async () => {

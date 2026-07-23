@@ -20,7 +20,7 @@ import { SettingsManager } from "../src/core/settings-manager.ts";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
 import "../src/modes/interactive/interactive-model-routing.ts";
 
-const MAI_CODE_FLASH_ID = "mai-code-1-flash-picker";
+const MAI_CODE_FLASH_ID = "mai-code-2-flash-picker";
 const COPILOT_TOKEN = "tid=x;proxy-ep=proxy.individual.githubcopilot.com";
 const COPILOT_BASE_URL = "https://api.individual.githubcopilot.com";
 
@@ -110,7 +110,7 @@ test("refreshCurrentModelFromRegistry adopts catalog metadata and clamps stale C
 	const unsubscribe = session.subscribe((event) => emittedEventTypes.push(event.type));
 
 	setActiveCopilotModelCatalog(maiCodeCatalog);
-	registry.refresh();
+	await registry.refresh();
 	session.refreshCurrentModelFromRegistry();
 	unsubscribe();
 
@@ -141,7 +141,7 @@ test("refreshCurrentModelFromRegistry leaves the active fallback untouched when 
 	});
 
 	setActiveCopilotModelCatalog(maiCodeCatalog);
-	registry.refresh();
+	await registry.refresh();
 	session.refreshCurrentModelFromRegistry();
 
 	assert.equal(session.model, fallbackModel);

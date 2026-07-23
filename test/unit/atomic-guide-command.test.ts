@@ -39,17 +39,33 @@ describe("/atomic guide command", () => {
     assert.match(getAtomicGuideMessage(normalizeAtomicGuideMode("what's new"), cwd), /^# What's new/);
   });
 
-  test("explains goal versus ralph across onboarding sections", () => {
+  test("explains workflow-first routing and custom workflow authoring", () => {
     const cwd = "/repo";
     const overview = getAtomicGuideMessage(normalizeAtomicGuideMode("overview"), cwd);
     const example = getAtomicGuideMessage(normalizeAtomicGuideMode("example"), cwd);
     const workflows = getAtomicGuideMessage(normalizeAtomicGuideMode("workflows"), cwd);
+    const onboarding = `${overview}\n${example}\n${workflows}`;
 
-    assert.match(overview, /`goal` \| small-to-medium scoped changes/);
-    assert.match(overview, /`ralph` \| larger migrations, new features, broad refactors, and multi-package changes where you want Atomic to research first, delegate, review, and iterate/);
-    assert.match(example, /For small-to-medium scoped changes where you can identify the work surface, exact outcome, and validation, use `goal`/);
-    assert.match(workflows, /\| `goal` \| small-to-medium scoped changes with a clear outcome and named validation/);
-    assert.match(workflows, /\| `ralph` \| larger migrations, new features, broad refactors, and multi-package research-first implementation work/);
+    assert.match(overview, /Default to a workflow for implementation, build, debugging/);
+    assert.match(overview, /author a custom TypeScript `workflow\(\{\.\.\.\}\)` inline/);
+    assert.match(example, /Default to a workflow for non-trivial implementation and review/);
+    assert.match(example, /author a custom TypeScript workflow inline from the starter patterns/);
+    assert.match(workflows, /Default to workflows for non-trivial work and requests with inherent structure plus a verifiable objective/);
+    assert.match(workflows, /classify-and-act routing, dynamic fan-out and synthesis, adversarial verification/);
+    assert.match(workflows, /\/workflow quit <run-id>/);
+    assert.match(workflows, /prefer `ctx\.tool\(name, args, fn\)`/);
+    assert.match(workflows, /filesystem writes, network mutations, and external API actions/);
+    assert.match(workflows, /durably cached, so resume returns the saved result without rerunning `fn`/);
+    assert.match(workflows, /Keep pure computation as ordinary TypeScript/);
+    assert.match(workflows, /do not wrap agent-stage internals or every function call indiscriminately/);
+
+    for (const regressionPolicy of [
+      "Multiple steps, files, tests, validation, or parallelism alone do not require a workflow",
+      "choose a workflow only when the user clearly delegates",
+      "there is no fixed tool-call escalation threshold",
+    ]) {
+      assert.doesNotMatch(onboarding, new RegExp(regressionPolicy));
+    }
   });
 
   test("treats adversarial punctuation arguments as unknown help requests", () => {

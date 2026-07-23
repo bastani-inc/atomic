@@ -176,6 +176,23 @@ describe("FooterComponent width handling", () => {
 		expect(statsText).toContain("CH25.0%");
 	});
 
+
+	it("marks Kimi Coding costs as subscription estimates", () => {
+		const session = createSession({
+			sessionName: "",
+			provider: "kimi-coding",
+			usage: {
+				input: 100,
+				output: 10,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { total: 1.234 },
+			},
+		});
+		const usageMeter = new UsageMeterComponent(session);
+
+		expect(stripAnsi(usageMeter.render(120).join("\n"))).toContain("$1.234 (sub)");
+	});
 	it("keeps stats line within width for wide model and provider names", () => {
 		const width = 60;
 		const session = createSession({

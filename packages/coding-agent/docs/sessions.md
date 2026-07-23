@@ -34,13 +34,15 @@ For the JSONL file format and SessionManager API, see [Session Format](/session-
 | `/tree` | Navigate the current session tree |
 | `/fork` | Create a new session from a previous user message |
 | `/clone` | Duplicate the current active branch into a new session |
-| `/compact` | Apply Verbatim Compaction with transcript-bound, validated logical deletions; see [Compaction](/compaction) |
+| `/compact` | Compact transcript lines verbatim while preserving exactly the configured number of newest context-visible messages; see [Compaction](/compaction) |
 | `/export [file]` | Export session to HTML |
 | `/share` | Upload as private GitHub gist with shareable HTML link |
 
 ## Resuming and Deleting Sessions
 
 `/resume` opens an interactive session picker for the current project. `atomic -r` opens the same picker at startup.
+
+When Atomic reconstructs a resumed session, the latest active verbatim `compaction` entry supplies a durable compacted transcript string followed by the exact original kept tail. A zero-retention boundary stores `firstKeptEntryId: null` and replays no pre-boundary ordinary message. Resume does not rerun a planner or re-derive omissions. Legacy logical-deletion `context_compaction` entries are inert archival records, so previously hidden content can re-enter context in sessions created by older versions.
 
 In the picker you can:
 
@@ -52,6 +54,8 @@ In the picker you can:
 - delete with CTRL+D, then confirm
 
 When available, Atomic uses the `trash` CLI for deletion instead of permanently removing files.
+
+The picker opens instantly: its header, search field, and loading indicator paint on the first frame, then sessions are discovered and parsed off the terminal's UI loop. Large session directories are scanned in cooperative batches and a single very large transcript is parsed in yielding chunks, so search, navigation, and cancel stay responsive and no individual session can freeze the picker while it loads. Closing the picker cancels any in-flight scan and discards stale results, so a slow load that finishes after you leave never updates the list.
 
 ### Internal (workflow) sessions
 
@@ -146,12 +150,12 @@ When prompted, choose one of:
 2. summarize with the default prompt
 3. summarize with custom focus instructions
 
-Branch summaries are separate from `/compact`: branch navigation can generate summary prose (optionally with focus instructions), while Verbatim Compaction records validated deletion targets and does not accept summary instructions.
+Branch summaries are separate from `/compact`: branch navigation can generate summary prose (optionally with focus instructions), while Verbatim Compaction lets a model select numbered line ranges and reconstructs retained text mechanically.
 
 See [Compaction](/compaction) for Verbatim Compaction, branch summarization internals, and extension hooks.
 
 ## Session Format
 
-Session files are JSONL and contain message entries, model changes, thinking-level changes, context-window changes, labels, context compactions, branch summaries, extension entries, and retired legacy `type:"compaction"` records from older sessions.
+Session files are JSONL and contain message entries, model changes, thinking-level changes, context-window changes, labels, active verbatim `compaction` boundaries, branch summaries, and extension entries. Retired `context_compaction` and non-verbatim `compaction` records remain parseable but inert.
 
 For parsers, extensions, SDK usage, and the full SessionManager API, see [Session Format](/session-format).

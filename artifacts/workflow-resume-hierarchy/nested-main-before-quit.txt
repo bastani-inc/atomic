@@ -1,0 +1,50 @@
+
+   ██████▙                  ▟██████    Atomic v0.0.0
+    ██████▙                ▟██████░░   (anthropic) claude-fable-5 high
+     ██████▙              ▟██████░░    ~/Documents/projects/atomic-worktrees/workflow-resume-hierarchy/.tmp-e2e
+      ██████▙            ▟██████░░
+       ████████████████████████░░
+        ██████▛░░░░░░░░▜██████░░
+         ██████▛      ▜██████░░
+          ██████▛    ▜██████░░
+           ██████▛  ▜██████░░
+            ░████████████░░░
+              ░░░░░░░░░░░░
+
+RESOURCES ~/Documents/projects/atomic-worktrees/workflow-resume-hierarchy/AGENTS.md · 18 skills · 14 prompts
+
+
+ Warning: Workflow discovery diagnostics (2): some workflow resources were skipped or need attention.
+ - [error IMPORT_FAILED] /Users/tonystark/Documents/projects/atomic-worktrees/workflow-resume-hierarchy/.tmp-e2e/.atomic/workflows/resume-hierarchy-e2e.ts:
+ Failed to import "/Users/tonystark/Documents/projects/atomic-worktrees/workflow-resume-hierarchy/.tmp-e2e/.atomic/workflows/resume-hierarchy-e2e.ts": Cannot
+ read properties of undefined (reading 'String')
+ - [error IMPORT_FAILED] /Users/tonystark/Documents/projects/atomic-worktrees/workflow-resume-hierarchy/.tmp-e2e/.atomic/workflows/resume-single-e2e.ts: Failed
+ to import "/Users/tonystark/Documents/projects/atomic-worktrees/workflow-resume-hierarchy/.tmp-e2e/.atomic/workflows/resume-single-e2e.ts": Cannot read
+ properties of undefined (reading 'String')
+
+ Warning: Anthropic subscription auth is active. Third-party harness usage draws from extra usage and is billed per token, not your Claude plan limits. Manage
+ extra usage at https://claude.ai/settings/usage.
+
+ Reloaded workflow resources. 13 workflow(s), generation 4.
+
+╭ DISPATCHED ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ●  cbaf0e31  resume-hierarchy-e2e  ● running                                                                                                                 │
+│   started in background                                                                                                                                      │
+│                                                                                                                                                              │
+│  ▸ /workflow connect cbaf0e31  see agents working · chat with and steer each stage                                                                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Connected to cbaf0e31. h hide · ctrl+x leave graph · return to main chat · esc close.
+
+                                                                                                                                 $0.000 (sub) • 0.0%/1.0M (auto)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+(anthropic) claude-fable-5 high • ~/Documents/projects/atomic-worktrees/workflow-resume-hierarchy/.tmp-e2e
+
+╭ BACKGROUND  1 run  ● 1 running ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   ●  cbaf0e  resume-hierarchy-e2e                                                                                                                            │
+│     chain · 1/2 · 42s                                                                                                                                        │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+

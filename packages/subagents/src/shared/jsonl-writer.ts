@@ -7,6 +7,7 @@ export interface DrainableSource {
 
 export interface JsonlWriteStream {
 	write(chunk: string): boolean;
+	on?(event: "error", listener: (error: Error) => void): JsonlWriteStream;
 	once(event: "drain", listener: () => void): JsonlWriteStream;
 	end(callback?: () => void): void;
 }

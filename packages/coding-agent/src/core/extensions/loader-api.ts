@@ -1,9 +1,11 @@
+import type { Provider } from "@earendil-works/pi-ai";
 import type { KeyId } from "@earendil-works/pi-tui";
 import { execCommand } from "../exec.ts";
 import type { ExecOptions } from "../exec.ts";
 import type { EventBus } from "../event-bus.ts";
 import type {
   Extension,
+  EntryRenderer,
   ExtensionAPI,
   ExtensionContext,
   ExtensionRuntime,
@@ -100,6 +102,11 @@ export function createExtensionAPI(
       extension.messageRenderers.set(customType, renderer as MessageRenderer);
     },
 
+    registerEntryRenderer<T>(customType: string, renderer: EntryRenderer<T>): void {
+      runtime.assertActive();
+      extension.entryRenderers.set(customType, renderer as EntryRenderer);
+    },
+
     getFlag(name: string): boolean | string | undefined {
       runtime.assertActive();
       if (!extension.flags.has(name)) return undefined;
@@ -122,9 +129,14 @@ export function createExtensionAPI(
       return resourceLoaderInheritanceSnapshotProvider?.() ?? {};
     },
 
-    sendMessage(message, options): void {
+    sendMessage(message, options): void | Promise<void> {
       runtime.assertActive();
-      runtime.sendMessage(message, options);
+      return runtime.sendMessage(message, options);
+    },
+
+    sendMessages(messages, options): void | Promise<void> {
+      runtime.assertActive();
+      return runtime.sendMessages(messages, options);
     },
 
     sendUserMessage(content, options): void {
@@ -192,9 +204,14 @@ export function createExtensionAPI(
       runtime.setThinkingLevel(level);
     },
 
-    registerProvider(name: string, config: ProviderConfig) {
+    registerProvider(nameOrProvider: string | Provider, config?: ProviderConfig) {
       runtime.assertActive();
-      runtime.registerProvider(name, config, extension.path);
+      if (typeof nameOrProvider === "string") {
+        if (!config) throw new Error("Provider config is required");
+        runtime.registerProvider(nameOrProvider, config, extension.path);
+      } else {
+        runtime.registerProvider(nameOrProvider, extension.path);
+      }
     },
 
     unregisterProvider(name: string) {

@@ -6,7 +6,9 @@ export const THINKING_DESCRIPTIONS: Record<ThinkingLevel, string> = {
 	minimal: "Very brief reasoning (~1k tokens)",
 	low: "Light reasoning (~2k tokens)",
 	medium: "Moderate reasoning (~8k tokens)",
-	high: "Deep reasoning (~16k tokens)",	xhigh: "Maximum reasoning (~32k tokens)",
+	high: "Deep reasoning (~16k tokens)",
+	xhigh: "Extra-high reasoning (~32k tokens)",
+	max: "Maximum reasoning",
 };
 
 export const DEFAULT_PROJECT_TRUST_LABELS: Record<DefaultProjectTrust, string> = {

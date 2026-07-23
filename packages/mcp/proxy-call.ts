@@ -1,14 +1,19 @@
 import type { ToolInfo } from "@bastani/atomic";
-import type { McpExtensionState } from "./state.ts";
-import type { McpContent, ToolMetadata } from "./types.ts";
-import { getServerPrefix } from "./types.ts";
-import { lazyConnect, updateServerMetadata, updateMetadataCache, getFailureAgeSeconds, updateStatusBar } from "./init.ts";
-import { getToolNames, findToolByName, formatSchema } from "./tool-metadata.ts";
-import { transformMcpContent } from "./tool-registrar.ts";
-import { maybeStartUiSession, type UiSessionRuntime } from "./ui-session.ts";
-import { unflattenToolArguments } from "./utils.ts";
-import { attemptAutoAuth, getAuthRequiredMessage } from "./proxy-auth.ts";
-import type { ProxyToolResult } from "./proxy-types.ts";
+import type { McpExtensionState } from "./state.js";
+import type { McpContent, ToolMetadata } from "./types.js";
+import { getServerPrefix } from "./types.js";
+import { lazyConnect, updateServerMetadata, updateMetadataCache, getFailureAgeSeconds, updateStatusBar } from "./init.js";
+import { getToolNames, findToolByName, formatSchema } from "./tool-metadata.js";
+import { transformMcpContent } from "./tool-registrar.js";
+import { maybeStartUiSession, type UiSessionRuntime } from "./ui-session.js";
+import { unflattenToolArguments } from "./utils.js";
+import { attemptAutoAuth, getAuthRequiredMessage, type AutoAuthResult } from "./proxy-auth.js";
+import type { ProxyToolResult } from "./proxy-types.js";
+import { waitForCaller, waitForCallerWithLateCleanup } from "./caller-wait.js";
+import { notifyUiCancellation, rethrowHostAbortAfterUiCancellation } from "./apps-cancellation.js";
+import { asCallToolResult } from "./call-tool-result.js";
+import { assertMcpStateLease, McpStateChangedError, type AssertMcpStateLease } from "./state-lease.js";
+import { callToolWithConfiguredTimeout, formatMcpToolCallFailure } from "./tool-call-timeout.js";
 
 export async function executeCall(
   state: McpExtensionState,
@@ -16,7 +21,12 @@ export async function executeCall(
   args?: Record<string, unknown>,
   serverOverride?: string,
   getPiTools?: () => ToolInfo[],
+  signal?: AbortSignal,
+  startAutoAuth: (state: McpExtensionState, serverName: string) => Promise<AutoAuthResult> = attemptAutoAuth,
+  assertActive?: AssertMcpStateLease,
 ): Promise<ProxyToolResult> {
+  signal?.throwIfAborted();
+  assertMcpStateLease(assertActive);
   let serverName: string | undefined = serverOverride;
   let toolMeta: ToolMetadata | undefined;
   let autoAuthAttempted = false;
@@ -43,14 +53,18 @@ export async function executeCall(
   }
 
   if (serverName && !toolMeta) {
-    const connected = await lazyConnect(state, serverName);
+    const connected = await waitForCaller(() => lazyConnect(state, serverName!), signal);
+    signal?.throwIfAborted();
+    assertMcpStateLease(assertActive);
     if (connected) {
       toolMeta = findToolByName(state.toolMetadata.get(serverName), toolName);
     } else {
       const needsAuthConnection = state.manager.getConnection(serverName);
       if (needsAuthConnection?.status === "needs-auth") {
         autoAuthAttempted = true;
-        const autoAuth = await attemptAutoAuth(state, serverName);
+        const autoAuth = await waitForCaller(() => startAutoAuth(state, serverName!), signal);
+        signal?.throwIfAborted();
+        assertMcpStateLease(assertActive);
         if (autoAuth.status === "failed") {
           return {
             content: [{ type: "text" as const, text: autoAuth.message }],
@@ -58,9 +72,13 @@ export async function executeCall(
           };
         }
         if (autoAuth.status === "success") {
-          await state.manager.close(serverName);
+          await waitForCaller(() => state.manager.close(serverName!), signal);
+          signal?.throwIfAborted();
+          assertMcpStateLease(assertActive);
           state.failureTracker.delete(serverName);
-          const connectedAfterAuth = await lazyConnect(state, serverName);
+          const connectedAfterAuth = await waitForCaller(() => lazyConnect(state, serverName!), signal);
+          signal?.throwIfAborted();
+          assertMcpStateLease(assertActive);
           if (connectedAfterAuth) {
             toolMeta = findToolByName(state.toolMetadata.get(serverName), toolName);
             if (!toolMeta) {
@@ -106,10 +124,14 @@ export async function executeCall(
       const failedAgo = getFailureAgeSeconds(state, configuredServer);
       if (failedAgo !== null && existingConnection?.status !== "needs-auth") continue;
 
-      let connected = await lazyConnect(state, configuredServer);
+      let connected = await waitForCaller(() => lazyConnect(state, configuredServer), signal);
+      signal?.throwIfAborted();
+      assertMcpStateLease(assertActive);
       if (!connected && state.manager.getConnection(configuredServer)?.status === "needs-auth" && !autoAuthAttempted) {
         autoAuthAttempted = true;
-        const autoAuth = await attemptAutoAuth(state, configuredServer);
+        const autoAuth = await waitForCaller(() => startAutoAuth(state, configuredServer), signal);
+        signal?.throwIfAborted();
+        assertMcpStateLease(assertActive);
         if (autoAuth.status === "failed") {
           return {
             content: [{ type: "text" as const, text: autoAuth.message }],
@@ -117,9 +139,13 @@ export async function executeCall(
           };
         }
         if (autoAuth.status === "success") {
-          await state.manager.close(configuredServer);
+          await waitForCaller(() => state.manager.close(configuredServer), signal);
+          signal?.throwIfAborted();
+          assertMcpStateLease(assertActive);
           state.failureTracker.delete(configuredServer);
-          connected = await lazyConnect(state, configuredServer);
+          connected = await waitForCaller(() => lazyConnect(state, configuredServer), signal);
+          signal?.throwIfAborted();
+          assertMcpStateLease(assertActive);
         }
       }
 
@@ -162,7 +188,9 @@ export async function executeCall(
   if (connection?.status === "needs-auth") {
     if (!autoAuthAttempted) {
       autoAuthAttempted = true;
-      const autoAuth = await attemptAutoAuth(state, serverName);
+      const autoAuth = await waitForCaller(() => startAutoAuth(state, serverName!), signal);
+      signal?.throwIfAborted();
+      assertMcpStateLease(assertActive);
       if (autoAuth.status === "failed") {
         return {
           content: [{ type: "text" as const, text: autoAuth.message }],
@@ -170,7 +198,9 @@ export async function executeCall(
         };
       }
       if (autoAuth.status === "success") {
-        await state.manager.close(serverName);
+        await waitForCaller(() => state.manager.close(serverName!), signal);
+        signal?.throwIfAborted();
+        assertMcpStateLease(assertActive);
         state.failureTracker.delete(serverName);
         connection = state.manager.getConnection(serverName);
       }
@@ -202,14 +232,19 @@ export async function executeCall(
     }
 
     try {
+      assertMcpStateLease(assertActive);
       if (state.ui) {
         state.ui.setStatus("mcp", `MCP: connecting to ${serverName}...`);
       }
-      connection = await state.manager.connect(serverName, definition);
+      connection = await waitForCaller(() => state.manager.connect(serverName, definition), signal);
+      signal?.throwIfAborted();
+      assertMcpStateLease(assertActive);
       if (connection.status === "needs-auth") {
         if (!autoAuthAttempted) {
           autoAuthAttempted = true;
-          const autoAuth = await attemptAutoAuth(state, serverName);
+          const autoAuth = await waitForCaller(() => startAutoAuth(state, serverName!), signal);
+          signal?.throwIfAborted();
+          assertMcpStateLease(assertActive);
           if (autoAuth.status === "failed") {
             return {
               content: [{ type: "text" as const, text: autoAuth.message }],
@@ -217,8 +252,12 @@ export async function executeCall(
             };
           }
           if (autoAuth.status === "success") {
-            await state.manager.close(serverName);
-            connection = await state.manager.connect(serverName, definition);
+            await waitForCaller(() => state.manager.close(serverName!), signal);
+            signal?.throwIfAborted();
+            assertMcpStateLease(assertActive);
+            connection = await waitForCaller(() => state.manager.connect(serverName, definition), signal);
+            signal?.throwIfAborted();
+            assertMcpStateLease(assertActive);
           }
         }
 
@@ -230,6 +269,7 @@ export async function executeCall(
           };
         }
       }
+      assertMcpStateLease(assertActive);
       state.failureTracker.delete(serverName);
       updateServerMetadata(state, serverName);
       updateMetadataCache(state, serverName);
@@ -246,6 +286,8 @@ export async function executeCall(
         };
       }
     } catch (error) {
+      signal?.throwIfAborted();
+      assertMcpStateLease(assertActive);
       state.failureTracker.set(serverName, Date.now());
       updateStatusBar(state);
       const message = error instanceof Error ? error.message : String(error);
@@ -255,15 +297,20 @@ export async function executeCall(
       };
     }
   }
+  const definition = state.config.mcpServers[serverName] ?? connection.definition;
 
   let uiSession: UiSessionRuntime | null = null;
 
   try {
+    assertMcpStateLease(assertActive);
     state.manager.touch(serverName);
     state.manager.incrementInFlight(serverName);
 
     if (toolMeta.resourceUri) {
-      const result = await connection.client.readResource({ uri: toolMeta.resourceUri });
+      assertMcpStateLease(assertActive);
+      const result = await connection.client.readResource({ uri: toolMeta.resourceUri }, { signal });
+      signal?.throwIfAborted();
+      assertMcpStateLease(assertActive);
       const content = (result.contents ?? []).map(c => ({
         type: "text" as const,
         text: "text" in c ? c.text : ("blob" in c ? `[Binary data: ${(c as { mimeType?: string }).mimeType ?? "unknown"}]` : JSON.stringify(c)),
@@ -275,16 +322,25 @@ export async function executeCall(
     }
 
     uiSession = toolMeta.uiResourceUri
-      ? await maybeStartUiSession(state, {
-          serverName,
-          toolName: toolMeta.originalName,
-          toolArgs: args ?? {},
-          uiResourceUri: toolMeta.uiResourceUri,
-          streamMode: toolMeta.uiStreamMode,
-        })
+      ? await waitForCallerWithLateCleanup(
+          () => maybeStartUiSession(state, {
+            serverName,
+            toolName: toolMeta.originalName,
+            toolArgs: args ?? {},
+            uiResourceUri: toolMeta.uiResourceUri!,
+            streamMode: toolMeta.uiStreamMode,
+          }),
+          signal,
+          (lateSession) => {
+            if (lateSession && !lateSession.reused) lateSession.close("caller cancelled during UI startup");
+          },
+        )
       : null;
+    signal?.throwIfAborted();
+    assertMcpStateLease(assertActive);
 
-    const resultPromise = connection.client.callTool({
+    assertMcpStateLease(assertActive);
+    const resultPromise = callToolWithConfiguredTimeout(connection.client, {
       name: toolMeta.originalName,
       // Normalize provider-flattened argument keys (e.g. Gemini's `keywords[0]`)
       // back into arrays/objects before the MCP server validates them.
@@ -292,11 +348,14 @@ export async function executeCall(
       // preserved unless the schema proves the head is a container.
       arguments: unflattenToolArguments(args, toolMeta.inputSchema),
       _meta: uiSession?.requestMeta,
-    });
+    }, definition, serverName, signal);
 
     if (toolMeta.uiResourceUri) {
-      const result = await resultPromise;
-      uiSession?.sendToolResult(result as unknown as import("@modelcontextprotocol/sdk/types.js").CallToolResult);
+      const sdkResult = await resultPromise;
+      signal?.throwIfAborted();
+      assertMcpStateLease(assertActive);
+      const result = asCallToolResult(sdkResult);
+      uiSession?.sendToolResult(result);
       const mcpContent = (result.content ?? []) as McpContent[];
       const content = transformMcpContent(mcpContent);
 
@@ -326,7 +385,10 @@ export async function executeCall(
       };
     }
 
-    const result = await resultPromise;
+    const sdkResult = await resultPromise;
+    signal?.throwIfAborted();
+    assertMcpStateLease(assertActive);
+    const result = asCallToolResult(sdkResult);
 
     const mcpContent = (result.content ?? []) as McpContent[];
     const content = transformMcpContent(mcpContent);
@@ -353,10 +415,13 @@ export async function executeCall(
       details: { mode: "call", mcpResult: result, server: serverName, tool: toolMeta.originalName },
     };
   } catch (error) {
+    await rethrowHostAbortAfterUiCancellation(signal, uiSession);
     const message = error instanceof Error ? error.message : String(error);
-    uiSession?.sendToolCancelled(message);
+    await notifyUiCancellation(uiSession, message);
+    signal?.throwIfAborted();
+    assertMcpStateLease(assertActive);
 
-    let errorWithSchema = `Failed to call tool: ${message}`;
+    let errorWithSchema = formatMcpToolCallFailure(error, serverName, definition.timeoutMs);
     if (toolMeta.inputSchema) {
       errorWithSchema += `\n\nExpected parameters:\n${formatSchema(toolMeta.inputSchema)}`;
     }
@@ -366,10 +431,17 @@ export async function executeCall(
       details: { mode: "call", error: "call_failed", message },
     };
   } finally {
-    if (uiSession?.reused) {
-      uiSession.close();
+    let staleState = false;
+    try {
+      assertMcpStateLease(assertActive);
+    } catch (error) {
+      if (error instanceof McpStateChangedError) staleState = true;
+      else throw error;
+    }
+    if (uiSession && (uiSession.reused || staleState)) {
+      uiSession.close(staleState ? "stale MCP session" : undefined);
     }
     state.manager.decrementInFlight(serverName);
-    state.manager.touch(serverName);
+    if (!staleState) state.manager.touch(serverName);
   }
 }

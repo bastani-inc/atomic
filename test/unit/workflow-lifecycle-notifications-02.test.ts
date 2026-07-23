@@ -196,7 +196,7 @@ describe("installWorkflowLifecycleNotifications", () => {
     });
     store.recordRunStart({ id: "run-7", name: "turn", inputs: {}, status: "running", stages: [], startedAt: 1 });
     store.recordRunEnd("run-7", "completed", {});
-    assert.deepEqual(options, [{ triggerTurn: true, deliverAs: "steer" }]);
+    assert.deepEqual(options, [{ triggerTurn: true, deliverAs: "steer", persistWhenStreaming: true }]);
   });
 
   test("warns about send failures when workflow debug logging is enabled", () => {

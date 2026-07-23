@@ -15,6 +15,8 @@ import {
     assistantTextMessage,
     type StageControlHandle,
 } from "./stage-chat-view-helpers.js";
+import { join, sep } from "node:path";
+import { hexToAnsi } from "../../packages/workflows/src/tui/color-utils.js";
 
 describe("StageChatView", () => {
     test("failed resume keeps the local paused state", async () => {
@@ -226,7 +228,80 @@ describe("StageChatView", () => {
         view.dispose();
     });
 
-    test("footer keeps model context and Ctrl+D orchestrator hint on one line", () => {
+    test("idle footer shows themed cwd, branch, and live MCP extension status", () => {
+        // Match production replaceHome() exactly: HOME on POSIX, USERPROFILE on
+        // Windows. Build the cwd and expectation with native separators so the
+        // test passes on both platforms.
+        const home = process.env.HOME || process.env.USERPROFILE;
+        assert.ok(home, "test requires HOME or USERPROFILE for main-footer parity");
+        const cwd = join(home, "Documents", "projects", "atomic");
+        const shortCwd = ["~", "Documents", "projects", "atomic"].join(sep);
+        const store = createStore();
+        setupRun(store, "run-1", "stage-a", "running");
+        const agentSession = fakeFooterAgentSession(false);
+        Object.assign(agentSession.sessionManager, {
+            getCwd: () => cwd,
+        });
+        const { handle } = makeHandle(undefined, [], "running", agentSession);
+        const statuses = new Map([
+            ["mcp", "MCP: 1/1 servers connected (3 tools)"],
+        ]);
+        let branch = "main";
+        let branchChanged: (() => void) | undefined;
+        let renderRequests = 0;
+        let unsubscribed = false;
+        const graphTheme = deriveGraphTheme({
+            dim: "#654321",
+            textMuted: "#123456",
+        });
+        const view = new StageChatView({
+            store,
+            graphTheme,
+            runId: "run-1",
+            stageId: "stage-a",
+            workflowName: "test-wf",
+            handle,
+            footerData: {
+                getGitBranch: () => branch,
+                getExtensionStatuses: () => statuses,
+                getAvailableProviderCount: () => 2,
+                onBranchChange: (listener) => {
+                    branchChanged = listener;
+                    return () => {
+                        unsubscribed = true;
+                    };
+                },
+            },
+            requestRender: () => {
+                renderRequests += 1;
+            },
+            onDetach: () => {},
+            onClose: () => {},
+        });
+
+        const initialRaw = view.render(120).join("\n");
+        const initial = stripAnsi(initialRaw);
+        assert.ok(initial.includes(`${shortCwd} (main)`), "expected home-shortened cwd and branch");
+        assert.match(initial, /MCP: 1\/1 servers connected \(3 tools\)/);
+        assert.ok(
+            initialRaw.includes(`${hexToAnsi(graphTheme.textMuted)}${shortCwd} (main)`),
+            "cwd and branch should use the workflow chat's muted text theme",
+        );
+
+        branch = "feature/footer-parity";
+        statuses.set("mcp", "MCP: 0/1 servers");
+        branchChanged?.();
+        assert.equal(renderRequests, 1);
+        const updated = view.render(120).map(stripAnsi).join("\n");
+        assert.ok(updated.includes(`${shortCwd} (feature/footer-parity)`), "expected updated branch after invalidation");
+        assert.match(updated, /MCP: 0\/1 servers/);
+        assert.doesNotMatch(updated, /MCP: 1\/1 servers connected/);
+
+        view.dispose();
+        assert.equal(unsubscribed, true);
+    });
+
+    test("footer keeps model context and Ctrl+X hierarchy hint on one line", () => {
         const store = createStore();
         setupRun(store, "run-1", "stage-a", "running");
         const { handle } = makeHandle();
@@ -255,9 +330,43 @@ describe("StageChatView", () => {
         const hintIndex = expectRightAlignedReturnHint(lines, 120);
         assert.match(
             lines[hintIndex] ?? "",
-            /\(openai-codex\) gpt-5\.5 high .*Documents\/projects\/atomic/,
+            /\(openai-codex\) gpt-5\.5 high .*ctrl\+x return to graph/,
         );
         assert.notEqual(lines[hintIndex]?.trim(), RETURN_HINT_TEXT);
+        view.dispose();
+    });
+
+    test("40-column live footer separates model context from the compact hierarchy hint", () => {
+        const store = createStore();
+        setupRun(store, "run-1", "stage-a", "running");
+        const agentSession = fakeFooterAgentSession(false);
+        Object.assign(agentSession.state.model!, {
+            id: "claude-sonnet-4",
+            provider: "anthropic",
+        });
+        const { handle } = makeHandle(undefined, [], "running", agentSession);
+        const view = new StageChatView({
+            store,
+            graphTheme: deriveGraphTheme({}),
+            runId: "run-1",
+            stageId: "stage-a",
+            workflowName: "test-wf",
+            handle,
+            footerData: {
+                getGitBranch: () => "main",
+                getExtensionStatuses: () => new Map(),
+                getAvailableProviderCount: () => 2,
+                onBranchChange: () => () => {},
+            },
+            onDetach: () => {},
+            onClose: () => {},
+        });
+
+        const footer = view.render(40).map(stripAnsi)
+            .find((line) => line.includes("ctrl+x graph"));
+        assert.match(footer ?? "", /\sctrl\+x graph · ctrl\+t off$/);
+        assert.equal(footer?.length, 40);
+        assert.doesNotMatch(footer ?? "", /clactrl\+x/);
         view.dispose();
     });
 

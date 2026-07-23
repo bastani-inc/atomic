@@ -27,6 +27,8 @@ export interface AuthStorageBackend {
 	 * `AuthStorage.reload()` falls back to a `withLock`-based read.
 	 */
 	read?(): string | undefined;
+	deleteProvider?(provider: string): string | undefined;
+	deleteProviderAsync?(provider: string): Promise<string | undefined>;
 	withLock<T>(fn: (current: string | undefined) => LockResult<T>): T;
 	withLockAsync<T>(fn: (current: string | undefined) => Promise<LockResult<T>>): Promise<T>;
 }
@@ -104,8 +106,8 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 	 * never observe a half-written file. The temp file is best-effort cleaned up
 	 * if the rename fails.
 	 */
-	private writeAtomic(content: string): void {
-		const dir = dirname(this.authPath);
+	private writeAtomic(content: string, path = this.authPath): void {
+		const dir = dirname(path);
 		const tempPath = join(
 			dir,
 			`.${`auth.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`}.tmp`,
@@ -113,7 +115,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		try {
 			writeFileSync(tempPath, content, AUTH_FILE_WRITE_OPTIONS);
 			chmodSync(tempPath, 0o600);
-			renameSync(tempPath, this.authPath);
+			renameSync(tempPath, path);
 		} catch (error) {
 			try {
 				if (existsSync(tempPath)) rmSync(tempPath, { force: true });
@@ -126,6 +128,46 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 
 	read(): string | undefined {
 		return this.readMergedAuth();
+	}
+
+	deleteProvider(provider: string): string | undefined {
+		const paths = [...new Set(this.readPaths.filter((path) => existsSync(path)))].sort();
+		const releases: Array<() => void> = [];
+		try {
+			for (const path of paths) releases.push(this.acquireLockSyncWithRetry(path));
+			for (const path of paths) {
+				const data = JSON.parse(readFileSync(path, "utf-8")) as AuthStorageData;
+				if (!(provider in data)) continue;
+				delete data[provider];
+				this.writeAtomic(JSON.stringify(data, null, 2), path);
+			}
+			return this.readMergedAuth();
+		} finally {
+			for (const release of releases.reverse()) release();
+		}
+	}
+
+	async deleteProviderAsync(provider: string): Promise<string | undefined> {
+		const paths = [...new Set(this.readPaths.filter((path) => existsSync(path)))].sort();
+		const releases: Array<() => Promise<void>> = [];
+		try {
+			for (const path of paths) {
+				releases.push(await lockfile.lock(path, {
+					realpath: false,
+					retries: { retries: 10, factor: 2, minTimeout: 100, maxTimeout: 10000, randomize: true },
+					stale: 30000,
+				}));
+			}
+			for (const path of paths) {
+				const data = JSON.parse(readFileSync(path, "utf-8")) as AuthStorageData;
+				if (!(provider in data)) continue;
+				delete data[provider];
+				this.writeAtomic(JSON.stringify(data, null, 2), path);
+			}
+			return this.readMergedAuth();
+		} finally {
+			for (const release of releases.reverse()) await release();
+		}
 	}
 
 	withLock<T>(fn: (current: string | undefined) => LockResult<T>): T {

@@ -23,6 +23,7 @@ export { ExtensionRunner } from "./runner.ts";
 export type {
 	AfterProviderResponseEvent,
 	AgentEndEvent,
+	AgentSettledEvent,
 	AgentStartEvent,
 	// Re-exports
 	AgentToolResult,
@@ -37,6 +38,7 @@ export type {
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
 	BeforeProviderRequestEvent,
+	BeforeProviderHeadersEvent,
 	BeforeProviderRequestEventResult,
 	BuildSystemPromptOptions,
 	// Context
@@ -83,6 +85,12 @@ export type {
 	GetThinkingLevelHandler,
 	HostCustomUiState,
 	HostCustomUiStateListener,
+	HostInputFormField,
+	HostInputFormFieldType,
+	HostInputFormRequest,
+	HostSessionPickerHandle,
+	HostSessionPickerRequest,
+	HostSessionPickerRow,
 	// Events - Input
 	InputEvent,
 	InputEventResult,
@@ -94,6 +102,8 @@ export type {
 	// Events - Message
 	MessageEndEvent,
 	// Message Rendering
+	EntryRenderer,
+	EntryRenderOptions,
 	MessageRenderer,
 	MessageRenderOptions,
 	MessageStartEvent,
@@ -110,6 +120,7 @@ export type {
 	// Provider Registration
 	ProviderConfig,
 	ProviderModelConfig,
+	InlineExtension,
 	ReadToolCallEvent,
 	ReadToolResultEvent,
 	// Commands
@@ -122,6 +133,8 @@ export type {
 	ResourcesDiscoverResult,
 	SendMessageHandler,
 	SendMessageOptions,
+	SendMessagesHandler,
+	SendMessagesOptions,
 	SendUserMessageHandler,
 	SessionBeforeCompactEvent,
 	SessionBeforeCompactResult,

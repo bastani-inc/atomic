@@ -11,6 +11,11 @@ export interface SelfUpdateRuntime {
 }
 
 export type InstallMethod = "bun-binary" | "npm" | "pnpm" | "yarn" | "bun" | "unknown";
+export type SelfUpdateTarget = string | { packageName: string; installSpec?: string };
+function normalizeSelfUpdateTarget(target: SelfUpdateTarget): { packageName: string; installSpec: string } {
+	if (typeof target === "string") return { packageName: target, installSpec: target };
+	return { packageName: target.packageName, installSpec: target.installSpec ?? target.packageName };
+}
 
 interface SelfUpdateCommandStep {
 	command: string;
@@ -90,6 +95,7 @@ function getSelfUpdateCommandForMethod(
 	installedPackageName: string,
 	updatePackageName = installedPackageName,
 	npmCommand?: string[],
+	installSpec = updatePackageName,
 ): SelfUpdateCommand | undefined {
 	switch (method) {
 		case "bun-binary":
@@ -108,7 +114,7 @@ function getSelfUpdateCommandForMethod(
 					"--ignore-scripts",
 					"--config.minimumReleaseAge=0",
 					...binDirArgs,
-					updatePackageName,
+					installSpec,
 				]),
 				updatePackageName === installedPackageName
 					? undefined
@@ -117,7 +123,7 @@ function getSelfUpdateCommandForMethod(
 		}
 		case "yarn":
 			return makeSelfUpdateCommand(
-				makeSelfUpdateCommandStep("yarn", ["global", "add", "--ignore-scripts", updatePackageName]),
+				makeSelfUpdateCommandStep("yarn", ["global", "add", "--ignore-scripts", installSpec]),
 				updatePackageName === installedPackageName
 					? undefined
 					: makeSelfUpdateCommandStep("yarn", ["global", "remove", installedPackageName]),
@@ -129,7 +135,7 @@ function getSelfUpdateCommandForMethod(
 					"-g",
 					"--ignore-scripts",
 					"--minimum-release-age=0",
-					updatePackageName,
+					installSpec,
 				]),
 				updatePackageName === installedPackageName
 					? undefined
@@ -145,7 +151,7 @@ function getSelfUpdateCommandForMethod(
 				"-g",
 				"--ignore-scripts",
 				"--min-release-age=0",
-				updatePackageName,
+				installSpec,
 			]);
 			const uninstallStep =
 				updatePackageName === installedPackageName
@@ -290,10 +296,11 @@ export function getSelfUpdateCommandForRuntime(
 	runtime: SelfUpdateRuntime,
 	packageName: string,
 	npmCommand?: string[],
-	updatePackageName = packageName,
+	updateTarget: SelfUpdateTarget = packageName,
 ): SelfUpdateCommand | undefined {
 	const method = detectInstallMethodForRuntime(runtime);
-	const command = getSelfUpdateCommandForMethod(runtime, method, packageName, updatePackageName, npmCommand);
+	const target = normalizeSelfUpdateTarget(updateTarget);
+	const command = getSelfUpdateCommandForMethod(runtime, method, packageName, target.packageName, npmCommand, target.installSpec);
 	if (!command || !isManagedByGlobalPackageManager(runtime, method, packageName, npmCommand) || !isSelfUpdatePathWritable(runtime)) {
 		return undefined;
 	}
@@ -304,20 +311,21 @@ export function getSelfUpdateUnavailableInstructionForRuntime(
 	runtime: SelfUpdateRuntime,
 	packageName: string,
 	npmCommand?: string[],
-	updatePackageName = packageName,
+	updateTarget: SelfUpdateTarget = packageName,
 ): string {
 	const method = detectInstallMethodForRuntime(runtime);
 	if (method === "bun-binary") {
 		return `Download from: https://github.com/earendil-works/pi-mono/releases/latest`;
 	}
-	const command = getSelfUpdateCommandForMethod(runtime, method, packageName, updatePackageName, npmCommand);
+	const target = normalizeSelfUpdateTarget(updateTarget);
+	const command = getSelfUpdateCommandForMethod(runtime, method, packageName, target.packageName, npmCommand, target.installSpec);
 	if (command) {
 		if (isManagedByGlobalPackageManager(runtime, method, packageName, npmCommand) && !isSelfUpdatePathWritable(runtime)) {
 			return `This installation is managed by a global ${method} install, but the install path is not writable. Update it yourself with: ${command.display}`;
 		}
 		return `This installation is not managed by a global ${method} install. Update it with the package manager, wrapper, or source checkout that provides it.`;
 	}
-	return `Update ${updatePackageName} using the package manager, wrapper, or source checkout that provides this installation.`;
+	return `Update ${target.installSpec} using the package manager, wrapper, or source checkout that provides this installation.`;
 }
 
 export function getUpdateInstructionForRuntime(runtime: SelfUpdateRuntime, packageName: string): string {

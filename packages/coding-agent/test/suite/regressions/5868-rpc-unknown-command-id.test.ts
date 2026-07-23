@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import type { AgentSessionRuntime } from "../../../src/core/agent-session-runtime.ts";
 import { runRpcMode } from "../../../src/modes/rpc/rpc-mode.ts";
 import { createHarness, type Harness } from "../harness.ts";
+import { withNormalRpcEnvironment } from "../../normal-rpc-environment.ts";
 
 // Regression for https://github.com/earendil-works/pi/issues/5868
 
@@ -86,23 +87,23 @@ describe("RPC unknown command responses (#5868)", () => {
 		rpcIo.lineHandler = undefined;
 	});
 
-	test("preserves the request id on unknown command errors", async () => {
+	test.each(["foobar", "context_compact"])("preserves the request id and rejects removed/unknown command %s", async (command) => {
 		const listenerSnapshot = takeListenerSnapshot();
 		const harness = await createHarness();
 
 		try {
-			void runRpcMode(createRuntimeHost(harness));
+			withNormalRpcEnvironment(() => { void runRpcMode(createRuntimeHost(harness)); });
 			await vi.waitFor(() => expect(rpcIo.lineHandler).toBeDefined());
 
-			rpcIo.lineHandler?.(JSON.stringify({ id: "test", type: "foobar" }));
+			rpcIo.lineHandler?.(JSON.stringify({ id: "test", type: command }));
 
 			await vi.waitFor(() => {
 				expect(parseOutputLines()).toContainEqual({
 					id: "test",
 					type: "response",
-					command: "foobar",
+					command,
 					success: false,
-					error: "Unknown command: foobar",
+					error: `Unknown command: ${command}`,
 				});
 			});
 		} finally {

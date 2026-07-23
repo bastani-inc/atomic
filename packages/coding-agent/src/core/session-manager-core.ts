@@ -2,6 +2,7 @@ import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai/c
 import { existsSync, statSync } from "fs";
 import { resolve } from "path";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
+import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import {
 	createBackupSnapshot,
@@ -9,8 +10,12 @@ import {
 	forkSessionFromFile,
 } from "./session-manager-archive.ts";
 import {
+	classifiedWorkflowMetadata,
+	validSessionWorkflowMetadata,
+} from "./session-manager-classification.ts";
+import {
 	createBranchSummaryEntry,
-	createContextCompactionEntry,
+	createCompactionEntry,
 	createContextWindowChangeEntry,
 	createCustomEntry,
 	createCustomMessageEntry,
@@ -39,8 +44,6 @@ import {
 } from "./session-manager-storage.ts";
 import type {
 	BranchSummaryEntry,
-	ContextCompactionStats,
-	ContextDeletionTarget,
 	FileEntry,
 	NewSessionOptions,
 	SessionContext,
@@ -73,6 +76,7 @@ export class SessionManager {
 		sessionFile: string | undefined,
 		persist: boolean,
 		newSessionOptions?: NewSessionOptions,
+		preloadedFileEntries?: FileEntry[],
 	) {
 		this.cwd = resolvePath(cwd);
 		this.sessionDir = normalizePath(sessionDir);
@@ -82,7 +86,7 @@ export class SessionManager {
 		}
 
 		if (sessionFile) {
-			this.setSessionFile(sessionFile);
+			this._setSessionFile(sessionFile, preloadedFileEntries);
 		} else {
 			this.newSession(newSessionOptions);
 		}
@@ -90,9 +94,13 @@ export class SessionManager {
 
 	/** Switch to a different session file (used for resume and branching) */
 	setSessionFile(sessionFile: string): void {
+		this._setSessionFile(sessionFile);
+	}
+
+	private _setSessionFile(sessionFile: string, preloadedFileEntries?: FileEntry[]): void {
 		this.sessionFile = resolvePath(sessionFile);
 		if (existsSync(this.sessionFile)) {
-			this.fileEntries = loadEntriesFromFile(this.sessionFile);
+			this.fileEntries = preloadedFileEntries ?? loadEntriesFromFile(this.sessionFile);
 
 			// If file was empty, initialize it with a valid session header. If it was non-empty but did not parse as a pi session, fail without modifying it.
 			if (this.fileEntries.length === 0) {
@@ -140,6 +148,7 @@ export class SessionManager {
 		this.fileEntries = [header];
 		this.byId.clear();
 		this.labelsById.clear();
+		this.labelTimestampsById.clear();
 		this.leafId = null;
 		this.flushed = false;
 
@@ -149,12 +158,14 @@ export class SessionManager {
 		return this.sessionFile;
 	}
 
-	/** Mark the session header as internal (e.g. workflow stage). Preserves an existing full marker on reattach. */
+	/** Mark the session as workflow-owned, repairing malformed markers while preserving valid ownership. */
 	markSessionInternal(workflow?: SessionWorkflowMetadata): void {
 		const header = this.fileEntries.find((entry) => entry.type === "session") as SessionHeader | undefined;
-		if (!header || (header.internal && header.workflow)) return;
+		if (!header || classifiedWorkflowMetadata(header)) return;
+		const validWorkflow = validSessionWorkflowMetadata(workflow);
+		if (!validWorkflow) return;
 		header.internal = true;
-		if (workflow) header.workflow = workflow;
+		header.workflow = validWorkflow;
 		if (this.flushed) this._rewriteFile();
 	}
 
@@ -246,15 +257,9 @@ export class SessionManager {
 		this._appendEntry(entry);
 		return entry.id;
 	}
-
-	/** Append logical deletion metadata for deletion-only context compaction. */
-	appendContextCompaction(
-		deletedTargets: ContextDeletionTarget[],
-		protectedEntryIds: string[],
-		stats: ContextCompactionStats,
-		backupPath?: string,
-	): string {
-		const entry = createContextCompactionEntry(deletedTargets, protectedEntryIds, stats, backupPath, this.byId, this.leafId);
+	appendCompaction(compactedText: string, firstKeptEntryId: string | null, tokensBefore: number, details: VerbatimCompactionDetails): string {
+		if (firstKeptEntryId !== null && !this.byId.has(firstKeptEntryId)) throw new Error(`Entry ${firstKeptEntryId} not found`);
+		const entry = createCompactionEntry(compactedText, firstKeptEntryId, tokensBefore, details, this.byId, this.leafId);
 		this._appendEntry(entry);
 		return entry.id;
 	}
@@ -382,12 +387,12 @@ export class SessionManager {
 	}
 
 	/** Start a new branch with a summary of the abandoned path. */
-	branchWithSummary(branchFromId: string | null, summary: string, details?: unknown, fromHook?: boolean): string {
+	branchWithSummary(branchFromId: string | null, summary: string, details?: unknown, fromHook?: boolean, usage?: import("@earendil-works/pi-ai/compat").Usage): string {
 		if (branchFromId !== null && !this.byId.has(branchFromId)) {
 			throw new Error(`Entry ${branchFromId} not found`);
 		}
 		this.leafId = branchFromId;
-		const entry: BranchSummaryEntry = createBranchSummaryEntry(branchFromId, summary, details, fromHook, this.byId);
+		const entry: BranchSummaryEntry = createBranchSummaryEntry(branchFromId, summary, details, usage, fromHook, this.byId);
 		this._appendEntry(entry);
 		return entry.id;
 	}
@@ -400,6 +405,7 @@ export class SessionManager {
 			sessionDir: this.getSessionDir(),
 			cwd: this.cwd,
 			previousSessionFile: this.sessionFile,
+			workflow: classifiedWorkflowMetadata(this.getHeader()),
 			path: this.getBranch(leafId),
 			labelsById: this.labelsById,
 			labelTimestampsById: this.labelTimestampsById,
@@ -430,7 +436,7 @@ export class SessionManager {
 		const header = entries.find((entry) => entry.type === "session") as SessionHeader | undefined;
 		const cwd = cwdOverride ?? header?.cwd ?? process.cwd();
 		const dir = sessionDir ? normalizePath(sessionDir) : resolve(resolvedPath, "..");
-		return new SessionManager(cwd, dir, resolvedPath, true);
+		return new SessionManager(cwd, dir, resolvedPath, true, undefined, entries);
 	}
 
 	/** Continue the most recent session (skips internal workflow sessions unless `includeInternal: true`). */

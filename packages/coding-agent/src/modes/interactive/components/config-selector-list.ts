@@ -1,19 +1,20 @@
 import { homedir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
-import { type Component, type Focusable, getKeybindings, Input, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, type Focusable, getKeybindings, Input, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import { CONFIG_DIR_NAME } from "../../../config.ts";
 import type { PathMetadata, ResolvedPaths, ResolvedResource } from "../../../core/package-manager.ts";
 import type { PackageSource, SettingsManager } from "../../../core/settings-manager.ts";
 import { theme } from "../theme/theme.ts";
-import { rawKeyHint } from "./keybinding-hints.ts";
+import { toggleProjectResource } from "./config-selector-project-scope.ts";
 
-type ResourceType = "extensions" | "skills" | "prompts" | "themes";
+export type ResourceType = "extensions" | "skills" | "prompts" | "themes" | "workflows";
 
 const RESOURCE_TYPE_LABELS: Record<ResourceType, string> = {
 	extensions: "Extensions",
 	skills: "Skills",
 	prompts: "Prompts",
 	themes: "Themes",
+	workflows: "Workflows",
 };
 
 export interface ResourceItem {
@@ -48,7 +49,6 @@ function formatBaseDir(baseDir: string): string {
 	if (baseDir === homeDir) {
 		displayPath = "~";
 	} else if (baseDir.startsWith(homeDir)) {
-		// Replace home prefix with ~, normalize separators for display
 		const rest = baseDir.slice(homeDir.length);
 		displayPath = `~${rest.replace(/\\/g, "/")}`;
 	} else {
@@ -62,7 +62,6 @@ function getGroupLabel(metadata: PathMetadata, agentDir: string): string {
 	if (metadata.origin === "package") {
 		return `${metadata.source} (${metadata.scope})`;
 	}
-	// Top-level resources
 	if (metadata.source === "auto") {
 		if (metadata.baseDir) {
 			return metadata.scope === "user"
@@ -132,20 +131,15 @@ export function buildGroups(resolved: ResolvedPaths, agentDir: string): Resource
 	addToGroup(resolved.skills, "skills");
 	addToGroup(resolved.prompts, "prompts");
 	addToGroup(resolved.themes, "themes");
-
+	addToGroup(resolved.workflows, "workflows");
 	// Sort groups: packages first, then top-level; user before project
 	const groups = Array.from(groupMap.values());
 	groups.sort((a, b) => {
-		if (a.origin !== b.origin) {
-			return a.origin === "package" ? -1 : 1;
-		}
-		if (a.scope !== b.scope) {
-			return a.scope === "user" ? -1 : 1;
-		}
+		if (a.origin !== b.origin) return a.origin === "package" ? -1 : 1;
+		if (a.scope !== b.scope) return a.scope === "user" ? -1 : 1;
 		return a.source.localeCompare(b.source);
 	});
-	// Sort subgroups within each group by type order, and items by name
-	const typeOrder: Record<ResourceType, number> = { extensions: 0, skills: 1, prompts: 2, themes: 3 };
+	const typeOrder: Record<ResourceType, number> = { extensions: 0, skills: 1, prompts: 2, themes: 3, workflows: 4 };
 	for (const group of groups) {
 		group.subgroups.sort((a, b) => typeOrder[a.type] - typeOrder[b.type]);
 		for (const subgroup of group.subgroups) {
@@ -158,21 +152,6 @@ type FlatEntry =
 	| { type: "group"; group: ResourceGroup }
 	| { type: "subgroup"; subgroup: ResourceSubgroup; group: ResourceGroup }
 	| { type: "item"; item: ResourceItem };
-export class ConfigSelectorHeader implements Component {
-	invalidate(): void {}
-	render(width: number): string[] {
-		const title = theme.bold("Resource Configuration");
-		const sep = theme.fg("muted", " · ");
-		const hint = rawKeyHint("space", "Toggle") + sep + rawKeyHint("esc", "Close");
-		const hintWidth = visibleWidth(hint);
-		const titleWidth = visibleWidth(title);
-		const spacing = Math.max(1, width - titleWidth - hintWidth);
-		return [
-			truncateToWidth(`${title}${" ".repeat(spacing)}${hint}`, width, ""),
-			theme.fg("muted", "Type to filter resources"),
-		];
-	}
-}
 export class ResourceList implements Component, Focusable {
 	private groups: ResourceGroup[];
 	private flatItems: FlatEntry[] = [];
@@ -184,8 +163,10 @@ export class ResourceList implements Component, Focusable {
 	private cwd: string;
 	private agentDir: string;
 	public onCancel?: () => void;
+	private writeScope: "global" | "project" = "global";
 	public onExit?: () => void;
 	public onToggle?: (item: ResourceItem, newEnabled: boolean) => void;
+	public onSwitchMode?: () => void;
 	private _focused = false;
 	get focused(): boolean {
 		return this._focused;
@@ -194,14 +175,21 @@ export class ResourceList implements Component, Focusable {
 		this._focused = value;
 		this.searchInput.focused = value;
 	}
-	constructor(groups: ResourceGroup[], settingsManager: SettingsManager, cwd: string, agentDir: string) {
+	constructor(groups: ResourceGroup[], settingsManager: SettingsManager, cwd: string, agentDir: string, terminalHeight?: number) {
 		this.groups = groups;
 		this.settingsManager = settingsManager;
 		this.cwd = cwd;
 		this.agentDir = agentDir;
 		this.searchInput = new Input();
+		this.maxVisible = Math.max(5, (terminalHeight ?? 24) - 8);
 		this.buildFlatList();
 		this.filteredItems = [...this.flatItems];
+	}
+	setWriteScope(scope: "global" | "project"): void { this.writeScope = scope; }
+	setGroups(groups: ResourceGroup[]): void {
+		this.groups = groups;
+		this.buildFlatList();
+		this.filterItems(this.searchInput.getValue());
 	}
 	private buildFlatList(): void {
 		this.flatItems = [];
@@ -221,12 +209,10 @@ export class ResourceList implements Component, Focusable {
 	private findNextItem(fromIndex: number, direction: 1 | -1): number {
 		let idx = fromIndex + direction;
 		while (idx >= 0 && idx < this.filteredItems.length) {
-			if (this.filteredItems[idx].type === "item") {
-				return idx;
-			}
+			if (this.filteredItems[idx].type === "item") return idx;
 			idx += direction;
 		}
-		return fromIndex; // Stay at current if no item found
+		return fromIndex;
 	}
 	private filterItems(query: string): void {
 		if (!query.trim()) {
@@ -279,59 +265,35 @@ export class ResourceList implements Component, Focusable {
 	}
 	updateItem(item: ResourceItem, enabled: boolean): void {
 		item.enabled = enabled;
-		// Update in groups too
 		for (const group of this.groups) {
 			for (const subgroup of group.subgroups) {
-				const found = subgroup.items.find((i) => i.path === item.path && i.resourceType === item.resourceType);
-				if (found) {
-					found.enabled = enabled;
-					return;
-				}
+				const found = subgroup.items.find((candidate) => candidate.path === item.path && candidate.resourceType === item.resourceType);
+				if (found) { found.enabled = enabled; return; }
 			}
 		}
 	}
 	invalidate(): void {}
 	render(width: number): string[] {
-		const lines: string[] = [];
-		// Search input
-		lines.push(...this.searchInput.render(width));
-		lines.push("");
-		if (this.filteredItems.length === 0) {
-			lines.push(theme.fg("muted", "  No resources found"));
-			return lines;
-		}
-		// Calculate visible range
-		const startIndex = Math.max(
-			0,
-			Math.min(this.selectedIndex - Math.floor(this.maxVisible / 2), this.filteredItems.length - this.maxVisible),
-		);
+		const lines = [...this.searchInput.render(width), ""];
+		if (this.filteredItems.length === 0) return [...lines, theme.fg("muted", "  No resources found")];
+		const startIndex = Math.max(0, Math.min(this.selectedIndex - Math.floor(this.maxVisible / 2), this.filteredItems.length - this.maxVisible));
 		const endIndex = Math.min(startIndex + this.maxVisible, this.filteredItems.length);
 		for (let i = startIndex; i < endIndex; i++) {
 			const entry = this.filteredItems[i];
-			const isSelected = i === this.selectedIndex;
-			if (entry.type === "group") {
-				// Main group header (no cursor)
-				const groupLine = theme.fg("accent", theme.bold(entry.group.label));
-				lines.push(truncateToWidth(`  ${groupLine}`, width, ""));
-			} else if (entry.type === "subgroup") {
-				// Subgroup header (indented, no cursor)
-				const subgroupLine = theme.fg("muted", entry.subgroup.label);
-				lines.push(truncateToWidth(`    ${subgroupLine}`, width, ""));
-			} else {
-				// Resource item (cursor only on items)
-				const item = entry.item;
-				const cursor = isSelected ? "> " : "  ";
-				const checkbox = item.enabled ? theme.fg("success", "[x]") : theme.fg("dim", "[ ]");
-				const name = isSelected ? theme.bold(item.displayName) : item.displayName;
+			const selected = i === this.selectedIndex;
+			if (entry.type === "group") lines.push(truncateToWidth(`  ${theme.fg("accent", theme.bold(entry.group.label))}`, width, ""));
+			else if (entry.type === "subgroup") lines.push(truncateToWidth(`    ${theme.fg("muted", entry.subgroup.label)}`, width, ""));
+			else {
+				const cursor = selected ? "> " : "  ";
+				const checkbox = entry.item.enabled ? theme.fg("success", "[x]") : theme.fg("dim", "[ ]");
+				const name = selected ? theme.bold(entry.item.displayName) : entry.item.displayName;
 				lines.push(truncateToWidth(`${cursor}    ${checkbox} ${name}`, width, "..."));
 			}
 		}
-		// Scroll indicator
 		if (startIndex > 0 || endIndex < this.filteredItems.length) {
-			const itemCount = this.filteredItems.filter((e) => e.type === "item").length;
-			const currentItemIndex =
-				this.filteredItems.slice(0, this.selectedIndex).filter((e) => e.type === "item").length + 1;
-			lines.push(theme.fg("dim", `  (${currentItemIndex}/${itemCount})`));
+			const itemCount = this.filteredItems.filter((entry) => entry.type === "item").length;
+			const current = this.filteredItems.slice(0, this.selectedIndex).filter((entry) => entry.type === "item").length + 1;
+			lines.push(theme.fg("dim", `  (${current}/${itemCount})`));
 		}
 		return lines;
 	}
@@ -375,17 +337,21 @@ export class ResourceList implements Component, Focusable {
 			this.onExit?.();
 			return;
 		}
+		if (kb.matches(data, "tui.input.tab")) {
+			this.onSwitchMode?.();
+			return;
+		}
 		if (data === " " || kb.matches(data, "tui.select.confirm")) {
 			const entry = this.filteredItems[this.selectedIndex];
 			if (entry?.type === "item") {
 				const newEnabled = !entry.item.enabled;
-				this.toggleResource(entry.item, newEnabled);
+				if (this.writeScope === "project") toggleProjectResource(this.settingsManager, entry.item, this.cwd, newEnabled);
+				else this.toggleResource(entry.item, newEnabled);
 				this.updateItem(entry.item, newEnabled);
 				this.onToggle?.(entry.item, newEnabled);
 			}
 			return;
 		}
-		// Pass to search input
 		this.searchInput.handleInput(data);
 		this.filterItems(this.searchInput.getValue());
 	}
@@ -398,92 +364,44 @@ export class ResourceList implements Component, Focusable {
 	}
 	private toggleTopLevelResource(item: ResourceItem, enabled: boolean): void {
 		const scope = item.metadata.scope as "user" | "project";
-		const settings =
-			scope === "project" ? this.settingsManager.getProjectSettings() : this.settingsManager.getGlobalSettings();
-		const arrayKey = item.resourceType as "extensions" | "skills" | "prompts" | "themes";
-		const current = (settings[arrayKey] ?? []) as string[];
-		// Generate pattern for this resource
+		const settings = scope === "project" ? this.settingsManager.getProjectSettings() : this.settingsManager.getGlobalSettings();
+		const arrayKey = item.resourceType;
 		const pattern = this.getResourcePattern(item);
-		const disablePattern = `-${pattern}`;
-		const enablePattern = `+${pattern}`;
-		// Filter out existing patterns for this resource
-		const updated = current.filter((p) => {
-			const stripped = p.startsWith("!") || p.startsWith("+") || p.startsWith("-") ? p.slice(1) : p;
+		const updated = (settings[arrayKey] ?? []).filter((entry) => {
+			const stripped = /^[!+-]/.test(entry) ? entry.slice(1) : entry;
 			return stripped !== pattern;
 		});
-		if (enabled) {
-			updated.push(enablePattern);
-		} else {
-			updated.push(disablePattern);
-		}
+		updated.push(`${enabled ? "+" : "-"}${pattern}`);
 		if (scope === "project") {
-			if (arrayKey === "extensions") {
-				this.settingsManager.setProjectExtensionPaths(updated);
-			} else if (arrayKey === "skills") {
-				this.settingsManager.setProjectSkillPaths(updated);
-			} else if (arrayKey === "prompts") {
-				this.settingsManager.setProjectPromptTemplatePaths(updated);
-			} else if (arrayKey === "themes") {
-				this.settingsManager.setProjectThemePaths(updated);
-			}
+			if (arrayKey === "extensions") this.settingsManager.setProjectExtensionPaths(updated);
+			else if (arrayKey === "skills") this.settingsManager.setProjectSkillPaths(updated);
+			else if (arrayKey === "prompts") this.settingsManager.setProjectPromptTemplatePaths(updated);
+			else if (arrayKey === "themes") this.settingsManager.setProjectThemePaths(updated);
+			else this.settingsManager.setProjectWorkflowPaths(updated);
 		} else {
-			if (arrayKey === "extensions") {
-				this.settingsManager.setExtensionPaths(updated);
-			} else if (arrayKey === "skills") {
-				this.settingsManager.setSkillPaths(updated);
-			} else if (arrayKey === "prompts") {
-				this.settingsManager.setPromptTemplatePaths(updated);
-			} else if (arrayKey === "themes") {
-				this.settingsManager.setThemePaths(updated);
-			}
+			if (arrayKey === "extensions") this.settingsManager.setExtensionPaths(updated);
+			else if (arrayKey === "skills") this.settingsManager.setSkillPaths(updated);
+			else if (arrayKey === "prompts") this.settingsManager.setPromptTemplatePaths(updated);
+			else if (arrayKey === "themes") this.settingsManager.setThemePaths(updated);
+			else this.settingsManager.setWorkflowPaths(updated);
 		}
 	}
 	private togglePackageResource(item: ResourceItem, enabled: boolean): void {
 		const scope = item.metadata.scope as "user" | "project";
-		const settings =
-			scope === "project" ? this.settingsManager.getProjectSettings() : this.settingsManager.getGlobalSettings();
+		const settings = scope === "project" ? this.settingsManager.getProjectSettings() : this.settingsManager.getGlobalSettings();
 		const packages = [...(settings.packages ?? [])] as PackageSource[];
-		const pkgIndex = packages.findIndex((pkg) => {
-			const source = typeof pkg === "string" ? pkg : pkg.source;
-			return source === item.metadata.source;
-		});
+		const pkgIndex = packages.findIndex((pkg) => (typeof pkg === "string" ? pkg : pkg.source) === item.metadata.source);
 		if (pkgIndex === -1) return;
 		let pkg = packages[pkgIndex];
-		// Convert string to object form if needed
-		if (typeof pkg === "string") {
-			pkg = { source: pkg };
-			packages[pkgIndex] = pkg;
-		}
-		// Get the resource array for this type
-		const arrayKey = item.resourceType as "extensions" | "skills" | "prompts" | "themes";
-		const current = (pkg[arrayKey] ?? []) as string[];
-		// Generate pattern relative to package root
+		if (typeof pkg === "string") pkg = { source: pkg };
+		const arrayKey = item.resourceType;
 		const pattern = this.getPackageResourcePattern(item);
-		const disablePattern = `-${pattern}`;
-		const enablePattern = `+${pattern}`;
-		// Filter out existing patterns for this resource
-		const updated = current.filter((p) => {
-			const stripped = p.startsWith("!") || p.startsWith("+") || p.startsWith("-") ? p.slice(1) : p;
-			return stripped !== pattern;
-		});
-		if (enabled) {
-			updated.push(enablePattern);
-		} else {
-			updated.push(disablePattern);
-		}
-		(pkg as Record<string, unknown>)[arrayKey] = updated.length > 0 ? updated : undefined;
-		// Clean up empty filter object
-		const hasFilters = ["extensions", "skills", "prompts", "themes"].some(
-			(k) => (pkg as Record<string, unknown>)[k] !== undefined,
-		);
-		if (!hasFilters) {
-			packages[pkgIndex] = (pkg as { source: string }).source;
-		}
-		if (scope === "project") {
-			this.settingsManager.setProjectPackages(packages);
-		} else {
-			this.settingsManager.setPackages(packages);
-		}
+		const updated = (pkg[arrayKey] ?? []).filter((entry) => (/^[!+-]/.test(entry) ? entry.slice(1) : entry) !== pattern);
+		updated.push(`${enabled ? "+" : "-"}${pattern}`);
+		pkg[arrayKey] = updated;
+		packages[pkgIndex] = pkg;
+		if (scope === "project") this.settingsManager.setProjectPackages(packages);
+		else this.settingsManager.setPackages(packages);
 	}
 	private getTopLevelBaseDir(scope: "user" | "project"): string {
 		return scope === "project" ? join(this.cwd, CONFIG_DIR_NAME) : this.agentDir;

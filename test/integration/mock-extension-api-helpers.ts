@@ -76,12 +76,7 @@ export interface RegisteredFlag {
   options: PiFlagNamedOpts;
 }
 
-export interface SentMessage {
-  customType?: string;
-  content?: string;
-  display?: boolean;
-  details?: unknown;
-}
+export type SentMessage = Parameters<NonNullable<ExtensionAPI["sendMessage"]>>[0];
 
 export function makeMock(): ExtensionAPI & {
   tools: RegisteredTool[];
@@ -130,7 +125,7 @@ export function makeMock(): ExtensionAPI & {
     },
     // Chat surfaces dispatch via emitChatSurface → pi.sendMessage. Mirror
     // the recipient so tests can assert against the message stream.
-    sendMessage(msg: SentMessage) {
+    sendMessage(msg) {
       sent.push(msg);
     },
   };
@@ -216,12 +211,14 @@ export function expectRegisteredCommand(
 }
 
 export const EXPECTED_WORKFLOW_DESCRIPTION_TOKENS = [
-  "named workflows",
-  "direct one-off",
+  "named builtin, project, user, or package workflows",
+  "Run named",
+  "custom TypeScript workflow",
+  "inline with normal coding tools",
   "discover with list/get/inputs",
   "status/stages/stage details",
   "prompt answers",
-  "pause/resume/interrupt/kill",
+  "pause/resume/interrupt/quit",
   "reload workflow resources",
   "sessionFile/transcriptPath",
   "Windows backslashes",
@@ -229,6 +226,8 @@ export const EXPECTED_WORKFLOW_DESCRIPTION_TOKENS = [
   "path-only by default",
   "explicit tail/limit",
   "missing transcript paths",
+  "models",
+  "configured-auth snapshot",
 ] as const;
 
 // ---------------------------------------------------------------------------

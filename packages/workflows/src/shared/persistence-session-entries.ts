@@ -43,6 +43,8 @@ export interface RunStartPayload {
   readonly rootRunId?: string;
   readonly resumedFromRunId?: string;
   readonly resumeFromStageId?: string;
+  /** Elapsed ms inherited from prior sessions of a resumed run. */
+  readonly accumulatedDurationMs?: number;
   readonly ts: number;
 }
 
@@ -112,6 +114,8 @@ export interface RunEndPayload {
   readonly failedStageId?: string;
   readonly resumable?: boolean;
   readonly retryAfterMs?: number;
+  readonly endedAt?: number;
+  readonly durationMs?: number;
   readonly ts: number;
 }
 
@@ -148,6 +152,7 @@ export function appendRunStart(api: PersistenceAPI, payload: RunStartPayload): v
     ...(payload.rootRunId !== undefined ? { rootRunId: payload.rootRunId } : {}),
     ...(payload.resumedFromRunId !== undefined ? { resumedFromRunId: payload.resumedFromRunId } : {}),
     ...(payload.resumeFromStageId !== undefined ? { resumeFromStageId: payload.resumeFromStageId } : {}),
+    ...(payload.accumulatedDurationMs !== undefined ? { accumulatedDurationMs: payload.accumulatedDurationMs } : {}),
     ts: payload.ts,
   });
   if (entryId && typeof api.setLabel === "function") {
@@ -254,6 +259,8 @@ export function appendRunEnd(api: PersistenceAPI, payload: RunEndPayload): void 
     ...(terminalPayload.failedStageId !== undefined ? { failedStageId: terminalPayload.failedStageId } : {}),
     ...(terminalPayload.resumable !== undefined ? { resumable: terminalPayload.resumable } : {}),
     ...(terminalPayload.retryAfterMs !== undefined ? { retryAfterMs: terminalPayload.retryAfterMs } : {}),
+    ...(terminalPayload.endedAt !== undefined ? { endedAt: terminalPayload.endedAt } : {}),
+    ...(terminalPayload.durationMs !== undefined ? { durationMs: terminalPayload.durationMs } : {}),
     ts: terminalPayload.ts,
   });
 }

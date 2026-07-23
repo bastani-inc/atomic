@@ -79,11 +79,11 @@
   },
   "dependencies": {
     "jiti": "^2.7.0",
-    "typebox": "^1.1.24"
+    "typebox": "^1.3.6"
   },
   "peerDependencies": {
     "@bastani/atomic": "*",
-    "@earendil-works/pi-tui": "^0.80.3"
+    "@earendil-works/pi-tui": "^0.81.1"
   },
   "peerDependenciesMeta": {
     "@bastani/atomic": {

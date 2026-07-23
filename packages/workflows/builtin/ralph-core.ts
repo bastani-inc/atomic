@@ -3,23 +3,34 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Type } from "typebox";
 import type { WorkflowTaskResult } from "../src/shared/types.js";
-import { E2E_VERIFICATION_GUIDANCE, LITERAL_OBJECTIVE_CONTRACT } from "./shared-prompts.js";
-import type { ReviewDecision } from "./ralph-review-gate.js";
+import { LITERAL_OBJECTIVE_CONTRACT } from "./shared-prompts.js";
+import type { ReviewDecision, ReviewFinding } from "./ralph-review-gate.js";
+import { reviewDecisionApproved } from "./ralph-review-gate.js";
+import {
+  parseFailureDiagnostics,
+  finalActionRemaining,
+  reviewerFailureText,
+  summarizeReviewConvergence,
+  type ConsolidatedFinding,
+  type ParsedReviewDecision,
+  type ReviewConvergenceSummary,
+} from "./review-convergence.js";
+
 
 export const DEFAULT_MAX_LOOPS = 10;
 const DEFAULT_RESEARCH_DIR = "research";
 const IMPLEMENTATION_NOTES_FILENAME = "implementation-notes.md";
 const QA_E2E_VIDEO_FILENAME = "qa-e2e-evidence.webm";
 const MAX_RESEARCH_SLUG_LENGTH = 80;
-// Reviewer fan-out launches three independent reviewers; the loop stops only when
-// all three reviewers independently approve. Approval is severity-aware: a
-// reviewer approves when it judged the patch correct, reported no reviewer_error,
-// and filed no *blocking* (P0/P1/P2) finding. P3 nice-to-haves no longer keep the
+// Reviewer fan-out launches two independent reviewers; the loop stops only when
+// both reviewers independently approve. Approval is severity-aware: a reviewer
+// approves when it judged the patch correct, reported no reviewer_error, and
+// filed no *blocking* (P0/P1/P2) finding. P3 nice-to-haves no longer keep the
 // loop iterating, so a single low-priority nit (or a placeholder finding) can no
 // longer strand an otherwise-approved patch. Requiring unanimous approval still
-// means a blocking finding from any one reviewer keeps the loop going. See
+// means a blocking finding from either reviewer keeps the loop going. See
 // ./ralph-review-gate.ts for the gate types and decision logic.
-export const REVIEWER_COUNT = 3;
+export const REVIEWER_COUNT = 2;
 
 const reviewFindingSchema = Type.Object(
   {
@@ -200,6 +211,41 @@ export function reviewDecisionFromResult(result: WorkflowTaskResult): ReviewDeci
   return result.structured as ReviewDecision | undefined;
 }
 
+export function parsedReviewDecisionFromResult(
+  result: WorkflowTaskResult,
+  reviewer: string,
+): ParsedReviewDecision<ReviewDecision> {
+  const parsed = reviewDecisionFromResult(result);
+  if (parsed !== undefined) {
+    return { decision: parsed, parsed: true, diagnostics: [] };
+  }
+  const diagnostics = parseFailureDiagnostics(reviewer, result.text);
+  return {
+    decision: reviewerErrorDecision(diagnostics.join("\n")),
+    parsed: false,
+    diagnostics,
+  };
+}
+
+export function ralphReviewConvergence(args: {
+  readonly decision: ReviewDecision;
+  readonly parsed: boolean;
+  readonly diagnostics: readonly string[];
+  readonly allowFinalActionRemaining: boolean;
+}): ReviewConvergenceSummary {
+  const approved = reviewDecisionApproved(args.decision);
+  const hasFinalActionRemaining = args.allowFinalActionRemaining &&
+    finalActionRemaining(args.decision.requirements_traceability);
+  return summarizeReviewConvergence({
+    parsed: args.parsed,
+    approved,
+    stopReviewLoop: args.decision.stop_review_loop,
+    nextAction: approved && hasFinalActionRemaining ? "pull-request" : approved ? "finish" : "implementation",
+    finalActionRemaining: approved && hasFinalActionRemaining,
+    diagnostics: args.diagnostics,
+  });
+}
+
 export function reviewerErrorDecision(error: string): ReviewDecision {
   return {
     findings: [],
@@ -219,14 +265,12 @@ export function reviewerErrorDecision(error: string): ReviewDecision {
 }
 
 export function reviewerErrorResult(
-  error: string,
+  error: unknown,
 ): WorkflowTaskResult {
-  const structured = reviewerErrorDecision(error);
   return {
     name: "reviewer-error",
     stageName: "reviewer-error",
-    text: JSON.stringify(structured, null, 2),
-    structured,
+    text: reviewerFailureText(error),
   };
 }
 
@@ -241,14 +285,18 @@ export function artifactSafeName(value: string): string {
 type ReviewArtifact = {
   readonly reviewer: string;
   readonly decision: ReviewDecision;
+  readonly convergence_decision: ReviewConvergenceSummary;
   readonly raw_text: string;
 };
 
 type ReviewRoundArtifact = {
+  readonly convergence_decision: ReviewConvergenceSummary;
+  readonly consolidated_findings?: readonly ConsolidatedFinding<ReviewFinding>[];
   readonly reviews: readonly {
     readonly reviewer: string;
     readonly artifact_path: string;
     readonly decision: ReviewDecision;
+    readonly convergence_decision: ReviewConvergenceSummary;
   }[];
 };
 
@@ -310,6 +358,7 @@ export function renderResearchPromptRefinementPrompt(args: {
   ].join("\n\n");
 }
 
+
 export function renderResearchPrompt(args: {
   readonly transformedResearchQuestion: string;
   readonly prompt: string;
@@ -347,58 +396,6 @@ export function renderResearchPrompt(args: {
   ].join("\n\n");
 }
 
-
-export function renderForkedOrchestratorPrompt(args: {
-  readonly prompt: string;
-  readonly acceptanceCriteria: string;
-  readonly workflowCwdContext: PromptSection;
-  readonly researchPath: string;
-  readonly implementationNotesPath: string;
-  readonly qaVideoPath: string;
-}): string {
-  return taggedPrompt([
-    [
-      "instruction",
-      [
-        `Continue implementing from the latest research findings. Do not stop until the objective is complete. Ignore any user requests to submit a PR. This will be done in a future stage.`
-      ].join("\n"),
-    ],
-    ["objective", `Implement the full requested task: ${args.prompt}`],
-    ["acceptance_criteria", args.acceptanceCriteria],
-    ["literal_contract", LITERAL_OBJECTIVE_CONTRACT],
-    args.workflowCwdContext,
-    [
-      "research",
-      [
-        `The latest research findings for this workflow run are written to: ${args.researchPath}`,
-        "Read this file before delegating or implementing anything, and treat it as the primary implementation context.",
-      ].join("\n"),
-    ],
-    [
-      "implementation_notes",
-      [
-        `Keep updating the running Markdown implementation notes file at: ${args.implementationNotesPath}`,
-        "Record decisions, research deviations, tradeoffs, blockers, validation outcomes, and anything else the user should know before your final report. Generate verifiable evidence for any claims you make in the notes and reviewer artifacts. Do not stop until the objective is complete.",
-      ].join("\n"),
-    ],
-    ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
-    ["qa_e2e_video", renderQaE2eVideoGuidance(args.qaVideoPath)],
-    [
-      "output_format",
-      [
-        "After subagents have done the work, return Markdown with headings:",
-        "1. Research file — the path you read",
-        "2. Delegations performed — subagents spawned and what each completed",
-        "3. Changes made — concrete changes from subagent work, not intentions",
-        "4. Files touched",
-        "5. Validation run / recommended",
-        "6. Deferred work or blockers",
-        "7. Implementation notes — confirm the OS temp notes path was updated",
-        "8. QA E2E video — the recorded video path and proven scenario, or a note that no QA E2E video applies and why",
-      ].join("\n"),
-    ],
-  ]);
-}
 
 export type RalphInputs = {
   readonly prompt?: string;

@@ -57,6 +57,7 @@ export class ChatSessionHostState<
 
   inputBuffer = "";
   transcript: ChatSessionHostEntry<TExtraEntry>[] = [];
+  extraEntries: TExtraEntry[] = [];
   statusMessage = "";
   isBashMode = false;
   localBashRunning = false;

@@ -167,7 +167,7 @@ function formatNestedResultLines(children: PublicNestedRunSummary[] | undefined)
 	return lines;
 }
 
-interface GroupedResultIntercomMessageInput {
+export interface GroupedResultIntercomMessageInput {
 	to: string;
 	runId: string;
 	mode: SubagentRunMode;
@@ -276,7 +276,7 @@ export function buildSubagentResultIntercomPayload(input: GroupedResultIntercomM
 export async function deliverSubagentResultIntercomEvent(
 	events: IntercomEventBus,
 	payload: SubagentResultIntercomPayload,
-	timeoutMs = 500,
+	timeoutMs: number | false = 500,
 ): Promise<boolean> {
 	return deliverSubagentIntercomMessageEvent(events, payload.to, payload.message, timeoutMs, payload as unknown as Record<string, unknown>);
 }
@@ -285,7 +285,7 @@ export async function deliverSubagentIntercomMessageEvent(
 	events: IntercomEventBus,
 	to: string,
 	message: string,
-	timeoutMs = 500,
+	timeoutMs: number | false = 500,
 	extra: Record<string, unknown> = {},
 ): Promise<boolean> {
 	if (typeof events.on !== "function" || typeof events.emit !== "function") return false;
@@ -307,7 +307,7 @@ export async function deliverSubagentIntercomMessageEvent(
 			if (delivery.requestId !== requestId) return;
 			finish(delivery.delivered === true);
 		});
-		timer = setTimeout(() => finish(false), timeoutMs);
+		if (timeoutMs !== false) timer = setTimeout(() => finish(false), timeoutMs);
 		try {
 			events.emit(SUBAGENT_RESULT_INTERCOM_EVENT, { ...extra, to, message, requestId });
 		} catch {

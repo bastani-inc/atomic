@@ -1,6 +1,5 @@
-import type { ExtensionAPI } from "@bastani/atomic";
-import { Text } from "@mariozechner/pi-tui";
-import { StringEnum } from "@mariozechner/pi-ai/compat";
+import { StringEnum, type ExtensionAPI } from "@bastani/atomic";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { renderWebSearchResult } from "./result-renderers.js";
 import type { ExtractedContent } from "./extract.js";
@@ -243,6 +242,7 @@ export function registerWebSearchTool(pi: ExtensionAPI, deps: RegisterWebSearchT
 					}
 					if (inlineContent) allInlineContent.push(...inlineContent);
 				} catch (err) {
+					signal?.throwIfAborted();
 					const message = err instanceof Error ? err.message : String(err);
 					const requestedProvider = typeof resolvedProvider === "string" && resolvedProvider !== "auto"
 						? resolvedProvider
@@ -251,6 +251,7 @@ export function registerWebSearchTool(pi: ExtensionAPI, deps: RegisterWebSearchT
 				}
 			}
 
+			signal?.throwIfAborted();
 			return deps.buildSearchReturn({
 				queryList,
 				results: searchResults,

@@ -21,6 +21,16 @@ Thanks for your interest in contributing to Atomic. This guide explains how to p
 - Add or update tests when changing behavior.
 - Do not add build output, generated artifacts, or unrelated formatting changes.
 
+## Claiming an issue
+
+For external contributors, before starting substantial work on an existing issue, comment with your intended approach and wait for a maintainer to assign the issue or explicitly approve the work. A maintainer will respond within 24 hours. An expression of interest alone does not reserve an issue.
+
+Assignments are normally held for seven days. Post a progress update if you need more time. Maintainers may release an assignment when there has been no activity.
+
+Avoid competing pull requests for assigned issues. Coordinate with the assignee and a maintainer first; uncoordinated duplicate pull requests may be closed.
+
+Assignment reserves the opportunity to work on an issue but does not guarantee merge. Maintainers may work on issues and open pull requests without being assigned.
+
 ## Testing and checks
 
 Before opening a pull request, run the most relevant checks for your change:
@@ -42,7 +52,7 @@ bun run test:all
 When opening a PR:
 
 - Describe the problem and the solution clearly.
-- Link related issues or discussions when applicable.
+- When applicable, link an issue with `Closes #<issue-number>` or `Related: #<issue-number>`.
 - Include test output or explain why tests were not run.
 - Call out breaking changes, migration steps, or follow-up work.
 

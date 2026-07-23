@@ -1,4 +1,13 @@
+export interface CompletionSeenRecord {
+	seenAt: number;
+	signature?: string;
+}
+
+export type CompletionSeenMap = Map<string, number | CompletionSeenRecord>;
+export type CompletionSeenMatch = "miss" | "match" | "conflict";
+
 interface CompletionDataLike {
+	runId?: unknown;
 	id?: unknown;
 	agent?: unknown;
 	timestamp?: unknown;
@@ -20,6 +29,8 @@ function asFiniteNumber(value: unknown): number | undefined {
 }
 
 export function buildCompletionKey(data: CompletionDataLike, fallback: string): string {
+	const runId = asNonEmptyString(data.runId);
+	if (runId) return `run:${runId}`;
 	const id = asNonEmptyString(data.id);
 	if (id) return `id:${id}`;
 	const sessionId = asNonEmptyString(data.sessionId) ?? "no-session";
@@ -40,24 +51,50 @@ export function buildCompletionKey(data: CompletionDataLike, fallback: string): 
 	].join(":");
 }
 
-function pruneSeenMap(seen: Map<string, number>, now: number, ttlMs: number): void {
-	for (const [key, ts] of seen.entries()) {
-		if (now - ts > ttlMs) seen.delete(key);
+function recordTimestamp(record: number | CompletionSeenRecord): number {
+	return typeof record === "number" ? record : record.seenAt;
+}
+
+function pruneSeenMap(seen: CompletionSeenMap, now: number, ttlMs: number): void {
+	for (const [key, record] of seen.entries()) {
+		if (now - recordTimestamp(record) > ttlMs) seen.delete(key);
 	}
 }
 
-export function markSeenWithTtl(seen: Map<string, number>, key: string, now: number, ttlMs: number): boolean {
+export function lookupSeenWithTtl(
+	seen: CompletionSeenMap,
+	key: string,
+	signature: string | undefined,
+	now: number,
+	ttlMs: number,
+): CompletionSeenMatch {
+	pruneSeenMap(seen, now, ttlMs);
+	const record = seen.get(key);
+	if (record === undefined) return "miss";
+	const recordedSignature = typeof record === "number" ? undefined : record.signature;
+	return recordedSignature === undefined || signature === undefined || recordedSignature === signature ? "match" : "conflict";
+}
+
+export function hasSeenWithTtl(seen: CompletionSeenMap, key: string, now: number, ttlMs: number): boolean {
+	return lookupSeenWithTtl(seen, key, undefined, now, ttlMs) !== "miss";
+}
+
+export function recordSeen(seen: CompletionSeenMap, key: string, now: number, signature?: string): void {
+	seen.set(key, signature === undefined ? now : { seenAt: now, signature });
+}
+
+export function markSeenWithTtl(seen: CompletionSeenMap, key: string, now: number, ttlMs: number): boolean {
 	pruneSeenMap(seen, now, ttlMs);
 	if (seen.has(key)) return true;
 	seen.set(key, now);
 	return false;
 }
 
-export function getGlobalSeenMap(storeKey: string): Map<string, number> {
+export function getGlobalSeenMap(storeKey: string): CompletionSeenMap {
 	const globalStore = globalThis as Record<string, unknown>;
 	const existing = globalStore[storeKey];
-	if (existing instanceof Map) return existing as Map<string, number>;
-	const map = new Map<string, number>();
+	if (existing instanceof Map) return existing as CompletionSeenMap;
+	const map: CompletionSeenMap = new Map();
 	globalStore[storeKey] = map;
 	return map;
 }

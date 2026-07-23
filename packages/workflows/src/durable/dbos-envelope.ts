@@ -8,24 +8,24 @@
  * the synchronous replay reads (`getToolOutput`, `getUiResponse`,
  * `getStageOutput`) cannot reconstruct their lookup keys.
  *
- * The envelope is forward-compatible: old/simple payloads (plain values without
- * the envelope marker) are treated as generic stage outputs during hydration.
- *
- * cross-ref: issue #1498 — DBOS read-side hydration.
+ * Payloads without the current envelope marker and version are rejected.
  */
 
 import type { WorkflowSerializableObject, WorkflowSerializableValue } from "../shared/types.js";
-import type {
-  DurableCheckpoint,
-  DurableCheckpointKind,
-  DurableStageCheckpoint,
-  DurableToolCheckpoint,
-  DurableUiCheckpoint,
-  UiPromptKind,
+import {
+  DURABLE_STAGE_TOPOLOGY_VERSION,
+  type DurableCheckpoint,
+  type DurableCheckpointKind,
+  type DurableStageCheckpoint,
+  type DurableStageTopology,
+  type DurableToolCheckpoint,
+  type DurableUiCheckpoint,
+  type UiPromptKind,
 } from "./types.js";
+import { isCurrentDurableFormat, DURABLE_FORMAT_VERSION } from "./format-version.js";
 
 /** Envelope schema version. */
-export const DBOS_ENVELOPE_VERSION = 1;
+export const DBOS_ENVELOPE_VERSION = DURABLE_FORMAT_VERSION;
 
 /** Marker key present on every envelope payload. */
 const ENVELOPE_MARKER = "__dbos_checkpoint__";
@@ -51,12 +51,31 @@ export interface DbosCheckpointEnvelope extends WorkflowSerializableObject {
   readonly sessionId?: string;
   readonly sessionFile?: string;
   readonly completedAt: number;
+  readonly startedAt?: number;
+  readonly endedAt?: number;
+  readonly durationMs?: number;
+  readonly result?: string;
+  readonly model?: string;
+  readonly fastMode?: boolean;
+  readonly attemptedModels?: WorkflowSerializableValue;
+  readonly modelAttempts?: WorkflowSerializableValue;
+  readonly topology?: WorkflowSerializableValue;
+}
+
+/** Add a compatibility root topology when a legacy/output-only writer omits it. */
+export function withCurrentStageTopology(cp: DurableCheckpoint): DurableCheckpoint {
+  if (cp.kind !== "stage" || cp.topology !== undefined) return cp;
+  return {
+    ...cp,
+    topology: { version: DURABLE_STAGE_TOPOLOGY_VERSION, stageId: cp.checkpointId, parentIds: [] },
+  };
 }
 
 /**
  * Encode a durable checkpoint into a DBOS step-output envelope.
  */
-export function encodeCheckpoint(cp: DurableCheckpoint): DbosCheckpointEnvelope {
+export function encodeCheckpoint(checkpoint: DurableCheckpoint): DbosCheckpointEnvelope {
+  const cp = withCurrentStageTopology(checkpoint);
   const output = checkpointOutputValue(cp);
   const base: DbosCheckpointEnvelope = {
     __dbos_checkpoint__: ENVELOPE_MARKER,
@@ -80,8 +99,22 @@ export function encodeCheckpoint(cp: DurableCheckpoint): DbosCheckpointEnvelope 
     ...base,
     name: s.name,
     replayKey: s.replayKey,
+    ...(s.topology !== undefined ? { topology: {
+      version: s.topology.version,
+      stageId: s.topology.stageId,
+      parentIds: [...s.topology.parentIds],
+      ...(s.topology.run !== undefined ? { run: { ...s.topology.run } } : {}),
+    } } : {}),
     ...(s.sessionId !== undefined ? { sessionId: s.sessionId } : {}),
     ...(s.sessionFile !== undefined ? { sessionFile: s.sessionFile } : {}),
+    ...(s.startedAt !== undefined ? { startedAt: s.startedAt } : {}),
+    ...(s.endedAt !== undefined ? { endedAt: s.endedAt } : {}),
+    ...(s.durationMs !== undefined ? { durationMs: s.durationMs } : {}),
+    ...(s.result !== undefined ? { result: s.result } : {}),
+    ...(s.model !== undefined ? { model: s.model } : {}),
+    ...(s.fastMode !== undefined ? { fastMode: s.fastMode } : {}),
+    ...(s.attemptedModels !== undefined ? { attemptedModels: [...s.attemptedModels] } : {}),
+    ...(s.modelAttempts !== undefined ? { modelAttempts: s.modelAttempts as WorkflowSerializableValue } : {}),
   };
 }
 
@@ -89,34 +122,52 @@ export function encodeCheckpoint(cp: DurableCheckpoint): DbosCheckpointEnvelope 
  * Type guard: is this value a checkpoint envelope?
  */
 export function isCheckpointEnvelope(value: WorkflowSerializableValue | undefined): value is DbosCheckpointEnvelope {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const obj = value as Record<string, unknown>;
-  return obj[ENVELOPE_MARKER] === ENVELOPE_MARKER;
+  if (!hasCheckpointEnvelopeMarker(value)) return false;
+  return value.v === DBOS_ENVELOPE_VERSION;
 }
 
-/**
- * Decode a DBOS step output into a durable checkpoint.
- *
- * - Envelope payloads reconstruct the full checkpoint with original metadata.
- * - Non-envelope payloads (legacy/simple) produce a generic stage checkpoint
- *   so the output is still discoverable during replay.
- *
- * Returns `undefined` if the payload cannot be interpreted.
- */
+function hasCheckpointEnvelopeMarker(value: WorkflowSerializableValue | undefined): value is Record<string, WorkflowSerializableValue> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  return (value as Record<string, WorkflowSerializableValue>)[ENVELOPE_MARKER] === ENVELOPE_MARKER;
+}
+export type DbosCheckpointCompatibility =
+  | { readonly kind: "current"; readonly checkpoint: DurableCheckpoint }
+  | { readonly kind: "unknown" };
+
+/** Classify and decode one DBOS checkpoint payload without reinterpreting marked formats. */
+export function classifyCheckpointPayload(
+  workflowId: string,
+  stepName: string,
+  value: WorkflowSerializableValue,
+): DbosCheckpointCompatibility {
+  if (!hasCheckpointEnvelopeMarker(value) || !isCurrentDurableFormat(value.v)) return { kind: "unknown" };
+  const hasOutput = value["hasOutput"];
+  const containsOutput = value["output"] !== undefined;
+  if (value["checkpointId"] !== stepName || typeof hasOutput !== "boolean" || hasOutput !== containsOutput) {
+    return { kind: "unknown" };
+  }
+  const checkpoint = decodeEnvelope(workflowId, value as DbosCheckpointEnvelope);
+  return checkpoint === undefined ? { kind: "unknown" } : { kind: "current", checkpoint };
+}
+
+/** Decode one current DBOS checkpoint envelope. */
 export function decodeToCheckpoint(
   workflowId: string,
   stepName: string,
   value: WorkflowSerializableValue,
 ): DurableCheckpoint | undefined {
-  if (isCheckpointEnvelope(value)) return decodeEnvelope(workflowId, value);
-  if (value === undefined) return undefined;
-  return decodeLegacy(workflowId, stepName, value);
+  const classified = classifyCheckpointPayload(workflowId, stepName, value);
+  return classified.kind === "current" ? classified.checkpoint : undefined;
 }
 
 function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): DurableCheckpoint | undefined {
+  if (typeof env.checkpointId !== "string" || env.checkpointId.length === 0
+    || typeof env.completedAt !== "number" || !Number.isFinite(env.completedAt)
+    || (env.name !== undefined && typeof env.name !== "string")
+    || (env.hasOutput !== undefined && typeof env.hasOutput !== "boolean")) return undefined;
   const common = { workflowId, checkpointId: env.checkpointId, completedAt: env.completedAt };
   if (env.kind === "tool") {
-    if (env.argsHash === undefined || env.output === undefined) return undefined;
+    if (typeof env.argsHash !== "string" || env.output === undefined) return undefined;
     return {
       kind: "tool",
       ...common,
@@ -126,7 +177,8 @@ function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): Durabl
     } as DurableToolCheckpoint;
   }
   if (env.kind === "ui") {
-    if (env.promptHash === undefined || env.promptKind === undefined || env.output === undefined) return undefined;
+    if (typeof env.promptHash !== "string" || !isUiPromptKind(env.promptKind) || env.output === undefined
+      || (env.message !== undefined && typeof env.message !== "string")) return undefined;
     return {
       kind: "ui",
       ...common,
@@ -136,31 +188,106 @@ function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): Durabl
       response: env.output,
     } as DurableUiCheckpoint;
   }
+  const topology = stageTopology(env.topology);
+  if (env.kind !== "stage" || topology === undefined
+    || (env.replayKey !== undefined && typeof env.replayKey !== "string")
+    || (env.sessionId !== undefined && typeof env.sessionId !== "string")
+    || (env.sessionFile !== undefined && typeof env.sessionFile !== "string")
+    || !isOptionalFiniteNumber(env.startedAt)
+    || !isOptionalFiniteNumber(env.endedAt)
+    || !isOptionalFiniteNumber(env.durationMs)
+    || (env.result !== undefined && typeof env.result !== "string")
+    || (env.model !== undefined && typeof env.model !== "string")
+    || (env.fastMode !== undefined && typeof env.fastMode !== "boolean")
+    || (env.attemptedModels !== undefined && !isStringArray(env.attemptedModels))
+    || (env.modelAttempts !== undefined && !isModelAttempts(env.modelAttempts))) return undefined;
   return {
     kind: "stage",
     ...common,
     name: env.name ?? "stage",
     replayKey: env.replayKey ?? env.checkpointId,
     ...(env.hasOutput !== false && env.output !== undefined ? { output: env.output } : {}),
+    topology,
     ...(env.sessionId !== undefined ? { sessionId: env.sessionId } : {}),
     ...(env.sessionFile !== undefined ? { sessionFile: env.sessionFile } : {}),
+    ...(typeof env.startedAt === "number" ? { startedAt: env.startedAt } : {}),
+    ...(typeof env.endedAt === "number" ? { endedAt: env.endedAt } : {}),
+    ...(typeof env.durationMs === "number" ? { durationMs: env.durationMs } : {}),
+    ...(typeof env.result === "string" ? { result: env.result } : {}),
+    ...(typeof env.model === "string" ? { model: env.model } : {}),
+    ...(typeof env.fastMode === "boolean" ? { fastMode: env.fastMode } : {}),
+    ...(isStringArray(env.attemptedModels) ? { attemptedModels: env.attemptedModels } : {}),
+    ...(Array.isArray(env.modelAttempts) ? { modelAttempts: env.modelAttempts as DurableStageCheckpoint["modelAttempts"] } : {}),
   } as DurableStageCheckpoint;
 }
 
-function decodeLegacy(
-  workflowId: string,
-  stepName: string,
-  output: WorkflowSerializableValue,
-): DurableStageCheckpoint {
+
+function stageTopology(value: WorkflowSerializableValue | undefined): DurableStageTopology | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, WorkflowSerializableValue>;
+  if (record["version"] !== DURABLE_STAGE_TOPOLOGY_VERSION
+    || typeof record["stageId"] !== "string" || !isStringArray(record["parentIds"])) return undefined;
+  const run = stageRunTopology(record["run"]);
+  if (record["run"] !== undefined && run === undefined) return undefined;
   return {
-    kind: "stage",
-    workflowId,
-    checkpointId: `stage:${stepName}`,
-    name: stepName,
-    replayKey: stepName,
-    output,
-    completedAt: Date.now(),
+    version: DURABLE_STAGE_TOPOLOGY_VERSION,
+    stageId: record["stageId"],
+    parentIds: record["parentIds"],
+    ...(run !== undefined ? { run } : {}),
   };
+}
+
+function stageRunTopology(value: WorkflowSerializableValue | undefined): NonNullable<DurableStageTopology["run"]> | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const run = value as Record<string, WorkflowSerializableValue>;
+  if (typeof run["runId"] !== "string" || typeof run["runName"] !== "string") return undefined;
+  for (const key of ["parentRunId", "parentStageId", "rootRunId"] as const) {
+    if (run[key] !== undefined && typeof run[key] !== "string") return undefined;
+  }
+  return {
+    runId: run["runId"],
+    runName: run["runName"],
+    ...(typeof run["parentRunId"] === "string" ? { parentRunId: run["parentRunId"] } : {}),
+    ...(typeof run["parentStageId"] === "string" ? { parentStageId: run["parentStageId"] } : {}),
+    ...(typeof run["rootRunId"] === "string" ? { rootRunId: run["rootRunId"] } : {}),
+  };
+}
+
+function isModelAttempts(value: WorkflowSerializableValue | undefined): boolean {
+  return Array.isArray(value) && value.every((attempt) => {
+    if (typeof attempt !== "object" || attempt === null || Array.isArray(attempt)) return false;
+    const record = attempt as Record<string, WorkflowSerializableValue>;
+    return typeof record["model"] === "string"
+      && typeof record["success"] === "boolean"
+      && (record["reasoningLevel"] === undefined || isReasoningLevel(record["reasoningLevel"]))
+      && (record["error"] === undefined || typeof record["error"] === "string")
+      && (record["usage"] === undefined || isModelUsage(record["usage"]));
+  });
+}
+
+function isReasoningLevel(value: WorkflowSerializableValue): boolean {
+  return value === "off" || value === "minimal" || value === "low" || value === "medium"
+    || value === "high" || value === "xhigh" || value === "max";
+}
+
+function isModelUsage(value: WorkflowSerializableValue): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const usage = value as Record<string, WorkflowSerializableValue>;
+  return ["input", "output", "cacheRead", "cacheWrite", "cost", "turns"]
+    .every((key) => usage[key] === undefined || (typeof usage[key] === "number" && Number.isFinite(usage[key])));
+}
+
+function isUiPromptKind(value: WorkflowSerializableValue | undefined): value is UiPromptKind {
+  return value === "input" || value === "confirm" || value === "select"
+    || value === "editor" || value === "custom";
+}
+
+function isOptionalFiniteNumber(value: WorkflowSerializableValue | undefined): boolean {
+  return value === undefined || (typeof value === "number" && Number.isFinite(value));
+}
+
+function isStringArray(value: WorkflowSerializableValue | undefined): value is readonly string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
 function checkpointOutputValue(cp: DurableCheckpoint): WorkflowSerializableValue | undefined {

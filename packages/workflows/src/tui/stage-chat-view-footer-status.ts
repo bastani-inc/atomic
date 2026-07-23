@@ -78,6 +78,19 @@ export function renderFooterWithOrchestratorReturnHint(
   );
   return lines;
 }
+export function renderReadOnlyArchiveFooter(
+  ctx: StageChatViewContext,
+  width: number,
+): string[] {
+  const closeHint =
+    paint("esc", ctx.theme.text, { bold: true }) +
+    paint(" to close", ctx.theme.textMuted);
+  return [
+    mergeOrchestratorReturnHintIntoLine(ctx, closeHint, width, {
+      minimumPrefixWidth: visibleWidth(closeHint) + 1,
+    }),
+  ];
+}
 
 export function embedOrchestratorReturnHintInWidget(
   ctx: StageChatViewContext,
@@ -89,11 +102,20 @@ export function embedOrchestratorReturnHintInWidget(
   }
   const lines = [...widgetLines];
   const targetIndex = widgetHintTargetLineIndex(lines);
+  const targetLine = lines[targetIndex] ?? "";
+  const trailingBorder = trailingWidgetBorderChar(targetLine);
+  const plainPrefix = stripAnsi(targetLine)
+    .slice(0, trailingBorder.length > 0 ? -trailingBorder.length : undefined)
+    .trimEnd();
   lines[targetIndex] = mergeOrchestratorReturnHintIntoLine(
     ctx,
-    lines[targetIndex] ?? "",
+    targetLine,
     width,
-    { preserveTrailingBorder: true, rightMargin: 2 },
+    {
+      preserveTrailingBorder: true,
+      rightMargin: 2,
+      minimumPrefixWidth: visibleWidth(plainPrefix) + 1,
+    },
   );
   return lines;
 }
@@ -102,29 +124,60 @@ function mergeOrchestratorReturnHintIntoLine(
   ctx: StageChatViewContext,
   line: string,
   width: number,
-  options: { preserveTrailingBorder?: boolean; rightMargin?: number } = {},
+  options: {
+    preserveTrailingBorder?: boolean;
+    rightMargin?: number;
+    minimumPrefixWidth?: number;
+  } = {},
 ): string {
   const copyModeState = ctx.mouseScrollCaptureEnabled ? "off" : "on";
-  const plain = `ctrl+d graph · ${STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL} copy mode ${copyModeState}`;
-  const styled =
-    paint("ctrl+d", ctx.theme.text, { bold: true }) +
-    paint(" graph · ", ctx.theme.textMuted) +
-    paint(STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL, ctx.theme.text, { bold: true }) +
-    paint(` copy mode ${copyModeState}`, ctx.theme.textMuted);
+  const fullHint = {
+    plain: `ctrl+x return to graph · ${STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL} copy mode ${copyModeState}`,
+    styled:
+      paint("ctrl+x", ctx.theme.text, { bold: true }) +
+      paint(" return to graph · ", ctx.theme.textMuted) +
+      paint(STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL, ctx.theme.text, { bold: true }) +
+      paint(` copy mode ${copyModeState}`, ctx.theme.textMuted),
+  };
+  const compactHint = {
+    plain: `ctrl+x graph · ${STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL} ${copyModeState}`,
+    styled:
+      paint("ctrl+x", ctx.theme.text, { bold: true }) +
+      paint(" graph · ", ctx.theme.textMuted) +
+      paint(STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL, ctx.theme.text, { bold: true }) +
+      paint(` ${copyModeState}`, ctx.theme.textMuted),
+  };
   const trailingBorder = options.preserveTrailingBorder === true
     ? trailingWidgetBorderChar(line)
     : "";
   const suffixWidth = visibleWidth(trailingBorder);
-  const hintWidth = visibleWidth(plain);
   const requestedRightMargin = Math.max(0, Math.floor(options.rightMargin ?? 0));
+  const minimumPrefixWidth = Math.max(
+    0,
+    Math.floor(options.minimumPrefixWidth ?? 0),
+  );
+  const fullRequiredWidth =
+    suffixWidth +
+    requestedRightMargin +
+    minimumPrefixWidth +
+    visibleWidth(fullHint.plain);
+  const hint = fullRequiredWidth <= width ? fullHint : compactHint;
+  const hintWidth = visibleWidth(hint.plain);
   const rightMargin = Math.min(
     requestedRightMargin,
     Math.max(0, width - suffixWidth - hintWidth),
   );
   const hintStart = Math.max(0, width - suffixWidth - rightMargin - hintWidth);
-  const prefix = truncateToWidth(line, hintStart, "", true);
+  const prefixWidth = Math.max(0, hintStart - 1);
+  const prefix = truncateToWidth(line, prefixWidth, "", true);
   const gap = Math.max(0, hintStart - visibleWidth(prefix));
-  return prefix + " ".repeat(gap) + styled + " ".repeat(rightMargin) + trailingBorder;
+  return (
+    prefix +
+    " ".repeat(gap) +
+    hint.styled +
+    " ".repeat(rightMargin) +
+    trailingBorder
+  );
 }
 
 export function banner(
@@ -185,6 +238,8 @@ export function editorRuleColor(
     case "high":
       return ctx.theme.mauve;
     case "xhigh":
+      return ctx.theme.error;
+    case "max":
       return ctx.theme.error;
     case "off":
     default:

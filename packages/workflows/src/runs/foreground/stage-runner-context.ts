@@ -1,4 +1,4 @@
-import { createStructuredOutputCapture } from "@bastani/atomic";
+import { createStructuredOutputCapture, runCallback } from "@bastani/atomic";
 import type { StageExecutionMeta } from "../../shared/types.js";
 import { StageSessionController } from "./stage-runner-controller.js";
 import { assistantMessage } from "./stage-runner-messages.js";
@@ -42,7 +42,10 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
         if (structuredOutputCapture) {
           throw new Error("atomic-workflows: stage schema requires an AgentSessionAdapter so the structured_output tool can be registered.");
         }
-        const rawText = await adapters.prompt.prompt(text, meta);
+        const rawText = await runCallback(
+          { kind: "workflow.stage_adapter", name: `prompt:${stageName}`, runId, stageId },
+          () => adapters.prompt!.prompt(text, meta),
+        );
         lastAssistantText = await finalizePromptOutput(rawText, outputOptions, runtimeCwd());
         adapterMessages = assistantMessage(lastAssistantText);
         return lastAssistantText;
@@ -74,7 +77,10 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 
     async complete(text, completeOpts) {
       if (adapters.complete) {
-        lastAssistantText = await adapters.complete.complete(text, completeOpts, meta);
+        lastAssistantText = await runCallback(
+          { kind: "workflow.stage_adapter", name: `complete:${stageName}`, runId, stageId },
+          () => adapters.complete!.complete(text, completeOpts, meta),
+        );
         adapterMessages = assistantMessage(lastAssistantText);
         return lastAssistantText;
       }
@@ -94,6 +100,10 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 
     async sendUserMessage(text, options) {
       await controller.sendUserMessage(text, options);
+    },
+
+    async __sendUserMessage(text, options, beforeDelivery) {
+      return controller.sendUserMessage(text, options, beforeDelivery);
     },
 
     async steer(text) {
@@ -186,6 +196,14 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 
     async __ensureSessionFromFile(sessionFile) {
       await controller.ensureSessionFromFile(sessionFile);
+    },
+
+    __sealGeneration() {
+      controller.sealGeneration();
+    },
+
+    async __closeGeneration() {
+      await controller.closeGeneration();
     },
 
     __sessionMeta() {

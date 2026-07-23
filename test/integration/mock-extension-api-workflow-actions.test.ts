@@ -297,6 +297,38 @@ describe("MockExtensionAPI — tool list/status without name or inputs", () => {
     assert.equal(Array.isArray(r.snapshots), true);
   });
 
+  // Tool execute: { action: "models" } — no name, no inputs
+  test("execute({ action: 'models' }) returns action='models'", async () => {
+    const execute = mock.tools[0]!.opts.execute;
+    const result = await runTool(execute, { action: "models" });
+    assert.equal(result.action, "models");
+  });
+
+  test("execute({ action: 'models' }) returns models array", async () => {
+    const execute = mock.tools[0]!.opts.execute;
+    const result = await runTool(execute, { action: "models" });
+    const r = result as { action: "models"; models: unknown[] };
+    assert.equal(Array.isArray(r.models), true);
+  });
+
+  test("execute({ action: 'models' }) entries have required fields and no secrets", async () => {
+    const execute = mock.tools[0]!.opts.execute;
+    const result = await runTool(execute, { action: "models" });
+    const r = result as { action: "models"; models: Array<{ provider: string; id: string; fullId: string; isCurrent: boolean }> };
+    for (const entry of r.models) {
+      assert.equal(typeof entry.provider, "string");
+      assert.equal(typeof entry.id, "string");
+      assert.equal(typeof entry.fullId, "string");
+      assert.equal(typeof entry.isCurrent, "boolean");
+    }
+    const raw = JSON.stringify(result);
+    assert.ok(!raw.includes("token"));
+    assert.ok(!raw.includes("apiKey"));
+    assert.ok(!raw.includes("auth"));
+    assert.ok(!raw.includes("secret"));
+    assert.ok(!raw.includes("credential"));
+  });
+
 });
 
 // ---------------------------------------------------------------------------

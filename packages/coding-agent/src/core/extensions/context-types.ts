@@ -1,11 +1,12 @@
 import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai/compat";
-import type { ContextCompactionResult } from "../compaction/index.ts";
+import type { VerbatimCompactionResult } from "../compaction/index.ts";
 import type { CustomMessage } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ReadonlySessionManager, SessionManager } from "../session-manager.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
-import type { SendMessageOptions } from "./message-types.ts";
+import type { SendMessageOptions, SendMessagesOptions } from "./message-types.ts";
 import type { ExtensionUIContext } from "./ui-types.ts";
+import type { WorkflowStageAdmissionBoundary } from "../workflow-stage-admission.ts";
 
 export interface ContextUsage {
 	/** Estimated context tokens, or null if unknown (e.g. right after compaction, before next LLM response). */
@@ -22,8 +23,27 @@ export interface CompactOptions {
 	preserve_recent?: number;
 	/** Focus query for relevance-based pruning. Defaults to auto-detected session context. */
 	query?: string;
-	onComplete?: (result: ContextCompactionResult) => void;
+	onComplete?: (result: VerbatimCompactionResult) => void;
 	onError?: (error: Error) => void;
+}
+
+export interface WorkflowStageLateMessageRouter {
+	routeMessage<T>(
+		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
+		options?: SendMessageOptions,
+	): void | Promise<void>;
+	routeMessages<T>(
+		messages: Array<Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">>,
+		options?: SendMessagesOptions,
+	): void | Promise<void>;
+}
+
+export interface WorkflowStageMessageAdmission {
+	/** Internal generation-owned boundary shared by every model-fallback session. */
+	readonly boundary: WorkflowStageAdmissionBoundary;
+	/** Internal extension state that must survive model-fallback session replacement. */
+	readonly extensionState: Map<string, object>;
+	isOpen(): boolean;
 }
 
 export interface WorkflowStageOrchestrationContext {
@@ -35,6 +55,16 @@ export interface WorkflowStageOrchestrationContext {
 		readonly disableWorkflowTool: true;
 		readonly maxSubagentDepth: number;
 	};
+	/** Internal lifecycle seam for surfacing detached results after this stage closes. */
+	readonly lateMessageRouter?: WorkflowStageLateMessageRouter;
+	/** Internal synchronous boundary used before producer reply/turn side effects. */
+	readonly messageAdmission?: WorkflowStageMessageAdmission;
+	/**
+	 * Resolved per-session intercom home group for this stage. Concrete, already
+	 * normalized upstream. Read by the intercom extension (buildRegistration) and
+	 * inherited by subagents this stage spawns. Absent => no group override.
+	 */
+	readonly intercomGroup?: string;
 }
 
 // Union alias kept for forward-compatible orchestration context variants.

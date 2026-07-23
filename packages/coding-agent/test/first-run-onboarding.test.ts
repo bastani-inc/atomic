@@ -334,6 +334,7 @@ describe("first-run onboarding", () => {
       },
       ui: { requestRender: vi.fn() },
       handleFatalRuntimeError: vi.fn(),
+      ensureDeferredStartupComplete: vi.fn(async () => {}),
     };
     const clear = Reflect.get(InteractiveMode.prototype, "clearFirstRunOnboardingUi") as (this: typeof host) => void;
     const handleClearCommand = Reflect.get(InteractiveMode.prototype, "handleClearCommand") as (this: typeof host & { clearFirstRunOnboardingUi: () => void }) => Promise<void>;
@@ -341,7 +342,9 @@ describe("first-run onboarding", () => {
     hostWithClear.clearFirstRunOnboardingUi = () => clear.call(hostWithClear);
 
     await handleClearCommand.call(hostWithClear);
+    expect(host.ensureDeferredStartupComplete).toHaveBeenCalledTimes(1);
 
+    expect(host.ensureDeferredStartupComplete).toHaveBeenCalledTimes(1);
     expect(host.firstRunNoticeVisible).toBe(false);
     expect(host.firstRunOnboardingNoticeComponents).toEqual([]);
     expect(host.chatContainer.children).not.toContain(staleNotice);

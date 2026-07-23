@@ -148,6 +148,9 @@ export interface WorkflowRuntimeConfig {
   readonly statusFile: boolean;
   readonly statusFilePath?: string;
   readonly resumeInFlight: "ask" | "auto" | "never";
+  readonly worktree?: {
+    readonly symlinkDirectories: readonly string[];
+  };
 }
 
 export interface WorkflowWorktreeInputBinding {
@@ -170,7 +173,7 @@ export interface WorkflowDefinition<
   readonly name: string;
   readonly normalizedName: string;
   readonly description: string;
-  readonly autoAttach?: boolean;
+  readonly autoAttach?: true;
   readonly inputs: WorkflowInputSchemaMap;
   readonly outputs?: WorkflowOutputSchemaMap;
   readonly inputBindings?: WorkflowInputBindings;
@@ -269,6 +272,8 @@ export interface WorkflowDetails extends WorkflowSerializableObject {
   readonly controlEvents?: readonly WorkflowControlEvent[];
   readonly intercom?: WorkflowIntercomSummary;
   readonly warnings?: readonly string[];
+  /** Actionable user guidance for accepted background execution. */
+  readonly message?: string;
   readonly error?: string;
   /** True when the run reached its terminal status through ctx.exit(). */
   readonly exited?: boolean;

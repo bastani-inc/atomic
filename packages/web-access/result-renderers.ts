@@ -1,5 +1,5 @@
-import type { ToolDefinition } from "@bastani/atomic";
-import { Box, Text } from "@mariozechner/pi-tui";
+import { keyHintIfBound, type ToolDefinition } from "@bastani/atomic";
+import { Box, Text } from "@earendil-works/pi-tui";
 import { formatSeconds } from "./utils.js";
 
 type ToolResultRenderer = NonNullable<ToolDefinition["renderResult"]>;
@@ -89,7 +89,7 @@ function progressBar(progress: number): string {
 	return "\u2588".repeat(filled) + "\u2591".repeat(10 - filled);
 }
 
-export const renderWebSearchResult: ToolResultRenderer = (result, { expanded, isPartial }, theme) => {
+export const renderWebSearchResult = ((result, { expanded, isPartial }, theme) => {
 	const details = result.details as WebSearchResultDetails | undefined;
 
 	if (isPartial) {
@@ -241,13 +241,15 @@ export const renderWebSearchResult: ToolResultRenderer = (result, { expanded, is
 		}
 		const moreLines = Math.max(0, totalLines - collapsedLines);
 		if (moreLines > 0) {
-			box.addChild(new Text(theme.fg("muted", `\n... (${moreLines} more lines, ${totalLines} total, CTRL+O Expand)`), 0, 0));
+			const expandHint = keyHintIfBound("app.tools.expand", "Expand");
+			const prefix = theme.fg("muted", `\n... (${moreLines} more lines, ${totalLines} total${expandHint ? ", " : ")"}`);
+			box.addChild(new Text(prefix + (expandHint ? expandHint + theme.fg("muted", ")") : ""), 0, 0));
 		}
 		return box;
 	}
 
 	return new Text(lines.join("\n"), 0, 0);
-};
+}) satisfies ToolResultRenderer;
 
 export const renderCodeSearchResult: ToolResultRenderer = (result, { expanded }, theme) => {
 	const details = result.details as CodeSearchResultDetails | undefined;
@@ -349,7 +351,7 @@ export const renderGetSearchContentResult: ToolResultRenderer = (result, { expan
 export function renderWebAccessToolResult(name: string, args: ToolRenderResultArgs): ToolRenderResult {
 	switch (name) {
 		case "web_search":
-			return renderWebSearchResult(...args);
+			return renderWebSearchResult(args[0], args[1], args[2]);
 		case "code_search":
 			return renderCodeSearchResult(...args);
 		case "fetch_content":

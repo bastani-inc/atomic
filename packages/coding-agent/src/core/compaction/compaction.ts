@@ -3,8 +3,9 @@
  */
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, Usage } from "@earendil-works/pi-ai/compat";
+import type { Api, AssistantMessage, Usage } from "@earendil-works/pi-ai/compat";
 import type { SessionEntry } from "../session-manager.ts";
+import { messageIsLlmVisible, userLikeContentBlockIsLlmVisible } from "../messages.ts";
 
 export interface CompactionSettings {
 	enabled: boolean;
@@ -29,12 +30,12 @@ export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
  *
  * Prefer normalized component fields over `totalTokens`: some providers expose
  * `totalTokens` as a billing/cumulative total, while the footer needs an active
- * context estimate. Anthropic-compatible endpoints can also mirror cached input
- * in both `input` and `cacheRead`/`cacheWrite`; when cache buckets are nearly the
- * same size as `input`, treat `input` as the full prompt instead of counting the
- * same cached prompt twice.
+ * context estimate. Some Anthropic-compatible endpoints mirror cached input in
+ * both `input` and `cacheRead`/`cacheWrite`; only Anthropic Messages usage uses
+ * the near-equal-bucket guard because OpenAI APIs expose disjoint normalized
+ * components that must always be summed.
  */
-export function calculateContextTokens(usage: Usage): number {
+export function calculateContextTokens(usage: Usage, api?: Api): number {
 	const input = Math.max(0, usage.input || 0);
 	const output = Math.max(0, usage.output || 0);
 	const cacheRead = Math.max(0, usage.cacheRead || 0);
@@ -43,7 +44,7 @@ export function calculateContextTokens(usage: Usage): number {
 	const hasComponents = input > 0 || output > 0 || cacheTokens > 0;
 	if (!hasComponents) return Math.max(0, usage.totalTokens || 0);
 
-	const cacheMirrorsInput = input > 0 && cacheTokens > 0 && cacheTokens >= input * 0.9 && cacheTokens <= input * 1.1;
+	const cacheMirrorsInput = api === "anthropic-messages" && input > 0 && cacheTokens > 0 && cacheTokens >= input * 0.9 && cacheTokens <= input * 1.1;
 	const promptTokens = cacheMirrorsInput ? input : input + cacheTokens;
 	return promptTokens + output;
 }
@@ -83,12 +84,25 @@ export interface ContextUsageEstimate {
 	lastUsageIndex: number | null;
 }
 
-function getLastAssistantUsageInfo(messages: AgentMessage[]): { usage: Usage; index: number } | undefined {
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const usage = getAssistantUsage(messages[i]);
-		if (usage) return { usage, index: i };
+function getLastAssistantUsageInfo(messages: AgentMessage[]): { usage: Usage; api: Api; index: number } | undefined {
+	let latestPrefixTimestamp = Number.NEGATIVE_INFINITY;
+	let usageInfo: { usage: Usage; api: Api; index: number } | undefined;
+
+	for (let i = 0; i < messages.length; i++) {
+		const message = messages[i];
+		const usage = getAssistantUsage(message);
+		if (
+			usage &&
+			message.role === "assistant" &&
+			message.timestamp >= latestPrefixTimestamp &&
+			calculateContextTokens(usage, message.api) > 0
+		) {
+			usageInfo = { usage, api: message.api, index: i };
+		}
+		latestPrefixTimestamp = Math.max(latestPrefixTimestamp, message.timestamp);
 	}
-	return undefined;
+
+	return usageInfo;
 }
 
 /**
@@ -111,7 +125,7 @@ export function estimateContextTokens(messages: AgentMessage[]): ContextUsageEst
 		};
 	}
 
-	const usageTokens = calculateContextTokens(usageInfo.usage);
+	const usageTokens = calculateContextTokens(usageInfo.usage, usageInfo.api);
 	let trailingTokens = 0;
 	for (let i = usageInfo.index + 1; i < messages.length; i++) {
 		trailingTokens += estimateTokens(messages[i]);
@@ -145,20 +159,51 @@ export function shouldCompact(contextTokens: number, contextWindow: number, sett
 export const ESTIMATED_IMAGE_CHARS = 4800;
 export const ESTIMATED_IMAGE_TOKENS = Math.ceil(ESTIMATED_IMAGE_CHARS / 4);
 
-function estimateTextAndImageContentChars(content: string | Array<{ type: string; text?: string }>): number {
-	if (typeof content === "string") {
-		return content.length;
+function safeSerializedPayloadLength(value: unknown, fallback: string): number {
+	try {
+		const serialized = JSON.stringify(value);
+		if (typeof serialized === "string") return serialized.length;
+	} catch {
+		// Cyclic and otherwise unserializable future blocks use a conservative marker below.
 	}
+	return fallback.length;
+}
 
-	let chars = 0;
-	for (const block of content) {
-		if (block.type === "text" && block.text) {
-			chars += block.text.length;
-		} else if (block.type === "image") {
-			chars += ESTIMATED_IMAGE_CHARS;
-		}
+function nonEmptyBlockType(block: unknown): string | undefined {
+	if (!block || typeof block !== "object") return undefined;
+	const type = (block as { type?: unknown }).type;
+	return typeof type === "string" && type.trim().length > 0 ? type : undefined;
+}
+
+function estimateContentBlockChars(block: unknown): number {
+	const type = nonEmptyBlockType(block);
+	if (!type) return 0;
+	const record = block as Record<string, unknown>;
+	if (type === "image") return ESTIMATED_IMAGE_CHARS;
+	if (type === "text") return typeof record.text === "string" ? record.text.length : 0;
+	if (type === "thinking") return typeof record.thinking === "string" ? record.thinking.length : 0;
+	if (type === "toolCall") {
+		const nameLength = typeof record.name === "string" ? record.name.length : 0;
+		return nameLength + safeSerializedPayloadLength(record.arguments, "[unserializable tool arguments]");
 	}
-	return chars;
+	return safeSerializedPayloadLength(block, `[unserializable ${type} block]`);
+}
+
+/** Estimate one raw content block after the caller applies provider visibility. */
+export function estimateContentBlockTokens(block: unknown, visible = true): number {
+	if (!visible) return 0;
+	const chars = estimateContentBlockChars(block);
+	return chars > 0 ? Math.ceil(chars / 4) : 0;
+}
+
+function estimateUserLikeContentTokens(content: unknown): number {
+	if (typeof content === "string") return content.trim().length > 0 ? Math.ceil(content.length / 4) : 0;
+	if (!Array.isArray(content)) return 0;
+	const chars = content.reduce(
+		(total, block) => total + (userLikeContentBlockIsLlmVisible(block) ? estimateContentBlockChars(block) : 0),
+		0,
+	);
+	return chars > 0 ? Math.ceil(chars / 4) : 0;
 }
 
 /**
@@ -168,10 +213,10 @@ function estimateTextAndImageContentChars(content: string | Array<{ type: string
  * heuristic independently of the transcript-based estimation used in production.
  */
 export function countImageContentBlocks(content: string | Array<{ type: string }>): number {
-	if (typeof content === "string") return 0;
+	if (typeof content === "string" || !Array.isArray(content)) return 0;
 	let count = 0;
 	for (const block of content) {
-		if (block.type === "image") count += 1;
+		if (block && typeof block === "object" && block.type === "image") count += 1;
 	}
 	return count;
 }
@@ -191,41 +236,31 @@ export function estimateImageContentTokens(content: string | Array<{ type: strin
  * This is conservative (overestimates tokens).
  */
 export function estimateTokens(message: AgentMessage): number {
-	let chars = 0;
+	if (!message || typeof message !== "object" || !messageIsLlmVisible(message)) return 0;
 
 	switch (message.role) {
-		case "user": {
-			chars = estimateTextAndImageContentChars(
-				(message as { content: string | Array<{ type: string; text?: string }> }).content,
-			);
-			return Math.ceil(chars / 4);
-		}
-		case "assistant": {
-			const assistant = message as AssistantMessage;
-			for (const block of assistant.content) {
-				if (block.type === "text") {
-					chars += block.text.length;
-				} else if (block.type === "thinking") {
-					chars += block.thinking.length;
-				} else if (block.type === "toolCall") {
-					chars += block.name.length + JSON.stringify(block.arguments).length;
-				}
-			}
-			return Math.ceil(chars / 4);
-		}
+		case "user":
 		case "custom":
+			return estimateUserLikeContentTokens((message as { content?: unknown }).content);
+		case "assistant": {
+			const content = (message as { content?: unknown }).content;
+			if (!Array.isArray(content)) return 0;
+			const chars = content.reduce((total, block) => total + estimateContentBlockChars(block), 0);
+			return chars > 0 ? Math.ceil(chars / 4) : 0;
+		}
 		case "toolResult": {
-			chars = estimateTextAndImageContentChars(message.content);
-			return Math.ceil(chars / 4);
+			const content = (message as { content?: unknown }).content;
+			if (!Array.isArray(content)) return 0;
+			const chars = content.reduce((total, block) => total + estimateContentBlockChars(block), 0);
+			return chars > 0 ? Math.ceil(chars / 4) : 0;
 		}
 		case "bashExecution": {
-			chars = message.command.length + message.output.length;
-			return Math.ceil(chars / 4);
+			const command = typeof message.command === "string" ? message.command : "";
+			const output = typeof message.output === "string" ? message.output : "";
+			return Math.ceil((command.length + output.length) / 4);
 		}
-		case "branchSummary": {
-			chars = message.summary.length;
-			return Math.ceil(chars / 4);
-		}
+		case "branchSummary":
+			return typeof message.summary === "string" ? Math.ceil(message.summary.length / 4) : 0;
 	}
 
 	return 0;

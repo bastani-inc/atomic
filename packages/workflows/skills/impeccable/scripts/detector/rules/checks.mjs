@@ -18,6 +18,8 @@ import {
   parseRgb,
   relativeLuminance,
 } from '../shared/color.mjs';
+import { extractGoogleFontFamilies } from '../shared/fonts.mjs';
+import { stripHtmlBlocks } from '../shared/page.mjs';
 
 const DETECTOR_IS_BROWSER = typeof window !== 'undefined';
 
@@ -573,14 +575,47 @@ function checkHtmlPatterns(html) {
     findings.push({ id: 'repeating-stripes-gradient', snippet: 'repeating-gradient decorative stripes' });
   }
 
+  // --- Provider tells (gated): two-axis grid-line background (Codex/GPT) ---
+  // The Codex grid tell is two hairline `linear-gradient(... <color> 1px,
+  // transparent 1px)` layers (one per axis) tiled by a repeating
+  // `background-size` cell. Both signals must co-occur in the SAME style block
+  // (a CSS rule body or one inline `style="..."`): two hairline stops WITHOUT a
+  // tiling background-size is a fixed crosshair, not a grid, and a single
+  // hairline is a legitimate ruled line. Scoping to one block also stops
+  // unrelated single-axis rules on separate elements from adding up across the
+  // page. Count hairlines only inside `background`/`background-image` values so
+  // a hairline in an unrelated property (mask-image, border-image) can't stand
+  // in for the second axis. Colors like `oklch(96% 0.012 82 / 0.055)` carry
+  // nested parens, so match the hairline stop directly rather than parsing
+  // whole gradient layers.
+  {
+    const hairlineRe = /\b\d{1,3}px\s*,\s*transparent\s+\d{1,3}px/gi;
+    const gridSizeRe = /background-size\s*:[^;{}"']*\b\d{1,3}px\b/i;
+    const bgDeclRe = /\bbackground(?:-image)?\s*:\s*([^;{}"']*)/gi;
+    const blockRe = /\{([^{}]*)\}|style\s*=\s*"([^"]*)"|style\s*=\s*'([^']*)'/gi;
+    let blk;
+    while ((blk = blockRe.exec(html)) !== null) {
+      const block = blk[1] || blk[2] || blk[3] || '';
+      if (!gridSizeRe.test(block)) continue;
+      let hairlineCount = 0;
+      let bm;
+      bgDeclRe.lastIndex = 0;
+      while ((bm = bgDeclRe.exec(block)) !== null) {
+        const stops = bm[1].match(hairlineRe);
+        if (stops) hairlineCount += stops.length;
+      }
+      if (hairlineCount >= 2) {
+        findings.push({ id: 'codex-grid-background', snippet: 'two-axis grid-line gradient background' });
+        break;
+      }
+    }
+  }
+
   // --- Provider tells (gated): "X theater" framing copy (GPT) ---
   // Lives here (regex-on-HTML) rather than in the text-content analyzers so it
   // runs in the bundled browser path too, not just the CLI/static path.
   {
-    const bodyText = html
-      .replace(/<script\b[^>]*>[\s\S]*?<\/script[^>]*>/gi, ' ')
-      .replace(/<style\b[^>]*>[\s\S]*?<\/style[^>]*>/gi, ' ')
-      .replace(/<[^>]+>/g, ' ');
+    const bodyText = stripHtmlBlocks(html, ['script', 'style']).replace(/<[^>]+>/g, ' ');
     const tm = /\b(\w+)\s+theater\b/i.exec(bodyText);
     if (tm) findings.push({ id: 'theater-slop-phrase', snippet: `"${tm[0].trim()}"` });
   }
@@ -2036,14 +2071,9 @@ function checkPageTypography(doc, win) {
 
   // Check Google Fonts links in HTML
   const html = doc.documentElement?.outerHTML || '';
-  const gfRe = /fonts\.googleapis\.com\/css2?\?family=([^&"'\s]+)/gi;
-  let m;
-  while ((m = gfRe.exec(html)) !== null) {
-    const families = m[1].split('|').map(f => f.split(':')[0].replace(/\+/g, ' ').toLowerCase());
-    for (const f of families) {
-      fonts.add(f);
-      if (OVERUSED_FONTS.has(f)) overusedFound.add(f);
-    }
+  for (const f of extractGoogleFontFamilies(html)) {
+    fonts.add(f);
+    if (OVERUSED_FONTS.has(f)) overusedFound.add(f);
   }
 
   // Also parse raw HTML/style content for font-family (jsdom may not expose all via CSSOM)

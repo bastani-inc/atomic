@@ -55,7 +55,7 @@ export function isChatMessageEntry<TExtraEntry extends ChatTranscriptEntryLike>(
     case "branchSummary":
       return candidate.role === "summary" && candidate.message !== undefined;
     case "system":
-      return candidate.role === "system" && candidate.message !== undefined;
+      return candidate.role === "system" && typeof candidate.text === "string";
     default:
       return false;
   }

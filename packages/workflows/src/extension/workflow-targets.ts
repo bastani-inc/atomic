@@ -41,23 +41,13 @@ export function topLevelExpandedSnapshots() {
   }));
 }
 
-export function reloadBlockedMessage(count = inFlightRunCount()): string {
-  return `Reload skipped: ${count} workflow run(s) still in flight. Wait for them to finish, or pause/kill them before reloading workflow resources.`;
-}
 
-export function allStageConflictMessage(action: "pause" | "interrupt" | "kill"): string {
+export function allStageConflictMessage(action: "pause" | "interrupt" | "quit"): string {
   return `Cannot ${action} --all with a stageId; omit stageId or target a single run.`;
 }
 
-export class WorkflowReloadBlockedError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "WorkflowReloadBlockedError";
-  }
-}
 
 export function reloadFailureMessage(error: unknown): string {
-  if (error instanceof WorkflowReloadBlockedError) return error.message;
   return `Reload failed: ${error instanceof Error ? error.message : String(error)}`;
 }
 

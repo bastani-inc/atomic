@@ -1,10 +1,12 @@
 import { GraphCanvas } from "./graph-canvas.js";
 import {
+  COMPACT_HINT_KEYS,
   HINT_KEYS,
   MODE_PILL_LABEL,
   OVERLAY_LINE_COUNT,
   OVERLAY_VERTICAL_MARGIN_ROWS,
 } from "./graph-view-constants.js";
+import { WORKFLOW_STATUS_KEY } from "./workflow-status.js";
 import { GraphViewState } from "./graph-view-state.js";
 import { renderOutlinePill } from "./header.js";
 import { NODE_H, NODE_W } from "./layout.js";
@@ -78,12 +80,25 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
    * the header band: `backgroundPanel` chrome, outlined accent pill
    * flush-left, hints flowing right on the centre row.
    */
+  protected _externalStatusText(): string | null {
+    const entries = Array.from(this.footerData?.getExtensionStatuses() ?? [])
+      .filter(([key, value]) => (
+        value.trim().length > 0 &&
+        key !== WORKFLOW_STATUS_KEY &&
+        !key.startsWith(`${WORKFLOW_STATUS_KEY}:`)
+      ))
+      .sort(([a], [b]) => a.localeCompare(b));
+    if (entries.length === 0) return null;
+    return entries.map(([, value]) => value.trim()).join(" · ");
+  }
+
   protected _renderStatusline(width: number): string[] {
     const t = this.graphTheme;
     const chromeBg = hexBg(t.backgroundPanel);
     const text = hexToAnsi(t.text);
     const muted = hexToAnsi(t.textMuted);
     const dim = hexToAnsi(t.dim);
+    const accent = hexToAnsi(t.accent);
 
     const {
       top,
@@ -91,18 +106,26 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
       bot,
       visibleWidth: pillW,
     } = renderOutlinePill(MODE_PILL_LABEL, t.accent, chromeBg);
-
-    // Hints — `<key> <label>` separated by `  ·  `.
+    // Hints use `<key> <label>` segments. Keep the hierarchy transition first,
+    // followed by extension status and secondary graph controls, so width
+    // pressure never hides the way back to main chat.
     const sep = `${chromeBg}  ${dim}·${RESET}${chromeBg}  `;
-    const segments = HINT_KEYS.map(
-      ({ key, label }) =>
-        `${text}${BOLD}${key}${RESET}${chromeBg} ${muted}${label}${RESET}${chromeBg}`,
-    );
-    const hintsStyledRaw = segments.join(sep);
-
     const leftEdgePad = 1;
     const rightEdgePad = 2;
     const hintsBudget = Math.max(0, width - leftEdgePad - pillW - rightEdgePad);
+    const fullHierarchyHint = "ctrl+x return to main chat";
+    const hintKeys = hintsBudget >= visibleWidth(fullHierarchyHint)
+      ? HINT_KEYS
+      : COMPACT_HINT_KEYS;
+    const statusText = this._externalStatusText();
+    const statusSegment = statusText ? [`${accent}${statusText}${RESET}${chromeBg}`] : [];
+    const hintSegments = hintKeys.map(
+      ({ key, label }) =>
+        `${text}${BOLD}${key}${RESET}${chromeBg} ${muted}${label}${RESET}${chromeBg}`,
+    );
+    const hintsStyledRaw = [hintSegments[0], ...statusSegment, ...hintSegments.slice(1)]
+      .filter((segment): segment is string => segment !== undefined)
+      .join(sep);
     const hintsStyled = truncateToWidth(hintsStyledRaw, hintsBudget, "");
     const hintsVisibleLen = visibleWidth(hintsStyled);
     const fillerVisible = Math.max(0, hintsBudget - hintsVisibleLen);

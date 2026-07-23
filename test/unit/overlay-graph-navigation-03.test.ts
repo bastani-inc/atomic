@@ -232,7 +232,7 @@ describe("GraphView keyboard navigation", () => {
     view.dispose();
   });
 
-  it("lets legacy run-level prompts keep graph detach and scroll controls", () => {
+  it("lets legacy run-level prompts keep Ctrl+X hierarchy and scroll controls", () => {
     const stages = [
       makeStage("stage-0"),
       makeStage("stage-1", ["stage-0"]),
@@ -263,7 +263,7 @@ describe("GraphView keyboard navigation", () => {
     view.render(96);
     assert.ok(view._graphScrollOffset > 0);
 
-    view.handleInput("\x04");
+    view.handleInput("\x18");
     assert.equal(detached, 1);
     view.dispose();
   });

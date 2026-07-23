@@ -186,6 +186,8 @@ const PROVIDER_UNAVAILABLE_PHRASES: readonly TokenMatch[] = [
   ["provider", "error"],
   ["model", "unavailable"],
   ["503"],
+  ["git", "command", "timed", "out"],
+  ["spawnsync", "git", "etimedout"],
 ];
 
 const AUTH_CONTEXT = new Set([

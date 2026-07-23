@@ -30,6 +30,7 @@ import {
     readPathEndsWith,
     readPaths,
 } from "./builtin-workflows-helpers.js";
+import { assertReviewerIntercomCoordination } from "./reviewer-intercom-prompt-assertions.js";
 
 describe("ralph", () => {
     let tempCwd: string | undefined;
@@ -237,26 +238,29 @@ describe("ralph", () => {
                 ?.forkFromSessionFile,
             "/tmp/ralph-research-prompt-refinement-1.jsonl",
         );
-        assert.equal(
-            (
-                ctx.calls.prompts["research-prompt-refinement-2"]?.[0] ?? ""
-            ).startsWith(
-                "/skill:prompt-engineer Transform the following user request",
-            ),
-            true,
+        const forkedRefinementPrompt =
+            ctx.calls.prompts["research-prompt-refinement-2"]?.[0] ?? "";
+        // Forked continuations inherit the skill, request, and contracts from
+        // the forked session history and must not repeat them.
+        assert.doesNotMatch(forkedRefinementPrompt, /\/skill:prompt-engineer/);
+        assert.match(
+            forkedRefinementPrompt,
+            /Transform the same user request into an updated research question/,
         );
+        assert.doesNotMatch(forkedRefinementPrompt, /<literal_contract>/);
 
         assert.equal(ctx.calls.taskOptions["research-2"]?.[0]?.context, "fork");
         assert.equal(
             ctx.calls.taskOptions["research-2"]?.[0]?.forkFromSessionFile,
             "/tmp/ralph-research-1.jsonl",
         );
-        assert.equal(
-            (ctx.calls.prompts["research-2"]?.[0] ?? "").startsWith(
-                "/skill:research-codebase ",
-            ),
-            true,
+        const forkedResearchPrompt = ctx.calls.prompts["research-2"]?.[0] ?? "";
+        assert.doesNotMatch(forkedResearchPrompt, /\/skill:research-codebase/);
+        assert.match(
+            forkedResearchPrompt,
+            /Research this updated question against the current repository state/,
         );
+        assert.doesNotMatch(forkedResearchPrompt, /<literal_contract>/);
 
         assert.equal(
             ctx.calls.taskOptions["orchestrator-2"]?.[0]?.context,
@@ -272,12 +276,18 @@ describe("ralph", () => {
             forkedOrchestratorPrompt,
             /Continue implementing from the latest research findings/i,
         );
+        // The forked orchestrator inherits contracts, E2E guidance, and the
+        // report format from its forked history and must not repeat them.
         assert.match(
+            forkedOrchestratorPrompt,
+            /previously established guidance still applies unchanged/i,
+        );
+        assert.doesNotMatch(
             forkedOrchestratorPrompt,
             /Verify correctness end-to-end whenever practical/,
         );
-        assert.match(forkedOrchestratorPrompt, /skill: "playwright-cli"/);
-        assert.match(forkedOrchestratorPrompt, /skill: "tmux"/);
+        assert.doesNotMatch(forkedOrchestratorPrompt, /skill: "playwright-cli"/);
+        assert.doesNotMatch(forkedOrchestratorPrompt, /<acceptance_matrix>/);
         assert.doesNotMatch(
             ctx.calls.prompts["orchestrator-2"]?.[0] ?? "",
             /project_initialization_preflight/,
@@ -315,11 +325,7 @@ describe("ralph", () => {
             },
             {
                 task: (name) => {
-                    if (
-                        name === "reviewer-a" ||
-                        name === "reviewer-b" ||
-                        name === "reviewer-c"
-                    ) {
+                    if (name === "reviewer-a" || name === "reviewer-b") {
                         return JSON.stringify({
                             findings: [],
                             overall_correctness: "patch is correct",
@@ -347,29 +353,34 @@ describe("ralph", () => {
         const reviewerOptions = ctx.calls.taskOptions["reviewer-a"]?.[0];
         assert.notEqual(reviewerOptions?.schema, undefined);
         assert.equal(reviewerOptions?.customTools, undefined);
-        const reviewerCOptions = ctx.calls.taskOptions["reviewer-c"]?.[0];
-        assert.equal(reviewerCOptions?.model, "zai/glm-5.2:xhigh");
-        assert.deepEqual(reviewerCOptions?.fallbackModels?.slice(0, 4), [
-            "zai-coding-cn/glm-5.2:xhigh",
-            "openai-codex/gpt-5.5:xhigh",
-            "github-copilot/gpt-5.5:xhigh",
-            "openai/gpt-5.5:xhigh",
-        ]);
+        const reviewerBOptions = ctx.calls.taskOptions["reviewer-b"]?.[0];
+        assert.equal(reviewerBOptions?.model, "openai-codex/gpt-5.6-sol:xhigh");
+        assert.deepEqual(ctx.calls.parallel[0], ["reviewer-a", "reviewer-b"]);
         // Dominated models (benchmark 2026-07-02) must stay out of the chain.
-        const reviewerCFallbacks = reviewerCOptions?.fallbackModels ?? [];
+        const reviewerBFallbacks = reviewerBOptions?.fallbackModels ?? [];
         assert.equal(
-            reviewerCFallbacks.includes("openrouter/sakana/fugu-ultra:high"),
+            reviewerBFallbacks.includes("openrouter/sakana/fugu-ultra:high"),
             true,
         );
         assert.equal(
-            reviewerCFallbacks.some((m) => m.startsWith("sakana/")),
+            reviewerBFallbacks.some((m) => m.startsWith("sakana/")),
             false,
         );
         assert.equal(
-            reviewerCFallbacks.some((m) => /gemini|sonnet/.test(m)),
+            reviewerBFallbacks.some((m) => /gemini|sonnet/.test(m)),
             false,
         );
+        for (const reviewerName of ["reviewer-a", "reviewer-b"]) {
+            assertReviewerIntercomCoordination(
+                ctx.calls.prompts[reviewerName]?.[0] ?? "",
+                reviewerName,
+            );
+        }
+
         const reviewerPrompt = ctx.calls.prompts["reviewer-a"]?.[0] ?? "";
+        assert.match(reviewerPrompt, /<structured_decision_assurance>/);
+        assert.match(reviewerPrompt, /Always return findings as an array/);
+        assert.match(reviewerPrompt, /requirements_traceability as a non-empty array/);
         assert.doesNotMatch(reviewerPrompt, /structured_output/i);
         assert.doesNotMatch(reviewerPrompt, /output_format/i);
     });

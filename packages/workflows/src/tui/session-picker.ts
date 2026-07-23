@@ -1,6 +1,6 @@
 /**
  * Workflow session picker — a centred overlay listing runs the user can
- * connect to (open the orchestrator pane) or kill.
+ * connect to (open the orchestrator pane).
  *
  * Visual contract (DESIGN.md §5 Picker Rows + pi-subagents/src/tui/render-helpers.ts):
  *  - Rounded `╭─ Title ─╮` chrome in `border` colour with title in `accent`.
@@ -162,7 +162,6 @@ function renderHintsRow(width: number, theme: GraphTheme, state: SessionPickerSt
     : [
         hint(`${keyText("tui.select.up")}/${keyText("tui.select.down")}`, "Navigate"),
         hint(keyText("tui.select.confirm"), "Connect"),
-        hint("x", "Kill"),
         hint("a", state.includeAll ? "Active Only" : "All"),
         hint("/", "Filter"),
         hint(keyText("tui.select.cancel"), "Close"),
@@ -333,13 +332,11 @@ export function renderSessionPicker(opts: SessionPickerRenderOpts): string[] {
 export type SessionPickerAction =
   | { kind: "noop" }
   | { kind: "close" }
-  | { kind: "connect"; runId: string }
-  | { kind: "kill"; runId: string };
+  | { kind: "connect"; runId: string };
 
 /**
  * Pure key handler — never mutates anything outside `state`. Returns an
- * action describing what the host should do next (mount the GraphView,
- * fire the kill confirmation, etc.).
+ * action describing what the host should do next (for example, mount the GraphView).
  *
  * Filter-focused mode keeps printable characters routed to `state.query`;
  * Enter exits the filter back to navigation mode.
@@ -400,12 +397,6 @@ export function handleSessionPickerInput(
     const row = rows[state.selectedIndex];
     if (!row) return { kind: "noop" };
     return { kind: "connect", runId: row.run.id };
-  }
-  // `x` = kill. Avoids collision with vim's `k` = up.
-  if (matchesKey(data, "x") || matchesKey(data, Key.shift("x"))) {
-    const row = rows[state.selectedIndex];
-    if (!row || row.run.endedAt !== undefined) return { kind: "noop" };
-    return { kind: "kill", runId: row.run.id };
   }
 
   return { kind: "noop" };

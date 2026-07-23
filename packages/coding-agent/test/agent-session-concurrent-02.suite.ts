@@ -388,6 +388,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		finishInterruptTurn?.();
 		await interrupt;
 		await firstPrompt.catch(() => {});
+		await waitFor(() => session.agent.hasQueuedMessages());
 
 		expect(session.pendingMessageCount).toBe(2);
 		expect(drainQueuedTexts(session.agent)).toEqual({ steering: ["Queued A", "Queued B"], followUp: [] });

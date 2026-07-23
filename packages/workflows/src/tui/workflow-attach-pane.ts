@@ -1,23 +1,11 @@
 /**
- * WorkflowAttachPane — outer in-place attach shell.
+ * In-place shell that swaps one `pi.ui.custom` overlay between the workflow
+ * graph and a stage chat without remounting the outer popup. Enter attaches
+ * the focused graph node; Ctrl+X returns to the graph with focus preserved,
+ * including for paused stages.
  *
- * Wraps a single `pi.ui.custom` overlay popup whose interior swaps
- * between the orchestrator `GraphView` and a stage-scoped
- * `StageChatView`. Pressing Enter on a graph node attaches the popup
- * to that node's chat; Ctrl+D in chat mode swaps back to graph mode
- * with the same node still focused (see ui/attach-mockup.html), including
- * paused stage chats.
- *
- * The shell never remounts the overlay — it only flips a `mode`
- * field and re-renders, so the popup stays in pi-tui's overlay layer
- * across attach/detach cycles. This matches the mockup contract
- * (`only the popup interior swapped — outer chrome is unchanged`).
- *
- * cross-ref:
- *  - src/tui/overlay-adapter.ts (host mount glue)
- *  - src/tui/graph-view.ts (graph mode Component)
- *  - src/tui/stage-chat-view.ts (chat mode Component)
- *  - src/runs/foreground/stage-control-registry.ts (live handles)
+ * Related host and view wiring lives in `overlay-adapter.ts`, `graph-view.ts`,
+ * `stage-chat-view.ts`, and `stage-control-registry.ts`.
  */
 import type { Component, EditorComponent, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import type { ChatMessageRenderOptions, ReadonlyFooterDataProvider } from "@bastani/atomic";
@@ -25,17 +13,18 @@ import type { Store } from "../shared/store.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { GraphView } from "./graph-view.js";
 import { StageChatView, type StageChatDetachMetadata, type StageChatDetachReason } from "./stage-chat-view.js";
+import { StageChatComposerDrafts } from "./stage-chat-composer-drafts.js";
 import { Key, matchesKey } from "./text-helpers.js";
-import type { StageControlHandle, StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
+import type { StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { StageSnapshot, StoreSnapshot } from "../shared/store-types.js";
 import { expandWorkflowGraph } from "../shared/expanded-workflow-graph.js";
 import { WORKFLOW_STATUS_KEY } from "./workflow-status.js";
+import { resolveAttachedStageHandle } from "./workflow-attach-pane-handle.js";
 /**
- * Surface used to write Pi's footer/status tag while the attach pane is
- * mounted. Passing `undefined` clears the slot — required on dispose so
- * the `pi-workflows/<workflow>[/<stage>]` tag does NOT linger in every
- * subsequent chat message after the overlay is closed.
+ * Surface for the overlay footer/status tag. Passing `undefined` on dispose
+ * prevents `pi-workflows/<workflow>[/<stage>]` from lingering in later chat
+ * messages after the overlay closes.
  * cross-ref: @bastani/atomic docs/extensions.md
  * §Widgets, Status, and Footer (`ctx.ui.setStatus`).
  */
@@ -46,11 +35,11 @@ export class WorkflowAttachPane implements Component {
   private theme: GraphTheme;
   private runId: string | null;
   private registry: StageControlRegistry | undefined;
+  private resolvePostMortemHandle?: WorkflowAttachPaneOpts["resolvePostMortemHandle"];
   private stageUiBroker: StageUiBroker | undefined;
   private uiStatus: AttachUiStatusSurface | undefined;
   private onClose: () => void;
   private onHide?: () => void;
-  private onQuit?: (runId: string) => void;
   private onPromptResolve?: (runId: string, promptId: string, response: unknown) => void;
   private getViewportRows?: () => number | undefined;
   private hostRequestRender?: () => void;
@@ -74,6 +63,7 @@ export class WorkflowAttachPane implements Component {
   private attachedRunId: string | null = null;
   /** Stage id the user most recently attached to (used to seed focus). */
   private lastAttachedStageId: string | null = null;
+  private composerDrafts = new StageChatComposerDrafts();
   /** Time-boxed guard for Enter leaking into graph mode during connect/detach transitions. */
   private graphEnterQuarantineUntil = 0;
   private stagePromptEnterQuarantineUntil = 0;
@@ -83,12 +73,11 @@ export class WorkflowAttachPane implements Component {
     this.store = opts.store;
     this.theme = opts.graphTheme;
     this.runId = opts.runId;
-    this.registry = opts.stageControlRegistry;
+    this.registry = opts.stageControlRegistry; this.resolvePostMortemHandle = opts.resolvePostMortemHandle;
     this.stageUiBroker = opts.stageUiBroker;
     this.uiStatus = opts.uiStatus;
     this.onClose = opts.onClose;
     this.onHide = opts.onHide;
-    this.onQuit = opts.onQuit;
     this.onPromptResolve = opts.onPromptResolve;
     this.getViewportRows = opts.getViewportRows;
     this.hostRequestRender = opts.requestRender;
@@ -106,7 +95,7 @@ export class WorkflowAttachPane implements Component {
     this.unsubscribeStore = this.store.subscribe((snapshot) => this._handleStoreUpdate(snapshot));
     this.graphView = this._buildGraphView();
     if (opts.initialAttachStageId !== undefined && this.runId) {
-      const target = this._resolveGraphStageTarget(this.runId, opts.initialAttachStageId);
+      const target = opts.initialAttachRunId === undefined ? this._resolveGraphStageTarget(this.runId, opts.initialAttachStageId) : { runId: opts.initialAttachRunId, stageId: opts.initialAttachStageId };
       this._attachToStage(target.runId, target.stageId);
     } else {
       this._syncAwaitingInputKeys(this.store.snapshot());
@@ -123,7 +112,6 @@ export class WorkflowAttachPane implements Component {
       graphTheme: this.theme,
       onClose: this.onClose,
       onHide: this.onHide,
-      onQuit: this.onQuit,
       onPromptResolve: this.onPromptResolve,
       onStageAttach: (runId, stageId) => this._attachToStage(runId, stageId, {
         suppressInitialPromptSubmit: true,
@@ -134,6 +122,7 @@ export class WorkflowAttachPane implements Component {
       initialFocusedStageId,
       getViewportRows: this.getViewportRows,
       piKeybindings: this.piKeybindings,
+      footerData: this.footerData,
       requestRender: () => {
         if (this.mode !== "graph") return;
         this.hostRequestRender?.();
@@ -175,7 +164,7 @@ export class WorkflowAttachPane implements Component {
         : 0;
     this.attachedRunId = runId;
     this.lastAttachedStageId = stageId;
-    const handle: StageControlHandle | undefined = this.registry?.get(runId, stageId);
+    const { handle, postMortemUnavailableReason } = resolveAttachedStageHandle(this.registry, this.resolvePostMortemHandle, runId, stageId);
     this.chatView?.dispose();
     let chatView!: StageChatView;
     chatView = new StageChatView({
@@ -185,6 +174,8 @@ export class WorkflowAttachPane implements Component {
       stageId,
       workflowName: this._workflowName(runId),
       handle,
+      initialComposerDraft: this.composerDrafts.get(runId, stageId),
+      postMortemUnavailableReason,
       onDetach: (reason, metadata) => this._detachFromStage(reason, metadata),
       onClose: this.onClose,
       requestRender: this.hostRequestRender,
@@ -218,6 +209,11 @@ export class WorkflowAttachPane implements Component {
     reason: StageChatDetachReason = "user",
     metadata: StageChatDetachMetadata = {},
   ): void {
+    this.composerDrafts.capture(
+      this.attachedRunId,
+      this.lastAttachedStageId,
+      this.chatView?._inputBuffer,
+    );
     if (this.chatView && this.attachedRunId && this.lastAttachedStageId) {
       this.store.recordStageAttached(this.attachedRunId, this.lastAttachedStageId, false);
     }
@@ -237,7 +233,7 @@ export class WorkflowAttachPane implements Component {
     this._setBaseStatus();
     this._syncMouseScrollTracking();
   }
-  retarget(runId: string | null, stageId?: string): void {
+  retarget(runId: string | null, stageId?: string, stageRunId?: string): void {
     if (this.chatView && this.attachedRunId && this.lastAttachedStageId) {
       this.store.recordStageAttached(this.attachedRunId, this.lastAttachedStageId, false);
     }
@@ -253,7 +249,7 @@ export class WorkflowAttachPane implements Component {
     this.graphView = this._buildGraphView();
     this._syncAwaitingInputKeys(this.store.snapshot());
     if (stageId !== undefined && runId) {
-      const target = this._resolveGraphStageTarget(runId, stageId);
+      const target = stageRunId === undefined ? this._resolveGraphStageTarget(runId, stageId) : { runId: stageRunId, stageId };
       this._attachToStage(target.runId, target.stageId);
       return;
     }
@@ -492,6 +488,9 @@ export class WorkflowAttachPane implements Component {
   }
   get _hasChatView(): boolean {
     return this.chatView !== null;
+  }
+  get _chatInputBuffer(): string | undefined {
+    return this.chatView?._inputBuffer;
   }
   get _runId(): string | null {
     return this.runId;

@@ -77,7 +77,7 @@ export function resolveTempScopeId(options?: {
 	return "shared";
 }
 
-const MAX_PARALLEL = 8;
+export const MAX_PARALLEL_TASKS = 50;
 export const MAX_CONCURRENCY = 4;
 export const TEMP_ROOT_DIR = path.join(os.tmpdir(), `${APP_NAME}-subagents-${resolveTempScopeId()}`);
 export const RESULTS_DIR = path.join(TEMP_ROOT_DIR, "async-subagent-results");
@@ -110,7 +110,8 @@ function normalizeTopLevelParallelValue(value: unknown): number | undefined {
 }
 
 export function resolveTopLevelParallelMaxTasks(value: unknown): number {
-	return normalizeTopLevelParallelValue(value) ?? MAX_PARALLEL;
+	const configuredMax = normalizeTopLevelParallelValue(value);
+	return configuredMax === undefined ? MAX_PARALLEL_TASKS : Math.min(configuredMax, MAX_PARALLEL_TASKS);
 }
 
 export function resolveTopLevelParallelConcurrency(

@@ -6,6 +6,7 @@ import {
 	calculateContextTokens,
 	DEFAULT_COMPACTION_SETTINGS,
 	estimateContextTokens,
+	estimateTokens,
 	getLastAssistantUsage,
 	shouldCompact,
 } from "../src/core/compaction/index.ts";
@@ -178,12 +179,17 @@ describe("Token calculation", () => {
 
 	it("does not double-count mirrored Anthropic-compatible cache buckets", () => {
 		const usage = createMockUsage(116_000, 500, 116_000, 0);
-		expect(calculateContextTokens(usage)).toBe(116_500);
+		expect(calculateContextTokens(usage, "anthropic-messages")).toBe(116_500);
+	});
+
+	it("counts disjoint Codex cache buckets even when they nearly equal uncached input", () => {
+		const usage = createMockUsage(7_907, 7, 7_936, 0);
+		expect(calculateContextTokens(usage, "openai-codex-responses")).toBe(15_850);
 	});
 
 	it("keeps separate Anthropic cache partitions when cache is not mirrored input", () => {
 		const usage = createMockUsage(35_000, 500, 81_000, 0);
-		expect(calculateContextTokens(usage)).toBe(116_500);
+		expect(calculateContextTokens(usage, "anthropic-messages")).toBe(116_500);
 	});
 
 	it("falls back to totalTokens when component values are unavailable", () => {
@@ -264,6 +270,36 @@ describe("shouldCompact", () => {
 });
 
 describe("estimateContextTokens", () => {
+	it("keeps malformed and future user-like token estimates finite and visibility-aligned", () => {
+		const cyclicBlock: Record<string, unknown> = { type: "audio", data: "cyclic-future-payload" };
+		cyclicBlock.self = cyclicBlock;
+		const invalidText = {
+			role: "user",
+			content: [{ type: "text", text: 42 }],
+			timestamp: 1,
+		} as unknown as AgentMessage;
+		const malformed = { role: "user", content: [{ data: "untyped" }], timestamp: 2 } as unknown as AgentMessage;
+		const future = {
+			role: "custom",
+			customType: "future",
+			content: [{ type: "audio", data: "future-provider-payload" }],
+			display: true,
+			timestamp: 3,
+		} as unknown as AgentMessage;
+		const cyclic = { role: "user", content: [cyclicBlock], timestamp: 4 } as unknown as AgentMessage;
+
+		expect(estimateTokens(invalidText)).toBe(0);
+		expect(estimateTokens(malformed)).toBe(0);
+		expect(estimateTokens(future)).toBeGreaterThan(0);
+		expect(estimateTokens(cyclic)).toBeGreaterThan(0);
+		for (const message of [invalidText, malformed, future, cyclic]) {
+			expect(Number.isFinite(estimateTokens(message))).toBe(true);
+		}
+		const total = estimateContextTokens([invalidText, malformed, future, cyclic]);
+		expect(Number.isFinite(total.tokens)).toBe(true);
+		expect(total.tokens).toBe(estimateTokens(future) + estimateTokens(cyclic));
+	});
+
 	it("should return the last non-aborted assistant usage tokens", () => {
 		const messages: AgentMessage[] = [
 			createUserMessage("hello"),
@@ -271,6 +307,14 @@ describe("estimateContextTokens", () => {
 		];
 		const result = estimateContextTokens(messages);
 		expect(result.tokens).toBe(150);
+	});
+
+	it("preserves the API discriminator for normalized cached usage", () => {
+		const usage = createMockUsage(7_907, 7, 7_936, 0);
+		const message = { ...createAssistantMessage("response", usage), api: "openai-codex-responses" as const, provider: "openai-codex" };
+		const result = estimateContextTokens([createUserMessage("hello"), message]);
+		expect(result.tokens).toBe(15_850);
+		expect(shouldCompact(result.tokens, 20_000, { ...DEFAULT_COMPACTION_SETTINGS, reserveTokens: 5_000 })).toBe(true);
 	});
 
 	it("should return zero tokens for empty messages", () => {
@@ -295,6 +339,25 @@ describe("estimateContextTokens", () => {
 		expect(result.usageTokens).toBe(80);
 		expect(result.tokens).toBeGreaterThanOrEqual(80);
 		expect(result.lastUsageIndex).toBe(1); // index of "ok" assistant message
+	});
+
+	it("ignores assistant usage older than a newer inserted prefix", () => {
+		const messages: AgentMessage[] = [
+			{ ...createUserMessage("new prefix"), timestamp: 2_000 },
+			{ ...createAssistantMessage("old reply", createMockUsage(1_000_000, 100_000)), timestamp: 1_000 },
+			{ ...createUserMessage("tail"), timestamp: 3_000 },
+		];
+
+		const result = estimateContextTokens(messages);
+		const heuristicTokens = messages.reduce((total, message) => total + estimateTokens(message), 0);
+
+		expect(result).toEqual({
+			tokens: heuristicTokens,
+			usageTokens: 0,
+			trailingTokens: heuristicTokens,
+			lastUsageIndex: null,
+		});
+		expect(shouldCompact(result.tokens, 100_000, { ...DEFAULT_COMPACTION_SETTINGS, reserveTokens: 10_000 })).toBe(false);
 	});
 });
 
@@ -371,7 +434,7 @@ describe("buildSessionContext", () => {
 		expect(loaded.thinkingLevel).toBe("high");
 	});
 
-	it("context_compaction entries filter deleted targets from active context", () => {
+	it("legacy context_compaction entries are inert archival records", () => {
 		const u1 = createMessageEntry(createUserMessage("old user task"));
 		const wholeDeleted = createMessageEntry(createAssistantMessage("WHOLE_ENTRY_DELETED"));
 		const partialDeleted = createMessageEntry({
@@ -391,21 +454,15 @@ describe("buildSessionContext", () => {
 
 		const loaded = buildSessionContext(entries);
 
-		// The deleted entry should not appear at all
-		expect(loaded.messages.find((m) => m.role === "assistant" && (m as AssistantMessage).content.some(
-			(c) => c.type === "text" && c.text === "WHOLE_ENTRY_DELETED"
-		))).toBeUndefined();
-
-		// The retained block from the partial deletion should still be present
-		const partialMsg = loaded.messages.find((m) => m.role === "assistant" && (m as AssistantMessage).content.some(
-			(c) => c.type === "text" && c.text === "RETAINED_BLOCK"
-		));
-		expect(partialMsg).toBeDefined();
-
-		// The deleted block should NOT appear
-		expect(loaded.messages.find((m) => m.role === "assistant" && (m as AssistantMessage).content.some(
-			(c) => c.type === "text" && c.text === "DELETED_BLOCK"
-		))).toBeUndefined();
+		expect(loaded.messages.find((message) => message.role === "assistant" && message.content.some(
+			(block) => block.type === "text" && block.text === "WHOLE_ENTRY_DELETED",
+		))).toBeDefined();
+		expect(loaded.messages.find((message) => message.role === "assistant" && message.content.some(
+			(block) => block.type === "text" && block.text === "RETAINED_BLOCK",
+		))).toBeDefined();
+		expect(loaded.messages.find((message) => message.role === "assistant" && message.content.some(
+			(block) => block.type === "text" && block.text === "DELETED_BLOCK",
+		))).toBeDefined();
 	});
 });
 

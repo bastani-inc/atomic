@@ -22,6 +22,7 @@ import { validateFileOnlyOutputMode } from "../shared/single-output.ts";
 import { buildChainExecutionDetails, buildChainExecutionErrorResult } from "./chain-execution-details.ts";
 import { appendParallelWorktreeSummary, ensureParallelProgressFile, runParallelChainTasks } from "./chain-execution-parallel-runner.ts";
 import type { ChainExecutionMutableState, ChainExecutionResult, ChainRuntimeContext } from "./chain-execution-types.ts";
+import { createDetachedCleanupBarrier } from "./detached-cleanup-barrier.ts";
 
 export async function runStaticParallelChainStep(input: {
 	context: ChainRuntimeContext;
@@ -33,6 +34,7 @@ export async function runStaticParallelChainStep(input: {
 	const { context, state, step, stepIndex, parallelTemplates } = input;
 	const parallelCwd = resolveChildCwd(context.cwd ?? context.ctx.cwd, step.cwd);
 	let worktreeSetup: WorktreeSetup | undefined;
+	let worktreeCleanupDeferred = false;
 	if (step.worktree) {
 		const worktreeTaskCwdConflict = findWorktreeTaskCwdConflict(step.parallel, parallelCwd);
 		if (worktreeTaskCwdConflict) {
@@ -56,6 +58,12 @@ export async function runStaticParallelChainStep(input: {
 
 	try {
 		const agentNames = step.parallel.map((task) => task.agent);
+		const parallelBaseIndex = state.globalTaskIndex;
+		const detachedCleanup = createDetachedCleanupBarrier(() => {
+			if (!worktreeSetup) return;
+			appendParallelWorktreeSummary("", worktreeSetup, path.join(context.chainDir, "worktree-diffs", `step-${stepIndex}`), agentNames);
+			cleanupWorktrees(worktreeSetup);
+		});
 		const parallelBehaviors = resolveParallelBehaviors(step.parallel, context.agents, stepIndex, context.chainSkills)
 			.map((behavior, taskIndex) => suppressProgressForReadOnlyTask(behavior, parallelTemplates[taskIndex] ?? step.parallel[taskIndex]?.task, context.originalTask));
 		for (let taskIndex = 0; taskIndex < step.parallel.length; taskIndex++) {
@@ -112,7 +120,17 @@ export async function runStaticParallelChainStep(input: {
 			maxSubagentDepth: context.params.maxSubagentDepth,
 			workflowStageSubagentGuard: context.params.workflowStageSubagentGuard,
 			runSync: context.executeRunSync,
+			onDetachedExit: (index, result) => {
+				try {
+					context.onDetachedExit?.(index, result);
+				} finally {
+					detachedCleanup.recover(index);
+				}
+			},
 		});
+		worktreeCleanupDeferred = detachedCleanup.defer(
+			parallelResults.flatMap((result, index) => result.detached ? [parallelBaseIndex + index] : []),
+		);
 		state.globalTaskIndex += step.parallel.length;
 		for (const result of parallelResults) {
 			state.results.push(result);
@@ -181,6 +199,6 @@ export async function runStaticParallelChainStep(input: {
 		state.prev = appendParallelWorktreeSummary(state.prev, worktreeSetup, path.join(context.chainDir, "worktree-diffs", `step-${stepIndex}`), agentNames);
 		return undefined;
 	} finally {
-		if (worktreeSetup) cleanupWorktrees(worktreeSetup);
+		if (worktreeSetup && !worktreeCleanupDeferred) cleanupWorktrees(worktreeSetup);
 	}
 }

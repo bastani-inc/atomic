@@ -37,6 +37,24 @@ session.subscribe((event) => {
 await session.prompt("What files are in the current directory?");
 ```
 
+`ModelRuntime` is the canonical asynchronous provider runtime when an integration wants provider-owned credentials, dynamic catalogs, and native providers in one object:
+
+```typescript
+import { createAgentSession, ModelRuntime, SessionManager } from "@bastani/atomic";
+
+const modelRuntime = await ModelRuntime.create();
+const { session } = await createAgentSession({
+  sessionManager: SessionManager.inMemory(),
+  modelRuntime,
+});
+```
+
+`ModelRuntime.create()` accepts custom `authPath`, `modelsPath`, credential storage, and runtime auth overrides. `ModelRegistry` and `AuthStorage` remain available as Atomic's synchronous compatibility facades. Use `readStoredCredential(provider, authPath?)` for a lightweight read of one stored provider credential.
+
+Extensions supplied directly to SDK sessions can use the exported `InlineExtension` type. Extension APIs and event types include native `registerProvider(Provider)`, `registerEntryRenderer`, `entry_appended`, `before_provider_headers`, and `agent_settled`.
+
+The package root also exports `buildContextEntries`, `sessionEntryToContextMessages`, and `CompactionEntry` for converting durable session branches into model context. The equivalent active-session operation is `sessionManager.buildContextEntries()`.
+
 ## Installation
 
 Install `@bastani/atomic` as a project dependency with npm, pnpm, or Bun:
@@ -126,8 +144,8 @@ interface AgentSession {
   // In-place tree navigation within the current session file
   navigateTree(targetId: string, options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string }): Promise<{ editorText?: string; cancelled: boolean; aborted?: boolean; summaryEntry?: BranchSummaryEntry }>;
 
-  // Verbatim Compaction (deletion-only Context Compaction)
-  compact(): Promise<ContextCompactionResult>;
+  // Verbatim line compaction
+  compact(options?: Partial<VerbatimCompactionParameters>): Promise<VerbatimCompactionResult>;
   abortCompaction(): void;
 
   // Abort current operation
@@ -138,7 +156,7 @@ interface AgentSession {
 }
 ```
 
-`compact()` accepts no custom summary instructions. It runs the same transcript-bound Verbatim Compaction planner as `/compact`: inspect transcript slices, record exact deletion targets, validate them locally, append a `context_compaction` entry, and rebuild active context with retained content unchanged.
+`compact()` serializes older context to numbered lines, asks the session model for JSON deleted ranges, validates them, and mechanically reconstructs a durable verbatim transcript string. It appends a `compaction` entry with `details.strategy: "verbatim-lines"`; the recent tail remains ordinary messages. The model never authors replacement context text.
 
 Session replacement APIs such as new-session, resume, fork, and import live on `AgentSessionRuntime`, not on `AgentSession`.
 
@@ -351,6 +369,9 @@ session.subscribe((event) => {
     case "compaction_end":
     case "auto_retry_start":
     case "auto_retry_end":
+    case "summarization_retry_scheduled":
+    case "summarization_retry_attempt_start":
+    case "summarization_retry_finished":
       break;
   }
 });
@@ -417,7 +438,7 @@ const available = await modelRegistry.getAvailable();
 
 const { session } = await createAgentSession({
   model: opus,
-  thinkingLevel: "medium", // off, minimal, low, medium, high, xhigh
+  thinkingLevel: "medium", // off, minimal, low, medium, high, xhigh, max (when supported by the model)
   contextWindow: 1_000_000, // optional; must be supported by the selected model unless non-strict fallback is acceptable
   contextWindowStrict: true, // optional; return contextWindowError instead of warning/fallback when unsupported
   
@@ -431,6 +452,8 @@ const { session } = await createAgentSession({
   modelRegistry,
 });
 ```
+
+`ModelRegistry` keeps synchronous reads for SDK and extension compatibility, while catalog refresh is asynchronous. Await `modelRegistry.refresh()` before reading `getAll()`, `find()`, or `getAvailable()` when a provider may update its catalog. The refresh result reports `aborted` and per-provider `errors`; successful providers publish their new catalogs even if another provider fails, and failed or timed-out providers retain their last-known models.
 
 If no model is provided:
 1. Tries to restore from session (if continuing)
@@ -447,11 +470,15 @@ The package root exports the same context-window helpers and types used by the r
 
 ### API Keys and OAuth
 
+`AuthStorage` and `ModelRegistry` remain synchronous public SDK entry points. Token refresh is serialized under Atomic's credential-store lock, and the `authStorage` and `modelRegistry` session options remain available.
+
 API key resolution priority (handled by AuthStorage):
 1. Runtime overrides (via `setRuntimeApiKey`, not persisted)
 2. Stored credentials in `auth.json` (API keys or OAuth tokens)
 3. Environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.)
 4. Fallback resolver (for custom provider keys from `models.json`)
+
+OAuth credentials may provide an API key, request headers, and a credential-specific `baseUrl`. Atomic applies all three to the request. In particular, GitHub Copilot enterprise and token-specific endpoints replace the static model URL without dropping retries, attribution headers, fast mode, or extension request hooks.
 
 ```typescript
 import { AuthStorage, ModelRegistry } from "@bastani/atomic";

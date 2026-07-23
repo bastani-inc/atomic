@@ -11,7 +11,7 @@
  *
  * Mechanically:
  *   1. validate the version + a clean working tree
- *   2. `git worktree add --detach <tmp> <base>` (default base: current HEAD)
+ *   2. resolve the current attached branch (or `--base`) to its exact remote branch SHA
  *   3. stamp the real version into the worktree via scripts/bump-version.ts
  *      (bun.lock keeps main's 0.0.0 placeholders; `bun install --frozen-lockfile`
  *      tolerates the workspace version-string mismatch, so the lockfile is left as-is)
@@ -20,8 +20,8 @@
  *   5. commit `Release <version>` and tag `<version>` inside the worktree
  *   6. remove the worktree — the tag (and its commit) persist in the repo
  *
- * Because publish.yml checks out the *tagged commit* (which now carries the
- * real version) every existing version validation passes unchanged.
+ * Pushing the version tag directly starts publish.yml, which verifies the tag
+ * commit identity before building and publishing the release.
  *
  * Usage:
  *   bun run scripts/cut-release.ts <version> [--base <ref>] [--push] [--yes]
@@ -36,6 +36,7 @@ import { $ } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { canonicalReleaseBaseRef } from "./release-base.js";
 
 const STRICT_RELEASE_VERSION_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-alpha\.([1-9]\d*))?$/;
 const PLACEHOLDER_VERSIONS = new Set(["0.0.0", "0.0.0-dev"]);
@@ -57,9 +58,11 @@ function parseArgs(): Options {
   let yes = false;
 
   for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
+    const arg = argv[i] as string;
     if (arg === "--base") {
-      base = argv[++i];
+      const candidate = argv[++i];
+      if (!candidate || candidate.startsWith("-")) fail("--base requires a canonical remote branch name.");
+      base = candidate;
     } else if (arg === "--push") {
       push = true;
     } else if (arg === "--yes" || arg === "-y") {
@@ -119,11 +122,26 @@ async function main(): Promise<void> {
 
   await $`git -C ${ROOT} worktree prune`.quiet();
 
-  const baseRef = base ?? "HEAD";
-  const baseSha = await gitText(["rev-parse", "--verify", `${baseRef}^{commit}`]).catch(() => {
-    return fail(`Base ref "${baseRef}" could not be resolved.`);
-  });
   const branch = await gitText(["rev-parse", "--abbrev-ref", "HEAD"]);
+  const baseBranch = base ?? branch;
+  if (baseBranch === "HEAD") {
+    fail("A canonical remote base branch is required when cutting a release from detached HEAD.");
+  }
+  let baseRef: string;
+  try {
+    baseRef = canonicalReleaseBaseRef(baseBranch);
+  } catch (error) {
+    return fail((error as Error).message);
+  }
+  const remoteBase = await $`git -C ${ROOT} ls-remote --exit-code --refs origin ${baseRef}`.nothrow().quiet();
+  if (remoteBase.exitCode !== 0) {
+    fail(`Base ref "${baseRef}" does not exist on origin.`);
+  }
+  const remoteFields = remoteBase.stdout.toString().trim().split(/\s+/u);
+  const baseSha = remoteFields[0];
+  if (!baseSha || !/^[0-9a-f]{40}$/u.test(baseSha) || remoteFields[1] !== baseRef || remoteFields.length !== 2) {
+    fail(`Base ref "${baseRef}" did not resolve to exactly one immutable remote commit.`);
+  }
 
   const name = (await $`git -C ${ROOT} config user.name`.nothrow().text()).trim() || "atomic-release";
   const email =
@@ -134,10 +152,7 @@ async function main(): Promise<void> {
   console.log(`  base:   ${baseRef} (${baseSha.slice(0, 9)})`);
   console.log(`  branch: ${branch} (left untouched)\n`);
 
-  if (!yes) {
-    console.log("Pass --yes to skip this notice. Proceeding in 1.5s...\n");
-    await Bun.sleep(1500);
-  }
+  if (!yes) console.log("Proceeding immediately; pass --yes to suppress this notice.\n");
 
   const tmpRoot = mkdtempSync(join(tmpdir(), "atomic-release-"));
   const worktreeDir = join(tmpRoot, "wt");
@@ -158,7 +173,8 @@ async function main(): Promise<void> {
     // shipped in the npm tarball and `bun install --frozen-lockfile` tolerates the
     // mismatch, so there is no need to relock (which also avoids a network round-trip).
     await $`git -C ${worktreeDir} add -A`;
-    await $`git -C ${worktreeDir} -c user.name=${name} -c user.email=${email} commit --no-verify -m ${`Release ${version}`}`.quiet();
+    const commitMessage = `Release ${version}\n\nRelease-base-ref: ${baseRef}\nRelease-base-sha: ${baseSha}`;
+    await $`git -C ${worktreeDir} -c user.name=${name} -c user.email=${email} commit --no-verify -m ${commitMessage}`.quiet();
     // Lightweight tag, matching the repo's publish trigger + verification convention.
     await $`git -C ${worktreeDir} -c user.name=${name} -c user.email=${email} tag ${version}`.quiet();
   } finally {
@@ -183,9 +199,9 @@ async function main(): Promise<void> {
   if (push) {
     console.log(`Pushing tag ${version}...`);
     await $`git -C ${ROOT} push origin ${version}`;
-    console.log("Done. CI publish.yml will build and publish from the tag.");
+    console.log("Tag pushed. GitHub Actions will run the inert tag signal, then the protected-main publisher.");
   } else {
-    console.log("Next: push the tag to trigger the publish pipeline:");
+    console.log("Next: push the tag to trigger the signal and protected publisher:");
     console.log(`  git push origin ${version}`);
   }
 }

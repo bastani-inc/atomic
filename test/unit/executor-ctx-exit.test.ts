@@ -6,6 +6,7 @@ import { inspectRun } from "../../packages/workflows/src/runs/background/status.
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { StageContext } from "../../packages/workflows/src/shared/types.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { mockSession, type StageSessionRuntime } from "./executor-shared.js";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -119,6 +120,18 @@ describe("ctx.exit", () => {
 
   test("aborts and skips in-flight parallel siblings", async () => {
     const store = createStore();
+    const lifecycleEvents: string[] = [];
+    const makeSession = (): StageSessionRuntime => {
+      let promptName = "unstarted", resolvePrompt: (() => void) | undefined;
+      return {
+        ...mockSession(),
+        async prompt(text) {
+          promptName = text; await new Promise<void>((resolve) => { resolvePrompt = resolve; });
+        },
+        async closeWorkflowStageGeneration() { lifecycleEvents.push(`close:${promptName}`); },
+        async abort() { resolvePrompt?.(); },
+      };
+    };
     const def = workflow({
       name: "exit-during-parallel",
       description: "",
@@ -141,11 +154,8 @@ describe("ctx.exit", () => {
 
     const result = await run(def, {}, {
       store,
-      adapters: {
-        prompt: {
-          prompt: async () => new Promise<string>(() => {}),
-        },
-      },
+      adapters: { agentSession: { async create() { return makeSession(); } } },
+      onStageEnd: (_runId, stage) => { lifecycleEvents.push(`end:${stage.name}`); },
     });
 
     assert.equal(result.status, "cancelled");
@@ -158,6 +168,13 @@ describe("ctx.exit", () => {
         ["slow-b", "skipped", "workflow-exit: parallel gate closed"],
       ],
     );
+    for (const stageName of ["slow-a", "slow-b"]) {
+      assert.equal(
+        lifecycleEvents.indexOf(`close:${stageName}`) < lifecycleEvents.indexOf(`end:${stageName}`),
+        true,
+        `workflow exit must close ${stageName} admission before terminal publication`,
+      );
+    }
   });
 
   test("stops queued parallel work after exit with failFast false and limited concurrency", async () => {

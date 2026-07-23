@@ -75,6 +75,8 @@ interface AsyncRunListOptions {
 	kill?: (pid: number, signal?: NodeJS.Signals | 0) => boolean;
 	now?: () => number;
 	reconcile?: boolean;
+	/** Only consider run dirs whose dir or status.json changed within this window. */
+	maxAgeMs?: number;
 }
 
 function getErrorMessage(error: unknown): string {
@@ -97,6 +99,19 @@ function isAsyncRunDir(root: string, entry: string): boolean {
 		throw new Error(`Failed to inspect async run path '${entryPath}': ${getErrorMessage(error)}`, {
 			cause: error instanceof Error ? error : undefined,
 		});
+	}
+}
+
+function runDirTouchedSince(asyncDir: string, cutoffMs: number): boolean {
+	try {
+		if (fs.statSync(asyncDir).mtimeMs >= cutoffMs) return true;
+	} catch {
+		return false;
+	}
+	try {
+		return fs.statSync(path.join(asyncDir, "status.json")).mtimeMs >= cutoffMs;
+	} catch {
+		return false;
 	}
 }
 
@@ -232,9 +247,13 @@ export function listAsyncRuns(asyncDirRoot: string, options: AsyncRunListOptions
 	}
 
 	const allowedStates = options.states ? new Set(options.states) : undefined;
+	const cutoff = options.maxAgeMs !== undefined ? (options.now?.() ?? Date.now()) - options.maxAgeMs : undefined;
 	const runs: AsyncRunSummary[] = [];
 	for (const entry of entries) {
 		const asyncDir = path.join(asyncDirRoot, entry);
+		// Recency cutoff: skip reconcile/read/parse work for long-untouched runs
+		// (two stats instead of a full per-run reconciliation at startup).
+		if (cutoff !== undefined && !runDirTouchedSince(asyncDir, cutoff)) continue;
 		const reconciliation = options.reconcile === false
 			? undefined
 			: reconcileAsyncRun(asyncDir, { resultsDir: options.resultsDir, kill: options.kill, now: options.now });

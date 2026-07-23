@@ -8,7 +8,6 @@
 
 export type { ResolvedInputs, RunContinuationOpts, RunOpts, RunResult } from "./executor-types.js";
 export { run } from "./executor-run.js";
-export { runTask, runParallel, runChain } from "./executor-direct.js";
 export { resolveInputs, resolveAndValidateInputs } from "./executor-inputs.js";
 export { raceAbort } from "./executor-abort.js";
 export {

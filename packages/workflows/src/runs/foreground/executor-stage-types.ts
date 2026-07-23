@@ -3,7 +3,7 @@ import type { Store } from "../../shared/store.js";
 import type { StageContext } from "../../shared/types.js";
 import type { InternalStageContext } from "./stage-runner.js";
 import type { StageControlRegistry } from "./stage-control-registry.js";
-import type { ParallelFailFastScope } from "./executor-types.js";
+import type { ParallelFailFastScope, StageSessionCheckpointOptions } from "./executor-types.js";
 import type { StageScheduler } from "./executor-scheduler.js";
 import type { WorkflowExitManager } from "./executor-exit-manager.js";
 import type { WorkflowFailure } from "../../shared/workflow-failures.js";
@@ -14,11 +14,14 @@ export interface StageMcpScope {
   clear(): void;
 }
 
+export type ResumeContinuationReason = "resume" | "queued-user-message";
+
 export interface LiveStageMutableState {
   activeAskUserQuestionAnonymousCalls: number;
   askUserQuestionObservedThisTurn: boolean;
   chatAnswerObservedThisTurn: boolean;
-  resumeContinuationPending: boolean;
+  resumeContinuationPending: false | ResumeContinuationReason;
+  waitingForStageChatTurn: boolean;
   liveHandleReleased: boolean;
   stageClosedByWorkflowExit: boolean;
   stageFinalized: boolean;
@@ -45,7 +48,7 @@ export interface LiveStageRuntime {
   unregisterStageHandle: () => void;
   dropStageControlHandle: () => void;
   unregisterWorkflowExitCleanup: () => void;
-  readonly captureStageSessionMeta: () => void;
+  readonly captureStageSessionMeta: (options?: StageSessionCheckpointOptions) => unknown;
   readonly applyModelFallbackMeta: (meta: ReturnType<InternalStageContext["__modelFallbackMeta"]>) => void;
   readonly appendStageStartOnce: () => void;
   readonly finalizeStageSnapshot: () => Promise<boolean>;

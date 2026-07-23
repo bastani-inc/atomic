@@ -11,7 +11,7 @@ function plain(text: string): string {
 }
 
 interface StartupIdentityAccess {
-	getStartupIdentityText(): string;
+	getStartupIdentityText(maxWidth?: number): string;
 }
 
 interface FastModeSelectorAccess {
@@ -22,6 +22,7 @@ function renderStartupIdentity(options: {
 	chatFastMode: boolean;
 	reasoning: boolean;
 	thinkingLevel: ThinkingLevel;
+	maxWidth?: number;
 }): string {
 	const session = {
 		state: {
@@ -49,7 +50,7 @@ function renderStartupIdentity(options: {
 		runtimeHost: { session },
 	});
 
-	return plain((mode as StartupIdentityAccess).getStartupIdentityText());
+	return plain((mode as StartupIdentityAccess).getStartupIdentityText(options.maxWidth));
 }
 
 describe("InteractiveMode startup banner", () => {
@@ -63,6 +64,60 @@ describe("InteractiveMode startup banner", () => {
 
 		expect(rendered).toContain("(openai) gpt-5.1-codex medium fast");
 		expect(rendered).not.toContain("gpt-5.1-codex fast medium");
+	});
+
+	it("keeps the side-by-side layout when the terminal is wide enough", () => {
+		initTheme("dark");
+		const rendered = renderStartupIdentity({
+			chatFastMode: false,
+			reasoning: false,
+			thinkingLevel: "off",
+			maxWidth: 120,
+		});
+
+		const lines = rendered.split("\n");
+		expect(lines[0]).toContain("██████");
+		expect(lines[0]).toContain("Atomic v0.0.0");
+	});
+
+	it("stacks the identity text under the logo when the meta column would wrap", () => {
+		initTheme("dark");
+		const rendered = renderStartupIdentity({
+			chatFastMode: false,
+			reasoning: false,
+			thinkingLevel: "off",
+			maxWidth: 40,
+		});
+
+		const lines = rendered.split("\n");
+		// No line mixes logo art with identity text (which is what wrapped
+		// and shredded the logo on narrow terminals).
+		for (const line of lines) {
+			if (line.includes("██████")) {
+				expect(line.trimEnd().length).toBeLessThanOrEqual(40);
+				expect(line).not.toContain("Atomic");
+				expect(line).not.toContain("openai");
+			}
+		}
+		expect(lines.some((line) => line.includes("██████"))).toBe(true);
+		expect(rendered).toContain("Atomic v0.0.0");
+		expect(rendered).toContain("(openai) gpt-5.1-codex");
+		expect(rendered).toContain("/tmp/project");
+	});
+
+	it("drops the logo art entirely when the terminal is narrower than the logo", () => {
+		initTheme("dark");
+		const rendered = renderStartupIdentity({
+			chatFastMode: false,
+			reasoning: false,
+			thinkingLevel: "off",
+			maxWidth: 20,
+		});
+
+		expect(rendered).not.toContain("█");
+		expect(rendered).toContain("Atomic v0.0.0");
+		expect(rendered).toContain("(openai) gpt-5.1-codex");
+		expect(rendered).toContain("/tmp/project");
 	});
 
 	it("refreshes the banner and inherited child fast-mode state when /fast changes", async () => {

@@ -3,21 +3,49 @@ import { quitAllRuns } from "../runs/background/quit.js";
 import { cancellationRegistry } from "../runs/background/cancellation-registry.js";
 import { stageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { store } from "../shared/store.js";
-import { restoreOnSessionStart } from "../shared/persistence-restore.js";
 import { installCompactionHook } from "../shared/persistence-compaction-policy.js";
 import { clearForms } from "../tui/inline-form-store.js";
 import { installStoreWidget } from "../tui/store-widget-installer.js";
-import { registerIntercomParentSession } from "../intercom/intercom-bridge.js";
-import {
-  resetWorkflowLifecycleNotificationState,
-  seedWorkflowLifecycleNotificationState,
-  withWorkflowLifecycleNotificationsSuppressed,
-} from "./lifecycle-notifications.js";
+import { resetWorkflowLifecycleNotificationState } from "./lifecycle-notifications.js";
 import { resetWorkflowHilAnswerNotificationState } from "./hil-answer-notifications.js";
 import type { ExtensionAPI } from "./public-types.js";
 import type { WorkflowExtensionRuntimeState } from "./extension-runtime-state.js";
 import { deAdvertiseAskUserQuestionWhenHeadless, formatStartupDiagnostics } from "./workflow-command-surfaces.js";
 import { inFlightRunCount } from "./workflow-targets.js";
+import { flushDbos, shutdownDbos } from "../durable/dbos-lifecycle.js";
+
+let processShutdownInstalled = false;
+
+/**
+ * Session dispose and process exit must never crash on durability teardown:
+ * a genuine flush/stop failure is diagnostic, not fatal, and an unhandled
+ * rejection here turns an otherwise-successful run into a nonzero exit.
+ */
+function shutdownDbosQuietly(): Promise<void> {
+  return shutdownDbos().catch((error: unknown) => {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(`atomic-workflows: DBOS durability shutdown failed: ${detail}`);
+  });
+}
+
+/**
+ * Process-preserving host-session boundaries (`/new`, `/resume`, `/fork`,
+ * `/reload`) must NOT stop the process-scoped DBOS executor: the replacement
+ * session reuses it for subsequent workflow runs. Flush pending durable
+ * writes instead, and reserve SDK shutdown for actual process exit.
+ */
+function flushDbosQuietly(): Promise<void> {
+  return flushDbos().catch((error: unknown) => {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(`atomic-workflows: DBOS durability flush failed: ${detail}`);
+  });
+}
+
+function installDbosProcessShutdown(): void {
+  if (processShutdownInstalled) return;
+  processShutdownInstalled = true;
+  process.once("beforeExit", () => void shutdownDbosQuietly());
+}
 
 export interface WorkflowLifecycleRegistrationDeps {
   runtimeState: WorkflowExtensionRuntimeState;
@@ -30,6 +58,7 @@ export function registerWorkflowLifecycleHandlers(
   deps: WorkflowLifecycleRegistrationDeps,
 ): void {
   if (typeof pi.on !== "function") return;
+  installDbosProcessShutdown();
   const { runtimeState } = deps;
   pi.on("session_before_switch", async (event, ctx) => {
     const reason = typeof event === "object" && event !== null && "reason" in event
@@ -58,56 +87,68 @@ export function registerWorkflowLifecycleHandlers(
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    runtimeState.resetWorkflowDiscoveryForSession();
     deAdvertiseAskUserQuestionWhenHeadless(pi, ctx?.hasUI);
+    await runtimeState.ensureWorkflowConfigLoaded();
     killAllRuns({ store, cancellation: cancellationRegistry, persistence: runtimeState.persistenceRef.current });
     store.clear();
     clearForms();
     resetWorkflowLifecycleNotificationState(runtimeState.lifecycleNotificationState);
     resetWorkflowHilAnswerNotificationState(runtimeState.hilAnswerNotificationState);
     stageControlRegistry.clear();
-    runtimeState.setIntercomParentSession(registerIntercomParentSession(pi));
-    await runtimeState.discoveryPromise;
+    // Named workflows publish lifecycle notices through the normal notification path.
     runtimeState.setNotificationsActive(true);
+    runtimeState.startWorkflowDiscoveryWarmup(() => {
+      if (!ctx?.ui) return;
+      const diagnostics = formatStartupDiagnostics(null, runtimeState.discoveryRef.current);
+      if (diagnostics !== null) ctx.ui.notify?.(diagnostics, "warning");
+    });
     if (ctx?.ui) {
-      const diagnostics = formatStartupDiagnostics(runtimeState.configLoadRef.current, runtimeState.discoveryRef.current);
+      const diagnostics = formatStartupDiagnostics(runtimeState.configLoadRef.current, null);
       if (diagnostics !== null) ctx.ui.notify?.(diagnostics, "warning");
       deps.storeWidgetRef.current?.();
       deps.storeWidgetRef.current = installStoreWidget({ ui: ctx.ui }, store);
     }
-    const sessionManager = ctx?.sessionManager ?? pi.sessionManager;
-    runtimeState.updateHostStageSessionDir(sessionManager);
-    if (sessionManager) {
-      const cfg = runtimeState.configLoadRef.current?.config;
-      withWorkflowLifecycleNotificationsSuppressed(runtimeState.lifecycleNotificationState, () => {
-        restoreOnSessionStart(
-          sessionManager,
-          {
-            resumeInFlight: cfg?.resumeInFlight ?? "ask",
-            persistRuns: cfg?.persistRuns ?? true,
-          },
-          store,
-        );
-        seedWorkflowLifecycleNotificationState(runtimeState.lifecycleNotificationState, store.snapshot());
-      });
-    }
+    // Session JSONL contains chat transcripts only. Workflow state is loaded
+    // from DBOS on the first workflow command or run, never during startup.
+    runtimeState.updateHostStageSessionDir(ctx?.sessionManager ?? pi.sessionManager);
   });
 
   installCompactionHook(pi, store);
-  pi.on("session_shutdown", (event) => {
+  pi.on("session_shutdown", async (event) => {
     const reason = typeof event === "object" && event !== null && "reason" in event
       ? (event as { readonly reason?: string }).reason
       : undefined;
     deps.intercomControlRef.current?.();
     deps.intercomControlRef.current = null;
     if (reason === "quit") {
-      // CLI/orchestrator quit is a resumable process boundary, not explicit
-      // `/workflow kill`. Durable-progress workflows stay available through
+      // CLI/orchestrator quit is a resumable process boundary, not destructive
+      // cancellation. Durable-progress workflows stay available through
       // `/workflow resume`; stage handles are disposed after being paused.
-      quitAllRuns({ store, stageControlRegistry });
+      try {
+        const results = await quitAllRuns({ store, stageControlRegistry });
+        const failures = results.filter((result) => !result.ok);
+        if (failures.length > 0) {
+          console.error(
+            "atomic-workflows: session shutdown could not gracefully quit every run:",
+            failures.map((result) =>
+              `${result.runId}: ${result.reason}${"message" in result ? ` (${result.message})` : ""}`
+            ).join(", "),
+          );
+        }
+      } finally {
+        stageControlRegistry.clear();
+      }
+    } else {
+      // Every non-quit host-session boundary invalidates detached lazy handles
+      // synchronously, before they can attach to the replacement session.
       stageControlRegistry.clear();
     }
     deps.storeWidgetRef.current?.();
     deps.storeWidgetRef.current = null;
+    runtimeState.resetWorkflowDiscoveryForSession();
     runtimeState.setNotificationsActive(false);
+    if (reason === "quit") await shutdownDbosQuietly();
+    else await flushDbosQuietly();
   });
 }

@@ -4,6 +4,178 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.11-alpha.1] - 2026-07-20
+
+### Changed
+
+- Published a synchronized Atomic 0.9.11-alpha.1 prerelease for the intercom extension; no functional intercom changes were made after 0.9.10.
+
+## [0.9.10] - 2026-07-20
+
+### Added
+
+- Added intercom **groups** for broker-enforced session isolation. Every session belongs to exactly one group (implicitly `"default"` when unset), resolved with precedence `orchestrationContext.intercomGroup` (per-session workflow-stage injection) > env `ATOMIC_INTERCOM_GROUP` (legacy `PI_INTERCOM_GROUP`) > intercom `config.json` `"group"` > `"default"`. A session in group G can only message peers in G: cross-group sends are rejected at the broker (unresolvable by name via group-scoped candidate resolution, and rejected by an exact-id defense-in-depth check with reason "Target session is in a different intercom group"), not merely hidden from discovery. `session_joined`/`session_left`/`presence_update` broadcasts and `intercom list` are group-scoped, so a session never sees peers outside its group. The `intercom` tool gains an optional `group` parameter: read-only for `list`/`status` (peek who is in a named group and see your own group), while `send`/`ask` stay locked to your own group and error clearly on a differing group. The subagent-only `contact_supervisor` path uses a dedicated broker protocol plus a supervisor-issued child capability, and only an exact broker-recorded reverse reply may cross back, so isolated children retain their supervisor link without granting peer traffic a general bypass.
+
+### Fixed
+
+- Fixed busy workflow-stage messages being retained solely in Intercom's private wait-until-idle queue. Stage-targeted traffic is now admitted synchronously through the AgentSession generation boundary with stable message IDs, preserving native follow-up ordering and exactly-once delivery; close-winning late traffic is surfaced through the parent/main chat without mutating the terminal stage. Existing non-stage idle batching, terminal barriers, reply correlation, and shutdown generation cleanup are unchanged.
+- Fixed closed workflow-stage Intercom routing to avoid source-side pre-admission, reserve destination dedupe entries until main-chat delivery succeeds, roll back reply context on failure, propagate asynchronous route rejection, and permit a failed stable-key delivery to retry without duplicate parent-chat messages. A final retry survives source-stage retirement, and hosts without batch admission now commit successful fallback members individually so a partial failure retries only the undelivered suffix.
+- Fixed a cross-group isolation bypass where any registered raw client could forge `channel: "supervisor"` on an ordinary `send` frame. Ordinary sends now reject client-authored channel markers; the broker issues child-scoped supervisor capabilities, binds validated registrations to the issuing supervisor, derives the only authorized cross-group destination, and adds the trusted relay marker itself. Wrong targets/tokens, fabricated `replyTo` values, and ordinary peer sends remain isolated, while legitimate child requests and exact supervisor replies continue to cross groups. Parent-held capability state is restored after broker reconnects, the child uses the broker-confirmed current supervisor ID, and the lightweight wrapper lazy-loads the authorization provider before spawn. Claimed provider failures propagate; hosts without a provider omit supervisor metadata rather than launching a silently broken `contact_supervisor` channel.
+- Fixed workflow stages freezing when their active foreground subagent sent Intercom traffic or blocking `contact_supervisor`. Busy open stages give the exact foreground owner probe/commit detach handshake first refusal before model-visible queue insertion; unclaimed traffic and owner loss between probe/commit fall back to normal insertion instead of dropping a broker-delivered message. A commit from one parallel child releases aggregate foreground supervision for all active siblings while their processes and eventual results remain owned.
+- Fixed `intercom.ask` hanging when one workflow stage targeted a sibling stage that had already completed. Blocking late asks now retain their exact sender/thread correlation while the workflow runtime schedules the target's retained conversation for a post-mortem turn; only that target's correlated `intercom.reply` resolves the caller. The production workflow and Intercom listeners now preserve the first owner's completion promise regardless of registration order, preventing the lightweight Intercom relay or duplicate listeners from replacing or double-delivering a claimed revival. Missing, deleted, non-resumable, or failed-to-reopen targets return a bounded actionable tool error instead of waiting for the normal ask timeout, while ordinary late notifications retain their existing parent-chat route ([#1854](https://github.com/bastani-inc/atomic/issues/1854)).
+- Fixed blocking `intercom.ask` delivery to a sibling workflow stage that is mid-turn. Busy targets now reserve the message synchronously in the open AgentSession generation before awaiting foreground-owner detach, then drain the eventual native queue insertion before terminal snapshot publication. Destination-side admission failures return an exact-thread actionable tool error instead of leaving the asker blocked for the 10-minute reply timeout.
+
+## [0.9.10-alpha.1] - 2026-07-19
+
+### Added
+
+- Added intercom **groups** for broker-enforced session isolation. Every session belongs to exactly one group (implicitly `"default"` when unset), resolved with precedence `orchestrationContext.intercomGroup` (per-session workflow-stage injection) > env `ATOMIC_INTERCOM_GROUP` (legacy `PI_INTERCOM_GROUP`) > intercom `config.json` `"group"` > `"default"`. A session in group G can only message peers in G: cross-group sends are rejected at the broker (unresolvable by name via group-scoped candidate resolution, and rejected by an exact-id defense-in-depth check with reason "Target session is in a different intercom group"), not merely hidden from discovery. `session_joined`/`session_left`/`presence_update` broadcasts and `intercom list` are group-scoped, so a session never sees peers outside its group. The `intercom` tool gains an optional `group` parameter: read-only for `list`/`status` (peek who is in a named group and see your own group), while `send`/`ask` stay locked to your own group and error clearly on a differing group. The subagent-only `contact_supervisor` path uses a dedicated broker protocol plus a supervisor-issued child capability, and only an exact broker-recorded reverse reply may cross back, so isolated children retain their supervisor link without granting peer traffic a general bypass.
+
+### Fixed
+
+- Fixed busy workflow-stage messages being retained solely in Intercom's private wait-until-idle queue. Stage-targeted traffic is now admitted synchronously through the AgentSession generation boundary with stable message IDs, preserving native follow-up ordering and exactly-once delivery; close-winning late traffic is surfaced through the parent/main chat without mutating the terminal stage. Existing non-stage idle batching, terminal barriers, reply correlation, and shutdown generation cleanup are unchanged.
+- Fixed closed workflow-stage Intercom routing to avoid source-side pre-admission, reserve destination dedupe entries until main-chat delivery succeeds, roll back reply context on failure, propagate asynchronous route rejection, and permit a failed stable-key delivery to retry without duplicate parent-chat messages. A final retry survives source-stage retirement, and hosts without batch admission now commit successful fallback members individually so a partial failure retries only the undelivered suffix.
+- Fixed a cross-group isolation bypass where any registered raw client could forge `channel: "supervisor"` on an ordinary `send` frame. Ordinary sends now reject client-authored channel markers; the broker issues child-scoped supervisor capabilities, binds validated registrations to the issuing supervisor, derives the only authorized cross-group destination, and adds the trusted relay marker itself. Wrong targets/tokens, fabricated `replyTo` values, and ordinary peer sends remain isolated, while legitimate child requests and exact supervisor replies continue to cross groups. Parent-held capability state is restored after broker reconnects, the child uses the broker-confirmed current supervisor ID, and the lightweight wrapper lazy-loads the authorization provider before spawn. Claimed provider failures propagate; hosts without a provider omit supervisor metadata rather than launching a silently broken `contact_supervisor` channel.
+- Fixed workflow stages freezing when their active foreground subagent sent Intercom traffic or blocking `contact_supervisor`. Busy open stages give the exact foreground owner probe/commit detach handshake first refusal before model-visible queue insertion; unclaimed traffic and owner loss between probe/commit fall back to normal insertion instead of dropping a broker-delivered message. A commit from one parallel child releases aggregate foreground supervision for all active siblings while their processes and eventual results remain owned.
+- Fixed `intercom.ask` hanging when one workflow stage targeted a sibling stage that had already completed. Blocking late asks now retain their exact sender/thread correlation while the workflow runtime schedules the target's retained conversation for a post-mortem turn; only that target's correlated `intercom.reply` resolves the caller. The production workflow and Intercom listeners now preserve the first owner's completion promise regardless of registration order, preventing the lightweight Intercom relay or duplicate listeners from replacing or double-delivering a claimed revival. Missing, deleted, non-resumable, or failed-to-reopen targets return a bounded actionable tool error instead of waiting for the normal ask timeout, while ordinary late notifications retain their existing parent-chat route ([#1854](https://github.com/bastani-inc/atomic/issues/1854)).
+- Fixed blocking `intercom.ask` delivery to a sibling workflow stage that is mid-turn. Busy targets now reserve the message synchronously in the open AgentSession generation before awaiting foreground-owner detach, then drain the eventual native queue insertion before terminal snapshot publication. Destination-side admission failures return an exact-thread actionable tool error instead of leaving the asker blocked for the 10-minute reply timeout.
+
+## [0.9.9] - 2026-07-15
+
+### Changed
+
+- Aligned the intercom extension peer dependency with `@earendil-works/pi-tui` `^0.80.7` as part of the consolidated Pi v0.80.7 dependency update; no intercom source changes were needed.
+- Updated the runtime `typebox` range to `^1.3.6`.
+
+### Fixed
+
+- Preserved per-child chronology between busy-parent Intercom messages and terminal async subagent notifications: paused, completed, and failed paths now claim pre-terminal ordinary messages from the exact child session/run in FIFO order and atomically admit the prelude plus terminal notice through the custom-message batch API. A process-local bridge complements extension-bus delivery for lazily activated companions; terminal identity deduplicates both paths even when the successful terminal dispatch has an empty prelude, while failed dispatches remain retryable and distinct resumed-run lifecycle terminals remain independent. Idle flushes use the same ordered batch admission, unrelated children remain independent, and ask/reply correlation is unchanged ([#1802](https://github.com/bastani-inc/atomic/issues/1802)).
+- Made every short session ID printed by `intercom list` directly actionable in `send`, blocking `ask`, and targeted `reply`. Target resolution now preserves exact full IDs and exact case-insensitive names before accepting unique ID prefixes, reports colliding prefixes with the matching sessions instead of guessing, resolves blocking asks to the full sender ID so threaded replies correlate correctly, and rejects short-form self-targets at both tool and broker routing boundaries.
+
+## [0.9.9-alpha.4] - 2026-07-15
+
+### Changed
+
+- Published a synchronized Atomic 0.9.9-alpha.4 prerelease for the intercom extension; no functional intercom changes were made after 0.9.9-alpha.3.
+
+## [0.9.9-alpha.3] - 2026-07-14
+
+### Fixed
+
+- Preserved per-child chronology between busy-parent Intercom messages and terminal async subagent notifications: paused, completed, and failed paths now claim pre-terminal ordinary messages from the exact child session/run in FIFO order and atomically admit the prelude plus terminal notice through the custom-message batch API. A process-local bridge complements extension-bus delivery for lazily activated companions; terminal identity deduplicates both paths even when the successful terminal dispatch has an empty prelude, while failed dispatches remain retryable and distinct resumed-run lifecycle terminals remain independent. Idle flushes use the same ordered batch admission, unrelated children remain independent, and ask/reply correlation is unchanged ([#1802](https://github.com/bastani-inc/atomic/issues/1802)).
+- Made every short session ID printed by `intercom list` directly actionable in `send`, blocking `ask`, and targeted `reply`. Target resolution now preserves exact full IDs and exact case-insensitive names before accepting unique ID prefixes, reports colliding prefixes with the matching sessions instead of guessing, resolves blocking asks to the full sender ID so threaded replies correlate correctly, and rejects short-form self-targets at both tool and broker routing boundaries.
+
+## [0.9.9-alpha.2] - 2026-07-14
+
+### Changed
+
+- Aligned the intercom extension peer dependency with `@earendil-works/pi-tui` `^0.80.7` as part of the consolidated Pi v0.80.7 dependency update; no intercom source changes were needed.
+- Updated the runtime `typebox` range to `^1.3.6`.
+
+## [0.9.9-alpha.1] - 2026-07-14
+
+### Changed
+
+- Published a synchronized Atomic 0.9.9-alpha.1 prerelease for the intercom extension; no functional intercom changes were made after 0.9.8.
+
+## [0.9.8] - 2026-07-12
+
+### Changed
+
+- Published the stable Atomic 0.9.8 release for the intercom extension; no functional intercom changes were made after 0.9.7.
+
+## [0.9.8-alpha.1] - 2026-07-12
+
+### Changed
+
+- Published a synchronized Atomic 0.9.8-alpha.1 prerelease for the intercom extension; no functional intercom changes were made after 0.9.7.
+
+## [0.9.7] - 2026-07-12
+
+### Fixed
+
+- Made blocking reply waits race-safe under concurrent tool calls. Waiter admission is now an atomic synchronous check-and-reserve shared by `intercom` `ask` and `contact_supervisor`: when several blocking requests race (parallel tool calls in one turn, same-tool or cross-tool), exactly one wins the reservation and every other call returns a normal structured "Already waiting for a reply" tool error. Previously the loser received an already-rejected promise that could sit unhandled while the winner's question was still being sent, crashing the whole agent process with an unhandled `Error: Already waiting for a reply` rejection.
+- Scoped blocking-ask cleanup to the owning call: cancellation, send failures, and delivery errors now settle only that call's own reply waiter instead of rejecting whichever waiter happened to be pending, so a losing or failing concurrent request can no longer tear down another call's in-flight ask. The reply-wait timeout also rejects only its own waiter, threaded replies still resolve the exact winning request, and session shutdown/replacement and broker disconnects continue to reject the currently pending waiter.
+- Made the pending reply-wait promise unhandled-rejection-proof: rejections that fire between the owner's awaits (for example a delivery failure racing dispatch) are pre-handled, so blocking coordination can never terminate the process.
+- Initialized the lazy Intercom runtime from the most recent turn/tool/model lifecycle context when a subagent result or control relay arrives in a session that never emitted `session_start` to extensions (for example non-interactive in-process child sessions). Such sessions now deliver self-addressed subagent result announcements locally instead of failing every relay.
+- Stopped recording misleading `intercom_result_error`/`intercom_control_error` "Intercom shutting down" entries when a relay fires while the runtime is uninitialized and the target is not the local session. The relay now acknowledges the message as undelivered (callers fall back to inline results) without attempting a broker connection that can only fail.
+
+## [0.9.7-alpha.1] - 2026-07-12
+
+### Fixed
+
+- Made blocking reply waits race-safe under concurrent tool calls. Waiter admission is now an atomic synchronous check-and-reserve shared by `intercom` `ask` and `contact_supervisor`: when several blocking requests race (parallel tool calls in one turn, same-tool or cross-tool), exactly one wins the reservation and every other call returns a normal structured "Already waiting for a reply" tool error. Previously the loser received an already-rejected promise that could sit unhandled while the winner's question was still being sent, crashing the whole agent process with an unhandled `Error: Already waiting for a reply` rejection.
+- Scoped blocking-ask cleanup to the owning call: cancellation, send failures, and delivery errors now settle only that call's own reply waiter instead of rejecting whichever waiter happened to be pending, so a losing or failing concurrent request can no longer tear down another call's in-flight ask. The reply-wait timeout also rejects only its own waiter, threaded replies still resolve the exact winning request, and session shutdown/replacement and broker disconnects continue to reject the currently pending waiter.
+- Made the pending reply-wait promise unhandled-rejection-proof: rejections that fire between the owner's awaits (for example a delivery failure racing dispatch) are pre-handled, so blocking coordination can never terminate the process.
+- Initialized the lazy Intercom runtime from the most recent turn/tool/model lifecycle context when a subagent result or control relay arrives in a session that never emitted `session_start` to extensions (for example non-interactive in-process child sessions). Such sessions now deliver self-addressed subagent result announcements locally instead of failing every relay.
+- Stopped recording misleading `intercom_result_error`/`intercom_control_error` "Intercom shutting down" entries when a relay fires while the runtime is uninitialized and the target is not the local session. The relay now acknowledges the message as undelivered (callers fall back to inline results) without attempting a broker connection that can only fail.
+
+## [0.9.6] - 2026-07-12
+
+### Changed
+
+- Restored fully tool-driven Intercom connections: parent and bridged child sessions no longer import or connect to the broker merely because a subagent starts. The runtime now connects only when the model or user invokes an Intercom tool, command, shortcut, or relay.
+
+## [0.9.6-alpha.1] - 2026-07-12
+
+### Changed
+
+- Restored fully tool-driven Intercom connections: parent and bridged child sessions no longer import or connect to the broker merely because a subagent starts. The runtime now connects only when the model or user invokes an Intercom tool, command, shortcut, or relay.
+
+## [0.9.5] - 2026-07-11
+
+### Added
+
+- Added preferred `atomic` package manifest metadata alongside the legacy `pi` manifest metadata so Atomic package discovery uses Atomic-branded metadata without breaking pi-compatible installs.
+
+### Changed
+
+- Aligned the intercom extension peer dependency with upstream `pi-tui` `^0.80.6` as part of the consolidated Pi sync; no intercom source behavior changed ([#1703](https://github.com/bastani-inc/atomic/issues/1703)).
+- Updated intercom documentation to describe Atomic's `~/.atomic/agent/intercom/` primary config/runtime path and legacy `~/.pi/agent/intercom/` fallback.
+- Updated the registered intercom tool description and prompt snippet to use Atomic/Pi-neutral local agent session wording instead of hard-coding Pi-branded session names in model-visible text.
+
+### Fixed
+
+- Made lazy Intercom lifecycle replay generation-safe, session-leased, and serialized with live lifecycle forwarding, so matching end events and newer model selections cannot be overtaken by a blocked stale replay. Shutdown waits for retired replay/initializer cleanup before replacement, calls spanning teardown reject, and failed or invalidated attempts cannot leak stale resources.
+- Recover from rejected lazy and delegated-child background initialization and later-generation session replay; later callers retry before executing, and concurrent retries share one initialization or replay attempt while normal sessions remain lazy.
+- Made acknowledged subagent result delivery idempotent end to end: lazy initialization failure and retired relay generations emit definitive negative acknowledgements, stable completion request IDs become broker message IDs, concurrent identical client sends coalesce onto one attempt, and a bounded TTL cache confirms identical successful retries without forwarding twice. Canonical target/payload/options signatures reject conflicting ID reuse even after success and across sender sessions, while transport attempt IDs and timestamps remain retry-insensitive. Brokers reject malformed present attempt IDs instead of unsafely downgrading them, and clients accept attempt-less legacy responses only for an ID's original active generation so a delayed legacy acknowledgement cannot settle a timeout/disconnect replacement.
+- Fixed foreground `intercom.ask`, `intercom.send`, and supervisor coordination to use an exact-owner probe/reservation plus an acknowledged, generation-scoped detach commit before model-visible steering delivery. This breaks parent/child ask deadlocks, promptly releases supervision for fire-and-forget progress/send, preserves threaded decision replies, leaves unmatched/background messages queued until idle, and prevents orphaned, stale, or duplicate delivery after cancellation or replacement. Interactive parents now await lazy Intercom broker/inbound-handler initialization before a foreground child launches ([#1727](https://github.com/bastani-inc/atomic/issues/1727)).
+- Register bridged foreground/background children with Intercom before agent work begins and gate interactive foreground launches on lazy parent broker readiness, while preserving single-flight heavy loading, replacement/shutdown cleanup, and no startup work for unused parents, disabled sessions, or definition/control-only subagent actions. Optional import/broker/connection failures diagnose and degrade without aborting parent or child launch, while later calls retain retry behavior. Adapted from `nicobailon/pi-intercom` commits `3cb5b9c`, `02a6897`, and `9f23b97` while retaining Atomic's lazy proxy and issue #1727 detach protocol.
+- Fixed Atomic intercom broker runtime paths to derive from the active Atomic agent directory, so `ATOMIC_CODING_AGENT_DIR` moves the broker socket, PID, spawn lock, and Windows launcher together while the legacy `PI_CODING_AGENT_DIR` alias remains supported.
+- Fixed raw TypeScript intercom imports to use the bundled `@earendil-works/pi-tui` package name, matching Atomic's runtime dependency while preserving the public intercom API.
+- Hardened default intercom broker startup so the pi-compatible `npx --no-install tsx` sentinel launches through the current runtime (`process.execPath`): Node-based installs use a resolved `tsx` CLI with a bundled `jiti` fallback, Bun source-checkout runs use the current Bun executable directly, and standalone Atomic Bun binaries re-enter the split launcher through a narrow internal broker handoff instead of treating the Atomic executable as a generic Bun interpreter; explicit custom `brokerCommand`/`brokerArgs` configs remain pass-through overrides.
+
+## [0.9.5-alpha.10] - 2026-07-11
+
+### Changed
+
+- Aligned the intercom extension peer dependency with upstream `pi-tui` `^0.80.6` as part of the consolidated Pi sync; no intercom source behavior changed ([#1703](https://github.com/bastani-inc/atomic/issues/1703)).
+
+### Fixed
+
+- Made lazy Intercom lifecycle replay generation-safe, session-leased, and serialized with live lifecycle forwarding, so matching end events and newer model selections cannot be overtaken by a blocked stale replay. Shutdown waits for retired replay/initializer cleanup before replacement, calls spanning teardown reject, and failed or invalidated attempts cannot leak stale resources.
+- Recover from rejected lazy and delegated-child background initialization and later-generation session replay; later callers retry before executing, and concurrent retries share one initialization or replay attempt while normal sessions remain lazy.
+- Made acknowledged subagent result delivery idempotent end to end: lazy initialization failure and retired relay generations emit definitive negative acknowledgements, stable completion request IDs become broker message IDs, concurrent identical client sends coalesce onto one attempt, and a bounded TTL cache confirms identical successful retries without forwarding twice. Canonical target/payload/options signatures reject conflicting ID reuse even after success and across sender sessions, while transport attempt IDs and timestamps remain retry-insensitive. Brokers reject malformed present attempt IDs instead of unsafely downgrading them, and clients accept attempt-less legacy responses only for an ID's original active generation so a delayed legacy acknowledgement cannot settle a timeout/disconnect replacement.
+- Fixed foreground `intercom.ask`, `intercom.send`, and supervisor coordination to use an exact-owner probe/reservation plus an acknowledged, generation-scoped detach commit before model-visible steering delivery. This breaks parent/child ask deadlocks, promptly releases supervision for fire-and-forget progress/send, preserves threaded decision replies, leaves unmatched/background messages queued until idle, and prevents orphaned, stale, or duplicate delivery after cancellation or replacement. Interactive parents now await lazy Intercom broker/inbound-handler initialization before a foreground child launches ([#1727](https://github.com/bastani-inc/atomic/issues/1727)).
+- Register bridged foreground/background children with Intercom before agent work begins and gate interactive foreground launches on lazy parent broker readiness, while preserving single-flight heavy loading, replacement/shutdown cleanup, and no startup work for unused parents, disabled sessions, or definition/control-only subagent actions. Optional import/broker/connection failures diagnose and degrade without aborting parent or child launch, while later calls retain retry behavior. Adapted from `nicobailon/pi-intercom` commits `3cb5b9c`, `02a6897`, and `9f23b97` while retaining Atomic's lazy proxy and issue #1727 detach protocol.
+
+## [0.9.5-alpha.8] - 2026-07-08
+
+### Added
+
+- Added preferred `atomic` package manifest metadata alongside the legacy `pi` manifest metadata so Atomic package discovery uses Atomic-branded metadata without breaking pi-compatible installs.
+
+### Changed
+
+- Updated intercom documentation to describe Atomic's `~/.atomic/agent/intercom/` primary config/runtime path and legacy `~/.pi/agent/intercom/` fallback.
+- Updated the registered intercom tool description and prompt snippet to use Atomic/Pi-neutral local agent session wording instead of hard-coding Pi-branded session names in model-visible text.
+
+### Fixed
+
+- Fixed Atomic intercom broker runtime paths to derive from the active Atomic agent directory, so `ATOMIC_CODING_AGENT_DIR` moves the broker socket, PID, spawn lock, and Windows launcher together while the legacy `PI_CODING_AGENT_DIR` alias remains supported.
+- Fixed raw TypeScript intercom imports to use the bundled `@earendil-works/pi-tui` package name, matching Atomic's runtime dependency while preserving the public intercom API.
+- Hardened default intercom broker startup so the pi-compatible `npx --no-install tsx` sentinel launches through the current runtime (`process.execPath`): Node-based installs use a resolved `tsx` CLI with a bundled `jiti` fallback, Bun source-checkout runs use the current Bun executable directly, and standalone Atomic Bun binaries re-enter the split launcher through a narrow internal broker handoff instead of treating the Atomic executable as a generic Bun interpreter; explicit custom `brokerCommand`/`brokerArgs` configs remain pass-through overrides.
+
 ## [0.9.4] - 2026-07-03
 
 ### Changed

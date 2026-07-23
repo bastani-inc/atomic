@@ -7,7 +7,7 @@
  *  - ctrl+f sends `handle.followUp(text)`.
  *  - Escape interrupts a streaming stage using the coding-agent chat contract.
  *  - After pause, Enter routes through `handle.resume(text)`.
- *  - Ctrl+D calls `onDetach`; Escape on inspect-only settled/Ctrl+C call `onClose`.
+ *  - Ctrl+X calls `onDetach`; Escape on inspect-only settled/Ctrl+C call `onClose`.
  *
  * cross-ref: src/tui/stage-chat-view.ts
  */
@@ -238,25 +238,29 @@ export function stripAnsi(text: string): string {
         .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
 }
 
-export const CTRL_D_VARIANTS = [
-    "\x04",
-    "\x1b[100;5u",
-    "\x1b[100;5:1u",
-    "\x1b[27;5;100~",
+export const CTRL_X_VARIANTS = [
+    "\x18",
+    "\x1b[120;5u",
+    "\x1b[120;5:1u",
+    "\x1b[27;5;120~",
 ];
 
-export const RETURN_HINT_TEXT = "ctrl+d graph · ctrl+t copy mode off";
+export const RETURN_HINT_TEXT = "ctrl+x return to graph · ctrl+t copy mode off";
+export const COMPACT_RETURN_HINT_TEXT = "ctrl+x graph · ctrl+t off";
 
 export function expectRightAlignedReturnHint(
     lines: readonly string[],
     width: number,
     rightInset = 0,
 ): number {
-    const index = lines.findIndex((line) => line.includes(RETURN_HINT_TEXT));
-    assert.ok(index >= 0, "expected Ctrl+D orchestrator hint");
+    const hint = lines.some((line) => line.includes(RETURN_HINT_TEXT))
+        ? RETURN_HINT_TEXT
+        : COMPACT_RETURN_HINT_TEXT;
+    const index = lines.findIndex((line) => line.includes(hint));
+    assert.ok(index >= 0, "expected Ctrl+X hierarchy navigation hint");
     assert.equal(
-        lines[index]!.indexOf(RETURN_HINT_TEXT),
-        width - RETURN_HINT_TEXT.length - rightInset,
+        lines[index]!.indexOf(hint),
+        width - hint.length - rightInset,
     );
     return index;
 }

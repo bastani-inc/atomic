@@ -12,6 +12,7 @@ import {
 import { join } from "path";
 import { StringDecoder } from "string_decoder";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
+import { isClassifiedWorkflowSession } from "./session-manager-classification.ts";
 import type { FileEntry, SessionEntry, SessionHeader } from "./session-manager-types.ts";
 
 const SESSION_READ_BUFFER_SIZE = 1024 * 1024;
@@ -124,9 +125,9 @@ export function readSessionHeader(filePath: string): SessionHeader | null {
 	}
 }
 
-/** Returns true when a session header marks the session as internal (e.g. a workflow stage session). */
+/** Returns true only for workflow-owned sessions with a complete classification marker. */
 export function isInternalHeader(header: SessionHeader | null | undefined): boolean {
-	return header?.internal === true;
+	return isClassifiedWorkflowSession(header);
 }
 
 export function getSessionHeaderCwd(header: SessionHeader): string | undefined {

@@ -63,8 +63,9 @@ describe("synthesizeCopilotCatalogModels", () => {
 		assert.deepEqual(claude?.input, ["text", "image"]);
 		assert.equal(claude?.reasoning, true);
 		assert.deepEqual(claude?.compat, { forceAdaptiveThinking: true });
-		assert.deepEqual(supportedThinkingLevels(claude), ["off", "low", "medium", "high", "xhigh"]);
+		assert.deepEqual(supportedThinkingLevels(claude), ["off", "low", "medium", "high", "xhigh", "max"]);
 		assert.deepEqual(claude?.thinkingLevelMap?.xhigh, "xhigh");
+		assert.deepEqual(claude?.thinkingLevelMap?.max, "max");
 		assert.equal(claude?.contextWindow, 200_000);
 		assert.deepEqual(claude?.contextWindowOptions, [200_000, 1_000_000]);
 		assert.equal(claude?.maxInputTokens, 936_000);
@@ -92,8 +93,9 @@ describe("synthesizeCopilotCatalogModels", () => {
 		assert.deepEqual(supportedThinkingLevels(models.find((model) => model.id === "gpt-5.5-style")), ["off", "low", "medium", "high", "xhigh"]);
 		assert.deepEqual(supportedThinkingLevels(models.find((model) => model.id === "gemini-3.5-flash-style")), ["minimal", "low", "medium", "high"]);
 		const adaptiveMax = models.find((model) => model.id === "claude-opus-4.6-style");
-		assert.deepEqual(supportedThinkingLevels(adaptiveMax), ["off", "low", "medium", "high", "xhigh"]);
+		assert.deepEqual(supportedThinkingLevels(adaptiveMax), ["off", "low", "medium", "high", "xhigh", "max"]);
 		assert.equal(adaptiveMax?.thinkingLevelMap?.xhigh, "max");
+		assert.equal(adaptiveMax?.thinkingLevelMap?.max, "max");
 	});
 
 	test("gates out non-picker, non-chat, disabled, unmapped, namespaced, and duplicate entries", () => {

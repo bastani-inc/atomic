@@ -286,15 +286,21 @@ export function suppressProgressForReadOnlyTask(behavior: ResolvedStepBehavior, 
 	return behavior.progress && taskDisallowsFileUpdates(policyTask) ? { ...behavior, progress: false } : behavior;
 }
 
+/** Resolve single-agent progress, preserving read-only suppression only for inherited defaults. */
+export function resolveSingleProgress(agentConfig: AgentConfig, override: boolean | undefined, task: string | undefined): boolean {
+	const behavior = resolveStepBehavior(agentConfig, { progress: override });
+	return override !== undefined ? behavior.progress : suppressProgressForReadOnlyTask(behavior, task).progress;
+}
+
 // =============================================================================
 // Chain Instruction Injection
 // =============================================================================
 
-/**
- * Resolve a file path: absolute paths pass through, relative paths get chainDir prepended.
- */
-function resolveChainPath(filePath: string, chainDir: string): string {
-	return path.isAbsolute(filePath) ? filePath : path.join(chainDir, filePath);
+/** Build the common read prefix, resolving relative paths against the child's effective cwd. */
+export function buildReadInstruction(reads: string[] | false | undefined, cwd: string): string {
+	if (!reads || reads.length === 0) return "";
+	const files = reads.map((file) => path.resolve(cwd, file));
+	return `[Read from: ${files.join(", ")}]`;
 }
 
 /**
@@ -302,7 +308,13 @@ function resolveChainPath(filePath: string, chainDir: string): string {
  * These are appended to the task to tell the agent what to read/write.
  */
 export function writeInitialProgressFile(progressDir: string): void {
+	fs.mkdirSync(progressDir, { recursive: true });
 	fs.writeFileSync(path.join(progressDir, "progress.md"), INITIAL_PROGRESS_CONTENT);
+}
+
+/** Add the child-facing instruction for a single-agent progress file. */
+export function injectSingleProgressInstruction(task: string, progressDir: string): string {
+	return `${task}\n\n---\nCreate and maintain progress at: ${path.join(progressDir, "progress.md")}`;
 }
 
 export function buildChainInstructions(
@@ -315,14 +327,12 @@ export function buildChainInstructions(
 	const suffixParts: string[] = [];
 
 	// READS - prepend to override any hardcoded filenames in task text
-	if (behavior.reads && behavior.reads.length > 0) {
-		const files = behavior.reads.map((f) => resolveChainPath(f, chainDir));
-		prefixParts.push(`[Read from: ${files.join(", ")}]`);
-	}
+	const readInstruction = buildReadInstruction(behavior.reads, chainDir);
+	if (readInstruction) prefixParts.push(readInstruction);
 
 	// OUTPUT - prepend so agent knows where to write
 	if (behavior.output) {
-		const outputPath = resolveChainPath(behavior.output, chainDir);
+		const outputPath = path.isAbsolute(behavior.output) ? behavior.output : path.join(chainDir, behavior.output);
 		prefixParts.push(`[Write to: ${outputPath}]`);
 	}
 

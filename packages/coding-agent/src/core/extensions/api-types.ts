@@ -1,4 +1,5 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { Provider } from "@earendil-works/pi-ai";
 import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai/compat";
 import type { KeyId } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
@@ -11,9 +12,11 @@ import type { SlashCommandInfo } from "../slash-commands.ts";
 import type {
 	AfterProviderResponseEvent,
 	AgentEndEvent,
+	AgentSettledEvent,
 	AgentStartEvent,
 	BeforeAgentStartEvent,
 	BeforeProviderRequestEvent,
+	BeforeProviderHeadersEvent,
 	ContextEvent,
 	InputEvent,
 	InputEventResult,
@@ -45,7 +48,7 @@ import type {
 	ToolResultEventResult,
 	UserBashEventResult,
 } from "./event-results.ts";
-import type { MessageRenderer, SendMessageOptions } from "./message-types.ts";
+import type { EntryRenderer, MessageRenderer, SendMessageOptions, SendMessagesOptions } from "./message-types.ts";
 import type { ProviderConfig } from "./provider-types.ts";
 import type {
 	ResourcesDiscoverEvent,
@@ -96,10 +99,12 @@ export interface ExtensionAPI {
 		event: "before_provider_request",
 		handler: ExtensionHandler<BeforeProviderRequestEvent, BeforeProviderRequestEventResult>,
 	): void;
+	on(event: "before_provider_headers", handler: ExtensionHandler<BeforeProviderHeadersEvent>): void;
 	on(event: "after_provider_response", handler: ExtensionHandler<AfterProviderResponseEvent>): void;
 	on(event: "before_agent_start", handler: ExtensionHandler<BeforeAgentStartEvent, BeforeAgentStartEventResult>): void;
 	on(event: "agent_start", handler: ExtensionHandler<AgentStartEvent>): void;
 	on(event: "agent_end", handler: ExtensionHandler<AgentEndEvent>): void;
+	on(event: "agent_settled", handler: ExtensionHandler<AgentSettledEvent>): void;
 	on(event: "turn_start", handler: ExtensionHandler<TurnStartEvent>): void;
 	on(event: "turn_end", handler: ExtensionHandler<TurnEndEvent>): void;
 	on(event: "message_start", handler: ExtensionHandler<MessageStartEvent>): void;
@@ -174,6 +179,8 @@ export interface ExtensionAPI {
 
 	/** Register a custom renderer for CustomMessageEntry. */
 	registerMessageRenderer<T = unknown>(customType: string, renderer: MessageRenderer<T>): void;
+	/** Register a custom renderer for a persistent CustomEntry. */
+	registerEntryRenderer<T = unknown>(customType: string, renderer: EntryRenderer<T>): void;
 
 	// =========================================================================
 	// Actions
@@ -183,7 +190,13 @@ export interface ExtensionAPI {
 	sendMessage<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
 		options?: SendMessageOptions,
-	): void;
+	): void | Promise<void>;
+
+	/** Atomically admit custom messages in array order without waiting for the resulting turn. */
+	sendMessages<T = unknown>(
+		messages: Array<Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">>,
+		options?: SendMessagesOptions,
+	): void | Promise<void>;
 
 	/**
 	 * Send a user message to the agent. Always triggers a turn.
@@ -295,6 +308,7 @@ export interface ExtensionAPI {
 	 * });
 	 */
 	registerProvider(name: string, config: ProviderConfig): void;
+	registerProvider(provider: Provider): void;
 
 	/**
 	 * Unregister a previously registered provider.

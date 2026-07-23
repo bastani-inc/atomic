@@ -175,11 +175,7 @@ describe("StageChatView", () => {
     });
 
     test("stage chat no longer handles /context-compact as a workflow slash command", async () => {
-        const agentSession = {
-            contextCompact: async () => {
-                throw new Error("contextCompact should not be called");
-            },
-        } as unknown as AgentSession;
+        const agentSession = {} as AgentSession;
         const store = createStore();
         setupRun(store, "run-1", "stage-a");
         const { handle, state } = makeHandle(

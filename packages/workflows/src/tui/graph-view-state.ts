@@ -1,3 +1,4 @@
+import type { ReadonlyFooterDataProvider } from "@bastani/atomic";
 import type { Store } from "../shared/store.js";
 import type {
   PendingPrompt,
@@ -54,7 +55,6 @@ export abstract class GraphViewState {
   protected store: Store;
   protected graphTheme: GraphTheme;
   protected onClose?: () => void;
-  protected onQuit?: (runId: string) => void;
   protected onHide?: () => void;
   protected onPromptResolve?: (runId: string, promptId: string, response: unknown) => void;
   protected onStageAttach?: (runId: string, stageId: string) => void;
@@ -63,6 +63,7 @@ export abstract class GraphViewState {
   protected getViewportRows?: () => number | undefined;
   protected requestRender?: () => void;
   protected piKeybindings?: unknown;
+  protected footerData?: ReadonlyFooterDataProvider;
 
   /** Active HIL prompt state, set when `_rebuildLayout` sees a new prompt id. */
   protected promptState: PromptCardState | null = null;
@@ -93,7 +94,6 @@ export abstract class GraphViewState {
     this.store = opts.store;
     this.graphTheme = opts.graphTheme;
     this.onClose = opts.onClose;
-    this.onQuit = opts.onQuit;
     this.onHide = opts.onHide;
     this.onPromptResolve = opts.onPromptResolve;
     this.onStageAttach = opts.onStageAttach;
@@ -102,6 +102,7 @@ export abstract class GraphViewState {
     this.getViewportRows = opts.getViewportRows;
     this.requestRender = opts.requestRender;
     this.piKeybindings = opts.piKeybindings;
+    this.footerData = opts.footerData;
 
     this._unsubscribe = this.store.subscribe((snap) => {
       this.currentSnapshot = snap;

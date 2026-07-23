@@ -2,6 +2,102 @@
 
 ## [Unreleased]
 
+## [0.9.11-alpha.1] - 2026-07-20
+
+### Changed
+
+- Published a synchronized Atomic 0.9.11-alpha.1 prerelease for the Cursor provider package; no functional Cursor provider changes were made after 0.9.9.
+
+## [0.9.10] - 2026-07-20
+
+### Changed
+
+- Published the stable Atomic 0.9.10 release for the Cursor provider package; no functional Cursor provider changes were made after 0.9.9.
+
+## [0.9.10-alpha.1] - 2026-07-19
+
+### Changed
+
+- Published a synchronized Atomic 0.9.10-alpha.1 prerelease for the Cursor provider package; no functional Cursor provider changes were made after 0.9.9.
+
+## [0.9.9] - 2026-07-15
+
+### Changed
+
+- Published the stable Atomic 0.9.9 release for the Cursor provider package with its `@earendil-works/pi-ai` dependency aligned to `^0.80.7`; no functional Cursor provider source changes were made after 0.9.8.
+
+## [0.9.9-alpha.4] - 2026-07-15
+
+### Changed
+
+- Published a synchronized Atomic 0.9.9-alpha.4 prerelease for the Cursor provider package; no functional Cursor provider changes were made after 0.9.9-alpha.3.
+
+## [0.9.9-alpha.3] - 2026-07-14
+
+### Changed
+
+- Published a synchronized Atomic 0.9.9-alpha.3 prerelease for the Cursor provider package; no functional Cursor provider changes were made after 0.9.9-alpha.2.
+
+## [0.9.9-alpha.2] - 2026-07-14
+
+### Changed
+
+- Aligned the Cursor provider dependency with `@earendil-works/pi-ai` `^0.80.7` as part of the consolidated Pi v0.80.7 dependency update; no Cursor provider source changes were needed.
+
+## [0.9.9-alpha.1] - 2026-07-14
+
+### Changed
+
+- Published a synchronized Atomic 0.9.9-alpha.1 prerelease for the Cursor provider package; no functional Cursor provider changes were made after 0.9.8.
+
+## [0.9.8] - 2026-07-12
+
+### Changed
+
+- Published the stable Atomic 0.9.8 release for the Cursor provider package; no functional Cursor provider changes were made after 0.9.7.
+
+## [0.9.8-alpha.1] - 2026-07-12
+
+### Changed
+
+- Published a synchronized Atomic 0.9.8-alpha.1 prerelease for the Cursor provider package; no functional Cursor provider changes were made after 0.9.7.
+
+## [0.9.7] - 2026-07-12
+
+### Changed
+
+- Published the stable Atomic 0.9.7 release for the Cursor provider package; no functional Cursor provider changes were made after 0.9.6.
+
+## [0.9.7-alpha.1] - 2026-07-12
+
+### Changed
+
+- Published a synchronized Atomic 0.9.7-alpha.1 prerelease for the Cursor provider package; no functional Cursor provider changes were made after 0.9.6.
+
+## [0.9.6] - 2026-07-12
+
+### Changed
+
+- Published the stable Atomic 0.9.6 release for the Cursor provider package; no functional Cursor provider changes were made after 0.9.5.
+
+## [0.9.6-alpha.1] - 2026-07-12
+
+### Changed
+
+- Published a synchronized Atomic 0.9.6-alpha.1 prerelease for the Cursor provider package; no functional Cursor provider changes were made after 0.9.5.
+
+## [0.9.5] - 2026-07-11
+
+### Changed
+
+- Aligned the Cursor provider dependency with upstream `pi-ai` `^0.80.6` and mapped the new `max` thinking level to Cursor's advertised effort variants while preserving per-model capability filtering ([#1703](https://github.com/bastani-inc/atomic/issues/1703)).
+
+## [0.9.5-alpha.10] - 2026-07-11
+
+### Changed
+
+- Aligned the Cursor provider dependency with upstream `pi-ai` `^0.80.6` and mapped the new `max` thinking level to Cursor's advertised effort variants while preserving per-model capability filtering ([#1703](https://github.com/bastani-inc/atomic/issues/1703)).
+
 ## [0.9.4] - 2026-07-03
 
 ### Changed

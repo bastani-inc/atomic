@@ -1,6 +1,6 @@
 import { afterEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { renderWidget, RUNNING_ANIMATION_MS, stopWidgetAnimation } from "../../packages/subagents/src/tui/render.js";
+import { renderWidget, stopWidgetAnimation } from "../../packages/subagents/src/tui/render.js";
 import { type AsyncJobState, type Component, type ExtensionContext, type RenderTheme, theme, withMockedNow } from "./subagents-render-stability-helpers.js";
 describe("async widget animation ticker lifecycle", () => {
     afterEach(() => {
@@ -112,7 +112,7 @@ describe("async widget animation ticker lifecycle", () => {
         );
     });
 
-    test("mounted async widget uses captured widget time across unrelated host re-renders", () => {
+    test("mounted async widget advances pulse only when the job snapshot changes", () => {
         type WidgetFactory = (
             tui: unknown,
             widgetTheme: RenderTheme,
@@ -132,25 +132,24 @@ describe("async widget animation ticker lifecycle", () => {
         const stableA = withMockedNow(20_000, () =>
             component.render(120).join("\n"),
         );
-        const stableB = withMockedNow(30_000, () =>
+        withMockedNow(30_000, () => renderWidget(ctx, [runningJob()]));
+        const stableB = withMockedNow(40_000, () =>
             component.render(120).join("\n"),
         );
         assert.equal(
             stableB,
             stableA,
-            "host re-renders must not advance the mounted widget spinner clock by themselves",
+            "same job snapshot must not advance the async pulse frame",
         );
 
-        withMockedNow(10_000 + RUNNING_ANIMATION_MS, () =>
-            renderWidget(ctx, [runningJob()]),
+        withMockedNow(50_000, () =>
+            renderWidget(ctx, [{ ...runningJob(), toolCount: 2, updatedAt: 11_000 }]),
         );
-        const advanced = withMockedNow(30_000, () =>
-            component.render(120).join("\n"),
-        );
+        const advanced = component.render(120).join("\n");
         assert.notEqual(
             advanced,
             stableA,
-            "widget status updates/ticks should still advance the captured widget clock",
+            "semantic job snapshot updates should advance the async pulse frame",
         );
     });
 
@@ -304,30 +303,71 @@ describe("async widget animation ticker lifecycle", () => {
         );
     });
 
-    test("running jobs drive periodic re-renders; finished jobs stop them", async () => {
+    test("running jobs do not drive periodic re-renders without status updates", async () => {
         const { ctx, renders } = mockLifecycleWidgetCtx();
         renderWidget(ctx, [runningJob()]);
         await new Promise((resolve) =>
-            setTimeout(resolve, RUNNING_ANIMATION_MS * 3 + 40),
-        );
-        const whileRunning = renders();
-        assert.ok(
-            whileRunning >= 1,
-            `expected periodic widget re-renders while running, saw ${whileRunning}`,
-        );
-
-        renderWidget(ctx, [{ ...runningJob(), status: "complete" }]);
-        const afterStop = renders();
-        await new Promise((resolve) =>
-            setTimeout(resolve, RUNNING_ANIMATION_MS * 3 + 40),
+            setTimeout(resolve, 300),
         );
         assert.equal(
             renders(),
-            afterStop,
-            "widget ticker must stop once no job is running",
+            0,
+            "async widget pulse must not schedule cosmetic timer re-renders",
+        );
+
+        renderWidget(ctx, [{ ...runningJob(), toolCount: 2, updatedAt: 11_000 }]);
+        assert.equal(
+            renders(),
+            1,
+            "semantic status updates still request an in-place widget render",
+        );
+
+        await new Promise((resolve) =>
+            setTimeout(resolve, 300),
+        );
+        assert.equal(
+            renders(),
+            1,
+            "no periodic widget ticker should run after the status update",
         );
     });
 
+
+    test("compact large parallel widgets preserve running output paths", () => {
+        type WidgetFactory = (
+            tui: unknown,
+            widgetTheme: RenderTheme,
+        ) => Component;
+
+        const { ctx, widgetCalls } = mockLifecycleWidgetCtx();
+        const steps = Array.from({ length: 3 }, (_, index) => ({
+            index,
+            agent: `worker-${index}`,
+            status: "running" as const,
+            durationMs: 1_000 + index,
+            toolCount: index + 1,
+            tokens: { input: 10, output: 0, total: 10 },
+        }));
+        renderWidget(ctx, [{
+            ...runningJob(),
+            asyncDir: "/tmp/parallel-job",
+            mode: "parallel",
+            agents: steps.map((step) => step.agent),
+            steps,
+            stepsTotal: steps.length,
+            runningSteps: steps.length,
+            completedSteps: 0,
+        }]);
+
+        const factory = widgetCalls[0]?.content;
+        assert.equal(typeof factory, "function");
+        const component = (factory as WidgetFactory)(undefined, theme);
+        const rendered = component.render(160).join("\n");
+
+        assert.match(rendered, /output-0\.log/, "compact parallel widget should keep the first running output path");
+        assert.match(rendered, /output-1\.log/, "compact parallel widget should keep the second running output path");
+        assert.match(rendered, /output-2\.log/, "compact parallel widget should keep the third running output path");
+    });
     test("mounts the async widget belowEditor so its live line stays within the viewport (flicker-free)", () => {
         const opts: unknown[] = [];
         const ctx = {

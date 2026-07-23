@@ -8,7 +8,7 @@
  *    badge.
  *  - Inputs wrap to a second body row only when row 1's interior cannot
  *    hold them; the body row uses the same overflow rules.
- *  - Runs keep one hint row: `▸ /workflow connect <short-id>   watch, attach & steer`.
+ *  - Runs keep one hint row: `▸ /workflow connect <short-id>   see agents working · chat with and steer each stage`.
  *
  * Explicitly removed (was in the legacy 7-row layout): the `✓ submitted`
  * echo, the `[ DISPATCHED ]` band, the `run id` muted caption beside the
@@ -48,9 +48,11 @@ describe("renderDispatchConfirm — themed", () => {
     assert.match(plain, /prompt="map the codebase"/);
     assert.match(plain, /max_partitions=4/);
 
-    // Non-onboarding workflows keep one hint row, connect-only.
-    assert.match(plain, /▸ \/workflow connect 0391c9c1\s+watch, attach & steer/);
-
+    // Guidance preserves the actionable short id and explains the graph in
+    // plain language without attach/detach jargon.
+    assert.match(plain, /▸ \/workflow connect 0391c9c1\s+see agents working/);
+    assert.match(plain, /chat with and steer each stage/);
+    assert.doesNotMatch(plain, /attach|detach/i);
     // Legacy chrome MUST be gone.
     assert.doesNotMatch(plain, /✓ submitted/);
     assert.doesNotMatch(plain, /\[ DISPATCHED \]/);
@@ -167,8 +169,10 @@ describe("renderDispatchConfirm — plain", () => {
     // Inputs present (inline on wide terminal).
     assert.match(out, /prompt="hello"/);
 
-    // All workflows keep the dispatch card focused on attach/steer.
-    assert.match(out, /▸ \/workflow connect abc12345\s+watch, attach & steer/);
+    // All workflows explain how to see agents and chat with/steer stages.
+    assert.match(out, /▸ \/workflow connect abc12345\s+see agents working/);
+    assert.match(out, /chat with and steer each stage/);
+    assert.doesNotMatch(out, /attach|detach/i);
     assert.doesNotMatch(out, /▸ \/workflow status abc12345/);
     assert.doesNotMatch(out, /Ask here anytime for status or to steer this run\./);
 

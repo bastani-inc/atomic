@@ -1,6 +1,10 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ReviewDecision, ReviewRecord } from "./goal-types.js";
+import {
+  consolidateFindingsBatch,
+  type ReviewConvergenceSummary,
+} from "./review-convergence.js";
 
 export function artifactSafeName(value: string): string {
   const safe = value
@@ -21,6 +25,7 @@ export async function writeReviewArtifact(
   reviewer: string,
   decision: ReviewDecision,
   rawText: string,
+  convergenceDecision: ReviewConvergenceSummary,
 ): Promise<string> {
   const artifactPath = join(
     artifactDir,
@@ -28,7 +33,7 @@ export async function writeReviewArtifact(
   );
   await writeFile(
     artifactPath,
-    `${JSON.stringify({ reviewer, decision, raw_text: rawText }, null, 2)}\n`,
+    `${JSON.stringify({ reviewer, decision, convergence_decision: convergenceDecision, raw_text: rawText }, null, 2)}\n`,
     { encoding: "utf8" },
   );
   return artifactPath;
@@ -40,9 +45,19 @@ export async function writeReviewRoundArtifact(
 ): Promise<string> {
   const artifactPath = join(artifactDir, "review-round-latest.json");
   const visibleReviews = reviews.map(withoutTurn);
-  await writeFile(artifactPath, `${JSON.stringify({ reviews: visibleReviews }, null, 2)}\n`, {
-    encoding: "utf8",
-  });
+  // Deduplicated cross-reviewer findings batch so the next worker turn can
+  // plan and repair the round's findings together instead of one at a time.
+  const consolidatedFindings = consolidateFindingsBatch(
+    reviews.map((review) => ({
+      reviewer: review.reviewer,
+      findings: review.findings,
+    })),
+  );
+  await writeFile(
+    artifactPath,
+    `${JSON.stringify({ reviews: visibleReviews, consolidated_findings: consolidatedFindings }, null, 2)}\n`,
+    { encoding: "utf8" },
+  );
   return artifactPath;
 }
 

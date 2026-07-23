@@ -8,6 +8,7 @@ import type { WorkflowFailure } from "../../shared/workflow-failures.js";
 import type { GraphFrontierTracker } from "../../engine/graph-inference.js";
 import type { RunOpts, WorkflowExitCleanup } from "./executor-types.js";
 import type { ContinuationReplayIndex } from "./executor-continuation.js";
+import type { StageControlRegistry } from "./stage-control-registry.js";
 import { getPromptAnswerState, sameStringSet } from "./executor-continuation.js";
 import { applyFailureToStage, stageReplayFields } from "./executor-lifecycle.js";
 import {
@@ -25,6 +26,7 @@ export function buildPromptNodeUiAdapter(input: {
   readonly runId: string;
   readonly activeStore: Store;
   readonly opts: RunOpts;
+  readonly stageControlRegistry: StageControlRegistry;
   readonly tracker: GraphFrontierTracker;
   readonly replayIndex: ContinuationReplayIndex;
   readonly signal: AbortSignal;
@@ -88,10 +90,19 @@ export function buildPromptNodeUiAdapter(input: {
     };
     let finalized = false;
     let unregisterWorkflowExitCleanup = (): void => {};
+    let unregisterStageControl = (): void => {};
+    let pauseGate: PromiseWithResolvers<void> | undefined;
+    const waitForExplicitResume = async (): Promise<void> => {
+      if (pauseGate !== undefined) await pauseGate.promise;
+    };
     const finalizePromptStage = (status: "completed" | "failed" | "skipped"): void => {
       if (finalized) return;
       finalized = true;
       unregisterWorkflowExitCleanup();
+      unregisterStageControl();
+      const currentPauseGate = pauseGate;
+      pauseGate = undefined;
+      currentPauseGate?.resolve();
       stageSnapshot.status = status;
       stageSnapshot.endedAt = Date.now();
       stageSnapshot.durationMs = elapsedStageMs(stageSnapshot, stageSnapshot.endedAt);
@@ -120,6 +131,32 @@ export function buildPromptNodeUiAdapter(input: {
 
     input.activeStore.recordStageStart(input.runId, stageSnapshot);
     input.opts.onStageStart?.(input.runId, stageSnapshot);
+    unregisterStageControl = input.stageControlRegistry.register({
+      runId: input.runId,
+      stageId,
+      stageName: descriptor.kind,
+      get status() { return stageSnapshot.status; },
+      sessionId: undefined,
+      sessionFile: undefined,
+      isStreaming: false,
+      messages: [],
+      async ensureAttached() {},
+      async prompt() {},
+      async steer() {},
+      async followUp() {},
+      async pause() {
+        if (pauseGate === undefined) pauseGate = Promise.withResolvers<void>();
+        input.activeStore.recordStagePaused(input.runId, stageId);
+      },
+      async resume() {
+        input.activeStore.recordStageResumed(input.runId, stageId);
+        input.activeStore.recordRunResumed(input.runId);
+        const currentPauseGate = pauseGate;
+        pauseGate = undefined;
+        currentPauseGate?.resolve();
+      },
+      subscribe: () => () => {},
+    });
     unregisterWorkflowExitCleanup = input.registerWorkflowExitCleanup(stageId, {
       skipForWorkflowExit(reason?: string): void {
         if (finalized) return;
@@ -176,6 +213,7 @@ export function buildPromptNodeUiAdapter(input: {
           descriptor.options as Parameters<typeof stageUiBroker.requestCustomUi>[3],
           mergedSignal.signal,
         );
+        await waitForExplicitResume();
         input.activeStore.recordStagePromptAnswer(input.runId, stageId, prompt, response, { answerSource: "workflow_ui" });
         finalizePromptStage("completed");
         return response;
@@ -233,6 +271,7 @@ export function buildPromptNodeUiAdapter(input: {
           },
         );
       });
+      await waitForExplicitResume();
       finalizePromptStage("completed");
       return response;
     } catch (err) {

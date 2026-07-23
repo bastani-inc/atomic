@@ -42,7 +42,7 @@ export function renderChatSessionBody<
   if (state.transcript.length > 0) {
     components.push(state.transcriptComponent);
   }
-  if (state.statusMessage) {
+  if (state.statusMessage && !state.compacting) {
     components.push(new Spacer(1));
     components.push(new Text(state.style.dim(state.statusMessage), 2, 0));
   }
@@ -80,7 +80,9 @@ export function renderChatSessionWorkingStatus<
   TExtraEntry extends ChatTranscriptEntryLike,
 >(state: ChatSessionHostState<TExtraEntry>, width: number): string[] {
   if (!isChatSessionStreaming(state)) return [];
-  const message = state.workingMessage ?? "Working...";
+  const message = state.compacting
+    ? state.statusMessage || "Compacting context..."
+    : state.workingMessage ?? "Working...";
   return new WorkingStatusComponent({
     spinner: spinnerFrame(),
     message,
@@ -134,7 +136,11 @@ export function renderChatSessionFooter<TExtraEntry extends ChatTranscriptEntryL
 ): string[] {
   const agentSession = state.getAgentSession?.();
   if (agentSession && state.footerData) {
-    return new FooterComponent(agentSession, state.footerData).render(width);
+    return new FooterComponent(agentSession, state.footerData, {
+      dim: (text) => state.style.dim(text),
+      muted: (text) => state.style.textMuted(text),
+      warning: (text) => state.style.accent(text),
+    }).render(width);
   }
   return [];
 }
@@ -145,6 +151,9 @@ export function renderChatSessionEntry<
   state: ChatSessionHostState<TExtraEntry>,
   entry: ChatSessionHostEntry<TExtraEntry>,
 ): Component {
+  if (state.extraEntries.includes(entry as TExtraEntry)) {
+    return state.renderExtraEntry?.(entry as TExtraEntry) ?? new Text("", 0, 0);
+  }
   if (isChatMessageEntry(entry)) {
     return renderChatMessageEntry(
       streamingWindowedEntry(state, entry),

@@ -53,3 +53,22 @@ export function normalizeSessionCreateResult(
   if ("session" in created) return created;
   return { session: created };
 }
+
+export function attachCreatedStageSession<T>(
+  created: StageSessionRuntime | StageSessionCreateResult,
+  disposed: boolean,
+  stageName: string,
+  attach: (result: StageSessionCreateResult) => T,
+): T | Promise<never> {
+  const result = normalizeSessionCreateResult(created);
+  if (!disposed) return attach(result);
+  return rejectDisposedCreatedSession(result, stageName);
+}
+
+async function rejectDisposedCreatedSession(
+  result: StageSessionCreateResult,
+  stageName: string,
+): Promise<never> {
+  await disposeStageSession(result.session);
+  throw new Error(`atomic-workflows: stage "${stageName}" session has been disposed`);
+}

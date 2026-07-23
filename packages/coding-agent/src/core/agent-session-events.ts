@@ -2,10 +2,12 @@ import { disposeSessionAsyncJobManager } from "./async/session-manager.js";
 import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Message, TextContent } from "@earendil-works/pi-ai/compat";
 import { cleanupSessionResources } from "@earendil-works/pi-ai/compat";
+import { formatCodexProviderError } from "./codex-errors.ts";
 import { formatCopilotProviderError } from "./copilot-errors.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { customMessageExcludesContext, isSingleGenericAbortTextContent, replacementAbortContent, type AgentSessionEvent, type AgentSessionEventListener } from "./agent-session-types.ts";
 import type { MessageEndEvent, MessageStartEvent, MessageUpdateEvent, ToolExecutionEndEvent, ToolExecutionStartEvent, ToolExecutionUpdateEvent, TurnEndEvent, TurnStartEvent } from "./extensions/index.ts";
+import { normalizeMessageContent } from "./messages.ts";
 
 export function _emit(this: AgentSession, event: AgentSessionEvent): void {
 	for (const l of this._eventListeners) {
@@ -48,7 +50,7 @@ export function _createRetryPromiseForAgentEnd(this: AgentSession, event: AgentE
 	}
 
 	const settings = this.settingsManager.getRetrySettings();
-	if (!settings.enabled) {
+	if (!settings.enabled && this._fallbackModels.length === 0) {
 		return;
 	}
 
@@ -84,6 +86,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 	// This ensures the UI sees the updated queue state
 	if (event.type === "message_start" && event.message.role === "user") {
 		this._overflowRecoveryAttempted = false;
+		this._fallbackAttemptedKeys.clear();
 		const messageText = this._getUserMessageText(event.message);
 		if (messageText) {
 			// Check steering queue first
@@ -148,7 +151,16 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			// retries instead of honoring maxRetries.
 			const assistantFailed = assistantMsg.stopReason === "error" || this._isEmptyCompletion(assistantMsg) || this._isSafetyRefusal(assistantMsg);
 			if (!assistantFailed) {
+				this._fallbackAttemptedKeys.clear();
 				this._overflowRecoveryAttempted = false;
+				this._outputBudgetErrorContinuationAttempts = 0;
+			}
+
+			// A non-truncated assistant response means the length-continuation loop
+			// made progress (or the turn completed cleanly), so reset the bounded
+			// output-cap continuation counter.
+			if (assistantMsg.stopReason !== "length") {
+				this._lengthContinuationAttempts = 0;
 			}
 
 			// Reset retry counter immediately on successful assistant response
@@ -168,13 +180,17 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 	if (event.type === "agent_end" && this._lastAssistantMessage) {
 		const msg = this._lastAssistantMessage;
 		this._lastAssistantMessage = undefined;
+		const postToolPreflightFailed =
+			this._postToolCompactionPreflightError !== undefined &&
+			msg.errorMessage === this._postToolCompactionPreflightError;
 
 		// Check for retryable errors first (overloaded, rate limit, server errors,
 		// transient provider finish_reason errors, degenerate empty completions,
 		// or intercepted canned safety refusals)
-		const retryableError = this._isRetryableError(msg);
-		const emptyCompletion = !retryableError && this._isEmptyCompletion(msg);
-		const safetyRefusal = !retryableError && !emptyCompletion && this._isSafetyRefusal(msg);
+		const retryableError = !postToolPreflightFailed && this._isRetryableError(msg);
+		const emptyCompletion = !postToolPreflightFailed && !retryableError && this._isEmptyCompletion(msg);
+		const safetyRefusal =
+			!postToolPreflightFailed && !retryableError && !emptyCompletion && this._isSafetyRefusal(msg);
 		if (retryableError || emptyCompletion || safetyRefusal) {
 			if (emptyCompletion && !msg.errorMessage) {
 				// Surface a clear reason in the retry banner; empty completions carry no
@@ -225,9 +241,9 @@ export function _applyProviderErrorGuidance(this: AgentSession, event: AgentEven
 	const assistantMessage = event.message as AssistantMessage;
 	if (assistantMessage.stopReason !== "error" || !assistantMessage.errorMessage) return;
 
-	assistantMessage.errorMessage = formatCopilotProviderError(
+	assistantMessage.errorMessage = formatCodexProviderError(
 		assistantMessage.provider,
-		assistantMessage.errorMessage,
+		formatCopilotProviderError(assistantMessage.provider, assistantMessage.errorMessage),
 	);
 }
 
@@ -325,7 +341,7 @@ export async function _emitExtensionEvent(this: AgentSession, event: AgentEvent)
 		};
 		const replacement = await this._extensionRunner.emitMessageEnd(extensionEvent);
 		if (replacement) {
-			this._replaceMessageInPlace(event.message, replacement);
+			this._replaceMessageInPlace(event.message, normalizeMessageContent(replacement));
 		}
 	} else if (event.type === "tool_execution_start") {
 		const extensionEvent: ToolExecutionStartEvent = {

@@ -17,6 +17,7 @@ import type {
 import type { TokenUsage } from "../../shared/types.ts";
 import type { RunnerStep, RunnerSubagentStep as SubagentStep } from "../shared/parallel-utils.ts";
 import type { WorktreeSetup } from "../shared/worktree.ts";
+import type { SupervisorAuthorization } from "../../intercom/supervisor-authorization.ts";
 
 export interface SubagentRunConfig {
 	id: string;
@@ -40,6 +41,8 @@ export interface SubagentRunConfig {
 	controlConfig?: ResolvedControlConfig;
 	controlIntercomTarget?: string;
 	childIntercomTargets?: Array<string | undefined>;
+	supervisorAuthorizations?: Array<SupervisorAuthorization | undefined>;
+	dynamicSupervisorAuthorizations?: Record<number, SupervisorAuthorization[]>;
 	resultMode?: SubagentRunMode;
 	dynamicFanoutMaxItems?: number;
 	workflowGraph?: WorkflowGraphSnapshot;
@@ -128,6 +131,7 @@ export interface SingleStepContext {
 	registerInterrupt?: (interrupt: (() => void) | undefined) => void;
 	childIntercomTarget?: string;
 	orchestratorIntercomTarget?: string;
+	supervisorAuthorization?: SupervisorAuthorization;
 	nestedRoute?: NestedRouteInfo;
 	onAttemptStart?: (attempt: { model?: string; thinking?: string; fastMode?: boolean }) => void;
 	onChildEvent?: (event: ChildEvent) => void;

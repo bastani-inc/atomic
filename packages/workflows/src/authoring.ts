@@ -36,11 +36,11 @@ export type {
   StageUserMessageDelivery,
   StageSessionCreateOptions,
   StageSessionCreateResult,
+  StageSessionEvent,
   StageSessionRuntime,
   WorkflowAction,
   WorkflowArtifact,
   WorkflowChainOptions,
-  WorkflowChainStep,
   WorkflowChildResult,
   WorkflowContextMode,
   WorkflowControlEvent,
@@ -56,8 +56,6 @@ export type {
   WorkflowDetails,
   WorkflowDetailsMode,
   WorkflowDetailsStatus,
-  WorkflowDirectOptions,
-  WorkflowDirectTaskItem,
   WorkflowExecutionMode,
   WorkflowExecutionPolicy,
   WorkflowExitOptions,
@@ -79,7 +77,6 @@ export type {
   WorkflowOutputSchema,
   WorkflowOutputSchemaMap,
   WorkflowOutputValues,
-  WorkflowParallelChainStep,
   WorkflowParallelOptions,
   WorkflowPersistencePort,
   WorkflowProgressSummary,
@@ -127,16 +124,12 @@ import type {
   RunStatus,
   StageSnapshot,
   WorkflowDefinition as WorkflowContractDefinition,
-  WorkflowDetails,
-  WorkflowDirectOptions,
-  WorkflowDirectTaskItem,
   WorkflowExecutionPolicy,
   WorkflowInputSchemaMap,
   WorkflowInputValues,
   WorkflowOutputSchemaMap,
   WorkflowOutputValues,
   WorkflowSerializableObject,
-  WorkflowChainStep,
 } from "./shared/authoring-contract.js";
 
 // Type-only nominal brand for standalone package typings. Runtime discovery uses
@@ -199,10 +192,6 @@ export declare function run<TInputs extends WorkflowInputValues, TOutputs extend
   inputs: Readonly<NoInfer<WorkflowRunInputArgument<TRunInputs>>>,
   opts?: RunOpts,
 ): Promise<RunResult<TOutputs>>;
-export declare function runTask(task: WorkflowDirectTaskItem, runOptions?: RunOpts): Promise<WorkflowDetails>;
-export declare function runTask(task: WorkflowDirectTaskItem, options?: WorkflowDirectOptions, runOptions?: RunOpts): Promise<WorkflowDetails>;
-export declare function runParallel(tasks: readonly WorkflowDirectTaskItem[], options?: WorkflowDirectOptions, runOptions?: RunOpts): Promise<WorkflowDetails>;
-export declare function runChain(steps: readonly WorkflowChainStep[], options?: WorkflowDirectOptions, runOptions?: RunOpts): Promise<WorkflowDetails>;
 export declare function resolveInputs<TInputs extends WorkflowInputValues>(
   schema: Readonly<Record<keyof TInputs & string, TSchema>>,
   provided: Partial<TInputs>,

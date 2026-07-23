@@ -1,6 +1,6 @@
 # Providers
 
-Atomic supports subscription-based providers via OAuth and API key providers via environment variables or auth file. Atomic knows the available models for each provider, and the list is updated with every Atomic release.
+Atomic supports subscription-based providers via OAuth and API-key providers via environment variables or the auth file. Built-in catalogs ship with Atomic; configured and native providers may refresh newer catalogs independently and cache them in `~/.atomic/agent/models-store.json` for offline use.
 
 ## Table of Contents
 
@@ -8,8 +8,9 @@ Atomic supports subscription-based providers via OAuth and API key providers via
 - [API Keys](#api-keys)
 - [Auth File](#auth-file)
 - [Cloud Providers](#cloud-providers)
-- [Custom Providers](#custom-providers)
+- [llama.cpp](#llamacpp)
 - [Resolution Order](#resolution-order)
+- [Custom Providers](#custom-providers)
 
 ## Subscriptions
 
@@ -18,14 +19,17 @@ Use `/login` in interactive mode, then select a provider:
 - ChatGPT Plus/Pro (Codex)
 - Claude Pro/Max
 - GitHub Copilot
+- xAI (Grok/X subscription)
+- Radius
 - Cursor (experimental)
-
-Use `/logout` to clear credentials. Tokens are stored in `~/.atomic/agent/auth.json` and auto-refresh when expired.
+Use `/logout` to clear credentials. Logout immediately invalidates authentication in the active interactive engine and removes the selected provider from both `~/.atomic/agent/auth.json` and any effective legacy `~/.pi/agent/auth.json`, so the provider remains logged out after restart. Environment variables, command-line credentials, and `models.json` configuration cannot be cleared by Atomic; when one of those sources still authenticates the provider, the logout status names the remaining source. Stored tokens auto-refresh when expired.
 
 ### OpenAI Codex
 
 - Requires ChatGPT Plus or Pro subscription
 - Officially endorsed by OpenAI: [Codex for OSS](https://developers.openai.com/community/codex-for-oss)
+
+If the Codex backend reports that an OAuth/auth token was invalidated or revoked, retry the request once in case the rejection is transient. If it persists, run `/logout` and select **OpenAI ChatGPT Plus/Pro**, then run `/login`, authenticate that subscription again, and retry the request. Atomic displays these recovery steps with the provider error; it does not automatically delete the stored credential or repeatedly retry a definitive authentication rejection.
 
 ### Codex Fast Mode
 
@@ -44,6 +48,15 @@ Anthropic subscription auth is active for Claude Pro/Max accounts. Third-party h
 - Selecting long context sets Atomic's displayed window to the model's full capacity while compaction triggers against the effective prompt-token budget, and makes Copilot requests include `X-GitHub-Api-Version: 2026-06-01`. Atomic does not send a body field, `contextTier`, or model-id variant; GitHub automatically applies the server-side `long_context` tier when prompt tokens exceed the default budget.
 - Long-context Copilot requests consume more AI credits and require Copilot long-context/usage-based billing entitlement. A prompt that reaches the model's normal prompt cap is compacted and retried automatically. Only when GitHub rejects a prompt *below* that cap — for example because the account lacks the long-context/usage-based billing entitlement and is dropped to a smaller server tier — does Atomic surface a friendly entitlement/server-cap/cost hint rather than silently truncating context.
 - **Gemini models** (`github-copilot/gemini-3.1-pro-preview`, `github-copilot/gemini-3.5-flash`, …) are served through Copilot's CAPI gateway, which re-translates the OpenAI request into Google's GenAI format and enforces Gemini's stricter `FunctionDeclaration` schema (it rejects a tool-parameter `anyOf`/`oneOf` whose branch is a complex object, returning `400 invalid request body`). Atomic automatically sanitizes outbound tool/function JSON Schemas for these models into the supported subset — resolving object/array-bearing unions to their most expressive branch, converting `const`/literal unions to `enum`, collapsing nullable unions to `nullable`, and dropping non-portable keywords such as `additionalProperties`, `patternProperties`, `format`, and numeric/length bounds. Gemini also serializes array/object tool-call **arguments** as flattened indexed keys (`keywords[0]`, `keywords[1]`, …); Atomic reconstructs these back into proper arrays/objects before validation so tool calls (including `structured_output` and MCP tools) don't fail and loop. Both transforms are transparent and scoped to GitHub Copilot Gemini models only; no configuration is required and other providers/models are unaffected.
+- **Claude/Anthropic Messages models** served through GitHub Copilot use Copilot SSE transport. If Copilot cleanly ends a `/v1/messages` stream after Anthropic terminal stop-reason evidence but omits the required `message_stop` event, Atomic adds that one terminal event before provider parsing so the turn can finish normally, including when the final complete SSE frame reaches EOF without a trailing blank-line separator. The repair covers public Copilot hosts and GHE tenant routes such as `copilot-api.<enterprise>.ghe.com`, and is otherwise limited to closed, non-error Copilot Anthropic event streams; malformed, truncated, already well-formed, non-Copilot/look-alike host, non-SSE, Gemini, and OpenAI-style streams continue through the normal parser and retry behavior.
+
+### xAI (Grok/X subscription)
+
+Run `/login xai`, then select **Use a subscription**. `XAI_API_KEY` remains available through **Use an API key**.
+
+### Radius
+
+Radius is a dynamic `pi-messages` gateway. `/login radius` stores OAuth tokens in `auth.json`; its model catalog refreshes independently and is cached in `models-store.json`. API-key authentication is also available through `/login radius` or `RADIUS_API_KEY`. Custom Radius gateways can be declared in `models.json` with `"oauth": "radius"` and the gateway `baseUrl`.
 
 ### Cursor (experimental)
 
@@ -56,7 +69,7 @@ Current limitations:
 - For image-capable Cursor models, Atomic serializes user images and mixed text/image MCP tool results into Cursor's private request format. Image payloads must be non-empty standard base64; MIME-style line wrapping whitespace is accepted and stripped before serialization.
 - Model metadata is cached token-free in `~/.atomic/agent/cursor-model-catalog.json` and can be used at startup before fresh credentials are available. Estimated labels are used only when no valid cache exists and allowed live `GetUsableModels` discovery failures occur; refresh-time discovery is best-effort so rotated credentials are still persisted.
 - Cursor's private model discovery does not return token-limit metadata. Atomic preserves any positive limits Cursor does send, then resolves a model's context window and max output tokens from its bundled `@earendil-works/pi-ai` model catalog by matching the Cursor model ID's family/version. Explicit `1M` Cursor ids or labels on any fast/thinking sibling for the same family are treated as a 1,000,000-token context floor even when the closest reference match advertises a smaller base window. Cursor-only models with no pi-ai match (for example `composer-*` and `default`/Auto) keep a conservative 200k context / 64k output estimate. This only sets limits; it never changes which Cursor models are listed.
-- Cursor thinking levels are derived from the discovered Cursor variants for each model group. Atomic only exposes `xhigh` when Cursor advertises a true `xhigh` or `max` variant for that group; if an older saved `xhigh` selection is restored for a model that currently only has lower-effort variants, the request falls back to the nearest concrete Cursor variant instead of sending an invalid id.
+- Cursor thinking levels are derived from the discovered variants for each model group. Atomic exposes `xhigh` only when Cursor advertises an `xhigh` or `max` variant, and exposes the distinct `max` level only when Cursor advertises an actual `max` variant. If an older saved `xhigh` or `max` selection is restored for a model that currently has only lower-effort variants, the request falls back to the nearest concrete Cursor variant instead of sending an invalid id.
 - The implementation avoids a localhost proxy and keeps credentials OAuth-only. Cursor's HTTP/2 transport uses the bundled `@bastani/atomic-natives` Rust/N-API client, so it does not require Node.js on `PATH`. The native client currently opens request-scoped HTTP/2 sessions; pooling may be added in a future release.
 - Cursor request encoding intentionally omits a `previousWorkspaceUris` current-directory entry by default so local absolute working-directory paths are not sent as workspace context. HTTP/2 Connect request/framing code is isolated, buffered across arbitrary chunks, tested with injected fakes, and uses a minimal production protobuf codec with field-order-independent exec ids, protobuf `Value` plus raw UTF-8/JSON tool arguments, historical tool-result correlation, checkpoint token-details parsing, paused-stream abort/idle cleanup, catalog-aware fast/thinking model grouping, and credential/PKCE-redacted protocol errors.
 
@@ -72,6 +85,8 @@ Use `/login` in interactive mode and select a provider to store an API key in `a
 export ANTHROPIC_API_KEY=sk-ant-...
 atomic
 ```
+
+After a successful API-key or OAuth login, Atomic refreshes provider credentials and model discovery in the active session. Newly authenticated models are immediately available in `/model` without restarting Atomic, including providers with dynamically discovered catalogs.
 
 | Provider | Environment Variable | `auth.json` key |
 |----------|----------------------|------------------|
@@ -95,6 +110,7 @@ atomic
 | ZAI Coding Plan (China) | `ZAI_CODING_CN_API_KEY` | `zai-coding-cn` |
 | OpenCode Zen | `OPENCODE_API_KEY` | `opencode` |
 | OpenCode Go | `OPENCODE_API_KEY` | `opencode-go` |
+| Radius | `RADIUS_API_KEY` | `radius` |
 | Hugging Face | `HF_TOKEN` | `huggingface` |
 | Fireworks | `FIREWORKS_API_KEY` | `fireworks` |
 | Together AI | `TOGETHER_API_KEY` | `together` |
@@ -103,6 +119,8 @@ atomic
 | MiniMax (China) | `MINIMAX_CN_API_KEY` | `minimax-cn` |
 | Moonshot AI | `MOONSHOT_API_KEY` | `moonshotai` |
 | Moonshot AI (China) | `MOONSHOT_API_KEY` | `moonshotai-cn` |
+| Qwen Token Plan | `QWEN_TOKEN_PLAN_API_KEY` | `qwen-token-plan` |
+| Qwen Token Plan (China) | `QWEN_TOKEN_PLAN_CN_API_KEY` | `qwen-token-plan-cn` |
 | Xiaomi MiMo | `XIAOMI_API_KEY` | `xiaomi` |
 | Xiaomi MiMo Token Plan (China) | `XIAOMI_TOKEN_PLAN_CN_API_KEY` | `xiaomi-token-plan-cn` |
 | Xiaomi MiMo Token Plan (Amsterdam) | `XIAOMI_TOKEN_PLAN_AMS_API_KEY` | `xiaomi-token-plan-ams` |
@@ -125,6 +143,8 @@ Store credentials in `~/.atomic/agent/auth.json`:
   "opencode": { "type": "api_key", "key": "..." },
   "opencode-go": { "type": "api_key", "key": "..." },
   "together": { "type": "api_key", "key": "..." },
+  "qwen-token-plan": { "type": "api_key", "key": "sk-sp-..." },
+  "qwen-token-plan-cn": { "type": "api_key", "key": "sk-sp-..." },
   "xiaomi": { "type": "api_key", "key": "..." },
   "xiaomi-token-plan-cn":  { "type": "api_key", "key": "..." },
   "xiaomi-token-plan-ams": { "type": "api_key", "key": "..." },
@@ -133,6 +153,25 @@ Store credentials in `~/.atomic/agent/auth.json`:
 ```
 
 The file is created with `0600` permissions (user read/write only). Auth file credentials take priority over environment variables.
+
+API-key credentials may include provider-scoped `env` values. They take precedence over process environment variables while resolving the credential key, provider/model headers, and provider configuration such as Cloudflare account IDs, Azure settings, Vertex project/location, Bedrock settings, cache retention, and `HTTP_PROXY`/`HTTPS_PROXY`:
+
+```json
+{
+  "cloudflare-ai-gateway": {
+    "type": "api_key",
+    "key": "$CLOUDFLARE_API_KEY",
+    "env": {
+      "CLOUDFLARE_API_KEY": "...",
+      "CLOUDFLARE_ACCOUNT_ID": "account-id",
+      "CLOUDFLARE_GATEWAY_ID": "gateway-id"
+    }
+  }
+}
+```
+
+Use this when Atomic should use provider settings different from the project shell environment.
+
 
 ### Key Resolution
 
@@ -269,6 +308,10 @@ export GOOGLE_CLOUD_LOCATION=us-central1
 ```
 
 Or set `GOOGLE_APPLICATION_CREDENTIALS` to a service account key file.
+
+## llama.cpp
+
+For router-mode discovery, load/unload management, and Hugging Face downloads with a local llama.cpp server, see [llama.cpp](/llama-cpp). Configure it with `/login llama.cpp` or `LLAMA_BASE_URL` and manage models with `/llama`.
 
 ## Custom Providers
 

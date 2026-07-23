@@ -18,6 +18,7 @@ export interface TaskParam {
 	progress?: boolean;
 	model?: string;
 	skill?: string | string[] | boolean;
+	group?: string | true;
 }
 
 export interface SubagentParamsLike {
@@ -37,7 +38,6 @@ export interface SubagentParamsLike {
 	worktree?: boolean;
 	context?: "fresh" | "fork";
 	async?: boolean;
-	clarify?: boolean;
 	share?: boolean;
 	control?: ControlConfig;
 	sessionDir?: string;
@@ -47,8 +47,11 @@ export interface SubagentParamsLike {
 	includeProgress?: boolean;
 	model?: string;
 	skill?: string | string[] | boolean;
+	group?: string | true;
 	output?: string | boolean;
 	outputMode?: "inline" | "file-only";
+	reads?: string[] | false;
+	progress?: boolean;
 	agentScope?: string;
 	chainDir?: string;
 }
@@ -92,7 +95,6 @@ export interface ExecutionContextData {
 	sessionFileForIndex: (idx?: number) => string | undefined;
 	artifactConfig: ArtifactConfig;
 	artifactsDir: string;
-	backgroundRequestedWhileClarifying: boolean;
 	effectiveAsync: boolean;
 	controlConfig: ResolvedControlConfig;
 	intercomBridge: IntercomBridgeState;

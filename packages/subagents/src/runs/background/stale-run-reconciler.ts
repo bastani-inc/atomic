@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
+import { publishFileExclusive, unlinkIfPresent } from "../../shared/exclusive-file-publication.js";
 import { RESULTS_DIR, type AsyncParallelGroupStatus, type AsyncStatus, type NestedRunSummary, type SubagentRunMode } from "../../shared/types.ts";
 import { normalizeParallelGroups } from "./parallel-groups.ts";
 import { nestedSummaryFromAsyncStatus, projectNestedEvents, resolveNestedAsyncDir, writeNestedEvent, type NestedRoute } from "../shared/nested-events.ts";
@@ -28,6 +29,7 @@ interface ReconcileAsyncRunOptions {
 	startedRun?: StartedRunMetadata;
 	missingStatusGraceMs?: number;
 	staleAlivePidMs?: number;
+	publish?: (source: string, destination: string) => "published" | "exists";
 }
 
 interface ReconcileAsyncRunResult {
@@ -51,6 +53,52 @@ function isNotFoundError(error: unknown): boolean {
 function appendJsonl(filePath: string, payload: object): void {
 	fs.mkdirSync(path.dirname(filePath), { recursive: true });
 	fs.appendFileSync(filePath, `${JSON.stringify(payload)}\n`, "utf-8");
+}
+
+function repairStagePath(resultPath: string): string {
+	return path.join(path.dirname(resultPath), `.${path.basename(resultPath)}.stale-repair-stage`);
+}
+
+function readStagedRepair(resultPath: string): object | undefined {
+	try {
+		return JSON.parse(fs.readFileSync(repairStagePath(resultPath), "utf-8")) as object;
+	} catch (error) {
+		if (isNotFoundError(error)) return undefined;
+		throw error;
+	}
+}
+
+function stagedRepairMessage(staged: object): string | undefined {
+	const summary = (staged as { summary?: unknown }).summary;
+	return typeof summary === "string" ? summary : undefined;
+}
+
+function retireObsoleteStage(resultPath: string): void {
+	const stagePath = repairStagePath(resultPath);
+	const retiredPath = `${stagePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.retired`;
+	try {
+		fs.renameSync(stagePath, retiredPath);
+		try { fs.unlinkSync(retiredPath); } catch (error) { if (!isNotFoundError(error)) console.error(error); }
+	} catch (error) {
+		if (!isNotFoundError(error)) console.error(error);
+	}
+}
+
+function publishStagedRepair(
+	resultPath: string,
+	status: AsyncStatus,
+	staged: object,
+	publish: (source: string, destination: string) => "published" | "exists" = publishFileExclusive,
+): ReconcileAsyncRunResult {
+	const stagePath = repairStagePath(resultPath);
+	const outcome = publish(stagePath, resultPath);
+	unlinkIfPresent(stagePath);
+	return {
+		status,
+		repaired: outcome === "published",
+		resultPath,
+		message: outcome === "published" ? stagedRepairMessage(staged) : "A concurrently published result was preserved.",
+	};
 }
 
 function readStatusFile(asyncDir: string): AsyncStatus | null {
@@ -222,19 +270,25 @@ function buildFailedRepair(status: AsyncStatus, asyncDir: string, now: number, r
 	};
 }
 
-function writeFailedRepair(asyncDir: string, status: AsyncStatus, resultPath: string, now: number, reason?: string): ReconcileAsyncRunResult {
+function writeFailedRepair(asyncDir: string, status: AsyncStatus, resultPath: string, now: number, reason?: string, publish?: ReconcileAsyncRunOptions["publish"]): ReconcileAsyncRunResult {
 	const repair = buildFailedRepair(status, asyncDir, now, reason);
-	writeAtomicJson(resultPath, repair.result);
+	// Stage the exact public payload beside its destination. Publication consumes
+	// the hidden stage with one atomic rename after terminal status is durable.
+	writeAtomicJson(repairStagePath(resultPath), repair.result);
 	writeAtomicJson(path.join(asyncDir, "status.json"), repair.status);
-	appendJsonl(path.join(asyncDir, "events.jsonl"), {
-		type: "subagent.run.repaired_stale",
-		ts: now,
-		runId: repair.status.runId,
-		pid: status.pid,
-		resultPath,
-		message: repair.message,
-	});
-	return { status: repair.status, repaired: true, resultPath, message: repair.message };
+	try {
+		appendJsonl(path.join(asyncDir, "events.jsonl"), {
+			type: "subagent.run.repaired_stale",
+			ts: now,
+			runId: repair.status.runId,
+			pid: status.pid,
+			resultPath,
+			message: repair.message,
+		});
+	} catch (error) {
+		console.error(`Failed to append stale-repair event for '${asyncDir}'; publishing the recoverable result: ${getErrorMessage(error)}`);
+	}
+	return publishStagedRepair(resultPath, repair.status, repair.result, publish);
 }
 
 function terminal(state: AsyncStatus["state"]): boolean {
@@ -305,6 +359,7 @@ export function reconcileAsyncRun(asyncDir: string, options: ReconcileAsyncRunOp
 	const runId = effectiveStatus.runId || path.basename(asyncDir);
 	const resultPath = path.join(options.resultsDir ?? RESULTS_DIR, `${runId}.json`);
 	if (fs.existsSync(resultPath)) {
+		retireObsoleteStage(resultPath);
 		const terminalStatus = effectiveStatus.state === "running" || effectiveStatus.state === "queued"
 			? terminalStatusFromResult(effectiveStatus, resultPath, now)
 			: undefined;
@@ -313,6 +368,11 @@ export function reconcileAsyncRun(asyncDir: string, options: ReconcileAsyncRunOp
 			return { status: terminalStatus, repaired: true, resultPath, message: "Existing async result file was used to repair stale running status." };
 		}
 		return { status: effectiveStatus, repaired: false, resultPath };
+	}
+
+	const stagedRepair = readStagedRepair(resultPath);
+	if (stagedRepair && terminal(effectiveStatus.state)) {
+		return publishStagedRepair(resultPath, effectiveStatus, stagedRepair, options.publish);
 	}
 
 	if (effectiveStatus.state !== "running" || typeof effectiveStatus.pid !== "number") {
@@ -332,8 +392,7 @@ export function reconcileAsyncRun(asyncDir: string, options: ReconcileAsyncRunOp
 		const lastUpdate = effectiveStatus.lastUpdate ?? effectiveStatus.startedAt;
 		if (now - lastUpdate <= staleAfterMs) return { status: status ?? null, repaired: false, resultPath };
 		const message = `Async runner process ${effectiveStatus.pid} still has a live PID, but status has not updated for ${now - lastUpdate}ms. Marked run failed by stale-run reconciliation because PID ownership cannot be verified.`;
-		return writeFailedRepair(asyncDir, effectiveStatus, resultPath, now, message);
+		return writeFailedRepair(asyncDir, effectiveStatus, resultPath, now, message, options.publish);
 	}
-
-	return writeFailedRepair(asyncDir, effectiveStatus, resultPath, now);
+	return writeFailedRepair(asyncDir, effectiveStatus, resultPath, now, undefined, options.publish);
 }

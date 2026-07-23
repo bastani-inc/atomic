@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { WorkflowParallelOptions, WorkflowTaskResult, WorkflowTaskStep } from "../../shared/types.js";
 import type { EngineRuntime } from "../runtime.js";
 import type { WorkflowTaskPrimitive } from "./task.js";
@@ -11,6 +12,7 @@ import {
   taskPrevious,
   taskWithSharedDefaults,
 } from "../../runs/foreground/executor-task-prompts.js";
+import { normalizeAutoGroupSentinel } from "../../shared/intercom-group.js";
 
 export function createParallelPrimitive(input: {
   readonly runtime: EngineRuntime;
@@ -18,19 +20,32 @@ export function createParallelPrimitive(input: {
 }): (steps: readonly WorkflowTaskStep[], options?: WorkflowParallelOptions) => Promise<WorkflowTaskResult[]> {
   return async (steps: readonly WorkflowTaskStep[], options: WorkflowParallelOptions = {}): Promise<WorkflowTaskResult[]> => {
     input.runtime.exit.throwIfWorkflowExitSelected();
-    const fallback = parallelFallbackTask(steps, options);
-    const failFastEnabled = options.failFast !== false;
+    // Normalize both authored and agent-serialized sentinels before deciding
+    // whether this invocation needs one shared auto-group UUID.
+    const normalizeGroup = <T extends { group?: string | true }>(value: T): T =>
+      value.group === undefined ? value : { ...value, group: normalizeAutoGroupSentinel(value.group) };
+    const normalizedOptions = normalizeGroup(options);
+    const normalizedSteps = steps.map(normalizeGroup);
+    const needsAutoGroup = normalizedOptions.group === true
+      || normalizedSteps.some((step) => step.group === true);
+    const autoGroup = needsAutoGroup ? randomUUID() : undefined;
+    const resolveAutoGroup = <T extends { group?: string | true }>(value: T): T =>
+      value.group === true && autoGroup ? { ...value, group: autoGroup } : value;
+    const resolvedOptions = resolveAutoGroup(normalizedOptions);
+    const resolvedSteps = normalizedSteps.map(resolveAutoGroup);
+    const fallback = parallelFallbackTask(resolvedSteps, resolvedOptions);
+    const failFastEnabled = resolvedOptions.failFast !== false;
     const parallelScope: ParallelFailFastScope = {
       failed: false,
       activeStages: new Map<string, ParallelFailFastStage>(),
       parentIds: Object.freeze(input.runtime.tracker.currentParents()),
     };
-    return mapParallelSteps(steps, options.concurrency, options.failFast, async (step) => {
+    return mapParallelSteps(resolvedSteps, resolvedOptions.concurrency, resolvedOptions.failFast, async (step) => {
       input.runtime.exit.throwIfWorkflowExitSelected();
-      const prompt = replaceTaskPlaceholder(step.prompt ?? step.task ?? fallback, options.task ?? fallback);
+      const prompt = replaceTaskPlaceholder(step.prompt ?? step.task ?? fallback, resolvedOptions.task ?? fallback);
       return await input.task(
         step.name,
-        taskWithSharedDefaults(taskOptionsFromStep(step, prompt, taskPrevious(step)), options),
+        taskWithSharedDefaults(taskOptionsFromStep(step, prompt, taskPrevious(step)), resolvedOptions),
         parallelScope,
       );
     }, async (error) => {

@@ -1,75 +1,40 @@
-import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from "@bastani/atomic";
-import type { McpExtensionState } from "./state.ts";
-import type { DirectToolSpec, McpConfig, McpContent } from "./types.ts";
-import type { MetadataCache } from "./metadata-cache.ts";
-import { lazyConnect, getFailureAgeSeconds } from "./init.ts";
-import { isServerCacheValid } from "./metadata-cache.ts";
-import { formatSchema } from "./tool-metadata.ts";
-import { transformMcpContent } from "./tool-registrar.ts";
-import { maybeStartUiSession, type UiSessionRuntime } from "./ui-session.ts";
-import { formatToolName, isToolExcluded } from "./types.ts";
-import { resourceNameToToolName } from "./resource-tools.ts";
-import { authenticate, supportsOAuth } from "./mcp-auth-flow.ts";
-import { formatAuthRequiredMessage, unflattenToolArguments } from "./utils.ts";
+import type { DirectToolSpec, McpConfig } from "./types.js";
+import type { MetadataCache } from "./metadata-cache.js";
+import { isServerCacheValid } from "./metadata-cache.js";
+import { formatToolName, isToolExcluded } from "./types.js";
+import { resourceNameToToolName } from "./resource-tools.js";
 
 const BUILTIN_NAMES = new Set(["read", "bash", "edit", "write", "grep", "find", "search", "ls", "mcp"]);
 
-type DirectAutoAuthResult =
-  | { status: "skipped" }
-  | { status: "success" }
-  | { status: "failed"; message: string };
-
-function getDirectAuthRequiredMessage(
-  state: McpExtensionState,
-  serverName: string,
-  defaultMessage = `MCP server "${serverName}" requires OAuth authentication. Run /mcp-auth ${serverName} first.`,
-): string {
-  return formatAuthRequiredMessage(state.config, serverName, defaultMessage);
+interface DirectToolSelection {
+  readonly servers: ReadonlySet<string>;
+  readonly toolsByServer: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
-function getDirectAuthFailedMessage(state: McpExtensionState, serverName: string, message: string): string {
-  const customGuidance = state.config.settings?.authRequiredMessage;
-  if (customGuidance) {
-    return `OAuth authentication failed for "${serverName}": ${message}. ${getDirectAuthRequiredMessage(state, serverName)}`;
+function parseDirectToolSelection(items: readonly string[] | undefined): DirectToolSelection {
+  const servers = new Set<string>();
+  const toolsByServer = new Map<string, Set<string>>();
+  for (const rawItem of items ?? []) {
+    const item = rawItem.replace(/\/+$/, "");
+    if (!item) continue;
+    if (!item.includes("/")) {
+      servers.add(item);
+      continue;
+    }
+    const [server, tool] = item.split("/", 2);
+    if (!server) continue;
+    if (!tool) {
+      servers.add(server);
+      continue;
+    }
+    if (!toolsByServer.has(server)) toolsByServer.set(server, new Set());
+    toolsByServer.get(server)!.add(tool);
   }
-  return `OAuth authentication failed for "${serverName}": ${message}. Run /mcp-auth ${serverName} first.`;
+  return { servers, toolsByServer };
 }
 
-async function attemptDirectAutoAuth(
-  state: McpExtensionState,
-  serverName: string,
-): Promise<DirectAutoAuthResult> {
-  if (state.config.settings?.autoAuth !== true) {
-    return { status: "skipped" };
-  }
-
-  const definition = state.config.mcpServers[serverName];
-  if (!definition || !supportsOAuth(definition) || !definition.url) {
-    return { status: "skipped" };
-  }
-
-  const grantType = definition.oauth ? definition.oauth.grantType ?? "authorization_code" : "authorization_code";
-  if (!state.ui && grantType !== "client_credentials") {
-    return {
-      status: "failed",
-      message: getDirectAuthRequiredMessage(
-        state,
-        serverName,
-        `MCP server "${serverName}" requires OAuth authentication. Run /mcp-auth ${serverName} in an interactive session.`,
-      ),
-    };
-  }
-
-  try {
-    await authenticate(serverName, definition.url, definition);
-    return { status: "success" };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return {
-      status: "failed",
-      message: getDirectAuthFailedMessage(state, serverName, message),
-    };
-  }
+function directToolSelectionIncludes(selection: DirectToolSelection, serverName: string): boolean {
+  return selection.servers.has(serverName) || selection.toolsByServer.has(serverName);
 }
 
 export function resolveDirectTools(
@@ -83,24 +48,7 @@ export function resolveDirectTools(
 
   const seenNames = new Set<string>();
 
-  const envServers = new Set<string>();
-  const envTools = new Map<string, Set<string>>();
-  if (envOverride) {
-    for (let item of envOverride) {
-      item = item.replace(/\/+$/, "");
-      if (item.includes("/")) {
-        const [server, tool] = item.split("/", 2);
-        if (server && tool) {
-          if (!envTools.has(server)) envTools.set(server, new Set());
-          envTools.get(server)!.add(tool);
-        } else if (server) {
-          envServers.add(server);
-        }
-      } else if (item) {
-        envServers.add(item);
-      }
-    }
-  }
+  const envSelection = parseDirectToolSelection(envOverride);
 
   const globalDirect = config.settings?.directTools;
 
@@ -111,10 +59,10 @@ export function resolveDirectTools(
     let toolFilter: true | string[] | false = false;
 
     if (envOverride) {
-      if (envServers.has(serverName)) {
+      if (envSelection.servers.has(serverName)) {
         toolFilter = true;
-      } else if (envTools.has(serverName)) {
-        toolFilter = [...envTools.get(serverName)!];
+      } else if (envSelection.toolsByServer.has(serverName)) {
+        toolFilter = [...envSelection.toolsByServer.get(serverName)!];
       }
     } else {
       if (definition.directTools !== undefined) {
@@ -182,14 +130,18 @@ export function resolveDirectTools(
 export function getMissingConfiguredDirectToolServers(
   config: McpConfig,
   cache: MetadataCache | null,
+  envOverride?: readonly string[],
 ): string[] {
   const missing: string[] = [];
   const globalDirect = config.settings?.directTools;
-
+  const envSelection = parseDirectToolSelection(envOverride);
   for (const [serverName, definition] of Object.entries(config.mcpServers)) {
-    const hasDirectTools = definition.directTools !== undefined
+    const hasConfiguredDirectTools = definition.directTools !== undefined
       ? !!definition.directTools
       : !!globalDirect;
+    const hasDirectTools = envOverride
+      ? directToolSelectionIncludes(envSelection, serverName)
+      : hasConfiguredDirectTools;
 
     if (!hasDirectTools) continue;
 
@@ -260,172 +212,5 @@ export function buildProxyDescription(
   return desc;
 }
 
-type DirectToolExecute = (
-  toolCallId: string,
-  params: Record<string, unknown>,
-  signal: AbortSignal | undefined,
-  onUpdate: AgentToolUpdateCallback<Record<string, unknown>> | undefined,
-  ctx: ExtensionContext,
-) => Promise<AgentToolResult<Record<string, unknown>>>;
 
-export function createDirectToolExecutor(
-  getState: () => McpExtensionState | null,
-  getInitPromise: () => Promise<McpExtensionState> | null,
-  spec: DirectToolSpec
-): DirectToolExecute {
-  return async function execute(_toolCallId, params) {
-    let state = getState();
-    const initPromise = getInitPromise();
-
-    if (!state && initPromise) {
-      try {
-        state = await initPromise;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return {
-          content: [{ type: "text" as const, text: `MCP initialization failed: ${message}` }],
-          details: { error: "init_failed", message },
-        };
-      }
-    }
-    if (!state) {
-      return {
-        content: [{ type: "text" as const, text: "MCP not initialized" }],
-        details: { error: "not_initialized" },
-      };
-    }
-
-    let connected = await lazyConnect(state, spec.serverName);
-    let autoAuthAttempted = false;
-
-    if (!connected && state.manager.getConnection(spec.serverName)?.status === "needs-auth") {
-      autoAuthAttempted = true;
-      const autoAuth = await attemptDirectAutoAuth(state, spec.serverName);
-      if (autoAuth.status === "failed") {
-        return {
-          content: [{ type: "text" as const, text: autoAuth.message }],
-          details: { error: "auth_required", server: spec.serverName, message: autoAuth.message },
-        };
-      }
-      if (autoAuth.status === "success") {
-        await state.manager.close(spec.serverName);
-        state.failureTracker.delete(spec.serverName);
-        connected = await lazyConnect(state, spec.serverName);
-      }
-    }
-
-    if (!connected) {
-      const authConnection = state.manager.getConnection(spec.serverName);
-      if (authConnection?.status === "needs-auth") {
-        const message = getDirectAuthRequiredMessage(state, spec.serverName);
-        return {
-          content: [{ type: "text" as const, text: message }],
-          details: { error: "auth_required", server: spec.serverName, message, autoAuthAttempted },
-        };
-      }
-      const failedAgo = getFailureAgeSeconds(state, spec.serverName);
-      return {
-        content: [{ type: "text" as const, text: `MCP server "${spec.serverName}" not available${failedAgo !== null ? ` (failed ${failedAgo}s ago)` : ""}` }],
-        details: { error: "server_unavailable", server: spec.serverName },
-      };
-    }
-
-    const connection = state.manager.getConnection(spec.serverName);
-    if (!connection || connection.status !== "connected") {
-      return {
-        content: [{ type: "text" as const, text: `MCP server "${spec.serverName}" not connected` }],
-        details: { error: "not_connected", server: spec.serverName },
-      };
-    }
-
-    let uiSession: UiSessionRuntime | null = null;
-
-    try {
-      state.manager.touch(spec.serverName);
-      state.manager.incrementInFlight(spec.serverName);
-
-      if (spec.resourceUri) {
-        const result = await connection.client.readResource({ uri: spec.resourceUri });
-        const content = (result.contents ?? []).map(c => ({
-          type: "text" as const,
-          text: "text" in c ? c.text : ("blob" in c ? `[Binary data: ${(c as { mimeType?: string }).mimeType ?? "unknown"}]` : JSON.stringify(c)),
-        }));
-        return {
-          content: content.length > 0 ? content : [{ type: "text" as const, text: "(empty resource)" }],
-          details: { server: spec.serverName, resourceUri: spec.resourceUri },
-        };
-      }
-
-      const hasUi = !!spec.uiResourceUri;
-      uiSession = hasUi
-        ? await maybeStartUiSession(state, {
-            serverName: spec.serverName,
-            toolName: spec.originalName,
-            toolArgs: params ?? {},
-            uiResourceUri: spec.uiResourceUri!,
-            streamMode: spec.uiStreamMode,
-          })
-        : null;
-
-      const resultPromise = connection.client.callTool({
-        name: spec.originalName,
-        // Normalize provider-flattened argument keys (e.g. Gemini's `keywords[0]`)
-        // back into arrays/objects before the MCP server validates them.
-        // Schema-aware: literal dotted property names (e.g. `filter.name`) are
-        // preserved unless the schema proves the head is a container.
-        arguments: unflattenToolArguments(params, spec.inputSchema),
-        _meta: uiSession?.requestMeta,
-      });
-
-      const result = await resultPromise;
-      uiSession?.sendToolResult(result as unknown as import("@modelcontextprotocol/sdk/types.js").CallToolResult);
-
-      const mcpContent = (result.content ?? []) as McpContent[];
-      const content = transformMcpContent(mcpContent);
-
-      if (result.isError) {
-        let errorText = content.filter(c => c.type === "text").map(c => (c as { text: string }).text).join("\n") || "Tool execution failed";
-        if (spec.inputSchema) {
-          errorText += `\n\nExpected parameters:\n${formatSchema(spec.inputSchema)}`;
-        }
-        return {
-          content: [{ type: "text" as const, text: `Error: ${errorText}` }],
-          details: { error: "tool_error", server: spec.serverName },
-        };
-      }
-
-      const resultText = content.filter(c => c.type === "text").map(c => (c as { text: string }).text).join("\n") || "(empty result)";
-      if (hasUi) {
-        const uiMessage = uiSession?.reused
-          ? "Updated the open UI."
-          : "📺 Interactive UI is now open in your browser. I'll respond to your prompts and intents as you interact with it.";
-        return {
-          content: [{ type: "text" as const, text: `${resultText}\n\n${uiMessage}` }],
-          details: { server: spec.serverName, tool: spec.originalName, uiOpen: true },
-        };
-      }
-
-      return {
-        content: content.length > 0 ? content : [{ type: "text" as const, text: "(empty result)" }],
-        details: { server: spec.serverName, tool: spec.originalName },
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      uiSession?.sendToolCancelled(message);
-      let errorText = `Failed to call tool: ${message}`;
-      if (spec.inputSchema) {
-        errorText += `\n\nExpected parameters:\n${formatSchema(spec.inputSchema)}`;
-      }
-      return {
-        content: [{ type: "text" as const, text: errorText }],
-        details: { error: "call_failed", server: spec.serverName },
-      };
-    } finally {
-      if (uiSession?.reused) {
-        uiSession.close();
-      }
-      state.manager.decrementInFlight(spec.serverName);
-      state.manager.touch(spec.serverName);
-    }
-  };
-}
+export { createDirectToolExecutor } from "./direct-tool-executor.js";

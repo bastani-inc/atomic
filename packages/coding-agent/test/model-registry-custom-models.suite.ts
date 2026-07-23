@@ -1,8 +1,6 @@
-import type { AnthropicMessagesCompat, OpenAICompletionsCompat } from "@earendil-works/pi-ai/compat";
+import type { AnthropicMessagesCompat, OpenAICompletionsCompat, OpenAIResponsesCompat } from "@earendil-works/pi-ai/compat";
 import { describe, expect, test } from "vitest";
 import { ModelRegistry } from "../src/core/model-registry.ts";
-import { describeModelRegistry } from "./model-registry-fixtures.ts";
-
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
 
 describeModelRegistry((context) => {
@@ -331,6 +329,37 @@ describeModelRegistry((context) => {
 			expect(compat?.supportsLongCacheRetention).toBe(false);
 		});
 
+		test("compat schema accepts Pi 0.80.7 Responses session affinity settings", () => {
+			writeRawModelsJson({
+				demo: {
+					baseUrl: "https://example.com/v1",
+					apiKey: "DEMO_KEY",
+					api: "openai-responses",
+					compat: {
+						sessionAffinityFormat: "openai-nosession",
+						supportsToolSearch: true,
+					},
+					models: [
+						{
+							id: "demo-model",
+							reasoning: true,
+							input: ["text"],
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							contextWindow: 1000,
+							maxTokens: 100,
+						},
+					],
+				},
+			});
+
+			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const compat = registry.find("demo", "demo-model")?.compat as OpenAIResponsesCompat | undefined;
+
+			expect(registry.getError()).toBeUndefined();
+			expect(compat?.sessionAffinityFormat).toBe("openai-nosession");
+			expect(compat?.supportsToolSearch).toBe(true);
+		});
+
 		test("model-level baseUrl overrides provider-level baseUrl for custom models", () => {
 			writeRawModelsJson({
 				"opencode-go": {
@@ -402,7 +431,7 @@ describeModelRegistry((context) => {
 			).toBe(true);
 		});
 
-		test("refresh() reloads merged custom models from disk", () => {
+		test("refresh() reloads merged custom models from disk", async () => {
 			writeModelsJson({
 				anthropic: providerConfig("https://first-proxy.example.com/v1", [{ id: "claude-custom" }]),
 			});
@@ -413,7 +442,7 @@ describeModelRegistry((context) => {
 			writeModelsJson({
 				anthropic: providerConfig("https://second-proxy.example.com/v1", [{ id: "claude-custom-2" }]),
 			});
-			registry.refresh();
+			await registry.refresh();
 
 			const anthropicModels = getModelsForProvider(registry, "anthropic");
 			expect(anthropicModels.some((m) => m.id === "claude-custom")).toBe(false);
@@ -421,7 +450,7 @@ describeModelRegistry((context) => {
 			expect(anthropicModels.some((m) => m.id.includes("claude"))).toBe(true);
 		});
 
-		test("removing custom models from models.json keeps built-in provider models", () => {
+		test("removing custom models from models.json keeps built-in provider models", async () => {
 			writeModelsJson({
 				anthropic: providerConfig("https://proxy.example.com/v1", [{ id: "claude-custom" }]),
 			});
@@ -430,7 +459,7 @@ describeModelRegistry((context) => {
 
 			// Remove custom models and refresh
 			writeModelsJson({});
-			registry.refresh();
+			await registry.refresh();
 
 			const anthropicModels = getModelsForProvider(registry, "anthropic");
 			expect(anthropicModels.some((m) => m.id === "claude-custom")).toBe(false);

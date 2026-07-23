@@ -120,11 +120,11 @@ describe("native bash PTY execution", () => {
 		enabled = true;
 		await expect(bash.execute("dynamic-on", { command: "cat file.txt" }, undefined, undefined, {} as never)).rejects.toThrow(/Use the read tool/);
 	});
-	it("returns timeout and wall-time metadata for local execution", async () => {
+	it("returns timeout and wall-time metadata for valid local execution", async () => {
 		const bash = createBashToolDefinition(testDir, { operations: { exec: async () => ({ exitCode: 0 }) } });
-		const result = await bash.execute("timing", { command: "true", timeout: 9999 }, undefined, undefined, {} as never);
+		const result = await bash.execute("timing", { command: "true", timeout: 3600 }, undefined, undefined, {} as never);
 		expect(result.details?.timeoutSeconds).toBe(3600);
-		expect(result.details?.requestedTimeoutSeconds).toBe(9999);
+		expect(result.details?.requestedTimeoutSeconds).toBeUndefined();
 		expect(typeof result.details?.wallTimeMs).toBe("number");
 	});
 

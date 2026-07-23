@@ -25,7 +25,7 @@ async function loadVirtualModules(): Promise<Record<string, object>> {
     // "@earendil-works/pi-ai"`, so we load the compat module here and key it
     // under the root specifier below to keep every extension working unchanged.
     import("@earendil-works/pi-ai/compat"),
-    import("@earendil-works/pi-ai/oauth"),
+    import("../oauth-compat.ts"),
     // NOTE: This import works because loader.ts exports are NOT re-exported from index.ts,
     // avoiding a circular dependency while preserving the package-name extension import path.
     import("../../index.ts"),
@@ -79,6 +79,7 @@ let _transpileCacheDir: string | null = null;
 function getTranspileCacheDir(): string {
   if (_transpileCacheDir) return _transpileCacheDir;
   _transpileCacheDir = getExtensionTranspileCacheDir();
+  fs.mkdirSync(_transpileCacheDir, { recursive: true });
   pruneStaleTranspileCaches(_transpileCacheDir);
   return _transpileCacheDir;
 }
@@ -192,21 +193,24 @@ function getAliases(): Record<string, string> {
   // upstream layout change moves these files, this join needs updating to
   // match the package's real dist paths.
   const piAiEntry = resolveWorkspaceOrImport("ai/dist/compat.js", "@earendil-works/pi-ai");
-  const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@earendil-works/pi-ai");
+  const piAiProvidersEntry = resolveWorkspaceOrImport("ai/dist/providers/all.js", "@earendil-works/pi-ai");
+  const piAiOauthEntry = path.resolve(__dirname, "../oauth-compat.js");
 
   _aliases = {
     "@bastani/atomic": piCodingAgentEntry,
     "@earendil-works/pi-coding-agent": piCodingAgentEntry,
     "@earendil-works/pi-agent-core": piAgentCoreEntry,
     "@earendil-works/pi-tui": piTuiEntry,
-    "@earendil-works/pi-ai": piAiEntry,
-    "@earendil-works/pi-ai/compat": piAiEntry,
     "@earendil-works/pi-ai/oauth": piAiOauthEntry,
+    "@earendil-works/pi-ai/providers/all": piAiProvidersEntry,
+    "@earendil-works/pi-ai/compat": piAiEntry,
+    "@earendil-works/pi-ai": piAiEntry,
     "@mariozechner/pi-agent-core": piAgentCoreEntry,
     "@mariozechner/pi-tui": piTuiEntry,
-    "@mariozechner/pi-ai": piAiEntry,
-    "@mariozechner/pi-ai/compat": piAiEntry,
     "@mariozechner/pi-ai/oauth": piAiOauthEntry,
+    "@mariozechner/pi-ai/providers/all": piAiProvidersEntry,
+    "@mariozechner/pi-ai/compat": piAiEntry,
+    "@mariozechner/pi-ai": piAiEntry,
     typebox: typeboxEntry,
     "typebox/compile": typeboxCompileEntry,
     "typebox/value": typeboxValueEntry,
@@ -218,11 +222,11 @@ function getAliases(): Record<string, string> {
   return _aliases;
 }
 
-/** Internal hooks for extension-loader alias regression tests. */
 export const extensionLoaderTestHooks = {
   loadVirtualModules,
   getAliases,
   findPackageRoot,
+  getTranspileCacheDir,
 };
 
 /**

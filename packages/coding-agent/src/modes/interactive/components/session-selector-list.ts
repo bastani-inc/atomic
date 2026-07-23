@@ -220,11 +220,13 @@ export class SessionList implements Component, Focusable {
 			const truncatedMsg = truncateToWidth(normalizedMessage, Math.max(10, availableForMsg), "…");
 
 			// Style message
-			let messageColor: "error" | "warning" | "accent" | null = null;
+			let messageColor: "error" | "warning" | "accent" | "success" | null = null;
 			if (isConfirmingDelete) {
 				messageColor = "error";
 			} else if (isCurrent) {
 				messageColor = "accent";
+			} else if (session.messageColor !== undefined) {
+				messageColor = session.messageColor;
 			} else if (hasName) {
 				messageColor = "warning";
 			}

@@ -6,6 +6,7 @@ import type {
 } from "@bastani/atomic";
 import type { EditorComponent, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import type { StageControlHandle } from "../runs/foreground/stage-control-registry.js";
+import type { PostMortemUnavailableReason } from "../runs/foreground/postmortem-stage-chat.js";
 import type { Store } from "../shared/store.js";
 import type {
   MountedStageCustomUi,
@@ -32,12 +33,16 @@ export interface StageChatViewOpts {
   stageId: string;
   /** The workflow display name, used in the title chrome `<workflow> / <stage>`. */
   workflowName: string;
+  /** Unsent composer draft restored when reattaching to this stage. */
+  initialComposerDraft?: string;
   /**
    * Live stage-control handle when available. When absent the chat is
    * inspect-only (settled stage with no live handle).
    */
   handle?: StageControlHandle;
-  /** Called when the user presses Ctrl+D (back to graph). */
+  /** Why a retained terminal stage could not be reopened for follow-up chat. */
+  postMortemUnavailableReason?: PostMortemUnavailableReason;
+  /** Called when the user presses Ctrl+X (back to graph). */
   onDetach: (reason?: StageChatDetachReason, metadata?: StageChatDetachMetadata) => void;
   /** Called when the user presses Escape (close the whole popup). */
   onClose: () => void;
@@ -127,6 +132,7 @@ export interface StageChatViewContext {
   stageId: string;
   workflowName: string;
   handle: StageControlHandle | undefined;
+  postMortemUnavailableReason: PostMortemUnavailableReason | undefined;
   onDetach: (reason?: StageChatDetachReason, metadata?: StageChatDetachMetadata) => void;
   onClose: () => void;
   requestRender: (() => void) | undefined;
@@ -139,6 +145,7 @@ export interface StageChatViewContext {
   piEditorFactory: StageChatViewOpts["piEditorFactory"] | undefined;
   getToolsExpanded: (() => boolean) | undefined;
   setToolsExpanded: ((expanded: boolean) => void) | undefined;
+  footerData: ReadonlyFooterDataProvider | undefined;
   chatHost: ChatSessionHost<NoticeEntry>;
   stageUiBroker: StageUiBroker;
   canSubmitPrompt: ((runId: string, stageId: string, promptId: string) => boolean) | undefined;
@@ -157,5 +164,6 @@ export interface StageChatViewContext {
   seenNoticeIds: Set<string>;
   _unsubscribeStore: (() => void) | null;
   _unsubscribeHandle: (() => void) | null;
+  _unsubscribeFooterData: (() => void) | null;
   _unregisterStageUiHost: (() => void) | null;
 }

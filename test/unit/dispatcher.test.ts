@@ -127,31 +127,36 @@ describe("dispatch run (always background)", () => {
     }
   });
 
-  test("returns before the workflow body settles", async () => {
-    let settled = false;
+  test("returns after startup admission without waiting for workflow completion", async () => {
+    let bodyStarted = false;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
     const slowWf = workflow({
       name: "slow-bg-wf",
       description: "",
       inputs: {},
       outputs: {},
-      run: async (_ctx) => {
-        await new Promise((resolve) => setTimeout(resolve, 200));
-        settled = true;
+      run: async () => {
+        bodyStarted = true;
+        await held;
         return {};
       },
     }) as WorkflowDefinition;
 
-    const registry = createRegistry([slowWf]);
-    const t0 = Date.now();
+    const deps = freshDeps();
     const result = await dispatch(
       { action: "run", workflow: "slow-bg-wf", inputs: {} },
-      { registry, ...freshDeps() },
+      { registry: createRegistry([slowWf]), ...deps },
     );
-    const elapsed = Date.now() - t0;
 
     assert.equal(result.action, "run");
-    assert.ok(elapsed < 100, "dispatch must not wait for the background promise");
-    assert.equal(settled, false);
+    if (result.action === "run") {
+      assert.equal(result.status, "running");
+      assert.equal(bodyStarted, true);
+      assert.equal(deps.jobs.has(result.runId), true, "admitted body remains a live background job");
+      release();
+      await deps.jobs.get(result.runId)?.promise;
+    }
   });
 
   test("not-found workflow returns failed result with empty runId", async () => {
@@ -269,7 +274,7 @@ describe("dispatch run forwards persistence", () => {
   }
 
   function lifecycleTypes(calls: Array<{ type: string }>): string[] {
-    return calls.map((c) => c.type).filter((type) => type !== "workflow.durable.checkpoint");
+    return calls.map((c) => c.type);
   }
 
   const stageWorkflow = workflow({

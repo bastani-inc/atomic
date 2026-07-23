@@ -1,4 +1,5 @@
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
+import { isValidThinkingLevel } from "../cli/args.ts";
 import { buildFallbackModel, parseModelPattern } from "./model-resolver-patterns.ts";
 import type { ResolveCliModelResult } from "./model-resolver-types.ts";
 import type { ModelRegistry } from "./model-registry.ts";
@@ -16,6 +17,22 @@ function findRawExactModel(cliModel: string, availableModels: Model<Api>[]): Mod
   return availableModels.find(
     (m) => m.id.toLowerCase() === lower || `${m.provider}/${m.id}`.toLowerCase() === lower,
   );
+}
+
+function splitCustomModelThinkingSuffix(pattern: string): {
+  modelId: string;
+  thinkingLevel: ResolveCliModelResult["thinkingLevel"];
+} {
+  const lastColonIndex = pattern.lastIndexOf(":");
+  if (lastColonIndex <= 0) return { modelId: pattern, thinkingLevel: undefined };
+
+  const suffix = pattern.substring(lastColonIndex + 1);
+  if (!isValidThinkingLevel(suffix)) return { modelId: pattern, thinkingLevel: undefined };
+
+  return {
+    modelId: pattern.substring(0, lastColonIndex),
+    thinkingLevel: suffix,
+  };
 }
 
 /**
@@ -50,6 +67,17 @@ export function resolveCliModel(options: {
   }
 
   const providerMap = buildProviderMap(availableModels);
+
+  // A registered raw ID may itself look like "provider/model:thinking" (for example,
+  // a gateway-owned ID). Preserve that exact ID before provider inference consumes the suffix.
+  const rawPattern = splitCustomModelThinkingSuffix(cliModel);
+  if (!cliProvider && rawPattern.thinkingLevel !== undefined) {
+    const exact = findRawExactModel(cliModel, availableModels);
+    if (exact) {
+      return { model: exact, warning: undefined, thinkingLevel: undefined, error: undefined };
+    }
+  }
+
   let provider = cliProvider ? providerMap.get(cliProvider.toLowerCase()) : undefined;
   if (cliProvider && !provider) {
     return {
@@ -118,14 +146,21 @@ export function resolveCliModel(options: {
   }
 
   if (provider) {
-    const fallbackModel = buildFallbackModel(provider, pattern, availableModels);
+    // Registered resolution above takes precedence, including model IDs whose final colon
+    // segment happens to look like a thinking level. Only custom fallback splits it.
+    const customPattern = splitCustomModelThinkingSuffix(pattern);
+    const fallbackModel = buildFallbackModel(provider, customPattern.modelId, availableModels);
     if (fallbackModel) {
+      const customModel =
+        customPattern.thinkingLevel && customPattern.thinkingLevel !== "off"
+          ? { ...fallbackModel, reasoning: true }
+          : fallbackModel;
       const fallbackWarning = warning
-        ? `${warning} Model "${pattern}" not found for provider "${provider}". Using custom model id.`
-        : `Model "${pattern}" not found for provider "${provider}". Using custom model id.`;
+        ? `${warning} Model "${customPattern.modelId}" not found for provider "${provider}". Using custom model id.`
+        : `Model "${customPattern.modelId}" not found for provider "${provider}". Using custom model id.`;
       return {
-        model: fallbackModel,
-        thinkingLevel: undefined,
+        model: customModel,
+        thinkingLevel: customPattern.thinkingLevel,
         warning: fallbackWarning,
         error: undefined,
       };

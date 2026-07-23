@@ -21,10 +21,16 @@ import type { ChatMessageRenderOptions, ReadonlyFooterDataProvider } from "@bast
 import { WorkflowAttachPane } from "./workflow-attach-pane.js";
 import { WORKFLOW_STATUS_KEY } from "./workflow-status.js";
 import { deriveGraphThemeFromPiTheme } from "./graph-theme.js";
-import { quitRun as defaultQuitRun } from "../runs/background/quit.js";
 import { stageControlRegistry as defaultStageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import type { StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
+import type { PostMortemHandleResolution } from "./workflow-attach-pane-types.js";
+import {
+  remoteTerminalControlFrom,
+  setMouseScrollTracking,
+  setTerminalAutowrap,
+} from "./overlay-terminal-modes.js";
+import type { OverlayTerminalOutput } from "./overlay-terminal-modes.js";
 import type {
   PiCustomComponent,
   PiCustomOverlayFactoryTui,
@@ -36,10 +42,13 @@ import type {
   PiKeybindings,
   PiOverlayHandle,
   PiOverlayOptions,
+  PiRemoteTerminalControl,
   PiTheme,
 } from "../extension/wiring.js";
 
 export type OverlayChatRenderSettings = Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd">>;
+
+export type { OverlayTerminalOutput } from "./overlay-terminal-modes.js";
 
 export interface OverlayUISurface {
   custom?: PiCustomOverlayFunction;
@@ -64,12 +73,12 @@ export interface OverlayPiSurface {
  * `toggle(runId)`— show if hidden, hide if visible, create if absent.
  * `close()`      — permanently dismiss.
  *
- * Optional `stageId` (on `open`) opens directly on the stage-chat
- * surface for that node — used by `/workflow attach <runId> <stageId>`
+ * Optional `stageId` and owning `stageRunId` (on `open`) open directly on
+ * that exact stage-chat node — used by `/workflow attach <runId> <stageId>`
  * and the picker overlay's connect-to-stage flow.
  */
 export interface GraphOverlayPort {
-  open(runId: string | null, surface?: OverlayPiSurface, stageId?: string): void;
+  open(runId: string | null, surface?: OverlayPiSurface, stageId?: string, stageRunId?: string): void;
   toggle(runId: string | null, surface?: OverlayPiSurface): void;
   close(): void;
 }
@@ -101,15 +110,8 @@ const FULLSCREEN_OVERLAY_OPTIONS: PiOverlayOptions = {
   margin: 0,
 };
 
-const MOUSE_SCROLL_TRACKING_ON = "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
-const MOUSE_SCROLL_TRACKING_OFF = "\x1b[?1006l\x1b[?1002l\x1b[?1000l";
 const MAIN_CHAT_INPUT_STATUS_KEY = `${WORKFLOW_STATUS_KEY}:main-chat-input`;
 const MAIN_CHAT_INPUT_STATUS = "Main chat needs input — exit graph to answer.";
-
-function setMouseScrollTracking(enabled: boolean): void {
-  if (!process.stdout.isTTY) return;
-  process.stdout.write(enabled ? MOUSE_SCROLL_TRACKING_ON : MOUSE_SCROLL_TRACKING_OFF);
-}
 
 export interface BuildGraphOverlayAdapterOpts {
   /**
@@ -117,15 +119,20 @@ export interface BuildGraphOverlayAdapterOpts {
    * Defaults to the singleton registry registered alongside the store.
    */
   stageControlRegistry?: StageControlRegistry;
+  /**
+   * Resolver that revives a post-mortem chat handle for an eligible terminal
+   * agent stage with a valid retained session but no process-local handle.
+   * Threaded into every `WorkflowAttachPane` so generic attach/connect and
+   * restored/replayed durable snapshots open as interactive follow-up chats;
+   * unavailable results provide the pane's actionable read-only reason.
+   */
+  resolvePostMortemHandle?: (runId: string, stageId: string) => PostMortemHandleResolution;
   /** Broker used to route stage-local custom UI into attached stage chats. */
   stageUiBroker?: StageUiBroker;
-  /**
-   * Quit hook used by graph-mode `q`. This is intentionally distinct from
-   * `/workflow kill`: panel quit leaves durable-progress runs resumable.
-   */
-  onQuitRun?: (runId: string) => void;
   /** Optional clock injection for deterministic attach-pane transition tests. */
   now?: () => number;
+  /** Terminal output seam used to test raw overlay control sequences. */
+  terminalOutput?: OverlayTerminalOutput;
 }
 
 export function buildGraphOverlayAdapter(
@@ -134,10 +141,23 @@ export function buildGraphOverlayAdapter(
   buildOpts: BuildGraphOverlayAdapterOpts = {},
 ): GraphOverlayPort {
   const registry = buildOpts.stageControlRegistry ?? defaultStageControlRegistry;
+  const resolvePostMortemHandle = buildOpts.resolvePostMortemHandle;
   const stageUiBroker = buildOpts.stageUiBroker;
-  const quitRun = buildOpts.onQuitRun ?? ((id: string): void => {
-    defaultQuitRun(id, { store, stageControlRegistry: registry });
-  });
+  const terminalOutput = buildOpts.terminalOutput ?? {
+    platform: process.platform,
+    isTTY: process.stdout.isTTY,
+    write: (data: string): void => {
+      process.stdout.write(data);
+    },
+  };
+  // Isolated interactive mode exposes a remote terminal-control capability;
+  // prefer it so the real host TTY (not the child's non-TTY JSONL stdout) gets
+  // the modes. Otherwise fall back to the local process.stdout seam.
+  let remoteTerminalControl: PiRemoteTerminalControl | null = null;
+  const updateMouseScrollTracking = (enabled: boolean): void => {
+    if (remoteTerminalControl) remoteTerminalControl.setMouseScrollTracking(enabled);
+    else setMouseScrollTracking(enabled, terminalOutput);
+  };
   let currentView: WorkflowAttachPane | null = null;
   // pi-tui returns an OverlayHandle via `options.onHandle`. We hold onto
   // it so toggle() can flip `setHidden` rather than remounting the
@@ -146,9 +166,25 @@ export function buildGraphOverlayAdapter(
   let currentHandle: PiOverlayHandle | null = null;
   let mounted = false;
   let finishMounted: (() => void) | null = null;
+  // Repaints the mounted overlay through its factory TUI. Needed on the
+  // hidden→visible flip: store updates while hidden intentionally skip
+  // `requestRender` (#1856), so reopening must explicitly render the
+  // invalidated view from the current snapshot.
+  let requestMountedRender: (() => void) | null = null;
   let observedUi: OverlayUISurface | undefined;
   let unsubscribeHostCustomUi: (() => void) | null = null;
   let hostInlineCustomUiActive = false;
+  let overlayVisible = false;
+
+  function updateTerminalAutowrap(visible: boolean): void {
+    if (overlayVisible === visible) return;
+    overlayVisible = visible;
+    if (remoteTerminalControl) {
+      if (terminalOutput.platform === "win32") remoteTerminalControl.setAutowrap(!visible);
+      return;
+    }
+    setTerminalAutowrap(!visible, terminalOutput);
+  }
 
   function readHostCustomUiActive(ui: OverlayUISurface | undefined = observedUi): boolean {
     const state = ui?.getHostCustomUiState?.();
@@ -188,8 +224,9 @@ export function buildGraphOverlayAdapter(
   }
 
   function close(): void {
-    setMouseScrollTracking(false);
+    updateMouseScrollTracking(false);
     currentHandle?.hide();
+    updateTerminalAutowrap(false);
     finishMounted?.();
     observedUi?.setStatus?.(WORKFLOW_STATUS_KEY, undefined);
     observedUi?.setStatus?.(MAIN_CHAT_INPUT_STATUS_KEY, undefined);
@@ -198,11 +235,13 @@ export function buildGraphOverlayAdapter(
     finishMounted = null;
     currentView = null;
     mounted = false;
+    remoteTerminalControl = null;
+    requestMountedRender = null;
     clearHostCustomUiObservation();
   }
 
   /**
-   * Non-destructive close path used by graph-mode `Ctrl+D` / `h`. Goes
+   * Non-destructive return path used by graph-mode `Ctrl+X` / `h`. Goes
    * through Pi/pi public primitives in priority order:
    *   1. `OverlayHandle.setHidden(true)` when the host exposed an
    *      overlay handle via `options.onHandle`. Keeps the overlay
@@ -213,16 +252,16 @@ export function buildGraphOverlayAdapter(
    *      component, hides the overlay if present, restores focus to
    *      the editor, and resolves the custom() promise.
    *
-   * Critically: this never touches `killRun`, `cancellationRegistry`,
-   * or any run-cancellation surface — the backing workflow keeps
-   * running and can be re-attached.
+   * This is UI-only: the backing workflow keeps running unchanged and the
+   * same mounted overlay can be reopened later.
    */
   function hideMounted(): void {
-    setMouseScrollTracking(false);
+    updateMouseScrollTracking(false);
     observedUi?.setStatus?.(MAIN_CHAT_INPUT_STATUS_KEY, undefined);
     if (currentHandle) {
       currentView?.setVisible(false);
       currentHandle.setHidden(true);
+      updateTerminalAutowrap(false);
       currentHandle.unfocus();
       return;
     }
@@ -230,6 +269,7 @@ export function buildGraphOverlayAdapter(
       finishMounted();
       return;
     }
+    updateTerminalAutowrap(false);
   }
 
   function refocusVisibleOverlayForAwaitingInput(snapshot: StoreSnapshot): void {
@@ -244,8 +284,15 @@ export function buildGraphOverlayAdapter(
     view: WorkflowAttachPane,
     tui: PiCustomOverlayFactoryTui,
   ): PiCustomComponent {
+    requestMountedRender = () => tui.requestRender?.();
     const onStoreUpdate = (snapshot: StoreSnapshot): void => {
+      // Always invalidate retained view state so a later reopen renders the
+      // current snapshot — but while the overlay is hidden, never ask the
+      // host to render (#1856): each hidden-overlay render request became
+      // terminal writes that flickered main chat and could snap native
+      // scrollback to the bottom.
       view.invalidate();
+      if (currentHandle?.isHidden() === true) return;
       refocusVisibleOverlayForAwaitingInput(snapshot);
       tui.requestRender?.();
     };
@@ -258,7 +305,10 @@ export function buildGraphOverlayAdapter(
       },
       invalidate: () => tui.requestRender?.(),
       dispose: () => {
-        setMouseScrollTracking(false);
+        updateTerminalAutowrap(false);
+        updateMouseScrollTracking(false);
+        remoteTerminalControl = null;
+        requestMountedRender = null;
         unsubscribe();
         view.dispose();
       },
@@ -269,27 +319,31 @@ export function buildGraphOverlayAdapter(
     runId: string | null,
     surface?: OverlayPiSurface,
     stageId?: string,
+    stageRunId?: string,
   ): void {
     const ui = surface?.ui ?? pi.ui;
     observeHostCustomUi(ui);
 
     // Already mounted but hidden — flip visibility without remounting.
     if (mounted && currentHandle?.isHidden()) {
-      currentView?.retarget(runId, stageId);
+      currentView?.retarget(runId, stageId, stageRunId);
       currentView?.setVisible(true);
-      setMouseScrollTracking(currentView?.wantsMouseScrollTracking() ?? true);
+      updateTerminalAutowrap(true);
+      updateMouseScrollTracking(currentView?.wantsMouseScrollTracking() ?? true);
       currentHandle.setHidden(false);
       currentHandle.focus();
+      requestMountedRender?.();
       return;
     }
     if (mounted) {
-      currentView?.retarget(runId, stageId);
-      setMouseScrollTracking(currentView?.wantsMouseScrollTracking() ?? true);
+      currentView?.retarget(runId, stageId, stageRunId);
+      updateTerminalAutowrap(true);
+      updateMouseScrollTracking(currentView?.wantsMouseScrollTracking() ?? true);
       // Restore keyboard focus to the visible overlay after retargeting.
       // pi-tui dispatches key events only to the focused component, so a
       // mounted-but-visible overlay that is retargeted (e.g. to a stage-scoped
       // HIL prompt / readiness gate) would otherwise appear frozen — arrows,
-      // Enter, Ctrl+D and `q` all dead — if focus stayed on an underlying or
+      // Enter and Ctrl+X all dead — if focus stayed on an underlying or
       // previously-focused pane (issue #1120).
       currentHandle?.focus();
       return;
@@ -306,10 +360,13 @@ export function buildGraphOverlayAdapter(
       keybindings: PiKeybindings,
       done: (result: undefined) => void,
     ): PiCustomComponent => {
+      // Prefer the host's remote terminal-control capability (isolated mode);
+      // stays null for non-isolated hosts, keeping the local process.stdout seam.
+      remoteTerminalControl = remoteTerminalControlFrom(tui);
       const finish = (): void => {
         if (settled) return;
         settled = true;
-        setMouseScrollTracking(false);
+        updateMouseScrollTracking(false);
         observedUi?.setStatus?.(WORKFLOW_STATUS_KEY, undefined);
         observedUi?.setStatus?.(MAIN_CHAT_INPUT_STATUS_KEY, undefined);
         currentView?.dispose();
@@ -317,20 +374,27 @@ export function buildGraphOverlayAdapter(
         currentHandle = null;
         finishMounted = null;
         mounted = false;
+        requestMountedRender = null;
         clearHostCustomUiObservation();
-        done(undefined);
+        try {
+          done(undefined);
+        } finally {
+          updateTerminalAutowrap(false);
+          remoteTerminalControl = null;
+        }
       };
       const view = new WorkflowAttachPane({
         store,
         graphTheme: deriveGraphThemeFromPiTheme(theme),
         runId,
         stageControlRegistry: registry,
+        resolvePostMortemHandle,
         stageUiBroker,
         uiStatus,
         onClose: finish,
         onHide: hideMounted,
-        onQuit: quitRun,
         initialAttachStageId: stageId,
+        initialAttachRunId: stageRunId,
         piTui: tui,
         piTheme: theme,
         piKeybindings: keybindings,
@@ -369,7 +433,7 @@ export function buildGraphOverlayAdapter(
           if (currentHandle?.isFocused() === true) return;
           currentHandle?.focus();
         },
-        setMouseScrollTracking,
+        setMouseScrollTracking: updateMouseScrollTracking,
         now: buildOpts.now,
       } as ConstructorParameters<typeof WorkflowAttachPane>[0] & {
         piTui?: PiCustomOverlayFactoryTui;
@@ -379,7 +443,8 @@ export function buildGraphOverlayAdapter(
       currentView = view;
       finishMounted = finish;
       mounted = true;
-      setMouseScrollTracking(view.wantsMouseScrollTracking());
+      updateTerminalAutowrap(true);
+      updateMouseScrollTracking(view.wantsMouseScrollTracking());
       updateMainChatInputHint(readHostCustomUiActive(ui));
       return makeComponent(view, tui);
     };
@@ -403,11 +468,16 @@ export function buildGraphOverlayAdapter(
     if (mounted && currentHandle) {
       const nowHidden = !currentHandle.isHidden();
       currentView?.setVisible(!nowHidden);
-      setMouseScrollTracking(
+      if (!nowHidden) updateTerminalAutowrap(true);
+      updateMouseScrollTracking(
         nowHidden ? false : currentView?.wantsMouseScrollTracking() ?? true,
       );
       currentHandle.setHidden(nowHidden);
-      if (!nowHidden) currentHandle.focus();
+      if (nowHidden) updateTerminalAutowrap(false);
+      else {
+        currentHandle.focus();
+        requestMountedRender?.();
+      }
       return;
     }
     if (mounted) {

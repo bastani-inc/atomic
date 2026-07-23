@@ -26,7 +26,7 @@ describe("standalone workflow package typing", () => {
               "@bastani/workflows": "file:../../packages/workflows",
             },
             devDependencies: {
-              typescript: "^6.0.3",
+              typescript: "^7.0.2",
             },
           },
           null,
@@ -47,7 +47,8 @@ describe("standalone workflow package typing", () => {
               allowImportingTsExtensions: true,
               allowArbitraryExtensions: true,
               ignoreDeprecations: "6.0",
-              baseUrl: ".", typeRoots: [join(repoRoot, "node_modules", "@types")],
+              typeRoots: [join(repoRoot, "node_modules", "@types")],
+              types: ["bun"],
               paths: {
                 "@bastani/atomic": [join(repoRoot, "packages", "coding-agent", "src", "index.ts")],
                 "@earendil-works/pi-tui": [join(repoRoot, "node_modules", "@earendil-works", "pi-tui", "dist", "index.d.ts")],
@@ -87,7 +88,7 @@ import type { Component, OverlayHandle, OverlayOptions, TUI } from "@earendil-wo
 import type {
   AgentSessionAdapter,
   StageAdapters,
-  StageOptions, StageSendUserMessageOptions, StageStatus, StageUserMessageContent,
+  StageOptions, StageSendUserMessageOptions, StageSessionEvent, StageStatus, StageUserMessageContent,
   WorkflowDefinition, WorkflowExecutionPolicy, WorkflowInputBindings, WorkflowInputSchemaMap,
   WorkflowMcpPort, WorkflowModelCatalogPort, WorkflowOutputSchemaMap, WorkflowPersistencePort, WorkflowRunOutput,
   WorkflowRuntimeConfig, WorkflowTaskSessionOptions, WorkflowUIAdapter,
@@ -259,6 +260,7 @@ const authoredWorkflow = workflow({
     return { summary: chained.at(-1)?.text ?? "", maybe: nickname };
   },
 }); const summarySchema = authoredWorkflow.outputs.summary; void summarySchema;
+const autoAttachTypeCheck: true | undefined = authoredWorkflow.autoAttach; void autoAttachTypeCheck;
 const optionalOutputWorkflow = workflow({
   name: "Optional Output Fixture",
   description: "",
@@ -389,7 +391,7 @@ const adapter: AgentSessionAdapter = {
       const invalidDelivery: StageSendUserMessageOptions = { deliverAs: "nextTurn" }; void content; void delivery; void invalidDelivery; },
       async steer() {},
       async followUp() {},
-      subscribe() { return () => {}; },
+      subscribe(listener) { const event: StageSessionEvent = { type: "agent_start" }; listener(event); return () => {}; },
       sessionFile: undefined,
       sessionId: "fixture-session",
       async setModel() {},

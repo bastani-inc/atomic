@@ -4,12 +4,9 @@
  * cross-ref: spec §8.1 Phase D — persist-kill-controls, resume-helper
  */
 
-import { describe, test, afterEach } from "bun:test";
+import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { killRun, killAllRuns, resumeRun, inspectRun } from "../../packages/workflows/src/runs/background/status.js";
-import { quitRun } from "../../packages/workflows/src/runs/background/quit.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import type { WorkflowPersistencePort } from "../../packages/workflows/src/shared/types.js";
@@ -44,26 +41,6 @@ function makePersistence(): { port: WorkflowPersistencePort; calls: Array<{ type
 // ---------------------------------------------------------------------------
 // killRun — no persistence port
 // ---------------------------------------------------------------------------
-
-describe("quitRun — durable inactive marking", () => {
-  afterEach(() => setDurableBackend(undefined));
-  test("quit flips the durable handle from running to paused", () => {
-    const backend = new InMemoryDurableBackend();
-    setDurableBackend(backend);
-    backend.registerWorkflow({ workflowId: "wf-quit", name: "stress", inputs: {}, createdAt: 1, status: "running" });
-    backend.recordCheckpoint({ kind: "tool", workflowId: "wf-quit", checkpointId: "tool:1", name: "boot", argsHash: "h", output: "ok", completedAt: 2 });
-    assert.equal(backend.getWorkflow("wf-quit")?.status, "running");
-
-    const store = createStore();
-    store.recordRunStart(makeRun({ id: "wf-quit", status: "running" }));
-    quitRun("wf-quit", { store });
-
-    // Quit marks the durable handle inactive so it is unambiguously resumable
-    // in another session (rather than relying on crash-recovery of `running`).
-    assert.equal(backend.getWorkflow("wf-quit")?.status, "paused");
-    assert.equal(backend.listResumableWorkflows().length, 1);
-  });
-});
 
 describe("killRun — no persistence", () => {
   test("returns ok:false not_found for unknown runId", () => {
@@ -148,7 +125,7 @@ describe("killRun — with persistence", () => {
 // ---------------------------------------------------------------------------
 
 describe("killRun — active-blocked metadata cleanup", () => {
-  test("terminalizes a blocked run as non-resumable killed and persists terminal metadata", () => {
+  test("terminalizes a blocked run as non-resumable killed and persists terminal metadata", async () => {
     const s = createStore();
     const { port, calls } = makePersistence();
     const run = makeRun({ id: "blocked-run" });
@@ -190,7 +167,7 @@ describe("killRun — active-blocked metadata cleanup", () => {
     assert.equal(inspected.detail.failureRecoverability, "non_recoverable");
     assert.equal(inspected.detail.failureDisposition, "terminal_killed");
 
-    const resumed = resumeRun(run.id, { store: s });
+    const resumed = await resumeRun(run.id, { store: s });
     assert.equal(resumed.ok, true);
     if (!resumed.ok) throw new Error("narrowing");
     assert.equal(resumed.mode, "not_resumable");
@@ -305,12 +282,12 @@ describe("killAllRuns — persistence", () => {
 // ---------------------------------------------------------------------------
 
 describe("resumeRun", () => {
-  test("returns snapshot for active run", () => {
+  test("returns snapshot for active run", async () => {
     const s = createStore();
     const run = makeRun({ id: "active-1" });
     s.recordRunStart(run);
 
-    const result = resumeRun(run.id, { store: s });
+    const result = await resumeRun(run.id, { store: s });
     assert.equal(result.ok, true);
     if (!result.ok) throw new Error("narrowing");
     assert.equal(result.runId, run.id);
@@ -318,13 +295,13 @@ describe("resumeRun", () => {
     assert.equal(result.snapshot.status, "running");
   });
 
-  test("returns snapshot for completed run", () => {
+  test("returns snapshot for completed run", async () => {
     const s = createStore();
     const run = makeRun({ id: "ended-1" });
     s.recordRunStart(run);
     s.recordRunEnd(run.id, "completed");
 
-    const result = resumeRun(run.id, { store: s });
+    const result = await resumeRun(run.id, { store: s });
     assert.equal(result.ok, true);
     if (!result.ok) throw new Error("narrowing");
     assert.equal(result.runId, run.id);
@@ -332,18 +309,18 @@ describe("resumeRun", () => {
     assert.equal(typeof result.snapshot.endedAt, "number");
   });
 
-  test("returns not_found for unknown runId", () => {
+  test("returns not_found for unknown runId", async () => {
     const s = createStore();
-    const result = resumeRun("ghost-run", { store: s });
+    const result = await resumeRun("ghost-run", { store: s });
     assert.deepEqual(result, { ok: false, runId: "ghost-run", reason: "not_found" });
   });
 
-  test("returns deep copy", () => {
+  test("returns deep copy", async () => {
     const s = createStore();
     const run = makeRun({ id: "copy-check" });
     s.recordRunStart(run);
 
-    const result = resumeRun(run.id, { store: s });
+    const result = await resumeRun(run.id, { store: s });
     assert.equal(result.ok, true);
     if (!result.ok) throw new Error("narrowing");
 

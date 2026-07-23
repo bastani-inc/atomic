@@ -1,8 +1,8 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { buildModelCandidates, resolveModelCandidate } from "../../packages/subagents/src/runs/shared/model-fallback.js";
-import { applyThinkingSuffix } from "../../packages/subagents/src/runs/shared/pi-args.js";
-import { resolveEffectiveThinking, splitKnownThinkingSuffix } from "../../packages/subagents/src/shared/model-info.js";
+import { applyThinkingSuffix, buildPiArgs } from "../../packages/subagents/src/runs/shared/pi-args.js";
+import { getSupportedThinkingLevels, resolveEffectiveThinking, splitKnownThinkingSuffix, THINKING_LEVELS } from "../../packages/subagents/src/shared/model-info.js";
 import type { AvailableModelInfo } from "../../packages/subagents/src/runs/shared/model-fallback.js";
 import { parseFrontmatter } from "../../packages/subagents/src/agents/frontmatter.js";
 
@@ -18,6 +18,7 @@ describe("subagent suffix-first reasoning helpers", () => {
     assert.deepEqual(splitKnownThinkingSuffix("claude-sonnet-4"), { baseModel: "claude-sonnet-4", thinkingSuffix: "" });
     assert.deepEqual(splitKnownThinkingSuffix("provider:model:ultra"), { baseModel: "provider:model:ultra", thinkingSuffix: "" });
     assert.deepEqual(splitKnownThinkingSuffix("provider:with-colon/model:off"), { baseModel: "provider:with-colon/model", thinkingSuffix: ":off" });
+    assert.deepEqual(splitKnownThinkingSuffix("openai/gpt-5:max"), { baseModel: "openai/gpt-5", thinkingSuffix: ":max" });
   });
 
   test("applyThinkingSuffix preserves valid suffix over legacy thinking", () => {
@@ -26,6 +27,57 @@ describe("subagent suffix-first reasoning helpers", () => {
     assert.equal(applyThinkingSuffix("provider:model:ultra", "high"), "provider:model:ultra:high");
   });
 
+  test("accepts every pi 0.80.6 thinking level and preserves unknown-level rejection", () => {
+    assert.deepEqual(THINKING_LEVELS, ["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+
+    for (const level of THINKING_LEVELS) {
+      assert.equal(resolveEffectiveThinking("openai/gpt-5", level), level);
+      const expectedModel = level === "off" ? "openai/gpt-5" : `openai/gpt-5:${level}`;
+      assert.equal(applyThinkingSuffix("openai/gpt-5", level), expectedModel);
+    }
+
+    assert.equal(resolveEffectiveThinking("openai/gpt-5", "ultra"), undefined);
+    assert.deepEqual(splitKnownThinkingSuffix("openai/gpt-5:ultra"), {
+      baseModel: "openai/gpt-5:ultra",
+      thinkingSuffix: "",
+    });
+  });
+
+  test("forwards max thinking to the child Atomic CLI model argument", () => {
+    const model = "openai/gpt-5.6-sol";
+    const result = buildPiArgs({
+      baseArgs: [],
+      task: "reason deeply",
+      sessionEnabled: false,
+      model,
+      thinking: "max",
+      inheritProjectContext: true,
+      inheritSkills: true,
+    });
+
+    const modelIndex = result.args.indexOf("--model");
+    assert.notEqual(modelIndex, -1);
+    assert.equal(result.args[modelIndex + 1], `${model}:max`);
+  });
+
+
+  test("offers max only when a model explicitly maps the new extended level", () => {
+    assert.equal(getSupportedThinkingLevels({
+      provider: "openai",
+      id: "gpt-5",
+      fullId: "openai/gpt-5",
+      reasoning: true,
+      thinkingLevelMap: { xhigh: "high" },
+    }).includes("max"), false);
+
+    assert.equal(getSupportedThinkingLevels({
+      provider: "openai",
+      id: "gpt-5.6-sol",
+      fullId: "openai/gpt-5.6-sol",
+      reasoning: true,
+      thinkingLevelMap: { max: "max" },
+    }).includes("max"), true);
+  });
   test("resolveEffectiveThinking uses suffix, then legacy thinking, then undefined", () => {
     assert.equal(resolveEffectiveThinking("gpt-5:low", "high"), "low");
     assert.equal(resolveEffectiveThinking("gpt-5", "high"), "high");

@@ -1,23 +1,32 @@
 import { beforeEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import {
-  cancellationRegistry,
-  createExtensionRuntime,
-  defaultStore,
   EXPECTED_WORKFLOW_DESCRIPTION_TOKENS,
   factory,
-  makeExecuteWorkflowTool,
   makeMock,
   recordWorkflowRun,
   runTool,
-  waitForRun,
   WORKFLOW_TOOL_DESCRIPTION,
 } from "./mock-extension-api-helpers.js";
 import type { WorkflowToolArgs } from "./mock-extension-api-helpers.js";
 import type { WorkflowToolResult } from "../../packages/workflows/src/extension/render-result.js";
+
+function registryModel(overrides: Partial<Model<Api>> & Pick<Model<Api>, "id" | "provider">): Model<Api> {
+  return {
+    name: overrides.id,
+    api: "openai-completions",
+    baseUrl: "https://example.invalid",
+    reasoning: false,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128_000,
+    maxTokens: 4_096,
+    ...overrides,
+  };
+}
 
 describe("MockExtensionAPI — tool registration", () => {
   let mock: ReturnType<typeof makeMock>;
@@ -51,6 +60,8 @@ describe("MockExtensionAPI — tool registration", () => {
     for (const token of EXPECTED_WORKFLOW_DESCRIPTION_TOKENS) {
       assert.ok(description.includes(token), `description mentions ${token}`);
     }
+    assert.match(description, /quit/);
+    assert.doesNotMatch(description, /kill/);
   });
 
   test("README workflow tool description stays in sync", () => {
@@ -68,7 +79,7 @@ describe("MockExtensionAPI — tool registration", () => {
     assert.equal(params["type"], "object");
   });
 
-  test("tool parameters include named, control, and direct execution properties", () => {
+  test("tool parameters include only named execution, discovery, inspection, messaging, and control properties", () => {
     const params = mock.tools[0]!.opts.parameters as {
       properties: Record<string, unknown>;
     };
@@ -81,17 +92,13 @@ describe("MockExtensionAPI — tool registration", () => {
     assert.ok("stageId" in params.properties);
     assert.ok("message" in params.properties);
     assert.ok(!("id" in params.properties));
-    assert.ok("task" in params.properties);
-    assert.ok("tasks" in params.properties);
-    assert.ok("chain" in params.properties);
-    assert.ok("chainName" in params.properties);
-    assert.ok("context" in params.properties);
-    assert.ok("cwd" in params.properties);
-    assert.ok("output" in params.properties);
-    assert.ok("outputMode" in params.properties);
-    assert.ok("maxOutput" in params.properties);
-    assert.ok("artifacts" in params.properties);
-    assert.ok("sessionDir" in params.properties);
+    for (const removed of [
+      "task", "tasks", "chain", "chainName", "chainDir", "concurrency", "failFast",
+      "async", "intercom", "context", "cwd", "output", "outputMode", "maxOutput",
+      "artifacts", "sessionDir", "worktree", "gitWorktreeDir", "baseBranch",
+    ]) {
+      assert.ok(!(removed in params.properties), `removed direct field ${removed}`);
+    }
   });
 
   test("tool 'action' schema covers rewritten literals only", () => {
@@ -103,9 +110,10 @@ describe("MockExtensionAPI — tool registration", () => {
     const actionSchema = params.properties.action;
     // TypeBox Optional(Union([...])) wraps in anyOf
     const raw = JSON.stringify(actionSchema);
-    for (const literal of ["run", "list", "get", "status", "interrupt", "kill", "resume", "inputs"]) {
+    for (const literal of ["run", "list", "get", "status", "interrupt", "quit", "resume", "inputs", "models"]) {
       assert.ok(raw.includes(literal));
     }
+    assert.ok(!raw.includes("kill"));
     assert.ok(!raw.includes("doctor"));
   });
 
@@ -115,207 +123,6 @@ describe("MockExtensionAPI — tool registration", () => {
     assert.equal(result.action, "run");
   });
 
-  test("tool execute runs direct single-task mode through workflow runtime", async () => {
-    const execute = mock.tools[0]!.opts.execute;
-    const result = await runTool(execute, {
-      task: { name: "scout", task: "inspect direct mode" },
-    });
-
-    assert.equal(result.action, "run");
-    const r = result as {
-      action: "run";
-      runId: string;
-      status: string;
-      details?: {
-        mode: string;
-        status: string;
-        results?: Array<{ name: string; text: string }>;
-      };
-    };
-    assert.equal(r.status, "completed");
-    assert.equal(r.details?.mode, "single");
-    assert.equal(r.details?.status, "completed");
-    assert.equal(r.details?.results?.[0]?.name, "scout");
-    assert.equal(r.details?.results?.[0]?.text, "stub:sdk:inspect direct mode");
-    assert.ok(r.runId);
-  });
-
-  test("tool execute writes direct task output artifacts", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "atomic-workflow-tool-output-"));
-    const output = join(dir, "scout.md");
-    const execute = mock.tools[0]!.opts.execute;
-    const result = await runTool(execute, {
-      task: { name: "scout", task: "inspect with output", output },
-    });
-
-    assert.equal(result.action, "run");
-    assert.equal(readFileSync(output, "utf8"), "stub:sdk:inspect with output");
-    const r = result as {
-      action: "run";
-      details?: {
-        artifacts?: Array<{ kind: string; path: string; taskName?: string }>;
-      };
-    };
-    assert.ok(r.details?.artifacts?.some((artifact) =>
-      artifact.kind === "output" &&
-      artifact.path === output &&
-      artifact.taskName === "scout",
-    ));
-  });
-
-  test("tool execute runs direct parallel mode and expands count", async () => {
-    const execute = mock.tools[0]!.opts.execute;
-    const result = await runTool(execute, {
-      tasks: [{ name: "reviewer", task: "review direct mode", count: 2 }],
-    });
-
-    assert.equal(result.action, "run");
-    const r = result as {
-      action: "run";
-      status: string;
-      details?: {
-        mode: string;
-        results?: Array<{ name: string; text: string }>;
-      };
-    };
-    assert.equal(r.status, "completed");
-    assert.equal(r.details?.mode, "parallel");
-    assert.deepEqual(r.details?.results?.map((item) => item.name), ["reviewer-1", "reviewer-2"]);
-    assert.deepEqual(r.details?.results?.map((item) => item.text), [
-      "stub:sdk:review direct mode",
-      "stub:sdk:review direct mode",
-    ]);
-  });
-
-  test("tool execute accepts async direct task runs and records them in the store", async () => {
-    const execute = mock.tools[0]!.opts.execute;
-    const result = await runTool(execute, {
-      task: { name: "async-scout", task: "inspect async mode" },
-      async: true,
-    });
-
-    assert.equal(result.action, "run");
-    const r = result as {
-      action: "run";
-      runId: string;
-      status: string;
-      details?: {
-        mode: string;
-        status: string;
-        progress?: { completed: number; total: number };
-      };
-    };
-    assert.equal(r.status, "accepted");
-    assert.equal(r.details?.mode, "single");
-    assert.equal(r.details?.status, "accepted");
-    assert.deepEqual(r.details?.progress, { completed: 0, total: 1 });
-
-    await waitForRun(r.runId, { store: defaultStore });
-    const settled = defaultStore.runs().find((run) => run.id === r.runId);
-    assert.notEqual(settled, undefined);
-    assert.equal(settled?.name, "direct-task");
-    assert.equal(settled?.status, "completed");
-
-    const status = await runTool(execute, { action: "status", runId: r.runId });
-    assert.equal(status.action, "statusDetail");
-    const statusDetail = status as { action: "statusDetail"; runId: string };
-    assert.equal(statusDetail.runId, r.runId);
-  });
-
-  test("tool execute can interrupt an async direct task while it is running", async () => {
-    let promptStarted = false;
-    const runtime = createExtensionRuntime({
-      store: defaultStore,
-      cancellation: cancellationRegistry,
-      adapters: {
-        prompt: {
-          prompt: async (_text, meta) => {
-            promptStarted = true;
-            await new Promise<void>((resolve) => {
-              const signal = meta?.signal;
-              if (signal?.aborted) {
-                resolve();
-                return;
-              }
-              signal?.addEventListener("abort", () => resolve(), { once: true });
-            });
-            return "aborted cleanup";
-          },
-        },
-      },
-    });
-    const executeWorkflowTool = makeExecuteWorkflowTool(runtime, () => undefined, () => undefined);
-
-    const started = await executeWorkflowTool({
-      task: { name: "blocking-scout", task: "wait for interrupt" },
-      async: true,
-    }, {});
-    assert.equal(started.action, "run");
-    const runId = (started as Extract<WorkflowToolResult, { action: "run" }>).runId;
-    assert.ok(runId);
-
-    for (let attempt = 0; attempt < 20 && !promptStarted; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
-    assert.equal(promptStarted, true);
-
-    const interrupted = await executeWorkflowTool({ action: "interrupt", runId }, {});
-    assert.equal(interrupted.action, "interrupt");
-    const interruptResult = interrupted as Extract<WorkflowToolResult, { action: "interrupt" }>;
-    assert.equal(interruptResult.status, "paused");
-
-    const paused = defaultStore.runs().find((run) => run.id === runId);
-    assert.equal(paused?.status, "paused");
-
-    defaultStore.removeRun(runId);
-  });
-
-  test("tool execute runs direct chain mode with root task defaults", async () => {
-    const execute = mock.tools[0]!.opts.execute;
-    const result = await runTool(execute, {
-      task: "map direct chain",
-      chain: [
-        { name: "researcher" },
-        {
-          parallel: [
-            { name: "reviewer-a" },
-            { name: "reviewer-b", task: "check {previous}" },
-          ],
-        },
-      ],
-    });
-
-    assert.equal(result.action, "run");
-    const r = result as {
-      action: "run";
-      status: string;
-      details?: {
-        mode: string;
-        results?: Array<{ name: string; text: string }>;
-      };
-    };
-    assert.equal(r.status, "completed");
-    assert.equal(r.details?.mode, "chain");
-    assert.deepEqual(r.details?.results?.map((item) => item.name), [
-      "researcher",
-      "reviewer-a",
-      "reviewer-b",
-    ]);
-    assert.equal(r.details?.results?.[0]?.text, "stub:sdk:map direct chain");
-    assert.equal(r.details?.results?.[1]?.text, "stub:sdk:stub:sdk:map direct chain");
-    assert.equal(r.details?.results?.[2]?.text, "stub:sdk:check stub:sdk:map direct chain");
-  });
-
-  test("tool execute rejects ambiguous named workflow plus direct task mode", async () => {
-    const execute = mock.tools[0]!.opts.execute;
-    await assert.rejects(
-      () => runTool(execute, {
-        workflow: "deep-research-codebase",
-        task: { name: "scout", task: "inspect" },
-      }),
-      /exactly one normal execution mode/,
-    );
-  });
 
   test("tool execute returns list stub for action='list'", async () => {
     const execute = mock.tools[0]!.opts.execute;
@@ -375,6 +182,40 @@ describe("MockExtensionAPI — tool registration", () => {
     assert.ok(r.inputs.some((input) => input.name === "prompt"));
   });
 
+  test("tool execute derives thinking levels from real-shaped registry models and marks current", async () => {
+    const execute = mock.tools[0]!.opts.execute;
+    const reasoningModel = registryModel({
+      provider: "openai",
+      id: "gpt-4",
+      reasoning: true,
+      thinkingLevelMap: {
+        minimal: null,
+        low: "low",
+        medium: "medium",
+        high: "high",
+        xhigh: null,
+        max: "max",
+      },
+    });
+    const nonReasoningModel = registryModel({ provider: "anthropic", id: "claude-3" });
+    const withRegistry = await execute("models-with-registry", { action: "models" }, undefined, undefined, {
+      model: reasoningModel,
+      modelRegistry: { getAvailable: () => [reasoningModel, nonReasoningModel] },
+    } as never);
+    const result = withRegistry.details as Extract<WorkflowToolResult, { action: "models" }>;
+    assert.equal(result.models.length, 2);
+    assert.equal(result.models[0]!.fullId, "openai/gpt-4");
+    assert.equal(result.models[0]!.isCurrent, true);
+    assert.deepEqual(result.models[0]!.availableThinkingLevels, ["off", "low", "medium", "high", "max"]);
+    assert.equal(result.models[1]!.fullId, "anthropic/claude-3");
+    assert.equal(result.models[1]!.isCurrent, false);
+    assert.deepEqual(result.models[1]!.availableThinkingLevels, ["off"]);
+
+    const withoutRegistry = await execute("models-without-registry", { action: "models" }, undefined, undefined, {} as never);
+    const emptyResult = withoutRegistry.details as Extract<WorkflowToolResult, { action: "models" }>;
+    assert.deepEqual(emptyResult.models, []);
+  });
+
   test("tool execute returns read-only workflow details for action='get'", async () => {
     const execute = mock.tools[0]!.opts.execute;
     const result = await runTool(execute, { workflow: "deep-research-codebase", action: "get" });
@@ -399,7 +240,10 @@ describe("MockExtensionAPI — tool registration", () => {
     assert.equal(r.details?.action, "get");
     assert.equal(r.details?.status, "completed");
     assert.equal(r.details?.output?.workflow, "deep-research-codebase");
-    assert.ok(r.details?.output?.description?.includes("Scout"));
+    assert.equal(
+      r.details?.output?.description,
+      "Heavy research for tasks requiring comprehensive, whole-repository context.",
+    );
     assert.ok(r.details?.output?.inputs?.some((input) => input.name === "prompt" && input.required === true));
   });
 
@@ -421,11 +265,11 @@ describe("MockExtensionAPI — tool registration", () => {
     assert.ok(r.message.includes("Run not found"));
   });
 
-  test("tool execute returns kill result for canonical action='kill'", async () => {
+  test("tool execute returns quit result for canonical action='quit'", async () => {
     const execute = mock.tools[0]!.opts.execute;
-    const result = await runTool(execute, { runId: "run-123", action: "kill" });
-    assert.equal(result.action, "kill");
-    const r = result as { action: "kill"; runId: string; status: string; message: string };
+    const result = await runTool(execute, { runId: "run-123", action: "quit" });
+    assert.equal(result.action, "quit");
+    const r = result as { action: "quit"; runId: string; status: string; message: string };
     assert.equal(r.runId, "run-123");
     assert.equal(r.status, "noop");
     assert.ok(r.message.includes("Run not found"));

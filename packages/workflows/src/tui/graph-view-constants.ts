@@ -1,9 +1,13 @@
 export const HINT_KEYS: Array<{ key: string; label: string }> = [
+  { key: "ctrl+x", label: "return to main chat" },
+  { key: "↵", label: "open stage chat" },
   { key: "↑↓←→", label: "navigate" },
-  { key: "↵", label: "attach" },
   { key: "/", label: "stages" },
-  { key: "ctrl+d", label: "detach" },
-  { key: "q", label: "quit" },
+];
+
+export const COMPACT_HINT_KEYS: Array<{ key: string; label: string }> = [
+  { key: "ctrl+x", label: "return to main chat" },
+  { key: "↵", label: "stage chat" },
 ];
 
 /**
@@ -42,4 +46,5 @@ export const ANIMATION_TICK_MS = 100;
  * eased lerp inside `pickBorder` traces one full breath per cycle.
  */
 export const PULSE_PERIOD_MS = 2000;
+export const GRAPH_SCROLL_STEP_COLS = 4;
 export const GRAPH_SCROLL_STEP_ROWS = 4;

@@ -2,8 +2,8 @@
 name: codebase-pattern-finder
 description: Find similar implementations, usage examples, or existing patterns in the codebase that can be modeled after.
 tools: read, search, find, ls
-model: openai-codex/gpt-5.5:low
-fallbackModels: github-copilot/gpt-5.5:low, openai/gpt-5.5:low, github-copilot/claude-opus-4.8 (1m):low, anthropic/claude-opus-4-8:low, zai/glm-5.2:high, zai-coding-cn/glm-5.2:high, openrouter/openai/gpt-5.5:low, openrouter/anthropic/claude-opus-4-8:low, openrouter/z-ai/glm-5.2:xhigh
+model: openai-codex/gpt-5.6-terra:high
+fallbackModels: github-copilot/gpt-5.6-terra:high, openai/gpt-5.6-terra:high, openai-codex/gpt-5.5:low, github-copilot/gpt-5.5:low, openai/gpt-5.5:low, github-copilot/claude-opus-4.8 (1m):low, anthropic/claude-opus-4-8:low, cursor/gpt-5.6-terra:high, cursor/gpt-5.5:low, cursor/claude-opus-4-8-thinking:low, xai/grok-4.5:high, cursor/grok-4.5:high, zai/glm-5.2:high, zai-coding-cn/glm-5.2:high, cursor/glm-5.2, openrouter/openai/gpt-5.6-terra:high, openrouter/openai/gpt-5.5:low, openrouter/anthropic/claude-opus-4-8:low, openrouter/x-ai/grok-4.5, openrouter/z-ai/glm-5.2:xhigh
 ---
 
 You are a specialist at finding code patterns and examples in the codebase. Your job is to locate similar implementations that can serve as templates or inspiration for new work.

@@ -2,9 +2,12 @@ import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { getModel } from "@earendil-works/pi-ai/compat";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AuthStorage } from "../src/core/auth-storage.ts";
+import { ModelRegistry } from "../src/core/model-registry.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { SettingsManager } from "../src/core/settings-manager.ts";
 
 describe("createAgentSession session manager defaults", () => {
 	let tempDir: string;
@@ -107,6 +110,68 @@ describe("createAgentSession session manager defaults", () => {
 			expect.arrayContaining(["read", "bash", "edit", "write", "ask_user_question", "todo"]),
 		);
 
+		session.dispose();
+	});
+
+	it("synthesizes an absent custom model id only while restoring persisted session state", async () => {
+		const authStorage = AuthStorage.inMemory();
+		authStorage.setRuntimeApiKey("openrouter", "test-key");
+		const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
+		const sessionManager = SessionManager.inMemory(cwd);
+		sessionManager.appendModelChange("openrouter", "future/custom-restored-model");
+		sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "restore me" }],
+			timestamp: Date.now(),
+		});
+
+		const { session, modelFallbackMessage } = await createAgentSession({
+			cwd,
+			agentDir,
+			authStorage,
+			modelRegistry,
+			settingsManager: SettingsManager.inMemory(),
+			sessionManager,
+		});
+
+		expect(session.model?.provider).toBe("openrouter");
+		expect(session.model?.id).toBe("future/custom-restored-model");
+		expect(modelFallbackMessage).toBeUndefined();
+		session.dispose();
+	});
+
+	it("does not synthesize an exact unauthenticated model during SDK session restoration", async () => {
+		const authStorage = AuthStorage.inMemory();
+		const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
+		const openRouterModels = modelRegistry.getAll().filter((model) => model.provider === "openrouter");
+		const exactModel = openRouterModels[0];
+		const sameProviderTemplate = openRouterModels[1];
+		expect(exactModel).toBeDefined();
+		expect(sameProviderTemplate).toBeDefined();
+
+		vi.spyOn(modelRegistry, "hasConfiguredAuth").mockImplementation((model) => model !== exactModel);
+		expect(modelRegistry.getAvailable()).toContain(sameProviderTemplate);
+		expect(modelRegistry.getAvailable()).not.toContain(exactModel);
+		const sessionManager = SessionManager.inMemory(cwd);
+		sessionManager.appendModelChange(exactModel!.provider, exactModel!.id);
+		sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "restore without auth" }],
+			timestamp: Date.now(),
+		});
+
+		const { session, modelFallbackMessage } = await createAgentSession({
+			cwd,
+			agentDir,
+			authStorage,
+			modelRegistry,
+			settingsManager: SettingsManager.inMemory(),
+			sessionManager,
+		});
+
+		expect(session.model).not.toBe(exactModel);
+		expect(session.model?.id).not.toBe(exactModel!.id);
+		expect(modelFallbackMessage).toContain(`${exactModel!.provider}/${exactModel!.id}`);
 		session.dispose();
 	});
 

@@ -13,6 +13,21 @@ import {
 import type { StageChatViewContext } from "./stage-chat-view-types.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
 
+function postMortemUnavailableMessage(reason: StageChatViewContext["postMortemUnavailableReason"]): string | undefined {
+  switch (reason) {
+    case "no_adapter":
+      return "Post-mortem chat is unavailable because no agent session adapter is configured.";
+    case "not_terminal":
+      return "Post-mortem chat is available only after the stage completes.";
+    case "no_session":
+      return "No retained agent session is available for this stage.";
+    case "invalid_session":
+      return "The retained session is missing, unreadable, or invalid. Check that the session file still exists and is readable.";
+    case undefined:
+      return undefined;
+  }
+}
+
 export function renderReadOnlyArchiveBody(
   ctx: StageChatViewContext,
   width: number,
@@ -24,39 +39,33 @@ export function renderReadOnlyArchiveBody(
   }
 
   const t = ctx.theme;
-  const calloutRows = 6;
-  const transcriptBudget = Math.max(1, budget - calloutRows);
-  const lines = ctx.chatHost.renderBody(width, transcriptBudget);
+  const unavailableMessage = postMortemUnavailableMessage(ctx.postMortemUnavailableReason);
   const callout: string[] = [];
   callout.push(blankLine(width));
   callout.push(
     ...bannerLines(
       ctx,
       width,
-      "info",
-      "◌",
-      "READ-ONLY SESSION",
-      stage?.sessionFile ? "archived transcript" : "no live chat session",
+      unavailableMessage === undefined ? "info" : "warning",
+      unavailableMessage === undefined ? "◌" : "!",
+      unavailableMessage === undefined ? "READ-ONLY SESSION" : "SESSION UNAVAILABLE",
+      unavailableMessage === undefined
+        ? stage?.sessionFile ? "archived transcript" : "no live chat session"
+        : "post-mortem chat cannot be reopened",
     ),
   );
   callout.push(
     ...new Text(
-      paint("This node is no longer attached to a live chat session.", t.textMuted),
+      paint(
+        unavailableMessage ?? "This node is no longer attached to a live chat session.",
+        t.textMuted,
+      ),
       2,
       0,
     ).render(width),
   );
-  callout.push(
-    ...new Text(
-      paint("esc", t.accent, { bold: true }) +
-        paint(" close", t.textMuted) +
-        paint("  ·  ", t.dim) +
-        paint("ctrl+d", t.accent, { bold: true }) +
-        paint(" return to graph", t.textMuted),
-      2,
-      0,
-    ).render(width),
-  );
+  const transcriptBudget = Math.max(0, budget - callout.length);
+  const lines = transcriptBudget > 0 ? ctx.chatHost.renderBody(width, transcriptBudget) : [];
   lines.push(...callout);
   while (lines.length < budget) lines.push(blankLine(width));
   if (lines.length > budget) lines.length = budget;
@@ -111,17 +120,6 @@ function renderReadOnlyPromptArchiveBody(
   bodyLines.push(...new Text(paint("your response", t.textMuted, { bold: true }), 2, 0).render(innerWidth));
   bodyLines.push(...new Text(paint(answer, answer.startsWith("(") ? t.dim : t.text), 4, 0).render(innerWidth));
   bodyLines.push("");
-  bodyLines.push(
-    ...new Text(
-      paint("esc", t.accent, { bold: true }) +
-        paint(" close", t.textMuted) +
-        paint("  ·  ", t.dim) +
-        paint("ctrl+d", t.accent, { bold: true }) +
-        paint(" return to graph", t.textMuted),
-      2,
-      0,
-    ).render(innerWidth),
-  );
 
   const title = stage.status === "skipped" ? "QUESTION SKIPPED" : "QUESTION ASKED";
   const cardLines = renderRoundedBoxLines({
@@ -178,7 +176,7 @@ export function renderPausedBody(
   const callout: string[] = [];
   callout.push(blankLine(width));
   callout.push(
-    ...bannerLines(ctx, width, "warning", "❚❚", "PAUSED", "enter resumes · ctrl+d graph"),
+    ...bannerLines(ctx, width, "warning", "❚❚", "PAUSED", "enter resumes · ctrl+x return to graph"),
   );
   callout.push(
     ...new Text(
@@ -220,7 +218,7 @@ export function renderBlockedBody(
   );
   lines.push(
     ...new Text(
-      paint("ctrl+d", t.accent, { bold: true }) + paint(" return to graph", t.textMuted),
+      paint("ctrl+x", t.accent, { bold: true }) + paint(" return to graph", t.textMuted),
       2,
       0,
     ).render(width),

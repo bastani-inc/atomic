@@ -1,13 +1,13 @@
-import { randomUUID } from "node:crypto";
-import { APP_NAME } from "@bastani/atomic";
-import { ChainClarifyComponent, type ChainClarifyResult } from "./chain-clarify.ts";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { currentModelFullId, resolveModelCandidate } from "../shared/model-fallback.ts";
 import { collectKnownModelProviders, toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
-import { discoverAvailableSkills, normalizeSkillInput } from "../../agents/skills.ts";
+import { normalizeSkillInput } from "../../agents/skills.ts";
+import { injectSingleProgressInstruction, resolveSingleProgress, writeInitialProgressFile } from "../../shared/settings.ts";
 import { recordRun } from "../shared/run-history.ts";
 import { getSingleResultOutput, compactForegroundDetails } from "../../shared/utils.ts";
 import { updateForegroundNestedProjection } from "../shared/nested-events.ts";
-import { resolveStepBehavior } from "../../shared/settings.ts";
+import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/intercom-group.ts";
 import {
 	INTERCOM_BRIDGE_MARKER,
 	resolveSubagentIntercomTarget,
@@ -22,6 +22,7 @@ import {
 import {
 	resolveChildMaxSubagentDepth,
 	resolveSubagentDepthPolicy,
+	workflowSessionMetadataFromContext,
 	wrapForkTask,
 	type AgentProgress,
 	type ArtifactPaths,
@@ -29,7 +30,7 @@ import {
 	type SubagentToolResult,
 } from "../../shared/types.ts";
 import type { ExecutionContextData, ResolvedExecutorDeps } from "./subagent-executor-types.ts";
-import { createForegroundControlNotifier, maybeBuildForegroundIntercomReceipt, rememberForegroundRun } from "./subagent-executor-status.ts";
+import { createForegroundControlNotifier, maybeBuildForegroundIntercomReceipt, notifyDetachedForegroundChildExit, rememberForegroundRun, replaceForegroundRunChild } from "./subagent-executor-status.ts";
 
 function formatFailedSingleRunOutput(result: SingleResult, displayOutput: string): string {
 	const error = result.error || "Failed";
@@ -42,6 +43,15 @@ function formatFailedSingleRunOutput(result: SingleResult, displayOutput: string
 		lines.push("", `Output artifact: ${result.artifactPaths.outputPath}`);
 	}
 	return lines.join("\n");
+}
+
+function cleanupTransientProgress(progressDir: string | undefined, artifactsEnabled: boolean): void {
+	if (!progressDir || artifactsEnabled) return;
+	try {
+		fs.rmSync(progressDir, { recursive: true, force: true });
+	} catch {
+		// Scratch cleanup must never replace the child run's result or original error.
+	}
 }
 
 export async function runSinglePath(data: ExecutionContextData, deps: ResolvedExecutorDeps): Promise<SubagentToolResult> {
@@ -58,7 +68,6 @@ export async function runSinglePath(data: ExecutionContextData, deps: ResolvedEx
 		artifactConfig,
 		artifactsDir,
 		onUpdate,
-		sessionRoot,
 		controlConfig,
 	} = data;
 	const onControlEvent = createForegroundControlNotifier(data, deps);
@@ -78,96 +87,20 @@ export async function runSinglePath(data: ExecutionContextData, deps: ResolvedEx
 	const availableModels: ModelInfo[] = ctx.modelRegistry.getAvailable().map(toModelInfo);
 	const knownModelProviders = collectKnownModelProviders(ctx.modelRegistry);
 	let task = params.task ?? "";
-	let modelOverride: string | undefined = resolveModelCandidate(
+	const modelOverride: string | undefined = resolveModelCandidate(
 		(params.model as string | undefined) ?? agentConfig.model,
 		availableModels,
 		currentProvider,
 	);
-	let skillOverride: string[] | false | undefined = normalizeSkillInput(params.skill);
+	const skillOverride: string[] | false | undefined = normalizeSkillInput(params.skill);
 	const rawOutput = params.output !== undefined ? params.output : agentConfig.output;
-	let effectiveOutput = normalizeSingleOutputOverride(rawOutput, agentConfig.output);
+	const effectiveOutput = normalizeSingleOutputOverride(rawOutput, agentConfig.output);
 	const effectiveOutputMode = params.outputMode ?? "inline";
 	const depthPolicy = resolveSubagentDepthPolicy(ctx, deps.config.maxSubagentDepth);
 	const currentMaxSubagentDepth = depthPolicy.maxSubagentDepth;
 	const workflowStageSubagentGuard = depthPolicy.workflowStageSubagentGuard;
 	const maxSubagentDepth = resolveChildMaxSubagentDepth(currentMaxSubagentDepth, agentConfig.maxSubagentDepth);
-
-	if (params.clarify === true && ctx.hasUI) {
-		const behavior = resolveStepBehavior(agentConfig, { output: effectiveOutput, skills: skillOverride });
-		const availableSkills = discoverAvailableSkills(effectiveCwd);
-
-		const result = await ctx.ui.custom<ChainClarifyResult>(
-			(tui, theme, _kb, done) =>
-				new ChainClarifyComponent(
-					tui, theme,
-					[agentConfig],
-					[task],
-					task,
-					undefined,
-					[behavior],
-					availableModels,
-					currentProvider,
-					availableSkills,
-					done,
-					"single",
-				),
-			{ overlay: true, overlayOptions: { anchor: "center", width: 84, maxHeight: "80%" } },
-		);
-
-		if (!result || !result.confirmed) {
-			return { content: [{ type: "text", text: "Cancelled" }], details: { mode: "single", results: [] } };
-		}
-
-		task = result.templates[0]!;
-		const override = result.behaviorOverrides[0];
-		if (override?.model) modelOverride = override.model;
-		if (override?.output !== undefined) effectiveOutput = normalizeSingleOutputOverride(override.output, agentConfig.output);
-		if (override?.skills !== undefined) skillOverride = override.skills;
-
-		if (result.runInBackground) {
-			if (!deps.runtime.isAsyncAvailable()) {
-				return {
-					content: [{ type: "text", text: `Background mode requires upstream jiti for TypeScript execution but it could not be found. Ensure the ${APP_NAME}-subagents package dependencies are installed.` }],
-					isError: true,
-					details: { mode: "single" as const, results: [] },
-				};
-			}
-			const id = randomUUID();
-			const asyncCtx = {
-				pi: deps.pi,
-				cwd: ctx.cwd,
-				currentSessionId: deps.state.currentSessionId!,
-				currentModelProvider: ctx.model?.provider,
-				currentModel: currentModelFullId(ctx.model),
-			};
-			return deps.runtime.executeAsyncSingle(id, {
-				agent: params.agent!,
-				task: params.context === "fork" ? wrapForkTask(task) : task,
-				agentConfig,
-				ctx: asyncCtx,
-				availableModels,
-				knownModelProviders,
-				cwd: effectiveCwd,
-				maxOutput: params.maxOutput,
-				artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
-				artifactConfig,
-				shareEnabled,
-				sessionRoot,
-				sessionFile: sessionFileForIndex(0),
-				skills: skillOverride === false ? [] : skillOverride,
-				output: effectiveOutput,
-				outputMode: effectiveOutputMode,
-				modelOverride,
-				maxSubagentDepth,
-				workflowStageSubagentGuard,
-				worktreeSetupHook: deps.config.worktreeSetupHook,
-				worktreeSetupHookTimeoutMs: deps.config.worktreeSetupHookTimeoutMs,
-				controlConfig,
-				controlIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
-				childIntercomTarget: data.intercomBridge.active ? (agent, index) => resolveSubagentIntercomTarget(id, agent, index) : undefined,
-			});
-		}
-	}
+	const progress = resolveSingleProgress(agentConfig, params.progress, task);
 
 	if (params.context === "fork") {
 		task = wrapForkTask(task);
@@ -177,6 +110,13 @@ export async function runSinglePath(data: ExecutionContextData, deps: ResolvedEx
 	const validationError = validateFileOnlyOutputMode(effectiveOutputMode, outputPath, `Single run (${params.agent})`);
 	if (validationError) {
 		return { content: [{ type: "text", text: validationError }], isError: true, details: { mode: "single", results: [] } };
+	}
+	// Single-agent progress is isolated by run so the injected contract cannot
+	// overwrite a project's own progress.md or collide with another child.
+	const progressDir = progress ? path.join(artifactsDir, "progress", runId) : undefined;
+	if (progressDir) {
+		writeInitialProgressFile(progressDir);
+		task = injectSingleProgressInstruction(task, progressDir);
 	}
 	task = injectSingleOutputInstruction(task, outputPath);
 
@@ -222,37 +162,54 @@ export async function runSinglePath(data: ExecutionContextData, deps: ResolvedEx
 		}
 		: undefined;
 
-	const r = await deps.runtime.runSync(ctx.cwd, agents, params.agent!, task, {
-		cwd: effectiveCwd,
-		signal,
-		interruptSignal: interruptController.signal,
-		allowIntercomDetach: agentConfig.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
-		intercomEvents: deps.pi.events,
-		runId,
-		sessionDir: sessionDirForIndex(0),
-		sessionFile: sessionFileForIndex(0),
-		share: shareEnabled,
-		artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
-		artifactConfig,
-		maxOutput: params.maxOutput,
-		outputPath,
-		outputMode: effectiveOutputMode,
-		maxSubagentDepth,
-		workflowStageSubagentGuard,
-		onUpdate: forwardSingleUpdate,
-		controlConfig,
-		onControlEvent,
-		intercomSessionName: childIntercomTarget,
-		orchestratorIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
-		nestedRoute: foregroundControl?.nestedRoute,
-		index: 0,
-		modelOverride,
-		availableModels,
-		knownModelProviders,
-		preferredModelProvider: currentProvider,
-		currentModel: currentModelFullId(ctx.model),
-		skills: effectiveSkills,
-	});
+	let r: SingleResult;
+	try {
+		r = await deps.runtime.runSync(ctx.cwd, agents, params.agent!, task, {
+			cwd: effectiveCwd,
+			signal,
+			interruptSignal: interruptController.signal,
+			allowIntercomDetach: agentConfig.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
+			intercomEvents: deps.pi.events,
+			runId,
+			sessionDir: sessionDirForIndex(0),
+			sessionFile: sessionFileForIndex(0),
+			share: shareEnabled,
+			artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
+			artifactConfig,
+			maxOutput: params.maxOutput,
+			outputPath,
+			outputMode: effectiveOutputMode,
+			maxSubagentDepth,
+			workflowStageSubagentGuard,
+			workflowSessionMetadata: workflowSessionMetadataFromContext(ctx),
+			onUpdate: forwardSingleUpdate,
+			controlConfig,
+			onControlEvent,
+			intercomSessionName: childIntercomTarget,
+			orchestratorIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
+			intercomGroup: resolveChildIntercomGroup(params.group, inheritedIntercomGroup(ctx), undefined),
+			nestedRoute: foregroundControl?.nestedRoute,
+			onDetachedExit: (result) => {
+				cleanupTransientProgress(progressDir, artifactConfig.enabled);
+				if (result) {
+					replaceForegroundRunChild(deps.state, runId, 0, result);
+					notifyDetachedForegroundChildExit({ pi: deps.pi, runId, mode: "single", index: 0, result });
+				}
+			},
+			index: 0,
+			modelOverride,
+			availableModels,
+			knownModelProviders,
+			preferredModelProvider: currentProvider,
+			currentModel: currentModelFullId(ctx.model),
+			skills: effectiveSkills,
+		});
+	} catch (error) {
+		cleanupTransientProgress(progressDir, artifactConfig.enabled);
+		throw error;
+	}
+	// Detached children still own this storage until their process closes.
+	if (!r.detached) cleanupTransientProgress(progressDir, artifactConfig.enabled);
 	if (foregroundControl?.currentIndex === 0) {
 		foregroundControl.interrupt = undefined;
 		foregroundControl.currentActivityState = r.progress?.activityState;

@@ -11,7 +11,7 @@
  *  - Idle stage (empty transcript, not streaming, not settled): Enter prompts.
  *  - Running live stages: Enter steers, Ctrl+F queues a follow-up, Escape uses
  *    the host chat interrupt path.
- *  - Paused stages: Enter resumes with composer text; Ctrl+D returns to graph.
+ *  - Paused stages: Enter resumes with composer text; Ctrl+X returns to graph.
  *  - Blocked and read-only archive stages absorb mutation keystrokes.
  *  - Workflow notices and prompt/custom UI panels keep workflow-specific chrome.
  *
@@ -35,6 +35,7 @@ import { renderCustomUi } from "./stage-chat-view-custom-ui.js";
 import {
   renderFooterWithOrchestratorReturnHint,
   renderHeader,
+  renderReadOnlyArchiveFooter,
   sepRule,
 } from "./stage-chat-view-footer-status.js";
 import { handleStageChatInput } from "./stage-chat-view-input.js";
@@ -73,6 +74,7 @@ export class StageChatView implements Component, Focusable {
   private stageId!: StageChatViewContext["stageId"];
   private workflowName!: StageChatViewContext["workflowName"];
   private handle!: StageChatViewContext["handle"];
+  private postMortemUnavailableReason!: StageChatViewContext["postMortemUnavailableReason"];
   private onDetach!: StageChatViewContext["onDetach"];
   private onClose!: StageChatViewContext["onClose"];
   private requestRender!: StageChatViewContext["requestRender"];
@@ -85,6 +87,7 @@ export class StageChatView implements Component, Focusable {
   private piEditorFactory!: StageChatViewContext["piEditorFactory"];
   private getToolsExpanded!: StageChatViewContext["getToolsExpanded"];
   private setToolsExpanded!: StageChatViewContext["setToolsExpanded"];
+  private footerData!: StageChatViewContext["footerData"];
   private chatHost!: StageChatViewContext["chatHost"];
   private stageUiBroker!: StageChatViewContext["stageUiBroker"];
   private canSubmitPrompt!: StageChatViewContext["canSubmitPrompt"];
@@ -101,6 +104,7 @@ export class StageChatView implements Component, Focusable {
   private seenNoticeIds!: StageChatViewContext["seenNoticeIds"];
   private _unsubscribeStore!: StageChatViewContext["_unsubscribeStore"];
   private _unsubscribeHandle!: StageChatViewContext["_unsubscribeHandle"];
+  private _unsubscribeFooterData!: StageChatViewContext["_unsubscribeFooterData"];
   private _unregisterStageUiHost!: StageChatViewContext["_unregisterStageUiHost"];
 
   constructor(opts: StageChatViewOpts) {
@@ -127,9 +131,11 @@ export class StageChatView implements Component, Focusable {
     const workingLines = chatChromeHidden ? [] : this.chatHost.renderWorkingStatus(w);
     const usageLines = chatChromeHidden ? [] : this.chatHost.renderUsage(w);
     const editorLines = chatChromeHidden ? [] : this.chatHost.renderEditor(w);
-    const footerLines = chatChromeHidden
+    const footerLines = customUiActive || promptActive
       ? []
-      : renderFooterWithOrchestratorReturnHint(ctx, w, this.chatHost.renderFooter(w));
+      : readOnlyArchive
+        ? renderReadOnlyArchiveFooter(ctx, w)
+        : renderFooterWithOrchestratorReturnHint(ctx, w, this.chatHost.renderFooter(w));
 
     const totalRows = viewLineCount(ctx);
     const plan = planStageChatFrame({
@@ -205,6 +211,7 @@ export class StageChatView implements Component, Focusable {
     void this.stageId;
     void this.workflowName;
     void this.handle;
+    void this.postMortemUnavailableReason;
     void this.onDetach;
     void this.onClose;
     void this.requestRender;
@@ -217,6 +224,7 @@ export class StageChatView implements Component, Focusable {
     void this.piEditorFactory;
     void this.getToolsExpanded;
     void this.setToolsExpanded;
+    void this.footerData;
     void this.stageUiBroker;
     void this.canSubmitPrompt;
     void this.mountingRequestId;
@@ -229,6 +237,7 @@ export class StageChatView implements Component, Focusable {
     void this.seenNoticeIds;
     void this._unsubscribeStore;
     void this._unsubscribeHandle;
+    void this._unsubscribeFooterData;
     void this._unregisterStageUiHost;
     return this as unknown as StageChatViewContext;
   }

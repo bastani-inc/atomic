@@ -230,7 +230,7 @@ describe("renderHintRows", () => {
     const theme = deriveGraphTheme({});
     const out = renderHintRows(
       [
-        { command: "/workflow connect 0391c9c1", hint: "watch, attach & steer" },
+        { command: "/workflow connect 0391c9c1", hint: "see agents working · chat with and steer each stage" },
         { command: "/workflow status", hint: "list retained runs" },
       ],
       theme,
@@ -289,10 +289,6 @@ describe("renderChatSurfacePlainText", () => {
           inputs: { prompt: "go", count: 2 },
         },
         patterns: [/DISPATCHED/, /dispatch-workflow/, /dispatch-run-1234567890/, /prompt="go"/, /count=2/],
-      },
-      {
-        payload: { kind: "killed", run, previousStatus: "running" },
-        patterns: [/Workflow killed/, /printable-workflow/, /run-printable-1234567890/, /running → killed/],
       },
     ];
     for (const { payload, patterns } of payloads) {
@@ -358,39 +354,6 @@ describe("registerChatSurfaceRenderer", () => {
     registerChatSurfaceRenderer(replacementPi as never, deriveGraphTheme({}));
     assert.equal(replacementPi.calls, 1);
     assert.notEqual(replacementPi.renderers.get(CHAT_SURFACE_CUSTOM_TYPE), undefined);
-  });
-  test("renders killed workflow notices inline in chat", () => {
-    class ClassBackedPi {
-      readonly renderers = new Map<string, (payload: unknown) => unknown>();
-      registerMessageRenderer(event: string, renderer: (payload: unknown) => unknown): void {
-        this.renderers.set(event, renderer);
-      }
-    }
-    const pi = new ClassBackedPi();
-    registerChatSurfaceRenderer(pi as never, deriveGraphTheme({}));
-    const renderer = pi.renderers.get(CHAT_SURFACE_CUSTOM_TYPE);
-    assert.notEqual(renderer, undefined);
-    const component = renderer!({
-      details: {
-        kind: "killed",
-        run: {
-          id: "abc12345-0000-0000-0000-000000000000",
-          name: "demo-kill",
-          inputs: {},
-          status: "running",
-          stages: [{ id: "s1", name: "plan", status: "running", parentIds: [], toolEvents: [] }],
-          startedAt: 1000,
-        },
-        previousStatus: "running",
-      },
-    }) as { render(width: number): string[] };
-    const rendered = stripAnsi(component.render(72).join("\n"));
-    assert.match(rendered, /Workflow killed/);
-    assert.match(rendered, /demo-kill/);
-    assert.doesNotMatch(rendered, /removed from live history/);
-    assert.match(rendered, /retained/i);
-    assert.match(rendered, /read-only inspection/i);
-    assert.doesNotMatch(rendered, /close/);
   });
   test("status/detail cards freeze elapsed at creation so scrollback doesn't tick on re-render", () => {
     // Regression for the whole-screen flicker class fixed for the tool-result

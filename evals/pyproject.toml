@@ -10,3 +10,13 @@ dependencies = [
 
 [tool.uv.sources]
 datacurve-pier = { path = "vendor/pier", editable = true }
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.39.9",
+    "pytest>=8.4.2",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

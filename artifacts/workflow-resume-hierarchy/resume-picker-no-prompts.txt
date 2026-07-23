@@ -1,0 +1,50 @@
+
+   ██████▙                  ▟██████    Atomic v0.0.0
+    ██████▙                ▟██████░░   (anthropic) claude-fable-5 high
+     ██████▙              ▟██████░░    ~/Documents/projects/atomic-worktrees/workflow-resume-hierarchy
+      ██████▙            ▟██████░░
+       ████████████████████████░░
+        ██████▛░░░░░░░░▜██████░░
+         ██████▛      ▜██████░░
+          ██████▛    ▜██████░░
+           ██████▛  ▜██████░░
+            ░████████████░░░
+              ░░░░░░░░░░░░
+
+RESOURCES AGENTS.md · 18 skills · 14 prompts
+
+
+ Warning: Anthropic subscription auth is active. Third-party harness usage draws from extra usage and is billed per token, not your Claude plan limits. Manage
+ extra usage at https://claude.ai/settings/usage.
+
+ ⠙ Working...
+
+                                                                                                                                 $0.000 (sub) • 0.0%/1.0M (auto)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Resume Session (Current Folder)                                                                              ◉ Current Folder | ○ All  Name: All  Sort: Threaded
+tab scope · re:<pattern> regex · "phrase" exact
+ctrl+s Sort · ctrl+n Named · ctrl+d Delete · ctrl+p Path (off)
+
+>
+
+› resume-hierarchy-e2e  paused  11 checkpoints                                                                                      Durable workflow runs 11 now
+  goal  crashed  4 checkpoints                                                                                                       Durable workflow runs 4 19m
+  publish-release  ✓ completed  35 checkpoints                                                                                    Completed workflow runs 35 12h
+  dummy-structured-followup  ✓ completed  3 checkpoints                                                                            Completed workflow runs 3 13h
+  goal  ✓ completed  26 checkpoints                                                                                               Completed workflow runs 26 14h
+  goal  ✓ completed  47 checkpoints                                                                                               Completed workflow runs 47 14h
+  goal  ✓ completed  25 checkpoints                                                                                               Completed workflow runs 25 14h
+  goal  ✓ completed  26 checkpoints                                                                                               Completed workflow runs 26 14h
+  goal  ✓ completed  47 checkpoints                                                                                               Completed workflow runs 47 14h
+  goal  ✓ completed  25 checkpoints                                                                                               Completed workflow runs 25 15h
+  (1/167)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+(anthropic) claude-fable-5 high • ~/Documents/projects/atomic-worktrees/workflow-resume-hierarchy
+
+
+
+
+

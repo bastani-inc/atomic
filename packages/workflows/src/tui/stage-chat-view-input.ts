@@ -5,6 +5,10 @@ import {
 } from "./prompt-card.js";
 import { APP_ACTION, isKeybindingsLike, matchesAction } from "./keybindings-adapter.js";
 import {
+  parseTerminalMouseInput,
+  terminalMouseWheelDirection,
+} from "./mouse-input.js";
+import {
   setComponentFocused,
   setEditorFocused,
 } from "./stage-chat-view-render-helpers.js";
@@ -30,12 +34,21 @@ export function handleStageChatInput(
   ctx: StageChatViewContext,
   data: string,
 ): boolean {
+  if (matchesKey(data, Key.ctrl("x"))) {
+    if (ctx.mountedCustomUi) releaseMountedCustomUi(ctx);
+    else {
+      const stage = currentStage(ctx);
+      syncPromptState(ctx, stage?.pendingPrompt);
+      recordCurrentPromptDraft(ctx);
+    }
+    ctx.onDetach();
+    return true;
+  }
   if (matchesKey(data, Key.ctrl("t"))) {
     ctx.mouseScrollCaptureEnabled = !ctx.mouseScrollCaptureEnabled;
     ctx.requestRender?.();
     return true;
   }
-  if (handleToolsExpandInput(ctx, data)) return true;
   if (ctx.mountedCustomUi) {
     return handleMountedCustomUiInput(ctx, data);
   }
@@ -43,17 +56,13 @@ export function handleStageChatInput(
   syncPromptState(ctx, stage?.pendingPrompt);
   const readOnlyArchive = isReadOnlyArchive(ctx, stage);
   const readOnlyPromptArchive = readOnlyArchive && stage?.promptFootprint !== undefined;
-  if (matchesKey(data, Key.ctrl("d"))) {
-    if (!ctx.promptState && ctx.chatHost.hasInputText()) return ctx.chatHost.handleInput(data);
-    recordCurrentPromptDraft(ctx);
-    ctx.onDetach();
-    return true;
-  }
+
   if (ctx.promptState) {
     if (handlePromptScrollInput(ctx, data, ctx.promptEditor === null)) return true;
     handlePromptInput(ctx, data);
     return true;
   }
+  if (handleToolsExpandInput(ctx, data)) return true;
   if (readOnlyPromptArchive && handlePromptScrollInput(ctx, data, true)) {
     return true;
   }
@@ -108,14 +117,7 @@ function handleMountedCustomUiInput(
     ctx.requestRender?.();
     return true;
   }
-  if (matchesKey(data, Key.ctrl("d"))) {
-    // Detach stops *viewing* the stage; it does not cancel a pending human-input
-    // request. Release the local display only — the request stays pending and
-    // is re-displayed when the user re-attaches.
-    releaseMountedCustomUi(ctx);
-    ctx.onDetach();
-    return true;
-  }
+
   if (matchesKey(data, Key.ctrl("c"))) {
     // Close hides the overlay; the background run — and its pending human-input
     // request — keep living. Release the local display only.
@@ -184,12 +186,18 @@ function handlePromptScrollInput(
   data: string,
   includeKeyboard = true,
 ): boolean {
-  const wheelDeltaRows = mouseWheelDeltaRows(data);
+  const mouse = parseTerminalMouseInput(data);
+  const wheelDirection = mouse ? terminalMouseWheelDirection(mouse) : null;
+  const wheelDeltaRows = wheelDirection === "up"
+    ? -PROMPT_SCROLL_STEP_ROWS
+    : wheelDirection === "down"
+      ? PROMPT_SCROLL_STEP_ROWS
+      : 0;
   if (wheelDeltaRows !== 0) {
     scrollPromptBy(ctx, wheelDeltaRows);
     return true;
   }
-  if (isMouseSequence(data)) return true;
+  if (mouse) return true;
   if (!includeKeyboard) return false;
   if (matchesKey(data, "pageUp")) {
     scrollPromptBy(ctx, -promptPageSize(ctx));
@@ -218,25 +226,4 @@ function scrollPromptBy(ctx: StageChatViewContext, deltaRows: number): void {
     Math.min(ctx.promptMaxScroll, ctx.promptScrollOffset + deltaRows),
   );
   ctx.requestRender?.();
-}
-
-function mouseWheelDeltaRows(data: string): number {
-  const sgr = data.match(/^\x1b\[<(\d+);\d+;\d+M$/);
-  if (sgr) return wheelDeltaForButtonCode(Number.parseInt(sgr[1]!, 10));
-  if (data.startsWith("\x1b[M") && data.length >= 6) {
-    return wheelDeltaForButtonCode(data.charCodeAt(3) - 32);
-  }
-  return 0;
-}
-
-function wheelDeltaForButtonCode(code: number): number {
-  if ((code & 64) === 0) return 0;
-  const direction = code & 3;
-  if (direction === 0) return -PROMPT_SCROLL_STEP_ROWS;
-  if (direction === 1) return PROMPT_SCROLL_STEP_ROWS;
-  return 0;
-}
-
-function isMouseSequence(data: string): boolean {
-  return /^\x1b\[<\d+;\d+;\d+[mM]$/.test(data) || data.startsWith("\x1b[M");
 }

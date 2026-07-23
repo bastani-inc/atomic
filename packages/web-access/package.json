@@ -31,7 +31,7 @@
   },
   "peerDependencies": {
     "@bastani/atomic": "*",
-    "@earendil-works/pi-tui": "^0.80.3"
+    "@earendil-works/pi-tui": "^0.81.1"
   },
   "peerDependenciesMeta": {
     "@bastani/atomic": {
@@ -43,7 +43,7 @@
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
-    "linkedom": "^0.18.12",
+    "linkedom": "^0.18.13",
     "p-limit": "^7.3.0",
     "turndown": "^7.2.0",
     "unpdf": "^1.6.2"

@@ -61,13 +61,14 @@ interface CursorVariantGroup {
 const CURSOR_FALLBACK_RAW_MODELS = rawFallbackModels satisfies readonly CursorUsableModel[];
 const PARSEABLE_EFFORTS: readonly Exclude<CursorEffort, "default">[] = ["none", "low", "medium", "high", "xhigh", "max"];
 const EFFORT_ORDER: readonly CursorEffort[] = ["none", "low", "default", "medium", "high", "xhigh", "max"];
-const THINKING_LEVELS: readonly ThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh"];
+const THINKING_LEVELS: readonly ThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh", "max"];
 const THINKING_LEVEL_EFFORT_PREFERENCES: Record<ThinkingLevel, readonly CursorEffort[]> = {
 	minimal: ["none", "low", "default"],
 	low: ["low", "none", "default"],
 	medium: ["medium", "default", "low"],
 	high: ["high", "medium", "default"],
 	xhigh: ["max", "xhigh"],
+	max: ["max"],
 };
 
 const ESTIMATED_CONTEXT_WINDOW = 200_000;
@@ -277,7 +278,7 @@ function buildCursorThinkingLevelMap(group: CursorVariantGroup, effortVariants: 
 	// minimal/least-effort variant because `off` means minimum reasoning.
 	const hasRealBaseId = group.variants.some((variant) => variant.id === group.primaryId);
 	if (!hasRealBaseId) {
-		const defaultVariant = map.minimal ?? map.low ?? map.medium ?? map.high ?? map.xhigh ?? null;
+		const defaultVariant = map.minimal ?? map.low ?? map.medium ?? map.high ?? map.xhigh ?? map.max ?? null;
 		if (defaultVariant) map.off = defaultVariant;
 	}
 	return map;
@@ -289,8 +290,10 @@ function buildThinkingLevelMap(effortVariants: ReadonlyMap<CursorEffort, string>
 		low: chooseEffortVariant(effortVariants, THINKING_LEVEL_EFFORT_PREFERENCES.low, primaryId),
 		medium: chooseEffortVariant(effortVariants, THINKING_LEVEL_EFFORT_PREFERENCES.medium, primaryId),
 		high: chooseEffortVariant(effortVariants, THINKING_LEVEL_EFFORT_PREFERENCES.high, primaryId),
-		// `xhigh` should only be offered when Cursor advertises a true xhigh/max variant.
+		// `xhigh` can use Cursor's strongest advertised xhigh/max variant, while
+		// `max` is distinct and must not be synthesized from an xhigh-only group.
 		xhigh: chooseCursorXhighVariant(effortVariants),
+		max: effortVariants.get("max") ?? null,
 	};
 }
 

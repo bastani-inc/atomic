@@ -2,8 +2,10 @@ import type { ExtensionContext } from "@bastani/atomic";
 import { Container, Text, type Component } from "@earendil-works/pi-tui";
 import * as path from "node:path";
 import { MAX_WIDGET_JOBS, WIDGET_KEY, type AsyncJobState } from "../shared/types.ts";
-import { getTermWidth, RUNNING_ANIMATION_MS, runningGlyph, truncLine, type Theme } from "./render-layout.ts";
+import { getTermWidth, runningPulseGlyph, truncLine, type Theme } from "./render-layout.ts";
 import { themeBold } from "./render-status-progress.ts";
+import { advanceResultPulseFrame } from "./render-result-animation.ts";
+import { widgetRenderKey } from "./render-stable-output.ts";
 import {
 	buildSingleWidgetLines,
 	compactSingleWidgetLines,
@@ -13,7 +15,6 @@ import {
 import {
 	widgetActivity,
 	widgetJobName,
-	widgetJobsRunningSeed,
 	widgetStats,
 	widgetStatusGlyph,
 } from "./render-event-formatting.ts";
@@ -26,22 +27,24 @@ class LiveWidgetComponent implements Component {
 		private readonly theme: Theme,
 		private readonly getExpanded: () => boolean,
 		private readonly getNow: () => number,
+		private readonly getPulseFrame: () => number | undefined,
 	) {}
 
 	render(width: number): string[] {
 		const jobs = this.getJobs();
 		const expanded = this.getExpanded();
 		const now = this.getNow();
-		const lines = this.buildLines(jobs, width, expanded, now);
+		const pulseFrame = this.getPulseFrame();
+		const lines = this.buildLines(jobs, width, expanded, now, pulseFrame);
 		this.container.clear();
 		for (const line of fitWidgetLineBudget(lines, this.theme, width, expanded)) this.container.addChild(new Text(line, 1, 0));
 		return this.container.render(width);
 	}
 
-	private buildLines(jobs: AsyncJobState[], width: number, expanded: boolean, now: number): string[] {
-		if (expanded) return buildWidgetLines(jobs, this.theme, width, true, now);
-		if (jobs.length === 1) return compactSingleWidgetLines(jobs[0]!, this.theme, width, now);
-		return buildWidgetLines(jobs, this.theme, width, false, now);
+	private buildLines(jobs: AsyncJobState[], width: number, expanded: boolean, now: number, pulseFrame: number | undefined): string[] {
+		if (expanded) return buildWidgetLines(jobs, this.theme, width, true, now, pulseFrame);
+		if (jobs.length === 1) return compactSingleWidgetLines(jobs[0]!, this.theme, width, now, pulseFrame);
+		return buildWidgetLines(jobs, this.theme, width, false, now, pulseFrame);
 	}
 
 	invalidate(): void {
@@ -49,54 +52,89 @@ class LiveWidgetComponent implements Component {
 	}
 }
 
-function buildWidgetComponent(getJobs: () => AsyncJobState[], getExpanded: () => boolean, getNow: () => number): (_tui: unknown, theme: Theme) => Component {
-	return (_tui, theme) => new LiveWidgetComponent(getJobs, theme, getExpanded, getNow);
+function buildWidgetComponent(getJobs: () => AsyncJobState[], getExpanded: () => boolean, getNow: () => number, getPulseFrame: () => number | undefined): (_tui: unknown, theme: Theme) => Component {
+	return (_tui, theme) => new LiveWidgetComponent(getJobs, theme, getExpanded, getNow, getPulseFrame);
 }
 
 interface RenderRequestingContext {
 	ui: ExtensionContext["ui"] & { requestRender?: () => void };
 }
 
-// There is only ever one async-agents widget per host process, so the widget
-// ticker and mounted component read their driving context/jobs from module-level
-// singletons instead of remounting the widget for every visible update.
-let latestWidgetCtx: ExtensionContext | undefined;
-let latestWidgetJobs: AsyncJobState[] = [];
-let latestWidgetFrameNow = 0;
-let latestWidgetExpanded = false;
-let widgetTimer: ReturnType<typeof setInterval> | undefined;
-let mountedWidgetCtx: ExtensionContext | undefined;
-let mountedWidgetOwnerKey: string | undefined;
-let widgetMounted = false;
-
-function getLatestWidgetJobs(): AsyncJobState[] {
-	return latestWidgetJobs;
+interface WidgetAnimationState {
+	latestCtx?: ExtensionContext;
+	latestJobs: AsyncJobState[];
+	frameNow: number;
+	expanded: boolean;
+	snapshotKey?: string;
+	pulseFrame?: number;
+	mountedCtx?: ExtensionContext;
+	mountedOwnerKey?: string;
+	surfaceKey?: object;
+	mounted: boolean;
 }
 
-function getLatestWidgetFrameNow(): number {
-	return latestWidgetFrameNow;
+interface WidgetSurfaceState {
+	activeOwner?: object;
 }
 
-function getLatestWidgetExpanded(): boolean {
-	// LiveWidgetComponent re-renders outside a specific renderWidget() call, so
-	// remember the last expansion state observed from a live host UI. Workflow
-	// stage-node detach can briefly repaint the mounted singleton with a stale or
-	// no-UI context before the next subagent status update refreshes it; falling
-	// back to the cached value avoids a transient collapse while jobs keep running.
-	if (!latestWidgetCtx?.hasUI) return latestWidgetExpanded;
-	const expanded = latestWidgetCtx.ui.getToolsExpanded?.();
-	if (typeof expanded === "boolean") latestWidgetExpanded = expanded;
-	return latestWidgetExpanded;
+interface WidgetRegistry {
+	states: WeakMap<object, WidgetAnimationState>;
+	surfaces: WeakMap<object, WidgetSurfaceState>;
 }
 
-function clearLatestWidgetState(): void {
-	latestWidgetCtx = undefined;
-	latestWidgetJobs = [];
-	latestWidgetFrameNow = 0;
-	latestWidgetExpanded = false;
-	mountedWidgetCtx = undefined;
-	mountedWidgetOwnerKey = undefined;
-	widgetMounted = false;
+const defaultWidgetOwner = {};
+
+function getWidgetRegistry(): WidgetRegistry {
+	const key = "__piSubagentWidgetRegistry";
+	const globalStore = globalThis as Record<string, unknown>;
+	const existing = globalStore[key] as WidgetRegistry | undefined;
+	if (existing?.states instanceof WeakMap && existing.surfaces instanceof WeakMap) return existing;
+	const registry: WidgetRegistry = { states: new WeakMap(), surfaces: new WeakMap() };
+	globalStore[key] = registry;
+	return registry;
+}
+
+function getWidgetState(owner: object): WidgetAnimationState {
+	const registry = getWidgetRegistry();
+	const existing = registry.states.get(owner);
+	if (existing) return existing;
+	const state: WidgetAnimationState = {
+		latestJobs: [],
+		frameNow: 0,
+		expanded: false,
+		mounted: false,
+	};
+	registry.states.set(owner, state);
+	return state;
+}
+
+function getSurfaceState(surfaceKey: object): WidgetSurfaceState {
+	const registry = getWidgetRegistry();
+	const existing = registry.surfaces.get(surfaceKey);
+	if (existing) return existing;
+	const surface = {};
+	registry.surfaces.set(surfaceKey, surface);
+	return surface;
+}
+
+function getExpanded(state: WidgetAnimationState): boolean {
+	if (!state.latestCtx?.hasUI) return state.expanded;
+	const expanded = state.latestCtx.ui.getToolsExpanded?.();
+	if (typeof expanded === "boolean") state.expanded = expanded;
+	return state.expanded;
+}
+
+function clearWidgetState(state: WidgetAnimationState): void {
+	state.latestCtx = undefined;
+	state.latestJobs = [];
+	state.frameNow = 0;
+	state.expanded = false;
+	state.snapshotKey = undefined;
+	state.pulseFrame = undefined;
+	state.mountedCtx = undefined;
+	state.mountedOwnerKey = undefined;
+	state.surfaceKey = undefined;
+	state.mounted = false;
 }
 
 function getWidgetOwnerKey(ctx: ExtensionContext): string {
@@ -127,6 +165,28 @@ function getWidgetOwnerKey(ctx: ExtensionContext): string {
 	return `${sessionOwner}|cwd:${cwdOwner}`;
 }
 
+function widgetStatusText(jobs: AsyncJobState[]): string | undefined {
+	if (jobs.length === 0) return undefined;
+	const counts = new Map<string, number>();
+	for (const job of jobs) counts.set(job.status, (counts.get(job.status) ?? 0) + 1);
+	const ordered = ["running", "queued", "complete", "failed", "paused"];
+	const parts = ordered
+		.map((status) => {
+			const count = counts.get(status) ?? 0;
+			return count > 0 ? `${count} ${status}` : undefined;
+		})
+		.filter((part): part is string => part !== undefined);
+	return `Async agents: ${parts.join(", ")}`;
+}
+
+function setWidgetStatus(ctx: ExtensionContext, jobs: AsyncJobState[]): void {
+	try {
+		ctx.ui.setStatus?.(WIDGET_KEY, widgetStatusText(jobs));
+	} catch {
+		// Status mirroring must never prevent the primary widget render path.
+	}
+}
+
 function requestWidgetRender(ctx: ExtensionContext): void {
 	(ctx as RenderRequestingContext).ui.requestRender?.();
 }
@@ -140,65 +200,56 @@ function unmountWidgetBestEffort(ctx: ExtensionContext | undefined): void {
 		// reload/session rebinding, but local state still needs to move on so the
 		// next status update can mount cleanly on the active UI context.
 	}
-}
-
-function hasAnimatedWidgetJobs(jobs: AsyncJobState[]): boolean {
-	// Animate while any job — or any of its nested steps — is still running so the
-	// header/step spinners never freeze before the work actually settles.
-	return jobs.some((job) => job.status === "running" || job.steps?.some((step) => step.status === "running"));
-}
-
-function refreshAnimatedWidget(): void {
-	if (!latestWidgetCtx?.hasUI) return;
 	try {
-		latestWidgetFrameNow = Date.now();
-		requestWidgetRender(latestWidgetCtx);
+		ctx.ui.setStatus?.(WIDGET_KEY, undefined);
 	} catch {
-		// A stale render context means the cosmetic ticker can no longer update the
-		// mounted widget safely; tear it down best-effort and let the next status
-		// update remount on the active host context.
-		stopWidgetAnimation();
+		// Status mirroring cleanup must never block primary widget teardown.
 	}
 }
 
-function ensureWidgetAnimation(): void {
-	if (widgetTimer) return;
-	widgetTimer = setInterval(() => {
-		if (!hasAnimatedWidgetJobs(latestWidgetJobs)) {
-			stopWidgetAnimation();
-			return;
-		}
-		refreshAnimatedWidget();
-	}, RUNNING_ANIMATION_MS);
-	widgetTimer.unref?.();
+function widgetSnapshotKey(jobs: AsyncJobState[]): string {
+	return jobs.map(widgetRenderKey).join("\n");
 }
 
-// Stop only the ticker, keeping the last-rendered widget context/jobs intact.
-function stopWidgetTicker(): void {
-	if (widgetTimer) {
-		clearInterval(widgetTimer);
-		widgetTimer = undefined;
+function refreshWidgetSnapshot(state: WidgetAnimationState, jobs: AsyncJobState[]): void {
+	const snapshotKey = widgetSnapshotKey(jobs);
+	if (snapshotKey === state.snapshotKey) return;
+	state.snapshotKey = snapshotKey;
+	state.frameNow = Date.now();
+	state.pulseFrame = advanceResultPulseFrame(state.pulseFrame);
+}
+
+function releaseMountedWidget(state: WidgetAnimationState, owner: object): void {
+	if (state.mounted) unmountWidgetBestEffort(state.mountedCtx);
+	if (state.surfaceKey) {
+		const surface = getSurfaceState(state.surfaceKey);
+		if (surface.activeOwner === owner) surface.activeOwner = undefined;
 	}
+	clearWidgetState(state);
 }
 
-// Full teardown: stop the ticker, clear the mounted widget if possible, and
-// forget the driving context/jobs entirely.
-export function stopWidgetAnimation(): void {
-	stopWidgetTicker();
-	if (widgetMounted) unmountWidgetBestEffort(mountedWidgetCtx);
-	clearLatestWidgetState();
+// Full teardown. Explicit API ownership is authoritative; logical context
+// matching only protects context-driven teardown from stale session wrappers.
+export function stopWidgetAnimation(ownerCtx?: ExtensionContext, owner: object = defaultWidgetOwner): void {
+	const state = getWidgetState(owner);
+	if (ownerCtx && state.mounted && state.mountedOwnerKey !== getWidgetOwnerKey(ownerCtx)) return;
+	if (state.surfaceKey && getSurfaceState(state.surfaceKey).activeOwner !== owner) {
+		clearWidgetState(state);
+		return;
+	}
+	releaseMountedWidget(state, owner);
 }
 
-export function buildWidgetLines(jobs: AsyncJobState[], theme: Theme, width = getTermWidth(), expanded = false, now: number = Date.now()): string[] {
+export function buildWidgetLines(jobs: AsyncJobState[], theme: Theme, width = getTermWidth(), expanded = false, now: number = Date.now(), pulseFrame?: number): string[] {
 	if (jobs.length === 0) return [];
-	if (jobs.length === 1) return buildSingleWidgetLines(jobs[0]!, theme, width, expanded, now);
+	if (jobs.length === 1) return buildSingleWidgetLines(jobs[0]!, theme, width, expanded, now, pulseFrame);
 	const running = jobs.filter((job) => job.status === "running");
 	const queued = jobs.filter((job) => job.status === "queued");
 	const finished = jobs.filter((job) => job.status !== "running" && job.status !== "queued");
 
 	const lines: string[] = [];
 	const hasActive = running.length > 0 || queued.length > 0;
-	const headerGlyph = running.length > 0 ? runningGlyph(widgetJobsRunningSeed(running), now) : hasActive ? "●" : "○";
+	const headerGlyph = running.length > 0 ? runningPulseGlyph(pulseFrame) : hasActive ? "●" : "○";
 	lines.push(truncLine(`${theme.fg(hasActive ? "accent" : "dim", headerGlyph)} ${theme.fg(hasActive ? "accent" : "dim", "Async agents")} ${theme.fg("dim", "· background")}`, width));
 
 	const items: string[][] = [];
@@ -211,9 +262,9 @@ export function buildWidgetLines(jobs: AsyncJobState[], theme: Theme, width = ge
 		if (slots <= 0) { hiddenRunning++; continue; }
 		const stats = widgetStats(job, theme);
 		items.push([
-			`${widgetStatusGlyph(job, theme, now)} ${themeBold(theme, widgetJobName(job))}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`,
+			`${widgetStatusGlyph(job, theme, pulseFrame)} ${themeBold(theme, widgetJobName(job))}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`,
 			`  ${theme.fg("dim", `⎿  ${widgetActivity(job)}`)}`,
-			...widgetParallelAgentDetails(job, theme, expanded, width, now),
+			...widgetParallelAgentDetails(job, theme, expanded, width, now, pulseFrame),
 		]);
 		slots--;
 	}
@@ -228,9 +279,9 @@ export function buildWidgetLines(jobs: AsyncJobState[], theme: Theme, width = ge
 		if (slots <= 0) { hiddenFinished++; continue; }
 		const stats = widgetStats(job, theme);
 		items.push([
-			`${widgetStatusGlyph(job, theme, now)} ${themeBold(theme, widgetJobName(job))}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`,
+			`${widgetStatusGlyph(job, theme, pulseFrame)} ${themeBold(theme, widgetJobName(job))}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`,
 			`  ${theme.fg("dim", `⎿  ${widgetActivity(job)}`)}`,
-			...widgetParallelAgentDetails(job, theme, expanded, width, now),
+			...widgetParallelAgentDetails(job, theme, expanded, width, now, pulseFrame),
 		]);
 		slots--;
 	}
@@ -259,60 +310,54 @@ export function buildWidgetLines(jobs: AsyncJobState[], theme: Theme, width = ge
 	return lines;
 }
 
-/**
- * Render the async jobs widget
- */
-export function renderWidget(ctx: ExtensionContext, jobs: AsyncJobState[]): void {
+/** Render the async jobs widget for one ExtensionAPI owner. */
+export function renderWidget(ctx: ExtensionContext, jobs: AsyncJobState[], owner: object = defaultWidgetOwner): void {
+	const state = getWidgetState(owner);
 	const ownerKey = getWidgetOwnerKey(ctx);
+	const requestedSurfaceKey = ctx.ui.setWidget;
+	const requestedSurface = getSurfaceState(requestedSurfaceKey);
 	if (jobs.length === 0) {
-		if (widgetMounted && mountedWidgetOwnerKey !== ownerKey) {
-			// With no visible job frame, stale-owner empty updates and newly-active
-			// empty owners are indistinguishable here. Preserve active-widget safety;
-			// host session disposal owns cross-owner empty-session teardown.
-			return;
-		}
-		stopWidgetAnimation();
+		if (requestedSurface.activeOwner && requestedSurface.activeOwner !== owner) return;
+		if (state.surfaceKey && getSurfaceState(state.surfaceKey).activeOwner !== owner) return;
+		if (state.mounted && state.mountedOwnerKey !== ownerKey) return;
+		if (ctx.hasUI) setWidgetStatus(ctx, []);
+		stopWidgetAnimation(ctx, owner);
 		return;
 	}
 	if (!ctx.hasUI) {
-		stopWidgetAnimation();
+		stopWidgetAnimation(ctx, owner);
 		return;
 	}
-	latestWidgetCtx = ctx;
-	latestWidgetJobs = [...jobs];
-	latestWidgetFrameNow = Date.now();
-	if (widgetMounted && mountedWidgetOwnerKey !== ownerKey) {
-		// Session rebinding can leave the previous host UI alive briefly; clear the
-		// old mount before installing the singleton widget on the new owner/context.
-		unmountWidgetBestEffort(mountedWidgetCtx);
-		mountedWidgetCtx = undefined;
-		mountedWidgetOwnerKey = undefined;
-		widgetMounted = false;
+	// Workflow stages forward the host's setWidget function, which identifies the
+	// shared widget surface. A stage cannot replace a parent already active there.
+	if (!state.mounted && requestedSurface.activeOwner && requestedSurface.activeOwner !== owner) return;
+	state.latestCtx = ctx;
+	state.latestJobs = [...jobs];
+	refreshWidgetSnapshot(state, jobs);
+	if (state.mounted && state.mountedOwnerKey !== ownerKey) {
+		releaseMountedWidget(state, owner);
+		state.latestCtx = ctx;
+		state.latestJobs = [...jobs];
+		refreshWidgetSnapshot(state, jobs);
 	}
-	if (!widgetMounted) {
-		// belowEditor: the widget animates a running glyph / elapsed labels on a
-		// timer. pi-tui full-clears the screen+scrollback whenever a changed line
-		// sits above the viewport fold, so an aboveEditor widget flickers once the
-		// bottom region grows tall and pushes it above the fold. Rendering below the
-		// editor keeps the live line within the bottom viewport (flicker-free), and
-		// matches the workflow companion widget's placement (#1109).
-		ctx.ui.setWidget(WIDGET_KEY, buildWidgetComponent(getLatestWidgetJobs, getLatestWidgetExpanded, getLatestWidgetFrameNow), {
-			placement: "belowEditor",
-		});
-		mountedWidgetCtx = ctx;
-		mountedWidgetOwnerKey = ownerKey;
-		widgetMounted = true;
+	setWidgetStatus(ctx, jobs);
+	if (!state.mounted) {
+		const surface = getSurfaceState(requestedSurfaceKey);
+		if (surface.activeOwner && surface.activeOwner !== owner) return;
+		ctx.ui.setWidget(WIDGET_KEY, buildWidgetComponent(
+			() => state.latestJobs,
+			() => getExpanded(state),
+			() => state.frameNow,
+			() => state.pulseFrame,
+		), { placement: "belowEditor" });
+		state.mountedCtx = ctx;
+		state.mountedOwnerKey = ownerKey;
+		state.surfaceKey = requestedSurfaceKey;
+		state.mounted = true;
+		surface.activeOwner = owner;
 	} else {
-		// The mounted widget reads latestWidgetJobs via getLatestWidgetJobs(), so a
-		// visible->visible update only needs to ask the host to render in place. Keep
-		// teardown pointed at the freshest same-owner wrapper because older wrappers
-		// can go stale after host session/context rebinding.
-		mountedWidgetCtx = ctx;
-		mountedWidgetOwnerKey = ownerKey;
+		state.mountedCtx = ctx;
+		state.mountedOwnerKey = ownerKey;
 		requestWidgetRender(ctx);
 	}
-	// Keep the just-rendered ctx/jobs as the last-rendered state; only the ticker
-	// is conditional on whether anything is still animating.
-	if (hasAnimatedWidgetJobs(jobs)) ensureWidgetAnimation();
-	else stopWidgetTicker();
 }

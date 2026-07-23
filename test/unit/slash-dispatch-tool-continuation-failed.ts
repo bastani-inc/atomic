@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { describe, test } from "bun:test";
 import {
+    installSlashDispatchTestHooks,
     assert,
     parseWorkflowArgs,
     tokenizeWorkflowArgs,
@@ -63,13 +64,14 @@ import type {
     StageControlHandle,
 } from "./slash-dispatch-utils.js";
 
+installSlashDispatchTestHooks();
+
 describe("tool run-control actions", () => {
     function makeToolHandler() {
         const registry = createRegistry([]);
         const runtime = createExtensionRuntime({ registry });
         return makeExecuteWorkflowTool(
             runtime,
-            () => undefined,
             () => undefined,
         );
     }
@@ -94,7 +96,6 @@ describe("tool run-control actions", () => {
         return {
             handler: makeExecuteWorkflowTool(
                 runtime,
-                () => undefined,
                 () => undefined,
             ),
             wasDispatched: () => dispatched,
@@ -201,7 +202,6 @@ describe("tool run-control actions", () => {
         });
         const handler = makeExecuteWorkflowTool(
             runtime,
-            () => undefined,
             () => undefined,
         );
 

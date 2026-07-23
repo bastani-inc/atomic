@@ -37,18 +37,34 @@ export const FILE_ONLY_OUTPUT = "file-only" satisfies WorkflowOutputMode;
 export const PLANNER_MODEL_CONFIG = {
   model: "anthropic/claude-fable-5:high",
   fallbackModels: [
+    "openai-codex/gpt-5.6-sol:xhigh",
+    "github-copilot/gpt-5.6-sol:xhigh",
+    "openai/gpt-5.6-sol:xhigh",
+    "kimi-coding/k3:max",
+    "moonshotai/kimi-k3:max",
+    "moonshotai-cn/kimi-k3:max",
     "openai-codex/gpt-5.5:xhigh",
     "github-copilot/gpt-5.5:xhigh",
     "openai/gpt-5.5:xhigh",
     "github-copilot/claude-opus-4.8 (1m):high",
     "anthropic/claude-opus-4-8:high",
+    "cursor/claude-fable-5:high",
+    "cursor/gpt-5.6-sol:xhigh",
+    "cursor/gpt-5.5:high",
+    "cursor/claude-opus-4-8-thinking:high",
+    "xai/grok-4.5:high",
+    "cursor/grok-4.5:high",
     "zai/glm-5.2:xhigh",
     "zai-coding-cn/glm-5.2:xhigh",
+    "cursor/glm-5.2",
     "openrouter/anthropic/claude-fable-5:high",
+    "openrouter/openai/gpt-5.6-sol:xhigh",
+    "openrouter/moonshotai/kimi-k3:max",
     "openrouter/sakana/fugu-ultra:high",
     "openrouter/openai/gpt-5.5:xhigh",
     "openrouter/anthropic/claude-opus-4-8:high",
-    "openrouter/z-ai/glm-5.2:xhigh"
+    "openrouter/x-ai/grok-4.5",
+    "openrouter/z-ai/glm-5.2:xhigh",
   ],
   excludedTools: ["ask_user_question"],
 } as const;
@@ -58,16 +74,27 @@ export const PLANNER_MODEL_CONFIG = {
 // and glm-5.2:high (36%/$2.84) back it up; unbenchmarked minis/haiku/flash
 // are excluded.
 export const EXPLORER_MODEL_CONFIG = {
-  model: "openai-codex/gpt-5.5:low",
+  model: "openai-codex/gpt-5.6-terra:high",
   fallbackModels: [
+    "github-copilot/gpt-5.6-terra:high",
+    "openai/gpt-5.6-terra:high",
+    "openai-codex/gpt-5.5:low",
     "github-copilot/gpt-5.5:low",
     "openai/gpt-5.5:low",
     "github-copilot/claude-opus-4.8 (1m):low",
     "anthropic/claude-opus-4-8:low",
+    "cursor/gpt-5.6-terra:high",
+    "cursor/gpt-5.5:low",
+    "cursor/claude-opus-4-8-thinking:low",
+    "xai/grok-4.5:high",
+    "cursor/grok-4.5:high",
     "zai/glm-5.2:high",
     "zai-coding-cn/glm-5.2:high",
+    "cursor/glm-5.2",
+    "openrouter/openai/gpt-5.6-terra:high",
     "openrouter/openai/gpt-5.5:low",
     "openrouter/anthropic/claude-opus-4-8:low",
+    "openrouter/x-ai/grok-4.5",
     "openrouter/z-ai/glm-5.2:xhigh",
   ],
   excludedTools: ["ask_user_question"],
@@ -92,7 +119,10 @@ export function taggedPrompt(sections: readonly PromptSection[]): string {
     .join("\n\n");
 }
 
-export function positiveInteger(value: number | undefined, fallback: number): number {
+export function positiveInteger(
+  value: number | undefined,
+  fallback: number,
+): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0
     ? Math.floor(value)
     : fallback;
@@ -351,4 +381,3 @@ export function displayRelativePath(path: string, fromCwd: string): string {
   }
   return displayPath(path);
 }
-

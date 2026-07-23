@@ -68,48 +68,47 @@ describe("MockExtensionAPI — slash command registration", () => {
     await cmd.options.handler("run my-wf", { ui: { notify: (m: string) => messages.push(m) } });
     assert.ok(messages.length > 0);
   });
-  test("/workflow getArgumentCompletions returns all subcommands for empty partial", () => {
+  test("/workflow getArgumentCompletions returns all subcommands for empty partial", async () => {
     const cmd = getCommand(mock.commands, "workflow")!;
-    const completions = cmd.options.getArgumentCompletions?.("");
-    assert.equal(Array.isArray(completions), true);
-    assert.equal(typeof (completions as Promise<unknown> | null)?.then, "undefined");
-    const labels = completions!.map((c) => c.label);
-    for (const sub of ["list", "status", "connect", "interrupt", "kill", "resume", "inputs"]) {
+    const completions = (await cmd.options.getArgumentCompletions?.("")) ?? [];
+    const labels = completions.map((c) => c.label);
+    for (const sub of ["list", "status", "connect", "interrupt", "quit", "resume", "inputs"]) {
       assert.ok(labels.includes(sub));
     }
+    assert.equal(labels.includes("kill"), false);
     assert.equal(labels.includes("session"), false);
   });
 
-  test("/workflow getArgumentCompletions filters by partial", () => {
+  test("/workflow getArgumentCompletions filters by partial", async () => {
     const cmd = getCommand(mock.commands, "workflow")!;
-    const completions = cmd.options.getArgumentCompletions?.("li");
-    assert.notEqual(completions, undefined);
-    assert.ok(completions!.length > 0);
-    assert.equal(completions!.every((c) => c.label.startsWith("li")), true);
+    const completions = (await cmd.options.getArgumentCompletions?.("li")) ?? [];
+    assert.ok(completions.length > 0);
+    assert.equal(completions.every((c) => c.label.startsWith("li")), true);
   });
 
-  test("/workflow getArgumentCompletions covers subcommand arguments", () => {
+  test("/workflow getArgumentCompletions covers subcommand arguments", async () => {
     const cmd = getCommand(mock.commands, "workflow")!;
-    const inputs = cmd.options.getArgumentCompletions?.("inputs de");
-    assert.ok(inputs?.some((c) => c.value === "inputs deep-research-codebase "));
+    const inputs = (await cmd.options.getArgumentCompletions?.("inputs de")) ?? [];
+    assert.ok(inputs.some((c) => c.value === "inputs deep-research-codebase "));
 
-    const status = cmd.options.getArgumentCompletions?.("status --");
-    assert.equal(status?.some((c) => c.value === "status --all ") ?? false, false);
+    const status = (await cmd.options.getArgumentCompletions?.("status --")) ?? [];
+    assert.equal(status.some((c) => c.value === "status --all "), false);
 
-    const interrupt = cmd.options.getArgumentCompletions?.("interrupt -");
-    assert.ok(interrupt?.some((c) => c.value === "interrupt -y "));
+    const interrupt = (await cmd.options.getArgumentCompletions?.("interrupt -")) ?? [];
+    assert.ok(interrupt.some((c) => c.value === "interrupt -y "));
 
-    const kill = cmd.options.getArgumentCompletions?.("kill -");
-    assert.ok(kill?.some((c) => c.value === "kill -y "));
+    const quit = (await cmd.options.getArgumentCompletions?.("quit -")) ?? [];
+    assert.ok(quit.some((c) => c.value === "quit --all "));
+    assert.equal(quit.some((c) => c.label === "-y" || c.label === "--yes"), false);
   });
 
-  test("/workflow getArgumentCompletions covers workflow run inputs and flags", () => {
+  test("/workflow getArgumentCompletions covers workflow run inputs and flags", async () => {
     const cmd = getCommand(mock.commands, "workflow")!;
-    const inputKeys = cmd.options.getArgumentCompletions?.("deep-research-codebase p");
-    assert.ok(inputKeys?.some((c) => c.value === "deep-research-codebase prompt="));
+    const inputKeys = (await cmd.options.getArgumentCompletions?.("deep-research-codebase p")) ?? [];
+    assert.ok(inputKeys.some((c) => c.value === "deep-research-codebase prompt="));
 
-    const flags = cmd.options.getArgumentCompletions?.("deep-research-codebase --");
-    assert.ok(flags?.some((c) => c.value === "deep-research-codebase --no-picker "));
+    const flags = (await cmd.options.getArgumentCompletions?.("deep-research-codebase --")) ?? [];
+    assert.ok(flags.some((c) => c.value === "deep-research-codebase --no-picker "));
   });
 
 });
@@ -214,24 +213,22 @@ describe("renderCall — all action branches", () => {
     assert.ok(renderCall({ runId: "run-1", action: "interrupt" }).includes("run-1"));
   });
 
-  test("action='kill' includes runId", () => {
-    assert.ok(renderCall({ runId: "run-kill", action: "kill" }).includes("run-kill"));
+  test("action='quit' includes runId", () => {
+    assert.ok(renderCall({ runId: "run-quit", action: "quit" }).includes("run-quit"));
   });
 
   test("action='resume' includes runId", () => {
     assert.ok(renderCall({ runId: "run-2", action: "resume" }).includes("run-2"));
   });
 
+  test("action='models' returns models string", () => {
+    assert.equal(renderCall({ action: "models" }), "workflow: list configured models");
+  });
+
   test("defaults to 'run' when action omitted", () => {
     assert.ok(renderCall({ workflow: "wf-c" }).includes("run"));
   });
 
-  test("describes direct task runs instead of an unnamed workflow", () => {
-    assert.equal(
-      renderCall({ task: { name: "subagent-tool-probe", prompt: "probe" } }),
-      'workflow: run "direct-task"',
-    );
-  });
 
   test("respects host render width", () => {
     const out = renderCall(
@@ -315,7 +312,7 @@ describe("renderResult — all action branches", () => {
         truncated: false,
       },
       { action: "interrupt", runId: "run-abcdef", status: "paused", message: "A very long interrupt response message." },
-      { action: "kill", runId: "run-abcdef", status: "killed", message: "A very long kill response message." },
+      { action: "quit", runId: "run-abcdef", status: "paused", message: "A very long resumable quit response message." },
       { action: "resume", runId: "run-abcdef", status: "ok", message: "A very long resume response message." },
     ];
 
@@ -350,7 +347,7 @@ describe("renderResult — all action branches", () => {
   });
 
   test("action='status' empty snapshots renders empty band", () => {
-    const out = renderResult({ action: "status", snapshots: [] });
+    const out = renderResult({ action: "status", filter: "all", runs: [], snapshots: [] });
     assert.match(out, /BACKGROUND/);
     assert.match(out, /0 runs/);
     assert.match(out, /no workflow runs in current session/);
@@ -359,6 +356,8 @@ describe("renderResult — all action branches", () => {
   test("action='status' with snapshots renders cards", () => {
     const out = renderResult({
       action: "status",
+      filter: "all",
+      runs: [],
       snapshots: [
         {
           id: "r1-uuid",
@@ -441,15 +440,15 @@ describe("renderResult — all action branches", () => {
     assert.ok(out.includes("Interrupt not yet implemented"));
   });
 
-  test("action='kill' shows message", () => {
+  test("action='quit' shows resumable message", () => {
     const out = renderResult({
-      action: "kill",
-      runId: "r-kill",
-      status: "killed",
-      message: "Killed and retained for inspection",
+      action: "quit",
+      runId: "r-quit",
+      status: "paused",
+      message: "Workflow quit and can be resumed",
     });
-    assert.ok(out.includes("r-kill"));
-    assert.ok(out.includes("Killed and retained for inspection"));
+    assert.ok(out.includes("r-quit"));
+    assert.ok(out.includes("Workflow quit and can be resumed"));
   });
 
   test("action='resume' shows message", () => {
@@ -461,6 +460,29 @@ describe("renderResult — all action branches", () => {
     });
     assert.ok(out.includes("r20"));
     assert.ok(out.includes("Resume not yet implemented"));
+  });
+
+  test("action='models' empty renders empty-catalog; populated shows markers and disclaimer", () => {
+    const empty = renderResult({ action: "models", models: [] });
+    assert.ok(empty.includes("no models in configured catalog"));
+
+    const withCurrent = renderResult({
+      action: "models",
+      models: [{ provider: "openai", id: "gpt-4", fullId: "openai/gpt-4", isCurrent: true,
+        availableThinkingLevels: ["off", "low", "medium", "high", "max"] }],
+    }, { width: 240 });
+    assert.ok(withCurrent.includes("openai/gpt-4"));
+    assert.ok(withCurrent.includes("(current)"));
+    assert.ok(withCurrent.includes("[levels: off, low, medium, high, max]"));
+
+    const withoutCurrent = renderResult({
+      action: "models",
+      models: [{ provider: "anthropic", id: "claude-3", fullId: "anthropic/claude-3", isCurrent: false }],
+    }, { width: 240 });
+    assert.ok(withoutCurrent.includes("anthropic/claude-3"));
+    assert.ok(withoutCurrent.includes("no current model"));
+    assert.ok(withoutCurrent.includes("configured-auth catalog snapshot"));
+    assert.ok(withoutCurrent.includes("not proof of credentials"));
   });
 
   test("unknown action falls through to default", () => {

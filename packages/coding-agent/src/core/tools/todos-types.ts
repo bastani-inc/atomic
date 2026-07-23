@@ -1,5 +1,5 @@
-import { StringEnum } from "@earendil-works/pi-ai/compat";
 import { type Static, Type } from "typebox";
+import { StringEnum } from "../typebox-compat.ts";
 
 export interface TodoFrontMatter {
 	id: string;

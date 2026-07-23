@@ -38,6 +38,7 @@ atomic list                     # show installed packages from settings
 atomic update                   # update Atomic only
 atomic update --all             # update Atomic, update packages, and reconcile pinned git refs
 atomic update --extensions      # update packages and reconcile pinned git refs only
+atomic update --models          # force-refresh authenticated provider model catalogs
 atomic update --self            # update Atomic only
 atomic update --self --force    # reinstall Atomic even if current
 atomic update npm:@foo/bar      # update one package
@@ -45,6 +46,8 @@ atomic update --extension npm:@foo/bar
 ```
 
 These commands manage Atomic packages and `atomic update` can update the Atomic CLI installation. To uninstall Atomic itself, see [Quickstart](/quickstart#uninstall).
+
+Self-update resolves an exact advertised package/version target and installs that pinned spec, so the update cannot drift to a newer registry release during installation. Any release note supplied by the update service is shown before installation. Atomic only updates installations it can verify are writable and managed by the detected global package manager; otherwise it prints a manual command. On Windows, loaded native dependencies are temporarily quarantined during replacement and stale quarantine directories are cleaned on later update attempts.
 
 By default, `install` and `remove` write to user settings (`~/.atomic/agent/settings.json`). Use `-l` to write to project settings (`.atomic/settings.json`; legacy `.pi/settings.json` is also read) instead. Project settings can be shared with your team, and Atomic installs any missing packages automatically on startup after the project is trusted.
 
@@ -236,11 +239,11 @@ Filter what a package loads using the object form in settings:
 
 ## Enable and Disable Resources
 
-Use `atomic config` to enable or disable extensions, skills, prompt templates, and themes from installed packages and local directories. Works for both global (`~/.atomic/agent`) and project (`.atomic/`) scopes. Workflow package filters can be configured in settings with `workflows` patterns.
+Use `atomic config` to enable or disable extensions, skills, prompt templates, and themes. It starts in global settings (`~/.atomic/agent/settings.json`); press Tab to switch global/project scope. Use `atomic config -l` to start in project overrides (`.atomic/settings.json`) with inherited global resources dimmed. Workflow package filters can be configured with `workflows` patterns.
 
 ## Scope and Deduplication
 
-Packages can appear in both global and project settings. If the same package appears in both, the project entry wins. Identity is determined by:
+Packages can appear in both global and project settings. The project entry normally wins. A project entry with `autoload: false` instead acts as a delta over the global entry: it starts with no newly auto-discovered resources while explicit include/exclude patterns adjust the inherited package resources. Identity is determined by:
 
 - npm: package name
 - git: repository URL without ref

@@ -1,12 +1,12 @@
-import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai/compat";
+import type { ImageContent, Message, TextContent, Usage } from "@earendil-works/pi-ai/compat";
 import { join } from "path";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
+import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
+import { validSessionWorkflowMetadata } from "./session-manager-classification.ts";
 import {
 	CURRENT_SESSION_VERSION,
 	type BranchSummaryEntry,
-	type ContextCompactionEntry,
-	type ContextCompactionStats,
-	type ContextDeletionTarget,
+	type CompactionEntry,
 	type ContextWindowChangeEntry,
 	type CustomEntry,
 	type CustomMessageEntry,
@@ -47,8 +47,11 @@ export function createSessionHeader(
 		cwd,
 	};
 	if (parentSession !== undefined) header.parentSession = parentSession;
-	if (internal) header.internal = true;
-	if (workflow) header.workflow = workflow;
+	const validWorkflow = internal === true ? validSessionWorkflowMetadata(workflow) : undefined;
+	if (validWorkflow) {
+		header.internal = true;
+		header.workflow = validWorkflow;
+	}
 	return header;
 }
 
@@ -107,24 +110,25 @@ export function createModelChangeEntry(
 	};
 }
 
-export function createContextCompactionEntry(
-	deletedTargets: ContextDeletionTarget[],
-	protectedEntryIds: string[],
-	stats: ContextCompactionStats,
-	backupPath: string | undefined,
+export function createCompactionEntry(
+	compactedText: string,
+	firstKeptEntryId: string | null,
+	tokensBefore: number,
+	details: VerbatimCompactionDetails,
 	byId: { has(id: string): boolean },
 	parentId: string | null,
-): ContextCompactionEntry {
+): CompactionEntry<VerbatimCompactionDetails> {
 	return {
-		type: "context_compaction",
+		type: "compaction",
 		...entryBase(byId, parentId),
-		promptVersion: 1,
-		deletedTargets,
-		protectedEntryIds,
-		stats,
-		backupPath,
+		summary: compactedText,
+		firstKeptEntryId,
+		tokensBefore,
+		details,
+		fromHook: details.rung === "extension" || undefined,
 	};
 }
+
 
 export function createCustomEntry(
 	customType: string,
@@ -204,6 +208,7 @@ export function createBranchSummaryEntry(
 	branchFromId: string | null,
 	summary: string,
 	details: unknown,
+	usage: Usage | undefined,
 	fromHook: boolean | undefined,
 	byId: { has(id: string): boolean },
 ): BranchSummaryEntry {
@@ -213,6 +218,7 @@ export function createBranchSummaryEntry(
 		fromId: branchFromId ?? "root",
 		summary,
 		details,
+		usage,
 		fromHook,
 	};
 }

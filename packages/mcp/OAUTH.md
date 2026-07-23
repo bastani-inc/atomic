@@ -191,6 +191,7 @@ A Node.js HTTP server runs on `localhost` at path `/callback`:
 - Displays success/error HTML pages
 - Validates state parameter for CSRF protection
 - Has a 5-minute timeout for pending authorizations
+- Rejects and removes pending authorization waiters during session restart/shutdown before replacement-session startup continues
 
 ## Token Storage
 

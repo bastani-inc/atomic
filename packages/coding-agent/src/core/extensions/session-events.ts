@@ -1,5 +1,5 @@
-import type { ContextCompactionPreparation, ContextCompactionResult } from "../compaction/index.ts";
-import type { BranchSummaryEntry, ContextCompactionEntry, SessionEntry } from "../session-manager.ts";
+import type { VerbatimCompactionDetails, VerbatimCompactionPreparation, VerbatimCompactionResult } from "../compaction/index.ts";
+import type { BranchSummaryEntry, CompactionEntry, SessionEntry } from "../session-manager.ts";
 
 // ============================================================================
 // Resource Events
@@ -57,8 +57,8 @@ export interface SessionBeforeForkEvent {
 export interface SessionBeforeCompactEvent {
 	type: "session_before_compact";
 	reason: "manual" | "threshold" | "overflow";
-	parameters: ContextCompactionPreparation["parameters"];
-	preparation: ContextCompactionPreparation;
+	parameters: VerbatimCompactionPreparation["parameters"];
+	preparation: VerbatimCompactionPreparation;
 	branchEntries: SessionEntry[];
 	signal: AbortSignal;
 }
@@ -67,9 +67,9 @@ export interface SessionBeforeCompactEvent {
 export interface SessionCompactEvent {
 	type: "session_compact";
 	reason: "manual" | "threshold" | "overflow";
-	parameters: ContextCompactionPreparation["parameters"];
-	result: ContextCompactionResult;
-	contextCompactionEntry: ContextCompactionEntry;
+	parameters: VerbatimCompactionPreparation["parameters"];
+	result: VerbatimCompactionResult;
+	compactionEntry: CompactionEntry<VerbatimCompactionDetails>;
 	fromExtension: boolean;
 }
 

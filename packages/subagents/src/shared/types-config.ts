@@ -3,6 +3,7 @@
  */
 
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { SessionWorkflowMetadata } from "@bastani/atomic";
 import type { NestedRouteInfo } from "./types-async.ts";
 import type {
 	ArtifactConfig,
@@ -13,6 +14,7 @@ import type {
 	MaxOutputConfig,
 	OutputMode,
 	ResolvedControlConfig,
+	SingleResult,
 } from "./types-results.ts";
 
 // ============================================================================
@@ -46,6 +48,7 @@ export const SUBAGENT_ASYNC_COMPLETE_EVENT = "subagent:async-complete";
 export const SUBAGENT_CONTROL_EVENT = "subagent:control-event";
 export const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
 export const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
+export const SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT = "subagent:terminal-ordering-barrier";
 export const SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT = "subagent:result-intercom-delivery";
 
 // ============================================================================
@@ -58,11 +61,18 @@ export interface RunSyncOptions {
 	interruptSignal?: AbortSignal;
 	allowIntercomDetach?: boolean;
 	intercomEvents?: IntercomEventBus;
+	onDetachedExit?: (result: SingleResult) => void;
+	/** Shared foreground-group signal used to release sibling supervision after one exact child commits Intercom detach. */
+	intercomDetachSignal?: AbortSignal;
+	/** Releases every active foreground sibling only after this exact child accepts a detach commit. */
+	onIntercomDetachCommit?: () => void;
 	onUpdate?: (r: AgentToolResult<Details>) => void;
 	onControlEvent?: (event: ControlEvent) => void;
 	controlConfig?: ResolvedControlConfig;
 	intercomSessionName?: string;
 	orchestratorIntercomTarget?: string;
+	/** Resolved intercom home group for the spawned child (explicit subagent group or inherited stage group). */
+	intercomGroup?: string;
 	maxOutput?: MaxOutputConfig;
 	artifactsDir?: string;
 	artifactConfig?: ArtifactConfig;
@@ -70,11 +80,14 @@ export interface RunSyncOptions {
 	index?: number;
 	sessionDir?: string;
 	sessionFile?: string;
+	/** Override the Atomic CLI entrypoint used by foreground child processes. */
+	piArgv1?: string;
 	share?: boolean;
 	outputPath?: string;
 	outputMode?: OutputMode;
 	maxSubagentDepth?: number;
 	workflowStageSubagentGuard?: boolean;
+	workflowSessionMetadata?: SessionWorkflowMetadata;
 	nestedRoute?: NestedRouteInfo;
 	/** Override the agent's default model (format: "provider/id" or just "id") */
 	modelOverride?: string;

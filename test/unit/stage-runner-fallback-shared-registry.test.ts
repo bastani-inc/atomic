@@ -27,6 +27,8 @@ interface FakeSessionConfig {
   modelRegistry: unknown;
   /** When set, prompt() throws this error (to drive fallback). */
   promptError?: Error;
+  onTransfer?: (target: object) => void;
+  orchestrationContext?: StageSessionCreateOptions["orchestrationContext"];
 }
 
 function makeFakeStageSession(config: FakeSessionConfig): StageSessionRuntime {
@@ -37,6 +39,7 @@ function makeFakeStageSession(config: FakeSessionConfig): StageSessionRuntime {
     },
     async steer() {},
     async followUp() {},
+    transferWorkflowStageDeliveriesTo(target) { config.onTransfer?.(target); },
     subscribe() {
       return () => {};
     },
@@ -60,14 +63,17 @@ function makeFakeStageSession(config: FakeSessionConfig): StageSessionRuntime {
     },
     async compact() {
       return {
-        promptVersion: 1,
+        compactedText: "[User]: retained",
+        firstKeptEntryId: "kept",
+        tokensBefore: 0,
+        promptVersion: 3,
         parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "auto-detected" },
-        deletedTargets: [],
-        protectedEntryIds: [],
+        rung: "planned" as const,
         stats: {
-          objectsBefore: 0,
-          objectsAfter: 0,
-          objectsDeleted: 0,
+          linesBefore: 0,
+          linesDeleted: 0,
+          linesKept: 0,
+          rangeCount: 0,
           tokensBefore: 0,
           tokensAfter: 0,
           percentReduction: 0,
@@ -83,7 +89,13 @@ function makeFakeStageSession(config: FakeSessionConfig): StageSessionRuntime {
   };
   // The real SDK AgentSession exposes `.modelRegistry`; the stage runner reads it
   // (via a structural cast) to capture/reuse the registry across candidates.
-  return Object.assign(base, { modelRegistry: config.modelRegistry });
+  return Object.assign(base, {
+    modelRegistry: config.modelRegistry,
+    state: { messages: [] },
+    sessionManager: {},
+    getContextUsage: () => undefined,
+    orchestrationContext: config.orchestrationContext,
+  });
 }
 
 describe("stage model fallback reuses one ModelRegistry across candidates (#1431)", () => {
@@ -93,6 +105,8 @@ describe("stage model fallback reuses one ModelRegistry across candidates (#1431
 
     const createdWith: Array<{ model: unknown; modelRegistry: unknown }> = [];
     let createCount = 0;
+    let fallbackDeliveryTarget: object | undefined;
+    let sharedOrchestrationContext: StageSessionCreateOptions["orchestrationContext"];
 
     const opts: StageRunnerOpts = {
       stageId: "stage-1",
@@ -104,19 +118,30 @@ describe("stage model fallback reuses one ModelRegistry across candidates (#1431
       },
       adapters: {
         agentSession: {
-          async create(options: StageSessionCreateOptions) {
+          async create(options: StageSessionCreateOptions, meta) {
             createCount += 1;
             createdWith.push({ model: options?.model, modelRegistry: options?.modelRegistry });
-            // First candidate fails with a retryable error to force fallback;
-            // it carries registryA, which the runner must capture and reuse.
             if (createCount === 1) {
+              sharedOrchestrationContext = {
+                kind: "workflow-stage",
+                workflowRunId: "run-1",
+                workflowStageId: "stage-1",
+                workflowStageName: "Reviewer A",
+                constraints: { disableWorkflowTool: true, maxSubagentDepth: 5 },
+              };
               return makeFakeStageSession({
                 modelRegistry: registryA,
+                orchestrationContext: sharedOrchestrationContext,
                 promptError: new Error("rate limit exceeded"),
+                onTransfer: (target) => { fallbackDeliveryTarget = target; },
               });
             }
-            return makeFakeStageSession({ modelRegistry: registryB });
-          },
+            assert.equal(meta?.orchestrationContext, sharedOrchestrationContext);
+            return makeFakeStageSession({
+              modelRegistry: registryB,
+              orchestrationContext: sharedOrchestrationContext,
+            });
+          }
         },
       },
     };
@@ -127,6 +152,8 @@ describe("stage model fallback reuses one ModelRegistry across candidates (#1431
 
     // Two candidates were attempted (primary failed, fallback succeeded).
     assert.equal(createCount, 2, "expected the fallback candidate to be created");
+    assert.ok(fallbackDeliveryTarget, "failed candidate must transfer detached deliveries to its replacement");
+    await (fallbackDeliveryTarget as StageSessionRuntime).followUp("completion received while stage remains open");
 
     // The primary candidate builds its own registry (none injected).
     assert.equal(createdWith[0]?.model, "anthropic/model-a");

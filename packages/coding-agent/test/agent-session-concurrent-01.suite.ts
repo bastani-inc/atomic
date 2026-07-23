@@ -420,6 +420,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		finishInterruptTurn?.();
 		await interrupt;
 		await firstPrompt.catch(() => {});
+		await waitFor(() => session.agent.hasQueuedMessages());
 
 		expect(userTurns.some((turn) => turn.includes("Queued steer"))).toBe(false);
 		expect(session.pendingMessageCount).toBe(2);

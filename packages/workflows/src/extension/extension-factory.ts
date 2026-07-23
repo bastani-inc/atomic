@@ -1,4 +1,3 @@
-import { quitRun } from "../runs/background/quit.js";
 import { store } from "../shared/store.js";
 import { subscribeIntercomControl } from "../intercom/result-intercom.js";
 import { buildIntercomCallbacks } from "../intercom/intercom-routing.js";
@@ -15,6 +14,9 @@ import { createWorkflowExtensionRuntimeState } from "./extension-runtime-state.j
 import { registerWorkflowLifecycleHandlers } from "./extension-lifecycle.js";
 import { dynamicTextRenderComponent } from "./render-component.js";
 import { makeExecuteWorkflowTool } from "./workflow-tool.js";
+import { createPostMortemHandleResolver, postMortemDepsForRun } from "./postmortem-deps.js";
+import { registerCompletedStageIntercomAskRouter } from "./completed-stage-intercom-ask.js";
+import type { PostMortemHandleResolution } from "../tui/workflow-attach-pane-types.js";
 import { registerWorkflowTool } from "./workflow-tool-registration.js";
 import { registerWorkflowSlashCommand } from "./workflow-command-registration.js";
 import { installInputInterceptor, type WorkflowCommandHandler } from "./workflow-command-utils.js";
@@ -35,13 +37,9 @@ function registerWorkflowMessageRenderers(pi: ExtensionAPI): void {
 
 function buildWorkflowOverlay(
   pi: ExtensionAPI,
+  resolvePostMortemHandle: (runId: string, stageId: string) => PostMortemHandleResolution,
 ): GraphOverlayPort {
-  return buildGraphOverlayAdapter(pi, store, {
-    onQuitRun: (runId) => {
-      quitRun(runId, { store });
-      pi.ui?.notify?.(`Workflow quit; resume with /workflow resume.`, "info");
-    },
-  });
+  return buildGraphOverlayAdapter(pi, store, { resolvePostMortemHandle });
 }
 
 function registerWorkflowShortcut(pi: ExtensionAPI, overlay: GraphOverlayPort): void {
@@ -78,14 +76,21 @@ function registerIntercomControl(
 function factory(pi: ExtensionAPI): void {
   const adapters = buildRuntimeAdapters(pi);
   const runtimeState = createWorkflowExtensionRuntimeState(pi, adapters);
-  const overlay = buildWorkflowOverlay(pi);
+  const postMortemResolverDeps = {
+    adapters,
+    resolveDefaultStageSessionDir: runtimeState.resolveDefaultStageSessionDir,
+  };
+  const postMortemHandleResolver = createPostMortemHandleResolver(postMortemResolverDeps);
+  const overlay = buildWorkflowOverlay(pi, postMortemHandleResolver);
+  registerCompletedStageIntercomAskRouter(pi, postMortemHandleResolver);
   const workflowCommands = new Map<string, WorkflowCommandHandler>();
   const storeWidgetRef: { current: (() => void) | null } = { current: null };
   const intercomControlRef: { current: (() => void) | null } = { current: null };
   const executeWorkflowTool = makeExecuteWorkflowTool(
     (ctx) => runtimeState.runtimeForContext(ctx),
-    () => runtimeState.persistenceRef.current,
     runtimeState.reloadWorkflowResources,
+    runtimeState.ensureWorkflowResourcesLoaded,
+    { resolvePostMortemDeps: (runId) => postMortemDepsForRun(runId, postMortemResolverDeps) },
   );
   const executeWorkflowToolWithAutoAttach: typeof executeWorkflowTool = async (args, ctx) => {
     const result = await executeWorkflowTool(args, ctx);
@@ -108,12 +113,13 @@ function factory(pi: ExtensionAPI): void {
     runtimeForContext: runtimeState.runtimeForContext,
     overlay,
     reloadWorkflowResources: runtimeState.reloadWorkflowResources,
+    ensureWorkflowResourcesLoaded: runtimeState.ensureWorkflowResourcesLoaded,
     runWithLifecycleSuppressedForPolicy: runtimeState.runWithLifecycleSuppressedForPolicy,
     runControl: {
       pi,
       overlay,
-      getPersistence: () => runtimeState.persistenceRef.current,
       runtimeForContext: runtimeState.runtimeForContext,
+      ensureWorkflowResourcesLoaded: runtimeState.ensureWorkflowResourcesLoaded,
     },
   });
   registerWorkflowMessageRenderers(pi);

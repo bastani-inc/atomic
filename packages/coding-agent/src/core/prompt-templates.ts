@@ -62,6 +62,7 @@ export function parseCommandArgs(argsString: string): string[] {
  * - ${@:N} for args from Nth onwards (bash-style slicing)
  * - ${@:N:L} for L args starting from Nth
  * - ${N:-default} for positional args with a default value when missing/empty
+ * - ${@:-default} and ${ARGUMENTS:-default} for all args with a default when empty
  *
  * Note: Replacement happens on the template string only. Argument and default
  * values containing patterns like $1, $@, or $ARGUMENTS are NOT recursively substituted.
@@ -74,11 +75,12 @@ export function substituteArgs(content: string, args: string[]): string {
 	// disk. This is an Atomic hardening divergence from upstream; 1024 characters
 	// far exceeds any realistic slash-command default value.
 	return content.replace(
-		/\$\{(\d+):-([^}]{0,1024})\}|\$\{@:(\d+)(?::(\d+))?\}|\$(ARGUMENTS|@|\d+)/g,
-		(_match, defaultNum, defaultValue, sliceStart, sliceLength, simple) => {
-			if (defaultNum) {
-				const index = parseInt(defaultNum, 10) - 1;
-				const value = args[index];
+		/\$\{(\d+|ARGUMENTS|@):-([^}]{0,1024})\}|\$\{@:(\d+)(?::(\d+))?\}|\$(ARGUMENTS|@|\d+)/g,
+		(_match, defaultTarget, defaultValue, sliceStart, sliceLength, simple) => {
+			if (defaultTarget) {
+				const value = defaultTarget === "@" || defaultTarget === "ARGUMENTS"
+					? allArgs
+					: args[parseInt(defaultTarget, 10) - 1];
 				return value ? value : defaultValue;
 			}
 

@@ -3,7 +3,7 @@ import { type Api, type Model, type OAuthProviderId, type OAuthSelectPrompt, pat
 import { hasDefaultModelProvider, isUnknownModel } from "./interactive-mode-helpers.ts";
 
 InteractiveModeBase.prototype.completeProviderAuthentication = async function(this: InteractiveModeBase, providerId: string, providerName: string, authType: "oauth" | "api_key", previousModel: Model<Api> | undefined): Promise<void> {
-    this.session.modelRegistry.refresh();
+    await this.session.modelRegistry.refresh();
 
     const actionLabel =
       authType === "oauth"
@@ -77,7 +77,7 @@ InteractiveModeBase.prototype.showBedrockSetupDialog = function(this: Interactiv
       providerName,
       "Amazon Bedrock setup",
     );
-    dialog.showInfo([
+    dialog.showDetails([
       theme.fg(
         "text",
         "Amazon Bedrock uses AWS credentials instead of a single API key.",
@@ -121,15 +121,18 @@ InteractiveModeBase.prototype.showApiKeyLoginDialog = async function(this: Inter
     };
 
     try {
-      const apiKey = (await dialog.showPrompt("Enter API key:")).trim();
-      if (!apiKey) {
-        throw new Error("API key cannot be empty.");
+      const customAuth = this.session.modelRegistry.getCustomApiKeyAuth(providerId);
+      if (customAuth) {
+        const credential = await customAuth.login({
+          signal: dialog.signal,
+          prompt: (prompt) => dialog.showPrompt(prompt.message, prompt.placeholder),
+        });
+        this.session.modelRegistry.authStorage.set(providerId, credential);
+      } else {
+        const apiKey = (await dialog.showPrompt("Enter API key:")).trim();
+        if (!apiKey) throw new Error("API key cannot be empty.");
+        this.session.modelRegistry.authStorage.set(providerId, { type: "api_key", key: apiKey });
       }
-
-      this.session.modelRegistry.authStorage.set(providerId, {
-        type: "api_key",
-        key: apiKey,
-      });
 
       restoreEditor();
       await this.completeProviderAuthentication(
@@ -267,10 +270,21 @@ InteractiveModeBase.prototype.showLoginDialog = async function(this: Interactive
             dialog.showProgress(message);
           },
 
+          onInfo: (message, links) => {
+            dialog.showInfo(message, links);
+          },
+
           onSelect: (prompt: OAuthSelectPrompt) =>
             this.showOAuthLoginSelect(dialog, prompt),
 
           onManualCodeInput: () => manualCodePromise,
+
+          onManualCodeCancel: () => {
+            dialog.dismissPendingInput();
+            manualCodeResolve?.("");
+            manualCodeResolve = undefined;
+            manualCodeReject = undefined;
+          },
 
           signal: dialog.signal,
         },

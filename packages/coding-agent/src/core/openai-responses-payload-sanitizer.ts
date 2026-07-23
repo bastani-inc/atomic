@@ -7,6 +7,7 @@ type JsonValue = string | number | boolean | null | JsonValue[] | JsonObject;
 const RESPONSES_FUNCTION_CALL_ID = /^fc_[A-Za-z0-9_-]{1,61}$/;
 const RESPONSES_FUNCTION_CALL_ID_PREFIX = "fc_";
 const MAX_RESPONSES_FUNCTION_CALL_ID_LENGTH = 64;
+export const MIN_RESPONSES_MAX_OUTPUT_TOKENS = 16;
 
 function isPlainObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -54,15 +55,34 @@ function sanitizeResponsesFunctionCall(item: JsonObject): boolean {
 }
 
 export function sanitizeOpenAIResponsesPayload(payload: unknown, model: Pick<Model<Api>, "api">): unknown {
-  if (!isOpenAIResponsesModel(model) || !isPlainObject(payload) || !Array.isArray(payload.input)) return payload;
+  if (!isOpenAIResponsesModel(model) || !isPlainObject(payload)) return payload;
 
   let changed = false;
-  const input = payload.input.map((item) => {
-    if (!isPlainObject(item)) return item;
-    const cloned = { ...item };
-    changed = sanitizeResponsesFunctionCall(cloned) || changed;
-    return cloned;
-  });
+  let sanitizedPayload: JsonObject = payload;
 
-  return changed ? { ...payload, input } : payload;
+  if (
+    typeof payload.max_output_tokens === "number" &&
+    Number.isFinite(payload.max_output_tokens) &&
+    payload.max_output_tokens < MIN_RESPONSES_MAX_OUTPUT_TOKENS
+  ) {
+    changed = true;
+    sanitizedPayload = { ...sanitizedPayload, max_output_tokens: MIN_RESPONSES_MAX_OUTPUT_TOKENS };
+  }
+
+  if (Array.isArray(payload.input)) {
+    let inputChanged = false;
+    const input = payload.input.map((item) => {
+      if (!isPlainObject(item)) return item;
+      const cloned = { ...item };
+      inputChanged = sanitizeResponsesFunctionCall(cloned) || inputChanged;
+      return cloned;
+    });
+
+    if (inputChanged) {
+      changed = true;
+      sanitizedPayload = { ...sanitizedPayload, input };
+    }
+  }
+
+  return changed ? sanitizedPayload : payload;
 }

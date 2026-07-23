@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import type { McpExtensionState } from "./state.ts";
+import type { McpExtensionState } from "./state.js";
 import {
   extractUiPromptText,
   UI_STREAM_HOST_CONTEXT_KEY,
@@ -10,11 +10,11 @@ import {
   type UiMessageParams,
   type UiModelContextParams,
   type UiStreamMode,
-} from "./types.ts";
-import { logger } from "./logger.ts";
-import { startUiServer, type UiServerHandle } from "./ui-server.ts";
-import { isGlimpseAvailable, openGlimpseWindow } from "./glimpse-ui.ts";
-import { escapeHtmlAttribute } from "./host-html-template.ts";
+} from "./types.js";
+import { logger } from "./logger.js";
+import { startUiServer, type UiServerHandle } from "./ui-server.js";
+import { isGlimpseAvailable, openGlimpseWindow } from "./glimpse-ui.js";
+import { escapeHtmlAttribute } from "./host-html-template.js";
 
 let activeGlimpseWindow: { close(): void } | null = null;
 
@@ -38,7 +38,7 @@ export interface UiSessionRuntime {
   isActive: () => boolean;
   sendToolResult: (result: CallToolResult) => void;
   sendResultPatch: (result: CallToolResult) => void;
-  sendToolCancelled: (reason: string) => void;
+  sendToolCancelled: (reason: string) => void | Promise<void>;
   close: (reason?: string) => void;
 }
 
@@ -153,16 +153,7 @@ export async function maybeStartUiSession(
         sendToolCancelled: (reason: string) => {
           if (!active || state.uiServer !== existingHandle) return;
           nextStreamSequence += 1;
-          existingHandle.sendToolResult(
-            withStreamEnvelope(
-              {
-                isError: true,
-                content: [{ type: "text", text: reason }],
-              },
-              streamId,
-              nextStreamSequence,
-            ),
-          );
+          return existingHandle.sendToolCancelled(reason);
         },
         close: () => {
           active = false;
@@ -367,7 +358,7 @@ export async function maybeStartUiSession(
       },
       sendToolCancelled: (reason: string) => {
         if (!active || state.uiServer !== handle) return;
-        handle.sendToolCancelled(reason);
+        return handle.sendToolCancelled(reason);
       },
       close: (reason?: string) => {
         active = false;

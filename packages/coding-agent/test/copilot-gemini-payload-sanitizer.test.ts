@@ -263,12 +263,13 @@ describe("sanitizeCopilotGeminiPayload", () => {
 
   it("produces a Gemini-safe schema for the real workflow tool parameters", () => {
     const raw = WorkflowParametersSchema as unknown;
-    // The real workflow schema contains anyOf-of-object (the failing construct).
-    expect(hasUnionWithObjectBranch(raw)).toBe(true);
+    // The named-only workflow schema keeps unions to string literals; it must
+    // not reintroduce the anyOf-of-object construct that breaks Gemini.
+    expect(hasUnionWithObjectBranch(raw)).toBe(false);
     const payload = { model: "gemini-3.1-pro-preview", messages: [], tools: [functionTool("workflow", raw)] };
     const result = sanitizeCopilotGeminiPayload(payload, geminiModel()) as { tools: Array<{ function: { parameters: unknown } }> };
     const sanitized = result.tools[0].function.parameters;
-    // After sanitization, no union retains an object/array branch.
+    // Sanitization keeps the schema free of union object/array branches.
     expect(hasUnionWithObjectBranch(sanitized)).toBe(false);
   });
 

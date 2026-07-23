@@ -2,6 +2,7 @@ import * as path from "node:path";
 import { INTERCOM_BRIDGE_MARKER } from "../../intercom/intercom-bridge.ts";
 import { mapConcurrent, resolveChildCwd } from "../../shared/utils.ts";
 import { MAX_CONCURRENCY, resolveChildMaxSubagentDepth, type SingleResult } from "../../shared/types.ts";
+import { workflowSessionMetadataFromContext } from "../../shared/types-depth.ts";
 import {
 	buildChainInstructions,
 	suppressProgressForReadOnlyTask,
@@ -42,8 +43,19 @@ export async function runParallelChainTasks(input: ParallelChainRunInput): Promi
 	const concurrency = input.step.concurrency ?? MAX_CONCURRENCY;
 	const failFast = input.step.failFast ?? false;
 	let aborted = false;
+	const intercomDetachController = new AbortController();
 
 	return mapConcurrent(input.step.parallel, concurrency, async (task, taskIndex) => {
+		if (intercomDetachController.signal.aborted) {
+			return {
+				agent: task.agent,
+				task: input.parallelTemplates[taskIndex] ?? task.task ?? "{previous}",
+				exitCode: -1,
+				messages: [],
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+				error: "Skipped after foreground group detached for intercom coordination",
+			};
+		}
 		if (aborted && failFast) {
 			return {
 				agent: task.agent,
@@ -118,11 +130,15 @@ export async function runParallelChainTasks(input: ParallelChainRunInput): Promi
 			outputMode: behavior.outputMode,
 			maxSubagentDepth,
 			workflowStageSubagentGuard: input.workflowStageSubagentGuard,
+			workflowSessionMetadata: workflowSessionMetadataFromContext(input.ctx),
 			controlConfig: input.controlConfig,
 			onControlEvent: input.onControlEvent,
 			intercomSessionName: input.childIntercomTarget?.(task.agent, input.globalTaskIndex + taskIndex),
 			orchestratorIntercomTarget: input.orchestratorIntercomTarget,
 			nestedRoute: input.nestedRoute,
+			onDetachedExit: (recovered) => input.onDetachedExit?.(input.globalTaskIndex + taskIndex, recovered),
+			intercomDetachSignal: intercomDetachController.signal,
+			onIntercomDetachCommit: () => intercomDetachController.abort(),
 			modelOverride: effectiveModel,
 			availableModels: input.availableModels,
 			knownModelProviders: input.knownModelProviders,

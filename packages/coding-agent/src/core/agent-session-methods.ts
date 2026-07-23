@@ -1,10 +1,9 @@
 import type { Agent, AgentEvent, AgentMessage, AgentState, AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ProviderHeaders } from "@earendil-works/pi-ai";
 import type { Api, AssistantMessage, ImageContent, Message, Model, TextContent } from "@earendil-works/pi-ai/compat";
+import type { PendingPostToolCompactionGuard } from "./agent-session-post-tool-compaction.ts";
 import type { BashResult } from "./bash-executor.ts";
-import type {
-	ContextCompactionParameters,
-	ContextCompactionResult,
-} from "./compaction/index.ts";
+import type { VerbatimCompactionParameters, VerbatimCompactionResult } from "./compaction/index.ts";
 import type {
 	ContextUsage,
 	ExtensionCommandContextActions,
@@ -30,6 +29,7 @@ import type { BashOperations } from "./tools/bash.ts";
 import type {
 	AgentSessionEvent,
 	AgentSessionEventListener,
+	AgentSessionReloadOptions,
 	ContextWindowReplayRequest,
 	ContextWindowReplaySource,
 	DrainedAgentQueues,
@@ -40,10 +40,10 @@ import type {
 	SessionStats,
 	ToolDefinitionEntry,
 } from "./agent-session-types.ts";
-import type { SendMessageOptions } from "./extensions/index.ts";
+import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.ts";
 
-export interface ContextCompactionApplyOptions {
-	resolvePlannerAuth: () => Promise<{ apiKey: string; headers?: Record<string, string> } | undefined>;
+export interface VerbatimCompactionApplyOptions {
+	resolvePlannerAuth: () => Promise<{ apiKey: string; headers?: ProviderHeaders; baseUrl?: string } | undefined>;
 	abortController: AbortController;
 	backupLabel: string;
 	compression_ratio?: number;
@@ -102,7 +102,7 @@ export interface AgentSessionMethodSurface {
 	readonly extensionRunner: ExtensionRunner;
 
 	_handleAgentEvent(event: AgentEvent): void;
-	_getRequiredRequestAuth(model: Model<Api>): Promise<{ apiKey: string; headers?: Record<string, string> }>;
+	_getRequiredRequestAuth(model: Model<Api>): Promise<{ apiKey: string; headers?: ProviderHeaders; baseUrl?: string }>;
 	_installAgentToolHooks(): void;
 	_installAgentNextTurnRefresh(): void;
 	_emit(event: AgentSessionEvent): void;
@@ -133,7 +133,7 @@ export interface AgentSessionMethodSurface {
 	_refreshBaseSystemPromptFromActiveTools(): void;
 
 	prompt(text: string, options?: PromptOptions): Promise<void>;
-	_runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void>;
+	_runAgentPrompt(messages: AgentMessage | AgentMessage[], promptStarted?: () => void): Promise<void>;
 	_runAgentContinue(): Promise<void>;
 	_continueQueuedAgentMessages(): Promise<void>;
 	_tryExecuteBuiltinSlashCommand(text: string): Promise<boolean>;
@@ -153,6 +153,10 @@ export interface AgentSessionMethodSurface {
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
 		options?: SendMessageOptions,
 	): Promise<void>;
+	sendCustomMessages<T = unknown>(
+		messages: Array<Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">>,
+		options?: SendMessagesOptions,
+	): Promise<void>;
 	_appendCustomMessage<T>(message: CustomMessage<T>): void;
 	_enqueueInterruptCustomMessage<T>(message: CustomMessage<T>, options?: SendMessageOptions): Promise<void>;
 	_sendInterruptCustomMessageNow<T>(message: CustomMessage<T>, options?: SendMessageOptions): Promise<void>;
@@ -168,8 +172,8 @@ export interface AgentSessionMethodSurface {
 	setSteeringMode(mode: "all" | "one-at-a-time"): void;
 	setFollowUpMode(mode: "all" | "one-at-a-time"): void;
 
-	_emitModelChanged(nextModel: Model<Api>, previousModel: Model<Api> | undefined, source: "set" | "cycle" | "restore"): void;
-	_emitModelSelect(nextModel: Model<Api>, previousModel: Model<Api> | undefined, source: "set" | "cycle" | "restore"): Promise<void>;
+	_emitModelChanged(nextModel: Model<Api>, previousModel: Model<Api> | undefined, source: "set" | "cycle" | "restore" | "fallback"): void;
+	_emitModelSelect(nextModel: Model<Api>, previousModel: Model<Api> | undefined, source: "set" | "cycle" | "restore" | "fallback"): Promise<void>;
 	setModel(model: Model<Api>): Promise<void>;
 	cycleModel(direction?: "forward" | "backward"): Promise<ModelCycleResult | undefined>;
 	_cycleScopedModel(direction: "forward" | "backward"): Promise<ModelCycleResult | undefined>;
@@ -192,17 +196,20 @@ export interface AgentSessionMethodSurface {
 	_applyContextWindowReplay(contextWindow: number | undefined): void;
 	_appendContextWindowChangeIfChanged(previousModel: Model<Api> | undefined, nextModel: Model<Api>): void;
 
-	_applyContextVerbatimCompaction(options: ContextCompactionApplyOptions): Promise<ContextCompactionResult | undefined>;
-	compact(options?: Partial<ContextCompactionParameters>): Promise<ContextCompactionResult>;
-	contextCompact(): Promise<ContextCompactionResult>;
+	_applyVerbatimCompaction(options: VerbatimCompactionApplyOptions): Promise<VerbatimCompactionResult | undefined>;
+	compact(options?: Partial<VerbatimCompactionParameters>): Promise<VerbatimCompactionResult>;
 	abortCompaction(): void;
 	abortBranchSummary(): void;
 	_checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck?: boolean): Promise<void>;
 	_isCopilotServerCapBelowSelectedContextWindow(assistantMessage: AssistantMessage): boolean;
 	_dropTrailingAutoCompactionRetryAssistantIfPresent(): void;
 	_schedulePostAutoCompactionContinuationProbe(reason: "overflow" | "threshold", willRetry: boolean): void;
-	_resumeAfterAutoCompaction(): void;
+	_awaitPendingPostCompactionContinuation(): Promise<void>;
+	_resumeAfterAutoCompaction(): Promise<void>;
+	_resumeAfterLengthTruncation(): void;
 	_runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<void>;
+	_preflightPostToolContext(messages: AgentMessage[], signal?: AbortSignal): Promise<AgentMessage[]>;
+	_finishPostToolCompactionPreflight(messages: AgentMessage[]): AgentMessage[];
 	setAutoCompactionEnabled(enabled: boolean): void;
 
 	bindExtensions(bindings: ExtensionBindings): Promise<void>;
@@ -215,13 +222,14 @@ export interface AgentSessionMethodSurface {
 	_bindExtensionCore(runner: ExtensionRunner): void;
 	_refreshToolRegistry(options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void;
 	_buildRuntime(options: RuntimeBuildOptions): void;
-	reload(options?: { reason?: "startup" | "reload" }): Promise<void>;
+	reload(options?: AgentSessionReloadOptions): Promise<void>;
 
 	_isRetryableError(message: AssistantMessage): boolean;
 	_normalizePersistedGeminiToolArgs(message: AssistantMessage): void;
 	_isEmptyCompletion(message: AssistantMessage): boolean;
 	_isSafetyRefusal(message: AssistantMessage): boolean;
 	_handleRetryableError(message: AssistantMessage): Promise<boolean>;
+	_trySwitchToFallbackModel(message: AssistantMessage): Promise<boolean>;
 	abortRetry(): void;
 	waitForRetry(): Promise<void>;
 	setAutoRetryEnabled(enabled: boolean): void;
@@ -242,6 +250,9 @@ export interface AgentSessionMethodSurface {
 	exportToJsonl(outputPath?: string): string;
 	getLastAssistantText(): string | undefined;
 	createReplacedSessionContext(): ReplacedSessionContext;
+	sealWorkflowStageGeneration(): void;
+	closeWorkflowStageGeneration(): Promise<void>;
+	transferWorkflowStageDeliveriesTo(target: object): void;
 	hasExtensionHandlers(eventType: string): boolean;
 }
 
@@ -299,7 +310,6 @@ export interface AgentSessionPublicSurface extends Pick<AgentSessionMethodSurfac
 	| "setSteeringMode"
 	| "setFollowUpMode"
 	| "compact"
-	| "contextCompact"
 	| "abortCompaction"
 	| "abortBranchSummary"
 	| "setAutoCompactionEnabled"
@@ -329,12 +339,22 @@ export interface AgentSessionPublicSurface extends Pick<AgentSessionMethodSurfac
 
 export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, AgentSessionPublicSurface {
 	_scopedModels: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
+	_fallbackModels: string[];
+	_fallbackAttemptedKeys: Set<string>;
+
 	_unsubscribeAgent?: () => void;
 	_eventListeners: AgentSessionEventListener[];
 	_agentEventQueue: Promise<void>;
 	_steeringMessages: string[];
 	_followUpMessages: string[];
 	_interruptDeliveryQueue: Promise<void>;
+	_pendingPostCompactionContinuation: Promise<void> | undefined;
+	_postCompactionContinuationToken: number;
+	_lengthContinuationAttempts: number;
+	_outputBudgetErrorContinuationAttempts: number;
+	_postToolCompactionPreflightError: string | undefined;
+	_pendingPostToolCompactionGuard: PendingPostToolCompactionGuard | undefined;
+	_terminatingToolCallIds: Set<string>;
 	_pendingInterruptDeliveries: number;
 	_activeInterruptQueueHold: InterruptQueueHold | undefined;
 	_activeInterruptAbortMessage: string | undefined;
@@ -379,5 +399,6 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_lastAssistantMessage: AssistantMessage | undefined;
 	_asyncJobManager: AsyncJobManager;
 	_asyncJobManagerSessionId: symbol;
+	_workflowStageAdmission: import("./workflow-stage-admission.ts").WorkflowStageAdmissionBoundary | undefined;
 }
 

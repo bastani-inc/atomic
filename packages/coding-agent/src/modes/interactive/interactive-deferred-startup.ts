@@ -1,6 +1,6 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { modelsAreEqual } from "@earendil-works/pi-ai/compat";
-import { type Container, recordTimeSinceReset, resolveModelScopeWithDiagnostics, resolveSavedModelReference, setRegisteredThemes } from "./interactive-mode-deps.ts";
+import { type Container, recordTimeSinceReset, resolveModelScopeWithDiagnostics, resolveRestoredModelReference, setRegisteredThemes } from "./interactive-mode-deps.ts";
 
 export interface DeferredStartupMode {
     deferredStartupPending: boolean;
@@ -10,8 +10,17 @@ export interface DeferredStartupMode {
 
 export async function ensureDeferredStartupComplete(mode: DeferredStartupMode): Promise<void> {
     if (!mode.deferredStartupPending && !mode.deferredStartupPromise) return;
-    mode.deferredStartupPromise ??= mode.completeDeferredStartup();
-    await mode.deferredStartupPromise;
+    const startupPromise = mode.deferredStartupPromise ?? Promise.resolve().then(() => mode.completeDeferredStartup());
+    mode.deferredStartupPromise = startupPromise;
+    try {
+      await startupPromise;
+    } catch {
+      mode.deferredStartupPending = false;
+    } finally {
+      if (mode.deferredStartupPromise === startupPromise && !mode.deferredStartupPending) {
+        mode.deferredStartupPromise = undefined;
+      }
+    }
   }
 
 InteractiveModeBase.prototype.ensureDeferredStartupComplete = async function(this: InteractiveModeBase): Promise<void> {
@@ -24,45 +33,44 @@ InteractiveModeBase.prototype.ensureDeferredStartupComplete = async function(thi
  * the same post-load UI wiring as /reload and discloses loaded resources.
  */
 InteractiveModeBase.prototype.completeDeferredStartup = async function(this: InteractiveModeBase): Promise<void> {
-	try {
-		await this.bindCurrentSessionExtensions();
-		await this.session.reload({ reason: "startup" });
-	} catch (error) {
-		this.stopWorkingLoader();
+    try {
+      await this.bindCurrentSessionExtensions();
+      await this.session.reload({ reason: "startup" });
+
+      this.stopWorkingLoader();
+      this.deferredStartupPending = false;
+      recordTimeSinceReset("deferred-extension-load");
+
+      setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
+      await this.themeController.applyFromSettings();
+      this.setupAutocompleteProvider();
+      this.setupExtensionShortcuts(this.session.extensionRunner);
+      await applyDeferredModelScope(this);
+      await this.retryDeferredModelRestore(this.startupNoticesContainer);
+      if (this.deferLoadedResourcesDisclosureUntilAgentEnd) {
+        this.pendingLoadedResourcesDisclosure = true;
+      } else {
+        this.showLoadedResources({ force: true, showDiagnosticsWhenQuiet: true, targetContainer: this.startupNoticesContainer });
+        // Keep the subscription warning after the RESOURCES disclosure.
+        void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
+        this.showStartupNoticesIfNeeded(this.startupNoticesContainer);
+      }
+      const modelsJsonError = this.session.modelRegistry.getError();
+      if (modelsJsonError) {
+        this.showError(`models.json error: ${modelsJsonError}`);
+      }
+      void this.updateAvailableProviderCount().catch(() => {});
+      this.updateEditorBorderColor();
+      this.ui.requestRender();
+    } catch (error) {
+      this.stopWorkingLoader();
       this.deferredStartupPending = false;
       this.showError(
         `Extension loading failed: ${error instanceof Error ? error.message : String(error)}`,
       );
       // The RESOURCES disclosure will not render; surface the held warning.
       void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
-      return;
     }
-
-	this.stopWorkingLoader();
-	this.deferredStartupPending = false;
-    recordTimeSinceReset("deferred-extension-load");
-
-    setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
-    await this.themeController.applyFromSettings();
-    this.setupAutocompleteProvider();
-    this.setupExtensionShortcuts(this.session.extensionRunner);
-    await applyDeferredModelScope(this);
-    await this.retryDeferredModelRestore(this.startupNoticesContainer);
-	if (this.deferLoadedResourcesDisclosureUntilAgentEnd) {
-		this.pendingLoadedResourcesDisclosure = true;
-	} else {
-		this.showLoadedResources({ force: true, showDiagnosticsWhenQuiet: true, targetContainer: this.startupNoticesContainer });
-		// Keep the subscription warning after the RESOURCES disclosure.
-		void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
-	}
-	this.showStartupNoticesIfNeeded(this.startupNoticesContainer);
-    const modelsJsonError = this.session.modelRegistry.getError();
-    if (modelsJsonError) {
-      this.showError(`models.json error: ${modelsJsonError}`);
-    }
-    void this.updateAvailableProviderCount().catch(() => {});
-    this.updateEditorBorderColor();
-    this.ui.requestRender();
   };
 
 export async function applyDeferredModelScope(mode: InteractiveModeBase): Promise<void> {
@@ -110,8 +118,11 @@ InteractiveModeBase.prototype.retryDeferredModelRestore = async function(this: I
       return;
     }
     const savedModel = this.sessionManager.buildSessionContext().model;
+    if (!savedModel && this.session.model && this.session.modelRegistry.hasConfiguredAuth(this.session.model)) {
+      return;
+    }
     if (savedModel) {
-      const restoredModel = await resolveSavedModelReference(
+      const restoredModel = await resolveRestoredModelReference(
         savedModel.provider,
         savedModel.modelId,
         this.session.modelRegistry,

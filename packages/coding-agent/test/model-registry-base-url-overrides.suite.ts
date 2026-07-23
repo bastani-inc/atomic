@@ -2,7 +2,6 @@ import { describe, expect, test } from "vitest";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
 
-import { describeModelRegistry } from "./model-registry-fixtures.ts";
 
 describeModelRegistry((context) => {
 	const {
@@ -219,7 +218,7 @@ describeModelRegistry((context) => {
 			expect(googleModels.some((m) => m.id === "gemini-custom")).toBe(true);
 		});
 
-		test("refresh() picks up baseUrl override changes", () => {
+		test("refresh() picks up baseUrl override changes", async () => {
 			writeRawModelsJson({
 				anthropic: overrideConfig("https://first-proxy.example.com/v1"),
 			});
@@ -231,7 +230,7 @@ describeModelRegistry((context) => {
 			writeRawModelsJson({
 				anthropic: overrideConfig("https://second-proxy.example.com/v1"),
 			});
-			registry.refresh();
+			await registry.refresh();
 
 			expect(getModelsForProvider(registry, "anthropic")[0].baseUrl).toBe("https://second-proxy.example.com/v1");
 		});

@@ -29,7 +29,7 @@ In practice, that means:
 7. Require evidence before accepting the result.
 8. Ask for a summary, handoff, or next-step plan.
 
-A good workflow prompt does not just say what to try. It says what success looks like. When the work is non-trivial, asks to implement/build/debug/fix/migrate/add a feature, touches a scoped set of files, or already has loop language such as `do X until Y`, `repeat until`, `iterate until`, `review/fix until passing`, or `run checks and fix until green`, route it to a workflow so the stop condition, evidence, and review/fix cycle are tracked instead of left implicit in chat.
+A good workflow prompt does not just say what to try. It says what success looks like. Default to a workflow for non-trivial work or a request with inherent structure plus a verifiable objective: implementation, debugging, migrations, multi-file changes, validation, review gates, evidence requirements, and loop/stop-condition prompts all benefit from tracked execution. Use direct chat for tiny deterministic low-risk work. Do not force-fit a builtin—Atomic can author a custom TypeScript workflow inline and compose classify-and-act, fan-out-and-synthesize, adversarial verification, generate-and-filter, tournament, and loop-until-done patterns.
 
 ---
 
@@ -392,7 +392,7 @@ Synthesize the current findings into: root cause, proposed fix, files likely inv
 
 ---
 
-### Pause, kill, or rerun
+### Pause, quit, or rerun
 
 **Signal:** A run is stale, duplicated, superseded, or based on outdated assumptions.
 
@@ -618,7 +618,7 @@ Synthesize findings first: root cause, affected path, proposed fix, and validati
 | Accepting unverified summaries | Ask for changed files, commands run, results, and remaining risks. |
 | Mixing investigation and implementation too early | Ask for root cause and proposed fix before code changes. |
 | Ignoring blocked stages | Answer directly with one decision and any constraints. |
-| Continuing stale runs | Pause, kill, or rerun with updated context. |
+| Continuing stale runs | Pause, quit, or rerun with updated context. |
 | Reading every log | Inspect status, then stages, then only relevant details. |
 | Publishing without gates | Require release validation and explicit stop conditions. |
 

@@ -1,9 +1,9 @@
 import type { ExtensionAPI } from "@bastani/atomic";
 import { randomUUID } from "crypto";
 import { Type } from "typebox";
-import { Text } from "@mariozechner/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 import type { IntercomClient } from "./broker/client.ts";
-import type { Message } from "./types.ts";
+import type { ReplyWait, ReplyWaitAdmission } from "./reply-waiter.ts";
 import { renderIntercomResult } from "./result-renderers.js";
 import {
   formatAttachments,
@@ -13,35 +13,49 @@ import {
   toError,
 } from "./intercom-utils.js";
 import type { ReplyTracker } from "./reply-tracker.ts";
+import { resolveSessionTargetId } from "./session-target.js";
+import { normalizeGroup } from "./group.js";
 
 interface IntercomToolDeps {
   ensureConnected(reason: "tool"): Promise<IntercomClient>;
   syncPresenceIdentity(sessionId: string): void;
-  resolveSessionTarget(activeClient: IntercomClient, nameOrId: string): Promise<string | null>;
+  resolveSessionTarget?(activeClient: IntercomClient, nameOrId: string): Promise<string | null>;
   confirmSend: boolean;
-  waitForReply(from: string, replyTo: string, signal?: AbortSignal): Promise<Message>;
-  replyTracker: ReplyTracker;
+  /**
+   * Atomically reserve the single reply-waiter slot. Returns a structured
+   * refusal when another blocking ask already holds it, so concurrent calls
+   * never observe a rejected promise.
+   */
+  beginReplyWait(from: string, replyTo: string, signal?: AbortSignal): ReplyWaitAdmission;
+  replyTracker: ReplyTracker | (() => ReplyTracker);
+  /** Advisory fast-path check; beginReplyWait is the authoritative reservation. */
   hasReplyWaiter(): boolean;
-  rejectReplyWaiter(error: Error): void;
 }
 
 export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): void {
-  const { ensureConnected, syncPresenceIdentity, resolveSessionTarget, waitForReply, replyTracker, hasReplyWaiter, rejectReplyWaiter } = deps;
+  const { ensureConnected, syncPresenceIdentity, beginReplyWait, hasReplyWaiter } = deps;
+  const resolveTarget = deps.resolveSessionTarget ?? resolveSessionTargetId;
+  const activeReplyTracker = (): ReplyTracker =>
+    typeof deps.replyTracker === "function" ? deps.replyTracker() : deps.replyTracker;
   pi.registerTool({
     name: "intercom",
     label: "Intercom",
-    description: `Send a message to another pi session running on this machine.
+    description: `Send a message to another local agent session running on this machine.
 Use this to communicate findings, request help, or coordinate work with other sessions.
 
+Sessions belong to an intercom group and can ONLY message sessions in the same group;
+cross-group sends are rejected by the broker. Ungrouped sessions share the "default" group.
+
 Usage:
-  intercom({ action: "list" })                    → List active sessions
-  intercom({ action: "send", to: "session-name", message: "..." })  → Send message
+  intercom({ action: "list" })                    → List sessions in your group
+  intercom({ action: "list", group: "name" })     → Read-only peek at another group's sessions
+  intercom({ action: "send", to: "session-name", message: "..." })  → Send message (own group only)
   intercom({ action: "ask", to: "session-name", message: "..." })   → Ask and wait for reply
   intercom({ action: "reply", message: "..." })                      → Reply to the active/single pending ask
   intercom({ action: "pending" })                                      → List unresolved inbound asks
-  intercom({ action: "status" })                  → Show connection status`,
+  intercom({ action: "status" })                  → Show connection status and your group`,
     promptSnippet:
-      "Use to coordinate with other local pi sessions: list peers, send updates, ask for help, or check intercom connectivity.",
+      "Use to coordinate with other local agent sessions in your intercom group: list peers, send updates, ask for help, or check intercom connectivity. Groups are isolated; you can only message sessions in your own group.",
 
     parameters: Type.Object({
       action: Type.String({
@@ -62,6 +76,9 @@ Usage:
       replyTo: Type.Optional(Type.String({
         description: "Message ID to reply to (for threading or responding to an 'ask')",
       })),
+      group: Type.Optional(Type.String({
+        description: "Read-only group filter for 'list'/'status' (peek who is in a named group). 'send'/'ask' are always locked to your own group; passing a different group errors.",
+      })),
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -78,15 +95,30 @@ Usage:
 
       syncPresenceIdentity(ctx.sessionManager.getSessionId());
 
-      const { action, to, message, attachments, replyTo } = params;
+      const { action, to, message, attachments, replyTo, group } = params;
+      const requestedGroup = typeof group === "string" && group.trim() ? normalizeGroup(group) : undefined;
+      const resolveOwnGroup = async (): Promise<string> => {
+        const sessions = await connectedClient.listSessions();
+        const self = sessions.find((s) => s.id === connectedClient.sessionId);
+        return normalizeGroup(self?.group);
+      };
+      if ((action === "send" || action === "ask") && requestedGroup) {
+        const ownGroup = await resolveOwnGroup();
+        if (requestedGroup !== ownGroup) {
+          return {
+            content: [{ type: "text", text: `The 'group' parameter is read-only for 'list'/'status'. '${action}' is always locked to your own group ("${ownGroup}"); it cannot target group "${requestedGroup}".` }],
+            isError: true,
+            details: { error: true },
+          };
+        }
+      }
 
       switch (action) {
         case "list": {
           try {
             const mySessionId = connectedClient.sessionId;
-            const sessions = await connectedClient.listSessions();
-            const currentSession = sessions.find(s => s.id === mySessionId);
-            const otherSessions = sessions.filter(s => s.id !== mySessionId);
+            const ownSessions = await connectedClient.listSessions();
+            const currentSession = ownSessions.find(s => s.id === mySessionId);
 
             if (!currentSession) {
               return {
@@ -95,15 +127,30 @@ Usage:
                 details: { error: true },
               };
             }
+            const ownGroup = normalizeGroup(currentSession.group);
 
-            const currentSection = `**Current session:**\n${formatSessionListRow(currentSession, currentSession.cwd, true)}`;
+            if (requestedGroup && requestedGroup !== ownGroup) {
+              const peeked = await connectedClient.listSessions(requestedGroup);
+              const section = peeked.length === 0
+                ? `**Group [${requestedGroup}] (read-only peek):**\nNo sessions in this group.`
+                : `**Group [${requestedGroup}] (read-only peek):**\n${peeked.map(s => formatSessionListRow(s, currentSession.cwd, s.id === mySessionId)).join("\n")}`;
+              return {
+                content: [{ type: "text", text: `Your group: ${ownGroup}\n\n${section}` }],
+                isError: false,
+                details: { group: ownGroup, peekGroup: requestedGroup },
+              };
+            }
+
+            const otherSessions = ownSessions.filter(s => s.id !== mySessionId);
+            const currentSection = `**Current session** (group: ${ownGroup}):\n${formatSessionListRow(currentSession, currentSession.cwd, true)}`;
             const otherSection = otherSessions.length === 0
-              ? "**Other sessions:**\nNo other sessions connected."
-              : `**Other sessions:**\n${otherSessions.map(s => formatSessionListRow(s, currentSession.cwd, false)).join("\n")}`;
+              ? `**Other sessions:**\nNo other sessions in your group (${ownGroup}).`
+              : `**Other sessions** (group: ${ownGroup}):\n${otherSessions.map(s => formatSessionListRow(s, currentSession.cwd, false)).join("\n")}`;
 
             return {
               content: [{ type: "text", text: `${currentSection}\n\n${otherSection}` }],
               isError: false,
+              details: { group: ownGroup },
             };
           } catch (error) {
             return {
@@ -123,7 +170,7 @@ Usage:
             };
           }
           try {
-            const sendTo = await resolveSessionTarget(connectedClient, to) ?? to;
+            const sendTo = await resolveTarget(connectedClient, to) ?? to;
             if (sendTo === connectedClient.sessionId) {
               return {
                 content: [{ type: "text", text: "Cannot message the current session" }],
@@ -141,6 +188,7 @@ Usage:
                 return {
                   content: [{ type: "text", text: "Message cancelled by user" }],
                   isError: false,
+                  details: {},
                 };
               }
             }
@@ -164,7 +212,7 @@ Usage:
               timestamp: Date.now(),
             });
             if (replyTo) {
-              replyTracker.markReplied(replyTo);
+              activeReplyTracker().markReplied(replyTo);
             }
             return {
               content: [{ type: "text", text: `Message sent to ${to}` }],
@@ -204,10 +252,10 @@ Usage:
               details: { error: true },
             };
           }
-          let replyPromise: Promise<Message> | null = null;
+          let wait: ReplyWait | null = null;
 
           try {
-            const sendTo = await resolveSessionTarget(connectedClient, to) ?? to;
+            const sendTo = await resolveTarget(connectedClient, to) ?? to;
             if (_signal?.aborted) {
               return {
                 content: [{ type: "text", text: "Cancelled" }],
@@ -223,7 +271,15 @@ Usage:
               };
             }
             const questionId = randomUUID();
-            replyPromise = waitForReply(sendTo, questionId, _signal);
+            const admission = beginReplyWait(sendTo, questionId, _signal);
+            if (!admission.ok) {
+              return {
+                content: [{ type: "text", text: admission.reason === "busy" ? "Already waiting for a reply" : "Cancelled" }],
+                isError: true,
+                details: { error: true },
+              };
+            }
+            wait = admission.wait;
             const sendResult = await connectedClient.send(sendTo, {
               messageId: questionId,
               text: message,
@@ -234,14 +290,7 @@ Usage:
 
             if (!sendResult.delivered) {
               const errorText = sendResult.reason ?? "Session may not exist or has disconnected.";
-              rejectReplyWaiter(new Error(`Message to "${to}" was not delivered: ${errorText}`));
-              if (replyPromise) {
-                try {
-                  await replyPromise;
-                } catch {
-                  // The waiter was already rejected above. Keep the delivery failure as the only error here.
-                }
-              }
+              wait.cancel(new Error(`Message to "${to}" was not delivered: ${errorText}`));
               return {
                 content: [{ type: "text", text: `Message to "${to}" was not delivered: ${errorText}` }],
                 isError: true,
@@ -254,7 +303,7 @@ Usage:
               messageId: sendResult.id,
               timestamp: Date.now(),
             });
-            const replyMessage = await replyPromise;
+            const replyMessage = await wait.promise;
             const replyText = replyMessage.content.text;
             const replyAttachments = replyMessage.content.attachments?.length
               ? formatAttachments(replyMessage.content.attachments)
@@ -265,19 +314,22 @@ Usage:
               messageId: replyMessage.id,
               timestamp: replyMessage.timestamp,
             });
+            if (replyMessage.replyError !== undefined) {
+              return {
+                content: [{ type: "text", text: `Failed: ${replyMessage.replyError}` }],
+                isError: true,
+                details: { error: true, replyTo: replyMessage.replyTo },
+              };
+            }
             return {
               content: [{ type: "text", text: `**Reply from ${to}:**\n${replyText}${replyAttachments}` }],
               isError: false,
+              details: {},
             };
           } catch (error) {
-            rejectReplyWaiter(toError(error));
-            if (replyPromise) {
-              try {
-                await replyPromise;
-              } catch {
-                // The waiter is cleanup-only on this path. The real failure is the one from the outer catch.
-              }
-            }
+            // Settle only this call's own waiter; a concurrent call's
+            // reservation must never be torn down from this failure path.
+            wait?.cancel(toError(error));
             return {
               content: [{ type: "text", text: `Failed: ${getErrorMessage(error)}` }],
               isError: true,
@@ -296,7 +348,7 @@ Usage:
           }
 
           try {
-            const target = replyTracker.resolveReplyTarget({ to });
+            const target = activeReplyTracker().resolveReplyTarget({ to });
             if (target.from.id === connectedClient.sessionId) {
               return {
                 content: [{ type: "text", text: "Cannot message the current session" }],
@@ -316,7 +368,7 @@ Usage:
                 details: { messageId: result.id, delivered: false, reason: result.reason },
               };
             }
-            replyTracker.markReplied(target.message.id);
+            activeReplyTracker().markReplied(target.message.id);
             pi.appendEntry("intercom_sent", {
               to: target.from.name || target.from.id,
               message: { text: message, replyTo: target.message.id },
@@ -338,11 +390,12 @@ Usage:
         }
 
         case "pending": {
-          const pendingAsks = replyTracker.listPending();
+          const pendingAsks = activeReplyTracker().listPending();
           if (pendingAsks.length === 0) {
             return {
               content: [{ type: "text", text: "No unresolved inbound asks." }],
               isError: false,
+              details: {},
             };
           }
 
@@ -355,6 +408,7 @@ Usage:
           return {
             content: [{ type: "text", text: `**Pending asks:**\n${lines.join("\n")}` }],
             isError: false,
+            details: {},
           };
         }
 
@@ -362,12 +416,18 @@ Usage:
           try {
             const mySessionId = connectedClient.sessionId;
             const sessions = await connectedClient.listSessions();
+            const self = sessions.find((s) => s.id === mySessionId);
+            const ownGroup = normalizeGroup(self?.group);
+            const peekSection = requestedGroup && requestedGroup !== ownGroup
+              ? `\nPeeked group [${requestedGroup}]: ${(await connectedClient.listSessions(requestedGroup)).length} session(s)`
+              : "";
             return {
               content: [{
                 type: "text",
-                text: `**Intercom Status:**\nConnected: Yes\nSession ID: ${mySessionId}\nActive sessions: ${sessions.length}`,
+                text: `**Intercom Status:**\nConnected: Yes\nSession ID: ${mySessionId}\nGroup: ${ownGroup}\nActive sessions in group: ${sessions.length}${peekSection}`,
               }],
               isError: false,
+              details: { group: ownGroup },
             };
           } catch (error) {
             return {

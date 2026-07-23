@@ -6,7 +6,6 @@ import type {
 	ChainStep,
 	ParallelStep,
 	ResolvedStepBehavior,
-	ResolvedTemplates,
 } from "../../shared/settings.ts";
 import type {
 	ActivityState,
@@ -23,7 +22,6 @@ import type {
 import type { ChainOutputMap } from "../../shared/types.ts";
 import type { WorktreeSetup } from "../shared/worktree.ts";
 import type { runSync } from "./execution.ts";
-import type { BehaviorOverride } from "./chain-clarify.ts";
 
 export type RunSyncDependency = typeof runSync;
 
@@ -74,7 +72,6 @@ export interface ChainExecutionParams {
 	artifactsDir: string;
 	artifactConfig: ArtifactConfig;
 	includeProgress?: boolean;
-	clarify?: boolean;
 	onUpdate?: (r: AgentToolResult<Details>) => void;
 	onControlEvent?: (event: ControlEvent) => void;
 	controlConfig: ResolvedControlConfig;
@@ -90,16 +87,13 @@ export interface ChainExecutionParams {
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
 	runSync?: RunSyncDependency;
+	onDetachedExit?: (index: number, result: SingleResult) => void;
 }
 
 export interface ChainExecutionResult {
 	content: Array<{ type: "text"; text: string }>;
 	details: Details;
 	isError?: boolean;
-	requestedAsync?: {
-		chain: ChainStep[];
-		chainSkills: string[];
-	};
 }
 
 export interface ParallelChainRunInput {
@@ -143,6 +137,7 @@ export interface ParallelChainRunInput {
 	workflowStageSubagentGuard?: boolean;
 	nestedRoute?: NestedRouteInfo;
 	runSync: RunSyncDependency;
+	onDetachedExit?: (index: number, result: SingleResult) => void;
 }
 
 export interface ChainExecutionMutableState {
@@ -187,10 +182,5 @@ export interface ChainRuntimeContext {
 	totalSteps: number;
 	executeRunSync: RunSyncDependency;
 	makeDetailsInput(overrides?: Pick<Partial<ChainExecutionDetailsInput>, "currentStepIndex" | "currentFlatIndex">): ChainExecutionDetailsInput;
+	onDetachedExit?: (index: number, result: SingleResult) => void;
 }
-
-export type ChainClarificationOutcome = {
-	result?: ChainExecutionResult;
-	templates: ResolvedTemplates;
-	tuiBehaviorOverrides?: (BehaviorOverride | undefined)[];
-};

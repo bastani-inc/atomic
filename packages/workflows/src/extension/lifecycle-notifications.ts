@@ -15,8 +15,16 @@ import type {
   StoreSnapshot,
 } from "../shared/store-types.js";
 import { isTopLevelWorkflowRun } from "../shared/run-visibility.js";
+import {
+  actionableReturnedStatusText,
+  effectiveRunStatus,
+  isReturnedBlockedWorkflowStatus,
+  normalizeReturnedWorkflowStatus,
+  structuredRecoverableWorkflowFailureText,
+} from "../shared/returned-run-status.js";
 import { deriveGraphThemeFromPiTheme, type GraphTheme } from "../tui/graph-theme.js";
 import { renderWorkflowNoticeCard, type WorkflowNoticeTone } from "../tui/workflow-notice-card.js";
+import { createLifecycleNoticeDelivery } from "./lifecycle-notification-delivery.js";
 
 export const LIFECYCLE_NOTICE_CUSTOM_TYPE = "workflows:lifecycle-notice";
 export const LIFECYCLE_NOTICE_SNIPPET_LIMIT = 240;
@@ -49,11 +57,16 @@ export interface WorkflowLifecycleNoticeDetails {
   readonly error?: string;
   readonly failedStageId?: string;
   readonly durationMs?: number;
+  readonly active?: boolean;
   readonly createdAt: number;
 }
 
 export interface WorkflowLifecycleNotificationState {
   readonly deliveredTerminalRuns: Set<string>;
+  readonly retryableTerminalNotices: Map<string, WorkflowLifecycleNoticeDetails>;
+  readonly pendingTerminalRuns: Map<string, symbol>;
+  readonly retryableTerminalRuns: Set<string>;
+  readonly retryObservers: Set<(key: string, details: WorkflowLifecycleNoticeDetails) => void>;
   readonly deliveredInputPrompts: Set<string>;
   suppressionDepth: number;
 }
@@ -69,23 +82,28 @@ export interface WorkflowLifecycleNotificationOptions {
 }
 
 type RawRenderer = PiMessageRenderer;
-
-// Process-lifetime registration dedupe: extension hosts are object identities
-// and may be garbage-collected, but renderer registrations are not unregistered.
 const rendererRegisteredHosts = new WeakSet<object>();
-
 export function createWorkflowLifecycleNotificationState(): WorkflowLifecycleNotificationState {
   return {
     deliveredTerminalRuns: new Set<string>(),
+    pendingTerminalRuns: new Map<string, symbol>(),
+    retryableTerminalNotices: new Map<string, WorkflowLifecycleNoticeDetails>(),
+    retryableTerminalRuns: new Set<string>(),
+    retryObservers: new Set<(key: string, details: WorkflowLifecycleNoticeDetails) => void>(),
     deliveredInputPrompts: new Set<string>(),
     suppressionDepth: 0,
   };
 }
 
+/** Reset all prior-session lifecycle delivery and dedupe state. */
 export function resetWorkflowLifecycleNotificationState(
   state: WorkflowLifecycleNotificationState,
 ): void {
   state.deliveredTerminalRuns.clear();
+  state.pendingTerminalRuns.clear();
+  state.retryableTerminalRuns.clear();
+  state.retryableTerminalNotices.clear();
+  state.retryObservers.clear();
   state.deliveredInputPrompts.clear();
   state.suppressionDepth = 0;
 }
@@ -97,8 +115,11 @@ export function seedWorkflowLifecycleNotificationState(
   for (const run of snapshot.runs) {
     if (!isTopLevelWorkflowRun(run)) continue;
     const noticeKind = terminalNoticeKind(run);
-    if (noticeKind !== undefined && run.endedAt !== undefined) {
-      state.deliveredTerminalRuns.add(terminalRunKey(noticeKind, run.id));
+    if (noticeKind !== undefined && lifecycleOccurrenceAt(run, noticeKind) !== undefined) {
+      const key = terminalRunKey(noticeKind, run);
+      if (!state.pendingTerminalRuns.has(key) && !state.retryableTerminalRuns.has(key)) {
+        state.deliveredTerminalRuns.add(key);
+      }
     }
     if (run.pendingPrompt !== undefined) {
       state.deliveredInputPrompts.add(runAwaitingInputKey(run.id, run.pendingPrompt));
@@ -159,30 +180,25 @@ export function installWorkflowLifecycleNotifications(
 
   const notifyOn = new Set<WorkflowLifecycleNoticeKind>(options.config.notifyOn);
   const state = options.state ?? createWorkflowLifecycleNotificationState();
-  if (options.seedExisting !== false) {
-    seedWorkflowLifecycleNotificationState(state, options.store.snapshot());
-  }
+  let delivery!: ReturnType<typeof createLifecycleNoticeDelivery>;
+  if (options.seedExisting !== false) seedWorkflowLifecycleNotificationState(state, options.store.snapshot());
 
-  const emit = (details: WorkflowLifecycleNoticeDetails): void => {
-    const content = formatWorkflowLifecycleNoticeText(details);
-    const deliveryOptions = { triggerTurn: true, deliverAs: "steer" as const };
+  const emit = (details: WorkflowLifecycleNoticeDetails): boolean | Promise<boolean> => {
     try {
-      // Store subscribers are notified in a tight loop. A lifecycle notice
-      // failure must never abort sibling subscribers such as status writers.
-      void Promise.resolve(
-        send(
-          {
-            customType: LIFECYCLE_NOTICE_CUSTOM_TYPE,
-            content,
-            display: true,
-            details,
-          },
-          deliveryOptions,
-        ),
-      ).catch((error: unknown) => warnLifecycleSendFailure(error));
+      const result = send({
+        customType: LIFECYCLE_NOTICE_CUSTOM_TYPE,
+        content: formatWorkflowLifecycleNoticeText(details),
+        display: true,
+        details,
+      }, { triggerTurn: true, deliverAs: "steer", persistWhenStreaming: true });
+      if (result === undefined) return true;
+      return Promise.resolve(result).then(() => true, (error: unknown) => {
+        warnLifecycleSendFailure(error);
+        return false;
+      });
     } catch (error) {
       warnLifecycleSendFailure(error);
-      // Best-effort notification only; keep store delivery isolated.
+      return false;
     }
   };
 
@@ -191,16 +207,19 @@ export function installWorkflowLifecycleNotifications(
     kind: "completed" | "failed" | "blocked",
   ): void => {
     const noticeKind = terminalNoticeKind(run);
-    if (noticeKind !== kind || run.endedAt === undefined || !notifyOn.has(kind)) {
+    if (noticeKind !== kind || lifecycleOccurrenceAt(run, kind) === undefined || !notifyOn.has(kind)) {
       return;
     }
 
-    const key = terminalRunKey(kind, run.id);
-    if (state.deliveredTerminalRuns.has(key)) return;
-
-    state.deliveredTerminalRuns.add(key);
-    if (state.suppressionDepth > 0) return;
-    emit(makeTerminalNotice(run, kind));
+    const key = terminalRunKey(kind, run);
+    if (state.deliveredTerminalRuns.has(key) || state.pendingTerminalRuns.has(key)) return;
+    if (state.suppressionDepth > 0) {
+      state.deliveredTerminalRuns.add(key);
+      state.retryableTerminalRuns.delete(key);
+      state.retryableTerminalNotices.delete(key);
+      return;
+    }
+    delivery.deliver(key, makeTerminalNotice(run, kind));
   };
 
   const emitStageAwaitingInputNoticeOnce = (
@@ -243,8 +262,17 @@ export function installWorkflowLifecycleNotifications(
       }
     }
   };
+  delivery = createLifecycleNoticeDelivery({ state, emit, eligible: (details) => notifyOn.has(details.kind) });
+  for (const [key, details] of state.retryableTerminalNotices) {
+    if (notifyOn.has(details.kind)) delivery.deliver(key, details);
+  }
 
-  return options.store.subscribe(inspect);
+  const unsubscribe = options.store.subscribe(inspect);
+  inspect(options.store.snapshot());
+  return () => {
+    unsubscribe();
+    delivery.dispose();
+  };
 }
 
 export function registerLifecycleNoticeRenderer(
@@ -279,7 +307,8 @@ export function formatWorkflowLifecycleNoticeText(details: WorkflowLifecycleNoti
   }
   if (details.kind === "blocked") {
     const errorText = details.error ? `: ${details.error}` : "";
-    return `! Workflow "${workflowName}" ended blocked (run ${details.runId})${errorText}. Inspect: /workflow status ${details.runId}`;
+    const stateText = details.active === true ? "is blocked" : "ended blocked";
+    return `! Workflow "${workflowName}" ${stateText} (run ${details.runId})${errorText}. Inspect: /workflow status ${details.runId}`;
   }
   const prompt = details.promptMessage ? ` Prompt: ${details.promptMessage}` : "";
   if (details.scope === "run") {
@@ -299,19 +328,22 @@ function makeTerminalNotice(
   const failedStage = run.failedStageId
     ? run.stages.find((stage) => stage.id === run.failedStageId)
     : undefined;
-  const error = run.error ?? (kind === "blocked" ? run.exitReason : undefined);
+  const activeBlocked = kind === "blocked" && isActiveRecoverableBlockedRun(run);
+  const error = activeBlocked
+    ? run.failureMessage ?? structuredRecoverableWorkflowFailureText(run) ?? run.error
+    : run.error ?? returnedNoticeError(run, kind) ?? (kind === "blocked" ? run.exitReason : undefined);
   return {
     kind,
     scope: "run",
     runId: run.id,
     workflowName: run.name,
-    status: run.status,
+    status: effectiveRunStatus(run),
+    ...(activeBlocked ? { active: true } : {}),
     ...(error ? { error: truncateSnippet(error) } : {}),
     ...(run.failedStageId ? { failedStageId: run.failedStageId } : {}),
     ...(failedStage ? { stageId: failedStage.id, stageName: failedStage.name } : {}),
     ...(run.durationMs !== undefined ? { durationMs: run.durationMs } : {}),
-    // Normal store paths stamp endedAt; Date.now() is defensive for malformed restored snapshots.
-    createdAt: run.endedAt ?? Date.now(),
+    createdAt: lifecycleOccurrenceAt(run, kind) ?? Date.now(),
   };
 }
 
@@ -330,15 +362,38 @@ function jsonString(value: string): string {
 }
 
 function terminalNoticeKind(run: RunSnapshot): "completed" | "failed" | "blocked" | undefined {
-  if (run.status === "failed" || run.status === "blocked") return run.status;
-  if (run.status !== "completed") return undefined;
-  const returnedStatus = run.result?.["status"];
-  if (returnedStatus === "failed" || returnedStatus === "blocked") return returnedStatus;
+  if (isActiveRecoverableBlockedRun(run)) return "blocked";
+  const status = effectiveRunStatus(run);
+  if (status === "failed" || status === "blocked") return status;
+  if (status !== "completed") return undefined;
   return "completed";
 }
 
-function terminalRunKey(kind: "completed" | "failed" | "blocked", runId: string): string {
-  return `${kind}:${runId}`;
+function isActiveRecoverableBlockedRun(run: RunSnapshot): boolean {
+  return run.blockedAt !== undefined && structuredRecoverableWorkflowFailureText(run) !== undefined;
+}
+
+function lifecycleOccurrenceAt(
+  run: RunSnapshot,
+  kind: "completed" | "failed" | "blocked",
+): number | undefined {
+  if (kind === "blocked" && isActiveRecoverableBlockedRun(run)) return run.blockedAt;
+  return run.endedAt;
+}
+
+function returnedNoticeError(run: RunSnapshot, kind: "completed" | "failed" | "blocked"): string | undefined {
+  const structuredFailureText = structuredRecoverableWorkflowFailureText(run);
+  if (kind === "blocked" && structuredFailureText !== undefined) return structuredFailureText;
+  const returnedStatus = normalizeReturnedWorkflowStatus(run.result?.["status"]);
+  if (returnedStatus === undefined) return undefined;
+  if (kind === "failed" && returnedStatus === "failed") return actionableReturnedStatusText(run.result);
+  if (kind === "blocked" && isReturnedBlockedWorkflowStatus(returnedStatus)) return actionableReturnedStatusText(run.result);
+  return undefined;
+}
+
+function terminalRunKey(kind: "completed" | "failed" | "blocked", run: RunSnapshot): string {
+  const occurrence = kind === "blocked" ? run.blockedAt ?? lifecycleOccurrenceAt(run, kind) : "";
+  return occurrence === undefined ? `${kind}:${run.id}` : `${kind}:${run.id}:${occurrence}`;
 }
 
 function awaitingInputKey(runId: string, stage: StageSnapshot): string {
@@ -397,7 +452,7 @@ function renderLifecycleNoticeCard(
     : details.kind === "awaiting_input"
       ? `Workflow "${details.workflowName}" needs input`
       : details.kind === "blocked"
-        ? `Workflow "${details.workflowName}" ended blocked`
+        ? `Workflow "${details.workflowName}" ${details.active === true ? "is blocked" : "ended blocked"}`
         : `Workflow "${details.workflowName}" completed`;
   return renderWorkflowNoticeCard({
     title,

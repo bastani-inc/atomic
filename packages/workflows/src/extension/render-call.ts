@@ -11,6 +11,7 @@ export interface WorkflowToolArgs {
   workflow?: string;
   inputs?: WorkflowInputValues;
   action?:
+    | "models"
     | "run"
     | "list"
     | "get"
@@ -21,22 +22,16 @@ export interface WorkflowToolArgs {
     | "send"
     | "pause"
     | "interrupt"
-    | "kill"
+    | "quit"
     | "resume"
     | "reload"
     | "inputs";
   runId?: string;
-  task?: { name?: string; prompt?: string; task?: string } | string;
-  tasks?: readonly unknown[];
-  chain?: readonly unknown[];
 }
 
 function runTarget(args: WorkflowToolArgs): string | undefined {
   if (args.workflow !== undefined && args.workflow.trim().length > 0) return args.workflow;
   if (args.runId !== undefined && args.runId.trim().length > 0) return args.runId;
-  if (args.task !== undefined) return "direct-task";
-  if (args.tasks !== undefined) return "direct-parallel";
-  if (args.chain !== undefined) return "direct-chain";
   return undefined;
 }
 
@@ -101,8 +96,8 @@ export function renderCall(args: WorkflowToolArgs, opts: RenderCallOpts = {}): s
         ? "workflow: interrupt run"
         : `workflow: interrupt run ${quoted(name)}`;
       break;
-    case "kill":
-      line = name === undefined ? "workflow: kill run" : `workflow: kill run ${quoted(name)}`;
+    case "quit":
+      line = name === undefined ? "workflow: quit run" : `workflow: quit run ${quoted(name)}`;
       break;
     case "resume":
       line = name === undefined
@@ -111,6 +106,9 @@ export function renderCall(args: WorkflowToolArgs, opts: RenderCallOpts = {}): s
       break;
     case "get":
       line = name === undefined ? "workflow: get" : `workflow: get ${quoted(name)}`;
+      break;
+    case "models":
+      line = "workflow: list configured models";
       break;
     default:
       line = name === undefined ? `workflow: ${action}` : `workflow: ${action} ${quoted(name)}`;

@@ -7,12 +7,13 @@ import type {
   CallToolRequest,
   CallToolResult,
 } from "@modelcontextprotocol/sdk/types.js";
-import type { ConsentManager } from "./consent-manager.ts";
-import { ServerError, wrapError } from "./errors.ts";
-import { buildHostHtmlTemplate, buildCspMetaContent, applyCspMeta } from "./host-html-template.ts";
-import { logger } from "./logger.ts";
-import { parseBody, sendJson, validateTokenBody, validateTokenQuery } from "./ui-server-http.ts";
-import type { McpServerManager } from "./server-manager.ts";
+import type { ConsentManager } from "./consent-manager.js";
+import { ServerError, wrapError } from "./errors.js";
+import { buildHostHtmlTemplate, buildCspMetaContent, applyCspMeta } from "./host-html-template.js";
+import { logger } from "./logger.js";
+import { parseBody, sendJson, validateTokenBody, validateTokenQuery } from "./ui-server-http.js";
+import type { McpServerManager } from "./server-manager.js";
+import { callToolWithConfiguredTimeout } from "./tool-call-timeout.js";
 import {
   extractUiPromptText,
   getVisualizationStreamEnvelope,
@@ -26,7 +27,7 @@ import {
   type UiResourceContent,
   type UiSessionMessages,
   type UiStreamSummary,
-} from "./types.ts";
+} from "./types.js";
 
 const ABANDONED_GRACE_MS = 60_000;
 const WATCHDOG_INTERVAL_MS = 5_000;
@@ -58,7 +59,7 @@ export interface UiServerHandle {
   sendToolInput: (args: Record<string, unknown>) => void;
   sendToolResult: (result: CallToolResult) => void;
   sendResultPatch: (result: CallToolResult) => void;
-  sendToolCancelled: (reason: string) => void;
+  sendToolCancelled: (reason: string) => void | Promise<void>;
   sendHostContext: (context: UiHostContext) => void;
   /** Get accumulated messages from this session */
   getSessionMessages: () => UiSessionMessages;
@@ -312,13 +313,13 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
         try {
           options.manager.touch(options.serverName);
           options.manager.incrementInFlight(options.serverName);
-          const result = await connection.client.callTool({
+          const result = await callToolWithConfiguredTimeout(connection.client, {
             name: callParams.name,
             arguments:
               callParams.arguments && typeof callParams.arguments === "object" && !Array.isArray(callParams.arguments)
                 ? callParams.arguments
                 : {},
-          });
+          }, connection.definition, options.serverName);
           sendJson(res, 200, { ok: true, result });
         } finally {
           options.manager.decrementInFlight(options.serverName);

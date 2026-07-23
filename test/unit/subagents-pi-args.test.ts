@@ -1,14 +1,23 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { ENV_CODEX_FAST_MODE } from "../../packages/coding-agent/src/config.js";
+import { WORKFLOW_SESSION_METADATA_ENV } from "../../packages/coding-agent/src/core/session-manager-classification.js";
 import {
   buildPiArgs,
   FANOUT_CHILD_EXTENSION_PATH,
+  INTERCOM_GROUP_ENV,
   PROMPT_RUNTIME_EXTENSION_PATH,
   SUBAGENT_FANOUT_CHILD_ENV,
   SUBAGENT_PARENT_DEPTH_ENV,
   SUBAGENT_PARENT_MAX_DEPTH,
+  SUBAGENT_SUPERVISOR_CAPABILITY_ENV,
+  SUBAGENT_SUPERVISOR_SESSION_ID_ENV,
 } from "../../packages/subagents/src/runs/shared/pi-args.js";
+import {
+  inheritedIntercomGroup,
+  resolveChildIntercomGroup,
+  sharedAutoGroupForSet,
+} from "../../packages/subagents/src/runs/shared/intercom-group.js";
 import {
   STRUCTURED_OUTPUT_CAPTURE_ENV,
   STRUCTURED_OUTPUT_SCHEMA_ENV,
@@ -222,5 +231,101 @@ describe("subagent child CLI args", () => {
     assert.equal(chatScoped.env[ENV_CODEX_FAST_MODE], "chat=1;workflow=0");
     assert.equal(workflowScoped.env[ENV_CODEX_FAST_MODE], "chat=1;workflow=1");
     assert.equal(workflowDisabled.env[ENV_CODEX_FAST_MODE], "chat=0;workflow=0");
+  });
+
+  test("passes workflow ownership metadata to fresh child sessions", () => {
+    const workflow = { runId: "run-1", stageId: "stage-1", stageName: "build" };
+    const result = buildPiArgs({
+      baseArgs: [],
+      task: "hello",
+      sessionEnabled: true,
+      sessionFile: "/tmp/fresh-subagent.jsonl",
+      inheritProjectContext: true,
+      inheritSkills: true,
+      workflowSessionMetadata: workflow,
+    });
+
+    assert.equal(result.env[WORKFLOW_SESSION_METADATA_ENV], JSON.stringify(workflow));
+  });
+
+  test("writes the intercom group env only when the child has intercom access", () => {
+    const withPeer = buildPiArgs({
+      baseArgs: [],
+      task: "hello",
+      sessionEnabled: false,
+      inheritProjectContext: true,
+      inheritSkills: true,
+      intercomGroup: "reviewers",
+      intercomSessionName: "child-1",
+    });
+    const withSupervisor = buildPiArgs({
+      baseArgs: [],
+      task: "hello",
+      sessionEnabled: false,
+      inheritProjectContext: true,
+      inheritSkills: true,
+      intercomGroup: "reviewers",
+      orchestratorIntercomTarget: "parent",
+    });
+    const withoutAccess = buildPiArgs({
+      baseArgs: [],
+      task: "hello",
+      sessionEnabled: false,
+      inheritProjectContext: true,
+      inheritSkills: true,
+      intercomGroup: "reviewers",
+    });
+
+    assert.equal(withPeer.env[INTERCOM_GROUP_ENV], "reviewers");
+    assert.equal(withSupervisor.env[INTERCOM_GROUP_ENV], "reviewers");
+    assert.equal(withoutAccess.env[INTERCOM_GROUP_ENV], undefined);
+  });
+
+  test("passes broker-issued supervisor authorization only through dedicated child env", () => {
+    const result = buildPiArgs({
+      baseArgs: [],
+      task: "hello",
+      sessionEnabled: false,
+      inheritProjectContext: true,
+      inheritSkills: true,
+      intercomSessionName: "child-1",
+      orchestratorIntercomTarget: "parent",
+      supervisorAuthorization: { capability: "capability-1", supervisorSessionId: "supervisor-id" },
+    });
+
+    assert.equal(result.env[SUBAGENT_SUPERVISOR_CAPABILITY_ENV], "capability-1");
+    assert.equal(result.env[SUBAGENT_SUPERVISOR_SESSION_ID_ENV], "supervisor-id");
+
+    const descendantWithoutGrant = buildPiArgs({
+      baseArgs: [], task: "nested", sessionEnabled: false,
+      inheritProjectContext: true, inheritSkills: true,
+    });
+    assert.equal(descendantWithoutGrant.env[SUBAGENT_SUPERVISOR_CAPABILITY_ENV], "");
+    assert.equal(descendantWithoutGrant.env[SUBAGENT_SUPERVISOR_SESSION_ID_ENV], "");
+  });
+
+  test("resolveChildIntercomGroup: explicit > inherited; auto sentinels use the shared group", () => {
+    assert.equal(resolveChildIntercomGroup("teamX", "stage", undefined), "teamX");
+    assert.equal(resolveChildIntercomGroup(undefined, "stage", undefined), "stage");
+    assert.equal(resolveChildIntercomGroup(undefined, undefined, undefined), undefined);
+    assert.equal(resolveChildIntercomGroup(true, "stage", "shared-uuid"), "shared-uuid");
+    assert.equal(resolveChildIntercomGroup(" TrUe ", "stage", "shared-uuid"), "shared-uuid");
+    assert.equal(resolveChildIntercomGroup(" AuTo ", "stage", "shared-uuid"), "shared-uuid");
+  });
+
+  test("sharedAutoGroupForSet mints one uuid when a boolean or string sentinel opts in", () => {
+    assert.equal(sharedAutoGroupForSet(undefined, [{ group: "a" }, {}]), undefined);
+    const set = sharedAutoGroupForSet(true, [{}, {}]);
+    assert.match(set ?? "", /^[0-9a-f-]{36}$/);
+    const stringSet = sharedAutoGroupForSet(" AUTO ", [{}, {}]);
+    assert.match(stringSet ?? "", /^[0-9a-f-]{36}$/);
+    const perItem = sharedAutoGroupForSet(undefined, [{ group: " true " }, {}]);
+    assert.match(perItem ?? "", /^[0-9a-f-]{36}$/);
+  });
+
+  test("inheritedIntercomGroup reads the stage group from orchestrationContext only", () => {
+    assert.equal(inheritedIntercomGroup({ orchestrationContext: { intercomGroup: "stage-g" } }), "stage-g");
+    assert.equal(inheritedIntercomGroup({ orchestrationContext: {} }), undefined);
+    assert.equal(inheritedIntercomGroup(undefined), undefined);
   });
 });

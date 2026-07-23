@@ -2,8 +2,13 @@
  * Recursion-depth guard helpers for nested subagent execution.
  */
 
-import type { ExtensionContext } from "@bastani/atomic";
-import { APP_NAME, getEnvValue, WORKFLOW_STAGE_SUBAGENT_GUARD_ENV } from "@bastani/atomic";
+import type { ExtensionContext, SessionWorkflowMetadata } from "@bastani/atomic";
+import {
+	APP_NAME,
+	getEnvValue,
+	WORKFLOW_SESSION_METADATA_ENV,
+	WORKFLOW_STAGE_SUBAGENT_GUARD_ENV,
+} from "@bastani/atomic";
 import { DEFAULT_SUBAGENT_MAX_DEPTH, MAX_SUBAGENT_NESTING_DEPTH } from "./types-runtime.ts";
 
 const ENV_PREFIX = APP_NAME.toUpperCase();
@@ -37,6 +42,28 @@ export function hasWorkflowStageSubagentGuard(): boolean {
 
 export function isWorkflowStageOrchestrationContext(ctx: Pick<ExtensionContext, "orchestrationContext">): boolean {
 	return ctx.orchestrationContext?.kind === "workflow-stage";
+}
+
+export function workflowSessionMetadataFromContext(
+	ctx: Pick<ExtensionContext, "orchestrationContext">,
+): SessionWorkflowMetadata | undefined {
+	const orchestration = ctx.orchestrationContext;
+	if (orchestration?.kind !== "workflow-stage") return undefined;
+	return {
+		runId: orchestration.workflowRunId,
+		stageId: orchestration.workflowStageId,
+		stageName: orchestration.workflowStageName,
+	};
+}
+
+export function workflowSessionEnv(metadata: SessionWorkflowMetadata | undefined): Record<string, string> {
+	return metadata ? { [WORKFLOW_SESSION_METADATA_ENV]: JSON.stringify(metadata) } : {};
+}
+
+export function workflowSessionEnvFromContext(
+	ctx: Pick<ExtensionContext, "orchestrationContext">,
+): Record<string, string> {
+	return workflowSessionEnv(workflowSessionMetadataFromContext(ctx));
 }
 
 export function resolveWorkflowStageMaxSubagentDepth(

@@ -18,8 +18,9 @@
           "quickstart",
           "usage",
           "providers",
-          "security",
+          "llama-cpp",
           "containerization",
+          "security",
           "settings",
           "keybindings",
           "sessions",
@@ -32,11 +33,20 @@
           "extensions",
           "skills",
           "subagents",
+          "intercom",
           "workflows",
           "prompt-templates",
           "themes",
           "packages",
-          "models",
+          {
+            "group": "Models",
+            "pages": [
+              "models",
+              "models/model-selection",
+              "models/pareto-efficiency",
+              "models/artificial-analysis-index"
+            ]
+          },
           "custom-provider"
         ]
       },

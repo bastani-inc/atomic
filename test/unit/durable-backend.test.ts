@@ -1,16 +1,9 @@
 /**
- * Tests for the durable workflow backend — in-memory and file-backed.
- *
- * cross-ref: issue #1498 — DBOS-backed cross-session resumability.
- * Verifies: checkpoint idempotency, no-duplicate side effects, resume listing.
+ * Tests the current in-memory injection backend and durable primitives.
  */
-import { describe, test, beforeEach, afterEach } from "bun:test";
+import { describe, test, beforeEach } from "bun:test";
 import assert from "node:assert/strict";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { InMemoryDurableBackend, durableHash } from "../../packages/workflows/src/durable/backend.js";
-import { FileDurableBackend, WorkflowFileDurableBackend, durableStateFileFor } from "../../packages/workflows/src/durable/file-backend.js";
 import { finalizeDurableTerminalStatus } from "../../packages/workflows/src/engine/run-durable-finalize.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { createToolPrimitive, createCheckpointIdGenerator, sleepOrAbort } from "../../packages/workflows/src/durable/tool-primitive.js";
@@ -30,10 +23,6 @@ function makeStageCheckpoint(workflowId: string, replayKey: string, output: stri
   return { kind: "stage", workflowId, checkpointId, name: "stage1", replayKey, output, completedAt: Date.now() };
 }
 
-function assertModeIfSupported(path: string, mode: number): void {
-  if (process.platform === "win32") return;
-  assert.equal(statSync(path).mode & 0o777, mode);
-}
 
 describe("InMemoryDurableBackend", () => {
   let backend: InMemoryDurableBackend;
@@ -86,15 +75,17 @@ describe("InMemoryDurableBackend", () => {
     assert.equal(cps[1]!.checkpointId, "cp-1");
   });
 
-  test("listResumableWorkflows includes running/paused after checkpoint progress", () => {
+  test("keeps completed workflows out of resumable listing and in completed listing", () => {
     // A `running` durable handle may belong to a crashed process (cross-session
     // crash recovery), so it is resumable at the backend level alongside
     // `paused`. Same-session double-resume is filtered by the command layer.
     assert.equal(backend.listResumableWorkflows().length, 0);
+    assert.equal(backend.listCompletedWorkflows().length, 0);
     backend.recordCheckpoint(makeToolCheckpoint(WORKFLOW_ID, "progress", "h-progress", "done"));
     assert.equal(backend.listResumableWorkflows().length, 1);
     backend.setWorkflowStatus(WORKFLOW_ID, "completed");
     assert.equal(backend.listResumableWorkflows().length, 0);
+    assert.deepEqual(backend.listCompletedWorkflows().map((entry) => entry.workflowId), [WORKFLOW_ID]);
   });
 
   test("listResumableWorkflows filters children and non-recoverable failures", () => {
@@ -105,6 +96,34 @@ describe("InMemoryDurableBackend", () => {
     assert.ok(ids.includes("root-failed"));
     assert.ok(!ids.includes("root-terminal"));
     assert.ok(!ids.includes("child-run"));
+  });
+
+  test("finalizes an active recoverable block as durable blocked and resumable", async () => {
+    const runSnapshot: RunSnapshot = {
+      id: WORKFLOW_ID,
+      name: "test-workflow",
+      inputs: {},
+      status: "running",
+      stages: [],
+      startedAt: 1,
+      blockedAt: 2,
+      error: "Configure credentials and resume.",
+      failureKind: "auth",
+      failureRecoverability: "recoverable",
+      failureDisposition: "active_blocked",
+      failureMessage: "No API key for provider",
+      resumable: true,
+    };
+
+    await finalizeDurableTerminalStatus({
+      runId: WORKFLOW_ID,
+      runSnapshot,
+      isRoot: true,
+      durableBackend: backend,
+    });
+
+    assert.equal(backend.getWorkflow(WORKFLOW_ID)?.status, "blocked");
+    assert.equal(backend.getWorkflow(WORKFLOW_ID)?.resumable, true);
   });
 
   test("non-resumable terminal finalization hides failed durable workflow", async () => {
@@ -140,13 +159,12 @@ describe("InMemoryDurableBackend", () => {
     assert.ok(handle.updatedAt >= before);
   });
 
-  test("toCacheEntry exports session-cache entry", () => {
-    const entry = backend.toCacheEntry(WORKFLOW_ID);
-    assert.ok(entry);
-    assert.equal(entry!.type, "workflow.durable.checkpoint");
-    assert.equal(entry!.workflowId, WORKFLOW_ID);
-    assert.equal(entry!.name, "test-workflow");
-    assert.equal(entry!.status, "running");
+  test("toMetadata shapes current DBOS workflow metadata", () => {
+    const metadata = backend.toMetadata(WORKFLOW_ID);
+    assert.ok(metadata);
+    assert.equal(metadata.workflowId, WORKFLOW_ID);
+    assert.equal(metadata.name, "test-workflow");
+    assert.equal(metadata.status, "running");
   });
 
   test("reset clears all state", () => {
@@ -156,135 +174,7 @@ describe("InMemoryDurableBackend", () => {
   });
 });
 
-describe("FileDurableBackend", () => {
-  let tmpDir: string;
-  let backend: FileDurableBackend;
 
-  beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "durable-test-"));
-    backend = new FileDurableBackend(join(tmpDir, "state.json"));
-    backend.registerWorkflow({
-      workflowId: WORKFLOW_ID,
-      name: "file-workflow",
-      inputs: { key: "value" },
-      createdAt: Date.now(),
-      status: "running",
-    });
-  });
-
-  afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  test("persists checkpoints across backend instances (cross-session resume)", () => {
-    const hash = durableHash({ name: "side-effect", args: { id: 42 } });
-    backend.recordCheckpoint(makeToolCheckpoint(WORKFLOW_ID, "side-effect", hash, "done"));
-    assert.equal(backend.getToolOutput(WORKFLOW_ID, hash), "done");
-
-    // Simulate a new session/process by creating a new backend instance.
-    const backend2 = new FileDurableBackend(join(tmpDir, "state.json"));
-    assert.equal(backend2.getToolOutput(WORKFLOW_ID, hash), "done");
-    assert.equal(backend2.getWorkflow(WORKFLOW_ID)!.name, "file-workflow");
-  });
-
-  test("lists resumable workflows from a new backend instance", () => {
-    backend.recordCheckpoint(makeToolCheckpoint(WORKFLOW_ID, "progress", "h-progress", "done"));
-    backend.setWorkflowStatus(WORKFLOW_ID, "paused");
-    const backend2 = new FileDurableBackend(join(tmpDir, "state.json"));
-    const resumable = backend2.listResumableWorkflows();
-    assert.equal(resumable.length, 1);
-    assert.equal(resumable[0]!.workflowId, WORKFLOW_ID);
-    assert.equal(resumable[0]!.status, "paused");
-  });
-
-  test("merges concurrent backend updates instead of losing stale writes", () => {
-    const file = join(tmpDir, "state.json");
-    const backendA = new FileDurableBackend(file);
-    const backendB = new FileDurableBackend(file);
-    const hashA = durableHash({ name: "a", args: {} });
-    const hashB = durableHash({ name: "b", args: {} });
-    backendA.recordCheckpoint(makeToolCheckpoint(WORKFLOW_ID, "a", hashA, "A", "cp-a"));
-    backendB.recordCheckpoint(makeToolCheckpoint(WORKFLOW_ID, "b", hashB, "B", "cp-b"));
-    const reloaded = new FileDurableBackend(file);
-    assert.equal(reloaded.getToolOutput(WORKFLOW_ID, hashA), "A");
-    assert.equal(reloaded.getToolOutput(WORKFLOW_ID, hashB), "B");
-  });
-});
-
-describe("WorkflowFileDurableBackend", () => {
-  let tmpDir: string;
-
-  beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "durable-workflow-files-"));
-  });
-
-  afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  test("stores workflows in separate files and aggregates resume listing", () => {
-    const backend = new WorkflowFileDurableBackend(tmpDir);
-    backend.registerWorkflow({ workflowId: "wf-a", name: "a", inputs: {}, createdAt: 1, status: "running" });
-    backend.recordCheckpoint(makeToolCheckpoint("wf-a", "a", "hash-a", "A", "cp-a"));
-    backend.setWorkflowStatus("wf-a", "paused");
-    backend.registerWorkflow({ workflowId: "wf-b", name: "b", inputs: {}, createdAt: 2, status: "running" });
-    backend.recordCheckpoint(makeToolCheckpoint("wf-b", "b", "hash-b", "B", "cp-b"));
-    backend.setWorkflowStatus("wf-b", "failed");
-
-    assert.equal(existsSync(durableStateFileFor(tmpDir, "wf-a")), true);
-    assert.equal(existsSync(durableStateFileFor(tmpDir, "wf-b")), true);
-    assert.equal(existsSync(join(tmpDir, "state.json")), false);
-
-    const reloaded = new WorkflowFileDurableBackend(tmpDir);
-    const ids = reloaded.listResumableWorkflows().map((entry) => entry.workflowId).sort();
-    assert.deepEqual(ids, ["wf-a", "wf-b"]);
-  });
-
-  test("prunes completed workflow files", () => {
-    const backend = new WorkflowFileDurableBackend(tmpDir);
-    backend.registerWorkflow({ workflowId: "wf-done", name: "done", inputs: {}, createdAt: 1, status: "running" });
-    backend.recordCheckpoint(makeToolCheckpoint("wf-done", "done", "hash-done", "ok", "cp-done"));
-    backend.setWorkflowStatus("wf-done", "completed");
-
-    assert.equal(existsSync(durableStateFileFor(tmpDir, "wf-done")), false);
-    assert.equal(backend.listResumableWorkflows().length, 0);
-  });
-
-  test("reset clears workflow files without wiping unrelated durable-root files", () => {
-    const backend = new WorkflowFileDurableBackend(tmpDir);
-    const keepPath = join(tmpDir, "notes.txt");
-    writeFileSync(keepPath, "keep", "utf-8");
-    backend.registerWorkflow({ workflowId: "wf-reset", name: "reset", inputs: {}, createdAt: 1, status: "running" });
-    backend.recordCheckpoint(makeToolCheckpoint("wf-reset", "reset", "hash-reset", "ok", "cp-reset"));
-
-    backend.reset();
-
-    assert.equal(existsSync(durableStateFileFor(tmpDir, "wf-reset")), false);
-    assert.equal(existsSync(keepPath), true);
-  });
-
-  test("uses restrictive permissions for durable directory and state files", () => {
-    const backend = new WorkflowFileDurableBackend(tmpDir);
-    backend.registerWorkflow({ workflowId: "wf-secure", name: "secure", inputs: {}, createdAt: 1, status: "running" });
-    const filePath = durableStateFileFor(tmpDir, "wf-secure");
-    assert.equal(existsSync(filePath), true);
-
-    assertModeIfSupported(tmpDir, 0o700);
-    assertModeIfSupported(filePath, 0o600);
-  });
-
-  test("merges same-workflow updates through per-workflow locks", () => {
-    const backendA = new WorkflowFileDurableBackend(tmpDir);
-    const backendB = new WorkflowFileDurableBackend(tmpDir);
-    backendA.registerWorkflow({ workflowId: "wf-merge", name: "merge", inputs: {}, createdAt: 1, status: "running" });
-    backendA.recordCheckpoint(makeToolCheckpoint("wf-merge", "a", "hash-a", "A", "cp-a"));
-    backendB.recordCheckpoint(makeToolCheckpoint("wf-merge", "b", "hash-b", "B", "cp-b"));
-
-    const reloaded = new WorkflowFileDurableBackend(tmpDir);
-    assert.equal(reloaded.getToolOutput("wf-merge", "hash-a"), "A");
-    assert.equal(reloaded.getToolOutput("wf-merge", "hash-b"), "B");
-  });
-});
 
 describe("ctx.tool primitive (durable caching)", () => {
   let backend: InMemoryDurableBackend;

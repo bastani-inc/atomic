@@ -8,12 +8,19 @@ import {
   type ReviewFinding,
 } from "../../packages/workflows/builtin/ralph-review-gate.js";
 
-function finding(priority: number | null | undefined): ReviewFinding {
+function finding(
+  priority: number | null | undefined,
+  objectiveAlignment:
+    | "required_by_objective"
+    | "consistent_with_objective"
+    | "beyond_objective"
+    | "contradicts_objective" = "consistent_with_objective",
+): ReviewFinding {
   return {
     title: priority === undefined ? "untitled" : `[P${priority}] finding`,
     body: "body",
     confidence_score: 0.9,
-    objective_alignment: "required_by_objective",
+    objective_alignment: objectiveAlignment,
     ...(priority === undefined ? {} : { priority }),
     code_location: {
       absolute_file_path: "/repo/file.ts",
@@ -42,17 +49,27 @@ function decision(overrides: Partial<ReviewDecision> = {}): ReviewDecision {
 }
 
 describe("isBlockingFinding", () => {
+  // isBlockingFinding still classifies findings for reviewer prompts and
+  // consolidated repair batches; it no longer overrides the reviewer's
+  // stop_review_loop boolean in the approval gate.
   test("P0/P1/P2 are blocking", () => {
     assert.equal(isBlockingFinding(finding(0)), true);
     assert.equal(isBlockingFinding(finding(1)), true);
     assert.equal(isBlockingFinding(finding(2)), true);
+    assert.equal(isBlockingFinding(finding(0, "required_by_objective")), true);
+    assert.equal(isBlockingFinding(finding(2, "required_by_objective")), true);
   });
 
-  test("P3 is non-blocking", () => {
+  test("P3 is non-blocking only for consistent_with_objective findings", () => {
     assert.equal(isBlockingFinding(finding(3)), false);
   });
 
-  test("the blocking threshold is P2", () => {
+  test("required_by_objective findings block at any priority — severity labels alone never dismiss them", () => {
+    assert.equal(isBlockingFinding(finding(3, "required_by_objective")), true);
+    assert.equal(isBlockingFinding(finding(null, "required_by_objective")), true);
+  });
+
+  test("the blocking threshold for in-scope findings is P2", () => {
     assert.equal(MAX_BLOCKING_PRIORITY, 2);
   });
 
@@ -67,65 +84,26 @@ describe("isBlockingFinding", () => {
     assert.equal(isBlockingFinding(unclassified as ReviewFinding), true);
   });
 
-
   test("unprioritized (null/undefined) findings are blocking", () => {
     assert.equal(isBlockingFinding(finding(null)), true);
     assert.equal(isBlockingFinding(finding(undefined)), true);
   });
 });
 
-describe("reviewDecisionApproved", () => {
-  test("correct patch with no findings approves", () => {
+describe("reviewDecisionApproved (boolean convergence gate)", () => {
+  test("stop_review_loop=true with no reviewer_error approves", () => {
     assert.equal(reviewDecisionApproved(decision()), true);
   });
 
-  test("correct patch with only a P3 nit approves (the dummy-finding regression)", () => {
+  test("stop_review_loop=false never approves, regardless of other evidence", () => {
+    assert.equal(reviewDecisionApproved(decision({ stop_review_loop: false })), false);
     assert.equal(
-      reviewDecisionApproved(
-        decision({ findings: [finding(3)], stop_review_loop: false }),
-      ),
-      true,
-    );
-  });
-
-  test("approval ignores the self-reported stop_review_loop flag", () => {
-    // A reviewer that coupled stop_review_loop to "findings empty" still
-    // approves when the only finding is a non-blocking P3.
-    assert.equal(
-      reviewDecisionApproved(
-        decision({ findings: [finding(3), finding(3)], stop_review_loop: false }),
-      ),
-      true,
-    );
-  });
-
-  test.each([0, 1, 2])("a P%d finding blocks approval", (priority) => {
-    assert.equal(
-      reviewDecisionApproved(decision({ findings: [finding(priority)] })),
+      reviewDecisionApproved(decision({ stop_review_loop: false, findings: [] })),
       false,
     );
   });
 
-  test("a blocking finding alongside P3 nits still blocks", () => {
-    assert.equal(
-      reviewDecisionApproved(decision({ findings: [finding(3), finding(1), finding(3)] })),
-      false,
-    );
-  });
-
-  test("an unprioritized finding blocks approval", () => {
-    assert.equal(reviewDecisionApproved(decision({ findings: [finding(null)] })), false);
-    assert.equal(reviewDecisionApproved(decision({ findings: [finding(undefined)] })), false);
-  });
-
-  test("'patch is incorrect' never approves, even with no findings", () => {
-    assert.equal(
-      reviewDecisionApproved(decision({ overall_correctness: "patch is incorrect" })),
-      false,
-    );
-  });
-
-  test("a reviewer_error never approves, even with no blocking findings", () => {
+  test("a reviewer_error never approves, even when stop_review_loop is true", () => {
     assert.equal(
       reviewDecisionApproved(
         decision({
@@ -140,36 +118,28 @@ describe("reviewDecisionApproved", () => {
     );
   });
 
-  test("rejects missing or non-proven requirements traceability", () => {
-    assert.equal(reviewDecisionApproved(decision({ requirements_traceability: [] })), false);
-    for (const status of ["contradicted", "missing", "unverified"] as const) {
-      assert.equal(
-        reviewDecisionApproved(
-          decision({
-            requirements_traceability: [
-              {
-                requirement: `Requirement is ${status}`,
-                status,
-                evidence: "Evidence does not prove the requirement.",
-              },
-            ],
-          }),
-        ),
-        false,
-      );
-    }
-  });
-
-  test("approves when every requirements traceability entry is proven", () => {
+  test("the boolean is authoritative: findings and traceability do not override it", () => {
+    // The deadlock this gate fixes: acceptance criteria referencing the review
+    // process itself (quorum, PR creation) can never be `proven` by a single
+    // reviewer. The reviewer signals convergence through the boolean instead.
     assert.equal(
       reviewDecisionApproved(
         decision({
           requirements_traceability: [
-            { requirement: "First clause", status: "proven", evidence: "File and test evidence." },
-            { requirement: "Second clause", status: "proven", evidence: "Runtime evidence." },
+            { requirement: "Implement the task", status: "proven", evidence: "verified" },
+            {
+              requirement: "All reviewers approve and a PR is created",
+              status: "unverified",
+              evidence: "harness process gate / post-approval final action",
+            },
           ],
         }),
       ),
+      true,
+    );
+    // Findings arrays are audit evidence, not a second gate.
+    assert.equal(
+      reviewDecisionApproved(decision({ findings: [finding(0)] })),
       true,
     );
   });

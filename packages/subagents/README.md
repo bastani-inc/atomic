@@ -6,6 +6,8 @@
 
 `@bastani/subagents` lets Atomic delegate work to focused child agents. It is Atomic's bundled adaptation of upstream `pi-subagents`; use it for code review, scouting, implementation, parallel audits, saved workflows, background jobs, and anything else that benefits from a second or third set of model eyes.
 
+Use subagents selectively for bounded specialist delegation while the parent remains in control: one focused agent, a sequential chain, or parallel independent tasks. Keep interactive, exploratory, conceptual, and conversation-led work inline. Multiple steps, files, tests, validation, or parallelism alone do not require a workflow. For a clearly delegated, well-defined autonomous job that is likely long-running/background-oriented or materially needs durable stages, checkpoints, resumability, HIL, gates, retries, or bounded loops, use an appropriate workflow instead. Choose async subagents only when background execution is genuinely useful; foreground is appropriate when the parent needs the result before proceeding.
+
 https://github.com/user-attachments/assets/702554ec-faaf-4635-80aa-fb5d6e292fd1
 
 ## Installation
@@ -151,9 +153,9 @@ Use `~/.atomic/agent/settings.json` for a user override or `.atomic/settings.jso
 
 Foreground runs stream progress in the conversation while they run.
 
-Background runs keep working after control returns to you. Inspect active runs with `subagent({ action: "status" })`, or a specific run with `subagent({ action: "status", id: "..." })`.
+Background runs keep working after control returns to you. The launch acknowledgement says `launched` and `completion pending`: the `subagent` launch tool call itself is finished, while the detached child is not. Inspect active runs with `subagent({ action: "status" })`, or a specific run with `subagent({ action: "status", id: "..." })`.
 
-They also show a compact async widget and send completion notifications. Parallel background runs show per-agent progress instead of fake chain steps. Chains with parallel groups keep their grouped shape in progress and results, so failed or paused agents stay visible next to completed ones.
+They also show a compact async widget with the same launch/pending distinction and send completion notifications. Parallel background runs show per-agent progress instead of fake chain steps. Chains with parallel groups keep their grouped shape in progress and results, so failed or paused agents stay visible next to completed ones.
 
 You can also ask naturally:
 
@@ -227,7 +229,10 @@ The child can use one dedicated coordination tool:
 
 - `contact_supervisor`: the child contacts the parent/supervisor session that delegated the task. Use `reason: "need_decision"` for blocking decisions or clarification, and `reason: "progress_update"` for short non-blocking updates when a discovery changes the plan. Do not ask for clarification when the only conflict is review-only/no-edit versus progress-writing or artifact-writing instructions; no-edit wins.
 
-Child-side routine completion handoffs are still not expected. With the intercom bridge active, parent-side `pi-subagents` sends grouped completion results through `pi-intercom`: one grouped message per foreground parent `subagent` run and one per completed async result file. Acknowledged foreground delivery returns a compact receipt with artifact/session paths; if unacknowledged, the normal full output is preserved. Grouped messages include child intercom targets and full child summaries.
+Child-side routine completion handoffs are still not expected. With the intercom bridge active, parent-side `pi-subagents` sends grouped completion results through `pi-intercom`: one grouped message per foreground parent `subagent` run and one per completed async result file. Intercom-confirmed foreground delivery returns a compact receipt with artifact/session paths; without that confirmation, the normal full output is preserved. Grouped messages include child intercom targets and full child summaries. The separate in-process completion event keeps its legacy synchronous semantics: emission is accepted unless a listener explicitly rejects it during the call, and no listener is not treated as an error.
+When the companion is enabled and available, the bridge gives eligible children deterministic Intercom identities and coordination tools without connecting them automatically. Parent and child connections remain tool-driven: if a child may need live coordination, the parent model should invoke `intercom({ action: "status" })` before launch, and the child connects when it invokes `contact_supervisor` or `intercom`. Foreground/background launch and management-only actions do not force Intercom loading or broker startup.
+
+For foreground runs, Intercom uses a targeted probe/reservation before delivery: only the exact live child can claim its message. Atomic then commits detach for that child and waits for its acknowledgement before placing claimed asks, sends, decisions, interviews, and progress updates in the parent's model-visible steering queue, so cancellation between phases cannot surface an orphaned request. Blocking calls remain alive for an exact threaded reply and then resume; fire-and-forget calls create no waiter. The retained child later replaces its detached status and artifacts with the real result. Cancellation/replacement invalidates stale handshakes, duplicate delivery cannot recommit, and background or unmatched messages retain queued-until-idle behavior.
 
 If a child appears stalled, needs-attention notices can show up in the parent session with useful next actions, such as checking `subagent({ action: "status" })`, interrupting the run, or nudging the child.
 
@@ -298,7 +303,7 @@ Append `[key=value,...]` to an agent name to override defaults for that step:
 |-----|---------|-------------|
 | `output` | `output=context.md` | Write results to a file. For `/chain` and `/parallel`, relative paths live under the chain directory; for `/run`, relative paths resolve against cwd. |
 | `outputMode` | `outputMode=file-only` | Return only a concise file reference for saved output instead of the full saved content. Requires `output`; default is `inline`. |
-| `reads` | `reads=a.md+b.md` | Read files before executing. `+` separates multiple paths. |
+| `reads` | `reads=a.md+b.md` | Read files before executing. `+` separates multiple paths. `/run` forwards these through the same resolver as tool-based foreground and background launches, so relative paths use the effective child working directory. |
 | `model` | `model=anthropic/claude-sonnet-4` | Override model for this step. |
 | `skills` | `skills=planning+review` | Override injected skills. `+` separates multiple skills. |
 | `progress` | `progress` | Enable progress tracking. |
@@ -330,28 +335,15 @@ You can combine them in either order:
 /run reviewer "review this diff" --bg --fork
 ```
 
-Background runs are detached. If the parent agent has other independent work, it should keep working. If it has nothing useful to do until the background result arrives, it should end the turn instead of running sleep or status-polling loops. Pi will deliver the completion when the run finishes.
+Background runs are detached. A successful acknowledgement explicitly means the run was launched and child completion is pending; it is a terminal result for the launch tool, not a claim that the child has finished. If the parent agent has other independent work, it should keep working. If it has nothing useful to do until the background result arrives, it should end the turn instead of running sleep or status-polling loops. Pi will deliver the completion when the run finishes.
 
 The `oracle` and `worker` builtins are designed for an explicit decision loop. A typical pattern is to ask `oracle` for diagnosis and a recommended execution prompt, then only run `worker` after the main agent approves that direction.
 
-## Clarify and launch UI
+## Non-interactive execution
 
-Chains open a clarify UI by default so you can preview and edit the workflow before it runs. Single and parallel tool calls can opt into the same flow with `clarify: true`; slash commands launch directly.
+Every supported subagent launch starts immediately without opening a preview/editor prompt or waiting for terminal input. This applies to single, parallel, chain, foreground, background, fanout, prompt-template, and human-entered `/run`, `/chain`, `/parallel`, and `/run-chain` execution. Gather any needed context and ask the user questions in the parent conversation before launching.
 
-Common clarify keys:
-
-- `Enter` runs in the foreground, or in the background if background is toggled on
-- `Escape` Cancel/Back
-- `↑↓` moves between steps or tasks
-- `e` edits the task/template
-- `m` selects a model
-- `t` selects thinking level
-- `s` selects skills
-- `b` toggles background execution
-- `w` edits output/write behavior where supported
-- `r` edits reads where supported
-- `p` toggles progress tracking where supported
-Picker screens use `↑↓`, `Enter`, `Escape`, and type-to-filter. The full-screen editor supports word wrapping, paste, `Escape` Save, and `CTRL+C` Discard.
+The human slash commands remain on their separate parsing and event-bridge path, including background and fork flags.
 
 ## Agents and chains
 
@@ -654,7 +646,7 @@ If you are writing an agent that orchestrates subagents, the bundled skill helps
 
 ## Programmatic tool usage
 
-These are the parameters the LLM passes when it calls the `subagent` tool. Most users ask naturally or use slash commands instead.
+These are the parameters the LLM passes when it calls the `subagent` tool. Most users ask naturally or use slash commands instead. All execution calls are non-interactive.
 
 ### Execution examples
 
@@ -665,8 +657,12 @@ These are the parameters the LLM passes when it calls the `subagent` tool. Most 
 { agent: "scout", task: "investigate", output: false }
 { agent: "scout", task: "write a large report", output: "reports/scout.md", outputMode: "file-only" }
 
+{ agent: "scout", task: "review the design", cwd: "packages/api", reads: ["docs/design.md", "../shared.md"] }
 // Forked context
 { agent: "worker", task: "continue this thread", context: "fork" }
+// Maintain a run-scoped progress.md under isolated artifact storage
+{ agent: "worker", task: "implement the approved fix", progress: true }
+
 
 // Parallel
 { tasks: [{ agent: "scout", task: "a" }, { agent: "reviewer", task: "b" }] }
@@ -796,6 +792,8 @@ Agent definitions are not loaded into context by default. Management actions let
 | `config` | object/string | - | Agent or chain config for create/update. |
 | `output` | `string \| false` | agent default | Override single-agent output file. |
 | `outputMode` | `"inline" \| "file-only"` | `inline` | Return saved output inline or as a concise saved-file reference. `file-only` requires an `output` path. |
+| `reads` | `string[] \| false` | - | Single-agent files to read before execution, or `false` to disable. Relative paths resolve against the effective child `cwd`; absolute paths pass through. |
+| `progress` | boolean | agent default | Enable or disable single-agent run-scoped `progress.md` tracking under isolated artifact storage. Omission inherits the agent default except for read-only tasks. This does not write `progress.md` into the child `cwd` and is independent of `includeProgress`; with `artifacts: false`, foreground storage is removed after the child exits. |
 | `skill` | `string \| string[] \| false` | agent default | Override skills or disable all. |
 | `model` | string | agent default | Override model. |
 | `tasks` | array | - | Top-level parallel tasks. Supports `agent`, `task`, `cwd`, `count`, `output`, `outputMode`, `reads`, `progress`, `skill`, and `model`. |
@@ -804,13 +802,12 @@ Agent definitions are not loaded into context by default. Management actions let
 | `chain` | array | - | Sequential, static parallel, and dynamic fanout chain steps. Steps and chain parallel tasks support `phase`, `label`, `as`, and `outputSchema` in addition to the usual execution fields. Dynamic fanout uses `expand`, one child `parallel` template, and `collect`. |
 | `context` | `fresh \| fork` | agent default or `fresh` | `fork` creates real branched sessions from the parent leaf. Packaged `planner`, `worker`, and `oracle` default to `fork`. |
 | `chainDir` | string | temp chain dir | Persistent directory for chain artifacts. |
-| `clarify` | boolean | true for chains | Show TUI preview/edit flow. |
 | `agentScope` | `user \| project \| both` | `both` | Agent discovery scope. Project wins on collisions. |
-| `async` | boolean | false | Background execution. For chains, `clarify: true` explicitly keeps the run foreground for the clarify UI. |
+| `async` | boolean | false | Background execution. Programmatic calls start without prompting in either foreground or background mode. |
 | `cwd` | string | runtime cwd | Override working directory. |
 | `maxOutput` | object | 200KB, 5000 lines | Final output truncation limits. |
 | `artifacts` | boolean | true | Write debug artifacts. |
-| `includeProgress` | boolean | false | Include full progress in result. |
+| `includeProgress` | boolean | false | Include detailed runtime progress telemetry in the final result. This does not create or maintain `progress.md`; use `progress` for that. |
 | `share` | boolean | false | Upload session export to GitHub Gist. |
 | `sessionDir` | string | derived | Override session log directory. |
 
@@ -835,7 +832,7 @@ subagent({ action: "doctor" })
 
 ## Worktree isolation
 
-Parallel agents can clobber each other if they edit the same checkout. `worktree: true` gives each parallel child its own git worktree branched from `HEAD`.
+Parallel agents can clobber each other if they edit the same checkout. `worktree: true` gives each parallel child a branch-backed worktree under `<main-root>/.atomic/worktrees/<flattened-name>` on branch `worktree-<flattened-name>`. `/` is flattened to `+`, and creation remains anchored at the canonical main repository root even when Atomic is invoked inside another linked worktree. The base ref is `origin/<default-branch>` (fetched when needed), then `HEAD`.
 
 ```ts
 { tasks: [
@@ -857,11 +854,14 @@ Requirements:
 
 - run inside a git repo
 - working tree must be clean
-- `node_modules/` is symlinked into each worktree when present
+- `node_modules/` is symlinked from the main root into each worktree when present
 - task-level `cwd` overrides must be omitted or match the shared cwd
 - configured `worktreeSetupHook` must return valid JSON before timeout
+- `.atomic/settings.local.json` and untracked `.atomic/settings.json` are propagated without overwriting tracked content
+- the main repository's Husky or populated `.git/hooks` directory is shared through `core.hooksPath`
+- gitignored files matched by `.worktreeinclude` are copied into the worktree
 
-After a worktree parallel step completes, per-agent diff stats are appended to the output and full patch files are written to artifacts. Worktrees and temp branches are cleaned up in `finally` blocks.
+After a worktree parallel step completes, per-agent diff stats are appended to the output and full patch files are written to artifacts. Cleanup forcibly removes each worktree, waits briefly for Git's lock release, and deletes its `worktree-*` branch; the same cleanup runs after post-creation setup failures.
 
 ## Configuration
 
@@ -881,7 +881,7 @@ Makes top-level calls use background execution when the request does not explici
 { "forceTopLevelAsync": true }
 ```
 
-Forces depth-0 single, parallel, and chain runs into background mode and bypasses clarify UI by forcing `clarify: false`. Nested calls keep their own inherited settings.
+Forces depth-0 single, parallel, and chain runs into background mode. Calls remain non-interactive in both foreground and background mode; nested calls keep their own inherited settings.
 
 ### `parallel`
 
@@ -894,7 +894,7 @@ Forces depth-0 single, parallel, and chain runs into background mode and bypasse
 }
 ```
 
-`maxTasks` defaults to `8`; `concurrency` defaults to `4`. Per-call `concurrency` takes precedence.
+`maxTasks` defaults to `50`; `concurrency` defaults to `4`. `maxTasks` can set a lower per-call task limit but cannot exceed the hard maximum of `50`. Per-call `concurrency` takes precedence.
 
 ### `defaultSessionDir`
 
@@ -986,7 +986,9 @@ Async runs write:
   subagent-log-<id>.md
 ```
 
-`status.json` powers the widget and `subagent({ action: "status" })` output. `events.jsonl` contains wrapper events plus child Pi JSON events annotated with run and step metadata. `output-<n>.log` is a live human-readable tail. Fallback information is persisted so background runs are debuggable after completion.
+`status.json` powers the widget and `subagent({ action: "status" })` output. `events.jsonl` contains wrapper events plus bounded child telemetry annotated with run and step metadata: streaming deltas keep compact incremental metadata rather than cumulative partial-message snapshots, and raw child stdout/stderr consume the same byte budget. One truncation marker records exhaustion, while the full finalized `message_end` and later control/lifecycle/terminal events remain available. Writer reacquisition uses a bounded identity/fingerprint cache so unchanged or append-only journals avoid full rescans while same-inode rewrites, truncate/regrow cycles, replacements, and externally appended markers reset state correctly. `output-<n>.log` is a live human-readable tail. Fallback information is persisted so background runs are debuggable after completion.
+
+The result watcher waits for modern run status to become terminal using capped exponential rechecks, so a late repaired status still delivers without a fixed-rate polling loop. Intercom confirmation and local synchronous acceptance are tracked as separate phases; a successful phase is not replayed when another phase retries or the watcher is replaced. Equivalent result aliases coalesce by canonical run identity, but aliases with different user-visible output or parent targets are retained under collision-resistant names in the non-scanned `<results>/.undelivered/` directory. The same directory retains a still-owned result after a finite no-progress retry budget, and Atomic logs the retained path instead of retrying forever, overwriting earlier evidence, or deleting the payload.
 
 ## Completion and output
 
@@ -1003,6 +1005,8 @@ For existing subagent integrations and saved definitions:
 ## Live progress
 
 Foreground runs show compact live progress for single, chain, and parallel modes: current tool, recent output, token counts, duration, activity freshness, current-tool duration, and chain graph metadata when available.
+
+File-based tracking and returned telemetry are separate. On a single-agent call, `progress: true` creates a run-scoped `progress.md` under isolated subagent artifact storage and asks the child to maintain it in foreground or background mode without writing `progress.md` into the child working directory. `progress: false` disables an agent's `defaultProgress`. `includeProgress: true` only adds detailed runtime progress data to the final foreground tool result; it does not enable the file.
 
 Press `CTRL+O` to expand the full streaming view with complete output per step.
 
@@ -1094,7 +1098,7 @@ The main runtime files are:
 
 ### Suffix-first reasoning levels
 
-Reasoning levels are configured suffix-first using the `model_name:thinking_effort` syntax on `model` and each `fallbackModels` entry: `model: claude-sonnet-4:high` and `fallbackModels: claude-sonnet-4:medium, gpt-5:low, claude-haiku-4:off`. Canonical efforts are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`. The older `thinking` field is deprecated; it remains supported as a legacy default only when a model candidate has no suffix, and a suffix always wins.
+Reasoning levels are configured suffix-first using the `model_name:thinking_effort` syntax on `model` and each `fallbackModels` entry: `model: claude-sonnet-4:high` and `fallbackModels: claude-sonnet-4:medium, gpt-5:low, claude-haiku-4:off`. Canonical efforts are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`. `xhigh` and `max` are forwarded only when the selected model supports them. The older `thinking` field is deprecated; it remains supported as a legacy default only when a model candidate has no suffix, and a suffix always wins.
 
 Migrate legacy `thinking` frontmatter by folding the effort into `model` and `fallbackModels`:
 

@@ -1,5 +1,6 @@
 import type { StageControlHandle, AgentSessionEventListener } from "./stage-control-registry.js";
 import type { LiveStageRuntime } from "./executor-stage-types.js";
+import type { StageUserMessageDeliveryAction } from "./stage-runner-types.js";
 import { isTerminalStage } from "./executor-scheduler.js";
 import { StageToolExecutionBuffer } from "./stage-tool-execution-buffer.js";
 
@@ -54,21 +55,52 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
       runtime.throwIfStageMutationBlocked();
       runtime.captureStageSessionMeta();
     },
-    async prompt(text: string) {
+    async sendUserMessage(text, options) {
       runtime.throwIfStageMutationBlocked();
       await ensureMessagingSession();
+      runtime.throwIfStageMutationBlocked();
       try {
-        await runtime.innerCtx.prompt(text);
+        const action = await runtime.innerCtx.__sendUserMessage(
+          text,
+          options,
+          runtime.throwIfStageMutationBlocked,
+        );
+        if (action === "steer" || action === "followUp") {
+          runtime.state.resumeContinuationPending = "queued-user-message";
+        }
+        return action;
       } finally {
         runtime.captureStageSessionMeta();
       }
+    },
+    async prompt(text: string) {
       runtime.throwIfStageMutationBlocked();
+      await ensureMessagingSession();
+      let action: StageUserMessageDeliveryAction | undefined;
+      try {
+        action = await runtime.innerCtx.__sendUserMessage(
+          text,
+          undefined,
+          runtime.throwIfStageMutationBlocked,
+        );
+      } finally {
+        runtime.captureStageSessionMeta();
+      }
+      if (action !== "handled") runtime.throwIfStageMutationBlocked();
     },
     async steer(text: string) {
       runtime.throwIfStageMutationBlocked();
       await ensureMessagingSession();
+      runtime.throwIfStageMutationBlocked();
+      // A user message queued into an in-flight turn should nudge the stage
+      // back to its objective once that turn ends: arm the pending flag so
+      // drainResumeContinuations injects RESUME_CONTINUATION_PROMPT after the
+      // tracked call resolves. Idle deliveries start a fresh user turn and
+      // need no continuation nudge, so only arm while streaming.
+      const queuedIntoInFlightTurn = runtime.innerCtx.isStreaming;
       try {
         await runtime.innerCtx.steer(text);
+        if (queuedIntoInFlightTurn) runtime.state.resumeContinuationPending = "queued-user-message";
       } finally {
         runtime.captureStageSessionMeta();
       }
@@ -76,8 +108,12 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
     async followUp(text: string) {
       runtime.throwIfStageMutationBlocked();
       await ensureMessagingSession();
+      runtime.throwIfStageMutationBlocked();
+      // Same in-flight continuation arming as steer(): see comment above.
+      const queuedIntoInFlightTurn = runtime.innerCtx.isStreaming;
       try {
         await runtime.innerCtx.followUp(text);
+        if (queuedIntoInFlightTurn) runtime.state.resumeContinuationPending = "queued-user-message";
       } finally {
         runtime.captureStageSessionMeta();
       }
@@ -85,38 +121,56 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
     async pause() {
       runtime.throwIfStageMutationBlocked();
       const statusBeforePause = runtime.stageSnapshot.status;
+      if (statusBeforePause === "pending" || statusBeforePause === "running" || runtime.innerCtx.isStreaming) {
+        await runtime.innerCtx.__requestPause();
+      }
       const changed = runtime.activeStore.recordStagePaused(runtime.runId, runtime.stageId);
       if (changed) {
         runtime.scheduler.ensureReleaseBarrier(runtime.stageId);
         await runtime.scheduler.cascadePauseFrom(runtime.stageId);
         const run = runtime.activeStore.runs().find((candidate) => candidate.id === runtime.runId);
         const stillActive = run?.stages.some(
-          (s) => s.status === "running" && s.id !== runtime.stageId,
+          (stage) => stage.status === "running" && stage.id !== runtime.stageId,
         ) ?? false;
         if (!stillActive) runtime.activeStore.recordRunPaused(runtime.runId);
       }
-      if (statusBeforePause === "pending" || statusBeforePause === "running" || runtime.innerCtx.isStreaming) {
-        await runtime.innerCtx.__requestPause();
-      }
+      // Graceful pause/quit is an exact durability boundary. Force the latest
+      // pause-adjusted stage elapsed time even inside the normal 30s bucket.
+      await runtime.captureStageSessionMeta({ forceDurable: true });
     },
     async resume(message?: string) {
       runtime.throwIfStageMutationBlocked();
       await ensureMessagingSession();
+      runtime.throwIfStageMutationBlocked();
       const wasPausedBeforeResume = runtime.innerCtx.__isPaused();
-      const hasResumeContinuationMessage = typeof message === "string" && message.trim().length > 0;
-      const previousResumeContinuationPending = runtime.state.resumeContinuationPending;
-      const queuedResumeContinuation = wasPausedBeforeResume && hasResumeContinuationMessage;
-      if (queuedResumeContinuation) runtime.state.resumeContinuationPending = true;
+      const resumesIdleStageChat = wasPausedBeforeResume && runtime.state.waitingForStageChatTurn;
+      const hasMessage = typeof message === "string" && message.trim().length > 0;
+      const resumeMessage = hasMessage ? message : undefined;
+      const queuedResumeContinuation = wasPausedBeforeResume && !resumesIdleStageChat;
+      const addedResumeContinuation = queuedResumeContinuation && runtime.state.resumeContinuationPending === false;
+      if (addedResumeContinuation) runtime.state.resumeContinuationPending = "resume";
       try {
+        await runtime.innerCtx.__resume(resumesIdleStageChat ? undefined : resumeMessage);
         const changed = runtime.activeStore.recordStageResumed(runtime.runId, runtime.stageId);
         if (changed) {
           runtime.scheduler.releaseStageBarrier(runtime.stageId);
           await runtime.scheduler.cascadeResumeFrom(runtime.stageId);
+          // Preserve manual per-stage semantics: once this acknowledged
+          // resume succeeds, the run is active even if sibling stages remain paused.
           runtime.activeStore.recordRunResumed(runtime.runId);
         }
-        await runtime.innerCtx.__resume(message);
+        if (resumesIdleStageChat && hasMessage) {
+          runtime.throwIfStageMutationBlocked();
+          return await runtime.innerCtx.__sendUserMessage(
+            message,
+            undefined,
+            runtime.throwIfStageMutationBlocked,
+          );
+        }
       } catch (err) {
-        if (queuedResumeContinuation) runtime.state.resumeContinuationPending = previousResumeContinuationPending;
+        if (addedResumeContinuation && runtime.state.resumeContinuationPending === "resume") {
+          runtime.state.resumeContinuationPending = false;
+        }
         throw err;
       } finally {
         runtime.captureStageSessionMeta();

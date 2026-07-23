@@ -172,6 +172,7 @@ export interface ResourceAccumulator {
 }
 
 export interface PackageFilter {
+	autoload?: boolean;
 	extensions?: string[];
 	skills?: string[];
 	prompts?: string[];

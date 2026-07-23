@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { addResource, getTargetMap } from "./package-manager-resource-accumulator.ts";
 import { collectResourceFiles } from "./package-manager-resource-files.ts";
 import { conventionDirsForResource, getManifestFromPackageJson, manifestEntriesForResource } from "./package-manager-manifest.ts";
-import { applyPatterns, hasGlobPattern, isOverridePattern, splitPatterns } from "./package-manager-resource-patterns.ts";
+import { applyAutoloadDisabledPatterns, applyPatterns, hasGlobPattern, isOverridePattern, splitPatterns } from "./package-manager-resource-patterns.ts";
 import { resolvePathFromBase } from "./package-manager-paths.ts";
 import type { PackageFilter, PathMetadata, ResourceAccumulator, ResourceMap, ResourceType } from "./package-manager-types.ts";
 
@@ -29,9 +29,13 @@ export async function collectPackageResources(
 ): Promise<boolean> {
 	if (filter) {
 		for (const resourceType of ["extensions", "skills", "prompts", "themes", "workflows"] as const) {
-			const patterns = filter[resourceType as keyof PackageFilter];
+			const patterns = filter[resourceType];
 			const target = getTargetMap(accumulator, resourceType);
-			if (patterns !== undefined) await applyPackageFilter(packageRoot, patterns, resourceType, target, metadata);
+			if (filter.autoload === false) {
+				const { allFiles } = await collectManifestFiles(packageRoot, resourceType);
+				const selected = applyAutoloadDisabledPatterns(allFiles, patterns ?? [], packageRoot);
+				for (const [filePath, enabled] of selected) addResource(target, filePath, metadata, enabled);
+			} else if (patterns !== undefined) await applyPackageFilter(packageRoot, patterns, resourceType, target, metadata);
 			else await collectDefaultResources(packageRoot, resourceType, target, metadata);
 		}
 		return true;

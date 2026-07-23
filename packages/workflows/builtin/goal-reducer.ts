@@ -1,4 +1,22 @@
 import type { BlockerObservation, GoalLedger, ReducerOutcome, ReviewRecord } from "./goal-types.js";
+import {
+  summarizeReviewConvergence,
+  type ReviewNextAction,
+} from "./review-convergence.js";
+
+function reducerSummary(
+  reviews: readonly ReviewRecord[],
+  approved: boolean,
+  nextAction: ReviewNextAction,
+) {
+  return summarizeReviewConvergence({
+    parsed: reviews.every((review) => review.parsed),
+    approved,
+    stopReviewLoop: approved,
+    nextAction,
+    diagnostics: reviews.flatMap((review) => review.parse_diagnostics),
+  });
+}
 
 export function normalizeBlocker(blocker: string): string {
   return blocker.toLowerCase().replace(/\s+/g, " ").trim();
@@ -68,19 +86,28 @@ export function reduceGoalDecision(
     readonly maxTurns: number;
     readonly reviewQuorum: number;
     readonly blockerThreshold: number;
+    readonly nextActionOnComplete: ReviewNextAction;
   },
 ): ReducerOutcome {
   const completeVotes = turnReviews.filter(
     (review) => review.decision === "complete",
   ).length;
+  const quorumMet = completeVotes >= options.reviewQuorum;
 
-  if (completeVotes >= options.reviewQuorum) {
+  // Deterministic boolean convergence: each review's `decision` is derived
+  // solely from the reviewer's self-reported `stop_review_loop` flag (plus the
+  // reviewer_error/parse-failure guards). The reducer completes on quorum of
+  // those booleans and does not re-litigate findings arrays or traceability
+  // statuses — reviewer prompts own deriving the flag from that evidence.
+  if (quorumMet) {
+    const summary = reducerSummary(turnReviews, true, options.nextActionOnComplete);
     return {
       status: "complete",
       decision: {
+        ...summary,
         turn: options.turn,
         decision: "complete",
-        reason: `Reviewer quorum met: ${completeVotes}/${options.reviewQuorum} reviewers marked complete.`,
+        reason: `Reviewer quorum met: ${completeVotes}/${options.reviewQuorum} reviewers independently reported stop_review_loop=true with no reviewer execution errors.`,
         complete_votes: completeVotes,
         review_quorum: options.reviewQuorum,
       },
@@ -101,6 +128,7 @@ export function reduceGoalDecision(
       status: "blocked",
       blockerObservation: observation,
       decision: {
+        ...reducerSummary(turnReviews, false, "blocked"),
         turn: options.turn,
         decision: "blocked",
         reason: `Same blocker repeated for ${blockerCount}/${options.blockerThreshold} consecutive controller observations.`,
@@ -116,6 +144,7 @@ export function reduceGoalDecision(
       status: "needs_human",
       blockerObservation: observation,
       decision: {
+        ...reducerSummary(turnReviews, false, "needs_human"),
         turn: options.turn,
         decision: "needs_human",
         reason: `Worker attempt budget reached without reviewer quorum. Remaining work: ${collectRemainingWork(turnReviews)}`,
@@ -130,6 +159,7 @@ export function reduceGoalDecision(
     status: "active",
     blockerObservation: observation,
     decision: {
+      ...reducerSummary(turnReviews, false, "implementation"),
       turn: options.turn,
       decision: "continue",
       reason: `Reviewer quorum not met. Remaining work: ${collectRemainingWork(turnReviews)}`,

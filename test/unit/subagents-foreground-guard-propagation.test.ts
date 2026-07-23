@@ -191,7 +191,7 @@ function makeExecutor(_cwd: string, agents: MinimalAgentConfig[]) {
 	const deps = {
 		pi: makePi(),
 		state: makeState(),
-		config: { maxSubagentDepth: 2, parallel: { concurrency: 4, maxTasks: 8 } },
+		config: { maxSubagentDepth: 2, parallel: { concurrency: 4, maxTasks: 50 } },
 		asyncByDefault: false,
 		tempArtifactsDir: path.join(tempRoot, "artifacts"),
 		getSubagentSessionRoot: () => path.join(tempRoot, "sessions"),
@@ -254,7 +254,6 @@ describe("foreground workflow-stage subagent guard propagation", () => {
 					{ agent: "alpha", task: "first" },
 					{ parallel: [{ agent: "beta", task: "second" }, { agent: "gamma", task: "third" }] },
 				],
-				clarify: false,
 			},
 			new AbortController().signal,
 			undefined,
@@ -274,7 +273,6 @@ describe("foreground workflow-stage subagent guard propagation", () => {
 			"subagent",
 			{
 				tasks: [{ agent: "alpha", task: "first" }, { agent: "beta", task: "second" }],
-				clarify: false,
 			},
 			new AbortController().signal,
 			undefined,
@@ -285,26 +283,20 @@ describe("foreground workflow-stage subagent guard propagation", () => {
 		assertGuardedRunSyncCalls(["alpha", "beta"]);
 	});
 
-	test("passes workflow-stage guard when foreground parallel clarify launches async", async () => {
+	test("passes workflow-stage guard to async parallel children", async () => {
 		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-parallel-async-guard-"));
 		const agents = [makeAgent("alpha"), makeAgent("beta")];
 		const executor = makeExecutor(cwd, agents);
-		const uiResult = {
-			confirmed: true,
-			runInBackground: true,
-			templates: ["first clarified", "second clarified"],
-			behaviorOverrides: [{}, {}],
-		};
 
 		const result = await executor.execute(
 			"subagent",
 			{
 				tasks: [{ agent: "alpha", task: "first" }, { agent: "beta", task: "second" }],
-				clarify: true,
+				async: true,
 			},
 			new AbortController().signal,
 			undefined,
-			makeWorkflowStageContext(cwd, uiResult),
+			makeWorkflowStageContext(cwd),
 		);
 
 		assertNoErrorFlag(result);
@@ -314,27 +306,21 @@ describe("foreground workflow-stage subagent guard propagation", () => {
 		assert.equal(asyncChainCalls[0]!.params.workflowStageSubagentGuard, true);
 	});
 
-	test("passes workflow-stage guard when single clarify launches async", async () => {
+	test("passes workflow-stage guard to an async single child", async () => {
 		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-single-async-guard-"));
 		const agents = [makeAgent("alpha")];
 		const executor = makeExecutor(cwd, agents);
-		const uiResult = {
-			confirmed: true,
-			runInBackground: true,
-			templates: ["clarified single task"],
-			behaviorOverrides: [{}],
-		};
 
 		const result = await executor.execute(
 			"subagent",
 			{
 				agent: "alpha",
 				task: "single task",
-				clarify: true,
+				async: true,
 			},
 			new AbortController().signal,
 			undefined,
-			makeWorkflowStageContext(cwd, uiResult),
+			makeWorkflowStageContext(cwd),
 		);
 
 		assertNoErrorFlag(result);

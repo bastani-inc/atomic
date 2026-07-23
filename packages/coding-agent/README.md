@@ -388,6 +388,7 @@ atomic list
 atomic update                               # update Atomic only
 atomic update --all                         # update Atomic and packages
 atomic update --extensions                  # update packages only
+atomic update --models                      # force-refresh authenticated provider model catalogs
 atomic update --self                        # update Atomic only
 atomic update --self --force                # reinstall Atomic even if current
 atomic update npm:@foo/atomic-tools         # update one package
@@ -487,6 +488,7 @@ atomic uninstall <source> [-l]       # Alias for remove
 atomic update [source|self|atomic]   # Update Atomic only, or one package source
 atomic update --all                  # Update Atomic and packages
 atomic update --extensions           # Update packages only
+atomic update --models               # Force-refresh authenticated provider model catalogs
 atomic update --self                 # Update Atomic only
 atomic update --self --force         # Reinstall Atomic even if current
 atomic update --extension <src>      # Update one package
@@ -517,7 +519,7 @@ cat README.md | atomic -p "Summarize this text"
 | `--provider <name>` | Provider (anthropic, openai, google, etc.) |
 | `--model <pattern>` | Model pattern or ID (supports `provider/id` and optional `:<thinking>`) |
 | `--api-key <key>` | API key (overrides env vars) |
-| `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh` |
+| `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` (subject to model capabilities) |
 | `--models <patterns>` | Comma-separated patterns for CTRL+P cycling |
 | `--list-models [search]` | List available models |
 
@@ -528,7 +530,7 @@ cat README.md | atomic -p "Summarize this text"
 | `-c`, `--continue` | Continue most recent session |
 | `-r`, `--resume` | Browse and select session |
 | `--session <path\|id>` | Use specific session file or partial UUID |
-| `--session-id <id>` | Use an exact project session ID, creating it if missing |
+| `--session-id <id>` | Use an exact project session ID; warn and create it when missing |
 | `--fork <path\|id>` | Fork specific session file or partial UUID into a new session |
 | `--session-dir <dir>` | Custom session storage directory |
 | `--name <name>`, `-n <name>` | Set the session display name |

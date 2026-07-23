@@ -145,6 +145,7 @@ InteractiveModeBase.prototype.handleHotkeysCommand = function(this: InteractiveM
   };
 
 InteractiveModeBase.prototype.handleClearCommand = async function(this: InteractiveModeBase): Promise<void> {
+    await this.ensureDeferredStartupComplete();
     if (this.loadingAnimation) {
       this.loadingAnimation.stop();
       this.loadingAnimation = undefined;

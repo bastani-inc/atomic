@@ -1,666 +1,437 @@
 name: Publish
+run-name: Publish ${{ github.event.inputs.tag || github.ref_name }}
 
 on:
-    push:
-        tags:
-            - "[0-9]*.[0-9]*.[0-9]*"
-    workflow_dispatch:
-        inputs:
-            tag:
-                description: "Tag to publish (e.g., 0.8.0 or 0.8.0-alpha.1)"
-                required: true
-                type: string
+  push:
+    tags:
+      - "[0-9]*.[0-9]*.[0-9]*"
+      - "[0-9]*.[0-9]*.[0-9]*-alpha.[0-9]*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (e.g., 0.9.10 or 0.9.10-alpha.1)"
+        required: true
+        type: string
+      source_ref:
+        description: "Source ref to build/publish (defaults to tag; use only for release recovery)"
+        required: false
+        type: string
 
 permissions:
-    contents: write
-    id-token: write
+  contents: read
 
 concurrency:
-    group: publish-${{ github.event.inputs.tag || github.ref }}
-    cancel-in-progress: false
+  group: publish-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 env:
-    PREK_DISABLE_INSTALL: "1"
-    FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-    PACKAGE_DIR: packages/coding-agent
-    PACKAGE_NAME: "@bastani/atomic"
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  SOURCE_REF: ${{ github.event.inputs.source_ref || github.event.inputs.tag || github.ref_name }}
+  PACKAGE_DIR: packages/coding-agent
+  GLIBC_FLOOR: "2.17"
+  RUSTUP_TOOLCHAIN: "1.97.0"
 
 jobs:
-    linux-binary-smoke:
-        name: Smoke test Linux binary
-        runs-on: blacksmith-4vcpu-ubuntu-2404
-
-        steps:
-            - uses: useblacksmith/checkout@v1
-              with:
-                  ref: ${{ github.event.inputs.tag || github.ref_name }}
-                  persist-credentials: false
-
-            - uses: oven-sh/setup-bun@v2
-              with:
-                  bun-version: latest
-
-            - uses: actions/setup-node@v6
-              with:
-                  node-version: 24
-
-            - uses: dtolnay/rust-toolchain@stable
-
-            - name: Build Linux x64 archive
-              run: ./scripts/build-binaries.sh --skip-deps --platform linux-x64
-
-            - name: Smoke test Linux release archive
-              shell: bash
-              run: |
-                  set -euo pipefail
-                  smoke_dir="$RUNNER_TEMP/atomic-linux-binary-smoke"
-                  rm -rf "$smoke_dir"
-                  mkdir -p "$smoke_dir"
-                  tar -xzf packages/coding-agent/binaries/atomic-linux-x64.tar.gz -C "$smoke_dir"
-
-                  "$smoke_dir/atomic/atomic" --version
-                  for required_path in \
-                    app.js \
-                    image-resize-worker.js \
-                    builtin/workflows/package.json \
-                    builtin/workflows/src/extension/index.ts \
-                    builtin/subagents/package.json \
-                    builtin/subagents/src/extension/index.ts \
-                    builtin/mcp/package.json \
-                    builtin/mcp/index.ts \
-                    builtin/web-access/package.json \
-                    builtin/web-access/index.ts \
-                    builtin/intercom/package.json \
-                    builtin/intercom/index.ts \
-                    builtin/cursor/package.json \
-                    builtin/cursor/index.ts \
-                    node_modules/@bastani/atomic-natives/package.json \
-                    node_modules/@bastani/atomic-natives/native/index.js \
-                    node_modules/@bastani/atomic-natives/native/atomic_natives.linux-x64-gnu.node \
-                    node_modules/@modelcontextprotocol/ext-apps/package.json \
-                    node_modules/@mozilla/readability/package.json; do
-                    test -f "$smoke_dir/atomic/$required_path" || {
-                      echo "Missing release archive path: $required_path" >&2
-                      exit 1
-                    }
-                  done
-
-                  # --version exits before builtin extensions are loaded. Start the
-                  # non-interactive runtime far enough to surface extension diagnostics,
-                  # but allow the expected no-models exit in CI. Run from a clean temp
-                  # cwd so repo-local config (e.g. .mcp.json) can't leak into the smoke
-                  # run and hang startup.
-                  work_dir="$RUNNER_TEMP/atomic-linux-binary-smoke-cwd"
-                  rm -rf "$work_dir"
-                  mkdir -p "$work_dir"
-                  set +e
-                  output=$(cd "$work_dir" && printf '' | "$smoke_dir/atomic/atomic" --no-session 2>&1)
-                  status=$?
-                  set -e
-                  echo "$output"
-                  if grep -q 'Failed to load extension' <<<"$output"; then
-                    exit 1
-                  fi
-                  if [ "$status" -ne 0 ] && ! grep -Eq 'No models available|No model selected|No API key found' <<<"$output"; then
-                    exit "$status"
-                  fi
-                  echo "Runtime smoke test completed with status $status."
-
-    windows-binary-smoke:
-        name: Smoke test Windows binary
-        runs-on: blacksmith-4vcpu-windows-2025
-
-        steps:
-            - uses: useblacksmith/checkout@v1
-              with:
-                  ref: ${{ github.event.inputs.tag || github.ref_name }}
-                  persist-credentials: false
-
-            - uses: oven-sh/setup-bun@v2
-              with:
-                  bun-version: latest
-
-            - uses: actions/setup-node@v6
-              with:
-                  node-version: 24
-
-            - uses: dtolnay/rust-toolchain@stable
-
-            - name: Build Windows x64 archive
-              shell: bash
-              run: ./scripts/build-binaries.sh --skip-deps --platform windows-x64
-
-            - name: Smoke test Windows release archive
-              shell: pwsh
-              run: |
-                  $ErrorActionPreference = "Stop"
-                  $smokeDir = Join-Path $env:RUNNER_TEMP "atomic-windows-binary-smoke"
-                  Remove-Item -Recurse -Force $smokeDir -ErrorAction SilentlyContinue
-                  New-Item -ItemType Directory -Path $smokeDir | Out-Null
-                  Expand-Archive -Path "packages/coding-agent/binaries/atomic-windows-x64.zip" -DestinationPath $smokeDir -Force
-
-                  $atomic = Join-Path $smokeDir "atomic.exe"
-                  & $atomic --version
-                  if ($LASTEXITCODE -ne 0) {
-                    exit $LASTEXITCODE
-                  }
-                  foreach ($requiredPath in @(
-                    "app.js",
-                    "image-resize-worker.js",
-                    "builtin/workflows/package.json",
-                    "builtin/workflows/src/extension/index.ts",
-                    "builtin/subagents/package.json",
-                    "builtin/subagents/src/extension/index.ts",
-                    "builtin/mcp/package.json",
-                    "builtin/mcp/index.ts",
-                    "builtin/web-access/package.json",
-                    "builtin/web-access/index.ts",
-                    "builtin/intercom/package.json",
-                    "builtin/intercom/index.ts",
-                    "builtin/cursor/package.json",
-                    "builtin/cursor/index.ts",
-                    "node_modules/@bastani/atomic-natives/package.json",
-                    "node_modules/@bastani/atomic-natives/native/index.js",
-                    "node_modules/@bastani/atomic-natives/native/atomic_natives.win32-x64-msvc.node",
-                    "native/win32/prebuilds/win32-x64/win32-console-mode.node",
-                    "node_modules/@modelcontextprotocol/ext-apps/package.json",
-                    "node_modules/@mozilla/readability/package.json"
-                  )) {
-                    $archivePath = Join-Path $smokeDir $requiredPath
-                    if (-not (Test-Path $archivePath)) {
-                      throw "Missing release archive path: $requiredPath"
-                    }
-                  }
-
-                  # --version exits before builtin extensions are loaded. Start the
-                  # non-interactive runtime far enough to surface extension diagnostics,
-                  # but allow the expected no-models exit in CI. Run from a clean temp
-                  # cwd so repo-local config (e.g. .mcp.json) can't leak into the smoke
-                  # run and hang startup.
-                  $workDir = Join-Path $env:RUNNER_TEMP "atomic-windows-binary-smoke-cwd"
-                  Remove-Item -Recurse -Force $workDir -ErrorAction SilentlyContinue
-                  New-Item -ItemType Directory -Path $workDir | Out-Null
-                  Push-Location $workDir
-                  $output = "" | & $atomic --no-session 2>&1 | Out-String
-                  $status = $LASTEXITCODE
-                  Pop-Location
-                  Write-Host $output
-                  if ($output -match "Failed to load extension") {
-                    exit 1
-                  }
-                  if ($status -ne 0 -and $output -notmatch "No models available|No model selected|No API key found") {
-                    exit $status
-                  }
-                  Write-Host "Runtime smoke test completed with status $status."
-
-    atomic-native-artifacts:
-        name: Atomic native ${{ matrix.platform }}
-        runs-on: ${{ matrix.runner }}
-        strategy:
-            fail-fast: false
-            matrix:
-                include:
-                    - { runner: blacksmith-4vcpu-ubuntu-2404, platform: linux-x64, target: "" }
-                    - { runner: blacksmith-4vcpu-ubuntu-2404-arm, platform: linux-arm64, target: "" }
-                    - { runner: macos-26-intel, platform: darwin-x64, target: "" }
-                    - { runner: blacksmith-6vcpu-macos-26, platform: darwin-arm64, target: "" }
-                    - { runner: blacksmith-4vcpu-ubuntu-2404, platform: windows-x64, target: x86_64-pc-windows-msvc }
-                    - { runner: blacksmith-4vcpu-ubuntu-2404, platform: windows-arm64, target: aarch64-pc-windows-msvc }
-
-        steps:
-            - uses: actions/checkout@v7.0.0
-              with:
-                  ref: ${{ github.event.inputs.tag || github.ref_name }}
-                  persist-credentials: false
-
-            - uses: oven-sh/setup-bun@v2
-              with:
-                  bun-version: latest
-
-            - uses: dtolnay/rust-toolchain@stable
-              with:
-                  targets: ${{ matrix.target }}
-
-            - uses: actions/setup-node@v6
-              with:
-                  node-version: 24
-
-            - name: Install dependencies
-              run: bun install --frozen-lockfile
-
-            - name: Setup zig for Linux cross compile
-              if: matrix.target != '' && startsWith(matrix.target, 'aarch64-unknown-linux')
-              uses: mlugg/setup-zig@v2
-              with:
-                  version: 0.16.0
-
-            - name: Install cargo-zigbuild for Linux cross compile
-              if: matrix.target != '' && startsWith(matrix.target, 'aarch64-unknown-linux')
-              uses: taiki-e/install-action@v2
-              with:
-                  tool: cargo-zigbuild
-
-            - name: Install LLVM tooling for Windows cross compile
-              if: endsWith(matrix.target, '-msvc')
-              run: |
-                  sudo apt-get update
-                  sudo apt-get install -y clang lld llvm
-
-            - name: Install cargo-xwin for Windows cross compile
-              if: endsWith(matrix.target, '-msvc')
-              uses: taiki-e/install-action@v2
-              with:
-                  tool: cargo-xwin
-
-            - name: Build Atomic native binding
-              shell: bash
-              env:
-                  CROSS_TARGET: ${{ matrix.target }}
-                  XWIN_ACCEPT_LICENSE: "1"
-              run: |
-                  set -euo pipefail
-                  bun run --cwd packages/natives build
-                  ls -lh packages/natives/native/*.node
-
-            - name: Upload Atomic native binding
-              uses: actions/upload-artifact@v7
-              with:
-                  name: atomic-natives-${{ matrix.platform }}
-                  path: packages/natives/native/*.node
-                  if-no-files-found: error
-                  retention-days: 14
-
-    publish:
-        name: Publish @bastani/atomic
-        # npm provenance only supports GitHub-hosted runners.
-        runs-on: ubuntu-latest
-        needs:
-            - linux-binary-smoke
-            - windows-binary-smoke
-            - atomic-native-artifacts
-        outputs:
-            version: ${{ steps.package.outputs.version }}
-            npm_tag: ${{ steps.package.outputs.npm_tag }}
-            release_tag: ${{ steps.checkout_ref.outputs.ref }}
-
-        steps:
-            - name: Resolve checkout ref
-              id: checkout_ref
-              shell: bash
-              env:
-                  DISPATCH_TAG: ${{ github.event.inputs.tag || '' }}
-              run: |
-                  set -euo pipefail
-                  if [ -n "$DISPATCH_TAG" ]; then
-                    ref="$DISPATCH_TAG"
-                  else
-                    ref="${GITHUB_REF#refs/tags/}"
-                  fi
-                  release_version_re='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-alpha\.[1-9][0-9]*)?'
-                  if [[ ! "$ref" =~ ^$release_version_re$ ]]; then
-                    echo "Unexpected tag format: $ref (expected MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-alpha.REVISION, e.g. 0.8.0 or 0.8.0-alpha.1)" >&2
-                    exit 1
-                  fi
-                  echo "ref=$ref" >> "$GITHUB_OUTPUT"
-
-            - uses: actions/checkout@v7.0.0
-              with:
-                  ref: ${{ steps.checkout_ref.outputs.ref }}
-                  fetch-depth: 0
-                  persist-credentials: false
-
-            - uses: oven-sh/setup-bun@v2
-              with:
-                  bun-version: latest
-
-            - uses: actions/setup-node@v6
-              with:
-                  node-version: 24
-
-            - name: Install dependencies
-              run: bun install --frozen-lockfile
-
-            - name: Typecheck
-              run: bun run typecheck
-
-            - name: Test
-              run: bun run test:all
-
-            - name: Verify committed npm shrinkwrap
-              run: bun run check:shrinkwrap
-
-            - name: Download Atomic native bindings
-              uses: actions/download-artifact@v8
-              with:
-                  pattern: atomic-natives-*
-                  path: packages/natives/native
-                  merge-multiple: true
-
-            - name: Prepare Atomic native optional packages
-              run: |
-                  bun run --cwd packages/natives create-npm-dirs
-                  bun run --cwd packages/natives artifacts
-
-            - name: Docs link validation
-              working-directory: ${{ env.PACKAGE_DIR }}
-              run: bun run docs:check
-
-            - name: Mintlify docs validation
-              working-directory: ${{ env.PACKAGE_DIR }}/docs
-              run: |
-                  bunx --bun mintlify@latest validate
-                  bunx --bun mintlify@latest broken-links
-
-            - name: Validate single publish target and package metadata
-              id: package
-              shell: bash
-              env:
-                  RELEASE_TAG: ${{ steps.checkout_ref.outputs.ref }}
-              run: |
-                  set -euo pipefail
-
-                  release_version_re='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-alpha\.[1-9][0-9]*)?'
-
-                  root_name=$(bun --eval 'import pkg from "./package.json" with { type: "json" }; console.log(pkg.name);')
-                  if [ "$root_name" != "atomic-monorepo" ]; then
-                    echo "Unexpected root package name: $root_name" >&2
-                    exit 1
-                  fi
-
-                  pushd "$PACKAGE_DIR" >/dev/null
-
-                  name=$(bun --eval 'import pkg from "./package.json" with { type: "json" }; console.log(pkg.name);')
-                  version=$(bun --eval 'import pkg from "./package.json" with { type: "json" }; console.log(pkg.version);')
-                  expected_tag="$version"
-
-                  if [ "$name" != "$PACKAGE_NAME" ]; then
-                    echo "Only $PACKAGE_NAME may be published by this workflow; found $name in $PACKAGE_DIR/package.json." >&2
-                    exit 1
-                  fi
-
-                  if [[ ! "$version" =~ ^$release_version_re$ ]]; then
-                    echo "$PACKAGE_DIR/package.json version $version is invalid (expected MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-alpha.REVISION, e.g. 0.8.0 or 0.8.0-alpha.1)." >&2
-                    exit 1
-                  fi
-
-                  # main is versionless: it carries the 0.0.0 development placeholder and the
-                  # real version is materialized only on a tagged "Release X" commit produced by
-                  # scripts/cut-release.ts. Refuse to publish the placeholder if it is ever tagged.
-                  if [ "$version" = "0.0.0" ] || [ "$version" = "0.0.0-dev" ]; then
-                    echo "$PACKAGE_DIR/package.json is at the development placeholder ($version); refusing to publish. Cut a release with: bun run scripts/cut-release.ts <version>" >&2
-                    exit 1
-                  fi
-
-                  if [ "$RELEASE_TAG" != "$expected_tag" ]; then
-                    echo "Tag $RELEASE_TAG does not match $PACKAGE_DIR/package.json version $version (expected $expected_tag)." >&2
-                    exit 1
-                  fi
-
-                  popd >/dev/null
-
-                  while IFS=$'\t' read -r manifest_path manifest_name manifest_version manifest_private; do
-                    if [[ ! "$manifest_version" =~ ^$release_version_re$ ]]; then
-                      echo "$manifest_path version $manifest_version is invalid (expected MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-alpha.REVISION)." >&2
-                      exit 1
-                    fi
-
-                    if [ "$manifest_version" != "$version" ]; then
-                      echo "$manifest_path version $manifest_version does not match $PACKAGE_DIR/package.json version $version." >&2
-                      exit 1
-                    fi
-
-                    if [ "$manifest_name" != "$PACKAGE_NAME" ] && [ "$manifest_name" != "@bastani/atomic-natives" ] && [ "$manifest_private" != "true" ]; then
-                      echo "$manifest_path ($manifest_name) is bundled into $PACKAGE_NAME and must remain private (not independently published)." >&2
-                      exit 1
-                    fi
-                  done < <(bun --eval '
-                    import { existsSync, readdirSync } from "node:fs";
-                    const rootPkg = await Bun.file("package.json").json();
-                    const paths = typeof rootPkg.version === "string" ? ["package.json"] : [];
-                    paths.push(
-                      ...readdirSync("packages", { withFileTypes: true })
-                        .filter((entry) => entry.isDirectory())
-                        .map((entry) => `packages/${entry.name}/package.json`)
-                        .filter((path) => existsSync(path))
-                        .sort(),
-                    );
-                    for (const path of paths) {
-                      const pkg = await Bun.file(path).json();
-                      console.log([path, pkg.name, pkg.version, pkg.private === true ? "true" : "false"].join("\t"));
-                    }
-                  ')
-
-                  if [[ "$version" == *-* ]]; then
-                    npm_tag="next"
-                  else
-                    npm_tag="latest"
-                  fi
-
-                  echo "name=$name" >> "$GITHUB_OUTPUT"
-                  echo "version=$version" >> "$GITHUB_OUTPUT"
-                  echo "npm_tag=$npm_tag" >> "$GITHUB_OUTPUT"
-                  echo "Publishing $name@$version from $PACKAGE_DIR with npm tag '$npm_tag'."
-
-            - name: Build @bastani/atomic package and binaries
-              run: ./scripts/build-binaries.sh
-
-            - name: Verify built package metadata
-              working-directory: ${{ env.PACKAGE_DIR }}
-              run: |
-                  bun --eval '
-                    import { existsSync, readdirSync, statSync } from "node:fs";
-                    import path from "node:path";
-                    import pkg from "./package.json" with { type: "json" };
-
-                    const failures = [];
-                    const expectedBuiltins = ["workflows", "subagents", "mcp", "web-access", "intercom", "cursor"];
-                    const clean = (value) => String(value).replace(/^\.\//, "").replace(/\/$/, "");
-                    const walk = (dir) => {
-                      if (!existsSync(dir)) return [];
-                      const entries = [];
-                      for (const name of readdirSync(dir)) {
-                        const full = path.join(dir, name);
-                        const stat = statSync(full);
-                        if (stat.isDirectory()) entries.push(...walk(full));
-                        else entries.push(full.replaceAll(path.sep, "/"));
-                      }
-                      return entries;
-                    };
-                    const exists = (pattern) => {
-                      const normalized = clean(pattern);
-                      if (!normalized.includes("*")) return existsSync(normalized);
-                      const star = normalized.indexOf("*");
-                      const slash = normalized.lastIndexOf("/", star);
-                      const dir = slash === -1 ? "." : normalized.slice(0, slash);
-                      const suffix = normalized.slice(normalized.lastIndexOf("*") + 1).replace(/^\//, "");
-                      return walk(dir).some((file) => suffix === "" || file.endsWith(suffix));
-                    };
-                    const requirePath = (label, value) => {
-                      if (!value || !exists(value)) failures.push(`${label}: ${value}`);
-                    };
-
-                    if (pkg.private) failures.push("@bastani/atomic package.json must not set private=true");
-                    if (pkg.name !== "@bastani/atomic") failures.push(`unexpected package name: ${pkg.name}`);
-                    if (pkg.bin?.atomic !== "dist/cli.js") failures.push("bin.atomic must point at dist/cli.js");
-
-                    for (const sectionName of ["dependencies", "optionalDependencies", "peerDependencies", "devDependencies"]) {
-                      const dependencies = pkg[sectionName];
-                      if (!dependencies) continue;
-                      for (const [dependencyName, dependencyRange] of Object.entries(dependencies)) {
-                        if (String(dependencyRange).startsWith("workspace:")) {
-                          failures.push(`${sectionName}.${dependencyName} must not use workspace protocol`);
-                        }
-                        if (dependencyName.startsWith("@bastani/") && dependencyName !== "@bastani/atomic-natives") {
-                          failures.push(`${sectionName}.${dependencyName} must not reference a private bundled package`);
-                        }
-                      }
-                    }
-
-                    requirePath("main", pkg.main);
-                    requirePath("types", pkg.types);
-                    requirePath("bin.atomic", pkg.bin?.atomic);
-                    requirePath("dist builtin root", "dist/builtin");
-
-                    for (const builtin of expectedBuiltins) {
-                      requirePath(`dist builtin ${builtin}`, `dist/builtin/${builtin}/package.json`);
-                    }
-                    for (const native of [
-                      "atomic_natives.darwin-arm64.node",
-                      "atomic_natives.darwin-x64.node",
-                      "atomic_natives.linux-arm64-gnu.node",
-                      "atomic_natives.linux-x64-gnu.node",
-                      "atomic_natives.win32-arm64-msvc.node",
-                      "atomic_natives.win32-x64-msvc.node",
-                    ]) {
-                      requirePath(`atomic native ${native}`, `../../packages/natives/native/${native}`);
-                    }
-
-                    if (failures.length > 0) {
-                      console.error("Invalid @bastani/atomic package metadata/build output:");
-                      for (const failure of failures) console.error(`- ${failure}`);
-                      process.exit(1);
-                    }
-                  '
-
-            - name: Extract release notes from CHANGELOG.md
-              id: release_notes
-              shell: bash
-              env:
-                  VERSION: ${{ steps.package.outputs.version }}
-              run: |
-                  set -euo pipefail
-                  notes_file="$RUNNER_TEMP/release-notes.md"
-                  awk -v ver="$VERSION" '
-                    BEGIN { flag = 0 }
-                    /^## \[/ {
-                      if (flag == 1) exit
-                      if ($0 ~ "^## \\[" ver "\\]") { flag = 1; next }
-                    }
-                    flag == 1 { print }
-                  ' "$PACKAGE_DIR/CHANGELOG.md" > "$notes_file"
-
-                  if [ ! -s "$notes_file" ]; then
-                    echo "Release v$VERSION" > "$notes_file"
-                  fi
-
-                  echo "notes_file=$notes_file" >> "$GITHUB_OUTPUT"
-
-            - name: Check @bastani/atomic npm registry
-              id: registry
-              shell: bash
-              env:
-                  PACKAGE_VERSION: ${{ steps.package.outputs.version }}
-              run: |
-                  set -euo pipefail
-                  if bun pm view "$PACKAGE_NAME@$PACKAGE_VERSION" version >/dev/null 2>&1; then
-                    echo "exists=true" >> "$GITHUB_OUTPUT"
-                    echo "$PACKAGE_NAME@$PACKAGE_VERSION is already on npm; skipping publish."
-                  else
-                    echo "exists=false" >> "$GITHUB_OUTPUT"
-                  fi
-
-            - name: Check @bastani/atomic-natives npm registry
-              id: native_registry
-              shell: bash
-              env:
-                  PACKAGE_VERSION: ${{ steps.package.outputs.version }}
-              run: |
-                  set -euo pipefail
-                  if bun pm view "@bastani/atomic-natives@$PACKAGE_VERSION" version >/dev/null 2>&1; then
-                    echo "exists=true" >> "$GITHUB_OUTPUT"
-                    echo "@bastani/atomic-natives@$PACKAGE_VERSION is already on npm; skipping publish."
-                  else
-                    echo "exists=false" >> "$GITHUB_OUTPUT"
-                  fi
-
-            - name: Publish Atomic native packages to npm
-              if: steps.native_registry.outputs.exists != 'true'
-              working-directory: packages/natives
-              shell: bash
-              env:
-                  NPM_CONFIG_PROVENANCE: "true"
-                  NPM_CONFIG_TAG: ${{ steps.package.outputs.npm_tag }}
-                  NPM_TAG: ${{ steps.package.outputs.npm_tag }}
-              run: |
-                  set -euo pipefail
-                  bun run prepublish:native
-                  bun pm pack --dry-run
-                  npm publish --provenance --access public --tag "$NPM_TAG" --registry https://registry.npmjs.org
-
-            - name: Verify prepared npm shrinkwrap for published package
-              if: steps.registry.outputs.exists != 'true'
-              run: bun run check:shrinkwrap
-
-            - name: Verify npm tarball contents
-              if: steps.registry.outputs.exists != 'true'
-              working-directory: ${{ env.PACKAGE_DIR }}
-              shell: bash
-              run: |
-                  set -euo pipefail
-                  bun pm pack --dry-run
-                  npm pack --dry-run --json > "$RUNNER_TEMP/atomic-npm-pack.json"
-                  cat "$RUNNER_TEMP/atomic-npm-pack.json"
-                  bun --eval '
-                    const pack = await Bun.file(process.env.RUNNER_TEMP + "/atomic-npm-pack.json").json();
-                    const files = new Set(pack[0]?.files?.map((file) => file.path));
-                    if (!files.has("npm-shrinkwrap.json")) {
-                      throw new Error("npm pack output is missing npm-shrinkwrap.json");
-                    }
-                  '
-
-            - name: Publish to npm
-              if: steps.registry.outputs.exists != 'true'
-              working-directory: ${{ env.PACKAGE_DIR }}
-              shell: bash
-              env:
-                  NPM_CONFIG_PROVENANCE: "true"
-                  NPM_TAG: ${{ steps.package.outputs.npm_tag }}
-              run: npm publish --provenance --access public --tag "$NPM_TAG" --registry https://registry.npmjs.org
-
-            - name: Determine release type
-              id: release_type
-              shell: bash
-              env:
-                  VERSION: ${{ steps.package.outputs.version }}
-              run: |
-                  set -euo pipefail
-                  if [[ "$VERSION" == *-* ]]; then
-                    echo "prerelease=true" >> "$GITHUB_OUTPUT"
-                    echo "make_latest=false" >> "$GITHUB_OUTPUT"
-                  else
-                    echo "prerelease=false" >> "$GITHUB_OUTPUT"
-                    echo "make_latest=true" >> "$GITHUB_OUTPUT"
-                  fi
-
-            - name: Generate binary checksums
-              shell: bash
-              working-directory: ${{ env.PACKAGE_DIR }}/binaries
-              run: |
-                  set -euo pipefail
-                  release_assets=(
-                    atomic-darwin-arm64.tar.gz
-                    atomic-darwin-x64.tar.gz
-                    atomic-linux-x64.tar.gz
-                    atomic-linux-arm64.tar.gz
-                    atomic-windows-x64.zip
-                    atomic-windows-arm64.zip
-                  )
-                  sha256sum "${release_assets[@]}" > SHA256SUMS
-
-            - name: Create GitHub Release with binaries
-              uses: softprops/action-gh-release@v3
-              with:
-                  tag_name: ${{ steps.checkout_ref.outputs.ref }}
-                  name: ${{ steps.checkout_ref.outputs.ref }}
-                  body_path: ${{ steps.release_notes.outputs.notes_file }}
-                  draft: false
-                  prerelease: ${{ steps.release_type.outputs.prerelease == 'true' }}
-                  make_latest: ${{ steps.release_type.outputs.make_latest }}
-                  files: |
-                      packages/coding-agent/binaries/atomic-darwin-arm64.tar.gz
-                      packages/coding-agent/binaries/atomic-darwin-x64.tar.gz
-                      packages/coding-agent/binaries/atomic-linux-x64.tar.gz
-                      packages/coding-agent/binaries/atomic-linux-arm64.tar.gz
-                      packages/coding-agent/binaries/atomic-windows-x64.zip
-                      packages/coding-agent/binaries/atomic-windows-arm64.zip
-                      packages/coding-agent/binaries/SHA256SUMS
+  integrity:
+    name: Verify release tag
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.verify.outputs.sha }}
+      version: ${{ steps.verify.outputs.version }}
+      npm-tag: ${{ steps.verify.outputs.npm-tag }}
+    steps:
+      - uses: useblacksmith/checkout@v1
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Verify tag commit identity
+        id: verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          version_re='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-alpha\.[1-9][0-9]*)?'
+          [[ "$RELEASE_TAG" =~ ^$version_re$ ]] || { echo "Invalid release tag: $RELEASE_TAG" >&2; exit 1; }
+          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          sha=$(git rev-parse HEAD^{commit})
+          tag_sha=$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")
+          [[ "$sha" == "$tag_sha" ]] || { echo "Source ref does not resolve to tag commit $tag_sha" >&2; exit 1; }
+          version=$(bun -e 'console.log((await Bun.file("packages/coding-agent/package.json").json()).version)')
+          [[ "$version" == "$RELEASE_TAG" ]] || { echo "Package version $version does not match tag $RELEASE_TAG" >&2; exit 1; }
+          subject=$(git show -s --format=%s HEAD)
+          [[ "$subject" == "Release $RELEASE_TAG" ]] || { echo "Commit subject must be Release $RELEASE_TAG; found: $subject" >&2; exit 1; }
+          npm_tag=latest
+          [[ "$version" == *-alpha.* ]] && npm_tag=next
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "npm-tag=$npm_tag" >> "$GITHUB_OUTPUT"
+
+  native-artifacts:
+    name: Native ${{ matrix.platform }} ${{ matrix.arch }}
+    needs: integrity
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: blacksmith-4vcpu-ubuntu-2404, platform: linux, arch: x64, target: x86_64-unknown-linux-gnu }
+          - { runner: blacksmith-4vcpu-ubuntu-2404-arm, platform: linux, arch: arm64, target: aarch64-unknown-linux-gnu }
+          - { runner: macos-26-intel, platform: darwin, arch: x64, target: x86_64-apple-darwin }
+          - { runner: blacksmith-6vcpu-macos-26, platform: darwin, arch: arm64, target: aarch64-apple-darwin }
+          - { runner: blacksmith-4vcpu-ubuntu-2404, platform: win32, arch: x64, target: x86_64-pc-windows-msvc }
+          - { runner: blacksmith-4vcpu-ubuntu-2404, platform: win32, arch: arm64, target: aarch64-pc-windows-msvc }
+    steps:
+      - uses: useblacksmith/checkout@v1
+        with:
+          ref: ${{ env.SOURCE_REF }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      # rustup needs the bare target. Linux's napi build separately receives
+      # the glibc-suffixed target consumed by cargo-zigbuild.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.0
+          targets: ${{ matrix.target }}
+      - name: Prefer pinned rustup toolchain on macOS
+        if: matrix.platform == 'darwin'
+        shell: bash
+        run: |
+          toolchain_bin="$(dirname "$(rustup which cargo)")"
+          echo "$toolchain_bin" >> "$GITHUB_PATH"
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Resolve explicit native build target
+        id: target
+        shell: bash
+        env:
+          BARE_TARGET: ${{ matrix.target }}
+          TARGET_PLATFORM: ${{ matrix.platform }}
+        run: |
+          build_target="$BARE_TARGET"
+          [[ "$TARGET_PLATFORM" != linux ]] || build_target="${BARE_TARGET}.${GLIBC_FLOOR}"
+          echo "build-target=$build_target" >> "$GITHUB_OUTPUT"
+      - name: Set baseline x64 CPU flags
+        if: matrix.arch == 'x64'
+        shell: bash
+        run: echo 'RUSTFLAGS=-C target-cpu=x86-64-v2' >> "$GITHUB_ENV"
+      - name: Setup zig for portable Linux GNU builds
+        if: matrix.platform == 'linux'
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Install cargo-zigbuild for portable Linux GNU builds
+        if: matrix.platform == 'linux'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+      - name: Install Windows cross-compile tooling
+        if: matrix.platform == 'win32'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld llvm
+      - name: Install cargo-xwin
+        if: matrix.platform == 'win32'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-xwin
+      - name: Build native binding
+        env:
+          CROSS_TARGET: ${{ matrix.platform != 'darwin' && steps.target.outputs.build-target || '' }}
+          NATIVE_TARGET: ${{ matrix.platform == 'darwin' && matrix.target || '' }}
+          XWIN_ACCEPT_LICENSE: "1"
+        run: bun run --cwd packages/natives build
+      - uses: actions/upload-artifact@v7
+        with:
+          name: atomic-natives-${{ matrix.platform }}-${{ matrix.arch }}
+          path: packages/natives/native/*.node
+          if-no-files-found: error
+          retention-days: 14
+
+  linux-binary-smoke:
+    name: Smoke Linux binary
+    needs: integrity
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
+    steps:
+      - uses: useblacksmith/checkout@v1
+        with:
+          ref: ${{ env.SOURCE_REF }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.0
+      - name: Build Linux x64 archive
+        run: ./scripts/build-binaries.sh --skip-deps --platform linux-x64
+      - name: Smoke Linux release archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          smoke="$RUNNER_TEMP/atomic-linux-smoke"
+          mkdir -p "$smoke"
+          tar -xzf packages/coding-agent/binaries/atomic-linux-x64.tar.gz -C "$smoke"
+          "$smoke/atomic/atomic" --version
+          for path in app.js image-resize-worker.js builtin/workflows/package.json builtin/subagents/package.json builtin/mcp/package.json builtin/web-access/package.json builtin/intercom/package.json builtin/cursor/package.json node_modules/@bastani/atomic-natives/package.json node_modules/@bastani/atomic-natives/native/atomic_natives.linux-x64-gnu.node node_modules/@modelcontextprotocol/ext-apps/package.json node_modules/@mozilla/readability/package.json; do
+            test -f "$smoke/atomic/$path" || { echo "Missing release archive path: $path" >&2; exit 1; }
+          done
+          mkdir -p "$RUNNER_TEMP/atomic-linux-cwd"
+          set +e
+          output=$(cd "$RUNNER_TEMP/atomic-linux-cwd" && printf '' | "$smoke/atomic/atomic" --no-session 2>&1)
+          status=$?
+          set -e
+          echo "$output"
+          ! grep -q 'Failed to load extension' <<<"$output"
+          [[ "$status" -eq 0 ]] || grep -Eq 'No models available|No model selected|No API key found' <<<"$output"
+
+  windows-binary-smoke:
+    name: Smoke Windows binary
+    needs: integrity
+    runs-on: blacksmith-4vcpu-windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: useblacksmith/checkout@v1
+        with:
+          ref: ${{ env.SOURCE_REF }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.0
+      - name: Build Windows x64 archive
+        shell: bash
+        run: ./scripts/build-binaries.sh --skip-deps --platform windows-x64
+      - name: Smoke Windows release archive
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $smoke = Join-Path $env:RUNNER_TEMP "atomic-windows-smoke"
+          New-Item -ItemType Directory -Force -Path $smoke | Out-Null
+          Expand-Archive packages/coding-agent/binaries/atomic-windows-x64.zip $smoke -Force
+          $atomic = Join-Path $smoke "atomic.exe"
+          & $atomic --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($path in @("app.js", "image-resize-worker.js", "builtin/workflows/package.json", "builtin/subagents/package.json", "builtin/mcp/package.json", "builtin/web-access/package.json", "builtin/intercom/package.json", "builtin/cursor/package.json", "node_modules/@bastani/atomic-natives/package.json", "node_modules/@bastani/atomic-natives/native/atomic_natives.win32-x64-msvc.node", "native/win32/prebuilds/win32-x64/win32-console-mode.node", "node_modules/@modelcontextprotocol/ext-apps/package.json", "node_modules/@mozilla/readability/package.json")) {
+            if (-not (Test-Path (Join-Path $smoke $path))) { throw "Missing release archive path: $path" }
+          }
+          $cwd = Join-Path $env:RUNNER_TEMP "atomic-windows-cwd"
+          New-Item -ItemType Directory -Force -Path $cwd | Out-Null
+          Push-Location $cwd
+          $output = "" | & $atomic --no-session 2>&1 | Out-String
+          $status = $LASTEXITCODE
+          Pop-Location
+          Write-Host $output
+          if ($output -match "Failed to load extension") { exit 1 }
+          if ($status -ne 0 -and $output -notmatch "No models available|No model selected|No API key found") { exit $status }
+
+  build:
+    name: Build release payload
+    needs: [integrity, native-artifacts, linux-binary-smoke, windows-binary-smoke]
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    steps:
+      - uses: useblacksmith/checkout@v1
+        with:
+          ref: ${{ env.SOURCE_REF }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Install dependencies and verify shrinkwrap
+        run: |
+          bun install --frozen-lockfile
+          bun run check:shrinkwrap
+      - name: Download native bindings
+        uses: actions/download-artifact@v8
+        with:
+          pattern: atomic-natives-*
+          path: packages/natives/native
+          merge-multiple: true
+      - name: Prepare native packages
+        run: |
+          bun run --cwd packages/natives create-npm-dirs
+          bun run --cwd packages/natives artifacts
+          bun run --cwd packages/natives prepublish:native -- --skip-optional-publish
+      - name: Build release archives
+        run: ./scripts/build-binaries.sh --skip-install
+      - name: Validate package metadata and prepare payload
+        env:
+          VERSION: ${{ needs.integrity.outputs.version }}
+        run: |
+          set -euo pipefail
+          bun -e '
+            import { existsSync, readdirSync } from "node:fs";
+            const atomic = await Bun.file("packages/coding-agent/package.json").json();
+            const natives = await Bun.file("packages/natives/package.json").json();
+            const failures = [];
+            if (atomic.name !== "@bastani/atomic" || atomic.version !== process.env.VERSION || atomic.private) failures.push("invalid @bastani/atomic identity");
+            if (atomic.bin?.atomic !== "dist/cli.js") failures.push("invalid atomic bin metadata");
+            if (natives.name !== "@bastani/atomic-natives" || natives.version !== process.env.VERSION || natives.private) failures.push("invalid native root identity");
+            for (const entry of readdirSync("packages", { withFileTypes: true })) {
+              if (!entry.isDirectory()) continue;
+              const path = `packages/${entry.name}/package.json`;
+              if (!existsSync(path)) continue;
+              const pkg = await Bun.file(path).json();
+              if (pkg.version !== process.env.VERSION) failures.push(`${path} has version ${pkg.version}`);
+              if (!["@bastani/atomic", "@bastani/atomic-natives"].includes(pkg.name) && pkg.private !== true) failures.push(`${pkg.name} must remain private`);
+            }
+            for (const pkg of [atomic, natives]) for (const deps of [pkg.dependencies, pkg.optionalDependencies, pkg.peerDependencies]) for (const [name, range] of Object.entries(deps ?? {})) if (String(range).startsWith("workspace:")) failures.push(`workspace range: ${name}`);
+            for (const path of [atomic.main, atomic.types, atomic.bin?.atomic, "dist/builtin", "dist/builtin/workflows/package.json", "dist/builtin/subagents/package.json", "dist/builtin/mcp/package.json", "dist/builtin/web-access/package.json", "dist/builtin/intercom/package.json", "dist/builtin/cursor/package.json"]) if (!path || !existsSync(`packages/coding-agent/${path}`)) failures.push(`missing ${path}`);
+            for (const native of ["darwin-arm64","darwin-x64","linux-arm64-gnu","linux-x64-gnu","win32-arm64-msvc","win32-x64-msvc"]) if (!existsSync(`packages/natives/native/atomic_natives.${native}.node`)) failures.push(`missing native ${native}`);
+            if (failures.length) throw new Error(failures.join("\n"));'
+          rm -rf release-assets npm-packages
+          mkdir release-assets npm-packages
+          cp packages/coding-agent/binaries/atomic-*.tar.gz packages/coding-agent/binaries/atomic-*.zip release-assets/
+          awk -v ver="$VERSION" 'BEGIN { found=0 } /^## \[/ { if (found) exit; if ($0 ~ "^## \\[" ver "\\]") { found=1; next } } found { print }' packages/coding-agent/CHANGELOG.md > release-assets/RELEASE_NOTES.md
+          test -s release-assets/RELEASE_NOTES.md || echo "Release $VERSION" > release-assets/RELEASE_NOTES.md
+          (cd release-assets && sha256sum atomic-*.tar.gz atomic-*.zip > SHA256SUMS)
+          for dir in packages/natives/npm/* packages/natives packages/coding-agent; do npm pack "./$dir" --pack-destination npm-packages; done
+          test "$(find npm-packages -name '*.tgz' -type f | wc -l | tr -d ' ')" = 8
+          bun -e '
+            const expected = new Set(["@bastani/atomic-natives-darwin-arm64","@bastani/atomic-natives-darwin-x64","@bastani/atomic-natives-linux-arm64-gnu","@bastani/atomic-natives-linux-x64-gnu","@bastani/atomic-natives-win32-arm64-msvc","@bastani/atomic-natives-win32-x64-msvc"]);
+            const root = await Bun.file("packages/natives/package.json").json();
+            const actual = Object.keys(root.optionalDependencies ?? {});
+            if (actual.length !== 6 || actual.some((name) => !expected.has(name) || root.optionalDependencies[name] !== process.env.VERSION)) throw new Error("native optionalDependencies must be the six exact-version platform packages");'
+      - name: Upload release payload
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-payload-${{ env.RELEASE_TAG }}
+          path: |
+            release-assets
+            npm-packages
+          if-no-files-found: error
+          retention-days: 14
+
+  stage-github-release:
+    name: Stage draft GitHub Release
+    needs: [integrity, build]
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-payload-${{ env.RELEASE_TAG }}
+      - name: Validate and stage draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd release-assets
+          sha256sum -c SHA256SUMS
+          existing=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null || true)
+          [[ "$existing" != false ]] || { echo "GitHub Release $RELEASE_TAG is already published. Refusing to mutate a public release." >&2; exit 1; }
+          [[ "$existing" != true ]] || gh release delete "$RELEASE_TAG" --yes
+          assets=(atomic-darwin-arm64.tar.gz atomic-darwin-x64.tar.gz atomic-linux-x64.tar.gz atomic-linux-arm64.tar.gz atomic-windows-x64.zip atomic-windows-arm64.zip SHA256SUMS)
+          gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --notes-file RELEASE_NOTES.md "${assets[@]}"
+          expected=$(printf '%s\n' "${assets[@]}" | sort)
+          actual=$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | sort)
+          [[ "$actual" == "$expected" ]] || { echo "Draft release asset set mismatch" >&2; exit 1; }
+
+  publish-npm:
+    name: Publish npm packages
+    needs: [integrity, stage-github-release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-payload-${{ env.RELEASE_TAG }}
+          path: payload
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@11.16.0 --ignore-scripts
+      - name: Publish native packages then coding agent
+        env:
+          VERSION: ${{ needs.integrity.outputs.version }}
+          NPM_TAG: ${{ needs.integrity.outputs.npm-tag }}
+        run: |
+          set -euo pipefail
+          declare -A tarballs=()
+          for file in payload/npm-packages/*.tgz; do
+            name=$(tar -xOf "$file" package/package.json | jq -er .name)
+            version=$(tar -xOf "$file" package/package.json | jq -er .version)
+            [[ "$version" == "$VERSION" ]] || { echo "$name has version $version, expected $VERSION" >&2; exit 1; }
+            tarballs[$name]="$file"
+          done
+          packages=(@bastani/atomic-natives-darwin-arm64 @bastani/atomic-natives-darwin-x64 @bastani/atomic-natives-linux-arm64-gnu @bastani/atomic-natives-linux-x64-gnu @bastani/atomic-natives-win32-arm64-msvc @bastani/atomic-natives-win32-x64-msvc @bastani/atomic-natives @bastani/atomic)
+          [[ "${#tarballs[@]}" -eq "${#packages[@]}" ]] || { echo "Expected exactly eight npm packages" >&2; exit 1; }
+          for name in "${packages[@]}"; do
+            [[ -n "${tarballs[$name]:-}" ]] || { echo "Missing package $name" >&2; exit 1; }
+            if npm view "$name@$VERSION" version --registry https://registry.npmjs.org >/dev/null 2>&1; then
+              echo "$name@$VERSION already exists; skipping."
+            else
+              npm publish "${tarballs[$name]}" --provenance --access public --tag "$NPM_TAG" --registry https://registry.npmjs.org
+            fi
+          done
+
+  publish-github-release:
+    name: Publish GitHub Release
+    needs: [stage-github-release, publish-npm]
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Publish staged GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          existing=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null || true)
+          [[ "$existing" == true ]] || { echo "Draft GitHub Release $RELEASE_TAG does not exist." >&2; exit 1; }
+          gh release edit "$RELEASE_TAG" --draft=false --prerelease=${{ contains(env.RELEASE_TAG, '-') }} --latest=${{ contains(env.RELEASE_TAG, '-') && 'false' || 'true' }}
+
+  cleanup-draft-github-release:
+    name: Clean up failed draft GitHub Release
+    needs: [build, stage-github-release, publish-npm, publish-github-release]
+    if: ${{ always() && needs.stage-github-release.result != 'skipped' && (needs.stage-github-release.result != 'success' || needs.publish-npm.result != 'success' || needs.publish-github-release.result != 'success') }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Delete draft GitHub Release after failure
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          existing=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null || true)
+          [[ "$existing" != true ]] || gh release delete "$RELEASE_TAG" --yes

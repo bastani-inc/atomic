@@ -66,7 +66,7 @@ test("handleSessionPickerInput: enter on selected row returns connect", () => {
   assert.deepEqual(action, { kind: "connect", runId: "id-1" });
 });
 
-test("handleSessionPickerInput: arrows navigate, x kills selected active row", () => {
+test("handleSessionPickerInput: arrows navigate and x has no workflow action", () => {
   const state = createSessionPickerState();
   const rows = [
     { run: makeRun({ id: "id-1" }), bucket: "active" as const },
@@ -74,8 +74,7 @@ test("handleSessionPickerInput: arrows navigate, x kills selected active row", (
   ];
   handleSessionPickerInput("\x1b[B", state, rows);
   assert.equal(state.selectedIndex, 1);
-  const kill = handleSessionPickerInput("x", state, rows);
-  assert.deepEqual(kill, { kind: "kill", runId: "id-2" });
+  assert.deepEqual(handleSessionPickerInput("x", state, rows), { kind: "noop" });
 });
 
 test("handleSessionPickerInput: x is a no-op on terminal rows", () => {
@@ -146,7 +145,7 @@ test("renderSessionPicker emits header, sections, and footer hints", () => {
   assert.match(joined, /ralph/);
   assert.match(joined, /Navigate/);
   assert.match(joined, /Connect/);
-  assert.match(joined, /Kill/);
+  assert.doesNotMatch(joined, /Kill/);
 });
 
 test("renderSessionPicker shows empty state when no rows", () => {

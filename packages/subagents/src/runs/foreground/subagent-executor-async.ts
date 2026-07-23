@@ -9,15 +9,58 @@ import {
 	resolveSubagentDepthPolicy,
 	resolveTopLevelParallelConcurrency,
 	resolveTopLevelParallelMaxTasks,
+	workflowSessionMetadataFromContext,
 	wrapForkTask,
 } from "../../shared/types.ts";
-import { type ChainStep } from "../../shared/settings.ts";
+import { isDynamicParallelStep, isParallelStep, resolveSingleProgress, type ChainStep, type SequentialStep } from "../../shared/settings.ts";
 import { normalizeSingleOutputOverride } from "../shared/single-output.ts";
 import type { ExecutionContextData, ResolvedExecutorDeps } from "./subagent-executor-types.ts";
 import { collectChainSessionFiles, wrapChainTasksForFork } from "./subagent-executor-input.ts";
 import { buildChainWorktreeTaskCwdError, buildParallelModeError, buildParallelWorktreeTaskCwdError } from "./subagent-executor-worktree.ts";
+import { requestSupervisorAuthorization, type SupervisorAuthorization } from "../../intercom/supervisor-authorization.ts";
 
-export function runAsyncPath(data: ExecutionContextData, deps: ResolvedExecutorDeps): import("../../shared/types.ts").SubagentToolResult | null {
+async function authorizeChild(deps: ResolvedExecutorDeps, childName: string | undefined): Promise<SupervisorAuthorization | undefined> {
+	return await requestSupervisorAuthorization(deps.pi.events, childName);
+}
+
+async function authorizeAsyncChain(
+	chain: ChainStep[],
+	childTarget: ((agent: string, index: number) => string | undefined) | undefined,
+	dynamicMaxItems: number | undefined,
+	deps: ResolvedExecutorDeps,
+): Promise<{
+	authorizations?: Array<SupervisorAuthorization | undefined>;
+	dynamic?: Record<number, SupervisorAuthorization[]>;
+}> {
+	if (!childTarget) return {};
+	const authorizations: Array<SupervisorAuthorization | undefined> = [];
+	const dynamic: Record<number, SupervisorAuthorization[]> = {};
+	for (let stepIndex = 0; stepIndex < chain.length; stepIndex++) {
+		const step = chain[stepIndex]!;
+		if (isDynamicParallelStep(step)) {
+			authorizations.push(undefined);
+
+			const count = Math.max(0, dynamicMaxItems ?? 0);
+			dynamic[stepIndex] = (await Promise.all(
+				Array.from({ length: count }, () => authorizeChild(deps, "*")),
+			)).filter((value): value is SupervisorAuthorization => value !== undefined);
+			continue;
+		}
+		const agents = isParallelStep(step)
+			? step.parallel.map((task) => task.agent)
+			: [(step as SequentialStep).agent];
+		for (let index = 0; index < agents.length; index++) {
+			authorizations.push(await authorizeChild(deps, "*"));
+		}
+	}
+	return {
+		authorizations,
+		...(Object.keys(dynamic).length > 0 ? { dynamic } : {}),
+	};
+}
+
+
+export async function runAsyncPath(data: ExecutionContextData, deps: ResolvedExecutorDeps): Promise<import("../../shared/types.ts").SubagentToolResult | null> {
 	const {
 		params,
 		effectiveCwd,
@@ -74,6 +117,7 @@ export function runAsyncPath(data: ExecutionContextData, deps: ResolvedExecutorD
 		currentSessionId: deps.state.currentSessionId!,
 		currentModelProvider: ctx.model?.provider,
 		currentModel: currentModelFullId(ctx.model),
+		workflowSessionMetadata: workflowSessionMetadataFromContext(ctx),
 	};
 	const availableModels: ModelInfo[] = ctx.modelRegistry.getAvailable().map(toModelInfo);
 	const knownModelProviders = collectKnownModelProviders(ctx.modelRegistry);
@@ -101,6 +145,9 @@ export function runAsyncPath(data: ExecutionContextData, deps: ResolvedExecutorD
 			...(task.reads !== undefined && task.reads !== true ? { reads: task.reads } : {}),
 			...(task.progress !== undefined ? { progress: task.progress } : {}),
 		}));
+		const supervisorAuthorizations = childIntercomTarget
+			? await Promise.all(params.tasks.map((task, index) => authorizeChild(deps, childIntercomTarget(task.agent, index))))
+			: undefined;
 		return deps.runtime.executeAsyncChain(id, {
 			chain: [{
 				parallel: parallelTasks,
@@ -127,6 +174,7 @@ export function runAsyncPath(data: ExecutionContextData, deps: ResolvedExecutorD
 			controlConfig,
 			controlIntercomTarget,
 			childIntercomTarget,
+			supervisorAuthorizations,
 			nestedRoute,
 		});
 	}
@@ -135,6 +183,12 @@ export function runAsyncPath(data: ExecutionContextData, deps: ResolvedExecutorD
 		const normalized = normalizeSkillInput(params.skill);
 		const chainSkills = normalized === false ? [] : (normalized ?? []);
 		const chain = wrapChainTasksForFork(params.chain as ChainStep[], params.context);
+		const supervisor = await authorizeAsyncChain(
+			chain,
+			childIntercomTarget,
+			deps.config.chain?.dynamicFanout?.maxItems,
+			deps,
+		);
 		return deps.runtime.executeAsyncChain(id, {
 			chain,
 			task: params.task,
@@ -158,6 +212,8 @@ export function runAsyncPath(data: ExecutionContextData, deps: ResolvedExecutorD
 			controlConfig,
 			controlIntercomTarget,
 			childIntercomTarget,
+			supervisorAuthorizations: supervisor.authorizations,
+			dynamicSupervisorAuthorizations: supervisor.dynamic,
 			nestedRoute,
 		});
 	}
@@ -178,6 +234,10 @@ export function runAsyncPath(data: ExecutionContextData, deps: ResolvedExecutorD
 		const skills = normalizedSkills === false ? [] : normalizedSkills;
 		const maxSubagentDepth = resolveChildMaxSubagentDepth(currentMaxSubagentDepth, a.maxSubagentDepth);
 		const modelOverride = resolveModelCandidate((params.model as string | undefined) ?? a.model, availableModels, currentProvider);
+		const progress = resolveSingleProgress(a, params.progress, params.task);
+		const supervisorAuthorization = childIntercomTarget
+			? await authorizeChild(deps, childIntercomTarget(params.agent!, 0))
+			: undefined;
 		return deps.runtime.executeAsyncSingle(id, {
 			agent: params.agent!,
 			task: params.context === "fork" ? wrapForkTask(params.task ?? "") : (params.task ?? ""),
@@ -195,6 +255,7 @@ export function runAsyncPath(data: ExecutionContextData, deps: ResolvedExecutorD
 			skills,
 			output: effectiveOutput,
 			outputMode: effectiveOutputMode,
+			progress,
 			modelOverride,
 			maxSubagentDepth,
 			workflowStageSubagentGuard,
@@ -203,6 +264,7 @@ export function runAsyncPath(data: ExecutionContextData, deps: ResolvedExecutorD
 			controlConfig,
 			controlIntercomTarget,
 			childIntercomTarget: childIntercomTarget ? (agent, index) => childIntercomTarget(agent, index) : undefined,
+			supervisorAuthorization,
 			nestedRoute,
 		});
 	}

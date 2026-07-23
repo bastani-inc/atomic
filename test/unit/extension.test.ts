@@ -74,6 +74,15 @@ function getSessionBeforeSwitchHandler(): SessionBeforeSwitchHandler {
   return handler;
 }
 
+async function waitForCondition(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(predicate(), true);
+}
+
 beforeEach(() => {
   stageControlRegistry.clear();
   store.clear();
@@ -279,6 +288,7 @@ test("session_start warns when discovered workflows fail validation", async () =
       },
     });
 
+    await waitForCondition(() => notifications.some((entry) => entry.message.includes("Workflow discovery diagnostics")));
     const warning = notifications.find((entry) => entry.message.includes("Workflow discovery diagnostics"));
     assert.notEqual(warning, undefined);
     assert.equal(warning?.type, "warning");
@@ -330,13 +340,25 @@ test("session_shutdown quit disposes retained completed stage handles", async ()
   assert.equal(stageControlRegistry.get("run-1", "stage-1"), undefined);
 });
 
-test("session_shutdown quit leaves in-flight workflows resumable", async () => {
+test("session_shutdown quit settles rejected and late pause acknowledgements before clearing controls", async () => {
   let disposed = 0;
+  const pauseAcknowledged = Promise.withResolvers<void>();
   store.recordRunStart(workflowRun({
     id: "quit-run",
     stages: [{
       id: "stage-quit",
       name: "live-stage",
+      status: "running",
+      parentIds: [],
+      startedAt: Date.now(),
+      toolEvents: [],
+    }],
+  }));
+  store.recordRunStart(workflowRun({
+    id: "reject-run",
+    stages: [{
+      id: "stage-reject",
+      name: "reject-stage",
       status: "running",
       parentIds: [],
       startedAt: Date.now(),
@@ -356,7 +378,26 @@ test("session_shutdown quit leaves in-flight workflows resumable", async () => {
     async prompt() {},
     async steer() {},
     async followUp() {},
-    async pause() {},
+    async pause() { await pauseAcknowledged.promise; },
+    async resume() {},
+    subscribe() { return () => {}; },
+    dispose() { disposed += 1; },
+  });
+
+  stageControlRegistry.register({
+    runId: "reject-run",
+    stageId: "stage-reject",
+    stageName: "reject-stage",
+    status: "running",
+    sessionId: "session-reject",
+    sessionFile: "/tmp/session-reject.jsonl",
+    isStreaming: true,
+    messages: [],
+    async ensureAttached() {},
+    async prompt() {},
+    async steer() {},
+    async followUp() {},
+    async pause() { throw new Error("shutdown pause rejected"); },
     async resume() {},
     subscribe() { return () => {}; },
     dispose() { disposed += 1; },
@@ -366,14 +407,32 @@ test("session_shutdown quit leaves in-flight workflows resumable", async () => {
   const sessionShutdown = handlers.get("session_shutdown");
   assert.notEqual(sessionShutdown, undefined);
 
-  await sessionShutdown?.({ reason: "quit" });
+  let shutdownSettled = false;
+  const shutdown = Promise.resolve(sessionShutdown?.({ reason: "quit" }))
+    .finally(() => { shutdownSettled = true; });
+  await Promise.resolve();
+  await Promise.resolve();
+  const settledBeforeLateAcknowledgement = shutdownSettled;
+  const controlsPresentBeforeLateAcknowledgement = stageControlRegistry.get("quit-run", "stage-quit") !== undefined;
+  pauseAcknowledged.resolve();
+  let shutdownFailure: unknown;
+  try {
+    await shutdown;
+  } catch (error) {
+    shutdownFailure = error;
+  }
+
+  assert.equal(settledBeforeLateAcknowledgement, false);
+  assert.equal(controlsPresentBeforeLateAcknowledgement, true);
+  assert.equal(shutdownFailure, undefined);
 
   const run = store.runs().find((candidate) => candidate.id === "quit-run");
   assert.equal(run?.endedAt, undefined);
   assert.equal(run?.status, "paused");
   assert.equal(run?.exitReason, "quit");
   assert.equal(run?.resumable, true);
-  assert.equal(disposed, 1);
+  assert.equal(store.runs().find((candidate) => candidate.id === "reject-run")?.status, "running");
+  assert.equal(disposed, 2);
 });
 
 test("session_start removes ask_user_question but keeps workflow in non-interactive sessions", async () => {

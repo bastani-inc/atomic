@@ -13,6 +13,7 @@ import {
 import { getSingleResultOutput, resolveChildCwd } from "../../shared/utils.ts";
 import { normalizeSkillInput } from "../../agents/skills.ts";
 import { resolveChildMaxSubagentDepth } from "../../shared/types.ts";
+import { workflowSessionMetadataFromContext } from "../../shared/types-depth.ts";
 import { outputEntryFromResult, resolveOutputReferences } from "../shared/chain-outputs.ts";
 import { currentModelFullId, resolveModelCandidate } from "../shared/model-fallback.ts";
 import { recordRun } from "../shared/run-history.ts";
@@ -20,7 +21,6 @@ import { validateFileOnlyOutputMode } from "../shared/single-output.ts";
 import { createStructuredOutputRuntime } from "../shared/structured-output.ts";
 import { buildWorkflowGraphSnapshot } from "../shared/workflow-graph.ts";
 import { buildChainExecutionDetails, buildChainExecutionErrorResult } from "./chain-execution-details.ts";
-import type { BehaviorOverride } from "./chain-clarify.ts";
 import type { ChainExecutionMutableState, ChainExecutionResult, ChainRuntimeContext } from "./chain-execution-types.ts";
 
 export async function runSequentialChainStep(input: {
@@ -29,9 +29,8 @@ export async function runSequentialChainStep(input: {
 	seqStep: SequentialStep;
 	stepIndex: number;
 	stepTemplate: string;
-	tuiOverride?: BehaviorOverride;
 }): Promise<ChainExecutionResult | undefined> {
-	const { context, state, seqStep, stepIndex, stepTemplate, tuiOverride } = input;
+	const { context, state, seqStep, stepIndex, stepTemplate } = input;
 	const agentConfig = context.agents.find((agent) => agent.name === seqStep.agent);
 	if (!agentConfig) {
 		removeChainDir(context.chainDir);
@@ -43,11 +42,11 @@ export async function runSequentialChainStep(input: {
 	}
 
 	const stepOverride: StepOverrides = {
-		output: tuiOverride?.output !== undefined ? tuiOverride.output : seqStep.output,
+		output: seqStep.output,
 		outputMode: seqStep.outputMode,
-		reads: tuiOverride?.reads !== undefined ? tuiOverride.reads : seqStep.reads,
-		progress: tuiOverride?.progress !== undefined ? tuiOverride.progress : seqStep.progress,
-		skills: tuiOverride?.skills !== undefined ? tuiOverride.skills : normalizeSkillInput(seqStep.skill),
+		reads: seqStep.reads,
+		progress: seqStep.progress,
+		skills: normalizeSkillInput(seqStep.skill),
 	};
 	const behavior = suppressProgressForReadOnlyTask(
 		resolveStepBehavior(agentConfig, stepOverride, context.chainSkills),
@@ -73,8 +72,7 @@ export async function runSequentialChainStep(input: {
 	stepTask = prefix + stepTask + suffix;
 
 	const effectiveModel =
-		tuiOverride?.model
-		?? (seqStep.model ? resolveModelCandidate(seqStep.model, context.availableModels, context.ctx.model?.provider) : null)
+		(seqStep.model ? resolveModelCandidate(seqStep.model, context.availableModels, context.ctx.model?.provider) : null)
 		?? resolveModelCandidate(agentConfig.model, context.availableModels, context.ctx.model?.provider);
 	const outputPath = typeof behavior.output === "string"
 		? (path.isAbsolute(behavior.output) ? behavior.output : path.join(context.chainDir, behavior.output))
@@ -119,11 +117,13 @@ export async function runSequentialChainStep(input: {
 		outputMode: behavior.outputMode,
 		maxSubagentDepth,
 		workflowStageSubagentGuard: context.params.workflowStageSubagentGuard,
+		workflowSessionMetadata: workflowSessionMetadataFromContext(context.params.ctx),
 		controlConfig: context.controlConfig,
 		onControlEvent: context.onControlEvent,
 		intercomSessionName: context.childIntercomTarget?.(seqStep.agent, flatIndex),
 		orchestratorIntercomTarget: context.orchestratorIntercomTarget,
 		nestedRoute: context.params.nestedRoute,
+		onDetachedExit: (recovered) => context.onDetachedExit?.(flatIndex, recovered),
 		modelOverride: effectiveModel,
 		availableModels: context.availableModels,
 		knownModelProviders: context.knownModelProviders,

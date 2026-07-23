@@ -3,6 +3,36 @@ title: "Changelog"
 description: "What's new in Atomic"
 ---
 
+<Update label="July 18, 2026">
+
+## Model catalogs and provider authentication
+
+- **Dynamic provider catalogs stay current.** The model picker renders its cached snapshot immediately and reports concise success, partial-failure, or timeout status. Run `atomic update --models` to force-refresh authenticated dynamic provider catalogs.
+- **Complete authentication reaches provider requests.** API keys, provider headers, and credential-specific enterprise endpoints are preserved across normal chat and SDK requests.
+- **Interaction reliability improved.** Adjacent thinking blocks render as one section, Windows startup restores Atomic's terminal title after package checks, standalone Bun binaries include every interactive OAuth adapter, and early clone/fork attempts explain that the first assistant response must save the session.
+
+See [SDK](/sdk) and [Custom providers](/custom-provider).
+
+</Update>
+<Update label="July 10, 2026">
+
+## Pi 0.80.6 compatibility
+
+- **Synced through upstream Pi 0.80.6.** Atomic and its bundled extensions now use the 0.80.6 Pi runtime packages, including signed empty Anthropic thinking preservation, request-wide GPT-5.4/5.5 long-context pricing, and corrected GPT-5.6 catalog/backend metadata.
+- **Model controls are current.** Atomic accepts `max` wherever the active model advertises it, applies `models.json` overrides to matching extension-registered models and built-ins, and loads legacy `.pi` plus primary `.atomic` layers during normal CLI startup. Disjoint override IDs survive, exact primary entries replace complete legacy entries, and removed catalog IDs fall back instead of being synthesized on resume. See [Models](/models).
+- **Custom pricing tiers are preserved.** Custom `models.json` entries and extension providers can declare complete request-wide `cost.tiers`; matching `modelOverrides` can update scalar rates without losing inherited tiers or replace/clear the tier array explicitly. See [Models](/models#request-wide-cost-tiers) and [Custom Providers](/custom-provider#usage-and-cost).
+- **Safer session and tool behavior.** Invalid explicit bash timeouts fail instead of being clamped; missing exact session IDs warn before creation; lax null or omitted message content is normalized; auth writes surface persistence failures; Windows context traversal terminates at drive roots; and duplicate fork selections are ignored. See [Tools](/tools) and [Usage](/usage).
+- **More reliable streaming and binaries.** Visible custom messages stay before the live assistant row, standalone Linux clipboard reads can fall back to xclip with correctly packaged native bindings, caller-relative `TMPDIR` paths work from external directories, and `--skip-deps` tolerates a missing optional clipboard wrapper.
+
+</Update>
+<Update label="July 9, 2026">
+
+## Dependency refresh
+
+- **Synced with upstream Pi 0.80.5.** Atomic's coding-agent package and bundled extensions now depend on `@earendil-works/pi-ai`, `@earendil-works/pi-agent-core`, and `@earendil-works/pi-tui` through `^0.80.5`.
+- **Refreshed runtime dependencies.** The consolidated dependency update also moves `lru-cache` to `11.5.2`, optional `@dbos-inc/dbos-sdk` to `4.23.6`, and native Cargo dependencies `napi`, `napi-derive`, and `tree-sitter` to their latest stable releases.
+
+</Update>
 <Update label="June 29, 2026">
 
 ## Upstream Pi sync

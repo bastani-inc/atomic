@@ -17,6 +17,7 @@ import { ModelRegistry } from "../src/core/model-registry.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { runRpcMode } from "../src/modes/rpc/rpc-mode.ts";
+import { withNormalRpcEnvironment } from "./normal-rpc-environment.ts";
 import { createTestResourceLoader } from "./utilities.ts";
 
 const rpcIo = vi.hoisted(() => ({
@@ -178,7 +179,7 @@ async function startRpcMode(options: { withAuth: boolean; responseDelayMs: numbe
 	rpcIo.lineHandler = undefined;
 
 	const { runtimeHost, cleanup } = createRuntimeHost(options);
-	void runRpcMode(runtimeHost);
+	withNormalRpcEnvironment(() => { void runRpcMode(runtimeHost); });
 	await vi.waitFor(() => expect(rpcIo.lineHandler).toBeDefined());
 
 	return { lineHandler: rpcIo.lineHandler!, cleanup };

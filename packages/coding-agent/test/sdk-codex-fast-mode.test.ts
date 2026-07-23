@@ -150,7 +150,7 @@ describe("createAgentSession codex fast mode", () => {
 		});
 
 		try {
-			await session.agent.streamFn(model, { messages: [] }, { sessionId: session.sessionId });
+			await session.agent.streamFunction(model, { messages: [] }, { sessionId: session.sessionId });
 			const payload = await session.agent.onPayload?.(options.payload ?? { model: model.id }, model);
 			return { options: capturedOptions, payload };
 		} finally {
@@ -205,7 +205,7 @@ describe("createAgentSession codex fast mode", () => {
 		});
 
 		try {
-			const stream = await session.agent.streamFn(model, { messages: [] }, { sessionId: session.sessionId });
+			const stream = await session.agent.streamFunction(model, { messages: [] }, { sessionId: session.sessionId });
 			const result = await stream.result();
 
 			expect(result.stopReason).toBe("stop");
@@ -318,7 +318,7 @@ describe("createAgentSession codex fast mode", () => {
 		});
 
 		try {
-			const stream = await session.agent.streamFn(model, { messages: [] }, { sessionId: session.sessionId });
+			const stream = await session.agent.streamFunction(model, { messages: [] }, { sessionId: session.sessionId });
 			const result = await stream.result();
 
 			expect(result.stopReason).toBe("stop");

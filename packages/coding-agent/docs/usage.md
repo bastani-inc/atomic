@@ -39,7 +39,7 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/model` | Switch models |
 | `/scoped-models` | Enable/disable models for CTRL+P cycling |
 | `/fast` | Toggle Codex fast mode for chat and workflow stages when `openai/*` or `openai-codex/*` models are available |
-| `/workflow` | List/run workflows; manage runs (connect/inspect/pause/interrupt/resume/kill); reload workflow resources |
+| `/workflow` | List/run workflows; manage runs (connect/inspect/pause/interrupt/quit/resume); reload workflow resources |
 | `/settings` | Thinking level, theme, message delivery, transport |
 | `/resume` | Pick from previous sessions |
 | `/new` | Start a new session |
@@ -85,13 +85,15 @@ atomic --name "Refactor"   # Set the session display name
 atomic --fork <path|id>    # Fork a session into a new session file
 ```
 
+When `--session-id` does not match an exact session in the current project, Atomic warns that no session was found and then creates the requested new session. Reusing an existing exact ID opens it without that warning.
+
 Useful session commands:
 
 - `/session` shows the current session file and ID.
 - `/tree` navigates the in-file session tree and can summarize abandoned branches.
 - `/fork` creates a new session from an earlier user message.
 - `/clone` duplicates the current active branch into a new session file.
-- `/compact` uses Verbatim Compaction: a fixed no-argument deletion-only planner searches/reads transcript slices, records exact deletion targets, and applies only locally validated logical deletions. Retained transcript content stays verbatim. Atomic's approach is informed by Morph's Context Compaction article: [Morph's Context Compaction](https://www.morphllm.com/context-compaction).
+- `/compact` uses verbatim line compaction: the model selects one-based numbered ranges to delete, Atomic validates them, and retained text is reconstructed mechanically with `(filtered N lines)` markers. Exactly the configured number of newest context-visible messages remains ordinary; the default is two and zero preserves none.
 
 See [Sessions](/sessions) and [Compaction](/compaction) for details.
 
@@ -120,12 +122,18 @@ Use `/export [file]` to write a session to HTML.
 
 Use `/share` to upload a private GitHub gist with a shareable HTML link.
 
-If you use Atomic for open source work and want to publish sessions for model, prompt, tool, and evaluation research, use an Atomic-owned workflow or your team's dataset process. Upstream Pi session-sharing utilities may still be useful for historical context, but they are not the primary Atomic publication path.
+Treat exported and shared sessions as sensitive: transcripts can contain source code, file paths, credentials, and other private data from your session. Review a session before sharing it, and only upload transcripts you are comfortable making accessible to anyone with the link.
 
 ## CLI Reference
 
 ```bash
 atomic [options] [@files...] [messages...]
+```
+
+Use `--` to end option parsing when positional prompt text begins with `-`, `--`, or `@`. Every argument after the terminator is treated as literal message text rather than an option or file argument:
+
+```bash
+atomic --print -- "- leading-dash prompt"
 ```
 
 ### Package Commands
@@ -137,6 +145,7 @@ atomic uninstall <source> [-l]     # Alias for remove
 atomic update [source|self|atomic] # Update Atomic only, or one package source
 atomic update --all                # Update Atomic and packages; reconcile pinned git refs
 atomic update --extensions         # Update packages only; reconcile pinned git refs
+atomic update --models             # Force-refresh authenticated provider model catalogs
 atomic update --self               # Update Atomic only
 atomic update --extension <src>    # Update one package
 atomic list                        # List installed packages
@@ -172,7 +181,7 @@ When a print-mode turn correctly finishes by calling an opt-in terminating struc
 | `--provider <name>` | Provider, such as `anthropic`, `openai`, or `google` |
 | `--model <pattern>` | Model pattern or ID; supports `provider/id` and optional `:<thinking>` |
 | `--api-key <key>` | API key, overriding environment variables |
-| `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh` |
+| `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; model capability mapping still governs availability |
 | `--models <patterns>` | Comma-separated patterns for CTRL+P cycling |
 | `--list-models [search]` | List available models |
 
@@ -183,7 +192,7 @@ When a print-mode turn correctly finishes by calling an opt-in terminating struc
 | `-c`, `--continue` | Continue the most recent session |
 | `-r`, `--resume` | Browse and select a session |
 | `--session <path\|id>` | Use a specific session file or partial UUID |
-| `--session-id <id>` | Use an exact project session ID, creating it if missing |
+| `--session-id <id>` | Use an exact project session ID; warn and create it when missing |
 | `--fork <path\|id>` | Fork a session file or partial UUID into a new session |
 | `--session-dir <dir>` | Custom session storage directory |
 | `--name <name>`, `-n <name>` | Set the session display name |
@@ -281,7 +290,7 @@ atomic --tools read,search,find,ls -p "Review the code"
 
 | Variable | Description |
 |----------|-------------|
-| `ATOMIC_CODING_AGENT_DIR` | Override config directory; default is `~/.atomic/agent` |
+| `ATOMIC_CODING_AGENT_DIR` | Override config directory; default is `~/.atomic/agent`. Bundled intercom runtime/config files live under its `intercom/` subdirectory |
 | `ATOMIC_CODING_AGENT_SESSION_DIR` | Override session storage directory; overridden by `--session-dir` |
 | `ATOMIC_PACKAGE_DIR` | Override package directory, useful for Nix/Guix store paths |
 | `ATOMIC_OFFLINE` | Disable startup network operations, including update checks, package update checks, and install/update telemetry |
@@ -290,10 +299,10 @@ atomic --tools read,search,find,ls -p "Review the code"
 | `PI_CACHE_RETENTION` | Provider/upstream-specific prompt-cache retention knob; set to `long` where supported |
 | `VISUAL`, `EDITOR` | External editor for CTRL+G |
 
-`PI_*` aliases are also supported for app-specific `ATOMIC_*` variables for legacy compatibility. `PI_CACHE_RETENTION` is not one of those aliases and has no `ATOMIC_*` equivalent. Use `PI_CACHE_RETENTION=long` when configuring prompt-cache retention for providers/upstreams that support long-lived caches.
+`PI_*` aliases are also supported for app-specific `ATOMIC_*` variables for legacy compatibility. For example, [Intercom](/intercom) honors `PI_CODING_AGENT_DIR` when `ATOMIC_CODING_AGENT_DIR` is unset and still reads legacy `~/.pi/agent/intercom/config.json` when the Atomic config is absent. `PI_CACHE_RETENTION` is not one of those aliases and has no `ATOMIC_*` equivalent. Use `PI_CACHE_RETENTION=long` when configuring prompt-cache retention for providers/upstreams that support long-lived caches. Intercom's default broker starter works across Node-based installs, Bun source checkouts, and standalone Atomic binaries without requiring `npx`, `tsx`, or `bun` to be present on `PATH`; custom broker commands remain explicit opt-in overrides.
 
 ## Design Principles
 
-Atomic keeps the core CLI small, while this distribution bundles first-party package extensions for workflows, subagents, MCP, web access, and intercom. Other workflows can still be installed as extensions or packages, or handled externally with tools such as containers and tmux.
+Atomic keeps the core CLI small, while this distribution bundles first-party package extensions for workflows, subagents, MCP, web access, and [intercom](/intercom). Other workflows can still be installed as extensions or packages, or handled externally with tools such as containers and tmux.
 
 For the full rationale, read the [blog post](https://mariozechner.at/posts/2025-11-30-pi-coding-agent/).

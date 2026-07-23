@@ -7,6 +7,7 @@ import { readStatus } from "../../shared/utils.ts";
 import { buildRevivedAsyncTask, resolveAsyncResumeTarget } from "../background/async-resume.ts";
 import { resolveSubagentRunId, type ResolvedSubagentRunId } from "../background/run-id-resolver.ts";
 import { toModelInfo } from "../../shared/model-info.ts";
+import { resolveSingleProgress } from "../../shared/settings.ts";
 import {
 	createNestedRoute,
 	readNestedControlResults,
@@ -24,6 +25,7 @@ import {
 	resolveIntercomSessionTarget,
 	resolveSubagentIntercomTarget,
 } from "../../intercom/intercom-bridge.ts";
+import { requestSupervisorAuthorization } from "../../intercom/supervisor-authorization.ts";
 import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.ts";
 import {
@@ -32,6 +34,7 @@ import {
 	isWorkflowStageOrchestrationContext,
 	resolveSubagentDepthPolicy,
 	resolveWorkflowStageMaxSubagentDepth,
+	workflowSessionMetadataFromContext,
 	subagentDepthBlockedMessage,
 	type ArtifactConfig,
 	type NestedRunSummary,
@@ -413,18 +416,24 @@ export async function resumeAsyncRun(input: {
 	}
 
 	const runId = randomUUID().slice(0, 8);
+	const revivedTarget = intercomBridge.active
+		? resolveSubagentIntercomTarget(runId, target.agent, 0)
+		: undefined;
+	const supervisorAuthorization = await requestSupervisorAuthorization(input.deps.pi.events, revivedTarget);
 	const artifactConfig: ArtifactConfig = { ...DEFAULT_ARTIFACT_CONFIG, enabled: input.params.artifacts !== false };
 	const availableModels = input.ctx.modelRegistry.getAvailable().map(toModelInfo);
 	const result = input.deps.runtime.executeAsyncSingle(runId, {
 		agent: target.agent,
 		task: buildRevivedAsyncTask(target, followUp),
 		agentConfig,
+		progress: resolveSingleProgress(agentConfig, input.params.progress, followUp),
 		ctx: {
 			pi: input.deps.pi,
 			cwd: input.requestCwd,
 			currentSessionId: input.deps.state.currentSessionId,
 			currentModelProvider: input.ctx.model?.provider,
 			currentModel: currentModelFullId(input.ctx.model),
+			workflowSessionMetadata: workflowSessionMetadataFromContext(input.ctx),
 		},
 		cwd: effectiveCwd,
 		maxOutput: input.params.maxOutput,
@@ -440,12 +449,12 @@ export async function resumeAsyncRun(input: {
 		controlConfig: resolveControlConfig(input.deps.config.control, input.params.control),
 		controlIntercomTarget: intercomBridge.active ? intercomBridge.orchestratorTarget : undefined,
 		childIntercomTarget: intercomBridge.active ? (agent, index) => resolveSubagentIntercomTarget(runId, agent, index) : undefined,
+		supervisorAuthorization,
 		availableModels,
 	});
 	if (result.isError) return result;
 
 	const revivedId = result.details.asyncId ?? runId;
-	const revivedTarget = intercomBridge.active ? resolveSubagentIntercomTarget(revivedId, target.agent, 0) : undefined;
 	const sourceLabel = target.source;
 	const lines = [
 		`Revived ${sourceLabel} subagent from ${target.runId}.`,

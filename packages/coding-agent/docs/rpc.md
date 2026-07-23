@@ -277,6 +277,33 @@ Response contains an array of full [Model](#model) objects:
 }
 ```
 
+#### logout_provider
+
+Remove a provider's stored credential in the authoritative agent process, refresh its available-model catalog, and return the remaining authentication status and new catalog. Environment variables and `models.json` authentication are reported but are not modified.
+
+```json
+{"type": "logout_provider", "provider": "github-copilot"}
+```
+
+Response:
+
+```json
+{
+  "type": "response",
+  "command": "logout_provider",
+  "success": true,
+  "data": {
+    "provider": "github-copilot",
+    "authStatus": {"configured": false},
+    "models": [],
+    "scopedModels": []
+  }
+}
+```
+
+`models` preserves the refreshed catalog order. `scopedModels` is optional. If authentication remains through an environment variable, `authStatus.source` is `"environment"` and `authStatus.label` names the variable.
+
+
 ### Context Window
 
 #### get_available_context_windows
@@ -347,9 +374,9 @@ Set the reasoning/thinking level for models that support it.
 {"type": "set_thinking_level", "level": "high"}
 ```
 
-Levels: `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`
+Levels: `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`.
 
-Note: `"xhigh"` is only supported by OpenAI codex-max models.
+`xhigh` and `max` are available only when the active model's capability mapping supports them; unsupported levels are clamped by the session model controls.
 
 Response:
 ```json
@@ -371,6 +398,24 @@ Response:
   "command": "cycle_thinking_level",
   "success": true,
   "data": {"level": "high"}
+}
+```
+
+#### get_available_thinking_levels
+
+Return the thinking levels supported by the current model, in cycle order.
+
+```json
+{"type": "get_available_thinking_levels"}
+```
+
+Response:
+```json
+{
+  "type": "response",
+  "command": "get_available_thinking_levels",
+  "success": true,
+  "data": {"levels": ["off", "low", "medium", "high"]}
 }
 ```
 
@@ -414,7 +459,7 @@ Response:
 
 #### compact
 
-Run Atomic's default Verbatim Compaction to reduce token usage. This command has no prompt/config fields; send no custom instructions. The selected model runs Atomic's fixed internal planner with transcript-bound tools (`context_search_transcript`, `context_read_entry`, `context_delete`, and `context_grep_delete`); Atomic validates the cumulative deletion targets locally, appends a `context_compaction` entry, and rebuilds active context with surviving entries/content blocks reused verbatim. This deletion-only Context Compaction approach is informed by Morph's article: [Morph's Context Compaction](https://www.morphllm.com/context-compaction).
+Run Atomic's verbatim line compactor. The selected session model receives the complete active numbered transcript except for exactly the newest `preserve_recent` context-visible messages and returns bare `start,end` deletion records; Atomic validates them and mechanically reconstructs retained lines with `(filtered N lines)` markers. The default tail is two messages, with no user-turn alignment. A value of zero sends the entire active transcript and persists `firstKeptEntryId: null`. The command appends a durable `compaction` entry with `details.strategy: "verbatim-lines"`.
 
 ```json
 {"type": "compact"}
@@ -427,21 +472,31 @@ Response:
   "command": "compact",
   "success": true,
   "data": {
-    "promptVersion": 1,
-    "deletedTargets": [{ "kind": "entry", "entryId": "abc123" }],
-    "protectedEntryIds": ["user-task-entry"],
+    "compactedText": "[User]: fix the test\n(filtered 42 lines)\n[Assistant]: Fixed.",
+    "firstKeptEntryId": "m7",
+    "tokensBefore": 150000,
+    "promptVersion": 3,
+    "parameters": {
+      "compression_ratio": 0.5,
+      "preserve_recent": 2,
+      "query": "fix the test"
+    },
+    "rung": "planned",
     "stats": {
-      "objectsBefore": 20,
-      "objectsAfter": 19,
-      "objectsDeleted": 1,
+      "linesBefore": 812,
+      "linesDeleted": 417,
+      "linesKept": 395,
+      "rangeCount": 63,
       "tokensBefore": 150000,
-      "tokensAfter": 120000,
-      "percentReduction": 20
+      "tokensAfter": 72000,
+      "percentReduction": 52
     },
     "backupPath": "/path/to/session.jsonl.2026-06-06T00-00-00-000Z.compact.bak"
   }
 }
 ```
+
+`firstKeptEntryId` is a string when at least one ordinary message remains outside compaction and `null` when none does. RPC clients must accept both values.
 
 #### set_auto_compaction
 
@@ -880,12 +935,13 @@ Events are streamed to stdout as JSON lines during agent operation. Events do NO
 | `tool_execution_end` | Tool completes |
 | `queue_update` | Pending steering/follow-up queue changed |
 | `context_window_changed` | Active context-window token budget changed |
-| `compaction_start` | Default Verbatim Compaction begins |
-| `compaction_end` | Default Verbatim Compaction completes |
-| `context_compaction_start` | Compatibility `context_compact` RPC begins |
-| `context_compaction_end` | Compatibility `context_compact` RPC completes |
+| `compaction_start` | Verbatim line compaction begins |
+| `compaction_end` | Verbatim line compaction completes |
 | `auto_retry_start` | Auto-retry begins (after transient error) |
 | `auto_retry_end` | Auto-retry completes (success or final failure) |
+| `summarization_retry_scheduled` | Retry scheduled for a transient compaction or branch-summary provider error |
+| `summarization_retry_attempt_start` | Retried summarization request starts |
+| `summarization_retry_finished` | Summarization retry loop completes |
 | `extension_error` | Extension threw an error |
 
 ### agent_start
@@ -1059,16 +1115,20 @@ The `reason` field is `"manual"`, `"threshold"`, or `"overflow"`.
   "type": "compaction_end",
   "reason": "threshold",
   "result": {
-    "promptVersion": 1,
-    "deletedTargets": [{ "kind": "entry", "entryId": "abc123" }],
-    "protectedEntryIds": ["user-task-entry"],
+    "compactedText": "[User]: fix the test\n(filtered 42 lines)",
+    "firstKeptEntryId": "m7",
+    "tokensBefore": 150000,
+    "promptVersion": 3,
+    "parameters": {"compression_ratio": 0.5, "preserve_recent": 2, "query": "fix the test"},
+    "rung": "planned",
     "stats": {
-      "objectsBefore": 20,
-      "objectsAfter": 19,
-      "objectsDeleted": 1,
+      "linesBefore": 812,
+      "linesDeleted": 417,
+      "linesKept": 395,
+      "rangeCount": 63,
       "tokensBefore": 150000,
-      "tokensAfter": 120000,
-      "percentReduction": 20
+      "tokensAfter": 72000,
+      "percentReduction": 52
     }
   },
   "aborted": false,
@@ -1076,15 +1136,15 @@ The `reason` field is `"manual"`, `"threshold"`, or `"overflow"`.
 }
 ```
 
-If `reason` was `"overflow"` and compaction succeeds, `willRetry` is `true` and the agent will automatically retry the prompt.
+If `reason` was `"overflow"` and compaction succeeds, `willRetry` is `true` and the agent will automatically retry the prompt. Public prompt/RPC callers wait for that post-compaction continuation before the prompt is considered complete.
 
 If compaction was aborted, `result` is `null` and `aborted` is `true`.
 
 If compaction failed (e.g., API quota exceeded), `result` is `null`, `aborted` is `false`, and `errorMessage` contains the error description.
 
-### context_compaction_start / context_compaction_end
+If overflow recovery exhausts the same-model compact-and-retry attempt, `compaction_end` includes `"unresolvedOverflow": true` and an `errorMessage`. Workflow orchestration treats that signal as a context-length failure that can advance configured model fallback tiers.
 
-The compatibility RPC command `context_compact` emits these events. It uses the same deletion-only Verbatim Compaction path as `compact`, but reports the historical context-compaction event names. The result contains `deletedTargets`, `protectedEntryIds`, `stats`, `promptVersion`, and optional `backupPath`.
+There is no `context_compact` command; Atomic reports it as an unknown command. Use `compact`. Only `compaction_start` and `compaction_end` events are emitted.
 
 ### auto_retry_start / auto_retry_end
 
@@ -1118,6 +1178,34 @@ On final failure (max retries exceeded):
 }
 ```
 
+
+### summarization_retry_scheduled / summarization_retry_attempt_start / summarization_retry_finished
+
+Emitted when compaction planning or branch summarization retries after a transient provider error. These events use the same retry settings as automatic assistant-turn retries.
+
+```json
+{
+  "type": "summarization_retry_scheduled",
+  "attempt": 1,
+  "maxAttempts": 3,
+  "delayMs": 2000,
+  "errorMessage": "terminated"
+}
+```
+
+```json
+{
+  "type": "summarization_retry_attempt_start",
+  "source": "compaction",
+  "reason": "threshold"
+}
+```
+
+For branch summaries, `source` is `"branchSummary"` and no `reason` is present. The loop then emits:
+
+```json
+{"type": "summarization_retry_finished"}
+```
 ### extension_error
 
 Emitted when an extension throws an error.
@@ -1144,9 +1232,9 @@ If a dialog method includes a `timeout` field, the agent-side will auto-resolve 
 
 Some `ExtensionUIContext` methods are not supported or degraded in RPC mode because they require direct TUI access:
 - `custom()` returns `undefined`
-- `setWorkingMessage()`, `setWorkingIndicator()`, `setFooter()`, `setHeader()`, `setEditorComponent()`, `setToolsExpanded()` are no-ops
+- `setWorkingMessage()`, `setWorkingIndicator()`, `setFooter()`, `setHeader()`, `setEditorComponent()` are no-ops
 - `getEditorText()` returns `""`
-- `getToolsExpanded()` returns `false`
+- `setToolsExpanded()` and `getToolsExpanded()` maintain context-local expansion state; `getChatRenderSettings().toolOutputExpanded` reports the same value. This state is not sent through the client extension-UI protocol.
 - `pasteToEditor()` delegates to `setEditorText()` (no paste/collapse handling)
 - `getAllThemes()` returns `[]`
 - `getTheme()` returns `undefined`

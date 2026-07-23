@@ -1,39 +1,48 @@
 import type { WorkflowTaskResult } from "../src/shared/types.js";
 import type { ReviewDecision, ReviewRecord } from "./goal-types.js";
+import {
+  finalActionRemaining,
+  parseFailureDiagnostics,
+  summarizeReviewConvergence,
+  type ParsedReviewDecision,
+} from "./review-convergence.js";
 
 export function reviewDecisionFromResult(result: WorkflowTaskResult): ReviewDecision | undefined {
   return result.structured as ReviewDecision | undefined;
 }
 
-const NON_BLOCKING_ALIGNMENTS = new Set([
-  "beyond_objective",
-  "contradicts_objective",
-]);
-
-function findingBlocksApproval(finding: ReviewDecision["findings"][number]): boolean {
-  const alignment = finding.objective_alignment;
-  if (NON_BLOCKING_ALIGNMENTS.has(alignment)) return false;
-  if (alignment !== "required_by_objective" && alignment !== "consistent_with_objective") {
-    return true;
+export function parsedReviewDecisionFromResult(
+  result: WorkflowTaskResult,
+  reviewer: string,
+): ParsedReviewDecision<ReviewDecision> {
+  const parsed = reviewDecisionFromResult(result);
+  if (parsed !== undefined) {
+    return { decision: parsed, parsed: true, diagnostics: [] };
   }
-  return finding.priority !== 3;
+  const diagnostics = parseFailureDiagnostics(reviewer, result.text);
+  return {
+    decision: reviewerErrorDecision(diagnostics.join("\n")),
+    parsed: false,
+    diagnostics,
+  };
 }
 
-function traceabilityApproves(decision: ReviewDecision): boolean {
-  return decision.requirements_traceability.length > 0 &&
-    decision.requirements_traceability.every((entry) => entry.status === "proven");
-}
-
+/**
+ * Deterministic single-reviewer approval gate.
+ *
+ * The reviewer's self-reported `stop_review_loop` boolean is the single
+ * authoritative convergence signal: the harness does not recompute approval
+ * from findings arrays, priorities, or requirements_traceability statuses.
+ * Those fields remain required audit evidence for humans and later stages,
+ * and the reviewer prompt instructs the model how to derive the flag from
+ * them — but the gate itself trusts the boolean.
+ *
+ * Two hard guards remain: a reviewer execution failure (`reviewer_error`)
+ * never approves, and unparsed reviewer output is synthesized upstream as a
+ * `stop_review_loop: false` decision, so parse failures never approve either.
+ */
 export function reviewApproved(decision: ReviewDecision): boolean {
-  const hasBlockingFindings = decision.findings.some(findingBlocksApproval);
-  return (
-    decision.stop_review_loop === true &&
-    decision.overall_correctness === "patch is correct" &&
-    decision.goal_oracle_satisfied === true &&
-    traceabilityApproves(decision) &&
-    !hasBlockingFindings &&
-    decision.reviewer_error == null
-  );
+  return decision.stop_review_loop === true && decision.reviewer_error == null;
 }
 
 export function reviewerErrorDecision(message: string): ReviewDecision {
@@ -76,9 +85,14 @@ export function reviewDecisionToRecord(args: {
   readonly reviewer: string;
   readonly artifactPath: string;
   readonly decision: ReviewDecision;
+  readonly parsed: boolean;
+  readonly diagnostics: readonly string[];
+  readonly allowFinalActionRemaining: boolean;
 }): ReviewRecord {
   const blocker = blockerFromReviewDecision(args.decision);
   const approved = reviewApproved(args.decision);
+  const hasFinalActionRemaining = args.allowFinalActionRemaining &&
+    finalActionRemaining(args.decision.requirements_traceability);
   const verificationGap = args.decision.verification_remaining.trim();
   const traceabilityGaps = args.decision.requirements_traceability
     .filter((entry) => entry.status !== "proven")
@@ -94,6 +108,18 @@ export function reviewDecisionToRecord(args: {
       : [`${args.decision.reviewer_error.kind}: ${args.decision.reviewer_error.message}`]),
   ];
 
+  const nextAction = approved
+    ? hasFinalActionRemaining ? "pull-request" : "finish"
+    : blocker === null ? "implementation" : "blocked";
+  const convergenceDecision = summarizeReviewConvergence({
+    parsed: args.parsed,
+    approved,
+    stopReviewLoop: args.decision.stop_review_loop,
+    nextAction,
+    finalActionRemaining: approved && hasFinalActionRemaining,
+    diagnostics: args.diagnostics,
+  });
+
   return {
     ...args.decision,
     decision: approved ? "complete" : blocker === null ? "continue" : "blocked",
@@ -105,5 +131,9 @@ export function reviewDecisionToRecord(args: {
     turn: args.turn,
     reviewer: args.reviewer,
     artifact_path: args.artifactPath,
+    parsed: args.parsed,
+    approved,
+    parse_diagnostics: args.diagnostics,
+    convergence_decision: convergenceDecision,
   };
 }

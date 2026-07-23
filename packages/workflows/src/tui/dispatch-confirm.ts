@@ -8,7 +8,7 @@
  *      title: runId8 · workflowName · ● running
  *      body: compact `k=v · k=v · +N more` input summary when present
  *  - One compact next-step hint:
- *      ▸ /workflow connect <id>  watch, attach & steer
+ *      ▸ /workflow connect <id>  see agents working · chat with and steer each stage
  *
  * What we deliberately do NOT emit (was in the legacy 7-row layout):
  *  - the `✓ submitted · /workflow <name>` echo line — pi already shows
@@ -143,7 +143,7 @@ export function renderDispatchConfirm(opts: RenderDispatchConfirmOpts): string {
   const titleLine = ` ●  ${tag}  ${opts.workflowName}  ${trailing.text} `;
 
   const hints = renderHintRows([
-    { command: `/workflow connect ${tag}`, hint: "watch, attach & steer" },
+    { command: `/workflow connect ${tag}`, hint: "see agents working · chat with and steer each stage" },
   ], theme)
     .split("\n")
     .map((line) => ` ${line} `);

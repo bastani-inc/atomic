@@ -99,6 +99,65 @@ pi.on("session_start", async (_event, ctx) => {
 
 Pass `{ signal }` to `ctx.ui.custom()` when the UI belongs to an abortable operation. If the signal aborts, Atomic dismisses the custom UI and rejects the returned promise with the signal reason. For overlays, use `options.onHandle` to receive an overlay handle for programmatic visibility control.
 
+In Atomic's default interactive mode, the component instance remains in the isolated engine child. The terminal host caches rendered lines and forwards input asynchronously, so `render()` and `handleInput()` must not depend on direct access to host process objects. The remote bridge preserves pi-tui's key-release contract: release events are filtered unless the child component sets `wantsKeyRelease = true`, matching a directly mounted component. Return values passed to `done()` must be JSON-safe.
+
+### Host terminal modes from an isolated component
+
+Because the component runs in the engine child — whose stdout is the JSONL transport, not a TTY — writing raw terminal escape sequences to `process.stdout` from `render()`/`handleInput()` is a no-op and never reaches the real host terminal. For the two host-terminal modes an overlay commonly needs, the factory `tui.terminal` exposes typed, allowlisted setters that the host applies to the real TTY over the engine protocol:
+
+```typescript
+await ctx.ui.custom((tui, theme, keybindings, done) => {
+  tui.terminal.setMouseScrollTracking?.(true); // enable SGR mouse-scroll reporting on the host TTY
+  tui.terminal.setAutowrap?.(false);           // disable autowrap (DECAWM) — Windows terminals only
+  return new MyOverlay({ onClose: done });
+}, { overlay: true });
+```
+
+These are the only terminal controls exposed; arbitrary child bytes are never forwarded to the terminal. The host resets any mode a component enabled when the overlay hides, closes, is disposed, or when the engine child crashes/restarts, so a stranded child can never leave the terminal in mouse-reporting or autowrap-off mode. On non-isolated hosts and test seams the setters are absent, and callers should fall back to writing escape sequences to their own `process.stdout`.
+
+### Host-native session picker
+
+Remote-rendered components pay one host⇄child round trip per keypress under engine isolation. For session-style list pickers, the `ctx.ui.hostSessionPicker(request)` capability avoids that entirely: the terminal host mounts the real built-in `SessionSelectorComponent` and feeds it JSON-safe rows, so arrow-key navigation and search stay host-local and survive extension event-loop stalls. Only semantic events cross the host⇄extension boundary: the extension pushes row `update`s and `error`s (and may `close()` the picker); the host reports selection, cancel, and confirmed Ctrl+D deletes.
+
+Every interactive host implements the same API — non-isolated mode mounts the selector directly in-process (no IPC at all), isolated mode routes it over the engine session-picker protocol channel — so callers never branch on the mode. The member is absent only on non-interactive surfaces (headless RPC, print); fail with an actionable error there instead of degrading to a hand-rolled picker.
+
+```typescript
+const picker = ctx.ui.hostSessionPicker?.({
+  sessions: rows, // HostSessionPickerRow[]: SessionInfo with createdAt/modifiedAt epoch millis
+  showRenameHint: false,
+  onDelete: async (path) => {
+    // Deletion is extension-owned: the host keeps the row until you reply.
+    const outcome = await remove(path);
+    if (outcome.ok) picker!.update(rowsWithout(path));
+    else picker!.error(outcome.message);
+  },
+});
+if (!picker) throw new Error("This command requires an interactive session picker");
+picker.update(await loadMoreRows()); // merge late rows into the open picker
+const path = await picker.result;    // selected row's path, or undefined on cancel
+```
+
+The bundled workflows extension's `/workflow resume` picker is built exclusively on this channel.
+
+### Host-native input form
+
+Use `ctx.ui.hostInputForm(request)` for structured inline forms whose keyboard handling must remain responsive under interactive-engine isolation. The terminal host mounts and focuses the real form in the bottom editor slot (`overlay: false`); Tab/Shift+Tab, arrows, text editing, configured keybindings, Enter, Escape, and Ctrl+C are handled entirely in the host process. In isolated mode only the JSON-safe open request and the final submit/cancel event cross the engine boundary. Non-isolated mode mounts the same component directly.
+
+```typescript
+const values = await ctx.ui.hostInputForm?.({
+  title: "Release",
+  fields: [
+    { name: "version", type: "string", required: true, initialValue: "" },
+    { name: "channel", type: "select", choices: ["stable", "beta"], initialValue: "stable" },
+  ],
+});
+if (values === undefined) return; // Escape, Ctrl+C, teardown, or close
+```
+
+Field types are `string`, `text`, `number`, `integer`, `boolean`, and `select`. Initial and returned values are raw strings; the caller owns domain coercion. Every current interactive Atomic host exposes the optional capability, while headless RPC and print surfaces omit it. Keep a legacy fallback only when compatibility with older hosts is required.
+
+The bundled `/workflow <name>` input picker uses this channel and retains its older custom-editor/`ctx.ui.custom()` paths only as compatibility fallbacks.
+
 ## Overlays
 
 Overlays render components on top of existing content without clearing the screen. Pass `{ overlay: true }` to `ctx.ui.custom()`:
@@ -448,7 +507,7 @@ Set `ATOMIC_TUI_WRITE_LOG` to capture the raw ANSI stream written to stdout.
 ATOMIC_TUI_WRITE_LOG=/tmp/tui-ansi.log atomic
 ```
 
-Atomic vendors TUI components through the installed `@earendil-works/pi-tui` dependency; this monorepo does not include the upstream TUI test source tree.
+Atomic vendors TUI components through the installed `@earendil-works/pi-tui` dependency.
 
 ## Performance
 
@@ -760,7 +819,7 @@ ctx.ui.setWorkingIndicator({ frames: [] });
 ctx.ui.setWorkingIndicator();
 ```
 
-This only affects the normal streaming working indicator. Compaction and retry loaders keep their built-in styling. Custom frames are rendered verbatim, so extensions must add their own colors when needed.
+This only affects the normal streaming working indicator. Compaction and retry loaders keep their built-in styling. During successful post-tool autocompaction, Atomic temporarily replaces the working indicator with the compaction loader and restores the working indicator before the same stream continues; no additional user input is required. Custom frames are rendered verbatim, so extensions must add their own colors when needed.
 
 **Examples:** [working-indicator.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/working-indicator.ts)
 
@@ -811,6 +870,8 @@ ctx.ui.setFooter((tui, theme, footerData) => ({
 
 ctx.ui.setFooter(undefined); // restore default
 ```
+
+`ctx.ui.getFooterDataProvider()` exposes the same read-only provider to embedded extension UIs. In isolated interactive mode Atomic maintains the provider inside the engine session, mirrors every `setStatus()` update into it, and uses the session cwd with the same cached Git-branch watcher, so synchronous renderers can read current status and branch data without an RPC round trip or per-render Git process.
 
 Token stats available via `ctx.sessionManager.getBranch()` and `ctx.model`.
 
@@ -875,9 +936,9 @@ class VimEditor extends CustomEditor {
 
 export default function (pi: ExtensionAPI) {
   pi.on("session_start", (_event, ctx) => {
-    // Factory receives theme and keybindings from the app
+    // Factory receives the TUI, theme, and keybindings from the app
     ctx.ui.setEditorComponent((tui, theme, keybindings) =>
-      new VimEditor(theme, keybindings)
+      new VimEditor(tui, theme, keybindings)
     );
   });
 }

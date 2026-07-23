@@ -27,13 +27,14 @@ import type {
 } from "@bastani/atomic";
 import type { StageAdapters, StageSessionCreateResult, StageSessionRuntime } from "../runs/foreground/stage-runner.js";
 import type { StageExecutionMeta, StageOptions } from "../shared/types.js";
+import { resolveStageGroup, stageHasIntercomAccess } from "../shared/intercom-group.js";
 import { stageUiBroker, type StageUiBroker } from "../shared/stage-ui-broker.js";
 import { prepareAtomicStageSessionOptions } from "./atomic-stage-session.js";
 import type { PiCodingAgentSdk, PrepareAtomicStageSessionOptions } from "./atomic-stage-session.js";
 export { prepareAtomicStageSessionOptions } from "./atomic-stage-session.js";
 export type { AtomicCreateAgentSessionOptions, PiCodingAgentSdk, PiSdkResourceLoader, PiSdkSettingsManager, PrepareAtomicStageSessionOptions } from "./atomic-stage-session.js";
 import type { PiCustomOverlayFactory, PiCustomOverlayOptions, PiUISurface } from "./ui-surface.js";
-export type { PiCustomComponent, PiCustomOverlayFactory, PiCustomOverlayFactoryTui, PiCustomOverlayFunction, PiCustomOverlayOptions, PiEditorComponent, PiEditorFactory, PiHostCustomUiState, PiHostCustomUiStateListener, PiKeybindings, PiOverlayHandle, PiOverlayOptions, PiTheme, PiUIDialogOptions, PiUISurface, UIWiringSurface } from "./ui-surface.js";
+export type { PiCustomComponent, PiCustomOverlayFactory, PiCustomOverlayFactoryTui, PiCustomOverlayFunction, PiCustomOverlayOptions, PiEditorComponent, PiEditorFactory, PiHostCustomUiState, PiHostCustomUiStateListener, PiHostSessionPickerFunction, PiHostSessionPickerHandle, PiHostSessionPickerRequest, PiHostSessionPickerRow, PiKeybindings, PiOverlayHandle, PiOverlayOptions, PiRemoteTerminalControl, PiTheme, PiUIDialogOptions, PiUISurface, UIWiringSurface } from "./ui-surface.js";
 
 // ---------------------------------------------------------------------------
 // Minimal pi surface
@@ -60,6 +61,23 @@ export interface PiExecOpts {
   timeout?: number;
 }
 
+type StageLateMessageRouter = NonNullable<
+  NonNullable<CreateAgentSessionOptions["orchestrationContext"]>["lateMessageRouter"]
+>;
+
+const LATE_STAGE_MESSAGE_EVENT = "atomic:workflow-stage-late-message";
+type LateStageMessage = Parameters<StageLateMessageRouter["routeMessage"]>[0];
+type LateStageMessageEvent = {
+  handled: boolean;
+  completion?: Promise<void>;
+  batch: boolean;
+  messages: LateStageMessage[];
+  workflowRunId: string;
+  workflowStageId: string;
+  workflowStageName: string;
+  options?: Parameters<StageLateMessageRouter["routeMessage"]>[1];
+};
+
 export interface RuntimeWiringSurface {
   exec?: (command: string, args: string[], opts?: PiExecOpts) => Promise<PiExecResult>;
   ui?: PiUISurface;
@@ -67,6 +85,9 @@ export interface RuntimeWiringSurface {
   getResourceLoaderInheritanceSnapshot?: () => DefaultResourceLoaderInheritanceSnapshot | undefined;
   /** Test seam: inject a stub session factory instead of importing the SDK. */
   createAgentSession?: (options?: CreateAgentSessionOptions) => Promise<StageSessionCreateResult>;
+  sendMessage?: StageLateMessageRouter["routeMessage"];
+  sendMessages?: StageLateMessageRouter["routeMessages"];
+  events?: { emit?: (channel: string, data: Record<string, unknown>) => void };
 }
 
 export interface RuntimeAdapterBuildOptions {
@@ -140,14 +161,17 @@ async function createTestAgentSession(_options?: CreateAgentSessionOptions): Pro
     },
     async compact(): ReturnType<StageSessionRuntime["compact"]> {
       return {
-        promptVersion: 1,
+        compactedText: "[User]: retained",
+        firstKeptEntryId: "kept",
+        tokensBefore: 0,
+        promptVersion: 3,
         parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "auto-detected" },
-        deletedTargets: [],
-        protectedEntryIds: [],
+        rung: "planned",
         stats: {
-          objectsBefore: 0,
-          objectsAfter: 0,
-          objectsDeleted: 0,
+          linesBefore: 0,
+          linesDeleted: 0,
+          linesKept: 0,
+          rangeCount: 0,
           tokensBefore: 0,
           tokensAfter: 0,
           percentReduction: 0,
@@ -167,19 +191,63 @@ async function createTestAgentSession(_options?: CreateAgentSessionOptions): Pro
 function stripWorkflowOnlyOptions(options: (StageOptions | CreateAgentSessionOptions) | undefined): CreateAgentSessionOptions | undefined {
   if (!options) return options;
   const maybeWorkflowOptions = options as StageOptions;
-  const { schema: _schema, mcp: _mcp, fallbackModels: _fallbackModels, ...sessionOptions } = maybeWorkflowOptions;
+  const { schema: _schema, mcp: _mcp, fallbackModels: _fallbackModels, group: _group, ...sessionOptions } = maybeWorkflowOptions;
   return sessionOptions as CreateAgentSessionOptions;
 }
 
-function makeWorkflowStageOrchestrationContext(meta: StageExecutionMeta): NonNullable<CreateAgentSessionOptions["orchestrationContext"]> {
+function emitLateIntercomRoute(
+  pi: RuntimeWiringSurface,
+  meta: StageExecutionMeta,
+  messages: LateStageMessage[],
+  options: LateStageMessageEvent["options"] | undefined,
+  batch: boolean,
+): Promise<void> | undefined {
+  if (!messages.some((message) => message.customType === "intercom_message") || !pi.events?.emit) return undefined;
+  const event: LateStageMessageEvent = {
+    handled: false,
+    messages,
+    options,
+    batch,
+    workflowRunId: meta.runId,
+    workflowStageId: meta.stageId,
+    workflowStageName: meta.stageName,
+  };
+  pi.events.emit(LATE_STAGE_MESSAGE_EVENT, event as unknown as Record<string, unknown>);
+  if (!event.handled) return undefined;
+  return event.completion ?? Promise.resolve();
+}
+
+function makeWorkflowStageOrchestrationContext(
+  meta: StageExecutionMeta,
+  pi: RuntimeWiringSurface,
+): NonNullable<CreateAgentSessionOptions["orchestrationContext"]> {
+  const intercomGroup = stageHasIntercomAccess(meta.stageOptions) ? resolveStageGroup(meta.stageOptions) : undefined;
   return {
     kind: "workflow-stage",
     workflowRunId: meta.runId,
     workflowStageId: meta.stageId,
     workflowStageName: meta.stageName,
-    constraints: {
-      disableWorkflowTool: true,
-      maxSubagentDepth: 5,
+    constraints: { disableWorkflowTool: true, maxSubagentDepth: 5 },
+    ...(intercomGroup ? { intercomGroup } : {}),
+    lateMessageRouter: {
+      routeMessage(message, options) {
+        const intercomRoute = emitLateIntercomRoute(pi, meta, [message], options, false);
+        if (intercomRoute) return intercomRoute;
+        if (!pi.sendMessage) throw new Error("atomic-workflows: main-chat late-message route is unavailable");
+        return pi.sendMessage(message, options);
+      },
+      routeMessages(messages, options) {
+        const intercomRoute = emitLateIntercomRoute(pi, meta, messages, options, true);
+        if (intercomRoute) return intercomRoute;
+        if (pi.sendMessages) return pi.sendMessages(messages, options);
+        const sendMessage = pi.sendMessage;
+        if (!sendMessage) throw new Error("atomic-workflows: main-chat late-message route is unavailable");
+        return (async () => {
+          for (const [index, message] of messages.entries()) {
+            await sendMessage(message, index === 0 ? options : { deliverAs: "followUp" });
+          }
+        })();
+      },
     },
   };
 }
@@ -187,6 +255,7 @@ function makeWorkflowStageOrchestrationContext(meta: StageExecutionMeta): NonNul
 function withWorkflowStageSessionOptions(
   options: CreateAgentSessionOptions,
   meta: StageExecutionMeta | undefined,
+  pi: RuntimeWiringSurface,
 ): CreateAgentSessionOptions {
   // Workflow stage sessions should never see the workflow tool, even when older
   // meta-less callers cannot receive the richer runtime orchestration context.
@@ -201,7 +270,9 @@ function withWorkflowStageSessionOptions(
   return {
     ...options,
     excludedTools,
-    ...(meta ? { orchestrationContext: makeWorkflowStageOrchestrationContext(meta) } : {}),
+    ...(meta
+      ? { orchestrationContext: meta.orchestrationContext ?? makeWorkflowStageOrchestrationContext(meta, pi) }
+      : {}),
   };
 }
 
@@ -306,6 +377,7 @@ export function buildRuntimeAdapters(
         const sessionOptions = withWorkflowStageSessionOptions(
           stripWorkflowOnlyOptions(stageOptions) ?? {},
           meta,
+          pi,
         );
         const result = await createSession(sessionOptions);
         const bindable = result.session as BindableStageSession;

@@ -132,12 +132,16 @@ describe("AgentSession async bash auto-delivery", () => {
 		await waitFor(() => turns.some((turn) => turn.some((text) => text.includes("streaming-async"))));
 	});
 
-	it("suppresses a streaming-staged async result when polling acknowledges it before the follow-up drains", async () => {
+	it("keeps a streaming async result admitted when later polling acknowledges the job", async () => {
 		let finishFirstTurn: (() => void) | undefined;
 		const turns: string[][] = [];
 		session = createSession(tempDir, (userTexts, stream) => {
 			turns.push(userTexts);
 			stream.push({ type: "start", partial: createAssistantMessage("") });
+			if (userTexts.some((text) => text.includes("stale-async"))) {
+				stream.push({ type: "done", reason: "stop", message: createAssistantMessage("follow-up") });
+				return;
+			}
 			finishFirstTurn = () => stream.push({ type: "done", reason: "stop", message: createAssistantMessage("done") });
 		});
 		const firstPrompt = session.prompt("First message");
@@ -147,14 +151,14 @@ describe("AgentSession async bash auto-delivery", () => {
 		const started = await bash?.execute("bash-streaming-stale", { command: "printf stale-async", async: true });
 		const jobId = started?.details?.async?.jobId;
 		expect(jobId).toBeDefined();
-		await waitFor(() => AsyncJobManager.instance()?.deliveryState().delivering === true);
+		await waitFor(() => session?.agent.hasQueuedMessages() === true);
 		await waitFor(async () => {
 			const polled = await bash?.execute("bash-poll-stale", { command: `__atomic_bash_job ${jobId}` });
 			return polled?.content.some((item) => item.type === "text" && item.text.includes("stale-async")) === true;
 		});
 		finishFirstTurn?.();
 		await firstPrompt;
-		await new Promise((resolve) => setTimeout(resolve, 120));
-		expect(turns.some((turn) => turn.some((text) => text.includes("stale-async")))).toBe(false);
+		await waitFor(() => turns.some((turn) => turn.some((text) => text.includes("stale-async"))));
+		expect(turns.filter((turn) => turn.some((text) => text.includes("stale-async")))).toHaveLength(1);
 	});
 });

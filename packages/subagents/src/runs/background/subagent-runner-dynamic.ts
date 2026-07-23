@@ -6,6 +6,7 @@ import { aggregateParallelOutputs, mapConcurrent, MAX_PARALLEL_CONCURRENCY } fro
 import { collectDynamicResults, DynamicFanoutError, materializeDynamicParallelStep, validateDynamicCollection } from "../shared/dynamic-fanout.ts";
 import { runSingleStep } from "./subagent-runner-step.ts";
 import type { RunnerExecutionState, RunnerStatusStep, RunnerStep, SubagentStep } from "./subagent-runner-types.ts";
+import type { SupervisorAuthorization } from "../../intercom/supervisor-authorization.ts";
 import { createMutatingFailureState } from "../shared/long-running-guard.ts";
 import { markDynamicGraphGroup, resetStepLiveDetail, updateStepFromChildEvent, updateStepModel, writeStatusPayload } from "./subagent-runner-state.ts";
 
@@ -85,6 +86,17 @@ export async function runDynamicGroup(state: RunnerExecutionState, step: RunnerS
 	}));
 	statusPayload.steps.splice(groupStartFlatIndex, 1, ...dynamicStatusSteps);
 	if (config.childIntercomTargets) config.childIntercomTargets = statusPayload.steps.map((statusStep, index) => resolveSubagentIntercomTarget(id, statusStep.agent, index));
+	const dynamicAuthorizations = config.dynamicSupervisorAuthorizations?.[stepIndex];
+	if (dynamicAuthorizations) {
+		const authorizations = config.supervisorAuthorizations
+			?? new Array<SupervisorAuthorization | undefined>(statusPayload.steps.length - dynamicStatusSteps.length + 1).fill(undefined);
+		authorizations.splice(
+			groupStartFlatIndex,
+			1,
+			...dynamicSteps.map((_, index) => dynamicAuthorizations[index]),
+		);
+		config.supervisorAuthorizations = authorizations;
+	}
 	state.mutatingFailureStates.splice(groupStartFlatIndex, 1, ...dynamicStatusSteps.map(() => createMutatingFailureState()));
 	state.pendingToolResults.splice(groupStartFlatIndex, 1, ...dynamicStatusSteps.map(() => undefined));
 	const materializedDelta = dynamicStatusSteps.length - 1;
@@ -162,6 +174,7 @@ export async function runDynamicGroup(state: RunnerExecutionState, step: RunnerS
 			piArgv1: config.piArgv1,
 			childIntercomTarget: config.childIntercomTargets?.[fi],
 			orchestratorIntercomTarget: config.controlIntercomTarget,
+			supervisorAuthorization: config.supervisorAuthorizations?.[fi],
 			nestedRoute: config.nestedRoute,
 			registerInterrupt: (interrupt) => {
 				state.activeChildInterrupt = interrupt;

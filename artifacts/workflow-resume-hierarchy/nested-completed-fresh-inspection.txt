@@ -1,0 +1,50 @@
+
+ ╭──────────────╮
+ │ ORCHESTRATOR │  resume-hierarchy-e2e                                                                                                                    ✓ 4
+ ╰──────────────╯
+
+
+
+                                                                  ╭──── root-before ─────╮
+                                                                  │         12s          │
+                                                                  │      ✓ complete      │
+                                                                  │         root         │
+                                                                  ╰──────────────────────╯
+                                                                              │
+                                                                              │
+                                                                              │
+                                                                  ╭───── child-seed ─────╮
+                                                                  │         14s          │
+                                                                  │      ✓ complete      │
+                                                                  │        1 dep         │
+                                                                  ╰──────────────────────╯
+                                                                              │
+                                                                ╭─────────────┴─────────────╮
+                                                                │                           │
+                                                    ╭───── left-wait ──────╮    ╭───── right-wait ─────╮
+                                                    │        1m 52s        │    │        2m 8s         │
+                                                    │      ✓ complete      │    │      ✓ complete      │
+                                                    │        1 dep         │    │        1 dep         │
+                                                    ╰──────────────────────╯    ╰──────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ╭───────╮
+ │ GRAPH │                                                                     ctrl+x return to main chat  ·  ↵ open stage chat  ·  ↑↓←→ navigate  ·  / stages
+ ╰───────╯
+

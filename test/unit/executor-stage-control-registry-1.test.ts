@@ -108,7 +108,7 @@ describe("executor — stage-control registry integration", () => {
         );
 
         const { runId, stageId } = await sawStage.promise;
-        const pauseResult = pauseRun(runId, {
+        const pauseResult = await pauseRun(runId, {
             store,
             stageControlRegistry: registry,
             stageId,
@@ -123,7 +123,7 @@ describe("executor — stage-control registry integration", () => {
         assert.equal(store.runs()[0]?.stages[0]?.status, "paused");
         assert.equal(store.runs()[0]?.endedAt, undefined);
 
-        const resumeResult = resumeRun(runId, {
+        const resumeResult = await resumeRun(runId, {
             store,
             stageControlRegistry: registry,
         });
@@ -285,7 +285,7 @@ describe("executor — stage-control registry integration", () => {
 
         const { runId, stageId } = await sawStage.promise;
         assert.equal(
-            pauseRun(runId, { store, stageControlRegistry: registry, stageId })
+            (await pauseRun(runId, { store, stageControlRegistry: registry, stageId }))
                 .ok,
             true,
         );

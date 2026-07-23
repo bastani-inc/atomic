@@ -1,7 +1,9 @@
+import { mountIdleStatus } from "./components/idle-status.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { type ExtensionCommandContext, Loader, Spacer, APP_NAME, MissingSessionCwdError, SessionManager, keyText, SessionSelectorComponent, TreeSelectorComponent, TrustSelectorComponent, hasTrustRequiringProjectResources, ProjectTrustStore, theme } from "./interactive-mode-deps.ts";
 
 InteractiveModeBase.prototype.handleCloneCommand = async function(this: InteractiveModeBase): Promise<void> {
+    await this.ensureDeferredStartupComplete();
     const leafId = this.sessionManager.getLeafId();
     if (!leafId) {
       this.showStatus("Nothing to clone yet");
@@ -74,7 +76,8 @@ InteractiveModeBase.prototype.showTrustSelector = function(this: InteractiveMode
     });
   };
 
-InteractiveModeBase.prototype.showTreeSelector = function(this: InteractiveModeBase, initialSelectedId?: string): void {
+InteractiveModeBase.prototype.showTreeSelector = async function(this: InteractiveModeBase, initialSelectedId?: string): Promise<void> {
+    await this.ensureDeferredStartupComplete();
     const tree = this.sessionManager.getTree();
     const realLeafId = this.sessionManager.getLeafId();
     const initialFilterMode = this.settingsManager.getTreeFilterMode();
@@ -155,6 +158,7 @@ InteractiveModeBase.prototype.showTreeSelector = function(this: InteractiveModeB
           }
 
           try {
+            await this.ensureDeferredStartupComplete();
             const result = await this.session.navigateTree(entryId, {
               summarize: wantsSummary,
               customInstructions,
@@ -187,6 +191,7 @@ InteractiveModeBase.prototype.showTreeSelector = function(this: InteractiveModeB
             if (summaryLoader) {
               summaryLoader.stop();
               this.statusContainer.clear();
+              mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
             }
             this.defaultEditor.onEscape = originalOnEscape;
           }
@@ -223,14 +228,17 @@ InteractiveModeBase.prototype.showSessionSelector = function(this: InteractiveMo
                 onProgress,
               ),
         async (sessionPath) => {
+          selector.dispose();
           done();
           await this.handleResumeSession(sessionPath);
         },
         () => {
+          selector.dispose();
           done();
           this.ui.requestRender();
         },
         () => {
+          selector.dispose();
           void this.shutdown();
         },
         () => this.ui.requestRender(),
@@ -255,11 +263,13 @@ InteractiveModeBase.prototype.showSessionSelector = function(this: InteractiveMo
   };
 
 InteractiveModeBase.prototype.handleResumeSession = async function(this: InteractiveModeBase, sessionPath: string, options?: Parameters<ExtensionCommandContext["switchSession"]>[1]): Promise<{ cancelled: boolean }> {
+    await this.ensureDeferredStartupComplete();
     if (this.loadingAnimation) {
       this.loadingAnimation.stop();
       this.loadingAnimation = undefined;
     }
     this.statusContainer.clear();
+    mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
     try {
       const result = await this.runtimeHost.switchSession(sessionPath, {
         withSession: options?.withSession,

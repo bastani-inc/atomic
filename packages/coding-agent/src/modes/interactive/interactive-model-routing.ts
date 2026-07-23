@@ -1,6 +1,7 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { type Api, type Model, getAgentDir, findExactModelReferenceMatch, resolveModelScope, ContextWindowSelectorComponent, formatContextWindow, copilotApiBaseUrlFromToken, copilotCatalogCacheHost, copilotCatalogCachePath, fetchCopilotModelCatalog, readCopilotCatalogCache, setActiveCopilotModelCatalog, writeCopilotCatalogCache, ModelSelectorComponent, ScopedModelsSelectorComponent, UserMessageSelectorComponent } from "./interactive-mode-deps.ts";
 import { ANTHROPIC_SUBSCRIPTION_AUTH_WARNING, isAnthropicSubscriptionAuthKey } from "./interactive-mode-helpers.ts";
+import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
 
 InteractiveModeBase.prototype.handleModelCommand = async function(this: InteractiveModeBase, searchTerm?: string): Promise<void> {
     if (!searchTerm) {
@@ -36,8 +37,9 @@ InteractiveModeBase.prototype.getModelCandidates = async function(this: Interact
       return this.session.scopedModels.map((scoped) => scoped.model);
     }
 
-    await this.refreshCopilotModelCatalog();
-    this.session.modelRegistry.refresh();
+    const allowNetwork = !isOfflineModeEnabled();
+    if (allowNetwork) await this.refreshCopilotModelCatalog();
+    await this.session.modelRegistry.refresh({ allowNetwork });
     try {
       return await this.session.modelRegistry.getAvailable();
     } catch {
@@ -71,7 +73,7 @@ InteractiveModeBase.prototype.loadCopilotModelCatalog = async function(this: Int
         writeCopilotCatalogCache(cachePath, baseUrl, catalog);
       }
       setActiveCopilotModelCatalog(catalog);
-      registry.refresh();
+      await registry.refresh();
       this.session.refreshCurrentModelFromRegistry();
       this.copilotCatalogApplied = true;
     } catch {
@@ -80,10 +82,11 @@ InteractiveModeBase.prototype.loadCopilotModelCatalog = async function(this: Int
   };
 
 InteractiveModeBase.prototype.updateAvailableProviderCount = async function(this: InteractiveModeBase): Promise<void> {
-    const models = await this.getModelCandidates();
-    const uniqueProviders = new Set(models.map((m) => m.provider));
-    this.footerDataProvider.setAvailableProviderCount(uniqueProviders.size);
-  };
+	const models = this.session.scopedModels.length > 0
+		? this.session.scopedModels.map((scoped) => scoped.model)
+		: this.session.modelRegistry.getAvailable();
+	this.footerDataProvider.setAvailableProviderCount(new Set(models.map((model) => model.provider)).size);
+};
 
 InteractiveModeBase.prototype.maybeWarnAboutAnthropicSubscriptionAuth = async function(this: InteractiveModeBase, model: Model<Api> | undefined = this.session.model, targetContainer = this.chatContainer): Promise<void> {
     if (this.settingsManager.getWarnings().anthropicExtraUsage === false) {
@@ -195,7 +198,7 @@ InteractiveModeBase.prototype.showContextWindowSelector = function(this: Interac
 
 InteractiveModeBase.prototype.showModelsSelector = async function(this: InteractiveModeBase): Promise<void> {
     // Get all available models
-    this.session.modelRegistry.refresh();
+	await this.session.modelRegistry.refresh({ allowNetwork: !isOfflineModeEnabled() });
     const allModels = this.session.modelRegistry.getAvailable();
 
     if (allModels.length === 0) {
@@ -287,7 +290,8 @@ InteractiveModeBase.prototype.showModelsSelector = async function(this: Interact
     });
   };
 
-InteractiveModeBase.prototype.showUserMessageSelector = function(this: InteractiveModeBase): void {
+InteractiveModeBase.prototype.showUserMessageSelector = async function(this: InteractiveModeBase): Promise<void> {
+    await this.ensureDeferredStartupComplete();
     const userMessages = this.session.getUserMessagesForForking();
 
     if (userMessages.length === 0) {
@@ -298,29 +302,33 @@ InteractiveModeBase.prototype.showUserMessageSelector = function(this: Interacti
     const initialSelectedId = userMessages[userMessages.length - 1]?.entryId;
 
     this.showSelector((done) => {
+      let selectionHandled = false;
       const selector = new UserMessageSelectorComponent(
         userMessages.map((m) => ({ id: m.entryId, text: m.text })),
         async (entryId) => {
+          if (selectionHandled) return;
+          selectionHandled = true;
+          done();
           try {
+            await this.ensureDeferredStartupComplete();
             const result = await this.runtimeHost.fork(entryId);
             if (result.cancelled) {
-              done();
               this.ui.requestRender();
               return;
             }
 
             this.renderCurrentSessionState();
             this.editor.setText(result.selectedText ?? "");
-            done();
             this.showStatus("Forked to new session");
           } catch (error: unknown) {
-            done();
             this.showError(
               error instanceof Error ? error.message : String(error),
             );
           }
         },
         () => {
+          if (selectionHandled) return;
+          selectionHandled = true;
           done();
           this.ui.requestRender();
         },

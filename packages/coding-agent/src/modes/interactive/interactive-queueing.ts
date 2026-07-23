@@ -65,7 +65,7 @@ InteractiveModeBase.prototype.restoreQueuedMessagesToEditor = function(this: Int
     if (allQueued.length === 0) {
       this.updatePendingMessagesDisplay();
       if (options?.abort) {
-        this.agent.abort();
+        void this.session.abort();
       }
       return 0;
     }
@@ -74,7 +74,7 @@ InteractiveModeBase.prototype.restoreQueuedMessagesToEditor = function(this: Int
     this.editor.setText(combinedText);
     this.updatePendingMessagesDisplay();
     if (options?.abort) {
-      this.agent.abort();
+      void this.session.abort();
     }
     return allQueued.length;
   };
@@ -157,9 +157,10 @@ InteractiveModeBase.prototype.flushCompactionQueue = async function(this: Intera
         await this.session.prompt(message.text);
       }
 
-      // Send first prompt (starts streaming)
+      // Start a prompt when idle, or preserve its delivery mode if a run is
+      // still winding down after compaction.
       const promptPromise = this.session
-        .prompt(firstPrompt.text)
+        .prompt(firstPrompt.text, { streamingBehavior: firstPrompt.mode })
         .catch((error) => {
           restoreQueue(error);
         });

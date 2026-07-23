@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import * as undici from "undici";
-import { installCopilotGeminiReasoningInterceptor } from "./copilot-gemini-reasoning.ts";
+import { installCopilotResponseInterceptor } from "./copilot-gemini-reasoning.ts";
 
 export const DEFAULT_HTTP_IDLE_TIMEOUT_MS = 600_000;
 
@@ -17,9 +17,13 @@ export const HTTP_IDLE_TIMEOUT_CHOICES = [
 ] as const;
 
 export function parseHttpIdleTimeoutMs(value: unknown): number | undefined {
-	if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
-		return undefined;
+	if (typeof value === "string") {
+		const trimmed = value.trim();
+		if (trimmed.toLowerCase() === "disabled") return 0;
+		if (trimmed.length === 0) return undefined;
+		return parseHttpIdleTimeoutMs(Number(trimmed));
 	}
+	if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return undefined;
 	return Math.floor(value);
 }
 
@@ -29,6 +33,13 @@ export function formatHttpIdleTimeoutMs(timeoutMs: number): string {
 		return choice.label;
 	}
 	return `${timeoutMs / 1000} sec`;
+}
+
+export function applyHttpProxySettings(httpProxy: string | undefined): void {
+	const proxy = httpProxy?.trim();
+	if (!proxy) return;
+	process.env.HTTP_PROXY ??= proxy;
+	process.env.HTTPS_PROXY ??= proxy;
 }
 
 export function createHttpDispatcherOptions(timeoutMs: number): ConstructorParameters<typeof undici.EnvHttpProxyAgent>[0] {
@@ -107,8 +118,8 @@ export function configureHttpDispatcher(timeoutMs: number = DEFAULT_HTTP_IDLE_TI
 		installedGlobalFetch = globalThis.fetch;
 	}
 
-	// Bridge CAPI Gemini thought signatures (`reasoning_opaque`) on the inbound
-	// SSE stream so multi-turn Copilot Gemini tool use does not stall on empty
-	// completions. Idempotent and scoped to `*.githubcopilot.com` event streams.
-	installCopilotGeminiReasoningInterceptor();
+	// Install Copilot response stream compatibility shims before provider parsers
+	// consume the body. Idempotent and scoped inside each shim to the relevant
+	// Copilot event-stream endpoint.
+	installCopilotResponseInterceptor();
 }

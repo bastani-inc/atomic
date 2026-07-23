@@ -10,7 +10,7 @@ const ENDPOINT_API_PREFERENCE = [
 ] as const satisfies readonly (readonly [string, Api])[];
 
 const ZERO_COST: Model<Api>["cost"] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-const ADAPTIVE_THINKING_LEVEL_MAP: Model<Api>["thinkingLevelMap"] = { minimal: "low", xhigh: "max" };
+const ADAPTIVE_THINKING_LEVEL_MAP: Model<Api>["thinkingLevelMap"] = { minimal: "low", xhigh: "max", max: "max" };
 
 export interface CopilotModelTemplate {
 	baseUrl: string;
@@ -34,6 +34,7 @@ export function copilotThinkingLevelMapFor(entry: CopilotModelContext, api: Api)
 	else if (api !== "anthropic-messages" || !entry.supports?.adaptiveThinking) map.off = null;
 	if (levels.has("xhigh")) map.xhigh = "xhigh";
 	else if (levels.has("max") && entry.supports?.adaptiveThinking) map.xhigh = "max";
+	if (levels.has("max")) map.max = "max";
 	return map;
 }
 

@@ -4,7 +4,7 @@ import re
 import shlex
 import tempfile
 from pathlib import Path
-from typing import override
+from typing import cast, override
 
 from harbor.agents.installed.base import (
     BaseInstalledAgent,
@@ -13,6 +13,11 @@ from harbor.agents.installed.base import (
 )
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
+from prerequisites import (
+    agent_install_command,
+    atomic_runtime_environment_command,
+    root_install_command,
+)
 
 
 class Atomic(BaseInstalledAgent):
@@ -22,6 +27,23 @@ class Atomic(BaseInstalledAgent):
     _LOG_SESSION_DIR = f"/logs/agent/{_SESSION_DIR_NAME}"
     _OPENAI_CODEX_PROVIDER = "openai-codex"
     _AUTH_UPLOAD_TARGET = "/tmp/atomic-subscription-auth.json"
+    _PROVIDER_AUTH_ENV_KEYS: dict[str, tuple[str, ...]] = {
+        "amazon-bedrock": ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
+        "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN"),
+        "github-copilot": ("COPILOT_GITHUB_TOKEN",),
+        "google": (
+            "GEMINI_API_KEY",
+            "GOOGLE_GENERATIVE_AI_API_KEY",
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "GOOGLE_API_KEY",
+        ),
+        "groq": ("GROQ_API_KEY",),
+        "huggingface": ("HF_TOKEN",),
+        "mistral": ("MISTRAL_API_KEY",),
+        "openai": ("OPENAI_API_KEY",),
+        "openrouter": ("OPENROUTER_API_KEY",),
+        "xai": ("XAI_API_KEY",),
+    }
 
     CLI_FLAGS = [
         CliFlag(
@@ -32,6 +54,48 @@ class Atomic(BaseInstalledAgent):
         ),
     ]
 
+    @override
+    def __init__(
+        self,
+        logs_dir: Path,
+        prompt_template_path: Path | str | None = None,
+        version: str | None = None,
+        extra_env: dict[str, str] | None = None,
+        *,
+        disallowed_subscriptions: str | list[str] | tuple[str, ...] | None = None,
+        **kwargs: object,
+    ) -> None:
+        self._disallowed_subscriptions: frozenset[str] = (
+            self._normalize_disallowed_subscriptions(disallowed_subscriptions)
+        )
+        super().__init__(
+            logs_dir=logs_dir,
+            prompt_template_path=prompt_template_path,
+            version=version,
+            extra_env=extra_env,
+            **kwargs,
+        )
+
+    @staticmethod
+    def _normalize_disallowed_subscriptions(value: object) -> frozenset[str]:
+        if value is None:
+            return frozenset()
+        values = [value] if isinstance(value, str) else value
+        if not isinstance(values, list | tuple):
+            raise TypeError(
+                "disallowed_subscriptions must be a string or list of strings"
+            )
+        subscriptions: set[str] = set()
+        for item in values:
+            if not isinstance(item, str):
+                raise TypeError(
+                    "disallowed_subscriptions must contain only provider names"
+                )
+            subscriptions.update(
+                name.strip() for name in item.split(",") if name.strip()
+            )
+        return frozenset(subscriptions)
+
     @staticmethod
     @override
     def name() -> str:
@@ -39,7 +103,7 @@ class Atomic(BaseInstalledAgent):
 
     @override
     def get_version_command(self) -> str | None:
-        return ". ~/.nvm/nvm.sh; atomic --version"
+        return f"{atomic_runtime_environment_command()}; atomic --version"
 
     @override
     def parse_version(self, stdout: str) -> str:
@@ -49,26 +113,13 @@ class Atomic(BaseInstalledAgent):
     async def install(self, environment: BaseEnvironment) -> None:
         await self.exec_as_root(
             environment,
-            command=(
-                "apt-get update && "
-                "apt-get install -y --no-install-recommends curl fd-find git ripgrep && "
-                "ln -sf /usr/bin/fdfind /usr/local/bin/fd"
-            ),
+            command=root_install_command(harbor=True),
             env={"DEBIAN_FRONTEND": "noninteractive"},
         )
         version_spec = f"@{self._version}" if self._version else "@latest"
         await self.exec_as_agent(
             environment,
-            command=(
-                "set -euo pipefail; "
-                "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash && "
-                'export NVM_DIR="$HOME/.nvm" && '
-                '\\. "$NVM_DIR/nvm.sh" || true && '
-                "command -v nvm &>/dev/null || { echo 'Error: NVM failed to load' >&2; exit 1; } && "
-                "nvm install 22 && npm -v && "
-                f"npm install -g @bastani/atomic{version_spec} && "
-                "atomic --version"
-            ),
+            command=agent_install_command(version_spec),
         )
 
     def _build_register_skills_command(self) -> str | None:
@@ -88,7 +139,18 @@ class Atomic(BaseInstalledAgent):
             Path.home() / ".pi" / "agent" / "auth.json",
         )
 
-    def _load_provider_auth(self, provider: str) -> dict[str, object] | None:
+    @staticmethod
+    def _is_valid_provider_auth(entry: object) -> bool:
+        if not isinstance(entry, dict):
+            return False
+        credential_type = entry.get("type")
+        if credential_type == "api_key":
+            return isinstance(entry.get("key"), str) and bool(entry["key"])
+        if credential_type == "oauth":
+            return isinstance(entry.get("access"), str) and bool(entry["access"])
+        return False
+
+    def _load_provider_auths(self) -> dict[str, dict[str, object]]:
         merged: dict[str, object] = {}
         for auth_path in reversed(self._auth_config_paths()):
             try:
@@ -97,13 +159,23 @@ class Atomic(BaseInstalledAgent):
                 continue
             if isinstance(data, dict):
                 merged.update(data)
-        entry = merged.get(provider)
-        return entry if isinstance(entry, dict) else None
+        return {
+            provider: cast(dict[str, object], entry)
+            for provider, entry in merged.items()
+            if provider
+            and provider not in self._disallowed_subscriptions
+            and self._is_valid_provider_auth(entry)
+        }
+
+    def _load_provider_auth(self, provider: str) -> dict[str, object] | None:
+        return self._load_provider_auths().get(provider)
 
     def _has_subscription_auth(self, provider: str) -> bool:
         if provider == "anthropic":
-            return bool(self._get_env("ANTHROPIC_OAUTH_TOKEN")) or (
-                self._load_provider_auth(provider) is not None
+            return bool(
+                self._get_env("ANTHROPIC_API_KEY")
+                or self._get_env("ANTHROPIC_OAUTH_TOKEN")
+                or self._load_provider_auth(provider) is not None
             )
         if provider == self._OPENAI_CODEX_PROVIDER:
             return self._load_provider_auth(provider) is not None
@@ -134,24 +206,36 @@ class Atomic(BaseInstalledAgent):
                 return fallback
         return provider, model
 
-    def _should_provision_subscription_auth(self, provider: str) -> bool:
-        if provider == self._OPENAI_CODEX_PROVIDER:
-            return True
-        # Provision the local Claude Pro/Max OAuth entry only when no explicit
-        # env credential is supplied; ANTHROPIC_OAUTH_TOKEN keeps precedence.
-        return provider == "anthropic" and not self._get_env("ANTHROPIC_OAUTH_TOKEN")
-
     async def _provision_subscription_auth(
         self,
         environment: BaseEnvironment,
         provider: str,
+        env: dict[str, str] | None = None,
     ) -> None:
-        if not self._should_provision_subscription_auth(provider):
+        auth_data = self._load_provider_auths()
+        if env is None:
+            keys = list(self._PROVIDER_AUTH_ENV_KEYS.get(provider, ()))
+            if provider in {"anthropic", self._OPENAI_CODEX_PROVIDER}:
+                keys.append("OPENROUTER_API_KEY")
+            environment_keys = {
+                key: value for key in keys if (value := self._get_env(key))
+            }
+        else:
+            environment_keys = env.copy()
+        for credential_keys in self._PROVIDER_AUTH_ENV_KEYS.values():
+            for key in credential_keys:
+                if value := self._get_env(key):
+                    environment_keys[key] = value
+        for auth_provider, credential_keys in self._PROVIDER_AUTH_ENV_KEYS.items():
+            has_environment_auth = (
+                all(environment_keys.get(key) for key in credential_keys)
+                if auth_provider == "amazon-bedrock"
+                else any(environment_keys.get(key) for key in credential_keys)
+            )
+            if has_environment_auth:
+                auth_data.pop(auth_provider, None)
+        if not auth_data:
             return
-        entry = self._load_provider_auth(provider)
-        if entry is None:
-            return
-        auth_data = {provider: entry}
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
             temp_path = Path(handle.name)
             json.dump(auth_data, handle, indent=2)
@@ -200,6 +284,7 @@ class Atomic(BaseInstalledAgent):
             "sync_atomic_sessions() { "
             f"mkdir -p {log_session_dir}; "
             f"cp -a {session_dir}/. {log_session_dir}/ 2>/dev/null || true; "
+            f"chmod -R a+rwX {log_session_dir} 2>/dev/null || true; "
             "}; "
             "sync_atomic_sessions_loop() { "
             "while true; do sync_atomic_sessions; sleep 5; done; "
@@ -216,6 +301,7 @@ class Atomic(BaseInstalledAgent):
             "trap 'cleanup_atomic_sessions 143; exit 143' TERM; "
         )
 
+    @override
     @with_prompt_template
     async def run(
         self,
@@ -272,7 +358,7 @@ class Atomic(BaseInstalledAgent):
         skills_command = self._build_register_skills_command()
         if skills_command:
             await self.exec_as_agent(environment, command=skills_command)
-        await self._provision_subscription_auth(environment, requested_provider)
+        await self._provision_subscription_auth(environment, requested_provider, env)
 
         # Atomic state stays under the container user's ~/.atomic/agent; after
         # the run, transcripts are copied to /logs for Harbor artifact parsing.
@@ -285,11 +371,11 @@ class Atomic(BaseInstalledAgent):
                 f"rm -rf {session_dir} {log_session_dir} && mkdir -p {session_dir} && "
                 f"{self._agent_state_setup_command()}"
                 f"{self._session_sync_trap_command(session_dir, log_session_dir)}"
-                f". ~/.nvm/nvm.sh && "
+                f"{atomic_runtime_environment_command()} && "
                 f"atomic --print --mode json --session-dir {session_dir} "
                 f"{model_args}"
                 f"{cli_flags}"
-                f"{escaped_instruction} "
+                f"-- {escaped_instruction} "
                 "2>&1 </dev/null | grep -v '\"type\":\"message_update\"' | "
                 f"stdbuf -oL tee /logs/agent/{self._OUTPUT_FILENAME}; status=$?; "
                 "exit $status"
@@ -373,6 +459,7 @@ class Atomic(BaseInstalledAgent):
         total_cache_read_tokens = 0
         total_cache_write_tokens = 0
         total_cost = 0.0
+        total_agent_steps = 0
         seen_message_ids: set[str] = set()
         seen_message_fingerprints: set[str] = set()
 
@@ -380,12 +467,9 @@ class Atomic(BaseInstalledAgent):
             message: object,
             entry_id: object = None,
         ) -> None:
-            nonlocal total_input_tokens, total_output_tokens
+            nonlocal total_input_tokens, total_output_tokens, total_agent_steps
             nonlocal total_cache_read_tokens, total_cache_write_tokens, total_cost
             if not isinstance(message, dict) or message.get("role") != "assistant":
-                return
-            usage = message.get("usage")
-            if not isinstance(usage, dict):
                 return
             fingerprint = self._assistant_message_fingerprint(message)
             if isinstance(entry_id, str):
@@ -397,6 +481,10 @@ class Atomic(BaseInstalledAgent):
                 seen_message_ids.add(entry_id)
             if fingerprint:
                 seen_message_fingerprints.add(fingerprint)
+            total_agent_steps += 1
+            usage = message.get("usage")
+            if not isinstance(usage, dict):
+                return
             total_input_tokens += self._token_count(usage.get("input"))
             total_output_tokens += self._token_count(usage.get("output"))
             total_cache_read_tokens += self._token_count(usage.get("cacheRead"))
@@ -472,3 +560,7 @@ class Atomic(BaseInstalledAgent):
         context.n_output_tokens = total_output_tokens
         context.n_cache_tokens = total_cache_tokens
         context.cost_usd = total_cost if total_cost > 0 else None
+        context.metadata = {
+            **(context.metadata or {}),
+            "n_agent_steps": total_agent_steps,
+        }

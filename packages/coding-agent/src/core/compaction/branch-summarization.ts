@@ -6,15 +6,12 @@
  */
 
 import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
-import type { Api, Model, SimpleStreamOptions } from "@earendil-works/pi-ai/compat";
+import { retryAssistantCall, type ProviderHeaders, type RetryCallbacks, type RetryPolicy } from "@earendil-works/pi-ai";
+import type { Api, Model, SimpleStreamOptions, Usage } from "@earendil-works/pi-ai/compat";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
 import { formatCopilotProviderError } from "../copilot-errors.ts";
 import { convertToLlm, createBranchSummaryMessage, createCustomMessage } from "../messages.ts";
-import {
-	buildContextDeletionFilteredPath,
-	type ReadonlySessionManager,
-	type SessionEntry,
-} from "../session-manager.ts";
+import type { ReadonlySessionManager, SessionEntry } from "../session-manager.ts";
 import { estimateTokens } from "./compaction.ts";
 import {
 	computeFileLists,
@@ -34,6 +31,7 @@ export interface BranchSummaryResult {
 	summary?: string;
 	readFiles?: string[];
 	modifiedFiles?: string[];
+	usage?: Usage;
 	aborted?: boolean;
 	error?: string;
 }
@@ -68,7 +66,9 @@ export interface GenerateBranchSummaryOptions {
 	/** API key for the model */
 	apiKey: string;
 	/** Request headers for the model */
-	headers?: Record<string, string>;
+	headers?: ProviderHeaders;
+	/** Credential-specific request endpoint for the model */
+	baseUrl?: string;
 	/** Abort signal for cancellation */
 	signal: AbortSignal;
 	/** Optional custom instructions for summarization */
@@ -79,6 +79,10 @@ export interface GenerateBranchSummaryOptions {
 	reserveTokens?: number;
 	/** Optional session stream function. Used to preserve SDK request behavior without mutating agent state. */
 	streamFn?: StreamFn;
+	/** Retry policy for transient summarization failures. */
+	retry?: RetryPolicy;
+	/** Retry lifecycle callbacks. */
+	callbacks?: RetryCallbacks;
 }
 
 // ============================================================================
@@ -196,7 +200,7 @@ function getMessageFromEntry(entry: SessionEntry): AgentMessage | undefined {
 export function prepareBranchEntries(entries: SessionEntry[], tokenBudget: number = 0): BranchPreparation {
 	const messages: AgentMessage[] = [];
 	const fileOps = createFileOps();
-	const filteredEntries = buildContextDeletionFilteredPath(entries);
+	const filteredEntries = entries;
 	let totalTokens = 0;
 
 	// First pass: collect file ops from ALL entries (even if they don't fit in token budget)
@@ -300,11 +304,14 @@ export async function generateBranchSummary(
 		model,
 		apiKey,
 		headers,
+		baseUrl,
 		signal,
 		customInstructions,
 		replaceInstructions,
 		reserveTokens = 16384,
 		streamFn,
+		retry,
+		callbacks,
 	} = options;
 
 	// Token budget = context window minus reserved space for prompt + response
@@ -342,19 +349,22 @@ export async function generateBranchSummary(
 	];
 
 	// Call LLM for summarization. Prefer the session stream function so SDK
-	// request behavior (timeouts, retries, attribution headers) stays consistent
-	// without running through agent state/events.
+	// request behavior stays consistent without mutating agent state.
 	const context = { systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages };
 	const requestOptions: SimpleStreamOptions = { apiKey, headers, signal, maxTokens: 2048 };
+	const requestModel = baseUrl === undefined || baseUrl === model.baseUrl ? model : { ...model, baseUrl };
 	const response = await (async () => {
 		try {
-			return streamFn
-				? await (await streamFn(model, context, requestOptions)).result()
-				: await completeSimple(model, context, requestOptions);
+			return await retryAssistantCall(
+				async () => streamFn
+					? (await streamFn(requestModel, context, requestOptions)).result()
+					: completeSimple(requestModel, context, requestOptions),
+				retry,
+				signal,
+				callbacks,
+			);
 		} catch (error) {
-			if (signal.aborted) {
-				return undefined;
-			}
+			if (signal.aborted) return undefined;
 			return {
 				stopReason: "error" as const,
 				errorMessage: error instanceof Error ? error.message : String(error),
@@ -384,6 +394,7 @@ export async function generateBranchSummary(
 
 	return {
 		summary: summary || "No summary generated",
+		usage: response.usage,
 		readFiles,
 		modifiedFiles,
 	};

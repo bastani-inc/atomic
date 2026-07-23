@@ -43,6 +43,7 @@ export {
   reconstructFlattenedKeys,
   unflattenArgumentsWithSchema,
 } from "./core/flattened-tool-arguments.ts";
+export { StringEnum, type StringEnumOptions } from "./core/typebox-compat.ts";
 export {
 	AgentSession,
 	type AgentSessionConfig,
@@ -64,21 +65,32 @@ export {
 	FileAuthStorageBackend,
 	InMemoryAuthStorageBackend,
 	type OAuthCredential,
+	readStoredCredential,
 } from "./core/auth-storage.ts";
+import "./core/oauth-compat.js";
+export {
+	getOAuthApiKey,
+	getOAuthProvider,
+	getOAuthProviders,
+	type LegacyOAuthProvider,
+	type OAuthProviderDescriptor,
+	registerOAuthProvider,
+	resetOAuthProviders,
+} from "./core/oauth-provider-bridge.ts";
 // Compaction
 export {
 	type BranchPreparation,
 	type BranchSummaryResult,
 	type CollectEntriesResult,
-	type CompactableTranscript,
-	type ContextCompactionPreparation,
-	type ContextCompactionResult,
-	type ContextDeletionRequest,
-	type ValidatedContextDeletionResult,
-	buildContextCompactionPrompt,
+	type CompactedTranscript,
+	type CompactionPlanOptions,
+	type VerbatimCompactionDetails,
+	type VerbatimCompactionParameters,
+	type VerbatimCompactionPreparation,
+	type VerbatimCompactionResult,
+	type LineRange,
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
-	contextCompact,
 	DEFAULT_COMPACTION_SETTINGS,
 	estimateTokens,
 	type FileOperations,
@@ -86,10 +98,11 @@ export {
 	generateBranchSummary,
 	getLastAssistantUsage,
 	prepareBranchEntries,
-	prepareContextCompaction,
+	prepareCompactionBoundary,
+	runVerbatimCompaction,
 	serializeConversation,
+	serializeConversationForCompaction,
 	shouldCompact,
-	validateContextDeletionRequest,
 } from "./core/compaction/index.ts";
 export {
 	CODEX_FAST_MODE_SERVICE_TIER,
@@ -122,6 +135,12 @@ export {
 } from "./core/context-window.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./core/event-bus.ts";
 export { areExperimentalFeaturesEnabled } from "./core/experimental.ts";
+export {
+	runCallback,
+	runSynchronousCallback,
+	type CallbackActivityDescriptor,
+	type CallbackActivityKind,
+} from "./core/callback-activity.ts";
 export * from "./index-extensions.js";
 // Builtin tool definitions reusable by first-party extensions (e.g. workflows
 // invoking the structured ask_user_question UI deterministically).
@@ -130,6 +149,7 @@ export { createAskUserQuestionToolDefinition } from "./core/tools/index.ts";
 export type { ReadonlyFooterDataProvider } from "./core/footer-data-provider.ts";
 export { convertToLlm } from "./core/messages.ts";
 export { ModelRegistry } from "./core/model-registry.ts";
+export { ModelRuntime, type CreateModelRuntimeOptions, type ModelRuntimeAuthOverrides } from "./core/model-runtime.ts";
 export type { DefaultProjectTrust } from "./core/settings-manager.ts";
 export {
 	hasProjectTrustInputs,
@@ -189,18 +209,28 @@ export {
 	type JsonObject,
 	type JsonPrimitive,
 	type JsonValue,
+	type MessageEndEvent,
+	type MessageStartEvent,
+	type MessageUpdateEvent,
 	type PromptTemplate,
 	type StructuredOutputCapture,
 	type StructuredOutputFileCapture,
 	type StructuredOutputToolOptions,
+	type ToolExecutionEndEvent,
+	type ToolExecutionStartEvent,
+	type ToolExecutionUpdateEvent,
 } from "./core/sdk.ts";
 export {
+	WORKFLOW_SESSION_METADATA_ENV,
+	workflowSessionMetadataFromEnv,
+} from "./core/session-manager-classification.ts";
+export {
 	type BranchSummaryEntry,
+	buildContextEntries,
 	buildSessionContext,
-	type ContextCompactionEntry,
-	type ContextCompactionStats,
-	type ContextDeletionTarget,
+	sessionEntryToContextMessages,
 	CURRENT_SESSION_VERSION,
+	type CompactionEntry,
 	type CustomEntry,
 	type CustomMessageEntry,
 	type FileEntry,
@@ -217,6 +247,7 @@ export {
 	type SessionInfoEntry,
 	SessionManager,
 	type SessionMessageEntry,
+	type SessionWorkflowMetadata,
 	type SessionTreeNode,
 	type ThinkingLevelChangeEntry,
 } from "./core/session-manager.ts";
@@ -337,6 +368,7 @@ export {
 	type ChatTranscriptRole,
 	BranchSummaryMessageComponent,
 	CustomEditor,
+	CustomEntryComponent,
 	CustomMessageComponent,
 	DynamicBorder,
 	ExtensionEditorComponent,
@@ -345,6 +377,7 @@ export {
 	FooterComponent,
 	UsageMeterComponent,
 	keyHint,
+	keyHintIfBound,
 	keyText,
 	LoginDialogComponent,
 	ModelSelectorComponent,
@@ -385,6 +418,16 @@ export {
 export { copyToClipboard } from "./utils/clipboard.ts";
 export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.ts";
 export { createGitEnvironment, GIT_LOCAL_ENV_VARS } from "./utils/git-env.ts";
+export {
+	isSafeFsWatchPathError,
+	isUnsafeWindowsShortPath,
+	resolveNativeWatchPath,
+	SAFE_FS_WATCH_CANONICALIZATION_FAILED,
+	SAFE_FS_WATCH_UNSAFE_WINDOWS_SHORT_PATH,
+	watchWithErrorHandler,
+	type SafeFsWatchErrorCode,
+	type SafeFsWatchPathError,
+} from "./utils/fs-watch.ts";
 export { convertToPng } from "./utils/image-convert.ts";
 export { formatDimensionNote, type ResizedImage, resizeImage } from "./utils/image-resize.ts";
 // Shell utilities

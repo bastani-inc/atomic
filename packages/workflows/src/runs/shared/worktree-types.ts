@@ -38,6 +38,8 @@ export interface WorktreeSetupHookConfig {
 export interface CreateWorktreesOptions {
 	agents?: string[];
 	setupHook?: WorktreeSetupHookConfig;
+	baseBranch?: string;
+	symlinkDirectories?: readonly string[];
 }
 
 export interface ResolvedWorktreeSetupHook {
@@ -65,7 +67,13 @@ export interface GitResult {
 	stdout: string;
 	stderr: string;
 	status: number | null;
+	signal?: NodeJS.Signals | null;
 	error?: Error;
+	argv?: readonly string[];
+	cwd?: string;
+	timeoutMs?: number;
+	elapsedMs?: number;
+	attempts?: number;
 }
 
 export interface GitWorktreeSetupOptions {
@@ -87,6 +95,8 @@ export interface GitWorktreeSetupResult {
 
 export interface RepoState {
 	toplevel: string;
+	mainRoot: string;
 	cwdRelative: string;
 	baseCommit: string;
+	baseRef: string;
 }

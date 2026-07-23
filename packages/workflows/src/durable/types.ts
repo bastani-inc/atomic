@@ -9,7 +9,7 @@
  * cross-ref: issue #1498
  */
 
-import type { WorkflowSerializableValue } from "../shared/types.js";
+import type { WorkflowModelAttempt, WorkflowSerializableValue } from "../shared/types.js";
 
 // ---------------------------------------------------------------------------
 // Top-level workflow identity
@@ -32,6 +32,14 @@ export interface DurableWorkflowHandle {
   readonly updatedAt: number;
   /** Current durable status. */
   readonly status: DurableWorkflowStatus;
+  /** Original invocation cwd used to resolve repo-relative workflow defaults on resume. */
+  readonly invocationCwd?: string;
+  /** Resolved workflow cwd when an input-bound reusable worktree was set up. */
+  readonly workflowCwd?: string;
+  /** Invoking repository root used for reusable worktree validation. */
+  readonly repositoryRoot?: string;
+  /** Resolved reusable git worktree root, when setup happened at workflow start. */
+  readonly gitWorktreeRoot?: string;
   /** Session file path that caches this workflow's durable metadata. */
   readonly sessionFile?: string;
   /** Number of completed durable checkpoints. */
@@ -44,6 +52,8 @@ export interface DurableWorkflowHandle {
   readonly rootWorkflowId?: string;
   /** Explicit resumability flag for failed/blocked runs. */
   readonly resumable?: boolean;
+  /** Executor id of the Atomic process that last wrote this workflow's metadata. */
+  readonly ownerExecutorId?: string;
 }
 
 export type DurableWorkflowStatus =
@@ -98,6 +108,26 @@ export interface DurableUiCheckpoint {
   readonly completedAt: number;
 }
 
+export const DURABLE_STAGE_TOPOLOGY_VERSION = 1 as const;
+
+/** Durable ownership metadata needed to rebuild nested workflow runs. */
+export interface DurableStageRunTopology {
+  readonly runId: string;
+  readonly runName: string;
+  readonly parentRunId?: string;
+  readonly parentStageId?: string;
+  readonly rootRunId?: string;
+}
+
+/** Versioned source-stage lineage used to reconstruct completed DAGs after restart. */
+export interface DurableStageTopology {
+  readonly version: typeof DURABLE_STAGE_TOPOLOGY_VERSION;
+  readonly stageId: string;
+  readonly parentIds: readonly string[];
+  /** Owning run and boundary linkage for nested workflow graph reconstruction. */
+  readonly run?: DurableStageRunTopology;
+}
+
 /** A `ctx.stage(...)` / `ctx.task(...)` durable checkpoint or resumable session marker. */
 export interface DurableStageCheckpoint {
   readonly kind: "stage";
@@ -107,12 +137,27 @@ export interface DurableStageCheckpoint {
   readonly name: string;
   /** Stable replay key (matches existing continuation replay semantics). */
   readonly replayKey: string;
+  /** Source stage identity and parents for fresh-process completed-run inspection. */
+  readonly topology?: DurableStageTopology;
   /** Stage output text or structured result when the stage completed. */
   readonly output?: WorkflowSerializableValue;
   /** Resumable Atomic/Pi session metadata for in-progress LM stages. */
   readonly sessionId?: string;
   readonly sessionFile?: string;
   readonly completedAt: number;
+  /** Original stage start timestamp, when available. */
+  readonly startedAt?: number;
+  /** Original stage end timestamp, when available. */
+  readonly endedAt?: number;
+  /** Original stage duration, when available. */
+  readonly durationMs?: number;
+  /** Display/result text recorded for the completed stage. */
+  readonly result?: string;
+  /** Completed stage/task model metadata used to hydrate replayed snapshots. */
+  readonly model?: string;
+  readonly fastMode?: boolean;
+  readonly attemptedModels?: readonly string[];
+  readonly modelAttempts?: readonly WorkflowModelAttempt[];
 }
 
 export type UiPromptKind = "input" | "confirm" | "select" | "editor" | "custom";
@@ -124,34 +169,35 @@ export type UiPromptKind = "input" | "confirm" | "select" | "editor" | "custom";
 export type WorkflowSerializableObject = Readonly<Record<string, WorkflowSerializableValue>>;
 
 // ---------------------------------------------------------------------------
-// Resume catalog entry (cached on session JSONL)
+// DBOS metadata and resume catalog
 // ---------------------------------------------------------------------------
 
-/**
- * Durable workflow metadata cached as a `workflow.durable.checkpoint` session
- * entry. This is the session-file cache described by the issue — it lets a new
- * session discover resumable workflows without scanning the full DBOS system
- * database. DBOS remains the checkpoint source of truth; this cache mirrors
- * the minimal top-level metadata needed for `/workflow resume` discovery.
- */
-export interface DurableCheckpointEntry {
-  readonly type: "workflow.durable.checkpoint";
+/** Current workflow metadata persisted in DBOS. */
+export interface DurableWorkflowMetadata {
   readonly workflowId: string;
   readonly name: string;
   readonly inputs: WorkflowSerializableObject;
   readonly status: DurableWorkflowStatus;
   readonly completedCheckpoints: number;
   readonly pendingPrompts: number;
+  readonly createdAt: number;
+  readonly promptReservationEpoch: string;
+  /** Executor id of the Atomic process that wrote this metadata generation. */
+  readonly ownerExecutorId?: string;
+  /** Unique winner token for a first-writer-wins status-transition generation. */
+  readonly transitionClaimId?: string;
+  readonly sessionFile?: string;
   readonly label?: string;
   readonly rootWorkflowId?: string;
   readonly resumable?: boolean;
-  readonly ts: number;
+  readonly invocationCwd?: string;
+  readonly workflowCwd?: string;
+  readonly repositoryRoot?: string;
+  readonly gitWorktreeRoot?: string;
+  readonly updatedAt: number;
 }
 
-/**
- * Resume catalog entry for the cross-session `/workflow resume` selector.
- * Built from durable checkpoint entries found across session files.
- */
+/** Resume catalog entry loaded directly from DBOS metadata. */
 export interface ResumableWorkflowEntry {
   readonly workflowId: string;
   readonly name: string;
@@ -163,6 +209,10 @@ export interface ResumableWorkflowEntry {
   readonly label?: string;
   readonly rootWorkflowId?: string;
   readonly resumable?: boolean;
+  readonly invocationCwd?: string;
+  readonly workflowCwd?: string;
+  readonly repositoryRoot?: string;
+  readonly gitWorktreeRoot?: string;
   readonly createdAt: number;
   readonly updatedAt: number;
 }

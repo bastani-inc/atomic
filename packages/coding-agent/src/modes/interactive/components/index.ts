@@ -29,12 +29,15 @@ export {
   type ChatTranscriptRole,
 } from "./chat-transcript.ts";
 export { BranchSummaryMessageComponent } from "./branch-summary-message.ts";
-export { ContextCompactionSummaryMessageComponent } from "./context-compaction-summary-message.ts";
+export { CompactionBoundaryMessageComponent } from "./compaction-boundary-message.ts";
 export { CustomEditor } from "./custom-editor.ts";
+export { IdleStatus } from "./idle-status.ts";
+export { CustomEntryComponent } from "./custom-entry.ts";
 export { CustomMessageComponent } from "./custom-message.ts";
 export { DaxnutsComponent } from "./daxnuts.ts";
 export { type RenderDiffOptions, renderDiff } from "./diff.ts";
 export { DynamicBorder } from "./dynamic-border.ts";
+export { FirstTimeSetupComponent, type FirstTimeSetupOptions, type FirstTimeSetupResult } from "./first-time-setup.ts";
 export { ExtensionEditorComponent } from "./extension-editor.ts";
 export { ExtensionInputComponent } from "./extension-input.ts";
 export { ExtensionSelectorComponent } from "./extension-selector.ts";
@@ -44,7 +47,7 @@ export {
   type FastModeSelectorConfig,
 } from "./fast-mode-selector.ts";
 export { FooterComponent, UsageMeterComponent } from "./footer.ts";
-export { keyHint, keyText, rawKeyHint } from "./keybinding-hints.ts";
+export { keyHint, keyHintIfBound, keyText, rawKeyHint } from "./keybinding-hints.ts";
 export { LoginDialogComponent } from "./login-dialog.ts";
 export { ModelSelectorComponent } from "./model-selector.ts";
 export { OAuthSelectorComponent } from "./oauth-selector.ts";

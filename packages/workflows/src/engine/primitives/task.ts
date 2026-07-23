@@ -1,6 +1,7 @@
 import type { WorkflowChainOptions, WorkflowParallelOptions, WorkflowTaskOptions, WorkflowTaskResult, WorkflowTaskStep } from "../../shared/types.js";
 import type { ParallelFailFastScope } from "../../runs/foreground/executor-types.js";
 import type { EngineRuntime } from "../runtime.js";
+import { RESUME_CONTINUATION_PROMPT } from "../../shared/resume-continuation.js";
 import {
   applyTaskContext,
   structuredTaskOutputText,
@@ -14,7 +15,7 @@ import {
 import {
   cleanupPreparedWorktrees,
   collectWorktreeDiffs,
-  prepareDirectWorktrees,
+  prepareTaskWorktrees,
   stageOptionsWithGitWorktree,
   stageOptionsWithInputDefaults,
 } from "../../runs/foreground/executor-direct-helpers.js";
@@ -41,6 +42,7 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
       const resolvedTaskOptions = stageOptionsWithGitWorktree(
         stageOptionsWithInputDefaults(taskOptions, runtime.inputRuntimeDefaults),
         runtime.workflowInvocationCwd,
+        runtime.gitWorktreeSetupCache,
       ) ?? taskOptions;
       const stageOptions = taskStageOptions(resolvedTaskOptions);
       const stageHandle = runtime.spawnStage(name, {
@@ -50,7 +52,7 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
       });
       const stage = stageHandle.context;
       const promptText = resolvedTaskOptions.resumeFromSessionFile !== undefined
-        ? "Continue"
+        ? RESUME_CONTINUATION_PROMPT
         : applyTaskContext(`${taskReadInstruction(resolvedTaskOptions)}${taskPrompt(resolvedTaskOptions)}`, taskPrevious(resolvedTaskOptions));
       const rawOutput = await stage.prompt(promptText, taskPromptOptions(resolvedTaskOptions));
       const structured = typeof rawOutput === "string" ? undefined : rawOutput;
@@ -79,11 +81,13 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
     };
 
     if (options.worktree !== true) return runTaskOnce(options);
-    const prepared = prepareDirectWorktrees(
+    const prepared = prepareTaskWorktrees(
       [{ ...options, name }],
       { ...options, worktree: true },
       `${runtime.runId}-${name}-${crypto.randomUUID()}`,
       name,
+      runtime.workflowInvocationCwd,
+      runtime.worktreeSymlinkDirectories,
     );
     const preparedTask = prepared.tasks[0]!;
     try {

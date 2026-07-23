@@ -1,3 +1,4 @@
+import type { ReadonlyFooterDataProvider } from "@bastani/atomic";
 import type { Store } from "../shared/store.js";
 import type { GraphTheme } from "./graph-theme.js";
 
@@ -9,12 +10,6 @@ export interface GraphViewOpts {
   store: Store;
   graphTheme: GraphTheme;
   onClose?: () => void;
-  /**
-   * Invoked when the user presses `q` inside the pane. This quits/detaches
-   * the orchestrator view and leaves the workflow resumable; it must not use
-   * the `/workflow kill` terminal path.
-   */
-  onQuit?: (runId: string) => void;
   /**
    * Invoked when the user presses `h` inside the pane. Hides without
    * unmounting (overlay-adapter calls `setHidden(true)`). Re-open via
@@ -34,9 +29,9 @@ export interface GraphViewOpts {
    */
   onStageAttach?: (runId: string, stageId: string) => void;
   /**
-   * Invoked when the user presses `Ctrl+D` while in graph mode. Mirrors
-   * the in-chat back affordance: detaches the whole popup (host calls
-   * `setHidden(true)`). Falls back to `onHide` when unset.
+   * Invoked when the user presses `Ctrl+X` in graph mode. Returns to main
+   * chat by hiding the popup with `setHidden(true)`. Falls back to `onHide`
+   * when unset.
    */
   onDetach?: () => void;
   /**
@@ -66,4 +61,6 @@ export interface GraphViewOpts {
   requestRender?: () => void;
   /** Host Pi keybindings manager used by run-level prompt cards. */
   piKeybindings?: unknown;
+  /** Host footer/status provider used to surface non-workflow extension statuses inside the fullscreen graph overlay. */
+  footerData?: ReadonlyFooterDataProvider;
 }

@@ -1,6 +1,0 @@
-# .crabbox.yaml — repo defaults for crabbox (https://crabbox.sh)
-# Operator identity (subscription, tenant, resource group) lives in each
-# user's crabbox config, not here. Override sizing per-run with --class/--type.
-provider: azure
-class: standard
-serverType: Standard_D16ads_v5

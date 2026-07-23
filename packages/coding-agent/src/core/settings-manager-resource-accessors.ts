@@ -39,6 +39,9 @@ interface SettingsManagerResourceAccessors {
 	getThemePaths(): string[];
 	setThemePaths(paths: string[]): void;
 	setProjectThemePaths(paths: string[]): void;
+	getWorkflowPaths(): string[];
+	setWorkflowPaths(paths: string[]): void;
+	setProjectWorkflowPaths(paths: string[]): void;
 	getEnableSkillCommands(): boolean;
 	setEnableSkillCommands(enabled: boolean): void;
 	getThinkingBudgets(): ThinkingBudgetsSettings | undefined;
@@ -262,6 +265,25 @@ const resourceAccessors: SettingsManagerResourceAccessors = {
 		const projectSettings = structuredClone(state.projectSettings);
 		projectSettings.themes = paths;
 		state.markProjectModified("themes");
+		state.saveProjectSettings(projectSettings);
+	},
+
+	getWorkflowPaths() {
+		return [...(settingsInternals(this).settings.workflows ?? [])];
+	},
+
+	setWorkflowPaths(paths) {
+		const state = settingsInternals(this);
+		state.globalSettings.workflows = paths;
+		state.markModified("workflows");
+		state.save();
+	},
+
+	setProjectWorkflowPaths(paths) {
+		const state = settingsInternals(this);
+		const projectSettings = structuredClone(state.projectSettings);
+		projectSettings.workflows = paths;
+		state.markProjectModified("workflows");
 		state.saveProjectSettings(projectSettings);
 	},
 

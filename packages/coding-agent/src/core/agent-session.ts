@@ -31,11 +31,14 @@ import type { AgentSessionInternalSurface, AgentSessionPublicSurface } from "./a
 import { agentSessionMessageQueueMethods } from "./agent-session-message-queue.ts";
 import { agentSessionModelsMethods } from "./agent-session-models.ts";
 import { agentSessionPromptMethods } from "./agent-session-prompt.ts";
+import { agentSessionPostToolCompactionMethods } from "./agent-session-post-tool-compaction.ts";
+import type { PendingPostToolCompactionGuard } from "./agent-session-post-tool-compaction.ts";
 import { agentSessionRetryMethods } from "./agent-session-retry.ts";
 import { agentSessionStateMethods } from "./agent-session-state.ts";
 import { agentSessionToolHooksMethods } from "./agent-session-tool-hooks.ts";
 import { agentSessionToolRegistryMethods } from "./agent-session-tool-registry.ts";
 import { agentSessionTreeMethods } from "./agent-session-tree.ts";
+import { WorkflowStageAdmissionBoundary } from "./workflow-stage-admission.ts";
 import type {
 	AgentSessionConfig,
 	AgentSessionEventListener,
@@ -71,6 +74,8 @@ export class AgentSession {
 	readonly settingsManager: SettingsManager;
 
 	protected _scopedModels: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
+	protected _fallbackModels: string[];
+	protected _fallbackAttemptedKeys: Set<string> = new Set();
 	protected _unsubscribeAgent?: () => void;
 	protected _eventListeners: AgentSessionEventListener[] = [];
 	protected _agentEventQueue: Promise<void> = Promise.resolve();
@@ -84,6 +89,13 @@ export class AgentSession {
 	protected _compactionAbortController: AbortController | undefined = undefined;
 	protected _autoCompactionAbortController: AbortController | undefined = undefined;
 	protected _overflowRecoveryAttempted = false;
+	protected _pendingPostCompactionContinuation: Promise<void> | undefined = undefined;
+	protected _postCompactionContinuationToken = 0;
+	protected _lengthContinuationAttempts = 0;
+	protected _outputBudgetErrorContinuationAttempts = 0;
+	protected _postToolCompactionPreflightError: string | undefined = undefined;
+	protected _pendingPostToolCompactionGuard: PendingPostToolCompactionGuard | undefined = undefined;
+	protected _terminatingToolCallIds = new Set<string>();
 	protected _branchSummaryAbortController: AbortController | undefined = undefined;
 	protected _retryAbortController: AbortController | undefined = undefined;
 	protected _retryAttempt = 0;
@@ -121,11 +133,13 @@ export class AgentSession {
 	protected _lastAssistantMessage: AssistantMessage | undefined = undefined;
 	protected _asyncJobManager: AsyncJobManager;
 	protected _asyncJobManagerSessionId: symbol;
+	protected _workflowStageAdmission: WorkflowStageAdmissionBoundary | undefined;
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
 		this.settingsManager = config.settingsManager;
 		this._scopedModels = config.scopedModels ?? [];
+		this._fallbackModels = config.fallbackModels ?? [];
 		this._resourceLoader = config.resourceLoader;
 		this._customTools = config.customTools ?? [];
 		this._cwd = config.cwd;
@@ -137,6 +151,18 @@ export class AgentSession {
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		this._orchestrationContext = config.orchestrationContext;
+		const stageContext = config.orchestrationContext?.kind === "workflow-stage"
+			? config.orchestrationContext
+			: undefined;
+		this._workflowStageAdmission = stageContext?.messageAdmission?.boundary
+			?? (stageContext ? new WorkflowStageAdmissionBoundary() : undefined);
+		if (this._workflowStageAdmission && stageContext && stageContext.messageAdmission === undefined) {
+			(stageContext as { messageAdmission?: { boundary: WorkflowStageAdmissionBoundary; extensionState: Map<string, object>; isOpen(): boolean } }).messageAdmission = {
+				boundary: this._workflowStageAdmission,
+				extensionState: new Map(),
+				isOpen: () => this._workflowStageAdmission?.isOpen() === true,
+			};
+		}
 		const internals = this as unknown as AgentSessionInternalSurface;
 		const asyncJobManagerHandle = createSessionAsyncJobManager(internals);
 		this._asyncJobManager = asyncJobManagerHandle.manager;
@@ -165,6 +191,7 @@ Object.assign(
 	agentSessionModelsMethods,
 	agentSessionCompactionMethods,
 	agentSessionAutoCompactionMethods,
+	agentSessionPostToolCompactionMethods,
 	agentSessionExtensionBindingsMethods,
 	agentSessionToolRegistryMethods,
 	agentSessionRetryMethods,

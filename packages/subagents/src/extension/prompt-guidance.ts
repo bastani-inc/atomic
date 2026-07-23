@@ -1,13 +1,9 @@
 export const DEFAULT_PROMPT_GUIDANCE: string[] = [
-	`**Subagent Orchestration**:
-  - To avoid draining your context window, prefer to use subagents for complex tasks all non-trivial operations should be delegated to subagents.
-  - You should delegate running bash commands (particularly ones that are likely to produce lots of output) such as investigating with the \`aws\` CLI, using the \`gh\` CLI, digging through logs to \`bash\` subagents.
-  - You should use separate subagents for separate tasks, and you may launch them in parallel, but do not delegate multiple tasks that are likely to have significant overlap to separate subagents.
-  - Sometimes subagents will take a long time. DO NOT attempt to do the job yourself while waiting for the subagent to respond Instead, use the time to plan out your next steps.
-  - **Debugging**: When a user asks about debugging, spawn a debugger subagent first.
-    - Do not attempt to debug or analyze code yourself without first consulting the debugger subagent.
-    - Explain the debugger's insights to the user clearly and concisely.
-    - Once the user confirms, implement the necessary code changes based on those insights.
-    - If the user has follow-up questions, spawn additional debugger and research subagents as needed.`,
+	`**Subagent orchestration**: Use subagents for focused specialist work inside workflows or as bounded delegation when a workflow would be unnecessary overhead.
+  - Because workflows are the default for non-trivial structured work with verifiable objectives, do not stretch parent-controlled subagent calls into an ad hoc implementation, review, or retry pipeline; use a workflow and let its stages delegate specialists.
+  - Use a single subagent for a focused specialty, a chain for a bounded sequential handoff, or parallel tasks for independent work. Keep substantial-overlap tasks together rather than duplicating investigation across agents.
+  - Delegate noisy or context-heavy command investigation when isolation helps, but run concise commands inline when that is simpler.
+  - Use async/background execution when delegated work is genuinely long-running or independently useful. Foreground execution is appropriate when the parent needs the result before proceeding; do not duplicate a delegated job while waiting.
+  - Use the debugger subagent for actual failures that need reproduction, root-cause diagnosis, and a validated fix; additional debugger or research delegates are optional when they add a distinct useful angle.`,
 ];
 

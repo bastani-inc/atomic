@@ -84,6 +84,7 @@ beforeAll(async () => {
   await writeFile(
     fixturePath,
     `import { workflow } from "@bastani/workflows";
+import { Type } from "typebox";
 
 export const attachEnabled = workflow({
   name: "attach-enabled",
@@ -98,6 +99,14 @@ export const attachDefault = workflow({
   name: "attach-default",
   description: "",
   inputs: {},
+  outputs: {},
+  run: (ctx) => ctx.exit(),
+});
+
+export const attachPickerDefault = workflow({
+  name: "attach-picker-default",
+  description: "",
+  inputs: { message: Type.String() },
   outputs: {},
   run: (ctx) => ctx.exit(),
 });
@@ -137,6 +146,31 @@ describe("workflow auto-attach host entrypoints", () => {
     const host = await createFactoryHost();
 
     await host.workflowCommand.options.handler("attach-default", {
+      ui: { notify: () => undefined },
+    });
+
+    assert.equal(host.customCalls.length, 0);
+  });
+
+  test.serial("/workflow preserves the existing input-form attach path when autoAttach is omitted", async () => {
+    const host = await createFactoryHost();
+
+    await host.workflowCommand.options.handler("attach-picker-default", {
+      ui: {
+        notify: () => undefined,
+        hostInputForm: async () => ({ message: "hello" }),
+        custom: host.pi.ui?.custom,
+      },
+    });
+
+    assert.equal(overlayMounts(host.customCalls).length, 1);
+  });
+
+  test.serial("headless /workflow remains detached when autoAttach is enabled", async () => {
+    const host = await createFactoryHost();
+
+    await host.workflowCommand.options.handler("attach-enabled", {
+      hasUI: false,
       ui: { notify: () => undefined },
     });
 

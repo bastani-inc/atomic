@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { keyHint, type ExtensionAPI, type ExtensionContext } from "@bastani/atomic";
+import { keyHintIfBound, type ExtensionAPI, type ExtensionContext } from "@bastani/atomic";
 import { Key, matchesKey } from "@earendil-works/pi-tui";
 import { discoverAgents, discoverAgentsAll, type ChainConfig } from "../agents/agents.ts";
 import type { SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
@@ -160,11 +160,12 @@ async function requestSlashRun(
 			if (done || !data || typeof data !== "object") return;
 			const update = data as SlashSubagentUpdate;
 			if (update.requestId !== requestId) return;
-			applySlashUpdate(requestId, update);
+			applySlashUpdate(requestId, update, pi);
 			if (!ctx.hasUI) return;
 			const tool = update.currentTool ? ` ${update.currentTool}` : "";
 			const count = update.toolCount ?? 0;
-			ctx.ui.setStatus("subagent-slash", `${count} tools${tool} | ${keyHint("app.tools.expand", "live detail")}`);
+			const expandHint = keyHintIfBound("app.tools.expand", "live detail");
+			ctx.ui.setStatus("subagent-slash", `${count} tools${tool}${expandHint ? ` | ${expandHint}` : ""}`);
 		};
 
 		const onTerminalInput = ctx.hasUI
@@ -260,7 +261,7 @@ async function runSlashSubagent(
 ): Promise<void> {
 	if (ctx.hasUI) ctx.ui.setToolsExpanded(false);
 	const requestId = randomUUID();
-	const initialDetails = buildSlashInitialResult(requestId, params);
+	const initialDetails = buildSlashInitialResult(requestId, params, pi);
 	const initialText = extractSlashMessageText(initialDetails.result.content) || "Running subagent...";
 	pi.sendMessage({
 		customType: SLASH_RESULT_TYPE,
@@ -272,7 +273,7 @@ async function runSlashSubagent(
 
 	try {
 		const response = await requestSlashRun(pi, ctx, requestId, params);
-		const finalDetails = finalizeSlashResult(response);
+		const finalDetails = finalizeSlashResult(response, pi);
 		pi.sendMessage({
 			customType: SLASH_RESULT_TYPE,
 			content: buildSlashExportText(response),
@@ -288,7 +289,7 @@ async function runSlashSubagent(
 		}
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		const failedDetails = failSlashResult(requestId, params, message);
+		const failedDetails = failSlashResult(requestId, params, message, pi);
 		pi.sendMessage({
 			customType: SLASH_RESULT_TYPE,
 			content: `## Subagent result\n\n${message}`,
@@ -402,11 +403,8 @@ export function registerSlashCommands(
 			if (!state.baseCwd) { ctx.ui.notify("Subagent session cwd is not initialized yet", "error"); return; }
 			const agents = discoverAgents(state.baseCwd, "both").agents;
 			if (!agents.find((a) => a.name === agentName)) { ctx.ui.notify(`Unknown agent: ${agentName}`, "error"); return; }
-			let finalTask = task;
-			if (inline.reads && Array.isArray(inline.reads) && inline.reads.length > 0) {
-				finalTask = `[Read from: ${inline.reads.join(", ")}]\n\n${finalTask}`;
-			}
-			const params: SubagentParamsLike = { agent: agentName, task: finalTask, clarify: false, agentScope: "both" };
+			const params: SubagentParamsLike = { agent: agentName, task, agentScope: "both" };
+			if (inline.reads !== undefined) params.reads = inline.reads;
 			if (inline.output !== undefined) params.output = inline.output;
 			if (inline.outputMode !== undefined) params.outputMode = inline.outputMode;
 			if (inline.skill !== undefined) params.skill = inline.skill;
@@ -433,7 +431,7 @@ export function registerSlashCommands(
 				...(config.skill !== undefined ? { skill: config.skill } : {}),
 				...(config.progress !== undefined ? { progress: config.progress } : {}),
 			}));
-			const params: SubagentParamsLike = { chain, task: parsed.task, clarify: false, agentScope: "both" };
+			const params: SubagentParamsLike = { chain, task: parsed.task, agentScope: "both" };
 			if (bg) params.async = true;
 			if (fork) params.context = "fork";
 			await runSlashSubagent(pi, ctx, params);
@@ -462,7 +460,7 @@ export function registerSlashCommands(
 				ctx.ui.notify(`Unknown chain: ${chainName}`, "error");
 				return;
 			}
-			const params: SubagentParamsLike = { chain: mapSavedChainSteps(chain), task, clarify: false, agentScope: "both" };
+			const params: SubagentParamsLike = { chain: mapSavedChainSteps(chain), task, agentScope: "both" };
 			if (bg) params.async = true;
 			if (fork) params.context = "fork";
 			await runSlashSubagent(pi, ctx, params);
@@ -485,7 +483,7 @@ export function registerSlashCommands(
 				...(config.skill !== undefined ? { skill: config.skill } : {}),
 				...(config.progress !== undefined ? { progress: config.progress } : {}),
 			}));
-			const params: SubagentParamsLike = { tasks, clarify: false, agentScope: "both" };
+			const params: SubagentParamsLike = { tasks, agentScope: "both" };
 			if (bg) params.async = true;
 			if (fork) params.context = "fork";
 			await runSlashSubagent(pi, ctx, params);

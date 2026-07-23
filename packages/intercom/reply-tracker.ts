@@ -1,17 +1,10 @@
 import type { Message, SessionInfo } from "./types.ts";
+import { resolveSessionTarget, sessionTargetFailureReason } from "./session-target.js";
 
 export interface IntercomContext {
   from: SessionInfo;
   message: Message;
   receivedAt: number;
-}
-
-function matchesPendingSender(context: IntercomContext, to: string): boolean {
-  if (context.from.id === to) {
-    return true;
-  }
-
-  return context.from.name?.toLowerCase() === to.toLowerCase();
 }
 
 export class ReplyTracker {
@@ -31,6 +24,14 @@ export class ReplyTracker {
 
   queueTurnContext(context: IntercomContext): void {
     this.pendingTurnContexts.push(context);
+  }
+
+  forgetIncomingMessage(context: IntercomContext): void {
+    if (this.pendingAsks.get(context.message.id) === context) this.pendingAsks.delete(context.message.id);
+    for (let index = this.pendingTurnContexts.length - 1; index >= 0; index -= 1) {
+      if (this.pendingTurnContexts[index] === context) this.pendingTurnContexts.splice(index, 1);
+    }
+    if (this.currentTurnContext === context) this.currentTurnContext = null;
   }
 
   beginTurn(now = Date.now()): void {
@@ -56,21 +57,28 @@ export class ReplyTracker {
     }
 
     const pending = Array.from(this.pendingAsks.values());
+    if (options.to) {
+      const senders = [...new Map(
+        pending.map((context) => [context.from.id, context.from] as const),
+      ).values()];
+      const resolution = resolveSessionTarget(senders, options.to);
+      if (resolution.kind !== "resolved") {
+        if (resolution.kind === "not_found") {
+          throw new Error(`No pending ask from "${options.to}"`);
+        }
+        throw new Error(sessionTargetFailureReason(options.to, resolution));
+      }
+      const matches = pending.filter(
+        (context) => context.from.id === resolution.session.id,
+      );
+      if (matches.length === 1) return matches[0]!;
+      if (matches.length > 1) {
+        throw new Error(`Multiple pending asks from "${options.to}"`);
+      }
+      throw new Error(`No pending ask from "${options.to}"`);
+    }
     if (pending.length === 1) {
       return pending[0]!;
-    }
-
-    if (options.to) {
-      const matches = pending.filter((context) => matchesPendingSender(context, options.to!));
-      if (matches.length === 1) {
-        return matches[0]!;
-      }
-      if (matches.length > 1) {
-        throw new Error(`Multiple pending asks from \"${options.to}\" — use the sender session ID instead.`);
-      }
-      if (pending.length > 1) {
-        throw new Error(`No pending ask from \"${options.to}\"`);
-      }
     }
 
     if (pending.length === 0) {

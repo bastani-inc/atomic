@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { normalizePath } from "../utils/paths.ts";
 import { parseContextWindowValue, validateContextWindowValue } from "./context-window.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
@@ -25,8 +26,14 @@ interface SettingsManagerBasicAccessors {
 	getThemeSetting(): string | undefined;
 	getTheme(): string | undefined;
 	setTheme(theme: string): void;
-	getDefaultThinkingLevel(): "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | undefined;
-	setDefaultThinkingLevel(level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh"): void;
+	getEnableAnalytics(): boolean | undefined;
+	setEnableAnalytics(enabled: boolean): void;
+	getTrackingId(): string | undefined;
+	getShowCacheMissNotices(): boolean;
+	setShowCacheMissNotices(enabled: boolean): void;
+	getDefaultThinkingLevel(): "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | undefined;
+	setDefaultThinkingLevel(level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"): void;
+	getFallbackModels(): string[];
 	getDefaultContextWindow(): number | undefined;
 	getDefaultContextWindowForModel(provider: string, modelId: string): number | undefined;
 	setDefaultContextWindow(contextWindow: number | undefined): void;
@@ -51,6 +58,8 @@ interface SettingsManagerBasicAccessors {
 	getRetryEnabled(): boolean;
 	setRetryEnabled(enabled: boolean): void;
 	getRetrySettings(): { enabled: boolean; maxRetries: number; baseDelayMs: number };
+	getHttpProxy(): string | undefined;
+	setHttpProxy(proxy: string | undefined): void;
 	getHttpIdleTimeoutMs(): number;
 	setHttpIdleTimeoutMs(timeoutMs: number): void;
 	getWebSocketConnectTimeoutMs(): number | undefined;
@@ -185,6 +194,36 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		state.save();
 	},
 
+	getEnableAnalytics() {
+		return settingsInternals(this).settings.enableAnalytics;
+	},
+
+	setEnableAnalytics(enabled) {
+		const state = settingsInternals(this);
+		state.globalSettings.enableAnalytics = enabled;
+		state.markModified("enableAnalytics");
+		if (enabled && !state.globalSettings.trackingId) {
+			state.globalSettings.trackingId = randomUUID();
+			state.markModified("trackingId");
+		}
+		state.save();
+	},
+
+	getTrackingId() {
+		return settingsInternals(this).settings.trackingId;
+	},
+
+	getShowCacheMissNotices() {
+		return settingsInternals(this).settings.showCacheMissNotices ?? false;
+	},
+
+	setShowCacheMissNotices(enabled) {
+		const state = settingsInternals(this);
+		state.globalSettings.showCacheMissNotices = enabled;
+		state.markModified("showCacheMissNotices");
+		state.save();
+	},
+
 	getDefaultThinkingLevel() {
 		return settingsInternals(this).settings.defaultThinkingLevel;
 	},
@@ -194,6 +233,13 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		state.globalSettings.defaultThinkingLevel = level;
 		state.markModified("defaultThinkingLevel");
 		state.save();
+	},
+
+	getFallbackModels() {
+		return (settingsInternals(this).settings.fallbackModels ?? [])
+			.filter((model): model is string => typeof model === "string")
+			.map((model) => model.trim())
+			.filter((model) => model.length > 0);
 	},
 
 	getDefaultContextWindow() {
@@ -320,6 +366,17 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 			maxRetries: settingsInternals(this).settings.retry?.maxRetries ?? 3,
 			baseDelayMs: settingsInternals(this).settings.retry?.baseDelayMs ?? 2000,
 		};
+	},
+
+	getHttpProxy() {
+		return settingsInternals(this).globalSettings.httpProxy;
+	},
+
+	setHttpProxy(proxy) {
+		const state = settingsInternals(this);
+		state.globalSettings.httpProxy = proxy;
+		state.markModified("httpProxy");
+		state.save();
 	},
 
 	getHttpIdleTimeoutMs() {

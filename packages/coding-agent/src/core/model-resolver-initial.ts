@@ -16,13 +16,19 @@ async function buildConfiguredProviderFallbackModel(
   return buildFallbackModel(provider, modelId, await modelRegistry.getAvailable());
 }
 
-export async function resolveSavedModelReference(
+/**
+ * Resolve a model reference persisted in a session. Exact unauthenticated
+ * models are authoritative failures; only an absent id may be reconstructed
+ * from an authenticated model for the same dynamic/custom provider.
+ */
+export async function resolveRestoredModelReference(
   provider: string,
   modelId: string,
   modelRegistry: ModelRegistry,
 ): Promise<Model<Api> | undefined> {
   const found = modelRegistry.find(provider, modelId);
-  if (found) return found;
+  if (found) return modelRegistry.hasConfiguredAuth(found) ? found : undefined;
+  if (!modelRegistry.canRestoreUnknownModel(provider)) return undefined;
   return buildConfiguredProviderFallbackModel(provider, modelId, modelRegistry);
 }
 
@@ -86,8 +92,8 @@ export async function findInitialModel(options: {
   }
 
   if (defaultProvider && defaultModelId) {
-    const found = await resolveSavedModelReference(defaultProvider, defaultModelId, modelRegistry);
-    if (found) {
+    const found = modelRegistry.find(defaultProvider, defaultModelId);
+    if (found && modelRegistry.hasConfiguredAuth(found)) {
       model = found;
       if (defaultThinkingLevel) {
         thinkingLevel = defaultThinkingLevel;
@@ -126,9 +132,7 @@ export async function restoreModelFromSession(
   fallbackMessage: string | undefined;
 }> {
   const exactRestoredModel = modelRegistry.find(savedProvider, savedModelId);
-  const restoredModel = exactRestoredModel && modelRegistry.hasConfiguredAuth(exactRestoredModel)
-    ? exactRestoredModel
-    : await buildConfiguredProviderFallbackModel(savedProvider, savedModelId, modelRegistry);
+  const restoredModel = await resolveRestoredModelReference(savedProvider, savedModelId, modelRegistry);
 
   if (restoredModel) {
     if (shouldPrintMessages) {

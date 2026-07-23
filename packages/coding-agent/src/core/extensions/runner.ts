@@ -3,6 +3,7 @@
  */
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { Provider, ProviderHeaders } from "@earendil-works/pi-ai";
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai/compat";
 import type { KeyId } from "@earendil-works/pi-tui";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
@@ -43,6 +44,7 @@ import type {
 import {
 	collectFlags,
 	collectRegisteredTools,
+	findEntryRenderer,
 	findMessageRenderer,
 	findToolDefinition,
 	hasExtensionHandlers,
@@ -53,6 +55,7 @@ import { noOpUIContext } from "./runner-ui.ts";
 import type {
 	CompactOptions,
 	ContextUsage,
+	EntryRenderer,
 	Extension,
 	ExtensionActions,
 	ExtensionCommandContext,
@@ -161,12 +164,13 @@ export class ExtensionRunner {
 		actions: ExtensionActions,
 		contextActions: ExtensionContextActions,
 		providerActions?: {
-			registerProvider?: (name: string, config: ProviderConfig) => void;
+			registerProvider?: (providerOrName: Provider | string, config?: ProviderConfig) => void;
 			unregisterProvider?: (name: string) => void;
 		},
 	): void {
 		// Copy actions into the shared runtime (all extension APIs reference this)
 		this.runtime.sendMessage = actions.sendMessage;
+		this.runtime.sendMessages = actions.sendMessages;
 		this.runtime.sendUserMessage = actions.sendUserMessage;
 		this.runtime.appendEntry = actions.appendEntry;
 		this.runtime.setSessionName = actions.setSessionName;
@@ -194,17 +198,17 @@ export class ExtensionRunner {
 		this.getSystemPromptFn = contextActions.getSystemPrompt;
 		this.getSystemPromptOptionsFn = contextActions.getSystemPromptOptions ?? (() => ({ cwd: this.cwd }));
 
-		// Flush provider registrations queued during extension loading
-		for (const { name, config, extensionPath } of this.runtime.pendingProviderRegistrations) {
+		// Flush provider registrations queued during extension loading.
+		for (const registration of this.runtime.pendingProviderRegistrations) {
 			try {
-				if (providerActions?.registerProvider) {
-					providerActions.registerProvider(name, config);
+				if ("provider" in registration) {
+					(providerActions?.registerProvider ?? ((provider: Provider) => this.modelRegistry.registerProvider(provider)))(registration.provider);
 				} else {
-					this.modelRegistry.registerProvider(name, config);
+					(providerActions?.registerProvider ?? ((name: string, config?: ProviderConfig) => this.modelRegistry.registerProvider(name, config!)))(registration.name, registration.config);
 				}
 			} catch (error) {
 				this.emitError({
-					extensionPath,
+					extensionPath: registration.extensionPath,
 					event: "register_provider",
 					error: error instanceof Error ? error.message : String(error),
 					stack: error instanceof Error ? error.stack : undefined,
@@ -215,13 +219,14 @@ export class ExtensionRunner {
 
 		// From this point on, provider registration/unregistration takes effect immediately
 		// without requiring a /reload.
-		this.runtime.registerProvider = (name, config) => {
-			if (providerActions?.registerProvider) {
-				providerActions.registerProvider(name, config);
-				return;
-			}
-			this.modelRegistry.registerProvider(name, config);
-		};
+		this.runtime.registerProvider = ((providerOrName: Provider | string, configOrPath?: ProviderConfig | string) => {
+			if (typeof providerOrName === "string") {
+				const config = configOrPath as ProviderConfig;
+				if (providerActions?.registerProvider) providerActions.registerProvider(providerOrName, config);
+				else this.modelRegistry.registerProvider(providerOrName, config);
+			} else if (providerActions?.registerProvider) providerActions.registerProvider(providerOrName);
+			else this.modelRegistry.registerProvider(providerOrName);
+		}) as ExtensionRuntime["registerProvider"];
 		this.runtime.unregisterProvider = (name) => {
 			if (providerActions?.unregisterProvider) {
 				providerActions.unregisterProvider(name);
@@ -333,6 +338,10 @@ export class ExtensionRunner {
 		return findMessageRenderer(this.extensions, customType);
 	}
 
+	getEntryRenderer(customType: string): EntryRenderer | undefined {
+		return findEntryRenderer(this.extensions, customType);
+	}
+
 	getRegisteredCommands(): ResolvedCommand[] {
 		this.commandDiagnostics = [];
 		return resolveRegisteredCommands(this.extensions);
@@ -420,6 +429,19 @@ export class ExtensionRunner {
 		return runBeforeProviderRequestHandlers(this.extensions, this.createContext(), payload, (error) =>
 			this.emitError(error),
 		);
+	}
+
+	async emitBeforeProviderHeaders(headers: ProviderHeaders): Promise<ProviderHeaders> {
+		for (const extension of this.extensions) {
+			for (const handler of extension.handlers.get("before_provider_headers") ?? []) {
+				try {
+					await handler({ type: "before_provider_headers", headers }, this.createContext());
+				} catch (error) {
+					this.emitError({ extensionPath: extension.path, event: "before_provider_headers", error: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined });
+				}
+			}
+		}
+		return headers;
 	}
 
 	emitBeforeAgentStart(

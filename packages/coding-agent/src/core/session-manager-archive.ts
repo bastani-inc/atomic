@@ -13,7 +13,14 @@ import {
 	loadEntriesFromFile,
 	writeSessionEntries,
 } from "./session-manager-storage.ts";
-import type { FileEntry, LabelEntry, NewSessionOptions, SessionEntry, SessionHeader } from "./session-manager-types.ts";
+import type {
+	FileEntry,
+	LabelEntry,
+	NewSessionOptions,
+	SessionEntry,
+	SessionHeader,
+	SessionWorkflowMetadata,
+} from "./session-manager-types.ts";
 import { assertValidSessionId, createSessionId, generateId } from "./session-manager-validation.ts";
 
 export function createBackupSnapshot(
@@ -35,6 +42,7 @@ export interface BranchedSessionStateInput {
 	sessionDir: string;
 	cwd: string;
 	previousSessionFile: string | undefined;
+	workflow?: SessionWorkflowMetadata;
 	path: SessionEntry[];
 	labelsById: ReadonlyMap<string, string>;
 	labelTimestampsById: ReadonlyMap<string, string>;
@@ -115,6 +123,8 @@ export function createBranchedSessionState(input: BranchedSessionStateInput): Br
 		input.cwd,
 		timestamp,
 		input.persist ? input.previousSessionFile : undefined,
+		input.workflow !== undefined,
+		input.workflow,
 	);
 
 	// Collect labels for entries in the path
@@ -176,7 +186,14 @@ export function forkSessionFromFile(
 	const newSessionFile = join(dir, `${timestamp.replace(/[:.]/g, "-")}_${newSessionId}.jsonl`);
 
 	// Write new header pointing to source as parent, with updated cwd
-	const newHeader: SessionHeader = createSessionHeader(newSessionId, resolvedTargetCwd, timestamp, resolvedSourcePath);
+	const newHeader: SessionHeader = createSessionHeader(
+		newSessionId,
+		resolvedTargetCwd,
+		timestamp,
+		resolvedSourcePath,
+		options?.internal,
+		options?.workflow,
+	);
 	appendSessionEntry(newSessionFile, newHeader);
 
 	// Copy all non-header entries from source

@@ -177,6 +177,24 @@ describe("classifyWorkflowFailure", () => {
     assert.equal(failure.kind, "unknown");
     assert.equal(failure.userMessage, "OAuth callback metadata parse failed");
   });
+
+  test("classifies git subprocess timeouts without treating them as repository setup errors", () => {
+    const failure = classifyWorkflowFailure(new Error("Timed out while checking the Git repository for gitWorktreeDir from /repo. Git reported: git command timed out after 60000ms (ETIMEDOUT): spawnSync git ETIMEDOUT"));
+    assert.equal(failure.kind, "provider");
+    assert.equal(failure.code, "provider_unavailable");
+    assert.equal(failure.retryable, true);
+    assert.equal(failure.disposition, "active_blocked");
+    assert.doesNotMatch(failure.userMessage, /not inside a Git repository/);
+  });
+
+  test("does not treat unrelated local timeout messages as provider outages", () => {
+    for (const message of ["local database timeout while acquiring lock", "unit test timeout exceeded"]) {
+      const failure = classifyWorkflowFailure(new Error(message));
+      assert.equal(failure.kind, "unknown");
+      assert.equal(failure.retryable, false);
+      assert.equal(failure.disposition, "terminal_failed");
+    }
+  });
   test("still treats OAuth token errors as auth failures", () => {
     const failure = classifyWorkflowFailure(new Error("OAuth token expired"));
     assert.equal(failure.kind, "auth");

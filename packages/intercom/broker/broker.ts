@@ -1,75 +1,19 @@
 import net from "net";
 import { writeFileSync, unlinkSync, mkdirSync } from "fs";
-import { join } from "path";
-import { homedir } from "os";
 import { randomUUID } from "crypto";
-import { CONFIG_DIR_NAME } from "@bastani/atomic";
 import { writeMessage, createMessageReader } from "./framing.js";
-import { getBrokerSocketPath } from "./paths.js";
-import type { SessionInfo, Message, Attachment, BrokerMessage } from "../types.js";
+import { getBrokerPidPath, getBrokerSocketPath, getIntercomDirPath } from "./paths.js";
+import type { SessionInfo, BrokerMessage, SupervisorRegistration } from "../types.js";
+import { DeliveredMessageCache } from "./delivered-message-cache.js";
+import { handleBrokerSend, type BrokerConnectedSession } from "./send-handler.js";
+import { SupervisorChannelCache } from "./supervisor-channel.js";
+import { normalizeGroup } from "../group.js";
 
-const INTERCOM_DIR = join(homedir(), CONFIG_DIR_NAME, "agent", "intercom");
+const INTERCOM_DIR = getIntercomDirPath();
 const SOCKET_PATH = getBrokerSocketPath();
-const PID_PATH = join(INTERCOM_DIR, "broker.pid");
+const PID_PATH = getBrokerPidPath();
 
-interface ConnectedSession {
-  socket: net.Socket;
-  info: SessionInfo;
-}
-
-function isAttachment(value: unknown): value is Attachment {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-
-  const attachment = value as Record<string, unknown>;
-
-  if (
-    attachment.type !== "file"
-    && attachment.type !== "snippet"
-    && attachment.type !== "context"
-  ) {
-    return false;
-  }
-
-  if (typeof attachment.name !== "string" || typeof attachment.content !== "string") {
-    return false;
-  }
-
-  return attachment.language === undefined || typeof attachment.language === "string";
-}
-
-function isMessage(value: unknown): value is Message {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-
-  const message = value as Record<string, unknown>;
-
-  if (typeof message.id !== "string" || typeof message.timestamp !== "number") {
-    return false;
-  }
-
-  if (message.replyTo !== undefined && typeof message.replyTo !== "string") {
-    return false;
-  }
-
-  if (message.expectsReply !== undefined && typeof message.expectsReply !== "boolean") {
-    return false;
-  }
-
-  if (typeof message.content !== "object" || message.content === null) {
-    return false;
-  }
-
-  const content = message.content as Record<string, unknown>;
-  if (typeof content.text !== "string") {
-    return false;
-  }
-
-  return content.attachments === undefined
-    || (Array.isArray(content.attachments) && content.attachments.every(isAttachment));
-}
+type ConnectedSession = BrokerConnectedSession;
 
 function isSessionRegistration(value: unknown): value is Omit<SessionInfo, "id"> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -92,13 +36,26 @@ function isSessionRegistration(value: unknown): value is Omit<SessionInfo, "id">
     return false;
   }
 
+  if (session.group !== undefined && typeof session.group !== "string") {
+    return false;
+  }
+
   return session.status === undefined || typeof session.status === "string";
 }
+function isSupervisorRegistration(value: unknown): value is SupervisorRegistration {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const registration = value as Record<string, unknown>;
+  return typeof registration.capability === "string"
+    && typeof registration.supervisorSessionId === "string";
+}
+
 
 class IntercomBroker {
   private sessions = new Map<string, ConnectedSession>();
   private server: net.Server;
   private shutdownTimer: NodeJS.Timeout | null = null;
+  private deliveredMessages = new DeliveredMessageCache();
+  private supervisorChannel = new SupervisorChannelCache();
 
   constructor() {
     mkdirSync(INTERCOM_DIR, { recursive: true });
@@ -136,8 +93,9 @@ class IntercomBroker {
 
     socket.on("close", () => {
       if (sessionId) {
+        const leavingGroup = this.sessions.get(sessionId)?.info.group;
         this.sessions.delete(sessionId);
-        this.broadcast({ type: "session_left", sessionId }, sessionId);
+        this.broadcastToGroup({ type: "session_left", sessionId }, leavingGroup, sessionId);
 
         this.scheduleShutdownCheck();
       }
@@ -181,29 +139,61 @@ class IntercomBroker {
         if (!isSessionRegistration(clientMessage.session)) {
           throw new Error("Invalid register message");
         }
+        if (clientMessage.supervisorOwnerToken !== undefined
+          && (typeof clientMessage.supervisorOwnerToken !== "string" || !clientMessage.supervisorOwnerToken)) {
+          throw new Error("Invalid supervisor owner token");
+        }
 
         if (currentId) {
           throw new Error("Received duplicate register message");
         }
 
+        let supervisorId: string | undefined;
+        if (clientMessage.supervisor !== undefined) {
+          const childName = clientMessage.session.name?.trim();
+          const claimedSupervisorId = isSupervisorRegistration(clientMessage.supervisor) && childName
+            ? this.supervisorChannel.claim(clientMessage.supervisor.capability, childName)
+            : undefined;
+          if (!claimedSupervisorId || !this.sessions.has(claimedSupervisorId)) {
+            writeMessage(socket, { type: "registration_failed", reason: "Invalid supervisor authorization" });
+            socket.end();
+            return;
+          }
+          supervisorId = claimedSupervisorId;
+        }
+
         const id = randomUUID();
         setId(id);
-        const info: SessionInfo = { ...clientMessage.session, id };
-        this.sessions.set(id, { socket, info });
+        const info: SessionInfo = {
+          ...clientMessage.session,
+          id,
+          group: normalizeGroup(clientMessage.session.group),
+        };
+        this.sessions.set(id, {
+          socket,
+          info,
+          ...(supervisorId ? { supervisorId } : {}),
+          ...(typeof clientMessage.supervisorOwnerToken === "string"
+            ? { supervisorOwnerToken: clientMessage.supervisorOwnerToken }
+            : {}),
+        });
 
         if (this.shutdownTimer) {
           clearTimeout(this.shutdownTimer);
           this.shutdownTimer = null;
         }
 
-        writeMessage(socket, { type: "registered", sessionId: id });
-        this.broadcast({ type: "session_joined", session: info }, id);
+        writeMessage(socket, supervisorId
+          ? { type: "registered", sessionId: id, supervisorSessionId: supervisorId }
+          : { type: "registered", sessionId: id });
+        this.broadcastToGroup({ type: "session_joined", session: info }, info.group, id);
         break;
       }
 
       case "unregister": {
+        const leavingGroup = this.sessions.get(currentId)?.info.group;
         this.sessions.delete(currentId);
-        this.broadcast({ type: "session_left", sessionId: currentId }, currentId);
+        this.broadcastToGroup({ type: "session_left", sessionId: currentId }, leavingGroup, currentId);
         setId(null);
         this.scheduleShutdownCheck();
         break;
@@ -213,59 +203,48 @@ class IntercomBroker {
         if (typeof clientMessage.requestId !== "string") {
           throw new Error("Invalid list message");
         }
+        if (clientMessage.group !== undefined && typeof clientMessage.group !== "string") {
+          throw new Error("Invalid list group");
+        }
 
-        const sessions = Array.from(this.sessions.values()).map(s => s.info);
+        const requester = currentId ? this.sessions.get(currentId) : undefined;
+        const effectiveGroup = normalizeGroup(
+          typeof clientMessage.group === "string" ? clientMessage.group : requester?.info.group,
+        );
+        const sessions = Array.from(this.sessions.values())
+          .map((s) => s.info)
+          .filter((info) => normalizeGroup(info.group) === effectiveGroup);
         writeMessage(socket, { type: "sessions", requestId: clientMessage.requestId, sessions });
         break;
       }
 
-      case "send": {
-        const message = clientMessage.message;
-        const messageId = isMessage(message) ? message.id : "unknown";
-
-        if (typeof clientMessage.to !== "string" || !isMessage(message)) {
-          writeMessage(socket, {
-            type: "delivery_failed",
-            messageId,
-            reason: "Invalid message format",
-          });
-          break;
+      case "authorize_supervisor": {
+        const supervisor = this.sessions.get(currentId);
+        if (!supervisor?.supervisorOwnerToken || typeof clientMessage.requestId !== "string"
+          || typeof clientMessage.childName !== "string" || !clientMessage.childName.trim()
+          || (clientMessage.capability !== undefined && typeof clientMessage.capability !== "string")) {
+          throw new Error("Invalid authorize_supervisor message");
         }
-
-        const targets = this.findSessions(clientMessage.to);
-        if (targets.length === 1) {
-          const fromSession = this.sessions.get(currentId);
-          if (!fromSession) {
-            writeMessage(socket, {
-              type: "delivery_failed",
-              messageId: message.id,
-              reason: "Sender session not found",
-            });
-            break;
-          }
-          writeMessage(targets[0].socket, {
-            type: "message",
-            from: fromSession.info,
-            message,
-          });
-          writeMessage(socket, { type: "delivered", messageId: message.id });
-          break;
-        }
-
-        if (targets.length > 1) {
-          writeMessage(socket, {
-            type: "delivery_failed",
-            messageId: message.id,
-            reason: `Multiple sessions named \"${clientMessage.to}\" are connected. Use the session ID instead.`,
-          });
-          break;
-        }
-
+        const childName = clientMessage.childName.trim();
+        const capability = this.supervisorChannel.authorize(
+          supervisor.info.id,
+          supervisor.supervisorOwnerToken,
+          childName,
+          typeof clientMessage.capability === "string" ? clientMessage.capability : undefined,
+        );
         writeMessage(socket, {
-          type: "delivery_failed",
-          messageId: message.id,
-          reason: "Session not found",
+          type: "supervisor_authorized",
+          requestId: clientMessage.requestId,
+          capability,
+          supervisorSessionId: supervisor.info.id,
+          childName,
         });
+        break;
+      }
+
+      case "send":
+      case "supervisor_send": {
+        handleBrokerSend(socket, clientMessage, currentId, this.sessions, this.deliveredMessages, writeMessage, this.supervisorChannel);
         break;
       }
 
@@ -291,7 +270,7 @@ class IntercomBroker {
             session.info.model = clientMessage.model;
           }
           session.info.lastActivity = Date.now();
-          this.broadcast({ type: "presence_update", session: session.info }, currentId);
+          this.broadcastToGroup({ type: "presence_update", session: session.info }, session.info.group, currentId);
         }
         break;
       }
@@ -301,19 +280,11 @@ class IntercomBroker {
     }
   }
 
-  private findSessions(nameOrId: string): ConnectedSession[] {
-    const byId = this.sessions.get(nameOrId);
-    if (byId) {
-      return [byId];
-    }
-
-    const lowerName = nameOrId.toLowerCase();
-    return Array.from(this.sessions.values()).filter(session => session.info.name?.toLowerCase() === lowerName);
-  }
-
-  private broadcast(msg: BrokerMessage, exclude?: string): void {
+  /** Deliver a broadcast only to sessions in the given (normalized) group. */
+  private broadcastToGroup(msg: BrokerMessage, group: string | undefined, exclude?: string): void {
+    const target = normalizeGroup(group);
     for (const [id, session] of this.sessions) {
-      if (id !== exclude) {
+      if (id !== exclude && normalizeGroup(session.info.group) === target) {
         writeMessage(session.socket, msg);
       }
     }

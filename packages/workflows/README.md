@@ -5,7 +5,7 @@
   An open-source Atomic workflow extension: install it, author workflows in TypeScript, run them from chat.
 </p>
 
-Use workflows by default for non-trivial tasks, structured requests, and objectives with verifiable done criteria, including implementation, build, debugging, bug-fix, migration, new-feature, scoped multi-file, and validation-heavy docs/code work. Prompt language such as `do X until Y`, `repeat until`, `iterate until`, `review/fix until passing`, or `run checks and fix until green` is a strong signal to map the work to a workflow with an explicit stop condition rather than a direct chat turn.
+Default to workflows for non-trivial work and requests with inherent structure plus a verifiable objective; reserve direct chat for tiny deterministic low-risk work. Workflow-first is not builtin-only or monolithic: Atomic can author custom TypeScript `workflow({...})` definitions inline, import reusable project/package workflows or builtins from `@bastani/workflows/builtin`, and nest them with `ctx.workflow(...)`. Imported children may nest further workflows within `maxDepth`, so compose proven research, implementation, design, verification, and approval graphs rather than copying them. Custom parents can also use runtime classification, dynamic fan-out and synthesis, adversarial verification, candidate tournaments, HIL gates, and bounded convergence.
 
 <p align="center">
   <a href="#authoring-api">Authoring API</a>
@@ -29,6 +29,18 @@ Adding workflow files under `.atomic/workflows/` (project scope) or `~/.atomic/a
 }
 ```
 
+Temporary-worktree setup can symlink selected main-root directories into each checkout (the default preserves `node_modules`):
+
+```json
+{
+  "worktree": {
+    "symlinkDirectories": ["node_modules", ".cache"]
+  }
+}
+```
+
+After Atomic is running, use `/workflow reload` or the workflow tool's `reload` action to rescan all workflow sources in process. Additions, edits, renames, deletions, config changes, and package-resource changes become visible immediately to list/get/inputs/help/completion/invocation surfaces. Reload requests are serialized/coalesced and publish a complete replacement registry; an in-flight workflow keeps its original definition while later calls use the new registry. Fatal refresh failures retain the prior registry, and skipped malformed or missing resources are reported with actionable diagnostics while valid siblings remain available.
+
 ### Workflow lifecycle notifications
 
 Workflow lifecycle notices are enabled by default. They send steer prompts into the main chat/model context when a run completes, fails, or ends blocked. Awaiting-input prompts are tracked for dedupe/restore, but they do not wake the main chat agent. Configure lifecycle tracking in the same extension config file:
@@ -49,6 +61,10 @@ When a stage human-in-the-loop prompt is answered from the workflow TUI/stage ch
 ---
 
 ## Authoring API
+
+### Workflow-owned side effects
+
+Prefer `ctx.tool(name, args, fn)` for workflow-owned TypeScript operations with side effects, including filesystem writes, network mutations, external API actions, and similar deterministic operations orchestrated directly by the workflow definition. Atomic durably caches a completed call's serializable result, so resume returns that result without rerunning `fn` or repeating the side effect. Keep pure computation and side-effect-free transformations as ordinary TypeScript. Do not wrap agent-stage internals or every function call indiscriminately.
 
 ### Example 1 — Single task
 
@@ -199,7 +215,7 @@ export default workflow({
 });
 ```
 
-The child executes as a nested workflow behind a parent boundary stage named `workflow:<workflow-name>` by default, but user-facing status and graph views flatten it into the parent run. In practice it should feel like inlining the child workflow code: child stages, HIL prompt nodes, and deeper imported children appear in one expanded parent graph, while implementation-owned child run ids stay hidden from top-level `/workflow status` lists. The child still has a run id internally so the graph can attach to, pause, interrupt, resume, or kill live child stages correctly. Inputs are strictly validated against the child workflow before it starts: unknown keys, missing required values, type mismatches, and invalid `select` choices fail before the child body runs. The parent receives the child's declared `outputs` on `child.outputs` after those outputs pass their declared runtime type checks.
+The child executes as a nested workflow behind a parent boundary stage named `workflow:<workflow-name>` by default, but user-facing status and graph views flatten it into the parent run. In practice it should feel like inlining the child workflow code: child stages, HIL prompt nodes, and deeper imported children appear in one expanded parent graph, while implementation-owned child run ids stay hidden from top-level `/workflow status` lists. The child still has a run id internally so the graph can attach to, pause, interrupt, or resume live child stages correctly. Inputs are strictly validated against the child workflow before it starts: unknown keys, missing required values, type mismatches, and invalid `select` choices fail before the child body runs. The parent receives the child's declared `outputs` on `child.outputs` after those outputs pass their declared runtime type checks.
 
 For workflows intended to be called as children, declare an `outputs` entry for every non-default field a parent should rely on. `outputs` is only the schema/contract: use normal TypeScript in `run()` to gather values from any stage/task/child workflow and return those keys.
 
@@ -232,7 +248,11 @@ export default workflow({
 Builtin workflows are also callable as modules for reuse:
 
 ```typescript
-import { deepResearchCodebase, goal, openClaudeDesign, ralph } from "@bastani/workflows/builtin";
+import {
+  adversarialVerification, classifyAndAct, deepResearchCodebase,
+  fanOutAndSynthesize, generateAndFilter, goal, loopUntilDone,
+  openClaudeDesign, ralph, tournament,
+} from "@bastani/workflows/builtin";
 import goalWorkflow from "@bastani/workflows/builtin/goal";
 import openClaudeDesignWorkflow from "@bastani/workflows/builtin/open-claude-design";
 ```
@@ -294,13 +314,16 @@ await ctx.parallel([
 Worktree semantics:
 
 - `gitWorktreeDir` must be used from inside a Git repository. Relative paths resolve from the logical invoking repository root; absolute paths are used as-is.
-- If the requested path exists, it must be an actual Git worktree/checkout root belonging to the invoking repository. Existing subdirectories are rejected so writes do not silently land in the main checkout.
-- If the path is missing, the parent directory is created and Git runs `git worktree add --detach <path> <baseBranch>`. `baseBranch` defaults to `HEAD` when omitted.
+- If the requested path exists, it must be an actual Git worktree/checkout root belonging to the invoking repository. The invoking checkout itself, paths nested beneath it, foreign repositories, and existing subdirectories are rejected so writes do not silently land in the main checkout.
+- If the path is missing, the parent directory is created and Git runs `git worktree add --detach <path> <baseBranch>` from the canonical main repository root. `baseBranch` defaults to `HEAD` when omitted. Missing targets whose existing parent resolves through a symlink beneath the invoking checkout are rejected.
 - The default execution cwd preserves the caller's repo-relative cwd inside the worktree. For example, invoking a workflow from `repo/packages/api` with `gitWorktreeDir=../repo-wt` uses `../repo-wt/packages/api` for workflow `ctx.cwd` and stage/task execution.
 - Symlinked repo/worktree paths preserve their logical spelling in the default cwd, matching Codex-style worktree behavior.
-- Explicit `cwd` still wins. Relative `cwd` values are resolved against the worktree default cwd; absolute `cwd` values are used as provided.
+- An explicit absolute `cwd` inside the invoking checkout is remapped to the corresponding worktree path; an absolute `cwd` already inside the selected worktree is preserved. Relative values resolve from the worktree default cwd and cannot escape it. Foreign paths, lexical traversal, and symlink escapes fail before a session starts.
+- Relative stage/task outputs follow the effective worktree cwd and cannot traverse or follow symlinks outside the selected worktree. Explicit absolute outputs remain caller-selected.
 
-`worktree: true` is different: it creates temporary isolated worktrees for direct task/parallel/chain execution and cleans them up afterward. It is mutually exclusive with `gitWorktreeDir`, which is intended for named/reusable worktrees that remain available across retries.
+`worktree: true` on an authored `ctx.task(...)` is different: it creates a branch-backed temporary checkout at `<main-root>/.atomic/worktrees/<flattened-name>` using branch `worktree-<flattened-name>` and cleans up both checkout and branch afterward, including failures before the task callback starts. `/` in generated names is flattened to `+`, and creation stays anchored at the canonical main root even when Atomic is launched from a linked worktree. The base ref is an explicit `baseBranch`, then `origin/<default-branch>` (fetched when needed), then `HEAD`. Post-creation setup copies `.atomic/settings.local.json` plus untracked `.atomic/settings.json`, shares the main repository's Husky or populated `.git/hooks` directory through `core.hooksPath`, symlinks configured `worktree.symlinkDirectories`, and copies gitignored files matched by `.worktreeinclude`; tracked checkout content is never overwritten. When no task `cwd` is set, temporary isolation starts from the runner invocation cwd; relative task cwd values resolve from that same invocation cwd. Relative task outputs are persisted under distinct per-task runner-owned temporary artifact directories before cleanup; returned output artifact paths therefore remain readable, including with `outputMode: "file-only"`. Those relative paths cannot traverse or follow symlinks outside their runner-owned output root, and a pre-existing symlink or junction at the trusted artifact root is rejected. It is mutually exclusive with `gitWorktreeDir`, which is intended for named/reusable worktrees that remain available across retries and `/workflow resume`. Durable resume records the original invocation cwd and resolved reusable-worktree metadata, then replays from that original repository context rather than whichever cwd the resumed interactive session currently has. Reusable worktree setup is cached by canonical repository and target identity within a workflow run, independent of equivalent path spelling or `baseBranch`, and the selected checkout identity is revalidated before reuse. Read-only Git repository probes retry a transient timeout once, and slow Git subprocess failures include the exact command, cwd, timeout, elapsed time, exit status/signal, and spawn error details.
+
+Worktrees provide checkout and cwd isolation, not an operating-system security sandbox. A process with permission to mutate arbitrary sibling paths can still race filesystem checks; use a container, VM, or another OS-enforced boundary for untrusted code.
 
 For advanced integrations, the SDK also exports `setupGitWorktree(options)`, which returns `{ worktreeRoot, cwd, repositoryRoot, created }` and uses the same validation/path behavior as the executor.
 
@@ -326,7 +349,7 @@ Atomic registers the canonical `structured_output` tool only for schema-enabled 
 
 ### Model fallbacks
 
-Stages and high-level task helpers can retry transient provider/model failures with an ordered `fallbackModels` list. The primary `model` is tried first, then each fallback, and finally the current Atomic-selected model when available. Fallbacks are only used for retryable model/provider failures such as rate limits, quota/auth/provider outages, unavailable models, network timeouts, and 5xx errors — ordinary tool, shell, validation, cancellation, and workflow-code failures are not retried.
+Stages and high-level task helpers can retry transient provider/model failures with an ordered `fallbackModels` list. The primary `model` is tried first, then each fallback, and finally the current Atomic-selected model when available. Fallbacks are only used for retryable model/provider failures such as rate limits, quota/usage-limit exhaustion (provider messages such as `The usage limit has been reached` and codes such as `usage_limit_reached`/`insufficient_quota` classify as retryable rate-limit failures so the chain advances to a candidate with remaining headroom), auth/provider outages, unavailable models, network timeouts, context-window overflows that Atomic's auto-compaction cannot resolve on the current model, and 5xx errors — ordinary tool, shell, validation, cancellation, and workflow-code failures are not retried.
 
 ```typescript
 import { workflow } from "@bastani/workflows";
@@ -361,16 +384,7 @@ export default workflow({
 });
 ```
 
-Direct helpers and workflow tool direct modes can set task-local fallbacks or a top-level default:
-
-```typescript
-await runParallel([
-  { name: "runtime-review", task: "Review runtime changes", model: "anthropic/claude-sonnet-4" },
-  { name: "quality-review", task: "Review quality risks", fallbackModels: ["openai/gpt-5-mini"] },
-], {
-  fallbackModels: ["github-copilot/gpt-5-mini"],
-});
-```
+Set `model` and `fallbackModels` on the authored stage/task/chain/parallel item that needs them.
 
 When pi exposes its model registry, workflow runs validate user-specified `model` / `fallbackModels` before starting model-backed work and report all unavailable or ambiguous IDs together. Bare model IDs are accepted only when they resolve uniquely or match the current provider; otherwise use `provider/model`. Fallback attempts may send the same prompt/context to a different provider, so choose fallbacks that fit your cost, privacy, and data-handling requirements.
 
@@ -531,38 +545,46 @@ Tradeoff: `Type.Unsafe<T>()` does not deeply validate at runtime — it trusts t
 | `/workflow <name> --help`             | Print the workflow's input schema                        |
 | `/workflow list`                      | List all registered workflows with descriptions          |
 | `/workflow status [run-id]`           | Show active plus retained terminal/current-session runs, or details for one run |
-| `/workflow connect [run-id]`          | Attach to a workflow run overlay                         |
+| `/workflow connect [run-id]`          | Open a workflow run graph                                |
 | `/workflow attach [run-id] [stage]`   | Open the attach/chat pane for a run or stage             |
 | `/workflow pause [run-id] [stage]`    | Pause a live run or stage                                |
 | `/workflow interrupt [run-id\|--all]` | Pause active/named/all active runs so they can resume    |
-| `/workflow kill [run-id\|--all]`      | Kill in-flight workflow runs; killed runs are retained for inspection |
+| `/workflow quit [run-id\|--all]`      | Gracefully pause live workflow runs so they can resume later          |
 | `/workflow resume <run-id>`           | Resume paused work or re-open a run snapshot             |
 | `/workflow reload`                    | Reload discovered workflow resources and package-manifest entries in-process |
 | `/workflow inputs <name>`             | Print the input schema for a workflow                    |
 
 Input overrides are bare `key=value` tokens (no leading `--`). Values are JSON-parsed when possible, so numbers, booleans, and quoted strings work as expected (e.g. `count=3`, `flag=true`, `prompt="multi word value"`). A whole-object override can be passed as a single JSON token (e.g. `{"prompt":"...","count":3}`). Runtime validation is strict: unknown input keys, missing required values, type mismatches, and invalid `select` choices fail before a named workflow run starts.
 
-Workflows always run as **background tasks** in interactive sessions — the chat editor stays free while a run executes. Press **F2** (or `/workflow connect <run-id>`) to attach to the live graph viewer; HIL prompts (`ctx.ui.input/confirm/select/editor/custom`) appear as awaiting-input graph nodes. Press Enter on a focused node, or click a visible graph node directly, to open that stage and answer locally, never as a modal dialog over the chat. Attached stage chats capture mouse/trackpad wheel events by default so scrolling stays inside the active stage transcript or prompt instead of falling through to terminal/main-chat scrollback. Press `ctrl+t` to toggle **copy mode**: copy mode disables workflow-chat mouse reporting so normal terminal/tmux text selection can work; press `ctrl+t` again to leave copy mode and restore workflow-chat scrolling. While copy mode is on, wheel/trackpad gestures are handled by the terminal/tmux and may scroll terminal scrollback, so leave copy mode before using the wheel again. Human input is detected when those runtime `ctx.ui.*` calls execute; workflows no longer have a declaration-time HIL flag.
+Named workflow launches always run as **background tasks** in interactive sessions. Run `/workflow connect <run>` to see agents working and chat with and steer each stage. Foreground launches are reserved for explicit user requests or technical requirements, with notice before launch. Press **F2** to open the same live graph viewer; HIL prompts (`ctx.ui.input/confirm/select/editor/custom`) appear as awaiting-input graph nodes. Press Enter on a focused node, or click a visible graph node directly, to open that stage and answer locally, never as a modal dialog over the chat. `ctrl+x` is the workflow hierarchy chord: attached stage chats show **ctrl+x return to graph**, while graph surfaces show **ctrl+x leave graph · return to main chat**. Workflow surfaces consume it before configurable editor/tool actions. Composer and prompt drafts survive leaving a stage, and pending custom questions remain pending for reattachment. `ctrl+d` and `q` are not workflow navigation controls; ordinary editor/prompt Ctrl+D behavior and printable prompt `q` remain available. Existing `esc`, `ctrl+c`, and graph `h` close/hide behavior is unchanged. While the graph pane is active, vertical wheel/trackpad gestures pan vertically and horizontal gestures pan wide graphs left and right when the terminal reports them, without falling through to the main chat or terminal scrollback. Attached stage chats capture mouse/trackpad wheel events by default so scrolling stays inside the active stage transcript or prompt instead of falling through to terminal/main-chat scrollback. Press `ctrl+t` to toggle **copy mode**: copy mode disables workflow-chat mouse reporting so normal terminal/tmux text selection can work; press `ctrl+t` again to leave copy mode and restore workflow-chat scrolling. Archived read-only stage transcripts show the same copy-mode footer/status, allowing their transcript text to be selected and copied while preserving `esc` close and `ctrl+x` graph navigation. While copy mode is on, wheel/trackpad gestures are handled by the terminal/tmux and may scroll terminal scrollback, so leave copy mode before using the wheel again. Human input is detected when those runtime `ctx.ui.*` calls execute; workflows no longer have a declaration-time HIL flag.
 
-Nested `ctx.workflow(...)` calls are displayed as an expanded graph within the top-level run. `/workflow status` and run pickers list only top-level user-launched workflows, not implementation-owned child runs. The `workflow` tool's `stages`, `stage`, `transcript`, `send`, `pause`, `interrupt`, and `resume` actions can still target visible child stage ids, prefixes, or names from the expanded graph; Atomic routes the control action to the owning nested run internally. (`stages`, `stage`, `transcript`, and `send` are `workflow` tool actions, not `/workflow` slash subcommands; the slash command exposes `connect`, `attach`, `pause`, `list`, `status`, `interrupt`, `kill`, `resume`, `reload`, and `inputs`.)
+Named launches return only after startup admission, while the admitted workflow body and stages remain background work. Pre-body setup failures (including invalid input-bound reusable worktrees) are returned immediately from the original tool call as structured failed results with the concrete error and allocated run id; Atomic does not first claim that the workflow started, and it removes the unadmitted run so corrected inputs can be retried immediately. Failures after admission continue to use normal background status and lifecycle notices.
+
+Graceful quit is idempotent for already-paused runs and preserves unresolved `ctx.ui` prompts in DBOS. Stable author-callsite-and-composed-nested-scope reservations are created before prompting and released by exact current-format token generation after answer checkpoint, rejection, or abort. Answering while quit/paused cannot advance workflow code until explicit resume.
+
+Workflow durability requires DBOS/Postgres. Atomic configures and launches DBOS lazily on the first workflow action, reuses that process-wide instance, and awaits readiness before durable execution or control. Initialization or persistence failures fail the workflow action; no alternate backend is selected. `DBOS_SYSTEM_DATABASE_URL` selects an existing database when supplied; otherwise Atomic runs DBOS against its own embedded Postgres (npm-distributed binaries, detached `pg_ctl` daemon under `~/.atomic/postgres` on port 5439, shared across sessions and never stopped by Atomic), with DBOS's `dbos-db` Docker container only as a platform fallback. Concurrent Atomic sessions safely share one database: unique per-process executor ids, owner/heartbeat metadata on running workflows, and first-writer-wins claims on contended status transitions prevent double dispatch. Running workflows never appear as resume targets in any session; stale-heartbeat (crashed) ones surface as red `crashed` rows, paused rows render yellow, failed/blocked red, completed green, and the open picker live-updates on local changes plus a bounded cross-session poll.
+
+DBOS is the only durable catalog for resume, completed inspection, deletion, and targeted lookup. Session JSONL files remain chat transcripts only. Atomic reads and writes one current format; prior local workflow state and older DBOS records are not converted or discovered.
+
+Nested `ctx.workflow(...)` calls are displayed as an expanded graph within the top-level run. `/workflow status` and run pickers list only top-level user-launched workflows, not implementation-owned child runs. The `workflow` tool's `stages`, `stage`, `transcript`, `send`, `pause`, `interrupt`, and `resume` actions can still target visible child stage ids, prefixes, or names from the expanded graph; Atomic routes the control action to the owning nested run internally. The run-level `quit` action targets the selected top-level run or all live top-level runs. (`stages`, `stage`, `transcript`, and `send` are `workflow` tool actions, not `/workflow` slash subcommands; the slash command exposes `connect`, `attach`, `pause`, `list`, `status`, `interrupt`, `quit`, `resume`, `reload`, and `inputs`.)
 
 Prompt answer replay is live-memory only. `StageSnapshot.promptAnswerState` reports whether continuation can replay a prompt answer (`available`), must ask again because the private ledger entry is gone (`unavailable`), or must ask again because multiple matching prompt nodes are ambiguous (`ambiguous`). Raw answers stay in a private `PromptAnswerRecord` ledger, are never serialized to snapshots or persistence, and remain resident in memory until the answer is cleared, the run is removed, or the store is cleared. Replay keys include prompt kind, message text, select choices, input/editor initial value, custom prompt identity hash, and hashed author callsite, so changing any of those inputs may intentionally re-ask on continuation. Empty `ctx.ui.select(..., [])` calls throw before creating a prompt node. Arbitrary custom-widget answers cannot be supplied with `workflow send`; focus the `custom` awaiting-input node in the interactive graph instead.
 
 ### `workflow` tool (LLM-callable)
 
-<!-- Keep the description below in sync with WORKFLOW_TOOL_DESCRIPTION in packages/workflows/src/extension/index.ts; integration tests assert this. -->
+<!-- Keep the description below in sync with WORKFLOW_TOOL_DESCRIPTION in packages/workflows/src/extension/workflow-prompts.ts; integration tests assert this. -->
 
 ```json
 {
   "name": "workflow",
-  "description": "Run named workflows or direct one-off task/tasks/chain workflows; discover with list/get/inputs, inspect status/stages/stage details, send prompt answers or steering, pause/resume/interrupt/kill runs, and reload workflow resources. For large stage handoffs, write context to files/artifacts, pass paths via reads, and prompt downstream agents to 'Read the file at <path>...' instead of injecting large previous text. For transcripts, prefer status/stages/stage to get sessionFile/transcriptPath, quote the exact path without rewriting separators (Windows backslashes are valid), then search it with rg/grep and read small ranges; transcript is path-only by default when sessionFile/transcriptPath exists, explicit tail/limit returns bounded previews, and missing transcript paths fall back to a small preview.",
+  "description": "Run named builtin, project, user, or package workflows; custom definitions may import reusable project/package workflows or builtin definitions from @bastani/workflows/builtin and nest them with ctx.workflow(...), including deeper composition within the configured maxDepth; when workflow execution fits but another shape would better achieve the task, author a custom TypeScript workflow({...}) inline with normal coding tools, reload it, and run it; discover with list/get/inputs/models, list session runs with status (no runId; statusFilter narrows the list), inspect status/stages/stage details, send prompt answers or steering, pause/resume/interrupt/quit runs, and reload workflow resources. For large stage handoffs, write context to files/artifacts, pass paths via reads, and prompt downstream agents to 'Read the file at <path>...' instead of injecting large previous text. For transcripts, prefer status/stages/stage to get sessionFile/transcriptPath, quote the exact path without rewriting separators (Windows backslashes are valid), then search it with rg/grep and read small ranges; transcript is path-only by default when sessionFile/transcriptPath exists, explicit tail/limit returns bounded previews, and missing transcript paths fall back to a small preview. Use action 'models' to inspect models in the configured catalog; the result is a configured-auth snapshot showing what's present in the registry with configured authentication, not proof of credentials, entitlements, OAuth freshness, or live provider access. When authoring a workflow that should dynamically select a model, first call workflow({ action: 'models' }) to inspect the configured catalog, then select from the returned provider/id entries considering the isCurrent marker and available thinking levels.",
   "parameters": {
     "workflow": "string (optional) — workflow ID or normalized name",
     "inputs": "object (optional) — key/value map of workflow inputs",
-    "action": "'run' | 'list' | 'get' | 'inputs' | 'status' | 'stages' | 'stage' | 'transcript' | 'send' | 'pause' | 'interrupt' | 'kill' | 'resume' | 'reload'",
-    "runId": "optional run id or unique prefix; control actions default to the active run where safe; use '--all' or all:true for pause/interrupt/kill all",
+    "action": "'run' | 'list' | 'get' | 'inputs' | 'models' | 'status' | 'stages' | 'stage' | 'transcript' | 'send' | 'pause' | 'interrupt' | 'quit' | 'resume' | 'reload'",
+    "runId": "optional run id or unique prefix; control actions default to the active run where safe; use '--all' or all:true for pause/interrupt/quit all",
     "stageId": "optional stage id, prefix, or name for stage-scoped actions; cannot be combined with all:true",
-    "statusFilter": "optional stages filter: pending/running/awaiting_input/paused/blocked/completed/failed/skipped/all",
+    "statusFilter": "optional filter for stages or the no-runId status run listing: pending/running/awaiting_input/paused/blocked/completed/failed/skipped/cancelled/killed/all; for the status listing, run statuses match directly and awaiting_input selects runs with a pending human prompt",
     "format": "optional agent-facing output format: text or json",
     "limit": "transcript-only explicit maximum number of recent entries; omitted with tail omitted uses the path-only default when sessionFile/transcriptPath exists",
     "tail": "transcript-only explicit last-N entry count; overrides limit for quick recent-context checks",
@@ -573,17 +595,7 @@ Prompt answer replay is live-memory only. `StageSnapshot.promptAnswerState` repo
     "delivery": "optional send delivery mode: auto, answer, prompt, steer, followUp, or resume; auto prioritizes answer, then resume, steer, followUp",
     "promptId": "optional pending prompt identifier for send/answer",
     "reason": "optional human-readable reload reason",
-    "all": "optional boolean for pause/interrupt/kill all; cannot be combined with stageId",
-    "task": "optional direct task object (name + prompt/task) or root task string for direct chain/parallel runs",
-    "tasks": "optional array of direct task objects (parallel direct run)",
-    "chain": "optional array of direct task objects and/or { parallel: [...] } groups (sequential direct run)",
-    "chainName": "optional label for a direct chain run",
-    "concurrency": "optional parallelism limit for direct tasks/chain",
-    "failFast": "optional fail-fast toggle for direct parallel work",
-    "async": "optional boolean to dispatch a run in the background",
-    "intercom": "optional intercom coordination options",
-    "chainDir": "optional directory for direct chain artifacts",
-    "session/task options": "per-stage overrides also accepted at the top level and on direct task items — schema, model, thinkingLevel, fallbackModels, tools, noTools, customTools, mcp, context, cwd, output, outputMode, reads, worktree, gitWorktreeDir, baseBranch, maxOutput, artifacts, and more"
+    "all": "optional boolean for pause/interrupt/quit all; cannot be combined with stageId"
   }
 }
 ```
@@ -591,8 +603,9 @@ Prompt answer replay is live-memory only. `StageSnapshot.promptAnswerState` repo
 - **`renderCall`** — renders a compact workflow call summary in the chat scroll.
 - **`renderResult`** — renders the result or dispatch banner; live progress continues through the widget and graph viewer. Named workflow runs are background-oriented.
 - **`transcript`** — path-only by default when a transcript file exists: use `status`, `stages`, or `stage` to identify the stage and its `sessionFile`/`transcriptPath`, quote the exact path without changing platform separators (for example, preserve Windows backslashes), then search that file with `rg`/`grep` for targeted terms and read only small surrounding ranges. Default text results include JSON-escaped `sessionFileJson`/`transcriptPathJson` lines for copy-safe path literals plus a `lazyReadPrompt`, with `entries: not inlined` so transcript bodies and tool outputs stay out of model context. Passing explicit `tail` or `limit` opts into a bounded inline preview for quick context checks. If no transcript path is available, the action falls back to a bounded preview of up to 5 recent entries with a `fallbackNote`. A registered live stage handle is used when one exists, even before live messages arrive; otherwise the action falls back to stored stage snapshots. Snapshot entries are ordered chronologically before `tail`/`limit` is applied, with terminal result/error entries kept after tool entries when timestamps are missing or tied. `includeToolOutput` applies only to inlined snapshot previews or no-path fallback previews; live session transcripts may not expose tool output.
-- **`send`** — answers pending primitive/structured stage prompts only when `text`, `response`, or `message` is present; an explicit empty string is a valid answer, while an omitted payload is a no-op. Follow-ups to completed or failed stages reuse retained `sessionFile` metadata when available so the conversation resumes from the archived stage transcript instead of starting empty; if no session metadata was retained, the follow-up is refused instead of silently resetting. Arbitrary `ctx.ui.custom<T>` widget prompts require the interactive workflow graph and return a clear unsupported message when targeted through `send`. `delivery: "auto"` answers pending prompts first, then resumes paused stages, steers streaming stages, or queues a follow-up.
+- **`send`** — answers pending primitive/structured stage prompts only when `text`, `response`, or `message` is present; an explicit empty string is a valid answer, while an omitted payload is a no-op. Follow-ups to eligible terminal agent stages revive an interactive **post-mortem chat** through the shared resolver: on a live-handle miss the stage's retained `sessionFile` is validated (existing, readable, context-bearing) and reopened as a detached, single-flight handle so the message is delivered as a conversational follow-up appended in place — the same path used by `/workflow attach`, restored/replayed durable snapshots, and completed-workflow inspection — without resuming, retrying, or re-dispatching workflow execution. If no valid retained session exists, the follow-up is refused (`No live handle for stage.`) instead of silently resetting or exposing a handle-less non-terminal session. Arbitrary `ctx.ui.custom<T>` widget prompts require the interactive workflow graph and return a clear unsupported message when targeted through `send`. `delivery: "auto"` answers pending prompts first, then resumes paused stages, steers streaming stages, or queues a follow-up.
 - **`reload`** — refreshes workflow resources directly in-process instead of queuing a literal `/workflow reload` chat follow-up.
+- **`models`** — returns safe model-catalog metadata from the configured registry. Each entry contains `provider` (e.g. `openai`), `id` (e.g. `gpt-4`), `fullId` (e.g. `openai/gpt-4`), `isCurrent` (whether this is the active model), and `availableThinkingLevels`, canonically derived from the registry model's `reasoning` and `thinkingLevelMap` metadata. The result is a configured-auth snapshot: it shows which models are present in the registry with configured authentication, not proof of credentials, entitlements, OAuth freshness, or live provider access. No secrets, tokens, or authentication details are returned.
 
 ### F2 keyboard shortcut
 
@@ -628,7 +641,7 @@ export default workflow({
 });
 ```
 
-The `workflow` tool still supports direct one-off `task`, `tasks`, and `chain` modes for agent-initiated orchestration. Those direct modes are runtime tool inputs, not workflow definition files.
+The `workflow` tool accepts named workflow execution (`workflow` plus `inputs`), discovery, inspection, messaging, run control, and reload. Author stage graphs with `ctx.task`, `ctx.chain`, and `ctx.parallel` inside workflow definitions.
 
 For large handoffs, prefer artifact paths over prompt injection: write stage output to `output`, set `outputMode: "file-only"` when the parent only needs the path, pass paths with `reads`, and instruct downstream agents explicitly with wording like `Read the file at <path>...`. Reserve `previous`/`{previous}` for compact summaries; avoid passing full session histories, all prior stage outputs, or every review round directly into the next model prompt. In review loops, save JSON review artifacts and pass only the latest review-round artifact, with a ledger or index file linking older rounds when needed.
 
@@ -640,9 +653,48 @@ To inspect a workflow's input schema inside pi, use `/workflow inputs <name>` or
 
 ## Builtin workflows
 
+### Six composable pattern workflows
+
+The six common patterns ship as full builtins and are discoverable/runnable by name:
+
+| Workflow | Graph and use | Inputs (defaults) | Parent-consumable outputs |
+|---|---|---|---|
+| `classify-and-act` | structured classifier → deterministic action; HIL fallback for low confidence | `prompt`; `categories` (3 defaults), `confidence_threshold=0.75` | result, category/confidence, classification/action paths |
+| `fan-out-and-synthesize` | partition → bounded artifact fan-out → evidence synthesis barrier | `prompt`; `max_branches=4`, `max_concurrency=4` | result, partitions, branch/synthesis/manifest paths |
+| `adversarial-verification` | worker → fresh rubric verifiers → reducer → bounded repair | `task`; `verifier_count=3`, `max_repairs=2` | result, approval, repairs, candidate/review/verifier paths |
+| `generate-and-filter` | candidate fan-out → dedupe/filter → optional judge → shortlist | `prompt`; `num_candidates=8`, `shortlist_size=3`, `use_judge=true`, `max_concurrency=4` | result, shortlist and candidate/filter/judge/final/manifest paths |
+| `tournament` | independent attempts → order-balanced pairwise judges → bracket reducer | `prompt`; `num_attempts=4`, `max_concurrency=4` | result, winner, attempt/judge/bracket paths |
+| `loop-until-done` | durable ledger → iteration/evaluator loop → complete or inspectable exhaustion | `prompt`; `max_iterations=5` | result/status, ledger, iteration/evaluation paths, remaining work |
+
+All six are exported from `@bastani/workflows/builtin` as definitions (`classifyAndAct`, `fanOutAndSynthesize`, `adversarialVerification`, `generateAndFilter`, `tournament`, and `loopUntilDone`). Import and nest them through `ctx.workflow(definition, { inputs, stageName })`; nested calls respect `maxDepth`. Prefer composition over copying their prompts or graphs: children contribute their stages, dedicated prompts, gates, artifacts, HIL nodes, and declared outputs to the expanded parent graph.
+
+A migration parent can nest all three definitions: fan out the fix pass, independently verify the produced patch set, then run a bounded evidence loop until the repository tests pass:
+
+```ts
+import { adversarialVerification, fanOutAndSynthesize, loopUntilDone } from "@bastani/workflows/builtin";
+
+const fixes = await ctx.workflow(fanOutAndSynthesize, {
+  inputs: { prompt: "Fix every migration call site", max_branches: 6 },
+  stageName: "migration fixes",
+});
+const verification = await ctx.workflow(adversarialVerification, {
+  inputs: { task: `Verify every patch listed by ${fixes.outputs.manifest_path}` },
+  stageName: "verify migration patches",
+});
+const convergence = await ctx.workflow(loopUntilDone, {
+  inputs: {
+    prompt: `Run the migration test suite and repair remaining failures. Start from ${fixes.outputs.manifest_path}; respect the verification decision at ${verification.outputs.review_report_path}.`,
+    max_iterations: 5,
+  },
+  stageName: "loop while migration tests fail",
+});
+```
+
+The parent can consume `fixes.outputs`, `verification.outputs`, and `convergence.outputs` directly, and can repeat the verification child per patch when its own typed input lists individual patch artifacts.
+
 ### `deep-research-codebase`
 
-Scout + research-history chain → two parallel specialist waves → aggregator. Ideal for deep investigation of a codebase topic across locator, pattern, analyzer, and ecosystem angles.
+Heavy research for tasks requiring comprehensive, whole-repository context.
 
 ```text
 /workflow deep-research-codebase prompt="How does session persistence work?"
@@ -660,7 +712,9 @@ Child workflow outputs: `result`, `findings`, `research_doc_path`, `artifact_dir
 
 ### `goal`
 
-Goal Runner workflow: initialize a persisted goal ledger with a per-run goal id, immutable `acceptance_criteria`, and lifecycle events, render goal-continuation context, run bounded worker LM turns, append receipts, run three independent reviewers with objective-alignment findings and clause-by-clause requirements traceability, let a TypeScript reducer decide `complete`, `continue`, `blocked`, or `needs_human`, and optionally run a final-stage PR handoff after approval. Workers and reviewers are prompted to verify user-visible behavior end-to-end when practical with `playwright-cli`-skilled subagents for web/frontend flows that may depend on backend/API behavior and tmux-skilled subagents for TUI or terminal-app scenarios; they must assume credentials/auth/environment access exists until concrete checks plus an actual app/flow launch attempt prove otherwise, and skipped E2E must cite exact attempted commands and observed failure output. Reviewers also look for any QA E2E video referenced by the ledger or receipt and inspect the actual video before treating it as proof. Token budget behavior is intentionally excluded. Goal skips PR creation by default; prompt text alone does not opt in. Pass `create_pr=true` to authorize only the final `pull-request` stage to inspect provider credentials and attempt provider-appropriate PR/MR/review creation after Goal reaches `complete` within the turn budget.
+Goal Runner workflow: initialize a persisted goal ledger with a per-run goal id, immutable `acceptance_criteria`, and lifecycle events, render goal-continuation context, run bounded worker LM turns, append receipts, run three independent reviewers with objective-alignment findings and clause-by-clause requirements traceability, let a TypeScript reducer decide `complete`, `continue`, `blocked`, or `needs_human`, and optionally run a final-stage PR handoff after approval. All three reviewers start in clean, non-forked contexts like Ralph's reviewers and use Ralph's exact `reviewer-a` model chain, led by Claude Fable 5. At review start, every concurrent reviewer checks Intercom, discovers sibling reviewers in the same run, communicates its validation plan, and coordinates ownership and serialization of expensive, lock-prone, or conflicting shared-checkout/shared-environment commands. Reviewers announce coordinated check starts and finishes, release claimed resources, and share reusable execution evidence while still independently inspecting the patch and producing their own verdicts. Workers begin from an observable acceptance/contract matrix derived from the literal objective/acceptance criteria and are prompted to model states, transitions, and invariants explicitly for stateful work; each review round's findings are consolidated into a deduplicated cross-reviewer batch (`consolidated_findings` in the round artifact) that the next worker turn repairs together, with durable regression evidence required for reproduced findings. Reviewers independently derive adversarial checks from the literal contract before relying on the worker receipt or worker-authored tests. Workers and reviewers are prompted to verify user-visible behavior end-to-end when practical with `playwright-cli`-skilled subagents for web/frontend flows that may depend on backend/API behavior and tmux-skilled subagents for TUI or terminal-app scenarios; they must assume credentials/auth/environment access exists until concrete checks plus an actual app/flow launch attempt prove otherwise, and skipped E2E must cite exact attempted commands and observed failure output. Reviewers also look for any QA E2E video referenced by the ledger or receipt and inspect the actual video before treating it as proof. Token budget behavior is intentionally excluded. Goal skips PR creation by default; prompt text alone does not opt in. Pass `create_pr=true` to authorize only the final `pull-request` stage to inspect provider credentials and attempt provider-appropriate PR/MR/review creation after Goal reaches `complete` within the turn budget.
+
+Resource release is itself a coordinated update: after releasing a claim, the reviewer explicitly notifies its siblings through Intercom rather than treating release as a silent local action.
 
 ```text
 /workflow goal objective="Migrate the database layer to Drizzle ORM" base_branch=develop
@@ -675,13 +729,15 @@ Goal Runner workflow: initialize a persisted goal ledger with a per-run goal id,
 | `base_branch` | `string` | —        | `origin/main` | Branch reviewers and the optional final stage compare the current delta with. |
 | `create_pr`    | `boolean` | —        | `false`       | Safe-by-default PR creation flag. Omitted or `false` skips the final `pull-request` stage and omits `pr_report`; prompt text alone does not opt in, and only strict `true` authorizes the final `pull-request` stage to attempt provider-appropriate PR/MR/review creation after Goal reaches `complete`. |
 
-`goal` defaults to 10 worker/review turns. Reviewer quorum is fixed internally at 2 reviewer `complete` votes. The repeated-blocker threshold defaults to 3 consecutive same-blocker turns and is clamped to `max_turns` when you run fewer than 3 turns.
+`goal` defaults to 10 worker/review turns. Reviewer quorum is fixed internally at 2 reviewer `complete` votes, and approval is deterministic on each reviewer's self-reported `stop_review_loop` boolean: a reviewer approves exactly when it returns `stop_review_loop=true` with no `reviewer_error` (parse failures count as non-approval), and the reducer completes the run when quorum of those booleans is met. Findings and `requirements_traceability` remain required audit evidence and drive the reviewer prompts that derive the flag (`required_by_objective` findings mean `false` at any priority, P3 included; `consistent_with_objective` P3 nice-to-haves, out-of-scope observations, the quorum process itself, and the authorized post-approval PR final action must not hold the flag at `false`), but the harness does not recompute approval from those arrays. Without quorum, the decision reason records the reviewers' remaining work, and the bounded loop stops inspectably at `max_turns` as `needs_human`. The repeated-blocker threshold defaults to 3 consecutive same-blocker turns and is clamped to `max_turns` when you run fewer than 3 turns.
 
 Child workflow outputs: `result`, `status`, `approved`, `goal_id`, `objective`, `acceptance_criteria`, `ledger_path`, `turns_completed`, `iterations_completed`, `receipts`, `remaining_work`, `review_report`, and `review_report_path`. `pr_report` is included only when `create_pr=true`, Goal reaches `complete`, and the final `pull-request` stage runs.
 
 ### `ralph`
 
-Raw prompt → prompt-engineering research → orchestrate → review workflow with optional final-stage PR handoff: use the raw prompt as the operative objective, keep optional `acceptance_criteria` as the immutable original task contract (defaulting to `prompt`), transform the prompt into a codebase and online research question with `/skill:prompt-engineer`, run `/skill:research-codebase` against it, write findings under `research/`, delegate implementation through sub-agents from that research, run parallel reviewers across Claude Fable 5, GPT-5.5 Codex, and Gemini 3.1 Pro model families, and iterate until approval or the loop limit. Ralph's research, orchestrator, and reviewer prompts receive the objective next to the literal acceptance contract; when launching follow-up Ralph runs from reviewer findings, pass the ORIGINAL task text as `acceptance_criteria` so deltas cannot drift from the contract. Ralph's orchestrator and reviewers are prompted to verify user-visible behavior end-to-end when practical with `playwright-cli`-skilled subagents for web/frontend flows that may depend on backend/API behavior and tmux-skilled subagents for TUI or terminal-app scenarios. They must assume credentials/auth/environment access exists until concrete non-destructive checks plus an actual launch/flow attempt prove otherwise; skipped E2E is valid only when exact attempted commands and observed failure output are recorded. For UI-applicable or full-stack changes, the orchestrator runs a `playwright-cli` end-to-end QA pass and records a reviewable proof video, references it in the implementation notes, and exposes it as the `qa_video_path` output; reviewers receive that path and inspect the actual video before treating it as proof. Review decisions include `requirements_traceability`, a non-empty clause-by-clause map over every prompt/acceptance-criteria requirement, and Ralph approval requires every entry to be `proven`; worker-authored tests/snapshots passing are circular evidence unless tied to independent current-state proof. When `create_pr=true`, the final `pull-request` stage attaches or links that video to the created PR/MR/review. Follow-up iterations pass unresolved review artifacts into prompt-engineering/research and fork research from prior research session data when available. Ralph skips PR creation by default; prompt text alone does not opt in. Pass `create_pr=true` to authorize only the final `pull-request` stage to inspect provider credentials and attempt provider-appropriate PR/MR/review creation (for example GitHub `gh`, Azure Repos `az repos pr create`, or Sapling/Phabricator tooling). Ralph's own PR-creation instructions live in that final stage. Reviewers inspect repository infrastructure directly as needed; Ralph no longer runs separate `infra-*` discovery stages.
+Raw prompt → prompt-engineering research → orchestrate → review workflow with optional final-stage PR handoff: use the raw prompt as the operative objective, keep optional `acceptance_criteria` as the immutable original task contract (defaulting to `prompt`), transform the prompt into a codebase and online research question with `/skill:prompt-engineer`, run `/skill:research-codebase` against it, write findings under `research/`, delegate implementation through sub-agents from that research, run parallel reviewers across Claude Fable 5 and GPT-5.5 Codex model families, and iterate until approval or the loop limit. At review start, each concurrent Ralph reviewer checks Intercom, discovers same-run sibling reviewers, communicates its validation plan, claims expensive or lock-prone checks, and coordinates serialization of conflicting shared-checkout/shared-environment commands. Reviewers announce coordinated check starts and finishes, release claimed resources, and share reusable command evidence, but each still independently inspects the patch and returns its own verdict. Ralph's research, orchestrator, and reviewer prompts receive the objective next to the literal acceptance contract; when launching follow-up Ralph runs from reviewer findings, pass the ORIGINAL task text as `acceptance_criteria` so deltas cannot drift from the contract. The orchestrator begins from an observable acceptance/contract matrix derived from the literal prompt/acceptance criteria, models states/transitions/invariants explicitly for stateful work, and repairs unresolved reviewer findings as one consolidated batch (the round artifact carries a deduplicated cross-reviewer `consolidated_findings` list) with durable regression evidence for reproduced findings. Reviewers independently derive adversarial checks from the literal contract before relying on the implementation notes, orchestrator report, or worker-authored tests, and each reviewer derives a single authoritative `stop_review_loop` boolean from that evidence (`required_by_objective` findings mean `false` at any priority, P3 included, while `consistent_with_objective` P3 nice-to-haves stay non-blocking); the loop gate approves deterministically on that boolean plus a null `reviewer_error` without recomputing approval from the findings arrays. Ralph's orchestrator and reviewers are prompted to verify user-visible behavior end-to-end when practical with `playwright-cli`-skilled subagents for web/frontend flows that may depend on backend/API behavior and tmux-skilled subagents for TUI or terminal-app scenarios. They must assume credentials/auth/environment access exists until concrete non-destructive checks plus an actual launch/flow attempt prove otherwise; skipped E2E is valid only when exact attempted commands and observed failure output are recorded. For UI-applicable or full-stack changes, the orchestrator runs a `playwright-cli` end-to-end QA pass and records a reviewable proof video, references it in the implementation notes, and exposes it as the `qa_video_path` output; reviewers receive that path and inspect the actual video before treating it as proof. Review decisions include `requirements_traceability`, a non-empty clause-by-clause map over every prompt/acceptance-criteria requirement kept as audit evidence for deriving the flag; worker-authored tests/snapshots passing are circular evidence unless tied to independent current-state proof, and process-only clauses (reviewer quorum, the authorized post-approval PR final action) must never hold `stop_review_loop` at `false`. When `create_pr=true`, the final `pull-request` stage attaches or links that video to the created PR/MR/review. Follow-up iterations pass unresolved review artifacts into prompt-engineering/research and fork research from prior research session data when available. Ralph skips PR creation by default; prompt text alone does not opt in. Pass `create_pr=true` to authorize only the final `pull-request` stage to inspect provider credentials and attempt provider-appropriate PR/MR/review creation (for example GitHub `gh`, Azure Repos `az repos pr create`, or Sapling/Phabricator tooling). Ralph's own PR-creation instructions live in that final stage. Reviewers inspect repository infrastructure directly as needed; Ralph no longer runs separate `infra-*` discovery stages.
+
+Resource release is itself a coordinated update: after releasing a claim, the reviewer explicitly notifies its sibling through Intercom rather than treating release as a silent local action.
 
 ```text
 /workflow ralph prompt="Migrate the database layer to Drizzle ORM" max_loops=3 base_branch=develop

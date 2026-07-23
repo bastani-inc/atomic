@@ -1,4 +1,5 @@
-import { complete, getModel, type Model } from "@mariozechner/pi-ai/compat";
+import { complete, getModel, type Model } from "@earendil-works/pi-ai/compat";
+import type { ProviderHeaders } from "@earendil-works/pi-ai";
 import type { QueryResultData } from "./storage.js";
 import {
 	buildDeterministicSummary,
@@ -12,12 +13,18 @@ import { filterByQueryIndices, normalizeSummaryMeta } from "./web-search-formatt
 async function resolveFirstAvailableModel(
 	ctx: SummaryGenerationContext,
 	candidates: Array<{ provider: string; id: string }>,
-): Promise<{ model: Model; apiKey: string; headers?: Record<string, string> }> {
+): Promise<{ model: Model; apiKey: string; headers?: ProviderHeaders }> {
 	for (const { provider, id } of candidates) {
 		const model = getModel(provider, id);
 		if (!model) continue;
 		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-		if (auth.ok && auth.apiKey) return { model, apiKey: auth.apiKey, headers: auth.headers };
+		if (auth.ok && auth.apiKey) {
+			return {
+				model: auth.baseUrl === undefined ? model : { ...model, baseUrl: auth.baseUrl },
+				apiKey: auth.apiKey,
+				headers: auth.headers,
+			};
+		}
 	}
 	throw new Error(`No model available: ${candidates.map(c => `${c.provider}/${c.id}`).join(", ")}`);
 }

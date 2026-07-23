@@ -6,8 +6,9 @@ import { CONFIG_DIR_NAME, getProjectConfigPaths } from "@bastani/atomic";
 import { getAgentPath, getAgentPaths } from "./agent-dir.ts";
 import type { McpConfig, ServerEntry, McpSettings, ImportKind, ServerProvenance } from "./types.ts";
 import { buildConfigWritePreview, getServersObject, readRawConfigObject, setServersObject, writeRawConfigObject, type ConfigWritePreview } from "./config-write-utils.ts";
+import { MCP_TIMEOUT_MS_CONFIG_ERROR, McpTimeoutConfigError, validateMcpServerTimeouts } from "./tool-call-timeout.js";
+export { MCP_TIMEOUT_MS_CONFIG_ERROR };
 export type { ConfigWritePreview } from "./config-write-utils.ts";
-
 const GENERIC_GLOBAL_CONFIG_PATH = join(homedir(), ".config", "mcp", "mcp.json");
 const PROJECT_CONFIG_NAME = ".mcp.json";
 const PROJECT_PI_CONFIG_NAME = `${CONFIG_DIR_NAME}/mcp.json`;
@@ -25,7 +26,6 @@ const IMPORT_PATHS: Record<ImportKind, string[]> = {
   windsurf: [join(homedir(), ".windsurf", "mcp.json")],
   vscode: [".vscode/mcp.json"],
 };
-
 interface ConfigSourceSpec {
   id: "shared-global" | "pi-global" | "shared-project" | "pi-project";
   label: string;
@@ -36,13 +36,11 @@ interface ConfigSourceSpec {
   shared: boolean;
   scope: "global" | "project";
 }
-
 export interface ConfigDiscoveryPath {
   label: string;
   path: string;
   exists: boolean;
 }
-
 export interface DiscoveredImportConfig {
   kind: ImportKind;
   path: string;
@@ -248,6 +246,7 @@ function expandImports(config: McpConfig, cwd = process.cwd()): McpConfig {
         }
       }
     } catch (error) {
+      if (error instanceof McpTimeoutConfigError) throw error;
       console.warn(`Failed to import MCP config from ${importKind}:`, error);
     }
   }
@@ -278,13 +277,14 @@ function getImportServerCount(importKind: ImportKind, path: string): number {
 function readValidatedConfig(path: string, label: string): McpConfig | null {
   if (!existsSync(path)) return null;
   try {
-    return validateConfig(JSON.parse(readFileSync(path, "utf-8")));
+    return validateMcpConfig(JSON.parse(readFileSync(path, "utf-8")));
   } catch (error) {
+    if (error instanceof McpTimeoutConfigError) throw error;
     console.warn(`Failed to load ${label}:`, error);
     return null;
   }
 }
-function validateConfig(raw: unknown): McpConfig {
+export function validateMcpConfig(raw: unknown): McpConfig {
   if (!raw || typeof raw !== "object") {
     return { mcpServers: {} };
   }
@@ -294,7 +294,7 @@ function validateConfig(raw: unknown): McpConfig {
     return { mcpServers: {} };
   }
   return {
-    mcpServers: servers as Record<string, ServerEntry>,
+    mcpServers: validateMcpServerTimeouts(servers as Record<string, unknown>),
     imports: Array.isArray(obj.imports) ? (obj.imports as ImportKind[]) : undefined,
     settings: obj.settings as McpSettings | undefined,
   };
@@ -320,7 +320,7 @@ function extractServers(config: unknown, kind: ImportKind): Record<string, Serve
   if (!servers || typeof servers !== "object" || Array.isArray(servers)) {
     return {};
   }
-  return servers as Record<string, ServerEntry>;
+  return validateMcpServerTimeouts(servers as Record<string, unknown>);
 }
 function isRepoPromptServer(name: string, entry: ServerEntry): boolean {
   const normalizedName = name.toLowerCase();

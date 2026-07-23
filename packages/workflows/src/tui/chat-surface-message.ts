@@ -27,7 +27,7 @@
 
 import type { ExtensionAPI } from "../extension/index.js";
 import type { RunDetail } from "../runs/background/status.js";
-import type { RunSnapshot, RunStatus } from "../shared/store-types.js";
+import type { RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowInputValues } from "../shared/types.js";
 import type { GraphTheme } from "./graph-theme.js";
 import type { WorkflowListEntry } from "./workflow-list.js";
@@ -35,7 +35,6 @@ import { renderDispatchConfirm } from "./dispatch-confirm.js";
 import { renderRunDetail } from "./run-detail.js";
 import { renderStatusList } from "./status-list.js";
 import { renderWorkflowList } from "./workflow-list.js";
-import { renderWorkflowKilledNotice } from "./session-confirm.js";
 
 /** Custom message type wired to {@link registerChatSurfaceRenderer}. */
 export const CHAT_SURFACE_CUSTOM_TYPE = "workflows:chat-surface";
@@ -82,19 +81,11 @@ export interface DetailPayload {
   detail: RunDetail;
 }
 
-/** Inline notice after a workflow run is killed and retained for inspection. */
-export interface KilledPayload {
-  kind: "killed";
-  run: RunSnapshot;
-  previousStatus: RunStatus;
-}
-
 export type ChatSurfacePayload =
   | DispatchPayload
   | StatusPayload
   | ListPayload
-  | DetailPayload
-  | KilledPayload;
+  | DetailPayload;
 
 // ---------------------------------------------------------------------------
 // Renderer registration
@@ -218,16 +209,6 @@ export function renderChatSurfacePlainText(
       }
       return lines.join("\n");
     }
-    case "killed":
-      if (options.theme !== undefined) {
-        return renderWorkflowKilledNotice({
-          width: width ?? 80,
-          theme: options.theme,
-          run: payload.run,
-          previousStatus: payload.previousStatus,
-        }).join("\n");
-      }
-      return renderKilledPlainText(payload);
   }
 }
 
@@ -272,20 +253,6 @@ function formatWorkflowEntryPlain(entry: WorkflowListEntry): string {
   ].filter((part): part is string => part !== undefined);
   const inputSummary = inputs.length > 0 ? inputs.join(" · ") : "inputs: (none)";
   return `workflow: ${entry.name} · description: ${entry.description} · ${inputSummary}`;
-}
-
-function renderKilledPlainText(payload: KilledPayload): string {
-  const run = payload.run;
-  const stageCount = run.stages.length;
-  const runningStages = run.stages.filter((stage) => stage.status === "running").length;
-  return [
-    "Workflow killed",
-    `workflow: ${run.name}`,
-    `run id: ${run.id}`,
-    `status: ${payload.previousStatus} → killed`,
-    `active stages: ${runningStages}/${stageCount}`,
-    `inspect: /workflow status ${run.id}`,
-  ].join("\n");
 }
 
 function formatPlainRecord(record: Readonly<WorkflowInputValues>): string {
@@ -353,12 +320,5 @@ function renderPayload(
       return renderWorkflowList(payload.entries, { theme, width });
     case "detail":
       return renderRunDetail(payload.detail, { theme, width, now });
-    case "killed":
-      return renderWorkflowKilledNotice({
-        width,
-        theme,
-        run: payload.run,
-        previousStatus: payload.previousStatus,
-      }).join("\n");
   }
 }

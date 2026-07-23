@@ -58,9 +58,8 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			// Gather the same active context Atomic would send to the model. This applies
-			// context_compaction deletion filters and treats retired summary-compaction
-			// records as archival metadata, not replacement conversation context.
+			// Gather the active provider context. Durable verbatim compaction boundaries
+			// are already reconstructed as a boundary message plus their kept tail.
 			const messages = buildSessionContext(ctx.sessionManager.getEntries(), ctx.sessionManager.getLeafId()).messages;
 
 			if (messages.length === 0) {
@@ -96,7 +95,7 @@ export default function (pi: ExtensionAPI) {
 					};
 
 					const response = await complete(
-						ctx.model!,
+						auth.baseUrl === undefined ? ctx.model! : { ...ctx.model!, baseUrl: auth.baseUrl },
 						{ systemPrompt: SYSTEM_PROMPT, messages: [userMessage] },
 						{ apiKey: auth.apiKey, headers: auth.headers, signal: loader.signal },
 					);

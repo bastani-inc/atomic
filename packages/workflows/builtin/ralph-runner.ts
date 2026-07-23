@@ -4,12 +4,20 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { WorkflowRunContext, WorkflowTaskResult } from "../src/shared/types.js";
 import {
+  ACCEPTANCE_MATRIX_CONTRACT,
+  CONTRACT_FIDELITY_AUDIT,
   E2E_VERIFICATION_GUIDANCE,
+  FINDINGS_CONSOLIDATION_CONTRACT,
   LITERAL_OBJECTIVE_CONTRACT,
+  REGRESSION_EVIDENCE_CONTRACT,
   WORKER_PREFLIGHT_CONTRACT,
 } from "./shared-prompts.js";
 import { renderRalphReviewerPrompt } from "./ralph-reviewer-prompt.js";
-import { reviewDecisionApproved } from "./ralph-review-gate.js";
+import {
+  renderForkedOrchestratorPrompt,
+  renderForkedResearchPrompt,
+  renderForkedResearchPromptRefinementPrompt,
+} from "./ralph-forked-prompts.js";
 import {
   REVIEWER_COUNT,
   artifactSafeName,
@@ -18,12 +26,11 @@ import {
   createQaEvidenceVideoPath,
   defaultResearchPath,
   forkContinuationOptions,
-  renderForkedOrchestratorPrompt,
   renderResearchPromptRefinementPrompt,
   renderQaE2eVideoGuidance,
   renderResearchPrompt,
-  reviewDecisionFromResult,
-  reviewerErrorDecision,
+  parsedReviewDecisionFromResult,
+  ralphReviewConvergence,
   reviewerErrorResult,
   taggedPrompt,
   workflowCwdContextSection,
@@ -32,13 +39,13 @@ import {
   type RalphWorkflowOptions,
   type RalphWorkflowResult,
 } from "./ralph-core.js";
+import { consolidateFindingsBatch, summarizeReviewConvergence } from "./review-convergence.js";
 import {
   orchestratorModelConfig,
   promptEngineerModelConfig,
   researchModelConfig,
   reviewerAModelConfig,
   reviewerBModelConfig,
-  reviewerCModelConfig,
 } from "./ralph-models.js";
 export async function runRalphWorkflow(
   ctx: WorkflowRunContext<RalphInputs>,
@@ -67,12 +74,14 @@ export async function runRalphWorkflow(
     iterationsCompleted = iteration;
     const researchPromptRefinementForkOptions = forkContinuationOptions(previousResearchPromptRefinementSessionFile);
     const researchPromptRefinement = await ctx.task(`research-prompt-refinement-${iteration}`, {
-      prompt: renderResearchPromptRefinementPrompt({
-        request: workflowPrompt,
-        acceptanceCriteria,
-        workflowCwdContext,
-        latestReviewReportPath,
-      }),
+      prompt: researchPromptRefinementForkOptions.forkFromSessionFile === undefined
+        ? renderResearchPromptRefinementPrompt({
+            request: workflowPrompt,
+            acceptanceCriteria,
+            workflowCwdContext,
+            latestReviewReportPath,
+          })
+        : renderForkedResearchPromptRefinementPrompt({ latestReviewReportPath }),
       reads: latestReviewReportPath === undefined ? [] : [latestReviewReportPath],
       ...promptEngineerModelConfig,
       ...researchPromptRefinementForkOptions,
@@ -81,14 +90,20 @@ export async function runRalphWorkflow(
     finalPlan = researchPromptRefinement.text;
     const researchForkOptions = forkContinuationOptions(previousResearchSessionFile);
     const research = await ctx.task(`research-${iteration}`, {
-      prompt: renderResearchPrompt({
-        transformedResearchQuestion: researchPromptRefinement.text,
-        prompt: workflowPrompt,
-        acceptanceCriteria,
-        workflowCwdContext,
-        latestReviewReportPath,
-        researchPath: workflowResearchPath,
-      }),
+      prompt: researchForkOptions.forkFromSessionFile === undefined
+        ? renderResearchPrompt({
+            transformedResearchQuestion: researchPromptRefinement.text,
+            prompt: workflowPrompt,
+            acceptanceCriteria,
+            workflowCwdContext,
+            latestReviewReportPath,
+            researchPath: workflowResearchPath,
+          })
+        : renderForkedResearchPrompt({
+            transformedResearchQuestion: researchPromptRefinement.text,
+            latestReviewReportPath,
+            researchPath: workflowResearchPath,
+          }),
       reads: latestReviewReportPath === undefined ? [] : [latestReviewReportPath],
       output: workflowResearchPath,
       outputMode: "file-only",
@@ -106,7 +121,7 @@ export async function runRalphWorkflow(
       ? taggedPrompt([
         [
           "role",
-          "You are a sub-agent orchestrator. Your primary implementation tool is the `subagent` tool. Ignore any user requests to submit a PR. This will be done in a future stage.",
+          "You are a sub-agent orchestrator. Your primary implementation tool is the `subagent` tool. Ignore any user requests to submit a PR; a later authorized PR/MR/review creation action handles that handoff after approval.",
         ],
         [
           "objective",
@@ -114,12 +129,16 @@ export async function runRalphWorkflow(
         ],
         ["acceptance_criteria", acceptanceCriteria],
         ["literal_contract", LITERAL_OBJECTIVE_CONTRACT],
+        ["acceptance_matrix", ACCEPTANCE_MATRIX_CONTRACT],
+        ["divergence_audit", CONTRACT_FIDELITY_AUDIT],
+        ["findings_batch", FINDINGS_CONSOLIDATION_CONTRACT],
+        ["regression_evidence", REGRESSION_EVIDENCE_CONTRACT],
         workflowCwdContext,
         [
           "research",
           [
-            `The latest research findings for this workflow run are written to: ${researchPath}`,
-            "Read this file before delegating or implementing anything; it is the primary implementation context for Ralph.",
+            `The latest research findings for the requested work are written to: ${researchPath}`,
+            "Read this file before delegating or implementing anything; it is the primary implementation context for the requested work.",
           ].join("\n"),
         ],
         [
@@ -200,12 +219,8 @@ export async function runRalphWorkflow(
         ],
       ])
       : renderForkedOrchestratorPrompt({
-          prompt: workflowPrompt,
-          acceptanceCriteria,
-          workflowCwdContext,
           researchPath,
           implementationNotesPath,
-          qaVideoPath,
         });
     const orchestrator = await ctx.task(`orchestrator-${iteration}`, {
       prompt: orchestratorPrompt,
@@ -226,6 +241,7 @@ export async function runRalphWorkflow(
       implementationNotesPath,
       orchestratorReportPath,
       qaVideoPath,
+      createPr,
     });
     let reviews: WorkflowTaskResult[];
     try {
@@ -251,55 +267,79 @@ export async function runRalphWorkflow(
             ],
             ...reviewerBModelConfig,
           },
-          {
-            name: "reviewer-c",
-            task: reviewPrompt,
-            reads: [
-              researchPath,
-              implementationNotesPath,
-              orchestratorReportPath,
-            ],
-            ...reviewerCModelConfig,
-          },
         ],
         {
           task: workflowPrompt,
           failFast: false,
+          group: `ralph-reviewers-iter-${iteration}`,
         },
       );
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      reviews = [reviewerErrorResult(message)];
+      reviews = [reviewerErrorResult(err)];
     }
     const reviewEntries = await Promise.all(reviews.map(async (review) => {
       const reviewer = review.name ?? review.stageName;
-      const decision = reviewDecisionFromResult(review) ??
-        reviewerErrorDecision(`Reviewer ${reviewer} returned no structured decision.`);
+      const parsed = parsedReviewDecisionFromResult(review, reviewer);
+      const convergenceDecision = ralphReviewConvergence({
+        decision: parsed.decision,
+        parsed: parsed.parsed,
+        diagnostics: parsed.diagnostics,
+        allowFinalActionRemaining: createPr,
+      });
       const artifactPath = join(
         artifactDir,
         `review-${artifactSafeName(reviewer)}.json`,
       );
       await writeJsonArtifact(artifactPath, {
         reviewer,
-        decision,
+        decision: parsed.decision,
+        convergence_decision: convergenceDecision,
         raw_text: review.text,
       });
-      return { reviewer, artifact_path: artifactPath, decision };
+      return {
+        reviewer,
+        artifact_path: artifactPath,
+        decision: parsed.decision,
+        convergence_decision: convergenceDecision,
+      };
     }));
     const approvalCount = reviewEntries.filter((review) =>
-      reviewDecisionApproved(review.decision),
+      review.convergence_decision.approved,
     ).length;
     approved =
       reviewEntries.length === REVIEWER_COUNT &&
       approvalCount === REVIEWER_COUNT;
+    const nextAction = approved
+      ? (createPr ? "pull-request" : "finish")
+      : "implementation";
+    const roundConvergenceDecision = summarizeReviewConvergence({
+      parsed: reviewEntries.every((review) => review.convergence_decision.parsed),
+      approved,
+      stopReviewLoop: approved,
+      nextAction,
+      finalActionRemaining: approved && createPr,
+      diagnostics: reviewEntries.flatMap((review) => review.convergence_decision.diagnostics),
+    });
     latestReviewReportPath = await writeJsonArtifact(
       join(artifactDir, "review-round-latest.json"),
-      { reviews: reviewEntries },
+      {
+        convergence_decision: roundConvergenceDecision,
+        // Deduplicated cross-reviewer findings batch so the next research and
+        // orchestrator passes repair the round's findings together instead of
+        // one at a time.
+        consolidated_findings: consolidateFindingsBatch(
+          reviewEntries.map((review) => ({
+            reviewer: review.reviewer,
+            findings: review.decision.findings,
+          })),
+        ),
+        reviews: reviewEntries,
+      },
     );
     if (approved) break;
   }
   const qaVideoAvailable = existsSync(qaVideoPath);
-  if (createPr === true) {
+  if (createPr === true && approved) {
     const prResult = await ctx.task("pull-request", {
       prompt: taggedPrompt([
         [
@@ -345,7 +385,7 @@ export async function runRalphWorkflow(
           [
             "Create a provider-appropriate PR/MR/review request only if there are meaningful changes, a remote/branch target is available, credentials are available, and the current state is suitable for review.",
             "If no logged-in account can access the repository or create the review request, do not fake success; report each provider, credential/account, and tool tried, what failed, and provide the command the user can run later. Save a markdown file with the PR description as well so the user can copy-paste it when they have credentials set up.",
-            "When you successfully create or update the review request, create a provider-appropriate comment containing the implementation notes file contents as the last action of this workflow stage.",
+            "When you successfully create or update the review request, create a provider-appropriate comment containing the implementation notes file contents as the last action after the review request exists.",
             "Worktrees are detached HEAD checkouts. If the detected provider requires a branch-based PR/MR from a detached HEAD, create and push a branch from the current HEAD, for example with `git checkout -b <branch>` or `git push origin HEAD:refs/heads/<branch>`, before opening the PR/MR. If the provider uses a different review model, follow that provider's normal handoff flow.",
             "Leave the worktree intact for retries or user recovery.",
             "If PR/MR/review creation is not possible, do not create a standalone comment elsewhere; include the implementation notes path and summary in your report instead.",

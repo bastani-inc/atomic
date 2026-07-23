@@ -20,11 +20,10 @@ import type { AgentScope } from "./agents.ts";
 import { discoverAgents } from "./agents.ts";
 import { getFinalOutput } from "./display.js";
 import { mapWithConcurrencyLimit, runSingleAgent } from "./runner.js";
-import { SubagentParams } from "./schemas.js";
+import { MAX_PARALLEL_TASKS, SubagentParams } from "./schemas.js";
 import type { SingleResult, SubagentDetails } from "./types.js";
 import { renderSubagentResult } from "./render.js";
 
-const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
 
 export default function (pi: ExtensionAPI) {

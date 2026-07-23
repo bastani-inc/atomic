@@ -7,12 +7,12 @@ import {
     makeHandle,
     setupRun,
     flush,
-    CTRL_D_VARIANTS,
+    CTRL_X_VARIANTS,
     makePendingPrompt,
 } from "./stage-chat-view-helpers.js";
 
 describe("StageChatView", () => {
-    test("Ctrl+D with non-empty input stays in the stage chat editor", () => {
+    test("Ctrl+X with non-empty input leaves stage chat and preserves the draft", () => {
         const store = createStore();
         setupRun(store, "run-1", "stage-a");
         const { handle } = makeHandle();
@@ -31,9 +31,9 @@ describe("StageChatView", () => {
         });
 
         for (const ch of "draft") view.handleInput(ch);
-        view.handleInput("\x04");
+        view.handleInput("\x18");
 
-        assert.equal(detached, 0);
+        assert.equal(detached, 1);
         assert.equal(view._inputBuffer, "draft");
         view.dispose();
     });
@@ -98,8 +98,8 @@ describe("StageChatView", () => {
         view.dispose();
     });
 
-    test("Ctrl+D variants call onDetach", () => {
-        for (const key of CTRL_D_VARIANTS) {
+    test("Ctrl+X variants call onDetach", () => {
+        for (const key of CTRL_X_VARIANTS) {
             const store = createStore();
             setupRun(store, "run-1", "stage-a");
             const { handle } = makeHandle();
@@ -122,8 +122,8 @@ describe("StageChatView", () => {
         }
     });
 
-    test("Ctrl+D variants detach from structured pending prompts without answering", async () => {
-        for (const key of CTRL_D_VARIANTS) {
+    test("Ctrl+X variants detach from structured pending prompts without answering", async () => {
+        for (const key of CTRL_X_VARIANTS) {
             const store = createStore();
             setupRun(store, "run-1", "stage-a");
             const prompt = makePendingPrompt({
@@ -170,8 +170,8 @@ describe("StageChatView", () => {
         }
     });
 
-    test("Ctrl+D variants detach from a paused structured pending prompt without answering", async () => {
-        for (const key of CTRL_D_VARIANTS) {
+    test("Ctrl+X variants detach from a paused structured pending prompt without answering", async () => {
+        for (const key of CTRL_X_VARIANTS) {
             const store = createStore();
             setupRun(store, "run-1", "stage-a", "paused");
             const prompt = makePendingPrompt({
@@ -218,8 +218,8 @@ describe("StageChatView", () => {
         }
     });
 
-    test("Ctrl+D variants detach from a paused stage chat", () => {
-        for (const key of CTRL_D_VARIANTS) {
+    test("Ctrl+X variants detach from a paused stage chat", () => {
+        for (const key of CTRL_X_VARIANTS) {
             const store = createStore();
             setupRun(store, "run-1", "stage-a", "paused");
             const { handle } = makeHandle(undefined, [], "paused");
@@ -244,6 +244,30 @@ describe("StageChatView", () => {
             assert.equal(closed, 0, JSON.stringify(key));
             view.dispose();
         }
+    });
+
+    test("Ctrl+D keeps ordinary editor behavior instead of leaving stage chat", () => {
+        const store = createStore();
+        setupRun(store, "run-1", "stage-a");
+        const { handle } = makeHandle();
+        let detached = 0;
+        const view = new StageChatView({
+            store,
+            graphTheme: deriveGraphTheme({}),
+            runId: "run-1",
+            stageId: "stage-a",
+            workflowName: "test-wf",
+            handle,
+            onDetach: () => { detached += 1; },
+            onClose: () => {},
+        });
+        for (const ch of "draft") view.handleInput(ch);
+
+        view.handleInput("\x04");
+
+        assert.equal(detached, 0);
+        assert.equal(view._inputBuffer, "draft");
+        view.dispose();
     });
 
 });

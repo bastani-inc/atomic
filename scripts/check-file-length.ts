@@ -216,13 +216,22 @@ function tryListTrackedFiles(cwd: string): FileListing | null {
   if (!root) return null;
 
   const filesResult = runGit(["ls-files", "-z", "--full-name"], root);
-  if (!filesResult.success) return null;
+  const deletedResult = runGit(["ls-files", "-z", "--deleted", "--full-name"], root);
+  if (!filesResult.success || !deletedResult.success) return null;
 
+  const deleted = new Set(
+    deletedResult.stdout
+      .toString()
+      .split("\0")
+      .filter((path) => path.length > 0)
+      .map(normalizePath),
+  );
   const files = filesResult.stdout
     .toString()
     .split("\0")
     .filter((path) => path.length > 0)
-    .map(normalizePath);
+    .map(normalizePath)
+    .filter((path) => !deleted.has(path));
 
   return { root, files, source: "git" };
 }

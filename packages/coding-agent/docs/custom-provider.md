@@ -214,7 +214,8 @@ models: [{
     low: null,
     medium: null,
     high: "default",
-    xhigh: "max"
+    xhigh: null,
+    max: "max"
   },
   compat: {
     supportsDeveloperRole: false,   // use "system" instead of "developer"
@@ -230,9 +231,7 @@ models: [{
 Use `openrouter` for OpenRouter-style `reasoning: { effort }` controls. Use `together` for Together-style `reasoning: { enabled }` controls; with `supportsReasoningEffort`, it also sends `reasoning_effort`. Use `qwen-chat-template` for local Qwen-compatible servers that read `chat_template_kwargs.enable_thinking` and need `preserve_thinking`.
 Use `cacheControlFormat: "anthropic"` for OpenAI-compatible providers that expose Anthropic-style prompt caching via `cache_control` on the system prompt, last tool definition, and last user/assistant text content.
 
-> Migration note: Mistral moved from `openai-completions` to `mistral-conversations`.
-> Use `mistral-conversations` for native Mistral models.
-> If you intentionally route Mistral-compatible/custom endpoints through `openai-completions`, set `compat` flags explicitly as needed.
+Use `mistral-conversations` for native Mistral models. If you intentionally route a Mistral-compatible or custom endpoint through `openai-completions`, set the required `compat` flags explicitly.
 
 ### Auth Header
 
@@ -312,6 +311,28 @@ pi.registerProvider("corporate-ai", {
 
 After registration, users can authenticate via `/login corporate-ai`.
 
+Existing extension OAuth definitions keep their `login`, `refreshToken`, `getApiKey`, and optional `modifyModels` methods. OAuth refresh is serialized so concurrent requests do not overwrite each other's credentials.
+
+## Dynamic model catalog refresh
+
+Providers whose catalogs change at runtime can add `refreshModels`. Atomic calls it during the asynchronous model refresh used by the model picker and authentication flows:
+
+```typescript
+pi.registerProvider("corporate-ai", {
+  baseUrl: "https://ai.corp.com/v1",
+  api: "openai-responses",
+  apiKey: "$CORPORATE_AI_KEY",
+  models: cachedModels,
+  async refreshModels({ signal, force, credential, store }) {
+    const models = await fetchCorporateModels({ signal, force, credential });
+    await store.write({ models, checkedAt: Date.now() });
+    return models;
+  }
+});
+```
+
+The current catalog stays readable while refresh is pending. Successful provider results are applied independently; a provider that fails, times out, or observes an aborted `signal` retains its previous list. Use the provider-scoped `store` only when the catalog should persist across sessions.
+
 ### OAuthLoginCallbacks
 
 The `callbacks` object provides three ways to authenticate:
@@ -345,7 +366,6 @@ interface OAuthCredentials {
 
 For providers with non-standard APIs, implement `streamSimple`. Study the existing provider implementations before writing your own:
 
-> **Compatibility note (Pi 0.80.2 sync):** Upstream Pi 0.80.2 made the `@earendil-works/pi-ai` root entrypoint core-only and moved the legacy global provider/model API (`stream`, `complete`, `registerApiProvider`, `getEnvApiKey`, `streamSimple`, and the `Model`/`Api`/`SimpleStreamOptions`/`AssistantMessageEventStream` types shown below) onto the `@earendil-works/pi-ai/compat` entrypoint. Atomic's extension loader aliases the `@earendil-works/pi-ai` root to `/compat` at runtime, so extensions that import these symbols from the root keep working unchanged. For new TypeScript code that needs this legacy surface, prefer importing from `@earendil-works/pi-ai/compat` for accurate type resolution. The `/oauth` subpath is unaffected.
 
 **Reference implementations:**
 
@@ -510,6 +530,8 @@ output.usage.totalTokens = output.usage.input + output.usage.output +
 calculateCost(model, output.usage);
 ```
 
+`calculateCost()` selects one rate set for the whole request. Aggregate input is `usage.input + usage.cacheRead + usage.cacheWrite`; a tier applies only when that sum is strictly greater than `inputTokensAbove`, and the matching tier with the highest threshold wins. Every tier must provide complete `input`, `output`, `cacheRead`, and `cacheWrite` rates. Extension-registered models preserve these tiers, and matching `models.json` `modelOverrides` use the same replacement rules described in [Custom Models](/models#request-wide-cost-tiers).
+
 ### Registration
 
 Register your stream function:
@@ -591,10 +613,10 @@ interface ProviderConfig {
 
 ```typescript
 interface ProviderModelConfig {
-  /** Model ID (e.g., "claude-sonnet-4-20250514"). */
+  /** Model ID (e.g., "claude-sonnet-4-5"). */
   id: string;
 
-  /** Display name (e.g., "Claude 4 Sonnet"). */
+  /** Display name (e.g., "Claude Sonnet 4.5"). */
   name: string;
 
   /** API type override for this specific model. */
@@ -607,17 +629,25 @@ interface ProviderModelConfig {
   reasoning: boolean;
 
   /** Maps Atomic thinking levels to provider/model-specific values; null marks a level unsupported. */
-  thinkingLevelMap?: Partial<Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh", string | null>>;
+  thinkingLevelMap?: Partial<Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max", string | null>>;
 
   /** Supported input types. */
   input: ("text" | "image")[];
 
-  /** Cost per million tokens (for usage tracking). */
+  /** Base cost per million tokens plus optional request-wide long-context tiers. */
   cost: {
     input: number;
     output: number;
     cacheRead: number;
     cacheWrite: number;
+    tiers?: Array<{
+      /** Tier applies only when input + cacheRead + cacheWrite strictly exceeds this value. */
+      inputTokensAbove: number;
+      input: number;
+      output: number;
+      cacheRead: number;
+      cacheWrite: number;
+    }>;
   };
 
   /** Default/effective context window size in tokens. */
@@ -632,7 +662,7 @@ interface ProviderModelConfig {
   /** Custom headers for this specific model. */
   headers?: Record<string, string>;
 
-  /** OpenAI compatibility settings for openai-completions API. */
+  /** API-specific provider compatibility settings. */
   compat?: {
     supportsStore?: boolean;
     supportsDeveloperRole?: boolean;
@@ -646,9 +676,17 @@ interface ProviderModelConfig {
     thinkingFormat?: "openai" | "openrouter" | "deepseek" | "together" | "zai" | "qwen" | "chat-template" | "qwen-chat-template" | "string-thinking" | "ant-ling";
     chatTemplateKwargs?: Record<string, string | number | boolean | null | { "$var": "thinking.enabled" | "thinking.effort"; omitWhenOff?: boolean }>;
     cacheControlFormat?: "anthropic";
+    sendSessionAffinityHeaders?: boolean;
+    sessionAffinityFormat?: "openai" | "openai-nosession" | "openrouter";
+    supportsLongCacheRetention?: boolean;
+    supportsToolSearch?: boolean;
   };
 }
 ```
 
+The `cost` shape is equivalent to `Model<Api>["cost"]`. Base rates and every tier are complete rate sets. When multiple thresholds match, `calculateCost()` uses the highest threshold and applies that tier to all four cost buckets for the request.
+
 `openrouter` sends `reasoning: { effort }`. `deepseek` sends `thinking: { type: "enabled" | "disabled" }` and `reasoning_effort` when enabled. `together` sends `reasoning: { enabled }` and also `reasoning_effort` when `supportsReasoningEffort` is enabled. `qwen` is for DashScope-style top-level `enable_thinking`. Use `qwen-chat-template` for local Qwen-compatible servers that read `chat_template_kwargs.enable_thinking` and need `preserve_thinking`. Use `chat-template` for configurable `chat_template_kwargs`, for example DeepSeek V3.x behind vLLM with `chatTemplateKwargs: { "thinking": { "$var": "thinking.enabled" } }`.
 `cacheControlFormat: "anthropic"` applies Anthropic-style `cache_control` markers to the system prompt, last tool definition, and last user/assistant text content.
+
+For `openai-responses` providers, set `compat.sessionAffinityFormat` to `"openai"` for `session_id` plus `x-client-request-id`, `"openai-nosession"` to omit `session_id` while retaining `x-client-request-id`, or `"openrouter"` for `x-session-id`. Responses-compatible providers may also set `supportsToolSearch` when they support deferred tool loading.

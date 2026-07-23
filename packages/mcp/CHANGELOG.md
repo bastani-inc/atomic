@@ -7,6 +7,140 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.11-alpha.1] - 2026-07-20
+
+### Changed
+
+- Published a synchronized Atomic 0.9.11-alpha.1 prerelease for the MCP extension; no functional MCP changes were made after 0.9.10.
+
+## [0.9.10] - 2026-07-20
+
+### Added
+
+- Added validated per-server MCP tool-call inactivity timeouts for local and remote servers, with progress-aware timer resets, user-readable timeout errors, and preserved host cancellation.
+
+### Fixed
+
+- Fixed collapsed MCP results showing a malformed or unavailable expand shortcut when `app.tools.expand` is remapped or unbound.
+- Preserved credential-specific `baseUrl` overrides for MCP sampling requests so enterprise/provider-owned endpoints are used alongside dynamic API keys and headers ([#1875](https://github.com/bastani-inc/atomic/issues/1875)).
+
+## [0.9.10-alpha.1] - 2026-07-19
+
+### Added
+
+- Added validated per-server MCP tool-call inactivity timeouts for local and remote servers, with progress-aware timer resets, user-readable timeout errors, and preserved host cancellation.
+
+### Fixed
+
+- Fixed collapsed MCP results showing a malformed or unavailable expand shortcut when `app.tools.expand` is remapped or unbound.
+- Preserved credential-specific `baseUrl` overrides for MCP sampling requests so enterprise/provider-owned endpoints are used alongside dynamic API keys and headers ([#1875](https://github.com/bastani-inc/atomic/issues/1875)).
+
+## [0.9.9] - 2026-07-15
+
+### Changed
+
+- Aligned the MCP extension peer dependencies with `@earendil-works/pi-ai` and `@earendil-works/pi-tui` `^0.80.7` as part of the consolidated Pi v0.80.7 dependency update; no MCP source changes were needed.
+- Updated the runtime `typebox` range to `^1.3.6`.
+
+## [0.9.9-alpha.4] - 2026-07-15
+
+### Changed
+
+- Published a synchronized Atomic 0.9.9-alpha.4 prerelease for the MCP extension; no functional MCP changes were made after 0.9.9-alpha.3.
+
+## [0.9.9-alpha.3] - 2026-07-14
+
+### Changed
+
+- Published a synchronized Atomic 0.9.9-alpha.3 prerelease for the MCP extension; no functional MCP changes were made after 0.9.9-alpha.2.
+
+## [0.9.9-alpha.2] - 2026-07-14
+
+### Changed
+
+- Aligned the MCP extension peer dependencies with `@earendil-works/pi-ai` and `@earendil-works/pi-tui` `^0.80.7` as part of the consolidated Pi v0.80.7 dependency update; no MCP source changes were needed.
+- Updated the runtime `typebox` range to `^1.3.6`.
+
+## [0.9.9-alpha.1] - 2026-07-14
+
+### Changed
+
+- Published a synchronized Atomic 0.9.9-alpha.1 prerelease for the MCP extension; no functional MCP changes were made after 0.9.8.
+
+## [0.9.8] - 2026-07-12
+
+### Changed
+
+- Published the stable Atomic 0.9.8 release for the MCP extension; no functional MCP changes were made after 0.9.7.
+
+## [0.9.8-alpha.1] - 2026-07-12
+
+### Changed
+
+- Published a synchronized Atomic 0.9.8-alpha.1 prerelease for the MCP extension; no functional MCP changes were made after 0.9.7.
+
+## [0.9.7] - 2026-07-12
+
+### Changed
+
+- Published the stable Atomic 0.9.7 release for the MCP extension; no functional MCP changes were made after 0.9.6.
+
+## [0.9.7-alpha.1] - 2026-07-12
+
+### Changed
+
+- Published a synchronized Atomic 0.9.7-alpha.1 prerelease for the MCP extension; no functional MCP changes were made after 0.9.6.
+
+## [0.9.6] - 2026-07-12
+
+### Changed
+
+- Published the stable Atomic 0.9.6 release for the MCP extension; no functional MCP changes were made after 0.9.5.
+
+## [0.9.6-alpha.1] - 2026-07-12
+
+### Changed
+
+- Published a synchronized Atomic 0.9.6-alpha.1 prerelease for the MCP extension; no functional MCP changes were made after 0.9.5.
+
+## [0.9.5] - 2026-07-11
+
+### Changed
+
+- Aligned the MCP extension peer dependencies with upstream `pi-ai`/`pi-tui` `^0.80.6` as part of the consolidated Pi sync; no MCP source behavior changed ([#1703](https://github.com/bastani-inc/atomic/issues/1703)).
+- Improved startup responsiveness by keeping first-run/default lazy MCP metadata bootstrap out of `initializeMcp()`'s synchronous path. Cached direct tools and the MCP proxy still register immediately, explicit `eager`/`keep-alive` servers still connect during initialization, missing configured or `MCP_DIRECT_TOOLS`-selected direct-tool metadata is warmed in the background, and explicit proxy `search`, `describe`, and server-list requests hydrate cold-cache lazy server metadata on demand instead of broadening startup warmup. Warmed direct tools are registered live in the current session after metadata refresh rather than requiring restart. Cold-cache `describe` first narrows hydration to prefix-matched or explicitly requested servers, treats hyphen/underscore prefixes as aliases, and does not fan out to unrelated lazy servers after a prefix-directed miss; cold-cache proxy `search` intentionally hydrates all matching lazy servers so unscoped searches can see every configured tool.
+
+### Fixed
+
+- Replaced one-shot detached MCP startup with generation-safe, retryable single-flight initialization shared by background startup, proxy/direct tools, and readiness-critical commands. Initialization fast paths now validate the active context and exact session lease, commands retain the state they initialized across lazy module imports, and stale or unpublished state cannot execute or publish after shutdown, restart, or context disposal. Replacement startup normally waits for retired initialization plus state/OAuth cleanup, but bounded observed teardown prevents non-abortable SDK work from permanently poisoning later sessions while fencing late completion.
+- Made readiness, lazy-connection, manager-close, and UI-start waits caller-local across direct tools and proxy connect/call/search/describe/list paths. Pre-aborted calls start no producer; one aborted waiter rejects promptly with its exact reason; late shared failures stay observed; late UI runtimes are closed; and proxy modes plus metadata hydration revalidate session ownership after waits and before metadata mutation or SDK side effects.
+- Completed MCP Apps cancellation lifecycles for direct and proxy UI calls by emitting exactly one terminal `tool-cancelled` before session teardown, preserving the exact host abort reason over SDK wrappers, isolating notification failures, keeping success `tool-result` mutually exclusive, forwarding real cancellation events from reused runtimes, and observing asynchronous browser AppBridge send failures.
+- Aligned MCP tool result expansion hints with the CLI-wide `Ctrl+o` keybinding copy.
+- Fixed MCP background direct-tool warmup cancellation so stale in-flight connects are discarded before metadata/cache mutation, direct-tool refresh callbacks are guarded to the active session, completed warmups clear their active handle safely, and env-selected direct tool servers hydrate without forcing every lazy server eager.
+
+## [0.9.5-alpha.10] - 2026-07-11
+
+### Changed
+
+- Aligned the MCP extension peer dependencies with upstream `pi-ai`/`pi-tui` `^0.80.6` as part of the consolidated Pi sync; no MCP source behavior changed ([#1703](https://github.com/bastani-inc/atomic/issues/1703)).
+
+### Fixed
+
+- Replaced one-shot detached MCP startup with generation-safe, retryable single-flight initialization shared by background startup, proxy/direct tools, and readiness-critical commands. Initialization fast paths now validate the active context and exact session lease, commands retain the state they initialized across lazy module imports, and stale or unpublished state cannot execute or publish after shutdown, restart, or context disposal. Replacement startup normally waits for retired initialization plus state/OAuth cleanup, but bounded observed teardown prevents non-abortable SDK work from permanently poisoning later sessions while fencing late completion.
+- Made readiness, lazy-connection, manager-close, and UI-start waits caller-local across direct tools and proxy connect/call/search/describe/list paths. Pre-aborted calls start no producer; one aborted waiter rejects promptly with its exact reason; late shared failures stay observed; late UI runtimes are closed; and proxy modes plus metadata hydration revalidate session ownership after waits and before metadata mutation or SDK side effects.
+- Completed MCP Apps cancellation lifecycles for direct and proxy UI calls by emitting exactly one terminal `tool-cancelled` before session teardown, preserving the exact host abort reason over SDK wrappers, isolating notification failures, keeping success `tool-result` mutually exclusive, forwarding real cancellation events from reused runtimes, and observing asynchronous browser AppBridge send failures.
+
+## [0.9.5-alpha.9] - 2026-07-09
+
+### Changed
+
+- Improved startup responsiveness by keeping first-run/default lazy MCP metadata bootstrap out of `initializeMcp()`'s synchronous path. Cached direct tools and the MCP proxy still register immediately, explicit `eager`/`keep-alive` servers still connect during initialization, missing configured or `MCP_DIRECT_TOOLS`-selected direct-tool metadata is warmed in the background, and explicit proxy `search`, `describe`, and server-list requests hydrate cold-cache lazy server metadata on demand instead of broadening startup warmup. Warmed direct tools are registered live in the current session after metadata refresh rather than requiring restart. Cold-cache `describe` first narrows hydration to prefix-matched or explicitly requested servers, treats hyphen/underscore prefixes as aliases, and does not fan out to unrelated lazy servers after a prefix-directed miss; cold-cache proxy `search` intentionally hydrates all matching lazy servers so unscoped searches can see every configured tool.
+
+### Fixed
+
+- Aligned MCP tool result expansion hints with the CLI-wide `Ctrl+o` keybinding copy.
+- Fixed MCP background direct-tool warmup cancellation so stale in-flight connects are discarded before metadata/cache mutation, direct-tool refresh callbacks are guarded to the active session, completed warmups clear their active handle safely, and env-selected direct tool servers hydrate without forcing every lazy server eager.
+
 ## [0.9.4] - 2026-07-03
 
 ### Changed

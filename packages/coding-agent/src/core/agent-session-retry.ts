@@ -1,16 +1,102 @@
-import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
-import { isContextOverflow } from "@earendil-works/pi-ai/compat";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai/compat";
+import { clampThinkingLevel, isContextOverflow, modelsAreEqual } from "@earendil-works/pi-ai/compat";
 import { sleep } from "../utils/sleep.ts";
+import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
+import { isCodexTokenInvalidationError } from "./codex-errors.ts";
 import { isCopilotGeminiModel } from "./copilot-gemini-payload-sanitizer.ts";
 import { normalizeToolArgumentsForModel } from "./copilot-gemini-tool-arguments.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 
+
+const THINKING_SUFFIXES = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ThinkingLevel[];
+const THINKING_SUFFIX_SET: ReadonlySet<string> = new Set(THINKING_SUFFIXES);
+
+function modelLabel(model: Model<Api> | undefined): string {
+	return model ? `${model.provider}/${model.id}` : "unknown model";
+}
+
+function splitFallbackModel(value: string): { modelId: string; thinkingLevel?: ThinkingLevel } {
+	const trimmed = value.trim();
+	const index = trimmed.lastIndexOf(":");
+	if (index < 0) return { modelId: trimmed };
+	const suffix = trimmed.slice(index + 1);
+	if (!THINKING_SUFFIX_SET.has(suffix)) return { modelId: trimmed };
+	return { modelId: trimmed.slice(0, index), thinkingLevel: suffix as ThinkingLevel };
+}
+
+function resolveFallbackModel(this: AgentSession, value: string): { model: Model<Api>; thinkingLevel?: ThinkingLevel } | undefined {
+	const parsed = splitFallbackModel(value);
+	if (!parsed.modelId.includes("/")) {
+		const available = this._modelRegistry.getAvailable().filter((model) => model.id === parsed.modelId);
+		const preferredProvider = this.model?.provider ?? this.settingsManager.getDefaultProvider();
+		const model = available.find((candidate) => candidate.provider === preferredProvider) ?? (available.length === 1 ? available[0] : undefined);
+		return model ? { model, thinkingLevel: parsed.thinkingLevel } : undefined;
+	}
+	const slash = parsed.modelId.indexOf("/");
+	const provider = parsed.modelId.slice(0, slash);
+	const modelId = parsed.modelId.slice(slash + 1);
+	const model = this._modelRegistry.find(provider, modelId);
+	if (!model || !this._modelRegistry.hasConfiguredAuth(model)) return undefined;
+	return { model, thinkingLevel: parsed.thinkingLevel };
+}
+
+function fallbackKey(model: Model<Api>, thinkingLevel: ThinkingLevel | undefined): string {
+	return `${model.provider}/${model.id}:${thinkingLevel ?? ""}`;
+}
+
+function hasProviderTransportDiagnostic(value: unknown, seen = new Set<unknown>(), includeMessageFields = false): boolean {
+	if (value === null || value === undefined || seen.has(value)) return false;
+	if (typeof value !== "object") {
+		return /provider_transport_failure|websocket.*error|sse.*404/i.test(String(value));
+	}
+	seen.add(value);
+	const record = value as Record<string, unknown>;
+	const fields = includeMessageFields
+		? [record.type, record.code, record.name, record.message, record.errorMessage, record.status, record.statusCode]
+		: [record.type, record.code, record.name, record.status, record.statusCode];
+	for (const field of fields) {
+		 if (typeof field === "string" || typeof field === "number") {
+			if (/provider_transport_failure|websocket.*error|sse.*404|\b404\b/i.test(String(field))) return true;
+		}
+	}
+	for (const nested of [record.error, record.cause, ...(Array.isArray(record.diagnostics) ? record.diagnostics : [])]) {
+		if (hasProviderTransportDiagnostic(nested, seen, true)) return true;
+	}
+	return false;
+}
+
+function hasProviderModelUnavailableDiagnostic(value: unknown, seen = new Set<unknown>(), includeMessageFields = false): boolean {
+	if (value === null || value === undefined || seen.has(value)) return false;
+	if (typeof value !== "object") return false;
+	seen.add(value);
+	const record = value as Record<string, unknown>;
+	const fields = includeMessageFields
+		? [record.type, record.code, record.name, record.message, record.errorMessage]
+		: [record.type, record.code, record.name, record.errorMessage];
+	for (const field of fields) {
+		if (typeof field === "string" && /model(?:[_\s-].*)?(?:not[_\s-]?found|unavailable|unknown|disabled)|model[_-]?not[_-]?found/i.test(field)) return true;
+	}
+	for (const nested of [record.error, record.cause, ...(Array.isArray(record.diagnostics) ? record.diagnostics : [])]) {
+		if (hasProviderModelUnavailableDiagnostic(nested, seen, true)) return true;
+	}
+	return false;
+}
 export function _isRetryableError(this: AgentSession, message: AssistantMessage): boolean {
-	if (message.stopReason !== "error" || !message.errorMessage) return false;
+	if (message.stopReason !== "error") return false;
 
 	// Context overflow is handled by compaction, not retry
 	const contextWindow = this.model?.contextWindow ?? 0;
 	if (isContextOverflow(message, contextWindow)) return false;
+
+	// A definitive Codex authentication rejection is terminal. It takes
+	// precedence over transport diagnostics recorded during WebSocket-to-SSE
+	// fallback so those earlier diagnostics cannot trigger a pointless retry.
+	const provider = message.provider || this.model?.provider;
+	if (provider && isCodexTokenInvalidationError(provider, message.errorMessage)) return false;
+
+	if (hasProviderTransportDiagnostic(message) || hasProviderModelUnavailableDiagnostic(message)) return true;
+	if (!message.errorMessage) return false;
 
 	const err = message.errorMessage;
 
@@ -27,8 +113,8 @@ export function _isRetryableError(this: AgentSession, message: AssistantMessage)
 		return true;
 	}
 
-	// Match: overloaded_error, provider returned error, rate limit, 429, 500, 502, 503, 504, service unavailable, network/connection errors (including connection lost), WebSocket transport closes/errors, fetch failed, premature stream endings, HTTP/2 closed before response, terminated, retry delay exceeded, and a bare/transient provider finish_reason "error" (e.g. github-copilot Gemini's CAPI mapping of MALFORMED_FUNCTION_CALL/OTHER/UNEXPECTED_TOOL_CALL). These are provider-agnostic transient failures.
-	return /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|stream ended before message_stop|http2 request did not get a response|timed? out|timeout|terminated|retry delay|finish.?reason:?\s*error/i.test(
+	// Match: overloaded_error, provider returned error, rate limit, quota/usage-limit exhaustion (e.g. "Codex error: The usage limit has been reached" — retryable so configured fallbackModels can advance to a provider/model with remaining headroom), 429, 500, 502, 503, 504, service unavailable, network/connection errors (including connection lost), WebSocket transport closes/errors, fetch failed, premature stream endings, HTTP/2 closed before response, terminated, retry delay exceeded, and a bare/transient provider finish_reason "error" (e.g. github-copilot Gemini's CAPI mapping of MALFORMED_FUNCTION_CALL/OTHER/UNEXPECTED_TOOL_CALL). These are provider-agnostic transient failures.
+	return /overloaded|provider.?returned.?error|rate.?limit|usage.?limit|quota|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|stream ended before message_stop|http2 request did not get a response|timed? out|timeout|terminated|retry delay|finish.?reason:?\s*error/i.test(
 		err,
 	);
 }
@@ -157,11 +243,79 @@ export function _isSafetyRefusal(this: AgentSession, message: AssistantMessage):
  * @returns true if retry was initiated, false if max retries exceeded or disabled
  */
 
+export async function _trySwitchToFallbackModel(this: AgentSession, message: AssistantMessage): Promise<boolean> {
+	if (this._fallbackModels.length === 0 || !this.model) return false;
+
+	this._fallbackAttemptedKeys.add(fallbackKey(this.model, this.thinkingLevel));
+	const fromModel = this.model;
+	for (const rawCandidate of this._fallbackModels) {
+		const candidate = resolveFallbackModel.call(this, rawCandidate);
+		if (!candidate) continue;
+		const key = fallbackKey(candidate.model, candidate.thinkingLevel);
+		if (this._fallbackAttemptedKeys.has(key)) continue;
+		const nextModel = this._withContextWindowForModelSwitch(candidate.model);
+		const nextLevel = clampThinkingLevel(
+			nextModel,
+			candidate.thinkingLevel ?? this.settingsManager.getDefaultThinkingLevel() ?? this.thinkingLevel ?? DEFAULT_THINKING_LEVEL,
+		) as ThinkingLevel;
+		if (modelsAreEqual(candidate.model, fromModel) && nextLevel === this.thinkingLevel) continue;
+		if (this._retryAttempt > 0) {
+			this._emit({
+				type: "auto_retry_end",
+				success: true,
+				attempt: Math.max(0, this._retryAttempt - 1),
+			});
+		}
+		this._fallbackAttemptedKeys.add(key);
+		this._emit({
+			type: "model_fallback_start",
+			from: modelLabel(fromModel),
+			to: `${nextModel.provider}/${nextModel.id}`,
+			reason: message.errorMessage || "Retryable model error",
+			attempt: this._fallbackAttemptedKeys.size - 1,
+		});
+
+		const messages = this.agent.state.messages;
+		if (messages.length > 0 && messages[messages.length - 1]?.role === "assistant") {
+			this.agent.state.messages = messages.slice(0, -1);
+		}
+		this.agent.state.model = nextModel;
+		this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
+		this._appendContextWindowChangeIfChanged(fromModel, nextModel);
+		this.agent.state.thinkingLevel = nextLevel;
+		this.sessionManager.appendThinkingLevelChange(nextLevel);
+		this._refreshBaseSystemPromptFromActiveTools();
+		this._emitModelChanged(nextModel, fromModel, "fallback");
+		await this._emitModelSelect(nextModel, fromModel, "fallback");
+		this._retryAttempt = 0;
+
+		setTimeout(() => {
+			this.agent.continue().then(
+				() => {
+					// A resolved continuation may still have produced an assistant
+					// error that will be classified by agent_end and may advance to
+					// the next fallback. Do not emit a successful fallback end here;
+					// agent_end/turn_end clear UI state for successful turns, while
+					// fallback exhaustion emits the failure end event.
+				},
+				(error: unknown) => {
+					const finalError = error instanceof Error ? error.message : String(error);
+					this._emit({ type: "model_fallback_end", success: false, from: modelLabel(fromModel), to: modelLabel(nextModel), finalError });
+					this._retryAttempt = 0;
+					this._resolveRetry();
+				},
+			);
+		}, 0);
+		return true;
+	}
+	this._emit({ type: "model_fallback_end", success: false, from: modelLabel(fromModel), finalError: message.errorMessage });
+	return false;
+}
+
 export async function _handleRetryableError(this: AgentSession, message: AssistantMessage): Promise<boolean> {
 	const settings = this.settingsManager.getRetrySettings();
 	if (!settings.enabled) {
-		this._resolveRetry();
-		return false;
+		return this._trySwitchToFallbackModel(message);
 	}
 
 	// Retry promise is created synchronously in _handleAgentEvent for agent_end.
@@ -175,6 +329,9 @@ export async function _handleRetryableError(this: AgentSession, message: Assista
 	this._retryAttempt++;
 
 	if (this._retryAttempt > settings.maxRetries) {
+		if (await this._trySwitchToFallbackModel(message)) {
+			return true;
+		}
 		// Max retries exceeded, emit final failure and reset
 		this._emit({
 			type: "auto_retry_end",
@@ -282,6 +439,7 @@ export const agentSessionRetryMethods = {
 	_isEmptyCompletion,
 	_isSafetyRefusal,
 	_handleRetryableError,
+	_trySwitchToFallbackModel,
 	abortRetry,
 	waitForRetry,
 	setAutoRetryEnabled,

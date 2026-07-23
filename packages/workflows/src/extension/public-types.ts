@@ -2,16 +2,11 @@ import type {
   CreateAgentSessionOptions,
   DefaultResourceLoaderInheritanceSnapshot,
 } from "@bastani/atomic";
+import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { SessionManager } from "../shared/persistence-restore.js";
 import type { StageSessionRuntime } from "../runs/foreground/stage-runner.js";
-import type { StageStatus } from "../shared/store-types.js";
-import type {
-  StageOptions,
-  WorkflowChainStep,
-  WorkflowDirectTaskItem,
-  WorkflowInputValues,
-  WorkflowMaxOutput,
-} from "../shared/types.js";
+import type { RunStatus, StageStatus } from "../shared/store-types.js";
+import type { WorkflowInputValues } from "../shared/types.js";
 import type { WidgetFactory } from "../tui/store-widget-installer.js";
 import type { RenderResultOpts, WorkflowToolResult } from "./render-result.js";
 import type { PiUISurface } from "./wiring.js";
@@ -61,13 +56,10 @@ export type PiArgumentCompletionResult = PiArgumentCompletion[] | null;
 export interface PiCommandOptions {
   description: string;
   handler: (args: string, ctx: PiCommandContext) => Promise<void> | void;
-  getArgumentCompletions?: (partial: string) => PiArgumentCompletionResult;
+  getArgumentCompletions?: (partial: string) => PiArgumentCompletionResult | Promise<PiArgumentCompletionResult>;
 }
 
-export interface PiRuntimeModel {
-  readonly provider: string;
-  readonly id: string;
-}
+export type PiRuntimeModel = Model<Api>;
 
 export interface PiRuntimeModelRegistry {
   getAvailable(): PiRuntimeModel[];
@@ -148,6 +140,10 @@ export interface WorkflowResourceInfo {
   };
 }
 
+type StageLateMessageRouter = NonNullable<
+  NonNullable<CreateAgentSessionOptions["orchestrationContext"]>["lateMessageRouter"]
+>;
+
 export interface ExtensionAPI {
   registerTool?: <TArgs, TResult>(opts: PiToolOpts<TArgs, TResult>) => void;
   registerCommand?: (name: string, options: PiCommandOptions) => void;
@@ -155,20 +151,8 @@ export interface ExtensionAPI {
     event: string,
     renderer: PiMessageRenderer,
   ) => void;
-  sendMessage?: <T = unknown>(
-    message: {
-      customType: string;
-      content?: string;
-      display?: boolean;
-      details?: T;
-    },
-    options?: {
-      triggerTurn?: boolean;
-      deliverAs?: "steer" | "followUp" | "nextTurn" | "interrupt";
-      excludeFromContext?: boolean;
-      interruptAbortMessage?: string;
-    },
-  ) => void | Promise<void>;
+  sendMessage?: StageLateMessageRouter["routeMessage"];
+  sendMessages?: StageLateMessageRouter["routeMessages"];
   registerFlag?: (name: string, opts: PiFlagNamedOpts) => void;
   getWorkflowResources?: () => readonly WorkflowResourceInfo[];
   refreshWorkflowResources?: () => Promise<readonly WorkflowResourceInfo[]>;
@@ -232,10 +216,11 @@ export interface ExtensionAPI {
   [key: string]: unknown;
 }
 
-export interface WorkflowToolArgs extends StageOptions {
+export interface WorkflowToolArgs {
   workflow?: string;
   inputs?: WorkflowInputValues;
   action?:
+    | "models"
     | "run"
     | "list"
     | "get"
@@ -246,7 +231,7 @@ export interface WorkflowToolArgs extends StageOptions {
     | "send"
     | "pause"
     | "interrupt"
-    | "kill"
+    | "quit"
     | "resume"
     | "reload"
     | "inputs";
@@ -254,7 +239,7 @@ export interface WorkflowToolArgs extends StageOptions {
   all?: boolean;
   stageId?: string;
   message?: string;
-  statusFilter?: StageStatus | "all";
+  statusFilter?: StageStatus | RunStatus | "all";
   format?: "text" | "json";
   limit?: number;
   tail?: number;
@@ -264,32 +249,6 @@ export interface WorkflowToolArgs extends StageOptions {
   delivery?: "auto" | "answer" | "prompt" | "steer" | "followUp" | "resume";
   promptId?: string;
   reason?: string;
-  task?: WorkflowDirectTaskItem | string;
-  tasks?: WorkflowDirectTaskItem[];
-  chain?: WorkflowChainStep[];
-  chainName?: string;
-  context?: "fresh" | "fork";
-  forkFromSessionFile?: string;
-  concurrency?: number;
-  failFast?: boolean;
-  async?: boolean;
-  intercom?: {
-    enabled?: boolean;
-    delivery?: "off" | "notify" | "result" | "control-and-result";
-    parentSession?: string;
-    notifyOn?: Array<
-      "active_long_running" | "needs_attention" | "completed" | "failed"
-    >;
-  };
-  output?: string | false;
-  outputMode?: "inline" | "file-only";
-  reads?: readonly string[] | false;
-  chainDir?: string;
-  maxOutput?: WorkflowMaxOutput;
-  artifacts?: boolean;
-  worktree?: boolean;
-  gitWorktreeDir?: string;
-  baseBranch?: string;
 }
 
 export type WorkflowExecuteToolResult = PiAgentToolResult<WorkflowToolResult>;

@@ -1,7 +1,7 @@
 import { type ExecFileException, execFile, spawnSync } from "child_process";
 import { existsSync, type FSWatcher, readFileSync, type Stats, statSync, unwatchFile, watchFile } from "fs";
 import { dirname, join, resolve } from "path";
-import { closeWatcher, FS_WATCH_RETRY_DELAY_MS, watchWithErrorHandler } from "../utils/fs-watch.ts";
+import { closeWatcher, FS_WATCH_RETRY_DELAY_MS, isSafeFsWatchPathError, watchWithErrorHandler } from "../utils/fs-watch.ts";
 import { createGitEnvironment } from "../utils/git-env.ts";
 
 type GitPaths = {
@@ -121,16 +121,24 @@ export class FooterDataProvider {
 	private refreshInFlight = false;
 	private refreshPending = false;
 	private disposed = false;
+	private gitWatchersStarted = false;
 
 	constructor(cwd: string) {
 		this.cwd = cwd;
-		this.gitPaths = findGitPaths(cwd);
+	}
+
+	/** Start post-frame git branch watching. Branch discovery remains lazy for first render. */
+	startGitWatcher(): void {
+		if (this.disposed || this.gitWatchersStarted) return;
+		this.gitWatchersStarted = true;
+		this.ensureGitPaths();
 		this.setupGitWatcher();
 	}
 
 	/** Current git branch, null if not in repo, "detached" if detached HEAD */
 	getGitBranch(): string | null {
 		if (this.cachedBranch === undefined) {
+			this.ensureGitPaths();
 			this.cachedBranch = this.resolveGitBranchSync();
 		}
 		return this.cachedBranch;
@@ -176,6 +184,7 @@ export class FooterDataProvider {
 			return;
 		}
 
+		const restartGitWatcher = this.gitWatchersStarted;
 		this.cwd = cwd;
 		if (this.refreshTimer) {
 			clearTimeout(this.refreshTimer);
@@ -183,8 +192,11 @@ export class FooterDataProvider {
 		}
 		this.clearGitWatchers();
 		this.cachedBranch = undefined;
-		this.gitPaths = findGitPaths(cwd);
-		this.setupGitWatcher();
+		this.gitPaths = undefined;
+		if (restartGitWatcher) {
+			this.gitWatchersStarted = false;
+			this.startGitWatcher();
+		}
 		this.notifyBranchChange();
 	}
 
@@ -196,7 +208,13 @@ export class FooterDataProvider {
 			this.refreshTimer = null;
 		}
 		this.clearGitWatchers();
+		this.gitWatchersStarted = false;
 		this.branchChangeCallbacks.clear();
+	}
+
+	private ensureGitPaths(): void {
+		if (this.gitPaths !== undefined) return;
+		this.gitPaths = findGitPaths(this.cwd);
 	}
 
 	private notifyBranchChange(): void {
@@ -295,13 +313,43 @@ export class FooterDataProvider {
 		}
 	}
 
+
+	private installHeadPollingFallback(): void {
+		if (!this.gitPaths || this.headWatchFilePath || this.headWatchFileListener) {
+			return;
+		}
+		this.headWatchFilePath = this.gitPaths.headPath;
+		this.headWatchFileListener = (current, previous) => {
+			if (current.mtimeMs !== previous.mtimeMs || current.ctimeMs !== previous.ctimeMs || current.size !== previous.size) {
+				this.scheduleRefresh();
+			}
+		};
+		watchFile(this.headWatchFilePath, { interval: 1000 }, this.headWatchFileListener);
+	}
+
+	private installReftableTablesListPolling(tablesListPath: string): void {
+		if (this.reftableTablesListWatchFileListener) {
+			return;
+		}
+		this.reftableTablesListWatchFileListener = (current, previous) => {
+			if (
+				current.mtimeMs !== previous.mtimeMs ||
+				current.ctimeMs !== previous.ctimeMs ||
+				current.size !== previous.size
+			) {
+				this.scheduleReftableRefresh();
+			}
+		};
+		watchFile(tablesListPath, { interval: 250 }, this.reftableTablesListWatchFileListener);
+	}
 	private scheduleGitWatcherRetry(): void {
-		if (this.disposed || this.gitWatcherRetryTimer) {
+		if (this.disposed || !this.gitWatchersStarted || this.gitWatcherRetryTimer) {
 			return;
 		}
 
 		this.gitWatcherRetryTimer = setTimeout(() => {
 			this.gitWatcherRetryTimer = null;
+			this.ensureGitPaths();
 			this.setupGitWatcher();
 		}, FS_WATCH_RETRY_DELAY_MS);
 	}
@@ -346,8 +394,8 @@ export class FooterDataProvider {
 
 	private setupGitWatcher(): void {
 		this.clearGitWatchers();
+		this.ensureGitPaths();
 		if (!this.gitPaths) return;
-
 		const pollGitHead = shouldPollGitHead(this.gitPaths.repoDir);
 
 		// Watch the directory containing HEAD, not HEAD itself.
@@ -360,18 +408,18 @@ export class FooterDataProvider {
 					this.scheduleRefresh();
 				}
 			},
-			() => this.handleGitWatcherError(),
+			(error) => {
+				if (isSafeFsWatchPathError(error)) {
+					this.installHeadPollingFallback();
+					return;
+				}
+				this.handleGitWatcherError();
+			},
 		);
 		if (pollGitHead) {
-			this.headWatchFilePath = this.gitPaths.headPath;
-			this.headWatchFileListener = (current, previous) => {
-				if (current.mtimeMs !== previous.mtimeMs || current.ctimeMs !== previous.ctimeMs || current.size !== previous.size) {
-					this.scheduleRefresh();
-				}
-			};
-			watchFile(this.headWatchFilePath, { interval: 1000 }, this.headWatchFileListener);
+			this.installHeadPollingFallback();
 		}
-		if (!this.headWatcher && !pollGitHead) {
+		if (!this.headWatcher && !this.headWatchFileListener) {
 			return;
 		}
 
@@ -386,11 +434,13 @@ export class FooterDataProvider {
 				(_eventType, filename) => {
 					this.handleReftableDirectoryEvent(filename);
 				},
-				() => this.handleGitWatcherError(),
+				(error) => {
+					if (isSafeFsWatchPathError(error)) {
+						return;
+					}
+					this.handleGitWatcherError();
+				},
 			);
-			if (!this.reftableWatcher) {
-				return;
-			}
 
 			const tablesListPath = this.reftableTablesListPath;
 			if (tablesListPath && existsSync(tablesListPath)) {
@@ -399,21 +449,15 @@ export class FooterDataProvider {
 					() => {
 						this.scheduleReftableRefresh();
 					},
-					() => this.handleGitWatcherError(),
+					(error) => {
+						if (isSafeFsWatchPathError(error)) {
+							this.installReftableTablesListPolling(tablesListPath);
+							return;
+						}
+						this.handleGitWatcherError();
+					},
 				);
-				if (!this.reftableTablesListWatcher) {
-					return;
-				}
-				this.reftableTablesListWatchFileListener = (current, previous) => {
-					if (
-						current.mtimeMs !== previous.mtimeMs ||
-						current.ctimeMs !== previous.ctimeMs ||
-						current.size !== previous.size
-					) {
-						this.scheduleReftableRefresh();
-					}
-				};
-				watchFile(tablesListPath, { interval: 250 }, this.reftableTablesListWatchFileListener);
+				this.installReftableTablesListPolling(tablesListPath);
 			}
 		}
 	}

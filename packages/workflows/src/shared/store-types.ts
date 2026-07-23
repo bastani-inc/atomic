@@ -142,6 +142,8 @@ export interface StageSnapshot {
    * refreshes parents, so do not cache this reference across store updates.
    */
   parentIds: readonly string[];
+  /** Set when durable inspection cannot safely determine the original stage lineage. */
+  topologyState?: "unavailable";
   startedAt?: number;
   endedAt?: number;
   durationMs?: number;
@@ -238,6 +240,12 @@ export interface RunSnapshot {
   startedAt: number;
   endedAt?: number;
   durationMs?: number;
+  /**
+   * Elapsed milliseconds inherited from prior sessions of this run. Seeded on
+   * durable/continuation resume so `elapsedRunMs` reports prior + current
+   * elapsed instead of restarting the total workflow duration at zero.
+   */
+  accumulatedDurationMs?: number;
   /** Milliseconds spent paused across completed pause intervals. */
   pausedDurationMs?: number;
   /** Timestamp set when a controlled pause begins; cleared on resume. */

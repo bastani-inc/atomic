@@ -72,6 +72,10 @@ fetch_content({ url: "/path/to/recording.mp4", prompt: "What error appears on sc
 
 ## Tools
 
+The public tools register immediately and share one lazy initialization attempt on first use. Calls wait for initialization and active-session replay before provider work begins; a rejected initializer or replay can be retried by a later call. Initialization and replay are leased to the active session: shutdown retires the lease and cleans its candidate, so calls spanning shutdown reject and a restarted session creates a fresh provider wrapper. An abort that arrives during the shared wait cancels only that invocation. Host cancellation after provider or curator work rejects with the exact host abort reason, while an explicit user action in the curator remains a successful `{ cancelled: true, cancelReason: "user" }` result. Resetting the application-owned attempt does not guarantee re-evaluation of an ESM module whose evaluation itself failed.
+
+For batch search/fetch calls, partial success remains usable and retains item-level errors. A non-empty batch where every provider request or URL fetch fails is reported through Atomic's tool-error channel with aggregate stage metadata while the per-item diagnostics remain stored in the result.
+
 ### web_search
 
 Search the web via Exa, Perplexity AI, or Gemini. Returns a synthesized answer with source citations.

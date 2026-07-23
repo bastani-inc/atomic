@@ -18,6 +18,9 @@ import {
 } from "./loader-virtual-modules.ts";
 import type { Extension, ExtensionFactory, ExtensionRuntime, LoadExtensionsResult } from "./types.ts";
 
+/** Yield between extensions only when the current macrotask turn has run long. */
+const INTER_EXTENSION_YIELD_THRESHOLD_MS = 16;
+
 /**
  * Create an Extension object with empty collections.
  */
@@ -34,6 +37,7 @@ function createExtension(extensionPath: string, resolvedPath: string): Extension
     handlers: new Map(),
     tools: new Map(),
     messageRenderers: new Map(),
+    entryRenderers: new Map(),
     commands: new Map(),
     flags: new Map(),
     shortcuts: new Map(),
@@ -128,9 +132,14 @@ async function loadExtensionsInternal(
   const resolvedRuntime = runtime ?? createExtensionRuntime();
 
   let processedExtensionCount = 0;
+  let lastYieldAt = Date.now();
   for (const extPath of paths) {
-    if (processedExtensionCount > 0) {
+    // Unconditional yields cost a full macrotask turn per extension (~100 ms
+    // each while the TUI is live). Only yield when this turn has actually
+    // held the event loop long enough to delay input/render work.
+    if (processedExtensionCount > 0 && Date.now() - lastYieldAt >= INTER_EXTENSION_YIELD_THRESHOLD_MS) {
       await yieldToEventLoop();
+      lastYieldAt = Date.now();
     }
     const extensionSpan = startTimingSpan(`loadExtensions.${extPath}.total`, "extensions");
     const { extension, error } = await loadExtension(

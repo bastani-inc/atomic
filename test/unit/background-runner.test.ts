@@ -136,6 +136,9 @@ describe("runDetached — returns immediately", () => {
 
     const accepted = runDetached(def, {}, { store, cancellation, jobs });
     assert.ok(accepted.message.includes("named-wf-result"));
+    assert.ok(accepted.message.includes(`/workflow connect ${accepted.runId}`));
+    assert.match(accepted.message, /see agents working.*chat with and steer each stage/);
+    assert.doesNotMatch(accepted.message, /attach|detach/i);
     assert.deepEqual(accepted.stages, []);
   });
 

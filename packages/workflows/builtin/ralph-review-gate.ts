@@ -1,26 +1,28 @@
+import { findingBlocksClosure } from "./review-convergence.js";
+
 /**
- * Review-gate severity logic for the builtin `ralph` workflow.
+ * Review-gate convergence logic for the builtin `ralph` workflow.
  *
- * The bounded review loop must stop as soon as the patch is judged correct, even
- * when a reviewer leaves a low-priority nit (or, occasionally, appends a
- * placeholder finding because it wrongly believed an empty `findings` array would
- * fail schema validation). Requiring a literally empty `findings` array made the
- * loop iterate forever in those cases despite unanimous "patch is correct"
- * verdicts.
+ * The reviewer's self-reported `stop_review_loop` boolean is the single
+ * authoritative convergence signal, mirroring the builtin `goal` gate. The
+ * harness no longer recomputes approval from findings arrays, priorities, or
+ * requirements_traceability statuses: those fields remain required audit
+ * evidence for humans and later stages, and the reviewer prompt instructs the
+ * model exactly how to derive the flag from them (blocking P0/P1/P2 findings
+ * and required_by_objective findings at any priority mean `false`; in-scope
+ * P3 nice-to-haves, out-of-scope observations, authorized post-approval final
+ * actions such as PR creation, and the multi-reviewer quorum process itself
+ * must never hold the flag at `false`).
  *
- * Approval is therefore severity-aware and deterministic. A single reviewer
- * approves when it judged the patch correct, reported no `reviewer_error`, and
- * filed no *blocking* finding:
+ * Recomputing approval from those arrays previously deadlocked runs whose
+ * acceptance criteria referenced the review process itself (for example
+ * "three reviewers approve" or "a PR is created"): no individual reviewer can
+ * prove such clauses, so traceability could never be fully `proven` even when
+ * every reviewer explicitly approved via the boolean.
  *
- * - Blocking  = P0/P1/P2 (numeric priority 0, 1, or 2).
- * - Non-blocking = P3 (numeric priority 3) — a nice-to-have that should not keep
- *   the loop spinning.
- * - A finding whose priority cannot be determined (`null`/`undefined`) is treated
- *   as blocking, so genuine ambiguity never silently approves.
- *
- * The decision is computed from the structured findings rather than the
- * reviewer's self-reported `stop_review_loop` boolean, so the gate does not
- * depend on the model correctly deriving that flag.
+ * Two hard guards remain: a reviewer execution failure (`reviewer_error`)
+ * never approves, and unparsed reviewer output is synthesized upstream as a
+ * `stop_review_loop: false` decision, so parse failures never approve either.
  */
 
 export type ObjectiveAlignment =
@@ -71,44 +73,30 @@ export type ReviewDecision = {
 };
 
 /**
- * Highest finding priority that still blocks approval. P0=0, P1=1, P2=2 block;
- * P3=3 does not.
+ * Highest finding priority that still blocks approval for
+ * `consistent_with_objective` findings. P0=0, P1=1, P2=2 block; P3=3 does not.
+ * `required_by_objective` findings block regardless of priority.
+ * Re-exported from the shared evidence-closure module.
  */
-export const MAX_BLOCKING_PRIORITY = 2;
+export { MAX_BLOCKING_PRIORITY } from "./review-convergence.js";
 
 /**
- * True when a finding must keep the review loop iterating. P0/P1/P2 block; P3 is
- * a non-blocking nice-to-have. A finding without a determinable priority
- * (`null`/`undefined`) is treated as blocking so ambiguity never silently
- * approves.
+ * True when a finding should be treated as blocking when *deriving* the
+ * reviewer's convergence flag or consolidating repair batches. Delegates to
+ * the shared predicate so Goal and Ralph classify findings identically:
+ * objective-required findings block at any priority, in-scope P3
+ * nice-to-haves do not, and ambiguity (missing priority or alignment)
+ * always blocks. This classification feeds prompts and repair batches; it no
+ * longer overrides the reviewer's `stop_review_loop` boolean.
  */
 export function isBlockingFinding(finding: ReviewFinding): boolean {
-  const alignment = finding.objective_alignment;
-  if (alignment === "beyond_objective" || alignment === "contradicts_objective") {
-    return false;
-  }
-  if (alignment !== "required_by_objective" && alignment !== "consistent_with_objective") {
-    return true;
-  }
-  const priority = finding.priority;
-  if (priority === undefined || priority === null) return true;
-  return priority <= MAX_BLOCKING_PRIORITY;
+  return findingBlocksClosure(finding);
 }
 
 /**
- * A single reviewer approves (would stop the loop) when it judged the patch
- * correct, surfaced no reviewer execution error, filed no blocking (P0/P1/P2)
- * finding, and supplied a non-empty requirement traceability map where every
- * explicit requirement is proven. P3 nice-to-haves and placeholder/dummy
- * findings do not block approval.
+ * Deterministic single-reviewer approval gate: the reviewer approves exactly
+ * when it set `stop_review_loop` to `true` and reported no execution error.
  */
 export function reviewDecisionApproved(decision: ReviewDecision): boolean {
-  const traceability = decision.requirements_traceability;
-  return (
-    decision.overall_correctness === "patch is correct" &&
-    decision.reviewer_error == null &&
-    !decision.findings.some(isBlockingFinding) &&
-    traceability.length > 0 &&
-    traceability.every((entry) => entry.status === "proven")
-  );
+  return decision.stop_review_loop === true && decision.reviewer_error == null;
 }

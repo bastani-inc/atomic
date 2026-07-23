@@ -78,8 +78,33 @@ describe("Cursor model mapper", () => {
 			medium: "composer-2-medium",
 			high: "composer-2-high",
 			xhigh: "composer-2-max",
+			max: "composer-2-max",
 		});
 		assert.equal(models.find((entry) => entry.id === "composer-2-thinking-fast")?.reasoning, true);
+	});
+
+	test("advertises max only for a discovered max variant", () => {
+		const [withMax] = mapCursorCatalogToProviderModels({
+			source: "live",
+			fetchedAt: 1,
+			models: [
+				{ id: "demo-high", displayName: "Demo High" },
+				{ id: "demo-max", displayName: "Demo Max" },
+			],
+		});
+		assert.equal(withMax?.thinkingLevelMap?.xhigh, "demo-max");
+		assert.equal(withMax?.thinkingLevelMap?.max, "demo-max");
+
+		const [xhighOnly] = mapCursorCatalogToProviderModels({
+			source: "live",
+			fetchedAt: 1,
+			models: [
+				{ id: "demo-high", displayName: "Demo High" },
+				{ id: "demo-xhigh", displayName: "Demo Extra High" },
+			],
+		});
+		assert.equal(xhighOnly?.thinkingLevelMap?.xhigh, "demo-xhigh");
+		assert.equal(xhighOnly?.thinkingLevelMap?.max, null);
 	});
 
 	test("marks static fallback catalog as estimated and mirrors the reference visible Cursor model set", () => {

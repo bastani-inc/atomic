@@ -11,6 +11,7 @@ import {
     makeMockSession,
     makeOpts,
     mkdtemp,
+    readFile,
     rm,
     tmpdir,
     writeFile,
@@ -37,6 +38,11 @@ describe("createStageContext — inherited session directories", () => {
 
             await ctx.__ensureSession();
 
+            assert.deepEqual(createOptions?.sessionManager?.getHeader()?.workflow, {
+                runId: "run-xyz",
+                stageId: "stage-abc",
+                stageName: "My Stage",
+            });
             assert.equal(createOptions?.sessionManager?.getSessionDir(), dir);
         } finally {
             await rm(dir, { recursive: true, force: true });
@@ -71,6 +77,7 @@ describe("createStageContext — inherited session directories", () => {
         }
     });
 
+
     test("does not force a sessionManager when defaultSessionDir is absent", async () => {
         const dir = await mkdtemp(join(tmpdir(), "pi-workflows-default-session-dir-"));
         try {
@@ -91,6 +98,13 @@ describe("createStageContext — inherited session directories", () => {
             await ctx.__ensureSession();
 
             assert.equal(createOptions?.sessionManager, undefined);
+            assert.deepEqual(createOptions?.orchestrationContext, {
+                kind: "workflow-stage",
+                workflowRunId: "run-xyz",
+                workflowStageId: "stage-abc",
+                workflowStageName: "My Stage",
+                constraints: { disableWorkflowTool: true, maxSubagentDepth: 5 },
+            });
         } finally {
             await rm(dir, { recursive: true, force: true });
         }
@@ -134,6 +148,15 @@ describe("createStageContext — inherited session directories", () => {
             await ctx.__ensureSession();
 
             assert.equal(createOptions?.sessionManager?.getSessionDir(), hostDir);
+            const sessionFile = createOptions?.sessionManager?.getSessionFile();
+            assert.ok(sessionFile);
+            const header = JSON.parse((await readFile(sessionFile, "utf8")).split("\n")[0]!) as Record<string, unknown>;
+            assert.equal(header.internal, true);
+            assert.deepEqual(header.workflow, {
+                runId: "run-xyz",
+                stageId: "stage-abc",
+                stageName: "My Stage",
+            });
         } finally {
             await rm(hostDir, { recursive: true, force: true });
             await rm(sourceDir, { recursive: true, force: true });

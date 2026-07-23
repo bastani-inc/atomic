@@ -9,7 +9,6 @@ export function validateExecutionInput(
 	hasChain: boolean,
 	hasTasks: boolean,
 	hasSingle: boolean,
-	allowClarifyTaskPrompt: boolean,
 ): SubagentToolResult | null {
 	if (Number(hasChain) + Number(hasTasks) + Number(hasSingle) !== 1) {
 		return {
@@ -22,6 +21,16 @@ export function validateExecutionInput(
 			isError: true,
 			details: { mode: "single" as const, results: [] },
 		};
+	}
+	if (hasSingle) {
+		const reads = (params as SubagentParamsLike & { reads?: unknown }).reads;
+		if (reads !== undefined && reads !== false && (!Array.isArray(reads) || reads.some((entry) => typeof entry !== "string"))) {
+			return {
+				content: [{ type: "text", text: "reads must be an array of file path strings or false" }],
+				isError: true,
+				details: { mode: "single", results: [] },
+			};
+		}
 	}
 
 	if (hasSingle && params.agent && !agents.find((agent) => agent.name === params.agent)) {
@@ -69,7 +78,7 @@ export function validateExecutionInput(
 				isError: true,
 				details: { mode: "chain" as const, results: [] },
 			};
-		} else if (!(firstStep as SequentialStep).task && !params.task && !allowClarifyTaskPrompt) {
+		} else if (!(firstStep as SequentialStep).task && !params.task) {
 			return {
 				content: [{ type: "text", text: "First step in chain must have a task" }],
 				isError: true,

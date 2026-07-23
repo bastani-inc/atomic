@@ -41,7 +41,7 @@ export function isGeneratedFile(filePath, options = {}) {
 
 function isGitIgnored(absPath, cwd) {
   try {
-    execFileSync('git', ['check-ignore', '--quiet', absPath], {
+    execFileSync('git', ['check-ignore', '--quiet', '--', absPath], {
       cwd,
       stdio: 'ignore',
     });

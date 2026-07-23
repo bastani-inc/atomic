@@ -8,10 +8,12 @@ import {
     RUNNING_ANIMATION_MS,
     stopResultAnimations,
 } from "../../packages/subagents/src/tui/render.js";
+import { widgetStepGlyph } from "../../packages/subagents/src/tui/render-event-formatting.js";
 import {
     type AgentToolResult,
     type Details,
     firstPulseChar,
+    firstSpinnerChar,
     runningSingleResult,
     theme,
     withMockedNow,
@@ -207,6 +209,13 @@ describe("subagent running pulse (foreground flicker fix)", () => {
             "same pulse frame + same captured now must render byte-identically regardless of wall-clock",
         );
         assert.equal(firstPulseChar(a), pulseGlyph(2));
+    });
+
+    test("foreground chain placeholder rows keep their existing running glyph", () => {
+        const glyph = withMockedNow(10_000, () => widgetStepGlyph("running", theme));
+
+        assert.ok(firstSpinnerChar(glyph), "foreground placeholder helper keeps the preexisting running spinner glyph");
+        assert.notEqual(glyph, pulseGlyph(1), "foreground placeholder helper must not reuse the async/foreground pulse frame");
     });
 
     test("multi-agent compact rows stay stable until a progress update", () => {

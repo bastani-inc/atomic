@@ -13,17 +13,15 @@
 import { createRegistry } from "../workflows/registry.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import {
-  INTERACTIVE_WORKFLOW_POLICY,
   type WorkflowDefinition,
   type WorkflowPersistencePort,
   type WorkflowMcpPort,
   type WorkflowRuntimeConfig,
-  type WorkflowDetails,
   type WorkflowModelCatalogPort,
   type WorkflowExecutionPolicy,
 } from "../shared/types.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
-import { resolveAndValidateInputs, runChain, runParallel, runTask, type RunOpts } from "../runs/foreground/executor.js";
+import { resolveAndValidateInputs, type RunOpts } from "../runs/foreground/executor.js";
 import type { Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { CancellationRegistry } from "../runs/background/cancellation-registry.js";
@@ -31,23 +29,14 @@ import { store as defaultStore } from "../shared/store.js";
 import { dispatch } from "./dispatcher.js";
 import type { WorkflowToolArgs } from "./index.js";
 import type { WorkflowToolResult } from "./render-result.js";
-import {
-  emitWorkflowControlIntercom,
-  emitWorkflowResultIntercom,
-  workflowIntercomAvailable,
-  type WorkflowIntercomDelivery,
-  type WorkflowResultIntercomPort,
-} from "../intercom/result-intercom.js";
-import { validateWorkflowModels } from "../runs/shared/model-fallback.js";
-import { runDetached } from "../runs/background/runner.js";
+import { launchDetachedUntilStartup, workflowStartupFailureMessage } from "../runs/background/startup-admission.js";
 import type { JobTracker } from "../runs/background/job-tracker.js";
-import { appendRunEnd } from "../shared/persistence-session-entries.js";
-import { classifyWorkflowFailure } from "../shared/workflow-failures.js";
-import { resumeDurableWorkflow as resumeDurableWorkflowAdapter, prepareRuntimeDurableResumable, isBackendTerminal, type ResumeDurableDeps, type ResumeDurableResult } from "../durable/resume-runtime.js";
-import { getDurableBackend, initializeDbosDurableBackendFromEnv } from "../durable/factory.js";
-import { scanResumableWorkflows } from "../durable/resume-catalog.js";
-import type { ResumableWorkflowEntry } from "../durable/types.js";
-import { directMode, directModelRequests, directOptions, directProgressTotal } from "./runtime-direct.js";
+import { getDurableBackend, initializeDurableBackend } from "../durable/factory.js";
+import {
+  createDurableResumeRuntime,
+  type DurableResumeRuntime,
+} from "./runtime-durable-resume.js";
+import { claimActiveBlockedResume, discardFailedActiveBlockedContinuation, finalizeResumedActiveBlockedSourceRun, releaseActiveBlockedClaim } from "./runtime-active-block-claim.js";
 
 // ---------------------------------------------------------------------------
 // Options
@@ -75,8 +64,6 @@ export interface ExtensionRuntimeOpts {
   persistence?: WorkflowPersistencePort;
   /** MCP scope-gating port forwarded to the executor. */
   mcp?: WorkflowMcpPort;
-  /** Workflow-native pi-intercom result/control event delivery. */
-  intercom?: WorkflowResultIntercomPort;
   /**
    * Resolved runtime configuration. Injected by the composition root after
    * merging file config with defaults. Forwarded to dispatch → run/runDetached.
@@ -98,7 +85,7 @@ export type ResumeFailedRunResult =
   | { ok: true; runId: string; sourceRunId: string; resumeFromStageId: string; message: string }
   | { ok: false; reason: "run_not_found" | "not_resumable" | "workflow_not_found" | "insufficient_state"; message: string };
 
-export interface ExtensionRuntime {
+export interface ExtensionRuntime extends DurableResumeRuntime {
   /**
    * Live registry — read-only reference.
    * Reflects all definitions registered at startup.
@@ -107,26 +94,14 @@ export interface ExtensionRuntime {
 
   /**
    * Dispatch a `list`, `inputs`, or `run` action.
-   * For `status`, `kill`, and `resume` use the runs/background/status module directly.
+   * Status and run-control actions use the dedicated control modules directly.
    */
   dispatch(args: WorkflowToolArgs, options?: RuntimeDispatchOptions): Promise<WorkflowToolResult>;
 
-  /** Execute direct single/parallel/chain workflow tool modes. */
-  runDirect(args: WorkflowToolArgs, options?: RuntimeDispatchOptions): Promise<WorkflowDetails>;
 
   /** Start a linked continuation for a failed resumable named workflow run. */
-  resumeFailedRun(sourceRunId: string, stageId?: string, options?: RuntimeDispatchOptions): ResumeFailedRunResult;
+  resumeFailedRun(sourceRunId: string, stageId?: string, options?: RuntimeDispatchOptions): Promise<ResumeFailedRunResult>;
 
-  /**
-   * Resume a durable workflow by top-level workflow id when no live run exists.
-   * Re-dispatches the workflow with the cached inputs and original workflow id
-   * so durable checkpoints replay (skipping completed side effects).
-   *
-   * cross-ref: issue #1498 — cross-session /workflow resume selector.
-   */
-  resumeDurableWorkflow(workflowIdOrPrefix: string, options?: RuntimeDispatchOptions): import("../durable/resume-runtime.js").ResumeDurableResult;
-  listDurableResumable(sessionDir?: string): readonly import("../durable/types.js").ResumableWorkflowEntry[];
-  prepareDurableResumable(workflowIdOrPrefix?: string, sessionDir?: string): Promise<readonly import("../durable/types.js").ResumableWorkflowEntry[]>;
 }
 export interface RuntimeDispatchOptions {
   readonly policy?: WorkflowExecutionPolicy;
@@ -156,31 +131,19 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
   const persistence = opts.persistence;
   const mcp = opts.mcp;
   const config = opts.config;
-  const intercom = opts.intercom;
   const models = opts.models;
   const jobs = opts.jobs;
   const runtimeCwd = opts.cwd ?? process.cwd();
   const resolveDefaultStageSessionDir = opts.resolveDefaultStageSessionDir;
-  const dbosReady = initializeDbosDurableBackendFromEnv().catch((err) => process.emitWarning(`Atomic workflow DBOS durability unavailable; using file-backed durability: ${err instanceof Error ? err.message : String(err)}`));
-  const ensureDbosReady = async (): Promise<void> => { await dbosReady; };
-  let preparedDurableCatalog: readonly ResumableWorkflowEntry[] = [];
+  const ensureDbosReady = async (): Promise<void> => {
+    // Deliberately not memoized: the factory revalidates its memoized backend
+    // against the current DBOS lifecycle generation, so caching a permanently
+    // resolved promise here could mask a backend stopped after a
+    // host-session replacement (issue #1957).
+    await initializeDurableBackend();
+  };
 
-  function runOptions(args: WorkflowToolArgs, policy?: WorkflowExecutionPolicy): RunOpts {
-    const argConcurrency =
-      typeof args.concurrency === "number" && Number.isFinite(args.concurrency)
-        ? Math.max(1, Math.floor(args.concurrency))
-        : undefined;
-    const effectiveConfig =
-      argConcurrency === undefined
-        ? config
-        : {
-            maxDepth: config?.maxDepth ?? 4,
-            defaultConcurrency: argConcurrency,
-            persistRuns: config?.persistRuns ?? true,
-            statusFile: config?.statusFile ?? false,
-            ...(config?.statusFilePath !== undefined ? { statusFilePath: config.statusFilePath } : {}),
-            resumeInFlight: config?.resumeInFlight ?? "ask",
-          };
+  function runOptions(policy?: WorkflowExecutionPolicy): RunOpts {
     const defaultSessionDir = resolveDefaultStageSessionDir?.();
     return {
       adapters,
@@ -188,90 +151,13 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
       cancellation,
       persistence,
       mcp,
-      config: effectiveConfig,
+      config,
       models,
       ...(defaultSessionDir !== undefined ? { defaultSessionDir } : {}),
       ...(policy !== undefined ? { executionMode: policy.mode } : {}),
       registry,
       cwd: runtimeCwd,
     };
-  }
-  function explicitIntercomDelivery(args: WorkflowToolArgs): WorkflowIntercomDelivery | undefined {
-    if (args.intercom?.enabled === false) return "off";
-    if (args.intercom?.delivery !== undefined) return args.intercom.delivery;
-    if (args.intercom?.enabled === true) return "control-and-result";
-    return undefined;
-  }
-  function effectiveIntercomDelivery(args: WorkflowToolArgs, mode: WorkflowDetails["mode"]): WorkflowIntercomDelivery {
-    const explicit = explicitIntercomDelivery(args);
-    if (explicit !== undefined) return explicit;
-    if (
-      args.async === true &&
-      workflowIntercomAvailable(intercom) &&
-      (mode === "parallel" || mode === "chain")
-    ) {
-      return "control-and-result";
-    }
-    return "off";
-  }
-  function intercomParentSession(args: WorkflowToolArgs): string | undefined {
-    if (args.intercom?.parentSession !== undefined) return args.intercom.parentSession;
-    if (typeof intercom?.parentSession === "function") return intercom.parentSession();
-    return intercom?.parentSession;
-  }
-
-  function withIntercomSummary(
-    details: WorkflowDetails,
-    delivery: WorkflowIntercomDelivery,
-    parentSession?: string,
-  ): WorkflowDetails {
-    if (delivery === "off") return details;
-    return {
-      ...details,
-      intercom: {
-        enabled: workflowIntercomAvailable(intercom),
-        delivery,
-        ...(parentSession !== undefined ? { parentSession } : {}),
-      },
-    };
-  }
-
-  function emitDirectIntercom(details: WorkflowDetails, delivery: WorkflowIntercomDelivery, parentSession?: string): void {
-    if (delivery === "off") return;
-    const summarized = withIntercomSummary(details, delivery, parentSession);
-    emitWorkflowControlIntercom(
-      intercom,
-      summarized,
-      `workflow ${summarized.status}: ${summarized.runId ?? "unknown run"}`,
-      { delivery: delivery === "result" ? "result" : delivery, parentSession },
-    );
-    emitWorkflowResultIntercom(intercom, summarized, {
-      delivery: delivery === "notify" ? "notify" : delivery,
-      parentSession,
-    });
-  }
-
-  function runDirectForeground(
-    args: WorkflowToolArgs,
-    runId?: string,
-    policy?: WorkflowExecutionPolicy,
-  ): Promise<WorkflowDetails> {
-    const directRunOptions = directOptions(args);
-    const baseRunOptions = runOptions(args, policy);
-    const effectiveRunOptions = runId === undefined
-      ? baseRunOptions
-      : { ...baseRunOptions, runId };
-
-    if (Array.isArray(args.chain)) {
-      return runChain(args.chain, directRunOptions, effectiveRunOptions);
-    }
-    if (Array.isArray(args.tasks)) {
-      return runParallel(args.tasks, directRunOptions, effectiveRunOptions);
-    }
-    if (args.task !== undefined && typeof args.task === "object") {
-      return runTask(args.task, directRunOptions, effectiveRunOptions);
-    }
-    throw new Error("WorkflowRuntime.runDirect: no direct execution mode supplied");
   }
 
   function matchesResumeStageIdentifier(stage: RunSnapshot["stages"][number], identifier: string): boolean {
@@ -315,31 +201,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
     return { ok: true, stageId: failedStageId };
   }
 
-  function finalizeResumedActiveBlockedSourceRun(source: RunSnapshot, continuationRunId: string): void {
-    const errorMessage = source.error ?? source.failureMessage ?? `workflow resumed in new run ${continuationRunId}`;
-    const metadata = {
-      ...(source.failureKind !== undefined ? { failureKind: source.failureKind } : {}),
-      ...(source.failureCode !== undefined ? { failureCode: source.failureCode } : {}),
-      failureRecoverability: "non_recoverable",
-      failureDisposition: "terminal_killed",
-      ...(source.failureMessage !== undefined ? { failureMessage: source.failureMessage } : {}),
-      ...(source.failedStageId !== undefined ? { failedStageId: source.failedStageId } : {}),
-      resumable: false,
-      ...(source.retryAfterMs !== undefined ? { retryAfterMs: source.retryAfterMs } : {}),
-    } as const;
-    const recorded = activeStore.recordRunEnd(source.id, "killed", undefined, errorMessage, metadata);
-    if (recorded && persistence !== undefined) {
-      appendRunEnd(persistence, {
-        runId: source.id,
-        status: "killed",
-        error: errorMessage,
-        ...metadata,
-        ts: Date.now(),
-      });
-    }
-  }
-
-  function resumeFailedRun(sourceRunId: string, stageId?: string, options?: RuntimeDispatchOptions): ResumeFailedRunResult {
+  async function resumeFailedRun(sourceRunId: string, stageId?: string, options?: RuntimeDispatchOptions): Promise<ResumeFailedRunResult> {
     const source = activeStore.runs().find((run) => run.id === sourceRunId);
     if (source === undefined) {
       return { ok: false, reason: "run_not_found", message: `run not found: ${sourceRunId}` };
@@ -363,72 +225,67 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
     } catch (err) {
       return { ok: false, reason: "insufficient_state", message: `insufficient_state: ${err instanceof Error ? err.message : String(err)}` };
     }
-    const accepted = runDetached(def, sourceInputs, {
-      ...runOptions({ workflow: def.name, inputs: sourceInputs }, options?.policy),
+    const stageMessage = (verb: string, runId: string): string =>
+      `${verb} workflow "${def.name}" from run ${source.id.slice(0, 8)} at stage ${resolvedStage.stageId.slice(0, 8)} (run ${runId.slice(0, 8)}).`;
+    const launchContinuation = () => launchDetachedUntilStartup(def, sourceInputs, {
+      ...runOptions(options?.policy),
       continuation: { source, resumeFromStageId: resolvedStage.stageId },
+      ...(jobs !== undefined ? { jobs } : {}),
     });
     if (isActiveBlockedResumable) {
-      finalizeResumedActiveBlockedSourceRun(source, accepted.runId);
+      // Keep the durable blocked source recoverable until fresh-ID startup admission succeeds.
+      if (!claimActiveBlockedResume(getDurableBackend(), source.id)) {
+        return { ok: false, reason: "not_resumable", message: `run ${source.id} is already being resumed in this session` };
+      }
+      let launch: ReturnType<typeof launchContinuation>;
+      try {
+        launch = launchContinuation();
+      } catch (error) {
+        releaseActiveBlockedClaim(source.id);
+        return { ok: false, reason: "insufficient_state", message: `failed to resume run ${source.id}: ${error instanceof Error ? error.message : String(error)}` };
+      }
+      const { accepted } = launch;
+      const admission = await launch.wait;
+      if (!admission.started) {
+        const startupError = workflowStartupFailureMessage(admission, activeStore.runs().find((run) => run.id === accepted.runId)?.error, `workflow run ${accepted.runId} ended before startup admission`);
+        try {
+          await discardFailedActiveBlockedContinuation(getDurableBackend(), accepted.runId, activeStore);
+        } catch (error) {
+          releaseActiveBlockedClaim(source.id);
+          return { ok: false, reason: "insufficient_state", message: `continuation for run ${source.id} failed to start (${startupError}) and cleanup failed: ${error instanceof Error ? error.message : String(error)}; source left resumable` };
+        }
+        releaseActiveBlockedClaim(source.id);
+        return { ok: false, reason: "insufficient_state", message: `continuation for run ${source.id} failed to start: ${startupError}; source left resumable` };
+      }
+      try {
+        finalizeResumedActiveBlockedSourceRun(source, accepted.runId, activeStore, persistence);
+      } catch (error) {
+        releaseActiveBlockedClaim(source.id);
+        return { ok: false, reason: "insufficient_state", message: `failed to finalize resumed source ${source.id}: ${error instanceof Error ? error.message : String(error)}` };
+      }
+      releaseActiveBlockedClaim(source.id);
+      return { ok: true, runId: accepted.runId, sourceRunId: source.id, resumeFromStageId: resolvedStage.stageId, message: stageMessage("Resuming blocked", accepted.runId) };
     }
-    return {
-      ok: true,
-      runId: accepted.runId,
-      sourceRunId: source.id,
-      resumeFromStageId: resolvedStage.stageId,
-      message: isActiveBlockedResumable
-        ? `Resuming blocked workflow "${def.name}" from run ${source.id.slice(0, 8)} at stage ${resolvedStage.stageId.slice(0, 8)} (new run ${accepted.runId}).`
-        : `Resuming failed workflow "${def.name}" from run ${source.id.slice(0, 8)} at stage ${resolvedStage.stageId.slice(0, 8)} (new run ${accepted.runId}).`,
-    };
+    let launch: ReturnType<typeof launchContinuation>;
+    try {
+      launch = launchContinuation();
+    } catch (error) {
+      return { ok: false, reason: "insufficient_state", message: `failed to resume run ${source.id}: ${error instanceof Error ? error.message : String(error)}` };
+    }
+    const { accepted } = launch;
+    const admission = await launch.wait;
+    if (!admission.started) {
+      const startupError = workflowStartupFailureMessage(admission, activeStore.runs().find((run) => run.id === accepted.runId)?.error, `workflow run ${accepted.runId} ended before startup admission`);
+      try {
+        await discardFailedActiveBlockedContinuation(getDurableBackend(), accepted.runId, activeStore);
+      } catch (error) {
+        return { ok: false, reason: "insufficient_state", message: `continuation for run ${source.id} failed to start (${startupError}) and cleanup failed: ${error instanceof Error ? error.message : String(error)}` };
+      }
+      return { ok: false, reason: "insufficient_state", message: `continuation for run ${source.id} failed to start: ${startupError}` };
+    }
+    return { ok: true, runId: accepted.runId, sourceRunId: source.id, resumeFromStageId: resolvedStage.stageId, message: stageMessage("Resuming failed", accepted.runId) };
   }
 
-  async function runDirectAsync(args: WorkflowToolArgs, policy?: WorkflowExecutionPolicy): Promise<WorkflowDetails> {
-    await ensureDbosReady();
-    const runId = crypto.randomUUID();
-    const mode = directMode(args);
-    const delivery = effectiveIntercomDelivery(args, mode);
-    const parentSession = intercomParentSession(args);
-    let warnings: readonly string[] = [];
-    try {
-      warnings = await validateWorkflowModels({
-        requests: directModelRequests(args),
-        catalog: models,
-      });
-    } catch (error: unknown) {
-      return withIntercomSummary({
-        mode,
-        action: "run",
-        runId,
-        status: "failed",
-        progress: { completed: 0, total: directProgressTotal(args) },
-        error: classifyWorkflowFailure(error).userMessage,
-      }, delivery, parentSession);
-    }
-    const background = runDirectForeground(args, runId, policy);
-    void background.then(
-      (details) => {
-        emitDirectIntercom(details, delivery, parentSession);
-      },
-      (error: unknown) => {
-        const details: WorkflowDetails = withIntercomSummary({
-          mode,
-          action: "run",
-          runId,
-          status: "failed",
-          progress: { completed: 0, total: directProgressTotal(args) },
-          error: classifyWorkflowFailure(error).userMessage,
-        }, delivery, parentSession);
-        emitDirectIntercom(details, delivery, parentSession);
-      },
-    );
-    return withIntercomSummary({
-      mode,
-      action: "run",
-      runId,
-      status: "accepted",
-      progress: { completed: 0, total: directProgressTotal(args) },
-      ...(warnings.length > 0 ? { warnings: [...warnings] } : {}),
-    }, delivery, parentSession);
-  }
 
   return {
     get registry(): WorkflowRegistry {
@@ -454,47 +311,18 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
       });
     },
 
-    async runDirect(args: WorkflowToolArgs, options?: RuntimeDispatchOptions): Promise<WorkflowDetails> {
-      await ensureDbosReady();
-      const policy = options?.policy ?? INTERACTIVE_WORKFLOW_POLICY;
-      if (args.async === true && policy.awaitTerminalRun !== true) {
-        return runDirectAsync(args, policy);
-      }
-      const mode = directMode(args);
-      const delivery = effectiveIntercomDelivery(args, mode);
-      const parentSession = intercomParentSession(args);
-      return runDirectForeground(args, undefined, policy).then((details) => {
-        const summarized = withIntercomSummary(details, delivery, parentSession);
-        emitDirectIntercom(summarized, delivery, parentSession);
-        return summarized;
-      });
-    },
 
     resumeFailedRun,
+    ...createDurableResumeRuntime({
+      registry,
+      store: activeStore,
+      adapters,
+      runtimeCwd,
+      ensureReady: ensureDbosReady,
+      resolveDefaultStageSessionDir,
+      baseRunOpts: (policy) => runOptions(policy),
+      ...(jobs !== undefined ? { jobs } : {}),
+    }),
 
-    resumeDurableWorkflow(workflowIdOrPrefix: string, options?: RuntimeDispatchOptions): ResumeDurableResult {
-      const adapterDeps: ResumeDurableDeps = {
-        registry,
-        baseRunOpts: runOptions({ workflow: "", inputs: {} }, options?.policy),
-        durableBackend: getDurableBackend(),
-      };
-      return resumeDurableWorkflowAdapter(workflowIdOrPrefix, adapterDeps, preparedDurableCatalog);
-    },
-    listDurableResumable(sessionDir?: string): readonly ResumableWorkflowEntry[] {
-      const backend = getDurableBackend();
-      const live = backend.listResumableWorkflows();
-      const dir = sessionDir ?? resolveDefaultStageSessionDir?.();
-      if (dir === undefined) return live;
-      const scanned = scanResumableWorkflows(dir);
-      const liveIds = new Set(live.map((e) => e.workflowId));
-      const compatible = scanned.filter((e) => !liveIds.has(e.workflowId) && backend.getWorkflow(e.workflowId) !== undefined && !isBackendTerminal(backend, e.workflowId));
-      return [...live, ...compatible];
-    },
-
-    async prepareDurableResumable(workflowIdOrPrefix?: string, sessionDir?: string): Promise<readonly ResumableWorkflowEntry[]> {
-      await ensureDbosReady();
-      preparedDurableCatalog = await prepareRuntimeDurableResumable(getDurableBackend, () => resolveDefaultStageSessionDir?.(), workflowIdOrPrefix, sessionDir);
-      return preparedDurableCatalog;
-    },
   };
 }

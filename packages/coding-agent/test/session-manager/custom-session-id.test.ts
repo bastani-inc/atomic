@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -94,6 +94,30 @@ describe("SessionManager.newSession with custom id", () => {
 		expect(session.getHeader()!.id).toBe(session.getSessionId());
 	});
 
+	it("inherits valid workflow classification when branching a persisted stage session", () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "pi-session-manager-"));
+		const workflow = { runId: "run-1", stageId: "stage-1", stageName: "build" };
+		const session = SessionManager.create(tempDir, tempDir, { internal: true, workflow });
+		session.appendMessage({ role: "user", content: "task", timestamp: Date.now() });
+		const leafId = session.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "done" }],
+			api: "openai-responses",
+			provider: "openai",
+			model: "gpt-5.4",
+			usage: {
+				input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		});
+
+		const branchPath = session.createBranchedSession(leafId)!;
+		const firstLine = readFileSync(branchPath, "utf8").split("\n")[0];
+		expect(JSON.parse(firstLine!)).toMatchObject({ internal: true, workflow });
+	});
+
 	it("generates a UUIDv7 id when forking from another session file", () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "pi-session-manager-"));
 		const sourcePath = join(tempDir, "source.jsonl");
@@ -163,5 +187,33 @@ describe("SessionManager.newSession with custom id", () => {
 		const sessionFile = forked.getSessionFile()!;
 		expect(sessionFile).toContain("forked-session-id");
 		expect(basename(sessionFile)).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z_forked-session-id\.jsonl$/);
+	});
+
+	it("persists valid workflow classification in the initial fork header", () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "pi-session-manager-"));
+		const sourcePath = join(tempDir, "source.jsonl");
+		writeFileSync(sourcePath, `${JSON.stringify({
+			type: "session", version: 3, id: "source-session-id", timestamp: new Date().toISOString(), cwd: tempDir,
+		})}\n`);
+		const workflow = { runId: "run-1", stageId: "stage-1", stageName: "build" };
+
+		const forked = SessionManager.forkFrom(sourcePath, tempDir, tempDir, { internal: true, workflow });
+		const firstLine = readFileSync(forked.getSessionFile()!, "utf8").split("\n")[0];
+
+		expect(JSON.parse(firstLine!)).toMatchObject({ internal: true, workflow });
+	});
+
+	it("keeps ordinary forks visible and unclassified", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "pi-session-manager-"));
+		const sourcePath = join(tempDir, "source.jsonl");
+		writeFileSync(sourcePath, `${JSON.stringify({
+			type: "session", version: 3, id: "source-session-id", timestamp: new Date().toISOString(), cwd: tempDir,
+		})}\n`);
+
+		const forked = SessionManager.forkFrom(sourcePath, tempDir, tempDir);
+
+		expect(forked.getHeader()).not.toHaveProperty("internal");
+		expect(forked.getHeader()).not.toHaveProperty("workflow");
+		expect((await SessionManager.list(tempDir, tempDir)).map((session) => session.id)).toContain(forked.getSessionId());
 	});
 });

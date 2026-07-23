@@ -1,9 +1,10 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai/compat";
 import type { CustomMessage } from "./messages.ts";
-import type { SendMessageOptions } from "./extensions/index.ts";
+import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { customMessageExcludesContext, drainAgentMessageQueue, normalizeInterruptAbortMessage, type AgentQueueAccess, type DrainedAgentQueues, type InterruptQueueHold } from "./agent-session-types.ts";
+import { createSessionAsyncDeliveryHandler } from "./async/session-manager.js";
 
 export async function _queueSteer(this: AgentSession, text: string, images?: ImageContent[]): Promise<void> {
 	this._steeringMessages.push(text);
@@ -74,35 +75,139 @@ export function _throwIfExtensionCommand(this: AgentSession, text: string): void
  * @param options.deliverAs Delivery mode: "steer", "followUp", "nextTurn", or "interrupt"
  */
 
-export async function sendCustomMessage<T = unknown>(this: AgentSession, 
+export async function sendCustomMessage<T = unknown>(this: AgentSession,
 	message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
 	options?: SendMessageOptions,
 ): Promise<void> {
 	const appMessage = {
 		role: "custom" as const,
 		customType: message.customType,
-		content: message.content,
+		content: message.content ?? [],
 		display: message.display,
 		details: message.details,
 		timestamp: Date.now(),
 		...(options?.excludeFromContext === true ? { excludeFromContext: true } : {}),
 	} satisfies CustomMessage<T>;
-	if (options?.deliverAs === "nextTurn") {
-		this._pendingNextTurnMessages.push(appMessage);
-	} else if (options?.deliverAs === "interrupt" && options.triggerTurn) {
-		await this._enqueueInterruptCustomMessage(appMessage, options);
-	} else if (this.isStreaming && options?.excludeFromContext === true && options.triggerTurn !== true && options.deliverAs === undefined) {
-		this._appendCustomMessage(appMessage);
-	} else if (this.isStreaming) {
-		this._queueAgentMessage(appMessage, options?.deliverAs === "followUp" ? "followUp" : "steer");
-	} else if (options?.triggerTurn) {
-		await this._runAgentPrompt(appMessage);
-	} else {
-		this._appendCustomMessage(appMessage);
-	}
+	const boundary = this._workflowStageAdmission;
+	const deliver = async (): Promise<void> => {
+		if (boundary && options?.stageAdmissionBarrier) await options.stageAdmissionBarrier();
+		if (options?.deliverAs === "nextTurn") {
+			this._pendingNextTurnMessages.push(appMessage);
+		} else if (options?.deliverAs === "interrupt" && options.triggerTurn) {
+			const interrupt = this._enqueueInterruptCustomMessage(appMessage, options);
+			boundary?.trackAdmittedWork(interrupt);
+			void interrupt.catch(() => {});
+		} else if (this.isStreaming && options?.excludeFromContext === true && options.triggerTurn !== true && options.deliverAs === undefined) {
+			this._appendCustomMessage(appMessage);
+		} else if (this.isStreaming && options?.persistWhenStreaming === true) {
+			// Persist the notice to the transcript so a streaming parent's cleared
+			// steer queue or aborted turn cannot silently drop it; it stays visible
+			// and in-context for the model's next step.
+			this._appendCustomMessage(appMessage);
+		} else if (this.isStreaming) {
+			this._queueAgentMessage(appMessage, options?.deliverAs === "followUp" ? "followUp" : "steer");
+		} else if (options?.triggerTurn) {
+			// ES2022 build target: use a manually constructed deferred instead of
+			// Promise.withResolvers (ES2024). Resolve on prompt-start so a later
+			// model-turn rejection cannot un-admit an already-delivered notice;
+			// reject only when the turn fails before that start signal fires.
+			let resolveAdmission!: () => void;
+			let rejectAdmission!: (error: unknown) => void;
+			const admission = new Promise<void>((resolve, reject) => {
+				resolveAdmission = resolve;
+				rejectAdmission = reject;
+			});
+			const turn = this._runAgentPrompt(appMessage, resolveAdmission);
+			void turn.then(resolveAdmission, rejectAdmission);
+			await admission;
+		} else {
+			this._appendCustomMessage(appMessage);
+		}
+	};
+	if (boundary === undefined) return deliver();
+	await boundary.admit(
+		options?.stageAdmissionKey,
+		deliver,
+		() => {
+			const router = this._orchestrationContext?.lateMessageRouter;
+			if (router === undefined) throw new Error("Workflow stage closed without a late-message router");
+			return router.routeMessage(message, options);
+		},
+	).completion;
+}
+
+/** Atomically admits a custom-message batch in array order. */
+export async function sendCustomMessages<T = unknown>(this: AgentSession,
+	messages: Array<Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">>,
+	options?: SendMessagesOptions,
+): Promise<void> {
+	const timestamp = Date.now();
+	const appMessages = messages.map((message) => ({
+		role: "custom" as const,
+		customType: message.customType,
+		content: message.content ?? [],
+		display: message.display,
+		details: message.details,
+		timestamp,
+		...(options?.excludeFromContext === true ? { excludeFromContext: true } : {}),
+	} satisfies CustomMessage<T>));
+	if (appMessages.length === 0) return;
+	const boundary = this._workflowStageAdmission;
+	const deliver = async (): Promise<void> => {
+		if (boundary && options?.stageAdmissionBarrier) await options.stageAdmissionBarrier();
+		if (options?.deliverAs === "nextTurn") {
+			this._pendingNextTurnMessages.push(...appMessages);
+		} else if (this.isStreaming && options?.excludeFromContext === true && options.triggerTurn !== true && options.deliverAs === undefined) {
+			for (const item of appMessages) this._appendCustomMessage(item);
+		} else if (this.isStreaming) {
+			const delivery = options?.deliverAs === "followUp" ? "followUp" : "steer";
+			for (const item of appMessages) this._queueAgentMessage(item, delivery);
+		} else if (options?.triggerTurn) {
+			const turn = this._runAgentPrompt(appMessages);
+			void turn.catch(() => {});
+		} else {
+			for (const item of appMessages) this._appendCustomMessage(item);
+		}
+	};
+	if (boundary === undefined) return deliver();
+	await boundary.admit(
+		options?.stageAdmissionKey,
+		deliver,
+		() => {
+			const router = this._orchestrationContext?.lateMessageRouter;
+			if (router === undefined) throw new Error("Workflow stage closed without a late-message router");
+			return router.routeMessages(messages, options);
+		},
+	).completion;
 }
 
 
+export function sealWorkflowStageGeneration(this: AgentSession): void {
+	this._workflowStageAdmission?.seal();
+}
+
+export async function closeWorkflowStageGeneration(this: AgentSession): Promise<void> {
+	await this._workflowStageAdmission?.close();
+	await this.agent?.waitForIdle?.();
+	await this._agentEventQueue;
+}
+
+export function transferWorkflowStageDeliveriesTo(this: AgentSession, target: object): void {
+	const next = target as AgentSession;
+	const queued = this._drainQueuedAgentMessages();
+	if (this._activeInterruptQueueHold) {
+		queued.steering.push(...this._activeInterruptQueueHold.steering);
+		queued.followUp.push(...this._activeInterruptQueueHold.followUp);
+		this._activeInterruptQueueHold = undefined;
+	}
+	next._pendingNextTurnMessages.unshift(...this._pendingNextTurnMessages.splice(0));
+	next._restoreQueuedAgentMessages(queued);
+	this._asyncJobManager.transferSessionDeliveries(
+		this._asyncJobManagerSessionId,
+		next._asyncJobManagerSessionId,
+		createSessionAsyncDeliveryHandler(next, next._asyncJobManager, next._asyncJobManagerSessionId),
+	);
+}
 export function _appendCustomMessage<T>(this: AgentSession, message: CustomMessage<T>): void {
 	this.agent.state.messages.push(message);
 	this.sessionManager.appendCustomMessageEntry(
@@ -289,19 +394,17 @@ export function setFollowUpMode(this: AgentSession, mode: "all" | "one-at-a-time
 }
 
 // =========================================================================
-// Compaction
+// Queue and delivery settings
 // =========================================================================
-
-/**
- * Apply validated logical deletions and rebuild active agent context.
- * Retained transcript entries/content blocks stay verbatim.
- */
-
 export const agentSessionMessageQueueMethods = {
 	_queueSteer,
 	_queueFollowUp,
 	_throwIfExtensionCommand,
+	transferWorkflowStageDeliveriesTo,
+	sealWorkflowStageGeneration,
 	sendCustomMessage,
+	sendCustomMessages,
+	closeWorkflowStageGeneration,
 	_appendCustomMessage,
 	_enqueueInterruptCustomMessage,
 	_sendInterruptCustomMessageNow,

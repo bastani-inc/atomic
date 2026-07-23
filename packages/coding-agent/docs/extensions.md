@@ -30,6 +30,8 @@ See [examples/extensions/](https://github.com/bastani-inc/atomic/tree/main/packa
 
 ## Table of Contents
 
+- [Startup and lazy discovery](#startup-and-lazy-discovery)
+- [Interactive callback isolation](#interactive-callback-isolation)
 - [Quick Start](#quick-start)
 - [Extension Locations](#extension-locations)
 - [Available Imports](#available-imports)
@@ -51,6 +53,24 @@ See [examples/extensions/](https://github.com/bastani-inc/atomic/tree/main/packa
 - [Error Handling](#error-handling)
 - [Mode Behavior](#mode-behavior)
 - [Examples Reference](#examples-reference)
+
+## Startup and lazy discovery
+
+Atomic keeps the interactive startup path responsive by registering lightweight command/tool wrappers first and deferring noncritical discovery work until after the session is usable. Built-in MCP, workflow, subagent, web-access, and Intercom extensions expose their public commands/tools immediately, but expensive server connections, workflow module evaluation, result-watcher priming, cleanup scans, and browser/provider loading may run in the background or on first explicit use. Commands such as `/workflow list`, named workflow runs/inputs, failed or durable workflow resume, `/mcp`, direct MCP tool calls, `mcp({ search })`, `mcp({ describe })`, `mcp({ server })`, and explicit reload/setup flows still wait for the resources they need before returning results; cold-cache MCP proxy `describe` first narrows hydration to prefix-matched or explicitly requested servers without starting unrelated servers after a prefix-directed miss, cold-cache unscoped MCP proxy `search` intentionally hydrates all uncached lazy servers so it can search the full configured tool set, env-selected MCP direct tools warm only their selected servers and refresh live tool registration when ready, paused live-workflow resume/pickers bypass full workflow discovery, autocomplete falls back to current/admin completions when lazy discovery fails, and workflow session restore reads only lightweight config during `session_start` so persisted-run settings apply without evaluating workflow modules.
+
+Web-access and Intercom first-use calls await one shared lazy initializer plus the latest active lifecycle replay before executing. Failed initializer/replay attempts remain retryable. Session-scoped leases retire candidates synchronously on shutdown, reject calls spanning teardown, and require fresh initialization after restart; shutdown awaits retired replay/initializer cleanup before the extension instance can be replaced, and Intercom serializes replay with live lifecycle forwarding so matching ends and newer model selections cannot be overtaken by stale replay. Aborting one web-access caller during a shared wait does not cancel initialization for other callers, and host abort after provider/curator execution preserves the exact abort reason while explicit curator user cancellation remains result-shaped. Non-empty `web_search`/`fetch_content` batches with no successful items are marked as tool errors with stage diagnostics; partial successes remain successful and retain their completed items.
+
+Bundled MCP startup, proxy calls, direct tools, and readiness-critical commands share a generation-scoped initializer and exact session lease. Failed background attempts remain retryable and single-flight; stale contexts cannot reuse initialized state; commands keep the state they initialized across lazy imports; and direct/proxy operations revalidate ownership after lifecycle-spanning waits and before metadata or SDK side effects. Caller cancellation races readiness, connection, manager-close, and UI-start waits with the exact reason, closes any UI runtime produced after cancellation, and does not cancel shared producers needed by survivors. Session restart/shutdown retires OAuth ownership immediately and uses bounded, observed cleanup so non-abortable SDK work cannot permanently block replacement sessions while late completion remains fenced. SDK-supported resource/tool requests still receive the call signal, though protocol-level remote cancellation is advisory; UI-backed MCP Apps calls preserve terminal cancellation ordering and keep successful result events mutually exclusive. Per-server `timeoutMs` applies a validated local-or-remote MCP tool-call inactivity limit at every call path while composing with the host abort signal; progress resets that timer, so a continuously reporting tool can run indefinitely, and omitting the field keeps the MCP SDK default.
+
+## Interactive callback isolation
+
+Interactive Atomic sessions run the agent engine, extensions, tools, hooks, workflow code, and extension-owned render components in a supervised child process. The terminal host owns stdin and cached rendering, so a synchronous busy loop in one callback cannot stop keyboard handling, spinners, or render scheduling. The engine sends a heartbeat every 50 ms; Atomic identifies the active callback after a 250 ms heartbeat gap and marks the engine unresponsive after one second. Escape requests cooperative cancellation and escalates to terminating the engine when it cannot acknowledge; the interrupted result is reported as unknown and is never retried automatically.
+
+Dialogs and `ctx.ui.custom()` components are proxied to the host as rendered lines with asynchronous input forwarding. Custom UI results must be JSON-safe. APIs that require a synchronous callback in the terminal process—raw `onTerminalInput` transforms, synchronous `getEditorText`, custom editor factories, autocomplete wrappers, component-factory widgets, and custom header/footer factories—are unavailable in isolated interactive mode and produce a warning rather than executing extension code in the host. Print and public RPC modes retain their existing execution model.
+
+For session-style list pickers use `ctx.ui.hostSessionPicker(request)` instead of remote-rendering a selector through `ctx.ui.custom()`: the terminal host mounts the real built-in session selector natively, fed with JSON-safe rows (`HostSessionPickerRow`: `SessionInfo` with `createdAt`/`modifiedAt` epoch millis). Arrow-key navigation and search never cross the process boundary; only semantic events do — the returned handle exposes `result` (resolves with the selected row's `path`, or `undefined` on cancel), `update(rows)`, `error(message)`, and `close()`, and the request's `onDelete(path)` callback owns deletion (the host keeps the row until the extension replies with `update` or `error`). Every interactive host implements the identical API — in-process (no IPC) when not isolated, over the engine protocol when isolated — so callers never branch; the member is absent only on non-interactive surfaces (headless RPC, print), where commands should fail with an actionable error. See [Host-native session picker](/tui#host-native-session-picker) for an example.
+
+For structured forms use `ctx.ui.hostInputForm(request)`. It accepts JSON-safe field descriptors (`string`, `text`, `number`, `integer`, `boolean`, or `select`, each with a raw `initialValue`) and resolves to a raw string record or `undefined` on cancellation. The terminal host owns the component, focus, validation, configured-keybinding handling, and mutable text state, so Tab, arrows, editing, Enter, Escape, and Ctrl+C are host-local rather than asynchronously forwarded to the engine child. Both interactive modes expose the same optional API; headless RPC and print omit it. See [Host-native input form](/tui#host-native-input-form).
 
 ## Quick Start
 
@@ -310,8 +330,9 @@ user sends prompt ────────────────────�
   │   │     ├─► tool_result (can modify)           │       │
   │   │     └─► tool_execution_end                 │       │
   │   │                                            │       │
-  │   └─► turn_end                                 │       │
-  │                                                        │
+  │   ├─► turn_end                                 │       │
+  │   └─► post-tool threshold preflight            │       │
+  │       (may compact before the next provider request)   │
   └─► agent_end                                            │
                                                            │
 user sends another prompt ◄────────────────────────────────┘
@@ -329,9 +350,9 @@ user sends another prompt ◄─────────────────
   └─► resources_discover { reason: "startup" }
 
 /compact or auto-compaction
-  ├─► compaction_start / compaction_end (deletion-only context compaction status)
-  ├─► session_before_compact (can cancel or provide a deletion request)
-  └─► session_compact (after the context_compaction entry is persisted)
+  ├─► compaction_start / compaction_end (verbatim line-compaction status)
+  ├─► session_before_compact (can cancel or provide compactedText)
+  └─► session_compact (after the compaction boundary is persisted)
 
 /tree navigation
   ├─► session_before_tree (can cancel or customize)
@@ -451,40 +472,36 @@ Do cleanup work in `session_shutdown`, then reestablish any in-memory state in `
 
 #### session_before_compact / session_compact
 
-Fired by `/compact` and auto-compaction. Compaction is deletion-only: extensions can cancel the run or return exact entry/content-block deletion targets for Atomic to validate locally. Extensions cannot return generated summaries.
+Fired by `/compact` and auto-compaction, including a threshold crossing detected after tool results enter the prospective next-turn context. Atomic prepares the complete active transcript except for the exact newest `preserve_recent` context-visible messages. Extensions may cancel or provide a complete, non-empty `compactedText` replacement for that region; they cannot move `firstKeptEntryId`. The override is persisted verbatim and works without provider credentials. A successful post-tool compaction returns its rebuilt context directly to the already-active Pi loop; it does not start a separate continuation. Cancellation or failure prevents that loop's follow-up provider request.
 
 ```typescript
-pi.on("session_before_compact", async (event, ctx) => {
-  const { preparation, branchEntries, reason, signal } = event;
-  const { transcript } = preparation;
+pi.on("session_before_compact", async (event) => {
+  const { preparation, branchEntries, parameters, reason, signal } = event;
 
-  // transcript.entries - compactable entries on the active branch
-  // transcript.protectedEntryIds - entries validation will reject if directly deleted
-  // transcript.tokensBefore - token estimate before compaction
-  // branchEntries - raw session entries on the current branch
+  // preparation.region.lines - unnumbered compactable transcript lines
+  // preparation.firstKeptEntryId - fixed start of the exact tail, or null when the tail is empty
+  // preparation.tokensBefore - whole-context token estimate
+  // parameters - compression_ratio, preserve_recent, query
+  // branchEntries - raw entries on the active branch
   // reason - "manual" | "threshold" | "overflow"
+  // preparation is a deep-frozen clone
 
   if (signal.aborted) return { cancel: true };
 
   // Cancel compaction:
   return { cancel: true };
 
-  // Or provide a deletion request. Atomic validates IDs, protected targets,
-  // tool-call/tool-result pairing, and non-empty remaining context before saving.
+  // Or replace only the prepared region. Whitespace-only text is rejected.
   return {
-    deletionRequest: {
-      deletions: [
-        { kind: "entry", entryId: "abc123", rationale: "Old successful command output" },
-        { kind: "content_block", entryId: "def456", blockIndex: 2, rationale: "Verbose obsolete log" },
-      ],
-    },
+    compactedText: preparation.region.lines.slice(0, 40).join("\n"),
   };
 });
 
-pi.on("session_compact", async (event, ctx) => {
-  // event.result - ContextCompactionResult with deletedTargets/protectedEntryIds/stats
-  // event.contextCompactionEntry - the saved context_compaction entry
-  // event.fromExtension - true if session_before_compact provided deletionRequest
+pi.on("session_compact", async (event) => {
+  // event.result - VerbatimCompactionResult (text, boundary, stats, parameters, rung)
+  // event.compactionEntry - saved CompactionEntry with strategy "verbatim-lines"
+  // event.fromExtension - true when session_before_compact provided compactedText
+  // Observe-only: errors are isolated after persistence.
 });
 ```
 
@@ -556,15 +573,17 @@ The `systemPromptOptions` field gives extensions access to the same structured d
 
 Inside `before_agent_start`, `event.systemPrompt` and `ctx.getSystemPrompt()` both reflect the chained system prompt as of the current handler. Later `before_agent_start` handlers can still modify it again.
 
-#### agent_start / agent_end
+#### agent_start / agent_end / agent_settled
 
-Fired once per user prompt.
+`agent_start` begins a low-level run. `agent_end` fires when that run ends, but Atomic may still retry, compact and retry, or deliver queued follow-ups. Use `agent_settled` when a status integration needs to know Atomic has no automatic continuation left.
 
 ```typescript
 pi.on("agent_start", async (_event, ctx) => {});
-
 pi.on("agent_end", async (event, ctx) => {
-  // event.messages - messages from this prompt
+  // event.messages - messages from this low-level run
+});
+pi.on("agent_settled", async (_event, ctx) => {
+  // ctx.isIdle() is true unless another extension started a run.
 });
 ```
 
@@ -644,13 +663,24 @@ pi.on("tool_execution_end", async (event, ctx) => {
 
 #### context
 
-Fired before each LLM call. Modify messages non-destructively. See [Session Format](/session-format) for message types.
+Fired before each LLM call. Modify messages non-destructively. See [Session Format](/session-format) for message types. When tool output crosses the buffered compaction threshold, the post-tool compaction preflight finishes before this hook runs for the follow-up call, so `event.messages` contains the rebuilt compacted context.
 
 ```typescript
 pi.on("context", async (event, ctx) => {
   // event.messages - deep copy, safe to modify
   const filtered = event.messages.filter(m => !shouldPrune(m));
   return { messages: filtered };
+});
+```
+
+#### before_provider_headers
+
+Fires after outgoing HTTP headers are assembled. Mutate `event.headers` to add, override, or remove headers. The event also identifies the provider and model.
+
+```typescript
+pi.on("before_provider_headers", (event, ctx) => {
+  event.headers["x-session-id"] = ctx.sessionManager.getSessionId();
+  delete event.headers["x-remove-me"];
 });
 ```
 
@@ -1040,15 +1070,15 @@ if (usage && usage.tokens > 100_000) {
 
 ### ctx.compact()
 
-Trigger Atomic's default Verbatim Compaction without awaiting completion. This is deletion-only Context Compaction: the internal planner searches/reads transcript slices, records exact entry/content-block deletion targets with transcript-bound tools, and Atomic applies only locally validated logical deletions. Retained transcript content stays unchanged. The approach is informed by Morph's Context Compaction write-up: [Morph's Context Compaction](https://www.morphllm.com/context-compaction). Use `compression_ratio`, `preserve_recent`, and `query` to tune the run, and `onComplete`/`onError` for follow-up actions.
+Trigger Atomic's verbatim line compactor without awaiting completion. The planner emits numbered deleted-line ranges only; Atomic validates them and reconstructs retained text mechanically. Use `compression_ratio` (fraction of compactable lines to keep), client-side `preserve_recent` (an exact context-visible message count), and `query` to tune the run, and `onComplete`/`onError` for follow-up actions.
 
 ```typescript
 ctx.compact({
-  compression_ratio: 0.5, // fraction to keep: 0.3 aggressive, 0.7 light
-  preserve_recent: 2,    // keep the last N context-eligible messages
+  compression_ratio: 0.5, // fraction of compactable lines to keep
+  preserve_recent: 2,    // protect exactly the newest two context-visible messages
   query: "keep active migration details",
   onComplete: (result) => {
-    ctx.ui.notify(`Compaction deleted ${result.stats.objectsDeleted} objects`, "info");
+    ctx.ui.notify(`Compaction kept ${result.stats.linesKept}/${result.stats.linesBefore} lines`, "info");
   },
   onError: (error) => {
     ctx.ui.notify(`Compaction failed: ${error.message}`, "error");
@@ -1056,7 +1086,7 @@ ctx.compact({
 });
 ```
 
-Verbatim Compaction uses a fixed internal prompt; no custom summary text can be injected. The `query` parameter guides relevance-based pruning inside that fixed prompt; it is not replacement summary text.
+The planner cannot author context text: only validated line ranges enter the mechanical reconstruction path. The `query` parameter guides relevance selection inside the fixed prompt; it is not replacement prose. Extensions that need an offline replacement can return `compactedText` from `session_before_compact`.
 
 ### ctx.getSystemPrompt()
 
@@ -1331,9 +1361,11 @@ Use `promptSnippet` to opt a custom tool into a one-line entry in `Available too
 
 See [dynamic-tools.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/dynamic-tools.ts) for a full example.
 
+Use Atomic's export rather than importing `StringEnum` directly from Pi. It preserves Pi's Google-compatible runtime schema while keeping the schema typed against Atomic's direct TypeBox version.
+
 ```typescript
 import { Type } from "typebox";
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum } from "@bastani/atomic";
 
 pi.registerTool({
   name: "my_tool",
@@ -1370,7 +1402,7 @@ pi.registerTool({
 
 ### pi.sendMessage(message, options?)
 
-Inject a custom message into the session.
+Inject a custom message into the session. The call returns `void | Promise<void>` for compatibility with synchronous hosts; use `await Promise.resolve(pi.sendMessage(...))` when admission or routing failure must be observed. Atomic's AgentSession runtime returns an admission receipt: it settles after the message is accepted by the local queue or workflow late-message route, without waiting for the resulting model turn to finish.
 
 ```typescript
 pi.sendMessage({
@@ -1393,6 +1425,19 @@ pi.sendMessage({
 - `triggerTurn: true` - If agent is idle, trigger an LLM response immediately. Required for `"interrupt"`; ignored for `"nextTurn"`.
 - `excludeFromContext: true` - Render and persist the custom message without adding it to LLM context. With no `deliverAs`, this remains display-only even while the agent is streaming.
 - `interruptAbortMessage` - Optional text used to replace generic abort results (for example `Operation aborted`) when `deliverAs: "interrupt"` aborts an active turn.
+
+### pi.sendMessages(messages, options?)
+
+Atomically admit a batch of custom messages in array order. The call returns `void | Promise<void>` for compatibility with synchronous hosts; use `await Promise.resolve(pi.sendMessages(...))` when admission or routing failure must be observed. The promise is an admission receipt and does not wait for the resulting model turn. Admission is indivisible; use this when a prelude and terminal notice must stay contiguous without globally serializing other extension work.
+
+```typescript
+pi.sendMessages([
+  { customType: "worker-update", content: "Ready", display: true },
+  { customType: "worker-terminal", content: "Completed", display: true },
+], { triggerTurn: true });
+```
+
+The batch supports `triggerTurn`, `excludeFromContext`, and `deliverAs: "steer" | "followUp" | "nextTurn"`. Interrupt delivery remains a single-message operation.
 
 ### pi.sendUserMessage(content, options?)
 
@@ -1438,6 +1483,21 @@ pi.on("session_start", async (_event, ctx) => {
   }
 });
 ```
+
+Appending emits `entry_appended` with the durable entry. This lets extensions react to session entries without polling.
+
+### pi.registerEntryRenderer(customType, renderer)
+
+Register a TUI renderer for durable custom entries created by `pi.appendEntry()`. These entries render in the transcript but do not enter model context.
+
+```typescript
+import { Text } from "@earendil-works/pi-tui";
+
+pi.registerEntryRenderer("status-card", (entry, { expanded }, theme) =>
+  new Text(theme.fg("accent", `${expanded ? "Details" : "Status"}: ${JSON.stringify(entry.data)}`), 0, 0)
+);
+```
+
 
 ### pi.setSessionName(name)
 
@@ -1629,10 +1689,10 @@ if (model) {
 
 ### pi.getThinkingLevel() / pi.setThinkingLevel(level)
 
-Get or set the thinking level. Level is clamped to model capabilities (non-reasoning models always use "off"). Changes emit `thinking_level_select`.
+Get or set the thinking level. Level is clamped to model capabilities (non-reasoning models always use `"off"`; `"xhigh"` and `"max"` require model support). Changes emit `thinking_level_select`.
 
 ```typescript
-const current = pi.getThinkingLevel();  // "off" | "minimal" | "low" | "medium" | "high" | "xhigh"
+const current = pi.getThinkingLevel();  // "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
 pi.setThinkingLevel("high");
 ```
 
@@ -1644,6 +1704,10 @@ Shared event bus for communication between extensions:
 pi.events.on("my:event", (data) => { ... });
 pi.events.emit("my:event", { ... });
 ```
+
+### Native providers
+
+In addition to `registerProvider(name, config)`, extensions can register a complete native `Provider` from `@earendil-works/pi-ai` with `pi.registerProvider(provider)`. Use the native overload for provider-owned authentication, catalog refresh, and transport behavior; use the config overload for ordinary proxies and custom endpoints.
 
 ### pi.registerProvider(name, config)
 
@@ -1700,6 +1764,25 @@ pi.registerProvider("corporate-ai", {
     }
   }
 });
+
+// Register provider-owned API-key setup for /login
+pi.registerProvider("local-server", {
+  name: "Local Server",
+  auth: {
+    apiKey: {
+      name: "Local server connection",
+      async login({ signal, prompt }) {
+        const baseUrl = await prompt({
+          type: "text",
+          message: "Server URL",
+          placeholder: "http://localhost:8080"
+        });
+        if (signal.aborted) throw new Error("Login cancelled");
+        return { type: "api_key", env: { LOCAL_SERVER_URL: baseUrl } };
+      }
+    }
+  }
+});
 ```
 
 **Config options:**
@@ -1711,6 +1794,7 @@ pi.registerProvider("corporate-ai", {
 - `authHeader` - If true, adds `Authorization: Bearer` header automatically.
 - `models` - Array of model definitions. If provided, replaces all existing models for this provider. Model definitions can set `baseUrl` to override the provider endpoint for that model.
 - `oauth` - OAuth provider config for `/login` support. When provided, the provider appears in the login menu.
+- `auth.apiKey` - Provider-owned API-key or connection setup for `/login`. Its `name` appears in the provider list and `login({ signal, prompt })` returns the credential Atomic persists. Extension providers registered only in the isolated interactive engine child are synchronized into the host's `/login` list; their login callback and credential-dependent model refresh still execute in the child, while prompts are rendered by the terminal host.
 - `streamSimple` - Custom streaming implementation for non-standard APIs.
 
 See [Custom providers](/custom-provider) for advanced topics: custom streaming APIs, OAuth details, model definition reference.
@@ -1810,7 +1894,7 @@ async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 
 ```typescript
 import { Type } from "typebox";
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum } from "@bastani/atomic";
 import { Text } from "@earendil-works/pi-tui";
 
 pi.registerTool({
@@ -1822,7 +1906,7 @@ pi.registerTool({
     "Use my_tool for todo planning instead of direct file edits when the user asks for a task list."
   ],
   parameters: Type.Object({
-    action: StringEnum(["list", "add"] as const),  // Use StringEnum for Google compatibility
+    action: StringEnum(["list", "add"] as const),  // Atomic's Pi-compatible TypeBox helper
     text: Type.Optional(Type.String()),
   }),
   prepareArguments(args) {
@@ -1879,7 +1963,7 @@ async execute(toolCallId, params) {
 }
 ```
 
-**Important:** Use `StringEnum` from `@earendil-works/pi-ai` for string enums. `Type.Union`/`Type.Literal` doesn't work with Google's API.
+**Important:** Use `StringEnum` from `@bastani/atomic` for string enums. It retains Pi's Google-compatible schema and composes with Atomic's direct TypeBox types; `Type.Union`/`Type.Literal` doesn't work with Google's API.
 
 **Argument preparation:** `prepareArguments(args)` is optional. If defined, it runs before schema validation and before `execute()`. Use it only when a custom tool must normalize arguments before validation. Return the object you want validated against `parameters`, keep the public schema strict, and avoid advertising deprecated fields.
 
@@ -2139,22 +2223,24 @@ If a slot intentionally has no visible content, return an empty `Component` such
 
 #### Keybinding Hints
 
-Use `keyHint()` to display keybinding hints that respect the active keybinding configuration:
+Use `keyHintIfBound()` when an affordance should disappear if the action has no effective keybinding. Add surrounding punctuation only when the helper returns text:
 
 ```typescript
-import { keyHint } from "@bastani/atomic";
+import { keyHintIfBound } from "@bastani/atomic";
 
 renderResult(result, { expanded }, theme, context) {
   let text = theme.fg("success", "✓ Done");
-  if (!expanded) {
-    text += ` (${keyHint("app.tools.expand", "to expand")})`;
+  const expandHint = keyHintIfBound("app.tools.expand", "to expand");
+  if (!expanded && expandHint) {
+    text += ` (${expandHint})`;
   }
   return new Text(text, 0, 0);
 }
 ```
 
 Available functions:
-- `keyHint(keybinding, description)` - Formats a configured keybinding id such as `"app.tools.expand"` or `"tui.select.confirm"`
+- `keyHint(keybinding, description)` - Formats a configured keybinding id such as `"app.tools.expand"` or `"tui.select.confirm"`; use it when the binding is required by the surrounding UI
+- `keyHintIfBound(keybinding, description)` - Formats the hint only when the action has an effective key list; use it for optional affordances and conditionally compose parentheses or separators
 - `keyText(keybinding)` - Returns the raw configured key text for a keybinding id
 - `rawKeyHint(key, description)` - Format a raw key string
 
@@ -2504,8 +2590,8 @@ class VimEditor extends CustomEditor {
 
 export default function (pi: ExtensionAPI) {
   pi.on("session_start", (_event, ctx) => {
-    ctx.ui.setEditorComponent((_tui, theme, keybindings) =>
-      new VimEditor(theme, keybindings)
+    ctx.ui.setEditorComponent((tui, theme, keybindings) =>
+      new VimEditor(tui, theme, keybindings)
     );
   });
 }
@@ -2514,7 +2600,7 @@ export default function (pi: ExtensionAPI) {
 **Key points:**
 - Extend `CustomEditor` (not base `Editor`) to get app keybindings (escape to abort, ctrl+d, model switching)
 - Call `super.handleInput(data)` for keys you don't handle
-- Factory receives `theme` and `keybindings` from the app
+- Factory receives `tui`, `theme`, and `keybindings` from the app
 - Use `ctx.ui.getEditorComponent()` before `setEditorComponent()` to wrap the previously configured custom editor
 - Pass `undefined` to restore default: `ctx.ui.setEditorComponent(undefined)`
 
@@ -2648,7 +2734,7 @@ All examples in [examples/extensions/](https://github.com/bastani-inc/atomic/tre
 | `prompt-customizer.ts` | Add context-aware tool guidance using `systemPromptOptions` | `on("before_agent_start")`, `BuildSystemPromptOptions` |
 | `file-trigger.ts` | File watcher triggers messages | `sendMessage` |
 | **Compaction & Sessions** |||
-| `custom-compaction.ts` | Custom deletion-request compaction policy | `on("session_before_compact")` |
+| `custom-compaction.ts` | Offline compacted-text override | `on("session_before_compact")` |
 | `trigger-compact.ts` | Trigger compaction manually | `compact()` |
 | `git-checkpoint.ts` | Git stash on turns | `on("turn_start")`, `on("session_before_fork")`, `exec` |
 | `auto-commit-on-exit.ts` | Commit on shutdown | `on("session_shutdown")`, `exec` |

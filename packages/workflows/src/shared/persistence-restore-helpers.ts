@@ -1,7 +1,7 @@
 import { Value } from "typebox/value";
 import { workflowSerializableObjectSchema } from "./serializable.js";
 import type { Store } from "./store.js";
-import type { SessionEntry } from "./persistence-restore.js";
+import type { NormalizedSessionEntry as SessionEntry } from "./persistence-restore.js";
 import type {
   RunStatus,
   StageSnapshot,
@@ -255,6 +255,14 @@ function numericRetryAfterMs(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
+function numericTimestamp(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function numericDuration(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
 export function findRunBlockedMetadata(
   entries: readonly SessionEntry[],
   runId: string,
@@ -349,6 +357,7 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
       ...(runMeta.rootRunId !== undefined ? { rootRunId: runMeta.rootRunId } : {}),
       ...(runMeta.resumedFromRunId !== undefined ? { resumedFromRunId: runMeta.resumedFromRunId } : {}),
       ...(runMeta.resumeFromStageId !== undefined ? { resumeFromStageId: runMeta.resumeFromStageId } : {}),
+      ...(runMeta.accumulatedDurationMs !== undefined ? { accumulatedDurationMs: runMeta.accumulatedDurationMs } : {}),
     });
 
     const error = end["error"];
@@ -360,6 +369,8 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
     const retryAfterMs = numericRetryAfterMs(end["retryAfterMs"]);
     const failureMessage = end["failureMessage"];
     const failedStageId = end["failedStageId"];
+    const restoredEndedAt = numericTimestamp(end["endedAt"]);
+    const restoredDurationMs = numericDuration(end["durationMs"]);
     store.recordRunEnd(
       runId,
       status,
@@ -378,6 +389,13 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
         ...(typeof exitReason === "string" ? { exitReason } : {}),
       },
     );
+    const restoredRun = store.runs().find((run) => run.id === runId);
+    if (restoredRun !== undefined && (restoredEndedAt !== undefined || restoredDurationMs !== undefined)) {
+      Object.assign(restoredRun, {
+        ...(restoredEndedAt !== undefined ? { endedAt: restoredEndedAt } : {}),
+        ...(restoredDurationMs !== undefined ? { durationMs: restoredDurationMs } : {}),
+      });
+    }
   }
 }
 
@@ -408,6 +426,7 @@ export function findRunStartMetadata(
   readonly rootRunId?: string;
   readonly resumedFromRunId?: string;
   readonly resumeFromStageId?: string;
+  readonly accumulatedDurationMs?: number;
 } {
   for (const entry of entries) {
     if (entry.type !== "workflow.run.start" || entry.payload["runId"] !== runId) continue;
@@ -416,12 +435,16 @@ export function findRunStartMetadata(
     const rootRunId = entry.payload["rootRunId"];
     const resumedFromRunId = entry.payload["resumedFromRunId"];
     const resumeFromStageId = entry.payload["resumeFromStageId"];
+    const accumulatedDurationMs = entry.payload["accumulatedDurationMs"];
     return {
       ...(typeof parentRunId === "string" ? { parentRunId } : {}),
       ...(typeof parentStageId === "string" ? { parentStageId } : {}),
       ...(typeof rootRunId === "string" ? { rootRunId } : {}),
       ...(typeof resumedFromRunId === "string" ? { resumedFromRunId } : {}),
       ...(typeof resumeFromStageId === "string" ? { resumeFromStageId } : {}),
+      ...(typeof accumulatedDurationMs === "number" && Number.isFinite(accumulatedDurationMs) && accumulatedDurationMs > 0
+        ? { accumulatedDurationMs }
+        : {}),
     };
   }
   return {};

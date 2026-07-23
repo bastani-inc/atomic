@@ -18,12 +18,16 @@
  *   - F2 shortcut registration in extension factory calls
  *     overlay.open(activeRunId).
  *   - /workflow resume + /workflow attach + /workflow pause routing.
- *   - Graph-mode Ctrl+D / `h` never kills the run.
- *   - `q` kills and retains the active run for inspection (regression gate).
+ *   - Graph-mode Ctrl+X / `h` never changes the run lifecycle.
+ *   - `q` does not navigate, cancel, or pause the active run.
  */
 
 import { InteractiveMode } from "../../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import {
+  openLocalHostSessionPicker,
+  type HostSessionPickerUi,
+} from "../../packages/coding-agent/src/modes/interactive/components/host-session-picker.ts";
 import type { OverlayPiSurface } from "../../packages/workflows/src/tui/overlay-adapter.js";
 
 export { buildGraphOverlayAdapter } from "../../packages/workflows/src/tui/overlay-adapter.js";
@@ -366,6 +370,38 @@ export function buildPrintCtx(): { ctx: PiCommandContext; messages: string[] } {
   };
 }
 
+/**
+ * Promise-returning `ui.custom` seam for the in-process host session picker.
+ * Mirrors `buildMockUi`'s capture into the SAME `CapturedCustomCall` array so
+ * tests keep asserting on `customCalls[0].component` (now the REAL
+ * `SessionSelectorComponent`), while satisfying `mountHostSessionPicker`'s
+ * promise contract (`ui.custom(...)` must return a promise that resolves on
+ * `done`).
+ */
+function buildHostPickerUi(calls: CapturedCustomCall[], mockOpts: MockUiOpts = {}): HostSessionPickerUi {
+  const custom = (
+    factoryArg: PiCustomOverlayFactory,
+    options: PiCustomOverlayOptions,
+  ): Promise<undefined> =>
+    new Promise<undefined>((resolve) => {
+      const { handle } = buildOverlayHandle();
+      options.onHandle?.(handle);
+      const tui: PiCustomOverlayFactoryTui = {
+        requestRender: () => mockOpts.onRequestRender?.(),
+        terminal:
+          mockOpts.rows != null || mockOpts.columns != null
+            ? { rows: mockOpts.rows, columns: mockOpts.columns }
+            : undefined,
+      };
+      const mounted = factoryArg(tui, {}, {}, (result) => resolve(result as undefined));
+      if (mounted instanceof Promise) {
+        throw new Error("test factory should be sync");
+      }
+      calls.push({ factory: factoryArg, options, component: mounted, handle });
+    });
+  return { requestRender: () => undefined, custom } as unknown as HostSessionPickerUi;
+}
+
 export function buildPrintCtxWithRealCustom(rows?: number): {
   ctx: PiCommandContext;
   messages: string[];
@@ -374,12 +410,18 @@ export function buildPrintCtxWithRealCustom(rows?: number): {
   initTheme("dark");
   const messages: string[] = [];
   const { ui, calls } = buildMockUi({ rows });
+  const pickerUi = buildHostPickerUi(calls, { rows });
+  const hostSessionPicker = ((request) =>
+    openLocalHostSessionPicker(pickerUi, request as never)) as NonNullable<
+      NonNullable<PiCommandContext["ui"]>["hostSessionPicker"]
+    >;
   const ctx: PiCommandContext = {
     ui: {
       notify: (m: string) => {
         messages.push(m);
       },
       custom: ui.custom,
+      hostSessionPicker,
     },
   };
   return { ctx, messages, customCalls: calls };
@@ -391,73 +433,12 @@ export function visibleText(lines: string[]): string {
   return lines.join("\n").replace(ANSI_RE, "");
 }
 
-export function setupSequentialRun(store: ReturnType<typeof createStore>, runId: string, count: number): void {
-  store.recordRunStart({
-    id: runId,
-    name: "wf",
-    inputs: {},
-    status: "running",
-    stages: [],
-    startedAt: Date.now(),
-  });
-  for (let i = 0; i < count; i++) {
-    store.recordStageStart(runId, {
-      id: `stage-${i}`,
-      name: `stage-${i}`,
-      status: "pending",
-      parentIds: i === 0 ? [] : [`stage-${i - 1}`],
-      toolEvents: [],
-    });
-  }
-}
-
-export function setupBranchingRun(store: ReturnType<typeof createStore>, runId: string): void {
-  const stages = [
-    { id: "root", parentIds: [] },
-    { id: "branch-left", parentIds: ["root"] },
-    { id: "branch-right", parentIds: ["root"] },
-    { id: "merge", parentIds: ["branch-left", "branch-right"] },
-    { id: "tail-a", parentIds: ["merge"] },
-    { id: "tail-b", parentIds: ["tail-a"] },
-  ];
-  setupRunFromStages(store, runId, stages);
-}
-
-export function setupWideFanoutRun(store: ReturnType<typeof createStore>, runId: string): void {
-  setupRunFromStages(store, runId, [
-    { id: "root", parentIds: [] },
-    { id: "child-0", parentIds: ["root"] },
-    { id: "child-1", parentIds: ["root"] },
-    { id: "child-2", parentIds: ["root"] },
-    { id: "child-3", parentIds: ["root"] },
-    { id: "child-4", parentIds: ["root"] },
-    { id: "child-5", parentIds: ["root"] },
-  ]);
-}
-
-export function setupRunFromStages(
-  store: ReturnType<typeof createStore>,
-  runId: string,
-  stages: Array<{ id: string; parentIds: string[] }>,
-): void {
-  store.recordRunStart({
-    id: runId,
-    name: "wf",
-    inputs: {},
-    status: "running",
-    stages: [],
-    startedAt: Date.now(),
-  });
-  for (const stage of stages) {
-    store.recordStageStart(runId, {
-      id: stage.id,
-      name: stage.id,
-      status: "pending",
-      parentIds: stage.parentIds,
-      toolEvents: [],
-    });
-  }
-}
+export {
+  setupBranchingRun,
+  setupRunFromStages,
+  setupSequentialRun,
+  setupWideFanoutRun,
+} from "./overlay-entrypoints-run-fixtures.js";
 
 // ---------------------------------------------------------------------------
 // buildGraphOverlayAdapter — degraded runtime (no custom)

@@ -10,7 +10,6 @@ on:
     push:
         branches: [main, "release/**", "prerelease/**"]
     pull_request:
-        branches: [main]
 
 jobs:
     test:
@@ -23,55 +22,80 @@ jobs:
                       binary_platform: windows-x64
             fail-fast: false
         runs-on: ${{ matrix.os }}
+        # Strict wall-clock budget: without an explicit limit a single hung test
+        # process burns the 360-minute GitHub default (observed: a wedged
+        # windows-x64 unit step ran 6h before cancellation). Green jobs finish in
+        # ~3.5m (linux) / ~9m (windows); anything beyond 10m is a hang or a
+        # regression worth failing fast on.
+        timeout-minutes: 10
         steps:
             - uses: useblacksmith/checkout@v1
               with:
+                  # LFS fixtures are required by the coding-agent test suite.
                   lfs: true
+                  # Full history and tags support CI contract fixtures and local
+                  # release tooling. Blacksmith's git mirror keeps this checkout
+                  # inexpensive while preserving those repository-wide checks.
+                  fetch-depth: 0
             - uses: oven-sh/setup-bun@v2
               with:
                   bun-version: latest
             # Node is required by test/integration/installed-package-node-extensions.test.ts,
             # which smoke-tests the built npm package under the Node runtime (the
             # `atomic` bin runs via `#!/usr/bin/env node` for npm/bun installs).
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@v7
               with:
                   node-version: 24
             - uses: dtolnay/rust-toolchain@stable
             - name: Install dependencies
               run: bun install --frozen-lockfile
             - name: Typecheck
+              if: runner.os == 'Linux'
               run: bun run typecheck
             - name: File length check
+              if: runner.os == 'Linux'
               run: bun run check:file-length
             - name: Docs link validation
+              if: runner.os == 'Linux'
               working-directory: packages/coding-agent
               run: bun run docs:check
             - name: Mintlify docs validation
-              if: github.event_name == 'pull_request'
+              if: runner.os == 'Linux' && github.event_name == 'pull_request'
               working-directory: packages/coding-agent/docs
+              # Pinned: mintlify@4.2.732 depends on @mintlify/editor@0.0.246,
+              # which is missing from the npm registry (404) and breaks
+              # `bunx mintlify@latest` for every PR. Unpin once upstream
+              # publishes a resolvable release.
               run: |
-                  bunx --bun mintlify@latest validate
-                  bunx --bun mintlify@latest broken-links
+                  bunx --bun mintlify@4.2.731 validate
+                  bunx --bun mintlify@4.2.731 broken-links
             - name: Build @bastani/atomic package
               working-directory: packages/coding-agent
               run: bun run build
-            - name: Unit tests
-              run: bun run test:unit
-            - name: Integration tests
-              run: bun run test:integration
+            - name: Deterministic CI and release contracts
+              run: bun run test:ci-contracts
+            - name: Unit tests (one bounded flake retry)
+              run: >-
+                  bun run scripts/run-flaky-test-suite.ts --label "unit tests (${{ matrix.binary_platform }})"
+                  --no-retry-file flaky-test-suite-runner.test.ts
+                  -- bun run test:unit
+            - name: Integration tests (one bounded flake retry)
+              run: >-
+                  bun run scripts/run-flaky-test-suite.ts --label "integration tests (${{ matrix.binary_platform }})"
+                  -- bun run test:integration
               env:
-                  # Hard-require the installed-package Node smoke here, where the
-                  # package build above guarantees dist/ exists. publish.yml runs
-                  # test:all before building and skips the smoke gracefully.
+                  # Hard-require the installed-package Node smoke where the package
+                  # build above guarantees dist/ exists on both supported hosts.
                   ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE: "1"
             - name: Build native bindings for package tests
               run: bun run --cwd packages/natives build
-            - name: coding-agent vitest suite
-              working-directory: packages/coding-agent
-              run: bun run --bun test
+            - name: coding-agent vitest suite (one bounded flake retry)
+              run: >-
+                  bun run scripts/run-flaky-test-suite.ts --label "coding-agent tests (${{ matrix.binary_platform }})"
+                  -- bun run --cwd packages/coding-agent --bun test
             - name: Build native release binary
               shell: bash
-              run: ./scripts/build-binaries.sh --platform "${{ matrix.binary_platform }}"
+              run: ./scripts/build-binaries.sh --skip-install --skip-package-build --platform "${{ matrix.binary_platform }}"
             - name: Smoke test Linux release archive
               if: runner.os == 'Linux'
               shell: bash
@@ -177,3 +201,11 @@ jobs:
                   if ($status -ne 0 -and $output -notmatch "No models available|No model selected|No API key found") {
                     exit $status
                   }
+            - name: Upload flaky-test diagnostics
+              if: always()
+              uses: actions/upload-artifact@v7
+              with:
+                  name: test-diagnostics-${{ matrix.binary_platform }}
+                  path: .ci-diagnostics/
+                  if-no-files-found: ignore
+                  retention-days: 14

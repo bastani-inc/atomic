@@ -4,12 +4,14 @@
 # Mirrors .github/workflows/publish.yml binary build.
 #
 # Usage:
-#   ./scripts/build-binaries.sh [--skip-deps] [--platform <platform>]
+#   ./scripts/build-binaries.sh [--skip-deps] [--skip-install] [--skip-package-build] [--platform <platform>]
 #
 # Options:
-#   --skip-deps         Skip installing cross-platform native bindings
-#   --platform <name>   Build only for specified platform
-#                       (darwin-arm64, darwin-x64, linux-x64, linux-arm64, windows-x64, windows-arm64)
+#   --skip-deps          Skip installing cross-platform native bindings
+#   --skip-install       Reuse dependencies installed by the caller
+#   --skip-package-build Reuse packages/coding-agent/dist built by the caller
+#   --platform <name>    Build only for specified platform
+#                        (darwin-arm64, darwin-x64, linux-x64, linux-arm64, windows-x64, windows-arm64)
 #
 # Output:
 #   packages/coding-agent/binaries/
@@ -22,15 +24,38 @@
 
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+# Keep caller-provided relative temp roots stable across every directory change.
+if [[ -n "${TMPDIR:-}" && "$TMPDIR" != /* ]]; then
+    TMPDIR="$(cd -- "$TMPDIR" && pwd -P)"
+    export TMPDIR
+fi
+cd -- "$(dirname -- "$0")/.."
 
 SKIP_DEPS=false
+SKIP_INSTALL=false
+SKIP_PACKAGE_BUILD=false
 PLATFORM=""
+
+CLIPBOARD_STAGE_DIR=""
+cleanup_clipboard_stage() {
+    if [[ -n "$CLIPBOARD_STAGE_DIR" ]]; then
+        rm -rf "$CLIPBOARD_STAGE_DIR"
+    fi
+}
+trap cleanup_clipboard_stage EXIT
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-deps)
             SKIP_DEPS=true
+            shift
+            ;;
+        --skip-install)
+            SKIP_INSTALL=true
+            shift
+            ;;
+        --skip-package-build)
+            SKIP_PACKAGE_BUILD=true
             shift
             ;;
         --platform)
@@ -56,24 +81,26 @@ if [[ -n "$PLATFORM" ]]; then
     esac
 fi
 
-echo "==> Installing dependencies..."
-bun install --frozen-lockfile
+if [[ "$SKIP_INSTALL" == "false" ]]; then
+    echo "==> Installing dependencies..."
+    bun install --frozen-lockfile
+else
+    echo "==> Reusing caller-installed dependencies (--skip-install)"
+fi
 
 if [[ "$SKIP_DEPS" == "false" ]]; then
-    echo "==> Installing cross-platform native bindings for clipboard..."
-    # bun (like npm) only installs optionalDependencies for the current
-    # platform/arch. For bun --compile to embed the right native module
-    # per target, force-install every platform binding via bun add --no-save.
-    # Failures here are non-fatal: clipboard is optional and the runtime
-    # call site has a try/catch fallback.
-    bun add --no-save \
-        @mariozechner/clipboard-darwin-arm64@0.3.2 \
-        @mariozechner/clipboard-darwin-x64@0.3.2 \
-        @mariozechner/clipboard-linux-x64-gnu@0.3.2 \
-        @mariozechner/clipboard-linux-arm64-gnu@0.3.2 \
-        @mariozechner/clipboard-win32-x64-msvc@0.3.2 \
-        @mariozechner/clipboard-win32-arm64-msvc@0.3.2 || \
-        echo "  warning: one or more clipboard bindings unavailable; binaries will fall back to no-op clipboard"
+    echo "==> Staging cross-platform native bindings for clipboard..."
+    # Stage in a disposable package so release preparation never mutates the
+    # repository manifest or lockfiles. --os '*' --cpu '*' bypasses Bun's host
+    # filtering and installs every exact-version release target.
+    clipboard_version="$(bun -e 'const p = await Bun.file("node_modules/@mariozechner/clipboard/package.json").json(); console.log(p.version)')"
+    CLIPBOARD_STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/atomic-clipboard-stage.XXXXXX")"
+    # mktemp may echo a relative path when TMPDIR is relative. Canonicalize it
+    # before the later cd into packages/coding-agent so staging and cleanup
+    # keep referring to the same directory.
+    CLIPBOARD_STAGE_DIR="$(cd -- "$CLIPBOARD_STAGE_DIR" && pwd -P)"
+    bun run packages/coding-agent/scripts/stage-clipboard-native-bindings.ts \
+        "$CLIPBOARD_STAGE_DIR" "$clipboard_version"
 else
     echo "==> Skipping cross-platform native bindings (--skip-deps)"
 fi
@@ -85,9 +112,18 @@ else
     bun run --cwd packages/natives build
 fi
 
-echo "==> Building @bastani/atomic package..."
-cd packages/coding-agent
-bun run build
+if [[ "$SKIP_PACKAGE_BUILD" == "false" ]]; then
+    echo "==> Building @bastani/atomic package..."
+    cd packages/coding-agent
+    bun run build
+else
+    echo "==> Reusing caller-built @bastani/atomic package (--skip-package-build)"
+    test -f packages/coding-agent/dist/bun/cli.js || {
+        echo "Missing packages/coding-agent/dist/bun/cli.js; cannot use --skip-package-build" >&2
+        exit 1
+    }
+    cd packages/coding-agent
+fi
 
 echo "==> Building binaries..."
 
@@ -125,6 +161,17 @@ echo "==> Copying runtime dependencies..."
 runtime_deps_dir="binaries/.runtime-node_modules"
 rm -rf "$runtime_deps_dir"
 bun run scripts/copy-runtime-dependencies.ts "$runtime_deps_dir"
+clipboard_copy_args=()
+if [[ "$SKIP_DEPS" == "true" ]]; then
+    # Local builds reuse whichever optional native packages are already present.
+    # Release builds remain strict so every requested archive gets its binding.
+    clipboard_copy_args+=(--allow-missing)
+else
+    clipboard_copy_args+=(--source-node-modules "$CLIPBOARD_STAGE_DIR/node_modules")
+fi
+bun run scripts/copy-clipboard-native-bindings.ts "$runtime_deps_dir" "${clipboard_copy_args[@]}" "${PLATFORMS[@]}"
+cleanup_clipboard_stage
+CLIPBOARD_STAGE_DIR=""
 
 echo "==> Copying shared assets..."
 cursor_native_filename() {

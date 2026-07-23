@@ -67,12 +67,15 @@ intercom({
 
 ### Pattern 2: Quick Status Check
 
-Before sending, verify who's connected:
+Before sending, verify who's connected. The short ID printed by `list` is directly usable by `send`, `ask`, and targeted `reply`:
 
 ```typescript
 intercom({ action: "list" })
-// → Shows all connected sessions with names, cwd, models, and live status (`idle`, `thinking`, `tool:<name>`)
+// → • planner (6332faab) — /workspace (model) [idle]
+intercom({ action: "ask", to: "6332faab", message: "Which option should I use?" })
 ```
+
+Intercom resolves exact full IDs first, exact case-insensitive names second, and unique ID prefixes last. A colliding prefix returns an ambiguity error; use a longer displayed ID or an exact name rather than guessing.
 
 ### Pattern 3: Reply Naturally
 
@@ -199,10 +202,12 @@ message, treat it as a `contact_supervisor` escalation.
 |--------|----------|----------|
 | `send` | Fire-and-forget | You don't need a response |
 | `ask` | Blocks until reply (10 min timeout) | You need an answer to continue |
-| `reply` | Responds to the active or pending inbound ask | You were asked something and need to answer naturally |
+| `reply` | Responds to the active or pending inbound ask; `to` accepts a displayed short ID | You were asked something and need to answer naturally |
 | `pending` | Lists unresolved inbound asks | You need to see who is waiting before replying |
-| `list` | Returns all sessions with live status | You need to discover targets or choose an idle peer |
+| `list` | Returns all sessions with actionable short IDs and live status | You need to discover targets or choose an idle peer |
 | `status` | Returns your connection state | Troubleshooting |
+
+Inside workflows, `ask` may target a sibling stage that has already completed. If that stage retains a valid conversation, Atomic automatically schedules a post-mortem turn there and preserves the exact child-to-child reply thread; do not send a separate workflow follow-up. Missing, deleted, non-resumable, or failed-to-reopen completed targets return an actionable error. A parent or unrelated session cannot satisfy the pending ask.
 
 ## Optional: Visible Peer Sessions via cmux, tmux, or psmux (Windows rewrite of tmux that has fully parity with tmux)
 
@@ -305,6 +310,11 @@ If neither `cmux` nor `tmux` is available, skip this path and use normal `interc
 - **10-minute timeout**: If no reply comes within 10 minutes, the ask fails
 - **One at a time**: Cannot have multiple pending asks from the same session
 - **Cannot self-target**: A session cannot ask itself
+- **Concurrency-safe**: If several blocking requests (multiple `ask` calls, or
+  `ask` plus `contact_supervisor`) race in the same session — for example from
+  parallel tool calls — exactly one wins the reservation. Every other call gets
+  a normal `"Already waiting for a reply"` tool error and can retry or fall
+  back to `send`; the losing calls never disturb the winning ask.
 
 ```typescript
 // Check if already waiting before asking
@@ -381,11 +391,13 @@ Use `/name` so others can target you easily:
 
 **"Already waiting for a reply"**
 ```typescript
-// You can only have one pending ask at a time
+// You can only have one pending ask at a time. Concurrent blocking requests
+// (parallel asks, or ask + contact_supervisor) return this error safely; the
+// winning request keeps waiting for its reply.
 // Option 1: Use send instead
 intercom({ action: "send", to: "planner", message: "..." });
 
-// Option 2: Wait for current ask to complete first
+// Option 2: Wait for the current ask to complete, then retry
 ```
 
 **"Cannot message the current session"**

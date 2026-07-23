@@ -1,12 +1,32 @@
-import { InteractiveModeBase } from "./interactive-mode-base.ts";
-import { type Container, type MarkdownTheme, os, path, Markdown, Spacer, Text, spawn, APP_NAME, APP_TITLE, ENV_OFFLINE, getEnvValue, getAgentDir, VERSION, formatCodexFastModeModelLabel, shouldApplyCodexFastMode, DefaultPackageManager, isInstallTelemetryEnabled, getChangelogPath, getEntriesForVersion, getNewEntries, normalizeChangelogLinks, parseChangelog, getCwdRelativePath, getPiUserAgent, recordTimeSinceReset, ensureTool, checkForNewPiVersion, renderAtomicAnsiBanner, DynamicBorder, getMarkdownTheme, onThemeChange, theme } from "./interactive-mode-deps.ts";
+import { InteractiveModeBase, seedStartupInput } from "./interactive-mode-base.ts";
+import { type Container, type MarkdownTheme, os, path, Markdown, Spacer, Text, spawn, APP_NAME, APP_TITLE, ENV_OFFLINE, getEnvValue, getAgentDir, VERSION, formatCodexFastModeModelLabel, shouldApplyCodexFastMode, DefaultPackageManager, isInstallTelemetryEnabled, getChangelogPath, getEntriesForVersion, getNewEntries, normalizeChangelogLinks, parseChangelog, getCwdRelativePath, getPiUserAgent, recordTimeSinceReset, ensureTool, checkForNewPiVersion, renderAtomicAnsiBanner, composeStartupIdentity, DynamicBorder, getMarkdownTheme, onThemeChange, theme } from "./interactive-mode-deps.ts";
 import { ExpandableText } from "./interactive-mode-helpers.ts";
+import { refreshCatalogsAfterTuiStartup, updateProviderCountFromSnapshot } from "./interactive-model-catalog-startup.ts";
 import { ONBOARDING_COPY } from "./interactive-onboarding.ts";
+import { onInteractiveEngineRemoteCommandsChanged, waitForInteractiveEngineBound } from "../interactive-engine/extension-ui-bridge.ts";
+import { restoreTerminalTitleAfterPackageCheck } from "./interactive-terminal-title.ts";
+import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
+
+export const shouldRefreshCopilotCatalogOnStartup = (): boolean => !isOfflineModeEnabled();
+
+function prepareStartupNotices(mode: InteractiveModeBase): void {
+    if (mode.startupNoticesPrepared) return;
+    mode.startupNoticesPrepared = true;
+    mode.hadLastChangelogVersionAtStartup = Boolean(mode.settingsManager.getLastChangelogVersion?.());
+    if (mode.changelogMarkdown === undefined) {
+      mode.changelogMarkdown = mode.getChangelogForDisplay?.();
+    }
+    mode.initializeFirstRunOnboardingMarkers?.();
+    if (!mode.firstRunNoticeVisible) {
+      mode.firstRunNoticeVisible = mode.isFirstRunOnboardingEligible?.() ?? false;
+    }
+  }
 
 InteractiveModeBase.prototype.showStartupNoticesIfNeeded = function(this: InteractiveModeBase, targetContainer: Container = this.chatContainer): void {
     if (this.startupNoticesShown) {
       return;
     }
+    prepareStartupNotices(this);
     this.startupNoticesShown = true;
 
     const changelogMarkdown = this.changelogMarkdown;
@@ -71,10 +91,7 @@ InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): 
 
     this.registerSignalHandlers();
 
-    // Load changelog (only show new entries, skip for resumed sessions)
-    this.hadLastChangelogVersionAtStartup = Boolean(this.settingsManager.getLastChangelogVersion());
-    this.changelogMarkdown = this.getChangelogForDisplay();
-    this.initializeFirstRunOnboardingMarkers();
+    // Changelog and first-run onboarding are prepared lazily after first paint.
 
     // Add header container as first child. Populate it after theme initialization.
     this.ui.addChild(this.headerContainer);
@@ -100,24 +117,43 @@ InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): 
 
     this.setupKeyHandlers();
     this.setupEditorSubmitHandler();
+    // Rebuild autocomplete whenever the engine child's command catalog arrives or
+    // changes (initial bind, engine restart, reload, new/resume/fork). Subscribed
+    // before bind so the first async catalog fetch can never be missed. No-op when
+    // the host is not isolated.
+    onInteractiveEngineRemoteCommandsChanged(this.runtimeHost, () => {
+      this.setupAutocompleteProvider();
+    });
 
-    this.firstRunNoticeVisible = this.isFirstRunOnboardingEligible();
+    seedStartupInput(
+      this.pendingUserInputs,
+      this.defaultEditor,
+      this.options.startupInputCapture?.consume(),
+      this.startupReplayInputs,
+      (text) => {
+        this.startupDraftText = text;
+      },
+      (text) => {
+        this.startupReplayActiveInput = text;
+      },
+    );
 
-    // Start the UI before initializing extensions so session_start handlers can use interactive dialogs.
-    // fd/rg readiness is intentionally checked after first paint because ensureTool may spawn
-    // or download tools on cold machines.
+    // Start UI before extension/session work; fd/rg readiness and git watching move after first paint.
     this.ui.start();
+    await waitForInteractiveEngineBound(this.runtimeHost);
     recordTimeSinceReset("time-to-first-frame");
+    this.footerDataProvider.onBranchChange(() => {
+      this.ui.requestRender();
+    });
     this.isInitialized = true;
 
     await this.themeController.applyFromSettings();
 
-    // Add the quiet startup identity (unless silenced). Resource details are
-    // disclosed separately in the chat canvas via the tools/resources toggle.
+    // Add the quiet startup identity unless silenced.
     if (this.options.verbose || !this.settingsManager.getQuietStartup()) {
       this.builtInHeader = new ExpandableText(
-        () => this.getStartupIdentityText(),
-        () => this.getStartupIdentityText(),
+        (width) => this.getStartupIdentityText(width),
+        (width) => this.getStartupIdentityText(width),
         this.getStartupExpansionState(),
         1,
         0,
@@ -158,12 +194,6 @@ InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): 
     this.attachStartupNoticesContainer();
     // Render initial messages AFTER the initial session binding is in place.
     this.renderInitialMessages();
-	if (this.deferredStartupPending) {
-		setTimeout(() => {
-			if (!this.deferredStartupPending || this.deferredStartupPromise) return;
-			void this.ensureDeferredStartupComplete();
-		}, 2000);
-	}
     // Set up theme file watcher
     onThemeChange(() => {
       this.ui.invalidate();
@@ -171,16 +201,7 @@ InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): 
       this.ui.requestRender();
     });
 
-    // Set up git branch watcher (uses provider instead of footer)
-    this.footerDataProvider.onBranchChange(() => {
-      this.ui.requestRender();
-    });
-
-    // Initialize available provider count for footer display without delaying first-frame startup.
-    void this.updateAvailableProviderCount().catch((error) => {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`Failed to update provider count: ${message}`);
-    });
+	updateProviderCountFromSnapshot(this);
   };
 
 InteractiveModeBase.prototype.updateTerminalTitle = function(this: InteractiveModeBase): void {
@@ -198,13 +219,17 @@ InteractiveModeBase.prototype.updateTerminalTitle = function(this: InteractiveMo
 InteractiveModeBase.prototype.run = async function(this: InteractiveModeBase): Promise<void> {
     await this.init();
 
+	if (shouldRefreshCopilotCatalogOnStartup()) void refreshCatalogsAfterTuiStartup(this);
+
 	setTimeout(() => {
-		void this.refreshCopilotModelCatalog();
     const startupNoticesContainer = this.startupNoticesContainer;
 		checkForNewPiVersion(this.version).then((newVersion) => {
 			if (newVersion) this.showNewVersionNotification(newVersion, startupNoticesContainer);
 		});
-		this.checkForPackageUpdates().then((updates) => {
+		restoreTerminalTitleAfterPackageCheck(this.checkForPackageUpdates(), {
+			initialized: () => this.isInitialized,
+			restore: () => this.updateTerminalTitle(),
+		}).then((updates) => {
 			if (updates.length > 0) this.showPackageUpdateNotification(updates, startupNoticesContainer);
 		});
 		this.checkTmuxKeyboardSetup().then((warning) => {
@@ -451,7 +476,7 @@ InteractiveModeBase.prototype.getStartupModelLabel = function(this: InteractiveM
     return formatCodexFastModeModelLabel(modelLabel, fastModeEnabled);
   };
 
-InteractiveModeBase.prototype.getStartupIdentityText = function(this: InteractiveModeBase): string {
+InteractiveModeBase.prototype.getStartupIdentityText = function(this: InteractiveModeBase, maxWidth?: number): string {
     const appLabel = APP_NAME.length > 0
       ? `${APP_NAME[0]!.toUpperCase()}${APP_NAME.slice(1)}`
       : "Atomic";
@@ -461,11 +486,7 @@ InteractiveModeBase.prototype.getStartupIdentityText = function(this: Interactiv
     const modelLine = `${provider} ${theme.fg("muted", this.getStartupModelLabel())}`;
     const cwd = theme.fg("muted", this.formatDisplayPath(this.sessionManager.getCwd()));
     const metaLines = [title, modelLine, cwd];
-    const markLines = this.getAtomicAnsiMarkLines();
-
-    return markLines
-      .map((line, index) => `${line}  ${metaLines[index] ?? ""}`.trimEnd())
-      .join("\n");
+    return composeStartupIdentity(this.getAtomicAnsiMarkLines(), metaLines, maxWidth);
   };
 
 InteractiveModeBase.prototype.getAtomicAnsiMarkLines = function(this: InteractiveModeBase): string[] {

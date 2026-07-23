@@ -3,7 +3,7 @@
  */
 
 import { Type } from "typebox";
-import { MAX_SUBAGENT_NESTING_DEPTH, SUBAGENT_ACTIONS } from "../shared/types.ts";
+import { MAX_PARALLEL_TASKS, MAX_SUBAGENT_NESTING_DEPTH, SUBAGENT_ACTIONS } from "../shared/types.ts";
 
 const SkillOverride = Type.Unsafe({
 	anyOf: [
@@ -35,10 +35,27 @@ const ReadsOverride = Type.Unsafe({
 	description: "Files to read before running (array of filenames), or false to disable",
 });
 
+const RootReadsOverride = Type.Unsafe({
+	anyOf: [
+		{ type: "array", items: { type: "string" } },
+		{ type: "boolean", enum: [false] },
+	],
+	description: "Files for a single agent to read before running, or false to disable. Relative paths resolve against the effective child cwd.",
+});
+
 const JsonSchemaObject = Type.Unsafe({
 	type: "object",
 	additionalProperties: true,
 	description: "Plain JSON Schema object for structured output.",
+});
+
+const MaxOutputSchema = Type.Object({
+	bytes: Type.Optional(Type.Number()),
+	lines: Type.Optional(Type.Number()),
+}, { additionalProperties: false });
+
+const GroupSchema = Type.Union([Type.String(), Type.Boolean()], {
+	description: "Intercom group for spawned children. A named string joins that group; boolean `true` or the trimmed, case-insensitive string sentinel `true`/`auto` auto-generates one shared UUID group per parallel set. The names `true` and `auto` are reserved; use a different literal group name. Defaults to the current session/stage's group. Only applied when the child has intercom access; contact_supervisor still reaches the supervisor across groups.",
 });
 
 const TaskItem = Type.Object({
@@ -52,6 +69,7 @@ const TaskItem = Type.Object({
 	progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking for this task" })),
 	model: Type.Optional(Type.String({ description: "Override model for this task (e.g. 'google/gemini-3-pro')" })),
 	skill: Type.Optional(SkillOverride),
+	group: Type.Optional(GroupSchema),
 });
 
 // Parallel task item (within a parallel step)
@@ -70,6 +88,7 @@ const ParallelTaskSchema = Type.Object({
 	progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking in {chain_dir}" })),
 	skill: Type.Optional(SkillOverride),
 	model: Type.Optional(Type.String({ description: "Override model for this task" })),
+	group: Type.Optional(GroupSchema),
 });
 
 const DynamicExpandSchema = Type.Object({
@@ -96,6 +115,7 @@ const DynamicParallelTemplateSchema = Type.Object({
 	progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking in {chain_dir}" })),
 	skill: Type.Optional(SkillOverride),
 	model: Type.Optional(Type.String({ description: "Override model for this task" })),
+	group: Type.Optional(GroupSchema),
 }, { additionalProperties: false });
 
 const DynamicCollectSchema = Type.Object({
@@ -134,6 +154,7 @@ const ChainItem = Type.Object({
 	worktree: Type.Optional(Type.Boolean({
 		description: "Create isolated git worktrees for each parallel task."
 	})),
+	group: Type.Optional(GroupSchema),
 }, {
 	description: "Chain step: use {agent, task?, ...} for sequential, {parallel: [...]} for static concurrent execution, or {expand, parallel: {...}, collect} for dynamic fanout.",
 	additionalProperties: false,
@@ -185,8 +206,12 @@ export const SubagentParams = Type.Object({
 		],
 		description: `Agent or chain config for create/update. Agent: name, package (optional namespace; runtime name becomes package.name), description, scope ('user'|'project', default 'user'), systemPrompt, systemPromptMode, inheritProjectContext, inheritSkills, defaultContext ('fresh'|'fork'), model, tools (comma-separated), extensions (comma-separated), skills (comma-separated), thinking, output, reads, progress, maxSubagentDepth (integer >= 0, clamped to ${MAX_SUBAGENT_NESTING_DEPTH}). Chain: name, package, description, scope, steps (array of {agent, task?, output?, outputMode?, reads?, model?, skill?, progress?}). Presence of 'steps' creates a chain instead of an agent. String values must be valid JSON.`
 	})),
-	tasks: Type.Optional(Type.Array(TaskItem, { description: "PARALLEL mode: [{agent, task, count?, output?, outputMode?, reads?, progress?}, ...]" })),
+	tasks: Type.Optional(Type.Array(TaskItem, {
+		maxItems: MAX_PARALLEL_TASKS,
+		description: `PARALLEL mode: [{agent, task, count?, output?, outputMode?, reads?, progress?}, ...]. Maximum ${MAX_PARALLEL_TASKS} tasks after count expansion.`,
+	})),
 	concurrency: Type.Optional(Type.Integer({ minimum: 1, description: "Top-level PARALLEL mode only: max concurrent tasks. Defaults to config.parallel.concurrency or 4." })),
+	group: Type.Optional(GroupSchema),
 	worktree: Type.Optional(Type.Boolean({
 		description: "Create isolated git worktrees for each parallel task. " +
 			"Prevents filesystem conflicts. Requires clean git state. " +
@@ -201,14 +226,13 @@ export const SubagentParams = Type.Object({
 	async: Type.Optional(Type.Boolean({ description: "Run in background (default: false, or per config)" })),
 	agentScope: Type.Optional(Type.String({ description: "Agent discovery scope: 'user', 'project', or 'both' (default: 'both'; project wins on name collisions)" })),
 	cwd: Type.Optional(Type.String()),
+	maxOutput: Type.Optional(MaxOutputSchema),
 	artifacts: Type.Optional(Type.Boolean({ description: "Write debug artifacts (default: true)" })),
 	includeProgress: Type.Optional(Type.Boolean({ description: "Include full progress in result (default: false)" })),
 	share: Type.Optional(Type.Boolean({ description: "Upload session to GitHub Gist for sharing (default: false)" })),
 	sessionDir: Type.Optional(
 		Type.String({ description: "Directory to store session logs (default: temp; enables sessions even if share=false)" }),
 	),
-	// Clarification TUI
-	clarify: Type.Optional(Type.Boolean({ description: "Show TUI to preview/edit before execution. Explicit clarify: true keeps the run foreground for the clarify UI; omitted clarify can still run in the background when async: true is set." })),
 	control: Type.Optional(ControlOverrides),
 	// Solo agent overrides
 	output: Type.Optional(Type.Unsafe({
@@ -219,6 +243,8 @@ export const SubagentParams = Type.Object({
 		description: "Output file for single agent (string), or false to disable. Relative paths resolve against cwd.",
 	})),
 	outputMode: Type.Optional(OutputModeOverride),
+	reads: Type.Optional(RootReadsOverride),
+	progress: Type.Optional(Type.Boolean({ description: "Enable run-scoped progress.md tracking for a single agent under isolated artifact storage, without writing progress.md into the child cwd. This controls the child-maintained file; includeProgress separately controls whether detailed runtime telemetry is returned." })),
 	skill: Type.Optional(SkillOverride),
 	model: Type.Optional(Type.String({ description: "Override model for single agent (e.g. 'anthropic/claude-sonnet-4')" })),
-});
+}, { additionalProperties: false });

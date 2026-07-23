@@ -1,0 +1,160 @@
+import type net from "node:net";
+import type { Attachment, BrokerMessage, Message, SessionInfo } from "../types.js";
+import { resolveSessionTarget, sessionTargetFailureReason } from "../session-target.js";
+import { DeliveredMessageCache } from "./delivered-message-cache.js";
+import { buildMessageSendSignature } from "./send-signature.js";
+import { SupervisorChannelCache } from "./supervisor-channel.js";
+import { isVerticalBypass, sameGroup } from "./group-isolation.js";
+import { normalizeGroup } from "../group.js";
+
+export interface BrokerConnectedSession {
+  socket: net.Socket;
+  info: SessionInfo;
+  /** Broker-bound supervisor relationship established by a capability. */
+  supervisorId?: string;
+  /** Private issuer identity used to restore child capabilities after reconnects. */
+  supervisorOwnerToken?: string;
+}
+
+interface SendClientMessage extends Record<string, unknown> {
+  type: string;
+}
+
+function isAttachment(value: unknown): value is Attachment {
+  if (typeof value !== "object" || value === null) return false;
+  const attachment = value as Record<string, unknown>;
+  if (attachment.type !== "file" && attachment.type !== "snippet" && attachment.type !== "context") return false;
+  if (typeof attachment.name !== "string" || typeof attachment.content !== "string") return false;
+  return attachment.language === undefined || typeof attachment.language === "string";
+}
+
+function isMessage(value: unknown): value is Message {
+  if (typeof value !== "object" || value === null) return false;
+  const message = value as Record<string, unknown>;
+  if (typeof message.id !== "string" || typeof message.timestamp !== "number") return false;
+  if (message.replyTo !== undefined && typeof message.replyTo !== "string") return false;
+  if (message.expectsReply !== undefined && typeof message.expectsReply !== "boolean") return false;
+  if (typeof message.content !== "object" || message.content === null) return false;
+  const content = message.content as Record<string, unknown>;
+  if (typeof content.text !== "string") return false;
+  return content.attachments === undefined || (Array.isArray(content.attachments) && content.attachments.every(isAttachment));
+}
+
+/** Validate and route one wire-level send request. */
+export function handleBrokerSend(
+  socket: net.Socket,
+  clientMessage: SendClientMessage,
+  currentId: string | null,
+  sessions: Map<string, BrokerConnectedSession>,
+  deliveredMessages: DeliveredMessageCache,
+  write: (target: net.Socket, message: BrokerMessage) => void,
+  supervisorCache: SupervisorChannelCache = new SupervisorChannelCache(),
+): void {
+  const message = clientMessage.message;
+  const messageId = isMessage(message) ? message.id : "unknown";
+  const hasAttemptId = Object.prototype.hasOwnProperty.call(clientMessage, "attemptId");
+  if (hasAttemptId && typeof clientMessage.attemptId !== "string") {
+    write(socket, {
+      type: "delivery_failed",
+      messageId,
+      reason: "Invalid attemptId format",
+    });
+    return;
+  }
+  const attemptId = typeof clientMessage.attemptId === "string" ? clientMessage.attemptId : undefined;
+  if (typeof clientMessage.to !== "string" || !isMessage(message)) {
+    write(socket, { type: "delivery_failed", messageId, attemptId, reason: "Invalid message format" });
+    return;
+  }
+  if (Object.prototype.hasOwnProperty.call(clientMessage, "channel")) {
+    write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Invalid channel" });
+    return;
+  }
+  const supervisorSend = clientMessage.type === "supervisor_send";
+
+  const signature = buildMessageSendSignature(clientMessage.to, message);
+  const deliveredMatch = deliveredMessages.lookup(message.id, signature);
+  if (deliveredMatch === "match") {
+    write(socket, { type: "delivered", messageId: message.id, attemptId });
+    return;
+  }
+  if (deliveredMatch === "conflict") {
+    write(socket, {
+      type: "delivery_failed",
+      messageId: message.id,
+      attemptId,
+      reason: `Intercom message ID '${message.id}' was already delivered with a different target or payload`,
+    });
+    return;
+  }
+
+  const fromSession = currentId ? sessions.get(currentId) : undefined;
+  if (!fromSession) {
+    write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Sender session not found" });
+    return;
+  }
+  const trimmedTo = clientMessage.to.trim();
+  if (supervisorSend && !fromSession.supervisorId) {
+    write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Supervisor channel is not authorized" });
+    return;
+  }
+  if (supervisorSend && trimmedTo !== fromSession.supervisorId) {
+    write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Supervisor target does not match the authorized relationship" });
+    return;
+  }
+
+
+  // Exact-id targeting always resolves against the full pool so a cross-group id
+  // is caught by the defense-in-depth group check below. Only a broker-authorized
+  // supervisor frame or an exact recorded reply may resolve across groups.
+  const exactIdTarget = sessions.get(trimmedTo);
+  const senderGroup = normalizeGroup(fromSession.info.group);
+  const reachableAcrossGroups = supervisorSend || Boolean(message.replyTo);
+  const candidates = reachableAcrossGroups
+    ? Array.from(sessions.values(), (session) => session.info)
+    : Array.from(sessions.values(), (session) => session.info).filter(
+        (info) => normalizeGroup(info.group) === senderGroup,
+      );
+  const resolution = exactIdTarget
+    ? ({ kind: "resolved", session: exactIdTarget.info } as const)
+    : resolveSessionTarget(candidates, trimmedTo);
+  if (resolution.kind === "resolved") {
+    const target = sessions.get(resolution.session.id);
+    if (!target) {
+      write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Session not found" });
+      return;
+    }
+    if (target.info.id === fromSession.info.id) {
+      write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Cannot message the current session" });
+      return;
+    }
+    const bypass = supervisorSend || isVerticalBypass({
+      replyTo: message.replyTo,
+      sender: fromSession.info,
+      target: target.info,
+      supervisorCache,
+    });
+    if (!bypass && !sameGroup(target.info, fromSession.info)) {
+      write(socket, {
+        type: "delivery_failed",
+        messageId: message.id,
+        attemptId,
+        reason: "Target session is in a different intercom group",
+      });
+      return;
+    }
+    write(target.socket, supervisorSend
+      ? { type: "message", from: fromSession.info, message, channel: "supervisor" }
+      : { type: "message", from: fromSession.info, message });
+    deliveredMessages.record(message.id, signature);
+    if (supervisorSend) supervisorCache.record(message.id, fromSession.info.id, target.info.id);
+    write(socket, { type: "delivered", messageId: message.id, attemptId });
+    return;
+  }
+  write(socket, {
+    type: "delivery_failed",
+    messageId: message.id,
+    attemptId,
+    reason: sessionTargetFailureReason(clientMessage.to, resolution),
+  });
+}

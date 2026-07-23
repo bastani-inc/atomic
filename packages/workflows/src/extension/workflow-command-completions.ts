@@ -13,8 +13,9 @@ function completeToken(
     : Math.max(argumentText.lastIndexOf(" "), argumentText.lastIndexOf("\t")) + 1;
   const head = argumentText.slice(0, tokenStart);
   const token = argumentText.slice(tokenStart);
+  const normalizedToken = token.trimEnd();
   const filtered = candidates
-    .filter((candidate) => candidate.value.startsWith(token))
+    .filter((candidate) => candidate.value.startsWith(token) && candidate.value.trimEnd() !== normalizedToken)
     .map((candidate) => ({ ...candidate, value: `${head}${candidate.value}` }));
   return filtered.length > 0 ? filtered : null;
 }
@@ -26,7 +27,7 @@ function adminCompletions(): PiArgumentCompletion[] {
     { value: "list ", label: "list", description: "List registered workflows" },
     { value: "status ", label: "status", description: "List current-session active and retained terminal runs" },
     { value: "interrupt ", label: "interrupt", description: "Interrupt a run" },
-    { value: "kill ", label: "kill", description: "Kill and retain a run for inspection" },
+    { value: "quit ", label: "quit", description: "Quit a run and keep it resumable" },
     { value: "pause ", label: "pause", description: "Pause a run or stage" },
     { value: "resume ", label: "resume", description: "Re-open overlay for a run" },
     { value: "inputs ", label: "inputs", description: "Show a workflow's input schema" },
@@ -50,6 +51,17 @@ function runIdItems(): PiArgumentCompletion[] {
   }));
 }
 
+export function workflowArgumentCompletionsNeedWorkflowResources(partial: string): boolean {
+  const parts = partial.trim().split(/\s+/).filter(Boolean);
+  const subcommand = parts[0] ?? "";
+  if (!partial.includes(" ")) return true;
+  if (!subcommand || subcommand === "inputs") return true;
+  if (["status", "connect", "resume", "attach", "pause", "interrupt", "quit", "reload"].includes(subcommand)) {
+    return false;
+  }
+  return true;
+}
+
 export function workflowArgumentCompletions(
   partial: string,
   runtime: ExtensionRuntime,
@@ -64,12 +76,17 @@ export function workflowArgumentCompletions(
   if (["status", "connect", "resume", "attach", "pause"].includes(subcommand)) {
     return completeToken(partial, runIdItems());
   }
-  if (subcommand === "interrupt" || subcommand === "kill") {
-    const verb = subcommand === "kill" ? "Kill and retain" : "Interrupt";
+  if (subcommand === "interrupt") {
     return completeToken(partial, [
-      { value: "--all ", label: "--all", description: `${verb} all in-flight runs` },
+      { value: "--all ", label: "--all", description: "Interrupt all in-flight runs" },
       { value: "--yes ", label: "--yes", description: "Skip confirmation" },
       { value: "-y ", label: "-y", description: "Skip confirmation" },
+      ...runIdItems(),
+    ]);
+  }
+  if (subcommand === "quit") {
+    return completeToken(partial, [
+      { value: "--all ", label: "--all", description: "Quit and keep all in-flight runs resumable" },
       ...runIdItems(),
     ]);
   }

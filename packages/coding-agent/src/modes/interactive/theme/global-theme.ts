@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { getCustomThemesDir } from "../../../config.ts";
-import { closeWatcher, watchWithErrorHandler } from "../../../utils/fs-watch.ts";
+import { closeWatcher, isSafeFsWatchPathError, watchWithErrorHandler } from "../../../utils/fs-watch.ts";
 import { Theme } from "./theme-class.ts";
 import { getDefaultTheme } from "./terminal-detection.ts";
 import { getBuiltinThemes, loadTheme, loadThemeFromPath, setRegisteredTheme } from "./theme-loading.ts";
@@ -28,6 +28,8 @@ function setGlobalTheme(t: Theme): void {
 let currentThemeName: string | undefined;
 let themeWatcher: fs.FSWatcher | undefined;
 let themeReloadTimer: NodeJS.Timeout | undefined;
+let themeWatchFilePath: string | undefined;
+let themeWatchFileListener: ((current: fs.Stats, previous: fs.Stats) => void) | undefined;
 let onThemeChangeCallback: (() => void) | undefined;
 
 export function getCurrentThemeName(): string | undefined {
@@ -136,6 +138,23 @@ function startThemeWatcher(): void {
 		}, 100);
 	};
 
+	const startPollingFallback = () => {
+		if (themeWatchFilePath && themeWatchFileListener) {
+			return;
+		}
+		themeWatchFilePath = themeFile;
+		themeWatchFileListener = (current, previous) => {
+			if (
+				current.mtimeMs !== previous.mtimeMs ||
+				current.ctimeMs !== previous.ctimeMs ||
+				current.size !== previous.size
+			) {
+				scheduleReload();
+			}
+		};
+		fs.watchFile(themeFile, { interval: 1000 }, themeWatchFileListener);
+	};
+
 	themeWatcher =
 		watchWithErrorHandler(
 			customThemesDir,
@@ -152,9 +171,12 @@ function startThemeWatcher(): void {
 				}
 				scheduleReload();
 			},
-			() => {
+			(error) => {
 				closeWatcher(themeWatcher);
 				themeWatcher = undefined;
+				if (isSafeFsWatchPathError(error)) {
+					startPollingFallback();
+				}
 			},
 		) ?? undefined;
 }
@@ -166,4 +188,9 @@ export function stopThemeWatcher(): void {
 	}
 	closeWatcher(themeWatcher);
 	themeWatcher = undefined;
+	if (themeWatchFilePath && themeWatchFileListener) {
+		fs.unwatchFile(themeWatchFilePath, themeWatchFileListener);
+	}
+	themeWatchFilePath = undefined;
+	themeWatchFileListener = undefined;
 }

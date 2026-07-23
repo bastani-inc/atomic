@@ -103,6 +103,24 @@ describe("--session-id read-only commands", () => {
 		expect(result.code).toBe(1);
 		expect(result.stderr).toContain("Session already exists with id 'existing-id'");
 	});
+
+	it("warns when an exact session id is missing and a new session is created", async () => {
+		const result = await runCli((dirs) => ["--session-dir", dirs.sessionDir, "--session-id", "missing-id", "-p", "hi"]);
+
+		expect(result.stderr).toContain("No session found with id 'missing-id'; creating a new session");
+	});
+
+	it("does not warn when an exact session id exists", async () => {
+		const result = await runCli(
+			(dirs) => ["--session-dir", dirs.sessionDir, "--session-id", "existing-id", "-p", "hi"],
+			(dirs) => {
+				mkdirSync(dirs.sessionDir, { recursive: true });
+				writeSession(dirs.sessionDir, dirs.projectDir, "existing-id");
+			},
+		);
+
+		expect(result.stderr).not.toContain("No session found with id 'existing-id'");
+	});
 });
 
 describe("--session-id validation", () => {

@@ -1,5 +1,12 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { createAssistantMessageEventStream, type Api, type AssistantMessage, type Model } from "@earendil-works/pi-ai/compat";
+import {
+	createAssistantMessageEventStream,
+	type Api,
+	type AssistantMessage,
+	type Model,
+	registerApiProvider,
+	unregisterApiProviders,
+} from "@earendil-works/pi-ai/compat";
 import { describe, expect, it } from "vitest";
 import { generateBranchSummary, prepareBranchEntries } from "../src/core/compaction/branch-summarization.ts";
 import { serializeConversation } from "../src/core/compaction/utils.ts";
@@ -122,7 +129,7 @@ function contextEntry(targets: ContextCompactionEntry["deletedTargets"]): Contex
 	return result;
 }
 
-describe("branch summarization context deletion filtering", () => {
+describe("branch summarization with archival compaction entries", () => {
 	it("adds Copilot long-context guidance to prompt-limit summarization errors", async () => {
 		resetIds();
 		const rawError = "prompt token count of 500000 exceeds the limit of 400000";
@@ -172,7 +179,40 @@ describe("branch summarization context deletion filtering", () => {
 		expect(result.error).not.toContain("Copilot long-context/usage-based billing");
 	});
 
-	it("omits whole-entry and content-block logical deletions from prepared prompt input", () => {
+	it("uses the credential-specific baseUrl for direct summary dispatch", async () => {
+		resetIds();
+		const api = "branch-summary-endpoint-probe" as Api;
+		const source = "branch-summary-endpoint-test";
+		let dispatchedBaseUrl: string | undefined;
+		const streamSimple = (requestModel: Model<Api>) => {
+			dispatchedBaseUrl = requestModel.baseUrl;
+			const stream = createAssistantMessageEventStream();
+			stream.end({
+				...assistantBlocks([{ type: "text", text: "summary" }]),
+				api,
+				provider: requestModel.provider,
+				model: requestModel.id,
+			});
+			return stream;
+		};
+		registerApiProvider({ api, stream: streamSimple, streamSimple }, source);
+		try {
+			const model = { ...copilotModel(), api };
+			const result = await generateBranchSummary([entry(user("summarize through enterprise"))], {
+				model,
+				apiKey: "test-key",
+				baseUrl: "https://api.enterprise.example.com",
+				signal: new AbortController().signal,
+			});
+
+			expect(result.error).toBeUndefined();
+			expect(dispatchedBaseUrl).toBe("https://api.enterprise.example.com");
+		} finally {
+			unregisterApiProviders(source);
+		}
+	});
+
+	it("treats legacy logical-deletion records as inert when preparing prompt input", () => {
 		resetIds();
 		const deletedEntrySentinel = "ITER7_BRANCH_DELETED_ENTRY_SENTINEL";
 		const deletedBlockSentinel = "ITER7_BRANCH_DELETED_BLOCK_SENTINEL";
@@ -195,11 +235,11 @@ describe("branch summarization context deletion filtering", () => {
 		const preparedJson = JSON.stringify(prepared.messages);
 		const promptInput = serializeConversation(convertToLlm(prepared.messages));
 
-		expect(preparedJson).not.toContain(deletedEntrySentinel);
-		expect(preparedJson).not.toContain(deletedBlockSentinel);
+		expect(preparedJson).toContain(deletedEntrySentinel);
+		expect(preparedJson).toContain(deletedBlockSentinel);
 		expect(preparedJson).toContain(retainedBlockSentinel);
-		expect(promptInput).not.toContain(deletedEntrySentinel);
-		expect(promptInput).not.toContain(deletedBlockSentinel);
+		expect(promptInput).toContain(deletedEntrySentinel);
+		expect(promptInput).toContain(deletedBlockSentinel);
 		expect(promptInput).toContain(retainedBlockSentinel);
 	});
 });

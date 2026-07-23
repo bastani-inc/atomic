@@ -278,6 +278,9 @@ export async function readClipboardImage(options?: {
 
 		if (!image && !wayland) {
 			image = await readClipboardImageViaNativeClipboard();
+			if (!image) {
+				image = readClipboardImageViaXclip();
+			}
 		}
 	} else {
 		image = await readClipboardImageViaNativeClipboard();

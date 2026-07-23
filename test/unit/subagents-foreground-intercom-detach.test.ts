@@ -1,0 +1,291 @@
+import { describe, test } from "bun:test";
+import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import * as fs from "node:fs";
+import { join } from "node:path";
+import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
+import { INTERCOM_DETACH_REQUEST_EVENT, INTERCOM_DETACH_RESPONSE_EVENT } from "../../packages/subagents/src/shared/types.js";
+import { agentConfig, successEvent, withFakeCli, withFakeCliEvent } from "./subagents-attempt-watchdog-helpers.js";
+
+function eventBus(emitter: EventEmitter) {
+  return {
+    on(channel: string, handler: (data: unknown) => void) { emitter.on(channel, handler); return () => emitter.off(channel, handler); },
+    emit(channel: string, data: unknown) { emitter.emit(channel, data); },
+  };
+}
+async function handoff(bus: ReturnType<typeof eventBus>, route: { requestId: string; childIntercomTarget: string; runtimeGeneration?: number }): Promise<void> {
+  const complete = { messageId: route.requestId, senderId: "child-id", runtimeGeneration: 1, ...route };
+  bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { ...complete, phase: "probe" });
+  await Bun.sleep(1);
+  bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { ...complete, phase: "commit" });
+}
+
+const bridgedAgent = () => ({ ...agentConfig(), systemPrompt: "Intercom orchestration channel:\nCoordinate." });
+
+// Fake-CLI children pay real runtime process startup (often 100ms+) before
+// their scripted output delay, which lands too close to the default 250ms
+// idle watchdog on slower or loaded machines. None of these tests assert
+// watchdog behavior, so run them with generous timeouts to stay deterministic.
+const DETACH_TIMEOUTS = { idleMs: 4000, wallMs: 10_000 };
+describe("foreground intercom detach routing", () => {
+
+  test("reports the eventual result exactly once and finalizes artifacts after detach", async () => {
+    const gateName = "release-detached-child";
+    const fakeScript = `import { existsSync } from "node:fs";
+import { join } from "node:path";
+const gate = join(process.cwd(), ${JSON.stringify(gateName)});
+const timer = setInterval(() => {
+  if (!existsSync(gate)) return;
+  clearInterval(timer);
+  console.log(${JSON.stringify(successEvent("resumed result"))});
+}, 5);`;
+    await withFakeCli(fakeScript, async (dir) => {
+      const emitter = new EventEmitter();
+      const recovered: Array<{ exitCode: number; finalOutput?: string; artifactPaths?: { outputPath: string; metadataPath: string }; modelAttempts?: Array<{ exitCode: number }> }> = [];
+      let resolveRecovery: () => void = () => undefined;
+      const recovery = new Promise<void>((resolve) => { resolveRecovery = resolve; });
+      const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+        cwd: dir, runId: "recover", index: 0, intercomSessionName: "child-a", allowIntercomDetach: true,
+        intercomEvents: eventBus(emitter), artifactsDir: dir,
+        onDetachedExit: (result) => {
+          recovered.push(result as typeof recovered[number]);
+          resolveRecovery();
+        },
+      });
+      await Bun.sleep(25);
+      await handoff(eventBus(emitter), { requestId: "q", childIntercomTarget: "child-a" });
+      const placeholder = await pending;
+      assert.equal(placeholder.exitCode, -2);
+      assert.ok(placeholder.artifactPaths);
+      assert.equal(fs.existsSync(placeholder.artifactPaths.outputPath), false);
+      fs.writeFileSync(join(dir, gateName), "release", "utf8");
+      await recovery;
+      assert.equal(recovered.length, 1);
+      const actual = recovered[0]!;
+      assert.equal(actual.exitCode, 0);
+      assert.match(actual.finalOutput ?? "", /resumed result/);
+      assert.equal(actual.modelAttempts?.at(-1)?.exitCode, 0);
+      assert.ok(actual.artifactPaths);
+      assert.match(fs.readFileSync(actual.artifactPaths.outputPath, "utf8"), /resumed result/);
+      const metadata = JSON.parse(fs.readFileSync(actual.artifactPaths.metadataPath, "utf8")) as { exitCode: number; modelAttempts: Array<{ exitCode: number }> };
+      assert.equal(metadata.exitCode, 0);
+      assert.equal(metadata.modelAttempts.at(-1)?.exitCode, 0);
+    }, { idleMs: 4000, wallMs: 4000 });
+  });
+  test("a broker-routed handoff detaches the exact child even before tool-start observation", async () => {
+    await withFakeCliEvent(successEvent("eventual result"), 100, async (dir) => {
+      const emitter = new EventEmitter();
+      const bus = eventBus(emitter);
+      let resolveFirstExit: () => void = () => undefined;
+      const firstExit = new Promise<void>((resolve) => { resolveFirstExit = resolve; });
+      const first = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+        cwd: dir, runId: "run", index: 0, intercomSessionName: "child-a", allowIntercomDetach: true,
+        intercomEvents: bus, onDetachedExit: () => resolveFirstExit(),
+      });
+      const second = runSync(dir, [bridgedAgent()], "fake-worker", "B", {
+        cwd: dir, runId: "run", index: 1, intercomSessionName: "child-b", allowIntercomDetach: true, intercomEvents: bus,
+      });
+		let acknowledged = 0;
+		emitter.on(INTERCOM_DETACH_RESPONSE_EVENT, () => acknowledged++);
+		const route = { requestId: "q1", messageId: "q1", childIntercomTarget: "child-a", senderId: "child-id", runtimeGeneration: 1 };
+		bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { ...route, phase: "probe" });
+		await Bun.sleep(10);
+		assert.equal(acknowledged, 1);
+		bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { ...route, phase: "commit" });
+		const a = await first;
+      const b = await second;
+      await firstExit;
+      assert.equal(a.detached, true);
+      assert.equal(a.exitCode, -2);
+      assert.equal(b.detached, undefined);
+      assert.equal(b.exitCode, 0);
+    }, DETACH_TIMEOUTS);
+  });
+
+  test("lifecycle cancellation still terminates a detached child and cleans listeners once", async () => {
+    await withFakeCliEvent(successEvent("too late"), 10_000, async (dir) => {
+      const emitter = new EventEmitter();
+      const bus = eventBus(emitter);
+      const controller = new AbortController();
+      const recovered: Array<{ exitCode: number }> = [];
+      const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+        cwd: dir, runId: "cancel-detached", index: 0, intercomSessionName: "child-a",
+        allowIntercomDetach: true, intercomEvents: bus, signal: controller.signal,
+        onDetachedExit: (result) => recovered.push(result),
+      });
+      await Bun.sleep(25);
+      await handoff(bus, { requestId: "q", childIntercomTarget: "child-a" });
+      assert.equal((await pending).detached, true);
+      controller.abort();
+      for (let i = 0; i < 30 && recovered.length === 0; i++) await Bun.sleep(20);
+      assert.equal(recovered.length, 1);
+      assert.notEqual(recovered[0]?.exitCode, 0);
+      assert.equal(emitter.listenerCount(INTERCOM_DETACH_REQUEST_EVENT), 0);
+    }, DETACH_TIMEOUTS);
+  });
+
+  test("abort before detach terminates normally and leaves no detach listener", async () => {
+    await withFakeCliEvent(successEvent("too late"), 10_000, async (dir) => {
+      const emitter = new EventEmitter();
+      const controller = new AbortController();
+      const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+        cwd: dir, runId: "cancel-before", index: 0, intercomSessionName: "child-a",
+        allowIntercomDetach: true, intercomEvents: eventBus(emitter), signal: controller.signal,
+      });
+      await Bun.sleep(25);
+      controller.abort();
+      const result = await pending;
+      assert.notEqual(result.exitCode, 0);
+      assert.equal(result.detached, undefined);
+      assert.equal(emitter.listenerCount(INTERCOM_DETACH_REQUEST_EVENT), 0);
+    }, DETACH_TIMEOUTS);
+  });
+
+
+  test("a parallel detach commit releases active sibling supervision while retaining both children", async () => {
+    const gateName = "release-parallel-detached-children";
+    const fakeScript = `import { existsSync } from "node:fs";
+import { join } from "node:path";
+const gate = join(process.cwd(), ${JSON.stringify(gateName)});
+const timer = setInterval(() => {
+  if (!existsSync(gate)) return;
+  clearInterval(timer);
+  console.log(${JSON.stringify(successEvent("parallel child recovered"))});
+}, 5);`;
+    await withFakeCli(fakeScript, async (dir) => {
+      const emitter = new EventEmitter();
+      const bus = eventBus(emitter);
+      const groupDetach = new AbortController();
+      const recovered: Array<{ exitCode: number }> = [];
+      const recoveredBoth = Promise.withResolvers<void>();
+      const launch = (index: number, target: string) => runSync(dir, [bridgedAgent()], "fake-worker", target, {
+        cwd: dir,
+        runId: "parallel-detach",
+        index,
+        intercomSessionName: target,
+        allowIntercomDetach: true,
+        intercomEvents: bus,
+        intercomDetachSignal: groupDetach.signal,
+        onIntercomDetachCommit: () => groupDetach.abort(),
+        onDetachedExit: (result) => {
+          recovered.push(result);
+          if (recovered.length === 2) recoveredBoth.resolve();
+        },
+      });
+      const first = launch(0, "child-a");
+      const sibling = launch(1, "child-b");
+      await Bun.sleep(25);
+      await handoff(bus, { requestId: "parallel-question", childIntercomTarget: "child-a" });
+
+      const placeholders = await Promise.all([first, sibling]);
+      assert.ok(placeholders.every((result) => result.detached === true));
+      fs.writeFileSync(join(dir, gateName), "release", "utf8");
+      await recoveredBoth.promise;
+      assert.equal(recovered.length, 2);
+      assert.ok(recovered.every((result) => result.exitCode === 0));
+    }, { idleMs: 4_000, wallMs: 4_000 });
+  });
+  test("background-style execution ignores targeted detach requests", async () => {
+    await withFakeCliEvent(successEvent("background result"), 80, async (dir) => {
+      const emitter = new EventEmitter();
+      const bus = eventBus(emitter);
+      const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+        cwd: dir, runId: "background", index: 0, intercomSessionName: "child-a",
+        allowIntercomDetach: false, intercomEvents: bus,
+      });
+      await Bun.sleep(20);
+      bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { phase: "commit", requestId: "q", childIntercomTarget: "child-a" });
+      const result = await pending;
+      assert.equal(result.detached, undefined);
+      assert.equal(result.exitCode, 0);
+      assert.match(result.finalOutput ?? "", /background result/);
+      assert.equal(emitter.listenerCount(INTERCOM_DETACH_REQUEST_EVENT), 0);
+    }, DETACH_TIMEOUTS);
+  });
+
+  test("duplicate targeted delivery detaches and recovers the child only once", async () => {
+    await withFakeCliEvent(successEvent("once"), 90, async (dir) => {
+      const emitter = new EventEmitter();
+      const bus = eventBus(emitter);
+      const recovered: Array<{ finalOutput?: string }> = [];
+      const recoveredExit = Promise.withResolvers<void>();
+      const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+        cwd: dir, runId: "duplicate", index: 0, intercomSessionName: "child-a",
+        allowIntercomDetach: true, intercomEvents: bus,
+        onDetachedExit: result => { recovered.push(result); recoveredExit.resolve(); },
+      });
+      await Bun.sleep(20);
+      const request = { requestId: "same", messageId: "same", senderId: "child-id", childIntercomTarget: "child-a", runtimeGeneration: 4 };
+      bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { ...request, phase: "probe" });
+      await Bun.sleep(1);
+      bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { ...request, phase: "commit" });
+      bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { ...request, phase: "commit" });
+      assert.equal((await pending).detached, true);
+      await recoveredExit.promise;
+      await Bun.sleep(0);
+      assert.equal(recovered.length, 1);
+      assert.match(recovered[0]?.finalOutput ?? "", /once/);
+      assert.equal(emitter.listenerCount(INTERCOM_DETACH_REQUEST_EVENT), 0);
+    }, DETACH_TIMEOUTS);
+  });
+
+  test("rejects commit without a matching probe and rejects generation reuse", async () => {
+    await withFakeCliEvent(successEvent("normal"), 100, async (dir) => {
+      const emitter = new EventEmitter();
+      const bus = eventBus(emitter);
+      const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+        cwd: dir, runId: "reserved", index: 0, intercomSessionName: "child-a", allowIntercomDetach: true, intercomEvents: bus,
+      });
+      await Bun.sleep(20);
+      const route = { requestId: "q", messageId: "q", senderId: "child-id", childIntercomTarget: "child-a" };
+      bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { ...route, runtimeGeneration: 1, phase: "commit" });
+      bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { ...route, runtimeGeneration: 1, phase: "probe" });
+      bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { ...route, runtimeGeneration: 2, phase: "commit" });
+      const result = await pending;
+      assert.equal(result.detached, undefined);
+      assert.equal(result.exitCode, 0);
+    }, DETACH_TIMEOUTS);
+  });
+  test("legacy unscoped delivery still requires observed intercom tool start", async () => {
+    await withFakeCliEvent(successEvent("normal"), 100, async (dir) => {
+      const emitter = new EventEmitter();
+      const bus = eventBus(emitter);
+      const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+        cwd: dir, runId: "run", intercomSessionName: "child-a", allowIntercomDetach: true, intercomEvents: bus,
+      });
+      await Bun.sleep(20);
+      bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "legacy" });
+      const result = await pending;
+      assert.equal(result.detached, undefined);
+      assert.equal(result.exitCode, 0);
+    }, DETACH_TIMEOUTS);
+  });
+
+  test("rejects missing and incorrect exact targets", async () => {
+    await withFakeCliEvent(successEvent("normal"), 120, async (dir) => {
+      const emitter = new EventEmitter();
+      const bus = eventBus(emitter);
+      const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+        cwd: dir, runId: "exact-run", index: 3, intercomSessionName: "child-a", allowIntercomDetach: true, intercomEvents: bus,
+      });
+      await Bun.sleep(20);
+      bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "missing", runId: "exact-run", agent: "fake-worker", childIndex: 3 });
+      await handoff(bus, { requestId: "wrong", childIntercomTarget: "child-b" });
+      const result = await pending;
+      assert.equal(result.detached, undefined);
+      assert.equal(result.exitCode, 0);
+    }, DETACH_TIMEOUTS);
+  });
+
+  test("treats hostile-looking event content as inert fixture data", async () => {
+    const hostileText = `"); throw new Error("executed as code"); //`;
+    await withFakeCliEvent(successEvent(hostileText), 0, async (dir) => {
+      const result = await runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+        cwd: dir,
+        runId: "hostile-data",
+      });
+      assert.equal(result.exitCode, 0);
+      assert.equal(result.finalOutput, hostileText);
+    }, DETACH_TIMEOUTS);
+  });
+});

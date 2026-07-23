@@ -8,6 +8,7 @@ import type {
 	ActivityState,
 	ChainOutputMap,
 	ModelAttempt,
+	SingleResult,
 	SubagentResultStatus,
 	SubagentRunMode,
 	TokenUsage,
@@ -216,6 +217,7 @@ export interface ForegroundResumeChild {
 	index: number;
 	sessionFile?: string;
 	status: SubagentResultStatus;
+	result?: SingleResult;
 }
 
 export interface ForegroundResumeRun {
@@ -256,7 +258,7 @@ export interface SubagentState {
 	cleanupTimers: Map<string, ReturnType<typeof setTimeout>>;
 	lastUiContext: ExtensionContext | null;
 	poller: NodeJS.Timeout | null;
-	completionSeen: Map<string, number>;
+	completionSeen: Map<string, number | { seenAt: number; signature?: string }>;
 	watcher: FSWatcher | null;
 	watcherRestartTimer: ReturnType<typeof setTimeout> | null;
 	resultFileCoalescer: {

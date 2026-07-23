@@ -1,4 +1,5 @@
 import { describe, test } from "bun:test";
+import { Value } from "typebox/value";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,6 +17,7 @@ import {
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import type { ExecutorDeps, SubagentExecutorRuntimeDeps } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
+import { resolveTopLevelParallelMaxTasks } from "../../packages/subagents/src/shared/types.js";
 import type { SingleResult, Usage } from "../../packages/subagents/src/shared/types.js";
 import type { ExtensionContext } from "../../packages/coding-agent/src/index.js";
 
@@ -124,7 +126,7 @@ function makeExecutor(input: {
 			getSessionName: () => "parent-session-name",
 		} as unknown as ExecutorDeps["pi"],
 		state: makeState(),
-		config: { maxSubagentDepth: 2, parallel: { concurrency: 4, maxTasks: 8 } } as ExecutorDeps["config"],
+		config: { maxSubagentDepth: 2, parallel: { concurrency: 4, maxTasks: 50 } } as ExecutorDeps["config"],
 		asyncByDefault: false,
 		tempArtifactsDir: join(input.cwd, "artifacts"),
 		getSubagentSessionRoot: () => join(input.cwd, "sessions"),
@@ -215,6 +217,48 @@ describe("recent upstream subagent syncs", () => {
 		const serialized = JSON.stringify(SubagentParams);
 		for (const keyword of ["allOf", "const", "if", "then", "not"]) {
 			assert.equal(serialized.includes(`\"${keyword}\"`), false, `schema should omit ${keyword}`);
+		}
+	});
+
+	test("defaults the top-level parallel task maximum to 50 and only allows config to lower it", () => {
+		assert.equal(resolveTopLevelParallelMaxTasks(undefined), 50);
+		assert.equal(resolveTopLevelParallelMaxTasks(12), 12);
+		assert.equal(resolveTopLevelParallelMaxTasks(51), 50);
+	});
+
+	test("accepts 50 top-level parallel tasks in the tool schema and rejects 51", () => {
+		const makeTasks = (count: number) => Array.from({ length: count }, (_, index) => ({
+			agent: "worker",
+			task: `Task ${index + 1}`,
+		}));
+
+		assert.equal(Value.Check(SubagentParams, { tasks: makeTasks(50) }), true);
+		assert.equal(Value.Check(SubagentParams, { tasks: makeTasks(51) }), false);
+	});
+
+	test("rejects more than 50 expanded top-level parallel tasks at runtime", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-parallel-limit-"));
+		try {
+			let runCount = 0;
+			const executor = makeExecutor({
+				cwd,
+				agents: [makeAgent("worker")],
+				runSync: async (_parentCwd, _agents, agentName, task) => {
+					runCount += 1;
+					return result(agentName, task);
+				},
+			});
+
+			const output = await executor.execute("parallel-limit", {
+				tasks: [{ agent: "worker", task: "Repeated task", count: 51 }],
+			}, new AbortController().signal, undefined, makeContext(cwd));
+			const text = output.content[0]?.type === "text" ? output.content[0].text : "";
+
+			assert.equal(output.isError, true);
+			assert.equal(text, "Max 50 tasks");
+			assert.equal(runCount, 0);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
 		}
 	});
 

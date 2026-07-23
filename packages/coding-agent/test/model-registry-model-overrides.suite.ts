@@ -269,7 +269,7 @@ describeModelRegistry((context) => {
 			}
 		});
 
-		test("refresh() picks up model override changes", () => {
+		test("refresh() picks up model override changes", async () => {
 			writeRawModelsJson({
 				openrouter: {
 					modelOverrides: {
@@ -295,14 +295,14 @@ describeModelRegistry((context) => {
 					},
 				},
 			});
-			registry.refresh();
+			await registry.refresh();
 
 			expect(
 				getModelsForProvider(registry, "openrouter").find((m) => m.id === "anthropic/claude-sonnet-4")?.name,
 			).toBe("Second Name");
 		});
 
-		test("removing model override restores built-in values", () => {
+		test("removing model override restores built-in values", async () => {
 			writeRawModelsJson({
 				openrouter: {
 					modelOverrides: {
@@ -321,7 +321,7 @@ describeModelRegistry((context) => {
 
 			// Remove override and refresh
 			writeRawModelsJson({});
-			registry.refresh();
+			await registry.refresh();
 
 			const restoredName = getModelsForProvider(registry, "openrouter").find(
 				(m) => m.id === "anthropic/claude-sonnet-4",
