@@ -43,6 +43,26 @@ test("Ralph orchestrator prompt preserves configured subagent model policy", asy
   assert.match(prompt, /Never invent or select an ad hoc model ID solely for diversity/);
 });
 
+test("Ralph orchestrator prompt constrains automatic no-policy model routing", async () => {
+  const prompt = await renderOrchestratorPrompt();
+
+  assert.match(prompt, /sole automatic exception is a delegated agent that has no preconfigured or default model policy/);
+  assert.match(prompt, /read `packages\/coding-agent\/docs\/models\/model-selection\.md`/);
+  assert.match(prompt, /documented Pareto-efficiency and role-based recommendations/);
+  assert.match(prompt, /call `workflow\(\{ action: "models" \}\)`/);
+  assert.match(prompt, /use only an available model's returned `fullId`/);
+  assert.match(
+    prompt,
+    /Append a thinking suffix only when the exact recommended level appears in that same model entry's `availableThinkingLevels`/,
+  );
+  assert.match(prompt, /no recommended model intersects with the configured catalog/);
+  assert.match(prompt, /leave the delegation unpinned, record the limitation/);
+  assert.match(prompt, /ask the user only when the task truly requires an explicit model/);
+  assert.match(prompt, /catalog is empty, leave the delegation unpinned/);
+  assert.match(prompt, /no configured models were returned/);
+  assert.match(prompt, /Do not inspect credentials or infer why a model is absent from the catalog/);
+});
+
 test("Ralph orchestrator prompt isolates all delegates in one run group", async () => {
   const prompt = await renderOrchestratorPrompt();
 
