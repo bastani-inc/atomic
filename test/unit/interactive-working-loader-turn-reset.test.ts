@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 import { AtomicWorkingLoader } from "../../packages/coding-agent/src/modes/interactive/components/atomic-working-status.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-agent-events.ts";
 import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
-import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { setThemeInstance } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { loadTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme-loading.ts";
 import { installLifecycleFakeClock } from "./chat-session-host-working-lifecycle-fixture.ts";
 
-beforeAll(() => initTheme("catppuccin-mocha", false));
+beforeAll(() => setThemeInstance(loadTheme("catppuccin-mocha", "truecolor")));
 
 function workingLine(loader: AtomicWorkingLoader): string {
   return loader.render(64)[1]?.trimEnd() ?? "";

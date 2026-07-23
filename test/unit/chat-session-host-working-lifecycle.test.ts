@@ -6,7 +6,8 @@ import {
   ATOMIC_WORKING_FRAME_MS,
 } from "../../packages/coding-agent/src/modes/interactive/components/atomic-working-status.ts";
 import { ANIMATION_FRAME_MS } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host-utils.ts";
-import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { setThemeInstance } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { loadTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme-loading.ts";
 import {
   editorTheme,
   installLifecycleFakeClock,
@@ -38,7 +39,7 @@ function isBold(host: ChatSessionHost<never>): boolean {
 }
 
 beforeAll(() => {
-  initTheme("dark", false);
+  setThemeInstance(loadTheme("dark", "truecolor"));
 });
 
 afterEach(() => {

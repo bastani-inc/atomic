@@ -1,5 +1,6 @@
 import { describe, test } from "bun:test";
-import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { setThemeInstance, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { loadTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme-loading.ts";
 import {
     assert,
     createStore,
@@ -206,13 +207,13 @@ describe("StageChatView", () => {
             return match ? match.slice(1).join(",") : undefined;
         };
         try {
-            initTheme("catppuccin-mocha", false);
+            setThemeInstance(loadTheme("catppuccin-mocha", "truecolor"));
             assert.equal(workingColor(), "112,117,159");
-            initTheme("light", false);
+            setThemeInstance(loadTheme("light", "truecolor"));
             assert.notEqual(workingColor(), "112,117,159");
         } finally {
             view.dispose();
-            initTheme("dark", false);
+            setThemeInstance(loadTheme("dark", "truecolor"));
         }
     });
 
