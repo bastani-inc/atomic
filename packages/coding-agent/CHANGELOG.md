@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.11-alpha.4] - 2026-07-23
+
 ### Changed
 
 - Installed builds now ship the builtin workflows extension as a single prebundled ESM file. Loading it previously resolved and transpiled a ~300-file TypeScript module graph per launch, which dominated interactive-engine startup on Windows (~7 s on a test VM, now ~1.1 s, ~6x faster) ([#1962](https://github.com/bastani-inc/atomic/issues/1962)). Source checkouts still load the raw TypeScript sources.
