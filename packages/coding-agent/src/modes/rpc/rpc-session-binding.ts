@@ -61,50 +61,58 @@ export class RpcSessionBinding {
 		this.renderService?.bindSession(session);
 		this.footerDataProvider = new FooterDataProvider(session.sessionManager.getCwd());
 
-		await session.bindExtensions({
-			uiContext: createRpcExtensionUIContext({
-				output: this.output,
-				pendingExtensionRequests: this.pendingExtensionRequests,
-				customUi: this.customUi,
-				sessionPicker: this.sessionPicker,
-				inputForm: this.inputForm,
-				footerDataProvider: this.footerDataProvider,
-			}),
-			mode: this.customUi ? "tui" : "rpc",
-			commandContextActions: {
-				waitForIdle: () => this.session.agent.waitForIdle(),
-				newSession: async (options) => this.runtimeHost.newSession(options),
-				fork: async (entryId, forkOptions) => {
-					const result = await this.runtimeHost.fork(entryId, forkOptions);
-					return { cancelled: result.cancelled };
+		try {
+			await session.bindExtensions({
+				uiContext: createRpcExtensionUIContext({
+					output: this.output,
+					pendingExtensionRequests: this.pendingExtensionRequests,
+					customUi: this.customUi,
+					sessionPicker: this.sessionPicker,
+					inputForm: this.inputForm,
+					footerDataProvider: this.footerDataProvider,
+				}),
+				mode: this.customUi ? "tui" : "rpc",
+				commandContextActions: {
+					waitForIdle: () => this.session.agent.waitForIdle(),
+					newSession: async (options) => this.runtimeHost.newSession(options),
+					fork: async (entryId, forkOptions) => {
+						const result = await this.runtimeHost.fork(entryId, forkOptions);
+						return { cancelled: result.cancelled };
+					},
+					navigateTree: async (targetId, options) => {
+						const result = await this.session.navigateTree(targetId, {
+							summarize: options?.summarize,
+							customInstructions: options?.customInstructions,
+							replaceInstructions: options?.replaceInstructions,
+							label: options?.label,
+						});
+						return { cancelled: result.cancelled };
+					},
+					switchSession: async (sessionPath, options) => {
+						return this.runtimeHost.switchSession(sessionPath, options);
+					},
+					reload: async () => {
+						const steeringMode = this.session.steeringMode;
+						const followUpMode = this.session.followUpMode;
+						if (this.reloadCoordinator) await this.reloadCoordinator.reload(this.session);
+						else await this.session.reload();
+						this.session.setSteeringMode(steeringMode);
+						this.session.setFollowUpMode(followUpMode);
+					},
 				},
-				navigateTree: async (targetId, options) => {
-					const result = await this.session.navigateTree(targetId, {
-						summarize: options?.summarize,
-						customInstructions: options?.customInstructions,
-						replaceInstructions: options?.replaceInstructions,
-						label: options?.label,
-					});
-					return { cancelled: result.cancelled };
+				shutdownHandler: this.requestShutdown,
+				onError: (err) => {
+					this.output({ type: "extension_error", extensionPath: err.extensionPath, event: err.event, error: err.error });
 				},
-				switchSession: async (sessionPath, options) => {
-					return this.runtimeHost.switchSession(sessionPath, options);
-				},
-				reload: async () => {
-					const steeringMode = this.session.steeringMode;
-					const followUpMode = this.session.followUpMode;
-					if (this.reloadCoordinator) await this.reloadCoordinator.reload(this.session);
-					else await this.session.reload();
-					this.session.setSteeringMode(steeringMode);
-					this.session.setFollowUpMode(followUpMode);
-				},
-			},
-			shutdownHandler: this.requestShutdown,
-			onError: (err) => {
-				this.output({ type: "extension_error", extensionPath: err.extensionPath, event: err.event, error: err.error });
-			},
-		});
-		this.footerDataProvider.startGitWatcher();
+			});
+			this.footerDataProvider.startGitWatcher();
+		} catch (error) {
+			// Leave no partially-initialized footer state behind if extension
+			// binding fails; dispose the provider and rethrow.
+			this.footerDataProvider.dispose();
+			this.footerDataProvider = undefined;
+			throw error;
+		}
 
 		this.unsubscribe = session.subscribe((event) => {
 			this.output(event);
