@@ -2,6 +2,7 @@ import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { createRpcExtensionUIContext } from "../../packages/coding-agent/src/modes/rpc/rpc-extension-ui.ts";
 import { FooterDataProvider } from "../../packages/coding-agent/src/core/footer-data-provider.js";
+import type { EngineCustomUiService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-custom-ui.ts";
 
 function createUI() {
 	return createRpcExtensionUIContext({
@@ -52,5 +53,27 @@ test("isolated extension UI exposes live footer status and cached git data", () 
 
 	ui.setStatus("mcp", undefined);
 	assert.equal(ui.getFooterDataProvider().getExtensionStatuses().has("mcp"), false);
+	provider.dispose();
+});
+
+test("setStatus invalidates isolated custom UI so mirrored status repaints", () => {
+	const provider = new FooterDataProvider(process.cwd());
+	let renderRequests = 0;
+	const customUi = {
+		requestRender: () => {
+			renderRequests += 1;
+		},
+	} as unknown as EngineCustomUiService;
+	const ui = createRpcExtensionUIContext({
+		output: () => {},
+		pendingExtensionRequests: new Map(),
+		footerDataProvider: provider,
+		customUi,
+	});
+
+	ui.setStatus("mcp", "MCP: 1/1 servers connected (3 tools)");
+	assert.equal(renderRequests, 1, "status update must invalidate custom UI components");
+	ui.setStatus("mcp", undefined);
+	assert.equal(renderRequests, 2, "status clear must invalidate custom UI components");
 	provider.dispose();
 });

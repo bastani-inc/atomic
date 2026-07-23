@@ -60,6 +60,14 @@ export class RpcSessionBinding {
 		const session = this.session;
 		this.renderService?.bindSession(session);
 		this.footerDataProvider = new FooterDataProvider(session.sessionManager.getCwd());
+		// Seed the provider count from the current catalog snapshot, mirroring
+		// updateProviderCountFromSnapshot() in interactive startup, so the
+		// embedded footer shows the (provider) model prefix in multi-provider
+		// sessions instead of defaulting to 0.
+		const models = session.scopedModels.length > 0
+			? session.scopedModels.map((scoped) => scoped.model)
+			: session.modelRegistry.getAvailable();
+		this.footerDataProvider.setAvailableProviderCount(new Set(models.map((model) => model.provider)).size);
 
 		try {
 			await session.bindExtensions({

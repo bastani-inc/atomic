@@ -160,6 +160,10 @@ export function createRpcExtensionUIContext({
 
 		setStatus(key: string, text: string | undefined): void {
 			footerDataProvider?.setExtensionStatus(key, text);
+			// Isolated custom UI components (e.g. an attached stage-chat footer)
+			// re-render only after an engine_custom_invalidate; without this the
+			// mirrored status text goes stale until an unrelated repaint occurs.
+			customUi?.requestRender();
 			emitExtensionUIRequest(output, { method: "setStatus", statusKey: key, statusText: text });
 		},
 
