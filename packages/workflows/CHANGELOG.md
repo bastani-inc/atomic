@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.11-alpha.4] - 2026-07-23
+
 ### Added
 
 - Added the opt-in `autoAttach` workflow-definition field, which opens the graph overlay when an interactive top-level named workflow is launched through `/workflow <name>` or the registered `workflow` tool without changing headless launches, nested workflow composition, or the existing input-form launch path.
