@@ -36,15 +36,37 @@ describe("workflow-first execution routing", () => {
     }
   });
 
-  test("requires an early routing decision and prevents inline drift", () => {
+  test("keeps early routing guidance without forcing a mode announcement", () => {
     for (const phrase of [
-      "Decide the execution mode before your first tool call",
-      "Reconnaissance counts as inline execution",
       "Budget reconnaissance",
       "roughly ten exploratory tool calls",
       "Sunk inline research transfers through files",
     ]) {
       expect(modelVisibleRouting).toContain(phrase);
+    }
+
+    for (const forcedAnnouncement of [
+      "Decide the execution mode before your first tool call",
+      "state it in one short line: inline",
+    ]) {
+      expect(modelVisibleRouting).not.toContain(forcedAnnouncement);
+    }
+  });
+
+  test("keeps all six core communication rules out of workflow promptGuidelines", () => {
+    const modelVisibleWorkflowGuidance = workflowGuidance.join("\n");
+    const coreCommunicationRules = [
+      "Never use a familiar printed metaphor, simile, or figure of speech.",
+      "Never use a long word where a short one will do.",
+      "Cut every word that can be cut.",
+      "Use active rather than passive voice where possible.",
+      "Prefer everyday English to foreign phrases, scientific terms, and jargon.",
+      "Break any rule rather than say anything outright barbarous.",
+    ];
+
+    expect(modelVisibleWorkflowGuidance).not.toContain("**Communication**:");
+    for (const rule of coreCommunicationRules) {
+      expect(modelVisibleWorkflowGuidance).not.toContain(rule);
     }
   });
 
