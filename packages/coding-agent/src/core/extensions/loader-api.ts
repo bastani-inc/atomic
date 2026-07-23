@@ -101,7 +101,11 @@ export function createExtensionAPI(
       if (!flagOwners.has(name)) flagOwners.set(name, extension.path);
       const ownsFlag = flagOwners.get(name) === extension.path;
       if (ownsFlag && options.default !== undefined && !runtime.flagValues.has(name)) {
-        runtime.flagValues.set(name, options.default);
+        if (runtime.applyFlagDefaultAfterRegistration) {
+          runtime.applyFlagDefaultAfterRegistration(name, extension.path, options.default);
+        } else {
+          runtime.flagValues.set(name, options.default);
+        }
       }
     },
 

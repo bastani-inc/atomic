@@ -45,21 +45,32 @@ function getShortestUniqueSourceLabels(sources: string[], reservedLabels: Readon
   }
 }
 
+function getExtensionIdentityPath(resourcePath: string): string {
+  const normalized = resourcePath.replace(/\\/g, "/");
+  const segments = normalized.split("/").filter(Boolean);
+  if (/^index\.[cm]?[jt]sx?$/.test(segments.at(-1) ?? "")) segments.pop();
+  return segments.join("/") || normalized;
+}
+
 function getOverlapLabels(mode: InteractiveModeBase, overlaps: readonly ResourceOverlap[]): string[] {
   const labels = new Set<string>();
   const localPackageSources = new Set<string>();
+  const extensionSources = new Set<string>();
   for (const overlap of overlaps) {
     const sourceInfo = overlap.inherited;
-    if (sourceInfo.origin === "package" && !mode.isPackageSource(sourceInfo)) {
+    if (sourceInfo.origin !== "package") {
+      extensionSources.add(getExtensionIdentityPath(sourceInfo.path));
+      continue;
+    }
+    if (!mode.isPackageSource(sourceInfo)) {
       localPackageSources.add(sourceInfo.source);
       continue;
     }
-    const label = sourceInfo.origin === "package"
-      ? mode.getCompactPackageSourceLabel(sourceInfo)
-      : mode.getCompactPathLabel(sourceInfo.path, sourceInfo);
+    const label = mode.getCompactPackageSourceLabel(sourceInfo);
     if (label) labels.add(label);
   }
   for (const label of getShortestUniqueSourceLabels([...localPackageSources], labels).values()) labels.add(label);
+  for (const label of getShortestUniqueSourceLabels([...extensionSources], labels).values()) labels.add(label);
   return [...labels];
 }
 const displayedOverlapFingerprints = new WeakMap<InteractiveModeBase, string>();

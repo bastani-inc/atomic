@@ -23,6 +23,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
   const state: { staleMessage?: string } = {};
   let resourceRegistrationBatchDepth = 0;
   let toolRefreshPending = false;
+  const pendingFlagDefaults = new Map<string, { ownerPath: string; value: boolean | string }>();
   const assertActive = () => {
     if (state.staleMessage) {
       throw new Error(state.staleMessage);
@@ -55,7 +56,14 @@ export function createExtensionRuntime(): ExtensionRuntime {
     },
     endResourceRegistrationBatch: () => {
       resourceRegistrationBatchDepth -= 1;
-      if (resourceRegistrationBatchDepth === 0 && toolRefreshPending) {
+      if (resourceRegistrationBatchDepth !== 0) return;
+      for (const [name, pending] of pendingFlagDefaults) {
+        if (runtime.flagOwners?.get(name) === pending.ownerPath && !runtime.flagValues.has(name)) {
+          runtime.flagValues.set(name, pending.value);
+        }
+      }
+      pendingFlagDefaults.clear();
+      if (toolRefreshPending) {
         toolRefreshPending = false;
         runtime.refreshTools();
       }
@@ -65,6 +73,13 @@ export function createExtensionRuntime(): ExtensionRuntime {
         toolRefreshPending = true;
       } else {
         runtime.refreshTools();
+      }
+    },
+    applyFlagDefaultAfterRegistration: (name, ownerPath, value) => {
+      if (resourceRegistrationBatchDepth > 0) {
+        pendingFlagDefaults.set(name, { ownerPath, value });
+      } else if (runtime.flagOwners?.get(name) === ownerPath && !runtime.flagValues.has(name)) {
+        runtime.flagValues.set(name, value);
       }
     },
     assertActive,

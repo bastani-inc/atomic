@@ -121,4 +121,39 @@ describe("InteractiveMode overlap labels", () => {
 		const output = normalizeRenderedOutput(fakeThis.chatContainer);
 		expect(output).toContain("`plugin` and `tmp/plugin` provide resources already bundled with Atomic.");
 	});
+
+	test("preserves distinct auto-discovered extension labels", () => {
+		const bundled = {
+			...createSourceInfo("/tmp/bundled/extensions/index.ts", {
+				source: "npm:@example/bundled",
+				scope: "temporary",
+				origin: "package",
+			}),
+			configurationOrigin: "bundled" as const,
+		};
+		const inherited = (resourcePath: string) => ({
+			...createSourceInfo(resourcePath, {
+				source: "auto",
+				scope: "user",
+				origin: "top-level",
+				baseDir: resourcePath.slice(0, resourcePath.lastIndexOf("/")),
+			}),
+			configurationOrigin: "inherited-pi" as const,
+		});
+		const fakeThis = createShowLoadedResourcesThis({
+			quietStartup: true,
+			overlaps: [
+				{ resourceType: "tool", name: "alpha", inherited: inherited("/tmp/pi-home/extensions/plugin-a/index.ts"), bundled },
+				{ resourceType: "command", name: "beta", inherited: inherited("/tmp/pi-project/extensions/plugin-b/index.ts"), bundled },
+			],
+		});
+
+		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, {
+			force: false,
+			showDiagnosticsWhenQuiet: true,
+		});
+
+		const output = normalizeRenderedOutput(fakeThis.chatContainer);
+		expect(output).toContain("`plugin-a` and `plugin-b` provide resources already bundled with Atomic.");
+	});
 });

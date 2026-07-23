@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed inherited `.pi` extensions conflicting with Atomic-bundled resources: exact-name tool, command, prompt, flag, and shortcut overlaps now keep Atomic's bundled registration without disabling unrelated extension features, interactive startup consolidates overlaps into one warning, and isolated TUI discovery again matches print/RPC while preserving explicit `.atomic` overrides and agent-directory isolation ([#1955](https://github.com/bastani-inc/atomic/issues/1955)).
+
 ## [0.9.11-alpha.4] - 2026-07-23
 
 ### Changed
@@ -14,7 +18,6 @@
 - Fixed interactive startup crashing with `Interactive engine did not become ready within 5000 ms` on machines with slow cold starts (commonly Windows PowerShell with npm-global installs). The fixed readiness deadline is removed; the host now waits until the engine reports ready and still fails fast if the engine process exits or the transport breaks ([#1962](https://github.com/bastani-inc/atomic/issues/1962)).
 - Fixed positional prompts beginning with `-`, `--`, or `@` being parsed as options or file arguments by supporting the conventional `--` end-of-options terminator ([#1950](https://github.com/bastani-inc/atomic/issues/1950)).
 - Fixed embedded extension UIs in isolated interactive mode receiving an empty placeholder from `ctx.ui.getFooterDataProvider()`. The engine session now exposes its live extension statuses and cached, watched Git branch so synchronous renderers such as workflow stage chat can match the main footer without RPC calls or per-render Git processes.
-- Fixed inherited `.pi` extensions conflicting with Atomic-bundled resources: exact-name tool, command, prompt, flag, and shortcut overlaps now keep Atomic's bundled registration without disabling unrelated extension features, interactive startup consolidates overlaps into one warning, and isolated TUI discovery again matches print/RPC while preserving explicit `.atomic` overrides and agent-directory isolation ([#1955](https://github.com/bastani-inc/atomic/issues/1955)).
 
 ## [0.9.11-alpha.3] - 2026-07-21
 

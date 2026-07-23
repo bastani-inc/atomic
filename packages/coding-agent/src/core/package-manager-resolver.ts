@@ -85,7 +85,7 @@ async function resolveConfiguredLocalEntries(
 			scope,
 			origin: "top-level",
 			baseDir,
-			configurationOrigin: baseIndex === 0 ? "atomic" : "inherited-pi",
+			configurationOrigin: baseIndex === 0 || fieldOrigin === "atomic" ? "atomic" : "inherited-pi",
 		};
 		await resolveLocalEntries([...relativeEntries, ...patterns], resourceType, target, metadata, baseDir);
 		await resolveLocalEntries([...fixedEntries, ...patterns], resourceType, target, {

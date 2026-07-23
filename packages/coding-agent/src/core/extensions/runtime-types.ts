@@ -96,6 +96,7 @@ export interface ExtensionRuntimeState {
 	beginResourceRegistrationBatch?: () => void;
 	endResourceRegistrationBatch?: () => void;
 	refreshToolsAfterRegistration?: () => void;
+	applyFlagDefaultAfterRegistration?: (name: string, ownerPath: string, value: boolean | string) => void;
 	/** Throws when this extension instance is stale after runtime replacement. */
 	assertActive: () => void;
 	/** Marks this extension instance as stale after runtime replacement or reload. */
