@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { flushPersistentCompileCache } from "../../utils/compile-cache.ts";
 import { killProcessTree, trackDetachedChildPid, untrackDetachedChildPid } from "../../utils/shell.ts";
 import { sleep } from "../../utils/sleep.ts";
 import type { ActivityWatchdogDiagnostic } from "../interactive-engine/activity-watchdog.ts";
@@ -23,6 +24,7 @@ export function spawnRpcClientProcess(options: RpcClientProcessOptions): ChildPr
 	const guardianFile = options.interactiveEngine
 		? join(tmpdir(), `atomic-engine-guardian-${process.pid}-${crypto.randomUUID()}`)
 		: undefined;
+	if (options.interactiveEngine) flushPersistentCompileCache();
 	const child = spawn(
 		options.runtimeExecutable ?? "bun",
 		[...(options.runtimeArgs ?? []), ...(options.cliPath ? [options.cliPath] : []), ...options.cliArgs],

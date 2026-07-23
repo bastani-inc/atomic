@@ -8,6 +8,8 @@ export class InteractiveEngineMonitor {
 	private readonly bound: Promise<void>;
 	private resolveBound!: () => void;
 	private rejectBound!: (error: Error) => void;
+	private readonly failure: Promise<never>;
+	private rejectFailure!: (error: Error) => void;
 	private readonly onMessage: (message: InteractiveEngineMessage) => void;
 
 	constructor(
@@ -23,26 +25,26 @@ export class InteractiveEngineMonitor {
 			this.resolveBound = resolve;
 			this.rejectBound = reject;
 		});
+		this.bound.catch(() => {});
+		this.failure = new Promise((_, reject) => {
+			this.rejectFailure = reject;
+		});
+		this.failure.catch(() => {});
 	}
 
 
 	stop(): void {
 		this.watchdog.stop();
 	}
-	fail(error: Error): void { this.rejectBound(error); }
+	fail(error: Error): void { this.rejectBound(error); this.rejectFailure(error); }
 
-	async waitUntilReady(timeoutMs = 5_000): Promise<void> {
-		let timeout: ReturnType<typeof setTimeout> | undefined;
-		try {
-			await Promise.race([
-				this.readiness,
-				new Promise<never>((_, reject) => {
-					timeout = setTimeout(() => reject(new Error(`Interactive engine did not become ready within ${timeoutMs} ms`)), timeoutMs);
-				}),
-			]);
-		} finally {
-			if (timeout) clearTimeout(timeout);
-		}
+	/**
+	 * Waits for the engine to announce readiness. There is deliberately no
+	 * deadline: slow starts (cold module loads on Windows) must not be treated
+	 * as failures. Engine exit or a transport error rejects via fail().
+	 */
+	async waitUntilReady(): Promise<void> {
+		await Promise.race([this.readiness, this.failure]);
 	}
 
 	waitUntilBound(): Promise<void> { return this.bound; }
