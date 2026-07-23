@@ -2,8 +2,13 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Interactive TUI startup on Windows is dramatically faster: the CLI now enables Node's persistent on-disk V8 compile cache (Node >= 22.8) and flushes it before spawning the isolated interactive engine, so both the host and the engine child reuse compiled module bytecode across runs and within the same launch ([#1962](https://github.com/bastani-inc/atomic/issues/1962)).
+
 ### Fixed
 
+- Fixed interactive startup crashing with `Interactive engine did not become ready within 5000 ms` on machines with slow cold starts (commonly Windows PowerShell with npm-global installs). The fixed readiness deadline is removed; the host now waits until the engine reports ready and still fails fast if the engine process exits or the transport breaks ([#1962](https://github.com/bastani-inc/atomic/issues/1962)).
 - Fixed positional prompts beginning with `-`, `--`, or `@` being parsed as options or file arguments by supporting the conventional `--` end-of-options terminator ([#1950](https://github.com/bastani-inc/atomic/issues/1950)).
 - Fixed embedded extension UIs in isolated interactive mode receiving an empty placeholder from `ctx.ui.getFooterDataProvider()`. The engine session now exposes its live extension statuses and cached, watched Git branch so synchronous renderers such as workflow stage chat can match the main footer without RPC calls or per-render Git processes.
 

@@ -9,6 +9,9 @@
  * loaded dynamically so metadata fast paths (e.g. --version) skip it entirely.
  */
 import { APP_NAME, VERSION } from "./config.ts";
+import { enablePersistentCompileCache } from "./utils/compile-cache.ts";
+
+enablePersistentCompileCache();
 
 process.title = APP_NAME;
 process.env[`${APP_NAME.toUpperCase()}_CODING_AGENT`] = "true";
