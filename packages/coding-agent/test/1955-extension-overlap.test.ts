@@ -62,6 +62,7 @@ export default function(pi) {
   ` : ""}
   pi.on("session_start", async () => {
     pi.registerTool({ name: "late-shared-tool", description: "${label} late tool", parameters: Type.Object({}), execute: async () => ({ content: [] }) });
+    pi.registerTool({ name: "late-second-shared-tool", description: "${label} second late tool", parameters: Type.Object({}), execute: async () => ({ content: [] }) });
     pi.registerFlag("late-shared-flag", { type: "string", default: "${label === "legacy" ? "same" : "bundled-late"}" });
     pi.registerFlag("late-no-default-flag", { type: "string", default: "${label === "legacy" ? "legacy-value" : "bundled-value"}" });
     ${label === "legacy" ? `pi.registerCommand("legacy-observed-late-flag", { description: String(pi.getFlag("late-shared-flag")), handler: async () => {} });` : ""}
@@ -199,16 +200,15 @@ describe("inherited Pi resource overlap compatibility", () => {
 		const bundledIndex = result.extensions.findIndex((extension) => extension.sourceInfo.configurationOrigin === "bundled");
 		expect(inheritedIndex).toBeLessThan(bundledIndex);
 		expect(result.extensions.every((extension) => !extension.tools.has("late-shared-tool"))).toBe(true);
-
 		const activeOwners: string[] = [];
 		result.runtime.refreshTools = () => {
-			const owner = result.extensions.find((extension) => extension.tools.has("late-shared-tool"));
-			if (owner?.sourceInfo.configurationOrigin) activeOwners.push(owner.sourceInfo.configurationOrigin);
+			const owners = ["late-shared-tool", "late-second-shared-tool"]
+				.map((name) => result.extensions.find((extension) => extension.tools.has(name))?.sourceInfo.configurationOrigin);
+			activeOwners.push(owners.join("/"));
 		};
 		const runner = new ExtensionRunner(result.extensions, result.runtime, cwd, {} as never, {} as never);
 		await runner.emit({ type: "session_start", reason: "startup" });
-
-		expect(activeOwners).toEqual(["bundled"]);
+		expect(activeOwners).toEqual(["bundled/bundled"]);
 		const winner = result.extensions.find((extension) => extension.tools.has("late-shared-tool"));
 		expect(winner?.sourceInfo.configurationOrigin).toBe("bundled");
 		expect(resolveRegisteredCommands(result.extensions).find((command) => command.name === "legacy-observed-late-flag")?.description)
@@ -297,7 +297,65 @@ export default function(pi) {
 		expect(loader.getOverlaps().some((overlap) => overlap.name === "late-shared-flag")).toBe(true);
 		expect(loader.getOverlaps().some((overlap) => overlap.name === "late-no-default-flag")).toBe(true);
 	});
-
+	it("preserves immediate non-conflicting dynamic registrations from an explicit Atomic extension", async () => {
+		const atomicExtensionDir = join(home, ".atomic", "agent", "extensions");
+		mkdirSync(atomicExtensionDir, { recursive: true });
+		writeFileSync(legacySettingsPath, "{}\n");
+		writeFileSync(join(atomicExtensionDir, "dynamic-explicit.ts"), `
+import { Type } from "typebox";
+export default function(pi) {
+  pi.on("session_start", async () => {
+    pi.registerFlag("atomic-only-dynamic", { type: "string", default: "ready" });
+    pi.registerTool({ name: "atomic-only-tool", description: "unique", parameters: Type.Object({}), execute: async () => ({ content: [] }) });
+    pi.registerCommand("observed-explicit-flag", { description: String(pi.getFlag("atomic-only-dynamic")), handler: async () => {} });
+    if (pi.getFlag("atomic-only-dynamic") === "ready") {
+      pi.registerTool({ name: "atomic-conditional-tool", description: "conditional", parameters: Type.Object({}), execute: async () => ({ content: [] }) });
+    }
+  });
+}
+`);
+		const loader = new DefaultResourceLoader({ cwd, agentDir: getAgentDir(), builtinPackagePaths: [] });
+		await loader.reload();
+		const result = loader.getExtensions();
+		const commandPresentAtRefresh: boolean[] = [];
+		result.runtime.refreshTools = () => {
+			const explicit = result.extensions.find((extension) => extension.path.endsWith("dynamic-explicit.ts"));
+			commandPresentAtRefresh.push(explicit?.commands.has("observed-explicit-flag") ?? false);
+		};
+		const runner = new ExtensionRunner(result.extensions, result.runtime, cwd, {} as never, {} as never);
+		await runner.emit({ type: "session_start", reason: "startup" });
+		const commands = resolveRegisteredCommands(result.extensions);
+		expect(commands.find((command) => command.name === "observed-explicit-flag")?.description).toBe("ready");
+		expect(collectRegisteredTools(result.extensions).some((tool) => tool.definition.name === "atomic-conditional-tool")).toBe(true);
+		expect(commandPresentAtRefresh[0]).toBe(false);
+		expect(loader.getOverlaps()).toEqual([]);
+	});
+	it("keeps a relative package explicitly listed by Atomic explicit when compatibility lookup finds it under Pi", async () => {
+		const atomicAgentDir = join(home, ".atomic", "agent");
+		const compatibilityPackage = join(home, ".pi", "agent", "compat-package");
+		mkdirSync(atomicAgentDir, { recursive: true });
+		mkdirSync(join(compatibilityPackage, "extensions"), { recursive: true });
+		writeFileSync(join(compatibilityPackage, "package.json"), JSON.stringify({
+			name: "example-atomic-compatibility",
+			pi: { extensions: ["./extensions/index.ts"] },
+		}, null, 2));
+		writeFileSync(join(compatibilityPackage, "extensions", "index.ts"), `
+import { Type } from "typebox";
+export default function(pi) {
+  pi.registerTool({ name: "shared-tool", description: "explicit Atomic compatibility package", parameters: Type.Object({}), execute: async () => ({ content: [] }) });
+  pi.registerTool({ name: "atomic-package-only", description: "unrelated", parameters: Type.Object({}), execute: async () => ({ content: [] }) });
+}
+`);
+		writeFileSync(join(atomicAgentDir, "settings.json"), `${JSON.stringify({ packages: ["./compat-package"] }, null, 2)}\n`);
+		const loader = createLoader();
+		await loader.reload();
+		const explicit = loader.getExtensions().extensions.find((extension) => extension.path.startsWith(compatibilityPackage));
+		expect(explicit?.sourceInfo.configurationOrigin).toBe("atomic");
+		const tools = collectRegisteredTools(loader.getExtensions().extensions);
+		expect(tools.find((tool) => tool.definition.name === "shared-tool")?.definition.description)
+			.toBe("explicit Atomic compatibility package");
+		expect(tools.some((tool) => tool.definition.name === "atomic-package-only")).toBe(true);
+	});
 	it("keeps same-relative Atomic extensions explicit when inherited settings also resolve under Pi", async () => {
 		const atomicExtensionDir = join(home, ".atomic", "agent", "extensions");
 		const piExtensionDir = join(home, ".pi", "agent", "extensions");

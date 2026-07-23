@@ -137,7 +137,7 @@ async function resolvePackageSources(
 					...metadata,
 					baseDir,
 					configurationOrigin: resolvesFromSettingsBase
-						? baseIndex === 0 ? "atomic" : "inherited-pi"
+						? baseIndex === 0 || configurationOrigin === "atomic" ? "atomic" : "inherited-pi"
 						: configurationOrigin,
 				};
 				await resolveLocalExtensionSource(parsed, accumulator, filter, localMetadata, baseDir, {

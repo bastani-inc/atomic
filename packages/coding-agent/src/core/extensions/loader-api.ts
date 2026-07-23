@@ -22,6 +22,10 @@ import {
 } from "./loader-resources.ts";
 
 type HandlerFn = (...args: unknown[]) => Promise<unknown>;
+function shouldDeferOverlapRegistration(extension: Extension): boolean {
+  const origin = extension.sourceInfo.configurationOrigin;
+  return origin === "inherited-pi" || origin === "bundled";
+}
 
 /**
  * Create the ExtensionAPI for an extension.
@@ -52,8 +56,9 @@ export function createExtensionAPI(
         definition: tool,
         sourceInfo: extension.sourceInfo,
       });
-      if (runtime.refreshToolsAfterRegistration) runtime.refreshToolsAfterRegistration();
-      else runtime.refreshTools();
+      if (runtime.refreshToolsAfterRegistration) {
+        runtime.refreshToolsAfterRegistration(extension, tool.name, shouldDeferOverlapRegistration(extension));
+      } else runtime.refreshTools();
     },
 
     registerCommand(name: string, options: Omit<RegisteredCommand, "name" | "sourceInfo">): void {
@@ -102,7 +107,12 @@ export function createExtensionAPI(
       const ownsFlag = flagOwners.get(name) === extension.path;
       if (ownsFlag && options.default !== undefined && !runtime.flagValues.has(name)) {
         if (runtime.applyFlagDefaultAfterRegistration) {
-          runtime.applyFlagDefaultAfterRegistration(name, extension.path, options.default);
+          runtime.applyFlagDefaultAfterRegistration(
+            name,
+            extension.path,
+            options.default,
+            shouldDeferOverlapRegistration(extension),
+          );
         } else {
           runtime.flagValues.set(name, options.default);
         }

@@ -1,4 +1,4 @@
-import type { ExtensionRuntime } from "./types.ts";
+import type { Extension, ExtensionRuntime, RegisteredTool } from "./types.ts";
 
 export async function runResourceRegistrationBatch<T>(runtime: ExtensionRuntime, run: () => Promise<T>): Promise<T> {
   if (!runtime.beginResourceRegistrationBatch || !runtime.endResourceRegistrationBatch) return run();
@@ -24,6 +24,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
   let resourceRegistrationBatchDepth = 0;
   let toolRefreshPending = false;
   const pendingFlagDefaults = new Map<string, { ownerPath: string; value: boolean | string }>();
+  const pendingToolRegistrations = new Map<string, { extension: Extension; name: string }>();
   const assertActive = () => {
     if (state.staleMessage) {
       throw new Error(state.staleMessage);
@@ -63,20 +64,37 @@ export function createExtensionRuntime(): ExtensionRuntime {
         }
       }
       pendingFlagDefaults.clear();
+      pendingToolRegistrations.clear();
       if (toolRefreshPending) {
         toolRefreshPending = false;
         runtime.refreshTools();
       }
     },
-    refreshToolsAfterRegistration: () => {
-      if (resourceRegistrationBatchDepth > 0) {
+    refreshToolsAfterRegistration: (extension, toolName, deferUntilBatchEnd = false) => {
+      if (resourceRegistrationBatchDepth > 0 && deferUntilBatchEnd && extension && toolName) {
+        pendingToolRegistrations.set(`${extension.path}\0${toolName}`, { extension, name: toolName });
         toolRefreshPending = true;
-      } else {
+        return;
+      }
+      const hidden: Array<{ extension: Extension; name: string; tool: RegisteredTool }> = [];
+      if (resourceRegistrationBatchDepth > 0) {
+        for (const pending of pendingToolRegistrations.values()) {
+          const tool = pending.extension.tools.get(pending.name);
+          if (!tool) continue;
+          pending.extension.tools.delete(pending.name);
+          hidden.push({ ...pending, tool });
+        }
+      }
+      try {
         runtime.refreshTools();
+      } finally {
+        for (const pending of hidden) {
+          if (!pending.extension.tools.has(pending.name)) pending.extension.tools.set(pending.name, pending.tool);
+        }
       }
     },
-    applyFlagDefaultAfterRegistration: (name, ownerPath, value) => {
-      if (resourceRegistrationBatchDepth > 0) {
+    applyFlagDefaultAfterRegistration: (name, ownerPath, value, deferUntilBatchEnd = false) => {
+      if (resourceRegistrationBatchDepth > 0 && deferUntilBatchEnd) {
         pendingFlagDefaults.set(name, { ownerPath, value });
       } else if (runtime.flagOwners?.get(name) === ownerPath && !runtime.flagValues.has(name)) {
         runtime.flagValues.set(name, value);
