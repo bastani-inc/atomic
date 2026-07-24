@@ -1,5 +1,5 @@
 import { access, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { CONFIG_DIR_NAME } from "../config.ts";
 import { getGitInstallPath } from "./package-manager-paths.ts";
 import { addAutoDiscoveredResources, collectProjectLocalResources } from "./package-manager-auto-resources.ts";
@@ -11,6 +11,7 @@ import { createAccumulator, addResource, getTargetMap, toResolvedPaths } from ".
 import { collectPackageResources, resolveLocalEntries } from "./package-manager-resource-collector.ts";
 import { resolveExtensionEntries } from "./package-manager-resource-files.ts";
 import { dedupePackages, getPackageIdentity, getPackageSourceString, parseSource } from "./package-manager-source.ts";
+import { splitPatterns } from "./package-manager-resource-patterns.ts";
 import { installParsedSource } from "./package-manager-operations.ts";
 import type {
 	MissingSourceAction,
@@ -46,7 +47,7 @@ export async function resolvePackages(
 	}
 
 	const packageSources = dedupePackages(context, allPackages);
-	await resolvePackageSources(context, packageSources, accumulator, onMissing);
+	await resolvePackageSources(context, packageSources, accumulator, onMissing, { settingsField: "packages" });
 
 	const globalBaseDir = context.agentDir;
 	const projectBaseDir = join(context.cwd, CONFIG_DIR_NAME);
@@ -57,28 +58,41 @@ export async function resolvePackages(
 		const target = getTargetMap(accumulator, resourceType);
 		const globalEntries = (globalSettings[resourceType] ?? []) as string[];
 		const projectEntries = (projectSettings[resourceType] ?? []) as string[];
-		for (const baseDir of projectBaseDirs) {
-			await resolveLocalEntries(
-				projectEntries,
-				resourceType,
-				target,
-				{ source: "local", scope: "project", origin: "top-level", baseDir },
-				baseDir,
-			);
-		}
-		for (const baseDir of globalBaseDirs) {
-			await resolveLocalEntries(
-				globalEntries,
-				resourceType,
-				target,
-				{ source: "local", scope: "user", origin: "top-level", baseDir },
-				baseDir,
-			);
-		}
+		const projectOrigin = context.settingsManager.isFieldInherited("project", resourceType) ? "inherited-pi" : "atomic";
+		const globalOrigin = context.settingsManager.isFieldInherited("global", resourceType) ? "inherited-pi" : "atomic";
+		await resolveConfiguredLocalEntries(projectEntries, resourceType, target, "project", projectBaseDirs, projectOrigin);
+		await resolveConfiguredLocalEntries(globalEntries, resourceType, target, "user", globalBaseDirs, globalOrigin);
 	}
 
 	await addAutoDiscoveredResources(context, accumulator, globalSettings, projectSettings, globalBaseDir, projectBaseDir);
 	return toResolvedPaths(accumulator);
+}
+
+async function resolveConfiguredLocalEntries(
+	entries: string[],
+	resourceType: "extensions" | "skills" | "prompts" | "themes" | "workflows",
+	target: ReturnType<typeof getTargetMap>,
+	scope: "project" | "user",
+	baseDirs: string[],
+	fieldOrigin: "atomic" | "inherited-pi",
+): Promise<void> {
+	const { plain, patterns } = splitPatterns(entries);
+	const relativeEntries = plain.filter((entry) => !isAbsolute(entry) && !entry.startsWith("~"));
+	const fixedEntries = plain.filter((entry) => isAbsolute(entry) || entry.startsWith("~"));
+	for (const [baseIndex, baseDir] of baseDirs.entries()) {
+		const metadata: PathMetadata = {
+			source: "local",
+			scope,
+			origin: "top-level",
+			baseDir,
+			configurationOrigin: baseIndex === 0 || fieldOrigin === "atomic" ? "atomic" : "inherited-pi",
+		};
+		await resolveLocalEntries([...relativeEntries, ...patterns], resourceType, target, metadata, baseDir);
+		await resolveLocalEntries([...fixedEntries, ...patterns], resourceType, target, {
+			...metadata,
+			configurationOrigin: fieldOrigin,
+		}, baseDir);
+	}
 }
 
 export async function resolveExtensionSources(
@@ -100,7 +114,7 @@ async function resolvePackageSources(
 	sources: Array<{ pkg: PackageSource; scope: SourceScope }>,
 	accumulator: ResourceAccumulator,
 	onMissing?: (source: string) => Promise<MissingSourceAction>,
-	options?: { includeProjectLocalResources?: boolean },
+	options?: { includeProjectLocalResources?: boolean; settingsField?: "packages" },
 ): Promise<void> {
 	for (const { pkg, scope } of sources) {
 		const sourceStr = getPackageSourceString(pkg);
@@ -109,11 +123,24 @@ async function resolvePackageSources(
 		const resolvedSource = deltaBase?.source ?? sourceStr;
 		const resolvedScope = deltaBase?.scope ?? scope;
 		const parsed = parseSource(resolvedSource);
-		const metadata: PathMetadata = { source: sourceStr, scope, origin: "package" };
+		const configurationOrigin = options?.settingsField && context.settingsManager.isFieldInherited(scope === "project" ? "project" : "global", options.settingsField)
+			? "inherited-pi"
+			: options?.settingsField ? "atomic" : undefined;
+		const metadata: PathMetadata = { source: sourceStr, scope, origin: "package", configurationOrigin };
 
 		if (parsed.type === "local") {
-			for (const baseDir of getBaseDirsForScope(context, resolvedScope)) {
-				await resolveLocalExtensionSource(parsed, accumulator, filter, { ...metadata, baseDir }, baseDir, {
+			for (const [baseIndex, baseDir] of getBaseDirsForScope(context, resolvedScope).entries()) {
+				const resolvesFromSettingsBase = options?.settingsField !== undefined
+					&& !isAbsolute(parsed.path)
+					&& !parsed.path.startsWith("~");
+				const localMetadata: PathMetadata = {
+					...metadata,
+					baseDir,
+					configurationOrigin: resolvesFromSettingsBase
+						? baseIndex === 0 || configurationOrigin === "atomic" ? "atomic" : "inherited-pi"
+						: configurationOrigin,
+				};
+				await resolveLocalExtensionSource(parsed, accumulator, filter, localMetadata, baseDir, {
 					includeProjectLocalResources: options?.includeProjectLocalResources === true,
 				});
 			}

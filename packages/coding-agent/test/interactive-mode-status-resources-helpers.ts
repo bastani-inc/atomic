@@ -1,4 +1,5 @@
 import { Container } from "@earendil-works/pi-tui";
+import type { ResourceOverlap } from "../src/core/diagnostics.ts";
 import type { SourceInfo } from "../src/core/source-info.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import type { ExtensionFixture } from "./interactive-mode-status-helpers.ts";
@@ -11,12 +12,14 @@ export function createShowLoadedResourcesThis(options: {
 		extensions?: ExtensionFixture[];
 		skills?: Array<{ filePath: string; name: string }>;
 		skillDiagnostics?: Array<{ type: "warning" | "error" | "collision"; message: string }>;
+		overlaps?: ResourceOverlap[];
 		useRealScopeGroups?: boolean;
 	}) {
 		const fakeThis: any = {
 			options: { verbose: options.verbose ?? false },
 			toolOutputExpanded: options.toolOutputExpanded ?? false,
 			chatContainer: new Container(),
+			runtimeHost: {},
 			settingsManager: {
 				getQuietStartup: () => options.quietStartup,
 			},
@@ -37,7 +40,7 @@ export function createShowLoadedResourcesThis(options: {
 						diagnostics: options.skillDiagnostics ?? [],
 					}),
 					getPrompts: () => ({ prompts: [], diagnostics: [] }),
-					getExtensions: () => ({ extensions: options.extensions ?? [], errors: [], runtime: {} }),
+					getExtensions: () => ({ extensions: options.extensions ?? [], errors: [], runtime: {}, overlaps: options.overlaps ?? [] }),
 					getThemes: () => ({ themes: [], diagnostics: [] }),
 				},
 			},

@@ -6,6 +6,7 @@ import type { CustomMessage } from "../messages.ts";
 import type { SessionManager } from "../session-manager.ts";
 import type { SlashCommandInfo } from "../slash-commands.ts";
 import type { SourceInfo } from "../source-info.ts";
+import type { ResourceOverlap } from "../diagnostics.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import type { RegisteredCommand } from "./command-types.ts";
 import type {
@@ -85,9 +86,36 @@ export type SetLabelHandler = (entryId: string, label: string | undefined) => vo
  */
 export interface ExtensionRuntimeState {
 	flagValues: Map<string, boolean | string>;
+	explicitFlagNames?: Set<string>;
+	/** Extension path that owns each active flag registration. */
+	flagOwners?: Map<string, string>;
+	/** Configuration origin of each active flag owner. */
+	flagOwnerOrigins?: Map<string, Extension["sourceInfo"]["configurationOrigin"]>;
 	/** Provider registrations queued during extension loading, processed when runner binds */
 	pendingProviderRegistrations: Array<{ provider: Provider; extensionPath: string } | { name: string; config: ProviderConfig; extensionPath: string }>;
+	/** Resource-level compatibility gate installed after extension provenance is resolved. */
+	canRegisterResource?: (extension: Extension, resourceType: ResourceOverlap["resourceType"], name: string) => boolean;
+	beginResourceRegistrationBatch?: () => void;
+	endResourceRegistrationBatch?: () => void;
+	refreshToolsAfterRegistration?: () => void;
+	applyFlagDefaultAfterRegistration?: (
+		name: string,
+		ownerPath: string,
+		value: boolean | string,
+		configurationOrigin?: Extension["sourceInfo"]["configurationOrigin"],
+	) => void;
+	stageToolRegistration?: (extension: Extension, name: string, registration: RegisteredTool) => boolean;
+	stageCommandRegistration?: (extension: Extension, name: string, registration: RegisteredCommand) => boolean;
+	stageFlagRegistration?: (extension: Extension, name: string, registration: ExtensionFlag, defaultValue?: boolean | string) => boolean;
+	stageShortcutRegistration?: (extension: Extension, name: KeyId, registration: ExtensionShortcut) => boolean;
+	hasPendingResourceRegistration?: (extension: Extension, resourceType: ResourceOverlap["resourceType"], name: string) => boolean;
+	deletePendingResourceRegistration?: (extension: Extension, resourceType: ResourceOverlap["resourceType"], name: string) => void;
+	getPendingFlagDefault?: (ownerPath: string, name: string) => boolean | string | undefined;
+	getAllToolsAfterRegistration?: (extension: Extension) => ToolInfo[];
+	getCommandsAfterRegistration?: (extension: Extension) => SlashCommandInfo[];
 	/** Throws when this extension instance is stale after runtime replacement. */
+	getActiveToolsAfterRegistration?: (extension: Extension) => string[];
+	setActiveToolsAfterRegistration?: (extension: Extension, toolNames: string[]) => boolean;
 	assertActive: () => void;
 	/** Marks this extension instance as stale after runtime replacement or reload. */
 	invalidate: (message?: string) => void;
@@ -192,6 +220,8 @@ export interface Extension {
 export interface LoadExtensionsResult {
 	extensions: Extension[];
 	errors: Array<{ path: string; error: string }>;
+	overlaps?: ResourceOverlap[];
+
 	/** Shared runtime - actions are throwing stubs until runner.initialize() */
 	runtime: ExtensionRuntime;
 }

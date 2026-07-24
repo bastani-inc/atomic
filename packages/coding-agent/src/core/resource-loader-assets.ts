@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { getProjectConfigDirs } from "../config.ts";
 import { loadThemeFromContent, type Theme } from "../modes/interactive/theme/theme.ts";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
-import type { ResourceDiagnostic } from "./diagnostics.ts";
+import type { ResourceDiagnostic, ResourceOverlap } from "./diagnostics.ts";
 import type { PathMetadata } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import { loadPromptTemplatesAsync } from "./prompt-templates-async.ts";
@@ -72,9 +72,23 @@ export async function updatePromptsFromPathsAsync(
 	metadataByPath?: Map<string, PathMetadata>,
 ): Promise<void> {
 	const state = resourceInternals(loader);
-	const promptsResult = state.noPromptTemplates && promptPaths.length === 0
-		? { prompts: [], diagnostics: [] }
-		: dedupePrompts(await loadPromptTemplatesAsync({ cwd: state.cwd, agentDir: state.agentDir, promptPaths, includeDefaults: false }));
+	const loadedPrompts = state.noPromptTemplates && promptPaths.length === 0
+		? []
+		: await loadPromptTemplatesAsync({ cwd: state.cwd, agentDir: state.agentDir, promptPaths, includeDefaults: false });
+	const sourcedPrompts = loadedPrompts.map((prompt) => ({
+		...prompt,
+		sourceInfo:
+			findSourceInfoForPath(loader, prompt.filePath, state.extensionPromptSourceInfos, metadataByPath) ??
+			prompt.sourceInfo ??
+			getDefaultSourceInfoForPath(loader, prompt.filePath),
+	}));
+	for (const prompt of sourcedPrompts) {
+		if (prompt.sourceInfo) state.extensionPromptSourceInfos.set(prompt.filePath, prompt.sourceInfo);
+	}
+	const promptsResult = dedupePrompts(sourcedPrompts);
+	const overlaps = state.extensionsResult.overlaps ??= [];
+	const extensionOverlaps = overlaps.filter((overlap) => overlap.resourceType !== "prompt");
+	overlaps.splice(0, overlaps.length, ...extensionOverlaps, ...promptsResult.overlaps);
 	applyPromptsResult(loader, promptsResult, metadataByPath);
 }
 
@@ -178,10 +192,26 @@ async function loadThemeFromFileAsync(filePath: string, themes: Theme[], diagnos
 	}
 }
 
-function dedupePrompts(prompts: PromptTemplate[]): { prompts: PromptTemplate[]; diagnostics: ResourceDiagnostic[] } {
+function dedupePrompts(prompts: PromptTemplate[]): {
+	prompts: PromptTemplate[];
+	diagnostics: ResourceDiagnostic[];
+	overlaps: ResourceOverlap[];
+} {
+	const bundledByName = new Map<string, PromptTemplate>();
+	for (const prompt of prompts) {
+		if (prompt.sourceInfo?.configurationOrigin === "bundled" && !bundledByName.has(prompt.name)) {
+			bundledByName.set(prompt.name, prompt);
+		}
+	}
 	const seen = new Map<string, PromptTemplate>();
 	const diagnostics: ResourceDiagnostic[] = [];
+	const overlaps: ResourceOverlap[] = [];
 	for (const prompt of prompts) {
+		const bundled = bundledByName.get(prompt.name);
+		if (prompt.sourceInfo?.configurationOrigin === "inherited-pi" && bundled?.sourceInfo) {
+			overlaps.push({ resourceType: "prompt", name: prompt.name, bundled: bundled.sourceInfo, inherited: prompt.sourceInfo });
+			continue;
+		}
 		const existing = seen.get(prompt.name);
 		if (existing) {
 			diagnostics.push({
@@ -194,7 +224,7 @@ function dedupePrompts(prompts: PromptTemplate[]): { prompts: PromptTemplate[]; 
 			seen.set(prompt.name, prompt);
 		}
 	}
-	return { prompts: Array.from(seen.values()), diagnostics };
+	return { prompts: Array.from(seen.values()), diagnostics, overlaps };
 }
 
 function dedupeThemes(themes: Theme[]): { themes: Theme[]; diagnostics: ResourceDiagnostic[] } {

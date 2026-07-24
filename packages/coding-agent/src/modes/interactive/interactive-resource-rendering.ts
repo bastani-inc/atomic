@@ -1,5 +1,91 @@
+import type { ResourceOverlap } from "../../core/diagnostics.ts";
+import { getInteractiveEngineResourceOverlaps } from "../interactive-engine/extension-ui-bridge.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { type Container, type ResourceDiagnostic, type SourceInfo, Spacer, Text, theme } from "./interactive-mode-deps.ts";
+
+function formatList(values: string[]): string {
+  if (values.length <= 1) return values[0] ?? "";
+  if (values.length === 2) return `${values[0]} and ${values[1]}`;
+  return `${values.slice(0, -1).join(", ")}, and ${values.at(-1)}`;
+}
+
+function getShortestUniqueSourceLabels(sources: string[], reservedLabels: ReadonlySet<string>): Map<string, string> {
+  const partsBySource = new Map(sources.map((source) => [
+    source,
+    source.replace(/\\/g, "/").split("/").filter(Boolean),
+  ]));
+  const depthBySource = new Map(sources.map((source) => [source, 1]));
+  while (true) {
+    const groups = new Map<string, string[]>();
+    for (const source of sources) {
+      const parts = partsBySource.get(source) ?? [source];
+      const depth = depthBySource.get(source) ?? 1;
+      const label = parts.slice(-depth).join("/") || source;
+      groups.set(label, [...(groups.get(label) ?? []), source]);
+    }
+    const duplicates = [...groups].filter(([label, group]) => group.length > 1 || reservedLabels.has(label));
+    if (duplicates.length === 0) {
+      return new Map(sources.map((source) => {
+        const parts = partsBySource.get(source) ?? [source];
+        return [source, parts.slice(-(depthBySource.get(source) ?? 1)).join("/") || source];
+      }));
+    }
+    let expanded = false;
+    for (const [, group] of duplicates) {
+      for (const source of group) {
+        const maxDepth = partsBySource.get(source)?.length ?? 1;
+        const depth = depthBySource.get(source) ?? 1;
+        if (depth < maxDepth) {
+          depthBySource.set(source, depth + 1);
+          expanded = true;
+        }
+      }
+    }
+    if (!expanded) return new Map(sources.map((source) => [source, source]));
+  }
+}
+
+function getExtensionIdentityPath(resourcePath: string): string {
+  const normalized = resourcePath.replace(/\\/g, "/");
+  const segments = normalized.split("/").filter(Boolean);
+  if (/^index\.[cm]?[jt]sx?$/.test(segments.at(-1) ?? "")) segments.pop();
+  return segments.join("/") || normalized;
+}
+
+function getOverlapLabels(mode: InteractiveModeBase, overlaps: readonly ResourceOverlap[]): string[] {
+  const labels = new Set<string>();
+  const localPackageSources = new Set<string>();
+  const extensionSources = new Set<string>();
+  for (const overlap of overlaps) {
+    const sourceInfo = overlap.inherited;
+    if (sourceInfo.origin !== "package") {
+      extensionSources.add(getExtensionIdentityPath(sourceInfo.path));
+      continue;
+    }
+    if (!mode.isPackageSource(sourceInfo)) {
+      localPackageSources.add(sourceInfo.source);
+      continue;
+    }
+    const label = mode.getCompactPackageSourceLabel(sourceInfo);
+    if (label) labels.add(label);
+  }
+  for (const label of getShortestUniqueSourceLabels([...localPackageSources], labels).values()) labels.add(label);
+  for (const label of getShortestUniqueSourceLabels([...extensionSources], labels).values()) labels.add(label);
+  return [...labels];
+}
+const displayedOverlapFingerprints = new WeakMap<InteractiveModeBase, string>();
+
+function shouldDisplayOverlapNotice(mode: InteractiveModeBase, overlaps: readonly ResourceOverlap[]): boolean {
+  if (overlaps.length === 0) return false;
+  const fingerprint = overlaps
+    .map((overlap) => `${overlap.resourceType}:${overlap.name}:${overlap.inherited.path}:${overlap.bundled.path}`)
+    .sort()
+    .join("\n");
+  if (displayedOverlapFingerprints.get(mode) === fingerprint) return false;
+  displayedOverlapFingerprints.set(mode, fingerprint);
+  return true;
+}
+
 
 InteractiveModeBase.prototype.showLoadedResources = function(this: InteractiveModeBase, options?: {
     extensions?: Array<{ path: string; sourceInfo?: SourceInfo }>;
@@ -192,6 +278,21 @@ InteractiveModeBase.prototype.showLoadedResources = function(this: InteractiveMo
     }
 
     if (showDiagnostics) {
+      const overlaps = [
+        ...(this.session.resourceLoader.getExtensions().overlaps ?? []),
+        ...getInteractiveEngineResourceOverlaps(this.runtimeHost),
+      ];
+      const overlapLabels = getOverlapLabels(this, overlaps);
+      if (shouldDisplayOverlapNotice(this, overlaps) && overlapLabels.length > 0) {
+        const sources = formatList(overlapLabels.map((label) => `\`${label}\``));
+        const verb = overlapLabels.length === 1 ? "provides" : "provide";
+        targetContainer.addChild(new Text(theme.fg(
+          "warning",
+          `Extension overlap detected: ${sources} ${verb} resources already bundled with Atomic. Atomic kept its bundled versions; non-conflicting extension features remain available.`,
+        ), 0, 0));
+        targetContainer.addChild(new Spacer(1));
+      }
+
       const skillDiagnostics = skillsResult.diagnostics;
       if (skillDiagnostics.length > 0) {
         const warningLines = this.formatDiagnostics(

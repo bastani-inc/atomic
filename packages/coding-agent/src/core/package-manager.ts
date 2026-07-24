@@ -66,6 +66,7 @@ export type {
 	ProgressEvent,
 	ResolvedPaths,
 	ResolvedResource,
+	ResourceConfigurationOrigin,
 	ResolveExtensionSourcesOptions,
 } from "./package-manager-types.ts";
 

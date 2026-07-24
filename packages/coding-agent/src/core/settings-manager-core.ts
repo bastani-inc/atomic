@@ -266,6 +266,10 @@ export class SettingsManager {
 		return structuredClone(this.projectSettings);
 	}
 
+	isFieldInherited(scope: SettingsScope, field: keyof Settings): boolean {
+		return this.storage.getFieldOrigin?.(scope, field) === "legacy";
+	}
+
 	isProjectTrusted(): boolean {
 		return this.projectTrusted;
 	}

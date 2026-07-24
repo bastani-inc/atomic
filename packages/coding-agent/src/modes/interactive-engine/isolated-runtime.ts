@@ -3,6 +3,7 @@ import type { AgentSession, AgentSessionEvent } from "../../core/agent-session.t
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../../core/agent-session-runtime.ts";
 import type { PromptOptions } from "../../core/agent-session-types.ts";
 import { SessionManager } from "../../core/session-manager.ts";
+import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import type { RpcClient } from "../rpc/rpc-client.ts";
 import type { RpcAutocompleteItem, RpcExtensionUIRequest, RpcExtensionUIResponse, RpcModelCatalog, RpcEvent, RpcSlashCommand } from "../rpc/rpc-types.ts";
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
@@ -30,6 +31,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private restartPromise: Promise<void> | undefined;
 	private readonly remoteCommands: RemoteCommandCatalog;
 	private readonly remoteModelCatalog: RemoteModelCatalog;
+	private resourceOverlaps: ResourceOverlap[] = [];
 
 	constructor(
 		localRuntime: AgentSessionRuntime,
@@ -65,6 +67,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		session.agent.steeringMode = state.steeringMode;
 		session.agent.followUpMode = state.followUpMode;
 		this.autoCompactionEnabled = state.autoCompactionEnabled;
+		this.resourceOverlaps = state.resourceOverlaps ?? [];
 		this.remoteSessionName = state.sessionName;
 		this.remoteSessionFile = state.sessionFile;
 		this.streaming = state.isStreaming;
@@ -116,10 +119,12 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	getEnginePid(): number | undefined { return this.client.getEnginePid(); }
 	getEngineGeneration(): number { return this.client.getGeneration(); }
 	isRecovering(): boolean { return this.restartPromise !== undefined; }
+	getResourceOverlaps(): readonly ResourceOverlap[] { return this.resourceOverlaps; }
 	async synchronize(): Promise<void> {
 		const state = await this.client.getState();
 		this.remoteSessionFile = state.sessionFile;
 		this.remoteSessionName = state.sessionName;
+		this.resourceOverlaps = state.resourceOverlaps ?? [];
 	}
 
 	setEngineCallbackActive(active: boolean): void { this.engineCallbackActive = active; }

@@ -14,9 +14,13 @@ export function applyExtensionSourceInfo(
 	metadataByPath: Map<string, PathMetadata>,
 ): void {
 	for (const extension of extensions) {
-		extension.sourceInfo =
+		const sourceInfo =
 			findSourceInfoForPath(loader, extension.path, undefined, metadataByPath) ??
 			getDefaultSourceInfoForPath(loader, extension.path);
+		extension.sourceInfo = {
+			...sourceInfo,
+			configurationOrigin: sourceInfo.configurationOrigin ?? extension.sourceInfo.configurationOrigin,
+		};
 		for (const command of extension.commands.values()) {
 			command.sourceInfo = extension.sourceInfo;
 		}

@@ -151,8 +151,11 @@ export interface SettingsManagerCreateOptions {
 	projectTrusted?: boolean;
 }
 
+export type SettingsFieldOrigin = "primary" | "legacy";
+
 export interface SettingsStorage {
 	withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void;
+	getFieldOrigin?(scope: SettingsScope, field: keyof Settings): SettingsFieldOrigin | undefined;
 }
 
 export interface SettingsError {

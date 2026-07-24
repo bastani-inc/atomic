@@ -17,6 +17,7 @@ import type {
 	ToolDefinition,
 	ToolInfo,
 } from "./extensions/index.ts";
+import type { PathMetadata } from "./package-manager.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
@@ -59,7 +60,7 @@ export interface ExtensionResourcePathEntry {
 
 export interface ExtensionResourcePathResult {
 	path: string;
-	metadata: { source: string; scope: "temporary"; origin: "top-level"; baseDir?: string };
+	metadata: PathMetadata;
 }
 
 export interface RuntimeBuildOptions {

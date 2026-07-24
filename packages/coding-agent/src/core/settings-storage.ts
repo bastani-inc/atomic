@@ -5,7 +5,7 @@ import { CONFIG_DIR_NAME } from "../config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { parseJsonFileContent } from "../utils/json.ts";
 import { deepMergeSettings } from "./settings-merge.ts";
-import type { Settings, SettingsScope, SettingsStorage } from "./settings-types.ts";
+import type { Settings, SettingsFieldOrigin, SettingsScope, SettingsStorage } from "./settings-types.ts";
 
 export class FileSettingsStorage implements SettingsStorage {
 	private globalSettingsPath: string;
@@ -20,6 +20,22 @@ export class FileSettingsStorage implements SettingsStorage {
 		this.projectSettingsPath = join(resolvedCwd, CONFIG_DIR_NAME, "settings.json");
 		this.globalReadPaths = (options?.globalReadPaths ?? [this.globalSettingsPath]).map((path) => normalizePath(path));
 		this.projectReadPaths = (options?.projectReadPaths ?? [this.projectSettingsPath]).map((path) => normalizePath(path));
+	}
+
+	getFieldOrigin(scope: SettingsScope, field: keyof Settings): SettingsFieldOrigin | undefined {
+		const readPaths = scope === "global" ? this.globalReadPaths : this.projectReadPaths;
+		for (const [index, readPath] of readPaths.entries()) {
+			if (!existsSync(readPath)) continue;
+			try {
+				const parsed = parseJsonFileContent(readFileSync(readPath, "utf-8")) as Settings;
+				if (Object.prototype.hasOwnProperty.call(parsed, field)) {
+					return index === 0 ? "primary" : "legacy";
+				}
+			} catch {
+				return undefined;
+			}
+		}
+		return undefined;
 	}
 
 	private acquireLockSyncWithRetry(path: string): () => void {
@@ -110,5 +126,11 @@ export class InMemorySettingsStorage implements SettingsStorage {
 				this.project = next;
 			}
 		}
+	}
+
+	getFieldOrigin(scope: SettingsScope, field: keyof Settings): SettingsFieldOrigin | undefined {
+		const raw = scope === "global" ? this.global : this.project;
+		const settings = JSON.parse(raw ?? "{}") as Settings;
+		return Object.prototype.hasOwnProperty.call(settings, field) ? "primary" : undefined;
 	}
 }

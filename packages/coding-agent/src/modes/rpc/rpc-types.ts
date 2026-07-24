@@ -13,6 +13,7 @@ import type { BashResult } from "../../core/bash-executor.ts";
 import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
+import type { ResourceOverlap } from "../../core/diagnostics.ts";
 
 // ============================================================================
 // RPC Commands (stdin)
@@ -153,6 +154,7 @@ export interface RpcSessionState {
 	autoCompactionEnabled: boolean;
 	messageCount: number;
 	pendingMessageCount: number;
+	resourceOverlaps?: ResourceOverlap[];
 }
 
 export interface RpcContextWindowInfo {

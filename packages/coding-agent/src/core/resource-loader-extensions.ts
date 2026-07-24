@@ -1,6 +1,8 @@
+import type { KeyId } from "@earendil-works/pi-tui";
 import { resolvePath } from "../utils/paths.ts";
 import { yieldToEventLoop } from "../utils/event-loop.ts";
 import { startTimingSpan, endTimingSpan } from "./timings.ts";
+import type { OverlappingResourceType } from "./diagnostics.ts";
 import {
 	loadExtensionFromFactory,
 	loadExtensionsCached,
@@ -44,7 +46,6 @@ export async function loadFinalExtensionSet(
 		endTimingSpan(inlineExtensionsSpan);
 		extensionsResult.extensions.push(...inlineExtensions.extensions);
 		extensionsResult.errors.push(...inlineExtensions.errors);
-		addExtensionConflictDiagnostics(extensionsResult);
 		return extensionsResult;
 	}
 
@@ -86,7 +87,6 @@ export async function loadFinalExtensionSet(
 		errors: [...preTrustExtensions.errors, ...remainingExtensions.errors],
 		runtime: preTrustExtensions.runtime,
 	};
-	addExtensionConflictDiagnostics(extensionsResult);
 	return extensionsResult;
 }
 
@@ -121,6 +121,7 @@ export async function loadExtensionFactories(
 				inheritanceSnapshotProvider,
 			);
 			extension.hidden = descriptor?.hidden;
+			if (descriptor?.bundled) extension.sourceInfo.configurationOrigin = "bundled";
 			extensions.push(extension);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "failed to load extension";
@@ -131,12 +132,136 @@ export async function loadExtensionFactories(
 	return { extensions, errors };
 }
 
-function addExtensionConflictDiagnostics(extensionsResult: LoadExtensionsResult): void {
-	// Detect extension conflicts (tools, commands, flags with same names from different extensions)
-	// Keep all extensions loaded. Conflicts are reported as diagnostics, and precedence is handled by load order.
-	const conflicts = detectExtensionConflicts(extensionsResult.extensions);
-	for (const conflict of conflicts) {
+export function resolveInheritedExtensionOverlaps(extensionsResult: LoadExtensionsResult): void {
+	extensionsResult.overlaps = [];
+	removeInheritedRegistrations("tool", extensionsResult, (extension) => extension.tools);
+	removeInheritedRegistrations("command", extensionsResult, (extension) => extension.commands);
+	removeInheritedRegistrations("flag", extensionsResult, (extension) => extension.flags);
+	removeInheritedRegistrations("shortcut", extensionsResult, (extension) => extension.shortcuts);
+	installRegistrationPolicy(extensionsResult);
+	rebuildFlagDefaults(extensionsResult);
+
+	for (const conflict of detectExtensionConflicts(extensionsResult.extensions)) {
 		extensionsResult.errors.push({ path: conflict.path, error: conflict.message });
+	}
+}
+
+function removeInheritedRegistrations<K extends string, V>(
+	resourceType: OverlappingResourceType,
+	extensionsResult: LoadExtensionsResult,
+	getRegistrations: (extension: Extension) => Map<K, V>,
+): void {
+	const bundledOwners = new Map<K, Extension>();
+	for (const extension of extensionsResult.extensions) {
+		if (extension.sourceInfo.configurationOrigin !== "bundled") continue;
+		for (const name of getRegistrations(extension).keys()) {
+			if (!bundledOwners.has(name)) bundledOwners.set(name, extension);
+		}
+	}
+	for (const extension of extensionsResult.extensions) {
+		if (extension.sourceInfo.configurationOrigin !== "inherited-pi") continue;
+		const registrations = getRegistrations(extension);
+		for (const name of [...registrations.keys()]) {
+			const bundledOwner = bundledOwners.get(name);
+			if (!bundledOwner) continue;
+			registrations.delete(name);
+			recordOverlap(extensionsResult, resourceType, name, bundledOwner, extension);
+		}
+	}
+}
+
+function installRegistrationPolicy(extensionsResult: LoadExtensionsResult): void {
+	const flagOwners = extensionsResult.runtime.flagOwners ??= new Map();
+	const flagOwnerOrigins = extensionsResult.runtime.flagOwnerOrigins ??= new Map();
+	extensionsResult.runtime.canRegisterResource = (extension, resourceType, name) => {
+		if (resourceType === "prompt") return true;
+		if (extension.sourceInfo.configurationOrigin === "inherited-pi") {
+			const bundledOwner = extensionsResult.extensions.find((candidate) =>
+				candidate.sourceInfo.configurationOrigin === "bundled"
+				&& hasActiveOrPendingRegistration(extensionsResult.runtime, candidate, resourceType, name));
+			if (!bundledOwner) return true;
+			recordOverlap(extensionsResult, resourceType, name, bundledOwner, extension);
+			return false;
+		}
+		const isBundled = extension.sourceInfo.configurationOrigin === "bundled";
+		for (const inherited of extensionsResult.extensions) {
+			if (inherited.sourceInfo.configurationOrigin !== "inherited-pi"
+				|| !hasActiveOrPendingRegistration(extensionsResult.runtime, inherited, resourceType, name)) continue;
+			if (resourceType === "flag" && flagOwners.get(name) === inherited.path) {
+				flagOwners.delete(name);
+				flagOwnerOrigins.delete(name);
+				if (!extensionsResult.runtime.explicitFlagNames?.has(name)) extensionsResult.runtime.flagValues.delete(name);
+			}
+			deleteRegistration(extensionsResult.runtime, inherited, resourceType, name);
+			if (isBundled) recordOverlap(extensionsResult, resourceType, name, extension, inherited);
+		}
+		return true;
+	};
+}
+
+function hasActiveOrPendingRegistration(
+	runtime: ExtensionRuntime,
+	extension: Extension,
+	resourceType: Exclude<OverlappingResourceType, "prompt">,
+	name: string,
+): boolean {
+	return hasRegistration(extension, resourceType, name)
+		|| runtime.hasPendingResourceRegistration?.(extension, resourceType, name) === true;
+}
+
+function hasRegistration(extension: Extension, resourceType: Exclude<OverlappingResourceType, "prompt">, name: string): boolean {
+	switch (resourceType) {
+		case "tool": return extension.tools.has(name);
+		case "command": return extension.commands.has(name);
+		case "flag": return extension.flags.has(name);
+		case "shortcut": return extension.shortcuts.has(name as KeyId);
+	}
+}
+
+function deleteRegistration(
+	runtime: ExtensionRuntime,
+	extension: Extension,
+	resourceType: Exclude<OverlappingResourceType, "prompt">,
+	name: string,
+): void {
+	runtime.deletePendingResourceRegistration?.(extension, resourceType, name);
+	switch (resourceType) {
+		case "tool": extension.tools.delete(name); break;
+		case "command": extension.commands.delete(name); break;
+		case "flag": extension.flags.delete(name); break;
+		case "shortcut": extension.shortcuts.delete(name as KeyId); break;
+	}
+}
+
+function recordOverlap(
+	extensionsResult: LoadExtensionsResult,
+	resourceType: OverlappingResourceType,
+	name: string,
+	bundled: Extension,
+	inherited: Extension,
+): void {
+	const overlaps = extensionsResult.overlaps ??= [];
+	if (overlaps.some((overlap) => overlap.resourceType === resourceType && overlap.name === name && overlap.inherited.path === inherited.sourceInfo.path)) return;
+	overlaps.push({ resourceType, name, bundled: bundled.sourceInfo, inherited: inherited.sourceInfo });
+}
+
+function rebuildFlagDefaults(extensionsResult: LoadExtensionsResult): void {
+	extensionsResult.runtime.flagValues.clear();
+	const flagOwners = extensionsResult.runtime.flagOwners ??= new Map();
+	const flagOwnerOrigins = extensionsResult.runtime.flagOwnerOrigins ??= new Map();
+	flagOwners.clear();
+	flagOwnerOrigins.clear();
+	for (const extension of extensionsResult.extensions) {
+		for (const [name, flag] of extension.flags) {
+			if (!flagOwners.has(name)) {
+				flagOwners.set(name, extension.path);
+				flagOwnerOrigins.set(name, extension.sourceInfo.configurationOrigin);
+			}
+			if (flagOwnerOrigins.get(name) === extension.sourceInfo.configurationOrigin
+				&& flag.default !== undefined && !extensionsResult.runtime.flagValues.has(name)) {
+				extensionsResult.runtime.flagValues.set(name, flag.default);
+			}
+		}
 	}
 }
 

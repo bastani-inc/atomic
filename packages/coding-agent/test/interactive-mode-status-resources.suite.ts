@@ -445,4 +445,47 @@ describe("InteractiveMode.showLoadedResources", () => {
 		expect(output).toContain("[Skill conflicts]");
 		expect(output).not.toContain("[Skills]");
 	});
+
+	test("shows one consolidated overlap notice derived from inherited source metadata", () => {
+		const inherited = {
+			...createSourceInfo("/tmp/pi-subagents/extensions/index.ts", {
+				source: "npm:pi-subagents",
+				scope: "user",
+				origin: "package",
+			}),
+			configurationOrigin: "inherited-pi" as const,
+		};
+		const bundled = {
+			...createSourceInfo("/tmp/atomic-subagents/index.ts", {
+				source: "@bastani/subagents",
+				scope: "temporary",
+				origin: "package",
+			}),
+			configurationOrigin: "bundled" as const,
+		};
+		const fakeThis = createShowLoadedResourcesThis({
+			quietStartup: true,
+			overlaps: [
+				{ resourceType: "tool", name: "subagent", inherited, bundled },
+				{ resourceType: "command", name: "agents", inherited, bundled },
+			],
+		});
+
+		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, {
+			force: false,
+			showDiagnosticsWhenQuiet: true,
+		});
+		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, {
+			force: false,
+			showDiagnosticsWhenQuiet: true,
+		});
+
+		const output = normalizeRenderedOutput(fakeThis.chatContainer);
+		const noticePrefix = "Extension overlap detected:";
+		expect(output.split(noticePrefix)).toHaveLength(2);
+		expect(output).toContain("`pi-subagents` provides resources already bundled with Atomic.");
+		expect(output).toContain("Atomic kept its bundled versions; non-conflicting extension features remain available.");
+		expect(output).not.toContain("[Prompt conflicts]");
+		expect(output).not.toContain("[Extension issues]");
+	});
 });

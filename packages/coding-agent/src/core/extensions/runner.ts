@@ -16,6 +16,7 @@ import {
 	createExtensionContext,
 	type ExtensionCommandContextSource,
 } from "./runner-context.ts";
+import { runResourceRegistrationBatch } from "./loader-runtime.ts";
 import {
 	runBeforeAgentStartHandlers,
 	runBeforeProviderRequestHandlers,
@@ -288,10 +289,16 @@ export class ExtensionRunner {
 
 	setFlagValue(name: string, value: boolean | string): void {
 		this.runtime.flagValues.set(name, value);
+		(this.runtime.explicitFlagNames ??= new Set()).add(name);
 	}
 
 	getFlagValues(): Map<string, boolean | string> {
 		return new Map(this.runtime.flagValues);
+	}
+
+	getExplicitFlagValues(): Map<string, boolean | string> {
+		const explicitFlagNames = this.runtime.explicitFlagNames ?? new Set<string>();
+		return new Map([...this.runtime.flagValues].filter(([name]) => explicitFlagNames.has(name)));
 	}
 
 	getShortcuts(resolvedKeybindings: KeybindingsConfig): Map<KeyId, ExtensionShortcut> {
@@ -401,47 +408,55 @@ export class ExtensionRunner {
 		};
 	}
 
+
 	async emit<TEvent extends RunnerEmitEvent>(event: TEvent): Promise<RunnerEmitResult<TEvent>> {
-		return runGenericHandlers(this.extensions, this.createContext(), event, (error) => this.emitError(error));
+		return runResourceRegistrationBatch(this.runtime, () =>
+			runGenericHandlers(this.extensions, this.createContext(), event, (error) => this.emitError(error)));
 	}
 
 	async emitMessageEnd(event: MessageEndEvent): Promise<AgentMessage | undefined> {
-		return runMessageEndHandlers(this.extensions, this.createContext(), event, (error) => this.emitError(error));
+		return runResourceRegistrationBatch(this.runtime, () =>
+			runMessageEndHandlers(this.extensions, this.createContext(), event, (error) => this.emitError(error)));
 	}
 
 	async emitToolResult(event: ToolResultEvent): Promise<ToolResultEventResult | undefined> {
-		return runToolResultHandlers(this.extensions, this.createContext(), event, (error) => this.emitError(error));
+		return runResourceRegistrationBatch(this.runtime, () =>
+			runToolResultHandlers(this.extensions, this.createContext(), event, (error) => this.emitError(error)));
 	}
 
 	async emitToolCall(event: ToolCallEvent): Promise<ToolCallEventResult | undefined> {
-		return runToolCallHandlers(this.extensions, this.createContext(), event);
+		return runResourceRegistrationBatch(this.runtime, () => runToolCallHandlers(this.extensions, this.createContext(), event));
 	}
 
 	async emitUserBash(event: UserBashEvent): Promise<UserBashEventResult | undefined> {
-		return runUserBashHandlers(this.extensions, this.createContext(), event, (error) => this.emitError(error));
+		return runResourceRegistrationBatch(this.runtime, () =>
+			runUserBashHandlers(this.extensions, this.createContext(), event, (error) => this.emitError(error)));
 	}
 
 	async emitContext(messages: AgentMessage[]): Promise<AgentMessage[]> {
-		return runContextHandlers(this.extensions, this.createContext(), messages, (error) => this.emitError(error));
+		return runResourceRegistrationBatch(this.runtime, () =>
+			runContextHandlers(this.extensions, this.createContext(), messages, (error) => this.emitError(error)));
 	}
 
 	emitBeforeProviderRequest(payload: unknown): Promise<unknown> {
-		return runBeforeProviderRequestHandlers(this.extensions, this.createContext(), payload, (error) =>
-			this.emitError(error),
-		);
+		return runResourceRegistrationBatch(this.runtime, () =>
+			runBeforeProviderRequestHandlers(this.extensions, this.createContext(), payload, (error) =>
+				this.emitError(error)));
 	}
 
 	async emitBeforeProviderHeaders(headers: ProviderHeaders): Promise<ProviderHeaders> {
-		for (const extension of this.extensions) {
-			for (const handler of extension.handlers.get("before_provider_headers") ?? []) {
-				try {
-					await handler({ type: "before_provider_headers", headers }, this.createContext());
-				} catch (error) {
-					this.emitError({ extensionPath: extension.path, event: "before_provider_headers", error: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined });
+		return runResourceRegistrationBatch(this.runtime, async () => {
+			for (const extension of this.extensions) {
+				for (const handler of extension.handlers.get("before_provider_headers") ?? []) {
+					try {
+						await handler({ type: "before_provider_headers", headers }, this.createContext());
+					} catch (error) {
+						this.emitError({ extensionPath: extension.path, event: "before_provider_headers", error: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined });
+					}
 				}
 			}
-		}
-		return headers;
+			return headers;
+		});
 	}
 
 	emitBeforeAgentStart(
@@ -450,7 +465,7 @@ export class ExtensionRunner {
 		systemPrompt: string,
 		systemPromptOptions: BuildSystemPromptOptions,
 	): Promise<BeforeAgentStartCombinedResult | undefined> {
-		return runBeforeAgentStartHandlers(
+		return runResourceRegistrationBatch(this.runtime, () => runBeforeAgentStartHandlers(
 			this.extensions,
 			this.createContext(),
 			() => this.assertActive(),
@@ -459,16 +474,16 @@ export class ExtensionRunner {
 			systemPrompt,
 			systemPromptOptions,
 			(error) => this.emitError(error),
-		);
+		));
 	}
 
 	emitResourcesDiscover(
 		cwd: string,
 		reason: ResourcesDiscoverEvent["reason"],
 	): Promise<ResourcesDiscoverCombinedResult> {
-		return runResourcesDiscoverHandlers(this.extensions, this.createContext(), cwd, reason, (error) =>
-			this.emitError(error),
-		);
+		return runResourceRegistrationBatch(this.runtime, () =>
+			runResourcesDiscoverHandlers(this.extensions, this.createContext(), cwd, reason, (error) =>
+				this.emitError(error)));
 	}
 
 	/** Emit input event. Transforms chain, "handled" short-circuits. */
@@ -478,8 +493,8 @@ export class ExtensionRunner {
 		source: InputSource,
 		streamingBehavior?: "steer" | "followUp",
 	): Promise<InputEventResult> {
-		return runInputHandlers(this.extensions, this.createContext(), text, images, source, streamingBehavior, (error) =>
-			this.emitError(error),
-		);
+		return runResourceRegistrationBatch(this.runtime, () =>
+			runInputHandlers(this.extensions, this.createContext(), text, images, source, streamingBehavior, (error) =>
+				this.emitError(error)));
 	}
 }

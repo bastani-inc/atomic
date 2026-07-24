@@ -47,20 +47,20 @@ export function createExtensionAPI(
 
     registerTool(tool: ToolDefinition): void {
       runtime.assertActive();
-      extension.tools.set(tool.name, {
-        definition: tool,
-        sourceInfo: extension.sourceInfo,
-      });
-      runtime.refreshTools();
+      if (runtime.canRegisterResource?.(extension, "tool", tool.name) === false) return;
+      const registration = { definition: tool, sourceInfo: extension.sourceInfo };
+      if (runtime.stageToolRegistration?.(extension, tool.name, registration)) return;
+      extension.tools.set(tool.name, registration);
+      if (runtime.refreshToolsAfterRegistration) runtime.refreshToolsAfterRegistration();
+      else runtime.refreshTools();
     },
 
     registerCommand(name: string, options: Omit<RegisteredCommand, "name" | "sourceInfo">): void {
       runtime.assertActive();
-      extension.commands.set(name, {
-        name,
-        sourceInfo: extension.sourceInfo,
-        ...options,
-      });
+      if (runtime.canRegisterResource?.(extension, "command", name) === false) return;
+      const registration = { name, sourceInfo: extension.sourceInfo, ...options };
+      if (runtime.stageCommandRegistration?.(extension, name, registration)) return;
+      extension.commands.set(name, registration);
     },
 
     registerShortcut(
@@ -71,11 +71,10 @@ export function createExtensionAPI(
       },
     ): void {
       runtime.assertActive();
-      extension.shortcuts.set(shortcut, {
-        shortcut,
-        extensionPath: extension.path,
-        ...options,
-      });
+      if (runtime.canRegisterResource?.(extension, "shortcut", shortcut) === false) return;
+      const registration = { shortcut, extensionPath: extension.path, ...options };
+      if (runtime.stageShortcutRegistration?.(extension, shortcut, registration)) return;
+      extension.shortcuts.set(shortcut, registration);
     },
 
     registerFlag(
@@ -87,13 +86,27 @@ export function createExtensionAPI(
       },
     ): void {
       runtime.assertActive();
-      extension.flags.set(name, {
-        name,
-        extensionPath: extension.path,
-        ...options,
-      });
+      if (runtime.canRegisterResource?.(extension, "flag", name) === false) return;
+      const registration = { name, extensionPath: extension.path, ...options };
+      if (runtime.stageFlagRegistration?.(extension, name, registration, options.default)) return;
+      extension.flags.set(name, registration);
+      const flagOwners = runtime.flagOwners ??= new Map();
+      const flagOwnerOrigins = runtime.flagOwnerOrigins ??= new Map();
+      if (!flagOwners.has(name)) {
+        flagOwners.set(name, extension.path);
+        flagOwnerOrigins.set(name, extension.sourceInfo.configurationOrigin);
+      }
       if (options.default !== undefined && !runtime.flagValues.has(name)) {
-        runtime.flagValues.set(name, options.default);
+        if (runtime.applyFlagDefaultAfterRegistration) {
+          runtime.applyFlagDefaultAfterRegistration(
+            name,
+            extension.path,
+            options.default,
+            extension.sourceInfo.configurationOrigin,
+          );
+        } else {
+          runtime.flagValues.set(name, options.default);
+        }
       }
     },
 
@@ -109,8 +122,9 @@ export function createExtensionAPI(
 
     getFlag(name: string): boolean | string | undefined {
       runtime.assertActive();
-      if (!extension.flags.has(name)) return undefined;
-      return runtime.flagValues.get(name);
+      const pendingDefault = runtime.getPendingFlagDefault?.(extension.path, name);
+      if (!extension.flags.has(name) && pendingDefault === undefined) return undefined;
+      return runtime.flagValues.get(name) ?? pendingDefault;
     },
 
     getWorkflowResources() {
@@ -171,22 +185,22 @@ export function createExtensionAPI(
 
     getActiveTools(): string[] {
       runtime.assertActive();
-      return runtime.getActiveTools();
+      return runtime.getActiveToolsAfterRegistration?.(extension) ?? runtime.getActiveTools();
     },
 
     getAllTools() {
       runtime.assertActive();
-      return runtime.getAllTools();
+      return runtime.getAllToolsAfterRegistration?.(extension) ?? runtime.getAllTools();
     },
 
     setActiveTools(toolNames: string[]): void {
       runtime.assertActive();
-      runtime.setActiveTools(toolNames);
+      if (!runtime.setActiveToolsAfterRegistration?.(extension, toolNames)) runtime.setActiveTools(toolNames);
     },
 
     getCommands() {
       runtime.assertActive();
-      return runtime.getCommands();
+      return runtime.getCommandsAfterRegistration?.(extension) ?? runtime.getCommands();
     },
 
     setModel(model) {

@@ -36,11 +36,24 @@ export async function resolvePackageResourcePaths(
 			options.trustedBorrowedProjectLocalSources,
 		);
 	}
-	const builtinPackagePaths =
-		state.builtinPackagePaths.length > 0
-			? await state.packageManager.resolveExtensionSources(state.builtinPackagePaths, { temporary: true })
-			: emptyResolvedPaths();
+	const builtinPackagePaths = state.builtinPackagePaths.length > 0
+		? markBundledResources(await state.packageManager.resolveExtensionSources(state.builtinPackagePaths, { temporary: true }))
+		: emptyResolvedPaths();
 	return { resolvedPaths, cliExtensionPaths, builtinPackagePaths };
+}
+
+function markBundledResources(paths: ResolvedPaths): ResolvedPaths {
+	const mark = (resources: ResolvedResource[]): ResolvedResource[] => resources.map((resource) => ({
+		...resource,
+		metadata: { ...resource.metadata, configurationOrigin: "bundled" },
+	}));
+	return {
+		extensions: mark(paths.extensions),
+		skills: mark(paths.skills),
+		prompts: mark(paths.prompts),
+		themes: mark(paths.themes),
+		workflows: mark(paths.workflows),
+	};
 }
 
 export async function resolveTrustedBorrowedProjectLocalSources(

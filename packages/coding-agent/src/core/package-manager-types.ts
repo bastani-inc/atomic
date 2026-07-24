@@ -1,11 +1,14 @@
 import type { GitSource } from "../utils/git.ts";
 import type { PackageSource, SettingsManager } from "./settings-manager.ts";
 
+export type ResourceConfigurationOrigin = "atomic" | "inherited-pi" | "bundled";
+
 export interface PathMetadata {
 	source: string;
 	scope: SourceScope;
 	origin: "package" | "top-level";
 	baseDir?: string;
+	configurationOrigin?: ResourceConfigurationOrigin;
 	/** True for project-local resources borrowed from an explicit temporary extension source. */
 	borrowedProjectLocal?: true;
 }
