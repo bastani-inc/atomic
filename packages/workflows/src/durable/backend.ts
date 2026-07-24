@@ -59,6 +59,8 @@ export interface DurableWorkflowBackend {
    * effects on resume.
    */
   getToolOutput(workflowId: string, argsHash: string): WorkflowSerializableValue | undefined;
+  /** Return the full cached tool checkpoint so graph topology can be replayed. */
+  getToolCheckpoint(workflowId: string, argsHash: string): DurableToolCheckpoint | undefined;
 
   /**
    * Look up a cached UI response by prompt hash. Returns `undefined` if the
@@ -199,9 +201,14 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
     const key = checkpointKey(currentCheckpoint);
     if (rec.checkpoints.has(key)) return;
     rec.checkpoints.set(key, currentCheckpoint);
-    if (currentCheckpoint.kind === "tool") rec.toolByHash.set(currentCheckpoint.argsHash, currentCheckpoint);
-    else if (currentCheckpoint.kind === "ui") rec.uiByHash.set(currentCheckpoint.promptHash, currentCheckpoint);
-    else {
+    if (currentCheckpoint.kind === "tool") {
+      const existing = rec.toolByHash.get(currentCheckpoint.argsHash);
+      if (existing === undefined || currentCheckpoint.completedAt >= existing.completedAt) {
+        rec.toolByHash.set(currentCheckpoint.argsHash, currentCheckpoint);
+      }
+    } else if (currentCheckpoint.kind === "ui") {
+      rec.uiByHash.set(currentCheckpoint.promptHash, currentCheckpoint);
+    } else {
       if ("output" in currentCheckpoint) rec.stageOutputByReplayKey.set(currentCheckpoint.replayKey, currentCheckpoint);
       if (currentCheckpoint.sessionId !== undefined || currentCheckpoint.sessionFile !== undefined) {
         const existing = rec.stageSessionByReplayKey.get(currentCheckpoint.replayKey);
@@ -221,6 +228,10 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 
   getToolOutput(workflowId: string, argsHash: string): WorkflowSerializableValue | undefined {
     return this.workflows.get(workflowId)?.toolByHash.get(argsHash)?.output;
+  }
+
+  getToolCheckpoint(workflowId: string, argsHash: string): DurableToolCheckpoint | undefined {
+    return this.workflows.get(workflowId)?.toolByHash.get(argsHash);
   }
 
   getUiResponse(workflowId: string, promptHash: string): WorkflowSerializableValue | undefined {

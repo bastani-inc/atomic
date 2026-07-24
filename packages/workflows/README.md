@@ -64,7 +64,9 @@ When a stage human-in-the-loop prompt is answered from the workflow TUI/stage ch
 
 ### Workflow-owned side effects
 
-Prefer `ctx.tool(name, args, fn)` for workflow-owned TypeScript operations with side effects, including filesystem writes, network mutations, external API actions, and similar deterministic operations orchestrated directly by the workflow definition. Atomic durably caches a completed call's serializable result, so resume returns that result without rerunning `fn` or repeating the side effect. Keep pure computation and side-effect-free transformations as ordinary TypeScript. Do not wrap agent-stage internals or every function call indiscriminately.
+Prefer `ctx.tool(name, args, fn)` for workflow-owned TypeScript operations with side effects, including filesystem writes, network mutations, external API actions, and similar deterministic operations orchestrated directly by the workflow definition. Each invocation creates a non-chat, non-attachable durable graph node before `fn` runs; it may appear before, between, after, or without model stages. Atomic durably caches a completed call's serializable result, so resume returns that result without rerunning `fn` or repeating the side effect. Tool-only workflows are valid tracked execution, while a normal return with no stage, child, tool, or explicit exit remains invalid. Keep pure computation and side-effect-free transformations as ordinary TypeScript. Do not wrap agent-stage internals or every function call indiscriminately.
+
+New tool checkpoints retain stable graph identity, invocation order, parents, and timing. A current-format checkpoint created before tool topology was added still replays safely: its cached output remains authoritative, the callback is never rerun, and inspection derives a deterministic root-level node/order from checkpoint identity and checkpoint order. Fresh completed inspection reconstructs tool topology but does not persist a workflow's declared root output; that existing limitation is separate from live `run()` output and graph correctness.
 
 ### Example 1 — Single task
 

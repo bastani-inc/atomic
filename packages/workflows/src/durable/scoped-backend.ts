@@ -73,6 +73,10 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
     return this.inner.getToolOutput(this.scope.rootWorkflowId, this.scopeKey(argsHash));
   }
 
+  getToolCheckpoint(_workflowId: string, argsHash: string) {
+    return this.inner.getToolCheckpoint(this.scope.rootWorkflowId, this.scopeKey(argsHash));
+  }
+
   getUiResponse(_workflowId: string, promptHash: string): WorkflowSerializableValue | undefined {
     return this.inner.getUiResponse(this.scope.rootWorkflowId, this.scopeKey(promptHash));
   }

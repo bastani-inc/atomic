@@ -78,12 +78,15 @@ export function openCompletedDurableWorkflow(
     deps.store.recordRunStart(restored);
     registerCompletedChatHandles(restored, deps);
   }
+  const hasReopenableStage = snapshots.some((run) =>
+    run.stages.some((stage) => stage.sessionFile !== undefined)
+  );
   return {
     ok: true,
     runId: snapshot.id,
     workflowId: snapshot.id,
     name: snapshot.name,
-    message: `Opened completed durable workflow "${snapshot.name}" (${snapshot.id.slice(0, 8)}) for read-only inspection and follow-up chat.`,
+    message: `Opened completed durable workflow "${snapshot.name}" (${snapshot.id.slice(0, 8)}) for read-only inspection${hasReopenableStage ? " and follow-up chat" : ""}.`,
   };
 }
 

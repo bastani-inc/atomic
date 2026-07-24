@@ -77,6 +77,20 @@ export type DurableCheckpoint = DurableToolCheckpoint | DurableUiCheckpoint | Du
 
 export type DurableCheckpointKind = "tool" | "ui" | "stage";
 
+export const DURABLE_TOOL_TOPOLOGY_VERSION = 1 as const;
+
+export interface DurableToolTopology {
+  readonly version: typeof DURABLE_TOOL_TOPOLOGY_VERSION;
+  readonly nodeId: string;
+  readonly ordinal: number;
+  readonly order: number;
+  readonly parentIds: readonly string[];
+  readonly startedAt?: number;
+  /** Original terminal timestamp; replay metadata may be written later. */
+  readonly endedAt?: number;
+  readonly run?: DurableStageRunTopology;
+}
+
 /** A `ctx.tool(...)` result cached durably. */
 export interface DurableToolCheckpoint {
   readonly kind: "tool";
@@ -90,6 +104,8 @@ export interface DurableToolCheckpoint {
   /** Cached tool output (JSON-serializable). */
   readonly output: WorkflowSerializableValue;
   readonly completedAt: number;
+  /** Additive graph topology; omitted by pre-#1991 checkpoints. */
+  readonly topology?: DurableToolTopology;
 }
 
 /** A `ctx.ui.*` user response cached durably. */
@@ -124,6 +140,8 @@ export interface DurableStageTopology {
   readonly version: typeof DURABLE_STAGE_TOPOLOGY_VERSION;
   readonly stageId: string;
   readonly parentIds: readonly string[];
+  /** Shared admission order with durable tool nodes. */
+  readonly order?: number;
   /** Owning run and boundary linkage for nested workflow graph reconstruction. */
   readonly run?: DurableStageRunTopology;
 }

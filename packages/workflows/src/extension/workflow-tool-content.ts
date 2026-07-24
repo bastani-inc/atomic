@@ -50,6 +50,10 @@ function statusRunHint(run: WorkflowRunStatusSummary): string | undefined {
   if (run.activeStages.length > 0) {
     return `stage: ${run.activeStages.map((stage) => stage.name).join(", ")}`;
   }
+  const tools = run.tools ?? [];
+  if (tools.length > 0) {
+    return `tools: ${tools.map((tool) => `${tool.name} (${tool.status})`).join(", ")}`;
+  }
   if (run.error !== undefined && run.error.length > 0) return truncateStatusText(run.error);
   if (run.exitReason !== undefined && run.exitReason.length > 0) {
     return truncateStatusText(run.exitReason);

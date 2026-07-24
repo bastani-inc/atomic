@@ -16,6 +16,30 @@ export type StageStatus =
   | "failed"
   | "skipped";
 
+export type ToolNodeStatus = "pending" | "running" | "completed" | "failed" | "cached" | "cancelled";
+
+/** First-class, durable graph node created for each ctx.tool invocation. */
+export interface ToolNodeSnapshot {
+  readonly kind: "tool";
+  readonly id: string;
+  readonly name: string;
+  readonly argsHash: string;
+  readonly ordinal: number;
+  readonly parentIds: readonly string[];
+  status: ToolNodeStatus;
+  /** Set when a legacy checkpoint lacks persisted topology. */
+  topologyState?: "unavailable";
+  /** True when the callback was skipped in favor of a durable checkpoint. */
+  replayed?: boolean;
+  /** Shared admission order with stages in this run. */
+  executionOrder?: number;
+  startedAt?: number;
+  endedAt?: number;
+  resultSummary?: string;
+  error?: string;
+  readonly attachable: false;
+}
+
 export type WorkflowFailureKind = "auth" | "rate_limit" | "provider" | "cancelled" | "unknown";
 export type WorkflowFailureRecoverability = "recoverable" | "non_recoverable" | "unknown";
 export type WorkflowFailureDisposition = "active_blocked" | "terminal_killed" | "terminal_failed";
@@ -142,6 +166,12 @@ export interface StageSnapshot {
    * refreshes parents, so do not cache this reference across store updates.
    */
   parentIds: readonly string[];
+  /** Shared admission order with tool nodes in this run. */
+  executionOrder?: number;
+  /** View-only graph discriminator; authored stages omit this or use "stage". */
+  nodeKind?: "stage" | "tool";
+  /** Original tool state when a tool node is projected into stage-compatible graph rendering. */
+  toolStatus?: ToolNodeStatus;
   /** Set when durable inspection cannot safely determine the original stage lineage. */
   topologyState?: "unavailable";
   startedAt?: number;
@@ -237,6 +267,8 @@ export interface RunSnapshot {
   readonly inputs: Readonly<WorkflowInputValues>;
   status: RunStatus;
   readonly stages: StageSnapshot[];
+  /** Durable ctx.tool execution nodes. Optional only for legacy/restored snapshots. */
+  readonly toolNodes?: ToolNodeSnapshot[];
   startedAt: number;
   endedAt?: number;
   durationMs?: number;

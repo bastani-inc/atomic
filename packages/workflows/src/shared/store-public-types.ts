@@ -8,6 +8,7 @@ import type {
   StageNotice,
   StoreSnapshot,
   ToolEvent,
+  ToolNodeSnapshot,
   RunStatus,
   WorkflowFailureKind,
   WorkflowFailureCode,
@@ -74,6 +75,9 @@ export interface Store {
   activeRunId(): string | null;
   recordRunStart(run: RunSnapshot): void;
   recordStageStart(runId: string, stage: StageSnapshot): void;
+  recordToolNodeStart(runId: string, node: ToolNodeSnapshot): boolean;
+  recordToolNodeRunning(runId: string, nodeId: string, startedAt: number): boolean;
+  recordToolNodeEnd(runId: string, nodeId: string, update: Pick<ToolNodeSnapshot, "status"> & Partial<Pick<ToolNodeSnapshot, "endedAt" | "resultSummary" | "error">>): boolean;
   /** Link a workflow boundary stage to its live child run before that child completes. */
   recordStageWorkflowChildRun(runId: string, stageId: string, ref: WorkflowChildRunRef): boolean;
   recordToolStart(runId: string, stageId: string, evt: ToolEvent): void;

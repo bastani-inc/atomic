@@ -26,7 +26,7 @@ import { createRunFinalizers } from "../runs/foreground/executor-run-finalizers.
 import { buildPromptNodeUiAdapter } from "../runs/foreground/executor-prompt-nodes.js";
 import {
   appendRunEndWhenRecorded,
-  assertWorkflowCreatedStage,
+  assertWorkflowCreatedExecution,
   finalizeKilled,
   finalizeKilledByFailure,
   recordActiveBlockedFailure,
@@ -48,6 +48,7 @@ import { createDurableStageSessionRecorder } from "./run-durable-stage-session.j
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { createDurableCachedStageRecorder, createDurableStageDeps } from "./run-durable-topology.js";
 import { admitDurableRootRun, durableRootRegistrationForRun } from "./run-durable-admission.js";
+import { createToolNodeLifecycle } from "./run-tool-node-lifecycle.js";
 
 type WorkflowRunInputArgument = Parameters<typeof resolveAndValidateInputs>[1];
 
@@ -86,6 +87,7 @@ export async function run<
       status: "failed",
       error: `atomic-workflows: maxDepth exceeded (max ${maxDepth})`,
       stages: [],
+      toolNodes: [],
     };
   }
 
@@ -119,6 +121,7 @@ export async function run<
     inputs: Object.freeze(resolvedInputs),
     status: "running" as const,
     stages: [],
+    toolNodes: [],
     startedAt: Date.now(),
     ...(opts.parentRun !== undefined ? {
       parentRunId: opts.parentRun.runId,
@@ -202,6 +205,7 @@ export async function run<
   const checkpointIdGenerator = createCheckpointIdGenerator();
   const stageReplayKeyGenerator = createStageReplayKeyGenerator(runId);
   const completedStageReplayKeys = new Map<string, string>();
+  const sourceToReplayedNodeIds = new Map<string, string>();
   const durableStageDeps = createDurableStageDeps({
     backend: durableBackend, run: runSnapshot,
     nextCheckpointId: checkpointIdGenerator, nextReplayKey: stageReplayKeyGenerator,
@@ -328,13 +332,14 @@ export async function run<
       }
     },
     signal: ownController.signal,
+    ...createToolNodeLifecycle({ store: activeStore, tracker, run: runSnapshot, sourceToReplayedNodeIds }),
   });
 
   // Durable ctx.ui wrapper — caches completed user responses so a resumed workflow does not re-ask answered prompts.
   const durableUiDeps = { workflowId: runId, backend: durableBackend, nextCheckpointId: checkpointIdGenerator };
   const cachedStage = createDurableCachedStageRecorder({
     store: activeStore, tracker, run: runSnapshot, backend: durableBackend,
-    rootBackend, completedStageReplayKeys,
+    rootBackend, completedStageReplayKeys, sourceToReplayedNodeIds,
   });
   const durableTask = createDurableTaskPrimitive({
     workflowId: runId, backend: durableBackend,
@@ -420,7 +425,7 @@ export async function run<
 
     const result = normalizeWorkflowRunOutput(def.name, rawResult);
     assertWorkflowRunOutputs(def.name, result, def.outputs);
-    assertWorkflowCreatedStage(runSnapshot);
+    assertWorkflowCreatedExecution(runSnapshot);
     await durableBackend.flush();
     const returned = classifyReturnedRunStatus(result, runSnapshot);
     const recorded = activeStore.recordRunEnd(runId, returned.status, result, returned.error, returned.metadata);

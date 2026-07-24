@@ -56,6 +56,8 @@ export interface WorkflowLifecycleNoticeDetails {
   readonly promptMessage?: string;
   readonly error?: string;
   readonly failedStageId?: string;
+  readonly toolNodeId?: string;
+  readonly toolName?: string;
   readonly durationMs?: number;
   readonly active?: boolean;
   readonly createdAt: number;
@@ -301,9 +303,11 @@ export function formatWorkflowLifecycleNoticeText(details: WorkflowLifecycleNoti
   }
   if (details.kind === "failed") {
     const stage = details.stageName ?? details.failedStageId;
-    const stageText = stage ? `, stage ${stage}` : "";
+    const originText = stage
+      ? `, stage ${stage}`
+      : details.toolName ? `, tool ${details.toolName}` : "";
     const errorText = details.error ? `: ${details.error}` : "";
-    return `✗ Workflow "${workflowName}" failed (run ${details.runId}${stageText})${errorText}. Inspect: /workflow status ${details.runId}`;
+    return `✗ Workflow "${workflowName}" failed (run ${details.runId}${originText})${errorText}. Inspect: /workflow status ${details.runId}`;
   }
   if (details.kind === "blocked") {
     const errorText = details.error ? `: ${details.error}` : "";
@@ -328,6 +332,9 @@ function makeTerminalNotice(
   const failedStage = run.failedStageId
     ? run.stages.find((stage) => stage.id === run.failedStageId)
     : undefined;
+  const failedTool = kind === "failed"
+    ? [...(run.toolNodes ?? [])].reverse().find((node) => node.status === "failed" || node.status === "cancelled")
+    : undefined;
   const activeBlocked = kind === "blocked" && isActiveRecoverableBlockedRun(run);
   const error = activeBlocked
     ? run.failureMessage ?? structuredRecoverableWorkflowFailureText(run) ?? run.error
@@ -342,6 +349,7 @@ function makeTerminalNotice(
     ...(error ? { error: truncateSnippet(error) } : {}),
     ...(run.failedStageId ? { failedStageId: run.failedStageId } : {}),
     ...(failedStage ? { stageId: failedStage.id, stageName: failedStage.name } : {}),
+    ...(failedTool ? { toolNodeId: failedTool.id, toolName: failedTool.name } : {}),
     ...(run.durationMs !== undefined ? { durationMs: run.durationMs } : {}),
     createdAt: lifecycleOccurrenceAt(run, kind) ?? Date.now(),
   };

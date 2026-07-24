@@ -290,6 +290,25 @@ export interface StageSnapshot extends WorkflowSerializableObject {
   readonly error?: string;
 }
 
+export interface ToolNodeSnapshot extends WorkflowSerializableObject {
+  readonly kind: "tool";
+  /** Stable durable node identity. */
+  readonly id: string;
+  readonly name: string;
+  readonly argsHash: string;
+  readonly ordinal: number;
+  readonly parentIds: readonly string[];
+  readonly status: "pending" | "running" | "completed" | "failed" | "cached" | "cancelled";
+  readonly topologyState?: "unavailable";
+  readonly replayed?: boolean;
+  readonly executionOrder?: number;
+  readonly startedAt?: number;
+  readonly endedAt?: number;
+  readonly resultSummary?: string;
+  readonly error?: string;
+  readonly attachable: false;
+}
+
 export interface RunResult<TOutputs extends WorkflowOutputValues = WorkflowOutputValues> extends WorkflowSerializableObject {
   readonly runId: string;
   readonly status: RunStatus;
@@ -299,6 +318,8 @@ export interface RunResult<TOutputs extends WorkflowOutputValues = WorkflowOutpu
   readonly exited?: boolean;
   readonly exitReason?: string;
   readonly stages: readonly StageSnapshot[];
+  /** Always populated by the runtime; optional for legacy structural literals. */
+  readonly toolNodes?: readonly ToolNodeSnapshot[];
 }
 
 export type ResolvedInputs<TInputs extends WorkflowInputValues = WorkflowInputValues> = Readonly<TInputs> & WorkflowSerializableObject;

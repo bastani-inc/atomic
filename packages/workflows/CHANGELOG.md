@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Fixed workflow-supplied working-indicator palettes to quantize through Atomic's detected terminal color mode, preserving the intended phase progression in 256-color and conhost-like environments instead of forcing truecolor output.
+- Fixed `ctx.tool()` calls durably completing side effects before a late empty-stage rejection. Tools now create ordered, inspectable, non-chat graph nodes with live, failed, completed, cancelled, and cached states; tool-only workflows complete normally, durable replay reconstructs topology without repeating callbacks, and completed tool-only runs open read-only instead of appearing stale ([#1991](https://github.com/bastani-inc/atomic/issues/1991)).
 
 ## [0.9.11-alpha.5] - 2026-07-23
 

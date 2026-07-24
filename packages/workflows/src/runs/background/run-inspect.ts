@@ -36,6 +36,8 @@ export interface RunDetail {
   readonly accumulatedDurationMs?: number;
   readonly inputs: Readonly<WorkflowInputValues>;
   readonly stages: readonly RunSnapshot["stages"][number][];
+  /** Always populated by inspectRun; optional for legacy structural literals. */
+  readonly tools?: readonly NonNullable<RunSnapshot["toolNodes"]>[number][];
   readonly result?: WorkflowOutputValues;
   readonly error?: string;
   readonly exited?: boolean;
@@ -77,7 +79,8 @@ export function inspectRun(
 
   // Deep copy so callers cannot mutate the store via the snapshot.
   const copy = structuredClone(candidate);
-  const expandedStages = expandWorkflowGraph(activeStore.snapshot(), copy.id).stages;
+  const expandedGraph = expandWorkflowGraph(activeStore.snapshot(), copy.id);
+  const expandedStages = expandedGraph.stages;
 
   const detail: RunDetail = {
     runId: copy.id,
@@ -93,6 +96,7 @@ export function inspectRun(
     accumulatedDurationMs: copy.accumulatedDurationMs,
     inputs: copy.inputs,
     stages: expandedStages.map((stage) => structuredClone(stage)),
+    tools: expandedGraph.tools.map((tool) => structuredClone(tool)),
     result: copy.result,
     error: copy.error ?? (effectiveRunStatus(copy) === copy.status ? undefined : (structuredRecoverableWorkflowFailureText(copy) ?? actionableReturnedStatusText(copy.result))),
     exited: copy.exited,

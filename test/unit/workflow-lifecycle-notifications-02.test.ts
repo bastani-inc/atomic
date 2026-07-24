@@ -103,6 +103,26 @@ function startRun(store: ReturnType<typeof createStore>, id: string, name = id):
 }
 
 describe("installWorkflowLifecycleNotifications", () => {
+  test("emits one failure notice with tool origin and no fabricated stage id", () => {
+    const { store, sent } = install();
+    store.recordRunStart({ id: "run-tool-fail", name: "mutate", inputs: {}, status: "running", stages: [], toolNodes: [], startedAt: 1 });
+    store.recordToolNodeStart("run-tool-fail", {
+      kind: "tool", id: "tool:failure", name: "publish-api", argsHash: "hash", ordinal: 1,
+      parentIds: [], status: "pending", attachable: false,
+    });
+    store.recordToolNodeRunning("run-tool-fail", "tool:failure", 2);
+    store.recordToolNodeEnd("run-tool-fail", "tool:failure", { status: "failed", endedAt: 3, error: "remote rejected" });
+
+    assert.equal(store.recordRunEnd("run-tool-fail", "failed", undefined, "remote rejected"), true);
+    store.recordNotice({ id: "tool-fail-tick", level: "info", message: "tick", createdAt: 4 });
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0]?.details?.toolNodeId, "tool:failure");
+    assert.equal(sent[0]?.details?.toolName, "publish-api");
+    assert.equal(sent[0]?.details?.failedStageId, undefined);
+    assert.match(sent[0]?.content ?? "", /tool publish-api.*remote rejected/);
+  });
+
   test("async suppression stays active until the awaited operation settles", async () => {
     const store = createStore();
     const state = createWorkflowLifecycleNotificationState();

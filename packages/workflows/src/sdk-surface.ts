@@ -34,7 +34,7 @@ export type { StageNode } from "./engine/graph-inference.js";
 export { setupGitWorktree } from "./runs/shared/worktree.js";
 export type { GitWorktreeSetupOptions, GitWorktreeSetupResult } from "./runs/shared/worktree.js";
 export { createStore, store } from "./shared/store.js";
-export type { RunStatus, StageStatus, ToolEvent, StageSnapshot, RunSnapshot, StoreSnapshot, WorkflowNotice, NoticeLevel, WorkflowOverlayAdapter, PromptKind, CustomPromptIdentitySource, PendingPrompt } from "./shared/store-types.js";
+export type { RunStatus, StageStatus, ToolEvent, ToolNodeSnapshot, StageSnapshot, RunSnapshot, StoreSnapshot, WorkflowNotice, NoticeLevel, WorkflowOverlayAdapter, PromptKind, CustomPromptIdentitySource, PendingPrompt } from "./shared/store-types.js";
 
 // Phase D — cancellation registry
 export { createCancellationRegistry, cancellationRegistry } from "./runs/background/cancellation-registry.js";

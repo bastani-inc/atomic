@@ -18,7 +18,7 @@
  */
 
 import type { RunDetail } from "../runs/background/status.js";
-import type { StageSnapshot } from "../shared/store-types.js";
+import type { StageSnapshot, ToolNodeSnapshot, ToolNodeStatus } from "../shared/store-types.js";
 import { elapsedRunMs, elapsedStageMs } from "../shared/timing.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { renderRoundedBox } from "./chat-surface.js";
@@ -70,15 +70,18 @@ function renderPlain(detail: RunDetail, now: number, width: number): string {
   }
   out.push("");
 
-  out.push(" STAGES ");
-  if (detail.stages.length === 0) {
-    out.push("  (no stages recorded yet) ");
-  } else {
-    for (const stage of detail.stages) {
-      out.push(...renderStageRowsPlain(stage, now, width - 4));
-    }
+  const tools = detail.tools ?? [];
+  if (detail.stages.length > 0 || tools.length === 0) {
+    out.push(" STAGES ");
+    if (detail.stages.length === 0) out.push("  (no stages recorded yet) ");
+    else for (const stage of detail.stages) out.push(...renderStageRowsPlain(stage, now, width - 4));
+    out.push("");
   }
-  out.push("");
+  if (tools.length > 0) {
+    out.push(" TOOLS ");
+    for (const tool of tools) out.push(...renderToolRowsPlain(tool, now, width - 4));
+    out.push("");
+  }
 
   const artifactRows = artifactRowsFor(detail);
   if (artifactRows.length > 0) {
@@ -126,15 +129,18 @@ function renderThemed(detail: RunDetail, now: number, theme: GraphTheme, width: 
   }
   out.push("");
 
-  out.push(` ${muted}${BOLD}STAGES${RESET} `);
-  if (detail.stages.length === 0) {
-    out.push(`  ${dim}(no stages recorded yet)${RESET} `);
-  } else {
-    for (const stage of detail.stages) {
-      out.push(...renderStageRowsThemed(stage, now, theme, width - 4));
-    }
+  const tools = detail.tools ?? [];
+  if (detail.stages.length > 0 || tools.length === 0) {
+    out.push(` ${muted}${BOLD}STAGES${RESET} `);
+    if (detail.stages.length === 0) out.push(`  ${dim}(no stages recorded yet)${RESET} `);
+    else for (const stage of detail.stages) out.push(...renderStageRowsThemed(stage, now, theme, width - 4));
+    out.push("");
   }
-  out.push("");
+  if (tools.length > 0) {
+    out.push(` ${muted}${BOLD}TOOLS${RESET} `);
+    for (const tool of tools) out.push(...renderToolRowsThemed(tool, now, theme, width - 4));
+    out.push("");
+  }
 
   const artifactRows = artifactRowsFor(detail);
   if (artifactRows.length > 0) {
@@ -267,6 +273,36 @@ function renderStageRowsThemed(
     const errFg = hexToAnsi(theme.error);
     rows.push(`   ${hexToAnsi(theme.textMuted)}error${RESET}  ${errFg}${truncateToWidth(stage.error.split("\n")[0] ?? "", Math.max(1, width - 12), "…")}${RESET} `);
   }
+  return rows;
+}
+
+function toolDisplayStatus(status: ToolNodeStatus): "pending" | "running" | "completed" | "failed" | "cancelled" {
+  return status === "cached" ? "completed" : status;
+}
+
+function toolDurationString(tool: ToolNodeSnapshot, now: number): string | undefined {
+  if (tool.startedAt === undefined) return undefined;
+  return fmtDuration(Math.max(0, (tool.endedAt ?? now) - tool.startedAt));
+}
+
+function renderToolRowsPlain(tool: ToolNodeSnapshot, now: number, width: number): string[] {
+  const icon = statusIcon(toolDisplayStatus(tool.status));
+  const duration = toolDurationString(tool, now);
+  const line = ` ${pad(`${icon} ${tool.name}`, STAGE_NAME_COL + 2)}${pad(tool.status, 10)}${duration ?? ""} `;
+  const rows = [truncateToWidth(line, width, "…")];
+  if (tool.error) rows.push(`   error  ${truncateToWidth(tool.error.split("\n")[0] ?? "", Math.max(1, width - 10), "…")} `);
+  return rows;
+}
+
+function renderToolRowsThemed(tool: ToolNodeSnapshot, now: number, theme: GraphTheme, width: number): string[] {
+  const displayStatus = toolDisplayStatus(tool.status);
+  const stateFg = hexToAnsi(statusColor(displayStatus, theme));
+  const text = hexToAnsi(theme.text);
+  const dim = hexToAnsi(theme.dim);
+  const duration = toolDurationString(tool, now);
+  const line = ` ${stateFg}${statusIcon(displayStatus)}${RESET} ${text}${pad(tool.name, STAGE_NAME_COL)}${RESET}  ${stateFg}${pad(tool.status, 10)}${RESET}${duration ? `${dim}${duration}${RESET}` : ""} `;
+  const rows = [truncateToWidth(line, width, "…")];
+  if (tool.error) rows.push(`   ${hexToAnsi(theme.textMuted)}error${RESET}  ${hexToAnsi(theme.error)}${truncateToWidth(tool.error.split("\n")[0] ?? "", Math.max(1, width - 12), "…")}${RESET} `);
   return rows;
 }
 

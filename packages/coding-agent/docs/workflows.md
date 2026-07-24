@@ -1560,7 +1560,7 @@ ctx.tool<TValue extends WorkflowSerializableValue>(
 ): Promise<TValue>;
 ```
 
-Runs arbitrary TypeScript code and durably caches its serializable result by call order plus the content hash of `name` and `args`. A completed call replays without rerunning `fn`, so use this primitive for durable side effects.
+Runs arbitrary TypeScript code as a tracked, non-attachable durable workflow graph node and caches its serializable result by call order plus the content hash of `name` and `args`. The node is created before `fn` runs and may appear before, between, after, or without model stages. A completed call replays without rerunning `fn`, so use this primitive for workflow-owned durable side effects; keep pure computation as ordinary TypeScript.
 
 **Options:**
 - `retriesAllowed` — retries failures when `true`; default `false`.
@@ -2514,8 +2514,8 @@ When two sessions race to resume the same paused workflow, a durable first-write
 ### How it works
 
 - **Only `ctx.*` blocks are checkpointed**: code outside `ctx.*` is not durable.
-- **Durable side effects**: Atomic flushes `ctx.tool` and `ctx.ui` writes before exposing completed results, so resume does not repeat an already-completed effect.
-- **Durable graph operations**: stage, task, chain, parallel, and child-workflow checkpoints include source-stage lineage plus owning-run/boundary metadata, timing, model, output, and retained chat-session references. Fresh-process resume and completed inspection reconstruct nested child runs and parallel DAG edges directly from DBOS.
+- **Durable side effects and graph nodes**: every `ctx.tool` invocation creates a tracked, non-chat graph node before its callback runs. Atomic flushes successful `ctx.tool` and `ctx.ui` writes before exposing completed results, so resume does not repeat an already-completed effect. Tool nodes can appear before, between, after, or without model stages.
+- **Durable graph operations**: tool, stage, task, chain, parallel, and child-workflow checkpoints include stable identity/order and the applicable source lineage, owning-run/boundary metadata, timing, output summary, model, and retained chat-session references. Fresh-process resume and completed inspection reconstruct tool-only, nested-child, mixed, and parallel DAG topology directly from DBOS.
 - **DBOS-only discovery**: `/workflow resume`, `/workflows`, completed inspection, deletion, and targeted lookup hydrate/query DBOS. Session JSONL remains only a chat transcript referenced by a current checkpoint; it is not a workflow catalog or discovery source.
 - **Current format only**: Atomic encodes and decodes one current DBOS format. Prior local files and older DBOS records are not read, converted, or cleaned up. Unsupported or malformed records are ignored as foreign data.
 - **Child side-effect scoping**: nested workflow effects are checkpointed under the durable root with stable child scopes.
@@ -2533,7 +2533,7 @@ Replayed `ctx.stage`, `ctx.task`, `ctx.chain`, `ctx.parallel`, and child-workflo
 
 ### `ctx.tool` — durable cached tool execution
 
-The `ctx.tool(name, args, fn, options?)` primitive runs arbitrary TypeScript code and caches the result durably. On resume, if that ordinal tool call already completed (matched by call order plus content hash of `name` + `args`), the runtime returns the cached result without re-executing the function — ensuring completed side effects are not repeated while still allowing two intentional same-name/same-args calls in one workflow.
+The `ctx.tool(name, args, fn, options?)` primitive runs arbitrary TypeScript code as a first-class durable graph node and caches the result durably. The node is non-attachable and has no stage chat controls. It is valid before, between, after, or without model stages, so a tool-only workflow completes normally; a workflow that returns normally without any stage, child, tool, or explicit exit remains invalid. On resume, if that ordinal tool call already completed (matched by call order plus content hash of `name` + `args`), the runtime returns the cached result without re-executing the function—ensuring completed side effects are not repeated while still preserving two intentional same-name/same-args calls as distinct ordered nodes.
 
 ```ts
 export default workflow({
@@ -2570,9 +2570,11 @@ Only current-format DBOS records are selectable. Atomic hides unsupported or mal
 
 Selecting a paused, failed, blocked, or crash-recovery target follows the existing resume path unchanged: Atomic re-dispatches the workflow with its cached inputs and the **original workflow id**, so previously completed `ctx.tool`, `ctx.ui`, stage/task/chain/parallel items, and child workflow boundaries replay from durable checkpoints rather than executing again. Selecting a completed target follows a separate open path.
 
-Atomic reconstructs completed root and nested child-run snapshots from authoritative checkpoints, remaps persisted source-stage and boundary references to reconstructed stage ids, and opens the full expanded hierarchy without calling the durable resume dispatcher or re-running workflow stages, tools, tasks, prompts, or workflow code.
+Atomic reconstructs completed root and nested child-run snapshots from authoritative checkpoints, remaps persisted source-stage and boundary references, and opens the full expanded hierarchy—including tool-only graphs—without calling the durable resume dispatcher or rerunning workflow stages, tools, tasks, prompts, or workflow code.
 
-Completed detail state is read-only. A retained stage chat may be reopened for follow-up without resuming workflow execution or mutating its DBOS handle. Current checkpoints always include supported topology; foreign checkpoints are excluded rather than displayed with inferred edges.
+Completed detail state is read-only. A retained stage chat may be reopened for follow-up without resuming workflow execution or mutating its DBOS handle; tool nodes never offer chat attachment. New tool checkpoints persist topology. A current-format tool checkpoint created before that additive topology existed still replays safely: its cached output remains authoritative, its callback is never rerun, and inspection derives a deterministic root-level node/order from checkpoint identity and checkpoint order. Foreign or malformed checkpoint formats remain excluded.
+
+Fresh completed inspection does not currently persist the workflow's declared root output. Live `run()` results still expose the declared output, and this output-persistence limitation does not block durable tool topology or read-only graph inspection.
 
 ```text
 /workflow resume                          # Mixed picker: resumable + completed

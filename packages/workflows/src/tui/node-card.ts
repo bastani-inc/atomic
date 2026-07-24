@@ -278,12 +278,13 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
   // body row for the child workflow identity and the final row for a
   // terse child-run summary. This keeps the graph dense while making
   // the boundary explain what actually ran.
-  const bodyText =
-    stage.status === "blocked"
+  const bodyText = stage.nodeKind === "tool"
+    ? (stage.error ?? stage.result ?? "durable tool")
+    : stage.status === "blocked"
       ? blockedBadgeText(stage, opts.stages, innerWidth)
       : workflowChildSummaryText(stage);
   const bodyHex = durationColor(stage.status, theme);
-  const statusText = `${statusIcon(stage.status)} ${statusLabel(stage.status)}`;
+  const statusText = `${statusIcon(stage.status)} ${stage.toolStatus ?? statusLabel(stage.status)}`;
   const statusLine =
     `${bg}${bc}│${RESET}` +
     centreColored(statusText, innerWidth, bodyHex, bg, {

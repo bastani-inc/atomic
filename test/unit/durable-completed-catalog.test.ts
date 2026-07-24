@@ -83,7 +83,7 @@ describe("completed durable catalog", () => {
     assert.equal(resolveCompletedWorkflow("stale", backend).kind, "stale");
   });
 
-  test("hides completed rows without a reopenable retained conversation", () => {
+  test("keeps invalid stage transcripts stale while opening tool-only runs read-only", () => {
     const backend = new InMemoryDurableBackend();
     const cases = [
       { id: "no-session", sessionFile: undefined },
@@ -116,9 +116,15 @@ describe("completed durable catalog", () => {
     registerCompleted(backend, "tool-only");
     backend.recordCheckpoint({ kind: "tool", workflowId: "tool-only", checkpointId: "tool:1", name: "read", argsHash: "hash", output: "ok", completedAt: 20 });
 
-    assert.deepEqual(listOpenableCompletedWorkflows(backend), []);
-    for (const item of [...cases, { id: "tool-only" }]) {
-      assert.equal(resolveCompletedWorkflow(item.id, backend).kind, "stale");
+    assert.deepEqual(listOpenableCompletedWorkflows(backend).map((entry) => entry.workflowId), ["tool-only"]);
+    for (const item of cases) assert.equal(resolveCompletedWorkflow(item.id, backend).kind, "stale");
+    const toolOnly = resolveCompletedWorkflow("tool-only", backend);
+    assert.equal(toolOnly.kind, "found");
+    if (toolOnly.kind === "found") {
+      assert.equal(toolOnly.snapshot.stages.length, 0);
+      assert.deepEqual(toolOnly.snapshot.toolNodes?.map((node) => ({ name: node.name, status: node.status, attachable: node.attachable })), [
+        { name: "read", status: "cached", attachable: false },
+      ]);
     }
   });
 

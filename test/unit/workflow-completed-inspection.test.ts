@@ -215,4 +215,31 @@ describe("completed workflow inspection", () => {
     assert.equal(store.runs()[0]?.stages[0]?.sessionFile, internalSessionFile);
     assert.deepEqual((await SessionManager.list(tempDir, tempDir)).map((session) => session.id), ["regular-history-session"]);
   });
+
+  test("opens a tool-only run as a read-only graph without promising chat", () => {
+    const backend = new InMemoryDurableBackend();
+    const store = createStore();
+    const registry = createStageControlRegistry();
+    backend.registerWorkflow({
+      workflowId: "completed-tool-only", name: "tool-only", inputs: {}, createdAt: 1, status: "completed",
+    });
+    backend.recordCheckpoint({
+      kind: "tool", workflowId: "completed-tool-only", checkpointId: "tool:publish", name: "publish",
+      argsHash: "publish-hash", output: "done", completedAt: 2,
+    });
+
+    const opened = openCompletedDurableWorkflow("completed-tool", {
+      durableBackend: backend,
+      store,
+      stageControlRegistry: registry,
+      adapters: { agentSession: { async create() { return mockSession(); } } },
+    });
+
+    assert.equal(opened.ok, true);
+    if (!opened.ok) return;
+    assert.match(opened.message, /read-only inspection/);
+    assert.doesNotMatch(opened.message, /follow-up chat/);
+    assert.deepEqual(registry.forRun("completed-tool-only"), []);
+    assert.deepEqual(store.runs()[0]?.toolNodes?.map((tool) => tool.name), ["publish"]);
+  });
 });

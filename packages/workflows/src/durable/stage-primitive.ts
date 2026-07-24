@@ -271,6 +271,7 @@ export function durableStageCheckpointMetadata(
       version: DURABLE_STAGE_TOPOLOGY_VERSION,
       stageId: stage.id,
       parentIds: [...stage.parentIds],
+      ...(stage.executionOrder !== undefined ? { order: stage.executionOrder } : {}),
       ...(run !== undefined ? { run: { ...run } } : {}),
     },
     ...(stage.startedAt !== undefined ? { startedAt: stage.startedAt } : {}),
@@ -446,6 +447,7 @@ export function recordCachedStageWithTracker(
   checkpoint: DurableCompletedStageCheckpoint,
   completedStageReplayKeys: Map<string, string>,
   stageFailFastScope?: ParallelFailFastScope,
+  sourceToReplayedNodeIds?: Map<string, string>,
 ): void {
   const stageId = cachedStageId(runId, replayKey);
   let parentIds = tracker.onSpawn(stageId, name);
@@ -454,7 +456,8 @@ export function recordCachedStageWithTracker(
     : undefined;
   const run = store.runs().find((candidate) => candidate.id === runId);
   const restored = sourceParents?.map((sourceId) =>
-    run?.stages.find((stage) => stage.replayedFromStageId === sourceId)?.id
+    sourceToReplayedNodeIds?.get(sourceId)
+      ?? run?.stages.find((stage) => stage.replayedFromStageId === sourceId)?.id
   );
   if (restored !== undefined && restored.every((id): id is string => id !== undefined)) {
     parentIds = restored;
@@ -463,6 +466,7 @@ export function recordCachedStageWithTracker(
     parentIds = [...(stageFailFastScope.parentIds ?? [])];
     tracker.replaceParents(stageId, parentIds);
   }
+  if (checkpoint.topology?.run?.runId === runId) sourceToReplayedNodeIds?.set(checkpoint.topology.stageId, stageId);
   recordCachedStageIntoStore(store, runId, name, replayKey, checkpoint.output, completedStageReplayKeys, parentIds, checkpoint);
   tracker.onSettle(stageId);
 }

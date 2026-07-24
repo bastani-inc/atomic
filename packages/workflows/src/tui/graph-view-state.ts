@@ -74,7 +74,7 @@ export abstract class GraphViewState {
   protected toastManager = createToastManager();
   protected detailsExpanded = true;
   protected cachedLayout: LayoutNode[] = [];
-  protected expandedGraph: ExpandedWorkflowGraph = { stages: [], targets: new Map() };
+  protected expandedGraph: ExpandedWorkflowGraph = { stages: [], renderStages: [], tools: [], nodes: [], targets: new Map() };
   protected currentSnapshot: StoreSnapshot | null = null;
   protected graphScrollOffset = 0;
   protected graphScrollColOffset = 0;
@@ -134,7 +134,7 @@ export abstract class GraphViewState {
     const run = this._getCurrentRun();
     if (!run) {
       this.cachedLayout = [];
-      this.expandedGraph = { stages: [], targets: new Map() };
+      this.expandedGraph = { stages: [], renderStages: [], tools: [], nodes: [], targets: new Map() };
       this.focusedIndex = 0;
       this.graphScrollOffset = 0;
       this.graphScrollColOffset = 0;
@@ -241,8 +241,8 @@ export abstract class GraphViewState {
   protected _graphStages(run: RunSnapshot): ExpandedWorkflowStage[] {
     this.expandedGraph = this.currentSnapshot
       ? expandWorkflowGraph(this.currentSnapshot, run.id)
-      : { stages: [], targets: new Map() };
-    const stages = [...this.expandedGraph.stages];
+      : { stages: [], renderStages: [], tools: [], nodes: [], targets: new Map() };
+    const stages = [...this.expandedGraph.renderStages];
     const hasStagePrompt = stages.some((stage) =>
       stage.pendingPrompt !== undefined ||
       (stage.status === "awaiting_input" && stage.promptFootprint?.kind === "custom")

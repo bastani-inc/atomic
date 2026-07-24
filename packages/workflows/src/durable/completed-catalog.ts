@@ -1,4 +1,4 @@
-import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
+import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../shared/store-types.js";
 import type { WorkflowChildResult, WorkflowInputValues, WorkflowOutputValues, WorkflowSerializableValue } from "../shared/types.js";
 import { isReopenableSessionTranscript } from "../shared/session-transcript.js";
 import type { DurableWorkflowBackend } from "./backend.js";
@@ -6,10 +6,11 @@ import {
   DURABLE_STAGE_TOPOLOGY_VERSION,
   type DurableCheckpoint,
   type DurableStageCheckpoint,
+  type DurableToolCheckpoint,
   type ResumableWorkflowEntry,
 } from "./types.js";
 import { resolveDurableEntry } from "./resume-runtime.js";
-import { priorRunElapsedMs } from "./run-timing.js";
+import { priorRunElapsedMs, RUN_TIMING_CHECKPOINT_NAME } from "./run-timing.js";
 
 export type CompletedWorkflowResolution =
   | { readonly kind: "found"; readonly entry: ResumableWorkflowEntry; readonly snapshot: RunSnapshot }
@@ -22,6 +23,8 @@ interface StageDraft {
   readonly replayKey: string;
   readonly name: string;
   readonly firstCompletedAt: number;
+  /** Every persisted identity observed for this replay key across continuations. */
+  readonly sourceIds: readonly string[];
   readonly output?: DurableStageCheckpoint["output"];
   readonly result?: string;
   readonly sessionId?: string;
@@ -79,7 +82,7 @@ export function completedWorkflowSnapshot(
 ): RunSnapshot | undefined {
   const runs = completedWorkflowRunSnapshots(backend, entry);
   const root = runs.find((run) => run.id === entry.workflowId);
-  if (root === undefined || !runs.some((run) => run.stages.some((stage) => stage.sessionFile !== undefined))) return undefined;
+  if (root === undefined || (!runs.some((run) => (run.toolNodes?.length ?? 0) > 0) && !runs.some((run) => run.stages.some((stage) => stage.sessionFile !== undefined)))) return undefined;
   return root;
 }
 
@@ -132,6 +135,53 @@ function validatedStageTranscript(stage: StageSnapshot): StageSnapshot {
   return withoutSessionFile;
 }
 
+function graphToolCheckpoints(checkpoints: readonly DurableCheckpoint[]): DurableToolCheckpoint[] {
+  const byHash = new Map<string, DurableToolCheckpoint>();
+  for (const checkpoint of checkpoints) {
+    if (checkpoint.kind !== "tool" || checkpoint.name === RUN_TIMING_CHECKPOINT_NAME) continue;
+    const existing = byHash.get(checkpoint.argsHash);
+    if (existing === undefined || checkpoint.completedAt >= existing.completedAt) {
+      byHash.set(checkpoint.argsHash, checkpoint);
+    }
+  }
+  return [...byHash.values()];
+}
+
+function completedToolNodes(
+  checkpoints: readonly DurableToolCheckpoint[],
+  runId: string,
+  rootRunId: string,
+  sourceIds: ReadonlyMap<string, string>,
+): ToolNodeSnapshot[] {
+  return checkpoints.flatMap((checkpoint, index) => {
+    const topologyRunId = checkpoint.topology?.run?.runId ?? rootRunId;
+    if (topologyRunId !== runId) return [];
+    const topology = checkpoint.topology;
+    return [{
+      kind: "tool" as const,
+      id: topology?.nodeId ?? checkpoint.checkpointId,
+      name: checkpoint.name,
+      argsHash: checkpoint.argsHash,
+      ordinal: topology?.ordinal ?? index + 1,
+      parentIds: Object.freeze([...(topology?.parentIds ?? [])].map((parentId) => sourceIds.get(parentId) ?? parentId)),
+      replayed: true,
+      ...(topology === undefined ? { topologyState: "unavailable" as const } : {}),
+      status: "cached" as const,
+      executionOrder: topology?.order ?? index + 1,
+      ...(topology?.startedAt !== undefined ? { startedAt: topology.startedAt } : {}),
+      endedAt: topology?.endedAt ?? checkpoint.completedAt,
+      resultSummary: summarizeCompletedToolResult(checkpoint.output),
+      attachable: false as const,
+    }];
+  });
+}
+
+function summarizeCompletedToolResult(value: WorkflowSerializableValue): string {
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined) return String(value).slice(0, 240);
+  return serialized.length <= 240 ? serialized : `${serialized.slice(0, 237)}...`;
+}
+
 
 function runSnapshotsFromCheckpoints(
   checkpoints: readonly DurableCheckpoint[],
@@ -146,10 +196,13 @@ function runSnapshotsFromCheckpoints(
     const existing = drafts.get(checkpoint.replayKey);
     drafts.set(checkpoint.replayKey, mergeStageDraft(existing, checkpoint));
   }
+  const toolCheckpoints = graphToolCheckpoints(checkpoints);
   const ordered = [...drafts.values()]
     .filter((draft) => !strict || draft.topology?.run === undefined || draft.endedAt !== undefined || draft.output !== undefined)
     .sort((a, b) => a.firstCompletedAt - b.firstCompletedAt);
-  if (ordered.length === 0) return [syntheticRun(rootRunId, rootRunName, checkpoints.length, fallbackCompletedAt)];
+  if (ordered.length === 0 && toolCheckpoints.length === 0) {
+    return [syntheticRun(rootRunId, rootRunName, checkpoints.length, fallbackCompletedAt)];
+  }
 
   const grouped = new Map<string, StageDraft[]>();
   for (const draft of ordered) {
@@ -162,18 +215,32 @@ function runSnapshotsFromCheckpoints(
     group.push(draft);
     grouped.set(runId, group);
   }
+  for (const checkpoint of toolCheckpoints) {
+    const runId = checkpoint.topology?.run?.runId ?? rootRunId;
+    if (!grouped.has(runId)) grouped.set(runId, []);
+  }
   retainReachableRunGroups(grouped, rootRunId);
   const idMaps = new Map<string, Map<string, string>>();
   for (const [runId, runDrafts] of grouped) {
     const ids = new Map<string, string>();
+    let hasIdentityConflict = false;
     runDrafts.forEach((draft, index) => {
-      const sourceId = draft.topology!.stageId;
-      if (!ids.has(sourceId)) ids.set(sourceId, `completed-stage-${index + 1}`);
+      const completedId = `completed-stage-${index + 1}`;
+      for (const sourceId of draft.sourceIds) {
+        const existing = ids.get(sourceId);
+        if (existing !== undefined && existing !== completedId) hasIdentityConflict = true;
+        else ids.set(sourceId, completedId);
+      }
     });
-    if (ids.size !== runDrafts.length) {
+    if (hasIdentityConflict) {
       if (strict) return [];
       grouped.delete(runId);
       continue;
+    }
+    for (const checkpoint of toolCheckpoints) {
+      const ownerRunId = checkpoint.topology?.run?.runId ?? rootRunId;
+      const sourceId = checkpoint.topology?.nodeId ?? checkpoint.checkpointId;
+      if (ownerRunId === runId) ids.set(sourceId, sourceId);
     }
     idMaps.set(runId, ids);
   }
@@ -181,7 +248,15 @@ function runSnapshotsFromCheckpoints(
   const runs: RunSnapshot[] = [];
   for (const [runId, runDrafts] of grouped) {
     const ids = idMaps.get(runId)!;
-    if (runDrafts.some((draft) => draft.topology!.parentIds.some((parentId) => !ids.has(parentId)))) {
+    const ownedTools = toolCheckpoints.filter((checkpoint) =>
+      (checkpoint.topology?.run?.runId ?? rootRunId) === runId
+    );
+    const hasUnknownParents = runDrafts.some((draft) =>
+      draft.topology!.parentIds.some((parentId) => !ids.has(parentId))
+    ) || ownedTools.some((checkpoint) =>
+      checkpoint.topology?.parentIds.some((parentId) => !ids.has(parentId)) === true
+    );
+    if (hasUnknownParents) {
       if (strict) return [];
       continue;
     }
@@ -190,9 +265,17 @@ function runSnapshotsFromCheckpoints(
       ids.get(draft.topology!.stageId)!,
       draft.topology!.parentIds.map((parentId) => ids.get(parentId)!),
     ));
-    const run = runDrafts.find((draft) => draft.topology?.run !== undefined)?.topology?.run;
-    const startedAt = Math.min(...stages.map((stage) => stage.startedAt ?? fallbackCompletedAt));
-    const endedAt = Math.max(...stages.map((stage) => stage.endedAt ?? fallbackCompletedAt));
+    const toolNodes = completedToolNodes(toolCheckpoints, runId, rootRunId, ids);
+    const run = runDrafts.find((draft) => draft.topology?.run !== undefined)?.topology?.run
+      ?? ownedTools.find((checkpoint) => checkpoint.topology?.run !== undefined)?.topology?.run;
+    const startedAt = Math.min(
+      ...stages.map((stage) => stage.startedAt ?? fallbackCompletedAt),
+      ...toolNodes.map((tool) => tool.startedAt ?? tool.endedAt ?? fallbackCompletedAt),
+    );
+    const endedAt = Math.max(
+      ...stages.map((stage) => stage.endedAt ?? fallbackCompletedAt),
+      ...toolNodes.map((tool) => tool.endedAt ?? fallbackCompletedAt),
+    );
     const parentRunId = run?.parentRunId ?? rootRunId;
     const boundarySourceId = grouped.get(parentRunId)?.find((draft) =>
       workflowChildFromOutput(draft.output)?.runId === runId
@@ -208,6 +291,7 @@ function runSnapshotsFromCheckpoints(
       inputs: {},
       status: "completed",
       stages,
+      toolNodes,
       startedAt,
       endedAt,
       durationMs: Math.max(0, endedAt - startedAt),
@@ -245,6 +329,10 @@ function mergeStageDraft(
   return {
     replayKey: checkpoint.replayKey,
     name: existing?.name ?? checkpoint.name,
+    sourceIds: [...new Set([
+      ...(existing?.sourceIds ?? []),
+      ...(checkpoint.topology?.stageId !== undefined ? [checkpoint.topology.stageId] : []),
+    ])],
     firstCompletedAt: Math.min(existing?.firstCompletedAt ?? checkpoint.completedAt, checkpoint.completedAt),
     ...valueOrExisting("output", checkpoint, existing),
     ...valueOrExisting("result", checkpoint, existing),
@@ -273,7 +361,7 @@ function preferredTopology(
 }
 
 function valueOrExisting<
-  K extends keyof Omit<StageDraft, "replayKey" | "name" | "firstCompletedAt">
+  K extends keyof Omit<StageDraft, "replayKey" | "name" | "firstCompletedAt" | "sourceIds">
 >(key: K, checkpoint: DurableStageCheckpoint, existing: StageDraft | undefined): Pick<StageDraft, K> | object {
   const checkpointValue = checkpoint[key];
   if (checkpointValue !== undefined) return { [key]: checkpointValue } as Pick<StageDraft, K>;
@@ -314,6 +402,7 @@ function stageSnapshotFromDraft(
     name: draft.name,
     status: "completed",
     parentIds,
+    ...(draft.topology?.order !== undefined ? { executionOrder: draft.topology.order } : {}),
     startedAt,
     endedAt,
     durationMs: draft.durationMs ?? Math.max(0, endedAt - startedAt),

@@ -202,6 +202,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
   }
 
   getToolOutput(workflowId: string, argsHash: string): WorkflowSerializableValue | undefined { return this.mem.getToolOutput(workflowId, argsHash); }
+  getToolCheckpoint(workflowId: string, argsHash: string) { return this.mem.getToolCheckpoint(workflowId, argsHash); }
   getUiResponse(workflowId: string, promptHash: string): WorkflowSerializableValue | undefined { return this.mem.getUiResponse(workflowId, promptHash); }
   getStageOutput(workflowId: string, replayKey: string): WorkflowSerializableValue | undefined { return this.mem.getStageOutput(workflowId, replayKey); }
   getStageSession(workflowId: string, replayKey: string) { return this.mem.getStageSession(workflowId, replayKey); }
