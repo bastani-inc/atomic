@@ -45,6 +45,8 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 		let delivery: Promise<void> | undefined;
 		let sentNotice: Parameters<Harness["session"]["sendCustomMessage"]>[0] | undefined;
 		let admissionObserved = false;
+		let queuedDisposalAttempted = false;
+		let queuedDisposalError: Error | undefined;
 		const workflowTool: AgentTool = {
 			name: "workflow",
 			label: "Workflow",
@@ -90,6 +92,21 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 		};
 		harness = await createHarness({ tools: [workflowTool], sessionManager });
 		harnesses.push(harness);
+		unsubscriptions.push(harness.session.subscribe((event) => {
+			if (
+				!queuedDisposalAttempted &&
+				event.type === "message_start" &&
+				event.message.role === "custom" &&
+				event.message.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE
+			) {
+				queuedDisposalAttempted = true;
+				try {
+					harness.session.dispose();
+				} catch (error) {
+					queuedDisposalError = error instanceof Error ? error : new Error(String(error));
+				}
+			}
+		}));
 		unsubscriptions.push(installWorkflowLifecycleNotifications({
 			store,
 			config: lifecycleConfig,
@@ -112,6 +129,8 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 		await harness.session.prompt("Run tool-pending.");
 
 		assert.equal(admissionObserved, true);
+		assert.equal(queuedDisposalAttempted, true);
+		assert.match(queuedDisposalError?.message ?? "", /queued protected reconciliation/);
 		assert.ok(providerContext);
 		assertWorkflowToolOrdering(providerContext);
 		const terminalUserMessages = providerContext.messages.filter(

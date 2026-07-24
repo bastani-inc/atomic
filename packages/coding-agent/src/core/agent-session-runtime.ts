@@ -4,6 +4,8 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { resolvePath } from "../utils/paths.ts";
 import type { AgentSession } from "./agent-session.ts";
+import type { AgentSessionInternalSurface } from "./agent-session-methods.ts";
+import { prepareProtectedStreamingCustomMessagesForDisposal } from "./agent-session-persistent-custom-messages.ts";
 import type { AgentSessionRuntimeDiagnostic, AgentSessionServices } from "./agent-session-services.ts";
 import type {
 	ProjectTrustContext,
@@ -188,14 +190,21 @@ export class AgentSessionRuntime {
 		return { cancelled: result?.cancel === true };
 	}
 
+	private disposeCurrentSession(): void {
+		prepareProtectedStreamingCustomMessagesForDisposal(
+			this.session as unknown as AgentSessionInternalSurface,
+		);
+		this.beforeSessionInvalidate?.();
+		this.session.dispose();
+	}
+
 	private async teardownCurrent(reason: SessionShutdownEvent["reason"], targetSessionFile?: string): Promise<void> {
 		await emitSessionShutdownEvent(this.session.extensionRunner, {
 			type: "session_shutdown",
 			reason,
 			targetSessionFile,
 		});
-		this.beforeSessionInvalidate?.();
-		this.session.dispose();
+		this.disposeCurrentSession();
 	}
 
 	private apply(result: CreateAgentSessionRuntimeResult): void {
@@ -419,8 +428,7 @@ export class AgentSessionRuntime {
 			type: "session_shutdown",
 			reason: "quit",
 		});
-		this.beforeSessionInvalidate?.();
-		this.session.dispose();
+		this.disposeCurrentSession();
 	}
 }
 

@@ -18,7 +18,10 @@ function protectedMessages(session: AgentSession): ProtectedStreamingCustomMessa
 	return session._protectedStreamingCustomMessages ??= [];
 }
 
-function appendDurableDisplayCard(session: AgentSession, message: CustomMessage): void {
+function appendDurableDisplayCard(
+	session: AgentSession,
+	message: CustomMessage,
+): CustomMessage & { excludeFromContext: true } {
 	const card = { ...message, excludeFromContext: true } satisfies CustomMessage & { excludeFromContext: true };
 	// Persist first: an admission receipt must never precede the durable card.
 	session.sessionManager.appendCustomMessageEntry(
@@ -29,10 +32,13 @@ function appendDurableDisplayCard(session: AgentSession, message: CustomMessage)
 		true,
 	);
 	session.agent.state.messages.push(card);
-	// The card is already live and file-backed. Public listeners remain fallible,
-	// but their notification errors cannot revoke admission or make the producer
-	// retry this committed occurrence. Emit both boundaries independently so a
-	// one-shot message_start failure does not suppress message_end.
+	return card;
+}
+
+function emitDurableDisplayCard(session: AgentSession, card: CustomMessage): void {
+	// The card is already live and file-backed, and its protected reconciliation
+	// is registered. Public listeners remain fallible, but their errors cannot
+	// revoke admission or make the producer retry this committed occurrence.
 	try {
 		session._emit({ type: "message_start", message: card });
 	} catch {}
@@ -55,7 +61,7 @@ export async function admitProtectedStreamingCustomMessage(
 	// protocol-sensitive phase; at ordinary turn boundaries the hidden steer must
 	// be queued synchronously so agent-core's next native poll observes it.
 	if (session.agent.state.pendingToolCalls.size > 0) await session._agentEventQueue;
-	appendDurableDisplayCard(session, message);
+	const card = appendDurableDisplayCard(session, message);
 	const reconciliation = {
 		role: "custom" as const,
 		customType: PROTECTED_RECONCILIATION_CUSTOM_TYPE,
@@ -64,7 +70,11 @@ export async function admitProtectedStreamingCustomMessage(
 		details: undefined,
 		timestamp: message.timestamp,
 	} satisfies CustomMessage;
+	// Register protection before notifying public card listeners. A reentrant
+	// teardown must see this queued reconciliation and fail closed rather than
+	// disconnecting the only session that can consume it.
 	protectedMessages(session).push({ message: reconciliation, delivery, phase: "queued" });
+	emitDurableDisplayCard(session, card);
 	return reconciliation;
 }
 
@@ -147,6 +157,14 @@ export function flushConsumedProtectedStreamingCustomMessages(session: AgentSess
 		// alive rather than discard the only remaining recovery state.
 		persistProtectedStreamingCustomMessage(session, entry.message);
 	}
+}
+
+/** Fail closed for queued input, then flush consumed recovery state. */
+export function prepareProtectedStreamingCustomMessagesForDisposal(session: AgentSession): void {
+	if (protectedMessages(session).some((entry) => entry.phase === "queued")) {
+		throw new Error("Cannot dispose a session with a queued protected reconciliation");
+	}
+	flushConsumedProtectedStreamingCustomMessages(session);
 }
 
 /** Restore only protected references actually removed from native queues/hold. */
