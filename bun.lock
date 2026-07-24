@@ -61,6 +61,7 @@
         "@types/proper-lockfile": "4.1.4",
         "@types/semver": "7.7.1",
         "@typescript/native-preview": "7.0.0-dev.20260707.2",
+        "ajv": "8.20.0",
         "shx": "0.4.0",
         "typescript": "7.0.2",
         "vitest": "4.1.10",

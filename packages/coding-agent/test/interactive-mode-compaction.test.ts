@@ -65,6 +65,11 @@ type CompactionEndEvent = {
 	midTurn?: boolean;
 };
 type AgentEndEvent = { type: "agent_end" };
+type AgentContinueErrorEvent = {
+	type: "agent_continue_error";
+	source: "post_compaction";
+	errorMessage: string;
+};
 
 const persistedContextMessages = [
 	persistedBoundary,
@@ -143,10 +148,13 @@ function makeMode(messages: AgentMessage[] = persistedContextMessages) {
 	return { mode, chatContainer, workingLoaders, entries };
 }
 
-async function emit(mode: object, event: CompactionStartEvent | CompactionEndEvent | AgentEndEvent): Promise<void> {
+async function emit(
+	mode: object,
+	event: CompactionStartEvent | CompactionEndEvent | AgentEndEvent | AgentContinueErrorEvent,
+): Promise<void> {
 	const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
 		this: object,
-		event: CompactionStartEvent | CompactionEndEvent | AgentEndEvent,
+		event: CompactionStartEvent | CompactionEndEvent | AgentEndEvent | AgentContinueErrorEvent,
 	) => Promise<void>;
 	await handleEvent.call(mode, event);
 }
@@ -232,6 +240,23 @@ describe("InteractiveMode compaction events", () => {
 		expect(renderedText(mode.statusContainer)).not.toContain("Working...");
 	});
 
+	it("stops the working loader when direct post-compaction continuation fails", async () => {
+		const { mode, workingLoaders } = makeMode([]);
+		mode.showWorkingLoaderNow.call(mode);
+		expect(renderedText(mode.statusContainer)).toContain("Working...");
+
+		await emit(mode, {
+			type: "agent_continue_error",
+			source: "post_compaction",
+			errorMessage: "Post-compaction continuation failed: provider failed",
+		});
+
+		expect(workingLoaders[0]?.stop).toHaveBeenCalledOnce();
+		expect(mode.loadingAnimation).toBeUndefined();
+		expect(renderedText(mode.statusContainer)).not.toContain("Working...");
+		expect(mode.showError).toHaveBeenCalledWith("Post-compaction continuation failed: provider failed");
+	});
+
 	it("does not restore the working spinner when mid-turn compaction cannot continue", async () => {
 		for (const event of [
 			{ type: "compaction_end", reason: "threshold", aborted: true, willRetry: false, midTurn: true },
@@ -312,6 +337,50 @@ describe("InteractiveMode compaction events", () => {
 		expect(fakeThis.session.prompt).toHaveBeenCalledWith("change direction", { streamingBehavior: "steer" });
 		expect(fakeThis.compactionQueuedMessages).toEqual([]);
 		expect(fakeThis.showError).not.toHaveBeenCalled();
+	});
+
+	it("keeps the original whimsical verb throughout tool execution", async () => {
+		const random = vi.spyOn(Math, "random").mockReturnValue(0);
+		try {
+			const { mode } = makeMode([]);
+			const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (this: object, event: object) => Promise<void>;
+			const send = async (event: object): Promise<void> => handleEvent.call(mode, event);
+			await send({ type: "turn_start" });
+			expect(mode.workingMessage).toBe("Schlepping...");
+			await send({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: undefined });
+			await send({ type: "tool_execution_start", toolCallId: "write-1", toolName: "write", args: { path: "src/a.ts" } });
+			await send({ type: "tool_execution_end", toolCallId: "write-1", toolName: "write", result: { content: [] }, isError: false });
+			await send({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read", result: { content: [] }, isError: false });
+			expect(mode.workingMessage).toBe("Schlepping...");
+			await send({ type: "turn_end" });
+			expect(mode.workingMessage).toBeUndefined();
+		} finally {
+			random.mockRestore();
+		}
+	});
+
+	it("renders the interactive hidden-thinking default through the production event path", async () => {
+		const { mode, chatContainer } = makeMode([]);
+		mode.hideThinkingBlock = true;
+		(mode as { hiddenThinkingLabel?: string }).hiddenThinkingLabel = undefined;
+		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (this: object, event: object) => Promise<void>;
+		await handleEvent.call(mode, {
+			type: "message_start",
+			message: {
+				role: "assistant",
+				content: [{ type: "thinking", thinking: "private reasoning" }],
+				api: "anthropic-messages",
+				provider: "test",
+				model: "test",
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+				stopReason: "stop",
+				timestamp: 1,
+			},
+		});
+		const rendered = renderedText(chatContainer);
+		expect(rendered.match(/Thinking\.\.\./g)).toHaveLength(1);
+		expect(rendered).not.toContain("Questioning the defaults");
+		expect(rendered).not.toContain("private reasoning");
 	});
 });
 

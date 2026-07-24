@@ -1,4 +1,6 @@
 import { describe, test } from "bun:test";
+import { setThemeInstance, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { loadTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme-loading.ts";
 import {
     assert,
     createStore,
@@ -17,6 +19,10 @@ import {
 } from "./stage-chat-view-helpers.js";
 import { join, sep } from "node:path";
 import { hexToAnsi } from "../../packages/workflows/src/tui/color-utils.js";
+
+function renderLifecycleOrigin(view: StageChatView, width: number): string[] {
+    return view.render(width).map(stripAnsi);
+}
 
 describe("StageChatView", () => {
     test("failed resume keeps the local paused state", async () => {
@@ -110,6 +116,8 @@ describe("StageChatView", () => {
     });
 
     test("renders pi-style spacing between a full transcript and the streaming loader", () => {
+        const previousReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
+        delete process.env.ATOMIC_REDUCED_MOTION;
         const store = createStore();
         setupRun(store, "run-1", "stage-a", "running");
         const messages = Array.from({ length: 30 }, (_, i) =>
@@ -137,21 +145,76 @@ describe("StageChatView", () => {
             onClose: () => {},
         });
 
-        const lines = view.render(96).map(stripAnsi);
-        const workingIndex = lines.findIndex((line) =>
-            line.includes("Working"),
-        );
-        assert.ok(
-            workingIndex > 1,
-            "expected working spinner after transcript",
-        );
-        const previousContent = lines
-            .slice(0, workingIndex)
-            .findLast((line) => line.trim() !== "");
-        assert.match(previousContent ?? "", /msg-\d+/);
-        assert.equal(lines[workingIndex - 1]?.trim(), "");
-        assert.match(lines[workingIndex] ?? "", /^\s+\S Working/);
-        view.dispose();
+        try {
+            const lines = renderLifecycleOrigin(view, 96);
+            const workingIndex = lines.findIndex((line) => line.includes("Working..."));
+            assert.ok(workingIndex > 4, "expected Atomic working icon after transcript");
+            const previousContent = lines
+                .slice(0, workingIndex - 1)
+                .findLast((line) => line.trim() !== "");
+            assert.match(previousContent ?? "", /msg-\d+/);
+            assert.equal(lines[workingIndex - 1]?.trim(), "");
+            assert.equal(lines[workingIndex]?.trimEnd(), " ∀ Working...");
+            assert.deepEqual(lines[workingIndex]?.match(/∀/g), ["∀"]);
+            assert.equal(lines.join("\n").match(/Working\.\.\./g)?.length, 1);
+        } finally {
+            view.dispose();
+            if (previousReducedMotion === undefined) delete process.env.ATOMIC_REDUCED_MOTION;
+            else process.env.ATOMIC_REDUCED_MOTION = previousReducedMotion;
+        }
+    });
+
+    test("64-column Atomic working mark keeps its label and composer in bounds", () => {
+        const previousReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
+        delete process.env.ATOMIC_REDUCED_MOTION;
+        const store = createStore();
+        setupRun(store, "run-1", "stage-a", "running");
+        const { handle } = makeHandle({
+            promptCalls: [], steerCalls: [], followUpCalls: [], pauseCalls: 0, resumeCalls: [], isStreaming: true,
+        });
+        const view = new StageChatView({
+            store, graphTheme: deriveGraphTheme({}), runId: "run-1", stageId: "stage-a",
+            workflowName: "test-wf", handle, onDetach: () => {}, onClose: () => {},
+        });
+        try {
+            const lines = renderLifecycleOrigin(view, 64);
+            assert.equal(lines.every((line) => line.length <= 64), true);
+            const working = lines.find((line) => line.includes("Working..."));
+            assert.equal(working?.trimEnd(), " ∀ Working...");
+            assert.deepEqual(working?.match(/∀/g), ["∀"]);
+            assert.equal(lines.some((line) => line.includes("❯")), true);
+            assert.equal(lines.some((line) => line.includes("ctrl+x")), true);
+        } finally {
+            view.dispose();
+            if (previousReducedMotion === undefined) delete process.env.ATOMIC_REDUCED_MOTION;
+            else process.env.ATOMIC_REDUCED_MOTION = previousReducedMotion;
+        }
+    });
+
+    test("mounted stage working identity follows live host theme changes", () => {
+        const store = createStore();
+        setupRun(store, "run-1", "stage-a", "running");
+        const { handle } = makeHandle({
+            promptCalls: [], steerCalls: [], followUpCalls: [], pauseCalls: 0, resumeCalls: [], isStreaming: true,
+        });
+        const view = new StageChatView({
+            store, graphTheme: deriveGraphTheme({}), runId: "run-1", stageId: "stage-a",
+            workflowName: "test-wf", handle, onDetach: () => {}, onClose: () => {}, piTheme: theme,
+        });
+        const workingColor = (): string | undefined => {
+            const line = view.render(64).find((candidate) => candidate.includes("Working...")) ?? "";
+            const match = /\u001b\[38;2;(\d+);(\d+);(\d+)m∀/.exec(line);
+            return match ? match.slice(1).join(",") : undefined;
+        };
+        try {
+            setThemeInstance(loadTheme("catppuccin-mocha", "truecolor"));
+            assert.equal(workingColor(), "112,117,159");
+            setThemeInstance(loadTheme("light", "truecolor"));
+            assert.notEqual(workingColor(), "112,117,159");
+        } finally {
+            view.dispose();
+            setThemeInstance(loadTheme("dark", "truecolor"));
+        }
     });
 
     test("attached live sessions render the usage ribbon, orchestrator hint, and coding-agent footer", () => {
@@ -189,12 +252,10 @@ describe("StageChatView", () => {
         const rendered = lines.join("\n");
         assert.match(rendered, /\$0\.123/);
         assert.match(rendered, /23\.4%\/200k/);
-        assert.match(rendered, /Working/);
+        assert.match(rendered, /Working\.\.\./);
         assert.doesNotMatch(rendered, /╌/);
 
-        const workingIndex = lines.findIndex((line) =>
-            line.includes("Working"),
-        );
+        const workingIndex = lines.findIndex((line) => line.includes("Working..."));
         const usageIndex = lines.findIndex((line) => line.includes("$0.123"));
         const promptIndex = lines.findIndex((line) => line.includes("❯"));
         const hintIndex = expectRightAlignedReturnHint(lines, 120);

@@ -815,11 +815,11 @@ ctx.ui.setWorkingIndicator({
 // Hide the indicator entirely
 ctx.ui.setWorkingIndicator({ frames: [] });
 
-// Restore Atomic's default spinner
+// Restore Atomic's default one-cell identity pulse
 ctx.ui.setWorkingIndicator();
 ```
 
-This only affects the normal streaming working indicator. Compaction and retry loaders keep their built-in styling. During successful post-tool autocompaction, Atomic temporarily replaces the working indicator with the compaction loader and restores the working indicator before the same stream continues; no additional user input is required. Custom frames are rendered verbatim, so extensions must add their own colors when needed.
+This only affects the normal streaming working indicator. With no extension override, Atomic renders the exact one-cell `∀` immediately before one of its 453 original randomized whimsical working verbs, selected once per turn. Every agent and SDK turn starts at regular weight with a fresh lifecycle-relative 88ms cadence, then follows a ten-frame, theme-aware dark → accent → bright/bold → accent → dark luminance ramp without changing glyph or geometry. Optional theme tone overrides control any desired phases exactly, including terminal palette indices 0–255; Atomic derives omitted tones from selected-surface, `accent`, and `text` roles. Dark, light, custom, and dynamically reloaded themes therefore retain their own palette. Under `NO_COLOR`, the same cadence remains visible through regular/bold weight without foreground-color escapes. Turn completion and terminal cleanup stop the timer cleanly. Restoring Atomic's default after an extension override also restarts at the dark regular phase; custom extension frames and intervals remain unchanged and render verbatim. `ATOMIC_REDUCED_MOTION=1` shows a static regular accent `∀` without an animation timer. The icon and longest message fit standard and 64-column widths. Factual status copy takes precedence. Compaction and retry loaders keep their plain built-in styling. During successful post-tool autocompaction, Atomic temporarily replaces the working indicator with the compaction loader and restores it before the same stream continues; no additional user input is required.
 
 **Examples:** [working-indicator.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/working-indicator.ts)
 

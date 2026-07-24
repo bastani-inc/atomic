@@ -1,3 +1,4 @@
+import { ATOMIC_WORKING_FRAME_MS, ATOMIC_WORKING_FRAMES } from "./atomic-working-status.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.ts";
 import type { ChatSessionHostState } from "./chat-session-host-state.ts";
 import { finalizeTerminalWorkflowToolEntries } from "./chat-session-host-terminal-cleanup.ts";
@@ -9,7 +10,7 @@ import {
 export function isChatSessionStreaming<TExtraEntry extends ChatTranscriptEntryLike>(
   state: ChatSessionHostState<TExtraEntry>,
 ): boolean {
-  return state.sdkBusy || state.isStreamingOverride?.() === true;
+  return !state.disposed && (state.sdkBusy || state.isStreamingOverride?.() === true);
 }
 
 export function isChatSessionBashRunning<TExtraEntry extends ChatTranscriptEntryLike>(
@@ -41,23 +42,73 @@ export function decrementOptimisticUserSignature<
   else state.optimisticUserSignatureCounts.set(signature, count - 1);
 }
 
+export function startChatSessionWorkingLifecycle<
+  TExtraEntry extends ChatTranscriptEntryLike,
+>(state: ChatSessionHostState<TExtraEntry>): void {
+  if (state.disposed) return;
+  clearChatSessionAnimation(state);
+  clearChatSessionEventRender(state);
+  state.immediateEventRenderPending = true;
+  state.workingLifecycleActive = true;
+  state.workingFrame = 0;
+}
+
+export function stopChatSessionWorkingLifecycle<
+  TExtraEntry extends ChatTranscriptEntryLike,
+>(
+  state: ChatSessionHostState<TExtraEntry>,
+  immediateEventRender = true,
+): void {
+  state.workingLifecycleActive = false;
+  clearChatSessionAnimation(state);
+  clearChatSessionEventRender(state);
+  state.immediateEventRenderPending = !state.disposed && immediateEventRender;
+}
+
+function clearChatSessionAnimation<
+  TExtraEntry extends ChatTranscriptEntryLike,
+>(state: ChatSessionHostState<TExtraEntry>): void {
+  if (!state.animationTimer) return;
+  clearInterval(state.animationTimer);
+  state.animationTimer = undefined;
+}
+
+function clearChatSessionEventRender<
+  TExtraEntry extends ChatTranscriptEntryLike,
+>(state: ChatSessionHostState<TExtraEntry>): void {
+  if (!state.renderThrottleTimer) return;
+  clearTimeout(state.renderThrottleTimer);
+  state.renderThrottleTimer = undefined;
+}
+
 export function syncChatSessionAnimationTick<
   TExtraEntry extends ChatTranscriptEntryLike,
 >(state: ChatSessionHostState<TExtraEntry>): void {
-  const shouldAnimate =
-    isChatSessionStreaming(state) ||
-    (state.sdkBusy && state.liveChat.pendingToolIds().length > 0);
+  const shouldAnimate = !state.disposed &&
+    process.env.ATOMIC_REDUCED_MOTION !== "1" &&
+    (state.workingLifecycleActive || state.compacting);
   if (shouldAnimate && !state.animationTimer) {
-    state.animationTimer = setInterval(() => {
+    const intervalMs = state.workingLifecycleActive
+      ? ATOMIC_WORKING_FRAME_MS
+      : ANIMATION_FRAME_MS;
+    const timer = setInterval(() => {
+      if (
+        state.disposed ||
+        state.animationTimer !== timer ||
+        (!state.workingLifecycleActive && !state.compacting)
+      ) {
+        return;
+      }
+      if (state.workingLifecycleActive) {
+        state.workingFrame = (state.workingFrame + 1) % ATOMIC_WORKING_FRAMES.length;
+      }
       state.requestRender?.();
-    }, ANIMATION_FRAME_MS);
+    }, intervalMs);
+    state.animationTimer = timer;
     state.animationTimer.unref?.();
     return;
   }
-  if (!shouldAnimate && state.animationTimer) {
-    clearInterval(state.animationTimer);
-    state.animationTimer = undefined;
-  }
+  if (!shouldAnimate) clearChatSessionAnimation(state);
 }
 
 export function clearChatSessionBusyForTerminalWorkflowStage<
@@ -65,6 +116,8 @@ export function clearChatSessionBusyForTerminalWorkflowStage<
 >(state: ChatSessionHostState<TExtraEntry>): void {
   state.sdkBusy = false;
   state.workingMessage = undefined;
+  state.compacting = false;
+  stopChatSessionWorkingLifecycle(state, false);
   if (finalizeTerminalWorkflowToolEntries(state.transcript)) {
     state.transcriptComponent.invalidate();
   }
@@ -76,14 +129,9 @@ export function clearChatSessionBusyForTerminalWorkflowStage<
 export function disposeChatSession<TExtraEntry extends ChatTranscriptEntryLike>(
   state: ChatSessionHostState<TExtraEntry>,
 ): void {
-  if (state.animationTimer) {
-    clearInterval(state.animationTimer);
-    state.animationTimer = undefined;
-  }
-  if (state.renderThrottleTimer) {
-    clearTimeout(state.renderThrottleTimer);
-    state.renderThrottleTimer = undefined;
-  }
+  state.disposed = true;
+  state.compacting = false;
+  stopChatSessionWorkingLifecycle(state, false);
   state.transcriptComponent.invalidate();
   state.editor = undefined;
 }
@@ -140,8 +188,14 @@ export function afterChatSessionEvent<TExtraEntry extends ChatTranscriptEntryLik
   state: ChatSessionHostState<TExtraEntry>,
   changed: boolean,
 ): void {
+  if (state.disposed) return;
   syncChatSessionAnimationTick(state);
   if (!changed) return;
+  if (state.immediateEventRenderPending) {
+    state.immediateEventRenderPending = false;
+    state.requestRender?.();
+    return;
+  }
   requestChatSessionEventRender(state);
 }
 
@@ -152,10 +206,13 @@ function requestChatSessionEventRender<
     state.requestRender?.();
     return;
   }
+  if (state.animationTimer) return;
   if (state.renderThrottleTimer) return;
-  state.renderThrottleTimer = setTimeout(() => {
+  const timer = setTimeout(() => {
+    if (state.disposed || state.renderThrottleTimer !== timer) return;
     state.renderThrottleTimer = undefined;
     state.requestRender?.();
   }, STREAMING_RENDER_THROTTLE_MS);
+  state.renderThrottleTimer = timer;
   state.renderThrottleTimer.unref?.();
 }

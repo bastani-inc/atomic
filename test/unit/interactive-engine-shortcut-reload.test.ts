@@ -6,6 +6,7 @@ import { join } from "node:path";
 
 const serialTest = process.platform === "win32" ? test.serial.skip : test.serial;
 const PREFIX = "@@ATOMIC_TEST@@";
+const ENGINE_BIND_SCENARIO_TIMEOUT_MS = 20_000;
 
 interface HarnessReport {
 	type?: string;
@@ -110,6 +111,20 @@ class InteractiveModeDriver {
 			}),
 		]);
 	}
+	async waitUntilEngineBound(shortcut: string): Promise<HarnessReport> {
+		const bound = await Promise.race([
+			this.waitFor((report) => report.type === "engine_bound", ENGINE_BIND_SCENARIO_TIMEOUT_MS),
+			this.process.exited.then((exitCode) => {
+				throw new Error(`Fixture exited before engine binding completed (exit=${exitCode}); stderr=${this.stderr.slice(-4_000)}`);
+			}),
+		]);
+		const catalog = [...this.reports].reverse().find((report) => report.type === "keybinding_state");
+		if (catalog?.shortcutKeys?.includes(shortcut) !== true) {
+			throw new Error(`Engine bound without expected shortcut ${shortcut}`);
+		}
+		return bound;
+	}
+
 
 	async stop(): Promise<void> {
 		if (this.process.exitCode === null) this.process.kill("SIGKILL");
@@ -163,6 +178,8 @@ async function reloadInteractiveMode(driver: InteractiveModeDriver, expectedBind
 	await driver.waitForNext(from, (report) =>
 		report.type === "reload_done" && report.expandKeys?.[0] === expectedBinding, 12_000);
 }
+
+
 
 async function reloadThroughExtensionContext(
 	driver: InteractiveModeDriver,
@@ -231,7 +248,7 @@ serialTest("real isolated InteractiveMode refreshes remote shortcuts and preserv
 		driver.send({ type: "state" });
 		state = await driver.waitForNext(stateIndex, (report) => report.type === "state");
 		assert.notEqual(state.toolsExpanded, initiallyExpanded, "custom agent-dir remap must reach editor input");
-		await driver.waitUntilShortcutReady("ctrl+y");
+		await driver.waitUntilEngineBound("ctrl+y");
 		driver.send({ type: "input", data: "\x19" });
 		const startupDeadline = performance.now() + 3_000;
 		while (shortcutInvocations(shortcutLog).length === 0 && performance.now() < startupDeadline) await Bun.sleep(20);
@@ -301,6 +318,41 @@ serialTest("startup shortcut dispatch waits for extension binding", async () => 
 	}
 }, 12_000);
 
+serialTest("post-bind shortcut readiness survives delayed extension session startup", async () => {
+	const temp = mkdtempSync(join(tmpdir(), "atomic-shortcut-delayed-bind-"));
+	const agentDir = join(temp, "custom-agent");
+	const shortcutConfig = join(temp, "shortcut.txt");
+	const shortcutLog = join(temp, "shortcut.log");
+	const keybindingsPath = join(agentDir, "keybindings.json");
+	const extension = join(import.meta.dir, "fixtures", "blocking-tool-extension.ts");
+	mkdirSync(agentDir, { recursive: true });
+	writeFileSync(shortcutConfig, "ctrl+y");
+	writeFileSync(keybindingsPath, JSON.stringify({ "app.tools.expand": "ctrl+x" }));
+	const driver = new InteractiveModeDriver(fixtureArgs(extension), {
+		ATOMIC_CODING_AGENT_DIR: agentDir,
+		ATOMIC_KEYBINDINGS_SHORTCUT_CONFIG_FILE: shortcutConfig,
+		ATOMIC_KEYBINDINGS_SHORTCUT_LOG_FILE: shortcutLog,
+		ATOMIC_KEYBINDINGS_SESSION_START_DELAY_MS: "9000",
+	});
+	try {
+		await driver.waitFor((report) => report.type === "terminal_ready");
+		await driver.waitFor((report) => report.type === "heartbeat" && typeof report.enginePid === "number");
+		const postBindWaitStartedAt = performance.now();
+		await driver.waitUntilEngineBound("ctrl+y");
+		assert.ok(
+			performance.now() - postBindWaitStartedAt >= 7_500,
+			"semantic engine binding must outlive the former generic eight-second report budget",
+		);
+		driver.send({ type: "input", data: "\x19" });
+		const dispatchDeadline = performance.now() + 3_000;
+		while (shortcutInvocations(shortcutLog).length === 0 && performance.now() < dispatchDeadline) await Bun.sleep(20);
+		assert.deepEqual(shortcutInvocations(shortcutLog), ["ctrl+y"]);
+	} finally {
+		await driver.stop();
+		rmSync(temp, { recursive: true, force: true });
+	}
+}, 20_000);
+
 serialTest("real engine restart republishes bindings and replaces the remote shortcut catalog", async () => {
 	const temp = mkdtempSync(join(tmpdir(), "atomic-shortcut-restart-parity-"));
 	const agentDir = join(temp, "custom-agent");
@@ -325,7 +377,7 @@ serialTest("real engine restart republishes bindings and replaces the remote sho
 		driver.send({ type: "state" });
 		const startup = await driver.waitFor((report) => report.type === "state" && report.expandKeys?.[0] === "ctrl+x");
 		assert.equal(startup.expandDisplay, "ctrl+x");
-		await driver.waitUntilShortcutReady("ctrl+y");
+		await driver.waitUntilEngineBound("ctrl+y");
 		driver.send({ type: "input", data: "\x19" });
 		const initialShortcutDeadline = performance.now() + 3_000;
 		while (shortcutInvocations(shortcutLog).length === 0 && performance.now() < initialShortcutDeadline) await Bun.sleep(20);

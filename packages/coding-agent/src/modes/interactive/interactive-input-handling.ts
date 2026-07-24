@@ -3,6 +3,7 @@ import { pasteClipboardImageToEditor, recordTimeSinceReset } from "./interactive
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import { interruptBlockedInteractiveEngine } from "../interactive-engine/extension-ui-bridge.ts";
 import { routeGlobalClearInput } from "./interactive-global-clear.ts";
+import { StartupIdentityComponent } from "./components/startup-identity.ts";
 
 InteractiveModeBase.prototype.runUserPromptTurn = async function(this: InteractiveModeBase, userInput: string): Promise<void> {
     // Show the working spinner immediately on submit so there is no visible gap
@@ -43,16 +44,20 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function(this: Interacti
     }
   };
 
-InteractiveModeBase.prototype.setupKeyHandlers = function(this: InteractiveModeBase): void {
-    this.ui.addInputListener((data) => routeGlobalClearInput(data, {
-      matchesClear: (candidate) => this.keybindings.matches(candidate, "app.clear"),
-      hasOverlay: () => this.ui.hasOverlay(),
-      blockingInlineCustomUiActive: () => this.blockingInlineCustomUiDepth > 0,
-      editorOwnsInput: () => this.editorContainer.children.includes(this.editor),
-      onClear: () => this.handleCtrlC(),
-      requestRender: () => this.ui.requestRender(),
-    }));
+export function registerStartupInputListeners(mode: InteractiveModeBase): void {
+	mode.ui.addInputListener(() => mode.builtInHeader instanceof StartupIdentityComponent ? void mode.builtInHeader.settle() : undefined);
+	mode.ui.addInputListener((data) => routeGlobalClearInput(data, {
+		matchesClear: (candidate) => mode.keybindings.matches(candidate, "app.clear"),
+		hasOverlay: () => mode.ui.hasOverlay(),
+		blockingInlineCustomUiActive: () => mode.blockingInlineCustomUiDepth > 0,
+		editorOwnsInput: () => mode.editorContainer.children.includes(mode.editor),
+		onClear: () => mode.handleCtrlC(),
+		requestRender: () => mode.ui.requestRender(),
+	}));
+}
 
+InteractiveModeBase.prototype.setupKeyHandlers = function(this: InteractiveModeBase): void {
+	registerStartupInputListeners(this);
     // Set up handlers on defaultEditor - they use this.editor for text access
     // so they work correctly regardless of which editor is active
     this.defaultEditor.onEscape = () => {

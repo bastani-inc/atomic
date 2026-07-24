@@ -20,6 +20,16 @@ export interface ChatSessionHostStyle {
   textMuted(text: string): string;
   accent(text: string): string;
   accentBold(text: string): string;
+  workingIndicatorPalette?: () => {
+    dark: string;
+    lift: string;
+    muted: string;
+    accent: string;
+    bright: string;
+    peak: string;
+  };
+  /** Use Atomic's live global theme when the host shares the interactive theme proxy. */
+  workingIndicatorUseGlobalTheme?: boolean;
   rule(hex: string, text: string): string;
   cursor(): string;
   blank(width: number): string;

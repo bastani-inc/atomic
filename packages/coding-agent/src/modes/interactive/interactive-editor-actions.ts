@@ -1,9 +1,10 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { getCapabilities, hyperlink, Spacer, Text, APP_NAME, CHANGELOG_URL, openExternalEditorForText, DynamicBorder, theme } from "./interactive-mode-deps.ts";
 import { ExpandableText, isExpandable } from "./interactive-mode-helpers.ts";
+import { StartupIdentityComponent } from "./components/startup-identity.ts";
 
 InteractiveModeBase.prototype.refreshBuiltInHeader = function(this: InteractiveModeBase): void {
-    if (this.builtInHeader instanceof ExpandableText) {
+    if (this.builtInHeader instanceof ExpandableText || this.builtInHeader instanceof StartupIdentityComponent) {
       this.builtInHeader.refresh();
     }
   };

@@ -96,6 +96,8 @@ export default function blockingToolExtension(api: ExtensionAPI): void {
 	}
 
 	api.on("session_start", async (event, ctx) => {
+		const startupDelayMs = Number(process.env.ATOMIC_KEYBINDINGS_SESSION_START_DELAY_MS ?? 0);
+		if (Number.isFinite(startupDelayMs) && startupDelayMs > 0) await Bun.sleep(startupDelayMs);
 		const startupGateFile = process.env.ATOMIC_KEYBINDINGS_SESSION_START_GATE_FILE;
 		if (startupGateFile) {
 			writeFileSync(startupGateFile, "waiting");

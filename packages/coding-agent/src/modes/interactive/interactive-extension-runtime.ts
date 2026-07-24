@@ -1,6 +1,7 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
-import { type KeyId, type Component, type LoaderIndicatorOptions, type ExtensionContext, type ExtensionRunner, type ExtensionWidgetOptions, Container, Loader, matchesKey, Text, TUI, AssistantMessageComponent, keyText, Theme, theme } from "./interactive-mode-deps.ts";
+import { type KeyId, type Component, type LoaderIndicatorOptions, type ExtensionContext, type ExtensionRunner, type ExtensionWidgetOptions, Container, matchesKey, Text, TUI, AssistantMessageComponent, keyText, Theme, theme } from "./interactive-mode-deps.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
+import { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 
 InteractiveModeBase.prototype.setupExtensionShortcuts = function(this: InteractiveModeBase, extensionRunner: ExtensionRunner): void {
     const shortcuts = extensionRunner.getShortcuts(
@@ -68,15 +69,15 @@ InteractiveModeBase.prototype.getWorkingLoaderMessage = function(this: Interacti
     return this.workingMessage ?? this.defaultWorkingMessage;
   };
 
-InteractiveModeBase.prototype.createWorkingLoader = function(this: InteractiveModeBase): Loader {
-    return new Loader(
-      this.ui,
-      (spinner) => theme.fg("accent", spinner),
-      (text) => theme.fg("muted", text),
-      this.getWorkingLoaderMessage(),
-      this.workingIndicatorOptions,
-    );
-  };
+InteractiveModeBase.prototype.createWorkingLoader = function(this: InteractiveModeBase): AtomicWorkingLoader {
+	return new AtomicWorkingLoader(
+		this.ui,
+		undefined,
+		(text) => theme.fg("muted", text),
+		this.getWorkingLoaderMessage(),
+		this.workingIndicatorOptions,
+	);
+};
 
 InteractiveModeBase.prototype.stopWorkingLoader = function(this: InteractiveModeBase): void {
     const hadLoader = this.loadingAnimation !== undefined;

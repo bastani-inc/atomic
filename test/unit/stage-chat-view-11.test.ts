@@ -12,6 +12,7 @@ import {
     type AgentSession,
     type AgentSessionEvent,
 } from "./stage-chat-view-helpers.js";
+import { installLifecycleFakeClock } from "./chat-session-host-working-lifecycle-fixture.ts";
 
 describe("StageChatView", () => {
     test("requests render and accumulates SDK thinking deltas", () => {
@@ -65,6 +66,7 @@ describe("StageChatView", () => {
             onClose: () => {},
         });
 
+        emit({ type: "agent_start" } as unknown as AgentSessionEvent);
         emit({
             type: "message_start",
             message: { role: "assistant", content: [] },
@@ -110,6 +112,7 @@ describe("StageChatView", () => {
         );
         assert.match(view.render(96).join("\n"), /I will inspect it/);
         assert.match(view.render(96).join("\n"), /read/);
+        assert.doesNotMatch(view.render(96).map(stripAnsi).join("\n"), /Checking the machinery/);
         view.dispose();
     });
 
@@ -144,6 +147,8 @@ describe("StageChatView", () => {
     });
 
     test("agent lifecycle starts and stops the Pi-style animation tick", () => {
+        const previousReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
+        delete process.env.ATOMIC_REDUCED_MOTION;
         const store = createStore();
         setupRun(store, "run-1", "stage-a");
         const { handle, emit } = makeHandle();
@@ -157,12 +162,17 @@ describe("StageChatView", () => {
             onDetach: () => {},
             onClose: () => {},
         });
-        assert.equal(view._hasAnimationTick, false);
-        emit({ type: "agent_start" } as unknown as AgentSessionEvent);
-        assert.equal(view._hasAnimationTick, true);
-        emit({ type: "agent_end" } as unknown as AgentSessionEvent);
-        assert.equal(view._hasAnimationTick, false);
-        view.dispose();
+        try {
+            assert.equal(view._hasAnimationTick, false);
+            emit({ type: "agent_start" } as unknown as AgentSessionEvent);
+            assert.equal(view._hasAnimationTick, true);
+            emit({ type: "agent_end" } as unknown as AgentSessionEvent);
+            assert.equal(view._hasAnimationTick, false);
+        } finally {
+            view.dispose();
+            if (previousReducedMotion === undefined) delete process.env.ATOMIC_REDUCED_MOTION;
+            else process.env.ATOMIC_REDUCED_MOTION = previousReducedMotion;
+        }
     });
 
     test("Escape pauses streaming stage chat without moving it to read-only", async () => {
@@ -221,6 +231,63 @@ describe("StageChatView", () => {
         view.dispose();
     });
 
+    test("Escape pause stops and fences the workflow-stage working timer without store cleanup", async () => {
+        const previousReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
+        delete process.env.ATOMIC_REDUCED_MOTION;
+        const timers = installLifecycleFakeClock();
+        const store = createStore();
+        setupRun(store, "run-1", "stage-a");
+        const { handle, emit, state } = makeHandle({
+            promptCalls: [],
+            steerCalls: [],
+            followUpCalls: [],
+            pauseCalls: 0,
+            resumeCalls: [],
+            isStreaming: true,
+        });
+        let renderRequests = 0;
+        const view = new StageChatView({
+            store,
+            graphTheme: deriveGraphTheme({}),
+            runId: "run-1",
+            stageId: "stage-a",
+            workflowName: "test-wf",
+            handle,
+            onDetach: () => {},
+            onClose: () => {},
+            requestRender: () => {
+                renderRequests += 1;
+            },
+        });
+        try {
+            emit({ type: "agent_start" } as AgentSessionEvent);
+            assert.equal(view._hasAnimationTick, true);
+            assert.equal(timers.activeIntervalDelays().includes(88), true);
+            assert.match(stripAnsi(view.render(96).join("\n")), /Working/);
+            const animationIndex = timers.intervalDelays().lastIndexOf(88);
+            const interruptedTick = timers.capturedAnimationCallbacks()[animationIndex]!;
+
+            view.handleInput("\x1b");
+            await flush();
+            await flush();
+
+            assert.equal(state.pauseCalls, 1);
+            assert.equal(store.runs()[0]?.stages[0]?.status, "running", "store cleanup must not mask interrupt cleanup");
+            assert.equal(view._hasAnimationTick, false);
+            assert.equal(timers.activeIntervalDelays().includes(88), false);
+            assert.doesNotMatch(stripAnsi(view.render(96).join("\n")), /Working/);
+            const afterInterrupt = renderRequests;
+            interruptedTick();
+            timers.advanceBy(176);
+            assert.equal(renderRequests, afterInterrupt, "paused-stage callback cannot repaint invisibly");
+        } finally {
+            view.dispose();
+            timers.restore();
+            if (previousReducedMotion === undefined) delete process.env.ATOMIC_REDUCED_MOTION;
+            else process.env.ATOMIC_REDUCED_MOTION = previousReducedMotion;
+        }
+    });
+
     test("tracks SDK tool execution events by toolCallId", () => {
         const store = createStore();
         setupRun(store, "run-1", "stage-a");
@@ -244,7 +311,7 @@ describe("StageChatView", () => {
             type: "tool_execution_start",
             toolCallId: "t1",
             toolName: "bash",
-            args: { command: "ls" },
+            args: { command: "bun test" },
         } as unknown as AgentSessionEvent);
         assert.equal(view._transcript.at(-1)?.role, "tool");
         assert.equal(view._transcript.at(-1)?.text.includes("bash"), true);
@@ -256,16 +323,74 @@ describe("StageChatView", () => {
             result: { content: [{ type: "text", text: "ok" }], details: {} },
             isError: false,
         } as unknown as AgentSessionEvent);
-
         assert.equal(renders, 2);
         const entry = view._transcript.at(-1);
         assert.equal(entry?.role, "tool");
         assert.equal(entry?.text.includes("ok"), true);
         const renderedLines = view.render(96);
         assert.match(renderedLines.join("\n"), /ok/);
-        const toolLine = renderedLines.find((line) => line.includes("$ ls"));
+        const toolLine = renderedLines.find((line) => line.includes("$ bun test"));
         assert.notEqual(toolLine, undefined);
         view.dispose();
+    });
+
+    test("renders the working surface throughout active SDK tool execution", () => {
+        const store = createStore();
+        setupRun(store, "run-1", "stage-a");
+        const { handle, emit } = makeHandle();
+        const view = new StageChatView({
+            store,
+            graphTheme: deriveGraphTheme({}),
+            runId: "run-1",
+            stageId: "stage-a",
+            workflowName: "test-wf",
+            handle,
+            onDetach: () => {},
+            onClose: () => {},
+        });
+
+        emit({ type: "agent_start" } as AgentSessionEvent);
+        emit({
+            type: "tool_execution_start",
+            toolCallId: "t1",
+            toolName: "bash",
+            args: { command: "bun test" },
+        } as AgentSessionEvent);
+        assert.match(view.render(96).map(stripAnsi).join("\n"), /Working\.\.\./);
+
+        emit({
+            type: "tool_execution_end",
+            toolCallId: "t1",
+            toolName: "bash",
+            result: { content: [{ type: "text", text: "ok" }], details: {} },
+            isError: false,
+        } as AgentSessionEvent);
+        assert.match(view.render(96).map(stripAnsi).join("\n"), /Working\.\.\./);
+        view.dispose();
+    });
+
+    test("the original whimsical verb survives tool lifecycle and streamed snapshots", () => {
+        const previousRandom = Math.random;
+        Math.random = () => 0;
+        try {
+            const store = createStore();
+            setupRun(store, "run-1", "stage-a");
+            const { handle, emit } = makeHandle();
+            const view = new StageChatView({ store, graphTheme: deriveGraphTheme({}), runId: "run-1", stageId: "stage-a", workflowName: "test-wf", handle, onDetach: () => {}, onClose: () => {} });
+            emit({ type: "agent_start" } as AgentSessionEvent);
+            emit({ type: "turn_start" } as AgentSessionEvent);
+            emit({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: undefined } as AgentSessionEvent);
+            emit({ type: "tool_execution_start", toolCallId: "write-1", toolName: "write", args: { path: "src/a.ts" } } as AgentSessionEvent);
+            emit({ type: "tool_execution_end", toolCallId: "write-1", toolName: "write", result: { content: [] }, isError: false } as AgentSessionEvent);
+            emit({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read", result: { content: [] }, isError: false } as AgentSessionEvent);
+            emit({ type: "message_update", message: { role: "assistant", content: [{ type: "toolCall", id: "read-1", name: "read", arguments: {} }] } } as AgentSessionEvent);
+            assert.match(stripAnsi(view.render(96).join("\n")), /Schlepping\.\.\./);
+            emit({ type: "turn_end" } as AgentSessionEvent);
+            assert.doesNotMatch(stripAnsi(view.render(96).join("\n")), /Working\.\.\.|Schlepping\.\.\./);
+            view.dispose();
+        } finally {
+            Math.random = previousRandom;
+        }
     });
 
     test("does not duplicate ask_user_question output echoed as a toolResult message", () => {

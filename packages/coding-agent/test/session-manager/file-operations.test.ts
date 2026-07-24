@@ -289,7 +289,7 @@ describe("SessionManager.setSessionFile with corrupted files", () => {
 		writeFileSync(noHeaderFile, originalContent);
 
 		expect(() => SessionManager.open(noHeaderFile, tempDir)).toThrow(
-			`Session file is not a valid pi session: ${noHeaderFile}`,
+			`Session file is not a valid Atomic session: ${noHeaderFile}`,
 		);
 
 		// The corrupted file must be left untouched.

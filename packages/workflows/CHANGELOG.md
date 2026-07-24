@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Changed workflow stage chat to render Atomic's exact one-cell `∀` with a pronounced, theme-aware dark → accent → bright/bold → accent → dark luminance ramp at 88ms and the ordinary one-row working geometry, while preserving `NO_COLOR` weight activity, reduced-motion static accent styling, blocked/prompt chrome suppression, composer space, and factual-state precedence.
+
+### Fixed
+
+- Fixed workflow-supplied working-indicator palettes to quantize through Atomic's detected terminal color mode, preserving the intended phase progression in 256-color and conhost-like environments instead of forcing truecolor output.
+
 ## [0.9.11-alpha.5] - 2026-07-23
 
 ### Changed
@@ -57,6 +65,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Fixed `workflow({ action: "resume", runId })` returning `Run not found` for eligible durably paused workflows after session-local run state was cleared. Explicit tool resume now resolves exact IDs and unique or ambiguous prefixes through the authoritative DBOS catalog before refusing the target, preserves original workflow IDs and checkpoint replay, and surfaces resource or durable lookup failures without making ordinary status listing hydrate durable history. ([#1924](https://github.com/bastani-inc/atomic/issues/1924))
 - Fixed session teardown crashing the process (exit code 1) after DBOS durability provisioning had failed: `shutdownDbos` re-awaited the memoized rejected configuration promise and rethrew the original provisioning error out of session dispose and the `beforeExit` hook, turning otherwise-successful `--print` runs into nonzero exits (surfacing as `NonZeroAgentExitCodeError` in eval harnesses). Shutdown is now a no-op for a backend that never reached readiness, and genuine teardown failures are logged instead of thrown.
+
 
 ## [0.9.10] - 2026-07-20
 

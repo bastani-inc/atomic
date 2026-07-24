@@ -143,6 +143,15 @@ async function runHost(): Promise<void> {
 								expandKeys: expandBinding === undefined ? [] : Array.isArray(expandBinding) ? expandBinding : [expandBinding],
 							});
 						});
+						void created.runtimeHost.waitUntilBound().then(
+							() => report({
+								type: "engine_bound",
+								generation: created.runtimeHost instanceof IsolatedInteractiveRuntime
+									? created.runtimeHost.getEngineGeneration()
+									: undefined,
+							}),
+							(error: Error) => report({ type: "diagnostic", message: `Engine binding failed: ${error.message}` }),
+						);
 					}
 					created.session.subscribe((event) => report({ type: "session_event", eventType: event.type }));
 				},

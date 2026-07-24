@@ -129,7 +129,7 @@ What Atomic is not: a cluttered enterprise dashboard, a generic CLI dump, or a f
 - Depth via tonal layering only; no shadows are possible in a terminal
 - Bold + dim contrast carries hierarchy where size cannot
 - Unicode iconography only (no emoji): `✓ ✗ → ↵ ↑↓←→ ○ ● ◆ ▸ ❯ │`
-- Braille spinner `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` at 80ms for loading
+- Ordinary working identity uses the literal one-cell `∀` with a theme-role luminance ramp at 88ms
 
 ## 2. Colors
 
@@ -255,7 +255,7 @@ The component voice is **tactile and confident**: rounded boxes, decisive select
 - **Pattern:** `  LABEL` — two-space indent with `subtext0` bold caps. Used to demarcate ARGUMENTS, INPUTS, and similar groupings.
 
 ### Spinner
-- **Pattern:** Braille spinner `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` at 80ms. Always `text` or status-colored, never animated decoratively.
+- **Pattern:** Keep the ordinary working identity as the exact literal one-cell `∀`. Animate only terminal foreground color and weight through `selection → accent → text/bold → accent → selection` at 88ms; never change glyph, width, or row count. Reduced motion is static regular `accent`; `NO_COLOR` uses regular/bold weight only. Extension-provided indicators remain verbatim.
 
 ### Named Rules
 
