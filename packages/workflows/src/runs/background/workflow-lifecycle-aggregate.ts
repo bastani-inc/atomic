@@ -1,5 +1,6 @@
 import { expandWorkflowGraph } from "../../shared/expanded-workflow-graph.js";
 import type { Store } from "../../shared/store-public-types.js";
+import { reciprocalWorkflowRootRunId } from "../../shared/workflow-run-ownership.js";
 
 /** Control-run ids visible below one workflow boundary, in graph order. */
 export function expandedControlRunIds(store: Store, runId: string): string[] {
@@ -11,17 +12,8 @@ export function expandedControlRunIds(store: Store, runId: string): string[] {
 
 /** Find the aggregate top-level lifecycle owner for a nested child run. */
 export function aggregateWorkflowRootRunId(store: Store, runId: string): string {
-  let current = runId;
-  const visited = new Set<string>();
-  while (!visited.has(current)) {
-    visited.add(current);
-    const parent = store.runs().find((run) => run.stages.some((stage) =>
-      stage.workflowChildRun?.runId === current || stage.workflowChild?.runId === current
-    ));
-    if (parent === undefined) return current;
-    current = parent.id;
-  }
-  return current;
+  const runById = new Map(store.runs().map((run) => [run.id, run]));
+  return reciprocalWorkflowRootRunId(runById, runId) ?? runId;
 }
 
 /** Whether this workflow boundary contains a paused/blocked descendant stage. */

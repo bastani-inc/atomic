@@ -35,11 +35,12 @@ export interface GraphViewOpts {
    */
   onDetach?: () => void;
   /**
-   * When provided, GraphView restores focus to this stage on construction
-   * — used by the attach shell so returning from the chat lands the
-   * cursor on the same node the user just attached to.
+   * When provided, GraphView restores focus to this stage on construction.
+   * `initialFocusedRunId` disambiguates identical local stage IDs in nested runs.
+   * The attach shell uses the pair when returning from stage chat.
    */
   initialFocusedStageId?: string;
+  initialFocusedRunId?: string;
   /**
    * Optional accessor returning the current terminal row count. When
    * present in overlay mode the renderer expands the frame to roughly

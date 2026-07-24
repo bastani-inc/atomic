@@ -73,6 +73,8 @@ export interface Store {
   notices(): readonly WorkflowNotice[];
   activeRunId(): string | null;
   recordRunStart(run: RunSnapshot): void;
+  /** Compare-and-swap a cached child run's owning boundary during durable replay. */
+  reconcileRunParentStage(runId: string, expectedParentStageId: string, parentStageId: string): boolean;
   recordStageStart(runId: string, stage: StageSnapshot): void;
   /** Link a workflow boundary stage to its live child run before that child completes. */
   recordStageWorkflowChildRun(runId: string, stageId: string, ref: WorkflowChildRunRef): boolean;

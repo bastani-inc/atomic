@@ -193,6 +193,7 @@ const store: Store = {
   notices: () => [],
   activeRunId: () => run?.id ?? null,
   recordRunStart: () => {},
+  reconcileRunParentStage: () => false,
   recordStageStart: () => {},
   recordStageWorkflowChildRun: () => false,
   recordToolStart: () => {},
