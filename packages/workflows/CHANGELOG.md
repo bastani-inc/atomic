@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Fixed workflow-supplied working-indicator palettes to quantize through Atomic's detected terminal color mode, preserving the intended phase progression in 256-color and conhost-like environments instead of forcing truecolor output.
+- Fixed retained terminal stage chats dropping the Working indicator after Enter and before the follow-up agent turn started; the indicator now remains visible and animated throughout prompt attachment and processing without reviving stale terminal activity ([#1982](https://github.com/bastani-inc/atomic/issues/1982)).
 
 ## [0.9.11-alpha.5] - 2026-07-23
 
