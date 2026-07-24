@@ -3,6 +3,10 @@ import type {
   StageSnapshot,
   StoreSnapshot,
 } from "./store-types.js";
+import {
+  authoritativeWorkflowChildRunId,
+  reciprocalWorkflowRootRunId,
+} from "./workflow-run-ownership.js";
 
 export interface ExpandedWorkflowStageTarget {
   readonly runId: string;
@@ -31,12 +35,6 @@ function virtualStageId(runId: string, stageId: string, isRootRun: boolean): str
 
 function isTerminalNonCompletedBoundary(stage: StageSnapshot): boolean {
   return stage.status === "failed" || stage.status === "skipped";
-}
-
-function childRunIdFor(stage: StageSnapshot): string | undefined {
-  if (isTerminalNonCompletedBoundary(stage)) return undefined;
-  if (stage.status === "completed") return stage.workflowChild?.runId ?? stage.workflowChildRun?.runId;
-  return stage.workflowChildRun?.runId;
 }
 
 function childAliasFor(stage: StageSnapshot): string | undefined {
@@ -86,6 +84,13 @@ export function expandWorkflowGraph(
   // has a single boundary stage), so removing a run from `visiting` on exit
   // cannot double-expand a shared child into duplicate virtual stage ids. If
   // that invariant is ever relaxed, dedupe expanded stages by virtual id here.
+  const rootOwnerByRunId = new Map<string, string | undefined>();
+  const rootOwnerFor = (runId: string): string | undefined => {
+    if (rootOwnerByRunId.has(runId)) return rootOwnerByRunId.get(runId);
+    const owner = reciprocalWorkflowRootRunId(runById, runId);
+    rootOwnerByRunId.set(runId, owner);
+    return owner;
+  };
   const visiting = new Set<string>();
 
   const expandRun = (
@@ -102,16 +107,17 @@ export function expandWorkflowGraph(
     const boundaryExpansions = new Map<string, ExpandedRunResult | null>();
 
     const validChildRunFor = (stage: StageSnapshot): RunSnapshot | undefined => {
-      const childRunId = childRunIdFor(stage);
+      const childRunId = authoritativeWorkflowChildRunId(stage);
       if (childRunId === undefined) return undefined;
       const childRun = runById.get(childRunId);
-      const expectedRootRunId = run.rootRunId ?? run.id;
+      const runRoot = rootOwnerFor(run.id);
       if (
         childRun === undefined ||
         childRun.stages.length === 0 ||
         childRun.parentRunId !== run.id ||
         childRun.parentStageId !== stage.id ||
-        (childRun.rootRunId !== undefined && childRun.rootRunId !== expectedRootRunId)
+        runRoot === undefined ||
+        rootOwnerFor(childRun.id) !== runRoot
       ) {
         return undefined;
       }

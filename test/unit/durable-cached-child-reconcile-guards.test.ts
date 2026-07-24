@@ -1,6 +1,13 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { reconcileCachedDirectChildParentStage } from "../../packages/workflows/src/engine/run-durable-topology.js";
+import {
+  createDurableCachedStageRecorder,
+  reconcileCachedDirectChildParentStage,
+} from "../../packages/workflows/src/engine/run-durable-topology.js";
+import { GraphFrontierTracker } from "../../packages/workflows/src/engine/graph-inference.js";
+import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import type { DurableCompletedStageCheckpoint } from "../../packages/workflows/src/durable/stage-primitive.js";
+import { DURABLE_STAGE_TOPOLOGY_VERSION } from "../../packages/workflows/src/durable/types.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { PendingPrompt, RunSnapshot, StageSnapshot, StoreSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 
@@ -124,7 +131,7 @@ test("cached child reconciliation rejects every ownership and status mismatch ve
       existing: childRun({ rootRunId: "other-root" }),
       catalog: childRun({ rootRunId: "other-root" }),
     },
-    { name: "existing and catalog roots disagree", existing: childRun({ rootRunId: undefined }) },
+    { name: "existing and catalog present roots disagree", existing: childRun({ rootRunId: "other-root" }) },
   ];
 
   for (const item of cases) {
@@ -261,4 +268,163 @@ test("an already reconciled child cannot be stolen by a later corrupt boundary",
   assert.equal(second, false);
   assert.equal(store.runs()[0]?.parentStageId, "first-current-boundary");
   assert.deepEqual(store.snapshot(), afterFirst);
+});
+
+test("nested cached child reconciles only with complete reciprocal legacy-root ancestry", () => {
+  const rootBoundary = boundary("root-to-middle", "middle");
+  const root = parentRun({ stages: [rootBoundary] });
+  const middle = parentRun({
+    id: "middle",
+    name: "middle-name",
+    parentRunId: ROOT_ID,
+    parentStageId: rootBoundary.id,
+    rootRunId: undefined,
+    stages: [boundary("current-boundary")],
+  });
+  const existing = childRun({ parentRunId: middle.id, rootRunId: ROOT_ID });
+  const catalog = childRun({ parentRunId: middle.id, rootRunId: ROOT_ID });
+  const store = createStore();
+  store.recordRunStart(root);
+  store.recordRunStart(middle);
+  store.recordRunStart(existing);
+  const before = store.snapshot();
+
+  const changed = reconcileCachedDirectChildParentStage({
+    store,
+    parentRun: middle,
+    catalogRun: catalog,
+    checkpointChildRunId: CHILD_ID,
+    boundary: boundary(),
+  });
+
+  assert.equal(changed, true);
+  assert.equal(store.runs().find((item) => item.id === CHILD_ID)?.parentStageId, "current-boundary");
+  const beforeChild = before.runs.find((item) => item.id === CHILD_ID)!;
+  const afterChild = store.snapshot().runs.find((item) => item.id === CHILD_ID)!;
+  const { parentStageId: _beforeParent, ...beforeRest } = beforeChild;
+  const { parentStageId: _afterParent, ...afterRest } = afterChild;
+  assert.deepEqual(afterRest, beforeRest);
+
+  const isolatedStore = createStore();
+  isolatedStore.recordRunStart(childRun({ parentRunId: middle.id, rootRunId: ROOT_ID }));
+  assert.equal(reconcileCachedDirectChildParentStage({
+    store: isolatedStore,
+    parentRun: middle,
+    catalogRun: catalog,
+    checkpointChildRunId: CHILD_ID,
+    boundary: boundary(),
+  }), false);
+  assert.equal(isolatedStore.runs()[0]?.parentStageId, OLD_BOUNDARY_ID);
+
+  const conflictingStore = createStore();
+  conflictingStore.recordRunStart(root);
+  conflictingStore.recordRunStart({ ...middle, rootRunId: "other-root" });
+  conflictingStore.recordRunStart(childRun({ parentRunId: middle.id, rootRunId: ROOT_ID }));
+  assert.equal(reconcileCachedDirectChildParentStage({
+    store: conflictingStore,
+    parentRun: { ...middle, rootRunId: "other-root" },
+    catalogRun: catalog,
+    checkpointChildRunId: CHILD_ID,
+    boundary: boundary(),
+  }), false);
+  assert.equal(conflictingStore.runs().find((item) => item.id === CHILD_ID)?.parentStageId, OLD_BOUNDARY_ID);
+
+  const storeConflict = createStore();
+  storeConflict.recordRunStart(root);
+  storeConflict.recordRunStart({ ...middle, rootRunId: "other-root" });
+  storeConflict.recordRunStart(childRun({ parentRunId: middle.id, rootRunId: ROOT_ID }));
+  assert.equal(reconcileCachedDirectChildParentStage({
+    store: storeConflict,
+    parentRun: middle,
+    catalogRun: catalog,
+    checkpointChildRunId: CHILD_ID,
+    boundary: boundary(),
+  }), false);
+  assert.equal(storeConflict.runs().find((item) => item.id === CHILD_ID)?.parentStageId, OLD_BOUNDARY_ID);
+});
+
+test("cached recorder derives the durable catalog root through rootless parent ancestry", () => {
+  const backend = new InMemoryDurableBackend();
+  backend.registerWorkflow({
+    workflowId: ROOT_ID,
+    name: "guard-root-name",
+    inputs: {},
+    createdAt: 1,
+    updatedAt: 10,
+    status: "completed",
+  });
+  const rootChildOutput = {
+    workflow: "middle-name", runId: "middle", status: "completed", outputs: {},
+  } as const;
+  const grandChildOutput = {
+    workflow: "guard-child-name", runId: CHILD_ID, status: "completed", outputs: {},
+  } as const;
+  backend.recordCheckpoint({
+    kind: "stage", workflowId: ROOT_ID, checkpointId: "root-boundary", name: "root-boundary",
+    replayKey: "root-boundary", output: rootChildOutput, completedAt: 2,
+    topology: {
+      version: DURABLE_STAGE_TOPOLOGY_VERSION, stageId: "root-boundary", parentIds: [],
+      run: { runId: ROOT_ID, runName: "guard-root-name", rootRunId: ROOT_ID },
+    },
+  });
+  const cachedBoundary: DurableCompletedStageCheckpoint = {
+    kind: "stage", workflowId: "middle", checkpointId: "middle-boundary", name: "middle-boundary",
+    replayKey: "middle-boundary", output: grandChildOutput, completedAt: 3,
+    topology: {
+      version: DURABLE_STAGE_TOPOLOGY_VERSION, stageId: "middle-boundary", parentIds: [],
+      run: {
+        runId: "middle", runName: "middle-name",
+        parentRunId: ROOT_ID, parentStageId: "root-boundary",
+      },
+    },
+  };
+  backend.recordCheckpoint({ ...cachedBoundary, workflowId: ROOT_ID });
+  backend.recordCheckpoint({
+    kind: "stage", workflowId: ROOT_ID, checkpointId: "grand-leaf", name: "leaf",
+    replayKey: "grand-leaf", output: "leaf-result", completedAt: 4,
+    topology: {
+      version: DURABLE_STAGE_TOPOLOGY_VERSION, stageId: "leaf", parentIds: [],
+      run: {
+        runId: CHILD_ID, runName: "guard-child-name", parentRunId: "middle",
+        parentStageId: "middle-boundary", rootRunId: ROOT_ID,
+      },
+    },
+  });
+
+  const root = parentRun({ stages: [boundary("root-boundary", "middle")] });
+  const middle = parentRun({
+    id: "middle", name: "middle-name", parentRunId: ROOT_ID,
+    parentStageId: "root-boundary", rootRunId: undefined, stages: [],
+  });
+  const store = createStore();
+  store.recordRunStart(root);
+  store.recordRunStart(middle);
+  const recorder = createDurableCachedStageRecorder({
+    store,
+    tracker: new GraphFrontierTracker(),
+    run: middle,
+    backend,
+    rootBackend: backend,
+    completedStageReplayKeys: new Map(),
+  });
+  recorder.record("middle-boundary", "middle-boundary", cachedBoundary);
+
+  const hydrated = store.runs().find((item) => item.id === CHILD_ID);
+  const replayedBoundary = store.runs().find((item) => item.id === "middle")?.stages[0];
+  assert.equal(hydrated?.parentRunId, "middle");
+  assert.equal(hydrated?.parentStageId, replayedBoundary?.id);
+  assert.equal(hydrated?.rootRunId, ROOT_ID);
+  assert.equal(replayedBoundary?.workflowChild?.runId, CHILD_ID);
+
+  const incompleteStore = createStore();
+  incompleteStore.recordRunStart(middle);
+  createDurableCachedStageRecorder({
+    store: incompleteStore,
+    tracker: new GraphFrontierTracker(),
+    run: middle,
+    backend,
+    rootBackend: backend,
+    completedStageReplayKeys: new Map(),
+  }).record("middle-boundary", "middle-boundary", cachedBoundary);
+  assert.equal(incompleteStore.runs().some((item) => item.id === CHILD_ID), false);
 });
