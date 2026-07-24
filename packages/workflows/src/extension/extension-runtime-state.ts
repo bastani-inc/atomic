@@ -1,6 +1,7 @@
 import type { CreateAgentSessionOptions } from "@bastani/atomic";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import type { SessionManager } from "../shared/persistence-restore.js";
+import type { RunSnapshot } from "../shared/store-types.js";
 import type {
   WorkflowExecutionPolicy,
   WorkflowMcpPort,
@@ -25,6 +26,7 @@ import { createStatusWriter, type StatusWriter } from "./status-writer.js";
 import {
   createWorkflowLifecycleNotificationState,
   installWorkflowLifecycleNotifications,
+  seedWorkflowLifecycleNotificationState,
   registerLifecycleNoticeRenderer,
   withWorkflowLifecycleNotificationsSuppressedAsync,
   type WorkflowLifecycleNotificationConfig,
@@ -50,6 +52,8 @@ export interface WorkflowExtensionRuntimeState {
   discoveryRef: { current: DiscoveryResult | null };
   lifecycleNotificationState: ReturnType<typeof createWorkflowLifecycleNotificationState>;
   hilAnswerNotificationState: ReturnType<typeof createWorkflowHilAnswerNotificationState>;
+  /** Seed lifecycle notification state before completed historical snapshots are inserted. */
+  beforeRestoreCompleted(snapshots: readonly RunSnapshot[]): void;
   runtimeForContext(ctx?: PiModelContext): ExtensionRuntime;
   resetWorkflowDiscoveryForSession(): void;
   ensureWorkflowConfigLoaded(): Promise<void>;
@@ -87,6 +91,9 @@ export function createWorkflowExtensionRuntimeState(
   let notificationGeneration = 0;
   const lifecycleNotificationState = createWorkflowLifecycleNotificationState();
   const hilAnswerNotificationState = createWorkflowHilAnswerNotificationState();
+  const beforeRestoreCompleted = (snapshots: readonly RunSnapshot[]): void => {
+    seedWorkflowLifecycleNotificationState(lifecycleNotificationState, { ...store.snapshot(), runs: snapshots });
+  };
   const lifecycleNotificationConfigRef: { current: WorkflowLifecycleNotificationConfig } = {
     current: WORKFLOW_CONFIG_DEFAULTS.workflowNotifications,
   };
@@ -135,6 +142,7 @@ export function createWorkflowExtensionRuntimeState(
       mcp: mcpPort,
       config: runtimeConfigRef.current,
       resolveDefaultStageSessionDir,
+      beforeRestoreCompleted,
     }),
   };
   const discoveryRef: { current: DiscoveryResult | null } = { current: null };
@@ -197,6 +205,7 @@ export function createWorkflowExtensionRuntimeState(
       config: runtimeConfigRef.current,
       models,
       resolveDefaultStageSessionDir,
+      beforeRestoreCompleted,
     });
   }
 
@@ -235,6 +244,7 @@ export function createWorkflowExtensionRuntimeState(
       mcp: mcpPort,
       config: runtimeConfigRef.current,
       resolveDefaultStageSessionDir,
+      beforeRestoreCompleted,
     });
   }
 
@@ -413,6 +423,7 @@ export function createWorkflowExtensionRuntimeState(
     discoveryRef,
     lifecycleNotificationState,
     hilAnswerNotificationState,
+    beforeRestoreCompleted,
     runtimeForContext,
     resetWorkflowDiscoveryForSession,
     ensureWorkflowConfigLoaded,

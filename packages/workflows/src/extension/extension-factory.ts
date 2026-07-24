@@ -120,6 +120,7 @@ function factory(pi: ExtensionAPI): void {
       overlay,
       runtimeForContext: runtimeState.runtimeForContext,
       ensureWorkflowResourcesLoaded: runtimeState.ensureWorkflowResourcesLoaded,
+      beforeRestoreCompleted: runtimeState.beforeRestoreCompleted,
     },
   });
   registerWorkflowMessageRenderers(pi);

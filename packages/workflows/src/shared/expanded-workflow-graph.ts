@@ -22,12 +22,13 @@ export type ExpandedWorkflowNode =
   | { readonly kind: "tool"; readonly tool: ExpandedWorkflowTool };
 
 export interface ExpandedWorkflowGraph {
-  /** Stage-compatible render projections; includes non-attachable tool cards. */
+  /** Stage-only inspection/control nodes; excludes tool projections. */
   readonly stages: readonly ExpandedWorkflowStage[];
   readonly tools: readonly ExpandedWorkflowTool[];
   readonly nodes: readonly ExpandedWorkflowNode[];
-  /** Contains stage targets only. Tool nodes intentionally have no chat/control target. */
+  /** All stage-compatible render projections, including non-attachable tool cards. */
   readonly renderStages: readonly ExpandedWorkflowStage[];
+  /** Stage targets only; tool nodes intentionally have no chat/control target. */
   readonly targets: ReadonlyMap<string, ExpandedWorkflowStageTarget>;
 }
 

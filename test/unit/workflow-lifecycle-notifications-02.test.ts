@@ -412,4 +412,51 @@ describe("installWorkflowLifecycleNotifications", () => {
       );
     }
   });
+
+  test("restoration seeding preserves pending and retryable live terminal admissions", () => {
+    const state = createWorkflowLifecycleNotificationState();
+    state.pendingTerminalRuns.set("completed:pending-live:", Symbol("pending"));
+    state.retryableTerminalRuns.add("completed:retry-live:");
+    const completed = (id: string) => ({
+      id, name: id, inputs: {}, status: "completed" as const, stages: [], startedAt: 1, endedAt: 2,
+    });
+
+    seedWorkflowLifecycleNotificationState(state, {
+      runs: [completed("pending-live"), completed("retry-live"), completed("history")], notices: [], version: 1,
+    });
+
+    assert.equal(state.deliveredTerminalRuns.has("completed:pending-live:"), false);
+    assert.equal(state.deliveredTerminalRuns.has("completed:retry-live:"), false);
+    assert.equal(state.deliveredTerminalRuns.has("completed:history:"), true);
+    assert.equal(state.pendingTerminalRuns.has("completed:pending-live:"), true);
+    assert.equal(state.retryableTerminalRuns.has("completed:retry-live:"), true);
+  });
+
+  test("failed lifecycle cards render tool origin with name and node-id fallback", () => {
+    const registered: RegisteredRenderer[] = [];
+    registerLifecycleNoticeRenderer({
+      rendererHost: {},
+      registerMessageRenderer(event, renderer) {
+        registered.push({ event, renderer: renderer as (payload: unknown) => unknown });
+      },
+    });
+    const render = (details: WorkflowLifecycleNoticeDetails, width: number): string[] =>
+      (registered[0]?.renderer({ details }) as CardComponent).render(width);
+    const base: WorkflowLifecycleNoticeDetails = {
+      kind: "failed", scope: "run", runId: "tool-failed", workflowName: "publish", status: "failed", createdAt: 1,
+      error: "publish rejected", toolNodeId: "tool:failure", toolName: "publish-api",
+    };
+
+    const named = render(base, 80).join("\n");
+    assert.match(named, /tool\s+publish-api/);
+    assert.doesNotMatch(named, /stage\s+/);
+    const fallback = render({ ...base, toolName: "" }, 80).join("\n");
+    assert.match(fallback, /tool\s+tool:failure/);
+    const stageWins = render({ ...base, stageName: "model-stage" }, 80).join("\n");
+    assert.match(stageWins, /stage\s+model-stage/);
+    assert.doesNotMatch(stageWins, /tool\s+publish-api/);
+    const narrow = render({ ...base, toolName: "" }, 24);
+    assert.match(narrow.join("\n"), /tool[\s\S]*tool:failure/);
+    assert.ok(narrow.every((line) => visibleWidth(line) <= 24));
+  });
 });

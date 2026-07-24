@@ -78,6 +78,47 @@ describe("workflow tool status nodes", () => {
       (run.toolNodes ?? []).map(({ name, status }) => ({ name, status })));
   });
 
+
+  test("mixed compact status keeps the stage hint and ordered tools", () => {
+    const run: RunSnapshot = {
+      id: "mixed-status-run", name: "mixed status", inputs: {}, status: "running", startedAt: 100,
+      stages: [{ id: "stage-1", name: "model-stage", status: "running", parentIds: [], toolEvents: [] }],
+      toolNodes: [
+        { ...tool("completed", 0), id: "prepare", name: "prepare" },
+        { ...tool("running", 1), id: "publish", name: "publish-api" },
+      ],
+    };
+    const summary = summarizeRunSnapshot(run, 300);
+    const result = { action: "status" as const, filter: "all" as const, runs: [summary], snapshots: [run] };
+
+    const text = renderWorkflowToolContent(result, { action: "status" });
+    assert.match(text, /stage: model-stage · tools: prepare \(completed\), publish-api \(running\)/);
+    const json = JSON.parse(renderWorkflowToolContent(result, { action: "status", format: "json" })) as {
+      runs: Array<{ tools: Array<{ name: string; status: string }> }>;
+    };
+    assert.deepEqual(json.runs[0]?.tools.map(({ name, status }) => ({ name, status })), [
+      { name: "prepare", status: "completed" },
+      { name: "publish-api", status: "running" },
+    ]);
+    const paused = summarizeRunSnapshot({ ...run, status: "paused", stages: [] }, 300);
+    const pausedText = renderWorkflowToolContent({ ...result, runs: [paused] }, { action: "status" });
+    assert.match(pausedText, /awaiting resume · tools: prepare \(completed\), publish-api \(running\)/);
+    const awaiting = summarizeRunSnapshot({
+      ...run,
+      pendingPrompt: { id: "prompt-1", kind: "input", message: "approve?", createdAt: 200 },
+    }, 300);
+    const awaitingText = renderWorkflowToolContent({ ...result, runs: [awaiting] }, { action: "status" });
+    assert.match(awaitingText, /awaiting input \(1\) · tools: prepare \(completed\), publish-api \(running\)/);
+    const stageOnly = summarizeRunSnapshot({ ...run, toolNodes: [] }, 300);
+    const stageOnlyLine = renderWorkflowToolContent({ ...result, runs: [stageOnly] }, { action: "status" })
+      .split("\n").find((line) => line.startsWith("[1]"));
+    assert.equal(stageOnlyLine?.endsWith("stage: model-stage"), true);
+    const toolOnlyRun = { ...run, stages: [], toolNodes: [run.toolNodes![1]!] };
+    const toolOnly = summarizeRunSnapshot(toolOnlyRun, 300);
+    const toolOnlyLine = renderWorkflowToolContent({ ...result, runs: [toolOnly], snapshots: [toolOnlyRun] }, { action: "status" })
+      .split("\n").find((line) => line.startsWith("[1]"));
+    assert.equal(toolOnlyLine?.endsWith("tools: publish-api (running)"), true);
+  });
   test("tool cards render terminal state labels", () => {
     const run = toolRun();
     const graph = expandWorkflowGraph({ runs: [run], notices: [], version: 1 }, run.id);

@@ -6,6 +6,11 @@ import { join } from "node:path";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { createExtensionRuntime, type ExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
+import {
+  createWorkflowLifecycleNotificationState,
+  installWorkflowLifecycleNotifications,
+  seedWorkflowLifecycleNotificationState,
+} from "../../packages/workflows/src/extension/lifecycle-notifications.js";
 import { handleRunControlCommand, type WorkflowRunControlDeps } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
 import { collectResumePickerLiveRuns } from "../../packages/workflows/src/extension/workflow-resume-picker-rows.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
@@ -38,6 +43,14 @@ function registerCompleted(backend: InMemoryDurableBackend, id: string, sessionF
   backend.recordCheckpoint({
     kind: "stage", workflowId: id, checkpointId: "stage:1", name: "final",
     replayKey: "stage:final:1", output: "ok", sessionFile, completedAt: 2,
+  });
+}
+
+function registerCompletedTool(backend: InMemoryDurableBackend, id: string): void {
+  backend.registerWorkflow({ workflowId: id, name: `${id}-flow`, inputs: {}, createdAt: 1, status: "completed" });
+  backend.recordCheckpoint({
+    kind: "tool", workflowId: id, checkpointId: "tool:done", name: "done",
+    argsHash: "done-hash", output: true, completedAt: 2,
   });
 }
 
@@ -86,6 +99,53 @@ describe("/workflow resume completed target", () => {
     assert.match(result.messages.join("\n"), /read-only inspection and follow-up chat/);
     assert.equal(store.runs().find((run) => run.id === "completed-command-target")?.status, "completed");
     assert.equal(backend.getWorkflow("completed-command-target")?.status, "completed");
+  });
+
+  test("keeps the direct completed fallback lifecycle-silent when the runtime omits the open adapter", async () => {
+    const backend = new InMemoryDurableBackend();
+    setDurableBackend(backend);
+    registerCompletedTool(backend, "completed-direct-fallback");
+    const lifecycleState = createWorkflowLifecycleNotificationState();
+    const sends: Array<{ options: object | undefined }> = [];
+    const unsubscribe = installWorkflowLifecycleNotifications({
+      store,
+      state: lifecycleState,
+      seedExisting: false,
+      config: { enabled: true, notifyOn: ["completed"] },
+      sendMessage(_message, options) { sends.push({ options }); },
+    });
+    const runtime = { ...createExtensionRuntime({ store }) };
+    delete runtime.openCompletedDurableWorkflow;
+    const opened: string[] = [];
+    const restored: string[][] = [];
+    const deps = commandDeps(runtime, opened);
+    deps.beforeRestoreCompleted = (snapshots) => {
+      assert.equal(store.runs().some((run) => run.id === "completed-direct-fallback"), false,
+        "lifecycle state must be seeded before the historical snapshot is inserted");
+      restored.push(snapshots.map((snapshot) => snapshot.id));
+      seedWorkflowLifecycleNotificationState(lifecycleState, { ...store.snapshot(), runs: snapshots });
+    };
+
+    try {
+      const messages: string[] = [];
+      const errors: string[] = [];
+      await handleRunControlCommand(
+        "resume",
+        ["completed-direct-fallback"],
+        { hasUI: true, ui: { notify: () => undefined } },
+        { info: (message) => messages.push(message), error: (message) => errors.push(message) },
+        deps,
+      );
+
+      assert.deepEqual(errors, []);
+      assert.deepEqual(opened, ["completed-direct-fallback"]);
+      assert.deepEqual(restored, [["completed-direct-fallback"]]);
+      assert.match(messages.join("\n"), /read-only inspection/);
+      assert.equal(store.runs().find((run) => run.id === "completed-direct-fallback")?.toolNodes?.[0]?.name, "done");
+      assert.deepEqual(sends, [], "historical command fallback must emit no lifecycle steer/card");
+    } finally {
+      unsubscribe();
+    }
   });
 
   test("opens an exact completed id and reports completed-prefix ambiguity", async () => {

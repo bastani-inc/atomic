@@ -49,9 +49,8 @@ import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { createDurableCachedStageRecorder, createDurableStageDeps } from "./run-durable-topology.js";
 import { admitDurableRootRun, durableRootRegistrationForRun } from "./run-durable-admission.js";
 import { createToolNodeLifecycle } from "./run-tool-node-lifecycle.js";
-
+import { createAdmittedToolExecutionTracker } from "./run-tool-execution-tracker.js";
 type WorkflowRunInputArgument = Parameters<typeof resolveAndValidateInputs>[1];
-
 export function run<
   TInputs extends WorkflowInputValues,
   TOutputs extends WorkflowOutputValues,
@@ -70,7 +69,6 @@ export async function run<
   opts: RunOpts = {},
 ): Promise<RunResult> {
   if (!isWorkflowDefinition(def)) throw new Error(workflowDefinitionRequirementMessage("run(definition, inputs)", def));
-
   const activeStore = opts.store ?? defaultStore;
   const adapters = opts.adapters ?? {};
   // Prompt-node UI is the graph-mode transport and intentionally takes precedence
@@ -78,7 +76,6 @@ export async function run<
   if (opts.usePromptNodesForUi === true && opts.ui !== undefined) {
     console.warn("atomic-workflows: usePromptNodesForUi ignores the provided RunOpts.ui adapter");
   }
-
   const depth = opts.depth ?? 0;
   const maxDepth = opts.config?.maxDepth ?? 4;
   if (depth >= maxDepth) {
@@ -114,7 +111,6 @@ export async function run<
   const inheritedElapsedMs = opts.parentRun === undefined
     ? inheritedRunElapsedMs({ backend: durableBackend, runId, continuationSource: opts.continuation?.source })
     : undefined;
-
   const runSnapshot: RunSnapshot = {
     id: runId,
     name: def.name,
@@ -134,7 +130,6 @@ export async function run<
     } : {}),
     ...(inheritedElapsedMs !== undefined ? { accumulatedDurationMs: inheritedElapsedMs } : {}),
   };
-
   const classifiedFailures = new Map<unknown, WorkflowFailure>();
   const classifyExecutorFailure = (error: unknown): WorkflowFailure => {
     const cached = classifiedFailures.get(error);
@@ -148,7 +143,6 @@ export async function run<
     classifiedFailures.set(error, classified);
     return classified;
   };
-
   activeStore.recordRunStart(runSnapshot);
   if (!opts.signal) opts.cancellation?.register(runId, ownController);
   opts.onRunStart?.(runSnapshot);
@@ -322,6 +316,7 @@ export async function run<
     hasPersistence: opts.persistence !== undefined, isChildRun: opts.parentRun !== undefined,
     continuationSourceId: opts.continuation?.source.id,
   });
+  const admittedTools = createAdmittedToolExecutionTracker();
   const tool = createToolPrimitive({
     workflowId: runId,
     backend: durableBackend,
@@ -332,6 +327,7 @@ export async function run<
       }
     },
     signal: ownController.signal,
+    trackExecution: admittedTools.track,
     ...createToolNodeLifecycle({ store: activeStore, tracker, run: runSnapshot, sourceToReplayedNodeIds }),
   });
 
@@ -415,6 +411,7 @@ export async function run<
     });
     if (opts.deferWorkflowStart === true) opts.onWorkflowStartReady?.();
     const rawResult = await runWorkflowDefinitionCallback(def.name, runId, () => def.run(ctx));
+    await admittedTools.drain();
     if (ownController.signal.aborted) {
       const selectedExit = findWorkflowExitSignal(ownController.signal.reason, exitScope);
       if (selectedExit !== undefined) return await finalizers.finalizeWorkflowExit(selectedExit);
@@ -422,6 +419,8 @@ export async function run<
       if (parentExit !== undefined) return await finalizers.finalizeParentWorkflowExitCancellation(parentExit);
       return finalizeKilled(runId, runSnapshot, activeStore, opts.persistence, opts.onRunEnd);
     }
+    const admittedToolFailure = admittedTools.firstFailure();
+    if (admittedToolFailure !== undefined) throw admittedToolFailure.error;
 
     const result = normalizeWorkflowRunOutput(def.name, rawResult);
     assertWorkflowRunOutputs(def.name, result, def.outputs);
@@ -435,6 +434,7 @@ export async function run<
     await durableBackend.flush();
     return reconcileTerminalRunResult(runId, runSnapshot, activeStore, { status: returned.status, result, error: returned.error }, opts.onRunEnd);
   } catch (err) {
+    await admittedTools.drain();
     const selectedExit = findWorkflowExitSignal(err, exitScope) ?? findWorkflowExitSignal(ownController.signal.reason, exitScope);
     if (selectedExit !== undefined) return await finalizers.finalizeWorkflowExit(selectedExit);
 

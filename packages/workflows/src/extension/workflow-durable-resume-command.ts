@@ -23,6 +23,8 @@ export interface WorkflowRunControlDeps {
   overlay: GraphOverlayPort;
   runtimeForContext: (ctx?: PiCommandContext) => ExtensionRuntime;
   ensureWorkflowResourcesLoaded: () => Promise<void> | void;
+  /** Seed lifecycle state before the direct completed-inspection fallback restores history. */
+  beforeRestoreCompleted?: (snapshots: readonly RunSnapshot[]) => void;
 }
 
 export interface WorkflowResumeCatalog {
@@ -108,7 +110,7 @@ export async function handleDurableResume(
       return await resumeDurableTarget(resolved.workflowId, ctx, reporter, deps, runtime);
     }
 
-    const completedAttempt = openCompleted(runtime, target, catalog.completed);
+    const completedAttempt = openCompleted(runtime, target, catalog.completed, deps.beforeRestoreCompleted);
     if (!completedAttempt.ok && completedAttempt.reason !== "not_found") {
       fail(completedAttempt.message);
       return true;
@@ -228,7 +230,7 @@ function openCompletedTarget(
   deps: WorkflowRunControlDeps,
   runtime: ExtensionRuntime,
 ): boolean {
-  const result = openCompleted(runtime, workflowId, catalog);
+  const result = openCompleted(runtime, workflowId, catalog, deps.beforeRestoreCompleted);
   if (!result.ok) reporter.error(result.message);
   else {
     reporter.info(result.message);
@@ -243,11 +245,13 @@ function openCompleted(
   runtime: ExtensionRuntime,
   workflowIdOrPrefix: string,
   catalog: readonly ResumableWorkflowEntry[],
+  beforeRestoreCompleted?: (snapshots: readonly RunSnapshot[]) => void,
 ) {
   return runtime.openCompletedDurableWorkflow?.(workflowIdOrPrefix, catalog)
     ?? openCompletedDurableWorkflow(workflowIdOrPrefix, {
       durableBackend: getDurableBackend(),
       store,
+      beforeRestore: beforeRestoreCompleted,
     }, catalog);
 }
 

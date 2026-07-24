@@ -214,7 +214,7 @@ export function installWorkflowLifecycleNotifications(
     }
 
     const key = terminalRunKey(kind, run);
-    if (state.deliveredTerminalRuns.has(key) || state.pendingTerminalRuns.has(key)) return;
+    if (state.deliveredTerminalRuns.has(key) || state.pendingTerminalRuns.has(key) || state.retryableTerminalRuns.has(key)) return;
     if (state.suppressionDepth > 0) {
       state.deliveredTerminalRuns.add(key);
       state.retryableTerminalRuns.delete(key);
@@ -302,10 +302,9 @@ export function formatWorkflowLifecycleNoticeText(details: WorkflowLifecycleNoti
     return `✓ Workflow "${workflowName}" completed (run ${details.runId}). Inspect: /workflow status ${details.runId}`;
   }
   if (details.kind === "failed") {
-    const stage = details.stageName ?? details.failedStageId;
-    const originText = stage
-      ? `, stage ${stage}`
-      : details.toolName ? `, tool ${details.toolName}` : "";
+    const stage = details.stageName ?? details.failedStageId ?? details.stageId;
+    const tool = lifecycleToolOrigin(details);
+    const originText = stage ? `, stage ${stage}` : tool !== undefined ? `, tool ${tool}` : "";
     const errorText = details.error ? `: ${details.error}` : "";
     return `✗ Workflow "${workflowName}" failed (run ${details.runId}${originText})${errorText}. Inspect: /workflow status ${details.runId}`;
   }
@@ -413,7 +412,9 @@ function awaitingInputKey(runId: string, stage: StageSnapshot): string {
 function runAwaitingInputKey(runId: string, prompt: PendingPrompt): string {
   return `awaiting_input:${runId}:run:${prompt.id}`;
 }
-
+function lifecycleToolOrigin(details: WorkflowLifecycleNoticeDetails): string | undefined {
+  return details.toolName !== undefined && details.toolName.length > 0 ? details.toolName : details.toolNodeId;
+}
 function truncateSnippet(value: string): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   if (normalized.length <= LIFECYCLE_NOTICE_SNIPPET_LIMIT) return normalized;
@@ -455,6 +456,7 @@ function renderLifecycleNoticeCard(
         : "WORKFLOW COMPLETE";
   const glyph = details.kind === "failed" ? "✗" : details.kind === "awaiting_input" ? "？" : details.kind === "blocked" ? "!" : "✓";
   const stage = details.stageName ?? details.failedStageId ?? details.stageId;
+  const tool = stage === undefined ? lifecycleToolOrigin(details) : undefined;
   const headline = details.kind === "failed"
     ? `Workflow "${details.workflowName}" failed`
     : details.kind === "awaiting_input"
@@ -471,6 +473,7 @@ function renderLifecycleNoticeCard(
       { label: "workflow", value: details.workflowName },
       { label: "run", value: details.runId },
       { label: "stage", value: stage },
+      { label: "tool", value: tool },
       { label: "prompt", value: details.promptMessage, tone: "muted" },
       { label: "error", value: details.error, tone: "error" },
       { label: "duration", value: formatDurationMs(details.durationMs), tone: "muted" },

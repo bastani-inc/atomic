@@ -26,6 +26,8 @@ export interface OpenCompletedDurableDeps {
   readonly stageControlRegistry?: StageControlRegistry;
   readonly cwd?: string;
   readonly defaultSessionDir?: string;
+  /** Seed lifecycle dedupe state before historical snapshots become observable. */
+  readonly beforeRestore?: (snapshots: readonly RunSnapshot[]) => void;
 }
 
 interface CompletedChatRegistration {
@@ -72,6 +74,7 @@ export function openCompletedDurableWorkflow(
   }
   const snapshots = completedWorkflowRunSnapshots(deps.durableBackend, resolved.entry);
   const snapshot = snapshots.find((run) => run.id === resolved.snapshot.id) ?? resolved.snapshot;
+  deps.beforeRestore?.(snapshots);
   for (const restored of snapshots) {
     const previous = deps.store.runs().find((run) => run.id === restored.id);
     if (previous !== undefined) deps.store.removeRun(previous.id);

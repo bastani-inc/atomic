@@ -69,4 +69,27 @@ describe("ctx.tool lifecycle notices", () => {
     assert.match(sent[0]?.content ?? "", /publish-failure.*remote publish rejected/);
     assert.equal(store.runs()[0]?.failedStageId, undefined);
   });
+
+  test("caught tool failure still emits exactly one failed lifecycle notice", async () => {
+    const { store, sent, unsubscribe } = install();
+    const result = await run(workflow({
+      name: "caught tool lifecycle failure", description: "", inputs: {}, outputs: {},
+      run: async (ctx) => {
+        try {
+          await ctx.tool("caught-publish", {}, async () => { throw new Error("caught publish rejected"); });
+        } catch {
+          // Tool failures remain workflow failures even when author code catches the promise.
+        }
+        return {};
+      },
+    }), {}, { store, durableBackend: new InMemoryDurableBackend() });
+    unsubscribe();
+
+    assert.equal(result.status, "failed");
+    assert.match(result.error ?? "", /caught publish rejected/);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0]?.details?.kind, "failed");
+    assert.equal(sent[0]?.details?.toolName, "caught-publish");
+    assert.equal(sent[0]?.details?.failedStageId, undefined);
+  });
 });

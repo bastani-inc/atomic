@@ -63,6 +63,8 @@ export interface CreateToolPrimitiveInput {
   readonly throwIfCancelled: () => void;
   /** Optional signal for aborting retry backoff sleeps. */
   readonly signal?: AbortSignal;
+  /** Track the final logical execution promise without replacing its identity. */
+  readonly trackExecution?: <T>(execution: Promise<T>) => void;
   /** Admit/update a first-class graph node around the durable call. */
   readonly onNodeStart?: (node: ToolNodeSnapshot) => void;
   readonly onNodeRunning?: (nodeId: string, startedAt: number) => void;
@@ -76,37 +78,58 @@ export interface CreateToolPrimitiveInput {
  */
 export function createToolPrimitive(input: CreateToolPrimitiveInput): WorkflowToolPrimitive {
   const ordinals = new Map<string, number>();
-  return async <T extends WorkflowSerializableValue>(
+  return <T extends WorkflowSerializableValue>(
     name: string,
     args: Readonly<Record<string, WorkflowSerializableValue>>,
     fn: () => Promise<T>,
     options?: WorkflowToolOptions,
   ): Promise<T> => {
-    input.throwIfCancelled();
-    const callKey = durableHash({ name, args });
-    const ordinal = (ordinals.get(callKey) ?? 0) + 1;
-    ordinals.set(callKey, ordinal);
-    const argsHash = durableHash({ name, args, ordinal });
+    let resolveExecution!: (value: T | PromiseLike<T>) => void;
+    let rejectExecution!: (reason?: unknown) => void;
+    const execution = new Promise<T>((resolve, reject) => {
+      resolveExecution = resolve;
+      rejectExecution = reject;
+    });
+    input.trackExecution?.(execution);
+    void executeToolInvocation(input, ordinals, name, args, fn, options).then(resolveExecution, rejectExecution);
+    return execution;
+  };
+}
 
-    const cached = input.backend.getToolCheckpoint(input.workflowId, argsHash);
-    const node: ToolNodeSnapshot = {
-      kind: "tool",
-      id: cached?.topology?.nodeId ?? `tool:${argsHash}`,
-      name,
-      argsHash,
-      ordinal: cached?.topology?.ordinal ?? ordinal,
-      parentIds: Object.freeze(cached?.topology?.parentIds ?? []),
-      status: "pending",
-      ...(cached !== undefined && cached.topology === undefined ? { topologyState: "unavailable" as const } : {}),
-      ...(cached !== undefined ? { replayed: true } : {}),
-      ...(cached?.topology?.order !== undefined ? { executionOrder: cached.topology.order } : {}),
-      ...(cached?.topology?.startedAt !== undefined ? { startedAt: cached.topology.startedAt } : {}),
-      attachable: false,
-    };
-    input.onNodeStart?.(node);
-    if (cached !== undefined) {
-      const endedAt = cached.topology?.endedAt ?? cached.completedAt;
-      recordReplayedToolTopology(input, node, cached, argsHash, endedAt);
+async function executeToolInvocation<T extends WorkflowSerializableValue>(
+  input: CreateToolPrimitiveInput,
+  ordinals: Map<string, number>,
+  name: string,
+  args: Readonly<Record<string, WorkflowSerializableValue>>,
+  fn: () => Promise<T>,
+  options?: WorkflowToolOptions,
+): Promise<T> {
+  input.throwIfCancelled();
+  const callKey = durableHash({ name, args });
+  const ordinal = (ordinals.get(callKey) ?? 0) + 1;
+  ordinals.set(callKey, ordinal);
+  const argsHash = durableHash({ name, args, ordinal });
+
+  const cached = input.backend.getToolCheckpoint(input.workflowId, argsHash);
+  const node: ToolNodeSnapshot = {
+    kind: "tool",
+    id: cached?.topology?.nodeId ?? `tool:${argsHash}`,
+    name,
+    argsHash,
+    ordinal: cached?.topology?.ordinal ?? ordinal,
+    parentIds: Object.freeze(cached?.topology?.parentIds ?? []),
+    status: "pending",
+    ...(cached !== undefined && cached.topology === undefined ? { topologyState: "unavailable" as const } : {}),
+    ...(cached !== undefined ? { replayed: true } : {}),
+    ...(cached?.topology?.order !== undefined ? { executionOrder: cached.topology.order } : {}),
+    ...(cached?.topology?.startedAt !== undefined ? { startedAt: cached.topology.startedAt } : {}),
+    attachable: false,
+  };
+  input.onNodeStart?.(node);
+  if (cached !== undefined) {
+    const endedAt = cached.topology?.endedAt ?? cached.completedAt;
+    try {
+      await recordReplayedToolTopology(input, node, cached, argsHash, endedAt);
       input.onNodeEnd?.(node.id, {
         status: "cached",
         endedAt,
@@ -114,85 +137,102 @@ export function createToolPrimitive(input: CreateToolPrimitiveInput): WorkflowTo
       });
       input.onNodeSettle?.(node.id);
       return cached.output as T;
-    }
-
-    const startedAt = Date.now();
-    input.onNodeRunning?.(node.id, startedAt);
-    try {
-      const result = await executeWithRetries(
-        () => runCallback(
-          { kind: "workflow.ctx_tool", name, runId: input.workflowId },
-          fn,
-        ),
-
-        options,
-        input.throwIfCancelled,
-        input.signal,
-      );
-
-      // Linearization policy: cancellation observed before persistence prevents
-      // a checkpoint. Once the durable write begins, a successful commit wins
-      // for this node; the root still observes its aborted signal and is killed.
-      input.throwIfCancelled();
-      const completedAt = Date.now();
-      const checkpoint: DurableToolCheckpoint = {
-        kind: "tool",
-        workflowId: input.workflowId,
-        checkpointId: `tool:${argsHash}`,
-        name,
-        argsHash,
-        output: result,
-        completedAt,
-        topology: {
-          version: DURABLE_TOOL_TOPOLOGY_VERSION,
-          nodeId: node.id,
-          ordinal,
-          order: node.executionOrder ?? 0,
-          parentIds: [...node.parentIds],
-          startedAt,
-          endedAt: completedAt,
-          ...(input.runTopology !== undefined ? { run: { ...input.runTopology } } : {}),
-        },
-      };
-      await recordCheckpointDurably(input.backend, checkpoint);
-      input.onNodeEnd?.(node.id, { status: "completed", endedAt: completedAt, resultSummary: summarizeToolResult(result) });
-      input.onNodeSettle?.(node.id);
-      return result;
     } catch (error) {
-      const cancelled = input.signal?.aborted === true;
-      input.onNodeEnd?.(node.id, {
-        status: cancelled ? "cancelled" : "failed",
-        endedAt: Date.now(),
-        error: error instanceof Error ? error.message : String(error),
-      });
+      const status = input.signal?.aborted === true ? "cancelled" : "failed";
+      input.onNodeEnd?.(node.id, { status, endedAt: Date.now(), error: error instanceof Error ? error.message : String(error) });
       input.onNodeSettle?.(node.id);
       throw error;
     }
-  };
+  }
+
+  const startedAt = Date.now();
+  input.onNodeRunning?.(node.id, startedAt);
+  try {
+    const result = await executeWithRetries(
+      () => runCallback(
+        { kind: "workflow.ctx_tool", name, runId: input.workflowId },
+        fn,
+      ),
+      options,
+      input.throwIfCancelled,
+      input.signal,
+    );
+
+    // Linearization policy: cancellation observed before persistence prevents
+    // a checkpoint. Once the durable write begins, a successful commit wins
+    // for this node; the root still observes its aborted signal and is killed.
+    input.throwIfCancelled();
+    const completedAt = Date.now();
+    const checkpoint: DurableToolCheckpoint = {
+      kind: "tool",
+      workflowId: input.workflowId,
+      checkpointId: `tool:${argsHash}`,
+      name,
+      argsHash,
+      output: result,
+      completedAt,
+      topology: {
+        version: DURABLE_TOOL_TOPOLOGY_VERSION,
+        nodeId: node.id,
+        ordinal,
+        order: node.executionOrder ?? 0,
+        parentIds: [...node.parentIds],
+        startedAt,
+        endedAt: completedAt,
+        ...(input.runTopology !== undefined ? { run: { ...input.runTopology } } : {}),
+      },
+    };
+    await recordCheckpointDurably(input.backend, checkpoint);
+    input.onNodeEnd?.(node.id, { status: "completed", endedAt: completedAt, resultSummary: summarizeToolResult(result) });
+    input.onNodeSettle?.(node.id);
+    return result;
+  } catch (error) {
+    const cancelled = input.signal?.aborted === true;
+    input.onNodeEnd?.(node.id, {
+      status: cancelled ? "cancelled" : "failed",
+      endedAt: Date.now(),
+      error: error instanceof Error ? error.message : String(error),
+    });
+    input.onNodeSettle?.(node.id);
+    throw error;
+  }
 }
 
 
-function recordReplayedToolTopology(
+async function recordReplayedToolTopology(
   input: CreateToolPrimitiveInput,
   node: ToolNodeSnapshot,
   cached: DurableToolCheckpoint,
   argsHash: string,
   endedAt: number,
-): void {
-  if (cached.topology === undefined || input.runTopology === undefined) return;
-  if (cached.topology.run?.runId === input.runTopology.runId) return;
-  const topology = {
-    ...cached.topology,
-    parentIds: [...node.parentIds],
-    order: node.executionOrder ?? cached.topology.order,
-    endedAt,
-    run: { ...input.runTopology },
-  };
-  const unchanged = JSON.stringify(cached.topology.parentIds) === JSON.stringify(topology.parentIds)
+): Promise<void> {
+  const runTopology = input.runTopology;
+  if (runTopology === undefined) return;
+  if (cached.topology === undefined && runTopology.parentRunId === undefined) return;
+  if (cached.topology?.run?.runId === runTopology.runId) return;
+  const topology = cached.topology === undefined
+    ? {
+        version: DURABLE_TOOL_TOPOLOGY_VERSION,
+        nodeId: node.id,
+        ordinal: node.ordinal,
+        order: node.executionOrder ?? 0,
+        parentIds: [...node.parentIds],
+        endedAt,
+        run: { ...runTopology },
+      }
+    : {
+        ...cached.topology,
+        parentIds: [...node.parentIds],
+        order: node.executionOrder ?? cached.topology.order,
+        endedAt,
+        run: { ...runTopology },
+      };
+  const unchanged = cached.topology !== undefined
+    && JSON.stringify(cached.topology.parentIds) === JSON.stringify(topology.parentIds)
     && JSON.stringify(cached.topology.run) === JSON.stringify(topology.run)
     && cached.topology.endedAt === topology.endedAt;
   if (unchanged) return;
-  input.backend.recordCheckpoint({
+  await recordCheckpointDurably(input.backend, {
     kind: "tool",
     workflowId: input.workflowId,
     checkpointId: `tool-replay-meta:${durableHash({ argsHash, topology })}`,
