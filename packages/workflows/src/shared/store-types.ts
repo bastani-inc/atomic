@@ -305,6 +305,8 @@ export interface RunSnapshot {
   /** Original unsanitized error text when different from `error`. */
   failureMessage?: string;
   failedStageId?: string;
+  /** Tool node whose rejection supplied the selected terminal failure. */
+  failedToolNodeId?: string;
   resumable?: boolean;
   /** Parent workflow run when this snapshot is an internal child workflow run. Hidden from top-level status lists. */
   parentRunId?: string;

@@ -25,6 +25,8 @@ export interface RunEndMetadata {
   readonly failureDisposition?: WorkflowFailureDisposition;
   readonly failureMessage?: string;
   readonly failedStageId?: string;
+  /** Tool node whose rejection supplied the selected terminal failure. */
+  readonly failedToolNodeId?: string;
   readonly resumable?: boolean;
   readonly retryAfterMs?: number;
   readonly exited?: boolean;

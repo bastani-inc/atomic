@@ -113,7 +113,9 @@ describe("installWorkflowLifecycleNotifications", () => {
     store.recordToolNodeRunning("run-tool-fail", "tool:failure", 2);
     store.recordToolNodeEnd("run-tool-fail", "tool:failure", { status: "failed", endedAt: 3, error: "remote rejected" });
 
-    assert.equal(store.recordRunEnd("run-tool-fail", "failed", undefined, "remote rejected"), true);
+    assert.equal(store.recordRunEnd("run-tool-fail", "failed", undefined, "remote rejected", {
+      failedToolNodeId: "tool:failure",
+    }), true);
     store.recordNotice({ id: "tool-fail-tick", level: "info", message: "tick", createdAt: 4 });
 
     assert.equal(sent.length, 1);

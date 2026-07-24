@@ -11,20 +11,23 @@ describe("ctx.tool admitted execution barrier", () => {
     const backend = new InMemoryDurableBackend();
     let admitted: Promise<unknown> | undefined;
     let trackedBeforeCallback = false;
+    let boundNodeId: string | undefined;
     const exactValue = { names: ["same", "same"], raw: " value " } as const;
     const tool = createToolPrimitive({
       workflowId: "promise-identity",
       backend,
       nextCheckpointId: () => "unused",
       throwIfCancelled: () => undefined,
-      trackExecution<T>(execution: Promise<T>): void {
+      trackExecution<T>(execution: Promise<T>) {
         admitted = execution;
         trackedBeforeCallback = true;
+        return { bindNode(nodeId: string): void { boundNodeId = nodeId; } };
       },
     });
 
     const returned = tool("identity", {}, async () => {
       assert.equal(trackedBeforeCallback, true, "rejection observation is installed before the callback starts");
+      assert.match(boundNodeId ?? "", /^tool:/, "node identity is bound before the callback starts");
       return exactValue;
     });
     assert.equal(returned, admitted);
@@ -290,6 +293,8 @@ describe("ctx.tool admitted execution barrier", () => {
     const result = await pending;
     assert.equal(result.status, "killed");
     assert.equal(result.toolNodes?.[0]?.status, "cancelled");
+    assert.equal(result.failedToolNodeId, undefined);
+    assert.equal(store.runs()[0]?.failedToolNodeId, undefined);
     assert.equal(backend.listCheckpoints(result.runId).some((checkpoint) => checkpoint.kind === "tool" && checkpoint.name === "cancelled-write"), false);
   });
 });

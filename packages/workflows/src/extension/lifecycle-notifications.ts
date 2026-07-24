@@ -331,9 +331,8 @@ function makeTerminalNotice(
   const failedStage = run.failedStageId
     ? run.stages.find((stage) => stage.id === run.failedStageId)
     : undefined;
-  const failedTool = kind === "failed"
-    ? [...(run.toolNodes ?? [])].reverse().find((node) => node.status === "failed" || node.status === "cancelled")
-    : undefined;
+  const failedToolNodeId = kind === "failed" && run.failedStageId === undefined ? run.failedToolNodeId : undefined;
+  const failedTool = (run.toolNodes ?? []).find((node) => node.id === failedToolNodeId);
   const activeBlocked = kind === "blocked" && isActiveRecoverableBlockedRun(run);
   const error = activeBlocked
     ? run.failureMessage ?? structuredRecoverableWorkflowFailureText(run) ?? run.error
@@ -348,7 +347,8 @@ function makeTerminalNotice(
     ...(error ? { error: truncateSnippet(error) } : {}),
     ...(run.failedStageId ? { failedStageId: run.failedStageId } : {}),
     ...(failedStage ? { stageId: failedStage.id, stageName: failedStage.name } : {}),
-    ...(failedTool ? { toolNodeId: failedTool.id, toolName: failedTool.name } : {}),
+    ...(failedToolNodeId !== undefined ? { toolNodeId: failedToolNodeId } : {}),
+    ...(failedTool !== undefined ? { toolName: failedTool.name } : {}),
     ...(run.durationMs !== undefined ? { durationMs: run.durationMs } : {}),
     createdAt: lifecycleOccurrenceAt(run, kind) ?? Date.now(),
   };

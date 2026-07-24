@@ -54,6 +54,10 @@ export type WorkflowToolPrimitive = <T extends WorkflowSerializableValue>(
   options?: WorkflowToolOptions,
 ) => Promise<T>;
 
+export interface WorkflowToolExecutionAdmission {
+  bindNode(nodeId: string): void;
+}
+
 export interface CreateToolPrimitiveInput {
   readonly workflowId: string;
   readonly backend: DurableWorkflowBackend;
@@ -63,8 +67,8 @@ export interface CreateToolPrimitiveInput {
   readonly throwIfCancelled: () => void;
   /** Optional signal for aborting retry backoff sleeps. */
   readonly signal?: AbortSignal;
-  /** Track the final logical execution promise without replacing its identity. */
-  readonly trackExecution?: <T>(execution: Promise<T>) => void;
+  /** Track the final logical execution promise and bind it to its graph node. */
+  readonly trackExecution?: <T>(execution: Promise<T>) => WorkflowToolExecutionAdmission | void;
   /** Admit/update a first-class graph node around the durable call. */
   readonly onNodeStart?: (node: ToolNodeSnapshot) => void;
   readonly onNodeRunning?: (nodeId: string, startedAt: number) => void;
@@ -90,8 +94,9 @@ export function createToolPrimitive(input: CreateToolPrimitiveInput): WorkflowTo
       resolveExecution = resolve;
       rejectExecution = reject;
     });
-    input.trackExecution?.(execution);
-    void executeToolInvocation(input, ordinals, name, args, fn, options).then(resolveExecution, rejectExecution);
+    const admission = input.trackExecution?.(execution);
+    void executeToolInvocation(input, ordinals, name, args, fn, options, (nodeId) => admission?.bindNode(nodeId))
+      .then(resolveExecution, rejectExecution);
     return execution;
   };
 }
@@ -102,7 +107,8 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
   name: string,
   args: Readonly<Record<string, WorkflowSerializableValue>>,
   fn: () => Promise<T>,
-  options?: WorkflowToolOptions,
+  options: WorkflowToolOptions | undefined,
+  bindNode: (nodeId: string) => void,
 ): Promise<T> {
   input.throwIfCancelled();
   const callKey = durableHash({ name, args });
@@ -125,6 +131,7 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
     ...(cached?.topology?.startedAt !== undefined ? { startedAt: cached.topology.startedAt } : {}),
     attachable: false,
   };
+  bindNode(node.id);
   input.onNodeStart?.(node);
   if (cached !== undefined) {
     const endedAt = cached.topology?.endedAt ?? cached.completedAt;

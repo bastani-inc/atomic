@@ -2535,6 +2535,8 @@ Replayed `ctx.stage`, `ctx.task`, `ctx.chain`, `ctx.parallel`, and child-workflo
 
 The `ctx.tool(name, args, fn, options?)` primitive runs arbitrary TypeScript code as a first-class durable graph node and caches the result durably. The node is non-attachable and has no stage chat controls. It is valid before, between, after, or without model stages, so a tool-only workflow completes normally; a workflow that returns normally without any stage, child, tool, or explicit exit remains invalid. On resume, if that ordinal tool call already completed (matched by call order plus content hash of `name` + `args`), the runtime returns the cached result without re-executing the function—ensuring completed side effects are not repeated while still preserving two intentional same-name/same-args calls as distinct ordered nodes.
 
+When the workflow body fulfills but one or more admitted tool calls failed, Atomic promotes the first admitted failure to the terminal run failure and persists that selected tool-node identity for status inspection and lifecycle output. An ordinary workflow-body rejection—including a direct uncaught `await ctx.tool(...)` rejection—retains the original error and failed graph node but does not claim a terminal tool origin: transparent native promise rejection carries no source-promise identity, so a later body throw that reuses the same object or primitive is observationally indistinguishable. Stage and workflow-body failures are therefore never mislabeled as tool failures.
+
 ```ts
 export default workflow({
   name: "data-pipeline",

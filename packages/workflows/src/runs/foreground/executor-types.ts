@@ -116,6 +116,8 @@ export interface RunResult<TOutputs extends WorkflowOutputValues = WorkflowOutpu
   readonly status: RunStatus;
   readonly result?: Partial<TOutputs>;
   readonly error?: string;
+  /** Tool node whose rejection supplied the selected terminal failure. */
+  readonly failedToolNodeId?: string;
   /** True when the run reached its terminal status through ctx.exit(). */
   readonly exited?: boolean;
   readonly exitReason?: string;

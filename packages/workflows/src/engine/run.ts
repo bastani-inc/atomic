@@ -317,6 +317,7 @@ export async function run<
     continuationSourceId: opts.continuation?.source.id,
   });
   const admittedTools = createAdmittedToolExecutionTracker();
+  let selectedAdmittedToolFailure: ReturnType<typeof admittedTools.firstFailure> = undefined;
   const tool = createToolPrimitive({
     workflowId: runId,
     backend: durableBackend,
@@ -419,8 +420,8 @@ export async function run<
       if (parentExit !== undefined) return await finalizers.finalizeParentWorkflowExitCancellation(parentExit);
       return finalizeKilled(runId, runSnapshot, activeStore, opts.persistence, opts.onRunEnd);
     }
-    const admittedToolFailure = admittedTools.firstFailure();
-    if (admittedToolFailure !== undefined) throw admittedToolFailure.error;
+    selectedAdmittedToolFailure = admittedTools.firstFailure();
+    if (selectedAdmittedToolFailure !== undefined) throw selectedAdmittedToolFailure.error;
 
     const result = normalizeWorkflowRunOutput(def.name, rawResult);
     assertWorkflowRunOutputs(def.name, result, def.outputs);
@@ -434,10 +435,10 @@ export async function run<
     await durableBackend.flush();
     return reconcileTerminalRunResult(runId, runSnapshot, activeStore, { status: returned.status, result, error: returned.error }, opts.onRunEnd);
   } catch (err) {
+    const observedAdmittedToolFailure = selectedAdmittedToolFailure;
     await admittedTools.drain();
     const selectedExit = findWorkflowExitSignal(err, exitScope) ?? findWorkflowExitSignal(ownController.signal.reason, exitScope);
     if (selectedExit !== undefined) return await finalizers.finalizeWorkflowExit(selectedExit);
-
     if (ownController.signal.aborted) {
       const parentExit = parentWorkflowExitAbortReason(ownController.signal.reason);
       if (parentExit !== undefined) return await finalizers.finalizeParentWorkflowExitCancellation(parentExit);
@@ -445,12 +446,10 @@ export async function run<
     }
 
     const failure = classifyExecutorFailure(err);
-    const metadata = normalizeStageLessFailureMetadata(selectRunFailureDisposition({
-      outerFailure: failure,
-      thrownError: err,
-      stages: runSnapshot.stages,
-      classifyFailure: classifyExecutorFailure,
-    }), runSnapshot.stages.length);
+    const selectedMetadata = normalizeStageLessFailureMetadata(selectRunFailureDisposition({ outerFailure: failure, thrownError: err, stages: runSnapshot.stages, classifyFailure: classifyExecutorFailure }), runSnapshot.stages.length);
+    const failedToolNodeId = selectedMetadata.failedStageId === undefined && selectedMetadata.failureKind !== "cancelled" && selectedMetadata.failureDisposition !== "terminal_killed"
+      ? observedAdmittedToolFailure?.nodeId : undefined;
+    const metadata = failedToolNodeId === undefined ? selectedMetadata : { ...selectedMetadata, failedToolNodeId };
 
     if (metadata.failureDisposition === "terminal_killed") {
       for (const failedStageId of metadata.failedStageIds) scheduler.blockKnownNonTerminalDescendants(failedStageId);
@@ -478,6 +477,7 @@ export async function run<
       ...(metadata.failureDisposition !== undefined ? { failureDisposition: metadata.failureDisposition } : {}),
       failureMessage: metadata.failureMessage,
       ...(metadata.failedStageId !== undefined ? { failedStageId: metadata.failedStageId } : {}),
+      ...(metadata.failedToolNodeId !== undefined ? { failedToolNodeId: metadata.failedToolNodeId } : {}),
       resumable: metadata.resumable,
       ...(metadata.retryAfterMs !== undefined ? { retryAfterMs: metadata.retryAfterMs } : {}),
       ...(runSnapshot.endedAt !== undefined ? { endedAt: runSnapshot.endedAt } : {}),

@@ -369,6 +369,7 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
     const retryAfterMs = numericRetryAfterMs(end["retryAfterMs"]);
     const failureMessage = end["failureMessage"];
     const failedStageId = end["failedStageId"];
+    const failedToolNodeId = end["failedToolNodeId"];
     const restoredEndedAt = numericTimestamp(end["endedAt"]);
     const restoredDurationMs = numericDuration(end["durationMs"]);
     store.recordRunEnd(
@@ -384,6 +385,7 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
         ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
         ...(typeof failureMessage === "string" ? { failureMessage } : {}),
         ...(typeof failedStageId === "string" ? { failedStageId } : {}),
+        ...(typeof failedToolNodeId === "string" ? { failedToolNodeId } : {}),
         ...(typeof resumable === "boolean" ? { resumable } : isWorkflowExitTerminalStatus(status) && restoredAuthorExit ? { resumable: false } : {}),
         ...(restoredAuthorExit && isWorkflowExitTerminalStatus(status) ? { exited: true } : {}),
         ...(typeof exitReason === "string" ? { exitReason } : {}),

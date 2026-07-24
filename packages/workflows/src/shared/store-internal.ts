@@ -86,6 +86,7 @@ export function clearRunFailureMetadata(run: RunSnapshot): void {
   delete run.failureDisposition;
   delete run.failureMessage;
   delete run.failedStageId;
+  delete run.failedToolNodeId;
   delete run.resumable;
   delete run.retryAfterMs;
   delete run.blockedAt;
@@ -100,6 +101,7 @@ export function clearStaleBlockedRunMetadata(run: RunSnapshot, metadata: RunEndM
   if (metadata?.failureDisposition === undefined) delete run.failureDisposition;
   if (metadata?.failureMessage === undefined) delete run.failureMessage;
   if (metadata?.failedStageId === undefined) delete run.failedStageId;
+  if (metadata?.failedToolNodeId === undefined) delete run.failedToolNodeId;
   if (metadata?.resumable === undefined) delete run.resumable;
   if (metadata?.retryAfterMs === undefined) delete run.retryAfterMs;
   if (metadata?.exited === undefined) delete run.exited;
@@ -114,6 +116,7 @@ export function applyRunEndMetadata(run: RunSnapshot, metadata: RunEndMetadata):
   if (metadata.retryAfterMs !== undefined) run.retryAfterMs = metadata.retryAfterMs;
   if (metadata.failureMessage !== undefined) run.failureMessage = metadata.failureMessage;
   if (metadata.failedStageId !== undefined) run.failedStageId = metadata.failedStageId;
+  if (metadata.failedToolNodeId !== undefined) run.failedToolNodeId = metadata.failedToolNodeId;
   if (metadata.resumable !== undefined) run.resumable = metadata.resumable;
   if (metadata.exited !== undefined) run.exited = metadata.exited;
   if (metadata.exitReason !== undefined) run.exitReason = metadata.exitReason;

@@ -70,12 +70,14 @@ run(child, {}).then((runResult) => {
 
 
 const legacyResult: RunResult = { runId: "legacy", status: "completed", stages: [] };
+const failedResult: RunResult = { runId: "failed", status: "failed", stages: [], failedToolNodeId: "tool:failure" };
 const inspectedTool: ToolNodeSnapshot = {
   kind: "tool", id: "tool:stable", name: "publish", argsHash: "args", ordinal: 2,
   parentIds: ["stage:parent"], status: "cached", executionOrder: 3,
   startedAt: 10, endedAt: 20, replayed: true, resultSummary: "ok", attachable: false,
 };
 const storeTool = createStore().runs()[0]?.toolNodes?.[0];
+const failedToolNodeId: string | undefined = createStore().runs()[0]?.failedToolNodeId;
 const stableId: string | undefined = storeTool?.id;
 const toolName: string | undefined = storeTool?.name;
 const identity: string | undefined = storeTool?.argsHash;
@@ -91,7 +93,9 @@ const resultSummary: string | undefined = storeTool?.resultSummary;
 const toolError: string | undefined = storeTool?.error;
 const attachable: false | undefined = storeTool?.attachable;
 void legacyResult;
+void failedResult;
 void inspectedTool;
+void failedToolNodeId;
 void stableId;
 void toolName;
 void identity;

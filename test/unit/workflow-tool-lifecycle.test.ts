@@ -48,7 +48,7 @@ describe("ctx.tool lifecycle notices", () => {
     assert.doesNotMatch(sent[0]?.content ?? "", /without creating any workflow|empty.graph/i);
   });
 
-  test("real tool failure emits one notice with original error and tool identity", async () => {
+  test("ordinary tool rejection emits one notice with original error and visible failed node", async () => {
     const { store, sent, unsubscribe } = install();
     const result = await run(workflow({
       name: "tool lifecycle failure", description: "", inputs: {}, outputs: {},
@@ -63,11 +63,12 @@ describe("ctx.tool lifecycle notices", () => {
     assert.match(result.error ?? "", /remote publish rejected/);
     assert.equal(sent.length, 1);
     assert.equal(sent[0]?.details?.kind, "failed");
-    assert.equal(sent[0]?.details?.toolName, "publish-failure");
-    assert.equal(sent[0]?.details?.toolNodeId, result.toolNodes?.[0]?.id);
+    assert.equal(sent[0]?.details?.toolName, undefined);
+    assert.equal(sent[0]?.details?.toolNodeId, undefined);
     assert.equal(sent[0]?.details?.failedStageId, undefined);
-    assert.match(sent[0]?.content ?? "", /publish-failure.*remote publish rejected/);
-    assert.equal(store.runs()[0]?.failedStageId, undefined);
+    assert.match(sent[0]?.content ?? "", /remote publish rejected/);
+    assert.equal(result.toolNodes?.[0]?.status, "failed");
+    assert.equal(store.runs()[0]?.failedToolNodeId, undefined);
   });
 
   test("caught tool failure still emits exactly one failed lifecycle notice", async () => {
@@ -91,5 +92,6 @@ describe("ctx.tool lifecycle notices", () => {
     assert.equal(sent[0]?.details?.kind, "failed");
     assert.equal(sent[0]?.details?.toolName, "caught-publish");
     assert.equal(sent[0]?.details?.failedStageId, undefined);
+    assert.equal(store.runs()[0]?.failedToolNodeId, result.toolNodes?.[0]?.id);
   });
 });

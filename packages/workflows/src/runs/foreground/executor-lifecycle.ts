@@ -40,6 +40,7 @@ export function appendRunEndWhenRecorded(
     readonly failureDisposition?: WorkflowFailureDisposition;
     readonly failureMessage?: string;
     readonly failedStageId?: string;
+    readonly failedToolNodeId?: string;
     readonly resumable?: boolean;
     readonly retryAfterMs?: number;
     readonly ts: number;
@@ -64,6 +65,7 @@ export function runResultFromSnapshot(snapshot: RunSnapshot): RunResult {
     status: snapshot.status,
     ...(snapshot.result !== undefined ? { result: snapshot.result } : {}),
     ...(snapshot.error !== undefined ? { error: snapshot.error } : {}),
+    ...(snapshot.failedToolNodeId !== undefined ? { failedToolNodeId: snapshot.failedToolNodeId } : {}),
     ...(snapshot.exited !== undefined ? { exited: snapshot.exited } : {}),
     ...(snapshot.exitReason !== undefined ? { exitReason: snapshot.exitReason } : {}),
     stages: [...snapshot.stages],
@@ -101,6 +103,7 @@ export interface RunFailureMetadata {
   readonly failureDisposition?: WorkflowFailureDisposition;
   readonly failureMessage: string;
   readonly failedStageId?: string;
+  readonly failedToolNodeId?: string;
   readonly resumable: boolean;
   readonly retryAfterMs?: number;
 }

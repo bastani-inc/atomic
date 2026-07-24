@@ -1,10 +1,15 @@
 export interface AdmittedToolFailure {
   readonly admissionOrder: number;
   readonly error: unknown;
+  readonly nodeId?: string;
+}
+
+export interface AdmittedToolExecutionAdmission {
+  bindNode(nodeId: string): void;
 }
 
 export interface AdmittedToolExecutionTracker {
-  track<T>(execution: Promise<T>): Promise<T>;
+  track<T>(execution: Promise<T>): AdmittedToolExecutionAdmission;
   drain(): Promise<void>;
   firstFailure(): AdmittedToolFailure | undefined;
 }
@@ -16,15 +21,16 @@ export function createAdmittedToolExecutionTracker(): AdmittedToolExecutionTrack
   let nextAdmissionOrder = 0;
 
   return {
-    track<T>(execution: Promise<T>): Promise<T> {
+    track<T>(execution: Promise<T>): AdmittedToolExecutionAdmission {
       const admissionOrder = ++nextAdmissionOrder;
+      let nodeId: string | undefined;
       const observed = execution.then(
         () => undefined,
-        (error: unknown) => { failures.push({ admissionOrder, error }); },
+        (error: unknown) => { failures.push({ admissionOrder, error, ...(nodeId !== undefined ? { nodeId } : {}) }); },
       );
       inFlight.add(observed);
       void observed.then(() => { inFlight.delete(observed); });
-      return execution;
+      return { bindNode(id: string): void { nodeId = id; } };
     },
     async drain(): Promise<void> {
       while (true) {
