@@ -319,11 +319,13 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			cycleModel: {
 				configurable: true,
 				value: async (direction?: "forward" | "backward") => {
+					const previousModel = session.model;
 					const result = await this.client.cycleModel(direction);
 					if (!result) return undefined;
 					const model = session.modelRegistry.find(result.model.provider, result.model.id) ?? result.model;
 					session.agent.state.model = model;
 					session.agent.state.thinkingLevel = result.thinkingLevel;
+					this.resolveModelFallbackAfterExplicitModelSelection(previousModel, model);
 					return { ...result, model };
 				},
 			},

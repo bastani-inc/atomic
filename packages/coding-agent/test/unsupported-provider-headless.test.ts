@@ -19,6 +19,7 @@ interface RpcHarness {
   send(command: RpcCommandBody): Promise<RpcResponse>;
   stop(): Promise<void>;
   stderr(): string;
+  records(): Array<{ type?: string }>;
 }
 
 function writeIsolatedState(agentDir: string, baseUrl: string): void {
@@ -35,17 +36,28 @@ function writeIsolatedState(agentDir: string, baseUrl: string): void {
     providers: {
       recovery: {
         baseUrl,
-        apiKey: "test-key",
         api: "openai-responses",
-        models: [{
-          id: "recovery-model",
-          name: "Recovery model",
-          reasoning: false,
-          input: ["text"],
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          contextWindow: 16_000,
-          maxTokens: 1024,
-        }],
+        apiKey: "test-key",
+        models: [
+          {
+            id: "recovery-model",
+            name: "Recovery model",
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 16_000,
+            maxTokens: 1024,
+          },
+          {
+            id: "recovery-model-2",
+            name: "Recovery model 2",
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 16_000,
+            maxTokens: 1024,
+          },
+        ],
       },
     },
   }));
@@ -83,9 +95,11 @@ function startRpc(cwd: string, agentDir: string, sessionDir: string, sessionFile
   let stderr = "";
   let nextId = 0;
   const pending = new Map<string, { resolve(value: RpcResponse): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>();
+  const records: Array<{ type?: string }> = [];
   child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
   const detach = attachJsonlLineReader(child.stdout, (line) => {
     const parsed = JSON.parse(line) as RpcResponse;
+    records.push(parsed);
     if (parsed.type !== "response" || !parsed.id) return;
     const request = pending.get(parsed.id);
     if (!request) return;
@@ -122,6 +136,7 @@ function startRpc(cwd: string, agentDir: string, sessionDir: string, sessionFile
       });
     },
     stderr: () => stderr,
+    records: () => [...records],
   };
 }
 
@@ -230,6 +245,20 @@ describe("unsupported provider in headless modes", () => {
       expect(responseSuccess(await rpc.send({ type: "get_available_models" }))).toBe(true);
       expect(responseSuccess(await rpc.send({ type: "set_model", provider: "recovery", modelId: "recovery-model" }))).toBe(true);
       expect(responseSuccess(await rpc.send({ type: "prompt", message: "recovered" }))).toBe(true);
+      expect(rpc.stderr()).not.toContain("API key");
+    } finally {
+      await rpc.stop();
+    }
+  });
+  it("RPC cycle_model clears persisted unsupported lock before the next prompt", async () => {
+    const rpc = startRpc(cwd, agentDir, sessionDir, persistedSessionFile);
+    try {
+      expect(responseError(await rpc.send({ type: "prompt", message: "blocked before cycle" }))).toBe(WARNING);
+      const cycled = await rpc.send({ type: "cycle_model", direction: "forward" });
+      expect(responseSuccess(cycled)).toBe(true);
+      const prompt = await rpc.send({ type: "prompt", message: "recovered by cycle" });
+      expect(responseSuccess(prompt)).toBe(true);
+      await expect.poll(() => rpc.records().some((record) => record.type === "agent_end")).toBe(true);
       expect(rpc.stderr()).not.toContain("API key");
     } finally {
       await rpc.stop();

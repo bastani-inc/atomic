@@ -134,12 +134,12 @@ export function createRpcCommandHandler({
 				runtimeHost.resolveModelFallback();
 				return createRpcSuccessResponse(id, "set_model", session.model ?? model);
 			}
-
 			case "cycle_model": {
+				const previousModel = session.model;
 				const result = await session.cycleModel(command.direction);
+				runtimeHost.resolveModelFallbackAfterExplicitModelSelection(previousModel, result?.model);
 				return createRpcSuccessResponse(id, "cycle_model", result ?? null);
 			}
-
 			case "get_available_models": {
 				const models = await session.modelRegistry.getAvailable();
 				return createRpcSuccessResponse(id, "get_available_models", {

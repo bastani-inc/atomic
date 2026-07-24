@@ -26,7 +26,7 @@ Common options:
 
 All commands support an optional `id` field for request/response correlation. If provided, the corresponding response will include the same `id`.
 
-If a complete saved provider/model default names a provider that remains unsupported after provider registration, the process stays live but `prompt` returns a correlated error with the generic configuration diagnostic before any user/model event is emitted. `get_available_models` and other non-prompt commands remain available. A successful explicit `set_model` clears the startup condition and allows later prompts; replacing the session applies the newly created session's condition again. Supported providers with an unknown model or missing authentication retain ordinary automatic fallback behavior.
+If a complete saved provider/model default names a provider that remains unsupported after provider registration, the process stays live but `prompt` returns a correlated error with the generic configuration diagnostic before any user/model event is emitted. `get_available_models` and other non-prompt commands remain available. A successful explicit `set_model`, or a successful `cycle_model` that returns a different available model, clears the startup condition and allows later prompts. A null or unchanged cycle result does not clear it. Replacing the session applies the newly created session's condition again. Supported providers with an unknown model or missing authentication retain ordinary automatic fallback behavior.
 
 ### Framing
 
@@ -237,7 +237,7 @@ Response contains the full [Model](#model) object:
 
 #### cycle_model
 
-Cycle to the next available model. Returns `null` data if only one model available.
+Cycle to the next available model. Returns `null` when fewer than two authenticated models are available in the active scope or catalog. When an unsupported saved default is blocking prompts, a successful cycle that returns a different model clears that condition; a `null` or unchanged result does not.
 
 ```json
 {"type": "cycle_model"}

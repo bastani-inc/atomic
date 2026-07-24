@@ -4,7 +4,7 @@
 
 ### Breaking Changes
 
-- Removed the experimental Cursor model provider in full. Cursor authentication, model catalogs and defaults, stale-provider restoration, bundled provider files, documentation, and Cursor-branded MCP compatibility imports are no longer available. Complete saved provider/model defaults whose provider remains unsupported after extension loading now stay unselected with a generic configuration warning instead of silently switching providers: interactive sessions stay live, print/JSON write the diagnostic to stderr and exit nonzero before prompting with clean JSON stdout, and RPC rejects prompts until explicit `set_model` recovery. Unknown or unauthenticated models on supported providers retain normal automatic selection ([#1994](https://github.com/bastani-inc/atomic/issues/1994)).
+- Removed the experimental Cursor model provider in full. Cursor authentication, model catalogs and defaults, stale-provider restoration, bundled provider files, documentation, and Cursor-branded MCP compatibility imports are no longer available. Complete saved provider/model defaults whose provider remains unsupported after extension loading now stay unselected with a generic configuration warning instead of silently switching providers: interactive sessions stay live, print/JSON write the diagnostic to stderr and exit nonzero before prompting with clean JSON stdout, and RPC rejects prompts until explicit `set_model` recovery or a successful explicit cycle to a different available model. Null and unchanged cycles preserve the prompt lock. Unknown or unauthenticated models on supported providers retain normal automatic selection ([#1994](https://github.com/bastani-inc/atomic/issues/1994)).
 
 ### Changed
 

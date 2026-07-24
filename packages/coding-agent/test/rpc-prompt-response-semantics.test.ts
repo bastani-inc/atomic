@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "@earendil-works/pi-agent-core";
 import {
+	type Api,
 	type AssistantMessage,
 	type AssistantMessageEvent,
 	EventStream,
@@ -99,7 +100,7 @@ function sleep(ms: number): Promise<void> {
 function createRuntimeHost(options: {
 	withAuth: boolean;
 	responseDelayMs: number;
-	model?: Model<any>;
+	model?: Model<Api>;
 	unsupportedFallback?: boolean;
 }): {
 	runtimeHost: AgentSessionRuntime;
@@ -167,6 +168,16 @@ function createRuntimeHost(options: {
 			this.modelFallbackMessage = undefined;
 			this.modelFallbackReason = undefined;
 		}),
+		resolveModelFallbackAfterExplicitModelSelection: vi.fn(function(
+			this: { modelFallbackMessage?: string; modelFallbackReason?: string },
+			previous: Model<Api> | undefined,
+			selected: Model<Api> | null | undefined,
+		) {
+			if (selected && (!previous || previous.provider !== selected.provider || previous.id !== selected.id)) {
+				this.modelFallbackMessage = undefined;
+				this.modelFallbackReason = undefined;
+			}
+		}),
 	} as unknown as AgentSessionRuntime;
 
 	return {
@@ -190,7 +201,7 @@ function createRuntimeHost(options: {
 async function startRpcMode(options: {
 	withAuth: boolean;
 	responseDelayMs: number;
-	model?: Model<any>;
+	model?: Model<Api>;
 	unsupportedFallback?: boolean;
 }): Promise<{
 	lineHandler: (line: string) => void;
@@ -301,6 +312,56 @@ describe("RPC prompt response semantics", () => {
 					expect.objectContaining({ success: false, error: warning }),
 				]);
 			});
+		} finally {
+			await cleanup();
+		}
+	});
+	it("clears unsupported prompt lock only after a successful changed cycle", async () => {
+		const initial = getModel("anthropic", "claude-sonnet-4-5");
+		const selected = getModel("anthropic", "claude-haiku-4-5");
+		if (!initial || !selected) throw new Error("missing cycle models");
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({
+			withAuth: true,
+			responseDelayMs: 0,
+			model: initial,
+			unsupportedFallback: true,
+		});
+		const lock = (): void => {
+			(runtimeHost as unknown as { modelFallbackMessage?: string }).modelFallbackMessage =
+				"Configured default model is unavailable or unsupported. Update defaultProvider/defaultModel or use /model.";
+			(runtimeHost as unknown as { modelFallbackReason?: string }).modelFallbackReason = "configured-provider-unsupported";
+		};
+		const cycle = vi.spyOn(runtimeHost.session, "cycleModel");
+
+		try {
+			cycle.mockImplementationOnce(async () => {
+				runtimeHost.session.agent.state.model = selected;
+				return { model: selected, thinkingLevel: "off", isScoped: false };
+			});
+			lineHandler(JSON.stringify({ id: "changed-cycle", type: "cycle_model" }));
+			await vi.waitFor(() => expect(parseOutputLines(rpcIo.outputLines).some(
+				(record) => record.id === "changed-cycle" && record.success === true,
+			)).toBe(true));
+			expect(runtimeHost.modelFallbackReason).toBeUndefined();
+			lineHandler(JSON.stringify({ id: "after-cycle", type: "prompt", message: "run after cycle" }));
+			await vi.waitFor(() => expect(getPromptResponses(rpcIo.outputLines, "after-cycle")).toEqual([
+				expect.objectContaining({ success: true }),
+			]));
+
+			for (const [id, implementation] of [
+				["null-cycle", async () => undefined],
+				["same-cycle", async () => ({ model: { ...selected }, thinkingLevel: "high" as const, isScoped: false })],
+				["failed-cycle", async () => { throw new Error("cycle hook failed"); }],
+			] as const) {
+				lock();
+				cycle.mockImplementationOnce(implementation);
+				lineHandler(JSON.stringify({ id, type: "cycle_model" }));
+				await vi.waitFor(() => expect(parseOutputLines(rpcIo.outputLines).some((record) => record.id === id)).toBe(true));
+				lineHandler(JSON.stringify({ id: `${id}-prompt`, type: "prompt", message: "must remain blocked" }));
+				await vi.waitFor(() => expect(getPromptResponses(rpcIo.outputLines, `${id}-prompt`)).toEqual([
+					expect.objectContaining({ success: false }),
+				]));
+			}
 		} finally {
 			await cleanup();
 		}

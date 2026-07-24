@@ -214,6 +214,61 @@ test("isolated host synchronizes authoritative engine fallback state and clears 
 	assert.equal(runtime.modelFallbackReason, undefined);
 });
 
+test("isolated explicit cycle clears fallback only for a changed model despite an intervening model event", async () => {
+	const previous = kimiModel();
+	const selected = { ...previous, id: `${previous.id}-next`, name: `${previous.name} Next` };
+	type CycleBehavior = "changed" | "same" | "null" | "throw";
+	let behavior: CycleBehavior = "changed";
+	let session!: AgentSession;
+	const client = {
+		onEvent: () => () => {},
+		cycleModel: async () => {
+			if (behavior === "throw") throw new Error("remote cycle failed");
+			if (behavior === "null") return null;
+			const model = behavior === "same" ? { ...session.model! } : selected;
+			if (behavior === "changed") session.agent.state.model = model;
+			return { model, thinkingLevel: behavior === "same" ? "high" as const : "off" as const, isScoped: false };
+		},
+		getCommands: async () => [],
+	} as unknown as RpcClient;
+	const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+	const sessionFixture = {
+		modelRegistry: registry,
+		sessionManager: SessionManager.inMemory(process.cwd()),
+		scopedModels: [],
+		sessionFile: undefined,
+		agent: {
+			state: { model: previous, thinkingLevel: "off", messages: [] },
+			steeringMode: "all",
+			followUpMode: "all",
+		},
+	};
+	Object.defineProperty(sessionFixture, "model", { get: () => sessionFixture.agent.state.model });
+	session = sessionFixture as unknown as AgentSession;
+	const createRuntime = (async () => { throw new Error("not used"); }) as CreateAgentSessionRuntimeFactory;
+	const localRuntime = new AgentSessionRuntime(
+		session,
+		{ cwd: process.cwd(), agentDir: process.cwd() } as never,
+		createRuntime,
+		[],
+		"locked",
+		"configured-provider-unsupported",
+	);
+	const runtime = new IsolatedInteractiveRuntime(localRuntime, createRuntime, client);
+
+	const changed = await runtime.session.cycleModel();
+	assert.equal(changed?.model.id, selected.id);
+	assert.equal(runtime.modelFallbackReason, undefined);
+
+	for (const control of ["same", "null", "throw"] as const) {
+		runtime.replaceModelFallback("locked", "configured-provider-unsupported");
+		behavior = control;
+		if (control === "throw") await assert.rejects(runtime.session.cycleModel(), /remote cycle failed/u);
+		else await runtime.session.cycleModel();
+		assert.equal(runtime.modelFallbackMessage, "locked", `${control} must preserve fallback`);
+		assert.equal(runtime.modelFallbackReason, "configured-provider-unsupported");
+	}
+});
 test("isolated session synchronization replaces each engine-selected session exactly once", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-isolated-session-sync-"));
 	const cwd = join(root, "cwd");

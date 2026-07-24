@@ -1,7 +1,7 @@
 import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Api, Model } from "@earendil-works/pi-ai/compat";
+import { modelsAreEqual, type Api, type Model } from "@earendil-works/pi-ai/compat";
 import { resolvePath } from "../utils/paths.ts";
 import type { AgentSession } from "./agent-session.ts";
 import type { AgentSessionInternalSurface } from "./agent-session-methods.ts";
@@ -142,6 +142,13 @@ export class AgentSessionRuntime {
 
 	resolveModelFallback(): void {
 		this.replaceModelFallback();
+	}
+
+	resolveModelFallbackAfterExplicitModelSelection(
+		previousModel: Model<Api> | undefined,
+		selectedModel: Model<Api> | null | undefined,
+	): void {
+		if (selectedModel && !modelsAreEqual(previousModel, selectedModel)) this.resolveModelFallback();
 	}
 
 	async logoutProvider(provider: string): Promise<LogoutProviderResult> {
