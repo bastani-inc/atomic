@@ -10,7 +10,6 @@ const CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const BUILTIN_TOOL_NAMES = new Set(["read", "bash", "edit", "write", "grep", "find", "search", "ls", "mcp"]);
 const GENERIC_GLOBAL_CONFIG_PATH = path.join(os.homedir(), ".config", "mcp", "mcp.json");
 const IMPORT_PATHS = {
-	cursor: [path.join(os.homedir(), ".cursor", "mcp.json")],
 	"claude-code": [
 		path.join(os.homedir(), ".claude", "mcp.json"),
 		path.join(os.homedir(), ".claude.json"),
@@ -193,7 +192,7 @@ function resolveImportPath(importKind: ImportKind, cwd: string): string | null {
 function extractServers(config: unknown, kind: ImportKind): Record<string, ServerEntry> {
 	if (!config || typeof config !== "object" || Array.isArray(config)) return {};
 	const obj = config as Record<string, unknown>;
-	const servers = kind === "cursor" || kind === "windsurf" || kind === "vscode"
+	const servers = kind === "windsurf" || kind === "vscode"
 		? obj.mcpServers ?? obj["mcp-servers"]
 		: obj.mcpServers;
 	return servers && typeof servers === "object" && !Array.isArray(servers) ? servers as Record<string, ServerEntry> : {};

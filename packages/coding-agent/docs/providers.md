@@ -21,7 +21,6 @@ Use `/login` in interactive mode, then select a provider:
 - GitHub Copilot
 - xAI (Grok/X subscription)
 - Radius
-- Cursor (experimental)
 Use `/logout` to clear credentials. Logout immediately invalidates authentication in the active interactive engine and removes the selected provider from both `~/.atomic/agent/auth.json` and any effective legacy `~/.pi/agent/auth.json`, so the provider remains logged out after restart. Environment variables, command-line credentials, and `models.json` configuration cannot be cleared by Atomic; when one of those sources still authenticates the provider, the logout status names the remaining source. Stored tokens auto-refresh when expired.
 
 ### OpenAI Codex
@@ -58,22 +57,6 @@ Run `/login xai`, then select **Use a subscription**. `XAI_API_KEY` remains avai
 
 Radius is a dynamic `pi-messages` gateway. `/login radius` stores OAuth tokens in `auth.json`; its model catalog refreshes independently and is cached in `models-store.json`. API-key authentication is also available through `/login radius` or `RADIUS_API_KEY`. Custom Radius gateways can be declared in `models.json` with `"oauth": "radius"` and the gateway `baseUrl`.
 
-### Cursor (experimental)
-
-Cursor support is bundled as the first-party `@bastani/cursor` extension and appears in `/login` as **Cursor (Experimental)**. It uses Cursor's browser PKCE flow and stores OAuth credentials in `~/.atomic/agent/auth.json`; do not paste Cursor tokens into environment variables, command-line arguments, or custom proxies. Atomic identifies as a Cursor CLI-compatible client against private endpoints; maintainers and users should explicitly accept that this may conflict with Cursor's terms of service, stop working without notice, or affect the Cursor account used to authenticate.
-
-Current limitations:
-
-- Cursor uses private, undocumented APIs and Cursor CLI-compatible headers. Atomic keeps the transport isolated and labels this provider experimental because Cursor may change the protocol without notice; use may conflict with Cursor's terms of service or provider-side account policies.
-- Image input is supported only for known multimodal Cursor Claude, Composer, Gemini, GPT, and Kimi model families (IDs beginning `claude-`, `composer-`, `gemini-`, `gpt-`, or `kimi-`), plus `grok-4.3`. Text-only Cursor models still reject images with a clear error.
-- For image-capable Cursor models, Atomic serializes user images and mixed text/image MCP tool results into Cursor's private request format. Image payloads must be non-empty standard base64; MIME-style line wrapping whitespace is accepted and stripped before serialization.
-- Model metadata is cached token-free in `~/.atomic/agent/cursor-model-catalog.json` and can be used at startup before fresh credentials are available. Estimated labels are used only when no valid cache exists and allowed live `GetUsableModels` discovery failures occur; refresh-time discovery is best-effort so rotated credentials are still persisted.
-- Cursor's private model discovery does not return token-limit metadata. Atomic preserves any positive limits Cursor does send, then resolves a model's context window and max output tokens from its bundled `@earendil-works/pi-ai` model catalog by matching the Cursor model ID's family/version. Explicit `1M` Cursor ids or labels on any fast/thinking sibling for the same family are treated as a 1,000,000-token context floor even when the closest reference match advertises a smaller base window. Cursor-only models with no pi-ai match (for example `composer-*` and `default`/Auto) keep a conservative 200k context / 64k output estimate. This only sets limits; it never changes which Cursor models are listed.
-- Cursor thinking levels are derived from the discovered variants for each model group. Atomic exposes `xhigh` only when Cursor advertises an `xhigh` or `max` variant, and exposes the distinct `max` level only when Cursor advertises an actual `max` variant. If an older saved `xhigh` or `max` selection is restored for a model that currently has only lower-effort variants, the request falls back to the nearest concrete Cursor variant instead of sending an invalid id.
-- The implementation avoids a localhost proxy and keeps credentials OAuth-only. Cursor's HTTP/2 transport uses the bundled `@bastani/atomic-natives` Rust/N-API client, so it does not require Node.js on `PATH`. The native client currently opens request-scoped HTTP/2 sessions; pooling may be added in a future release.
-- Cursor request encoding intentionally omits a `previousWorkspaceUris` current-directory entry by default so local absolute working-directory paths are not sent as workspace context. HTTP/2 Connect request/framing code is isolated, buffered across arbitrary chunks, tested with injected fakes, and uses a minimal production protobuf codec with field-order-independent exec ids, protobuf `Value` plus raw UTF-8/JSON tool arguments, historical tool-result correlation, checkpoint token-details parsing, paused-stream abort/idle cleanup, catalog-aware fast/thinking model grouping, and credential/PKCE-redacted protocol errors.
-
-Select models as `cursor/<model-id>` (default: `cursor/composer-2`).
 
 ## API Keys
 

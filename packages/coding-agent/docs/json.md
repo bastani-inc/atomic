@@ -6,6 +6,8 @@ atomic --mode json "Your prompt"
 
 Outputs all session events as JSON lines to stdout. Useful for integrating Atomic into other tools or custom UIs.
 
+If a complete saved provider/model default names a provider that remains unsupported after provider registration, JSON mode writes the generic configuration diagnostic to stderr and exits nonzero before sending the prompt. It writes no human diagnostic to stdout, so any stdout records remain valid JSONL. This differs from ordinary supported-provider model or authentication fallback, which retains normal automatic model selection.
+
 ## Event Types
 
 Events are defined in [`AgentSessionEvent`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/agent-session.ts#L152):

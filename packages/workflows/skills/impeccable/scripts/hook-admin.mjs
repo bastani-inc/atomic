@@ -27,7 +27,6 @@ import {
   getConfigPath,
   getLocalConfigPath,
   getCachePath,
-  getPendingPath,
   readConfig,
   DEFAULT_CONFIG,
   ensureHookGitExcludes,
@@ -39,7 +38,6 @@ const ACTIONS = new Set(['status', 'on', 'off', 'ignore-rule', 'ignore-file', 'i
 const IMPECCABLE_HOOK_COMMAND_MARKERS = [
   'skills/impeccable/scripts/hook-probe.mjs',
   'skills/impeccable/scripts/hook.mjs',
-  'skills/impeccable/scripts/hook-before-edit.mjs',
   'skills/impeccable/scripts/hook-after-edit.mjs',
   'skills/impeccable/scripts/hook-stop.mjs',
 ];
@@ -88,22 +86,6 @@ const HOOK_MANIFEST_TARGETS = [
                 statusMessage: STATUS_MESSAGE,
               },
             ],
-          },
-        ],
-      },
-    }),
-  },
-  {
-    provider: '.cursor',
-    skillRel: '.cursor/skills/impeccable',
-    destRel: '.cursor/hooks.json',
-    manifest: () => ({
-      version: 1,
-      hooks: {
-        preToolUse: [
-          {
-            command: 'node ".cursor/skills/impeccable/scripts/hook-before-edit.mjs"',
-            timeout: TIMEOUT_SECONDS,
           },
         ],
       },
@@ -422,7 +404,7 @@ function valueHasImpeccableHookMarker(value) {
 
 function stripImpeccableHookEntry(entry) {
   if (!entry || typeof entry !== 'object') return entry;
-  // `command`/`args`: Claude/Codex/Cursor. `bash`/`powershell`: GitHub Copilot's
+  // `command`/`args`: Claude/Codex. `bash`/`powershell`: GitHub Copilot's
   // flat entry shape, where the marker lives under the shell-command keys.
   if (valueHasImpeccableHookMarker(entry.command) || valueHasImpeccableHookMarker(entry.args)
     || valueHasImpeccableHookMarker(entry.bash) || valueHasImpeccableHookMarker(entry.powershell)) {
@@ -617,7 +599,7 @@ function reset(cwd) {
     } catch { /* ignore */ }
   }
   // State files are wholly ours; delete outright.
-  for (const filePath of [getCachePath(cwd), getPendingPath(cwd)]) {
+  for (const filePath of [getCachePath(cwd)]) {
     try {
       if (fs.existsSync(filePath)) {
         fs.unlinkSync(filePath);

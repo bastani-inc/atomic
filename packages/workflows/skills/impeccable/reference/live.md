@@ -11,7 +11,7 @@ Codex: run live helper commands, the app dev server, and any dependency-installi
 Execute in order. No step skipped, no step reordered.
 
 1. `live.mjs`: boot. If the request names or implies a file, route, or app inside a monorepo, infer the concrete path and run `node .agents/skills/impeccable/scripts/live.mjs --target <path>` instead; then run the rest of this live session from the returned `projectRoot`.
-2. Open the app URL that serves `pageFile` (infer from `package.json`, docs, terminal output, or an open tab). Never use `serverPort`; it's the helper, not the app. **Cursor:** `browser_navigate` to that URL before polling; do not skip. **Other harnesses:** use the available browser tool; if the URL is uncertain, ask the user once.
+2. Open the app URL that serves `pageFile` (infer from `package.json`, docs, terminal output, or an open tab). Never use `serverPort`; it's the helper, not the app. Use the available browser tool; if the URL is uncertain, ask the user once.
 3. Poll loop with the default long timeout (600000 ms). After every event or `--reply`, run `live-poll.mjs` again immediately. Never pass a short `--timeout=`.
 
 The global bar **Impeccable mark** dims and shows a pulsing amber dot when no agent is long-polling `/poll`. Hover the mark for the hint; restart `live-poll.mjs` to reconnect.
@@ -23,7 +23,6 @@ The global bar **Impeccable mark** dims and shows a pulsing amber dot when no ag
 
 Harness policy:
 - **Claude Code**: run the poll as a **background task** (no short timeout). The harness notifies you when it completes, so the main conversation stays free. Do not block the shell.
-- **Cursor**: run **one-shot** poll in a **background terminal** with notify on `"type":"(steer|generate|accept|discard|exit)"`. After each event the poll exits; handle it, `--reply`, then start `live-poll.mjs` again. Do **not** use `--stream` on Cursor: incremental stdout notify is slower in practice than exit-based notify (~5s vs sub-second in testing).
 - **Codex**: run the poll in the **foreground** (blocking shell; not a background task, not a subagent). Codex background exec sessions do not reliably surface poll stdout back into the conversation at the moment events arrive, so a "fire-and-forget" background poll will stall live mode.
 - **Other harnesses**: one-shot foreground unless you know stdout reliably returns to this session when a shell exits.
 
@@ -60,7 +59,7 @@ LOOP:
   "exit"      → break → Cleanup
 ```
 
-**Stream mode (experimental, not for Cursor):**
+**Stream mode (experimental):**
 
 ```
 node .agents/skills/impeccable/scripts/live-poll.mjs --stream   # stays running; one JSON line per event
@@ -68,7 +67,7 @@ node .agents/skills/impeccable/scripts/live-poll.mjs --stream   # stays running;
   Repeat until "exit" line → Cleanup
 ```
 
-Stream keeps one process alive and waits for `--reply` ack before polling again. Useful only when the harness reads incremental stdout reliably and quickly. **Cursor is not one of those:** background pattern notify on a long-running shell was ~5s to pick up events vs sub-second for one-shot exit notify. Default to one-shot everywhere unless you have measured otherwise.
+Stream keeps one process alive and waits for `--reply` ack before polling again. Use it only when the harness reads incremental stdout reliably and quickly. Default to one-shot everywhere unless you have measured otherwise.
 
 ## Recovery commands
 

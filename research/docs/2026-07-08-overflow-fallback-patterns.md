@@ -142,4 +142,3 @@ Key findings located for the requested research:
   - `packages/natives/CHANGELOG.md`
   - `packages/web-access/CHANGELOG.md`
   - `packages/intercom/CHANGELOG.md`
-  - `packages/cursor/CHANGELOG.md`

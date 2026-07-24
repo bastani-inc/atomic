@@ -10,7 +10,6 @@
 			"license": "MIT",
 			"dependencies": {
 				"@bastani/atomic-natives": "0.0.0",
-				"@bufbuild/protobuf": "^2.12.1",
 				"@dbos-inc/dbos-sdk": "4.23.6",
 				"@earendil-works/pi-agent-core": "^0.81.1",
 				"@earendil-works/pi-ai": "^0.81.1",
@@ -619,12 +618,6 @@
 				"type": "github",
 				"url": "https://github.com/sponsors/Borewit"
 			}
-		},
-		"node_modules/@bufbuild/protobuf": {
-			"version": "2.12.1",
-			"resolved": "https://registry.npmjs.org/@bufbuild/protobuf/-/protobuf-2.12.1.tgz",
-			"integrity": "sha512-BvAMfS6LrgZiryOAZ4pBYucu4wG/Ei/9o9DZ9akbREnMLbPJiom2i8b9C8IsKErQoiKqVhrerzt3kOT/RrzLHg==",
-			"license": "(Apache-2.0 AND BSD-3-Clause)"
 		},
 		"node_modules/@dbos-inc/dbos-sdk": {
 			"version": "4.23.6",

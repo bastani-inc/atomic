@@ -2,9 +2,9 @@
 /**
  * Impeccable design hook — PostToolUse entry point.
  *
- * Reads the Claude Code / Codex / Cursor hook event from stdin, runs the design
- * detector against the touched file, and emits a system reminder via
- * `hookSpecificOutput.additionalContext` when findings exist.
+ * Reads the Claude Code, Codex, or GitHub Copilot hook event from stdin, runs
+ * the design detector against the touched file, and emits a system reminder in
+ * the harness-specific context payload.
  *
  * Contract: never break a turn. Always exit 0. Clean files emit a small ack
  * unless quiet mode is enabled.

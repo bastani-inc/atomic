@@ -13,7 +13,6 @@ See these complete provider examples:
 
 - [`examples/extensions/custom-provider-anthropic/`](https://github.com/bastani-inc/atomic/tree/main/packages/coding-agent/examples/extensions/custom-provider-anthropic)
 - [`examples/extensions/custom-provider-gitlab-duo/`](https://github.com/bastani-inc/atomic/tree/main/packages/coding-agent/examples/extensions/custom-provider-gitlab-duo)
-- Built-in reference: `packages/cursor/` registers the experimental first-party Cursor provider with OAuth, model mapping, and a native `streamSimple` adapter without a local proxy.
 
 ## Table of Contents
 

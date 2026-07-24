@@ -31,7 +31,7 @@ import { type CodingAgentModelsStore, FileModelsStore, InMemoryCodingAgentModels
 import { getLegacyOAuthProvider, oauthCredentialToAuth } from "./oauth-provider-bridge.ts";
 import { withRemoteCatalog } from "./remote-catalog-provider.ts";
 import { clearConfigValueCache, isConfigValueConfigured } from "./resolve-config-value.ts";
-const REMOTE_CATALOG_PROVIDERS = new Set(["cursor", "github-copilot", "openrouter", "vercel-ai-gateway"]);
+const REMOTE_CATALOG_PROVIDERS = new Set(["github-copilot", "openrouter", "vercel-ai-gateway"]);
 const OPENAI_COMPATIBLE_APIS = new Set<Api>(["openai-completions", "openai-responses"]);
 let nextRegistryRegistrationId = 0;
 
@@ -296,6 +296,12 @@ export class ModelRegistry {
 	find(provider: string, modelId: string): Model<Api> | undefined { return this.models.find((model) => model.provider === provider && model.id === modelId); }
 	getProviders(): readonly Provider[] { return this.providerModels.getProviders(); }
 	getProvider(providerId: string): Provider | undefined { return this.providerModels.getProvider(providerId); }
+	/** Whether an exact provider id belongs to a built-in, configured, or extension registration. */
+	hasProvider(providerId: string): boolean {
+		return this.registeredProviders.has(providerId)
+			|| this.providerModels.getProvider(providerId) !== undefined
+			|| this.models.some((model) => model.provider === providerId);
+	}
 	checkAuth(providerId: string) { return this.providerModels.checkAuth(providerId); }
 	getAuth(providerId: string, overrides?: { apiKey?: string; env?: Record<string, string> }): Promise<AuthResult | undefined>;
 	getAuth(model: Model<Api>, overrides?: { apiKey?: string; env?: Record<string, string> }): Promise<AuthResult | undefined>;

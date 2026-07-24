@@ -52,9 +52,14 @@ export function createRpcCommandHandler({
 	return async (command: RpcCommand): Promise<RpcResponse | undefined> => {
 		const id = command.id;
 		const session = getSession();
-
 		switch (command.type) {
 			case "prompt": {
+				if (runtimeHost.modelFallbackReason === "configured-provider-unsupported") {
+					const message = runtimeHost.modelFallbackMessage;
+					if (!message) throw new Error("Unsupported configured provider is missing its diagnostic message");
+					output(createRpcErrorResponse(id, "prompt", message));
+					return undefined;
+				}
 				let preflightSucceeded = false;
 				void session
 					.prompt(command.message, {
@@ -126,6 +131,7 @@ export function createRpcCommandHandler({
 					return createRpcErrorResponse(id, "set_model", `Model not found: ${command.provider}/${command.modelId}`);
 				}
 				await session.setModel(model);
+				runtimeHost.resolveModelFallback();
 				return createRpcSuccessResponse(id, "set_model", session.model ?? model);
 			}
 
@@ -255,7 +261,6 @@ export function createRpcCommandHandler({
 				const result = await session.compact();
 				return createRpcSuccessResponse(id, "compact", result);
 			}
-
 
 			case "set_auto_compaction": {
 				session.setAutoCompactionEnabled(command.enabled);

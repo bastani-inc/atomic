@@ -39,6 +39,8 @@ Settings and trust JSON files may start with a UTF-8 BOM, as commonly written by
 | `showCacheMissNotices` | boolean | `false` | Show transcript notices for significant prompt-cache misses and their attributed wasted tokens |
 | `fallbackModels` | string[] | - | Ordered main-chat fallback models, written as `"provider/model"` with optional model-supported reasoning suffixes such as `:high`, `:xhigh`, or `:max` |
 
+`defaultProvider` and `defaultModel` form one exact saved selection when both are present. Atomic waits for built-in, configured, and extension provider registration before classifying that provider. If it remains unsupported, Atomic does not silently switch providers: interactive mode stays live with a generic configuration warning; print and JSON modes write the warning to stderr and exit nonzero before prompting (with JSON stdout remaining JSONL-clean); and RPC rejects `prompt` until a successful explicit `set_model` selects an available model. If the provider is supported but its saved model is unknown or lacks configured authentication, normal automatic selection of an available authenticated model remains enabled; the same is true when either field is omitted. Valid extension-provider defaults can resolve after deferred extension loading. Update an unsupported pair or choose a model with `/model`.
+
 #### thinkingBudgets
 
 ```json
@@ -293,7 +295,7 @@ When multiple sources specify a session directory, precedence is `--session-dir`
 |---------|------|---------|-------------|
 | `enabledModels` | string[] | - | Model patterns for CTRL+P cycling (same format as `--models` CLI flag). In interactive TTY startup, these patterns are resolved again after deferred extension/resource loading so extension-provided providers can match without blocking first paint. |
 | `defaultContextWindow` | number \| string | model default | Optional global fallback context window for models that expose selectable context windows. Accepts raw token counts or compact labels such as `400k` and `1m`. Unsupported values are ignored for models that do not support them. |
-| `defaultContextWindows` | object | `{}` | Per-model preferred context windows keyed as `provider/modelId`. The interactive `/model` context picker writes this setting so a Copilot-specific prompt cap such as `936k` does not leak into Anthropic, Cursor, or other providers. |
+| `defaultContextWindows` | object | `{}` | Per-model preferred context windows keyed as `provider/modelId`. The interactive `/model` context picker writes this setting so a provider-specific prompt cap such as Copilot's `936k` does not leak into other providers. |
 
 ```json
 {

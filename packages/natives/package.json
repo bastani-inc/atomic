@@ -16,9 +16,7 @@
   "keywords": [
     "napi",
     "rust",
-    "native",
-    "http2",
-    "cursor"
+    "native"
   ],
   "main": "./native/index.js",
   "types": "./native/index.d.ts",

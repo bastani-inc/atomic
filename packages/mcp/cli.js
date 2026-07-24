@@ -29,7 +29,6 @@ const PROJECT_PI_CONFIG_PATH = path.resolve(process.cwd(), CONFIG_DIR_NAME, "mcp
 const PROJECT_PI_CONFIG_READ_PATHS = getProjectConfigPaths(process.cwd(), "mcp.json");
 
 const IMPORT_PATHS = {
-  cursor: [path.join(HOME, ".cursor", "mcp.json")],
   "claude-code": [
     path.join(HOME, ".claude", "mcp.json"),
     path.join(HOME, ".claude.json"),

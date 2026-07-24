@@ -13,7 +13,7 @@ Both extensions are authored against the **pi-coding-agent** extension API (entr
 
 ### Summary
 
-Single-tool MCP proxy that gives pi MCP server access while keeping the prompt small. Registers ONE tool `mcp` (~200 tokens) instead of N tools (often 10k+). Tools are discovered on demand via `search`, `describe`, `list`, `connect`, `call` actions. Lazy server loading. Direct tool promotion (servers/tools listed in `directTools` get registered as top-level pi tools, bypassing the proxy). Multi-source config (`~/.config/mcp/mcp.json`, `<agent dir>/mcp.json`, `.mcp.json`, `.pi/mcp.json`). Auto-import from Cursor, Claude Code, Claude Desktop, Codex, Windsurf, VS Code formats. OAuth 2.1 (auto-discovery, dynamic client registration, PKCE, bearer tokens). MCP UI resources rendered in native windows (macOS) or browser. MCP sampling (servers can request a completion from pi's current model).
+At the audited upstream revision, this single-tool MCP proxy provided MCP server access with lazy loading, direct tool promotion, multi-source config, several third-party import formats, OAuth 2.1, MCP UI resources, and sampling. Atomic's current first-party adapter no longer supports Cursor compatibility imports; the historical upstream inventory below is not a statement of current Atomic support.
 
 Lifecycle modes per-server: `lazy` (default), `eager`, `keep-alive`.
 
@@ -39,7 +39,7 @@ Key files: `index.ts`, `init.ts`, `server-manager.ts`, `lifecycle.ts`, `config.t
 ```ts
 interface McpConfig {
     mcpServers: Record<string, ServerEntry>;
-    imports?: ImportKind[]; // cursor | claude-code | claude-desktop | codex | windsurf | vscode
+    imports?: ImportKind[]; // historical upstream schema; Atomic supports claude-code | claude-desktop | codex | windsurf | vscode
     settings?: McpSettings;
 }
 

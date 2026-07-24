@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Removed the experimental Cursor model provider in full. Cursor authentication, model catalogs and defaults, stale-provider restoration, bundled provider files, documentation, and Cursor-branded MCP compatibility imports are no longer available. Complete saved provider/model defaults whose provider remains unsupported after extension loading now stay unselected with a generic configuration warning instead of silently switching providers: interactive sessions stay live, print/JSON write the diagnostic to stderr and exit nonzero before prompting with clean JSON stdout, and RPC rejects prompts until explicit `set_model` recovery. Unknown or unauthenticated models on supported providers retain normal automatic selection ([#1994](https://github.com/bastani-inc/atomic/issues/1994)).
+
 ### Changed
 
 - Reworked interactive startup and ordinary working motion around Atomic's revision-3 identity system: the ∀ banner assembles inward in whole-column steps before its identity and manifesto beat land; main and workflow-stage work surfaces keep the exact one-cell `∀` visible while following a pronounced, theme-aware dark → accent → bright/bold → accent → dark luminance ramp at an 88ms cadence and retaining all 453 original randomized whimsical working verbs. Optional partial theme palettes can specify any phase exactly—including the approved Catppuccin Mocha prototype and terminal indices 0–255—while omitted tones derive from semantic selected-surface, accent, and text roles. `NO_COLOR` retains regular/bold activity without foreground-color escapes; reduced motion keeps a static regular accent `∀`; extension indicator frame and interval values remain verbatim while their phase/cadence restarts each turn; and factual status/prompt/receipt surfaces keep precedence. The inline icon and longest message fit tested standard/64-column layouts ([#1883](https://github.com/bastani-inc/atomic/issues/1883)).

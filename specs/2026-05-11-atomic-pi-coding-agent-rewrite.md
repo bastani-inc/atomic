@@ -624,7 +624,7 @@ This replaces the current `scm-sync.ts` per-agent toggling without touching upst
 - `.mcp.json` — preserved.
 - `.atomic/mcp.json` — replaces current `.claude/mcp.json` project entries.
 
-The adapter's auto-import wizard (`/mcp setup`) supports Cursor, Claude Code, Claude Desktop, Codex, Windsurf, VS Code formats — gives users who do have prior MCP configs a one-command import path.
+The adapter's auto-import wizard (`/mcp setup`) supports Claude Code, Claude Desktop, Codex, Windsurf, and VS Code formats, giving users who have prior MCP configs a one-command import path.
 
 #### Bundled MCP servers (curated default set ships with Atomic)
 
@@ -702,7 +702,7 @@ Per pi-mcp-adapter's existing multi-source loader:
 - `.mcp.json` (project shared) — **preserved**.
 - `.atomic/mcp.json` (Atomic project override) — replaces current `.claude/mcp.json` project entries.
 
-The auto-import functionality (Cursor, Claude Code, Claude Desktop, Codex, Windsurf, VS Code) gives users a one-command migration path: `/mcp setup` discovers existing MCP configs and imports them.
+The auto-import functionality (Claude Code, Claude Desktop, Codex, Windsurf, and VS Code) gives users a one-command migration path: `/mcp setup` discovers existing MCP configs and imports them.
 
 #### Distribution (decided Q9)
 
@@ -1091,7 +1091,7 @@ atomic
 
 The user's existing `.claude/`, `.opencode/`, `.github/` config directories are left in place by us — they're the user's, not ours, and v1 simply does not read them. If users want their pre-existing MCP servers or skills picked up, they:
 
-- Manually run `/mcp setup` inside the new TUI (pi-mcp-adapter's existing wizard imports from Cursor / Claude Code / Claude Desktop / Codex / Windsurf / VS Code formats).
+- Manually run `/mcp setup` inside the new TUI (the adapter's wizard imports from Claude Code, Claude Desktop, Codex, Windsurf, and VS Code formats).
 - Manually add skill paths to `~/.atomic/agent/settings.json` `skills: [...]` if they want their `~/.agents/skills/` or `~/.claude/skills/` available (per Q2, Atomic does not auto-load these).
 
 No documentation is written promising state migration. The README's "Upgrading from v0.x" section consists of the three commands above and a sentence noting that v1 is a clean rewrite.

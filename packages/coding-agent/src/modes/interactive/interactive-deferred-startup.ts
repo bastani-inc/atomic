@@ -1,6 +1,14 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { modelsAreEqual } from "@earendil-works/pi-ai/compat";
-import { type Container, recordTimeSinceReset, resolveModelScopeWithDiagnostics, resolveRestoredModelReference, setRegisteredThemes } from "./interactive-mode-deps.ts";
+import {
+  type Container,
+  findInitialModel,
+  formatNoModelsAvailableMessage,
+  recordTimeSinceReset,
+  resolveModelScopeWithDiagnostics,
+  resolveRestoredModelReference,
+  setRegisteredThemes,
+} from "./interactive-mode-deps.ts";
 
 export interface DeferredStartupMode {
     deferredStartupPending: boolean;
@@ -108,15 +116,14 @@ export async function applyDeferredModelScope(mode: InteractiveModeBase): Promis
   }
 
 /**
- * A session model saved with an extension-registered provider cannot resolve
- * until extensions load; retry the restore now and only surface the fallback
- * warning if it still fails.
+ * Session-restored models and complete settings defaults may depend on an
+ * extension provider. Re-evaluate them after deferred registration finishes,
+ * then surface only the final warning state.
  */
 InteractiveModeBase.prototype.retryDeferredModelRestore = async function(this: InteractiveModeBase, targetContainer?: Container): Promise<void> {
-    const fallbackMessage = this.options.modelFallbackMessage;
-    if (!fallbackMessage) {
-      return;
-    }
+    const preliminaryFallbackMessage = this.options.modelFallbackMessage;
+    if (!preliminaryFallbackMessage) return;
+
     const savedModel = this.sessionManager.buildSessionContext().model;
     if (!savedModel && this.session.model && this.session.modelRegistry.hasConfiguredAuth(this.session.model)) {
       return;
@@ -131,6 +138,29 @@ InteractiveModeBase.prototype.retryDeferredModelRestore = async function(this: I
         await this.session.setModel(restoredModel);
         return;
       }
+      this.showWarning(preliminaryFallbackMessage, targetContainer);
+      return;
     }
-    this.showWarning(fallbackMessage, targetContainer);
+
+    const defaultProvider = this.settingsManager.getDefaultProvider();
+    const defaultModelId = this.settingsManager.getDefaultModel();
+    if (defaultProvider && defaultModelId) {
+      const result = await findInitialModel({
+        scopedModels: [],
+        isContinuing: false,
+        defaultProvider,
+        defaultModelId,
+        defaultThinkingLevel: this.settingsManager.getDefaultThinkingLevel(),
+        modelRegistry: this.session.modelRegistry,
+      });
+      if (result.model) {
+        await this.session.setModel(result.model);
+        this.session.setThinkingLevel(result.thinkingLevel);
+        return;
+      }
+      this.showWarning(result.fallbackMessage ?? formatNoModelsAvailableMessage(), targetContainer);
+      return;
+    }
+
+    this.showWarning(preliminaryFallbackMessage, targetContainer);
   };

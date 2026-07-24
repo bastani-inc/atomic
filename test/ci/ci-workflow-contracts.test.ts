@@ -19,6 +19,14 @@ function jobBlock(workflow: string, name: string, next?: string): string {
   return workflow.slice(start, end);
 }
 
+function stepBlock(workflow: string, name: string, next: string): string {
+  const start = workflow.indexOf(`- name: ${name}`);
+  assert.notEqual(start, -1, `missing step: ${name}`);
+  const end = workflow.indexOf(`- name: ${next}`, start + 1);
+  assert.notEqual(end, -1, `missing next step: ${next}`);
+  return workflow.slice(start, end);
+}
+
 test("test workflow preserves its two-platform matrix and deterministic contracts", async () => {
   const workflow = await Bun.file(join(root, ".github/workflows/test.yml")).text();
   assert.match(workflow, /blacksmith-4vcpu-ubuntu-2404/);
@@ -26,6 +34,32 @@ test("test workflow preserves its two-platform matrix and deterministic contract
   assert.match(workflow, /name: Deterministic CI and release contracts[\s\S]*run: bun run test:ci-contracts/);
   assert.match(workflow, /Smoke test Linux release archive/);
   assert.match(workflow, /Smoke test Windows release archive/);
+  assert.match(
+    stepBlock(workflow, "coding-agent vitest suite (one bounded flake retry)", "Build native release binary"),
+    /ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE: "1"/u,
+  );
+});
+
+test("active CI workflows contain no removed Cursor builtin smoke checks", async () => {
+  for (const path of [join(root, ".github/workflows/test.yml"), publishPath]) {
+    assert.doesNotMatch(await Bun.file(path).text(), /builtin\/cursor/iu, path);
+  }
+});
+
+test("binary staging and every release smoke verify the exact builtin directory set", async () => {
+  const checker = /scripts\/assert-builtin-set\.ts/u;
+  const testWorkflow = await Bun.file(join(root, ".github/workflows/test.yml")).text();
+  const publishWorkflow = await Bun.file(publishPath).text();
+  const buildScript = await Bun.file(join(root, "scripts/build-binaries.sh")).text();
+
+  assert.match(stepBlock(testWorkflow, "Smoke test Linux release archive", "Smoke test Windows release archive"), checker);
+  assert.match(stepBlock(testWorkflow, "Smoke test Windows release archive", "Upload flaky-test diagnostics"), checker);
+  assert.equal(testWorkflow.split("scripts/assert-builtin-set.ts").length - 1, 2);
+  assert.match(jobBlock(publishWorkflow, "linux-binary-smoke", "windows-binary-smoke"), checker);
+  assert.match(jobBlock(publishWorkflow, "windows-binary-smoke", "build"), checker);
+  assert.match(jobBlock(publishWorkflow, "build", "stage-github-release"), checker);
+  assert.equal(publishWorkflow.split("scripts/assert-builtin-set.ts").length - 1, 3);
+  assert.match(buildScript, /assert-builtin-set\.ts "binaries\/\$platform\/builtin"/u);
 });
 
 test("publish workflow has direct tag and recovery triggers", async () => {

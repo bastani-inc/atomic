@@ -1,10 +1,9 @@
 import { describe, test } from "bun:test";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 import { subset as semverSubset } from "semver";
 import atomicPackageJson from "../../packages/coding-agent/package.json" with { type: "json" };
-import cursorPackageJson from "../../packages/cursor/package.json" with { type: "json" };
 import intercomPackageJson from "../../packages/intercom/package.json" with { type: "json" };
 import mcpPackageJson from "../../packages/mcp/package.json" with { type: "json" };
 import nativesPackageJson from "../../packages/natives/package.json" with { type: "json" };
@@ -88,7 +87,6 @@ const BUNDLED_PACKAGE_MANIFESTS: readonly PackageDependencySections[] = [
     mcpPackageJson,
     webAccessPackageJson,
     intercomPackageJson,
-    cursorPackageJson,
 ];
 
 const ATOMIC_RUNTIME_DEPENDENCIES: DependencyMap = {
@@ -297,27 +295,9 @@ describe("package metadata", () => {
         assert.ok(nativesPackageJson.files.includes("native/index.d.ts"));
     });
 
-    test("Cursor native transport documentation does not mention removed Node bridge paths", () => {
-        const checkedPaths = [
-            "packages/coding-agent/docs/providers.md",
-            "packages/cursor/README.md",
-            "packages/cursor/src/proto/README.md",
-        ];
-        const forbiddenPatterns = [
-            /ATOMIC_CURSOR_H2_BRIDGE_NODE/,
-            /h2-bridge/,
-            /Node bridge/i,
-            /node subprocess/i,
-            /subprocess bridge/i,
-            /shell out to Node/i,
-        ];
-
-        for (const checkedPath of checkedPaths) {
-            const content = readFileSync(checkedPath, "utf8");
-            for (const pattern of forbiddenPatterns) {
-                assert.doesNotMatch(content, pattern, `${checkedPath} must not mention ${pattern}`);
-            }
-        }
+    test("removed provider package directory is absent", () => {
+        const removedProvider = ["cur", "sor"].join("");
+        assert.equal(existsSync(join("packages", removedProvider)), false);
     });
 
     test("subagents package ships bundled agent markdown files", () => {

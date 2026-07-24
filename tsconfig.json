@@ -32,9 +32,7 @@
             "@bastani/web-access": ["./packages/web-access/index.ts"],
             "@bastani/web-access/*": ["./packages/web-access/*"],
             "@bastani/intercom": ["./packages/intercom/index.ts"],
-            "@bastani/intercom/*": ["./packages/intercom/*"],
-            "@bastani/cursor": ["./packages/cursor/index.ts"],
-            "@bastani/cursor/*": ["./packages/cursor/*"]
+            "@bastani/intercom/*": ["./packages/intercom/*"]
         }
     },
     "include": [

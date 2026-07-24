@@ -20,7 +20,6 @@ const expectedBuiltinPackages = [
   resolve("packages/mcp"),
   resolve("packages/web-access"),
   resolve("packages/intercom"),
-  resolve("packages/cursor"),
 ];
 
 const builtinPackageFixtures = [
@@ -29,14 +28,14 @@ const builtinPackageFixtures = [
   { packageName: "@bastani/mcp", dirname: "mcp", requiredEntry: "index.ts" },
   { packageName: "@bastani/web-access", dirname: "web-access", requiredEntry: "index.ts" },
   { packageName: "@bastani/intercom", dirname: "intercom", requiredEntry: "index.ts" },
-  { packageName: "@bastani/cursor", dirname: "cursor", requiredEntry: "index.ts" },
 ] as const;
 
 const fullBuiltinPackageLoadTimeoutMs = 60_000;
 
 describe("coding-agent builtin resources", () => {
-  test("discovers bundled companion packages in development", () => {
+  test("discovers bundled companion packages in development without the removed Cursor package", () => {
     assert.deepEqual(getBuiltinPackagePaths(), expectedBuiltinPackages);
+    assert.equal(getBuiltinPackagePaths().some((packagePath) => packagePath.endsWith("/cursor")), false);
   });
 
   test("discovers shipped binary adjacent builtin packages", () => {

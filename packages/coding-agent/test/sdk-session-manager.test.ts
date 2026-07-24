@@ -160,7 +160,7 @@ describe("createAgentSession session manager defaults", () => {
 			timestamp: Date.now(),
 		});
 
-		const { session, modelFallbackMessage } = await createAgentSession({
+		const { session, modelFallbackMessage, modelFallbackReason } = await createAgentSession({
 			cwd,
 			agentDir,
 			authStorage,
@@ -172,6 +172,100 @@ describe("createAgentSession session manager defaults", () => {
 		expect(session.model).not.toBe(exactModel);
 		expect(session.model?.id).not.toBe(exactModel!.id);
 		expect(modelFallbackMessage).toContain(`${exactModel!.provider}/${exactModel!.id}`);
+		expect(modelFallbackReason).toBe("session-restore");
+		session.dispose();
+	});
+
+	it("propagates a generic warning for an unusable complete saved default without switching providers", async () => {
+		const authStorage = AuthStorage.inMemory();
+		authStorage.setRuntimeApiKey("openai", "test-key");
+		const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
+		const settingsManager = SettingsManager.inMemory({
+			defaultProvider: ["cur", "sor"].join(""),
+			defaultModel: ["composer", "-2"].join(""),
+		});
+
+		const { session, modelFallbackMessage, modelFallbackReason } = await createAgentSession({
+			cwd,
+			agentDir,
+			authStorage,
+			modelRegistry,
+			settingsManager,
+			sessionManager: SessionManager.inMemory(cwd),
+		});
+
+		expect(session.model?.provider).toBe("unknown");
+		expect(session.model?.provider).not.toBe("openai");
+		expect(typeof modelFallbackMessage).toBe("string");
+		expect(modelFallbackMessage).toBe(
+			"Configured default model is unavailable or unsupported. Update defaultProvider/defaultModel or use /model.",
+		);
+		expect(modelFallbackReason).toBe("configured-provider-unsupported");
+		expect(settingsManager.getDefaultProvider()).toBe(["cur", "sor"].join(""));
+		expect(settingsManager.getDefaultModel()).toBe(["composer", "-2"].join(""));
+		session.dispose();
+	});
+	it("keeps normal automatic selection for an unknown model on a supported provider", async () => {
+		const authStorage = AuthStorage.inMemory();
+		authStorage.setRuntimeApiKey("openai", "test-key");
+		const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
+		const settingsManager = SettingsManager.inMemory({
+			defaultProvider: "openai",
+			defaultModel: "unknown-saved-model",
+		});
+
+		const { session, modelFallbackMessage, modelFallbackReason } = await createAgentSession({
+			cwd,
+			agentDir,
+			authStorage,
+			modelRegistry,
+			settingsManager,
+			sessionManager: SessionManager.inMemory(cwd),
+		});
+
+		expect(session.model?.provider).toBe("openai");
+		expect(session.model?.id).not.toBe("unknown-saved-model");
+		expect(modelFallbackMessage).toBeUndefined();
+		expect(modelFallbackReason).toBeUndefined();
+		session.dispose();
+	});
+
+	it("keeps normal automatic selection when a supported exact default lacks auth", async () => {
+		const authStorage = AuthStorage.inMemory();
+		authStorage.setRuntimeApiKey("openai", "test-key");
+		const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
+		const savedModel = modelRegistry.getAll().find((model) => model.provider === "anthropic");
+		if (!savedModel) throw new Error("missing Anthropic model fixture");
+		const settingsManager = SettingsManager.inMemory({
+			defaultProvider: savedModel.provider,
+			defaultModel: savedModel.id,
+		});
+
+		const { session, modelFallbackMessage } = await createAgentSession({
+			cwd,
+			agentDir,
+			authStorage,
+			modelRegistry,
+			settingsManager,
+			sessionManager: SessionManager.inMemory(cwd),
+		});
+
+		expect(session.model?.provider).toBe("openai");
+		expect(session.model).not.toBe(savedModel);
+		expect(modelFallbackMessage).toBeUndefined();
+		session.dispose();
+	});
+	it("classifies ordinary empty catalogs separately from unsupported providers", async () => {
+		const authStorage = AuthStorage.inMemory();
+		const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
+		vi.spyOn(modelRegistry, "getAvailable").mockReturnValue([]);
+		const { session, modelFallbackMessage, modelFallbackReason } = await createAgentSession({
+			cwd, agentDir, authStorage, modelRegistry,
+			settingsManager: SettingsManager.inMemory(),
+			sessionManager: SessionManager.inMemory(cwd),
+		});
+		expect(modelFallbackMessage).toContain("No models available");
+		expect(modelFallbackReason).toBe("no-models-available");
 		session.dispose();
 	});
 

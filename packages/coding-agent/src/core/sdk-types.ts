@@ -8,6 +8,7 @@ import type { SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { AgentSession } from "./agent-session.ts";
 import type { LoadExtensionsResult, OrchestrationContext, SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
+import type { ModelFallbackReason } from "./model-resolver-types.ts";
 
 export interface CreateAgentSessionOptions {
   /** Working directory for project-local discovery. Default: process.cwd() */
@@ -83,8 +84,10 @@ export interface CreateAgentSessionResult {
   session: AgentSession;
   /** Extensions result (for UI context setup in interactive mode) */
   extensionsResult: LoadExtensionsResult;
-  /** Warning if session was restored with a different model than saved */
+  /** Warning when a restored or configured model cannot be selected. */
   modelFallbackMessage?: string;
+  /** Semantic reason for modelFallbackMessage; suitable for mode control flow. */
+  modelFallbackReason?: ModelFallbackReason;
   /** Warning if a saved/default context window could not be applied to the selected model. */
   contextWindowWarning?: string;
   /** Error if an explicit strict context-window selection is unsupported. */

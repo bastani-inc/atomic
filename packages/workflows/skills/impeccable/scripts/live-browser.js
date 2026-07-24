@@ -8848,14 +8848,13 @@ void main() {
   function isEmbeddedPreviewBrowser() {
     const ua = navigator.userAgent || '';
     if (/Electron/i.test(ua)) return true;
-    if (/Cursor/i.test(ua)) return true;
     try {
-      return !!(window.cursor || window.__CURSOR__ || window.__GLASS_BROWSER__);
+      return !!window.__GLASS_BROWSER__;
     } catch { return false; }
   }
 
   function steerVoiceUnavailableMessage() {
-    return 'Voice input works in Chrome or Safari. Cursor\'s preview browser cannot reach speech services.';
+    return 'Voice input works in Chrome or Safari. This embedded preview browser cannot reach speech services.';
   }
 
   function steerVoiceErrorMessage(code) {

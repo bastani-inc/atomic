@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Removed
+
+- Removed Cursor MCP compatibility imports from delegated direct-tool resolution and removed Cursor model candidates from every builtin subagent fallback policy ([#1994](https://github.com/bastani-inc/atomic/issues/1994)).
+
 ## [0.9.11-alpha.5] - 2026-07-23
 
 ### Changed

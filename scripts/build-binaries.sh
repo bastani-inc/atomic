@@ -174,7 +174,7 @@ cleanup_clipboard_stage
 CLIPBOARD_STAGE_DIR=""
 
 echo "==> Copying shared assets..."
-cursor_native_filename() {
+atomic_native_filename() {
     case "$1" in
         darwin-arm64) echo "atomic_natives.darwin-arm64.node" ;;
         darwin-x64) echo "atomic_natives.darwin-x64.node" ;;
@@ -207,6 +207,7 @@ for platform in "${PLATFORMS[@]}"; do
     cp dist/modes/interactive/assets/* "binaries/$platform/assets/"
     cp -r dist/core/export-html "binaries/$platform/"
     cp -r dist/builtin "binaries/$platform/"
+    bun run ../../scripts/assert-builtin-set.ts "binaries/$platform/builtin"
     if console_arch="$(win32_console_mode_arch "$platform")"; then
         console_src="../../node_modules/@earendil-works/pi-tui/native/win32/prebuilds/win32-$console_arch/win32-console-mode.node"
         console_dst="binaries/$platform/native/win32/prebuilds/win32-$console_arch"
@@ -219,14 +220,14 @@ for platform in "${PLATFORMS[@]}"; do
     cp -r "$runtime_deps_dir" "binaries/$platform/node_modules"
     rm -rf "binaries/$platform/node_modules/@bastani/atomic-natives/npm"
     find "binaries/$platform/node_modules/@bastani/atomic-natives" -maxdepth 1 -type f -name 'atomic_natives.*.node' -delete
-    cursor_native="$(cursor_native_filename "$platform")"
-    cursor_native_dir="binaries/$platform/node_modules/@bastani/atomic-natives/native"
-    if [ ! -f "$cursor_native_dir/$cursor_native" ]; then
-        echo "Missing Atomic native binding for $platform: $cursor_native_dir/$cursor_native" >&2
+    atomic_native="$(atomic_native_filename "$platform")"
+    atomic_native_dir="binaries/$platform/node_modules/@bastani/atomic-natives/native"
+    if [ ! -f "$atomic_native_dir/$atomic_native" ]; then
+        echo "Missing Atomic native binding for $platform: $atomic_native_dir/$atomic_native" >&2
         echo "Build or download all Atomic native artifacts before building release archives." >&2
         exit 1
     fi
-    find "$cursor_native_dir" -type f -name 'atomic_natives.*.node' ! -name "$cursor_native" -delete
+    find "$atomic_native_dir" -type f -name 'atomic_natives.*.node' ! -name "$atomic_native" -delete
 
     cp -r docs "binaries/$platform/"
     cp -r examples "binaries/$platform/"
