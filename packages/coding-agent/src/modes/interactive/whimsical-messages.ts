@@ -2,7 +2,7 @@
  * Whimsical working messages cycled into the interactive loader between turns.
  */
 
-const messages = [
+export const WHIMSICAL_WORKING_MESSAGES = [
   // Short
   "Schlepping...",
   "Combobulating...",
@@ -459,8 +459,8 @@ const messages = [
   "Glazing the graphics...",
   "Topping with tests...",
   "Cherry-picking the commits...",
-];
+] as const;
 
 export function pickWhimsicalWorkingMessage(): string {
-  return messages[Math.floor(Math.random() * messages.length)];
+  return WHIMSICAL_WORKING_MESSAGES[Math.floor(Math.random() * WHIMSICAL_WORKING_MESSAGES.length)];
 }

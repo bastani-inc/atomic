@@ -1,7 +1,7 @@
 {
 	"$schema": "http://json-schema.org/draft-07/schema#",
-	"title": "Pi Coding Agent Theme",
-	"description": "Theme schema for Pi coding agent",
+	"title": "Atomic Coding Agent Theme",
+	"description": "Theme schema for the Atomic coding agent",
 	"type": "object",
 	"required": ["name", "colors"],
 	"properties": {
@@ -293,6 +293,19 @@
 					"$ref": "#/$defs/colorValue",
 					"description": "Editor border color in bash mode"
 				}
+			},
+			"additionalProperties": false
+		},
+		"workingIndicator": {
+			"type": "object",
+			"description": "Optional partial six-tone palette for Atomic's ordinary working identity",
+			"properties": {
+				"dark": { "$ref": "#/$defs/colorValue" },
+				"lift": { "$ref": "#/$defs/colorValue" },
+				"muted": { "$ref": "#/$defs/colorValue" },
+				"accent": { "$ref": "#/$defs/colorValue" },
+				"bright": { "$ref": "#/$defs/colorValue" },
+				"peak": { "$ref": "#/$defs/colorValue" }
 			},
 			"additionalProperties": false
 		},

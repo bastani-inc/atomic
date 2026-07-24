@@ -2379,7 +2379,7 @@ ctx.ui.setWorkingIndicator({
   intervalMs: 120,
 });
 ctx.ui.setWorkingIndicator({ frames: [] });  // Hide indicator
-ctx.ui.setWorkingIndicator();  // Restore default spinner
+ctx.ui.setWorkingIndicator();  // Restore the default one-cell ∀ luminance ramp
 
 // Widget above editor (default)
 ctx.ui.setWidget("my-widget", ["Line 1", "Line 2"]);
@@ -2451,7 +2451,7 @@ ctx.ui.setTheme(lightTheme!);  // Or switch by Theme object
 ctx.ui.theme.fg("accent", "styled text");  // Access current theme
 ```
 
-Custom working-indicator frames are rendered verbatim. If you want colors, add them to the frame strings yourself, for example with `ctx.ui.theme.fg(...)`.
+Atomic's default working indicator keeps the literal one-cell `∀` fixed while following the active theme's optional `workingIndicator` tone overrides through a dark → accent → bright/bold → accent → dark ramp every 88ms. Any omitted tones are derived from selected-surface, `accent`, and `text` roles. `NO_COLOR` keeps regular/bold activity without foreground-color escapes, and `ATOMIC_REDUCED_MOTION=1` uses a static regular accent `∀` without a timer. Custom working-indicator frames and intervals are rendered verbatim. If you want colors, add them to the frame strings yourself, for example with `ctx.ui.theme.fg(...)`.
 
 ### Autocomplete Providers
 

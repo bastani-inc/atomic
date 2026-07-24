@@ -24,7 +24,6 @@ import { isChatSessionStreaming } from "./chat-session-host-runtime.ts";
 import {
   cacheKey,
   isChatMessageEntry,
-  spinnerFrame,
   stripAnsi,
   tailStreamingText,
 } from "./chat-session-host-utils.ts";
@@ -80,13 +79,23 @@ export function renderChatSessionWorkingStatus<
   TExtraEntry extends ChatTranscriptEntryLike,
 >(state: ChatSessionHostState<TExtraEntry>, width: number): string[] {
   if (!isChatSessionStreaming(state)) return [];
-  const message = state.compacting
-    ? state.statusMessage || "Compacting context..."
-    : state.workingMessage ?? "Working...";
+  if (state.statusMessage && !state.compacting) return [];
+  if (state.compacting) {
+    return new WorkingStatusComponent({
+      spinner: "",
+      message: state.statusMessage || "Compacting context...",
+      messageColor: (text) => state.style.textMuted(text),
+    }).render(width);
+  }
+  if (!state.workingLifecycleActive) return [];
+  const palette = state.style.workingIndicatorPalette;
+  const useCallerStyling = !palette && state.style.workingIndicatorUseGlobalTheme !== true && process.env.NO_COLOR === undefined;
   return new WorkingStatusComponent({
-    spinner: spinnerFrame(),
-    message,
-    spinnerColor: (text) => state.style.accentBold(text),
+    frame: state.workingFrame,
+    message: state.workingMessage ?? "Working...",
+    palette,
+    spinnerColor: useCallerStyling ? (text) => state.style.accent(text) : undefined,
+    spinnerBoldColor: useCallerStyling ? (text) => state.style.accentBold(text) : undefined,
     messageColor: (text) => state.style.textMuted(text),
   }).render(width);
 }

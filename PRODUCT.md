@@ -60,7 +60,7 @@ Developers and engineering teams who orchestrate AI coding agents (Claude Code, 
 Stick to the established Unicode icon set for consistency:
 - `✓` success, `✗` error, `→` navigation, `…` truncation
 - `○` pending, `●` active, `│` structure
-- Braille spinner (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`) at 80ms for loading states
+- Ordinary working identity: the literal one-cell `∀` follows a theme-aware dark → accent → bright/bold → accent → dark luminance ramp at 88ms; reduced motion uses a static regular accent `∀`
 
 ### Layout Constants
 - Sidebar width: 24 characters

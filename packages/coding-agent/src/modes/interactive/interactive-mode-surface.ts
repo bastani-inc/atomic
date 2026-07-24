@@ -1,6 +1,7 @@
 /** Method surface installed onto InteractiveModeBase by sibling modules. */
 import type { AgentMessage, Api, Message, Model, OAuthSelectPrompt, AutocompleteProvider, SlashCommand, Keybinding, MarkdownTheme, OverlayHandle, OverlayOptions, Component, LoaderIndicatorOptions, AgentSession, AgentSessionEvent, EditorFactory, ExtensionCommandContext, ExtensionRunner, ExtensionUIContext, ExtensionUIDialogOptions, HostCustomUiState, HostCustomUiStateListener, ProjectTrustContext, ExtensionWidgetOptions, ReadonlyFooterDataProvider, AppKeybinding, VerbatimCompactionResult, ResourceDiagnostic, SessionContext, SourceInfo, ChatMessageEntry, ChatMessageRenderOptions, AuthSelectorProvider, Container, TUI, Theme, Loader, MissingSessionCwdError, KeybindingsManager, LoginDialogComponent } from "./interactive-mode-deps.ts";
 import type { CustomEntry, SessionEntry } from "../../core/session-manager.ts";
+import type { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 
 declare module "./interactive-mode-base.ts" {
   interface InteractiveModeBase {
@@ -33,8 +34,8 @@ declare module "./interactive-mode-base.ts" {
   formatExtensionDisplayPath(path: string): string;
   formatContextPath(p: string): string;
   getStartupModelLabel(): string;
-  getStartupIdentityText(maxWidth?: number): string;
-  getAtomicAnsiMarkLines(): string[];
+  getStartupIdentityText(maxWidth?: number, gap?: number, manifestoPhase?: number): string;
+  getAtomicAnsiMarkLines(gap?: number): string[];
   getStartupExpansionState(): boolean;
   getShortPath(fullPath: string, sourceInfo?: SourceInfo): string;
   getCompactPathLabel(resourcePath: string, sourceInfo?: SourceInfo): string;
@@ -97,7 +98,7 @@ declare module "./interactive-mode-base.ts" {
   setupExtensionShortcuts(extensionRunner: ExtensionRunner): void;
   setExtensionStatus(key: string, text: string | undefined): void;
   getWorkingLoaderMessage(): string;
-  createWorkingLoader(): Loader;
+  createWorkingLoader(): Loader | AtomicWorkingLoader;
   stopWorkingLoader(): void;
   showWorkingLoaderNow(): void;
   setWorkingVisible(visible: boolean): void;

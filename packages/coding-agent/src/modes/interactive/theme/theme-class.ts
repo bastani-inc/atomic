@@ -57,6 +57,8 @@ export type ThemeBg =
 	| "toolSuccessBg"
 	| "toolErrorBg";
 
+export type WorkingIndicatorTone = "dark" | "lift" | "muted" | "accent" | "bright" | "peak";
+
 export class Theme {
 	readonly name?: string;
 	readonly sourcePath?: string;
@@ -64,12 +66,18 @@ export class Theme {
 	private fgColors: Map<ThemeColor, string>;
 	private bgColors: Map<ThemeBg, string>;
 	private mode: ColorMode;
+	private workingIndicatorColors: Map<WorkingIndicatorTone, string>;
 
 	constructor(
 		fgColors: Record<ThemeColor, string | number>,
 		bgColors: Record<ThemeBg, string | number>,
 		mode: ColorMode,
-		options: { name?: string; sourcePath?: string; sourceInfo?: SourceInfo } = {},
+		options: {
+			name?: string;
+			sourcePath?: string;
+			sourceInfo?: SourceInfo;
+			workingIndicator?: Partial<Record<WorkingIndicatorTone, string | number>>;
+		} = {},
 	) {
 		this.name = options.name;
 		this.sourcePath = options.sourcePath;
@@ -82,6 +90,10 @@ export class Theme {
 		this.bgColors = new Map();
 		for (const [key, value] of Object.entries(bgColors) as [ThemeBg, string | number][]) {
 			this.bgColors.set(key, bgAnsi(value, mode));
+		}
+		this.workingIndicatorColors = new Map();
+		for (const [key, value] of Object.entries(options.workingIndicator ?? {}) as [WorkingIndicatorTone, string | number][]) {
+			this.workingIndicatorColors.set(key, fgAnsi(value, mode));
 		}
 	}
 
@@ -121,6 +133,10 @@ export class Theme {
 		const ansi = this.fgColors.get(color);
 		if (!ansi) throw new Error(`Unknown theme color: ${color}`);
 		return ansi;
+	}
+
+	getWorkingIndicatorAnsi(tone: WorkingIndicatorTone): string | undefined {
+		return this.workingIndicatorColors.get(tone);
 	}
 
 	getBgAnsi(color: ThemeBg): string {

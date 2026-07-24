@@ -268,4 +268,15 @@ describe("StageChatView", () => {
         view.dispose();
     });
 
+    test("one optional working row keeps the icon content and composer instead of only its spacer", () => {
+        const store = createStore();
+        setupRun(store, "run-1", "stage-a");
+        const { handle } = makeHandle({ promptCalls: [], steerCalls: [], followUpCalls: [], pauseCalls: 0, resumeCalls: [], isStreaming: true });
+        const view = new StageChatView({ store, graphTheme: deriveGraphTheme({}), runId: "run-1", stageId: "stage-a", workflowName: "test-wf", handle, onDetach: () => {}, onClose: () => {}, getViewportRows: () => 7 });
+        const rendered = view.render(64).map(stripAnsi).join("\n");
+        assert.match(rendered, /❯/);
+        assert.match(rendered, /∀ Working\.\.\./);
+        view.dispose();
+    });
+
 });

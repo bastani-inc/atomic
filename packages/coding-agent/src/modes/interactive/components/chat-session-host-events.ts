@@ -15,6 +15,8 @@ import { flushChatSessionCompactionQueue } from "./chat-session-host-actions.ts"
 import {
   afterChatSessionEvent,
   decrementOptimisticUserSignature,
+  startChatSessionWorkingLifecycle,
+  stopChatSessionWorkingLifecycle,
 } from "./chat-session-host-runtime.ts";
 import type { ChatSessionHostState } from "./chat-session-host-state.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.ts";
@@ -121,6 +123,7 @@ export function applyChatSessionAgentEvent<
   state: ChatSessionHostState<TExtraEntry>,
   event: AgentSessionEvent,
 ): boolean {
+  if (state.disposed) return false;
   const type = String((event as { type?: unknown }).type ?? "");
   if (type === "message_start") {
     const message = (event as { message?: unknown }).message;
@@ -146,15 +149,19 @@ export function applyChatSessionAgentEvent<
   switch (type) {
     case "agent_start":
       state.sdkBusy = true;
+      state.workingMessage = undefined;
+      startChatSessionWorkingLifecycle(state);
       state.liveChat.clearPendingTools();
       state.statusMessage = "";
       changed = true;
       break;
     case "agent_end":
       state.sdkBusy = false;
+      state.compacting = false;
       state.workingMessage = undefined;
       state.liveChat.clearPendingTools();
       state.statusMessage = "";
+      stopChatSessionWorkingLifecycle(state);
       changed = true;
       if (state.compactionQueuedMessages.length > 0) {
         const idle = state.getAgentSession?.()?.agent.waitForIdle() ?? Promise.resolve();
@@ -162,11 +169,14 @@ export function applyChatSessionAgentEvent<
       }
       break;
     case "turn_start":
+      startChatSessionWorkingLifecycle(state);
       state.workingMessage = pickWhimsicalWorkingMessage();
       changed = true;
       break;
     case "turn_end":
+      state.compacting = false;
       state.workingMessage = undefined;
+      stopChatSessionWorkingLifecycle(state);
       changed = true;
       break;
     case "queue_update": {
@@ -204,6 +214,10 @@ export function applyChatSessionAgentEvent<
       state.compacting = false;
       state.sdkBusy = compaction.midTurn === true;
       state.statusMessage = compaction.errorMessage ?? "";
+      if (compaction.midTurn !== true || compaction.aborted || compaction.errorMessage) {
+        state.workingMessage = undefined;
+        stopChatSessionWorkingLifecycle(state);
+      }
       if (!compaction.aborted && !compaction.errorMessage && compaction.result) {
         refreshCompactedTranscript(state, compaction.result);
       }
@@ -236,39 +250,49 @@ export function applyChatSessionAgentEvent<
       break;
     case "auto_retry_start":
       state.sdkBusy = true;
+      state.workingMessage = undefined;
       state.statusMessage = "retrying…";
+      stopChatSessionWorkingLifecycle(state);
       changed = true;
       break;
     case "model_fallback_start":
       state.sdkBusy = true;
+      state.workingMessage = undefined;
       state.statusMessage = "switching model…";
+      stopChatSessionWorkingLifecycle(state);
       changed = true;
       break;
     case "model_fallback_end": {
       const fallback = event as Extract<AgentSessionEvent, { type: "model_fallback_end" }>;
       state.statusMessage = fallback.success ? "" : (fallback.finalError ?? "model fallback failed");
+      state.workingMessage = undefined;
       if (!fallback.success) {
         state.sdkBusy = false;
-        state.workingMessage = undefined;
+        state.compacting = false;
       }
+      stopChatSessionWorkingLifecycle(state);
       changed = true;
       break;
     }
     case "auto_retry_end": {
       const retry = event as Extract<AgentSessionEvent, { type: "auto_retry_end" }>;
       state.statusMessage = "";
+      state.workingMessage = undefined;
       if (!retry.success) {
         state.sdkBusy = false;
-        state.workingMessage = undefined;
+        state.compacting = false;
       }
+      stopChatSessionWorkingLifecycle(state);
       changed = true;
       break;
     }
     case "agent_continue_error": {
       const continueError = event as Extract<AgentSessionEvent, { type: "agent_continue_error" }>;
       state.sdkBusy = false;
+      state.compacting = false;
       state.statusMessage = continueError.errorMessage;
       state.workingMessage = undefined;
+      stopChatSessionWorkingLifecycle(state);
       changed = true;
       break;
     }

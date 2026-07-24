@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { getCustomThemesDir, getThemesDir } from "../../../config.ts";
 import { detectColorMode, type ColorMode, resolveThemeColors } from "./color-utils.ts";
 import { assertThemeNameIsValid, parseThemeJsonContent } from "./theme-parse.ts";
-import { Theme, type ThemeBg, type ThemeColor } from "./theme-class.ts";
+import { Theme, type ThemeBg, type ThemeColor, type WorkingIndicatorTone } from "./theme-class.ts";
 import type { ThemeJson } from "./theme-schema.ts";
 
 let BUILTIN_THEMES: Record<string, ThemeJson> | undefined;
@@ -112,6 +112,9 @@ export function loadThemeJson(name: string): ThemeJson {
 function createTheme(themeJson: ThemeJson, mode?: ColorMode, sourcePath?: string): Theme {
 	const colorMode = mode ?? detectColorMode();
 	const resolvedColors = resolveThemeColors(themeJson.colors, themeJson.vars);
+	const workingIndicator = themeJson.workingIndicator
+		? resolveThemeColors(themeJson.workingIndicator, themeJson.vars)
+		: undefined;
 	const fgColors: Record<ThemeColor, string | number> = {} as Record<ThemeColor, string | number>;
 	const bgColors: Record<ThemeBg, string | number> = {} as Record<ThemeBg, string | number>;
 	const bgColorKeys: Set<string> = new Set([
@@ -132,6 +135,7 @@ function createTheme(themeJson: ThemeJson, mode?: ColorMode, sourcePath?: string
 	return new Theme(fgColors, bgColors, colorMode, {
 		name: themeJson.name,
 		sourcePath,
+		workingIndicator: workingIndicator as Partial<Record<WorkingIndicatorTone, string | number>> | undefined,
 	});
 }
 

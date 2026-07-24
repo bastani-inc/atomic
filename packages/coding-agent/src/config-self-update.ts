@@ -315,7 +315,7 @@ export function getSelfUpdateUnavailableInstructionForRuntime(
 ): string {
 	const method = detectInstallMethodForRuntime(runtime);
 	if (method === "bun-binary") {
-		return `Download from: https://github.com/earendil-works/pi-mono/releases/latest`;
+		return `Download from: https://github.com/bastani-inc/atomic/releases/latest`;
 	}
 	const target = normalizeSelfUpdateTarget(updateTarget);
 	const command = getSelfUpdateCommandForMethod(runtime, method, packageName, target.packageName, npmCommand, target.installSpec);

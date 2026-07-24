@@ -10,6 +10,7 @@ import {
 import type { Component, EditorTheme } from "@earendil-works/pi-tui";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { createVerbatimCompactionMessage, VERBATIM_COMPACTION_PREFIX } from "../../packages/coding-agent/src/core/messages.ts";
+import { stripAnsi } from "./chat-session-host-working-lifecycle-fixture.ts";
 
 beforeAll(() => {
   initTheme("dark", false);
@@ -64,6 +65,76 @@ test("ChatSessionHost clears busy state when model fallback fails", () => {
 
   assert.equal(host.isStreaming(), false);
   assert.equal(host.hasAnimationTick(), false);
+  host.dispose();
+});
+test("ChatSessionHost renders the lifecycle-origin one-cell Atomic identity in ordinary loader geometry", () => {
+  const previousReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
+  delete process.env.ATOMIC_REDUCED_MOTION;
+  const host = makeHost();
+  try {
+    host.applyAgentEvent({ type: "agent_start" } as never);
+    const lines = host.renderWorkingStatus(64);
+    assert.equal(lines.length, 2);
+    assert.equal(lines[0], "");
+    assert.equal(stripAnsi(lines[1] ?? "").trimEnd(), " ∀ Working...");
+    assert.deepEqual(stripAnsi(lines[1] ?? "").match(/∀/g), ["∀"]);
+  } finally {
+    host.dispose();
+    if (previousReducedMotion === undefined) delete process.env.ATOMIC_REDUCED_MOTION;
+    else process.env.ATOMIC_REDUCED_MOTION = previousReducedMotion;
+  }
+});
+test("ChatSessionHost keeps the Atomic identity static without a workflow animation tick under reduced motion", () => {
+  const previousReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
+  process.env.ATOMIC_REDUCED_MOTION = "1";
+  const host = makeHost();
+  try {
+    host.applyAgentEvent({ type: "agent_start" } as never);
+    assert.equal(host.hasAnimationTick(), false);
+    const lines = host.renderWorkingStatus(64);
+    assert.equal(stripAnsi(lines[1] ?? "").trimEnd(), " ∀ Working...");
+  } finally {
+    host.dispose();
+    if (previousReducedMotion === undefined) delete process.env.ATOMIC_REDUCED_MOTION;
+    else process.env.ATOMIC_REDUCED_MOTION = previousReducedMotion;
+  }
+});
+
+
+
+test("ChatSessionHost gives factual retry, fallback, error, cancellation, and compaction copy precedence", () => {
+  const cases = [
+    [{ type: "auto_retry_start", attempt: 1, maxAttempts: 2, delayMs: 1, errorMessage: "network" }, "retrying…"],
+    [{ type: "model_fallback_start", from: "a", to: "b", reason: "quota", attempt: 1 }, "switching model…"],
+    [{ type: "agent_continue_error", source: "post_compaction", errorMessage: "provider failed" }, "provider failed"],
+    [{ type: "agent_continue_error", source: "post_compaction", errorMessage: "Operation cancelled" }, "Operation cancelled"],
+  ];
+  for (const [event, factual] of cases) {
+    const host = makeHost();
+    host.applyAgentEvent({ type: "agent_start" } as never);
+    host.applyAgentEvent({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: {} } as never);
+    host.applyAgentEvent(event as never);
+    const body = host.renderBody(80, 8).join("\n");
+    assert.equal(host.renderWorkingStatus(80).length, 0);
+    assert.equal((body.match(new RegExp(String(factual).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) ?? []).length, 1);
+    assert.doesNotMatch(body, /Working\.\.\.|Schlepping\.\.\./);
+    host.dispose();
+  }
+
+  const compacting = makeHost();
+  compacting.applyAgentEvent({ type: "compaction_start", reason: "manual" } as never);
+  const compactStatus = compacting.renderWorkingStatus(80).join("\n");
+  assert.equal((compactStatus.match(/Compacting context\.\.\./g) ?? []).length, 1);
+  assert.doesNotMatch(compactStatus, /Working\.\.\.|Schlepping\.\.\./);
+  compacting.dispose();
+});
+
+test("ChatSessionHost clears verification branding on error and preserves factual receipt text", () => {
+  const host = makeHost();
+  host.applyAgentEvent({ type: "agent_start" } as never);
+  host.applyAgentEvent({ type: "tool_execution_start", toolCallId: "verify-1", toolName: "bash", args: { command: "bun test" } } as never);
+  host.applyAgentEvent({ type: "tool_execution_end", toolCallId: "verify-1", toolName: "bash", result: { content: [{ type: "text", text: "1 test failed" }] }, isError: true } as never);
+  assert.equal((host.renderBody(80, 20).join("\n").match(/1 test failed/g) ?? []).length, 1);
   host.dispose();
 });
 test("ChatSessionHost preserves compaction queued messages when flush fails", async () => {

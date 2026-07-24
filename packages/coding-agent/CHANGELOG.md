@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Reworked interactive startup and ordinary working motion around Atomic's revision-3 identity system: the ∀ banner assembles inward in whole-column steps before its identity and manifesto beat land; main and workflow-stage work surfaces keep the exact one-cell `∀` visible while following a pronounced, theme-aware dark → accent → bright/bold → accent → dark luminance ramp at an 88ms cadence and retaining all 453 original randomized whimsical working verbs. Optional partial theme palettes can specify any phase exactly—including the approved Catppuccin Mocha prototype and terminal indices 0–255—while omitted tones derive from semantic selected-surface, accent, and text roles. `NO_COLOR` retains regular/bold activity without foreground-color escapes; reduced motion keeps a static regular accent `∀`; extension indicator frame and interval values remain verbatim while their phase/cadence restarts each turn; and factual status/prompt/receipt surfaces keep precedence. The inline icon and longest message fit tested standard/64-column layouts ([#1883](https://github.com/bastani-inc/atomic/issues/1883)).
+
+### Fixed
+
+- Fixed shared, main, and workflow-stage Atomic working animation lifecycle safety. Every agent/turn starts from phase zero on a fresh cadence, restoring the ordinary indicator after an extension override resets its phase/cadence, and turn, interrupt/pause, terminal, error, replacement, and disposal cleanup fence both built-in and delegated timer callbacks without leaks or stale repaint. Reduced motion remains a static regular accent `∀` without a timer ([#1883](https://github.com/bastani-inc/atomic/issues/1883)).
+- Fixed Windows and limited-color branding fidelity: caller-supplied workflow palettes now honor the detected terminal color mode, partial ANSI-index palettes derive omitted tones from indices 0–15, and Catppuccin Mocha starts its pulse at readable truecolor and 256-color contrast. Startup now honors `NO_COLOR` across the mark, metadata, and manifesto, remains nonblank below the mark width, and settles through the real input chain before Ctrl+C is consumed. Bundled themes declare and validate against Atomic's rebranded local schema, standalone binaries link to Atomic releases, and reachable startup/crash diagnostics use Atomic branding while legacy `.pi` paths, `PI_*` aliases, migrations, and service integrations remain compatible ([#1883](https://github.com/bastani-inc/atomic/issues/1883)).
+
 ## [0.9.11-alpha.5] - 2026-07-23
 
 ### Changed
@@ -83,6 +92,7 @@
 
 - Fixed newly authenticated providers remaining unavailable in the model selector until Atomic restarted. API-key and OAuth login now reload the isolated engine's credentials and refresh its authoritative model catalog immediately, including credential-dependent dynamic discovery ([#1918](https://github.com/bastani-inc/atomic/issues/1918)).
 - Added actionable `/logout` and `/login` recovery guidance when OpenAI Codex invalidates or revokes a locally unexpired OAuth token, and prevented an earlier WebSocket-to-SSE transport diagnostic from making the definitive authentication rejection retryable ([#1922](https://github.com/bastani-inc/atomic/issues/1922)).
+
 
 ## [0.9.10] - 2026-07-20
 

@@ -1,5 +1,5 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
-import { chalk, killTrackedDetachedChildren } from "./interactive-mode-deps.ts";
+import { APP_TITLE, chalk, killTrackedDetachedChildren } from "./interactive-mode-deps.ts";
 import { formatResumeCommand, isDeadTerminalError } from "./interactive-mode-helpers.ts";
 
 const SHUTDOWN_INPUT_DRAIN_MAX_MS = 250;
@@ -105,7 +105,7 @@ InteractiveModeBase.prototype.uncaughtCrash = function(this: InteractiveModeBase
     try {
       this.ui.stop();
     } catch {}
-    console.error("pi exiting due to uncaughtException:");
+    console.error(`${APP_TITLE} exiting due to uncaughtException:`);
     console.error(error);
     process.exit(1);
   };

@@ -63,6 +63,10 @@ export class ChatSessionHostState<
   localBashRunning = false;
   sdkBusy = false;
   workingMessage: string | undefined;
+  workingFrame = 0;
+  workingLifecycleActive: boolean;
+  immediateEventRenderPending = false;
+  disposed = false;
   pendingSteeringMessages: readonly string[] = [];
   pendingFollowUpMessages: readonly string[] = [];
   compactionQueuedMessages: readonly string[] = [];
@@ -87,6 +91,7 @@ export class ChatSessionHostState<
     this.requestRender = opts.requestRender;
     this.getAgentSession = opts.getAgentSession;
     this.isStreamingOverride = opts.isStreaming;
+    this.workingLifecycleActive = opts.isStreaming?.() === true;
     this.isPaused = opts.isPaused;
     this.isDisabled = opts.isDisabled;
     this.isBashRunningOverride = opts.isBashRunning;

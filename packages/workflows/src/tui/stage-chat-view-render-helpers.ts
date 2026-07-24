@@ -138,6 +138,18 @@ export function blendBg(baseHex: string, tintHex: string, alpha: number): string
   return lerpColor(baseHex, tintHex, Math.max(0, Math.min(1, alpha)));
 }
 
+export function workingIndicatorPalette(theme: GraphTheme) {
+  const { selection: dark, accent, text: peak } = theme;
+  return {
+    dark,
+    lift: lerpColor(dark, accent, 0.25),
+    muted: lerpColor(dark, accent, 0.6),
+    accent,
+    bright: lerpColor(accent, peak, 0.55),
+    peak,
+  };
+}
+
 export function renderHintsForPrompt(
   kind: PendingPrompt["kind"],
   theme: GraphTheme,

@@ -126,7 +126,7 @@ export class StageChatView implements Component, Focusable {
     const readOnlyArchive = isReadOnlyArchive(ctx, stage);
 
     const customUiLines = customUiActive ? renderCustomUi(ctx, w) : [];
-    const chatChromeHidden = customUiActive || promptActive || readOnlyArchive;
+    const chatChromeHidden = customUiActive || promptActive || readOnlyArchive || blocked;
     const pendingLines = chatChromeHidden ? [] : this.chatHost.renderPendingMessages(w);
     const workingLines = chatChromeHidden ? [] : this.chatHost.renderWorkingStatus(w);
     const usageLines = chatChromeHidden ? [] : this.chatHost.renderUsage(w);
@@ -149,7 +149,9 @@ export class StageChatView implements Component, Focusable {
       footerRows: footerLines.length,
     });
     const visiblePendingLines = takeRows(pendingLines, plan.pendingRows);
-    const visibleWorkingLines = takeRows(workingLines, plan.workingRows);
+    const visibleWorkingLines = workingLines.slice(
+      Math.max(0, workingLines.length - plan.workingRows),
+    );
     const visibleUsageLines = takeRows(usageLines, plan.usageRows);
     const editorSlotLines = customUiActive ? customUiLines : editorLines;
     const visibleEditorLines = takeRows(editorSlotLines, plan.editorRows);

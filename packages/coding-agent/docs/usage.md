@@ -15,6 +15,12 @@ The interface has four main areas:
 
 The editor can be replaced temporarily by built-in UI such as `/settings` or by custom extension UI.
 
+### Startup and Working Identity
+
+On an interactive TTY, the startup ∀ assembles from two separated halves in whole-column steps, lands its shadow and session identity, then reveals the one-time manifesto beat. Any key—including Ctrl+C—completes the sequence immediately before normal input routing continues. Terminals narrower than the mark show compact textual identity throughout assembly instead of a blank startup area. Quiet startup suppresses the sequence; a mounted interactive UI without a TTY, or with `ATOMIC_REDUCED_MOTION=1`, starts in the complete settled state. `NO_COLOR` suppresses foreground color across the mark, metadata, and manifesto while retaining weight emphasis.
+
+While ordinary agent work is active, the exact one-cell `∀` remains visible and follows a pronounced ten-frame dark → accent → bright/bold → accent → dark luminance ramp at an 88ms cadence. Optional theme tone overrides control any terminal-supported foreground phase exactly, including palette indices 0–255; Atomic derives omitted tones from selected-surface, `accent`, and `text` roles. Dark, light, custom, and dynamically reloaded themes therefore remain correct without changing glyph shape or geometry. It occupies the same inline, one-row footprint as the standard spinner: one glyph immediately before the existing text. Main and workflow-stage chat preserve all 453 of Atomic's original randomized whimsical working verbs, selecting one message per turn; even the longest fits the tested 64-column surface. Every agent and SDK turn resets to the dark regular phase with a fresh lifecycle-relative cadence, while turn, terminal, error, replacement, and disposal paths stop the active timer cleanly. Restoring the ordinary indicator after an extension override also resets its phase and cadence; extension-provided frames and intervals remain unchanged and render verbatim. Under `NO_COLOR`, regular/bold weight preserves visible activity without foreground-color escapes. With `ATOMIC_REDUCED_MOTION=1`, `∀` remains static, regular, and accent-colored without an animation timer. Factual retry, fallback, error, cancellation, and compaction status suppresses the thematic indicator, while blocker and human-approval/prompt surfaces hide ordinary work chrome and factual receipts remain verbatim.
+
 ### Editor Features
 
 | Feature | How |
@@ -302,6 +308,7 @@ atomic --tools read,search,find,ls -p "Review the code"
 | `ATOMIC_CODING_AGENT_DIR` | Override config directory; default is `~/.atomic/agent`. Bundled intercom runtime/config files live under its `intercom/` subdirectory |
 | `ATOMIC_CODING_AGENT_SESSION_DIR` | Override session storage directory; overridden by `--session-dir` |
 | `ATOMIC_PACKAGE_DIR` | Override package directory, useful for Nix/Guix store paths |
+| `ATOMIC_REDUCED_MOTION` | Set to `1` to skip startup choreography and render the ordinary working identity as a static regular accent `∀` without a timer |
 | `ATOMIC_OFFLINE` | Disable startup network operations, including update checks, package update checks, and install/update telemetry |
 | `ATOMIC_SKIP_VERSION_CHECK` | Skip the Atomic version update check at startup. This prevents the latest-version request |
 | `ATOMIC_TELEMETRY` | Override install/update telemetry: `1`/`true`/`yes` or `0`/`false`/`no`. This does not disable update checks |
