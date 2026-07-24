@@ -13,7 +13,6 @@ export type Transport =
 
 // Import sources for config
 export type ImportKind = 
-  | "cursor" 
   | "claude-code" 
   | "claude-desktop" 
   | "codex" 

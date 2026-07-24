@@ -31,7 +31,7 @@ The adapter reads standard MCP files automatically. No extra setup needed if you
 | You already have... | What happens |
 |---------------------|--------------|
 | `.mcp.json` or `~/.config/mcp/mcp.json` | Pi uses it immediately. The first time you open `/mcp`, you'll see a short heads-up explaining which file Pi detected and that Pi only writes adapter-specific overrides to its own files. |
-| Host-specific configs (Cursor, Claude Code, Codex, etc.) but no standard MCP files | Run `/mcp setup` to adopt those host configs into Pi. The setup flow shows exactly what it found, lets you pick which ones to import, and previews the exact file changes before writing. |
+| Host-specific configs (Claude Code, Codex, etc.) but no standard MCP files | Run `/mcp setup` to adopt those host configs into Pi. The setup flow shows exactly what it found, lets you pick which ones to import, and previews the exact file changes before writing. |
 | Nothing configured yet | Run `/mcp setup` to scaffold a minimal `.mcp.json`, quick-add RepoPrompt, or inspect what the adapter discovered on your machine. |
 
 If you prefer the terminal, you can also run `pi-mcp-adapter init` after install to scan for host-specific configs and add missing compatibility imports to the Pi agent dir (`~/.pi/agent/mcp.json` by default, or `$PI_CODING_AGENT_DIR/mcp.json` when set).
@@ -315,12 +315,12 @@ Shared MCP files are loaded automatically. Use `imports` only for host-specific 
 
 ```json
 {
-  "imports": ["cursor", "claude-code", "claude-desktop"],
+  "imports": ["claude-code", "claude-desktop"],
   "mcpServers": { }
 }
 ```
 
-Supported compatibility imports: `cursor`, `claude-code`, `claude-desktop`, `vscode`, `windsurf`, `codex`
+Supported compatibility imports: `claude-code`, `claude-desktop`, `vscode`, `windsurf`, `codex`
 
 `pi-mcp-adapter init` detects these host-specific configs and adds missing imports to the Pi agent dir config for you.
 

@@ -118,7 +118,6 @@ Because of that limitation, I could not independently classify staged vs. unstag
 Issue #1445 changelog entries exist under `## [Unreleased]` in all inspected package changelogs except no gap was found:
 
 - `packages/coding-agent/CHANGELOG.md:17-23` includes a `### Changed` entry for the monorepo-wide file-length gate in Bun scripts, local `prek` hooks, and PR CI, with tracked TS/JS/Rust scope, documented exclusions, and no grandfathered baseline allowlist.
-- `packages/cursor/CHANGELOG.md:5-10` includes a `### Changed` entry for the same contributor-validation gate.
 - `packages/intercom/CHANGELOG.md:5-10` includes a `### Changed` entry for the same contributor-validation gate.
 - `packages/mcp/CHANGELOG.md:16-19` includes a `### Changed` entry for the same contributor-validation gate.
 - `packages/natives/CHANGELOG.md:5-8` includes a `### Changed` entry for the same contributor-validation gate.

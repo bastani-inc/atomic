@@ -29,7 +29,6 @@ Relevant local artifacts for the file-length gate / module-splitting / Bun / pre
 - 🟢 `package.json` — Root script wiring includes `check:file-length` and `lint` composition with typecheck.
 - 🟢 `packages/coding-agent/CHANGELOG.md` — Mentions issue #1445 and records the contributor-validation change to the monorepo-wide file-length gate in Bun scripts, local `prek` hooks, and PR CI.
   - Same issue note also appears in sibling package changelogs:
-    - `packages/cursor/CHANGELOG.md`
     - `packages/intercom/CHANGELOG.md`
     - `packages/mcp/CHANGELOG.md`
     - `packages/natives/CHANGELOG.md`

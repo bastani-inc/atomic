@@ -11,7 +11,6 @@ const expectedIntegrity = new Map([
 
 const declarations = new Map([
 	["packages/coding-agent", ["@earendil-works/pi-agent-core", "@earendil-works/pi-ai", "@earendil-works/pi-tui"]],
-	["packages/cursor", ["@earendil-works/pi-ai"]],
 	["packages/intercom", ["@earendil-works/pi-tui"]],
 	["packages/mcp", ["@earendil-works/pi-ai", "@earendil-works/pi-tui"]],
 	["packages/subagents", ["@earendil-works/pi-agent-core", "@earendil-works/pi-ai", "@earendil-works/pi-tui"]],
@@ -29,7 +28,7 @@ test("Pi v0.81.1 declarations and publish artifacts stay synchronized", async ()
 			declarationCount++;
 		}
 	}
-	assert.equal(declarationCount, 12);
+	assert.equal(declarationCount, 11);
 
 	for (const [workspace, names] of declarations) {
 		if (workspace === "packages/coding-agent") continue;

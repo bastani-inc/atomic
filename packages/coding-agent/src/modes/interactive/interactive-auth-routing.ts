@@ -83,8 +83,12 @@ InteractiveModeBase.prototype.getLogoutProviderOptions = function(
   this: InteractiveModeBase,
 ): AuthSelectorProvider[] {
   const authStorage = this.session.modelRegistry.authStorage;
+  const supportedProviderIds = new Set(
+    this.getLoginProviderOptions().map((provider) => provider.id),
+  );
   const options: AuthSelectorProvider[] = [];
   for (const providerId of authStorage.list()) {
+    if (!supportedProviderIds.has(providerId)) continue;
     const credential = authStorage.get(providerId);
     if (!credential) continue;
     options.push({

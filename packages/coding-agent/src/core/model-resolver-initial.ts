@@ -8,6 +8,9 @@ import { buildFallbackModel } from "./model-resolver-patterns.ts";
 import { resolveCliModel } from "./model-resolver-cli.ts";
 import type { InitialModelResult, ScopedModel } from "./model-resolver-types.ts";
 
+const CONFIGURED_DEFAULT_MODEL_UNAVAILABLE_MESSAGE =
+  "Configured default model is unavailable or unsupported. Update defaultProvider/defaultModel or use /model.";
+
 async function buildConfiguredProviderFallbackModel(
   provider: string,
   modelId: string,
@@ -99,6 +102,14 @@ export async function findInitialModel(options: {
         thinkingLevel = defaultThinkingLevel;
       }
       return { model, thinkingLevel, fallbackMessage: undefined };
+    }
+    if (!modelRegistry.hasProvider(defaultProvider)) {
+      return {
+        model: undefined,
+        thinkingLevel: DEFAULT_THINKING_LEVEL,
+        fallbackMessage: CONFIGURED_DEFAULT_MODEL_UNAVAILABLE_MESSAGE,
+        fallbackReason: "configured-provider-unsupported",
+      };
     }
   }
 

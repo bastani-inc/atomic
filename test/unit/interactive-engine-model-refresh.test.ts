@@ -1,10 +1,19 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.ts";
-import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
+import {
+	AgentSessionRuntime,
+	createAgentSessionFromServices,
+	createAgentSessionServices,
+	type CreateAgentSessionRuntimeFactory,
+} from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.ts";
 import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.ts";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
 import { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
 import type { RpcClient } from "../../packages/coding-agent/src/modes/rpc/rpc-client.ts";
 import type { RpcModelRefreshResult } from "../../packages/coding-agent/src/modes/rpc/rpc-types.ts";
@@ -128,4 +137,163 @@ test("an aborted isolated refresh does not replace the current model catalog", a
 	await Bun.sleep(0);
 	assert.deepEqual(registry.getAvailable(), []);
 	assert.deepEqual(session.scopedModels, []);
+});
+
+test("isolated host synchronizes authoritative engine fallback state and clears it after remote model selection", async () => {
+	const model = kimiModel();
+	type EngineState = Awaited<ReturnType<RpcClient["getState"]>>;
+	let state: EngineState = {
+		model,
+		thinkingLevel: "off",
+		isStreaming: false,
+		isCompacting: false,
+		steeringMode: "all",
+		followUpMode: "all",
+		sessionId: "test-session",
+		autoCompactionEnabled: true,
+		messageCount: 0,
+		pendingMessageCount: 0,
+	};
+	const client = {
+		onEvent: () => () => {},
+		getState: async () => state,
+		requestInternal: async () => ({ models: [model], scopedModels: [], customAuthProviders: [] }),
+		setModel: async () => model,
+		getCommands: async () => [],
+	} as unknown as RpcClient;
+	const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+	const session = {
+		modelRegistry: registry,
+		sessionManager: SessionManager.inMemory(process.cwd()),
+		scopedModels: [],
+		sessionFile: undefined,
+		agent: {
+			state: { model, thinkingLevel: "off", messages: [] },
+			steeringMode: "all",
+			followUpMode: "all",
+		},
+	} as unknown as AgentSession;
+	const createRuntime = (async () => { throw new Error("not used"); }) as CreateAgentSessionRuntimeFactory;
+	const localRuntime = new AgentSessionRuntime(
+		session,
+		{ cwd: process.cwd(), agentDir: process.cwd() } as never,
+		createRuntime,
+		[],
+		"preliminary host warning",
+		"configured-provider-unsupported",
+	);
+	const runtime = new IsolatedInteractiveRuntime(localRuntime, createRuntime, client);
+
+	await runtime.initializeFromEngine();
+	assert.equal(runtime.modelFallbackMessage, undefined);
+	assert.equal(runtime.modelFallbackReason, undefined);
+
+	state = {
+		...state,
+		modelFallbackMessage: "authoritative unsupported warning",
+		modelFallbackReason: "configured-provider-unsupported",
+	};
+	await runtime.initializeFromEngine();
+	await runtime.initializeFromEngine();
+	assert.equal(runtime.modelFallbackMessage, "authoritative unsupported warning");
+	assert.equal(runtime.modelFallbackReason, "configured-provider-unsupported");
+
+	state = {
+		...state,
+		model: undefined,
+		modelFallbackMessage: "No models available",
+		modelFallbackReason: "no-models-available",
+	};
+	await runtime.initializeFromEngine();
+	assert.equal(runtime.session.model, undefined);
+	assert.equal(runtime.modelFallbackMessage, "No models available");
+	assert.equal(runtime.modelFallbackReason, "no-models-available");
+
+	await runtime.session.setModel(model);
+	assert.equal(runtime.modelFallbackMessage, undefined);
+	assert.equal(runtime.modelFallbackReason, undefined);
+});
+
+test("isolated session synchronization replaces each engine-selected session exactly once", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-isolated-session-sync-"));
+	const cwd = join(root, "cwd");
+	const agentDir = join(root, "agent");
+	const sessionDir = join(root, "sessions");
+	mkdirSync(cwd);
+	mkdirSync(agentDir);
+	mkdirSync(sessionDir);
+	const createPersistedSession = (text: string): string => {
+		const manager = SessionManager.create(cwd, sessionDir);
+		manager.appendMessage({ role: "user", content: [{ type: "text", text }], timestamp: Date.now() });
+		const path = manager.getSessionFile();
+		assert.ok(path);
+		return path;
+	};
+	const firstSession = createPersistedSession("first");
+	const secondSession = createPersistedSession("second");
+	const authStorage = AuthStorage.inMemory();
+	let runtimeCreations = 0;
+	const startReasons: string[] = [];
+	const createRuntime: CreateAgentSessionRuntimeFactory = async (options) => {
+		runtimeCreations += 1;
+		if (options.sessionStartEvent) startReasons.push(options.sessionStartEvent.reason);
+		const services = await createAgentSessionServices({
+			cwd: options.cwd,
+			agentDir: options.agentDir,
+			authStorage,
+			resourceLoaderOptions: { noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true },
+		});
+		return {
+			...(await createAgentSessionFromServices({
+				services,
+				sessionManager: options.sessionManager,
+				sessionStartEvent: options.sessionStartEvent,
+			})),
+			services,
+			diagnostics: services.diagnostics,
+		};
+	};
+	const initial = await createRuntime({ cwd, agentDir, sessionManager: SessionManager.inMemory(cwd) });
+	runtimeCreations = 0;
+	startReasons.length = 0;
+	let engineSessionFile = firstSession;
+	const client = {
+		onEvent: () => () => {},
+		getState: async () => ({
+			thinkingLevel: "off" as const,
+			isStreaming: false,
+			isCompacting: false,
+			steeringMode: "all" as const,
+			followUpMode: "all" as const,
+			sessionId: "engine-session",
+			sessionFile: engineSessionFile,
+			autoCompactionEnabled: true,
+			messageCount: 1,
+			pendingMessageCount: 0,
+		}),
+		requestInternal: async () => ({ models: [], scopedModels: [], customAuthProviders: [] }),
+		switchSession: async (path: string) => { engineSessionFile = path; return { cancelled: false }; },
+		getCommands: async () => [],
+		stop: async () => {},
+	} as unknown as RpcClient;
+	const local = new AgentSessionRuntime(initial.session, initial.services, createRuntime, initial.diagnostics);
+	const runtime = new IsolatedInteractiveRuntime(local, createRuntime, client);
+	let rebinds = 0;
+	runtime.setRebindSession(async () => { rebinds += 1; });
+	try {
+		await runtime.initializeFromEngine();
+		assert.equal(runtime.session.sessionManager.getSessionFile(), firstSession);
+		assert.equal(runtimeCreations, 1, "initial engine binding must replace the local session once");
+		assert.equal(rebinds, 1);
+		assert.deepEqual(startReasons, ["resume"]);
+
+		await runtime.switchSession(secondSession);
+		assert.equal(runtime.session.sessionManager.getSessionFile(), secondSession);
+		assert.equal(runtimeCreations, 2, "explicit engine switch must add exactly one local replacement");
+		assert.equal(rebinds, 2);
+		assert.deepEqual(startReasons, ["resume", "resume"]);
+	} finally {
+		await runtime.dispose();
+		rmSync(root, { recursive: true, force: true });
+	}
 });

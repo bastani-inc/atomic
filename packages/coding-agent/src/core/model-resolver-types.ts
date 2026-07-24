@@ -25,8 +25,14 @@ export interface ResolveCliModelResult {
   error: string | undefined;
 }
 
+export type ModelFallbackReason =
+  | "session-restore"
+  | "configured-provider-unsupported"
+  | "no-models-available";
+
 export interface InitialModelResult {
   model: Model<Api> | undefined;
   thinkingLevel: ThinkingLevel;
   fallbackMessage: string | undefined;
+  fallbackReason?: ModelFallbackReason;
 }

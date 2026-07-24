@@ -15,7 +15,6 @@ const PROJECT_PI_CONFIG_NAME = `${CONFIG_DIR_NAME}/mcp.json`;
 const REPOPROMPT_BINARY_CANDIDATES = [join(homedir(), "RepoPrompt", "repoprompt_cli"), "/Applications/Repo Prompt.app/Contents/MacOS/repoprompt-mcp"];
 
 const IMPORT_PATHS: Record<ImportKind, string[]> = {
-  cursor: [join(homedir(), ".cursor", "mcp.json")],
   "claude-code": [
     join(homedir(), ".claude", "mcp.json"),
     join(homedir(), ".claude.json"),
@@ -309,7 +308,6 @@ function extractServers(config: unknown, kind: ImportKind): Record<string, Serve
     case "codex":
       servers = obj.mcpServers;
       break;
-    case "cursor":
     case "windsurf":
     case "vscode":
       servers = obj.mcpServers ?? obj["mcp-servers"];

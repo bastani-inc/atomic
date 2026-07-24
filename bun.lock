@@ -18,7 +18,6 @@
       },
       "dependencies": {
         "@bastani/atomic-natives": "0.0.0",
-        "@bufbuild/protobuf": "^2.12.1",
         "@dbos-inc/dbos-sdk": "4.23.6",
         "@earendil-works/pi-agent-core": "^0.81.1",
         "@earendil-works/pi-ai": "^0.81.1",
@@ -69,21 +68,6 @@
       "optionalDependencies": {
         "@mariozechner/clipboard": "0.3.9",
       },
-    },
-    "packages/cursor": {
-      "name": "@bastani/cursor",
-      "version": "0.0.0",
-      "dependencies": {
-        "@bastani/atomic-natives": "0.0.0",
-        "@bufbuild/protobuf": "^2.12.1",
-        "@earendil-works/pi-ai": "^0.81.1",
-      },
-      "peerDependencies": {
-        "@bastani/atomic": "*",
-      },
-      "optionalPeers": [
-        "@bastani/atomic",
-      ],
     },
     "packages/intercom": {
       "name": "@bastani/intercom",
@@ -249,8 +233,6 @@
 
     "@bastani/atomic-natives": ["@bastani/atomic-natives@workspace:packages/natives"],
 
-    "@bastani/cursor": ["@bastani/cursor@workspace:packages/cursor"],
-
     "@bastani/intercom": ["@bastani/intercom@workspace:packages/intercom"],
 
     "@bastani/mcp": ["@bastani/mcp@workspace:packages/mcp"],
@@ -262,8 +244,6 @@
     "@bastani/workflows": ["@bastani/workflows@workspace:packages/workflows"],
 
     "@borewit/text-codec": ["@borewit/text-codec@0.2.2", "", {}, "sha512-DDaRehssg1aNrH4+2hnj1B7vnUGEjU6OIlyRdkMd0aUdIUvKXrJfXsy8LVtXAy7DRvYVluWbMspsRhz2lcW0mQ=="],
-
-    "@bufbuild/protobuf": ["@bufbuild/protobuf@2.12.1", "", {}, "sha512-BvAMfS6LrgZiryOAZ4pBYucu4wG/Ei/9o9DZ9akbREnMLbPJiom2i8b9C8IsKErQoiKqVhrerzt3kOT/RrzLHg=="],
 
     "@dbos-inc/dbos-sdk": ["@dbos-inc/dbos-sdk@4.23.6", "", { "dependencies": { "commander": "^12.0.0", "pg": "^8.11.3", "serialize-error": "^8.1.0", "superjson": "^1.13.3", "ws": "^8.18.1", "yaml": "^2.8.3" }, "bin": { "dbos": "dist/src/cli/cli.js", "dbos-sdk": "dist/src/cli/cli.js" } }, "sha512-Hrdm/WM7DUMqb517ib+msv/pIGnUepP/h3Q62T0j8/LYHRXS2PyOSd76emn1wccPDuTwhUhNyzBfbxoTbW0DJQ=="],
 

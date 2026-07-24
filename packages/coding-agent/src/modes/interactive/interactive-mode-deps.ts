@@ -17,7 +17,8 @@ export type { AutocompleteProviderFactory, EditorFactory, ExtensionCommandContex
 export { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
 export { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
 export type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
-export { defaultModelPerProvider, findExactModelReferenceMatch, resolveModelScope, resolveModelScopeWithDiagnostics, resolveRestoredModelReference } from "../../core/model-resolver.ts";
+export { defaultModelPerProvider, findExactModelReferenceMatch, findInitialModel, resolveModelScope, resolveModelScopeWithDiagnostics, resolveRestoredModelReference } from "../../core/model-resolver.ts";
+export { formatNoModelsAvailableMessage } from "../../core/auth-guidance.ts";
 export { formatCodexFastModeModelLabel, hasSupportedCodexFastModeModel, shouldApplyCodexFastMode } from "../../core/codex-fast-mode.ts";
 export { configureHttpDispatcher } from "../../core/http-dispatcher.ts";
 export { DefaultPackageManager } from "../../core/package-manager.ts";

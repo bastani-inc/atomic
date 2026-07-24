@@ -11,7 +11,6 @@ This pass inspected representative remaining tracked TS/JS/Rust files that still
 ### Scope Notes
 - The file-length gate is defined in `package.json:25` as `bun scripts/check-file-length.ts`.
 - The repository policy documents that tracked `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, and `.rs` files are limited to 500 physical lines, with generated/vendored exclusions and first-five-line generated markers excluded from enforcement (`CLAUDE.md:83`).
-- `packages/cursor/src/proto/agent_pb.ts` is very large, but it starts with generated markers (`packages/cursor/src/proto/agent_pb.ts:1-2`), so it is excluded by the documented generated-file rule and is not treated here as a behavior-preserving split candidate.
 
 ---
 
@@ -97,91 +96,6 @@ Use `extract.ts` as the stable public barrel/orchestrator and extract sibling im
    - `extractContent()` orchestration (`packages/web-access/extract.ts:139-253`),
    - `fetchAllContent()` (`packages/web-access/extract.ts:494-499`).
 
----
-
-## 2. `packages/cursor/src/stream.ts`
-
-### What It Contains
-- Imports Cursor transport/state/model helpers and the `@earendil-works/pi-ai` stream interfaces (`packages/cursor/src/stream.ts:1-14`).
-- Defines public `CursorStreamAdapterOptions` (`packages/cursor/src/stream.ts:16-23`).
-- Defines internal runtime and timing constants:
-  - `CursorStreamRuntime` (`packages/cursor/src/stream.ts:25-31`)
-  - `DEFAULT_PAUSED_TURN_IDLE_TIMEOUT_MS`, `DEFAULT_STREAM_READ_TIMEOUT_MS`, `TOOL_CALL_BATCH_IDLE_TIMEOUT_MS` (`packages/cursor/src/stream.ts:33-35`)
-- Defines internal read result unions (`packages/cursor/src/stream.ts:37-44`) and UUID helper (`packages/cursor/src/stream.ts:46-48`).
-- Exports `CursorStreamAdapter` (`packages/cursor/src/stream.ts:50-344`), which:
-  - Stores transport/conversation/UUID/timeout runtime state in a private `#runtime` field (`packages/cursor/src/stream.ts:51-63`)
-  - Provides `streamSimple()` to create an assistant-message event stream and asynchronously run the Cursor stream (`packages/cursor/src/stream.ts:65-69`)
-  - Disposes state/transport (`packages/cursor/src/stream.ts:71-74`)
-  - Cleans up a session by canceling conversation state and discarding the wire conversation (`packages/cursor/src/stream.ts:76-79`)
-  - Exposes lifecycle snapshots from conversation state and transport (`packages/cursor/src/stream.ts:81-83`)
-  - Memoizes `CursorMessageReader` instances per `CursorRunStream` (`packages/cursor/src/stream.ts:85-91`)
-  - Implements the main private `#runStream()` loop (`packages/cursor/src/stream.ts:93-344`)
-- Implements stream/error/message helpers after the class:
-  - `normalizeCursorReadError()` (`packages/cursor/src/stream.ts:346-348`)
-  - `createOutputMessage()` (`packages/cursor/src/stream.ts:350-368`)
-  - context-to-tool-result helpers (`packages/cursor/src/stream.ts:370-402`)
-  - conversation identity derivation and hashing (`packages/cursor/src/stream.ts:404-442`)
-  - image-input detection (`packages/cursor/src/stream.ts:444-453`)
-  - stream mutation helpers for text, thinking, tool calls, and open-content closure (`packages/cursor/src/stream.ts:455-510`)
-  - usage update mapping (`packages/cursor/src/stream.ts:512-526`)
-  - read/timeout helper (`packages/cursor/src/stream.ts:528-560`)
-- Exports factory `createCursorStreamAdapter()` (`packages/cursor/src/stream.ts:562-564`).
-
-### Why It Remains Oversized
-The file combines the public adapter class, Cursor run-loop state machine, conversation identity logic, stream-content mutation helpers, context serialization helpers, read timeout handling, and factory export. The main size driver is the `CursorStreamAdapter` implementation plus many private helper clusters that support `#runStream()` (`packages/cursor/src/stream.ts:50-344`, `packages/cursor/src/stream.ts:346-560`).
-
-### Public Surfaces That Must Remain Stable
-- `CursorStreamAdapterOptions` is exported from the module (`packages/cursor/src/stream.ts:16-23`).
-- `CursorStreamAdapter` is exported and imported by the Cursor provider through the current `./stream.js` specifier (`packages/cursor/src/provider.ts:28`).
-- `createCursorStreamAdapter()` is exported (`packages/cursor/src/stream.ts:562-564`).
-- Tests import `CursorStreamAdapter` directly from `../../packages/cursor/src/stream.js`, so that path/specifier must remain valid (`test/unit/cursor-stream-01.test.ts:4`, `test/unit/cursor-stream-02.test.ts:4`, `test/unit/cursor-stream-03.test.ts:4`).
-
-### Safest Split Pattern
-Keep `stream.ts` as the public adapter entrypoint and move private helpers into sibling modules:
-
-1. `stream-types.ts`
-   - Move `CursorStreamRuntime`, `IteratorReadResult`, and `CursorReadRaceResult` from `packages/cursor/src/stream.ts:25-44`.
-   - Keep `CursorStreamAdapterOptions` exported from `stream.ts`, or re-export it from `stream.ts` if moved.
-
-2. `stream-output.ts`
-   - Move output-message and stream mutation helpers:
-     - `createOutputMessage()` (`packages/cursor/src/stream.ts:350-368`)
-     - `appendTextDelta()` (`packages/cursor/src/stream.ts:455-467`)
-     - `appendThinkingDelta()` (`packages/cursor/src/stream.ts:469-481`)
-     - `appendToolCall()` (`packages/cursor/src/stream.ts:483-495`)
-     - `closeOpenContent()` (`packages/cursor/src/stream.ts:497-510`)
-     - `updateUsage()` (`packages/cursor/src/stream.ts:512-526`)
-   - This keeps stream shape/event sequencing centralized without changing public imports.
-
-3. `stream-context.ts`
-   - Move context/tool-result/image helpers:
-     - `getTrailingToolResults()` (`packages/cursor/src/stream.ts:370-378`)
-     - `textFromToolResult()` (`packages/cursor/src/stream.ts:380-382`)
-     - `textFromMessage()` (`packages/cursor/src/stream.ts:384-402`)
-     - `hasImageInput()` (`packages/cursor/src/stream.ts:444-453`)
-
-4. `stream-conversation-id.ts`
-   - Move conversation identity helpers:
-     - `deriveCursorConversationIdentity()` (`packages/cursor/src/stream.ts:404-408`)
-     - `deriveCursorBridgeKeyFromSessionId()` (`packages/cursor/src/stream.ts:410-412`)
-     - `deriveCursorWireConversationIdFromSessionId()` (`packages/cursor/src/stream.ts:414-416`)
-     - `deriveCursorConversationKey()` (`packages/cursor/src/stream.ts:418-426`)
-     - `hashCursorKey()` (`packages/cursor/src/stream.ts:428-430`)
-     - `deterministicCursorConversationId()` (`packages/cursor/src/stream.ts:432-442`)
-   - Export only the helpers needed by `stream.ts`; keep the public `stream.ts` API unchanged.
-
-5. `stream-reader.ts`
-   - Move `normalizeCursorReadError()` and `readNextCursorMessage()` from `packages/cursor/src/stream.ts:346-348` and `packages/cursor/src/stream.ts:528-560`.
-   - Also move read-timeout constants if only used there.
-
-6. Leave in `stream.ts`:
-   - public `CursorStreamAdapterOptions`,
-   - `CursorStreamAdapter`,
-   - `createCursorStreamAdapter()`,
-   - the main `#runStream()` orchestration.
-   - Existing imports from `./stream.js` continue to work.
-
----
 
 ## 3. `packages/coding-agent/src/config.ts`
 
@@ -371,12 +285,11 @@ For each oversized public module, keep the original file as:
 
 This pattern is safest for:
 - `packages/web-access/extract.ts`
-- `packages/cursor/src/stream.ts`
 - `packages/coding-agent/src/config.ts`
 - `packages/coding-agent/src/modes/interactive/components/chat-message-renderer.ts`
 
 ### Preserve Raw TS Companion/Public Package Surfaces
-Where package consumers or tests import directly from source paths, keep the original source file exports intact. This is explicit for Cursor stream tests importing `../../packages/cursor/src/stream.js` (`test/unit/cursor-stream-01.test.ts:4`, `test/unit/cursor-stream-02.test.ts:4`, `test/unit/cursor-stream-03.test.ts:4`) and for web-access modules importing `./extract.js` (`packages/web-access/content-tools.ts:9`, `packages/web-access/video-extract.ts:10`, `packages/web-access/youtube-extract.ts:10`).
+Where package consumers or tests import directly from source paths, keep the original source file exports intact. This is explicit for web-access modules importing `./extract.js` (`packages/web-access/content-tools.ts:9`, `packages/web-access/video-extract.ts:10`, `packages/web-access/youtube-extract.ts:10`).
 
 ### Prefer Sibling Helper Modules Over New Nested Public Paths
 The lowest-risk split pattern is to create sibling implementation modules beside the oversized file, then have the existing file import/re-export them. This avoids changing package exports, test imports, raw TS companion paths, and runtime `.js` import specifiers.

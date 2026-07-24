@@ -88,7 +88,6 @@ export const DEFAULT_CONFIG = Object.freeze({
 
 export const HOOK_LOCAL_IGNORE_PATTERNS = Object.freeze([
   '.impeccable/hook.cache.json',
-  '.impeccable/hook.pending.json',
   '.impeccable/config.local.json',
 ]);
 
@@ -129,15 +128,9 @@ export function getCachePath(cwd) {
   return path.join(cwd, '.impeccable', 'hook.cache.json');
 }
 
-export function getPendingPath(cwd) {
-  return path.join(cwd, '.impeccable', 'hook.pending.json');
-}
 
 export function resolveProjectCwd(event, fallback = process.cwd()) {
-  return event?.cwd
-    || (Array.isArray(event?.workspace_roots) && event.workspace_roots[0])
-    || envProjectDir(fallback)
-    || fallback;
+  return event?.cwd || fallback;
 }
 
 function looksLikeProjectRoot(dir) {
@@ -1054,7 +1047,7 @@ export function resolveTargetFiles(event, projectCwd) {
   if (ti && typeof ti.file_path === 'string' && ti.file_path) {
     add(ti.file_path);
   }
-  // Cursor Write / StrReplace use `path`, not `file_path`.
+  // GitHub Copilot edit/create events use `path`, not `file_path`.
   if (ti && typeof ti.path === 'string' && ti.path) {
     add(ti.path);
   }
@@ -1066,7 +1059,6 @@ export function resolveTargetFiles(event, projectCwd) {
 
 export function resolveHarness(env = {}, event = null) {
   const explicit = env?.IMPECCABLE_HOOK_HARNESS;
-  if (explicit === 'cursor') return 'cursor';
   if (explicit === 'github') return 'github';
   if (explicit === 'claude' || explicit === 'codex') return 'claude';
   // GitHub Copilot's postToolUse event uses camelCase `toolName`/`toolArgs` and
@@ -1076,7 +1068,6 @@ export function resolveHarness(env = {}, event = null) {
     && event.tool_name === undefined && event.tool_input === undefined) {
     return 'github';
   }
-  if (typeof event?.conversation_id === 'string' && event.conversation_id) return 'cursor';
   return 'claude';
 }
 
@@ -1140,7 +1131,7 @@ function applyPatchText(rawArgs) {
 }
 
 function normalizeGitHubEvent(event, projectCwd) {
-  const cwd = event.cwd || envProjectDir(projectCwd) || projectCwd;
+  const cwd = event.cwd || projectCwd;
   const sessionId = event.sessionId || event.session_id || 'unknown';
   const toolName = event.toolName || event.tool_name || null;
   const toolInput = event.tool_input && typeof event.tool_input === 'object' ? { ...event.tool_input } : {};
@@ -1174,33 +1165,7 @@ function normalizeGitHubEvent(event, projectCwd) {
 export function normalizeHookEvent(event, projectCwd, harness = 'claude') {
   if (!event || typeof event !== 'object') return event;
   if (harness === 'github') return normalizeGitHubEvent(event, projectCwd);
-  if (harness !== 'cursor') return event;
-
-  const cwd = event.cwd
-    || (Array.isArray(event.workspace_roots) && event.workspace_roots[0])
-    || envProjectDir(projectCwd)
-    || projectCwd;
-  const sessionId = event.session_id || event.conversation_id || 'unknown';
-
-  const ti = event.tool_input && typeof event.tool_input === 'object' ? event.tool_input : {};
-  const filePath = ti.file_path || ti.path || event.file_path;
-  if (filePath) {
-    return {
-      ...event,
-      cwd,
-      session_id: sessionId,
-      tool_input: { ...ti, file_path: filePath },
-    };
-  }
-
-  return { ...event, cwd, session_id: sessionId };
-}
-
-function envProjectDir(fallback) {
-  if (typeof process.env.CURSOR_PROJECT_DIR === 'string' && process.env.CURSOR_PROJECT_DIR) {
-    return process.env.CURSOR_PROJECT_DIR;
-  }
-  return fallback;
+  return event;
 }
 
 // UI components often keep slop in a sibling/co-located stylesheet while the
@@ -1751,9 +1716,6 @@ export async function runHook({ stdinJson, env = {}, cwd = process.cwd(), now = 
 }
 
 export function payload(text, eventName = 'PostToolUse', harness = 'claude') {
-  if (harness === 'cursor') {
-    return JSON.stringify({ additional_context: text });
-  }
   // GitHub Copilot's postToolUse hook injects context via a top-level
   // `additionalContext` string (alongside an optional `modifiedResult`).
   if (harness === 'github') {

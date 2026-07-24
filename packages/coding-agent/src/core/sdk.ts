@@ -1,12 +1,6 @@
 import { join } from "node:path";
 import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@earendil-works/pi-agent-core";
-import {
-  clampThinkingLevel,
-  type Api,
-  type Message,
-  type Model,
-  streamSimple,
-} from "@earendil-works/pi-ai/compat";
+import { clampThinkingLevel, type Api, type Message, type Model, streamSimple } from "@earendil-works/pi-ai/compat";
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.ts";
@@ -24,9 +18,7 @@ import { restoreCopilotGeminiReasoningOpaque } from "./copilot-gemini-reasoning.
 import { normalizeCopilotGeminiReplayToolArguments } from "./copilot-gemini-tool-arguments.ts";
 import { getModelDefaultContextWindow, getSupportedContextWindows, selectContextWindow } from "./context-window.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
-import type {
-  ExtensionRunner,
-} from "./extensions/index.ts";
+import type { ExtensionRunner } from "./extensions/index.ts";
 import { convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import { findInitialModel, resolveRestoredModelReference } from "./model-resolver.ts";
@@ -41,6 +33,7 @@ import { defaultToolNames } from "./tools/index.ts";
 
 import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "./sdk-types.ts";
 export type { CreateAgentSessionOptions, CreateAgentSessionResult } from "./sdk-types.ts";
+export type { ModelFallbackReason } from "./model-resolver-types.ts";
 
 export * from "./sdk-exports.ts";
 
@@ -166,6 +159,7 @@ export async function createAgentSession(
 
   let model = options.model;
   let modelFallbackMessage: string | undefined;
+  let modelFallbackReason: import("./model-resolver-types.ts").ModelFallbackReason | undefined;
 
   // If session has data, try to restore model from it
   if (!model && hasExistingSession && existingSession.model) {
@@ -179,10 +173,9 @@ export async function createAgentSession(
     }
     if (!model) {
       modelFallbackMessage = `Could not restore model ${existingSession.model.provider}/${existingSession.model.modelId}`;
+      modelFallbackReason = "session-restore";
     }
   }
-
-  // If still no model, use findInitialModel (checks settings default, then provider defaults)
   if (!model) {
     const result = await findInitialModel({
       scopedModels: [],
@@ -194,7 +187,13 @@ export async function createAgentSession(
     });
     model = result.model;
     if (!model) {
-      modelFallbackMessage = formatNoModelsAvailableMessage();
+      if (result.fallbackReason === "configured-provider-unsupported") {
+        modelFallbackMessage = result.fallbackMessage;
+        modelFallbackReason = result.fallbackReason;
+      } else if (!modelFallbackMessage) {
+        modelFallbackMessage = result.fallbackMessage ?? formatNoModelsAvailableMessage();
+        modelFallbackReason = result.fallbackReason ?? "no-models-available";
+      }
     } else if (modelFallbackMessage) {
       modelFallbackMessage += `. Using ${model.provider}/${model.id}`;
     }
@@ -494,6 +493,7 @@ export async function createAgentSession(
     session,
     extensionsResult,
     modelFallbackMessage,
+    modelFallbackReason,
     contextWindowWarning,
     contextWindowError,
   };

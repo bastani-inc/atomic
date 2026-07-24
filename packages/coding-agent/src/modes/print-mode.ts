@@ -204,6 +204,10 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 	});
 
 	try {
+		if (runtimeHost.modelFallbackReason === "configured-provider-unsupported") {
+			if (runtimeHost.modelFallbackMessage) console.error(runtimeHost.modelFallbackMessage);
+			return 1;
+		}
 		if (mode === "json") {
 			const header = session.sessionManager.getHeader();
 			if (header) {

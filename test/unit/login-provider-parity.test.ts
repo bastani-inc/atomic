@@ -3,10 +3,14 @@ import assert from "node:assert/strict";
 import type { TUI } from "@earendil-works/pi-tui";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { defaultModelPerProvider } from "../../packages/coding-agent/src/core/model-resolver-defaults.ts";
+import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.ts";
+import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.ts";
 import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "../../packages/coding-agent/src/core/provider-display-names.ts";
 import { createAuthInteraction } from "../../packages/coding-agent/src/core/oauth-provider-bridge.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../../packages/coding-agent/src/core/slash-commands.ts";
 import { LoginDialogComponent } from "../../packages/coding-agent/src/modes/interactive/components/login-dialog.ts";
+import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
+import "../../packages/coding-agent/src/modes/interactive/interactive-auth-routing.ts";
 import { getBuiltinApiKeyLoginOptions } from "../../packages/coding-agent/src/modes/interactive/interactive-auth-routing.ts";
 import {
   getLoginProviderCompletions,
@@ -82,7 +86,36 @@ test("every installed builtin provider has a preferred default", () => {
   assert.equal(defaultModelPerProvider.radius, "auto");
   assert.equal(defaultModelPerProvider.nvidia, "nvidia/nemotron-3-super-120b-a12b");
   assert.equal(defaultModelPerProvider["zai-coding-cn"], "glm-5.1");
-  assert.equal(defaultModelPerProvider.cursor, "composer-2");
+  assert.equal(Object.hasOwn(defaultModelPerProvider, "cursor"), false);
+});
+
+test("stale Cursor authentication cannot restore the removed provider", () => {
+  const authStorage = AuthStorage.inMemory({
+    cursor: { type: "api_key", key: "stale-token" },
+  });
+  const registry = ModelRegistry.inMemory(authStorage);
+
+  assert.equal(authStorage.has("cursor"), true);
+  assert.equal(registry.getAll().some((model) => model.provider === "cursor"), false);
+  assert.equal(BUILT_IN_PROVIDER_DISPLAY_NAMES.cursor, undefined);
+});
+
+test("logout options ignore credentials for removed providers", () => {
+  const authStorage = AuthStorage.inMemory({
+    anthropic: { type: "api_key", key: "active-token" },
+    cursor: { type: "api_key", key: "stale-token" },
+  });
+  const context = {
+    session: { modelRegistry: { authStorage, getProviderDisplayName: (id: string) => id } },
+    getLoginProviderOptions: () => [
+      { id: "anthropic", name: "Anthropic", authType: "api_key" as const },
+    ],
+  };
+
+  const options = InteractiveModeBase.prototype.getLogoutProviderOptions.call(
+    context as unknown as InteractiveModeBase,
+  );
+  assert.deepEqual(options.map((option) => option.id), ["anthropic"]);
 });
 
 test("auth interaction keeps info links distinct from progress events", () => {

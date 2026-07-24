@@ -186,7 +186,8 @@ jobs:
           mkdir -p "$smoke"
           tar -xzf packages/coding-agent/binaries/atomic-linux-x64.tar.gz -C "$smoke"
           "$smoke/atomic/atomic" --version
-          for path in app.js image-resize-worker.js builtin/workflows/package.json builtin/subagents/package.json builtin/mcp/package.json builtin/web-access/package.json builtin/intercom/package.json builtin/cursor/package.json node_modules/@bastani/atomic-natives/package.json node_modules/@bastani/atomic-natives/native/atomic_natives.linux-x64-gnu.node node_modules/@modelcontextprotocol/ext-apps/package.json node_modules/@mozilla/readability/package.json; do
+          bun run scripts/assert-builtin-set.ts "$smoke/atomic/builtin"
+          for path in app.js image-resize-worker.js builtin/workflows/package.json builtin/subagents/package.json builtin/mcp/package.json builtin/web-access/package.json builtin/intercom/package.json node_modules/@bastani/atomic-natives/package.json node_modules/@bastani/atomic-natives/native/atomic_natives.linux-x64-gnu.node node_modules/@modelcontextprotocol/ext-apps/package.json node_modules/@mozilla/readability/package.json; do
             test -f "$smoke/atomic/$path" || { echo "Missing release archive path: $path" >&2; exit 1; }
           done
           mkdir -p "$RUNNER_TEMP/atomic-linux-cwd"
@@ -230,7 +231,8 @@ jobs:
           $atomic = Join-Path $smoke "atomic.exe"
           & $atomic --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          foreach ($path in @("app.js", "image-resize-worker.js", "builtin/workflows/package.json", "builtin/subagents/package.json", "builtin/mcp/package.json", "builtin/web-access/package.json", "builtin/intercom/package.json", "builtin/cursor/package.json", "node_modules/@bastani/atomic-natives/package.json", "node_modules/@bastani/atomic-natives/native/atomic_natives.win32-x64-msvc.node", "native/win32/prebuilds/win32-x64/win32-console-mode.node", "node_modules/@modelcontextprotocol/ext-apps/package.json", "node_modules/@mozilla/readability/package.json")) {
+          bun run scripts/assert-builtin-set.ts (Join-Path $smoke "builtin")
+          foreach ($path in @("app.js", "image-resize-worker.js", "builtin/workflows/package.json", "builtin/subagents/package.json", "builtin/mcp/package.json", "builtin/web-access/package.json", "builtin/intercom/package.json", "node_modules/@bastani/atomic-natives/package.json", "node_modules/@bastani/atomic-natives/native/atomic_natives.win32-x64-msvc.node", "native/win32/prebuilds/win32-x64/win32-console-mode.node", "node_modules/@modelcontextprotocol/ext-apps/package.json", "node_modules/@mozilla/readability/package.json")) {
             if (-not (Test-Path (Join-Path $smoke $path))) { throw "Missing release archive path: $path" }
           }
           $cwd = Join-Path $env:RUNNER_TEMP "atomic-windows-cwd"
@@ -282,6 +284,7 @@ jobs:
           VERSION: ${{ needs.integrity.outputs.version }}
         run: |
           set -euo pipefail
+          bun run scripts/assert-builtin-set.ts packages/coding-agent/dist/builtin
           bun -e '
             import { existsSync, readdirSync } from "node:fs";
             const atomic = await Bun.file("packages/coding-agent/package.json").json();
@@ -299,7 +302,7 @@ jobs:
               if (!["@bastani/atomic", "@bastani/atomic-natives"].includes(pkg.name) && pkg.private !== true) failures.push(`${pkg.name} must remain private`);
             }
             for (const pkg of [atomic, natives]) for (const deps of [pkg.dependencies, pkg.optionalDependencies, pkg.peerDependencies]) for (const [name, range] of Object.entries(deps ?? {})) if (String(range).startsWith("workspace:")) failures.push(`workspace range: ${name}`);
-            for (const path of [atomic.main, atomic.types, atomic.bin?.atomic, "dist/builtin", "dist/builtin/workflows/package.json", "dist/builtin/subagents/package.json", "dist/builtin/mcp/package.json", "dist/builtin/web-access/package.json", "dist/builtin/intercom/package.json", "dist/builtin/cursor/package.json"]) if (!path || !existsSync(`packages/coding-agent/${path}`)) failures.push(`missing ${path}`);
+            for (const path of [atomic.main, atomic.types, atomic.bin?.atomic, "dist/builtin", "dist/builtin/workflows/package.json", "dist/builtin/subagents/package.json", "dist/builtin/mcp/package.json", "dist/builtin/web-access/package.json", "dist/builtin/intercom/package.json"]) if (!path || !existsSync(`packages/coding-agent/${path}`)) failures.push(`missing ${path}`);
             for (const native of ["darwin-arm64","darwin-x64","linux-arm64-gnu","linux-x64-gnu","win32-arm64-msvc","win32-x64-msvc"]) if (!existsSync(`packages/natives/native/atomic_natives.${native}.node`)) failures.push(`missing native ${native}`);
             if (failures.length) throw new Error(failures.join("\n"));'
           rm -rf release-assets npm-packages

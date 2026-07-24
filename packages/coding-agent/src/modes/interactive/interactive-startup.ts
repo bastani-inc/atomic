@@ -244,7 +244,6 @@ InteractiveModeBase.prototype.run = async function(this: InteractiveModeBase): P
     // Show startup warnings
     const {
       migratedProviders,
-      modelFallbackMessage,
       initialMessage,
       initialImages,
       initialMessages,
@@ -261,6 +260,7 @@ InteractiveModeBase.prototype.run = async function(this: InteractiveModeBase): P
       this.showError(`models.json error: ${modelsJsonError}`);
     }
 
+    const modelFallbackMessage = this.runtimeHost.modelFallbackMessage;
     if (modelFallbackMessage && !this.deferredStartupPending) {
       this.showWarning(modelFallbackMessage, this.startupNoticesContainer);
     }

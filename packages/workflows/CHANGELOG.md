@@ -14,6 +14,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Fixed workflow-supplied working-indicator palettes to quantize through Atomic's detected terminal color mode, preserving the intended phase progression in 256-color and conhost-like environments instead of forcing truecolor output.
 
+### Removed
+
+- Removed Cursor model fallbacks and Cursor-branded Impeccable harness compatibility from shipped workflows and skills ([#1994](https://github.com/bastani-inc/atomic/issues/1994)).
+
 ## [0.9.11-alpha.5] - 2026-07-23
 
 ### Changed

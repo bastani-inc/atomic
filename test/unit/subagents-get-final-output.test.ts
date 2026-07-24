@@ -30,7 +30,7 @@ describe("subagents getFinalOutput", () => {
 	test("prefers final text over progress text in a multi-part assistant message", () => {
 		const messages = [assistantContent([
 			{ type: "text", text: "Working on the fix..." },
-			{ type: "thinking", thinking: "Cursor shell: shell $ npm test" },
+			{ type: "thinking", thinking: "Editor shell: shell $ npm test" },
 			{ type: "text", text: "Implemented: patch applied." },
 		])];
 

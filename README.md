@@ -85,14 +85,14 @@ Atomic does not require package install scripts. Add `--ignore-scripts` to the i
 
 ### Authenticate and run
 
-Atomic supports subscription login for Codex, Claude, GitHub Copilot, and Cursor (experimental), as well as API-key providers such as OpenRouter:
+Atomic supports subscription login for Codex, Claude, GitHub Copilot, xAI, and Radius, as well as API-key providers such as OpenRouter:
 
 ```bash
 atomic
 /login   # then select your provider
 ```
 
-Claude login from a third-party harness uses Anthropic extra usage billed per token rather than Claude plan limits. Cursor support uses private APIs, may conflict with Cursor's terms, and could affect the authenticated account. See [Providers & Models](./packages/coding-agent/README.md#providers--models) before using either integration.
+Claude login from a third-party harness uses Anthropic extra usage billed per token rather than Claude plan limits. See [Providers & Models](./packages/coding-agent/README.md#providers--models) for integration details.
 
 Missing a provider? [Open an issue](https://github.com/bastani-inc/atomic/issues/new) or contribute an integration.
 
@@ -278,7 +278,7 @@ You supply the credentials and permissions. The workflow defines how agents may 
 - A black-box swarm.
 - A claim that model output is deterministic or correct by default.
 - A checklist that a model may choose to follow.
-- A wrapper around Claude Code, Codex, Cursor, OpenCode, or Copilot CLI.
+- A wrapper around Claude Code, Codex, OpenCode, or Copilot CLI.
 - A replacement for engineering judgment.
 
 ---
@@ -295,7 +295,7 @@ The docs live in this repository under [`packages/coding-agent/docs`](./packages
 
 Atomic includes a coding-agent CLI. Its main product idea is the runtime around the agent session: scoped context, stages, tools, checks, artifacts, checkpoints, subagents, review gates, and human approvals.
 
-### Why not use Claude Code, Codex, Cursor, or OpenCode?
+### Why not use Claude Code, Codex, or OpenCode?
 
 Use any interactive coding tool that fits the job. Use Atomic when work needs an explicit process you can inspect, version, resume, and verify. Atomic connects to model providers directly rather than running those tools underneath it.
 

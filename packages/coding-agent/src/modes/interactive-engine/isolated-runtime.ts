@@ -44,6 +44,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			createRuntime,
 			[...localRuntime.diagnostics],
 			localRuntime.modelFallbackMessage,
+			localRuntime.modelFallbackReason,
 		);
 		this.client = client;
 		this.remoteCommands = new RemoteCommandCatalog(client);
@@ -58,11 +59,14 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	}
 	async initializeFromEngine(): Promise<void> {
 		const state = await this.client.getState();
-		const session = super.session;
 		const catalog = await this.client.requestInternal<RpcModelCatalog>({ type: "get_available_models" });
+		if (state.sessionFile && super.session.sessionManager.getSessionFile() !== state.sessionFile) {
+			await super.switchSession(state.sessionFile);
+		}
+		const session = super.session;
 		this.remoteModelCatalog.apply(catalog);
 		this.remoteModelCatalog.patch(session);
-		if (state.model) session.agent.state.model = state.model;
+		(session.agent.state as { model?: Model<Api> }).model = state.model;
 		session.agent.state.thinkingLevel = state.thinkingLevel;
 		session.agent.steeringMode = state.steeringMode;
 		session.agent.followUpMode = state.followUpMode;
@@ -72,7 +76,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.remoteSessionFile = state.sessionFile;
 		this.streaming = state.isStreaming;
 		this.compacting = state.isCompacting;
-		if (state.sessionFile && session.sessionFile !== state.sessionFile) await super.switchSession(state.sessionFile);
+		this.replaceModelFallback(state.modelFallbackMessage, state.modelFallbackReason);
 		this.refreshSessionView();
 		this.engineCallbackActive = false;
 		// Non-blocking refresh so isolated autocomplete lists engine-only extension
@@ -302,6 +306,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				value: async (model: Model<Api>) => {
 					const selected = await this.client.setModel(model.provider, model.id);
 					session.agent.state.model = session.modelRegistry.find(selected.provider, selected.id) ?? model;
+					this.resolveModelFallback();
 				},
 			},
 			setThinkingLevel: {

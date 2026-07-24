@@ -52,9 +52,14 @@ export function createRpcCommandHandler({
 	return async (command: RpcCommand): Promise<RpcResponse | undefined> => {
 		const id = command.id;
 		const session = getSession();
-
 		switch (command.type) {
 			case "prompt": {
+				if (runtimeHost.modelFallbackReason === "configured-provider-unsupported") {
+					const message = runtimeHost.modelFallbackMessage;
+					if (!message) throw new Error("Unsupported configured provider is missing its diagnostic message");
+					output(createRpcErrorResponse(id, "prompt", message));
+					return undefined;
+				}
 				let preflightSucceeded = false;
 				void session
 					.prompt(command.message, {
@@ -90,7 +95,6 @@ export function createRpcCommandHandler({
 				await session.abort();
 				return createRpcSuccessResponse(id, "abort");
 			}
-
 			case "new_session": {
 				const options = command.parentSession ? { parentSession: command.parentSession } : undefined;
 				const result = await runtimeHost.newSession(options);
@@ -103,6 +107,8 @@ export function createRpcCommandHandler({
 			case "get_state": {
 				const state: RpcSessionState = {
 					model: session.model,
+					modelFallbackMessage: runtimeHost.modelFallbackMessage,
+					modelFallbackReason: runtimeHost.modelFallbackReason,
 					thinkingLevel: session.thinkingLevel,
 					isStreaming: session.isStreaming,
 					isCompacting: session.isCompacting,
@@ -118,7 +124,6 @@ export function createRpcCommandHandler({
 				};
 				return createRpcSuccessResponse(id, "get_state", state);
 			}
-
 			case "set_model": {
 				const models = await session.modelRegistry.getAvailable();
 				const model = models.find((candidate) => candidate.provider === command.provider && candidate.id === command.modelId);
@@ -126,6 +131,7 @@ export function createRpcCommandHandler({
 					return createRpcErrorResponse(id, "set_model", `Model not found: ${command.provider}/${command.modelId}`);
 				}
 				await session.setModel(model);
+				runtimeHost.resolveModelFallback();
 				return createRpcSuccessResponse(id, "set_model", session.model ?? model);
 			}
 
@@ -255,7 +261,6 @@ export function createRpcCommandHandler({
 				const result = await session.compact();
 				return createRpcSuccessResponse(id, "compact", result);
 			}
-
 
 			case "set_auto_compaction": {
 				session.setAutoCompactionEnabled(command.enabled);
