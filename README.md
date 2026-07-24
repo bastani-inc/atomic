@@ -39,13 +39,17 @@
 
 ## Built for developers who want assurance
 
-Atomic grew from collective work on coding agents and developer infrastructure where plausible output was not enough. As agents become more capable, the harness around them must become more deliberate.
+ Your engineering process should be yours, not tied to any single tool, agent, or model. A harness encodes that process: how work is scoped, divided, checked, verified, and approved.
 
-Developers should control what agents see, how work is divided, what crosses boundaries, what evidence must exist, which checks permit progress, and where humans decide. Context, orchestration, and verification are core infrastructure. They should be inspectable, changeable, and owned by the developers who use them.
+ Atomic is the first verifiable coding agent runtime for building your own harness. A set of composable, verifiable harnesses can form the foundation of your software factory.
+ 
+ Build your process as workflows with scoped context, model choice, tools, handoffs, artifacts, retries, executable checks, review gates, and human approvals. 
+  
+ Atomic’s primitives are built for the software engineering lifecycle. Verification is built into the exeuction model. 
+ 
+ Atomic is open so you can inspect and adapt it. You own the workflow, the evidence, and the rules for completion.
 
-Closed platforms may have more resources or distribution. Atomic builds this infrastructure in the open so developers can inspect it, adapt it, and own it.
-
-Build in the open. Question the defaults. Keep control of the process. ☠︎
+ Own your intelligence. Build in the open. Question the defaults. Keep control of the process. ☠︎
 
 ---
 
