@@ -77,6 +77,8 @@ export interface ExtensionRuntimeOpts {
   cwd?: string;
   /** Resolve the host's non-default session directory for workflow stage transcripts. */
   resolveDefaultStageSessionDir?: () => string | undefined;
+  /** Seed lifecycle state before historical completed snapshots are restored. */
+  beforeRestoreCompleted?: (snapshots: readonly RunSnapshot[]) => void;
 }
 // ---------------------------------------------------------------------------
 // Public interface
@@ -135,6 +137,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
   const jobs = opts.jobs;
   const runtimeCwd = opts.cwd ?? process.cwd();
   const resolveDefaultStageSessionDir = opts.resolveDefaultStageSessionDir;
+  const beforeRestoreCompleted = opts.beforeRestoreCompleted;
   const ensureDbosReady = async (): Promise<void> => {
     // Deliberately not memoized: the factory revalidates its memoized backend
     // against the current DBOS lifecycle generation, so caching a permanently
@@ -321,6 +324,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
       ensureReady: ensureDbosReady,
       resolveDefaultStageSessionDir,
       baseRunOpts: (policy) => runOptions(policy),
+      beforeRestoreCompleted,
       ...(jobs !== undefined ? { jobs } : {}),
     }),
 

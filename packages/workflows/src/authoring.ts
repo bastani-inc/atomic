@@ -27,6 +27,7 @@ export type {
   StageOptions,
   StageContext,
   StageSnapshot,
+  ToolNodeSnapshot,
   StageExecutionMeta,
   StageMcpOptions,
   StageOutputOptions,
@@ -290,11 +291,15 @@ export interface RunSnapshot {
   readonly name: string;
   readonly status: RunStatus;
   readonly stages: readonly StageSnapshot[];
+  /** First-class durable ctx.tool nodes; populated by the runtime. */
+  readonly toolNodes?: readonly import("./shared/authoring-contract.js").ToolNodeSnapshot[];
   readonly startedAt: number;
   readonly endedAt?: number;
   readonly durationMs?: number;
   readonly result?: WorkflowOutputValues;
   readonly error?: string;
+  /** Tool node whose rejection supplied the selected terminal failure. */
+  readonly failedToolNodeId?: string;
   /** True when the run reached its terminal status through ctx.exit(). */
   readonly exited?: boolean;
   readonly exitReason?: string;

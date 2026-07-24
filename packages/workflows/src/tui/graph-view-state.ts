@@ -11,6 +11,7 @@ import {
   expandWorkflowGraph,
   type ExpandedWorkflowGraph,
   type ExpandedWorkflowStage,
+  type ExpandedWorkflowStageTarget,
 } from "../shared/expanded-workflow-graph.js";
 import type { GraphTheme } from "./graph-theme.js";
 import type { LayoutNode } from "./layout.js";
@@ -74,7 +75,7 @@ export abstract class GraphViewState {
   protected toastManager = createToastManager();
   protected detailsExpanded = true;
   protected cachedLayout: LayoutNode[] = [];
-  protected expandedGraph: ExpandedWorkflowGraph = { stages: [], targets: new Map() };
+  protected expandedGraph: ExpandedWorkflowGraph = { stages: [], renderStages: [], tools: [], nodes: [], targets: new Map() };
   protected currentSnapshot: StoreSnapshot | null = null;
   protected graphScrollOffset = 0;
   protected graphScrollColOffset = 0;
@@ -134,7 +135,7 @@ export abstract class GraphViewState {
     const run = this._getCurrentRun();
     if (!run) {
       this.cachedLayout = [];
-      this.expandedGraph = { stages: [], targets: new Map() };
+      this.expandedGraph = { stages: [], renderStages: [], tools: [], nodes: [], targets: new Map() };
       this.focusedIndex = 0;
       this.graphScrollOffset = 0;
       this.graphScrollColOffset = 0;
@@ -241,8 +242,8 @@ export abstract class GraphViewState {
   protected _graphStages(run: RunSnapshot): ExpandedWorkflowStage[] {
     this.expandedGraph = this.currentSnapshot
       ? expandWorkflowGraph(this.currentSnapshot, run.id)
-      : { stages: [], targets: new Map() };
-    const stages = [...this.expandedGraph.stages];
+      : { stages: [], renderStages: [], tools: [], nodes: [], targets: new Map() };
+    const stages = [...this.expandedGraph.renderStages];
     const hasStagePrompt = stages.some((stage) =>
       stage.pendingPrompt !== undefined ||
       (stage.status === "awaiting_input" && stage.promptFootprint?.kind === "custom")
@@ -273,6 +274,18 @@ export abstract class GraphViewState {
     if (!this.promptState || this.promptState.prompt.id !== prompt.id) {
       this.promptState = createPromptCardState(prompt);
     }
+  }
+
+  /** Stage-only control target shared by hints and activation. */
+  protected _stageChatTarget(
+    stage: StageSnapshot | undefined,
+  ): ExpandedWorkflowStageTarget | undefined {
+    if (!stage || stage.nodeKind === "tool") return undefined;
+    return expandedStageTarget(this.expandedGraph, stage.id);
+  }
+
+  protected _focusedStageChatTarget(): ExpandedWorkflowStageTarget | undefined {
+    return this._stageChatTarget(this.cachedLayout[this.focusedIndex]?.stage);
   }
 
   protected _getCurrentRun(): RunSnapshot | null {

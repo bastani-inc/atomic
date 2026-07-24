@@ -68,6 +68,7 @@ function printableDetail(overrides: Partial<RunDetail> = {}): RunDetail {
     durationMs: run.durationMs,
     inputs: run.inputs,
     stages: run.stages,
+    tools: run.toolNodes ?? [],
     result: run.result,
     ...overrides,
   };

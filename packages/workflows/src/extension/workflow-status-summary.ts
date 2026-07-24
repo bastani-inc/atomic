@@ -20,6 +20,7 @@ import type {
   StageInputRequest,
   StageSnapshot,
   StageStatus,
+  ToolNodeStatus,
 } from "../shared/store-types.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { elapsedRunMs } from "../shared/timing.js";
@@ -53,6 +54,26 @@ export interface WorkflowStatusAwaitingInput {
   readonly message?: string;
 }
 
+/** Non-chat durable tool-node status included additively in run summaries. */
+export interface WorkflowStatusToolNode {
+  readonly id: string;
+  readonly name: string;
+  readonly status: ToolNodeStatus;
+  readonly ordinal: number;
+  readonly executionOrder?: number;
+  readonly parentIds: readonly string[];
+  readonly startedAt?: number;
+  readonly endedAt?: number;
+  readonly replayed?: boolean;
+  readonly resultSummary?: string;
+  readonly error?: string;
+  readonly attachable: false;
+  /** Owning run identity; emitted for summaries, optional for source compatibility. */
+  readonly runId?: string;
+  readonly runName?: string;
+  readonly depth?: number;
+}
+
 /**
  * Concise, JSON-stable summary of one top-level run for the `status`
  * listing. `runId` feeds pause/resume/interrupt/quit/send directly;
@@ -70,6 +91,8 @@ export interface WorkflowRunStatusSummary {
   /** Pause-adjusted elapsed milliseconds (prior sessions included). */
   readonly elapsedMs: number;
   readonly activeStages: readonly WorkflowStatusActiveStage[];
+  /** Durable, non-attachable ctx.tool graph nodes in authored order. */
+  readonly tools?: readonly WorkflowStatusToolNode[];
   readonly awaitingInputCount: number;
   readonly awaitingInput: readonly WorkflowStatusAwaitingInput[];
   readonly exitReason?: string;
@@ -146,6 +169,26 @@ export function summarizeRunSnapshot(
       name: stage.name,
       status: stage.status,
     })),
+    tools: (run.toolNodes ?? []).map((tool) => {
+      const owner = tool as typeof tool & { readonly runId?: string; readonly runName?: string; readonly depth?: number };
+      return {
+        id: tool.id,
+        name: tool.name,
+        status: tool.status,
+        ordinal: tool.ordinal,
+        executionOrder: tool.executionOrder,
+        parentIds: [...tool.parentIds],
+        startedAt: tool.startedAt,
+        endedAt: tool.endedAt,
+        replayed: tool.replayed,
+        resultSummary: tool.resultSummary,
+        error: tool.error,
+        attachable: false,
+        runId: owner.runId ?? run.id,
+        runName: owner.runName ?? run.name,
+        depth: owner.depth ?? 0,
+      };
+    }),
     awaitingInputCount: awaitingInput.length,
     awaitingInput,
     exitReason: run.exitReason,

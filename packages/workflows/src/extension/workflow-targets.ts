@@ -35,10 +35,14 @@ export function inFlightRunCount(): number {
 
 export function topLevelExpandedSnapshots() {
   const snapshot = store.snapshot();
-  return topLevelWorkflowRuns(snapshot.runs).map((run) => ({
-    ...structuredClone(run),
-    stages: expandWorkflowGraph(snapshot, run.id).stages.map((stage) => structuredClone(stage)),
-  }));
+  return topLevelWorkflowRuns(snapshot.runs).map((run) => {
+    const graph = expandWorkflowGraph(snapshot, run.id);
+    return {
+      ...structuredClone(run),
+      stages: graph.stages.map((stage) => structuredClone(stage)),
+      toolNodes: graph.tools.map((tool) => structuredClone(tool)),
+    };
+  });
 }
 
 

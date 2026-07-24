@@ -296,6 +296,19 @@ describe("restoreOnSessionStart", () => {
     assert.equal(run.resumable, true);
     assert.equal(run.retryAfterMs, 2000);
   });
+  test("restores selected failed tool identity without requiring failed tool topology", () => {
+    const st = createStore();
+    const entries: SessionEntry[] = [
+      { id: "tool-e1", type: "workflow.run.start", payload: { runId: "tool-run", name: "wf", inputs: {}, ts: 1 } },
+      {
+        id: "tool-e2", type: "workflow.run.end",
+        payload: { runId: "tool-run", status: "failed", error: "publish rejected", failedToolNodeId: "tool:publish", ts: 2 },
+      },
+    ];
+
+    restoreOnSessionStart(makeSessionManager(entries), { resumeInFlight: "never", persistRuns: true }, st);
+    assert.equal(st.runs()[0]?.failedToolNodeId, "tool:publish");
+  });
   test("restores completed ctx.exit markers from run.end entries without requiring completed stages", () => {
     const st = createStore();
     const entries: SessionEntry[] = [

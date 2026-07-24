@@ -767,7 +767,7 @@ To migrate an existing file from the removed `defineWorkflow(...).compile()` bui
 
 `prompt` and `task` are aliases for task text inside authored workflow primitives. Prefer `prompt` because it mirrors lower-level `stage.prompt(...)`; `task` remains useful in `ctx.chain(...)` examples.
 
-Author workflows to create at least one tracked stage by calling `ctx.task()`, `ctx.chain()`, `ctx.parallel()`, `ctx.stage()`, or `ctx.workflow()` in the run body so each normal run has graph nodes to inspect, attach to, interrupt, resume, and render. Guard-only workflows may call `ctx.exit(...)` before creating a stage when they intentionally stop early.
+Author workflows to create at least one tracked execution node by calling `ctx.task()`, `ctx.chain()`, `ctx.parallel()`, `ctx.stage()`, `ctx.workflow()`, or `ctx.tool()` in the run body so each normal run has graph work to inspect and render. Stage nodes remain the attachable, interruptible, resumable chat units; durable tool nodes are non-chat execution. Guard-only workflows may call `ctx.exit(...)` before creating a node when they intentionally stop early.
 
 ### Guiding Principles
 
@@ -777,7 +777,7 @@ Author workflows to create at least one tracked stage by calling `ctx.task()`, `
 - **Schema-backed gates** - Prefer schema-backed workflow stages (`ctx.stage(..., { schema })`, `ctx.chain` items, or `ctx.parallel` items) for review/gate decisions whenever the workflow must evaluate model output; a schema-enabled item receives the structured-output tool automatically. See [Evaluation and Quality Gates](#evaluation-and-quality-gates).
 - **Stages are model stages** - Treat atomic workflow units as language model stages, not deterministic tools.
 - **Small deterministic-gate stages** - When deterministic gates are needed, create small dedicated stages that instruct a model to run a specific tool or perform a specific check. This keeps gates adaptive to the current codebase while preserving explicit workflow structure.
-- **Checkpoint workflow-owned side effects** - Prefer `ctx.tool(name, args, fn)` for filesystem writes, network mutations, external API actions, and other side effects orchestrated directly by the workflow definition. Atomic durably caches a completed call's serializable result, so resume returns that result without rerunning `fn`. Keep pure computation and side-effect-free transformations as ordinary TypeScript. Do not wrap agent-stage internals or every function call indiscriminately.
+- **Checkpoint workflow-owned side effects** - Prefer `ctx.tool(name, args, fn)` for filesystem writes, network mutations, external API actions, and other side effects orchestrated directly by the workflow definition. Atomic durably caches a completed call's serializable result, so resume returns that result without rerunning `fn`. Keep pure computation and side-effect-free transformations as ordinary TypeScript. Do not wrap agent-stage internals or every function call indiscriminately. Do not retain `ctx.tool` for detached work after the workflow executor returns: terminal admission is closed first, and a later call rejects before its callback, retries, graph node, or checkpoint can begin.
 
 ### Context engineering guidance
 
@@ -1560,7 +1560,7 @@ ctx.tool<TValue extends WorkflowSerializableValue>(
 ): Promise<TValue>;
 ```
 
-Runs arbitrary TypeScript code and durably caches its serializable result by call order plus the content hash of `name` and `args`. A completed call replays without rerunning `fn`, so use this primitive for durable side effects.
+Runs arbitrary TypeScript code as a tracked, non-attachable durable workflow graph node and caches its serializable result by call order plus the content hash of `name` and `args`. The node is created before `fn` runs and may appear before, between, after, or without model stages. A completed call replays without rerunning `fn`, so use this primitive for workflow-owned durable side effects; keep pure computation as ordinary TypeScript.
 
 **Options:**
 - `retriesAllowed` — retries failures when `true`; default `false`.
@@ -2514,8 +2514,8 @@ When two sessions race to resume the same paused workflow, a durable first-write
 ### How it works
 
 - **Only `ctx.*` blocks are checkpointed**: code outside `ctx.*` is not durable.
-- **Durable side effects**: Atomic flushes `ctx.tool` and `ctx.ui` writes before exposing completed results, so resume does not repeat an already-completed effect.
-- **Durable graph operations**: stage, task, chain, parallel, and child-workflow checkpoints include source-stage lineage plus owning-run/boundary metadata, timing, model, output, and retained chat-session references. Fresh-process resume and completed inspection reconstruct nested child runs and parallel DAG edges directly from DBOS.
+- **Durable side effects and graph nodes**: every `ctx.tool` invocation creates a tracked, non-chat graph node before its callback runs. Atomic flushes successful `ctx.tool` and `ctx.ui` writes before exposing completed results, so resume does not repeat an already-completed effect. Tool nodes can appear before, between, after, or without model stages.
+- **Durable graph operations**: tool, stage, task, chain, parallel, and child-workflow checkpoints include stable identity/order and the applicable source lineage, owning-run/boundary metadata, timing, output summary, model, and retained chat-session references. Fresh-process resume and completed inspection reconstruct tool-only, nested-child, mixed, and parallel DAG topology directly from DBOS.
 - **DBOS-only discovery**: `/workflow resume`, `/workflows`, completed inspection, deletion, and targeted lookup hydrate/query DBOS. Session JSONL remains only a chat transcript referenced by a current checkpoint; it is not a workflow catalog or discovery source.
 - **Current format only**: Atomic encodes and decodes one current DBOS format. Prior local files and older DBOS records are not read, converted, or cleaned up. Unsupported or malformed records are ignored as foreign data.
 - **Child side-effect scoping**: nested workflow effects are checkpointed under the durable root with stable child scopes.
@@ -2533,7 +2533,11 @@ Replayed `ctx.stage`, `ctx.task`, `ctx.chain`, `ctx.parallel`, and child-workflo
 
 ### `ctx.tool` — durable cached tool execution
 
-The `ctx.tool(name, args, fn, options?)` primitive runs arbitrary TypeScript code and caches the result durably. On resume, if that ordinal tool call already completed (matched by call order plus content hash of `name` + `args`), the runtime returns the cached result without re-executing the function — ensuring completed side effects are not repeated while still allowing two intentional same-name/same-args calls in one workflow.
+The `ctx.tool(name, args, fn, options?)` primitive runs arbitrary TypeScript code as a first-class durable graph node and caches the result durably. The node is non-attachable and has no stage chat controls. It is valid before, between, after, or without model stages, so a tool-only workflow completes normally; a workflow that returns normally without any stage, child, tool, or explicit exit remains invalid. On resume, if that ordinal tool call already completed (matched by call order plus content hash of `name` + `args`), the runtime returns the cached result without re-executing the function—ensuring completed side effects are not repeated while still preserving two intentional same-name/same-args calls as distinct ordered nodes. Legacy child checkpoints without topology keep that cached output authoritative even if the additive ownership-migration write is temporarily unavailable: current replay uses inferred child ownership, a later replay retries the metadata write, and fresh completed inspection falls back to root ownership with topology unavailable until a migration succeeds.
+
+When the workflow body fulfills but one or more admitted tool calls failed, Atomic promotes the first admitted failure to the terminal run failure and persists that selected tool-node identity for status inspection and lifecycle output. An ordinary workflow-body rejection—including a direct uncaught `await ctx.tool(...)` rejection—retains the original error and failed graph node but does not claim a terminal tool origin: transparent native promise rejection carries no source-promise identity, so a later body throw that reuses the same object or primitive is observationally indistinguishable. Stage and workflow-body failures are therefore never mislabeled as tool failures.
+
+Tool admission stays open while the workflow body runs and while already-admitted tools drain, including immediate promise-settlement continuations. Before any completed, failed, blocked, exited, or cancelled executor outcome is published, admission closes atomically. A detached call through a retained `ctx.tool` function after that point returns a rejected native promise without starting its callback, retries, graph node, or durable checkpoint; ignoring that promise does not emit an unhandled rejection.
 
 ```ts
 export default workflow({
@@ -2570,9 +2574,11 @@ Only current-format DBOS records are selectable. Atomic hides unsupported or mal
 
 Selecting a paused, failed, blocked, or crash-recovery target follows the existing resume path unchanged: Atomic re-dispatches the workflow with its cached inputs and the **original workflow id**, so previously completed `ctx.tool`, `ctx.ui`, stage/task/chain/parallel items, and child workflow boundaries replay from durable checkpoints rather than executing again. Selecting a completed target follows a separate open path.
 
-Atomic reconstructs completed root and nested child-run snapshots from authoritative checkpoints, remaps persisted source-stage and boundary references to reconstructed stage ids, and opens the full expanded hierarchy without calling the durable resume dispatcher or re-running workflow stages, tools, tasks, prompts, or workflow code.
+Atomic reconstructs completed root and nested child-run snapshots from authoritative checkpoints, remaps persisted source-stage and boundary references, and opens the full expanded hierarchy—including tool-only graphs—without calling the durable resume dispatcher or rerunning workflow stages, tools, tasks, prompts, or workflow code.
 
-Completed detail state is read-only. A retained stage chat may be reopened for follow-up without resuming workflow execution or mutating its DBOS handle. Current checkpoints always include supported topology; foreign checkpoints are excluded rather than displayed with inferred edges.
+Completed detail state is read-only. A retained stage chat may be reopened for follow-up without resuming workflow execution or mutating its DBOS handle; tool nodes never offer chat attachment. New tool checkpoints persist topology. A current-format tool checkpoint created before that additive topology existed still replays safely: its cached output remains authoritative and its callback is never rerun. Root-level inspection derives deterministic fallback identity/order from checkpoint identity and record order. If a topology-less cached tool replays inside a child workflow, Atomic first appends awaited topology metadata with the current child/boundary ownership, without replacing the original output checkpoint. Foreign or malformed checkpoint formats remain excluded.
+
+Fresh completed inspection does not currently persist the workflow's declared root output. Live `run()` results still expose the declared output, and this output-persistence limitation does not block durable tool topology or read-only graph inspection.
 
 ```text
 /workflow resume                          # Mixed picker: resumable + completed

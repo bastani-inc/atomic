@@ -46,6 +46,7 @@ export function createDurableCachedStageRecorder(input: {
   readonly backend: DurableWorkflowBackend;
   readonly rootBackend: DurableWorkflowBackend;
   readonly completedStageReplayKeys: Map<string, string>;
+  readonly sourceToReplayedNodeIds: Map<string, string>;
 }): {
   readonly record: (name: string, replayKey: string, checkpoint: DurableCompletedStageCheckpoint, scope?: ParallelFailFastScope) => void;
   readonly metadata: (replayKey: string) => Partial<DurableCompletedStageCheckpoint>;
@@ -54,7 +55,7 @@ export function createDurableCachedStageRecorder(input: {
     record(name, replayKey, checkpoint, scope): void {
       recordCachedStageWithTracker(
         input.store, input.tracker, input.run.id, name, replayKey, checkpoint,
-        input.completedStageReplayKeys, scope,
+        input.completedStageReplayKeys, scope, input.sourceToReplayedNodeIds,
       );
       const stage = input.store.runs().find((run) => run.id === input.run.id)?.stages
         .find((candidate) => candidate.replayKey === replayKey);

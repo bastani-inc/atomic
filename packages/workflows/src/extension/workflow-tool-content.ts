@@ -39,17 +39,24 @@ function truncateStatusText(text: string): string {
 }
 
 function statusRunHint(run: WorkflowRunStatusSummary): string | undefined {
+  const tools = run.tools ?? [];
+  const toolHint = tools.length > 0
+    ? `tools: ${tools.map((tool) => `${tool.name} (${tool.status})`).join(", ")}`
+    : undefined;
+  let primary: string | undefined;
   if (run.awaitingInputCount > 0) {
     const stages = run.awaitingInput
       .map((entry) => entry.stageName ?? entry.stageId)
       .filter((name): name is string => name !== undefined && name.length > 0);
     const suffix = stages.length > 0 ? `: ${stages.join(", ")}` : "";
-    return `awaiting input (${run.awaitingInputCount})${suffix}`;
+    primary = `awaiting input (${run.awaitingInputCount})${suffix}`;
+  } else if (run.status === "paused") {
+    primary = "awaiting resume";
+  } else if (run.activeStages.length > 0) {
+    primary = `stage: ${run.activeStages.map((stage) => stage.name).join(", ")}`;
   }
-  if (run.status === "paused") return "awaiting resume";
-  if (run.activeStages.length > 0) {
-    return `stage: ${run.activeStages.map((stage) => stage.name).join(", ")}`;
-  }
+  if (primary !== undefined) return toolHint === undefined ? primary : `${primary} · ${toolHint}`;
+  if (toolHint !== undefined) return toolHint;
   if (run.error !== undefined && run.error.length > 0) return truncateStatusText(run.error);
   if (run.exitReason !== undefined && run.exitReason.length > 0) {
     return truncateStatusText(run.exitReason);

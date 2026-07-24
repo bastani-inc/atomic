@@ -26,6 +26,8 @@ export interface OpenCompletedDurableDeps {
   readonly stageControlRegistry?: StageControlRegistry;
   readonly cwd?: string;
   readonly defaultSessionDir?: string;
+  /** Seed lifecycle dedupe state before historical snapshots become observable. */
+  readonly beforeRestore?: (snapshots: readonly RunSnapshot[]) => void;
 }
 
 interface CompletedChatRegistration {
@@ -72,18 +74,22 @@ export function openCompletedDurableWorkflow(
   }
   const snapshots = completedWorkflowRunSnapshots(deps.durableBackend, resolved.entry);
   const snapshot = snapshots.find((run) => run.id === resolved.snapshot.id) ?? resolved.snapshot;
+  deps.beforeRestore?.(snapshots);
   for (const restored of snapshots) {
     const previous = deps.store.runs().find((run) => run.id === restored.id);
     if (previous !== undefined) deps.store.removeRun(previous.id);
     deps.store.recordRunStart(restored);
     registerCompletedChatHandles(restored, deps);
   }
+  const hasReopenableStage = snapshots.some((run) =>
+    run.stages.some((stage) => stage.sessionFile !== undefined)
+  );
   return {
     ok: true,
     runId: snapshot.id,
     workflowId: snapshot.id,
     name: snapshot.name,
-    message: `Opened completed durable workflow "${snapshot.name}" (${snapshot.id.slice(0, 8)}) for read-only inspection and follow-up chat.`,
+    message: `Opened completed durable workflow "${snapshot.name}" (${snapshot.id.slice(0, 8)}) for read-only inspection${hasReopenableStage ? " and follow-up chat" : ""}.`,
   };
 }
 

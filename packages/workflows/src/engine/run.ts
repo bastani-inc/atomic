@@ -26,7 +26,7 @@ import { createRunFinalizers } from "../runs/foreground/executor-run-finalizers.
 import { buildPromptNodeUiAdapter } from "../runs/foreground/executor-prompt-nodes.js";
 import {
   appendRunEndWhenRecorded,
-  assertWorkflowCreatedStage,
+  assertWorkflowCreatedExecution,
   finalizeKilled,
   finalizeKilledByFailure,
   recordActiveBlockedFailure,
@@ -48,9 +48,9 @@ import { createDurableStageSessionRecorder } from "./run-durable-stage-session.j
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { createDurableCachedStageRecorder, createDurableStageDeps } from "./run-durable-topology.js";
 import { admitDurableRootRun, durableRootRegistrationForRun } from "./run-durable-admission.js";
-
+import { createToolNodeLifecycle } from "./run-tool-node-lifecycle.js";
+import { createAdmittedToolExecutionTracker } from "./run-tool-execution-tracker.js";
 type WorkflowRunInputArgument = Parameters<typeof resolveAndValidateInputs>[1];
-
 export function run<
   TInputs extends WorkflowInputValues,
   TOutputs extends WorkflowOutputValues,
@@ -69,7 +69,6 @@ export async function run<
   opts: RunOpts = {},
 ): Promise<RunResult> {
   if (!isWorkflowDefinition(def)) throw new Error(workflowDefinitionRequirementMessage("run(definition, inputs)", def));
-
   const activeStore = opts.store ?? defaultStore;
   const adapters = opts.adapters ?? {};
   // Prompt-node UI is the graph-mode transport and intentionally takes precedence
@@ -77,7 +76,6 @@ export async function run<
   if (opts.usePromptNodesForUi === true && opts.ui !== undefined) {
     console.warn("atomic-workflows: usePromptNodesForUi ignores the provided RunOpts.ui adapter");
   }
-
   const depth = opts.depth ?? 0;
   const maxDepth = opts.config?.maxDepth ?? 4;
   if (depth >= maxDepth) {
@@ -86,6 +84,7 @@ export async function run<
       status: "failed",
       error: `atomic-workflows: maxDepth exceeded (max ${maxDepth})`,
       stages: [],
+      toolNodes: [],
     };
   }
 
@@ -112,13 +111,13 @@ export async function run<
   const inheritedElapsedMs = opts.parentRun === undefined
     ? inheritedRunElapsedMs({ backend: durableBackend, runId, continuationSource: opts.continuation?.source })
     : undefined;
-
   const runSnapshot: RunSnapshot = {
     id: runId,
     name: def.name,
     inputs: Object.freeze(resolvedInputs),
     status: "running" as const,
     stages: [],
+    toolNodes: [],
     startedAt: Date.now(),
     ...(opts.parentRun !== undefined ? {
       parentRunId: opts.parentRun.runId,
@@ -131,7 +130,6 @@ export async function run<
     } : {}),
     ...(inheritedElapsedMs !== undefined ? { accumulatedDurationMs: inheritedElapsedMs } : {}),
   };
-
   const classifiedFailures = new Map<unknown, WorkflowFailure>();
   const classifyExecutorFailure = (error: unknown): WorkflowFailure => {
     const cached = classifiedFailures.get(error);
@@ -145,7 +143,6 @@ export async function run<
     classifiedFailures.set(error, classified);
     return classified;
   };
-
   activeStore.recordRunStart(runSnapshot);
   if (!opts.signal) opts.cancellation?.register(runId, ownController);
   opts.onRunStart?.(runSnapshot);
@@ -202,6 +199,7 @@ export async function run<
   const checkpointIdGenerator = createCheckpointIdGenerator();
   const stageReplayKeyGenerator = createStageReplayKeyGenerator(runId);
   const completedStageReplayKeys = new Map<string, string>();
+  const sourceToReplayedNodeIds = new Map<string, string>();
   const durableStageDeps = createDurableStageDeps({
     backend: durableBackend, run: runSnapshot,
     nextCheckpointId: checkpointIdGenerator, nextReplayKey: stageReplayKeyGenerator,
@@ -318,6 +316,8 @@ export async function run<
     hasPersistence: opts.persistence !== undefined, isChildRun: opts.parentRun !== undefined,
     continuationSourceId: opts.continuation?.source.id,
   });
+  const admittedTools = createAdmittedToolExecutionTracker();
+  let selectedAdmittedToolFailure: ReturnType<typeof admittedTools.firstFailure> = undefined;
   const tool = createToolPrimitive({
     workflowId: runId,
     backend: durableBackend,
@@ -328,13 +328,15 @@ export async function run<
       }
     },
     signal: ownController.signal,
+    trackExecution: admittedTools.track,
+    ...createToolNodeLifecycle({ store: activeStore, tracker, run: runSnapshot, sourceToReplayedNodeIds }),
   });
 
   // Durable ctx.ui wrapper — caches completed user responses so a resumed workflow does not re-ask answered prompts.
   const durableUiDeps = { workflowId: runId, backend: durableBackend, nextCheckpointId: checkpointIdGenerator };
   const cachedStage = createDurableCachedStageRecorder({
     store: activeStore, tracker, run: runSnapshot, backend: durableBackend,
-    rootBackend, completedStageReplayKeys,
+    rootBackend, completedStageReplayKeys, sourceToReplayedNodeIds,
   });
   const durableTask = createDurableTaskPrimitive({
     workflowId: runId, backend: durableBackend,
@@ -395,6 +397,7 @@ export async function run<
     if (opts.deferWorkflowStart === true) {
       await nextEventLoopTurn();
       if (ownController.signal.aborted) {
+        await admittedTools.closeAndDrain();
         const selectedExit = findWorkflowExitSignal(ownController.signal.reason, exitScope);
         if (selectedExit !== undefined) return await finalizers.finalizeWorkflowExit(selectedExit);
         const parentExit = parentWorkflowExitAbortReason(ownController.signal.reason);
@@ -410,6 +413,7 @@ export async function run<
     });
     if (opts.deferWorkflowStart === true) opts.onWorkflowStartReady?.();
     const rawResult = await runWorkflowDefinitionCallback(def.name, runId, () => def.run(ctx));
+    await admittedTools.closeAndDrain();
     if (ownController.signal.aborted) {
       const selectedExit = findWorkflowExitSignal(ownController.signal.reason, exitScope);
       if (selectedExit !== undefined) return await finalizers.finalizeWorkflowExit(selectedExit);
@@ -417,10 +421,12 @@ export async function run<
       if (parentExit !== undefined) return await finalizers.finalizeParentWorkflowExitCancellation(parentExit);
       return finalizeKilled(runId, runSnapshot, activeStore, opts.persistence, opts.onRunEnd);
     }
+    selectedAdmittedToolFailure = admittedTools.firstFailure();
+    if (selectedAdmittedToolFailure !== undefined) throw selectedAdmittedToolFailure.error;
 
     const result = normalizeWorkflowRunOutput(def.name, rawResult);
     assertWorkflowRunOutputs(def.name, result, def.outputs);
-    assertWorkflowCreatedStage(runSnapshot);
+    assertWorkflowCreatedExecution(runSnapshot);
     await durableBackend.flush();
     const returned = classifyReturnedRunStatus(result, runSnapshot);
     const recorded = activeStore.recordRunEnd(runId, returned.status, result, returned.error, returned.metadata);
@@ -430,22 +436,20 @@ export async function run<
     await durableBackend.flush();
     return reconcileTerminalRunResult(runId, runSnapshot, activeStore, { status: returned.status, result, error: returned.error }, opts.onRunEnd);
   } catch (err) {
+    const observedAdmittedToolFailure = selectedAdmittedToolFailure;
+    await admittedTools.closeAndDrain();
     const selectedExit = findWorkflowExitSignal(err, exitScope) ?? findWorkflowExitSignal(ownController.signal.reason, exitScope);
     if (selectedExit !== undefined) return await finalizers.finalizeWorkflowExit(selectedExit);
-
     if (ownController.signal.aborted) {
       const parentExit = parentWorkflowExitAbortReason(ownController.signal.reason);
       if (parentExit !== undefined) return await finalizers.finalizeParentWorkflowExitCancellation(parentExit);
       return finalizeKilled(runId, runSnapshot, activeStore, opts.persistence, opts.onRunEnd);
     }
-
     const failure = classifyExecutorFailure(err);
-    const metadata = normalizeStageLessFailureMetadata(selectRunFailureDisposition({
-      outerFailure: failure,
-      thrownError: err,
-      stages: runSnapshot.stages,
-      classifyFailure: classifyExecutorFailure,
-    }), runSnapshot.stages.length);
+    const selectedMetadata = normalizeStageLessFailureMetadata(selectRunFailureDisposition({ outerFailure: failure, thrownError: err, stages: runSnapshot.stages, classifyFailure: classifyExecutorFailure }), runSnapshot.stages.length);
+    const failedToolNodeId = selectedMetadata.failedStageId === undefined && selectedMetadata.failureKind !== "cancelled" && selectedMetadata.failureDisposition !== "terminal_killed"
+      ? observedAdmittedToolFailure?.nodeId : undefined;
+    const metadata = failedToolNodeId === undefined ? selectedMetadata : { ...selectedMetadata, failedToolNodeId };
 
     if (metadata.failureDisposition === "terminal_killed") {
       for (const failedStageId of metadata.failedStageIds) scheduler.blockKnownNonTerminalDescendants(failedStageId);
@@ -473,6 +477,7 @@ export async function run<
       ...(metadata.failureDisposition !== undefined ? { failureDisposition: metadata.failureDisposition } : {}),
       failureMessage: metadata.failureMessage,
       ...(metadata.failedStageId !== undefined ? { failedStageId: metadata.failedStageId } : {}),
+      ...(metadata.failedToolNodeId !== undefined ? { failedToolNodeId: metadata.failedToolNodeId } : {}),
       resumable: metadata.resumable,
       ...(metadata.retryAfterMs !== undefined ? { retryAfterMs: metadata.retryAfterMs } : {}),
       ...(runSnapshot.endedAt !== undefined ? { endedAt: runSnapshot.endedAt } : {}),

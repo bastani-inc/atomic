@@ -26,6 +26,7 @@ function fallbackRunDetailFromResult(
     durationMs: 0,
     inputs,
     stages,
+    tools: [],
     result: result.result,
     error: result.error,
     exited: result.exited,

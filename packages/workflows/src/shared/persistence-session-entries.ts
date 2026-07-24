@@ -112,6 +112,7 @@ export interface RunEndPayload {
   readonly failureDisposition?: string;
   readonly failureMessage?: string;
   readonly failedStageId?: string;
+  readonly failedToolNodeId?: string;
   readonly resumable?: boolean;
   readonly retryAfterMs?: number;
   readonly endedAt?: number;
@@ -257,6 +258,7 @@ export function appendRunEnd(api: PersistenceAPI, payload: RunEndPayload): void 
     ...(terminalPayload.failureDisposition !== undefined ? { failureDisposition: terminalPayload.failureDisposition } : {}),
     ...(terminalPayload.failureMessage !== undefined ? { failureMessage: terminalPayload.failureMessage } : {}),
     ...(terminalPayload.failedStageId !== undefined ? { failedStageId: terminalPayload.failedStageId } : {}),
+    ...(terminalPayload.failedToolNodeId !== undefined ? { failedToolNodeId: terminalPayload.failedToolNodeId } : {}),
     ...(terminalPayload.resumable !== undefined ? { resumable: terminalPayload.resumable } : {}),
     ...(terminalPayload.retryAfterMs !== undefined ? { retryAfterMs: terminalPayload.retryAfterMs } : {}),
     ...(terminalPayload.endedAt !== undefined ? { endedAt: terminalPayload.endedAt } : {}),

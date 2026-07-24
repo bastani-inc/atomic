@@ -33,6 +33,8 @@ export interface RunStatusEntry {
   readonly startedAt: number;
   readonly durationMs?: number;
   readonly stageCount: number;
+  readonly toolCount?: number;
+  readonly nodeCount?: number;
 }
 
 export type KillResult =
@@ -79,14 +81,18 @@ export function statusRuns(opts?: { all?: boolean; store?: Store }): RunStatusEn
   const activeStore = opts?.store ?? defaultStore;
 
   const snapshot = activeStore.snapshot();
-  return topLevelWorkflowRuns(snapshot.runs).map((run) => ({
-    runId: run.id,
-    name: run.name,
-    status: effectiveRunStatus(run),
-    startedAt: run.startedAt,
-    durationMs: run.durationMs,
-    stageCount: expandWorkflowGraph(snapshot, run.id).stages.length,
-  }));
+  return topLevelWorkflowRuns(snapshot.runs).map((run) => {
+    const graph = expandWorkflowGraph(snapshot, run.id);
+    return {
+      runId: run.id,
+      name: run.name,
+      status: effectiveRunStatus(run),
+      startedAt: run.startedAt,
+      durationMs: run.durationMs,
+      stageCount: graph.stages.length,
+      ...(graph.tools.length > 0 ? { toolCount: graph.tools.length, nodeCount: graph.nodes.length } : {}),
+    };
+  });
 }
 // ---------------------------------------------------------------------------
 // killRun

@@ -139,6 +139,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
     const switcherLines = renderSwitcher(this._displayStages(run), this.switcherState, {
       width: switcherWidth,
       theme: this.graphTheme,
+      canOpenStageChat: (stage) => this._stageChatTarget(stage) !== undefined,
     });
     const insertAt = Math.max(bodyStart, bodyStart + Math.min(2, Math.floor((bodyTarget - switcherLines.length) / 3)));
     const switcherLeft = Math.max(2, Math.floor((frameWidth - switcherWidth) / 2));

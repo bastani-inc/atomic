@@ -56,6 +56,8 @@ export interface WorkflowLifecycleNoticeDetails {
   readonly promptMessage?: string;
   readonly error?: string;
   readonly failedStageId?: string;
+  readonly toolNodeId?: string;
+  readonly toolName?: string;
   readonly durationMs?: number;
   readonly active?: boolean;
   readonly createdAt: number;
@@ -212,7 +214,7 @@ export function installWorkflowLifecycleNotifications(
     }
 
     const key = terminalRunKey(kind, run);
-    if (state.deliveredTerminalRuns.has(key) || state.pendingTerminalRuns.has(key)) return;
+    if (state.deliveredTerminalRuns.has(key) || state.pendingTerminalRuns.has(key) || state.retryableTerminalRuns.has(key)) return;
     if (state.suppressionDepth > 0) {
       state.deliveredTerminalRuns.add(key);
       state.retryableTerminalRuns.delete(key);
@@ -300,10 +302,11 @@ export function formatWorkflowLifecycleNoticeText(details: WorkflowLifecycleNoti
     return `✓ Workflow "${workflowName}" completed (run ${details.runId}). Inspect: /workflow status ${details.runId}`;
   }
   if (details.kind === "failed") {
-    const stage = details.stageName ?? details.failedStageId;
-    const stageText = stage ? `, stage ${stage}` : "";
+    const stage = details.stageName ?? details.failedStageId ?? details.stageId;
+    const tool = lifecycleToolOrigin(details);
+    const originText = stage ? `, stage ${stage}` : tool !== undefined ? `, tool ${tool}` : "";
     const errorText = details.error ? `: ${details.error}` : "";
-    return `✗ Workflow "${workflowName}" failed (run ${details.runId}${stageText})${errorText}. Inspect: /workflow status ${details.runId}`;
+    return `✗ Workflow "${workflowName}" failed (run ${details.runId}${originText})${errorText}. Inspect: /workflow status ${details.runId}`;
   }
   if (details.kind === "blocked") {
     const errorText = details.error ? `: ${details.error}` : "";
@@ -328,6 +331,8 @@ function makeTerminalNotice(
   const failedStage = run.failedStageId
     ? run.stages.find((stage) => stage.id === run.failedStageId)
     : undefined;
+  const failedToolNodeId = kind === "failed" && run.failedStageId === undefined ? run.failedToolNodeId : undefined;
+  const failedTool = (run.toolNodes ?? []).find((node) => node.id === failedToolNodeId);
   const activeBlocked = kind === "blocked" && isActiveRecoverableBlockedRun(run);
   const error = activeBlocked
     ? run.failureMessage ?? structuredRecoverableWorkflowFailureText(run) ?? run.error
@@ -342,6 +347,8 @@ function makeTerminalNotice(
     ...(error ? { error: truncateSnippet(error) } : {}),
     ...(run.failedStageId ? { failedStageId: run.failedStageId } : {}),
     ...(failedStage ? { stageId: failedStage.id, stageName: failedStage.name } : {}),
+    ...(failedToolNodeId !== undefined ? { toolNodeId: failedToolNodeId } : {}),
+    ...(failedTool !== undefined ? { toolName: failedTool.name } : {}),
     ...(run.durationMs !== undefined ? { durationMs: run.durationMs } : {}),
     createdAt: lifecycleOccurrenceAt(run, kind) ?? Date.now(),
   };
@@ -405,7 +412,9 @@ function awaitingInputKey(runId: string, stage: StageSnapshot): string {
 function runAwaitingInputKey(runId: string, prompt: PendingPrompt): string {
   return `awaiting_input:${runId}:run:${prompt.id}`;
 }
-
+function lifecycleToolOrigin(details: WorkflowLifecycleNoticeDetails): string | undefined {
+  return details.toolName !== undefined && details.toolName.length > 0 ? details.toolName : details.toolNodeId;
+}
 function truncateSnippet(value: string): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   if (normalized.length <= LIFECYCLE_NOTICE_SNIPPET_LIMIT) return normalized;
@@ -447,6 +456,7 @@ function renderLifecycleNoticeCard(
         : "WORKFLOW COMPLETE";
   const glyph = details.kind === "failed" ? "✗" : details.kind === "awaiting_input" ? "？" : details.kind === "blocked" ? "!" : "✓";
   const stage = details.stageName ?? details.failedStageId ?? details.stageId;
+  const tool = stage === undefined ? lifecycleToolOrigin(details) : undefined;
   const headline = details.kind === "failed"
     ? `Workflow "${details.workflowName}" failed`
     : details.kind === "awaiting_input"
@@ -463,6 +473,7 @@ function renderLifecycleNoticeCard(
       { label: "workflow", value: details.workflowName },
       { label: "run", value: details.runId },
       { label: "stage", value: stage },
+      { label: "tool", value: tool },
       { label: "prompt", value: details.promptMessage, tone: "muted" },
       { label: "error", value: details.error, tone: "error" },
       { label: "duration", value: formatDurationMs(details.durationMs), tone: "muted" },

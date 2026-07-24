@@ -14,11 +14,13 @@
 import type { WorkflowSerializableObject, WorkflowSerializableValue } from "../shared/types.js";
 import {
   DURABLE_STAGE_TOPOLOGY_VERSION,
+  DURABLE_TOOL_TOPOLOGY_VERSION,
   type DurableCheckpoint,
   type DurableCheckpointKind,
   type DurableStageCheckpoint,
   type DurableStageTopology,
   type DurableToolCheckpoint,
+  type DurableToolTopology,
   type DurableUiCheckpoint,
   type UiPromptKind,
 } from "./types.js";
@@ -88,7 +90,21 @@ export function encodeCheckpoint(checkpoint: DurableCheckpoint): DbosCheckpointE
   };
   if (cp.kind === "tool") {
     const t = cp as DurableToolCheckpoint;
-    return { ...base, name: t.name, argsHash: t.argsHash };
+    return {
+      ...base,
+      name: t.name,
+      argsHash: t.argsHash,
+      ...(t.topology !== undefined ? { topology: {
+        version: t.topology.version,
+        nodeId: t.topology.nodeId,
+        ordinal: t.topology.ordinal,
+        order: t.topology.order,
+        parentIds: [...t.topology.parentIds],
+        ...(t.topology.startedAt !== undefined ? { startedAt: t.topology.startedAt } : {}),
+        ...(t.topology.endedAt !== undefined ? { endedAt: t.topology.endedAt } : {}),
+        ...(t.topology.run !== undefined ? { run: { ...t.topology.run } } : {}),
+      } } : {}),
+    };
   }
   if (cp.kind === "ui") {
     const u = cp as DurableUiCheckpoint;
@@ -103,6 +119,7 @@ export function encodeCheckpoint(checkpoint: DurableCheckpoint): DbosCheckpointE
       version: s.topology.version,
       stageId: s.topology.stageId,
       parentIds: [...s.topology.parentIds],
+      ...(s.topology.order !== undefined ? { order: s.topology.order } : {}),
       ...(s.topology.run !== undefined ? { run: { ...s.topology.run } } : {}),
     } } : {}),
     ...(s.sessionId !== undefined ? { sessionId: s.sessionId } : {}),
@@ -168,12 +185,15 @@ function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): Durabl
   const common = { workflowId, checkpointId: env.checkpointId, completedAt: env.completedAt };
   if (env.kind === "tool") {
     if (typeof env.argsHash !== "string" || env.output === undefined) return undefined;
+    const topology = env.topology === undefined ? undefined : toolTopology(env.topology);
+    if (env.topology !== undefined && topology === undefined) return undefined;
     return {
       kind: "tool",
       ...common,
       name: env.name ?? "tool",
       argsHash: env.argsHash,
       output: env.output,
+      ...(topology !== undefined ? { topology } : {}),
     } as DurableToolCheckpoint;
   }
   if (env.kind === "ui") {
@@ -222,6 +242,30 @@ function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): Durabl
 }
 
 
+function toolTopology(value: WorkflowSerializableValue): DurableToolTopology | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, WorkflowSerializableValue>;
+  if (record["version"] !== DURABLE_TOOL_TOPOLOGY_VERSION
+    || typeof record["nodeId"] !== "string"
+    || typeof record["ordinal"] !== "number" || !Number.isInteger(record["ordinal"])
+    || typeof record["order"] !== "number" || !Number.isInteger(record["order"])
+    || !isStringArray(record["parentIds"])
+    || !isOptionalFiniteNumber(record["startedAt"])
+    || !isOptionalFiniteNumber(record["endedAt"])) return undefined;
+  const run = stageRunTopology(record["run"]);
+  if (record["run"] !== undefined && run === undefined) return undefined;
+  return {
+    version: DURABLE_TOOL_TOPOLOGY_VERSION,
+    nodeId: record["nodeId"],
+    ordinal: record["ordinal"],
+    order: record["order"],
+    parentIds: record["parentIds"],
+    ...(typeof record["startedAt"] === "number" ? { startedAt: record["startedAt"] } : {}),
+    ...(typeof record["endedAt"] === "number" ? { endedAt: record["endedAt"] } : {}),
+    ...(run !== undefined ? { run } : {}),
+  };
+}
+
 function stageTopology(value: WorkflowSerializableValue | undefined): DurableStageTopology | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   const record = value as Record<string, WorkflowSerializableValue>;
@@ -233,6 +277,7 @@ function stageTopology(value: WorkflowSerializableValue | undefined): DurableSta
     version: DURABLE_STAGE_TOPOLOGY_VERSION,
     stageId: record["stageId"],
     parentIds: record["parentIds"],
+    ...(typeof record["order"] === "number" && Number.isInteger(record["order"]) ? { order: record["order"] } : {}),
     ...(run !== undefined ? { run } : {}),
   };
 }

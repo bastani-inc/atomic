@@ -9,7 +9,7 @@ import type {
   WorkflowMcpPort,
   WorkflowModelCatalogPort,
 } from "../../shared/types.js";
-import type { RunStatus, RunSnapshot, StageSnapshot, WorkflowOverlayAdapter } from "../../shared/store-types.js";
+import type { RunStatus, RunSnapshot, StageSnapshot, ToolNodeSnapshot, WorkflowOverlayAdapter } from "../../shared/store-types.js";
 import type { Store } from "../../shared/store.js";
 import type { WorkflowRegistry } from "../../workflows/registry.js";
 import type { CancellationRegistry } from "../background/cancellation-registry.js";
@@ -116,10 +116,14 @@ export interface RunResult<TOutputs extends WorkflowOutputValues = WorkflowOutpu
   readonly status: RunStatus;
   readonly result?: Partial<TOutputs>;
   readonly error?: string;
+  /** Tool node whose rejection supplied the selected terminal failure. */
+  readonly failedToolNodeId?: string;
   /** True when the run reached its terminal status through ctx.exit(). */
   readonly exited?: boolean;
   readonly exitReason?: string;
   readonly stages: StageSnapshot[];
+  /** Always populated by the runtime; optional for legacy structural literals. */
+  readonly toolNodes?: ToolNodeSnapshot[];
 }
 
 export interface ParallelFailFastStage {

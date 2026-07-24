@@ -14,12 +14,15 @@ import { appendRunBlocked, appendRunEnd } from "../../shared/persistence-session
 import type { RunOpts, RunResult } from "./executor-types.js";
 import { safeExecutorAggregateErrorItems } from "./executor-abort.js";
 
-export const EMPTY_WORKFLOW_GRAPH_ERROR_MESSAGE = "Workflow run completed without creating any workflow stages. Create at least one stage with ctx.stage(), ctx.task(), ctx.chain(), ctx.parallel(), or ctx.workflow().";
+export const EMPTY_WORKFLOW_GRAPH_ERROR_MESSAGE = "Workflow run completed without creating any workflow stages or durable tool nodes. Create tracked execution with ctx.stage(), ctx.task(), ctx.chain(), ctx.parallel(), ctx.workflow(), or ctx.tool().";
 
-export function assertWorkflowCreatedStage(runSnapshot: RunSnapshot): void {
-  if (runSnapshot.stages.length > 0) return;
+export function assertWorkflowCreatedExecution(runSnapshot: RunSnapshot): void {
+  if (runSnapshot.stages.length > 0 || (runSnapshot.toolNodes?.length ?? 0) > 0) return;
   throw new Error(EMPTY_WORKFLOW_GRAPH_ERROR_MESSAGE);
 }
+
+/** @deprecated Use assertWorkflowCreatedExecution. */
+export const assertWorkflowCreatedStage = assertWorkflowCreatedExecution;
 
 export function appendRunEndWhenRecorded(
   persistence: WorkflowPersistencePort | undefined,
@@ -37,6 +40,7 @@ export function appendRunEndWhenRecorded(
     readonly failureDisposition?: WorkflowFailureDisposition;
     readonly failureMessage?: string;
     readonly failedStageId?: string;
+    readonly failedToolNodeId?: string;
     readonly resumable?: boolean;
     readonly retryAfterMs?: number;
     readonly ts: number;
@@ -61,9 +65,11 @@ export function runResultFromSnapshot(snapshot: RunSnapshot): RunResult {
     status: snapshot.status,
     ...(snapshot.result !== undefined ? { result: snapshot.result } : {}),
     ...(snapshot.error !== undefined ? { error: snapshot.error } : {}),
+    ...(snapshot.failedToolNodeId !== undefined ? { failedToolNodeId: snapshot.failedToolNodeId } : {}),
     ...(snapshot.exited !== undefined ? { exited: snapshot.exited } : {}),
     ...(snapshot.exitReason !== undefined ? { exitReason: snapshot.exitReason } : {}),
     stages: [...snapshot.stages],
+    toolNodes: [...(snapshot.toolNodes ?? [])],
   };
 }
 
@@ -71,7 +77,7 @@ export function reconcileTerminalRunResult(
   runId: string,
   runSnapshot: RunSnapshot,
   activeStore: Store,
-  fallback: Omit<RunResult, "runId" | "stages">,
+  fallback: Omit<RunResult, "runId" | "stages" | "toolNodes">,
   onRunEnd: RunOpts["onRunEnd"],
 ): RunResult {
   const canonical = activeStore.runs().find((snapshot) =>
@@ -83,6 +89,7 @@ export function reconcileTerminalRunResult(
         runId,
         ...fallback,
         stages: [...runSnapshot.stages],
+        toolNodes: [...(runSnapshot.toolNodes ?? [])],
       };
   onRunEnd?.(runId, result.status, result.result, result.error, result.exitReason);
   return result;
@@ -96,6 +103,7 @@ export interface RunFailureMetadata {
   readonly failureDisposition?: WorkflowFailureDisposition;
   readonly failureMessage: string;
   readonly failedStageId?: string;
+  readonly failedToolNodeId?: string;
   readonly resumable: boolean;
   readonly retryAfterMs?: number;
 }
@@ -448,5 +456,6 @@ export function recordActiveBlockedFailure(
     status: "running",
     error: metadata.errorMessage,
     stages: [...runSnapshot.stages],
+    toolNodes: [...(runSnapshot.toolNodes ?? [])],
   };
 }

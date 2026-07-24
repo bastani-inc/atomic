@@ -7,6 +7,7 @@ import type {
   WorkflowChildRunRef,
 } from "./store-types.js";
 import { accumulatePausedDurationMs } from "./timing.js";
+import { nextExecutionOrder } from "./store-tool-node-methods.js";
 import {
   cannotAwaitInput,
   cannotBlock,
@@ -41,6 +42,7 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
     recordStageStart(runId: string, stage: StageSnapshot): void {
       const run = context.findRun(runId);
       if (!run) return;
+      if (stage.executionOrder === undefined) stage.executionOrder = nextExecutionOrder(run);
       if (!run.stages.some((s) => s.id === stage.id)) {
         run.stages.push(stage);
       }

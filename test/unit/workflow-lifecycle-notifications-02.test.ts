@@ -103,6 +103,28 @@ function startRun(store: ReturnType<typeof createStore>, id: string, name = id):
 }
 
 describe("installWorkflowLifecycleNotifications", () => {
+  test("emits one failure notice with tool origin and no fabricated stage id", () => {
+    const { store, sent } = install();
+    store.recordRunStart({ id: "run-tool-fail", name: "mutate", inputs: {}, status: "running", stages: [], toolNodes: [], startedAt: 1 });
+    store.recordToolNodeStart("run-tool-fail", {
+      kind: "tool", id: "tool:failure", name: "publish-api", argsHash: "hash", ordinal: 1,
+      parentIds: [], status: "pending", attachable: false,
+    });
+    store.recordToolNodeRunning("run-tool-fail", "tool:failure", 2);
+    store.recordToolNodeEnd("run-tool-fail", "tool:failure", { status: "failed", endedAt: 3, error: "remote rejected" });
+
+    assert.equal(store.recordRunEnd("run-tool-fail", "failed", undefined, "remote rejected", {
+      failedToolNodeId: "tool:failure",
+    }), true);
+    store.recordNotice({ id: "tool-fail-tick", level: "info", message: "tick", createdAt: 4 });
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0]?.details?.toolNodeId, "tool:failure");
+    assert.equal(sent[0]?.details?.toolName, "publish-api");
+    assert.equal(sent[0]?.details?.failedStageId, undefined);
+    assert.match(sent[0]?.content ?? "", /tool publish-api.*remote rejected/);
+  });
+
   test("async suppression stays active until the awaited operation settles", async () => {
     const store = createStore();
     const state = createWorkflowLifecycleNotificationState();
@@ -391,5 +413,52 @@ describe("installWorkflowLifecycleNotifications", () => {
         `runId missing after wrap at width ${width}: ${JSON.stringify(lines)}`,
       );
     }
+  });
+
+  test("restoration seeding preserves pending and retryable live terminal admissions", () => {
+    const state = createWorkflowLifecycleNotificationState();
+    state.pendingTerminalRuns.set("completed:pending-live:", Symbol("pending"));
+    state.retryableTerminalRuns.add("completed:retry-live:");
+    const completed = (id: string) => ({
+      id, name: id, inputs: {}, status: "completed" as const, stages: [], startedAt: 1, endedAt: 2,
+    });
+
+    seedWorkflowLifecycleNotificationState(state, {
+      runs: [completed("pending-live"), completed("retry-live"), completed("history")], notices: [], version: 1,
+    });
+
+    assert.equal(state.deliveredTerminalRuns.has("completed:pending-live:"), false);
+    assert.equal(state.deliveredTerminalRuns.has("completed:retry-live:"), false);
+    assert.equal(state.deliveredTerminalRuns.has("completed:history:"), true);
+    assert.equal(state.pendingTerminalRuns.has("completed:pending-live:"), true);
+    assert.equal(state.retryableTerminalRuns.has("completed:retry-live:"), true);
+  });
+
+  test("failed lifecycle cards render tool origin with name and node-id fallback", () => {
+    const registered: RegisteredRenderer[] = [];
+    registerLifecycleNoticeRenderer({
+      rendererHost: {},
+      registerMessageRenderer(event, renderer) {
+        registered.push({ event, renderer: renderer as (payload: unknown) => unknown });
+      },
+    });
+    const render = (details: WorkflowLifecycleNoticeDetails, width: number): string[] =>
+      (registered[0]?.renderer({ details }) as CardComponent).render(width);
+    const base: WorkflowLifecycleNoticeDetails = {
+      kind: "failed", scope: "run", runId: "tool-failed", workflowName: "publish", status: "failed", createdAt: 1,
+      error: "publish rejected", toolNodeId: "tool:failure", toolName: "publish-api",
+    };
+
+    const named = render(base, 80).join("\n");
+    assert.match(named, /tool\s+publish-api/);
+    assert.doesNotMatch(named, /stage\s+/);
+    const fallback = render({ ...base, toolName: "" }, 80).join("\n");
+    assert.match(fallback, /tool\s+tool:failure/);
+    const stageWins = render({ ...base, stageName: "model-stage" }, 80).join("\n");
+    assert.match(stageWins, /stage\s+model-stage/);
+    assert.doesNotMatch(stageWins, /tool\s+publish-api/);
+    const narrow = render({ ...base, toolName: "" }, 24);
+    assert.match(narrow.join("\n"), /tool[\s\S]*tool:failure/);
+    assert.ok(narrow.every((line) => visibleWidth(line) <= 24));
   });
 });
