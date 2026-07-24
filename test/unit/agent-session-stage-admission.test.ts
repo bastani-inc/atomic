@@ -117,27 +117,6 @@ describe("AgentSession workflow-stage admission", () => {
 		await Promise.resolve();
 	});
 
-	test("persistWhenStreaming persists a streaming custom message instead of a droppable steer", async () => {
-		const steered: string[] = [];
-		const persisted: string[] = [];
-		const surface = {
-			_workflowStageAdmission: undefined,
-			isStreaming: true,
-			_pendingNextTurnMessages: [],
-			_queueAgentMessage(message: { content: string | object[] }) { if (typeof message.content === "string") steered.push(message.content); },
-			_appendCustomMessage(message: { content: string | object[] }) { if (typeof message.content === "string") persisted.push(message.content); },
-			async _enqueueInterruptCustomMessage() {},
-			async _runAgentPrompt() {},
-		};
-
-		await sendCustomMessage.call(surface as never, {
-			customType: "workflows:lifecycle-notice", content: "is blocked", display: true,
-		}, { triggerTurn: true, deliverAs: "steer", persistWhenStreaming: true });
-
-		// Persisted to the transcript (durable/visible), not queued as a transient steer.
-		assert.deepEqual(persisted, ["is blocked"]);
-		assert.deepEqual(steered, []);
-	});
 
 	test("fallback replacement transfers already-admitted native queue entries", () => {
 		const notification = { role: "custom", customType: "async-job-result", content: "done", display: true, timestamp: 1 };

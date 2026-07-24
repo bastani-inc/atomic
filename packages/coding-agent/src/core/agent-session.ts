@@ -86,6 +86,11 @@ export class AgentSession {
 	protected _activeInterruptQueueHold: InterruptQueueHold | undefined = undefined;
 	protected _activeInterruptAbortMessage: string | undefined = undefined;
 	protected _pendingNextTurnMessages: CustomMessage[] = [];
+	protected _protectedStreamingCustomMessages: Array<{
+		message: CustomMessage;
+		delivery: "steer" | "followUp";
+		phase: "queued" | "consumed-unpersisted" | "persistence-failed";
+	}> = [];
 	protected _compactionAbortController: AbortController | undefined = undefined;
 	protected _autoCompactionAbortController: AbortController | undefined = undefined;
 	protected _overflowRecoveryAttempted = false;

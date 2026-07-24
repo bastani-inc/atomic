@@ -21,10 +21,11 @@ export interface SendMessageOptions {
 	 */
 	stageAdmissionBarrier?: () => Promise<void>;
 	/**
-	 * When the parent chat is streaming, persist the custom message to the
-	 * transcript (visible and durable) instead of only queueing a transient
-	 * steer that can be dropped when the queue is cleared or the turn aborts.
-	 * Use for status notices that must not be silently lost.
+	 * Commit one display-only card before admission, then deliver a separate
+	 * hidden model-facing reconciliation. In an active parent chat that hidden
+	 * message waits for agent-core's protocol-safe boundary; queue clearing cannot
+	 * drop it and the lifecycle path does not interrupt the active response.
+	 * Use only for status notices that require later model reconciliation.
 	 */
 	persistWhenStreaming?: boolean;
 

@@ -5,6 +5,7 @@ import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { customMessageExcludesContext, drainAgentMessageQueue, normalizeInterruptAbortMessage, type AgentQueueAccess, type DrainedAgentQueues, type InterruptQueueHold } from "./agent-session-types.ts";
 import { createSessionAsyncDeliveryHandler } from "./async/session-manager.js";
+import { admitProtectedStreamingCustomMessage, queueProtectedStreamingCustomMessage, restoreProtectedStreamingCustomMessages, transferProtectedStreamingCustomMessages } from "./agent-session-persistent-custom-messages.ts";
 
 export async function _queueSteer(this: AgentSession, text: string, images?: ImageContent[]): Promise<void> {
 	this._steeringMessages.push(text);
@@ -91,6 +92,9 @@ export async function sendCustomMessage<T = unknown>(this: AgentSession,
 	const boundary = this._workflowStageAdmission;
 	const deliver = async (): Promise<void> => {
 		if (boundary && options?.stageAdmissionBarrier) await options.stageAdmissionBarrier();
+		const useProtectedReconciliation = options?.persistWhenStreaming === true &&
+			options.triggerTurn === true &&
+			options.excludeFromContext !== true;
 		if (options?.deliverAs === "nextTurn") {
 			this._pendingNextTurnMessages.push(appMessage);
 		} else if (options?.deliverAs === "interrupt" && options.triggerTurn) {
@@ -99,14 +103,38 @@ export async function sendCustomMessage<T = unknown>(this: AgentSession,
 			void interrupt.catch(() => {});
 		} else if (this.isStreaming && options?.excludeFromContext === true && options.triggerTurn !== true && options.deliverAs === undefined) {
 			this._appendCustomMessage(appMessage);
+		} else if (this.isStreaming && useProtectedReconciliation) {
+			// Commit the display card before admitting its separate, protocol-safe
+			// hidden reconciliation turn.
+			await queueProtectedStreamingCustomMessage(
+				this,
+				appMessage,
+				options?.deliverAs === "followUp" ? "followUp" : "steer",
+			);
 		} else if (this.isStreaming && options?.persistWhenStreaming === true) {
-			// Persist the notice to the transcript so a streaming parent's cleared
-			// steer queue or aborted turn cannot silently drop it; it stays visible
-			// and in-context for the model's next step.
 			this._appendCustomMessage(appMessage);
 		} else if (this.isStreaming) {
 			this._queueAgentMessage(appMessage, options?.deliverAs === "followUp" ? "followUp" : "steer");
 		} else if (options?.triggerTurn) {
+			const promptMessage = useProtectedReconciliation
+				? await admitProtectedStreamingCustomMessage(
+					this,
+					appMessage,
+					options?.deliverAs === "followUp" ? "followUp" : "steer",
+				)
+				: appMessage;
+			// Durable admission can yield while an unrelated prompt starts (for
+			// example from a public card listener). Re-check ownership before calling
+			// prompt: if another run now owns the agent, hand the protected message to
+			// its native queue instead of rejecting a second prompt or falsely
+			// acknowledging an orphaned reconciliation.
+			if (useProtectedReconciliation && this.isStreaming) {
+				this._queueAgentMessage(
+					promptMessage,
+					options.deliverAs === "followUp" ? "followUp" : "steer",
+				);
+				return;
+			}
 			// ES2022 build target: use a manually constructed deferred instead of
 			// Promise.withResolvers (ES2024). Resolve on prompt-start so a later
 			// model-turn rejection cannot un-admit an already-delivered notice;
@@ -117,7 +145,7 @@ export async function sendCustomMessage<T = unknown>(this: AgentSession,
 				resolveAdmission = resolve;
 				rejectAdmission = reject;
 			});
-			const turn = this._runAgentPrompt(appMessage, resolveAdmission);
+			const turn = this._runAgentPrompt(promptMessage, resolveAdmission);
 			void turn.then(resolveAdmission, rejectAdmission);
 			await admission;
 		} else {
@@ -200,6 +228,7 @@ export function transferWorkflowStageDeliveriesTo(this: AgentSession, target: ob
 		queued.followUp.push(...this._activeInterruptQueueHold.followUp);
 		this._activeInterruptQueueHold = undefined;
 	}
+	transferProtectedStreamingCustomMessages(this, next, queued);
 	next._pendingNextTurnMessages.unshift(...this._pendingNextTurnMessages.splice(0));
 	next._restoreQueuedAgentMessages(queued);
 	this._asyncJobManager.transferSessionDeliveries(
@@ -345,11 +374,12 @@ export function clearQueue(this: AgentSession): { steering: string[]; followUp: 
 	const followUp = [...this._followUpMessages];
 	this._steeringMessages = [];
 	this._followUpMessages = [];
-	this.agent.clearAllQueues();
+	const removed = this._drainQueuedAgentMessages();
 	if (this._activeInterruptQueueHold !== undefined) {
-		this._activeInterruptQueueHold.steering.length = 0;
-		this._activeInterruptQueueHold.followUp.length = 0;
+		removed.steering.push(...this._activeInterruptQueueHold.steering.splice(0));
+		removed.followUp.push(...this._activeInterruptQueueHold.followUp.splice(0));
 	}
+	restoreProtectedStreamingCustomMessages(this, removed);
 	this._emitQueueUpdate();
 	return { steering, followUp };
 }
