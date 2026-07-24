@@ -60,6 +60,7 @@ export abstract class GraphViewState {
   protected onStageAttach?: (runId: string, stageId: string) => void;
   protected onDetach?: () => void;
   protected initialFocusedStageId?: string;
+  protected initialFocusedRunId?: string;
   protected getViewportRows?: () => number | undefined;
   protected requestRender?: () => void;
   protected piKeybindings?: unknown;
@@ -99,6 +100,7 @@ export abstract class GraphViewState {
     this.onStageAttach = opts.onStageAttach;
     this.onDetach = opts.onDetach;
     this.initialFocusedStageId = opts.initialFocusedStageId;
+    this.initialFocusedRunId = opts.initialFocusedRunId;
     this.getViewportRows = opts.getViewportRows;
     this.requestRender = opts.requestRender;
     this.piKeybindings = opts.piKeybindings;
@@ -158,16 +160,19 @@ export abstract class GraphViewState {
     // uses this when swapping back from chat mode so the focus lands on
     // the same node the user just attached to.
     if (this.initialFocusedStageId !== undefined) {
-      const idx = this.cachedLayout.findIndex(
-        (n) =>
-          n.stage.id === this.initialFocusedStageId ||
-          expandedStageTarget(this.expandedGraph, n.stage.id)?.stageId === this.initialFocusedStageId,
-      );
+      const idx = this.cachedLayout.findIndex((node) => {
+        const target = expandedStageTarget(this.expandedGraph, node.stage.id);
+        if (this.initialFocusedRunId === undefined) {
+          return node.stage.id === this.initialFocusedStageId || target?.stageId === this.initialFocusedStageId;
+        }
+        return target !== undefined && target.stageId === this.initialFocusedStageId && target.runId === this.initialFocusedRunId;
+      });
       if (idx >= 0 && idx !== this.focusedIndex) {
         this.focusedIndex = idx;
         focusNeedsReveal = true;
       }
       this.initialFocusedStageId = undefined;
+      this.initialFocusedRunId = undefined;
     } else if (previousFocusedStageId !== undefined) {
       const idx = this.cachedLayout.findIndex(
         (n) => n.stage.id === previousFocusedStageId,

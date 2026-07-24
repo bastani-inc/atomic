@@ -66,10 +66,16 @@ export function createDurableCachedStageRecorder(input: {
           ...durableStageCheckpointMetadata(stage, durableRunTopology(input.run)),
         });
       }
-      if (workflowChildRunId(checkpoint) === undefined) return;
+      const directChildRunId = workflowChildRunId(checkpoint);
+      if (directChildRunId === undefined) return;
       const durableRootId = input.run.rootRunId ?? input.run.id;
       for (const childRun of durableNestedRunSnapshots(input.rootBackend, durableRootId)) {
-        if (!input.store.runs().some((candidate) => candidate.id === childRun.id)) input.store.recordRunStart(childRun);
+        if (input.store.runs().some((candidate) => candidate.id === childRun.id)) continue;
+        const hydratedRun = childRun.id === directChildRunId &&
+          childRun.parentRunId === input.run.id && stage !== undefined
+          ? { ...childRun, parentStageId: stage.id }
+          : childRun;
+        input.store.recordRunStart(hydratedRun);
       }
     },
     metadata(replayKey) {

@@ -94,8 +94,10 @@ export class WorkflowAttachPane implements Component {
     this.now = opts.now ?? Date.now;
     this.unsubscribeStore = this.store.subscribe((snapshot) => this._handleStoreUpdate(snapshot));
     this.graphView = this._buildGraphView();
-    if (opts.initialAttachStageId !== undefined && this.runId) {
-      const target = opts.initialAttachRunId === undefined ? this._resolveGraphStageTarget(this.runId, opts.initialAttachStageId) : { runId: opts.initialAttachRunId, stageId: opts.initialAttachStageId };
+    const target = opts.initialAttachStageId !== undefined && this.runId
+      ? (opts.initialAttachRunId === undefined ? this._resolveGraphStageTarget(this.runId, opts.initialAttachStageId) : { runId: opts.initialAttachRunId, stageId: opts.initialAttachStageId })
+      : undefined;
+    if (target) {
       this._attachToStage(target.runId, target.stageId);
     } else {
       this._syncAwaitingInputKeys(this.store.snapshot());
@@ -104,7 +106,7 @@ export class WorkflowAttachPane implements Component {
       this._syncMouseScrollTracking();
     }
   }
-  private _buildGraphView(initialFocusedStageId?: string): GraphView {
+  private _buildGraphView(initialFocusedStageId?: string, initialFocusedRunId?: string): GraphView {
     return new GraphView({
       mode: "overlay",
       runId: this.runId,
@@ -120,6 +122,7 @@ export class WorkflowAttachPane implements Component {
         if (this.onHide) this.onHide();
       },
       initialFocusedStageId,
+      initialFocusedRunId,
       getViewportRows: this.getViewportRows,
       piKeybindings: this.piKeybindings,
       footerData: this.footerData,
@@ -219,9 +222,9 @@ export class WorkflowAttachPane implements Component {
     }
     this.chatView?.dispose();
     this.chatView = null;
-    this.attachedRunId = null;
     this.graphView.dispose();
-    this.graphView = this._buildGraphView(this.lastAttachedStageId ?? undefined);
+    this.graphView = this._buildGraphView(this.lastAttachedStageId ?? undefined, this.attachedRunId ?? undefined);
+    this.attachedRunId = null;
     this.mode = "graph";
     this.stagePromptEnterQuarantineUntil = 0;
     this.lastStageAwaitingInputKey = null;
@@ -250,18 +253,18 @@ export class WorkflowAttachPane implements Component {
     this._syncAwaitingInputKeys(this.store.snapshot());
     if (stageId !== undefined && runId) {
       const target = stageRunId === undefined ? this._resolveGraphStageTarget(runId, stageId) : { runId: stageRunId, stageId };
-      this._attachToStage(target.runId, target.stageId);
-      return;
+      if (target) { this._attachToStage(target.runId, target.stageId); return; }
     }
     this._armGraphEnterQuarantineIfRunNeedsInput();
     this._setBaseStatus();
     this._syncMouseScrollTracking();
   }
-  private _resolveGraphStageTarget(rootRunId: string, stageId: string): { runId: string; stageId: string } {
+  private _resolveGraphStageTarget(rootRunId: string, stageId: string): { runId: string; stageId: string } | undefined {
     const graph = expandWorkflowGraph(this.store.snapshot(), rootRunId);
-    const match = graph.stages.find((stage) =>
-      stage.id === stageId || stage.workflowGraphTarget.stageId === stageId,
-    );
+    const exact = graph.stages.find((stage) => stage.id === stageId);
+    const localMatches = graph.stages.filter((stage) => stage.workflowGraphTarget.stageId === stageId);
+    if (exact === undefined && localMatches.length > 1) return undefined;
+    const match = exact ?? localMatches[0];
     if (match === undefined) return { runId: rootRunId, stageId };
     return {
       runId: match.workflowGraphTarget.runId,
@@ -480,9 +483,7 @@ export class WorkflowAttachPane implements Component {
     this.setMouseScrollTracking?.(false);
     this.uiStatus?.setStatus?.(WORKFLOW_STATUS_KEY, undefined);
   }
-  get _mode(): WorkflowAttachPaneMode {
-    return this.mode;
-  }
+  get _mode(): WorkflowAttachPaneMode { return this.mode; }
   get _lastAttachedStageId(): string | null {
     return this.lastAttachedStageId;
   }

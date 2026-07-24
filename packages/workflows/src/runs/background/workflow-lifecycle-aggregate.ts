@@ -1,5 +1,6 @@
 import { expandWorkflowGraph } from "../../shared/expanded-workflow-graph.js";
 import type { Store } from "../../shared/store-public-types.js";
+import type { StageSnapshot } from "../../shared/store-types.js";
 
 /** Control-run ids visible below one workflow boundary, in graph order. */
 export function expandedControlRunIds(store: Store, runId: string): string[] {
@@ -9,16 +10,26 @@ export function expandedControlRunIds(store: Store, runId: string): string[] {
   return [...ids];
 }
 
+function authoritativeChildRunId(stage: StageSnapshot | undefined): string | undefined {
+  if (stage === undefined || stage.status === "failed" || stage.status === "skipped") return undefined;
+  if (stage.status === "completed") return stage.workflowChild?.runId ?? stage.workflowChildRun?.runId;
+  return stage.workflowChildRun?.runId;
+}
+
 /** Find the aggregate top-level lifecycle owner for a nested child run. */
 export function aggregateWorkflowRootRunId(store: Store, runId: string): string {
+  const runs = store.runs();
   let current = runId;
   const visited = new Set<string>();
   while (!visited.has(current)) {
     visited.add(current);
-    const parent = store.runs().find((run) => run.stages.some((stage) =>
-      stage.workflowChildRun?.runId === current || stage.workflowChild?.runId === current
-    ));
-    if (parent === undefined) return current;
+    const child = runs.find((run) => run.id === current);
+    if (child?.parentRunId === undefined || child.parentStageId === undefined) return current;
+    const parent = runs.find((run) => run.id === child.parentRunId);
+    const boundary = parent?.stages.find((stage) => stage.id === child.parentStageId);
+    const expectedRootRunId = parent?.rootRunId ?? parent?.id;
+    const hasValidRoot = child.rootRunId === undefined || child.rootRunId === expectedRootRunId;
+    if (parent === undefined || authoritativeChildRunId(boundary) !== current || !hasValidRoot) return current;
     current = parent.id;
   }
   return current;
