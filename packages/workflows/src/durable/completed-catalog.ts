@@ -23,6 +23,8 @@ interface StageDraft {
   readonly replayKey: string;
   readonly name: string;
   readonly firstCompletedAt: number;
+  /** First position of this logical stage in the backend-provided checkpoint sequence. */
+  readonly firstSequence: number;
   /** Every persisted identity observed for this replay key across continuations. */
   readonly sourceIds: readonly string[];
   readonly output?: DurableStageCheckpoint["output"];
@@ -37,6 +39,12 @@ interface StageDraft {
   readonly attemptedModels?: readonly string[];
   readonly modelAttempts?: DurableStageCheckpoint["modelAttempts"];
   readonly topology?: DurableStageCheckpoint["topology"];
+}
+
+interface ReconstructionDrafts {
+  readonly stages: readonly StageDraft[];
+  readonly tools: readonly DurableToolCheckpoint[];
+  readonly firstToolSequenceByHash: ReadonlyMap<string, number>;
 }
 
 /** Authoritative completed rows. This path is deliberately separate from resumability. */
@@ -135,16 +143,32 @@ function validatedStageTranscript(stage: StageSnapshot): StageSnapshot {
   return withoutSessionFile;
 }
 
-function graphToolCheckpoints(checkpoints: readonly DurableCheckpoint[]): DurableToolCheckpoint[] {
-  const byHash = new Map<string, DurableToolCheckpoint>();
-  for (const checkpoint of checkpoints) {
-    if (checkpoint.kind !== "tool" || checkpoint.name === RUN_TIMING_CHECKPOINT_NAME) continue;
-    const existing = byHash.get(checkpoint.argsHash);
-    if (existing === undefined || checkpoint.completedAt >= existing.completedAt) {
-      byHash.set(checkpoint.argsHash, checkpoint);
+/** Enumerate the backend sequence once so legacy stages and tools share one order domain. */
+function checkpointDrafts(checkpoints: readonly DurableCheckpoint[]): ReconstructionDrafts {
+  const stageByReplayKey = new Map<string, StageDraft>();
+  const toolByHash = new Map<string, DurableToolCheckpoint>();
+  const firstToolSequenceByHash = new Map<string, number>();
+  checkpoints.forEach((checkpoint, index) => {
+    const sequence = index + 1;
+    if (checkpoint.kind === "stage") {
+      const existing = stageByReplayKey.get(checkpoint.replayKey);
+      stageByReplayKey.set(checkpoint.replayKey, mergeStageDraft(existing, checkpoint, sequence));
+      return;
     }
-  }
-  return [...byHash.values()];
+    if (checkpoint.kind !== "tool" || checkpoint.argsHash === RUN_TIMING_CHECKPOINT_NAME) return;
+    if (!firstToolSequenceByHash.has(checkpoint.argsHash)) {
+      firstToolSequenceByHash.set(checkpoint.argsHash, sequence);
+    }
+    const existing = toolByHash.get(checkpoint.argsHash);
+    if (existing === undefined || checkpoint.completedAt >= existing.completedAt) {
+      toolByHash.set(checkpoint.argsHash, checkpoint);
+    }
+  });
+  return {
+    stages: [...stageByReplayKey.values()],
+    tools: [...toolByHash.values()],
+    firstToolSequenceByHash,
+  };
 }
 
 function completedToolNodes(
@@ -152,6 +176,7 @@ function completedToolNodes(
   runId: string,
   rootRunId: string,
   sourceIds: ReadonlyMap<string, string>,
+  firstSequenceByHash: ReadonlyMap<string, number>,
 ): ToolNodeSnapshot[] {
   return checkpoints.flatMap((checkpoint, index) => {
     const topologyRunId = checkpoint.topology?.run?.runId ?? rootRunId;
@@ -167,7 +192,7 @@ function completedToolNodes(
       replayed: true,
       ...(topology === undefined ? { topologyState: "unavailable" as const } : {}),
       status: "cached" as const,
-      executionOrder: topology?.order ?? index + 1,
+      executionOrder: topology?.order ?? firstSequenceByHash.get(checkpoint.argsHash)!,
       ...(topology?.startedAt !== undefined ? { startedAt: topology.startedAt } : {}),
       endedAt: topology?.endedAt ?? checkpoint.completedAt,
       resultSummary: summarizeCompletedToolResult(checkpoint.output),
@@ -190,16 +215,11 @@ function runSnapshotsFromCheckpoints(
   fallbackCompletedAt: number,
   strict = true,
 ): RunSnapshot[] {
-  const drafts = new Map<string, StageDraft>();
-  for (const checkpoint of checkpoints) {
-    if (checkpoint.kind !== "stage") continue;
-    const existing = drafts.get(checkpoint.replayKey);
-    drafts.set(checkpoint.replayKey, mergeStageDraft(existing, checkpoint));
-  }
-  const toolCheckpoints = graphToolCheckpoints(checkpoints);
-  const ordered = [...drafts.values()]
+  const drafts = checkpointDrafts(checkpoints);
+  const toolCheckpoints = drafts.tools;
+  const ordered = drafts.stages
     .filter((draft) => !strict || draft.topology?.run === undefined || draft.endedAt !== undefined || draft.output !== undefined)
-    .sort((a, b) => a.firstCompletedAt - b.firstCompletedAt);
+    .sort((a, b) => a.firstSequence - b.firstSequence);
   if (ordered.length === 0 && toolCheckpoints.length === 0) {
     return [syntheticRun(rootRunId, rootRunName, checkpoints.length, fallbackCompletedAt)];
   }
@@ -265,7 +285,7 @@ function runSnapshotsFromCheckpoints(
       ids.get(draft.topology!.stageId)!,
       draft.topology!.parentIds.map((parentId) => ids.get(parentId)!),
     ));
-    const toolNodes = completedToolNodes(toolCheckpoints, runId, rootRunId, ids);
+    const toolNodes = completedToolNodes(toolCheckpoints, runId, rootRunId, ids, drafts.firstToolSequenceByHash);
     const run = runDrafts.find((draft) => draft.topology?.run !== undefined)?.topology?.run
       ?? ownedTools.find((checkpoint) => checkpoint.topology?.run !== undefined)?.topology?.run;
     const startedAt = Math.min(
@@ -325,10 +345,12 @@ function retainReachableRunGroups(grouped: Map<string, StageDraft[]>, rootRunId:
 function mergeStageDraft(
   existing: StageDraft | undefined,
   checkpoint: DurableStageCheckpoint,
+  sequence: number,
 ): StageDraft {
   return {
     replayKey: checkpoint.replayKey,
     name: existing?.name ?? checkpoint.name,
+    firstSequence: existing?.firstSequence ?? sequence,
     sourceIds: [...new Set([
       ...(existing?.sourceIds ?? []),
       ...(checkpoint.topology?.stageId !== undefined ? [checkpoint.topology.stageId] : []),
@@ -361,7 +383,7 @@ function preferredTopology(
 }
 
 function valueOrExisting<
-  K extends keyof Omit<StageDraft, "replayKey" | "name" | "firstCompletedAt" | "sourceIds">
+  K extends keyof Omit<StageDraft, "replayKey" | "name" | "firstCompletedAt" | "firstSequence" | "sourceIds">
 >(key: K, checkpoint: DurableStageCheckpoint, existing: StageDraft | undefined): Pick<StageDraft, K> | object {
   const checkpointValue = checkpoint[key];
   if (checkpointValue !== undefined) return { [key]: checkpointValue } as Pick<StageDraft, K>;
@@ -402,7 +424,7 @@ function stageSnapshotFromDraft(
     name: draft.name,
     status: "completed",
     parentIds,
-    ...(draft.topology?.order !== undefined ? { executionOrder: draft.topology.order } : {}),
+    executionOrder: draft.topology?.order ?? draft.firstSequence,
     startedAt,
     endedAt,
     durationMs: draft.durationMs ?? Math.max(0, endedAt - startedAt),

@@ -25,6 +25,7 @@ export interface SwitcherState {
 export interface SwitcherOpts {
   width: number;
   theme: GraphTheme;
+  canOpenStageChat?: (stage: StageSnapshot) => boolean;
 }
 
 export function filterStages(
@@ -36,8 +37,10 @@ export function filterStages(
   return stages.filter((s) => s.name.toLowerCase().includes(q));
 }
 
-const HINT = "↑↓ select · ↵ open stage chat · esc close";
-const COMPACT_HINT = "↵ stage chat · esc close";
+const STAGE_HINT = "↑↓ select · ↵ open stage chat · esc close";
+const STAGE_COMPACT_HINT = "↵ stage chat · esc close";
+const NO_CHAT_HINT = "↑↓ select · esc close";
+const NO_CHAT_COMPACT_HINT = "esc close";
 
 /** Pad a visible string (ANSI-safe) to exactly `width` cells. */
 function padVisible(s: string, width: number): string {
@@ -80,6 +83,11 @@ export function renderSwitcher(
   const { width, theme } = opts;
   const filtered = filterStages(stages, state.query);
   const innerWidth = Math.max(4, width - 2);
+  const selected = filtered[state.selectedIndex];
+  const canOpenStageChat = selected !== undefined && (
+    opts.canOpenStageChat?.(selected)
+      ?? (selected.nodeKind !== "tool" && selected.attachable !== false)
+  );
 
   const border = hexToAnsi(theme.borderActive);
   const panelBg = hexBg(theme.backgroundPanel);
@@ -96,7 +104,9 @@ export function renderSwitcher(
 
   // Header row: "  STAGES  query   …   ↑↓ select · ↵ open stage chat · esc close "
   const leftLabelText = "  STAGES";
-  const hint = innerWidth >= 44 ? HINT : COMPACT_HINT;
+  const hint = innerWidth >= 44
+    ? (canOpenStageChat ? STAGE_HINT : NO_CHAT_HINT)
+    : (canOpenStageChat ? STAGE_COMPACT_HINT : NO_CHAT_COMPACT_HINT);
   const queryBudget = Math.max(
     0,
     innerWidth - visibleWidth(leftLabelText) - visibleWidth(hint) - 3,

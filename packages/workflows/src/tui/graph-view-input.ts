@@ -1,4 +1,3 @@
-import { expandedStageTarget } from "../shared/expanded-workflow-graph.js";
 import {
   GRAPH_SCROLL_STEP_COLS,
   GRAPH_SCROLL_STEP_ROWS,
@@ -279,14 +278,8 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 
   private _attachFocusedStage(): boolean {
     if (!this.onStageAttach) return false;
-    const node = this.cachedLayout[this.focusedIndex];
-    const run = this._getCurrentRun();
-    if (!node || !run) return false;
-    if (node.stage.nodeKind === "tool" || node.stage.attachable === false) return false;
-    const target = expandedStageTarget(this.expandedGraph, node.stage.id) ?? {
-      runId: run.id,
-      stageId: node.stage.id,
-    };
+    const target = this._focusedStageChatTarget();
+    if (!target) return false;
     this.onStageAttach(target.runId, target.stageId);
     return true;
   }

@@ -11,6 +11,7 @@ import {
   expandWorkflowGraph,
   type ExpandedWorkflowGraph,
   type ExpandedWorkflowStage,
+  type ExpandedWorkflowStageTarget,
 } from "../shared/expanded-workflow-graph.js";
 import type { GraphTheme } from "./graph-theme.js";
 import type { LayoutNode } from "./layout.js";
@@ -273,6 +274,18 @@ export abstract class GraphViewState {
     if (!this.promptState || this.promptState.prompt.id !== prompt.id) {
       this.promptState = createPromptCardState(prompt);
     }
+  }
+
+  /** Stage-only control target shared by hints and activation. */
+  protected _stageChatTarget(
+    stage: StageSnapshot | undefined,
+  ): ExpandedWorkflowStageTarget | undefined {
+    if (!stage || stage.nodeKind === "tool" || stage.attachable === false) return undefined;
+    return expandedStageTarget(this.expandedGraph, stage.id);
+  }
+
+  protected _focusedStageChatTarget(): ExpandedWorkflowStageTarget | undefined {
+    return this._stageChatTarget(this.cachedLayout[this.focusedIndex]?.stage);
   }
 
   protected _getCurrentRun(): RunSnapshot | null {

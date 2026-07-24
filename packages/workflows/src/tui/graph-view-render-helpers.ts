@@ -114,9 +114,15 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
     const rightEdgePad = 2;
     const hintsBudget = Math.max(0, width - leftEdgePad - pillW - rightEdgePad);
     const fullHierarchyHint = "ctrl+x return to main chat";
-    const hintKeys = hintsBudget >= visibleWidth(fullHierarchyHint)
-      ? HINT_KEYS
+    const availableHintKeys = this._focusedStageChatTarget() === undefined
+      ? HINT_KEYS.filter(({ key }) => key !== "↵")
+      : HINT_KEYS;
+    const availableCompactHintKeys = this._focusedStageChatTarget() === undefined
+      ? COMPACT_HINT_KEYS.filter(({ key }) => key !== "↵")
       : COMPACT_HINT_KEYS;
+    const hintKeys = hintsBudget >= visibleWidth(fullHierarchyHint)
+      ? availableHintKeys
+      : availableCompactHintKeys;
     const statusText = this._externalStatusText();
     const statusSegment = statusText ? [`${accent}${statusText}${RESET}${chromeBg}`] : [];
     const hintSegments = hintKeys.map(
