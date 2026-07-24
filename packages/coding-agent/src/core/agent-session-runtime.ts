@@ -135,9 +135,13 @@ export class AgentSessionRuntime {
 		return this._modelFallbackReason;
 	}
 
+	replaceModelFallback(message?: string, reason?: ModelFallbackReason): void {
+		this._modelFallbackMessage = message;
+		this._modelFallbackReason = reason;
+	}
+
 	resolveModelFallback(): void {
-		this._modelFallbackMessage = undefined;
-		this._modelFallbackReason = undefined;
+		this.replaceModelFallback();
 	}
 
 	async logoutProvider(provider: string): Promise<LogoutProviderResult> {

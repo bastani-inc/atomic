@@ -176,8 +176,6 @@ export async function createAgentSession(
       modelFallbackReason = "session-restore";
     }
   }
-
-  // If still no model, use findInitialModel (checks settings default, then provider defaults)
   if (!model) {
     const result = await findInitialModel({
       scopedModels: [],
@@ -188,11 +186,15 @@ export async function createAgentSession(
       modelRegistry,
     });
     model = result.model;
-    if (!model && !modelFallbackMessage) {
-      modelFallbackMessage = result.fallbackMessage ?? formatNoModelsAvailableMessage();
-      modelFallbackReason = result.fallbackReason ?? "no-models-available";
-    }
-    if (model && modelFallbackMessage) {
+    if (!model) {
+      if (result.fallbackReason === "configured-provider-unsupported") {
+        modelFallbackMessage = result.fallbackMessage;
+        modelFallbackReason = result.fallbackReason;
+      } else if (!modelFallbackMessage) {
+        modelFallbackMessage = result.fallbackMessage ?? formatNoModelsAvailableMessage();
+        modelFallbackReason = result.fallbackReason ?? "no-models-available";
+      }
+    } else if (modelFallbackMessage) {
       modelFallbackMessage += `. Using ${model.provider}/${model.id}`;
     }
   }

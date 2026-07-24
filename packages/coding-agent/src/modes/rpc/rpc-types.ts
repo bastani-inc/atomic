@@ -14,6 +14,7 @@ import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
+import type { ModelFallbackReason } from "../../core/model-resolver-types.ts";
 
 // ============================================================================
 // RPC Commands (stdin)
@@ -143,6 +144,8 @@ export interface RpcSlashCommand {
 
 export interface RpcSessionState {
 	model?: Model<Api>;
+	modelFallbackMessage?: string;
+	modelFallbackReason?: ModelFallbackReason;
 	thinkingLevel: ThinkingLevel;
 	isStreaming: boolean;
 	isCompacting: boolean;

@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { SessionManager } from "../src/core/session-manager.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "../src/modes/rpc/jsonl.ts";
 import type { RpcCommand, RpcResponse } from "../src/modes/rpc/rpc-types.ts";
 import { bunExecutable, cliPath, runCliProcess } from "./cli-test-helpers.ts";
@@ -50,8 +51,11 @@ function writeIsolatedState(agentDir: string, baseUrl: string): void {
   }));
 }
 
-function commonArgs(): string[] {
-  return ["--no-session", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files"];
+function commonArgs(sessionFile?: string): string[] {
+  return [
+    ...(sessionFile ? ["--session", sessionFile] : ["--no-session"]),
+    "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files",
+  ];
 }
 
 function isolatedEnv(agentDir: string, sessionDir: string): NodeJS.ProcessEnv {
@@ -69,8 +73,8 @@ function isolatedEnv(agentDir: string, sessionDir: string): NodeJS.ProcessEnv {
   };
 }
 
-function startRpc(cwd: string, agentDir: string, sessionDir: string): RpcHarness {
-  const child = spawn(bunExecutable(), [cliPath, "--mode", "rpc", ...commonArgs()], {
+function startRpc(cwd: string, agentDir: string, sessionDir: string, sessionFile?: string): RpcHarness {
+  const child = spawn(bunExecutable(), [cliPath, "--mode", "rpc", ...commonArgs(sessionFile)], {
     cwd,
     env: isolatedEnv(agentDir, sessionDir),
     stdio: "pipe",
@@ -134,6 +138,7 @@ describe("unsupported provider in headless modes", () => {
   let cwd: string;
   let agentDir: string;
   let sessionDir: string;
+  let persistedSessionFile: string;
   let server: Server | undefined;
 
   beforeEach(async () => {
@@ -155,6 +160,30 @@ describe("unsupported provider in headless modes", () => {
     await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
     const address = server.address() as AddressInfo;
     writeIsolatedState(agentDir, `http://127.0.0.1:${address.port}/v1`);
+    const removedProvider = ["cur", "sor"].join("");
+    const persisted = SessionManager.create(cwd, sessionDir);
+    persisted.appendModelChange(removedProvider, ["composer", "-2"].join(""));
+    persisted.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: "persisted stale model" }],
+      timestamp: Date.now(),
+    });
+    persisted.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "persisted stale response" }],
+      api: "anthropic-messages",
+      provider: removedProvider,
+      model: ["composer", "-2"].join(""),
+      usage: {
+        input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop",
+      timestamp: Date.now(),
+    });
+    const createdFile = persisted.getSessionFile();
+    if (!createdFile) throw new Error("persisted session fixture did not create a file");
+    persistedSessionFile = createdFile;
   });
 
   afterEach(async () => {
@@ -178,6 +207,34 @@ describe("unsupported provider in headless modes", () => {
     });
   }
 
+  for (const mode of ["text", "json"] as const) {
+    it(`${mode} print classifies a persisted stale model plus unsupported default before prompting`, async () => {
+      const args = mode === "text"
+        ? ["-p", "do not send", ...commonArgs(persistedSessionFile)]
+        : ["--mode", "json", "do not send", ...commonArgs(persistedSessionFile)];
+      const result = await runCliProcess(args, { cwd, env: isolatedEnv(agentDir, sessionDir) });
+      expect(result.timedOut).toBe(false);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain(WARNING);
+      expect(result.stderr).not.toContain("API key");
+      expect(result.stdout).toBe("");
+    });
+  }
+
+  it("RPC keeps persisted stale state recoverable through explicit set_model", async () => {
+    const rpc = startRpc(cwd, agentDir, sessionDir, persistedSessionFile);
+    try {
+      const blocked = await rpc.send({ type: "prompt", message: "blocked persisted prompt" });
+      expect(responseError(blocked)).toBe(WARNING);
+      expect(responseError(blocked)).not.toContain("API key");
+      expect(responseSuccess(await rpc.send({ type: "get_available_models" }))).toBe(true);
+      expect(responseSuccess(await rpc.send({ type: "set_model", provider: "recovery", modelId: "recovery-model" }))).toBe(true);
+      expect(responseSuccess(await rpc.send({ type: "prompt", message: "recovered" }))).toBe(true);
+      expect(rpc.stderr()).not.toContain("API key");
+    } finally {
+      await rpc.stop();
+    }
+  });
   it("RPC remains live and accepts set_model recovery before prompting", async () => {
     const rpc = startRpc(cwd, agentDir, sessionDir);
     try {

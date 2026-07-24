@@ -95,7 +95,6 @@ export function createRpcCommandHandler({
 				await session.abort();
 				return createRpcSuccessResponse(id, "abort");
 			}
-
 			case "new_session": {
 				const options = command.parentSession ? { parentSession: command.parentSession } : undefined;
 				const result = await runtimeHost.newSession(options);
@@ -108,6 +107,8 @@ export function createRpcCommandHandler({
 			case "get_state": {
 				const state: RpcSessionState = {
 					model: session.model,
+					modelFallbackMessage: runtimeHost.modelFallbackMessage,
+					modelFallbackReason: runtimeHost.modelFallbackReason,
 					thinkingLevel: session.thinkingLevel,
 					isStreaming: session.isStreaming,
 					isCompacting: session.isCompacting,
@@ -123,7 +124,6 @@ export function createRpcCommandHandler({
 				};
 				return createRpcSuccessResponse(id, "get_state", state);
 			}
-
 			case "set_model": {
 				const models = await session.modelRegistry.getAvailable();
 				const model = models.find((candidate) => candidate.provider === command.provider && candidate.id === command.modelId);
