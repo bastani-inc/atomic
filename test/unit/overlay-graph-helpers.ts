@@ -94,6 +94,7 @@ export function makeStore(snap: StoreSnapshot): Store {
     notices: () => [],
     activeRunId: () => snap.runs[0]?.id ?? null,
     recordRunStart: () => {},
+    reconcileRunParentStage: () => false,
     recordStageStart: () => {},
     recordStageWorkflowChildRun: () => false,
     recordToolStart: () => {},
