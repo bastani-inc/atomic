@@ -150,19 +150,24 @@ test("terminal stage prompt preflight settles without a stuck spinner when no tu
   }
 });
 
-test("terminal stage prompt failure clears the preflight spinner and timer", async () => {
+test("terminal stage prompt retry clears the prior error and shows Working during attachment", async () => {
   const store = createStore();
   setupRun(store, "run-1", "stage-a", "completed");
-  const { handle } = makeHandle();
-  let releaseAttach!: () => void;
-  const attachGate = new Promise<void>((resolve) => {
-    releaseAttach = resolve;
+  const { handle, state } = makeHandle();
+  let attachCalls = 0;
+  let releaseRetryAttach!: () => void;
+  const retryAttachGate = new Promise<void>((resolve) => {
+    releaseRetryAttach = resolve;
   });
   handle.ensureAttached = async () => {
-    await attachGate;
+    attachCalls += 1;
+    if (attachCalls === 2) await retryAttachGate;
   };
-  handle.prompt = async () => {
-    throw new Error("prompt rejected");
+  handle.prompt = async (text) => {
+    state.promptCalls.push(text);
+    if (state.promptCalls.length === 1) {
+      throw new Error("transient prompt failure");
+    }
   };
   const view = new StageChatView({
     store,
@@ -177,17 +182,30 @@ test("terminal stage prompt failure clears the preflight spinner and timer", asy
 
   try {
     submitStageChatText(view, "failing prompt");
+    await flush();
+    await flush();
+    assert.equal(attachCalls, 1);
+    assert.deepEqual(state.promptCalls, ["failing prompt"]);
+    assert.match(renderText(view), /transient prompt failure/);
+    assert.doesNotMatch(renderText(view), /Working/);
+    assert.equal(view._hasAnimationTick, false);
+
+    submitStageChatText(view, "retry prompt");
+    assert.equal(attachCalls, 2);
+    assert.deepEqual(state.promptCalls, ["failing prompt"]);
+    assert.equal(view._statusMessage, "");
+    assert.doesNotMatch(renderText(view), /transient prompt failure/);
     assert.match(renderText(view), /Working/);
     assert.equal(view._hasAnimationTick, true);
 
-    releaseAttach();
+    releaseRetryAttach();
     await flush();
     await flush();
-    assert.match(renderText(view), /prompt rejected/);
+    assert.deepEqual(state.promptCalls, ["failing prompt", "retry prompt"]);
     assert.doesNotMatch(renderText(view), /Working/);
     assert.equal(view._hasAnimationTick, false);
   } finally {
-    releaseAttach();
+    releaseRetryAttach();
     view.dispose();
   }
 });

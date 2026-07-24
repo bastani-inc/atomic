@@ -2283,7 +2283,7 @@ Extensions can interact with users via `ctx.ui` methods and customize how messag
 - Async operations with cancel (BorderedLoader)
 - Settings toggles (SettingsList)
 - Status indicators (setStatus)
-- Working message, visibility, and indicator during streaming (`setWorkingMessage`, `setWorkingVisible`, `setWorkingIndicator`)
+- Working message, visibility, and indicator from accepted prompt startup through active turns (`setWorkingMessage`, `setWorkingVisible`, `setWorkingIndicator`)
 - Widgets above/below editor (setWidget)
 - Autocomplete providers layered on top of built-in slash/path completion (addAutocompleteProvider)
 - Custom footers (setFooter)
@@ -2365,13 +2365,13 @@ See [examples/extensions/timed-confirm.ts](https://github.com/bastani-inc/atomic
 ctx.ui.setStatus("my-ext", "Processing...");
 ctx.ui.setStatus("my-ext", undefined);  // Clear
 
-// Working loader (shown during streaming)
+// Working loader customization (active from accepted prompt startup through the agent turn)
 ctx.ui.setWorkingMessage("Thinking deeply...");
 ctx.ui.setWorkingMessage();  // Restore default
 ctx.ui.setWorkingVisible(false);  // Hide the built-in working loader row entirely
 ctx.ui.setWorkingVisible(true);   // Show the built-in working loader row
 
-// Working indicator (shown during streaming)
+// Working indicator customization (same lifecycle; see TUI Pattern 4b)
 ctx.ui.setWorkingIndicator({ frames: [ctx.ui.theme.fg("accent", "●")] });  // Static dot
 ctx.ui.setWorkingIndicator({
   frames: [
@@ -2456,6 +2456,8 @@ ctx.ui.theme.fg("accent", "styled text");  // Access current theme
 ```
 
 Atomic's default working indicator keeps the literal one-cell `∀` fixed while following the active theme's optional `workingIndicator` tone overrides through a dark → accent → bright/bold → accent → dark ramp every 88ms. Any omitted tones are derived from selected-surface, `accent`, and `text` roles. `NO_COLOR` keeps regular/bold activity without foreground-color escapes, and `ATOMIC_REDUCED_MOTION=1` uses a static regular accent `∀` without a timer. Custom working-indicator frames and intervals are rendered verbatim. If you want colors, add them to the frame strings yourself, for example with `ctx.ui.theme.fg(...)`.
+
+These APIs customize presentation only; they do not start work or emit an extension stream event before prompt startup. See [Working Indicator Customization](/tui#pattern-4b-working-indicator-customization) for accepted-prompt, pre-stream, and agent-turn handoff timing.
 
 ### Autocomplete Providers
 
@@ -2744,7 +2746,7 @@ All examples in [examples/extensions/](https://github.com/bastani-inc/atomic/tre
 | `auto-commit-on-exit.ts` | Commit on shutdown | `on("session_shutdown")`, `exec` |
 | **UI Components** |||
 | `status-line.ts` | Footer status indicator | `setStatus`, session events |
-| `working-indicator.ts` | Customize the streaming working indicator | `setWorkingIndicator`, `registerCommand` |
+| `working-indicator.ts` | Customize the Working indicator used during prompt startup and active turns | `setWorkingIndicator`, `registerCommand` |
 | `github-issue-autocomplete.ts` | Add `#1234` issue completions on top of built-in autocomplete by preloading recent open issues from `gh issue list` | `addAutocompleteProvider`, `on("session_start")`, `exec` |
 | `custom-footer.ts` | Replace footer entirely | `registerCommand`, `setFooter` |
 | `custom-header.ts` | Replace startup header | `on("session_start")`, `setHeader` |

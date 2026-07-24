@@ -33,7 +33,7 @@ export interface ExtensionWidgetOptions {
 /** Raw terminal input listener for extensions. */
 export type TerminalInputHandler = (data: string) => { consume?: boolean; data?: string } | undefined;
 
-/** Working indicator configuration for the interactive streaming loader. */
+/** Working indicator configuration for the interactive Working lifecycle. */
 export interface WorkingIndicatorOptions {
 	/** Animation frames. Use an empty array to hide the indicator entirely. Custom frames are rendered verbatim. */
 	frames?: string[];
@@ -173,14 +173,24 @@ export interface ExtensionUIContext {
 	/** Set status text in the footer/status bar. Pass undefined to clear. */
 	setStatus(key: string, text: string | undefined): void;
 
-	/** Set the working/loading message shown during streaming. Call with no argument to restore default. */
+	/**
+	 * Set the working/loading message presented during the active Working lifecycle,
+	 * from accepted prompt startup through the agent turn. This customizes
+	 * presentation only; it does not start work or emit pre-start events. Call with
+	 * no argument to restore the default.
+	 */
 	setWorkingMessage(message?: string): void;
 
-	/** Show or hide the built-in interactive working loader row during streaming. */
+	/**
+	 * Show or hide the built-in row during the active Working lifecycle.
+	 * This customizes presentation only; it does not start or stop work.
+	 */
 	setWorkingVisible(visible: boolean): void;
 
 	/**
-	 * Configure the interactive working indicator shown during streaming.
+	 * Configure the interactive indicator presented during the active Working
+	 * lifecycle, from accepted prompt startup through the agent turn. This
+	 * customizes presentation only; it does not start work or emit pre-start events.
 	 *
 	 * - Omit the argument to restore the default animated spinner.
 	 * - Use `frames: ["●"]` for a static indicator.

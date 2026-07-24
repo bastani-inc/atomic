@@ -104,6 +104,7 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
     if (isStreaming) {
       await queueChatSessionSteer(state, text);
     } else {
+      state.statusMessage = "";
       state.sdkBusy = true;
       startChatSessionWorkingLifecycle(state);
       submittedPromptLifecycleGeneration = state.workingLifecycleGeneration;
