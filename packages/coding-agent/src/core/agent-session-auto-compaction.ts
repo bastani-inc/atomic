@@ -271,8 +271,9 @@ export function _dropTrailingAutoCompactionRetryAssistantIfPresent(this: AgentSe
 
 /**
  * Internal: schedule a live post-event continuation after compaction_end listeners can flush queues.
- * The grace period preserves listener ordering, while waitForIdle prevents a transient active run
- * from permanently abandoning queued work.
+ * The grace period preserves listener ordering. Queue-only probes wait for transient work to become
+ * idle, while retry probes remain tied to the turn that scheduled them and are abandoned if another
+ * turn owns the agent when the grace period ends.
  */
 
 export function _schedulePostAutoCompactionContinuationProbe(this: AgentSession,
@@ -286,10 +287,15 @@ export function _schedulePostAutoCompactionContinuationProbe(this: AgentSession,
 		setTimeout(() => {
 			void (async () => {
 				try {
-					await this.agent.waitForIdle();
-					if (this._postCompactionContinuationToken !== token) return;
-					if (this.isCompacting || this.isStreaming) return;
-					if (!willRetry && !this.agent.hasQueuedMessages()) return;
+					if (willRetry) {
+						if (this._postCompactionContinuationToken !== token) return;
+						if (this.isCompacting || this.isStreaming) return;
+					} else {
+						await this.agent.waitForIdle();
+						if (this._postCompactionContinuationToken !== token) return;
+						if (this.isCompacting || this.isStreaming) return;
+						if (!this.agent.hasQueuedMessages()) return;
+					}
 					await this._resumeAfterAutoCompaction();
 				} finally {
 					if (this._pendingPostCompactionContinuation === pending) {
