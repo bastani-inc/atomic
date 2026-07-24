@@ -9,9 +9,9 @@ import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { createFauxStreamFn } from "./test-harness.ts";
 import { createTestResourceLoader } from "./utilities.ts";
 import { appendTestCompaction } from "./verbatim-compaction-test-helpers.ts";
-
 
 const compactionMocks = vi.hoisted(() => ({
 	runVerbatimCompaction: vi.fn(async (..._args: unknown[]) => ({
@@ -73,10 +73,9 @@ describe("AgentSession auto-compaction queue resume", () => {
 
 	beforeEach(() => {
 		compactionMocks.runVerbatimCompaction.mockClear();
-		tempDir = join(tmpdir(), `pi-auto-compaction-queue-${Date.now()}`);
+		tempDir = join(tmpdir(), `pi-auto-compaction-queue-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(tempDir, { recursive: true });
 		vi.useFakeTimers();
-
 		const model = getModel("anthropic", "claude-sonnet-4-5")!;
 		const agent = new Agent({
 			initialState: {
@@ -84,8 +83,8 @@ describe("AgentSession auto-compaction queue resume", () => {
 				systemPrompt: "Test",
 				tools: [],
 			},
+			streamFn: createFauxStreamFn(["Queued response"]).streamFn,
 		});
-
 		sessionManager = SessionManager.inMemory();
 		sessionManager.appendMessage({ role: "user", content: [{ type: "text", text: "existing compactable context" }], timestamp: Date.now() });
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
@@ -231,32 +230,33 @@ describe("AgentSession auto-compaction queue resume", () => {
 		expect(continueSpy).toHaveBeenCalledTimes(1);
 		expect(drainSpy).toHaveBeenCalledTimes(1);
 	});
-	it("should suppress deferred continuation when streaming starts before the probe", async () => {
-		session.agent.followUp({
-			role: "custom",
-			customType: "test",
-			content: [{ type: "text", text: "Queued custom" }],
-			display: false,
-			timestamp: Date.now(),
-		});
-
+	it("waits for active work to settle before dequeuing a message queued before compaction", async () => {
+		await session.followUp("Queued before compaction");
+		expect(session.pendingMessageCount).toBe(1);
 		expect(session.agent.hasQueuedMessages()).toBe(true);
 
-		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
-
-		const runAutoCompaction = (
-			session as unknown as {
-				_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
-			}
-		)._runAutoCompaction.bind(session);
-
-		await runAutoCompaction("threshold", false);
-
+		let releaseIdle: () => void = () => {};
+		const idle = new Promise<void>((resolve) => { releaseIdle = resolve; });
+		const waitForIdleSpy = vi.spyOn(session.agent, "waitForIdle").mockReturnValue(idle);
 		const isStreamingSpy = vi.spyOn(session, "isStreaming", "get").mockReturnValue(true);
-		await vi.advanceTimersByTimeAsync(100);
-		isStreamingSpy.mockRestore();
+		const clearQueueSpy = vi.spyOn(session, "clearQueue");
+		const internals = session as unknown as {
+			_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+			_awaitPendingPostCompactionContinuation: () => Promise<void>;
+		};
 
-		expect(continueSpy).not.toHaveBeenCalled();
+		await internals._runAutoCompaction("threshold", false);
+		await vi.advanceTimersByTimeAsync(100);
+		expect(session.pendingMessageCount).toBe(1);
+		expect(session.agent.hasQueuedMessages()).toBe(true);
+
+		isStreamingSpy.mockRestore();
+		releaseIdle();
+		await internals._awaitPendingPostCompactionContinuation();
+		expect(waitForIdleSpy).toHaveBeenCalledTimes(1);
+		expect(clearQueueSpy).not.toHaveBeenCalled();
+		expect(session.pendingMessageCount).toBe(0);
+		expect(session.agent.hasQueuedMessages()).toBe(false);
 	});
 	it("should clean overflow retry context before compaction_end even when streaming starts before the deferred probe", async () => {
 		const model = session.model!;
