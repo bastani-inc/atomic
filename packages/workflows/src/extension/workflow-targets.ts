@@ -119,15 +119,27 @@ export function resolveStageTarget(runId: string, stageTarget?: string): ToolSta
   const target = stageTarget?.trim();
   if (!target) return { ok: true, runId };
   const graph = expandWorkflowGraph(store.snapshot(), runId);
-  const exactId = graph.stages.find(
-    (stage) => stage.id === target || stage.workflowGraphTarget.stageId === target,
-  );
-  if (exactId !== undefined) {
+  const exactVirtualId = graph.stages.find((stage) => stage.id === target);
+  if (exactVirtualId !== undefined) {
     return {
       ok: true,
-      runId: exactId.workflowGraphTarget.runId,
-      stageId: exactId.workflowGraphTarget.stageId,
+      runId: exactVirtualId.workflowGraphTarget.runId,
+      stageId: exactVirtualId.workflowGraphTarget.stageId,
     };
+  }
+  const exactLocalIds = graph.stages.filter(
+    (stage) => stage.workflowGraphTarget.stageId === target,
+  );
+  if (exactLocalIds.length === 1) {
+    const stage = exactLocalIds[0]!;
+    return {
+      ok: true,
+      runId: stage.workflowGraphTarget.runId,
+      stageId: stage.workflowGraphTarget.stageId,
+    };
+  }
+  if (exactLocalIds.length > 1) {
+    return { ok: false, message: `Ambiguous stage identifier "${target}" matches: ${exactLocalIds.map(expandedStageLabel).join(", ")}` };
   }
   const exactNames = graph.stages.filter((stage) => stage.name === target);
   if (exactNames.length === 1) {

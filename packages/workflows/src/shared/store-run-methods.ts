@@ -17,6 +17,7 @@ type RunStoreMethods = Pick<
   | "notices"
   | "activeRunId"
   | "recordRunStart"
+  | "reconcileRunParentStage"
   | "recordRunEnd"
   | "recordRunBlocked"
   | "removeRun"
@@ -63,6 +64,14 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
     recordRunStart(run: RunSnapshot): void {
       state.runs.push(run);
       context.bumpAndNotify();
+    },
+
+    reconcileRunParentStage(runId: string, expectedParentStageId: string, parentStageId: string): boolean {
+      const run = context.findRun(runId);
+      if (run?.parentStageId !== expectedParentStageId || parentStageId === expectedParentStageId) return false;
+      run.parentStageId = parentStageId;
+      context.bumpAndNotify();
+      return true;
     },
 
     recordRunEnd(

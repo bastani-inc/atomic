@@ -2,7 +2,7 @@
  * Working Indicator Extension
  *
  * Demonstrates `ctx.ui.setWorkingIndicator()` for customizing the inline
- * working indicator shown while Atomic is streaming a response.
+ * Working indicator shown from accepted prompt startup through the active agent turn.
  *
  * Usage:
  *   atomic --extension examples/extensions/working-indicator.ts
@@ -96,7 +96,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("working-indicator", {
-		description: "Set the streaming working indicator: dot, pulse, none, spinner, or reset.",
+		description: "Set the Working indicator for prompt startup and active turns: dot, pulse, none, spinner, or reset.",
 		handler: async (args, ctx) => {
 			const nextMode = args.trim().toLowerCase();
 			if (!nextMode) {

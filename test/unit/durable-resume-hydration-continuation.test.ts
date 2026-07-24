@@ -178,6 +178,8 @@ exTest("fresh-store cached child replay restores nested parallel hierarchy", asy
   assert.equal(persistedAfter.parents[0], persistedBoundary.stageId);
 
   assert.equal(resumedBoundary.replayedFromStageId, persistedBoundary.stageId);
+  const resumedChild = store.runs().find((candidate) => candidate.parentRunId === runId)!;
+  assert.equal(resumedChild.parentStageId, resumedBoundary.id);
   assert.equal(resumedRoot.stages.find((stage) => stage.name === "after")?.replayedFromStageId, persistedAfter.stageId);
   assert.deepEqual(resumedRoot.stages.find((stage) => stage.name === "after")?.parentIds, [resumedBoundary.id]);
   const graph = expandWorkflowGraph(store.snapshot(), runId);

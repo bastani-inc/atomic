@@ -316,10 +316,14 @@ describe("/workflow attach <rootRunId> <nestedStageId>", () => {
             ...makeInflightRun(rootRunId),
             stages: [boundary("child-one", childOneRunId), boundary("child-two", childTwoRunId)],
         });
-        for (const childRunId of [childOneRunId, childTwoRunId]) {
+        for (const [childRunId, parentStageId] of [
+            [childOneRunId, "child-one"],
+            [childTwoRunId, "child-two"],
+        ] as const) {
             store.recordRunStart({
                 ...makeInflightRun(childRunId),
                 parentRunId: rootRunId,
+                parentStageId,
                 rootRunId,
                 stages: [{
                     id: nestedStageId,

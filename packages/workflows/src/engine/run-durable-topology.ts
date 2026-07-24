@@ -8,9 +8,13 @@ import {
 } from "../durable/stage-primitive.js";
 import type { DurableStageRunTopology } from "../durable/types.js";
 import type { GraphFrontierTracker } from "./graph-inference.js";
-import type { RunSnapshot } from "../shared/store-types.js";
+import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import type { Store } from "../shared/store.js";
 import type { ParallelFailFastScope } from "../runs/foreground/executor-types.js";
+import {
+  authoritativeWorkflowChildRunId,
+  reciprocalWorkflowRootRunId,
+} from "../shared/workflow-run-ownership.js";
 
 export function durableRunTopology(run: RunSnapshot): DurableStageRunTopology {
   return {
@@ -66,10 +70,32 @@ export function createDurableCachedStageRecorder(input: {
           ...durableStageCheckpointMetadata(stage, durableRunTopology(input.run)),
         });
       }
-      if (workflowChildRunId(checkpoint) === undefined) return;
-      const durableRootId = input.run.rootRunId ?? input.run.id;
+      const directChildRunId = workflowChildRunId(checkpoint);
+      if (directChildRunId === undefined) return;
+      const runById = new Map(input.store.runs().map((run) => [run.id, run]));
+      if (!runById.has(input.run.id)) runById.set(input.run.id, input.run);
+      const durableRootId = reciprocalWorkflowRootRunId(runById, input.run.id);
+      if (durableRootId === undefined) return;
       for (const childRun of durableNestedRunSnapshots(input.rootBackend, durableRootId)) {
-        if (!input.store.runs().some((candidate) => candidate.id === childRun.id)) input.store.recordRunStart(childRun);
+        const existingRun = input.store.runs().find((candidate) => candidate.id === childRun.id);
+        const isDirectChild = childRun.id === directChildRunId &&
+          childRun.parentRunId === input.run.id && stage?.workflowChild?.runId === directChildRunId;
+        if (existingRun !== undefined) {
+          if (stage !== undefined) {
+            reconcileCachedDirectChildParentStage({
+              store: input.store,
+              parentRun: input.run,
+              catalogRun: childRun,
+              checkpointChildRunId: directChildRunId,
+              boundary: stage,
+            });
+          }
+          continue;
+        }
+        const hydratedRun = isDirectChild && stage !== undefined
+          ? { ...childRun, parentStageId: stage.id }
+          : childRun;
+        input.store.recordRunStart(hydratedRun);
       }
     },
     metadata(replayKey) {
@@ -77,6 +103,49 @@ export function createDurableCachedStageRecorder(input: {
       return stage === undefined ? {} : durableStageCheckpointMetadata(stage, durableRunTopology(input.run));
     },
   };
+}
+
+export function reconcileCachedDirectChildParentStage(input: {
+  readonly store: Store;
+  readonly parentRun: RunSnapshot;
+  readonly catalogRun: RunSnapshot;
+  readonly checkpointChildRunId: string;
+  readonly boundary: StageSnapshot;
+}): boolean {
+  const existingRun = input.store.runs().find((run) => run.id === input.checkpointChildRunId);
+  const runById = new Map(input.store.runs().map((run) => [run.id, run]));
+  const storedParentRun = runById.get(input.parentRun.id);
+  if (
+    storedParentRun !== undefined &&
+    (storedParentRun.parentRunId !== input.parentRun.parentRunId ||
+      storedParentRun.parentStageId !== input.parentRun.parentStageId)
+  ) return false;
+  if (storedParentRun === undefined) runById.set(input.parentRun.id, input.parentRun);
+  const expectedRootRunId = reciprocalWorkflowRootRunId(runById, input.parentRun.id);
+  if (expectedRootRunId === undefined) return false;
+  const storedBoundary = storedParentRun?.stages.find((stage) => stage.id === input.boundary.id);
+  if (
+    !rootMatches(input.parentRun.rootRunId, expectedRootRunId) ||
+    !rootMatches(storedParentRun?.rootRunId, expectedRootRunId) ||
+    authoritativeWorkflowChildRunId(input.boundary) !== input.checkpointChildRunId ||
+    (storedParentRun !== undefined &&
+      authoritativeWorkflowChildRunId(storedBoundary) !== input.checkpointChildRunId) ||
+    input.catalogRun.id !== input.checkpointChildRunId ||
+    existingRun?.status !== "completed" || input.catalogRun.status !== "completed" ||
+    existingRun.parentRunId !== input.parentRun.id || input.catalogRun.parentRunId !== input.parentRun.id ||
+    input.catalogRun.parentStageId === undefined || existingRun.parentStageId !== input.catalogRun.parentStageId ||
+    !rootMatches(existingRun.rootRunId, expectedRootRunId) ||
+    !rootMatches(input.catalogRun.rootRunId, expectedRootRunId)
+  ) return false;
+  return input.store.reconcileRunParentStage(
+    existingRun.id,
+    input.catalogRun.parentStageId,
+    input.boundary.id,
+  );
+}
+
+function rootMatches(rootRunId: string | undefined, expectedRootRunId: string): boolean {
+  return rootRunId === undefined || rootRunId === expectedRootRunId;
 }
 
 function workflowChildRunId(checkpoint: DurableCompletedStageCheckpoint): string | undefined {

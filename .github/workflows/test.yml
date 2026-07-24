@@ -18,16 +18,17 @@ jobs:
                 include:
                     - os: blacksmith-4vcpu-ubuntu-2404
                       binary_platform: linux-x64
+                      timeout_minutes: 10
                     - os: blacksmith-4vcpu-windows-2025
                       binary_platform: windows-x64
+                      timeout_minutes: 15
             fail-fast: false
         runs-on: ${{ matrix.os }}
-        # Strict wall-clock budget: without an explicit limit a single hung test
-        # process burns the 360-minute GitHub default (observed: a wedged
-        # windows-x64 unit step ran 6h before cancellation). Green jobs finish in
-        # ~3.5m (linux) / ~9m (windows); anything beyond 10m is a hang or a
-        # regression worth failing fast on.
-        timeout-minutes: 10
+        # Strict per-platform wall-clock budgets prevent a hung process from
+        # consuming GitHub's 360-minute default. Linux stays bounded at 10m;
+        # Windows gets 15m because two healthy runs passed every test but crossed
+        # 10m while building or smoke-testing the release archive.
+        timeout-minutes: ${{ matrix.timeout_minutes }}
         steps:
             - uses: useblacksmith/checkout@v1
               with:

@@ -65,6 +65,7 @@ export class ChatSessionHostState<
   workingMessage: string | undefined;
   workingFrame = 0;
   workingLifecycleActive: boolean;
+  workingLifecycleGeneration = 0;
   immediateEventRenderPending = false;
   disposed = false;
   pendingSteeringMessages: readonly string[] = [];

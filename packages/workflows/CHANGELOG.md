@@ -13,6 +13,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Fixed workflow-supplied working-indicator palettes to quantize through Atomic's detected terminal color mode, preserving the intended phase progression in 256-color and conhost-like environments instead of forcing truecolor output.
+- Fixed live and restored nested `ctx.workflow()` graphs flattening valid child stages without preserving the authored composition topology. Hidden import boundaries now connect every boundary parent to every child root and every child terminal to downstream parent stages regardless of snapshot order; recursive one-level and deeper composition preserves sibling, sequential, parallel, and repeated child workflows; and boundaries with invalid, missing, empty, stale, mismatched, or recursively unusable child graphs, plus failed or skipped boundaries, retain the boundary summary rather than flattening an unrelated run. Duplicate child-local stage IDs and names keep distinct virtual IDs and exact owning `{runId, stageId}` targets across attach, messaging, pause, interrupt, resume, inspection, selection, and post-mortem chat, while nested runs remain excluded from top-level listings and ordinary workflow graph behavior is unchanged.
+- Fixed retained terminal stage chats dropping the Working indicator after Enter and before the follow-up agent turn started; the indicator now remains visible and animated throughout prompt attachment and processing without reviving stale terminal activity ([#1982](https://github.com/bastani-inc/atomic/issues/1982)).
 
 ### Removed
 

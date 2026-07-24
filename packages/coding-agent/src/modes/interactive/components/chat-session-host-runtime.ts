@@ -50,6 +50,7 @@ export function startChatSessionWorkingLifecycle<
   clearChatSessionEventRender(state);
   state.immediateEventRenderPending = true;
   state.workingLifecycleActive = true;
+  state.workingLifecycleGeneration += 1;
   state.workingFrame = 0;
 }
 
