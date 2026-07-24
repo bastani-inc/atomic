@@ -1,10 +1,14 @@
 import { afterEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall, type Context } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { createHarness, getMessageText, type Harness } from "../../packages/coding-agent/test/suite/harness.js";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { PROTECTED_RECONCILIATION_CUSTOM_TYPE } from "../../packages/coding-agent/src/core/agent-session-persistent-custom-messages.js";
 import {
 	installWorkflowLifecycleNotifications,
 	LIFECYCLE_NOTICE_CUSTOM_TYPE,
@@ -251,6 +255,78 @@ describe("workflow lifecycle parent reconciliation", () => {
 		const customEntries = harness.sessionManager.getEntries().filter((entry) => entry.type === "custom_message");
 		assert.equal(customEntries.filter((entry) => entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE).length, 1);
 		assert.equal(customEntries.filter((entry) => entry.display === false).length, 1, "one hidden reconciliation is durable after retry");
+	});
+	test("session disposal flushes a consumed reconciliation after repeated transient write failures", async () => {
+		const store = createStore();
+		store.recordRunStart({
+			id: "run-dispose-retry",
+			name: "dispose-retry",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 1,
+		});
+		const sessionDir = mkdtempSync(join(tmpdir(), "atomic-lifecycle-dispose-"));
+		tempDirs.push(sessionDir);
+		const sessionManager = SessionManager.create(process.cwd(), sessionDir);
+		const harness = await createHarness({ sessionManager });
+		harnesses.push(harness);
+		const appendCustomMessageEntry = harness.sessionManager.appendCustomMessageEntry.bind(harness.sessionManager);
+		let hiddenPersistenceAttempts = 0;
+		harness.sessionManager.appendCustomMessageEntry = ((customType, content, display, details, excludeFromContext) => {
+			if (customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE && hiddenPersistenceAttempts++ < 2) {
+				throw new Error("repeated transient hidden reconciliation write failure");
+			}
+			return appendCustomMessageEntry(customType, content, display, details, excludeFromContext);
+		}) as typeof harness.sessionManager.appendCustomMessageEntry;
+		unsubscriptions.push(installWorkflowLifecycleNotifications({
+			store,
+			config: lifecycleConfig,
+			seedExisting: false,
+			sendMessage: (message, options) => harness.session.sendCustomMessage(message, options),
+		}));
+		let terminalized = false;
+		let disposeScheduled = false;
+		let resolveDisposed!: () => void;
+		const disposed = new Promise<void>((resolve) => {
+			resolveDisposed = resolve;
+		});
+		unsubscriptions.push(harness.session.subscribe((event) => {
+			if (!terminalized && event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+				terminalized = true;
+				assert.equal(store.recordRunEnd("run-dispose-retry", "failed", { error: "boom" }), true);
+				return;
+			}
+			if (
+				!disposeScheduled &&
+				event.type === "message_end" &&
+				event.message.role === "custom" &&
+				event.message.customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE
+			) {
+				disposeScheduled = true;
+				queueMicrotask(() => {
+					harness.session.dispose();
+					resolveDisposed();
+				});
+				throw new Error("listener failure before session replacement");
+			}
+		}));
+		harness.setResponses([
+			fauxAssistantMessage("This stale response is still proceeding."),
+			fauxAssistantMessage("dispose-retry failed and was reconciled."),
+		]);
+
+		await assert.rejects(harness.session.prompt("Wait for dispose-retry."), /listener failure before session replacement/);
+		await disposed;
+
+		assert.equal(disposeScheduled, true);
+		assert.equal(hiddenPersistenceAttempts, 3, "disposal must make a final persistence attempt before state is lost");
+		const sessionFile = harness.sessionManager.getSessionFile();
+		assert.ok(sessionFile);
+		const reopened = SessionManager.open(sessionFile, harness.sessionManager.getSessionDir());
+		const customEntries = reopened.getEntries().filter((entry) => entry.type === "custom_message");
+		assert.equal(customEntries.filter((entry) => entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE).length, 1);
+		assert.equal(customEntries.filter((entry) => entry.customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE).length, 1);
 	});
 	test("stage delivery transfer moves queued notice protection while source keeps its core-local in-flight notice", async () => {
 		const store = createStore();

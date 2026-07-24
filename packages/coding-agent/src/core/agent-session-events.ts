@@ -8,7 +8,7 @@ import type { AgentSessionInternalSurface as AgentSession } from "./agent-sessio
 import { customMessageExcludesContext, isSingleGenericAbortTextContent, replacementAbortContent, type AgentSessionEvent, type AgentSessionEventListener } from "./agent-session-types.ts";
 import type { MessageEndEvent, MessageStartEvent, MessageUpdateEvent, ToolExecutionEndEvent, ToolExecutionStartEvent, ToolExecutionUpdateEvent, TurnEndEvent, TurnStartEvent } from "./extensions/index.ts";
 import { normalizeMessageContent } from "./messages.ts";
-import { isProtectedStreamingCustomMessage, markProtectedStreamingCustomMessageConsumed, markProtectedStreamingCustomMessagePersistenceFailed, persistProtectedStreamingCustomMessage, retryConsumedProtectedStreamingCustomMessages } from "./agent-session-persistent-custom-messages.ts";
+import { flushConsumedProtectedStreamingCustomMessages, isProtectedStreamingCustomMessage, markProtectedStreamingCustomMessageConsumed, markProtectedStreamingCustomMessagePersistenceFailed, persistProtectedStreamingCustomMessage, retryConsumedProtectedStreamingCustomMessages } from "./agent-session-persistent-custom-messages.ts";
 
 export function _emit(this: AgentSession, event: AgentSessionEvent): void {
 	for (const l of this._eventListeners) {
@@ -448,6 +448,10 @@ export function _reconnectToAgent(this: AgentSession): void {
  */
 
 export function dispose(this: AgentSession): void {
+	// A consumed reconciliation may still be memory-only after transient write
+	// failures. Flush it before invalidation so replacement cannot lose it; if the
+	// write still fails, abort disposal and retain the session's recovery state.
+	flushConsumedProtectedStreamingCustomMessages(this);
 	this._extensionRunner.invalidate(
 		"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
 	);

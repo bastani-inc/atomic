@@ -139,6 +139,16 @@ export function retryConsumedProtectedStreamingCustomMessages(session: AgentSess
 	}
 }
 
+/** Flush consumed reconciliations before session state can be discarded. */
+export function flushConsumedProtectedStreamingCustomMessages(session: AgentSession): void {
+	for (const entry of [...protectedMessages(session)]) {
+		if (entry.phase === "queued") continue;
+		// Do not swallow the final write failure: callers must keep this session
+		// alive rather than discard the only remaining recovery state.
+		persistProtectedStreamingCustomMessage(session, entry.message);
+	}
+}
+
 /** Restore only protected references actually removed from native queues/hold. */
 export function restoreProtectedStreamingCustomMessages(
 	session: AgentSession,
