@@ -137,6 +137,18 @@ async function runHost(): Promise<void> {
 				terminal,
 				onMode: (created) => {
 					mode = created;
+					const showWarning = created.showWarning.bind(created);
+					created.showWarning = (...args) => {
+						report({ type: "warning", message: args[0] });
+						return showWarning(...args);
+					};
+					const getUserInput = created.getUserInput.bind(created);
+					created.getUserInput = () => {
+						const input = getUserInput();
+						report({ type: "input_loop_ready" });
+						terminal.snapshot(created);
+						return input;
+					};
 					if (created.runtimeHost instanceof IsolatedInteractiveRuntime) {
 						created.runtimeHost.onDiagnostic((diagnostic) => report({ type: "diagnostic", message: diagnostic.message }));
 						created.runtimeHost.onKeybindingState((state) => {

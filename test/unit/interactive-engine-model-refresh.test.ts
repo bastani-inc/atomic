@@ -1,8 +1,16 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.ts";
-import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
+import {
+	AgentSessionRuntime,
+	createAgentSessionFromServices,
+	createAgentSessionServices,
+	type CreateAgentSessionRuntimeFactory,
+} from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.ts";
 import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.ts";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
@@ -204,4 +212,88 @@ test("isolated host synchronizes authoritative engine fallback state and clears 
 	await runtime.session.setModel(model);
 	assert.equal(runtime.modelFallbackMessage, undefined);
 	assert.equal(runtime.modelFallbackReason, undefined);
+});
+
+test("isolated session synchronization replaces each engine-selected session exactly once", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-isolated-session-sync-"));
+	const cwd = join(root, "cwd");
+	const agentDir = join(root, "agent");
+	const sessionDir = join(root, "sessions");
+	mkdirSync(cwd);
+	mkdirSync(agentDir);
+	mkdirSync(sessionDir);
+	const createPersistedSession = (text: string): string => {
+		const manager = SessionManager.create(cwd, sessionDir);
+		manager.appendMessage({ role: "user", content: [{ type: "text", text }], timestamp: Date.now() });
+		const path = manager.getSessionFile();
+		assert.ok(path);
+		return path;
+	};
+	const firstSession = createPersistedSession("first");
+	const secondSession = createPersistedSession("second");
+	const authStorage = AuthStorage.inMemory();
+	let runtimeCreations = 0;
+	const startReasons: string[] = [];
+	const createRuntime: CreateAgentSessionRuntimeFactory = async (options) => {
+		runtimeCreations += 1;
+		if (options.sessionStartEvent) startReasons.push(options.sessionStartEvent.reason);
+		const services = await createAgentSessionServices({
+			cwd: options.cwd,
+			agentDir: options.agentDir,
+			authStorage,
+			resourceLoaderOptions: { noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true },
+		});
+		return {
+			...(await createAgentSessionFromServices({
+				services,
+				sessionManager: options.sessionManager,
+				sessionStartEvent: options.sessionStartEvent,
+			})),
+			services,
+			diagnostics: services.diagnostics,
+		};
+	};
+	const initial = await createRuntime({ cwd, agentDir, sessionManager: SessionManager.inMemory(cwd) });
+	runtimeCreations = 0;
+	startReasons.length = 0;
+	let engineSessionFile = firstSession;
+	const client = {
+		onEvent: () => () => {},
+		getState: async () => ({
+			thinkingLevel: "off" as const,
+			isStreaming: false,
+			isCompacting: false,
+			steeringMode: "all" as const,
+			followUpMode: "all" as const,
+			sessionId: "engine-session",
+			sessionFile: engineSessionFile,
+			autoCompactionEnabled: true,
+			messageCount: 1,
+			pendingMessageCount: 0,
+		}),
+		requestInternal: async () => ({ models: [], scopedModels: [], customAuthProviders: [] }),
+		switchSession: async (path: string) => { engineSessionFile = path; return { cancelled: false }; },
+		getCommands: async () => [],
+		stop: async () => {},
+	} as unknown as RpcClient;
+	const local = new AgentSessionRuntime(initial.session, initial.services, createRuntime, initial.diagnostics);
+	const runtime = new IsolatedInteractiveRuntime(local, createRuntime, client);
+	let rebinds = 0;
+	runtime.setRebindSession(async () => { rebinds += 1; });
+	try {
+		await runtime.initializeFromEngine();
+		assert.equal(runtime.session.sessionManager.getSessionFile(), firstSession);
+		assert.equal(runtimeCreations, 1, "initial engine binding must replace the local session once");
+		assert.equal(rebinds, 1);
+		assert.deepEqual(startReasons, ["resume"]);
+
+		await runtime.switchSession(secondSession);
+		assert.equal(runtime.session.sessionManager.getSessionFile(), secondSession);
+		assert.equal(runtimeCreations, 2, "explicit engine switch must add exactly one local replacement");
+		assert.equal(rebinds, 2);
+		assert.deepEqual(startReasons, ["resume", "resume"]);
+	} finally {
+		await runtime.dispose();
+		rmSync(root, { recursive: true, force: true });
+	}
 });

@@ -60,7 +60,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	async initializeFromEngine(): Promise<void> {
 		const state = await this.client.getState();
 		const catalog = await this.client.requestInternal<RpcModelCatalog>({ type: "get_available_models" });
-		if (state.sessionFile && super.session.sessionFile !== state.sessionFile) await super.switchSession(state.sessionFile);
+		if (state.sessionFile && super.session.sessionManager.getSessionFile() !== state.sessionFile) {
+			await super.switchSession(state.sessionFile);
+		}
 		const session = super.session;
 		this.remoteModelCatalog.apply(catalog);
 		this.remoteModelCatalog.patch(session);
