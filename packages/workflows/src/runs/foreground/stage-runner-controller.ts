@@ -12,10 +12,8 @@ import { StageMessageAdmission } from "./stage-runner-message-admission.js";
 import { nextResumedContextOverflowFallbackIndex, terminatingToolCallId, unresolvedContextOverflowFailure, unresolvedContextOverflowMessage } from "./stage-runner-unresolved-overflow.js";
 import type { AgentSessionConsumer, StageModelFallbackMeta, StageRunnerOpts, StageSessionCreateOptions, StageSessionCreateResult, StageSessionEvent, StageSessionRuntime, WorkflowFastModeSettingsManager } from "./stage-runner-types.js";
 import { StageSessionReplacement } from "./stage-runner-replacement.js";
+import { StageSessionPause, type StageSessionPauseResumeResult } from "./stage-runner-pause.js";
 
-type PauseRequest = {
-  deferred: PromiseWithResolvers<{ message?: string }>;
-};
 
 export class StageSessionController {
   private session: StageSessionRuntime | undefined;
@@ -31,7 +29,7 @@ export class StageSessionController {
   private pendingThinkingLevel: Parameters<StageContext["setThinkingLevel"]>[0] | undefined;
   private readonly pendingListeners = new Set<(event: StageSessionEvent) => void>();
   private readonly listenerUnsubscribes = new Map<(event: StageSessionEvent) => void, () => void>();
-  private pauseRequest: PauseRequest | null = null;
+  private readonly pauseControl = new StageSessionPause(() => this.session);
   private readonly hasExplicitModelFallbackConfig: boolean;
   private candidatesPromise: Promise<WorkflowResolvedModelCandidate[]> | undefined;
   private activeCandidateIndex: number | undefined;
@@ -110,9 +108,18 @@ export class StageSessionController {
 
   async sendUserMessage(content: StageUserMessageContent, options?: StageSendUserMessageOptions, beforeDelivery?: () => void):
     Promise<Awaited<ReturnType<typeof sendStageUserMessage>>> {
-    return this.messageAdmission.run(async (release) => sendStageUserMessage(
-      await this.ensureSession("prompt"), content, options, beforeDelivery, release, this.messageAdmission,
-    ));
+    return this.messageAdmission.run(async (release) => {
+      const pausedDelivery = this.pauseControl.deferRunnerOwnedDelivery(
+        () => this.sendUserMessage(content, options, beforeDelivery),
+      );
+      if (pausedDelivery !== undefined) {
+        release();
+        return pausedDelivery;
+      }
+      return sendStageUserMessage(
+        await this.ensureSession("prompt"), content, options, beforeDelivery, release, this.messageAdmission,
+      );
+    });
   }
 
   sealGeneration(): void {
@@ -198,33 +205,16 @@ export class StageSessionController {
     await this.replacement.dispose();
     await disposeStageSession(this.session);
   }
-
-  async requestPause(): Promise<void> {
-    if (this.pauseRequest) return;
-    const deferred = Promise.withResolvers<{ message?: string }>();
-    void deferred.promise.catch(() => {});
-    const request = { deferred };
-    this.pauseRequest = request;
-    try { await this.session?.abort(); } catch (error) {
-      if (this.pauseRequest === request) { this.pauseRequest = null; deferred.reject(error); }
-      throw error;
-    }
-  }
-
-  resume(message?: string): void {
-    const req = this.pauseRequest;
-    if (!req) return;
-    this.pauseRequest = null;
-    req.deferred.resolve({ message });
-  }
-
-  isPaused(): boolean { return this.pauseRequest !== null; }
+  requestPause(): Promise<void> { return this.pauseControl.requestPause(); }
+  resume(
+    message?: string,
+    beforeResolve?: (result: StageSessionPauseResumeResult) => void,
+  ): Promise<StageSessionPauseResumeResult> { return this.pauseControl.resume(message, beforeResolve); }
+  isPaused(): boolean { return this.pauseControl.isPaused(); }
   sessionMeta(): { sessionId: string | undefined; sessionFile: string | undefined } {
     return { sessionId: this.session?.sessionId, sessionFile: this.session?.sessionFile };
   }
-
   agentSession(): AgentSession | undefined { return asAgentSession(this.session); }
-
   pendingMessageCount(): number { return typeof this.session?.pendingMessageCount === "number" ? this.session.pendingMessageCount : 0; }
 
   private bindAbortSignal(): void {
@@ -237,10 +227,7 @@ export class StageSessionController {
     };
     const onAbort = (): void => {
       void this.session?.abort().catch(() => {});
-      if (!this.pauseRequest) return;
-      const req = this.pauseRequest;
-      this.pauseRequest = null;
-      req.deferred.reject(abortReason());
+      this.pauseControl.reject(abortReason());
     };
     if (signal.aborted) onAbort();
     else signal.addEventListener("abort", onAbort, { once: true });
@@ -370,10 +357,11 @@ export class StageSessionController {
   ): Promise<{ readonly terminalScanStartIndex: number }> {
     let nextText: string | undefined = initialText;
     while (nextText !== undefined) {
-      const pendingPauseBeforePrompt = this.pauseRequest;
+      const pendingPauseBeforePrompt = this.pauseControl.currentResume();
       if (pendingPauseBeforePrompt) {
-        const { message } = await pendingPauseBeforePrompt.deferred.promise;
-        nextText = message;
+        const resumed = await pendingPauseBeforePrompt;
+        await resumed.runnerOwnedDeliverySettlement;
+        nextText = resumed.message;
         if (nextText === undefined) return { terminalScanStartIndex: activeSession.messages.length };
         continue;
       }
@@ -381,22 +369,24 @@ export class StageSessionController {
       this.unresolvedContextOverflowMessage = undefined;
       try {
         await activeSession.prompt(nextText, sdkOptions);
-        const pendingPauseAfterPrompt = this.pauseRequest;
+        const pendingPauseAfterPrompt = this.pauseControl.currentResume();
         if (pendingPauseAfterPrompt) {
-          const { message } = await pendingPauseAfterPrompt.deferred.promise;
+          const resumed = await pendingPauseAfterPrompt;
+          await resumed.runnerOwnedDeliverySettlement;
           this.throwUnresolvedContextOverflowIfPresent();
-          nextText = message;
+          nextText = resumed.message;
           if (nextText === undefined) return { terminalScanStartIndex: activeSession.messages.length };
           continue;
         }
         this.throwUnresolvedContextOverflowIfPresent();
         return { terminalScanStartIndex: promptStartIndex };
       } catch (err) {
-        const pendingPauseAfterThrow = this.pauseRequest;
+        const pendingPauseAfterThrow = this.pauseControl.currentResume();
         if (pendingPauseAfterThrow) {
-          const { message } = await pendingPauseAfterThrow.deferred.promise;
+          const resumed = await pendingPauseAfterThrow;
+          await resumed.runnerOwnedDeliverySettlement;
           this.throwUnresolvedContextOverflowIfPresent();
-          nextText = message;
+          nextText = resumed.message;
           if (nextText === undefined) return { terminalScanStartIndex: activeSession.messages.length };
           continue;
         }

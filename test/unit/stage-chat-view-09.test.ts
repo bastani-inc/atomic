@@ -191,15 +191,24 @@ describe("StageChatView", () => {
         view.dispose();
     });
 
-    test("Escape interrupts a completed stage ad-hoc chat without closing or workflow pause UI", async () => {
+    test("Escape interrupts completed ad-hoc chat and the next submission releases its native hold", async () => {
         const store = createStore();
         setupRun(store, "run-1", "stage-a", "completed");
         let abortCalls = 0;
+        let nativePaused = false;
+        let resumeQueueCalls = 0;
+        const deliveredPrompts: string[] = [];
+        const heldPrompts: string[] = [];
         const agentSession = {
             ...fakeFooterAgentSession(true),
-            abort: () => {
-                abortCalls += 1;
+            get queuedMessagesPaused() { return nativePaused; },
+            pauseQueuedMessages() { nativePaused = true; },
+            async resumeQueuedMessages() { resumeQueueCalls += 1; nativePaused = false; return heldPrompts.length > 0; },
+            async prompt(text: string) {
+                if (nativePaused) heldPrompts.push(text);
+                else deliveredPrompts.push(text);
             },
+            abort: async () => { abortCalls += 1; },
         } as unknown as AgentSession;
         const { handle, state } = makeHandle(
             {
@@ -214,6 +223,7 @@ describe("StageChatView", () => {
             "completed",
             agentSession,
         );
+        Object.assign(handle, { async prompt(text: string) { await agentSession.prompt(text); } });
         let closed = 0;
         const view = new StageChatView({
             store,
@@ -232,12 +242,23 @@ describe("StageChatView", () => {
         await flush();
         await flush();
         assert.equal(abortCalls, 1);
+        assert.equal(nativePaused, true);
         assert.equal(state.pauseCalls, 0);
         assert.equal(closed, 0);
         assert.equal(store.runs()[0]?.stages[0]?.status, "completed");
         const rendered = view.render(96).join("\n");
         assert.doesNotMatch(rendered, /PAUSED/);
         assert.match(rendered, /❯/);
+
+        for (const ch of "continue completed chat") view.handleInput(ch);
+        view.handleInput("\r");
+        await flush();
+        await flush();
+
+        assert.equal(resumeQueueCalls, 1);
+        assert.equal(nativePaused, false);
+        assert.deepEqual(heldPrompts, []);
+        assert.deepEqual(deliveredPrompts, ["continue completed chat"]);
         view.dispose();
     });
 

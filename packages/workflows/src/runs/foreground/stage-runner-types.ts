@@ -45,6 +45,12 @@ export interface StageSessionRuntime {
   sealWorkflowStageGeneration?(): void;
   closeWorkflowStageGeneration?(): Promise<void>;
   transferWorkflowStageDeliveriesTo?(target: object): void;
+  /** True when this runtime implements a native queued-message pause gate. */
+  readonly queuedMessagesPaused?: boolean;
+  /** Optional native optimization that synchronously holds queued work. */
+  pauseQueuedMessages?(): void;
+  /** Optional native release; true reports that raw queued work was released. */
+  resumeQueuedMessages?(): boolean | Promise<boolean>;
   steer(text: string): Promise<void>;
   followUp(text: string): Promise<void>;
   subscribe(listener: (event: StageSessionEvent) => void): () => void;
@@ -159,8 +165,11 @@ export interface InternalStageContext extends StageContext {
   __modelFallbackMeta(): StageModelFallbackMeta;
   /** Internal: register a controlled-pause request. */
   __requestPause(): Promise<void>;
-  /** Internal: complete a pending controlled pause. */
-  __resume(message?: string): Promise<void>;
+  /** Internal: complete a pending controlled pause and report its released raw work. */
+  __resume(
+    message?: string,
+    beforeResolve?: (result: import("./stage-runner-pause.js").StageSessionPauseResumeResult) => void,
+  ): Promise<import("./stage-runner-pause.js").StageSessionPauseResumeResult>;
   /** Internal: true while a controlled pause is in flight. */
   __isPaused(): boolean;
   /** Internal: true once a schema-backed prompt captured its final structured output. */

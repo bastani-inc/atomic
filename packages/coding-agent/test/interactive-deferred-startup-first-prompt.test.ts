@@ -16,7 +16,11 @@ type PromptTurnHarness = {
 	deferredStartupPromise?: Promise<void>;
 	deferLoadedResourcesDisclosureUntilAgentEnd: boolean;
 	pendingLoadedResourcesDisclosure: boolean;
-	session: { readonly isStreaming: boolean; prompt: (text: string) => Promise<void> };
+	session: {
+		readonly isStreaming: boolean;
+		resumeQueuedMessages: () => Promise<boolean>;
+		prompt: (text: string) => Promise<void>;
+	};
 	showWorkingLoaderNow: () => void;
 	ensureDeferredStartupComplete: () => Promise<void>;
 	showLoadedResources: () => void;
@@ -118,6 +122,7 @@ describe("interactive deferred startup first prompt readiness", () => {
 					get isStreaming() {
 						return session.isStreaming;
 					},
+					resumeQueuedMessages: vi.fn(async () => false),
 					prompt: vi.fn(async (text: string) => {
 						order.push("prompt");
 						observedPromptText = text;

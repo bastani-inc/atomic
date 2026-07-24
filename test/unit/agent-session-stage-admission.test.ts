@@ -126,6 +126,12 @@ describe("AgentSession workflow-stage admission", () => {
 			_asyncJobManagerSessionId: Symbol("target"),
 			_asyncJobManager: {},
 			_pendingNextTurnMessages: [] as object[],
+			_queuedMessagesPaused: false,
+			_activeInterruptQueueHold: undefined,
+			_steeringMessages: [] as string[],
+			_followUpMessages: [] as string[],
+			_drainQueuedAgentMessages: () => ({ steering: [], followUp: [] }),
+			_emitQueueUpdate() {},
 			async sendCustomMessage() {},
 			_restoreQueuedAgentMessages(queues: { steering: object[]; followUp: object[] }) {
 				restored.push(...queues.steering, ...queues.followUp);
@@ -136,6 +142,10 @@ describe("AgentSession workflow-stage admission", () => {
 			_asyncJobManager: { transferSessionDeliveries() { managerTransferred = true; } },
 			_activeInterruptQueueHold: undefined,
 			_pendingNextTurnMessages: [notification],
+			_queuedMessagesPaused: false,
+			_steeringMessages: [] as string[],
+			_followUpMessages: [] as string[],
+			_emitQueueUpdate() {},
 			_drainQueuedAgentMessages: () => ({ steering: [], followUp: [notification] }),
 		};
 

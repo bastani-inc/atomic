@@ -46,6 +46,19 @@ describe("resume continuation decision", () => {
     );
   });
 
+  for (const gateEnabled of [false, true]) {
+    test(`paused queued work injects with readiness gate ${gateEnabled ? "enabled" : "disabled"}`, () => {
+      assert.equal(
+        shouldInjectResumeContinuation({
+          reason: "paused-queued-user-message",
+          gateEnabled,
+          aborted: false,
+        }),
+        true,
+      );
+    });
+  }
+
   test("aborted run is a no-op", () => {
     assert.equal(
       shouldInjectResumeContinuation({

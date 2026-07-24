@@ -62,6 +62,10 @@ export class ChatSessionHostState<
   isBashMode = false;
   localBashRunning = false;
   sdkBusy = false;
+  /** Escape interrupt plus asynchronous workflow pause acknowledgement. */
+  interruptSettlement: Promise<void> | undefined;
+  /** Recorded pause failure consumed by the first submit after settlement. */
+  interruptFailureMessage: string | undefined;
   workingMessage: string | undefined;
   workingFrame = 0;
   workingLifecycleActive: boolean;

@@ -130,6 +130,58 @@ describe("createStageContext — controlled pause", () => {
         await promptPromise;
     });
 
+    test("repeated pause and early resume share the abort boundary and release once", async () => {
+        const abortBoundary = Promise.withResolvers<void>();
+        const secondPromptStarted = Promise.withResolvers<void>();
+        const events: string[] = [];
+        const promptTexts: string[] = [];
+        let rejectFirstPrompt: ((error: Error) => void) | undefined;
+        const { session, state } = makeMockSession({
+            pauseQueuedMessages() { events.push("hold"); },
+            async resumeQueuedMessages() { events.push("release"); return false; },
+            async prompt(text) {
+                state.promptCalls += 1;
+                promptTexts.push(text);
+                if (state.promptCalls === 1) {
+                    return new Promise<void>((_resolve, reject) => { rejectFirstPrompt = reject; });
+                }
+                secondPromptStarted.resolve();
+            },
+            async abort() {
+                state.abortCalls += 1;
+                events.push("abort:start");
+                await abortBoundary.promise;
+                events.push("abort:end");
+                rejectFirstPrompt?.(new Error("AbortError"));
+            },
+        });
+        const agentSession: AgentSessionAdapter = { async create() { return session; } };
+        const ctx = createStageContext(makeOpts({ adapters: { agentSession } })) as InternalStageContext;
+        const promptPromise = ctx.prompt("initial prompt");
+        await flushMicrotasks();
+
+        let secondPauseSettled = false;
+        const firstPause = ctx.__requestPause();
+        const secondPause = ctx.__requestPause().then(() => { secondPauseSettled = true; });
+        const resume = ctx.__resume("resume exactly once");
+        await flushMicrotasks();
+
+        assert.equal(state.abortCalls, 1);
+        assert.equal(secondPauseSettled, false);
+        assert.equal(ctx.__isPaused(), true);
+        assert.deepEqual(events, ["hold", "abort:start"]);
+        assert.deepEqual(promptTexts, ["initial prompt"]);
+
+        abortBoundary.resolve();
+        await Promise.all([firstPause, secondPause, resume, secondPromptStarted.promise]);
+        await promptPromise;
+
+        assert.equal(ctx.__isPaused(), false);
+        assert.equal(state.abortCalls, 1);
+        assert.deepEqual(events, ["hold", "abort:start", "abort:end", "release"]);
+        assert.deepEqual(promptTexts, ["initial prompt", "resume exactly once"]);
+    });
+
     test("signal abort while paused rejects the awaiter with the workflow kill reason", async () => {
         const { session, state } = makeMockSession();
         const agentSession: AgentSessionAdapter = {

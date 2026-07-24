@@ -4,46 +4,7 @@ import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import { interruptBlockedInteractiveEngine } from "../interactive-engine/extension-ui-bridge.ts";
 import { routeGlobalClearInput } from "./interactive-global-clear.ts";
 import { StartupIdentityComponent } from "./components/startup-identity.ts";
-
-InteractiveModeBase.prototype.runUserPromptTurn = async function(this: InteractiveModeBase, userInput: string): Promise<void> {
-    // Show the working spinner immediately on submit so there is no visible gap
-    // while prompt preflight runs before the agent emits `agent_start`.
-    this.showWorkingLoaderNow();
-    const deferredStartupNeedsPromptGate = this.deferredStartupPending || this.deferredStartupPromise !== undefined;
-    if (deferredStartupNeedsPromptGate) {
-      this.deferLoadedResourcesDisclosureUntilAgentEnd = true;
-    }
-    // Yield once so the freshly-mounted spinner paints before synchronous
-    // preflight work can block the event loop.
-    await yieldToEventLoop();
-    try {
-      if (deferredStartupNeedsPromptGate) {
-        await this.ensureDeferredStartupComplete();
-      }
-      await this.session.prompt(userInput);
-      this.deferLoadedResourcesDisclosureUntilAgentEnd = false;
-      if (this.pendingLoadedResourcesDisclosure) {
-        this.pendingLoadedResourcesDisclosure = false;
-        this.showLoadedResources({ force: true, showDiagnosticsWhenQuiet: true, targetContainer: this.startupNoticesContainer });
-        void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
-        this.showStartupNoticesIfNeeded(this.startupNoticesContainer);
-      }
-    } catch (error: unknown) {
-      this.deferLoadedResourcesDisclosureUntilAgentEnd = false;
-      this.discardDeferredRenderedUserInput(userInput);
-      const errorMessage =
-        error instanceof Error ? error.message : "Unknown error occurred";
-      this.showError(errorMessage);
-    } finally {
-      // A submission that resolves without starting an agent turn (e.g. an
-      // extension slash-command) never emits `agent_end`, so clear the
-      // pre-shown spinner here when idle to avoid a lingering indicator.
-      if (!this.session.isStreaming) {
-        this.stopWorkingLoader();
-      }
-    }
-  };
-
+import { pauseAndAbortInteractiveSession } from "./interactive-pause.ts";
 export function registerStartupInputListeners(mode: InteractiveModeBase): void {
 	mode.ui.addInputListener(() => mode.builtInHeader instanceof StartupIdentityComponent ? void mode.builtInHeader.settle() : undefined);
 	mode.ui.addInputListener((data) => routeGlobalClearInput(data, {
@@ -62,8 +23,8 @@ InteractiveModeBase.prototype.setupKeyHandlers = function(this: InteractiveModeB
     // so they work correctly regardless of which editor is active
     this.defaultEditor.onEscape = () => {
       if (!this.session.isStreaming && interruptBlockedInteractiveEngine(this.runtimeHost)) return;
-      if (this.session.isStreaming) {
-        this.restoreQueuedMessagesToEditor({ abort: true });
+      if (this.session.isStreaming || this.session.agent.hasQueuedMessages() || this.session.queuedMessagesPaused) {
+        pauseAndAbortInteractiveSession(this);
       } else if (this.session.isBashRunning) {
         this.session.abortBash();
       } else if (this.isBashMode) {
@@ -471,7 +432,7 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function(this: Interact
 
       // If streaming, use prompt() with steer behavior
       // This handles extension commands (execute immediately), prompt template expansion, and queueing
-      if (this.session.isStreaming) {
+      if (this.session.isStreaming && !this.session.queuedMessagesPaused) {
         this.editor.addToHistory?.(text);
         this.editor.setText("");
         await this.session.prompt(text, { streamingBehavior: "steer" });

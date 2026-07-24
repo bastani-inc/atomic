@@ -118,6 +118,11 @@ interface AgentSession {
   steer(text: string): Promise<void>;
   followUp(text: string): Promise<void>;
 
+  // Controlled queue-pause gate
+  readonly queuedMessagesPaused: boolean;
+  pauseQueuedMessages(): void;
+  resumeQueuedMessages(): Promise<boolean>;
+
   // Subscribe to events (returns unsubscribe function)
   subscribe(listener: (event: AgentSessionEvent) => void): () => void;
 
@@ -279,6 +284,10 @@ await session.followUp("After you're done, also do this");
 ```
 
 Both `steer()` and `followUp()` expand file-based prompt templates but error on extension commands (extension commands cannot be queued).
+
+`pauseQueuedMessages()` is a synchronous admission gate. It moves existing raw steering/follow-up entries into a hold before an abort boundary and keeps later context-bearing arrivals—including trigger-turn custom messages, batches, interrupts, async job delivery, `sendUserMessage()`, and ordinary `prompt()` calls—queued without starting a provider turn. Content blocks, optional data, duplicate identities, raw text, message types, and the existing order within each queue kind are retained. Non-trigger custom messages remain history-only and do not invent a turn.
+
+`resumeQueuedMessages()` releases that hold exactly once but does **not** itself start or continue a model turn. Its promise resolves to `true` only when raw held steering/follow-up work was released, and to `false` when no held raw work existed. The caller must use its existing explicit resume action (for example, the interactive chat submission or workflow resume boundary) to drive execution. `clearQueue()` clears the paused flag when it explicitly removes the final unowned held item; if a protected or interrupt-owned item remains, the gate stays paused.
 
 ### Agent and AgentState
 
