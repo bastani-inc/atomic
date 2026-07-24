@@ -81,7 +81,11 @@ type PromptTurnContext = {
 	deferredStartupPromise?: Promise<void>;
 	deferLoadedResourcesDisclosureUntilAgentEnd: boolean;
 	pendingLoadedResourcesDisclosure: boolean;
-	session: { isStreaming: boolean; prompt: (text: string) => Promise<void> };
+	session: {
+		isStreaming: boolean;
+		resumeQueuedMessages: () => Promise<boolean>;
+		prompt: (text: string) => Promise<void>;
+	};
 	showWorkingLoaderNow: () => void;
 	ensureDeferredStartupComplete: () => Promise<void>;
 	showLoadedResources: (options?: unknown) => void;
@@ -115,7 +119,11 @@ function createPromptTurnContext(options: {
 		deferredStartupPromise: options.deferredStartupPromise,
 		deferLoadedResourcesDisclosureUntilAgentEnd: false,
 		pendingLoadedResourcesDisclosure: false,
-		session: { isStreaming: false, prompt: vi.fn(async () => {}) },
+		session: {
+			isStreaming: false,
+			resumeQueuedMessages: vi.fn(async () => false),
+			prompt: vi.fn(async () => {}),
+		},
 		showWorkingLoaderNow: vi.fn(),
 		ensureDeferredStartupComplete: vi.fn(async () => {}),
 		showLoadedResources: vi.fn(),

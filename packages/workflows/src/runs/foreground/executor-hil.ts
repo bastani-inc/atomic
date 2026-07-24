@@ -320,7 +320,7 @@ export function shouldInjectResumeContinuation(state: {
   readonly aborted: boolean;
 }): boolean {
   if (state.reason === false || state.aborted) return false;
-  return state.reason === "queued-user-message" || state.gateEnabled;
+  return state.reason === "queued-user-message" || state.reason === "paused-queued-user-message" || state.gateEnabled;
 }
 
 let cachedReadinessGateTool: ReturnType<typeof createAskUserQuestionToolDefinition> | undefined;

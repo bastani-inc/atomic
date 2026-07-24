@@ -253,6 +253,12 @@ export interface StageSessionRuntime {
   sendUserMessage?(content: StageUserMessageContent, options?: StageSendUserMessageOptions): Promise<void>;
   steer(text: string): Promise<void>;
   followUp(text: string): Promise<void>;
+  /** True when this runtime implements a native queued-message pause gate. */
+  readonly queuedMessagesPaused?: boolean;
+  /** Optional native optimization that synchronously holds queued steer/follow-up work. */
+  pauseQueuedMessages?(): void;
+  /** Optional native release; true reports that raw queued work was released. */
+  resumeQueuedMessages?(): boolean | Promise<boolean>;
   /**
    * Must emit `agent_start` when a submitted user-message turn takes ownership and
    * `agent_end` when that owned turn terminates. Registration may replay state

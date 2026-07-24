@@ -75,7 +75,14 @@ export interface ContextWindowReplayResult {
 	wouldWarn: boolean;
 }
 
-export interface AgentSessionMethodSurface {
+export interface AgentSessionQueuePauseControl {
+	readonly queuedMessagesPaused: boolean;
+	pauseQueuedMessages(): void;
+	/** Release the hold without starting a turn; true means raw queued work was released. */
+	resumeQueuedMessages(): Promise<boolean>;
+}
+
+export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl {
 	readonly orchestrationContext: import("./extensions/index.ts").OrchestrationContext | undefined;
 	readonly modelRegistry: ModelRegistry;
 	readonly state: AgentState;
@@ -158,6 +165,8 @@ export interface AgentSessionMethodSurface {
 		messages: Array<Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">>,
 		options?: SendMessagesOptions,
 	): Promise<void>;
+	_commitAdmittedCustomMessage<T>(message: CustomMessage<T>, options?: SendMessageOptions): Promise<void>;
+	_commitAdmittedCustomMessages<T>(messages: CustomMessage<T>[], options?: SendMessagesOptions): Promise<void>;
 	_appendCustomMessage<T>(message: CustomMessage<T>): void;
 	_enqueueInterruptCustomMessage<T>(message: CustomMessage<T>, options?: SendMessageOptions): Promise<void>;
 	_sendInterruptCustomMessageNow<T>(message: CustomMessage<T>, options?: SendMessageOptions): Promise<void>;
@@ -283,6 +292,9 @@ export interface AgentSessionPublicSurface extends Pick<AgentSessionMethodSurfac
 	| "isBashRunning"
 	| "hasPendingBashMessages"
 	| "extensionRunner"
+	| "queuedMessagesPaused"
+	| "pauseQueuedMessages"
+	| "resumeQueuedMessages"
 	| "subscribe"
 	| "dispose"
 	| "getActiveToolNames"
@@ -358,6 +370,9 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_terminatingToolCallIds: Set<string>;
 	_pendingInterruptDeliveries: number;
 	_activeInterruptQueueHold: InterruptQueueHold | undefined;
+	_queuedMessagesPaused: boolean;
+	_queuedMessagesPauseAbortBoundary: Promise<void> | undefined;
+	_workflowStageDeliveryForwardTarget: AgentSessionInternalSurface | undefined;
 	_activeInterruptAbortMessage: string | undefined;
 	_pendingNextTurnMessages: CustomMessage[];
 	_protectedStreamingCustomMessages: Array<{

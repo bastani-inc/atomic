@@ -147,10 +147,22 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
       const hasMessage = typeof message === "string" && message.trim().length > 0;
       const resumeMessage = hasMessage ? message : undefined;
       const queuedResumeContinuation = wasPausedBeforeResume && !resumesIdleStageChat;
-      const addedResumeContinuation = queuedResumeContinuation && runtime.state.resumeContinuationPending === false;
-      if (addedResumeContinuation) runtime.state.resumeContinuationPending = "resume";
+      const previousResumeContinuation = runtime.state.resumeContinuationPending;
+      let resumeContinuationChanged = false;
+      let wakeReleasedIdleStageChat = false;
       try {
-        await runtime.innerCtx.__resume(resumesIdleStageChat ? undefined : resumeMessage);
+        await runtime.innerCtx.__resume(
+          resumesIdleStageChat ? undefined : resumeMessage,
+          ({ releasedQueuedMessages, runnerOwnedDeliveryPending }) => {
+            if (runnerOwnedDeliveryPending) return;
+            if (!releasedQueuedMessages && !queuedResumeContinuation) return;
+            resumeContinuationChanged = true;
+            runtime.state.resumeContinuationPending = releasedQueuedMessages
+              ? "paused-queued-user-message"
+              : previousResumeContinuation === false ? "resume" : previousResumeContinuation;
+            wakeReleasedIdleStageChat = resumesIdleStageChat && releasedQueuedMessages;
+          },
+        );
         const changed = runtime.activeStore.recordStageResumed(runtime.runId, runtime.stageId);
         if (changed) {
           runtime.scheduler.releaseStageBarrier(runtime.stageId);
@@ -159,6 +171,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
           // resume succeeds, the run is active even if sibling stages remain paused.
           runtime.activeStore.recordRunResumed(runtime.runId);
         }
+        if (wakeReleasedIdleStageChat) runtime.state.wakeWaitingForStageChatTurn?.();
         if (resumesIdleStageChat && hasMessage) {
           runtime.throwIfStageMutationBlocked();
           return await runtime.innerCtx.__sendUserMessage(
@@ -168,8 +181,8 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
           );
         }
       } catch (err) {
-        if (addedResumeContinuation && runtime.state.resumeContinuationPending === "resume") {
-          runtime.state.resumeContinuationPending = false;
+        if (resumeContinuationChanged) {
+          runtime.state.resumeContinuationPending = previousResumeContinuation;
         }
         throw err;
       } finally {

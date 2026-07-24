@@ -24,6 +24,7 @@ import { installAgentSessionAccessors } from "./agent-session-accessors.ts";
 import { agentSessionAutoCompactionMethods } from "./agent-session-auto-compaction.ts";
 import { agentSessionBashMethods } from "./agent-session-bash.ts";
 import { agentSessionCompactionMethods } from "./agent-session-compaction.ts";
+import { agentSessionCustomMessageCommitMethods } from "./agent-session-custom-message-commit.ts";
 import { agentSessionEventsMethods } from "./agent-session-events.ts";
 import { agentSessionExportMethods } from "./agent-session-export.ts";
 import { agentSessionExtensionBindingsMethods } from "./agent-session-extension-bindings.ts";
@@ -84,6 +85,9 @@ export class AgentSession {
 	protected _interruptDeliveryQueue: Promise<void> = Promise.resolve();
 	protected _pendingInterruptDeliveries = 0;
 	protected _activeInterruptQueueHold: InterruptQueueHold | undefined = undefined;
+	protected _queuedMessagesPaused = false;
+	protected _queuedMessagesPauseAbortBoundary: Promise<void> | undefined = undefined;
+	protected _workflowStageDeliveryForwardTarget: AgentSessionInternalSurface | undefined = undefined;
 	protected _activeInterruptAbortMessage: string | undefined = undefined;
 	protected _pendingNextTurnMessages: CustomMessage[] = [];
 	protected _protectedStreamingCustomMessages: Array<{
@@ -192,6 +196,7 @@ Object.assign(
 	agentSessionEventsMethods,
 	agentSessionStateMethods,
 	agentSessionPromptMethods,
+	agentSessionCustomMessageCommitMethods,
 	agentSessionMessageQueueMethods,
 	agentSessionModelsMethods,
 	agentSessionCompactionMethods,

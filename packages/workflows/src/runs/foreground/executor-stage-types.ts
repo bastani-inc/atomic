@@ -14,14 +14,17 @@ export interface StageMcpScope {
   clear(): void;
 }
 
-export type ResumeContinuationReason = "resume" | "queued-user-message";
+export type ResumeContinuationReason = "resume" | "queued-user-message" | "paused-queued-user-message";
 
 export interface LiveStageMutableState {
   activeAskUserQuestionAnonymousCalls: number;
   askUserQuestionObservedThisTurn: boolean;
   chatAnswerObservedThisTurn: boolean;
   resumeContinuationPending: false | ResumeContinuationReason;
+  suppressQueuedUserMessageContinuation: boolean;
   waitingForStageChatTurn: boolean;
+  /** Wakes the executor so a paused idle stage-chat can drain released work. */
+  wakeWaitingForStageChatTurn: (() => void) | undefined;
   liveHandleReleased: boolean;
   stageClosedByWorkflowExit: boolean;
   stageFinalized: boolean;

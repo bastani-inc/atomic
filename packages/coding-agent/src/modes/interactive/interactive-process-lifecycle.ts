@@ -1,6 +1,7 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { APP_TITLE, chalk, killTrackedDetachedChildren } from "./interactive-mode-deps.ts";
 import { formatResumeCommand, isDeadTerminalError } from "./interactive-mode-helpers.ts";
+import { pauseAndAbortInteractiveSession } from "./interactive-pause.ts";
 
 const SHUTDOWN_INPUT_DRAIN_MAX_MS = 250;
 const SHUTDOWN_INPUT_DRAIN_IDLE_MS = 50;
@@ -27,8 +28,8 @@ InteractiveModeBase.prototype.handleCtrlC = function(this: InteractiveModeBase):
 InteractiveModeBase.prototype.interruptActiveOperation = function(this: InteractiveModeBase): boolean {
     // Mirror the Escape interrupt paths so Ctrl+C aborts whichever operation is
     // currently running. Returns true when something was aborted.
-    if (this.session.isStreaming) {
-      this.restoreQueuedMessagesToEditor({ abort: true });
+    if (this.session.isStreaming || this.session.agent.hasQueuedMessages()) {
+      pauseAndAbortInteractiveSession(this);
       return true;
     }
     if (this.session.isBashRunning) {

@@ -84,11 +84,14 @@ export function createTrackedStageCaller(input: {
         reason,
         gateEnabled: readinessGateEnabled,
         aborted: runtime.signal.aborted,
-      })) {
-        continue;
+      }) || skipResumeContinuationInjection()) continue;
+      const suppressQueuedContinuation = reason === "paused-queued-user-message";
+      if (suppressQueuedContinuation) runtime.state.suppressQueuedUserMessageContinuation = true;
+      try {
+        result = await raceAbort(runtime.innerCtx.prompt(RESUME_CONTINUATION_PROMPT), runtime.signal) as T;
+      } finally {
+        if (suppressQueuedContinuation) runtime.state.suppressQueuedUserMessageContinuation = false;
       }
-      if (skipResumeContinuationInjection()) continue;
-      result = await raceAbort(runtime.innerCtx.prompt(RESUME_CONTINUATION_PROMPT), runtime.signal) as T;
       captureChatAnswer();
     }
     captureChatAnswer();
@@ -186,8 +189,12 @@ export function createTrackedStageCaller(input: {
               runtime.state.chatAnswerObservedThisTurn = false;
               runtime.state.waitingForStageChatTurn = true;
               try {
-                await raceAbort(new Promise<void>((resolve) => { resolveNextTurnEnd = resolve; }), runtime.signal);
+                await raceAbort(new Promise<void>((resolve) => {
+                  resolveNextTurnEnd = resolve;
+                  runtime.state.wakeWaitingForStageChatTurn = resolve;
+                }), runtime.signal);
               } finally {
+                runtime.state.wakeWaitingForStageChatTurn = undefined;
                 runtime.state.waitingForStageChatTurn = false;
               }
               if (runtime.signal.aborted) break;
@@ -198,6 +205,7 @@ export function createTrackedStageCaller(input: {
               if (runtime.innerCtx.__structuredOutputFinalized()) break;
             }
           } finally {
+            runtime.state.wakeWaitingForStageChatTurn = undefined;
             resolveNextTurnEnd = null;
             unsubscribeTurnWatcher();
           }

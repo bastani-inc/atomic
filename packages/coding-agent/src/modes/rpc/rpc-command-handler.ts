@@ -114,6 +114,7 @@ export function createRpcCommandHandler({
 					autoCompactionEnabled: session.autoCompactionEnabled,
 					messageCount: session.messages.length,
 					pendingMessageCount: session.pendingMessageCount,
+					queuedMessagesPaused: session.queuedMessagesPaused,
 					resourceOverlaps: session.resourceLoader.getExtensions().overlaps ?? [],
 				};
 				return createRpcSuccessResponse(id, "get_state", state);
@@ -280,7 +281,11 @@ export function createRpcCommandHandler({
 			case "clear_queue": {
 				return createRpcSuccessResponse(id, "clear_queue", session.clearQueue());
 			}
-
+			case "pause_queued_messages":
+				session.pauseQueuedMessages();
+				return createRpcSuccessResponse(id, "pause_queued_messages");
+			case "resume_queued_messages":
+				return createRpcSuccessResponse(id, "resume_queued_messages", { released: await session.resumeQueuedMessages() });
 			case "bash": {
 				const result = await session.executeBash(command.command, undefined, {
 					excludeFromContext: command.excludeFromContext,

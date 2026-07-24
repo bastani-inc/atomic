@@ -1,4 +1,5 @@
 import type { BashExecutionMessage } from "../../../core/messages.ts";
+import type { AgentSessionQueuePauseControl } from "../../../core/agent-session-methods.ts";
 import { combineQueuedMessagesForEditor } from "../chat-input-actions.ts";
 import type { ChatMessageEntry } from "./chat-message-renderer.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.ts";
@@ -21,17 +22,63 @@ import {
   userMessageSignature,
 } from "./chat-session-host-utils.ts";
 
-export async function interruptChatSession<
+function supportsQueuedMessagePause(
+  session: AgentSessionQueuePauseControl | undefined,
+): session is AgentSessionQueuePauseControl {
+  return typeof session?.pauseQueuedMessages === "function"
+    && typeof session.resumeQueuedMessages === "function";
+}
+
+export function interruptChatSession<
   TExtraEntry extends ChatTranscriptEntryLike,
 >(state: ChatSessionHostState<TExtraEntry>): Promise<void> {
+  const active = state.interruptSettlement;
+  if (active !== undefined) return active;
+  state.interruptFailureMessage = undefined;
+  const settlement = (async (): Promise<void> => {
+    try {
+      const session = state.getAgentSession?.();
+      if (supportsQueuedMessagePause(session)) session.pauseQueuedMessages();
+      state.sdkBusy = false;
+      state.workingMessage = undefined;
+      stopChatSessionWorkingLifecycle(state, false);
+      await state.commands.interrupt?.();
+    } catch (err) {
+      state.interruptFailureMessage = errorMessage(err);
+      state.statusMessage = state.interruptFailureMessage;
+      throw err;
+    } finally {
+      syncChatSessionAnimationTick(state);
+      state.requestRender?.();
+    }
+  })();
+  state.interruptSettlement = settlement;
+  void settlement.finally(() => {
+    if (state.interruptSettlement === settlement) state.interruptSettlement = undefined;
+  }).catch(() => {});
+  return settlement;
+}
+
+async function submitAfterInterruptSettlement<TExtraEntry extends ChatTranscriptEntryLike>(
+  state: ChatSessionHostState<TExtraEntry>,
+  settlement: Promise<void>,
+  text: string,
+): Promise<void> {
+  const editorText = state.inputBuffer;
   try {
-    restoreQueuedMessagesToEditor(state);
+    state.sdkBusy = true;
+    state.statusMessage = "resuming…";
+    syncChatSessionAnimationTick(state);
+    state.requestRender?.();
+    await settlement;
+    await requiredChatSessionCommand(state, "resume")(text);
+    if (state.inputBuffer === editorText) setChatSessionEditorText(state, "");
     state.sdkBusy = false;
-    state.workingMessage = undefined;
-    stopChatSessionWorkingLifecycle(state, false);
-    await state.commands.interrupt?.();
+    state.statusMessage = "";
   } catch (err) {
+    state.sdkBusy = false;
     state.statusMessage = errorMessage(err);
+    state.interruptFailureMessage = undefined;
   } finally {
     syncChatSessionAnimationTick(state);
     state.requestRender?.();
@@ -45,6 +92,18 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 ): Promise<void> {
   const text = (submittedText ?? state.inputBuffer).trim();
   if (!text) return;
+  const interruptSettlement = state.interruptSettlement;
+  if (interruptSettlement !== undefined) {
+    await submitAfterInterruptSettlement(state, interruptSettlement, text);
+    return;
+  }
+  if (state.interruptFailureMessage !== undefined) {
+    state.statusMessage = state.interruptFailureMessage;
+    state.interruptFailureMessage = undefined;
+    syncChatSessionAnimationTick(state);
+    state.requestRender?.();
+    return;
+  }
   if (text.startsWith("/") && state.commands.handleSlashCommand) {
     const handled = await state.commands.handleSlashCommand(text);
     if (handled) {
@@ -72,6 +131,9 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
   }
   setChatSessionEditorText(state, "");
   const isPaused = state.isPaused?.() === true;
+  const agentSession = state.getAgentSession?.();
+  const nativeQueuePaused = supportsQueuedMessagePause(agentSession)
+    && agentSession.queuedMessagesPaused;
   const isStreaming = isChatSessionStreaming(state);
   const shouldAppendOptimisticUser = mode === "auto" && !isStreaming;
   const optimisticSignature = shouldAppendOptimisticUser
@@ -90,6 +152,19 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
       syncChatSessionAnimationTick(state);
       state.requestRender?.();
       await requiredChatSessionCommand(state, "resume")(text);
+      state.sdkBusy = false;
+      state.statusMessage = "";
+      syncChatSessionAnimationTick(state);
+      return;
+    }
+    if (nativeQueuePaused) {
+      state.sdkBusy = true;
+      state.statusMessage = "resuming…";
+      syncChatSessionAnimationTick(state);
+      state.requestRender?.();
+      await agentSession.resumeQueuedMessages();
+      await state.commands.ensureAttached?.();
+      await requiredChatSessionCommand(state, "prompt")(text);
       state.sdkBusy = false;
       state.statusMessage = "";
       syncChatSessionAnimationTick(state);

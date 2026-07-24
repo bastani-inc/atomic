@@ -147,7 +147,9 @@ export function createWorkflowStageFactory(input: {
       askUserQuestionObservedThisTurn: false,
       chatAnswerObservedThisTurn: false,
       resumeContinuationPending: false,
+      suppressQueuedUserMessageContinuation: false,
       waitingForStageChatTurn: false,
+      wakeWaitingForStageChatTurn: undefined,
       liveHandleReleased: false,
       stageClosedByWorkflowExit: false,
       stageFinalized: false,
@@ -183,7 +185,9 @@ export function createWorkflowStageFactory(input: {
     });
     const unsubscribeQueuedUserMessageWatcher = innerCtx.subscribe(
       createQueuedUserMessageConsumptionWatcher(() => {
-        state.resumeContinuationPending = "queued-user-message";
+        if (!state.suppressQueuedUserMessageContinuation) {
+          state.resumeContinuationPending = "queued-user-message";
+        }
       }),
     );
 

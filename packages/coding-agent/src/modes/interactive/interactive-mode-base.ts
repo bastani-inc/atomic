@@ -4,6 +4,7 @@
  */
 import type {} from "./interactive-mode-surface.ts";
 import { type AssistantMessage, type AutocompleteProvider, type EditorComponent, type Component, type LoaderIndicatorOptions, type AgentSession, type AgentSessionRuntime, type AutocompleteProviderFactory, type EditorFactory, type HostCustomUiStateListener, Container, Loader, ProcessTerminal, Spacer, setKeybindings, Text, TUI, VERSION, FooterDataProvider, KeybindingsManager, AssistantMessageComponent, BashExecutionComponent, CountdownTimer, CustomEditor, ExtensionEditorComponent, ExtensionInputComponent, ExtensionSelectorComponent, FooterComponent, UsageMeterComponent, ToolExecutionComponent, getEditorTheme, setRegisteredThemes, InteractiveThemeController } from "./interactive-mode-deps.ts";
+import type { AgentSessionQueuePauseControl } from "../../core/agent-session-methods.ts";
 import type { CompactionQueuedMessage, InteractiveModeOptions } from "./interactive-mode-types.ts";
 import type { EarlyInputSnapshot } from "../../main-early-input.ts";
 import { shouldRenderEngineDiagnosticAsChatError } from "../interactive-engine/activity-watchdog.ts";
@@ -357,7 +358,6 @@ export class InteractiveModeBase {
   headerContainer: Container;
 
 
-
   // Built-in header (logo + keybinding hints + changelog)
   builtInHeader: Component | undefined = undefined;
 
@@ -370,8 +370,8 @@ export class InteractiveModeBase {
 
 
   // Convenience accessors
-  get session(): AgentSession {
-    return this.runtimeHost.session;
+  get session(): AgentSession & AgentSessionQueuePauseControl {
+    return this.runtimeHost.session as AgentSession & AgentSessionQueuePauseControl;
   }
 
 

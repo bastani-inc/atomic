@@ -187,9 +187,9 @@ See `/hotkeys` for the full list. Customize via `~/.atomic/agent/keybindings.jso
 
 | Key | Action |
 |-----|--------|
-| CTRL+C | Clear editor |
-| CTRL+C twice | Quit |
-| Escape | Cancel/abort |
+| CTRL+C | Interrupt active or queued work; when idle, clear editor |
+| CTRL+C twice while idle | Quit |
+| Escape | Abort active work and hold queued messages |
 | Escape twice | Open `/tree` |
 | CTRL+L | Open model selector |
 | CTRL+P / SHIFT+CTRL+P | Cycle scoped models forward/backward |
@@ -203,8 +203,8 @@ Submit messages while the agent is working:
 
 - **Enter** queues a *steering* message, delivered after the current assistant turn finishes executing its tool calls
 - **ALT+Enter** queues a *follow-up* message, delivered only after the agent finishes all work
-- **Escape** aborts and restores queued messages to editor
-- **ALT+Up** retrieves queued messages back to editor
+- **Escape** or **Ctrl+C** aborts active/queued work and pauses queued messages in place; submitting the next ordinary chat message resumes them once in their original per-queue order. After the abort settles, a later idle Ctrl+C still clears the editor and a second quick idle press quits without dequeuing the hold
+- **ALT+Up** explicitly retrieves queued messages back to the editor instead of resuming them
 
 On Windows Terminal, `ALT+Enter` is fullscreen by default. Remap it in [docs/terminal-setup.md](docs/terminal-setup.md) so Atomic can receive the follow-up shortcut.
 

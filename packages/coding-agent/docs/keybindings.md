@@ -82,8 +82,8 @@ Modifier combinations: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+1
 
 | Keybinding id | Default | Description |
 |--------|---------|-------------|
-| `app.interrupt` | `escape` | Cancel / abort the running agent, bash command, compaction, or retry |
-| `app.clear` | `ctrl+c` | Interrupt the running agent when busy; otherwise clear the editor (press twice to exit) |
+| `app.interrupt` | `escape` | Abort active work and hold queued messages; repeated Escape does not dequeue the hold |
+| `app.clear` | `ctrl+c` | Interrupt active or queued work; once idle, clear the editor (press twice while idle to exit) |
 | `app.exit` | `ctrl+d` | Exit (when editor empty) |
 | `app.suspend` | `ctrl+z` (none on Windows) | Suspend to background |
 | `app.editor.external` | `ctrl+g` | Open in external editor (`$VISUAL` or `$EDITOR`) |
@@ -91,6 +91,8 @@ Modifier combinations: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+1
 | `app.message.copy` | `ctrl+x` | Copy the last assistant message (or the selected message in `/tree`) |
 
 When `app.clipboard.pasteImage` finds text rather than an image, Atomic inserts that clipboard text into the editor instead of reporting an image-paste failure.
+
+A held paused queue by itself is idle for Ctrl+C handling. After an interruption settles, the next Ctrl+C clears the editor without releasing or dequeuing the hold, and a second quick idle press exits normally.
 
 ### Sessions
 

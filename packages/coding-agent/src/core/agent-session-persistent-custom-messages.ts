@@ -2,6 +2,7 @@ import type { DrainedAgentQueues } from "./agent-session-types.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { customMessageExcludesContext } from "./agent-session-types.ts";
 import type { CustomMessage } from "./messages.ts";
+import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
 
 type ProtectedDelivery = "steer" | "followUp";
 type ProtectedPhase = "queued" | "consumed-unpersisted" | "persistence-failed";
@@ -61,6 +62,7 @@ export async function admitProtectedStreamingCustomMessage(
 	// protocol-sensitive phase; at ordinary turn boundaries the hidden steer must
 	// be queued synchronously so agent-core's next native poll observes it.
 	if (session.agent.state.pendingToolCalls.size > 0) await session._agentEventQueue;
+	session = resolveWorkflowStageDeliveryTarget(session);
 	const card = appendDurableDisplayCard(session, message);
 	const reconciliation = {
 		role: "custom" as const,
@@ -159,10 +161,55 @@ export function flushConsumedProtectedStreamingCustomMessages(session: AgentSess
 	}
 }
 
-/** Fail closed for queued input, then flush consumed recovery state. */
+function removeReference<T>(items: T[], message: T): void {
+	let index = items.indexOf(message);
+	while (index >= 0) {
+		items.splice(index, 1);
+		index = items.indexOf(message);
+	}
+}
+
+function removeQueuedProtectedReference(session: AgentSession, message: CustomMessage): void {
+	const hold = session._activeInterruptQueueHold;
+	if (hold !== undefined) {
+		removeReference(hold.steering, message);
+		removeReference(hold.followUp, message);
+	}
+	const queues = session._drainQueuedAgentMessages();
+	session._restoreQueuedAgentMessages({
+		steering: queues.steering.filter((candidate) => candidate !== message),
+		followUp: queues.followUp.filter((candidate) => candidate !== message),
+	});
+}
+
+function isPausedHeldProtectedReference(session: AgentSession, message: CustomMessage): boolean {
+	const hold = session._activeInterruptQueueHold;
+	return session._queuedMessagesPaused && hold !== undefined &&
+		(hold.steering.includes(message) || hold.followUp.includes(message));
+}
+
+/**
+ * Persist only reconciliation input already sealed inside an accepted pause
+ * hold. Other queued input can still race an active protocol turn and must keep
+ * the historical fail-closed disposal behavior.
+ */
 export function prepareProtectedStreamingCustomMessagesForDisposal(session: AgentSession): void {
-	if (protectedMessages(session).some((entry) => entry.phase === "queued")) {
+	const pending = protectedMessages(session);
+	const queued = pending.filter((entry) => entry.phase === "queued");
+	if (queued.some((entry) => !isPausedHeldProtectedReference(session, entry.message))) {
 		throw new Error("Cannot dispose a session with a queued protected reconciliation");
+	}
+	for (const entry of queued) {
+		session.sessionManager.appendCustomMessageEntry(
+			entry.message.customType,
+			entry.message.content,
+			entry.message.display,
+			entry.message.details,
+			customMessageExcludesContext(entry.message),
+		);
+		removeQueuedProtectedReference(session, entry.message);
+		const index = pending.indexOf(entry);
+		if (index >= 0) pending.splice(index, 1);
 	}
 	flushConsumedProtectedStreamingCustomMessages(session);
 }
@@ -194,5 +241,5 @@ export function transferProtectedStreamingCustomMessages(
 		else retained.push(entry);
 	}
 	source._protectedStreamingCustomMessages = retained;
-	protectedMessages(target).push(...moved);
+	protectedMessages(target).unshift(...moved);
 }

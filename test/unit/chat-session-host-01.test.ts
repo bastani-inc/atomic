@@ -283,10 +283,16 @@ test("ChatSessionHost escape aborts active bash", async () => {
   assert.match(host.statusText(), /cancelled/i);
   host.dispose();
 });
-test("ChatSessionHost restores queued messages into the editor before interrupting", async () => {
+test("ChatSessionHost holds queued messages in place before interrupting", async () => {
+  let pauseQueueCalls = 0;
   let clearQueueCalls = 0;
   let interrupts = 0;
   const agentSession = {
+    pauseQueuedMessages: () => {
+      pauseQueueCalls += 1;
+    },
+    queuedMessagesPaused: false,
+    resumeQueuedMessages: async () => false,
     clearQueue: () => {
       clearQueueCalls += 1;
     },
@@ -309,10 +315,12 @@ test("ChatSessionHost restores queued messages into the editor before interrupti
   for (const ch of "draft") host.handleInput(ch);
   await host.interrupt();
 
-  assert.equal(clearQueueCalls, 1);
+  assert.equal(pauseQueueCalls, 1);
+  assert.equal(clearQueueCalls, 0);
   assert.equal(interrupts, 1);
-  assert.equal(host.inputText(), "steer one\n\nfollow later\n\ndraft");
-  assert.doesNotMatch(host.renderPendingMessages(80).join("\n"), /Steering|Follow-up/);
+  assert.equal(host.inputText(), "draft");
+  assert.match(host.renderPendingMessages(80).join("\n"), /Steering: steer one/);
+  assert.match(host.renderPendingMessages(80).join("\n"), /Follow-up: follow later/);
   host.dispose();
 });
 test("ChatSessionHost clears busy state when auto retry finishes unsuccessfully", () => {

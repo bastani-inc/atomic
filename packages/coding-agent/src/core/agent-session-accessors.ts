@@ -28,6 +28,7 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 		scopedModels: { get() { return this._scopedModels; } },
 		promptTemplates: { get() { return this._resourceLoader.getPrompts().prompts; } },
 		pendingMessageCount: { get() { return this._steeringMessages.length + this._followUpMessages.length; } },
+		queuedMessagesPaused: { get() { return this._queuedMessagesPaused; } },
 		resourceLoader: { get() { return this._resourceLoader; } },
 		autoCompactionEnabled: { get() { return this.settingsManager.getCompactionEnabled(); } },
 		isRetrying: { get() { return this._retryPromise !== undefined; } },

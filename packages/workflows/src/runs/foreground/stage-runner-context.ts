@@ -226,8 +226,8 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
       await controller.requestPause();
     },
 
-    async __resume(message?: string) {
-      controller.resume(message);
+    async __resume(message, beforeResolve) {
+      return controller.resume(message, beforeResolve);
     },
 
     __isPaused() {

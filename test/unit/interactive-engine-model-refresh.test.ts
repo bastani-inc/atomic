@@ -129,3 +129,49 @@ test("an aborted isolated refresh does not replace the current model catalog", a
 	assert.deepEqual(registry.getAvailable(), []);
 	assert.deepEqual(session.scopedModels, []);
 });
+
+test("isolated queue pause reaches the engine before abort and resumes remotely", async () => {
+	let releasePause!: () => void;
+	const pauseCommitted = new Promise<void>((resolve) => { releasePause = resolve; });
+	const calls: string[] = [];
+	const client = {
+		onEvent: () => () => {},
+		getState: async () => ({
+			thinkingLevel: "off" as const, isStreaming: true, isCompacting: false,
+			steeringMode: "all" as const, followUpMode: "all" as const,
+			sessionId: "test-session", autoCompactionEnabled: true, messageCount: 0,
+			pendingMessageCount: 1, queuedMessagesPaused: false,
+		}),
+		requestInternal: async (command: { type: string }) => {
+			if (command.type === "get_available_models") return { models: [], scopedModels: [], customAuthProviders: [] };
+			calls.push(command.type);
+			if (command.type === "pause_queued_messages") await pauseCommitted;
+			if (command.type === "resume_queued_messages") return { released: true };
+			return undefined;
+		},
+		abort: async () => { calls.push("abort"); },
+		getCommands: async () => [],
+	} as unknown as RpcClient;
+	const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+	const session = {
+		modelRegistry: registry, scopedModels: [], sessionFile: undefined, sessionManager: {},
+		agent: { state: { model: undefined, thinkingLevel: "off", messages: [] }, steeringMode: "all", followUpMode: "all" },
+	} as unknown as AgentSession;
+	const createRuntime = (async () => { throw new Error("not used"); }) as CreateAgentSessionRuntimeFactory;
+	const localRuntime = new AgentSessionRuntime(session, { cwd: process.cwd(), agentDir: process.cwd() } as never, createRuntime);
+	const runtime = new IsolatedInteractiveRuntime(localRuntime, createRuntime, client);
+	await runtime.initializeFromEngine();
+
+	runtime.session.pauseQueuedMessages();
+	const abort = runtime.session.abort();
+	await Bun.sleep(0);
+	assert.deepEqual(calls, ["pause_queued_messages"]);
+	assert.equal(runtime.session.queuedMessagesPaused, true);
+	releasePause();
+	await abort;
+	assert.deepEqual(calls, ["pause_queued_messages", "abort"]);
+
+	assert.equal(await runtime.session.resumeQueuedMessages(), true);
+	assert.deepEqual(calls, ["pause_queued_messages", "abort", "resume_queued_messages"]);
+	assert.equal(runtime.session.queuedMessagesPaused, false);
+});

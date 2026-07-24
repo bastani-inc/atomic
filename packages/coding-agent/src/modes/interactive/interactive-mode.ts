@@ -16,6 +16,7 @@ import "./interactive-extension-widgets.ts";
 import "./interactive-extension-context.ts";
 import "./interactive-extension-dialogs.ts";
 import "./interactive-extension-custom-ui.ts";
+import "./interactive-prompt-turn.ts";
 import "./interactive-input-handling.ts";
 import "./interactive-agent-events.ts";
 import "./interactive-render-chat.ts";
