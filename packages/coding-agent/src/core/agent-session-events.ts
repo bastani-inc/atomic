@@ -8,6 +8,7 @@ import type { AgentSessionInternalSurface as AgentSession } from "./agent-sessio
 import { customMessageExcludesContext, isSingleGenericAbortTextContent, replacementAbortContent, type AgentSessionEvent, type AgentSessionEventListener } from "./agent-session-types.ts";
 import type { MessageEndEvent, MessageStartEvent, MessageUpdateEvent, ToolExecutionEndEvent, ToolExecutionStartEvent, ToolExecutionUpdateEvent, TurnEndEvent, TurnStartEvent } from "./extensions/index.ts";
 import { normalizeMessageContent } from "./messages.ts";
+import { isProtectedStreamingCustomMessage, markProtectedStreamingCustomMessageConsumed, markProtectedStreamingCustomMessagePersistenceFailed, persistProtectedStreamingCustomMessage, retryConsumedProtectedStreamingCustomMessages } from "./agent-session-persistent-custom-messages.ts";
 
 export function _emit(this: AgentSession, event: AgentSessionEvent): void {
 	for (const l of this._eventListeners) {
@@ -26,21 +27,29 @@ export function _emitQueueUpdate(this: AgentSession): void {
 
 /** Internal handler for agent events - shared by subscribe and reconnect */
 
-export function _handleAgentEvent(this: AgentSession, event: AgentEvent): void {
+export function _handleAgentEvent(this: AgentSession, event: AgentEvent): Promise<void> | void {
 	// Create retry promise synchronously before queueing async processing.
 	// Agent.emit() calls this handler synchronously, and prompt() calls waitForRetry()
 	// as soon as agent.prompt() resolves. If _retryPromise is created only inside
 	// _processAgentEvent, slow earlier queued events can delay agent_end processing
 	// and waitForRetry() can miss the in-flight retry.
 	this._createRetryPromiseForAgentEnd(event);
+	const awaitProtectedPersistence = event.type === "message_end" && event.message.role === "custom"
+		? markProtectedStreamingCustomMessageConsumed(this, event.message)
+		: false;
 
-	this._agentEventQueue = this._agentEventQueue.then(
+	const processing = this._agentEventQueue.then(
 		() => this._processAgentEvent(event),
 		() => this._processAgentEvent(event),
 	);
+	this._agentEventQueue = processing;
 
-	// Keep queue alive if an event handler fails
-	this._agentEventQueue.catch(() => {});
+	// Keep queue alive if an event handler fails. Agent-core must additionally
+	// await the hidden reconciliation's persistence boundary before its provider
+	// request, but an extension-listener failure retains the legacy nonblocking
+	// event behavior.
+	processing.catch(() => {});
+	if (awaitProtectedPersistence) return processing.catch(() => {});
 }
 
 
@@ -82,6 +91,10 @@ export function _findLastAssistantInMessages(this: AgentSession, messages: Agent
 
 
 export async function _processAgentEvent(this: AgentSession, event: AgentEvent): Promise<void> {
+	const protectedMessage = event.type === "message_end" && event.message.role === "custom"
+		&& isProtectedStreamingCustomMessage(this, event.message)
+		? event.message
+		: undefined;
 	// When a user message starts, check if it's from either queue and remove it BEFORE emitting
 	// This ensures the UI sees the updated queue state
 	if (event.type === "message_start" && event.message.role === "user") {
@@ -108,24 +121,36 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 	this._applyInterruptAbortMessage(event);
 	this._applyProviderErrorGuidance(event);
 
-	// Emit to extensions first
-	await this._emitExtensionEvent(event);
-
-	// Notify all listeners
-	this._emit(event);
+	try {
+		// Emit to extensions first, then notify all public listeners.
+		await this._emitExtensionEvent(event);
+		this._emit(event);
+	} finally {
+		// Agent-core has consumed this protected input already. Its durability
+		// boundary cannot be skipped by a fallible extension or session listener.
+		if (protectedMessage !== undefined) {
+			try {
+				persistProtectedStreamingCustomMessage(this, protectedMessage);
+			} catch {
+				markProtectedStreamingCustomMessagePersistenceFailed(this, protectedMessage);
+			}
+			retryConsumedProtectedStreamingCustomMessages(this);
+		}
+	}
 
 	// Handle session persistence
 	if (event.type === "message_end") {
 		// Check if this is a custom message from extensions
 		if (event.message.role === "custom") {
-			// Persist as CustomMessageEntry
-			this.sessionManager.appendCustomMessageEntry(
-				event.message.customType,
-				event.message.content,
-				event.message.display,
-				event.message.details,
-				customMessageExcludesContext(event.message),
-			);
+			if (protectedMessage === undefined) {
+				this.sessionManager.appendCustomMessageEntry(
+					event.message.customType,
+					event.message.content,
+					event.message.display,
+					event.message.details,
+					customMessageExcludesContext(event.message),
+				);
+			}
 		} else if (
 			event.message.role === "user" ||
 			event.message.role === "assistant" ||
@@ -175,6 +200,10 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			}
 		}
 	}
+
+	// A transient hidden-reconciliation write failure retries independently of
+	// provider/card delivery and can never create another visible lifecycle card.
+	retryConsumedProtectedStreamingCustomMessages(this);
 
 	// Check auto-retry and auto-compaction after agent completes
 	if (event.type === "agent_end" && this._lastAssistantMessage) {

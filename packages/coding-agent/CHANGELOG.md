@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed fast named workflows leaving a stale “still running” parent-chat claim when a terminal lifecycle notice arrives before the launch result or during final text. The opt-in lifecycle path now commits one context-excluded display card before send admission, preserves the assistant call → `status=running` result order, and delivers a separate hidden reconciliation at a native safe boundary; queue clearing, ordinary aborts, and stage-session transfer retain that reconciliation without interrupting unrelated active text or duplicating the lifecycle card.
+
 ## [0.9.11-alpha.5] - 2026-07-23
 
 ### Changed

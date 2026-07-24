@@ -101,7 +101,7 @@ export interface AgentSessionMethodSurface {
 	readonly hasPendingBashMessages: boolean;
 	readonly extensionRunner: ExtensionRunner;
 
-	_handleAgentEvent(event: AgentEvent): void;
+	_handleAgentEvent(event: AgentEvent): Promise<void> | void;
 	_getRequiredRequestAuth(model: Model<Api>): Promise<{ apiKey: string; headers?: ProviderHeaders; baseUrl?: string }>;
 	_installAgentToolHooks(): void;
 	_installAgentNextTurnRefresh(): void;
@@ -359,6 +359,11 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_activeInterruptQueueHold: InterruptQueueHold | undefined;
 	_activeInterruptAbortMessage: string | undefined;
 	_pendingNextTurnMessages: CustomMessage[];
+	_protectedStreamingCustomMessages: Array<{
+		message: CustomMessage;
+		delivery: "steer" | "followUp";
+		phase: "queued" | "consumed-unpersisted" | "persistence-failed";
+	}>;
 	_compactionAbortController: AbortController | undefined;
 	_autoCompactionAbortController: AbortController | undefined;
 	_overflowRecoveryAttempted: boolean;
