@@ -50,6 +50,12 @@ export interface DurableWorkflowBackend {
   /** Persist a checkpoint before exposing its side effect. */
   recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void>;
 
+  /**
+   * Persist additive replay metadata without turning a rejected storage write
+   * into a fatal flush error. Returns false only for the storage rejection.
+   */
+  recordAdditiveCheckpointBestEffort(checkpoint: DurableCheckpoint): Promise<boolean>;
+
   /** Wait for all serialized writes to settle. */
   flush(): Promise<void>;
 
@@ -222,6 +228,15 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 
   async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
     this.recordCheckpoint(checkpoint);
+  }
+
+  async recordAdditiveCheckpointBestEffort(checkpoint: DurableCheckpoint): Promise<boolean> {
+    try {
+      await this.recordCheckpointAsync(checkpoint);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async flush(): Promise<void> {}

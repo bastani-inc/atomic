@@ -67,6 +67,8 @@ describe("workflow tool status nodes", () => {
 
     assert.deepEqual(summary.tools?.map(({ id, name, status, attachable }) => ({ id, name, status, attachable })),
       (run.toolNodes ?? []).map(({ id, name, status, attachable }) => ({ id, name, status, attachable })));
+    assert.deepEqual(summary.tools?.map(({ runId, runName, depth }) => ({ runId, runName, depth })),
+      (run.toolNodes ?? []).map(() => ({ runId: run.id, runName: run.name, depth: 0 })));
     const text = renderWorkflowToolContent(result, { action: "status" });
     for (const status of ["running", "completed", "failed", "cached", "cancelled"]) {
       assert.match(text, new RegExp(`tool-${status} \\(${status}\\)`));

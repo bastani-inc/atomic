@@ -64,6 +64,37 @@ describe("non-attachable tool interactions", () => {
     view.dispose();
   });
 
+  test("keyboard, mouse, and switcher activation open a retained completed stage", () => {
+    const localStore = createStore();
+    localStore.recordRunStart({
+      id: "postmortem-run", name: "postmortem", inputs: {}, status: "completed", startedAt: 1, endedAt: 2,
+      stages: [{
+        id: "retained-stage", name: "retained-stage", status: "completed", parentIds: [],
+        toolEvents: [], attachable: false, sessionFile: "/tmp/retained-session.jsonl",
+      }],
+    });
+    const graph = expandWorkflowGraph(localStore.snapshot(), "postmortem-run");
+    const attached: string[] = [];
+    const view = new GraphView({
+      mode: "overlay", runId: "postmortem-run", store: localStore, graphTheme: defaultTheme,
+      getViewportRows: () => 32,
+      onStageAttach: (runId, stageId) => attached.push(`${runId}/${stageId}`),
+    });
+
+    view.render(96);
+    view.handleInput("\r");
+    view.handleInput(clickForSingleNode(graph.renderStages[0]!));
+    view.handleInput("/");
+    for (const char of "retained-stage") view.handleInput(char);
+    view.handleInput("\r");
+    assert.deepEqual(attached, [
+      "postmortem-run/retained-stage",
+      "postmortem-run/retained-stage",
+      "postmortem-run/retained-stage",
+    ]);
+    view.dispose();
+  });
+
   test("textual stage/chat/control targeting cannot resolve or create a handle for a tool", async () => {
     recordToolOnly(store, "completed");
     for (const target of ["tool:publish", "publish-api"]) {

@@ -280,7 +280,7 @@ export abstract class GraphViewState {
   protected _stageChatTarget(
     stage: StageSnapshot | undefined,
   ): ExpandedWorkflowStageTarget | undefined {
-    if (!stage || stage.nodeKind === "tool" || stage.attachable === false) return undefined;
+    if (!stage || stage.nodeKind === "tool") return undefined;
     return expandedStageTarget(this.expandedGraph, stage.id);
   }
 

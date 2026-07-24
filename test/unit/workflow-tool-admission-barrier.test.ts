@@ -4,6 +4,7 @@ import { createToolPrimitive } from "../../packages/workflows/src/durable/tool-p
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
+import { createAdmittedToolExecutionTracker } from "../../packages/workflows/src/engine/run-tool-execution-tracker.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 
 describe("ctx.tool admitted execution barrier", () => {
@@ -34,6 +35,30 @@ describe("ctx.tool admitted execution barrier", () => {
     assert.equal(await returned, exactValue);
   });
 
+
+  test("refused tracking rejects the exact native execution promise before invocation", async () => {
+    const backend = new InMemoryDurableBackend();
+    const refusal = new Error("deterministic refusal");
+    let admitted: Promise<unknown> | undefined;
+    let callbacks = 0;
+    const tool = createToolPrimitive({
+      workflowId: "refused-promise-identity",
+      backend,
+      nextCheckpointId: () => "unused",
+      throwIfCancelled: () => undefined,
+      trackExecution<T>(execution: Promise<T>) {
+        admitted = execution;
+        return { accepted: false, error: refusal, bindNode(): void {} };
+      },
+    });
+
+    const returned = tool("refused", {}, async () => { callbacks += 1; return "never"; });
+    assert.equal(returned, admitted);
+    assert.equal(returned instanceof Promise, true);
+    await assert.rejects(returned, (error: unknown) => error === refusal);
+    assert.equal(callbacks, 0);
+    assert.deepEqual(backend.listCheckpoints("refused-promise-identity"), []);
+  });
   test("unawaited admitted success delays root completion until checkpointed", async () => {
     const store = createStore();
     const backend = new InMemoryDurableBackend();
@@ -296,5 +321,29 @@ describe("ctx.tool admitted execution barrier", () => {
     assert.equal(result.failedToolNodeId, undefined);
     assert.equal(store.runs()[0]?.failedToolNodeId, undefined);
     assert.equal(backend.listCheckpoints(result.runId).some((checkpoint) => checkpoint.kind === "tool" && checkpoint.name === "cancelled-write"), false);
+  });
+
+  test("closeAndDrain shares one close, admits while draining, then refuses atomically", async () => {
+    const tracker = createAdmittedToolExecutionTracker();
+    const first = Promise.withResolvers<void>();
+    const second = Promise.withResolvers<void>();
+    assert.equal(tracker.track(first.promise).accepted, true);
+    const close = tracker.closeAndDrain();
+    assert.equal(tracker.closeAndDrain(), close, "concurrent close calls share the close promise");
+    assert.equal(tracker.track(second.promise).accepted, true, "DRAINING remains open to settlement continuations");
+
+    let closed = false;
+    void close.then(() => { closed = true; });
+    first.resolve();
+    await Bun.sleep(0);
+    assert.equal(closed, false);
+    second.resolve();
+    await close;
+    assert.equal(tracker.closeAndDrain(), close, "completed close remains idempotent");
+
+    const refusedExecution = Promise.resolve();
+    const refused = tracker.track(refusedExecution);
+    assert.equal(refused.accepted, false);
+    if (!refused.accepted) assert.match(refused.error.message, /ctx\.tool admission is closed/);
   });
 });

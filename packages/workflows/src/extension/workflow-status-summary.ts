@@ -68,6 +68,10 @@ export interface WorkflowStatusToolNode {
   readonly resultSummary?: string;
   readonly error?: string;
   readonly attachable: false;
+  /** Owning run identity; emitted for summaries, optional for source compatibility. */
+  readonly runId?: string;
+  readonly runName?: string;
+  readonly depth?: number;
 }
 
 /**
@@ -165,20 +169,26 @@ export function summarizeRunSnapshot(
       name: stage.name,
       status: stage.status,
     })),
-    tools: (run.toolNodes ?? []).map((tool) => ({
-      id: tool.id,
-      name: tool.name,
-      status: tool.status,
-      ordinal: tool.ordinal,
-      executionOrder: tool.executionOrder,
-      parentIds: [...tool.parentIds],
-      startedAt: tool.startedAt,
-      endedAt: tool.endedAt,
-      replayed: tool.replayed,
-      resultSummary: tool.resultSummary,
-      error: tool.error,
-      attachable: false,
-    })),
+    tools: (run.toolNodes ?? []).map((tool) => {
+      const owner = tool as typeof tool & { readonly runId?: string; readonly runName?: string; readonly depth?: number };
+      return {
+        id: tool.id,
+        name: tool.name,
+        status: tool.status,
+        ordinal: tool.ordinal,
+        executionOrder: tool.executionOrder,
+        parentIds: [...tool.parentIds],
+        startedAt: tool.startedAt,
+        endedAt: tool.endedAt,
+        replayed: tool.replayed,
+        resultSummary: tool.resultSummary,
+        error: tool.error,
+        attachable: false,
+        runId: owner.runId ?? run.id,
+        runName: owner.runName ?? run.name,
+        depth: owner.depth ?? 0,
+      };
+    }),
     awaitingInputCount: awaitingInput.length,
     awaitingInput,
     exitReason: run.exitReason,

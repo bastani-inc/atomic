@@ -54,9 +54,9 @@ export type WorkflowToolPrimitive = <T extends WorkflowSerializableValue>(
   options?: WorkflowToolOptions,
 ) => Promise<T>;
 
-export interface WorkflowToolExecutionAdmission {
-  bindNode(nodeId: string): void;
-}
+export type WorkflowToolExecutionAdmission =
+  | { readonly accepted?: true; bindNode(nodeId: string): void }
+  | { readonly accepted: false; readonly error: Error; bindNode(nodeId: string): void };
 
 export interface CreateToolPrimitiveInput {
   readonly workflowId: string;
@@ -95,6 +95,11 @@ export function createToolPrimitive(input: CreateToolPrimitiveInput): WorkflowTo
       rejectExecution = reject;
     });
     const admission = input.trackExecution?.(execution);
+    if (admission?.accepted === false) {
+      void execution.catch(() => undefined);
+      rejectExecution(admission.error);
+      return execution;
+    }
     void executeToolInvocation(input, ordinals, name, args, fn, options, (nodeId) => admission?.bindNode(nodeId))
       .then(resolveExecution, rejectExecution);
     return execution;
@@ -239,7 +244,7 @@ async function recordReplayedToolTopology(
     && JSON.stringify(cached.topology.run) === JSON.stringify(topology.run)
     && cached.topology.endedAt === topology.endedAt;
   if (unchanged) return;
-  await recordCheckpointDurably(input.backend, {
+  await input.backend.recordAdditiveCheckpointBestEffort({
     kind: "tool",
     workflowId: input.workflowId,
     checkpointId: `tool-replay-meta:${durableHash({ argsHash, topology })}`,
@@ -249,6 +254,7 @@ async function recordReplayedToolTopology(
     completedAt: Date.now(),
     topology,
   });
+  input.throwIfCancelled();
 }
 function summarizeToolResult(value: WorkflowSerializableValue): string {
   const serialized = JSON.stringify(value);

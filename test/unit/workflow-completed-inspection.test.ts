@@ -12,9 +12,13 @@ import {
   seedWorkflowLifecycleNotificationState,
 } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
+import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
+import { computeLayout, NODE_H, NODE_W } from "../../packages/workflows/src/tui/layout.js";
 import { mockSession, type StageSessionRuntime } from "./executor-shared.js";
+import { defaultTheme, visibleText } from "./overlay-graph-helpers.js";
 
 let tempDir = "";
 
@@ -35,6 +39,16 @@ function retainedSession(name: string, internal = false): string {
     JSON.stringify({ type: "message", id: `${name}-message`, parentId: null, timestamp: new Date().toISOString(), message: { role: "user", content: "Original workflow request", timestamp: Date.now() } }),
   ].join("\n") + "\n");
   return path;
+}
+
+function clickForSingleNode(stage: RunSnapshot["stages"][number], width = 96, rows = 32): string {
+  const [node] = computeLayout([stage], { orientation: "vertical" });
+  const bodyRows = rows - 2 - 6;
+  const totalGraphRows = node.y + NODE_H;
+  const topPad = totalGraphRows <= bodyRows ? Math.min(3, Math.max(0, Math.floor((bodyRows - totalGraphRows) / 2))) : 0;
+  const graphInner = Math.max(1, Math.max(40, width) - 4);
+  const leftMargin = Math.max(2, node.x + NODE_W <= graphInner ? Math.floor((graphInner - node.x - NODE_W) / 2) : 2);
+  return `\x1b[<0;${leftMargin + node.x + 3};${1 + 3 + topPad + node.y + 3}M`;
 }
 function lifecycleRestoration(store: ReturnType<typeof createStore>) {
   const state = createWorkflowLifecycleNotificationState();
@@ -108,10 +122,32 @@ describe("completed workflow inspection", () => {
 
     assert.equal(opened.ok, true);
     assert.equal(store.runs()[0]?.status, "completed");
+    assert.equal(store.runs()[0]?.stages[0]?.attachable, false);
     assert.equal(backend.getWorkflow("completed-inspection")?.status, "completed");
     const handle = registry.get("completed-inspection", "completed-stage-1");
     assert.ok(handle);
     assert.deepEqual(registry.run("completed-inspection").stages(), []);
+
+    const attached: string[] = [];
+    const graph = expandWorkflowGraph(store.snapshot(), "completed-inspection");
+    const view = new GraphView({
+      mode: "overlay", runId: "completed-inspection", store, graphTheme: defaultTheme,
+      getViewportRows: () => 32,
+      onStageAttach: (runId, stageId) => { attached.push(`${runId}/${stageId}`); },
+    });
+    assert.match(visibleText(view.render(96)), /↵ open stage chat/);
+    view.handleInput("\r");
+    view.handleInput(clickForSingleNode(graph.renderStages[0]!));
+    view.handleInput("/");
+    assert.match(visibleText(view.render(96)), /↵ open stage chat/);
+    for (const char of "final") view.handleInput(char);
+    view.handleInput("\r");
+    assert.deepEqual(attached, [
+      "completed-inspection/completed-stage-1",
+      "completed-inspection/completed-stage-1",
+      "completed-inspection/completed-stage-1",
+    ]);
+    view.dispose();
     await handle.prompt("What should I do next?");
     assert.equal(sessionCreates, 1);
     assert.equal(restoredMessageCount, 1);

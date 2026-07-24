@@ -63,7 +63,7 @@ function viewFor(stages: StageSnapshot[], tools: ToolNodeSnapshot[] = []): Graph
 }
 
 describe("tool graph chat hints", () => {
-  test("wide footer advertises chat only for the focused attachable stage target", () => {
+  test("wide footer advertises chat for stage targets, including non-live completed stages", () => {
     const stageView = viewFor([stage("stage")]);
     const stageText = visibleText(stageView.render(120));
     assert.ok(stageText.includes(STAGE_FOOTER));
@@ -78,10 +78,9 @@ describe("tool graph chat hints", () => {
     assert.ok(toolText.includes(TOOL_FOOTER));
     assert.doesNotMatch(toolText, /↵ (?:open )?stage chat/);
 
-    const nonAttachableView = viewFor([stage("summary", [], { attachable: false })]);
+    const nonAttachableView = viewFor([stage("summary", [], { status: "completed", attachable: false })]);
     const nonAttachableText = visibleText(nonAttachableView.render(120));
-    assert.ok(nonAttachableText.includes(TOOL_FOOTER));
-    assert.doesNotMatch(nonAttachableText, /↵ (?:open )?stage chat/);
+    assert.ok(nonAttachableText.includes(STAGE_FOOTER));
 
     const compactToolText = visibleText(toolView.render(40));
     assert.match(compactToolText, /ctrl\+x\s+return to main chat/i);

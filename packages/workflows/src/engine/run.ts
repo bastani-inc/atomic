@@ -397,6 +397,7 @@ export async function run<
     if (opts.deferWorkflowStart === true) {
       await nextEventLoopTurn();
       if (ownController.signal.aborted) {
+        await admittedTools.closeAndDrain();
         const selectedExit = findWorkflowExitSignal(ownController.signal.reason, exitScope);
         if (selectedExit !== undefined) return await finalizers.finalizeWorkflowExit(selectedExit);
         const parentExit = parentWorkflowExitAbortReason(ownController.signal.reason);
@@ -412,7 +413,7 @@ export async function run<
     });
     if (opts.deferWorkflowStart === true) opts.onWorkflowStartReady?.();
     const rawResult = await runWorkflowDefinitionCallback(def.name, runId, () => def.run(ctx));
-    await admittedTools.drain();
+    await admittedTools.closeAndDrain();
     if (ownController.signal.aborted) {
       const selectedExit = findWorkflowExitSignal(ownController.signal.reason, exitScope);
       if (selectedExit !== undefined) return await finalizers.finalizeWorkflowExit(selectedExit);
@@ -436,7 +437,7 @@ export async function run<
     return reconcileTerminalRunResult(runId, runSnapshot, activeStore, { status: returned.status, result, error: returned.error }, opts.onRunEnd);
   } catch (err) {
     const observedAdmittedToolFailure = selectedAdmittedToolFailure;
-    await admittedTools.drain();
+    await admittedTools.closeAndDrain();
     const selectedExit = findWorkflowExitSignal(err, exitScope) ?? findWorkflowExitSignal(ownController.signal.reason, exitScope);
     if (selectedExit !== undefined) return await finalizers.finalizeWorkflowExit(selectedExit);
     if (ownController.signal.aborted) {
@@ -444,7 +445,6 @@ export async function run<
       if (parentExit !== undefined) return await finalizers.finalizeParentWorkflowExitCancellation(parentExit);
       return finalizeKilled(runId, runSnapshot, activeStore, opts.persistence, opts.onRunEnd);
     }
-
     const failure = classifyExecutorFailure(err);
     const selectedMetadata = normalizeStageLessFailureMetadata(selectRunFailureDisposition({ outerFailure: failure, thrownError: err, stages: runSnapshot.stages, classifyFailure: classifyExecutorFailure }), runSnapshot.stages.length);
     const failedToolNodeId = selectedMetadata.failedStageId === undefined && selectedMetadata.failureKind !== "cancelled" && selectedMetadata.failureDisposition !== "terminal_killed"

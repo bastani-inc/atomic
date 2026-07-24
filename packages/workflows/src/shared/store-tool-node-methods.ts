@@ -1,6 +1,6 @@
 import type { Store } from "./store-public-types.js";
 import type { RunSnapshot, ToolNodeSnapshot } from "./store-types.js";
-import type { StoreContext } from "./store-internal.js";
+import { TERMINAL_STATUSES, type StoreContext } from "./store-internal.js";
 
 type ToolNodeStoreMethods = Pick<Store, "recordToolNodeStart" | "recordToolNodeRunning" | "recordToolNodeEnd">;
 
@@ -14,7 +14,7 @@ export function createToolNodeStoreMethods(context: StoreContext): ToolNodeStore
   return {
     recordToolNodeStart(runId, node): boolean {
       const run = context.findRun(runId);
-      if (run === undefined) return false;
+      if (run === undefined || TERMINAL_STATUSES.has(run.status)) return false;
       const mutableRun = run as RunSnapshot & { toolNodes: ToolNodeSnapshot[] };
       if (mutableRun.toolNodes === undefined) mutableRun.toolNodes = [];
       const nodes = mutableRun.toolNodes;

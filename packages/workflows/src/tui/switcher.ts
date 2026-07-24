@@ -86,7 +86,7 @@ export function renderSwitcher(
   const selected = filtered[state.selectedIndex];
   const canOpenStageChat = selected !== undefined && (
     opts.canOpenStageChat?.(selected)
-      ?? (selected.nodeKind !== "tool" && selected.attachable !== false)
+      ?? selected.nodeKind !== "tool"
   );
 
   const border = hexToAnsi(theme.borderActive);

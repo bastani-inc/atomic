@@ -65,6 +65,10 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
     await this.inner.recordCheckpointAsync(this.remap(checkpoint));
   }
 
+  async recordAdditiveCheckpointBestEffort(checkpoint: DurableCheckpoint): Promise<boolean> {
+    return await this.inner.recordAdditiveCheckpointBestEffort(this.remap(checkpoint));
+  }
+
   flush(): Promise<void> {
     return this.inner.flush();
   }

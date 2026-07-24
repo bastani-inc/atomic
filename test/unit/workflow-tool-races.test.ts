@@ -111,4 +111,23 @@ describe("ctx.tool persistence and cancellation races", () => {
       executionOrder: 1,
     });
   });
+
+  test("terminal runs refuse new tool nodes but accept admitted terminal updates", () => {
+    const store = createStore();
+    store.recordRunStart({ id: "terminal-store-guard", name: "terminal", inputs: {}, status: "running", stages: [], toolNodes: [], startedAt: 1 });
+    assert.equal(store.recordToolNodeStart("terminal-store-guard", {
+      kind: "tool", id: "tool:admitted", name: "admitted", argsHash: "admitted", ordinal: 1,
+      parentIds: [], status: "pending", attachable: false,
+    }), true);
+    assert.equal(store.recordRunEnd("terminal-store-guard", "completed", {}, undefined), true);
+    assert.equal(store.recordToolNodeStart("terminal-store-guard", {
+      kind: "tool", id: "tool:late", name: "late", argsHash: "late", ordinal: 2,
+      parentIds: [], status: "pending", attachable: false,
+    }), false);
+    assert.equal(store.recordToolNodeRunning("terminal-store-guard", "tool:admitted", 2), true);
+    assert.equal(store.recordToolNodeEnd("terminal-store-guard", "tool:admitted", {
+      status: "completed", endedAt: 3, resultSummary: "settled",
+    }), true);
+    assert.deepEqual(store.runs()[0]?.toolNodes?.map((node) => [node.id, node.status]), [["tool:admitted", "completed"]]);
+  });
 });
