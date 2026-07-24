@@ -270,48 +270,37 @@ export function _dropTrailingAutoCompactionRetryAssistantIfPresent(this: AgentSe
 }
 
 /**
- * Internal: schedule a live post-event continuation probe after compaction_end listeners can flush queues.
+ * Internal: schedule a live post-event continuation after compaction_end listeners can flush queues.
+ * The grace period preserves listener ordering, while waitForIdle prevents a transient active run
+ * from permanently abandoning queued work.
  */
 
 export function _schedulePostAutoCompactionContinuationProbe(this: AgentSession,
 	_reason: "overflow" | "threshold",
 	willRetry: boolean,
 ): void {
-	if (willRetry) {
-		const token = this._postCompactionContinuationToken + 1;
-		this._postCompactionContinuationToken = token;
-		let pending: Promise<void>;
-		pending = new Promise<void>((resolve) => {
-			setTimeout(() => {
-				void (async () => {
-					try {
-						if (this._postCompactionContinuationToken !== token) return;
-						if (this.isCompacting || this.isStreaming) return;
-						await this._resumeAfterAutoCompaction();
-					} finally {
-						if (this._pendingPostCompactionContinuation === pending) {
-							this._pendingPostCompactionContinuation = undefined;
-						}
-						resolve();
+	const token = this._postCompactionContinuationToken + 1;
+	this._postCompactionContinuationToken = token;
+	let pending: Promise<void>;
+	pending = new Promise<void>((resolve) => {
+		setTimeout(() => {
+			void (async () => {
+				try {
+					await this.agent.waitForIdle();
+					if (this._postCompactionContinuationToken !== token) return;
+					if (this.isCompacting || this.isStreaming) return;
+					if (!willRetry && !this.agent.hasQueuedMessages()) return;
+					await this._resumeAfterAutoCompaction();
+				} finally {
+					if (this._pendingPostCompactionContinuation === pending) {
+						this._pendingPostCompactionContinuation = undefined;
 					}
-				})();
-			}, 100);
-		});
-		this._pendingPostCompactionContinuation = pending;
-		return;
-	}
-
-	setTimeout(() => {
-		if (this.isCompacting || this.isStreaming) {
-			return;
-		}
-
-		if (!this.agent.hasQueuedMessages()) {
-			return;
-		}
-
-		void this._resumeAfterAutoCompaction();
-	}, 100);
+					resolve();
+				}
+			})();
+		}, 100);
+	});
+	this._pendingPostCompactionContinuation = pending;
 }
 
 export async function _awaitPendingPostCompactionContinuation(this: AgentSession): Promise<void> {
