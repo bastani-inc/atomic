@@ -5,11 +5,11 @@ export { BashExecutionComponent } from "./bash-execution.ts";
 export { BorderedLoader } from "./bordered-loader.ts";
 export {
   chatEntriesFromAgentMessages,
-  LiveChatEntriesController,
   renderChatMessageEntry,
   type ChatMessageEntry,
   type ChatMessageRenderOptions,
 } from "./chat-message-renderer.ts";
+export { LiveChatEntriesController } from "./live-chat-entries-controller.ts";
 export {
   ChatSessionHost,
   type ChatSessionHostBashRequest,

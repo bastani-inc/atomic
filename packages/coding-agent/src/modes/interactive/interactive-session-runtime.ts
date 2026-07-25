@@ -1,5 +1,6 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { type AgentSession, setRegisteredThemes, stopThemeWatcher } from "./interactive-mode-deps.ts";
+import { resetAssistantToolLifecycle } from "./interactive-assistant-tool-routing.ts";
 
 InteractiveModeBase.prototype.bindCurrentSessionExtensions = async function(this: InteractiveModeBase): Promise<void> {
     const uiContext = this.createExtensionUIContext();
@@ -115,6 +116,7 @@ InteractiveModeBase.prototype.applyRuntimeSettings = function(this: InteractiveM
 
 InteractiveModeBase.prototype.rebindCurrentSession = async function(this: InteractiveModeBase): Promise<void> {
     this.unsubscribe?.();
+    resetAssistantToolLifecycle(this);
     this.unsubscribe = undefined;
     this.applyRuntimeSettings();
     await this.bindCurrentSessionExtensions();
@@ -139,6 +141,7 @@ InteractiveModeBase.prototype.renderCurrentSessionState = function(this: Interac
     this.streamingComponent = undefined;
     this.streamingMessage = undefined;
     this.pendingTools.clear();
+    resetAssistantToolLifecycle(this);
     this.renderInitialMessages();
   };
 

@@ -320,6 +320,7 @@ function assistantToolCallEvent(event: AgentSessionEvent): {
   toolCallId: string;
   toolName: string;
   args: unknown;
+  assistantToolCall: true;
 } | undefined {
   if (!isSafeAssistantMessageSnapshot((event as { message?: unknown }).message)) return undefined;
   const assistantEvent = (event as {
@@ -348,6 +349,7 @@ function toolCallPayload(value: unknown): {
   toolCallId: string;
   toolName: string;
   args: unknown;
+  assistantToolCall: true;
 } | undefined {
   if (value === null || typeof value !== "object") return undefined;
   const candidate = value as { type?: unknown; id?: unknown; name?: unknown; arguments?: unknown };
@@ -355,6 +357,7 @@ function toolCallPayload(value: unknown): {
   if (typeof candidate.id !== "string" || typeof candidate.name !== "string") return undefined;
   return {
     type: "tool_execution_start",
+    assistantToolCall: true,
     toolCallId: candidate.id,
     toolName: candidate.name,
     args: candidate.arguments ?? {},

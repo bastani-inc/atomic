@@ -8,6 +8,7 @@ import { RemoteCustomMessageComponent, RemoteToolExecutionComponent } from "../i
 import type { CustomEntry } from "../../core/session-manager.ts";
 import { CustomEntryComponent } from "./components/custom-entry.ts";
 import { CACHE_TTL_MS, collectCacheMisses } from "../../core/cache-stats.ts";
+import { resetAssistantToolLifecycle } from "./interactive-assistant-tool-routing.ts";
 
 InteractiveModeBase.prototype.showStatus = function(this: InteractiveModeBase, message: string): void {
     const children = this.chatContainer.children;
@@ -243,6 +244,7 @@ InteractiveModeBase.prototype.addMessageToChat = function(this: InteractiveModeB
 
 InteractiveModeBase.prototype.renderSessionContext = function(this: InteractiveModeBase, sessionContext: SessionContext, options: { updateFooter?: boolean; populateHistory?: boolean } = {}): void {
     this.pendingTools.clear();
+    resetAssistantToolLifecycle(this);
     const pendingDeferredInputs = [...this.deferredRenderedUserInputs];
     this.deferredRenderedUserInputs = [];
     this.deferredRenderedUserInputComponents.clear();
@@ -280,6 +282,7 @@ InteractiveModeBase.prototype.renderSessionEntries = function(
   options: { updateFooter?: boolean; populateHistory?: boolean; suppressCompactionBoundary?: VerbatimCompactionResult } = {},
 ): void {
   this.pendingTools.clear();
+  resetAssistantToolLifecycle(this);
   const deferredInputs = [...this.deferredRenderedUserInputs];
   this.deferredRenderedUserInputs = [];
   this.deferredRenderedUserInputComponents.clear();

@@ -230,7 +230,7 @@ describe("chat message renderer utilities", () => {
     ["roleless", {}],
     ["malformed", { role: "assistant", content: "malformed" }],
   ] as const) {
-    test(`starts a new assistant entry after a ${label} assistant end`, () => {
+    test(`fences only assistant-owned tools after a ${label} assistant end`, () => {
       const entries = [] as ReturnType<typeof chatEntriesFromAgentMessages>;
       const live = new LiveChatEntriesController(entries);
 
@@ -240,16 +240,23 @@ describe("chat message renderer utilities", () => {
       }), true);
       live.applyEvent({
         type: "tool_execution_start",
-        toolCallId: "pending-1",
+        toolCallId: "unrelated-tool",
         toolName: "read",
-        args: { path: "first.txt" },
+        args: { path: "unrelated.txt" },
+      });
+      live.applyEvent({
+        type: "message_update",
+        message: {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "owned-tool", name: "read", arguments: { path: "owned.txt" } }],
+        },
       });
 
       assert.equal(live.applyEvent({
         type: "message_end",
         message: terminalMessage,
       }), false);
-      assert.deepEqual(live.pendingToolIds(), ["pending-1"]);
+      assert.deepEqual(live.pendingToolIds(), ["unrelated-tool"]);
 
       assert.equal(live.applyEvent({
         type: "message_update",
@@ -258,13 +265,115 @@ describe("chat message renderer utilities", () => {
       const assistantEntries = entries.filter((entry) => entry.kind === "assistant");
       assert.equal(assistantEntries.length, 2);
       assert.deepEqual(assistantEntries.map((entry) => entry.message.content), [
-        [{ type: "text", text: "first" }],
+        [{ type: "toolCall", id: "owned-tool", name: "read", arguments: { path: "owned.txt" } }],
         [{ type: "text", text: "second" }],
       ]);
-      assert.deepEqual(live.pendingToolIds(), ["pending-1"]);
+      const ownedTool = entries.find((entry) => entry.kind === "tool" && entry.toolCallId === "owned-tool");
+      assert.equal(ownedTool?.kind === "tool" ? ownedTool.isPartial : undefined, false);
+      assert.deepEqual(ownedTool?.kind === "tool" ? ownedTool.result?.content : undefined, []);
+      assert.equal(ownedTool?.kind === "tool" ? ownedTool.result?.isError : undefined, true);
+      assert.deepEqual(live.pendingToolIds(), ["unrelated-tool"]);
     });
   }
 
+  test("workflow chat reclaims an announced tool row when execution starts immediately after a malformed end", () => {
+    const entries = [] as ReturnType<typeof chatEntriesFromAgentMessages>;
+    const live = new LiveChatEntriesController(entries);
+    live.applyEvent({
+      type: "message_update",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "reclaimed-tool", name: "read", arguments: { path: "first.txt" } }],
+      },
+    });
+
+    live.applyEvent({ type: "message_end", message: undefined });
+    assert.deepEqual(live.pendingToolIds(), []);
+    live.applyEvent({
+      type: "tool_execution_start",
+      toolCallId: "reclaimed-tool",
+      toolName: "read",
+      args: { path: "first.txt" },
+    });
+    live.applyEvent({
+      type: "tool_execution_update",
+      toolCallId: "reclaimed-tool",
+      partialResult: { content: [{ type: "text", text: "partial" }] },
+    });
+    live.applyEvent({
+      type: "tool_execution_end",
+      toolCallId: "reclaimed-tool",
+      result: { content: [{ type: "text", text: "final" }] },
+      isError: false,
+    });
+
+    const tools = entries.filter((entry) => entry.kind === "tool");
+    assert.equal(tools.length, 1);
+    assert.equal(tools[0]?.result?.content[0]?.type === "text" ? tools[0].result.content[0].text : undefined, "final");
+    assert.equal(tools[0]?.isPartial, false);
+    assert.deepEqual(live.pendingToolIds(), []);
+  });
+
+  test("workflow chat settles an orphaned row and fences late execution traffic after a follow-up", () => {
+    const entries = [] as ReturnType<typeof chatEntriesFromAgentMessages>;
+    const live = new LiveChatEntriesController(entries);
+    live.applyEvent({
+      type: "message_update",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "stale-tool", name: "read", arguments: { path: "first.txt" } }],
+      },
+    });
+    const staleToolIndex = entries.findIndex((entry) => entry.kind === "tool");
+
+    live.applyEvent({ type: "message_end", message: undefined });
+    live.applyEvent({
+      type: "message_update",
+      message: { role: "assistant", content: [{ type: "text", text: "follow-up" }] },
+    });
+    const settledTool = entries[staleToolIndex];
+    assert.equal(settledTool?.kind, "tool");
+    assert.equal(settledTool?.kind === "tool" ? settledTool.isPartial : undefined, false);
+    assert.deepEqual(settledTool?.kind === "tool" ? settledTool.result?.content : undefined, []);
+    assert.equal(settledTool?.kind === "tool" ? settledTool.result?.isError : undefined, true);
+
+    const lateStartApplied = live.applyEvent({
+      type: "tool_execution_start",
+      toolCallId: "stale-tool",
+      toolName: "read",
+      args: { path: "late.txt" },
+    });
+    const lateUpdateApplied = live.applyEvent({
+      type: "tool_execution_update",
+      toolCallId: "stale-tool",
+      partialResult: { content: [{ type: "text", text: "LATE_STALE_UPDATE" }] },
+    });
+    const lateEndApplied = live.applyEvent({
+      type: "tool_execution_end",
+      toolCallId: "stale-tool",
+      result: { content: [{ type: "text", text: "LATE_STALE_END" }] },
+      isError: false,
+    });
+
+    assert.equal(lateStartApplied, false);
+    assert.equal(lateUpdateApplied, false);
+    assert.equal(lateEndApplied, false);
+    assert.equal(entries[staleToolIndex], settledTool);
+    assert.deepEqual(live.pendingToolIds(), []);
+    assert.equal(entries.filter((entry) => entry.kind === "assistant").length, 2);
+    assert.equal(entries.filter((entry) => entry.kind === "tool").length, 1);
+
+    assert.equal(live.applyEvent({
+      type: "message_update",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "stale-tool", name: "read", arguments: { path: "new.txt" } }],
+      },
+    }), true);
+    assert.equal(entries[staleToolIndex], settledTool);
+    assert.equal(entries.filter((entry) => entry.kind === "tool").length, 2);
+    assert.deepEqual(live.pendingToolIds(), ["stale-tool"]);
+  });
   test("ignores malformed tool-result starts and renders a later valid result", () => {
     const entries = [] as ReturnType<typeof chatEntriesFromAgentMessages>;
     const live = new LiveChatEntriesController(entries);

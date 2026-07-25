@@ -1,59 +1,22 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
-import { type AssistantMessage, type Message, type AgentSessionEvent, Loader, Spacer, Text, pickWhimsicalWorkingMessage, AssistantMessageComponent, CountdownTimer, keyText, ToolExecutionComponent, theme } from "./interactive-mode-deps.ts";
+import { type Message, type AgentSessionEvent, Loader, Spacer, Text, pickWhimsicalWorkingMessage, CountdownTimer, keyText, theme } from "./interactive-mode-deps.ts";
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
-import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.ts";
-import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import { handleSummarizationRetryEvent } from "./interactive-summarization-retry-events.ts";
 import { CACHE_TTL_MS, detectCacheMiss } from "../../core/cache-stats.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
 import { isSafeAssistantCacheStatsMessage, isSafeAssistantMessageSnapshot } from "../../core/message-event-validation.ts";
+import {
+  beginAssistantLifecycle,
+  closeMalformedAssistantLifecycle,
+  closeValidAssistantLifecycle,
+  completeToolExecution,
+  createToolComponent,
+  renderAssistantSnapshot,
+  retireAssistantToolLifecycle,
+  routeToolExecutionStart,
+  syncAssistantToolComponents,
+} from "./interactive-assistant-tool-routing.ts";
 
-function createToolComponent(
-  mode: InteractiveModeBase,
-  toolName: string,
-  toolCallId: string,
-  args: unknown,
-): ToolExecutionComponent | RemoteToolExecutionComponent {
-  const options = {
-    showImages: mode.settingsManager.getShowImages(),
-    imageWidthCells: mode.settingsManager.getImageWidthCells(),
-  };
-  return mode.runtimeHost instanceof IsolatedInteractiveRuntime
-    ? new RemoteToolExecutionComponent(toolName, toolCallId, args, options, mode.runtimeHost, () => mode.ui.requestRender())
-    : new ToolExecutionComponent(
-        toolName, toolCallId, args, options, mode.getRegisteredToolDefinition(toolName), mode.ui, mode.sessionManager.getCwd(),
-      );
-}
-
-function renderAssistantSnapshot(mode: InteractiveModeBase, message: AssistantMessage): void {
-  let component = mode.streamingComponent;
-  if (!component) {
-    // RPC may drop an unsafe start; the first valid update or end restores the view.
-    component = new AssistantMessageComponent(
-      undefined,
-      mode.hideThinkingBlock,
-      mode.getMarkdownThemeWithSettings(),
-      mode.hiddenThinkingLabel,
-      mode.outputPad,
-    );
-    mode.streamingComponent = component;
-    mode.chatContainer.addChild(component);
-  }
-  mode.streamingMessage = message;
-  component.updateContent(message);
-}
-
-function syncAssistantToolComponents(mode: InteractiveModeBase, message: AssistantMessage): void {
-  for (const content of message.content) {
-    if (content.type !== "toolCall") continue;
-    const existing = mode.pendingTools.get(content.id);
-    if (existing) { existing.updateArgs(content.arguments); continue; }
-    const component = createToolComponent(mode, content.name, content.id, content.arguments);
-    component.setExpanded(mode.toolOutputExpanded);
-    mode.chatContainer.addChild(component);
-    mode.pendingTools.set(content.id, component);
-  }
-}
 
 InteractiveModeBase.prototype.subscribeToAgent = function(this: InteractiveModeBase): void {
     this.unsubscribe = this.session.subscribe(async (event) => {
@@ -70,7 +33,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
 
     switch (event.type) {
       case "agent_start":
-        this.pendingTools.clear();
+        retireAssistantToolLifecycle(this);
         if (this.settingsManager.getShowTerminalProgress()) {
           this.ui.terminal.setProgress(true);
         }
@@ -170,6 +133,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
           this.updatePendingMessagesDisplay();
           this.ui.requestRender();
         } else if (event.message.role === "assistant") {
+          beginAssistantLifecycle(this);
           this.streamingComponent = undefined;
           this.streamingMessage = undefined;
           renderAssistantSnapshot(this, event.message);
@@ -179,6 +143,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
 
       case "message_update":
         if (isSafeAssistantMessageSnapshot(event.message) && event.message.role === "assistant") {
+          beginAssistantLifecycle(this);
           renderAssistantSnapshot(this, event.message);
 
           syncAssistantToolComponents(this, event.message);
@@ -189,6 +154,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
       case "message_end":
         if (event.message?.role === "user") break;
         if (isSafeAssistantMessageSnapshot(event.message) && event.message.role === "assistant") {
+          beginAssistantLifecycle(this);
           let errorMessage: string | undefined;
           if (event.message.stopReason === "aborted") {
             const existingAbortMessage =
@@ -227,7 +193,13 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
             }
           }
         }
+        if (isSafeAssistantMessageSnapshot(event.message) && event.message.role === "assistant") {
+          closeValidAssistantLifecycle(this);
+        }
         if (event.message?.role === "assistant" || (this.streamingComponent !== undefined && typeof event.message?.role !== "string")) {
+          if (!isSafeAssistantMessageSnapshot(event.message)) {
+            closeMalformedAssistantLifecycle(this);
+          }
           this.streamingComponent = undefined;
           this.streamingMessage = undefined;
           this.footer.invalidate();
@@ -247,13 +219,18 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
         break;
 
       case "tool_execution_start": {
-        let component = this.pendingTools.get(event.toolCallId);
+        const route = routeToolExecutionStart(this, event.toolCallId);
+        if (route.status === "ignore") break;
+        let component = route.status === "reclaim"
+          ? route.tool
+          : this.pendingTools.get(event.toolCallId);
+        if (route.status === "reclaim") route.tool.updateArgs(event.args);
         if (!component) {
           component = createToolComponent(this, event.toolName, event.toolCallId, event.args);
           component.setExpanded(this.toolOutputExpanded);
           this.chatContainer.addChild(component);
-          this.pendingTools.set(event.toolCallId, component);
         }
+        this.pendingTools.set(event.toolCallId, component);
         component.markExecutionStarted();
         this.ui.requestRender();
         break;
@@ -276,6 +253,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
         if (component) {
           component.updateResult({ ...event.result, isError: event.isError });
           this.pendingTools.delete(event.toolCallId);
+          completeToolExecution(this, event.toolCallId);
           this.ui.requestRender();
         }
         break;
@@ -296,7 +274,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
           this.streamingComponent = undefined;
           this.streamingMessage = undefined;
         }
-        this.pendingTools.clear();
+        retireAssistantToolLifecycle(this);
         if (this.compactionQueuedMessages.length > 0) {
           void this.session.agent.waitForIdle().then(() => this.flushCompactionQueue({ willRetry: false }));
         }

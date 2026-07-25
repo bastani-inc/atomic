@@ -178,6 +178,96 @@ test("ChatSessionHost ignores tool-call deltas from malformed assistant updates 
   assert.equal(host.entries().some((entry) => entry.toolCallId === "safe-call"), true);
   host.dispose();
 });
+
+test("workflow chat fences an explicit tool call from an empty assistant update after a malformed end", () => {
+  const host = makeHost();
+  const announced = host.applyAgentEvent({
+    type: "message_update",
+    message: { role: "assistant", content: [] },
+    assistantMessageEvent: {
+      type: "toolcall_start",
+      contentIndex: 0,
+      toolCall: {
+        type: "toolCall",
+        id: "explicit-stale-call",
+        name: "read",
+        arguments: { path: "stale.txt" },
+      },
+    },
+  } as never);
+  assert.equal(announced, true);
+  assert.equal(host.entries().filter((entry) => entry.kind === "tool").length, 1);
+
+  host.applyAgentEvent({ type: "message_end", message: undefined } as never);
+  const prematureUpdate = host.applyAgentEvent({
+    type: "tool_execution_update",
+    toolCallId: "explicit-stale-call",
+    partialResult: { content: [{ type: "text", text: "PREMATURE_STALE_OUTPUT" }] },
+  } as never);
+  assert.equal(prematureUpdate, false);
+  host.applyAgentEvent({ type: "agent_end" } as never);
+
+  host.applyAgentEvent({
+    type: "message_update",
+    message: { role: "assistant", content: [{ type: "text", text: "workflow follow-up" }] },
+  } as never);
+  const staleTool = host.entries().find((entry) => entry.toolCallId === "explicit-stale-call");
+  assert.equal(staleTool?.isPartial, false);
+  assert.deepEqual(staleTool?.result?.content, []);
+  assert.equal(staleTool?.result?.isError, true);
+
+  assert.equal(host.applyAgentEvent({
+    type: "tool_execution_start",
+    toolCallId: "explicit-stale-call",
+    toolName: "read",
+    args: { path: "late.txt" },
+  } as never), false);
+  assert.equal(host.applyAgentEvent({
+    type: "tool_execution_end",
+    toolCallId: "explicit-stale-call",
+    result: { content: [{ type: "text", text: "LATE_STALE_OUTPUT" }] },
+    isError: false,
+  } as never), false);
+  assert.equal(host.entries().filter((entry) => entry.kind === "tool").length, 1);
+  assert.doesNotMatch(host.renderBody(80, 20).join("\n"), /PREMATURE_STALE_OUTPUT|LATE_STALE_OUTPUT/);
+  host.dispose();
+});
+test("workflow chat settles a reclaimed tool when follow-up traffic wins the race", () => {
+  const host = makeHost();
+  host.applyAgentEvent({
+    type: "message_update",
+    message: {
+      role: "assistant",
+      content: [{ type: "toolCall", id: "unfinished-call", name: "read", arguments: { path: "old.txt" } }],
+    },
+  } as never);
+  host.applyAgentEvent({ type: "message_end", message: undefined } as never);
+  host.applyAgentEvent({
+    type: "tool_execution_start",
+    toolCallId: "unfinished-call",
+    toolName: "read",
+    args: { path: "old.txt" },
+  } as never);
+
+  host.applyAgentEvent({
+    type: "message_update",
+    message: { role: "assistant", content: [{ type: "text", text: "workflow follow-up" }] },
+  } as never);
+  const lateEndApplied = host.applyAgentEvent({
+    type: "tool_execution_end",
+    toolCallId: "unfinished-call",
+    result: { content: [{ type: "text", text: "LATE_UNFINISHED_OUTPUT" }] },
+    isError: false,
+  } as never);
+
+  const tool = host.entries().find((entry) => entry.toolCallId === "unfinished-call");
+  assert.equal(lateEndApplied, false);
+  assert.equal(tool?.isPartial, false);
+  assert.deepEqual(tool?.result?.content, []);
+  assert.equal(tool?.result?.isError, true);
+  assert.doesNotMatch(host.renderBody(80, 20).join("\n"), /LATE_UNFINISHED_OUTPUT/);
+  host.dispose();
+});
 test("ChatSessionHost preserves compaction queued messages when flush fails", async () => {
   const statusMessages: string[] = [];
   const host = makeHost({

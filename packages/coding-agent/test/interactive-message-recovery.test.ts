@@ -40,16 +40,21 @@ function makeMode(options: { showCacheMissNotices?: boolean } = {}) {
 		hideThinkingBlock: false,
 		hiddenThinkingLabel: "Thinking...",
 		outputPad: 0,
+		compactionQueuedMessages: [],
+		workingVisible: false,
+		stopWorkingLoader: vi.fn(),
+		checkShutdownRequested: vi.fn(async () => {}),
 		getMarkdownThemeWithSettings: () => getMarkdownTheme(),
 		getRegisteredToolDefinition: () => undefined,
 		settingsManager: {
 			getShowCacheMissNotices: () => options.showCacheMissNotices ?? false,
 			getShowImages: () => false,
 			getImageWidthCells: () => 80,
+			getShowTerminalProgress: () => false,
 		},
 		session: { retryAttempt: 0, modelRegistry: { find: () => undefined } },
 		sessionManager: { getEntries: () => [], getCwd: () => import.meta.dir },
-		ui: { requestRender: vi.fn() },
+		ui: { requestRender: vi.fn(), terminal: { setProgress: vi.fn() } },
 	};
 }
 
@@ -249,20 +254,34 @@ describe("InteractiveMode assistant event recovery", () => {
 		["missing", undefined],
 		["null", null],
 		["roleless", {}],
-	] as const)("closes active streaming after an end with a %s message", async (_label, message) => {
+		["malformed", { role: "assistant", content: "malformed", stopReason: "stop" }],
+	] as const)("fences only assistant-owned tools after an end with a %s message", async (_label, message) => {
 		const mode = makeMode();
 		await handleEvent(mode, { type: "message_start", message: assistantMessage("First response") });
 		const firstEntry = mode.chatContainer.children[0];
-		const firstRender = stripVTControlCharacters(mode.chatContainer.render(100).join("\n"));
-		const pendingTool = {};
-		mode.pendingTools.set("pending-1", pendingTool);
+		await handleEvent(mode, {
+			type: "tool_execution_start",
+			toolCallId: "unrelated-tool",
+			toolName: "customTool",
+			args: {},
+		});
+		const unrelatedTool = mode.pendingTools.get("unrelated-tool");
+		await handleEvent(mode, {
+			type: "message_update",
+			message: {
+				...assistantMessage(""),
+				content: [{ type: "toolCall" as const, id: "owned-tool", name: "customTool", arguments: {} }],
+			},
+			assistantMessageEvent: { type: "toolcall_start", contentIndex: 0 },
+		});
+		const ownedTool = mode.pendingTools.get("owned-tool");
 
 		await handleEvent(mode, { type: "message_end", message });
 
 		expect(mode.streamingComponent).toBeUndefined();
 		expect(mode.streamingMessage).toBeUndefined();
-		expect(mode.pendingTools.get("pending-1")).toBe(pendingTool);
-		expect(stripVTControlCharacters(mode.chatContainer.render(100).join("\n"))).toBe(firstRender);
+		expect(mode.pendingTools.get("unrelated-tool")).toBe(unrelatedTool);
+		expect(mode.pendingTools.has("owned-tool")).toBe(false);
 
 		await handleEvent(mode, {
 			type: "message_update",
@@ -270,13 +289,12 @@ describe("InteractiveMode assistant event recovery", () => {
 			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "Second response" },
 		});
 
-		expect(mode.chatContainer.children).toHaveLength(2);
 		expect(mode.chatContainer.children[0]).toBe(firstEntry);
-		expect(mode.chatContainer.children[1]).not.toBe(firstEntry);
+		expect(mode.pendingTools.get("unrelated-tool")).toBe(unrelatedTool);
+		expect(Reflect.get(ownedTool!, "isPartial")).toBe(false);
+		expect(Reflect.get(ownedTool!, "result")).toMatchObject({ content: [], isError: true });
 		const rendered = stripVTControlCharacters(mode.chatContainer.render(100).join("\n"));
-		expect(rendered).toContain("First response");
 		expect(rendered).toContain("Second response");
-		expect(mode.pendingTools.get("pending-1")).toBe(pendingTool);
 	});
 
 	it("closes streaming after a malformed assistant end before the next message", async () => {
@@ -308,5 +326,163 @@ describe("InteractiveMode assistant event recovery", () => {
 		const finalRender = stripVTControlCharacters(mode.chatContainer.render(100).join("\n"));
 		expect(finalRender).toContain("First response");
 		expect(finalRender).toContain("Second response");
+	});
+
+	it("reclaims the announced tool row when execution starts immediately after a malformed end", async () => {
+		const mode = makeMode();
+		const toolCall = {
+			...assistantMessage(""),
+			content: [{ type: "toolCall" as const, id: "reclaimed-tool", name: "customTool", arguments: {} }],
+			stopReason: "toolUse" as const,
+		};
+		await handleEvent(mode, {
+			type: "message_update",
+			message: toolCall,
+			assistantMessageEvent: { type: "toolcall_start", contentIndex: 0 },
+		});
+		const announcedTool = mode.chatContainer.children[1];
+
+		await handleEvent(mode, { type: "message_end", message: undefined });
+		expect(mode.pendingTools.has("reclaimed-tool")).toBe(false);
+		await handleEvent(mode, {
+			type: "tool_execution_start",
+			toolCallId: "reclaimed-tool",
+			toolName: "customTool",
+			args: {},
+		});
+
+		expect(mode.chatContainer.children).toHaveLength(2);
+		expect(mode.chatContainer.children[1]).toBe(announcedTool);
+		expect(mode.pendingTools.get("reclaimed-tool")).toBe(announcedTool);
+		await handleEvent(mode, {
+			type: "tool_execution_update",
+			toolCallId: "reclaimed-tool",
+			partialResult: { content: [{ type: "text", text: "partial output" }] },
+		});
+		await handleEvent(mode, {
+			type: "tool_execution_end",
+			toolCallId: "reclaimed-tool",
+			result: { content: [{ type: "text", text: "final output" }] },
+			isError: false,
+		});
+		expect(mode.pendingTools.has("reclaimed-tool")).toBe(false);
+		expect(stripVTControlCharacters(mode.chatContainer.render(100).join("\n"))).toContain("final output");
+	});
+
+	it("settles a reclaimed tool when a follow-up starts before execution ends", async () => {
+		const mode = makeMode();
+		const toolCall = {
+			...assistantMessage(""),
+			content: [{ type: "toolCall" as const, id: "unfinished-tool", name: "customTool", arguments: {} }],
+			stopReason: "toolUse" as const,
+		};
+		await handleEvent(mode, {
+			type: "message_update",
+			message: toolCall,
+			assistantMessageEvent: { type: "toolcall_start", contentIndex: 0 },
+		});
+		const unfinishedTool = mode.chatContainer.children[1];
+
+		await handleEvent(mode, { type: "message_end", message: undefined });
+		await handleEvent(mode, {
+			type: "tool_execution_start",
+			toolCallId: "unfinished-tool",
+			toolName: "customTool",
+			args: {},
+		});
+		await handleEvent(mode, { type: "message_start", message: assistantMessage("Follow-up response") });
+		await handleEvent(mode, {
+			type: "tool_execution_end",
+			toolCallId: "unfinished-tool",
+			result: { content: [{ type: "text", text: "LATE_UNFINISHED_OUTPUT" }] },
+			isError: false,
+		});
+
+		expect(mode.pendingTools.has("unfinished-tool")).toBe(false);
+		expect(Reflect.get(unfinishedTool!, "isPartial")).toBe(false);
+		expect(Reflect.get(unfinishedTool!, "result")).toMatchObject({ content: [], isError: true });
+		expect(stripVTControlCharacters(mode.chatContainer.render(100).join("\n")))
+			.not.toContain("LATE_UNFINISHED_OUTPUT");
+	});
+
+	it("preserves safe tool-use end routing into the announced component", async () => {
+		const mode = makeMode();
+		const toolCall = {
+			...assistantMessage(""),
+			content: [{ type: "toolCall" as const, id: "safe-tool", name: "customTool", arguments: {} }],
+			stopReason: "toolUse" as const,
+		};
+		await handleEvent(mode, {
+			type: "message_update",
+			message: toolCall,
+			assistantMessageEvent: { type: "toolcall_start", contentIndex: 0 },
+		});
+		const announcedTool = mode.pendingTools.get("safe-tool");
+
+		await handleEvent(mode, { type: "message_end", message: toolCall });
+		expect(mode.pendingTools.get("safe-tool")).toBe(announcedTool);
+		await handleEvent(mode, {
+			type: "tool_execution_start",
+			toolCallId: "safe-tool",
+			toolName: "customTool",
+			args: {},
+		});
+		await handleEvent(mode, {
+			type: "tool_execution_end",
+			toolCallId: "safe-tool",
+			result: { content: [{ type: "text", text: "safe final output" }] },
+			isError: false,
+		});
+
+		expect(mode.chatContainer.children).toHaveLength(2);
+		expect(mode.chatContainer.children[1]).toBe(announcedTool);
+		expect(stripVTControlCharacters(mode.chatContainer.render(100).join("\n"))).toContain("safe final output");
+	});
+
+	it("settles an orphaned tool and fences its late execution traffic after a follow-up starts", async () => {
+		const mode = makeMode();
+		const toolCall = {
+			...assistantMessage(""),
+			content: [{ type: "toolCall" as const, id: "stale-tool", name: "customTool", arguments: {} }],
+			stopReason: "toolUse" as const,
+		};
+		await handleEvent(mode, {
+			type: "message_update",
+			message: toolCall,
+			assistantMessageEvent: { type: "toolcall_start", contentIndex: 0 },
+		});
+		const staleToolEntry = mode.chatContainer.children[1];
+
+		await handleEvent(mode, { type: "message_end", message: undefined });
+		await handleEvent(mode, { type: "agent_end", messages: [] });
+		await handleEvent(mode, { type: "agent_start" });
+		await handleEvent(mode, { type: "message_start", message: assistantMessage("Follow-up response") });
+		expect(Reflect.get(staleToolEntry!, "isPartial")).toBe(false);
+		expect(Reflect.get(staleToolEntry!, "result")).toMatchObject({ content: [], isError: true });
+		await handleEvent(mode, {
+			type: "tool_execution_start",
+			toolCallId: "stale-tool",
+			toolName: "customTool",
+			args: {},
+		});
+		await handleEvent(mode, {
+			type: "tool_execution_update",
+			toolCallId: "stale-tool",
+			partialResult: { content: [{ type: "text", text: "LATE_STALE_UPDATE" }] },
+		});
+		await handleEvent(mode, {
+			type: "tool_execution_end",
+			toolCallId: "stale-tool",
+			result: { content: [{ type: "text", text: "LATE_STALE_END" }] },
+			isError: false,
+		});
+
+		const rendered = stripVTControlCharacters(mode.chatContainer.render(100).join("\n"));
+		expect(mode.pendingTools.has("stale-tool")).toBe(false);
+		expect(mode.chatContainer.children).toHaveLength(3);
+		expect(mode.chatContainer.children[1]).toBe(staleToolEntry);
+		expect(rendered).toContain("Follow-up response");
+		expect(rendered).not.toContain("LATE_STALE_UPDATE");
+		expect(rendered).not.toContain("LATE_STALE_END");
 	});
 });

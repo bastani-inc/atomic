@@ -6,7 +6,7 @@ import type {
   MarkdownTheme,
   TUI,
 } from "@earendil-works/pi-tui";
-import { LiveChatEntriesController } from "./chat-message-renderer.ts";
+import { LiveChatEntriesController } from "./live-chat-entries-controller.ts";
 import {
   ChatTranscriptComponent,
   ScrollableComponentViewport,
