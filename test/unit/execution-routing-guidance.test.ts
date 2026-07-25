@@ -12,6 +12,7 @@ const repositoryRoot = resolve(import.meta.dir, "../..");
 async function readRepositoryFile(path: string): Promise<string> {
   return Bun.file(resolve(repositoryRoot, path)).text();
 }
+const normalizeMarkdownLineEndings = (markdown: string): string => markdown.replace(/\r\n?/g, "\n");
 
 const combinedGuidance = [...workflowGuidance, ...subagentGuidance].join("\n");
 const modelVisibleRouting = `${combinedGuidance}\n${WORKFLOW_TOOL_DESCRIPTION}\n${SUBAGENT_TOOL_DESCRIPTION}`;
@@ -254,7 +255,7 @@ describe("workflow-first execution routing", () => {
     ]) {
       expect(workflowGuidance.join("\n")).toContain(phrase);
     }
-    const documentation = await readRepositoryFile("packages/coding-agent/docs/workflows.md");
+    const documentation = normalizeMarkdownLineEndings((await readRepositoryFile("packages/coding-agent/docs/workflows.md")).replace(/\r?\n/g, "\r\n"));
     for (const phrase of [
       "Interpret ordering words locally unless a cross-item dependency is explicit", "already merged into the base each run will use", "A shared unmerged contract can create a dependency",
       "Independent clusters with internal dependencies", "Workflow run isolation and Git worktree isolation are separate guarantees", "missing target is created as a detached checkout from `baseBranch`",

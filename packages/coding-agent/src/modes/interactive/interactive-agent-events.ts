@@ -43,6 +43,18 @@ function renderAssistantSnapshot(mode: InteractiveModeBase, message: AssistantMe
   component.updateContent(message);
 }
 
+function syncAssistantToolComponents(mode: InteractiveModeBase, message: AssistantMessage): void {
+  for (const content of message.content) {
+    if (content.type !== "toolCall") continue;
+    const existing = mode.pendingTools.get(content.id);
+    if (existing) { existing.updateArgs(content.arguments); continue; }
+    const component = createToolComponent(mode, content.name, content.id, content.arguments);
+    component.setExpanded(mode.toolOutputExpanded);
+    mode.chatContainer.addChild(component);
+    mode.pendingTools.set(content.id, component);
+  }
+}
+
 InteractiveModeBase.prototype.subscribeToAgent = function(this: InteractiveModeBase): void {
     this.unsubscribe = this.session.subscribe(async (event) => {
       await this.handleEvent(event);
@@ -169,21 +181,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
         if (isSafeAssistantMessageSnapshot(event.message) && event.message.role === "assistant") {
           renderAssistantSnapshot(this, event.message);
 
-          for (const content of event.message.content) {
-            if (content.type === "toolCall") {
-              if (!this.pendingTools.has(content.id)) {
-                const component = createToolComponent(this, content.name, content.id, content.arguments);
-                component.setExpanded(this.toolOutputExpanded);
-                this.chatContainer.addChild(component);
-                this.pendingTools.set(content.id, component);
-              } else {
-                const component = this.pendingTools.get(content.id);
-                if (component) {
-                  component.updateArgs(content.arguments);
-                }
-              }
-            }
-          }
+          syncAssistantToolComponents(this, event.message);
           this.ui.requestRender();
         }
         break;
@@ -206,6 +204,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
             event.message.errorMessage = errorMessage;
           }
           renderAssistantSnapshot(this, event.message);
+          syncAssistantToolComponents(this, event.message);
 
           if (
             event.message.stopReason === "aborted" ||

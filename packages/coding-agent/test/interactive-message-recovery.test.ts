@@ -41,13 +41,14 @@ function makeMode(options: { showCacheMissNotices?: boolean } = {}) {
 		hiddenThinkingLabel: "Thinking...",
 		outputPad: 0,
 		getMarkdownThemeWithSettings: () => getMarkdownTheme(),
+		getRegisteredToolDefinition: () => undefined,
 		settingsManager: {
 			getShowCacheMissNotices: () => options.showCacheMissNotices ?? false,
 			getShowImages: () => false,
 			getImageWidthCells: () => 80,
 		},
 		session: { retryAttempt: 0, modelRegistry: { find: () => undefined } },
-		sessionManager: { getEntries: () => [] },
+		sessionManager: { getEntries: () => [], getCwd: () => import.meta.dir },
 		ui: { requestRender: vi.fn() },
 	};
 }
@@ -203,6 +204,45 @@ describe("InteractiveMode assistant event recovery", () => {
 		expect(rendered).toContain("Aborted after 2 retry attempts");
 		expect(rendered).not.toContain("Operation aborted");
 		expect(aborted.errorMessage).toBe("Aborted after 2 retry attempts");
+	});
+
+	it("recovers an aborted end-only tool call and shows its retry error", async () => {
+		const mode = makeMode();
+		mode.session.retryAttempt = 2;
+		const aborted = {
+			...assistantMessage(""),
+			content: [{ type: "toolCall" as const, id: "tool-1", name: "customTool", arguments: {} }],
+			stopReason: "aborted" as const,
+			errorMessage: "Request was aborted",
+		};
+
+		await handleEvent(mode, { type: "message_end", message: aborted });
+
+		const rendered = stripVTControlCharacters(mode.chatContainer.render(100).join("\n"));
+		expect(rendered).toContain("Aborted after 2 retry attempts");
+		expect(mode.chatContainer.children).toHaveLength(2);
+		expect(mode.pendingTools).toHaveLength(0);
+		expect(mode.streamingComponent).toBeUndefined();
+		expect(mode.streamingMessage).toBeUndefined();
+	});
+
+	it("recovers an error end-only tool call and shows its error", async () => {
+		const mode = makeMode();
+		const failed = {
+			...assistantMessage(""),
+			content: [{ type: "toolCall" as const, id: "tool-1", name: "customTool", arguments: {} }],
+			stopReason: "error" as const,
+			errorMessage: "Provider failed",
+		};
+
+		await handleEvent(mode, { type: "message_end", message: failed });
+
+		const rendered = stripVTControlCharacters(mode.chatContainer.render(100).join("\n"));
+		expect(rendered).toContain("Provider failed");
+		expect(mode.chatContainer.children).toHaveLength(2);
+		expect(mode.pendingTools).toHaveLength(0);
+		expect(mode.streamingComponent).toBeUndefined();
+		expect(mode.streamingMessage).toBeUndefined();
 	});
 
 	it.each([
