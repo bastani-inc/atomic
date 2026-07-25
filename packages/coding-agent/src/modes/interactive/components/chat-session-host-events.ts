@@ -10,6 +10,7 @@ import {
   isVerbatimCompactionMessage,
   type CustomMessage,
 } from "../../../core/messages.ts";
+import { isSafeAssistantMessageSnapshot } from "../../../core/message-event-validation.ts";
 import { pickWhimsicalWorkingMessage } from "../whimsical-messages.ts";
 import { flushChatSessionCompactionQueue } from "./chat-session-host-actions.ts";
 import {
@@ -320,6 +321,7 @@ function assistantToolCallEvent(event: AgentSessionEvent): {
   toolName: string;
   args: unknown;
 } | undefined {
+  if (!isSafeAssistantMessageSnapshot((event as { message?: unknown }).message)) return undefined;
   const assistantEvent = (event as {
     assistantMessageEvent?: {
       type?: unknown;

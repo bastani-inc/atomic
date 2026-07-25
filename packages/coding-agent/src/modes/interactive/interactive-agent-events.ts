@@ -158,6 +158,8 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
           this.updatePendingMessagesDisplay();
           this.ui.requestRender();
         } else if (event.message.role === "assistant") {
+          this.streamingComponent = undefined;
+          this.streamingMessage = undefined;
           renderAssistantSnapshot(this, event.message);
           this.ui.requestRender();
         }
@@ -225,6 +227,8 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
               component.setArgsComplete();
             }
           }
+        }
+        if (event.message?.role === "assistant" || (this.streamingComponent !== undefined && typeof event.message?.role !== "string")) {
           this.streamingComponent = undefined;
           this.streamingMessage = undefined;
           this.footer.invalidate();

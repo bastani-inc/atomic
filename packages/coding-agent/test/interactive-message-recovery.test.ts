@@ -34,6 +34,7 @@ function makeMode(options: { showCacheMissNotices?: boolean } = {}) {
 		chatContainer: new Container(),
 		streamingComponent: undefined,
 		streamingMessage: undefined,
+		addMessageToChat: vi.fn(),
 		pendingTools: new Map(),
 		toolOutputExpanded: false,
 		hideThinkingBlock: false,
@@ -143,6 +144,37 @@ describe("InteractiveMode assistant event recovery", () => {
 			.toContain("Recovered automatic follow-up");
 		expect(mode.streamingComponent).toBeUndefined();
 	});
+	it.each([
+		["custom", {
+			role: "custom",
+			customType: "status",
+			content: "Background status",
+			display: false,
+			timestamp: 2,
+		}],
+		["declaration-merged", {
+			role: "extensionProgress",
+			progress: 0.5,
+			label: "Working",
+			timestamp: 2,
+		}],
+	] as const)("keeps the active assistant component across a valid %s message pair", async (_label, message) => {
+		const mode = makeMode();
+		await handleEvent(mode, { type: "message_start", message: assistantMessage("First draft") });
+		const assistantEntry = mode.chatContainer.children[0];
+
+		await handleEvent(mode, { type: "message_start", message });
+		await handleEvent(mode, { type: "message_end", message });
+		await handleEvent(mode, {
+			type: "message_update",
+			message: assistantMessage("Complete response"),
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: " response" },
+		});
+
+		expect(mode.chatContainer.children).toEqual([assistantEntry]);
+		expect(mode.streamingComponent).toBe(assistantEntry);
+		expect(stripVTControlCharacters(mode.chatContainer.render(100).join("\n"))).toContain("Complete response");
+	});
 
 	it("renders a valid end when the dropped start has no updates", async () => {
 		const mode = makeMode();
@@ -171,5 +203,70 @@ describe("InteractiveMode assistant event recovery", () => {
 		expect(rendered).toContain("Aborted after 2 retry attempts");
 		expect(rendered).not.toContain("Operation aborted");
 		expect(aborted.errorMessage).toBe("Aborted after 2 retry attempts");
+	});
+
+	it.each([
+		["missing", undefined],
+		["null", null],
+		["roleless", {}],
+	] as const)("closes active streaming after an end with a %s message", async (_label, message) => {
+		const mode = makeMode();
+		await handleEvent(mode, { type: "message_start", message: assistantMessage("First response") });
+		const firstEntry = mode.chatContainer.children[0];
+		const firstRender = stripVTControlCharacters(mode.chatContainer.render(100).join("\n"));
+		const pendingTool = {};
+		mode.pendingTools.set("pending-1", pendingTool);
+
+		await handleEvent(mode, { type: "message_end", message });
+
+		expect(mode.streamingComponent).toBeUndefined();
+		expect(mode.streamingMessage).toBeUndefined();
+		expect(mode.pendingTools.get("pending-1")).toBe(pendingTool);
+		expect(stripVTControlCharacters(mode.chatContainer.render(100).join("\n"))).toBe(firstRender);
+
+		await handleEvent(mode, {
+			type: "message_update",
+			message: assistantMessage("Second response"),
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "Second response" },
+		});
+
+		expect(mode.chatContainer.children).toHaveLength(2);
+		expect(mode.chatContainer.children[0]).toBe(firstEntry);
+		expect(mode.chatContainer.children[1]).not.toBe(firstEntry);
+		const rendered = stripVTControlCharacters(mode.chatContainer.render(100).join("\n"));
+		expect(rendered).toContain("First response");
+		expect(rendered).toContain("Second response");
+		expect(mode.pendingTools.get("pending-1")).toBe(pendingTool);
+	});
+
+	it("closes streaming after a malformed assistant end before the next message", async () => {
+		const mode = makeMode();
+		await handleEvent(mode, { type: "message_start", message: assistantMessage("First draft") });
+		await handleEvent(mode, {
+			type: "message_update",
+			message: assistantMessage("First response"),
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: " response" },
+		});
+		const firstEntry = mode.chatContainer.children[0];
+		const firstRender = stripVTControlCharacters(mode.chatContainer.render(100).join("\n"));
+
+		await handleEvent(mode, {
+			type: "message_end",
+			message: { role: "assistant", content: "malformed", stopReason: "stop" },
+		});
+
+		expect(mode.streamingComponent).toBeUndefined();
+		expect(mode.streamingMessage).toBeUndefined();
+		expect(mode.chatContainer.children).toEqual([firstEntry]);
+		expect(stripVTControlCharacters(mode.chatContainer.render(100).join("\n"))).toBe(firstRender);
+
+		await handleEvent(mode, { type: "message_start", message: assistantMessage("Second response") });
+
+		expect(mode.chatContainer.children).toHaveLength(2);
+		expect(mode.chatContainer.children[0]).toBe(firstEntry);
+		expect(mode.chatContainer.children[1]).not.toBe(firstEntry);
+		const finalRender = stripVTControlCharacters(mode.chatContainer.render(100).join("\n"));
+		expect(finalRender).toContain("First response");
+		expect(finalRender).toContain("Second response");
 	});
 });

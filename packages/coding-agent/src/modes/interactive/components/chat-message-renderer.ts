@@ -205,9 +205,9 @@ export class LiveChatEntriesController {
   }
   private handleMessageUpdate(event: LiveChatEventLike): boolean {
     const message = event.message;
+    if (!isSafeAssistantMessageSnapshot(message)) return false;
     let changed = false;
-    const snapshotHasPayload = isSafeAssistantMessageSnapshot(message) &&
-      assistantContentHasRenderablePayload((message as { content: unknown }).content);
+    const snapshotHasPayload = assistantContentHasRenderablePayload((message as { content: unknown }).content);
     if (snapshotHasPayload) {
       changed = this.updateAssistantMessage(message as AssistantMessage) || changed;
     }
@@ -222,7 +222,11 @@ export class LiveChatEntriesController {
     return changed;
   }
   private handleMessageEnd(message: unknown): boolean {
-    if (!isSafeAssistantMessageSnapshot(message)) return false;
+    if (!isSafeAssistantMessageSnapshot(message)) {
+      const role = message !== null && typeof message === "object" ? Reflect.get(message, "role") : undefined;
+      if (this.streamingAssistantIndex !== undefined && (role === "assistant" || typeof role !== "string")) this.streamingAssistantIndex = undefined;
+      return false;
+    }
     const assistantMessage = message as AssistantMessage;
     const changed = this.updateAssistantMessage(assistantMessage);
     const stopReason = assistantMessage.stopReason;

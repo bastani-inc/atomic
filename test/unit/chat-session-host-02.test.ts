@@ -137,6 +137,47 @@ test("ChatSessionHost clears verification branding on error and preserves factua
   assert.equal((host.renderBody(80, 20).join("\n").match(/1 test failed/g) ?? []).length, 1);
   host.dispose();
 });
+test("ChatSessionHost ignores tool-call deltas from malformed assistant updates and renders the next valid call", () => {
+  const host = makeHost();
+
+  const changed = host.applyAgentEvent({
+    type: "message_update",
+    message: { role: "assistant", content: "bad" },
+    assistantMessageEvent: {
+      type: "toolcall_delta",
+      contentIndex: 0,
+      toolCall: {
+        type: "toolCall",
+        id: "unsafe-call",
+        name: "read",
+        arguments: { path: "secret.txt" },
+      },
+    },
+  } as never);
+
+  assert.equal(changed, false);
+  assert.equal(host.entries().some((entry) => entry.toolCallId === "unsafe-call"), false);
+  assert.doesNotMatch(host.renderBody(80, 20).join("\n"), /unsafe-call|secret\.txt/);
+
+  const recovered = host.applyAgentEvent({
+    type: "message_update",
+    message: { role: "assistant", content: [] },
+    assistantMessageEvent: {
+      type: "toolcall_delta",
+      contentIndex: 0,
+      toolCall: {
+        type: "toolCall",
+        id: "safe-call",
+        name: "read",
+        arguments: { path: "safe.txt" },
+      },
+    },
+  } as never);
+
+  assert.equal(recovered, true);
+  assert.equal(host.entries().some((entry) => entry.toolCallId === "safe-call"), true);
+  host.dispose();
+});
 test("ChatSessionHost preserves compaction queued messages when flush fails", async () => {
   const statusMessages: string[] = [];
   const host = makeHost({

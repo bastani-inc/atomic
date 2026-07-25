@@ -149,6 +149,33 @@ describe("chat message renderer utilities", () => {
     }), false);
     assert.deepEqual(entries, []);
   });
+  for (const [streamType, delta] of [
+    ["text_delta", "UNSAFE_TEXT"],
+    ["thinking_delta", "UNSAFE_THINKING"],
+  ] as const) {
+    test(`ignores a ${streamType} from a malformed assistant update and renders the next valid delta`, () => {
+      const entries = [] as ReturnType<typeof chatEntriesFromAgentMessages>;
+      const live = new LiveChatEntriesController(entries);
+
+      assert.equal(live.applyEvent({
+        type: "message_update",
+        message: { role: "assistant", content: "bad" },
+        assistantMessageEvent: { type: streamType, delta },
+      }), false);
+      assert.equal(entries.length, 0);
+
+      assert.equal(live.applyEvent({
+        type: "message_update",
+        message: { role: "assistant", content: [] },
+        assistantMessageEvent: { type: streamType, delta: "SAFE_DELTA" },
+      }), true);
+      assert.deepEqual(entries[0]?.kind === "assistant" ? entries[0].message.content : undefined, [
+        streamType === "text_delta"
+          ? { type: "text", text: "SAFE_DELTA" }
+          : { type: "thinking", thinking: "SAFE_DELTA" },
+      ]);
+    });
+  }
 
   test("ignores a malformed assistant end snapshot", () => {
     const entries = [] as ReturnType<typeof chatEntriesFromAgentMessages>;
@@ -160,6 +187,83 @@ describe("chat message renderer utilities", () => {
     }), false);
     assert.deepEqual(entries, []);
   });
+
+  for (const [label, interleavedMessage] of [
+    ["custom", {
+      role: "custom",
+      customType: "status",
+      content: "Background status",
+      display: false,
+      timestamp: 2,
+    }],
+    ["declaration-merged", {
+      role: "extensionProgress",
+      progress: 0.5,
+      label: "Working",
+      timestamp: 2,
+    }],
+  ] as const) {
+    test(`keeps the active assistant entry across a valid ${label} message pair`, () => {
+      const entries = [] as ReturnType<typeof chatEntriesFromAgentMessages>;
+      const live = new LiveChatEntriesController(entries);
+
+      assert.equal(live.applyEvent({
+        type: "message_start",
+        message: { role: "assistant", content: [{ type: "text", text: "first" }] },
+      }), true);
+      live.applyEvent({ type: "message_start", message: interleavedMessage });
+      assert.equal(live.applyEvent({ type: "message_end", message: interleavedMessage }), false);
+      assert.equal(live.applyEvent({
+        type: "message_update",
+        message: { role: "assistant", content: [{ type: "text", text: "complete" }] },
+      }), true);
+
+      const assistantEntries = entries.filter((entry) => entry.kind === "assistant");
+      assert.equal(assistantEntries.length, 1);
+      assert.deepEqual(assistantEntries[0]?.message.content, [{ type: "text", text: "complete" }]);
+    });
+  }
+
+  for (const [label, terminalMessage] of [
+    ["missing", undefined],
+    ["null", null],
+    ["roleless", {}],
+    ["malformed", { role: "assistant", content: "malformed" }],
+  ] as const) {
+    test(`starts a new assistant entry after a ${label} assistant end`, () => {
+      const entries = [] as ReturnType<typeof chatEntriesFromAgentMessages>;
+      const live = new LiveChatEntriesController(entries);
+
+      assert.equal(live.applyEvent({
+        type: "message_start",
+        message: { role: "assistant", content: [{ type: "text", text: "first" }] },
+      }), true);
+      live.applyEvent({
+        type: "tool_execution_start",
+        toolCallId: "pending-1",
+        toolName: "read",
+        args: { path: "first.txt" },
+      });
+
+      assert.equal(live.applyEvent({
+        type: "message_end",
+        message: terminalMessage,
+      }), false);
+      assert.deepEqual(live.pendingToolIds(), ["pending-1"]);
+
+      assert.equal(live.applyEvent({
+        type: "message_update",
+        message: { role: "assistant", content: [{ type: "text", text: "second" }] },
+      }), true);
+      const assistantEntries = entries.filter((entry) => entry.kind === "assistant");
+      assert.equal(assistantEntries.length, 2);
+      assert.deepEqual(assistantEntries.map((entry) => entry.message.content), [
+        [{ type: "text", text: "first" }],
+        [{ type: "text", text: "second" }],
+      ]);
+      assert.deepEqual(live.pendingToolIds(), ["pending-1"]);
+    });
+  }
 
   test("ignores malformed tool-result starts and renders a later valid result", () => {
     const entries = [] as ReturnType<typeof chatEntriesFromAgentMessages>;
