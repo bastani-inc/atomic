@@ -34,6 +34,13 @@ The test workflow runs on pushes to `main`, `release/**`, and `prerelease/**`, a
 - `blacksmith-4vcpu-ubuntu-2404` with `linux-x64` archive coverage
 - `blacksmith-4vcpu-windows-2025` with `windows-x64` archive coverage
 
+Repository ruleset `9310196` requires these exact job contexts:
+
+- `test (blacksmith-4vcpu-ubuntu-2404, linux-x64)`
+- `test (blacksmith-4vcpu-windows-2025, windows-x64)`
+
+The matrix job sets its display name from only `matrix.os` and `matrix.binary_platform` to keep those contexts stable. Per-platform timeout values remain matrix data, but they must not form part of the display name: without an explicit name, GitHub appends every matrix value, so timeout tuning would silently rename the required checks. Change the display-name contract and repository ruleset together; normal runner or timeout tuning must leave both contexts unchanged.
+
 Both legs install with Bun, build `@bastani/atomic`, run deterministic CI contracts and test suites, build native bindings, and smoke an installed release archive. Platform-independent typecheck, file-length, and documentation checks run on Linux. Archive smoke tests verify bundled builtins, native modules, runtime dependencies, `--version`, and startup far enough to reject extension-load failures.
 
 ## Direct release trigger and recovery

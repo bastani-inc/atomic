@@ -13,6 +13,7 @@ on:
 
 jobs:
     test:
+        name: test (${{ matrix.os }}, ${{ matrix.binary_platform }})
         strategy:
             matrix:
                 include:

@@ -51,12 +51,67 @@ const WORKFLOW_ADMIN_COMPLETIONS: AutocompleteItem[] = [
 
 const BUNDLED_WORKFLOW_COMPLETION_METADATA: WorkflowCompletionMetadata[] = [
 	{
-		name: "open-claude-design",
-		description: "AI-powered design workflow: discovery, reference research, HTML generation, refinement, and handoff.",
+		name: "adversarial-verification",
+		description: "Produce a candidate, challenge it with fresh-context rubric-based verifiers, and reduce their evidence through a bounded repair loop.",
 		inputs: {
-			prompt: { description: "What to design, such as a dashboard, page, component, or prototype.", kind: "string" },
-			discover_references: { description: "Discover current reference designs and feed them to generation.", kind: "boolean" },
-			max_refinements: { description: "Maximum generate/user-feedback loop iterations.", kind: "number" },
+			task: { description: "Task whose candidate result must be independently verified.", kind: "string" },
+			verifier_count: { description: "Number of independent verifiers per review round.", kind: "number" },
+			max_repairs: { description: "Maximum candidate repair rounds before rejection.", kind: "number" },
+		},
+	},
+	{
+		name: "classify-and-act",
+		description: "Classify a task with structured confidence, route deterministically to an isolated category action, and ask for human selection when confidence is low.",
+		inputs: {
+			prompt: { description: "Task to classify and execute.", kind: "string" },
+			categories: { description: "Ordered action categories available to the classifier and fallback chooser." },
+			confidence_threshold: { description: "Minimum structured confidence required to route without human selection.", kind: "number" },
+		},
+	},
+	{
+		name: "fan-out-and-synthesize",
+		description: "Partition a task, run bounded independent artifact branches, then synthesize all evidence at an explicit barrier.",
+		inputs: {
+			prompt: { description: "Task to partition, investigate, and synthesize.", kind: "string" },
+			max_branches: { description: "Maximum number of independent partitions produced and executed.", kind: "number" },
+			max_concurrency: { description: "Maximum number of branch agents running concurrently.", kind: "number" },
+		},
+	},
+	{
+		name: "generate-and-filter",
+		description: "Generate more independent candidates than needed, deduplicate and filter them by rubric, optionally judge them, and return a parent-consumable shortlist.",
+		inputs: {
+			prompt: { description: "Prompt for candidate generation and selection.", kind: "string" },
+			num_candidates: { description: "Number of independent candidates to generate.", kind: "number" },
+			shortlist_size: { description: "Maximum number of candidates in the final shortlist.", kind: "number" },
+			use_judge: { description: "Whether an independent judge reviews the filtered shortlist.", kind: "boolean" },
+			max_concurrency: { description: "Maximum simultaneous generator stages.", kind: "number" },
+		},
+	},
+	{
+		name: "loop-until-done",
+		description: "Repeat evidence-producing work and independent completion evaluation against a durable ledger until done or an inspectable iteration-limit failure.",
+		inputs: {
+			prompt: { description: "Objective whose explicit completion condition controls the bounded loop.", kind: "string" },
+			max_iterations: { description: "Maximum work/evaluation iterations before returning an inspectable failed status (1-20).", kind: "number" },
+		},
+	},
+	{
+		name: "open-claude-design",
+		description: "AI-powered design workflow: combined discovery/init → design-system/reference research → curated reference discovery → HTML generation → live-driven refinement → rich HTML handoff. The discovery stage asks what to build, the output type, and which references to emulate, then runs impeccable init for PRODUCT.md/DESIGN.md (references take precedence over project context). The user iteratively reviews the generated HTML.",
+		inputs: {
+			prompt: { description: "What to design (for example, a dashboard, page, component, or prototype). The discovery stage refines this into a confirmed brief and asks for the output type and references.", kind: "string" },
+			discover_references: { description: "Discover beautiful, current reference designs from notable design websites (Awwwards, recent.design, Dribbble, Monet, Motionsites) and feed them to generation. Set false to skip the network/browser reference pass.", kind: "boolean" },
+			max_refinements: { description: "Maximum generate/user-feedback loop iterations (default 3).", kind: "number" },
+		},
+	},
+	{
+		name: "tournament",
+		description: "Run several independent whole-task attempts through a balanced pairwise judging bracket and return an auditable winner.",
+		inputs: {
+			prompt: { description: "Task every competing agent must attempt independently.", kind: "string" },
+			num_attempts: { description: "Number of independent whole-task attempts (2-8).", kind: "number" },
+			max_concurrency: { description: "Maximum simultaneously active attempts or pairwise judges (1-8).", kind: "number" },
 		},
 	},
 ];

@@ -29,6 +29,14 @@ function stepBlock(workflow: string, name: string, next: string): string {
 
 test("test workflow preserves its two-platform matrix and deterministic contracts", async () => {
   const workflow = await Bun.file(join(root, ".github/workflows/test.yml")).text();
+  const testJob = jobBlock(workflow, "test");
+  assert.match(testJob, /^[ \t]+name: test \(\$\{\{ matrix\.os \}\}, \$\{\{ matrix\.binary_platform \}\}\)$/mu);
+  const matrixContexts = [...testJob.matchAll(/^[ \t]+- os: (\S+)\s+binary_platform: (\S+)$/gmu)]
+    .map(([, os, platform]) => `test (${os}, ${platform})`);
+  assert.deepEqual(matrixContexts, [
+    "test (blacksmith-4vcpu-ubuntu-2404, linux-x64)",
+    "test (blacksmith-4vcpu-windows-2025, windows-x64)",
+  ]);
   assert.match(workflow, /blacksmith-4vcpu-ubuntu-2404/);
   assert.match(workflow, /blacksmith-4vcpu-windows-2025/);
   assert.match(workflow, /blacksmith-4vcpu-ubuntu-2404\s+binary_platform: linux-x64\s+timeout_minutes: 10/);
