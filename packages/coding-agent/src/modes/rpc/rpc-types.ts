@@ -356,6 +356,12 @@ export type RpcResponse =
 /** Events streamed by RPC mode as session activity occurs. */
 export type RpcEvent = AgentSessionEvent;
 
+export interface RpcTransportError {
+	type: "transport_error";
+	recordType?: string;
+	error: string;
+}
+
 // ============================================================================
 // Extension UI Events (stdout)
 // ============================================================================

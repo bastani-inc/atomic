@@ -30,5 +30,11 @@ export class RpcEventBuffer {
 		this.updates.clear();
 	}
 
+	discard(): void {
+		if (this.timer) clearTimeout(this.timer);
+		this.timer = undefined;
+		this.updates.clear();
+	}
+
 	dispose(): void { this.flush(); }
 }

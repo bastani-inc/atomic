@@ -39,6 +39,32 @@ This matters for clients:
 
 In particular, Node `readline` is not protocol-compliant for RPC mode because it also splits on `U+2028` and `U+2029`, which are valid inside JSON strings.
 
+RPC output frames are capped at 1,048,576 UTF-8 bytes, excluding the single
+trailing LF. Oversized records are progressively bounded by reducing retained
+string bytes and array items while preserving the record's required structure.
+In particular, `message_start`, `message_update`, and `message_end` always
+contain structurally valid `message` payloads.
+
+If a correlated `response` cannot fit after the standard bounding pass, RPC
+emits a failed response with the original `id` and `command`:
+
+```json
+{"type":"response","id":"req-1","command":"get_messages","success":false,"error":"RPC record exceeded the 1 MiB transport limit"}
+```
+
+If an uncorrelated record remains irreducibly oversized after progressive
+bounding, RPC emits a terminal transport control record instead of reusing the
+original discriminator without its required payload:
+
+```json
+{"type":"transport_error","recordType":"message_start","error":"RPC record exceeded the 1 MiB transport limit"}
+```
+
+`recordType` is omitted only when the source record has no string `type`.
+`transport_error` is a raw JSONL control record, not an agent event; clients
+must stop consuming events from that process generation and restart or close
+the RPC process.
+
 ## Commands
 
 ### Prompting

@@ -10,6 +10,11 @@ import { sleep } from "../../utils/sleep.ts";
 import { createInteractiveJsonlOptions, spawnRpcClientProcess, terminateRpcClientProcess } from "./rpc-client-process.ts";
 import { RpcClientApi, type RpcCommandBody } from "./rpc-client-api.ts";
 import { RpcEventBuffer } from "./rpc-event-buffer.ts";
+import {
+	isMessageLifecycleType,
+	isRpcMessageLifecycleEvent,
+	isRpcTransportError,
+} from "./rpc-event-validation.ts";
 import { collectRpcEvents, waitForRpcIdle } from "./rpc-client-waits.ts";
 import type { RpcCommand, RpcExtensionUIRequest, RpcExtensionUIResponse, RpcEvent, RpcResponse } from "./rpc-types.ts";
 export type { ModelInfo, RpcCommandBody } from "./rpc-client-api.ts";
@@ -321,9 +326,19 @@ export class RpcClient extends RpcClientApi {
 		return eventsPromise;
 	}
 	private handleLine(line: string): void {
+		if (this.exitError) return;
 		if (this.engineMonitor?.handleLine(line)) return;
 		try {
 			const data = JSON.parse(line) as { type?: string; id?: string };
+			if (data.type === "transport_error") {
+				if (!isRpcTransportError(data)) {
+					this.failTransport(new Error("Interactive engine emitted malformed transport_error record"));
+					return;
+				}
+				const context = data.recordType ? ` for ${data.recordType}` : "";
+				this.failTransport(new Error(`Interactive engine transport error${context}: ${data.error}`));
+				return;
+			}
 			if (data.type === "extension_ui_request") {
 				const request = data as RpcExtensionUIRequest;
 				if (this.extensionUIListeners.length === 0) this.pendingExtensionUIRequests.push(request);
@@ -334,6 +349,10 @@ export class RpcClient extends RpcClientApi {
 				const pending = this.pendingRequests.get(data.id)!;
 				this.pendingRequests.delete(data.id);
 				pending.resolve(data as RpcResponse);
+				return;
+			}
+			if (isMessageLifecycleType(data.type) && !isRpcMessageLifecycleEvent(data)) {
+				this.failTransport(new Error(`Interactive engine emitted malformed ${data.type} event`));
 				return;
 			}
 			const event = data as RpcEvent;
@@ -383,9 +402,17 @@ export class RpcClient extends RpcClientApi {
 	}
 	private failTransport(error: Error): void {
 		this.exitError = error;
+		const stopReadingStdout = this.stopReadingStdout;
+		this.stopReadingStdout = null;
+		stopReadingStdout?.();
+		this.eventBuffer?.discard();
+		this.eventBuffer = undefined;
+		this.engineMonitor?.stop();
+		this.activeActivityIds.clear();
+		this.options.interactiveEngine?.onActivityChange?.(false);
 		this.stdinWriter?.close(error);
-		this.engineMonitor?.fail(error);
 		this.rejectPendingRequests(error);
+		this.engineMonitor?.fail(error);
 		this.options.interactiveEngine?.onDiagnostic({
 			activity: undefined, elapsedMs: 0, level: "unresponsive", message: error.message,
 		});
