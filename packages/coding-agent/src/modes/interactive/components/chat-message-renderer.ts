@@ -5,7 +5,7 @@ import type { TSchema } from "typebox";
 import type { MessageRenderer, ToolDefinition } from "../../../core/extensions/types.ts";
 import { isVerbatimCompactionMessage, type BashExecutionMessage, type BranchSummaryMessage, type CustomMessage } from "../../../core/messages.ts";
 import { parseSkillBlock } from "../../../core/agent-session.ts";
-import { isSafeMessageStartMessage } from "../../../core/message-event-validation.ts";
+import { isSafeAssistantMessageSnapshot, isSafeMessageStartMessage } from "../../../core/message-event-validation.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 import { AssistantMessageComponent } from "./assistant-message.ts";
 import { BashExecutionComponent } from "./bash-execution.ts";
@@ -206,10 +206,9 @@ export class LiveChatEntriesController {
   private handleMessageUpdate(event: LiveChatEventLike): boolean {
     const message = event.message;
     let changed = false;
-    const snapshotHasPayload = isAgentMessageLike(message) &&
-      message.role === "assistant" &&
-      assistantContentHasRenderablePayload((message as { content?: unknown }).content);
-    if (isAgentMessageLike(message) && message.role === "assistant" && snapshotHasPayload) {
+    const snapshotHasPayload = isSafeAssistantMessageSnapshot(message) &&
+      assistantContentHasRenderablePayload((message as { content: unknown }).content);
+    if (snapshotHasPayload) {
       changed = this.updateAssistantMessage(message as AssistantMessage) || changed;
     }
     const assistantEvent = event.assistantMessageEvent;
@@ -223,12 +222,13 @@ export class LiveChatEntriesController {
     return changed;
   }
   private handleMessageEnd(message: unknown): boolean {
-    if (!isAgentMessageLike(message) || message.role !== "assistant") return false;
-    const changed = this.updateAssistantMessage(message as AssistantMessage);
-    const stopReason = typeof message.stopReason === "string" ? message.stopReason : "";
+    if (!isSafeAssistantMessageSnapshot(message)) return false;
+    const assistantMessage = message as AssistantMessage;
+    const changed = this.updateAssistantMessage(assistantMessage);
+    const stopReason = assistantMessage.stopReason;
     if (stopReason === "aborted" || stopReason === "error") {
-      const errorText = typeof message.errorMessage === "string" && message.errorMessage
-        ? message.errorMessage
+      const errorText = assistantMessage.errorMessage
+        ? assistantMessage.errorMessage
         : stopReason === "aborted"
           ? "Operation aborted"
           : "Unknown error";
@@ -359,9 +359,6 @@ function isChatMessageEntry(entry: LiveChatEntry | undefined): entry is ChatMess
 }
 function isLegacyCompactionSummaryMessage(message: AgentMessage): boolean {
   return message.role === "compaction" + "Summary";
-}
-function isAgentMessageLike(message: unknown): message is AgentMessage & { stopReason?: unknown; errorMessage?: unknown } {
-  return message !== null && typeof message === "object" && "role" in message;
 }
 function assistantContentHasRenderablePayload(content: unknown): boolean {
   if (typeof content === "string") return content.length > 0;

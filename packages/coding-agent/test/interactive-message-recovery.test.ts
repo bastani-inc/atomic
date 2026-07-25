@@ -27,7 +27,7 @@ function assistantMessage(text: string): AssistantMessage {
 	};
 }
 
-function makeMode() {
+function makeMode(options: { showCacheMissNotices?: boolean } = {}) {
 	return {
 		isInitialized: true,
 		footer: { invalidate: vi.fn() },
@@ -41,11 +41,12 @@ function makeMode() {
 		outputPad: 0,
 		getMarkdownThemeWithSettings: () => getMarkdownTheme(),
 		settingsManager: {
-			getShowCacheMissNotices: () => false,
+			getShowCacheMissNotices: () => options.showCacheMissNotices ?? false,
 			getShowImages: () => false,
 			getImageWidthCells: () => 80,
 		},
-		session: { retryAttempt: 0 },
+		session: { retryAttempt: 0, modelRegistry: { find: () => undefined } },
+		sessionManager: { getEntries: () => [] },
 		ui: { requestRender: vi.fn() },
 	};
 }
@@ -59,6 +60,70 @@ async function handleEvent(mode: object, event: object): Promise<void> {
 }
 
 describe("InteractiveMode assistant event recovery", () => {
+	it.each([
+		["missing", undefined],
+		["null", null],
+	] as const)("ignores an update with a %s message", async (_label, message) => {
+		const mode = makeMode();
+
+		await expect(handleEvent(mode, {
+			type: "message_update",
+			message,
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "bad" },
+		})).resolves.toBeUndefined();
+		expect(mode.streamingComponent).toBeUndefined();
+	});
+
+	it.each([
+		["missing", undefined],
+		["null", null],
+	] as const)("ignores an end with a %s message", async (_label, message) => {
+		const mode = makeMode();
+
+		await expect(handleEvent(mode, { type: "message_end", message })).resolves.toBeUndefined();
+		expect(mode.streamingComponent).toBeUndefined();
+	});
+
+	it.each([
+		["absent", undefined],
+		["non-array", "bad"],
+		["malformed", [null]],
+	] as const)("ignores an assistant update with %s content", async (_label, content) => {
+		const mode = makeMode();
+		const message = content === undefined ? { role: "assistant" } : { role: "assistant", content };
+
+		await expect(handleEvent(mode, {
+			type: "message_update",
+			message,
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "bad" },
+		})).resolves.toBeUndefined();
+		expect(mode.streamingComponent).toBeUndefined();
+	});
+
+	it.each([
+		["absent", undefined],
+		["non-array", "bad"],
+		["malformed", [null]],
+	] as const)("ignores an assistant end with %s content", async (_label, content) => {
+		const mode = makeMode();
+		const message = content === undefined
+			? { role: "assistant", stopReason: "stop" }
+			: { role: "assistant", stopReason: "stop", content };
+
+		await expect(handleEvent(mode, { type: "message_end", message })).resolves.toBeUndefined();
+		expect(mode.streamingComponent).toBeUndefined();
+	});
+
+	it("skips cache-miss detection when an assistant end lacks cache stats", async () => {
+		const mode = makeMode({ showCacheMissNotices: true });
+
+		await expect(handleEvent(mode, {
+			type: "message_end",
+			message: { role: "assistant", content: [], stopReason: "stop" },
+		})).resolves.toBeUndefined();
+		expect(mode.streamingComponent).toBeUndefined();
+	});
+
 	it("renders valid update and end events when message_start was dropped", async () => {
 		const mode = makeMode();
 		const partial = assistantMessage("Recovered");

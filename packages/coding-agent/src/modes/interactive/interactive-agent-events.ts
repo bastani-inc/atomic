@@ -6,6 +6,7 @@ import { RemoteToolExecutionComponent } from "../interactive-engine/remote-rende
 import { handleSummarizationRetryEvent } from "./interactive-summarization-retry-events.ts";
 import { CACHE_TTL_MS, detectCacheMiss } from "../../core/cache-stats.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
+import { isSafeAssistantCacheStatsMessage, isSafeAssistantMessageSnapshot } from "../../core/message-event-validation.ts";
 
 function createToolComponent(
   mode: InteractiveModeBase,
@@ -163,7 +164,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
         break;
 
       case "message_update":
-        if (event.message.role === "assistant") {
+        if (isSafeAssistantMessageSnapshot(event.message) && event.message.role === "assistant") {
           renderAssistantSnapshot(this, event.message);
 
           for (const content of event.message.content) {
@@ -186,8 +187,8 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
         break;
 
       case "message_end":
-        if (event.message.role === "user") break;
-        if (event.message.role === "assistant") {
+        if (event.message?.role === "user") break;
+        if (isSafeAssistantMessageSnapshot(event.message) && event.message.role === "assistant") {
           let errorMessage: string | undefined;
           if (event.message.stopReason === "aborted") {
             const existingAbortMessage =
@@ -228,7 +229,11 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
           this.streamingMessage = undefined;
           this.footer.invalidate();
         }
-        if (event.message.role === "assistant" && this.settingsManager.getShowCacheMissNotices()) {
+        if (
+          isSafeAssistantCacheStatsMessage(event.message) &&
+          event.message.role === "assistant" &&
+          this.settingsManager.getShowCacheMissNotices()
+        ) {
           const miss = detectCacheMiss(this.sessionManager.getEntries(), event.message, { getModel: (provider, model) => this.session.modelRegistry.find(provider, model) });
           if (miss) {
             const cause = miss.modelChanged ? " after model switch" : miss.idleMs >= CACHE_TTL_MS ? " after cache TTL expiry" : "";

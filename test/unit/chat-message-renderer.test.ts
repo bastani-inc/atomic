@@ -139,6 +139,28 @@ describe("chat message renderer utilities", () => {
     assert.deepEqual(live.pendingToolIds(), []);
   });
 
+  test("ignores a malformed assistant update snapshot", () => {
+    const entries = [] as ReturnType<typeof chatEntriesFromAgentMessages>;
+    const live = new LiveChatEntriesController(entries);
+
+    assert.equal(live.applyEvent({
+      type: "message_update",
+      message: { role: "assistant", content: "bad" },
+    }), false);
+    assert.deepEqual(entries, []);
+  });
+
+  test("ignores a malformed assistant end snapshot", () => {
+    const entries = [] as ReturnType<typeof chatEntriesFromAgentMessages>;
+    const live = new LiveChatEntriesController(entries);
+
+    assert.equal(live.applyEvent({
+      type: "message_end",
+      message: { role: "assistant" },
+    }), false);
+    assert.deepEqual(entries, []);
+  });
+
   test("ignores malformed tool-result starts and renders a later valid result", () => {
     const entries = [] as ReturnType<typeof chatEntriesFromAgentMessages>;
     const live = new LiveChatEntriesController(entries);

@@ -35,12 +35,33 @@ function isUserLikeContent(value: unknown): boolean {
 		|| isSafeContentArray(value, (block) => isTextBlock(block) || isImageBlock(block));
 }
 
+export function isSafeAssistantMessageSnapshot(message: unknown): boolean {
+	return isRecord(message)
+		&& message.role === "assistant"
+		&& isSafeContentArray(message.content, isAssistantBlock)
+		&& (message.errorMessage === undefined || typeof message.errorMessage === "string");
+}
+
+export function isSafeAssistantCacheStatsMessage(message: unknown): boolean {
+	if (!isRecord(message) || !isSafeAssistantMessageSnapshot(message)) return false;
+	const usage = message.usage;
+	if (!isRecord(usage) || !isRecord(usage.cost)) return false;
+	return typeof message.provider === "string"
+		&& typeof message.model === "string"
+		&& typeof message.timestamp === "number"
+		&& typeof usage.input === "number"
+		&& typeof usage.cacheRead === "number"
+		&& typeof usage.cacheWrite === "number"
+		&& typeof usage.cost.input === "number"
+		&& typeof usage.cost.cacheRead === "number"
+		&& typeof usage.cost.cacheWrite === "number";
+}
+
 export function isSafeMessageStartMessage(message: unknown): boolean {
 	if (!isRecord(message) || typeof message.role !== "string") return false;
 	switch (message.role) {
 		case "assistant":
-			return isSafeContentArray(message.content, isAssistantBlock)
-				&& (message.errorMessage === undefined || typeof message.errorMessage === "string");
+			return isSafeAssistantMessageSnapshot(message);
 		case "user":
 			return isUserLikeContent(message.content);
 		case "custom":
