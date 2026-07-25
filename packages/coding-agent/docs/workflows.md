@@ -206,6 +206,23 @@ Use this compact coverage matrix internally (it may stay concise for a straightf
 requirement/risk | required evidence | workflow/stage that produces it | gap
 ```
 
+For any custom or composed graph, add this row and resolve it before launch:
+
+```text
+acyclic topology | node/edge sketch for branches and loops | architecture pass | unresolved back-edge
+```
+
+Answer these topology questions as part of the pass:
+
+1. Which stages may repeat?
+2. Does each iteration create distinct tracked work?
+3. What is the current frontier before each repeated stage?
+4. Could any proposed parent edge target an ancestor or the node itself?
+5. Are nested child workflows composed through boundaries rather than recursive `run` invocation?
+6. Does resume/replay rely on stable per-iteration identity and call order?
+
+Sketch expected nodes and dependencies for each branch, loop, and nested boundary. Any unresolved self-edge or back-edge must change the workflow design before launch.
+
 Compare candidate workflow **guarantees**, not only broad descriptions. A named graph fits only when it covers the task's lifecycle **and** produces the evidence required for every material requirement/risk. A generic implementation workflow can cover the lifecycle while missing exact API/type/build contracts, schemas/generated artifacts, state transitions, or domain-specific gates. **Do not treat "has reviewers" as proof that a task-specific risk is covered.**
 
 Ask these questions in order and stop at the cheapest shape that satisfies every remaining coverage row:
@@ -470,9 +487,57 @@ To migrate an existing file from the removed `defineWorkflow(...).compile()` bui
 
 Author workflows to create at least one tracked execution node by calling `ctx.task()`, `ctx.chain()`, `ctx.parallel()`, `ctx.stage()`, `ctx.workflow()`, or `ctx.tool()` in the run body so each normal run has graph work to inspect and render. Stage nodes remain the attachable, interruptible, resumable chat units; durable tool nodes are non-chat execution. Guard-only workflows may call `ctx.exit(...)` before creating a node when they intentionally stop early.
 
+### Dynamic topology must remain acyclic
+
+Atomic `workflow({ run })` definitions are imperative, dynamic TypeScript. The final graph is materialized only while `run(ctx)` executes and may depend on runtime inputs, branches, loops, files or network data, model or human output, helpers, and nested workflows. Discovery can report module import and definition-shape diagnostics: it loads the module, checks its exports, schemas, and `run` function, and rejects failures observable at that point. It does not execute every control-flow path or compile `run` into a complete graph. TypeScript and discovery cannot prove arbitrary dynamic acyclicity.
+
+**Cyclic workflow graphs are unsupported. Workflow authors and coding agents MUST NOT create self-edges or dependency edges from the current frontier to an existing ancestor. Every materialized execution topology must remain a DAG. If a cycle cannot be removed, redesign or stop before launch.**
+
+Before launch, sketch the expected node and dependency shape for every branch and loop. Reject any proposed edge from the current frontier to the node itself or an ancestor. Bounded loops must create distinct tracked work for each iteration, with stable per-iteration identity and call order for resume/replay; never reopen an ancestor below its downstream work.
+
+Invalid structural cycle:
+
+```text
+Implement → Review → Validate
+    ▲                    │
+    └────── Repair ──────┘
+```
+
+`Repair` points back to the existing `Implement` ancestor.
+
+Valid unrolled loop:
+
+```text
+Implement
+   ↓
+Review 1
+   ↓
+Validate 1
+   ↓
+Repair 1
+   ↓
+Review 2
+   ↓
+Validate 2
+```
+
+Each iteration creates new tracked nodes, so the materialized topology stays acyclic.
+
+Retained-session activity without new dependency work is not a loop edge:
+
+```text
+Implement ✓
+  activity: processing follow-up
+```
+
+Record such follow-up as non-topological activity metadata. Do not reopen the original node as a descendant of its own downstream review or validation work.
+
+Runtime and replayed topology checks are the authoritative cycle boundary. If code that materializes or restores topology changes, cover every new parent edge with incremental edge checks and validate reconstruction during execution, replay, and DBOS hydration. Authoring guidance cannot replace those runtime checks or make malformed durable topology safe.
+
 ### Guiding Principles
 
 - **Locally scoped stage prompts** - Describe only the current stage's objective, inputs, expected outputs, and success criteria. Avoid references to other stages unless the current stage explicitly receives and needs that information, and avoid workflow-specific or stage-specific vocabulary that is not explained inside the current prompt. See [Locally Scoped Stage Prompts](#locally-scoped-stage-prompts) for the expanded contract.
+- **DAG-only dynamic topology** - Treat `run(ctx)` as imperative code that materializes graph nodes at runtime. Keep every branch, loop iteration, and nested boundary acyclic; never add a self-edge or a parent edge to an ancestor, and redesign or stop before launch if one remains.
 - **Clear vocabulary** - Use clear software engineering terminology in self-described prompts.
 - **No regex gates** - Avoid hard-coded regular expressions that gate reviews or model outputs.
 - **Schema-backed gates** - Prefer schema-backed workflow stages (`ctx.stage(..., { schema })`, `ctx.chain` items, or `ctx.parallel` items) for review/gate decisions whenever the workflow must evaluate model output; a schema-enabled item receives the structured-output tool automatically. See [Evaluation and Quality Gates](#evaluation-and-quality-gates).
@@ -731,6 +796,8 @@ Control-signal probing is fail-closed. When the executor inspects an arbitrary t
 ### Workflow Composition
 
 Use workflow composition when a workflow calls a reusable user-defined workflow from the project or package, or a bundled builtin workflow, and consumes its outputs as a tracked boundary stage. Import the child definition with a normal TypeScript import, then pass it directly to `ctx.workflow(workflowDefinition, options)`. `ctx.workflow(...)` does not accept registry names, path objects, or string aliases.
+
+Compose nested workflows through these tracked boundaries; do not call a child definition's `run` function recursively. Each repeated child call must remain a distinct boundary with stable iteration identity and call order so execution, replay, and hydration preserve an acyclic parent/child topology.
 
 For workflows intended to be called by parent workflows, declare every field a parent should rely on in the child workflow's `outputs` object, including `result`. No output exists without declaration: a child exposes exactly its declared outputs, and returning an undeclared key fails the child call.
 
@@ -2223,6 +2290,7 @@ When two sessions race to resume the same paused workflow, a durable first-write
 - **Stable durable graph**: tool, stage, task, chain, parallel, and child-workflow checkpoints preserve stable source identity/order, parent DAG edges, actual status, owning-run/boundary metadata, timing, output summary, model, retained chat-session references, and exact `{ runId, stageId }` targets. Fresh-process resume and completed inspection reconstruct tool-only, nested-child, mixed, and parallel topology directly from DBOS.
 - **DBOS-only discovery**: `/workflow resume`, `/workflows`, completed inspection, deletion, and targeted lookup hydrate/query DBOS. Session JSONL remains only a chat transcript referenced by a current checkpoint; it is not a workflow catalog or discovery source.
 - **Fail-closed compatibility**: prior local and pre-current records are not converted. A completed current-format child boundary created before boundary-start or invocation-fingerprint identity is accepted only when child checkpoints reciprocally prove the same root, parent run, boundary, child, and scope. Active records without a provable invocation fingerprint, and malformed, duplicate, stale, nonreciprocal, mixed, aliased, cyclic, orphaned, or unsupported topology, are hidden or refused before cache/control/child dispatch without inventing a child link or executing repair work.
+- **Topology validation boundary**: authoring and discovery guidance cannot prove dynamic acyclicity. Runtime topology work must validate each materialized parent edge incrementally during execution and replay, and DBOS hydration must reject cyclic restored topology before exposing cache, control, or child dispatch.
 - **Cross-session safety**: per-process executor identity, owner/heartbeat liveness on running handles, and claim-guarded status transitions prevent double dispatch when several Atomic sessions share the database.
 
 **Privacy and retention.** DBOS persists workflow inputs, completed tool outputs, UI responses, stage outputs, and chat-session paths. Treat the configured database as sensitive. History does not automatically delete records by age or count; confirmed picker deletion removes inactive DBOS workflow state while preserving independent chat transcripts.
@@ -3200,6 +3268,7 @@ Before implementing or shipping a non-trivial workflow, answer these questions:
 - **Output contract:** Which outputs should be declared in `outputs`, which stage/task/child results should `run` return for those keys, and what runtime type must each value have? If another workflow may call this workflow as a child, which non-default outputs should the parent rely on?
 - **Context size:** Can downstream stages succeed from the handoff alone? Should large transcripts, logs, or research bundles be summarized or saved as artifacts?
 - **Control flow:** Should the workflow use `ctx.chain`, `ctx.parallel`, `ctx.ui`, bounded loops, `failFast`, or `fallbackModels`?
+- **Acyclic topology:** What node and dependency shape can each branch, bounded loop, and nested workflow boundary materialize? Which stages repeat, does each iteration create distinct tracked work with stable identity and call order, and what is the current frontier before each repeat? Could any proposed parent edge target the node itself or an ancestor? Are nested children composed through `ctx.workflow(...)` boundaries rather than recursive `run` invocation? Redesign or stop before launch if any self-edge or back-edge remains.
 - **User experience:** Are stage names readable in status and graph views? Is the final output compact? Are important artifacts saved with stable paths?
 - **Validation:** What success criteria, review gates, deterministic checks, or evaluator stages prove the workflow did the right thing? Are model gates schema-backed instead of regex/prose-matched, and do adaptive gates run as focused model stages with explicit tool/check instructions?
 - **Final actions:** Does the workflow distinguish implementation/review convergence from post-approval final actions such as PR/MR/review creation, release tagging, deployment, or publication? Are reviewers and reducers prompted to approve and hand off when implementation and validation criteria are proven and only an explicitly authorized final action remains?
@@ -3213,6 +3282,9 @@ Good workflows are information-flow systems, not just prompt sequences. Keep sta
 - Do not call `create`, `update`, or `delete` on the workflow tool; definitions are code-authored.
 - Do not use legacy workflow tool fields like `agent`, `stage`, or run-control `name`.
 - Do not pass strings or path objects to `ctx.workflow(...)`; import the workflow definition from `@bastani/workflows/builtin` or another TypeScript module first.
+- Do not create a self-edge or a dependency edge from the current frontier to an existing ancestor. Cyclic workflow graphs are unsupported; redesign or stop before launch when a cycle cannot be removed.
+- Do not model a bounded loop by reopening an earlier node beneath its downstream work. Create distinct tracked work per iteration and keep retained-session follow-up as non-topological activity when it adds no dependency work.
+- Do not claim TypeScript or workflow discovery proves a dynamic workflow acyclic. Discovery diagnoses imports and definition shape; execution, replay, and DBOS hydration are the runtime topology boundary.
 - Do not rely on undeclared child outputs; returning a key that is not declared in `outputs` fails the run. Declare every child-workflow field you expose in `outputs` — including `result` — and return values matching those schemas from `run` (see [Outputs](#outputs)).
 - Do not expect to select or rename child outputs at the call site; parent workflows receive the child's declared output contract as `child.outputs` after checking `child.exited === false`, and a partial declared-output map when `child.exited === true`.
 - Do not expect named workflow runs to block the chat turn; they are background tasks.
@@ -3494,15 +3566,15 @@ Builtin definition and contracts: [Six composable pattern builtins](#six-composa
 ┌─ 3  Adversarial verification ────────────────────────────┐
 │                                                          │
 │                                                          │
-│                                 ┌──────────┐             │
-│               ├────────────────▸│verifier A│             │
-│               │                 └──────────┘             │
-│  ┌──────┐     │                 ┌──────────┐             │
-│  │worker│◂────┼────────────────▸│verifier B│             │
-│  └──────┘     │                 └──────────┘             │
-│               │                 ┌──────────┐             │
-│               ├────────────────▸│verifier C│             │
-│                                 └──────────┘             │
+│  ┌──────┐       ┌──────────┐                             │
+│  │worker│───╮──▸│verifier A│──╮                          │
+│  └──────┘   │   └──────────┘  │                          │
+│             │   ┌──────────┐  │   ┌───────┐              │
+│             ├──▸│verifier B│──┼──▸│reducer│              │
+│             │   └──────────┘  │   └───────┘              │
+│             │   ┌──────────┐  │                          │
+│             ╰──▸│verifier C│──╯                          │
+│                 └──────────┘                             │
 │                                                          │
 └──────────────────────────────────────────────────────────┘
 ```
@@ -3574,12 +3646,14 @@ Builtin definition and contracts: [Six composable pattern builtins](#six-composa
 ```text
 ┌─ 6  Loop until done ─────────────────────────────────────┐
 │                                                          │
-│      yes, spawn another                                  │
-│     ╭────────────────╮                                   │
-│     ▾                │                                   │
-│  ┌─────┐      ┌─────────────┐  no   ┌────┐               │
-│  │agent│─────▸│new findings?│──────▸│done│               │
-│  └─────┘      └─────────────┘       └────┘               │
+│  ┌───────┐   ┌─────────────┐  no   ┌────┐                │
+│  │agent 1│──▸│new findings?│──────▸│done│                │
+│  └───────┘   └──────┬──────┘       └────┘                │
+│                     │ yes, spawn distinct work           │
+│                     ▾                                    │
+│                 ┌───────┐   ┌────────────┐               │
+│                 │agent 2│──▸│next check …│               │
+│                 └───────┘   └────────────┘               │
 │                                                          │
 └──────────────────────────────────────────────────────────┘
 ```
@@ -3588,6 +3662,7 @@ Best practices:
 - Define both success and escape conditions before the loop starts.
 - Keep a durable ledger of attempted work, findings, failures, and validation evidence.
 - Bound loops by iterations, budget, or convergence criteria so exhausting a bound produces an inspectable failure instead of letting the loop continue indefinitely.
+- Materialize every iteration as distinct tracked work with stable iteration identity and call order. Never represent repetition by a self-edge, a back-edge to an ancestor, or reopening an ancestor below its downstream work.
 
 #### Choosing a common workflow pattern
 

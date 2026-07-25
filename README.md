@@ -144,7 +144,7 @@ Atomic is the runtime. Workflows encode durable processes through stages, tools,
 
 Atomic is a fork of Pi, so it works with the providers, tools, MCP servers, skills, and extensions already in your Pi stack.
 
-A workflow's stage dependencies form a directed acyclic graph. Bounded loops and retries are control structures around those stages; Atomic records each attempt and its outcome in the execution graph. This keeps retries visible without turning the run into an unbounded conversation.
+Workflow stage dependencies must form a directed acyclic graph. Because imperative `workflow({ run })` definitions materialize topology from runtime branches, loops, and nested calls, module discovery cannot prove arbitrary acyclicity. Cyclic workflow graphs are unsupported: authored loop and repair iterations must create distinct tracked work per iteration and must never create self-edges or back-edges to ancestors. Retries within one `ctx.tool(...)` call remain attempts on that tool node rather than separate graph work.
 
 ```text
 issue or goal → research → plan → agent stages → artifacts → checks → review gate → final output

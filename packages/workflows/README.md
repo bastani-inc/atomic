@@ -62,6 +62,16 @@ When a stage human-in-the-loop prompt is answered from the workflow TUI/stage ch
 
 ## Authoring API
 
+### Dynamic topology is DAG-only
+
+Atomic `workflow({ run })` definitions are imperative, dynamic TypeScript. Discovery loads modules and validates imports and definition shape, but it does not compile every `run` path into a complete graph or prove acyclicity. Runtime inputs, branches, loops, external data, model or human output, helpers, and nested workflows determine the materialized topology during execution.
+
+**Cyclic workflow graphs are unsupported. Authors and coding agents MUST NOT create a self-edge or a dependency edge from the current frontier to an existing ancestor. Every materialized execution topology must remain a DAG. Redesign or stop before launch if a cycle cannot be removed.**
+
+Sketch branches, loops, and nested boundaries before launch. Bounded loops must create distinct tracked work per iteration with stable identity and call order; never reopen an ancestor beneath its downstream work. Compose children through `ctx.workflow(...)` boundaries rather than recursive `run` invocation. Keep retained-session follow-up that creates no dependency work as activity, not a back-edge.
+
+Execution, replay, and DBOS hydration are the authoritative topology-validation points. Runtime topology changes should add incremental edge checks and DBOS hydration validation; prompt guidance and TypeScript types cannot replace these checks.
+
 ### Workflow-owned side effects
 
 Prefer `ctx.tool(name, args, fn)` for workflow-owned TypeScript operations with side effects, including filesystem writes, network mutations, external API actions, and similar deterministic operations orchestrated directly by the workflow definition. Each invocation creates a non-chat, non-attachable durable graph node before `fn` runs; it may appear before, between, after, or without model stages. Atomic durably caches a completed call's serializable result, so resume returns that result without rerunning `fn` or repeating the side effect. Tool-only workflows are valid tracked execution, while a normal return with no stage, child, tool, or explicit exit remains invalid. Keep pure computation and side-effect-free transformations as ordinary TypeScript. Do not wrap agent-stage internals or every function call indiscriminately. The executor closes tool admission before publishing any terminal outcome; calling a retained `ctx.tool` function afterward returns a rejected native promise and creates no callback, retry, graph node, or checkpoint.

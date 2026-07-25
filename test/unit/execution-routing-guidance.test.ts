@@ -198,6 +198,50 @@ describe("workflow-first execution routing", () => {
     }
   });
 
+  test("requires dynamic workflow topologies to remain acyclic", async () => {
+    const authoringGuidance = workflowGuidance.join("\n");
+    const documentation = await readRepositoryFile("packages/coding-agent/docs/workflows.md");
+    const rootReadme = await readRepositoryFile("README.md");
+
+    for (const phrase of [
+      "imperative, dynamic TypeScript",
+      "Discovery validates module loading, imports, and definition shape",
+      "does not compile `run` into a complete graph or prove acyclicity",
+      "Cyclic workflow graphs are unsupported",
+      "MUST NOT create self-edges or dependency edges from the current frontier to an existing ancestor",
+      "Redesign or stop before launch",
+      "distinct tracked work for every iteration",
+      "stable per-iteration identity and call order",
+      "nested workflows through `ctx.workflow(...)` boundaries",
+      "incremental edge checks",
+      "DBOS hydration validation",
+      "acyclic topology | node/edge sketch for branches and loops | architecture pass | unresolved back-edge",
+    ]) {
+      expect(authoringGuidance).toContain(phrase);
+    }
+
+    for (const phrase of [
+      "Discovery can report module import and definition-shape diagnostics",
+      "TypeScript and discovery cannot prove arbitrary dynamic acyclicity",
+      "Implement → Review → Validate",
+      "Repair 1",
+      "Review 2",
+      "activity: processing follow-up",
+      "never reopen an ancestor below its downstream work",
+      "Which stages may repeat?",
+      "What is the current frontier before each repeated stage?",
+      "Could any proposed parent edge target an ancestor or the node itself?",
+      "Are nested child workflows composed through boundaries rather than recursive `run` invocation?",
+      "Does resume/replay rely on stable per-iteration identity and call order?",
+    ]) {
+      expect(documentation).toContain(phrase);
+    }
+
+    expect(rootReadme).toContain("authored loop and repair iterations must create distinct tracked work per iteration");
+    expect(rootReadme).toContain("Retries within one `ctx.tool(...)` call remain attempts on that tool node");
+    expect(rootReadme).not.toContain("bounded loops and retries must create distinct tracked work");
+  });
+
   test("retains every risk-based routing signal in model-visible guidance", () => {
     for (const phrase of [
       "broad repository uncertainty → Fan-out-and-synthesize with repository-focused branches",
