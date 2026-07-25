@@ -60,6 +60,7 @@ export interface ChainExecutionDetailsInput {
 export interface ChainExecutionParams {
 	chain: ChainStep[];
 	task?: string;
+	group?: string | true;
 	agents: AgentConfig[];
 	ctx: ExtensionContext;
 	intercomEvents?: IntercomEventBus;
@@ -98,6 +99,7 @@ export interface ChainExecutionResult {
 
 export interface ParallelChainRunInput {
 	step: ParallelStep;
+	chainIntercomGroup?: string | true;
 	parallelTemplates: string[];
 	parallelBehaviors: ResolvedStepBehavior[];
 	agents: AgentConfig[];

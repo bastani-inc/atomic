@@ -18,6 +18,7 @@ import { NESTED_RUNS_DIR, nestedResultsPath, resolveInheritedNestedRouteFromEnv,
 import { createStructuredOutputRuntime } from "../shared/structured-output.ts";
 import { resolveExpectedWorktreeAgentCwd } from "../shared/worktree.ts";
 import { buildWorkflowGraphSnapshot } from "../shared/workflow-graph.ts";
+import { resolveChildIntercomGroup, sharedAutoGroupForSet } from "../shared/intercom-group.ts";
 import {
 	AsyncStartValidationError,
 	UnavailableSubagentSkillError,
@@ -25,7 +26,7 @@ import {
 	formatAsyncStartedMessage,
 	formatAsyncStartError,
 	piPackageRoot,
-	spawnRunner,
+	spawnRunner as defaultSpawnRunner,
 } from "./async-execution-common.ts";
 import type { AsyncChainParams, AsyncExecutionResult, AsyncSpawnResult } from "./async-execution-types.ts";
 
@@ -57,6 +58,7 @@ export function executeAsyncChain(
 		supervisorAuthorizations,
 		dynamicSupervisorAuthorizations,
 		nestedRoute,
+		spawnRunner = defaultSpawnRunner,
 	} = params;
 	const resultMode = params.resultMode ?? "chain";
 	const chainSkills = params.chainSkills ?? [];
@@ -125,7 +127,15 @@ export function executeAsyncChain(
 			...(s.model ? { model: s.model } : {}),
 		};
 	};
-	const buildSeqStep = (s: SequentialStep, sessionFile?: string, behaviorCwd?: string, progressPrecreated = false, resolvedBehavior?: ResolvedStepBehavior) => {
+	const buildSeqStep = (
+		s: SequentialStep,
+		sessionFile?: string,
+		behaviorCwd?: string,
+		progressPrecreated = false,
+		resolvedBehavior?: ResolvedStepBehavior,
+		setGroup?: string | true,
+		sharedAutoGroup?: string,
+	) => {
 		const a = agents.find((x) => x.name === s.agent)!;
 		const stepCwd = resolveChildCwd(runnerCwd, s.cwd);
 		const instructionCwd = behaviorCwd ?? stepCwd;
@@ -172,6 +182,11 @@ export function executeAsyncChain(
 			label: s.label,
 			outputName: s.as,
 			structured: Boolean(s.outputSchema),
+			intercomGroup: resolveChildIntercomGroup(
+				s.group ?? setGroup ?? params.group,
+				ctx.intercomGroup,
+				sharedAutoGroup,
+			),
 			cwd: stepCwd,
 			model,
 			thinking: resolveEffectiveThinking(model, a.thinking),
@@ -209,6 +224,8 @@ export function executeAsyncChain(
 	try {
 		steps = chain.map((s, stepIndex) => {
 			if (isParallelStep(s)) {
+				const setGroup = s.group ?? params.group;
+				const sharedAutoGroup = sharedAutoGroupForSet(setGroup, s.parallel);
 				const parallelBehaviors = s.parallel.map((task) => {
 					const agent = agents.find((candidate) => candidate.name === task.agent)!;
 					return suppressProgressForReadOnlyTask(resolveStepBehavior(agent, buildStepOverrides(task), chainSkills), task.task, originalTask);
@@ -228,7 +245,7 @@ export function executeAsyncChain(
 								behaviorCwd = undefined;
 							}
 						}
-						return buildSeqStep(t, nextSessionFile(), behaviorCwd, progressPrecreated, parallelBehaviors[taskIndex]);
+						return buildSeqStep(t, nextSessionFile(), behaviorCwd, progressPrecreated, parallelBehaviors[taskIndex], setGroup, sharedAutoGroup);
 					}),
 					concurrency: s.concurrency,
 					failFast: s.failFast,
@@ -236,6 +253,8 @@ export function executeAsyncChain(
 				};
 			}
 			if (isDynamicParallelStep(s)) {
+				const setGroup = s.group ?? params.group;
+				const sharedAutoGroup = sharedAutoGroupForSet(setGroup, [s.parallel]);
 				const agent = agents.find((candidate) => candidate.name === s.parallel.agent)!;
 				const behavior = suppressProgressForReadOnlyTask(resolveStepBehavior(agent, buildStepOverrides(s.parallel), chainSkills), s.parallel.task, originalTask);
 				const progressPrecreated = behavior.progress;
@@ -245,7 +264,7 @@ export function executeAsyncChain(
 				}
 				return {
 					expand: s.expand,
-					parallel: buildSeqStep(s.parallel as SequentialStep, undefined, undefined, progressPrecreated, behavior),
+					parallel: buildSeqStep(s.parallel as SequentialStep, undefined, undefined, progressPrecreated, behavior, setGroup, sharedAutoGroup),
 					collect: s.collect,
 					concurrency: s.concurrency,
 					failFast: s.failFast,

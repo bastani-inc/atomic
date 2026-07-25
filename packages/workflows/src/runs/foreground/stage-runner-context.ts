@@ -17,10 +17,18 @@ import {
 import type { InternalStageContext, StageRunnerOpts } from "./stage-runner-types.js";
 
 export function createStageContext(opts: StageRunnerOpts): InternalStageContext {
-  const { stageId, stageName, adapters, runId, signal, stageOptions, executionMode } = opts;
+  const { stageId, stageName, adapters, runId, workflowIntercomGroup, signal, stageOptions, executionMode } = opts;
   const structuredOutputCapture = stageOptions?.schema ? createStructuredOutputCapture<unknown>() : undefined;
   const effectiveStageOptions = stageOptionsWithStructuredOutput(stageOptions, structuredOutputCapture);
-  const meta: StageExecutionMeta = { runId, stageId, stageName, signal, stageOptions: effectiveStageOptions, executionMode };
+  const meta: StageExecutionMeta = {
+    runId,
+    stageId,
+    stageName,
+    ...(workflowIntercomGroup === undefined ? {} : { workflowIntercomGroup }),
+    signal,
+    stageOptions: effectiveStageOptions,
+    executionMode,
+  };
   const controller = new StageSessionController(opts, meta, effectiveStageOptions, structuredOutputCapture);
   let lastAssistantText: string | undefined;
   let adapterMessages = [] as InternalStageContext["messages"];

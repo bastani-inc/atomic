@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - Changed workflow stage chat to render Atomic's exact one-cell `∀` with a pronounced, theme-aware dark → accent → bright/bold → accent → dark luminance ramp at 88ms and the ordinary one-row working geometry, while preserving `NO_COLOR` weight activity, reduced-motion static accent styling, blocked/prompt chrome suppression, composer space, and factual-state precedence.
+- Workflow invocations now assign a stable, non-`default` Intercom group from the persistent top-level run identity and apply it to every Intercom-capable stage by default. Nested workflows, model fallback, pause/resume, durable replay, and subagent inheritance retain the group; separate runs remain isolated; explicit stage/task/parallel groups (including `"default"`) still override it; and stages without Intercom access remain ungrouped. Workflow authors no longer need to mint and thread group names manually ([#1999](https://github.com/bastani-inc/atomic/issues/1999)).
 
 ### Fixed
 

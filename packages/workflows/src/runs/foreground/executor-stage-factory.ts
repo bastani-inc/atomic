@@ -30,6 +30,7 @@ import { createQueuedUserMessageConsumptionWatcher } from "./executor-queued-use
 
 export function createWorkflowStageFactory(input: {
   readonly runId: string;
+  readonly workflowIntercomGroup: string;
   readonly activeStore: Store;
   readonly opts: EngineStageRuntimeOptions;
   readonly adapters: StageAdapters;
@@ -132,6 +133,7 @@ export function createWorkflowStageFactory(input: {
       stageName: name,
       adapters: input.adapters,
       runId: input.runId,
+      workflowIntercomGroup: input.workflowIntercomGroup,
       signal: input.signal,
       stageOptions: stageOptionsForContext,
       models: input.opts.models,

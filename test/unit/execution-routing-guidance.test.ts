@@ -342,9 +342,11 @@ describe("workflow-first execution routing", () => {
       "thinking level listed for that entry",
       "leave the child unpinned",
       "Do not inspect credentials",
-      "each workflow or orchestrator invocation",
-      "one invocation-scoped literal Intercom group that is not default",
-      "including parallel and follow-up work",
+      "Workflow stages automatically receive their invocation-scoped Intercom group",
+      "inherit the launching session's group",
+      "single, parallel, chain, async, and follow-up work",
+      "Do not create or propagate group identifiers",
+      "explicit group only for an intentional topology override",
       "contact_supervisor available for cross-group escalation",
     ]) {
       expect(guidance).toContain(phrase);

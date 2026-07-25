@@ -4,6 +4,11 @@ import type { StageOptions } from "./types.js";
 /** The implicit group shared by every ungrouped session. */
 export const DEFAULT_INTERCOM_GROUP = "default";
 
+/** Stable non-default home group for every stage in one top-level workflow invocation. */
+export function workflowInvocationIntercomGroup(rootRunId: string): string {
+  return `workflow:${rootRunId}`;
+}
+
 /** Normalize authored or agent-serialized auto-group sentinels without changing real group names. */
 export function normalizeAutoGroupSentinel(group: string | true): string | true {
   if (group === true) return true;
@@ -19,17 +24,19 @@ export function normalizeGroup(value?: string | null): string {
 }
 
 /**
- * Resolve a stage's `group` option to a concrete home-group string, or undefined
- * when the stage did not request a group (so the intercom layer falls back to
- * env/config/default). A named string is trimmed; a bare `true` that survives to
- * this point (a single, non-parallel stage) mints one fresh UUID for that stage.
- * Parallel sets resolve `true` to one shared UUID upstream, so it never reaches
- * here as `true`.
+ * Resolve a stage's home group. An explicit authored group wins over the
+ * workflow invocation group. A named string is trimmed; a bare `true` that
+ * survives to this point (a single, non-parallel stage) mints one fresh UUID
+ * for that stage. Parallel sets resolve `true` to one shared UUID upstream.
+ * Without a workflow group, omission keeps the legacy env/config/default path.
  */
-export function resolveStageGroup(stageOptions?: { group?: string | true }): string | undefined {
-  if (!stageOptions) return undefined;
+export function resolveStageGroup(
+  stageOptions?: { group?: string | true },
+  workflowGroup?: string,
+): string | undefined {
+  if (!stageOptions) return workflowGroup;
   const group = stageOptions.group;
-  if (group === undefined) return undefined;
+  if (group === undefined) return workflowGroup;
   if (group === true) return randomUUID();
   const trimmed = group.trim();
   return trimmed.length > 0 ? trimmed : undefined;
@@ -42,7 +49,7 @@ export function resolveStageGroup(stageOptions?: { group?: string | true }): str
  */
 export function stageHasIntercomAccess(stageOptions?: StageOptions): boolean {
   if (!stageOptions) return true;
-  if (stageOptions.noTools === "all" || stageOptions.noTools === "builtin") return false;
+  if (stageOptions.noTools === "all") return false;
   const tools = stageOptions.tools;
   if (Array.isArray(tools) && !tools.includes("intercom")) return false;
   const excluded = stageOptions.excludedTools;

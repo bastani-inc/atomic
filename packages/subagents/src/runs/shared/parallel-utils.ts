@@ -8,6 +8,7 @@ export interface RunnerSubagentStep {
 	label?: string;
 	outputName?: string;
 	structured?: boolean;
+	intercomGroup?: string;
 	cwd?: string;
 	model?: string;
 	thinking?: string;

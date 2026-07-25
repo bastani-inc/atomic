@@ -110,6 +110,29 @@ describe("createStageContext — prompt metadata propagation", () => {
         });
     });
 
+    test("prompt adapter receives workflow intercom group when provided", async () => {
+        const received: StageExecutionMeta[] = [];
+        const promptAdapter: PromptAdapter = {
+            async prompt(_text, meta) {
+                received.push(meta!);
+                return "done";
+            },
+        };
+        const ctx = createStageContext(
+            makeOpts({
+                adapters: { prompt: promptAdapter },
+                workflowIntercomGroup: "workflow-run-r-100",
+            }),
+        );
+
+        await ctx.prompt("summarise this");
+
+        assert.equal(
+            received[0]?.workflowIntercomGroup,
+            "workflow-run-r-100",
+        );
+    });
+
     test("prompt adapter receives the text passed to ctx.prompt", async () => {
         const texts: string[] = [];
         const promptAdapter: PromptAdapter = {

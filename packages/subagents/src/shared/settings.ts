@@ -55,6 +55,7 @@ export interface SequentialStep {
 	progress?: boolean;
 	skill?: string | string[] | false;
 	model?: string;
+	group?: string | true;
 }
 
 /** Parallel task item within a parallel step */
@@ -73,6 +74,7 @@ export interface ParallelTaskItem {
 	progress?: boolean;
 	skill?: string | string[] | false;
 	model?: string;
+	group?: string | true;
 }
 
 export interface DynamicExpandSpec {
@@ -101,6 +103,7 @@ export interface DynamicParallelStep {
 	failFast?: boolean;
 	phase?: string;
 	label?: string;
+	group?: string | true;
 }
 
 /** Parallel step: multiple agents running concurrently */
@@ -110,6 +113,7 @@ export interface ParallelStep {
 	concurrency?: number;
 	failFast?: boolean;
 	worktree?: boolean;
+	group?: string | true;
 }
 
 /** Union type for chain steps */

@@ -18,6 +18,7 @@ import type { ExecutionContextData, ResolvedExecutorDeps } from "./subagent-exec
 import { collectChainSessionFiles, wrapChainTasksForFork } from "./subagent-executor-input.ts";
 import { buildChainWorktreeTaskCwdError, buildParallelModeError, buildParallelWorktreeTaskCwdError } from "./subagent-executor-worktree.ts";
 import { requestSupervisorAuthorization, type SupervisorAuthorization } from "../../intercom/supervisor-authorization.ts";
+import { inheritedIntercomGroup } from "../shared/intercom-group.ts";
 
 async function authorizeChild(deps: ResolvedExecutorDeps, childName: string | undefined): Promise<SupervisorAuthorization | undefined> {
 	return await requestSupervisorAuthorization(deps.pi.events, childName);
@@ -118,6 +119,7 @@ export async function runAsyncPath(data: ExecutionContextData, deps: ResolvedExe
 		currentModelProvider: ctx.model?.provider,
 		currentModel: currentModelFullId(ctx.model),
 		workflowSessionMetadata: workflowSessionMetadataFromContext(ctx),
+		intercomGroup: inheritedIntercomGroup(ctx),
 	};
 	const availableModels: ModelInfo[] = ctx.modelRegistry.getAvailable().map(toModelInfo);
 	const knownModelProviders = collectKnownModelProviders(ctx.modelRegistry);
@@ -138,6 +140,7 @@ export async function runAsyncPath(data: ExecutionContextData, deps: ResolvedExe
 			agent: task.agent,
 			task: params.context === "fork" ? wrapForkTask(task.task) : task.task,
 			cwd: task.cwd,
+			group: task.group,
 			...(modelOverrides[index] ? { model: modelOverrides[index] } : {}),
 			...(skillOverrides[index] !== undefined ? { skill: skillOverrides[index] } : {}),
 			...(task.output === true ? (agentConfigs[index]?.output ? { output: agentConfigs[index]!.output } : {}) : task.output !== undefined ? { output: task.output } : {}),
@@ -151,10 +154,12 @@ export async function runAsyncPath(data: ExecutionContextData, deps: ResolvedExe
 		return deps.runtime.executeAsyncChain(id, {
 			chain: [{
 				parallel: parallelTasks,
+				group: params.group,
 				concurrency: resolveTopLevelParallelConcurrency(params.concurrency, deps.config.parallel?.concurrency),
 				worktree: params.worktree,
 			}],
 			resultMode: "parallel",
+			group: params.group,
 			agents,
 			ctx: asyncCtx,
 			availableModels,
@@ -192,6 +197,7 @@ export async function runAsyncPath(data: ExecutionContextData, deps: ResolvedExe
 		return deps.runtime.executeAsyncChain(id, {
 			chain,
 			task: params.task,
+			group: params.group,
 			agents,
 			ctx: asyncCtx,
 			availableModels,
@@ -241,6 +247,7 @@ export async function runAsyncPath(data: ExecutionContextData, deps: ResolvedExe
 		return deps.runtime.executeAsyncSingle(id, {
 			agent: params.agent!,
 			task: params.context === "fork" ? wrapForkTask(params.task ?? "") : (params.task ?? ""),
+			group: params.group,
 			agentConfig: a,
 			ctx: asyncCtx,
 			availableModels,

@@ -18,12 +18,14 @@ export interface AsyncExecutionContext {
 	currentSessionId: string;
 	currentModelProvider?: string;
 	currentModel?: string;
+	intercomGroup?: string;
 	workflowSessionMetadata?: SessionWorkflowMetadata;
 }
 
 export interface AsyncChainParams {
 	chain: ChainStep[];
 	task?: string;
+	group?: string | true;
 	resultMode?: Exclude<SubagentRunMode, "single">;
 	agents: AgentConfig[];
 	ctx: AsyncExecutionContext;
@@ -47,12 +49,20 @@ export interface AsyncChainParams {
 	childIntercomTarget?: (agent: string, index: number) => string | undefined;
 	supervisorAuthorizations?: Array<SupervisorAuthorization | undefined>;
 	dynamicSupervisorAuthorizations?: Record<number, SupervisorAuthorization[]>;
+	/** Internal launch seam used by focused runtime tests. */
+	spawnRunner?: (
+		config: object,
+		suffix: string,
+		cwd: string,
+		env?: Record<string, string>,
+	) => AsyncSpawnResult;
 	nestedRoute?: NestedRouteInfo;
 }
 
 export interface AsyncSingleParams {
 	agent: string;
 	task?: string;
+	group?: string | true;
 	agentConfig: AgentConfig;
 	ctx: AsyncExecutionContext;
 	cwd?: string;

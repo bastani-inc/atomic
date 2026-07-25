@@ -81,6 +81,7 @@ export async function runStaticParallelChainStep(input: {
 
 		const parallelResults = await runParallelChainTasks({
 			step,
+			chainIntercomGroup: context.params.group,
 			parallelTemplates,
 			parallelBehaviors,
 			agents: context.agents,

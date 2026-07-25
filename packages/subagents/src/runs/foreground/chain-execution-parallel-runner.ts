@@ -15,6 +15,7 @@ import { buildWorkflowGraphSnapshot } from "../shared/workflow-graph.ts";
 import { diffWorktrees, formatWorktreeDiffSummary, type WorktreeSetup } from "../shared/worktree.ts";
 import { resolveOutputReferences } from "../shared/chain-outputs.ts";
 import { createStructuredOutputRuntime } from "../shared/structured-output.ts";
+import { inheritedIntercomGroup, resolveChildIntercomGroup, sharedAutoGroupForSet } from "../shared/intercom-group.ts";
 import type { ParallelChainRunInput } from "./chain-execution-types.ts";
 
 export function ensureParallelProgressFile(
@@ -44,6 +45,8 @@ export async function runParallelChainTasks(input: ParallelChainRunInput): Promi
 	const failFast = input.step.failFast ?? false;
 	let aborted = false;
 	const intercomDetachController = new AbortController();
+	const setGroup = input.step.group ?? input.chainIntercomGroup;
+	const sharedAutoGroup = sharedAutoGroupForSet(setGroup, input.step.parallel);
 
 	return mapConcurrent(input.step.parallel, concurrency, async (task, taskIndex) => {
 		if (intercomDetachController.signal.aborted) {
@@ -135,6 +138,11 @@ export async function runParallelChainTasks(input: ParallelChainRunInput): Promi
 			onControlEvent: input.onControlEvent,
 			intercomSessionName: input.childIntercomTarget?.(task.agent, input.globalTaskIndex + taskIndex),
 			orchestratorIntercomTarget: input.orchestratorIntercomTarget,
+			intercomGroup: resolveChildIntercomGroup(
+				task.group ?? setGroup,
+				inheritedIntercomGroup(input.ctx),
+				sharedAutoGroup,
+			),
 			nestedRoute: input.nestedRoute,
 			onDetachedExit: (recovered) => input.onDetachedExit?.(input.globalTaskIndex + taskIndex, recovered),
 			intercomDetachSignal: intercomDetachController.signal,

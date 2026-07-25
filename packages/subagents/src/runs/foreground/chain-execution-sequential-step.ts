@@ -17,6 +17,7 @@ import { workflowSessionMetadataFromContext } from "../../shared/types-depth.ts"
 import { outputEntryFromResult, resolveOutputReferences } from "../shared/chain-outputs.ts";
 import { currentModelFullId, resolveModelCandidate } from "../shared/model-fallback.ts";
 import { recordRun } from "../shared/run-history.ts";
+import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/intercom-group.ts";
 import { validateFileOnlyOutputMode } from "../shared/single-output.ts";
 import { createStructuredOutputRuntime } from "../shared/structured-output.ts";
 import { buildWorkflowGraphSnapshot } from "../shared/workflow-graph.ts";
@@ -122,6 +123,11 @@ export async function runSequentialChainStep(input: {
 		onControlEvent: context.onControlEvent,
 		intercomSessionName: context.childIntercomTarget?.(seqStep.agent, flatIndex),
 		orchestratorIntercomTarget: context.orchestratorIntercomTarget,
+		intercomGroup: resolveChildIntercomGroup(
+			seqStep.group ?? context.params.group,
+			inheritedIntercomGroup(context.ctx),
+			undefined,
+		),
 		nestedRoute: context.params.nestedRoute,
 		onDetachedExit: (recovered) => context.onDetachedExit?.(flatIndex, recovered),
 		modelOverride: effectiveModel,

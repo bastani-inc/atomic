@@ -156,7 +156,7 @@ Any parent chat or workflow stage that orchestrates subagents should omit the ex
 
 When an agent declares no model or fallback policy, consult `packages/coding-agent/docs/models/model-selection.md`, then call `workflow({ action: "models" })` when available. Use only a catalog-returned `fullId` and only a thinking level listed for that entry. If the catalog tool is unavailable, returns no models, or has no recommended model for the role, leave the child unpinned and report the limitation instead of inventing a model or inspecting credentials.
 
-Give every workflow or other orchestrator invocation one literal, invocation-specific Intercom group other than `default`, and pass that same group to all delegated children, including parallel and follow-up calls. `contact_supervisor` remains available across group boundaries.
+Workflow invocations receive a stable, non-`default` Intercom group automatically. Their stages and delegated children inherit it across single, parallel, chain, async, and follow-up calls, so omit `group` unless you intend to create a different coordination subgroup. Outside a workflow, children inherit the launching session's group. `contact_supervisor` remains available across group boundaries.
 
 ## Where running subagents show up
 

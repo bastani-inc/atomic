@@ -39,6 +39,29 @@ describe("createStageContext — complete metadata propagation", () => {
         });
     });
 
+    test("complete adapter receives workflow intercom group when provided", async () => {
+        const received: StageExecutionMeta[] = [];
+        const completeAdapter: CompleteAdapter = {
+            async complete(_text, _opts, meta) {
+                received.push(meta!);
+                return "done";
+            },
+        };
+        const ctx = createStageContext(
+            makeOpts({
+                adapters: { complete: completeAdapter },
+                workflowIntercomGroup: "workflow-run-r-55",
+            }),
+        );
+
+        await ctx.complete("write a draft");
+
+        assert.equal(
+            received[0]?.workflowIntercomGroup,
+            "workflow-run-r-55",
+        );
+    });
+
     test("complete adapter receives CompleteStageOpts.model", async () => {
         const receivedOpts: Array<CompleteStageOpts | undefined> = [];
         const completeAdapter: CompleteAdapter = {

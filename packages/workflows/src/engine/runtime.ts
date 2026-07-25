@@ -1,6 +1,7 @@
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { Store } from "../shared/store.js";
 import type { StageOptions } from "../shared/types.js";
+import { workflowInvocationIntercomGroup } from "../shared/intercom-group.js";
 import type { ConcurrencyLimiter } from "../runs/shared/concurrency.js";
 import type { ParallelFailFastScope } from "../runs/foreground/executor-types.js";
 import type { WorkflowExitManager } from "../runs/foreground/executor-exit-manager.js";
@@ -68,6 +69,7 @@ export type StageHandle = EngineAgentStageHandle | EngineWorkflowBoundaryHandle;
 
 export class EngineRuntime {
   readonly runId: string;
+  readonly workflowIntercomGroup: string;
   readonly depth: number;
   readonly activeStore: Store;
   readonly childRunOptions: EngineChildRunOptions;
@@ -94,6 +96,7 @@ export class EngineRuntime {
 
   constructor(input: EngineRuntimeInput) {
     this.runId = input.runId;
+    this.workflowIntercomGroup = workflowInvocationIntercomGroup(input.parentRootRunId ?? input.runId);
     this.depth = input.depth;
     this.activeStore = input.activeStore;
     this.childRunOptions = input.childRunOptions;
@@ -111,6 +114,7 @@ export class EngineRuntime {
     // created lazily by the stage runner through input.adapters.agentSession.
     this.spawnAgentStage = createWorkflowStageFactory({
       runId: input.runId,
+      workflowIntercomGroup: this.workflowIntercomGroup,
       activeStore: input.activeStore,
       opts: input.stageOptions,
       adapters: input.adapters,

@@ -118,6 +118,8 @@ export interface StageRunnerOpts {
   stageOptions?: StageOptions;
   /** Run ID of the containing workflow execution — forwarded to session adapter metadata. */
   runId: string;
+  /** Runtime-owned home group shared by this top-level workflow invocation. */
+  workflowIntercomGroup?: string;
   /** AbortSignal from the executor's own AbortController — forwarded to session adapter metadata. */
   signal?: AbortSignal;
   /** Optional model catalog used for fallback validation/resolution. */

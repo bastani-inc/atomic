@@ -248,7 +248,7 @@ describe("subagent child CLI args", () => {
     assert.equal(result.env[WORKFLOW_SESSION_METADATA_ENV], JSON.stringify(workflow));
   });
 
-  test("writes the intercom group env only when the child has intercom access", () => {
+  test("writes the intercom group only with access and clears inherited state otherwise", () => {
     const withPeer = buildPiArgs({
       baseArgs: [],
       task: "hello",
@@ -267,6 +267,14 @@ describe("subagent child CLI args", () => {
       intercomGroup: "reviewers",
       orchestratorIntercomTarget: "parent",
     });
+    const withEnvironmentFallback = buildPiArgs({
+      baseArgs: [],
+      task: "hello",
+      sessionEnabled: false,
+      inheritProjectContext: true,
+      inheritSkills: true,
+      intercomSessionName: "child-2",
+    });
     const withoutAccess = buildPiArgs({
       baseArgs: [],
       task: "hello",
@@ -278,7 +286,8 @@ describe("subagent child CLI args", () => {
 
     assert.equal(withPeer.env[INTERCOM_GROUP_ENV], "reviewers");
     assert.equal(withSupervisor.env[INTERCOM_GROUP_ENV], "reviewers");
-    assert.equal(withoutAccess.env[INTERCOM_GROUP_ENV], undefined);
+    assert.equal(withEnvironmentFallback.env[INTERCOM_GROUP_ENV], undefined);
+    assert.equal(withoutAccess.env[INTERCOM_GROUP_ENV], "");
   });
 
   test("passes broker-issued supervisor authorization only through dedicated child env", () => {

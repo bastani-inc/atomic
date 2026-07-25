@@ -70,6 +70,7 @@ export async function runDynamicParallelChainStep(input: {
 		parallel: materialized.parallel,
 		concurrency: step.concurrency,
 		failFast: step.failFast,
+		group: step.group,
 	};
 	const parallelTemplates = materialized.parallel.map((task) => task.task ?? "{previous}");
 	const parallelBehaviors = resolveParallelBehaviors(dynamicParallelStep.parallel, context.agents, stepIndex, context.chainSkills)
@@ -91,6 +92,7 @@ export async function runDynamicParallelChainStep(input: {
 	createParallelDirs(context.chainDir, stepIndex, dynamicParallelStep.parallel.length, dynamicParallelStep.parallel.map((task) => task.agent));
 	const parallelResults = await runParallelChainTasks({
 		step: dynamicParallelStep,
+		chainIntercomGroup: context.params.group,
 		parallelTemplates,
 		parallelBehaviors,
 		agents: context.agents,

@@ -13,6 +13,7 @@ import { injectSingleOutputInstruction, normalizeSingleOutputOverride, resolveSi
 import { buildModelCandidates, resolveModelCandidate } from "../shared/model-fallback.ts";
 import { filterSpawnableModelCandidates } from "../shared/model-candidate-filter.ts";
 import { NESTED_RUNS_DIR, nestedResultsPath, resolveInheritedNestedRouteFromEnv, resolveNestedParentAddressFromEnv, writeNestedEvent } from "../shared/nested-events.ts";
+import { resolveChildIntercomGroup } from "../shared/intercom-group.ts";
 import {
 	UNAVAILABLE_SUBAGENT_SKILL_ERROR,
 	formatAsyncStartedMessage,
@@ -120,6 +121,7 @@ export function executeAsyncSingle(
 					{
 						agent,
 						task: taskWithOutputInstruction,
+						intercomGroup: resolveChildIntercomGroup(params.group, ctx.intercomGroup, undefined),
 						cwd: runnerCwd,
 						model,
 						thinking: resolveEffectiveThinking(model, agentConfig.thinking),

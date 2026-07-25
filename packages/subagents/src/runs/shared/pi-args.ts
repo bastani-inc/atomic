@@ -272,10 +272,12 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	// own supervisor authority to a descendant that lacks a freshly issued grant.
 	env[SUBAGENT_SUPERVISOR_CAPABILITY_ENV] = input.supervisorAuthorization?.capability ?? "";
 	env[SUBAGENT_SUPERVISOR_SESSION_ID_ENV] = input.supervisorAuthorization?.supervisorSessionId ?? "";
-	// Only assign an intercom group when the child actually has intercom access
-	// (peer intercom session name OR contact_supervisor orchestrator target).
+	// Assign a workflow/explicit group only when the child has Intercom access;
+	// otherwise clear ambient group state so a restricted child receives none.
 	const hasIntercomAccess = Boolean(input.intercomSessionName || input.orchestratorIntercomTarget);
-	if (input.intercomGroup && hasIntercomAccess) {
+	if (!hasIntercomAccess) {
+		env[INTERCOM_GROUP_ENV] = "";
+	} else if (input.intercomGroup) {
 		env[INTERCOM_GROUP_ENV] = input.intercomGroup;
 	}
 	if (input.runId) {

@@ -123,6 +123,7 @@ export async function runSingleStep(
 				promptFileStem: step.agent,
 				intercomSessionName: ctx.childIntercomTarget,
 				orchestratorIntercomTarget: ctx.supervisorAuthorization ? ctx.orchestratorIntercomTarget : undefined,
+				intercomGroup: step.intercomGroup,
 				supervisorAuthorization: ctx.supervisorAuthorization,
 				runId: ctx.id,
 				childAgentName: step.agent,

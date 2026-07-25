@@ -210,6 +210,8 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
 export interface StageExecutionMeta {
   /** Run ID of the containing workflow execution. */
   runId: string;
+  /** Runtime-owned home group shared by this top-level workflow invocation. */
+  workflowIntercomGroup?: string;
   /** Stage ID of the current stage. */
   stageId: string;
   /** Human-readable stage name. */

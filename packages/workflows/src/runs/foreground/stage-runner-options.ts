@@ -21,7 +21,9 @@ function workflowOrchestrationContext(
     workflowStageName: meta.stageName,
     constraints: { disableWorkflowTool: true as const, maxSubagentDepth: 5 },
   };
-  const intercomGroup = stageHasIntercomAccess(stageOptions) ? resolveStageGroup(stageOptions) : undefined;
+  const intercomGroup = stageHasIntercomAccess(stageOptions)
+    ? resolveStageGroup(stageOptions, meta.workflowIntercomGroup)
+    : undefined;
   return intercomGroup ? { ...base, intercomGroup } : base;
 }
 

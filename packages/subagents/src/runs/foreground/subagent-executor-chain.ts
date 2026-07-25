@@ -37,6 +37,7 @@ export async function runChainPath(data: ExecutionContextData, deps: ResolvedExe
 	const chainResult = await executeChain({
 		chain,
 		task: params.task,
+		group: params.group,
 		agents,
 		ctx,
 		intercomEvents: deps.pi.events,

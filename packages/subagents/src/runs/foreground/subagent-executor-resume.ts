@@ -7,6 +7,7 @@ import { readStatus } from "../../shared/utils.ts";
 import { buildRevivedAsyncTask, resolveAsyncResumeTarget } from "../background/async-resume.ts";
 import { resolveSubagentRunId, type ResolvedSubagentRunId } from "../background/run-id-resolver.ts";
 import { toModelInfo } from "../../shared/model-info.ts";
+import { inheritedIntercomGroup } from "../shared/intercom-group.ts";
 import { resolveSingleProgress } from "../../shared/settings.ts";
 import {
 	createNestedRoute,
@@ -425,6 +426,7 @@ export async function resumeAsyncRun(input: {
 	const result = input.deps.runtime.executeAsyncSingle(runId, {
 		agent: target.agent,
 		task: buildRevivedAsyncTask(target, followUp),
+		group: input.params.group,
 		agentConfig,
 		progress: resolveSingleProgress(agentConfig, input.params.progress, followUp),
 		ctx: {
@@ -433,6 +435,7 @@ export async function resumeAsyncRun(input: {
 			currentSessionId: input.deps.state.currentSessionId,
 			currentModelProvider: input.ctx.model?.provider,
 			currentModel: currentModelFullId(input.ctx.model),
+			intercomGroup: inheritedIntercomGroup(input.ctx),
 			workflowSessionMetadata: workflowSessionMetadataFromContext(input.ctx),
 		},
 		cwd: effectiveCwd,

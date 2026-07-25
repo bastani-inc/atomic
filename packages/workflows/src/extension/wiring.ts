@@ -221,7 +221,9 @@ function makeWorkflowStageOrchestrationContext(
   meta: StageExecutionMeta,
   pi: RuntimeWiringSurface,
 ): NonNullable<CreateAgentSessionOptions["orchestrationContext"]> {
-  const intercomGroup = stageHasIntercomAccess(meta.stageOptions) ? resolveStageGroup(meta.stageOptions) : undefined;
+  const intercomGroup = stageHasIntercomAccess(meta.stageOptions)
+    ? resolveStageGroup(meta.stageOptions, meta.workflowIntercomGroup)
+    : undefined;
   return {
     kind: "workflow-stage",
     workflowRunId: meta.runId,
