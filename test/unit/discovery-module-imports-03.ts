@@ -246,17 +246,17 @@ export function registerDiscoveryModuleImportsSuite3(): void {
     test("user-global wins over bundled (same normalizedName)", async () => {
       // Use a name that matches a bundled workflow
       await createUserGlobalWorkflowFile(
-        "ralph-override.js",
-        validDefaultExportSrc("ralph", "ralph"),
+        "tournament-override.js",
+        validDefaultExportSrc("tournament", "tournament"),
       );
       const result = await discoverWorkflows({
         cwd: join(tmpRoot, "cwd"),
         homeDir: join(tmpRoot, "home"),
         includeBundled: true,
       });
-      assert.equal(result.registry.get("ralph")?.name, "ralph");
+      assert.equal(result.registry.get("tournament")?.name, "tournament");
       const bundledWarning = result.errors.filter(
-        (e) => e.code === "DUPLICATE_NAME" && e.source === "ralph",
+        (e) => e.code === "DUPLICATE_NAME" && e.source === "tournament",
       );
       assert.ok(bundledWarning.length >= 1);
     });

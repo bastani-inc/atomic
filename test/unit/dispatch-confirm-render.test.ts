@@ -29,9 +29,9 @@ const stripAnsi = (s: string) => s.replace(ANSI_RE, "");
 describe("renderDispatchConfirm — themed", () => {
   test("emits rounded dispatched panel with run card and connect hint", () => {
     const out = renderDispatchConfirm({
-      workflowName: "deep-research-codebase",
+      workflowName: "fan-out-and-synthesize",
       runId: "0391c9c1-aaaa-bbbb-cccc-dddddddddddd",
-      inputs: { prompt: "map the codebase", max_partitions: 4 },
+      inputs: { prompt: "map the codebase", max_branches: 4 },
       theme: deriveGraphTheme({}),
       width: 140,
     });
@@ -39,14 +39,14 @@ describe("renderDispatchConfirm — themed", () => {
 
     // Identity: short runId in the tag + workflow name on the same row.
     assert.match(plain, /0391c9c1/);
-    assert.match(plain, /deep-research-codebase/);
+    assert.match(plain, /fan-out-and-synthesize/);
 
     // Status badge in the trailing slot.
     assert.match(plain, /● running/);
 
     // Inputs ride row 1 (wide terminal → inline path).
     assert.match(plain, /prompt="map the codebase"/);
-    assert.match(plain, /max_partitions=4/);
+    assert.match(plain, /max_branches=4/);
 
     // Guidance preserves the actionable short id and explains the graph in
     // plain language without attach/detach jargon.
@@ -61,7 +61,7 @@ describe("renderDispatchConfirm — themed", () => {
     assert.doesNotMatch(plain, /▸ \/workflow status/);
 
     assert.match(plain, /^╭ DISPATCHED /);
-    assert.match(plain, /●  0391c9c1  deep-research-codebase  ● running/);
+    assert.match(plain, /●  0391c9c1  fan-out-and-synthesize  ● running/);
 
     // Themed mode emits ANSI escapes.
     assert.match(out, /\x1b\[/);
@@ -69,27 +69,27 @@ describe("renderDispatchConfirm — themed", () => {
 
   test("wide terminal → inputs render inside the rounded run card", () => {
     const out = renderDispatchConfirm({
-      workflowName: "deep-research-codebase",
+      workflowName: "fan-out-and-synthesize",
       runId: "be3181c1-aaaa-bbbb-cccc-dddddddddddd",
-      inputs: { prompt: "explore the codebase", max_partitions: 4 },
+      inputs: { prompt: "explore the codebase", max_branches: 4 },
       theme: deriveGraphTheme({}),
       width: 160,
     });
     const lines = stripAnsi(out).split("\n");
     assert.match(lines[0]!, /DISPATCHED/);
     assert.match(lines[1]!, /be3181c1/);
-    assert.match(lines[1]!, /deep-research-codebase/);
+    assert.match(lines[1]!, /fan-out-and-synthesize/);
     assert.match(lines[2]!, /prompt="explore the codebase"/);
-    assert.match(lines[2]!, /max_partitions=4/);
+    assert.match(lines[2]!, /max_branches=4/);
     assert.match(lines.join("\n"), /● running/);
     assert.match(lines.join("\n"), /▸ \/workflow connect be3181c1/);
   });
 
   test("narrow terminal → rounded card remains width-safe", () => {
     const out = renderDispatchConfirm({
-      workflowName: "deep-research-codebase",
+      workflowName: "fan-out-and-synthesize",
       runId: "be3181c1-aaaa-bbbb-cccc-dddddddddddd",
-      inputs: { prompt: "explore the codebase", max_partitions: 4 },
+      inputs: { prompt: "explore the codebase", max_branches: 4 },
       theme: deriveGraphTheme({}),
       width: 60,
     });
@@ -124,7 +124,7 @@ describe("renderDispatchConfirm — themed", () => {
       inputs: {
         prompt: "x",
         model: "claude-opus-4",
-        max_partitions: 12,
+        max_branches: 12,
         target: "main",
         branch: "feat/x",
         dry_run: false,
@@ -155,7 +155,7 @@ describe("renderDispatchConfirm — themed", () => {
 describe("renderDispatchConfirm — plain", () => {
   test("preserves the rounded shape without ANSI escapes", () => {
     const out = renderDispatchConfirm({
-      workflowName: "ralph",
+      workflowName: "tournament",
       runId: "abc12345-aaaa-bbbb-cccc-dddddddddddd",
       inputs: { prompt: "hello" },
       width: 140,
@@ -163,7 +163,7 @@ describe("renderDispatchConfirm — plain", () => {
     assert.doesNotMatch(out, /\x1b\[/);
 
     // Plain identity row carries run id, workflow name, and status.
-    assert.match(out, /●  abc12345  ralph  ● running/);
+    assert.match(out, /●  abc12345  tournament  ● running/);
     assert.match(out, /● running/);
 
     // Inputs present (inline on wide terminal).

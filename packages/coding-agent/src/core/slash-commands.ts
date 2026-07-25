@@ -51,45 +51,12 @@ const WORKFLOW_ADMIN_COMPLETIONS: AutocompleteItem[] = [
 
 const BUNDLED_WORKFLOW_COMPLETION_METADATA: WorkflowCompletionMetadata[] = [
 	{
-		name: "deep-research-codebase",
-		description: "Heavy research for tasks requiring comprehensive, whole-repository context.",
-		inputs: {
-			prompt: { description: "Research question or investigation focus for the codebase.", kind: "string" },
-			max_partitions: { description: "Maximum number of codebase partitions to explore in parallel.", kind: "number" },
-			max_concurrency: { description: "Maximum number of workflow stages to run concurrently during deep research.", kind: "number" },
-		},
-	},
-	{
-		name: "goal",
-		description: "Goal Runner workflow with bounded sub-agent orchestration turns, acceptance criteria, ledger artifacts, reviewers, and reducer-gated completion.",
-		inputs: {
-			objective: { description: "The objective or delta for this Goal Runner workflow run.", kind: "string" },
-			acceptance_criteria: { description: "Original immutable task contract this run must remain consistent with.", kind: "string" },
-			max_turns: { description: "Maximum orchestrator/review turns before Goal Runner stops as needs_human.", kind: "number" },
-			base_branch: { description: "Optional branch reviewers compare the current code delta against.", kind: "string" },
-			git_worktree_dir: { description: "Optional Git worktree path.", kind: "string" },
-			create_pr: { description: "Whether to run the final pull-request creation stage after approval.", kind: "boolean" },
-		},
-	},
-	{
 		name: "open-claude-design",
 		description: "AI-powered design workflow: discovery, reference research, HTML generation, refinement, and handoff.",
 		inputs: {
 			prompt: { description: "What to design, such as a dashboard, page, component, or prototype.", kind: "string" },
 			discover_references: { description: "Discover current reference designs and feed them to generation.", kind: "boolean" },
 			max_refinements: { description: "Maximum generate/user-feedback loop iterations.", kind: "number" },
-		},
-	},
-	{
-		name: "ralph",
-		description: "Raw prompt → research → orchestrate → multi-model parallel review loop with bounded iteration.",
-		inputs: {
-			prompt: { description: "The task or goal to research, execute, and refine.", kind: "string" },
-			acceptance_criteria: { description: "Original immutable task contract this run must remain consistent with.", kind: "string" },
-			max_loops: { description: "Maximum research/orchestrate/review iterations.", kind: "number" },
-			base_branch: { description: "Branch reviewers compare the current code delta against.", kind: "string" },
-			git_worktree_dir: { description: "Optional Git worktree path.", kind: "string" },
-			create_pr: { description: "Whether to run the final pull-request creation stage.", kind: "boolean" },
 		},
 	},
 ];

@@ -38,7 +38,7 @@ function stage(
 function activeRun(): RunSnapshot {
   return {
     id: "run-abc123def",
-    name: "deep-research-codebase",
+    name: "fan-out-and-synthesize",
     inputs: { prompt: "How does session persistence work?" },
     status: "running",
     startedAt: Date.now() - 42_000,
@@ -67,7 +67,7 @@ function completedRun(): RunSnapshot {
 function failedRun(): RunSnapshot {
   return {
     id: "run-fail-007",
-    name: "ralph",
+    name: "tournament",
     inputs: { prompt: "Migrate db" },
     status: "failed",
     startedAt: Date.now() - 12_000,

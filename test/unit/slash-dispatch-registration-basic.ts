@@ -123,8 +123,8 @@ describe("getArgumentCompletions includes workflow names", () => {
         assert.ok(labels.includes("reload"));
         assert.equal(labels.includes("session"), false);
 
-        assert.ok(labels.includes("deep-research-codebase"));
-        assert.ok(labels.includes("ralph"));
+        assert.ok(labels.includes("fan-out-and-synthesize"));
+        assert.ok(labels.includes("tournament"));
         assert.ok(labels.includes("open-claude-design"));
     });
 
@@ -193,7 +193,7 @@ describe("getArgumentCompletions includes workflow names", () => {
         const labels = (completions ?? []).map((c) => c.label);
         assert.ok(labels.includes("list"), "admin subcommands offered");
         assert.ok(
-            labels.includes("deep-research-codebase"),
+            labels.includes("fan-out-and-synthesize"),
             "workflow names offered",
         );
     });
@@ -253,10 +253,10 @@ describe("inputs subcommand", () => {
 
         const workflowCmd = commands.find((c) => c.name === "workflow");
         const { ctx, messages } = buildCtx();
-        await workflowCmd!.options.handler("inputs ralph", ctx);
+        await workflowCmd!.options.handler("inputs tournament", ctx);
 
         assert.ok(!messages[0].includes("Workflow not found"));
-        assert.ok(messages[0].includes("ralph"));
+        assert.ok(messages[0].includes("tournament"));
         assert.equal(
             sent.some(
                 (message) =>
@@ -269,11 +269,11 @@ describe("inputs subcommand", () => {
 });
 
 // ---------------------------------------------------------------------------
-// /workflow deep-research-codebase prompt=test dispatch (full factory path)
+// /workflow fan-out-and-synthesize prompt=test dispatch (full factory path)
 // ---------------------------------------------------------------------------
 
 describe("/workflow <name> prompt=test dispatches run via factory", () => {
-    test.serial("/workflow deep-research-codebase dispatches run action (not unknown subcommand)", async () => {
+    test.serial("/workflow fan-out-and-synthesize dispatches run action (not unknown subcommand)", async () => {
         const { pi, commands, sent } = buildMockPi();
         await runFactory(pi);
 
@@ -281,7 +281,7 @@ describe("/workflow <name> prompt=test dispatches run via factory", () => {
         const { ctx, messages } = buildCtx();
 
         await workflowCmd!.options.handler(
-            "deep-research-codebase prompt=test",
+            "fan-out-and-synthesize prompt=test",
             ctx,
         );
 

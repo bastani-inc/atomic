@@ -3,7 +3,7 @@
  * (and its already-loaded AuthStorage) across every candidate instead of letting
  * each fallback candidate build a fresh one.
  *
- * Rebuilding auth/model state per candidate is what let a Ralph `reviewer-a`
+ * Rebuilding auth/model state per candidate is what let a Tournament `reviewer-a`
  * stage misreport configured providers as "No API key found" after the primary
  * model 404'd: each fresh AuthStorage re-read auth.json under lock contention and
  * could silently fall back to an empty credential set (issue #1431).

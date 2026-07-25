@@ -1,8 +1,4 @@
-/**
- * Smoke tests for the three builtin workflows.
- * Validates definition shape, input schema, and that builtins are authored with
- * the high-level ctx.task / ctx.parallel / ctx.chain primitives.
- */
+/** Shared assertions and recording context for builtin workflow tests. */
 
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -129,9 +125,6 @@ export function readPathEndsWith(
     );
 }
 
-export function expectedDeepResearchAggregatorReadCount(): number {
-    return 5;
-}
 
 export function assertStringOutput(
     output: WorkflowTaskOptions["output"] | undefined,
@@ -313,6 +306,6 @@ export function assertOutputTypes(
 }
 
 // ---------------------------------------------------------------------------
-// deep-research-codebase
+// fan-out-and-synthesize
 // ---------------------------------------------------------------------------
 

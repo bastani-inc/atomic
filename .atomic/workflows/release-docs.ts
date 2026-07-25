@@ -2,7 +2,6 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { workflow } from "@bastani/workflows";
 import { Type } from "typebox";
-import deepResearchCodebase from "@bastani/workflows/builtin/deep-research-codebase";
 import {
   currentBranchName,
   DEFAULT_RELEASE_DOCS_BASE_BRANCH,
@@ -12,7 +11,7 @@ import {
   nextDocsValidationPhase,
   releaseDocsUpdateTaskKey,
   requireNonBaseBranch,
-  requireResearchDocPath,
+  requireResearchArtifactPath,
   runDocsChecks,
   runGit,
   sanitizeSegment,
@@ -58,7 +57,7 @@ export default workflow({
     }),
     current_branch: Type.String({ description: "Current git branch the workflow ran on." }),
     artifact_root: Type.String({ description: "Workflow artifact directory for this run." }),
-    research_doc_path: Type.String({ description: "Research artifact path from the codebase research child workflow." }),
+    research_doc_path: Type.String({ description: "Repository research artifact used to find docs gaps." }),
     stale_doc_task_count: Type.Number({ description: "Number of grouped stale-doc update tasks found." }),
     stale_doc_tasks: Type.Array(staleDocTaskSchema, { description: "Grouped stale-doc update tasks." }),
     validation_report_path: Type.String({ description: "Validation report artifact path." }),
@@ -97,23 +96,63 @@ export default workflow({
       ].join("\n"),
     );
 
-    const research = await ctx.workflow(deepResearchCodebase, {
-      stageName: "research-current-code-docs-gaps",
-      inputs: {
-        prompt: [
-          "Research Atomic documentation gaps for the current branch.",
-          "Compare the current codebase behavior against docs under packages/coding-agent/docs.",
-          "Do not use release target refs, baseline tags, or git comparison ranges for this analysis.",
-          "Focus on developer-facing and user-facing behavior that should be reflected in the hosted docs.",
-          "Document concrete file paths, symbols, CLI/workflow/settings behavior, and docs implications.",
-          "Do not edit files; this stage is research only.",
-        ].join("\n"),
-        max_partitions: 100,
-        max_concurrency: 8,
-      },
-    });
+    const researchParts = [
+      join(artifactRoot, "research-code-surface.md"),
+      join(artifactRoot, "research-docs-surface.md"),
+      join(artifactRoot, "research-behavior-gaps.md"),
+    ] as const;
+    await ctx.parallel(
+      [
+        {
+          name: "map-current-code-surface",
+          prompt: [
+            "Map user-facing and developer-facing behavior in the current Atomic codebase.",
+            "Focus on concrete files, symbols, CLI/workflow/settings behavior, and package surfaces that hosted docs should cover.",
+            "Do not edit files. Return concise evidence with repository paths.",
+          ].join("\n"),
+          output: researchParts[0],
+          outputMode: "file-only" as const,
+          context: "fresh" as const,
+        },
+        {
+          name: "map-current-docs-surface",
+          prompt: [
+            "Map the current hosted documentation under packages/coding-agent/docs.",
+            "Identify which files own CLI, workflow, settings, extension, package, and user guidance.",
+            "Do not edit files. Return concise evidence with documentation paths.",
+          ].join("\n"),
+          output: researchParts[1],
+          outputMode: "file-only" as const,
+          context: "fresh" as const,
+        },
+        {
+          name: "find-current-docs-gaps",
+          prompt: [
+            "Compare current Atomic behavior with hosted docs under packages/coding-agent/docs.",
+            "Find concrete stale, missing, or misleading user-facing docs, citing both code and docs paths.",
+            "Do not use release target refs, baseline tags, or git comparison ranges. Do not edit files.",
+          ].join("\n"),
+          output: researchParts[2],
+          outputMode: "file-only" as const,
+          context: "fresh" as const,
+        },
+      ],
+      { concurrency: 3, failFast: false },
+    );
 
-    const researchDocPath = requireResearchDocPath(research.outputs.research_doc_path);
+    const researchDocPath = requireResearchArtifactPath(join(artifactRoot, "current-docs-research.md"));
+    await ctx.task("synthesize-current-code-docs-gaps", {
+      prompt: [
+        "Synthesize the three repository research artifacts into one actionable docs-gap report.",
+        ...researchParts.map((path) => `Research artifact: ${path}`),
+        "Read each artifact, resolve overlap, and preserve concrete code/docs references.",
+        "Do not edit files.",
+      ].join("\n"),
+      reads: researchParts,
+      output: researchDocPath,
+      outputMode: "file-only",
+      context: "fresh",
+    });
 
     await ctx.task("identify-stale-docs", {
       prompt: [

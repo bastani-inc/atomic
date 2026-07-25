@@ -37,7 +37,7 @@ import { FIELDS, makeState, plain, ansi, assertLinesWithinWidth, makeEditor, mak
 test("card (submitted): shows ✓ submitted ribbon + composed command", () => {
   const state = makeState({
     rawText: {
-      prompt: "build me a tui",
+      prompt: "build tui",
       iters: "5",
       focus: "minimal",
       verbose: "false",
@@ -47,8 +47,8 @@ test("card (submitted): shows ✓ submitted ribbon + composed command", () => {
   const lines = renderInlineCard({ width: 80, state, theme: deriveGraphTheme({}) });
   const txt = plain(lines);
   assert.match(txt, /✓ submitted/);
-  assert.match(txt, /\/workflow ralph/);
-  assert.match(txt, /prompt="build me a tui"/);
+  assert.match(txt, /\/workflow tournament/);
+  assert.match(txt, /prompt="build tui"/);
   assert.match(txt, /focus=minimal/);
   // editing-status hints should NOT appear in frozen view.
   assert.doesNotMatch(txt, /✎ editing/);
@@ -128,12 +128,12 @@ test("card: live form lines stay within the requested width", () => {
   const width = 113;
   const longDescription = "Maximum number of codebase partitions to explore in parallel. Actual partitions scale by one per 10K LoC, capped by this value.";
   const state = makeState({
-    workflowName: "deep-research-codebase-with-a-very-long-name-that-should-not-overflow-the-terminal",
+    workflowName: "fan-out-and-synthesize-with-a-very-long-name-that-should-not-overflow-the-terminal",
     fields: [
       { name: "prompt", type: "text", required: true, description: "Research question or investigation focus for the codebase." },
-      { name: "max_partitions", type: "number", required: false, default: 4, description: longDescription },
+      { name: "max_branches", type: "number", required: false, default: 4, description: longDescription },
     ],
-    rawText: { prompt: "", max_partitions: "4" },
+    rawText: { prompt: "", max_branches: "4" },
     focusedIdx: 1,
     caret: 1,
   });
@@ -145,7 +145,7 @@ test("card: live form lines stay within the requested width", () => {
 test("card: frozen form lines stay within the requested width", () => {
   const width = 72;
   const state = makeState({
-    workflowName: "deep-research-codebase-with-a-very-long-name-that-should-not-overflow-the-terminal",
+    workflowName: "fan-out-and-synthesize-with-a-very-long-name-that-should-not-overflow-the-terminal",
     rawText: {
       prompt: "build a very long response that would otherwise make the submitted command line wider than the terminal",
       iters: "5",

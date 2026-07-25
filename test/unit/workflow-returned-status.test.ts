@@ -126,7 +126,7 @@ describe("workflow returned status outputs", () => {
   test("structured recoverable stage failures block even without a returned status field", () => {
     const runSnapshot: RunSnapshot = {
       id: "run-structured-auth",
-      name: "goal",
+      name: "adversarial-verification",
       inputs: {},
       status: "completed",
       startedAt: 1,
@@ -161,7 +161,7 @@ describe("workflow returned status outputs", () => {
   test("tolerated recoverable stage failures do not block successful completed runs", () => {
     const runSnapshot: RunSnapshot = {
       id: "run-tolerated-auth",
-      name: "ralph",
+      name: "tournament",
       inputs: {},
       status: "completed",
       startedAt: 1,
@@ -198,10 +198,10 @@ describe("workflow returned status outputs", () => {
     assert.equal(classified.metadata, undefined);
   });
 
-  test("needs_human result.status blocks Goal-like auth fallback exhaustion instead of completing", async () => {
+  test("needs_human result.status blocks implementation-loop auth fallback exhaustion instead of completing", async () => {
     const store = createStore();
     const def = workflow({
-      name: "goal-like-needs-human-auth",
+      name: "implementation-loop-needs-human-auth",
       description: "",
       inputs: {},
       outputs: {

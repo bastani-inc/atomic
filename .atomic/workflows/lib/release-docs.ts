@@ -153,12 +153,10 @@ export const currentBranchName = (cwd = repoRoot()): string => {
   );
 };
 
-export const requireResearchDocPath = (path: string | undefined): string => {
+export const requireResearchArtifactPath = (path: string | undefined): string => {
   const trimmed = path?.trim() ?? "";
   if (trimmed.length === 0) {
-    throw new Error(
-      "deep-research-codebase did not return research_doc_path; release-docs cannot continue without a research artifact path.",
-    );
+    throw new Error("release-docs cannot continue without a repository research artifact path.");
   }
   return trimmed;
 };

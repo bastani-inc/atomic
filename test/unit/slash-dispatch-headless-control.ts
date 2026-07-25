@@ -450,7 +450,7 @@ export default workflow({
         const { handler } = await registerWorkflowCommand();
         const { ctx, pickerCalls } = commandCtx(true);
 
-        await handler("deep-research-codebase", ctx);
+        await handler("fan-out-and-synthesize", ctx);
 
         assert.ok(
             pickerCalls.length > 0,
@@ -472,7 +472,7 @@ export default workflow({
             },
         } as PiCommandContext;
 
-        await handler("deep-research-codebase", ctx);
+        await handler("fan-out-and-synthesize", ctx);
 
         assert.deepEqual(calls, ["host"]);
         assert.equal(

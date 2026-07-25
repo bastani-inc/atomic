@@ -156,7 +156,7 @@ describe("renderRunDetail — themed", () => {
     const now = 1_000_000;
     const detail = detailFromRun(makeRun({
       id: "pause123uuid",
-      name: "ralph",
+      name: "tournament",
       status: "paused",
       startedAt: now - 10_000,
       pausedAt: now - 6_000,
@@ -167,7 +167,7 @@ describe("renderRunDetail — themed", () => {
     const plain = stripAnsi(out);
 
     assert.match(plain, /RUN pause1/);
-    assert.match(plain, /ralph/);
+    assert.match(plain, /tournament/);
     assert.match(plain, /❚❚ paused/);
     assert.match(plain, /state\s+❚❚ paused/);
     assert.match(plain, /workflow resume\s+id=pause1/);

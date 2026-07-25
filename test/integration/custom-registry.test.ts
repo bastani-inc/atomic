@@ -40,6 +40,15 @@ import { store as defaultStore } from "../../packages/workflows/src/shared/store
 
 const CUSTOM_WF_NORM = "custom-integration-workflow";
 const CUSTOM_WF_NAME = "Custom Integration Workflow";
+const BUILTIN_WORKFLOW_NAMES = [
+  "adversarial-verification",
+  "classify-and-act",
+  "fan-out-and-synthesize",
+  "generate-and-filter",
+  "loop-until-done",
+  "open-claude-design",
+  "tournament",
+] as const;
 
 const USER_WF_NORM = "user-global-integration-workflow";
 const USER_WF_NAME = "User Global Integration Workflow";
@@ -125,10 +134,12 @@ describe("discoverWorkflows — custom sources from temp cwd/home", () => {
     assert.ok(discoveryResult.registry.names().includes(USER_WF_NORM));
   });
 
-  test("result.registry includes bundled workflow names alongside custom", () => {
-    const names = discoveryResult.registry.names();
-    assert.ok(names.includes("deep-research-codebase"));
-    assert.ok(names.includes("ralph"));
+  test("result.registry includes the exact bundled workflow set alongside custom", () => {
+    const bundledNames = discoveryResult.sources
+      .filter((source) => source.kind === "bundled")
+      .map((source) => source.id)
+      .sort();
+    assert.deepEqual(bundledNames, [...BUILTIN_WORKFLOW_NAMES].sort());
   });
 
   test("result.sources contains a 'project-local' entry for custom workflow", () => {
@@ -172,12 +183,11 @@ describe("ExtensionRuntime with custom registry — tool dispatch", () => {
     assert.ok(r.items.some((i) => i.name === USER_WF_NORM));
   });
 
-  test("action='list' includes bundled workflows alongside custom", async () => {
+  test("action='list' includes every bundled workflow alongside custom", async () => {
     const result = await runtime.dispatch({ workflow: "", inputs: {}, action: "list" });
     const r = result as { action: "list"; items: { name: string }[] };
-    const names = r.items.map((i) => i.name);
-    assert.ok(names.includes("deep-research-codebase"));
-    assert.ok(names.includes("ralph"));
+    const names = r.items.map((item) => item.name);
+    for (const name of BUILTIN_WORKFLOW_NAMES) assert.ok(names.includes(name));
   });
 
   test("action='inputs' for custom workflow returns declared inputs", async () => {
@@ -340,8 +350,7 @@ describe("/workflow slash command — bundled-and-custom shared registry", () =>
     const listEntries = collectListEntryNames(mock.sent);
     const combined = messages.join("\n");
 
-    // Every bundled name visible to tool is also in slash output.
-    for (const name of ["deep-research-codebase", "ralph", "open-claude-design"]) {
+    for (const name of BUILTIN_WORKFLOW_NAMES) {
       assert.ok(toolWorkflows.includes(name));
       assert.ok(
         listEntries.includes(name) || combined.includes(name),
@@ -382,7 +391,7 @@ describe("/workflow slash command — bundled-and-custom shared registry", () =>
     const completions = await cmd.options.getArgumentCompletions?.("") ?? [];
     const labels = completions.map((c) => c.label);
 
-    for (const name of ["deep-research-codebase", "ralph", "open-claude-design"]) {
+    for (const name of BUILTIN_WORKFLOW_NAMES) {
       assert.ok(labels.includes(name));
     }
   });
@@ -400,17 +409,17 @@ describe("/workflow <name> dispatch — no per-workflow aliases", () => {
     factory(mock);
   });
 
-  test("alias workflow:ralph is not registered", () => {
-    const alias = getCommand(mock.commands, "workflow:ralph");
+  test("per-workflow aliases are not registered", () => {
+    const alias = getCommand(mock.commands, "workflow:open-claude-design");
     assert.equal(alias, undefined);
   });
 
-  test("/workflow deep-research-codebase execute produces output (completed or failed, not silent)", async () => {
+  test("/workflow fan-out-and-synthesize execute produces output (completed or failed, not silent)", async () => {
     const cmd = getCommand(mock.commands, "workflow");
     assert.notEqual(cmd, undefined);
     const messages: string[] = [];
     const beforeSent = mock.sent.length;
-    await cmd!.options.handler("deep-research-codebase prompt=test", { ui: { notify: (m: string) => messages.push(m) } });
+    await cmd!.options.handler("fan-out-and-synthesize prompt=test", { ui: { notify: (m: string) => messages.push(m) } });
     // Success path: dispatch confirmation goes through pi.sendMessage with
     // `{ kind: "dispatch", … }`. Failure paths still hit ctx.ui.notify. Either
     // signal counts as "not silent".
@@ -427,11 +436,11 @@ describe("/workflow <name> dispatch — no per-workflow aliases", () => {
   });
 
   test("/workflow dispatch and tool dispatch reach same registry", async () => {
-    // Tool route: dispatch ralph with required objective input (avoids resolveInputs throw)
+    // Tool route: dispatch a remaining builtin with its required input.
     const toolExecute = mock.tools[0]!.opts.execute;
     const toolOut = await toolExecute(
       "test-tool-call",
-      { workflow: "ralph", inputs: { objective: "test" }, action: "run" },
+      { workflow: "loop-until-done", inputs: { prompt: "test", max_iterations: 1 }, action: "run" },
       undefined,
       undefined,
       {} as never,
@@ -443,7 +452,7 @@ describe("/workflow <name> dispatch — no per-workflow aliases", () => {
     // but we can verify execute does NOT say "unknown subcommand".
     const cmd = getCommand(mock.commands, "workflow");
     const messages: string[] = [];
-    await cmd!.options.handler("ralph objective=test", { ui: { notify: (m: string) => messages.push(m) } });
+    await cmd!.options.handler("loop-until-done prompt=test max_iterations=1", { ui: { notify: (m: string) => messages.push(m) } });
     assert.equal(messages.some((m) => m.includes("unknown subcommand")), false);
   });
 

@@ -62,10 +62,10 @@ describe("WorkflowRegistry extended operations", () => {
   });
 
   test("get() normalizes lookup name", () => {
-    const r = createRegistry([makeWorkflow("deep research codebase")]);
-    const def = r.get("deep-research-codebase");
+    const r = createRegistry([makeWorkflow("fan out and synthesize")]);
+    const def = r.get("fan-out-and-synthesize");
     assert.notEqual(def, undefined);
-    assert.equal(def?.name, "deep research codebase");
+    assert.equal(def?.name, "fan out and synthesize");
   });
 
   test("registry keys are normalized names", () => {

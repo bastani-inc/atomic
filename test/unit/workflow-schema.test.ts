@@ -6,10 +6,10 @@ import { WorkflowParametersSchema } from "../../packages/workflows/src/extension
 describe("WorkflowParametersSchema", () => {
   test("accepts named workflow execution, discovery, inspection, messaging, control, and reload", () => {
     const calls = [
-      { action: "run", workflow: "goal", inputs: { objective: "ship it" } },
+      { action: "run", workflow: "fan-out-and-synthesize", inputs: { prompt: "ship it" } },
       { action: "list" },
-      { action: "get", workflow: "goal" },
-      { action: "inputs", workflow: "goal" },
+      { action: "get", workflow: "fan-out-and-synthesize" },
+      { action: "inputs", workflow: "fan-out-and-synthesize" },
       { action: "models" },
       { action: "models", format: "json" },
       { action: "status", runId: "abc123" },
@@ -54,7 +54,7 @@ describe("WorkflowParametersSchema", () => {
     } as const;
     for (const [field, value] of Object.entries(removed)) {
       assert.equal(
-        Value.Check(WorkflowParametersSchema, { action: "run", workflow: "goal", [field]: value }),
+        Value.Check(WorkflowParametersSchema, { action: "run", workflow: "fan-out-and-synthesize", [field]: value }),
         false,
         `expected removed field ${field} to be rejected`,
       );

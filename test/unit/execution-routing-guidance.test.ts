@@ -111,8 +111,7 @@ describe("workflow-first execution routing", () => {
       "maxDepth",
       "expanded parent graph",
       "Pass definitions, not registry-name strings or paths",
-      "deepResearchCodebase",
-      "conditionally nest `goal` or `ralph`",
+      "nest `fanOutAndSynthesize` for repository mapping",
       "wrap `openClaudeDesign`",
       "consuming only declared outputs",
     ]) {
@@ -201,13 +200,12 @@ describe("workflow-first execution routing", () => {
 
   test("retains every risk-based routing signal in model-visible guidance", () => {
     for (const phrase of [
-      "broad repository uncertainty",
-      "`deep-research-codebase`",
+      "broad repository uncertainty → Fan-out-and-synthesize with repository-focused branches",
       "independent slices → Fan-out-and-synthesize",
       "plausible-but-wrong contract risk → Adversarial verification",
       "competing architectures or implementations → Generate-and-filter or Tournament",
       "explicit repeat-until condition → Loop until done",
-      "implementation lifecycle → `goal` or `ralph`, potentially as a child",
+      "implementation lifecycle → a task-specific worker/reviewer loop",
       "exact API/build/schema requirements → dedicated deterministic gates",
     ]) {
       expect(modelVisibleRouting).toContain(phrase);
@@ -244,8 +242,8 @@ describe("workflow-first execution routing", () => {
       "requirement/risk | required evidence | workflow/stage that produces it | gap",
       'Do not treat "has reviewers" as proof that a task-specific risk is covered',
       "Does an installed graph supply complete coverage?",
-      "Broad repository uncertainty points to `deep-research-codebase`",
-      "implementation lifecycle to Goal or Ralph, potentially as a child",
+      "Broad repository uncertainty points to repository-focused Fan-out-and-synthesize",
+      "implementation work to a task-specific worker/reviewer loop",
       "first named workflow launch commits the execution shape for the turn",
       "one custom parent",
       "Choose the cheapest complete graph",
@@ -353,32 +351,6 @@ describe("workflow-first execution routing", () => {
     }
   });
 
-  test("restores Ralph's builtin subagent-orchestrator prompts", async () => {
-    const ralphPrompts = (await Promise.all([
-      "packages/workflows/builtin/ralph-core.ts",
-      "packages/workflows/builtin/ralph-runner.ts",
-    ].map(readRepositoryFile))).join("\n");
-
-    for (const phrase of [
-      "You are a sub-agent orchestrator",
-      "You are not the direct implementer",
-      "All non-trivial operations must be delegated to subagents",
-      "spawn the necessary subagents",
-      "A valid response must be grounded in actual subagent work",
-      "After subagents have done the work",
-      "subagents spawned and what each completed",
-    ]) {
-      expect(ralphPrompts).toContain(phrase);
-    }
-
-    for (const revertedPhrase of [
-      "Use subagents selectively for bounded specialist work",
-      "Concise direct work is appropriate",
-      "or none when direct work was sufficient",
-    ]) {
-      expect(ralphPrompts).not.toContain(revertedPhrase);
-    }
-  });
 
   test("synchronizes workflow-first docs with custom workflow authoring", async () => {
     const documentation = (await Promise.all(workflowDocumentationPaths.map(readRepositoryFile))).join("\n");

@@ -148,24 +148,24 @@ describe("decideWidgetAction", () => {
   });
 
   test("hidden + non-empty next lines → mount", () => {
-    assert.equal(decideWidgetAction(hidden, ["● 80c5fe ralph · single · 0/1 · 3m 23s"]), "mount");
+    assert.equal(decideWidgetAction(hidden, ["● 80c5fe tournament · single · 0/1 · 3m 23s"]), "mount");
   });
 
   test("mounted + empty next lines → unmount", () => {
-    const mounted: WidgetRenderState = { mounted: true, lines: ["● 80c5fe ralph · single · 0/1 · 3m 23s"] };
+    const mounted: WidgetRenderState = { mounted: true, lines: ["● 80c5fe tournament · single · 0/1 · 3m 23s"] };
     assert.equal(decideWidgetAction(mounted, []), "unmount");
   });
 
   test("mounted + changed lines (elapsed advanced) → update", () => {
-    const mounted: WidgetRenderState = { mounted: true, lines: ["● 80c5fe ralph · single · 0/1 · 3m 23s"] };
+    const mounted: WidgetRenderState = { mounted: true, lines: ["● 80c5fe tournament · single · 0/1 · 3m 23s"] };
     assert.equal(
-      decideWidgetAction(mounted, ["● 80c5fe ralph · single · 0/1 · 3m 29s"]),
+      decideWidgetAction(mounted, ["● 80c5fe tournament · single · 0/1 · 3m 29s"]),
       "update",
     );
   });
 
   test("mounted + identical lines → none", () => {
-    const lines = ["● 80c5fe ralph · single · 0/1 · 3m 23s", "     single · 3m 23s"];
+    const lines = ["● 80c5fe tournament · single · 0/1 · 3m 23s", "     single · 3m 23s"];
     const mounted: WidgetRenderState = { mounted: true, lines };
     assert.equal(decideWidgetAction(mounted, [...lines]), "none");
   });

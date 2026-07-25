@@ -249,7 +249,7 @@ describe("workflow reload rediscovery matrix", () => {
     await harness.execute({ action: "reload" });
     const before = names(await harness.execute({ action: "list" }));
     assert.deepEqual(before.filter((name) => name.startsWith("post-start-")), ["post-start-existing"]);
-    assert.ok(before.includes("goal"), "bundled workflows must survive reload");
+    assert.ok(before.includes("adversarial-verification"), "bundled workflows must survive reload");
 
     const globalAdded = join(agent, "workflows/added.ts");
     const configuredAdded = join(root, "configured-after-start/added.ts");
@@ -265,7 +265,7 @@ describe("workflow reload rediscovery matrix", () => {
     assert.ok(after.includes("post-start-existing"));
     assert.ok(after.includes("post-start-global"));
     assert.ok(after.includes("post-start-configured"));
-    assert.ok(after.includes("goal"), "bundled workflows must remain after rediscovery");
+    assert.ok(after.includes("adversarial-verification"), "bundled workflows must remain after rediscovery");
   });
 
   test.serial("add edit rename delete and malformed siblings replace metadata while preserving valid workflows", async () => {

@@ -174,13 +174,13 @@ Rich custom workflows can compose the [common workflow patterns](#common-workflo
 
 If inline work drifts past roughly ten exploratory tool calls without an artifact, edit, or commit, or repeats a "verify one more thing" loop, save the findings to a context file and hand the task to the best-fit named or custom workflow through `reads`. Sunk research is transferable, not a reason to continue inline.
 
-| User goal | Use |
+| User need | Use |
 |-----------|-----|
 | Run, inspect, connect to, pause, interrupt, quit, resume, or check status for an existing workflow | `/workflow ...` or `workflow({ action: ... })` |
-| Run an autonomous job that materially benefits from a durable goal ledger, bounded sub-agent orchestration turns, named validation, and reviewer-gated completion | `/workflow goal objective="..."` so Atomic delegates implementation through focused subagents, captures orchestrator receipts, gates completion through reviewers, stops as `complete`, `blocked`, or `needs_human`, and can optionally run a final PR handoff with `create_pr=true` after approval |
-| Run an autonomous job that materially benefits from a durable research-first pipeline, delegated implementation, and iterative review | `/workflow ralph prompt="..."` so Atomic can transform the prompt into a research question, research the codebase first, delegate implementation through sub-agents, review, and iterate; prompt text alone does not opt in to PR creation, so add `create_pr=true` only when you want the final `pull-request` stage and `pr_report` |
-| Create or edit reusable automation | a TypeScript workflow definition exported from `workflow({...})` |
-| Make a workflow robust | design the stage graph, context handoffs, artifacts, validation gates, model fallbacks, and human approval points before coding |
+| Run repository-wide research | Compose `fan-out-and-synthesize` with repository-focused branches, artifact outputs, and a synthesis barrier, or author a smaller task-specific research workflow. |
+| Run an implementation/review loop | Author a task-specific worker → fresh verifier → reducer loop with explicit evidence, repair bounds, and stop conditions. |
+| Create or edit reusable automation | A TypeScript workflow definition exported from `workflow({...})` |
+| Make a workflow robust | Design the stage graph, context handoffs, artifacts, validation gates, model fallbacks, and human approval points before coding |
 
 ### Choosing an Execution Shape
 
@@ -191,10 +191,10 @@ The shapes, cheapest first:
 | Shape | What it is | Guarantees you gain | Cost you pay |
 |---|---|---|---|
 | **Inline** | Answer or edit directly in the current session. | Lowest latency, zero ceremony. | No tracking, no gates, no isolation, easy to drift. |
-| **Inline + subagents** | Bounded specialist delegation (locate/analyze/research/debug passes, noisy command investigation, parallel read-only fanouts) while the parent keeps control and synthesizes. | Context isolation for noisy or parallel evidence-gathering. | No completion gate, no durable stages; the parent is the only reviewer. |
-| **Named workflows** | Installed builtin, project, user, or package workflows (`goal`, `ralph`, `deep-research-codebase`, `open-claude-design`, ...). | A proven graph: bounded loops, reviewer gates, ledgers, evidence contracts, tuned model chains. | The task must actually match the graph's objective and inputs. |
-| **Custom workflow** | A task-specific TypeScript `workflow({...})` authored inline, composing the common workflow patterns. | Exactly the control flow the task needs: runtime branching, dynamic fan-out, custom gates, tournaments, bounded loops. | Authoring and reload time; you own the design quality. |
-| **Composed/nested workflows** | A custom parent that imports proven definitions and calls `ctx.workflow(child)`. | Reuse of hardened children (research, review loops) inside custom control flow, within `maxDepth`. | Parent/child input-output contracts must be mapped deliberately. |
+| **Inline + subagents** | Bounded specialist delegation while the parent keeps control and synthesizes. | Context isolation for noisy or parallel evidence-gathering. | No completion gate or durable stages; the parent remains the reviewer. |
+| **Named workflows** | Installed builtin, project, user, or package workflows. | A tested graph with known inputs, outputs, gates, and artifacts. | The task must match the graph's objective and contract. |
+| **Custom workflow** | A task-specific TypeScript `workflow({...})` composed from common patterns. | Exact control flow for runtime branching, fan-out, gates, tournaments, and bounded loops. | Authoring and reload time; you own design quality. |
+| **Composed/nested workflows** | A parent that imports definitions and calls `ctx.workflow(child)`. | Reuse of tested children inside custom control flow, within `maxDepth`. | Parent/child input-output contracts must be mapped deliberately. |
 
 #### The self-prompt: pre-launch workflow architecture
 
@@ -215,8 +215,8 @@ Ask these questions in order and stop at the cheapest shape that satisfies every
 3. **Is there a loop or gate?** Any "until Y", "fix until passing", review/approval gate, or unknown-length repair cycle requires a workflow that enforces the stop condition, never an improvised inline retry loop or a stretched subagent chain.
 4. **Is it one task or a queue of tasks?** "Address all open issues" or "fix every ticket assigned to me" is a factory request, not one workflow. Enumerate and dependency-classify the items first, then follow [Task queues and software factories](#task-queues-and-software-factories): independent items become separate per-item runs; dependent items share one composed graph.
 5. **Does an installed graph supply complete coverage?** Run a named workflow only if its objective, inputs, lifecycle, and produced evidence cover every material row. Do not force-fit a broad-but-partial match ([When to Use Workflows](#when-to-use-workflows)).
-6. **What routing signals shape the graph?** Broad repository uncertainty points to `deep-research-codebase`; independent slices to Fan-out-and-synthesize; plausible-but-wrong contract risk to Adversarial verification or a task-specific verification stage; competing architectures or implementations to Generate-and-filter or Tournament; an explicit repeat-until condition to Loop until done; implementation lifecycle to Goal or Ralph, potentially as a child; and exact API/build/schema requirements to dedicated deterministic gates.
-7. **Does a proven graph solve only part of the task?** Author one custom parent and nest that definition with `ctx.workflow(...)`, placing the missing research, verification, or deterministic gates around it instead of re-authoring its prompts and gates.
+6. **What routing signals shape the graph?** Broad repository uncertainty points to repository-focused Fan-out-and-synthesize; independent slices to Fan-out-and-synthesize; plausible-but-wrong contract risk to Adversarial verification or a task-specific verification stage; competing architectures or implementations to Generate-and-filter or Tournament; an explicit repeat-until condition to Loop until done; implementation work to a task-specific worker/reviewer loop; and exact API/build/schema requirements to dedicated deterministic gates.
+7. **Does a tested graph solve only part of the task?** Author one custom parent and nest that definition with `ctx.workflow(...)`, placing the missing research, verification, or deterministic gates around it instead of copying its prompts and gates.
 8. **Is it only specialist evidence-gathering?** If the parent keeps control, no completion gate is needed, and the work is bounded (a debug pass, a parallel research fanout, one noisy investigation), inline subagents are enough—and cheaper than a workflow.
 9. **Is it truly tiny?** Deterministic, low-risk, single-file/no-test/no-review—answer or edit inline and stop.
 
@@ -265,34 +265,26 @@ Some requests are not one task but a queue of them: "address all open issues", "
 - **Dependent items** — one blocks another, they touch the same files/modules, they share a migration or API change, or their acceptance criteria reference each other.
 - **Clustered** — the queue splits into groups: dependencies inside a group, independence between groups.
 
-**Independent items → many small runs, not one big one.** Spawn one workflow run per item (typically `goal` with the item's text as the objective and acceptance criteria, `create_pr=true` for per-item PRs), each in its own `git_worktree_dir`, running in the background. One run per item provides what a monolith cannot:
+**Independent items → many small runs, not one big one.** Spawn one task-specific workflow run per item, each in its own explicitly requested worktree when isolation is needed. One run per item gives each task clean context, independent evidence, its own failure boundary, and real parallelism. Dispatch a bounded number at a time and report the item → run id → worktree map.
 
-- **Isolation:** a hard item that stalls or fails does not affect the remaining ones; each run resumes, retries, or can be stopped independently.
-- **Clean contexts:** every item starts with fresh context focused on its own objective instead of receiving the transcripts of twenty finished tickets.
-- **Independent evidence:** per-item reviewer gates, receipts, and PRs that a human can merge or reject one at a time.
-- **Real parallelism:** runs proceed concurrently, up to the number you choose to run at once (worktrees prevent filesystem collisions).
+**Dependent items → one graph that encodes the ordering.** When items block each other or share files, use a composed parent workflow that runs per-item child definitions in dependency order and passes declared outputs or artifacts to dependents. Use one monolithic graph only when the items form one tightly coupled task.
 
-Dispatch a bounded number at a time (for example 3–5 concurrent runs), wait for lifecycle notices, then dispatch the next wave — and report the dispatch plan (item → run id → worktree) so the queue is auditable.
+**Clustered queues → both.** Compose within a cluster and fan out across clusters. Each cluster becomes one run, while independent clusters run in bounded parallel waves.
 
-**Dependent items → one graph that encodes the ordering.** When items block each other or share a change surface, isolation no longer helps — separate runs could modify the same files or rely on outdated assumptions. Encode the dependency structure explicitly instead:
-
-- **A composed parent workflow** that nests a proven child (for example `ctx.workflow(goal, ...)` per item) in dependency order, passing each item's outputs/artifacts to its dependents — the preferred form, because each item still gets its own bounded loop and reviewer gate while the parent owns sequencing.
-- **A single monolithic workflow** only when the items share enough dependencies to form one task with subtasks (one migration touching every call site is one task, not a queue).
-
-**Clustered queues → both.** Compose within a cluster, fan out across clusters: each cluster becomes one run (a composed parent or a single `goal` objective covering the cluster), and independent clusters are dispatched as parallel background runs in waves.
-
-The self-prompt for factory requests, condensed: **enumerate → classify dependencies → fan out runs where independent, compose graphs where dependent → dispatch in bounded waves → report the plan.** When dependency classification is uncertain, prefer smaller independent runs and let per-item reviewer gates catch collisions — a rejected PR is cheaper than a monolith that applied a bad assumption throughout the queue.
+The factory self-prompt is: **enumerate → classify dependencies → fan out runs where independent → compose graphs where dependent → dispatch in bounded waves → report the plan.**
 
 #### Prompting the choice
 
-Humans can steer the shape directly. The most direct controls, in rough order of effect:
+Humans can steer the shape directly:
 
-- **Name the shape or workflow.** "Do this inline", "use subagents to investigate", "run the goal workflow", or "write a custom workflow for this" overrides the agent's own scoring.
-- **State acceptance criteria.** Verbatim acceptance criteria make the objective provable, which both selects workflow execution and sets the immutable contract that `goal`/`ralph` reviewers enforce.
-- **State the loop.** "Iterate until tests pass", "review and fix until approved" — loop wording is a hard workflow signal and defines the stop condition.
-- **State the evidence.** Asking for a PR, a QA video, test output, or reviewer sign-off tells the agent which gates the graph needs.
-- **State the boundary.** "Work in a separate worktree", "don't create the PR yet", or "stop after implementation" separates the implementation loop from explicitly authorized final actions.
-- **State the queue policy.** For factory requests, say how to split and gate the queue: "one workflow and PR per issue", "these three tickets depend on each other — do them in order in one run", "triage first and show me the dependency plan before dispatching", or "no more than three runs at a time". Absent a policy, the agent triages dependencies itself and defaults to independent per-item runs with per-item evidence.
+- **Name the shape or installed workflow.** "Do this inline", "use subagents to investigate", or "write a custom workflow for this" overrides automatic scoring.
+- **State acceptance criteria.** Verbatim criteria make the objective provable and define reviewer and reducer contracts.
+- **State the loop.** "Iterate until tests pass" or "review and fix until approved" defines a hard workflow stop condition.
+- **State the evidence.** A QA video, test output, generated artifact, or reviewer sign-off tells the graph which gates it needs.
+- **State the boundary.** "Work in a separate worktree", "do not create a PR", or "stop after implementation" separates implementation from final actions.
+- **State the queue policy.** Say how to split, order, isolate, and bound queued items; otherwise Atomic triages dependencies first.
+
+Absent these controls, Atomic applies the self-prompt and rubric above.
 
 Absent these levers, the agent applies the self-prompt and rubric above — so a prompt that mentions none of them is delegating the shape decision, not avoiding it.
 
@@ -314,288 +306,51 @@ Atomic's category is broader and more explicit: it is the loop engine for engine
 
 ## Built-in Workflows
 
-Atomic bundles ten workflows: four established end-to-end workflows and six reusable implementations of the common workflow patterns. They are available in every session — no install step required. Use `/workflow list` to confirm they are loaded, and `/workflow inputs <name>` to see the exact inputs in your environment.
-
-Workflow authors can also use these builtins as workflow definitions. Import them from `@bastani/workflows/builtin` and pass the definition directly to `ctx.workflow(...)` when one workflow should call `deep-research-codebase`, `goal`, `ralph`, `open-claude-design`, or any of the six pattern builtins as a nested child workflow. See [Workflow Composition](#workflow-composition) for full examples alongside user-defined child workflows.
-
-For the builtin result tables below, `deep-research-codebase`, `goal`, and `ralph` explicitly declare `outputs: { result: Type.Optional(Type.String(...)) }`, so `result` is an optional part of their declared output contracts and may be omitted, including after an intentional early exit. Like every workflow output, `result` must be declared in `outputs` and returned from `run` or supplied to `ctx.exit({ outputs })` when present — see [Outputs](#outputs); Atomic adds no automatic `result` output.
+Atomic bundles seven workflows: six reusable control-flow patterns and one end-to-end design workflow. They are available in every session. Use `/workflow list` to confirm the current set and `/workflow inputs <name>` to inspect a contract before launch.
 
 | Workflow | What it does | When to use |
 |---|---|---|
-| `classify-and-act` | Structured classifier → deterministic category action; low confidence falls back to human selection. | Route heterogeneous requests to isolated category-specific work. |
-| `fan-out-and-synthesize` | Structured partition → bounded parallel artifact branches → synthesis barrier. | Split independent slices and merge evidence with dedupe/conflict resolution. |
+| `classify-and-act` | Structured classifier → deterministic category action; low confidence can fall back to human selection. | Route mixed requests to isolated category-specific work. |
+| `fan-out-and-synthesize` | Structured partition → bounded parallel artifact branches → synthesis barrier. | Split independent slices, including repository research, and merge evidence. |
 | `adversarial-verification` | Worker → fresh rubric verifiers → reducer → bounded repair loop. | Independently prove or reject a candidate. |
-| `generate-and-filter` | Candidate fan-out → rubric dedupe/filter → optional judge → shortlist. | Explore more options than you need and select the strongest distinct few. |
+| `generate-and-filter` | Candidate fan-out → rubric dedupe/filter → optional judge → shortlist. | Explore more options than needed and keep the strongest distinct few. |
 | `tournament` | Whole-task attempts → balanced pairwise judges → bracket reducer. | Compare subjective or approach-sensitive solutions. |
 | `loop-until-done` | Durable ledger → iteration/evaluator loop → success or inspectable bound exhaustion. | Continue until explicit evidence proves completion. |
-| `deep-research-codebase` | Heavy research for tasks requiring comprehensive, whole-repository context. | Tasks that genuinely require comprehensive whole-repository coverage. |
-| `goal` | Persisted goal ledger → bounded sub-agent orchestrator turns → receipts → three-reviewer gate → deterministic reducer → final report → optional final-stage PR handoff after approval. | Clearly delegated autonomous work that materially benefits from a durable goal ledger, delegated implementation, named validation, and reviewer-gated completion; optionally allow only the final `pull-request` stage to attempt PR creation with `create_pr=true` after Goal reaches `complete`. |
-| `ralph` | Raw prompt → research-prompt-refinement → codebase/online research → sub-agent orchestration → multi-model parallel review → optional final-stage PR handoff. | Clearly delegated autonomous work that materially benefits from a durable research-first pipeline, delegated implementation, and iterative review; optionally allow only the final `pull-request` stage to attempt PR creation with `create_pr=true`. |
-| `open-claude-design` | Combined discovery/init (`/skill:impeccable shape` + `/skill:impeccable init` in one `discovery` stage) → design-system/reference research (`ds-*`) → curated gallery reference-discovery using that context → separate forked `generate-*` and `user-feedback-*` chains → rich HTML handoff (`exporter` → `final-display`). The discovery stage asks what to build, the output type, and which references to emulate, then lets impeccable init detect/create/reconcile `PRODUCT.md` and `DESIGN.md` (references take precedence over project context). Renders a live `preview.html` you can iterate against in the browser (opens through impeccable `live` / the `playwright-cli` skill when available). | UI, page, component, theme, or design-token work that benefits from a guided brief, beautiful references, and generation + user feedback loops. |
+| `open-claude-design` | Guided discovery and reference research → HTML generation → feedback loop → export and handoff. | UI, page, component, theme, or design-token work. |
 
 ### Six composable pattern builtins
 
-The six patterns in [Pattern diagrams](#pattern-diagrams) ship as full definitions exported from `@bastani/workflows/builtin`. Each has typed/defaulted inputs and declared outputs a parent can consume:
+The six common patterns are full definitions exported from `@bastani/workflows/builtin`:
 
 | Workflow | Required input | Bounded/defaulted knobs | Principal declared outputs |
 |---|---|---|---|
-| `classify-and-act` | `prompt` | `categories` (1–8), `confidence_threshold` (0.5–0.99) | `result`, `category`, `confidence`, classification/action paths |
+| `classify-and-act` | `prompt` | `categories` (1–8), `confidence_threshold` (0.5–0.99) | `result`, category, confidence, classification/action paths |
 | `fan-out-and-synthesize` | `prompt` | `max_branches` (1–12), `max_concurrency` (1–12) | `result`, partitions, branch paths, synthesis/manifest paths |
-| `adversarial-verification` | `task` | `verifier_count` (1–5), `max_repairs` (0–5) | `result`, `approved`, repairs, candidate/review/verifier paths, remaining work |
+| `adversarial-verification` | `task` | `verifier_count` (1–5), `max_repairs` (0–5) | `result`, approval, repairs, candidate/review/verifier paths |
 | `generate-and-filter` | `prompt` | `num_candidates` (2–20), `shortlist_size` (1–10), `use_judge`, `max_concurrency` | `result`, shortlist, candidate/filter/judge/final/manifest paths |
 | `tournament` | `prompt` | `num_attempts` (2–8), `max_concurrency` (1–8) | `result`, winner, attempt/judge/bracket paths |
 | `loop-until-done` | `prompt` | `max_iterations` (1–20) | `result`, `status`, ledger, iteration/evaluation paths, remaining work |
 
-Run them by name with `/workflow <name> ...` or import their definitions:
-
 ```ts
 import {
-  adversarialVerification, classifyAndAct, fanOutAndSynthesize,
-  generateAndFilter, loopUntilDone, tournament,
+  adversarialVerification,
+  classifyAndAct,
+  fanOutAndSynthesize,
+  generateAndFilter,
+  loopUntilDone,
+  tournament,
 } from "@bastani/workflows/builtin";
 
-const child = await ctx.workflow(fanOutAndSynthesize, {
-  inputs: { prompt: "Fix every migration call site", max_branches: 6 },
-  stageName: "migration fix pass",
-});
-if (child.exited === false) console.log(child.outputs.synthesis_path);
-```
-
-All six can be nested with `ctx.workflow(definition, { inputs, stageName })` and count toward `maxDepth` (default four workflow levels). Prefer composing these definitions over copying their prompts or graphs: nested children contribute their stages, dedicated prompts, gates, artifacts, HIL nodes, and declared outputs to the expanded parent graph. A migration parent can wrap a `fan-out-and-synthesize` fix pass in `loop-until-done` while tests fail, then invoke `adversarial-verification` for each resulting patch; the parent consumes declared artifact paths and decisions rather than recreating the three graphs.
-
-Concrete migration composition:
-
-```ts
-import { adversarialVerification, fanOutAndSynthesize, loopUntilDone } from "@bastani/workflows/builtin";
-
-const fixes = await ctx.workflow(fanOutAndSynthesize, {
-  inputs: { prompt: "Fix every migration call site", max_branches: 6 },
-  stageName: "migration fixes",
-});
-const verification = await ctx.workflow(adversarialVerification, {
-  inputs: { task: `Verify every patch listed by ${fixes.outputs.manifest_path}` },
-  stageName: "verify migration patches",
-});
-const convergence = await ctx.workflow(loopUntilDone, {
+const research = await ctx.workflow(fanOutAndSynthesize, {
   inputs: {
-    prompt: `Run migration tests and repair remaining failures using ${fixes.outputs.manifest_path} and ${verification.outputs.review_report_path}.`,
-    max_iterations: 5,
+    prompt: "Map the repository by independent subsystem and synthesize cited findings.",
+    max_branches: 6,
   },
-  stageName: "loop while migration tests fail",
+  stageName: "repository research",
 });
 ```
 
-The parent can consume every child's precise declared outputs and can call `adversarialVerification` once per patch when its own typed input enumerates patch artifacts.
-
-### `deep-research-codebase`
-
-Inputs:
-
-| Input | Type | Required | Default | Description |
-|---|---|---|---|---|
-| `prompt` | text | yes | — | Research question or investigation focus. |
-| `max_partitions` | number | no | `100` | Maximum codebase partitions explored in parallel. Actual partitions scale by one per 10K LoC, capped by this value. |
-| `max_concurrency` | number | no | `100` | Maximum workflow stages running concurrently during deep research. |
-
-Run examples:
-
-```text
-/workflow deep-research-codebase prompt="How do payment retries work end to end?"
-/workflow deep-research-codebase prompt="Map the workflow runtime" max_partitions=8 max_concurrency=4
-```
-
-Workflow tool call:
-
-```ts
-workflow({
-  action: "run",
-  workflow: "deep-research-codebase",
-  inputs: { prompt: "map workflow runtime", max_concurrency: 4 },
-})
-```
-
-Output locations and result fields:
-
-| Field | Meaning |
-|---|---|
-| `result` | Final Markdown research report text, matching `findings`. |
-| `findings` | Final Markdown research report text. |
-| `research_doc_path` | Public report path under `research/<date>-<topic>.md`. If a file already exists, the workflow writes a suffixed filename. |
-| `artifact_dir` | Hidden per-run handoff directory under `research/.deep-research-<run-id>/`. |
-| `manifest_path` | Manifest JSON path inside the hidden artifact directory. |
-| `partitions` | Codebase partitions the specialists explored. |
-| `explorer_count` | Number of partition explorer groups used. |
-| `specialist_count` | Number of specialist stages run across the research waves. |
-| `max_concurrency` | Concurrency limit used for the run. |
-| `history` | Prior-research/history overview included in the final synthesis. |
-
-People can read, commit, or share the dated Markdown report. The hidden artifact directory keeps large scout, history, and specialist handoff files available for audit without cluttering the visible research index.
-
-### `goal`
-
-Inputs:
-
-| Input | Type | Required | Default | Description |
-|---|---|---|---|---|
-| `objective` | text | yes | — | Goal-runner objective or delta. Include the desired end state, expected outcome, testing/validation instructions, and any explicit done criteria. Do not include PR/MR submission instructions here; strip them from the task text and request them via `create_pr=true` instead. |
-| `acceptance_criteria` | text | no | objective | Original immutable task contract that the run must remain consistent with. When launching a follow-up `goal` run from review findings, pass the ORIGINAL task text here so reviewer suggestions cannot drift or contradict the literal contract. |
-| `max_turns` | number | no | `10` | Maximum orchestrator/review turns before human follow-up is needed. |
-| `base_branch` | string | no | `origin/main` | Branch reviewers and the optional final stage compare the current code delta against; also used to create a missing worktree. |
-| `git_worktree_dir` | string | no | `""` | Optional reusable Git worktree root. Empty runs in the invoking checkout; non-empty values run Goal stages in the created/reused worktree. Set it only when the user explicitly requested worktree isolation — orchestrator stages are instructed never to create git worktrees, clones, or repository copies on their own. |
-| `create_pr` | boolean | no | `false` | Safe-by-default PR creation flag. Omitted or `false` skips the final `pull-request` stage and omits `pr_report`; prompt text alone does not opt in, and only strict `true` authorizes the final `pull-request` stage to attempt provider-appropriate PR/MR/review creation after Goal reaches `complete`. If the delegated task asks to submit a PR/MR/review, remove that instruction from `objective` and set `create_pr=true` instead. |
-
-`goal` defaults to 10 orchestrator/review turns. Reviewer quorum is fixed internally at 2 reviewer `complete` votes, and approval is deterministic on each reviewer's self-reported `stop_review_loop` boolean: a reviewer approves exactly when it returns `stop_review_loop=true` with no `reviewer_error` (schema-parse failures count as non-approval), and the reducer completes the run when quorum of those booleans is met without recomputing approval from findings arrays or traceability statuses. The repeated-blocker threshold defaults to 3 consecutive same-blocker turns and is clamped to `max_turns` when you run fewer than 3 turns.
-
-Run examples:
-
-```text
-/workflow goal objective="Implement specs/2026-03-rate-limit.md, add the requested regression tests, run bun test packages/api/rate-limit.test.ts, and finish only when burst traffic returns 429 with Retry-After"
-/workflow goal objective="Update the CLI docs to describe the new --json flag, include one usage example, and verify the docs build still passes" max_turns=3
-/workflow goal objective="Fix the settings form validation bug; add/adjust the focused test and consider it done when invalid emails show the inline error without submitting"
-/workflow goal objective="Implement the focused docs fix and run the docs validation command" create_pr=true
-/workflow goal objective="Fix the flaky package install test in an isolated worktree and run the focused regression" git_worktree_dir=../atomic-goal-install-wt base_branch=main
-```
-
-`goal` uses the raw `objective` exactly as supplied as the operative objective recorded in the ledger and stores `acceptance_criteria` as the immutable literal contract (defaulting to the objective when omitted); it does not run an initial prompt-refinement stage. It creates an OS-temp `goal-ledger.json` artifact, renders goal-continuation context for each orchestrator turn, runs `orchestrator-N` as a supervisor whose primary implementation tool is `subagent`, writes the latest orchestrator receipt to `orchestrator-receipt.md`, and appends receipts, reviewer decisions, blockers, reducer decisions, and lifecycle events to the ledger.
-
-Orchestrator and reviewer prompts (and the model-facing ledger artifact) deliberately omit the current turn/attempt number so the orchestrator focuses on completing the objective rather than pacing itself to the workflow budget. Goal keeps its orchestrator model configuration locally contained while copying Ralph's exact xhigh orchestrator model and fallback chain, led by `openai-codex/gpt-5.6-sol:xhigh`. Orchestrator and reviewer prompts treat the objective as user-provided data, not higher-priority instructions. By default `goal` does not start the final `pull-request` stage, and `pr_report` is omitted. Prompt text alone does not opt in.
-
-Pass `create_pr=true` only when you explicitly want the final stage to inspect provider credentials and attempt provider-appropriate PR/MR/review creation, such as GitHub `gh`, Azure Repos `az repos pr create`, or Sapling/Phabricator tooling, after Goal reaches `complete` within `max_turns`. Goal orchestrator and reviewer prompts explicitly tell intermediate stages to ignore PR-creation requests; only the final `pull-request` stage may attempt that handoff.
-
-Set `git_worktree_dir` when you want Goal's orchestrator and reviewer stages isolated in a reusable Git worktree. Relative paths resolve from the invoking repository root, existing same-repository worktree roots are reused, and missing paths are created from `base_branch`. Goal preserves the invoking repo-relative cwd inside the worktree, so launching from `repo/packages/api` with `git_worktree_dir=../repo-wt` runs stages from `../repo-wt/packages/api`.
-
-If the run is resumed later with `/workflow resume`, Atomic reuses the original invocation cwd and recorded reusable-worktree metadata instead of resolving the worktree path from the resumed chat's current cwd. Slow Git subprocesses can run for up to 60 seconds before Atomic reports an explicit Git timeout diagnostic.
-
-Write the `objective` as a compact acceptance spec. Define the desired end state, required testing, relevant commands or manual checks, and the outcome that proves completion. The workflow is intentionally lean: it does not first generate an RFC or migration plan, so the developer-supplied objective is where scope, validation, and completion criteria belong.
-
-Goal orchestrator/reviewer prompts treat the objective and acceptance criteria as the sole literal source of truth: if follow-up deltas, language specs, upstream issues, in-repo comments, or best practices conflict with explicit wording, reviewers surface the conflict instead of silently implementing external knowledge.
-
-Reviewer findings carry `objective_alignment` (`required_by_objective`, `consistent_with_objective`, `beyond_objective`, or `contradicts_objective`); `beyond_objective` and `contradicts_objective` findings are reported but do not block completion and must not be promoted into follow-up objectives without reconciling them against the acceptance criteria. Severity labels alone never dismiss objective-relevant findings: `required_by_objective` findings block at any priority (P3 included), while `consistent_with_objective` P3 nice-to-haves stay non-blocking.
-
-Review decisions also include `requirements_traceability`, a clause-by-clause evidence map over every explicit objective/acceptance-criteria requirement. Findings and traceability are audit evidence that drive how each reviewer derives its authoritative `stop_review_loop` boolean; the harness gates approval on that boolean alone, and Goal tells reviewers that process-only clauses (reviewer quorum/approval counts, and the authorized post-approval PR/MR/review final action when `create_pr=true`) must never hold the flag at `false`. Reviewers must also first prove the code delta actually exists in the review checkout (the invoking cwd or explicitly configured worktree): receipts claiming implemented work over an empty or unrelated delta are a blocking finding rather than grounds for approval, and modifications, renames, or deletions of pre-existing tests require explicit justification.
-
-Passing implementation-authored or repository-local tests alone is circular evidence and cannot prove an exact API, build, or schema clause. When the literal contract exposes compiler-checkable or schema-checkable behavior, Goal reviewers must independently run the applicable probe: a minimal external-consumer compile/typecheck for exact API shapes, every named positive and negative build/feature variant, or authoritative schema inspection/regeneration including omitted and zero-value fields and required-versus-optional representation.
-
-The orchestrator may claim readiness, but it cannot finalize completion. Before delegating implementation, Goal prompts the orchestrator to derive an observable acceptance/contract matrix from the literal objective/acceptance criteria (one row per clause, each mapped to the concrete check that proves it), model states, transitions, and invariants explicitly when the work is stateful, and split the work into focused subagent tasks.
-
-Delivery is part of readiness: unless the objective or acceptance criteria explicitly forbid committing, the orchestrator must ensure a delegated implementation agent commits the work in the current checkout with a descriptive message before readiness — verifying a clean working tree with the repository's version-control status command — and report the commit identifier in the receipt. Reviewers back this with the code-delta contract: uncommitted work at claimed readiness is remaining work, and a checkout whose delta is empty or unrelated to the objective can never be approved regardless of what receipts claim. Verification stays with prompts and reviewers using the repository's own version-control tooling, so no single VCS provider is hardcoded into the runner.
-
-Goal consolidates the latest reviewer findings into a deduplicated cross-reviewer batch persisted in the round artifact (`consolidated_findings` in `review-round-latest.json`), and the next orchestrator prompt instructs the orchestrator to coordinate subagents that repair the whole batch — with durable regression evidence for reproduced findings — rather than fixing one finding per turn. Goal prompts the orchestrator and reviewers to verify user-visible behavior end-to-end when practical, using `playwright-cli`-skilled subagents for web/frontend flows that may depend on backend/API behavior and tmux-skilled subagents for TUI or terminal-app scenarios.
-
-They must assume credentials/auth/environment access exists until concrete checks plus an actual app/flow launch attempt prove otherwise; reviewers accept skipped E2E only when the orchestrator receipt records the exact attempted commands and observed failure output. Goal reviewers also look for any QA E2E video referenced by the ledger or receipt and must inspect the actual video before treating it as proof.
-
-Three reviewers independently inspect the ledger, orchestrator receipt, repository state, and diff against `base_branch`; each starts in a clean, non-forked context matching Ralph's reviewer context behavior. Goal keeps an independent reviewer model chain led by Claude Fable 5, with GPT-5.6 ahead of Kimi K3 within both the leading direct-provider group and the OpenRouter group while preserving each group's position in the full chain. Their responsibilities are complementary: the completion reviewer owns clause-by-clause contract fidelity, exact exported API/type/build requirements, and literal examples; the evidence reviewer validates that claimed evidence belongs to the current checkout and that independent probes actually ran; and the risk reviewer owns transition matrices, configuration precedence, feature-flag coupling, permissive inputs, and over-implementation.
-
-Before reading the receipt or implementation-authored tests, each Goal reviewer derives only the contract-probe risk classes supported by the literal objective and repository context. Beyond API/build/schema checks, applicable probes cover state mutation matrices, temporary/injected paths and configuration precedence, direct low-level APIs with surrounding features enabled and disabled, and contract-permitted omitted, empty, zero, duplicate, aliased, or unusual inputs. Reviewers record each probe's command or scenario and observed result in the existing explanation, receipt assessment, remaining-verification, and traceability fields. A missing, blocked, or failed material probe remains unverified and forces `stop_review_loop=false`; a tool or dependency that prevents necessary verification uses the existing `reviewer_error` path rather than approval around the limitation.
-
-Before approval, every Goal reviewer self-audits that correctness is positive, all objective-relevant implementation/validation traceability is proven, no blocking objective-aligned finding remains, every applicable risk has evidence or a non-applicability explanation, `goal_oracle_satisfied` is true, no objective-relevant verification remains, and `reviewer_error` is empty. The reviewer still returns the existing structured JSON; no reviewer, schema, deterministic gate, or convergence behavior is added.
-
-A TypeScript reducer marks the goal complete when reviewer quorum approves via the `stop_review_loop` booleans, marks blocked only when the same dependency/tool blocker repeats for the blocker threshold, continues while quorum is missing (recording the reviewers' remaining work in the decision reason), and returns `needs_human` when `max_turns` is exhausted or orchestrator execution fails, so the bounded loop always stops with an inspectable reason.
-
-At the start of every Goal review, each concurrent reviewer uses [Intercom](/intercom) to initialize/check coordination and discover the sibling reviewers in the same workflow run. Before validation, reviewers communicate their plans and intended ownership, claim expensive or lock-prone checks, and serialize commands that can conflict in a shared checkout or environment, including full test suites, build or test commands, package-manager operations, browser/E2E sessions, migrations, and generated-artifact steps.
-
-They announce each coordinated check's start and completion, release every claimed resource and send siblings an explicit resource-release update, and share reusable command outcomes/evidence where appropriate. This operational coordination prevents collisions and duplicate conflicting work; it does not replace independent patch inspection, analysis, or each reviewer's own verdict.
-
-When Goal's reducer returns `needs_human`, `blocked`, or another incomplete status, Atomic does not report the top-level workflow run as successful. `/workflow status` and lifecycle notices surface it as blocked/failed according to the run's terminal condition. Atomic also preserves structured recoverable failure metadata from the run's blocking stage (`failedStageId`) or run-level failure metadata, so auth, rate-limit, and provider fallback exhaustion remains blocked/resumable even if the workflow later returns ordinary outputs instead of a reserved `status` value. Tolerated branch failures from non-fail-fast parallel work do not reclassify an otherwise completed run.
-
-Each Goal review round persists a convergence summary. Each reviewer record and review artifact distinguishes schema-parse status from the review verdict with `parsed`, `approved`, `stopReviewLoop`, `nextAction`, `finalActionRemaining`, and `diagnostics` fields; each reports malformed or missing structured reviewer output as a parse failure rather than as an ordinary finding/rejection.
-
-When `create_pr=true`, reviewers are told that PR/MR/review creation is a post-approval final action: if implementation and validation requirements are proven and only PR creation remains, the implementation can approve with `finalActionRemaining: true` and `nextAction: "pull-request"` instead of consuming another orchestrator turn. The ledger's reducer decision repeats the same concise fields for the controller outcome, so a successful quorum records `approved: true`, `stopReviewLoop: true`, and `nextAction: "pull-request"` when `create_pr=true` (otherwise `"finish"`) before any final handoff runs.
-
-Result fields:
-
-| Field | Meaning |
-|---|---|
-| `result` | Final report with objective, status, receipts, turns, and remaining work. |
-| `status` | Final reducer status: `complete`, `blocked`, or `needs_human` (or `active` only if externally interrupted). |
-| `approved` | Whether the reducer reached `complete`. |
-| `goal_id` | Per-run goal identifier stored in the ledger. |
-| `objective` | Raw goal objective used by the run. |
-| `acceptance_criteria` | Immutable acceptance criteria used by the run. |
-| `ledger_path` | OS-temp path to `goal-ledger.json`, including receipts, reviewer decisions, reducer decisions, blockers, and lifecycle events. |
-| `turns_completed` | Orchestrator/review turns completed. |
-| `iterations_completed` | Same value as `turns_completed`, retained for status summaries. |
-| `receipts` | Ledger receipt summaries and orchestrator artifact paths. |
-| `remaining_work` | Remaining gaps/blockers when incomplete, or `none`. |
-| `review_report` | Markdown report containing the last structured reviewer decision payloads used by the reducer. |
-| `review_report_path` | JSON artifact path for the latest Goal review round. |
-| `pr_report` | Pull-request report emitted only when `create_pr=true`, Goal reaches `complete`, and the final `pull-request` stage runs. |
-
-### `ralph`
-
-Inputs:
-
-| Input | Type | Required | Default | Description |
-|---|---|---|---|---|
-| `prompt` | text | yes | — | Task, feature request, issue summary, or spec path to research, execute, refine, and review. Do not include PR/MR submission instructions here; strip them from the task text and request them via `create_pr=true` instead. |
-| `acceptance_criteria` | text | no | prompt | Original immutable task contract that the run must remain consistent with. When launching a follow-up `ralph` run from review findings, pass the ORIGINAL task text here so reviewer suggestions cannot drift or contradict the literal contract. |
-| `max_loops` | number | no | `10` | Maximum research/orchestrate/review iterations before the workflow completes or reports the remaining work without reviewer approval. |
-| `base_branch` | string | no | `origin/main` | Branch reviewers and the optional final stage compare the current code delta against; also used to create a missing worktree. |
-| `git_worktree_dir` | string | no | `""` | Optional reusable Git worktree root. Empty runs in the invoking checkout; non-empty values run Ralph stages in the created/reused worktree. Set it only when the user explicitly requested worktree isolation — orchestrator stages are instructed never to create git worktrees, clones, or repository copies on their own. |
-| `create_pr` | boolean | no | `false` | Safe-by-default PR creation flag. Omitted or `false` skips the final `pull-request` stage and omits `pr_report`; prompt text alone does not opt in, and only strict `true` authorizes the final `pull-request` stage to attempt provider-appropriate PR/MR/review creation. If the delegated task asks to submit a PR/MR/review, remove that instruction from `prompt` and set `create_pr=true` instead. |
-
-Run examples:
-
-```text
-/workflow ralph prompt="Migrate the database layer to Drizzle" max_loops=3 base_branch=develop
-/workflow ralph prompt="Refactor authentication across the API, CLI, and web UI" create_pr=true
-/workflow ralph prompt="Safely implement the API refactor" git_worktree_dir=../atomic-ralph-api-wt base_branch=main
-```
-
-Each `ralph` run uses the raw `prompt` exactly as supplied as the operative objective for research, orchestration, and review, and stores `acceptance_criteria` as the immutable literal contract (defaulting to the prompt when omitted). Shared literal-contract prompt language forbids adding behaviors, restrictions, or error conditions beyond the prompt/acceptance criteria and requires surfacing conflicts with external knowledge; Ralph does not run an initial prompt-refinement stage.
-
-Each iteration transforms that raw prompt with `/skill:prompt-engineer Transform the following user request into a codebase and online research question which can be thoroughly explored: ...` (`research-prompt-refinement`), researches that transformed question with `/skill:research-codebase ...`, and writes the findings under `research/`. The research, orchestrator, and reviewer prompts carry `acceptance_criteria` next to the literal contract, so orchestrators should pass the ORIGINAL task text when launching follow-up Ralph runs from reviewer findings.
-
-Before implementing, Ralph prompts the orchestrator to derive an observable acceptance/contract matrix from the literal prompt/acceptance criteria (one row per clause mapped to the concrete observable check that proves it) and to model states, transitions, and invariants explicitly when the work is stateful.
-
-It treats the research artifact as its primary implementation context, initializes/updates an OS-temp implementation notes file while generating verifiable evidence for any claims it records in the notes and reviewer artifacts, delegates implementation through sub-agents, repairs unresolved reviewer findings as one consolidated batch (with durable regression evidence for reproduced findings) rather than one finding per iteration, and asks two independent reviewers (`reviewer-a` and `reviewer-b`) to inspect the patch directly against `base_branch`.
-
-The reviewer fan-out runs reviewers on different primary model families (Claude Fable 5 and GPT-5.5 Codex, with shared fallbacks) so the adversarial review gets cross-model coverage instead of repeated passes from one model. Before reading implementation notes, the orchestrator report, or worker-authored tests, both reviewers independently derive only the conditional contract-probe risk classes supported by the literal prompt and repository context. Applicable probes include minimal external-consumer API compile/typechecks, positive and negative build/feature variants, authoritative schema optionality and zero-value checks, state transition matrices, temporary/injected paths and configuration precedence, direct low-level APIs across feature-flag states, and permissive omitted/empty/zero/duplicate/aliased/unusual inputs.
-
-Ralph prompts its orchestrator and reviewers to verify user-visible behavior end-to-end when practical, using `playwright-cli`-skilled subagents for web/frontend flows that may depend on backend/API behavior and tmux-skilled subagents for TUI or terminal-app scenarios. They must assume credentials/auth/environment access exists until concrete checks plus an actual app/flow launch attempt prove otherwise; reviewers accept skipped E2E only when the orchestrator records the exact attempted commands and observed failure output.
-
-For UI-applicable or full-stack changes, the orchestrator runs a `playwright-cli` end-to-end QA pass and records a reviewable proof video (referenced in the implementation notes and surfaced as `qa_video_path`); reviewers receive that path and must inspect the actual video before treating it as proof. When `create_pr=true`, the final `pull-request` stage attaches or links that video to the created PR/MR/review after reviewer approval.
-
-If reviewers find issues, the next `research-prompt-refinement` and research stages receive the review artifact path (whose `review-round-latest.json` carries a deduplicated cross-reviewer `consolidated_findings` batch) so follow-up research can address unresolved findings, and research stages fork from prior research session data when available. The loop stops only when both reviewers independently approve or `max_loops` is reached, so the bounded loop always stops with an inspectable review round.
-
-Ralph findings include the same `objective_alignment` classification used by Goal, and each reviewer derives a single authoritative `stop_review_loop` boolean from that evidence: `required_by_objective` findings mean `false` at any priority (P3 included, because severity labels alone never dismiss objective-relevant findings), `consistent_with_objective` P0/P1/P2 findings mean `false` while P3 remains a non-blocking nice-to-have, and `beyond_objective`/`contradicts_objective` findings are surfaced but non-blocking so they are not silently converted into new requirements.
-
-The loop gate approves deterministically on `stop_review_loop=true` plus a null `reviewer_error` (parse failures count as non-approval) without recomputing approval from the findings arrays. Ralph review decisions also include `requirements_traceability`, a clause-by-clause evidence map over every explicit prompt/acceptance-criteria requirement kept as audit evidence for deriving the flag; reviewers are explicitly told that process-only clauses (reviewer quorum, and the authorized post-approval PR/MR/review final action when `create_pr=true`) must never hold the flag at `false`. Reviewers must also first prove the code delta actually exists in the review checkout (the invoking cwd or explicitly configured worktree): receipts claiming implemented work over an empty or unrelated delta are a blocking finding rather than grounds for approval, and modifications, renames, or deletions of pre-existing tests require explicit justification.
-
-Worker-authored or repository-local tests cannot by themselves prove exact API, build, or schema compliance. Each Ralph reviewer names every applicable independent probe and its observed outcome in `overall_explanation` and `requirements_traceability`; a missing, blocked, or failed material probe keeps the clause unverified and `stop_review_loop=false`, while tools or dependencies that prevent necessary verification use `reviewer_error`. Before approval, each reviewer self-audits positive correctness, proven objective-relevant traceability, no blocking objective-aligned finding, evidence or a non-applicability explanation for every applicable risk, and no reviewer error. These are prompt-level instructions using the existing reviewers, output fields, and convergence behavior; no deterministic gate or schema is added.
-
-By default Ralph does not start the final `pull-request` stage, and `pr_report` is omitted. Prompt text alone does not opt in. Pass `create_pr=true` only when you explicitly want the final `pull-request` stage to inspect provider credentials and attempt provider-appropriate PR/MR/review creation, such as GitHub `gh`, Azure Repos `az repos pr create`, or Sapling/Phabricator tooling; Ralph's own PR-creation instructions live in that final stage and run only after approval.
-
-At the start of every Ralph review, each concurrent reviewer uses Intercom to initialize/check coordination and discover the sibling reviewer in the same workflow run. Before validation, reviewers communicate their plans and intended ownership, claim expensive or lock-prone checks, and serialize commands that can conflict in a shared checkout or environment, including full test suites, build or test commands, package-manager operations, browser/E2E sessions, migrations, and generated-artifact steps.
-
-They announce each coordinated check's start and completion, release every claimed resource and send the sibling an explicit resource-release update, and share reusable command outcomes/evidence where appropriate. This operational coordination prevents collisions and duplicate conflicting work; it does not replace independent patch inspection, analysis, or each reviewer's own verdict.
-
-Each Ralph review artifact and `review-round-latest.json` includes a `convergence_decision` summary with `parsed`, `approved`, `stopReviewLoop`, `nextAction`, `finalActionRemaining`, and `diagnostics`. This distinguishes malformed or missing structured reviewer output from a parsed reviewer rejection or blocking finding by reporting it as a parse failure.
-
-When `create_pr=true`, reviewers are told that PR/MR/review creation is a post-approval final action: if implementation and validation requirements are proven and only PR creation remains, the implementation can approve with `finalActionRemaining: true` and `nextAction: "pull-request"` instead of consuming another orchestration iteration. When both reviewers converge, the latest round records `approved: true`, `stopReviewLoop: true`, and `nextAction: "pull-request"` when `create_pr=true` (otherwise `"finish"`), and the implementation loop stops before the final handoff stage.
-
-Set `git_worktree_dir` when you want Ralph's orchestrator and reviewer stages isolated in a reusable Git worktree. Relative paths resolve from the invoking repository root, existing same-repository worktree roots are reused, and missing paths are created from `base_branch`. Ralph preserves the invoking repo-relative cwd inside the worktree, so launching from `repo/packages/api` with `git_worktree_dir=../repo-wt` runs stages from `../repo-wt/packages/api`.
-
-Result fields:
-
-| Field | Meaning |
-|---|---|
-| `result` | Final implementation report from the orchestrator stage. |
-| `plan` | Latest transformed research question, retained for compatibility. |
-| `plan_path` | Backward-compatible alias for `research_path`. |
-| `research` | Latest research report text or artifact reference. |
-| `research_path` | Path to the latest generated research artifact under `research/`. |
-| `implementation_notes_path` | OS-temp notes file containing decisions, deviations, blockers, and validation notes. |
-| `qa_video_path` | Absolute path to the reviewable QA end-to-end proof video recorded with `playwright-cli` for UI-applicable changes, when one was produced. |
-| `pr_report` | Pull-request report emitted only when `create_pr=true` and the final `pull-request` stage runs. |
-| `approved` | Whether the reviewer loop approved before completion or optional final handoff. |
-| `iterations_completed` | Number of research/orchestrate/review loops completed. |
-| `review_report` | Compact reference to the latest reviewer payload artifact. |
-| `review_report_path` | JSON artifact path for the latest Ralph review round. |
-
-For a delegated autonomous implementation that materially benefits from a durable research-first pipeline, use `/skill:research-codebase` → `/skill:create-spec` → `/workflow ralph prompt="Implement specs/2026-03-rate-limit.md and validate the documented burst behavior"`. Ralph can start from a spec path, GitHub issue, or crisp ticket description; it uses that prompt as-is, researches the task, delegates through sub-agents, reviews, records a QA proof video for UI/full-stack changes when practical, and iterates.
-
-Use `/workflow goal` when an autonomous job instead materially benefits from a durable goal ledger, bounded sub-agent orchestration turns, and reviewer-gated completion; give it a concrete objective and add `create_pr=true` only when you want Goal's final `pull-request` stage after approval. Task size alone does not select either workflow.
+All six can run by name or as nested definitions. Prefer composition over copying prompts or graphs: nested children contribute stages, gates, artifacts, HIL nodes, and declared outputs to the expanded parent graph. For broad repository work, write a precise partition prompt, give branches distinct artifact paths, and make synthesis cite concrete files and resolve conflicts. For implementation, author a task-specific parent around the pattern builtins so its literal contract, deterministic checks, repair policy, and final actions stay explicit.
 
 ### `open-claude-design`
 
@@ -603,86 +358,32 @@ Inputs:
 
 | Input | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `prompt` | text | yes | — | What to design (dashboard, page, component, prototype, …). The discovery stage refines this into a confirmed brief and asks for the output type and references. |
-| `discover_references` | boolean | no | `true` | Discover beautiful, current reference designs (Awwwards, recent.design, Dribbble, Monet, Motionsites) and feed them to generation. Set `false` to skip the network/browser reference pass. |
+| `prompt` | text | yes | — | What to design. The discovery stage refines the brief, output type, and references. |
+| `discover_references` | boolean | no | `true` | Discover current design references and feed them to generation. |
 | `max_refinements` | number | no | `3` | Maximum generate/user-feedback loop iterations. |
 
-The output type (`prototype`, `wireframe`, `page`, `component`, `theme`, `tokens`) and any reference designs are **not** inputs — the discovery stage asks for them. There is no `design_system` input; the workflow establishes or loads the project's `DESIGN.md`/`PRODUCT.md` automatically.
+The workflow establishes or loads project design context, extracts user-provided references, can browse curated galleries, writes a live `preview.html`, and keeps separate generator and feedback session lineages. It exports an HTML spec and implementation handoff after approval. Browser-backed preview and feedback use the `playwright-cli` skill when available.
 
-Result fields:
-
-| Field | Meaning |
-|---|---|
-| `output_type` | Kind of design artifact produced (chosen during the discovery interview). |
-| `design_system` | Design system source used for generation: the project-derived design system. |
-| `artifact` | Latest final design summary from the approved preview artifact. |
-| `handoff` | Final rich HTML spec and implementation handoff summary. |
-| `approved_for_export` | Whether the latest user-feedback stage reported no further changes before export. |
-| `refinements_completed` | Number of refinement iterations completed. |
-| `import_context` | Reference-import context used during generation. |
-| `run_id` | Per-run design workflow artifact identifier. |
-| `artifact_dir` | Directory containing preview and spec artifacts. |
-| `preview_path` | Absolute path to the generated `preview.html` file. |
-| `preview_file_url` | `file://` URL for the generated `preview.html` file. |
-| `spec_path` | Absolute path to the generated `spec.html` file. |
-| `spec_file_url` | `file://` URL for the generated `spec.html` file. |
-| `playwright_cli_status` | Outcome of the initial deterministic step that ensures the `playwright-cli` skill's `playwright-cli` command is installed. |
-
-`open-claude-design` has no `result` output; it exposes only the declared fields listed above. Use the declared `artifact` and `handoff` fields for generated content.
-
-**Combined discovery/init.** The workflow's first and only front-door stage runs `/skill:impeccable shape` and `/skill:impeccable init` together. It interviews you (via the structured question tool) about what you want to build, the **output type** (`prototype`, `wireframe`, `page`, `component`, `theme`, or `tokens`), and which **references** to emulate (URLs, local file paths, screenshots, or design docs). Then, in the same `discovery` stage, impeccable init detects `PRODUCT.md`/`DESIGN.md` and creates or reconciles those files as needed.
-
-The references you name take **precedence over `DESIGN.md`/`PRODUCT.md`** during generation (the design system fills gaps the references don't cover, and `PRODUCT.md` still governs strategic register/voice). Headless runs infer a defensible brief, output type, references, and project-context assumptions rather than blocking.
-
-**Context and reference phase.** Design-system/reference research runs first, then gallery reference discovery uses those findings before the generator consumes the combined context:
-
-- *Design-system/reference research* — three parallel passes (`ds-locator` / `ds-analyzer` / `ds-patterns`) extract the project's design-system evidence and also handle user-provided references. URL references are captured with browser/screenshot tooling where available; local files, screenshots, and design docs are parsed by the applicable `ds-*` pass. Their extracted requirements feed the generator and **take precedence over `DESIGN.md`/`PRODUCT.md`**. There are no separate `web-capture-*`, `file-parser-*`, or `design-system-builder` stages.
-- *Reference discovery* (gated by `discover_references=true`, the default) — after the `ds-*` passes complete, the `reference-discovery` stage receives their evidence plus the `PRODUCT.md`/`DESIGN.md` init summary.
-  - It uses the `playwright-cli` skill to browse five curated galleries: [Awwwards](https://www.awwwards.com/websites/), [recent.design](https://recent.design/), [Dribbble recents](https://dribbble.com/shots/recent), [Monet](https://www.monet.design/c), and [Motionsites](https://motionsites.ai/).
-  - It then **opens the strongest selected designs** and, ideally, **records a scroll-through video of each real design page so its animations are captured**. A full-page screenshot is a supplement or fallback, and the real destination URL is retained; it does not just screenshot gallery thumbnails, with web search as the fallback when the browser is unavailable.
-  - It asks which curated reference direction you prefer. If none align, it asks you to provide a reference image, screenshot, URL, or local path for best results.
-  - The workflow persists the curated **references brief** to `<artifact_dir>/references.md` and passes it to the generator (`reference_inspiration`) and refinement. Set `discover_references=false` to skip it.
-
-**Generate/user-feedback loop.** Refinement is intentionally simple and mirrors Ralph's implement/reviewer rhythm: `generate-1` writes the first `preview.html`, `user-feedback-1` opens that preview with `/skill:impeccable live`, and any captured `live_changes`, `user_notes`, or `annotated_snapshot` feed the next forked `generate-*` stage. Generator and feedback stages keep separate session lineages: each later `generate-*` forks from the previous generate session, `user-feedback-1` starts its own feedback chain, and each later `user-feedback-*` forks only from the previous feedback session rather than falling back to generator sessions.
-
-When a `user-feedback-*` stage captures no meaningful feedback, the loop exports immediately. The workflow deliberately runs only `exporter`, followed by `final-display`; there is no pre-export scan, forced-fix stage, or export gate. The workflow saves captured feedback as durable artifacts under `<artifact_dir>/feedback/iteration-<n>.md` / `.json` (plus a best-effort copy of the annotated snapshot, constrained to files within the project/artifact dir). If captured notes fail to thread into the next generate prompt, the run fails with an explicit error rather than silently generating without user feedback.
-
-**Browser requirement.** open-claude-design is browser-centric (the discovery/preview review and the `live` QA loop need the `playwright-cli` skill's browser). If no browser is available, the workflow exits cleanly before generation and reports the would-be artifact paths and install instructions rather than generating a design you could not review interactively. (The test harness skips this early exit so headless test runs still complete.)
-
-Run examples:
+Declared outputs are `output_type`, `design_system`, `artifact`, `handoff`, `approved_for_export`, `refinements_completed`, `import_context`, `run_id`, `artifact_dir`, `preview_path`, `preview_file_url`, `spec_path`, `spec_file_url`, and `playwright_cli_status`. It has no implicit `result` output.
 
 ```text
 /workflow open-claude-design prompt="Refresh the settings page hierarchy"
-/workflow open-claude-design prompt="Design a billing page like Stripe's"
-/workflow open-claude-design prompt="Generate spacing and color tokens"
 /workflow open-claude-design prompt="Design a marketing landing page" discover_references=false
 ```
 
-The discovery interview asks for the output type and any reference URLs/files, so do not pass `output_type`, `reference`, or `design_system` on the command line.
-
 ### Launching with natural language
 
-You can also start a built-in workflow by describing the task in chat. Atomic picks the matching workflow and fills in inputs from your request:
+You can start a builtin in chat by naming its objective:
 
 ```text
-Run a deep codebase research workflow on how the rate limiter behaves under burst traffic.
+Fan out repository research by subsystem, save each branch as an artifact, and synthesize cited findings.
 ```
 
 ```text
-Use the goal workflow to implement specs/2026-03-rate-limit.md, run the focused rate-limit tests, finish only when burst traffic returns 429 with Retry-After, and cap it at 5 turns.
+Run open-claude-design to refresh the settings page hierarchy.
 ```
 
-```text
-Use the ralph workflow to research a database-layer migration, implement it, review it, and set `create_pr=true` for final-stage PR handoff.
-```
-
-```text
-Run open-claude-design to refresh the settings page hierarchy as a page.
-```
-
-If required inputs are missing or ambiguous, Atomic asks for missing inputs or opens the inline input picker before launching.
-
-Named workflows run in the background with a run id. See [Running Workflows](#running-workflows) for launch behavior, [Workflow Commands](#workflow-commands) for the common controls, and [Monitor and Control Runs](#monitor-and-control-runs) for steering, pausing, and resuming.
+If required inputs are missing or ambiguous, Atomic asks for them or opens the inline picker. Named runs execute in the background and return a run id.
 
 ## Writing a Workflow
 
@@ -1092,105 +793,70 @@ export default workflow({
 
 #### Compose with builtin workflows
 
-Parent workflows can call exported builtin workflow definitions like user-defined workflows. Use the barrel export to import several builtins:
+Builtin workflow definitions work like user-defined child definitions. Import several from the barrel:
 
 ```ts
-import { deepResearchCodebase, goal, openClaudeDesign, ralph } from "@bastani/workflows/builtin";
+import {
+  adversarialVerification,
+  classifyAndAct,
+  fanOutAndSynthesize,
+  generateAndFilter,
+  loopUntilDone,
+  openClaudeDesign,
+  tournament,
+} from "@bastani/workflows/builtin";
 ```
 
-Or import one builtin from its individual module path:
+Or import one individual module:
 
 ```ts
-import deepResearchCodebase from "@bastani/workflows/builtin/deep-research-codebase";
-import goal from "@bastani/workflows/builtin/goal";
-import openClaudeDesign from "@bastani/workflows/builtin/open-claude-design";
-import ralph from "@bastani/workflows/builtin/ralph";
+import fanOutAndSynthesize from "@bastani/workflows/builtin/fan-out-and-synthesize";
 ```
 
-Common builtin import targets:
-
-| Workflow name | TypeScript export | Individual module path | Typical use inside another workflow |
-|---|---|---|---|
-| `deep-research-codebase` | `deepResearchCodebase` | `@bastani/workflows/builtin/deep-research-codebase` | Gather broad repo research before planning, synthesis, or implementation. |
-| `goal` | `goal` | `@bastani/workflows/builtin/goal` | Run a bounded implementation/check loop with receipts and reviewer-gated completion; pass `create_pr=true` to authorize only the final PR-creation stage after approval. |
-| `ralph` | `ralph` | `@bastani/workflows/builtin/ralph` | Run an autonomous job that benefits from Ralph's durable research/orchestrate/review loop; pass `create_pr=true` to authorize only the final PR-creation stage. |
-| `open-claude-design` | `openClaudeDesign` | `@bastani/workflows/builtin/open-claude-design` | Generate and refine a UI/design artifact and handoff spec. |
-
-Example parent workflow that runs builtin deep research, then chooses either `goal` or `ralph` as the nested implementation runner:
+Example parent that maps a repository and verifies the synthesis:
 
 ```ts
 import { workflow } from "@bastani/workflows";
 import { Type } from "typebox";
-import { deepResearchCodebase, goal, ralph } from "@bastani/workflows/builtin";
+import { adversarialVerification, fanOutAndSynthesize } from "@bastani/workflows/builtin";
 
 export default workflow({
-  name: "research-then-implement",
-  description: "Run deep research, then dispatch to goal or Ralph.",
-  inputs: {
-    topic: Type.String(),
-    runner: Type.Union([Type.Literal("goal"), Type.Literal("ralph")], {
-      default: "goal",
-      description: "Use goal for a durable ledger and reviewer gates, or Ralph for a durable research-first pipeline.",
-    }),
-  },
+  name: "research-and-verify",
+  description: "Map repository slices, synthesize evidence, and verify the report.",
+  inputs: { topic: Type.String() },
   outputs: {
-    research_doc_path: Type.Optional(Type.String({ description: "Path to the deep-research document used for implementation." })),
-    runner: Type.String({ description: "Which nested runner executed: \"goal\" or \"ralph\"." }),
-    // Genuinely dynamic: the nested runner (goal vs ralph) is chosen at runtime and
-    // each exposes a different declared output shape, so a loose object is appropriate here.
-    // When a child's outputs are known and fixed, declare the precise shape instead.
-    implementation: Type.Object({}, { additionalProperties: true, description: "Declared outputs from the nested implementation workflow." }),
+    report_path: Type.String(),
+    approved: Type.Boolean(),
   },
   run: async (ctx) => {
-    const topic = String(ctx.inputs.topic);
-    const research = await ctx.workflow(deepResearchCodebase, {
-      inputs: { prompt: topic, max_concurrency: 4 },
-      stageName: "deep research",
+    const research = await ctx.workflow(fanOutAndSynthesize, {
+      inputs: {
+        prompt: `Partition repository research for: ${ctx.inputs.topic}. Save cited findings per slice and synthesize conflicts.`,
+        max_branches: 6,
+      },
+      stageName: "repository research",
     });
     if (research.exited === true) {
-      return ctx.exit({ status: research.status, reason: research.exitReason ?? "deep research stopped early" });
+      return ctx.exit({ status: research.status, reason: research.exitReason ?? "research stopped early" });
     }
 
-    if (String(ctx.inputs.runner) === "ralph") {
-      const implementation = await ctx.workflow(ralph, {
-        inputs: {
-          prompt: `Use the research document at ${String(research.outputs.research_doc_path)} to plan, implement, and review: ${topic}`,
-          create_pr: true,
-        },
-        stageName: "ralph implementation",
-      });
-      if (implementation.exited === true) {
-        return ctx.exit({ status: implementation.status, reason: implementation.exitReason ?? "ralph stopped early" });
-      }
-
-      return {
-        research_doc_path: research.outputs.research_doc_path,
-        runner: "ralph",
-        implementation: implementation.outputs,
-      };
-    }
-
-    const implementation = await ctx.workflow(goal, {
-      inputs: {
-        objective: `Use the research document at ${String(research.outputs.research_doc_path)} to implement and validate: ${topic}`,
-        max_turns: 3,
-      },
-      stageName: "goal implementation",
+    const verification = await ctx.workflow(adversarialVerification, {
+      inputs: { task: `Verify the cited report at ${research.outputs.synthesis_path}` },
+      stageName: "verify research report",
     });
-    if (implementation.exited === true) {
-      return ctx.exit({ status: implementation.status, reason: implementation.exitReason ?? "goal stopped early" });
+    if (verification.exited === true) {
+      return ctx.exit({ status: verification.status, reason: verification.exitReason ?? "verification stopped early" });
     }
 
     return {
-      research_doc_path: research.outputs.research_doc_path,
-      runner: "goal",
-      implementation: implementation.outputs,
+      report_path: research.outputs.synthesis_path,
+      approved: verification.outputs.approved,
     };
   },
 });
 ```
 
-Passing a workflow definition directly to `ctx.workflow(...)` uses the child workflow's normalized name for replay metadata and default boundary labels (`shared-research` for the user-defined example above, or builtin names such as `deep-research-codebase`, `goal`, and `ralph`).
+Passing a definition directly to `ctx.workflow(...)` uses the child definition's normalized name for replay metadata and the default boundary label.
 
 `ctx.workflow(workflowDefinition)` starts a nested workflow behind a parent boundary stage named `workflow:<workflow-name>` by default. User-facing status and graph views flatten a valid child graph into the parent run recursively, so composition behaves like inlining the child workflow code: child stages, HIL prompt nodes, and deeper imported workflows appear in one expanded graph. When Atomic hides a valid import boundary, every boundary parent connects to every child root, and every child terminal connects to each downstream dependent of the boundary. Every visible child node keeps a distinct virtual graph ID and its exact `{ runId, stageId }` control target, even when sibling or repeated child workflows reuse local stage IDs or names. Attach, send, pause, interrupt, resume, stage selection, and post-mortem chat therefore route to the nested run and stage that actually own the node. Implementation-owned child runs are not shown as separate top-level `/workflow status` entries. The returned child result has:
 
@@ -1226,7 +892,7 @@ A child exposes only outputs declared in `outputs` and returned from `run` or su
 
 Missing required outputs, schema type mismatches, and non-JSON-serializable returned values fail normal child completion before the parent continues; child `ctx.exit({ outputs })` allows missing required outputs but still validates every provided key and sets `child.exited === true` so parent code must handle the partial shape.
 
-Pass only workflow definitions to `ctx.workflow(...)`. Import reusable workflows with TypeScript `import` statements first; use `/workflow` names such as `goal` only for launching named runs, not as `ctx.workflow(...)` arguments. If a module is missing or does not export a workflow definition, workflow discovery fails when loading that module. Nested child workflows count against `maxDepth` (default `4` total workflow levels).
+Pass only workflow definitions to `ctx.workflow(...)`. Import reusable workflows with TypeScript `import` statements first; registry names are only for top-level named runs, not `ctx.workflow(...)` arguments. If a module is missing or does not export a workflow definition, workflow discovery fails when loading that module. Nested child workflows count against `maxDepth` (default `4` total workflow levels).
 
 Atomic hides an import boundary only when the referenced child run is non-empty and reciprocally identifies that parent run and boundary stage. The same rule applies recursively at deeper nesting levels. If no valid child graph can stand in for the boundary—including a failed or skipped boundary, a missing or empty child graph, stale or mismatched ownership metadata, or a recursive link that cannot produce a valid expansion—the graph keeps the boundary summary node instead of flattening an unrelated or invalid child. Running and completed boundaries with valid child graphs are flattened; completed summaries still retain the child workflow name, child run id prefix, and exposed output count for replay/debugging when fallback is required.
 
@@ -1649,7 +1315,7 @@ Sets the stage session's [Intercom](/intercom) home group so orchestrated stages
 
 `group` is accepted on `stage`/`task` options, on `ctx.parallel(...)` options, and per parallel step — a step-level `group` overrides the parallel options' `group`. The resolved value is injected per-session (race-safe across concurrently running in-process stages, stable across model fallback). Group assignment is **gated on intercom capability**: a stage with `noTools`, a `tools` allowlist that omits `intercom`, or `excludedTools` containing `intercom` is never placed into a group (so an agent is never isolated into a group it cannot use). Subagents spawned by a grouped stage inherit that stage's group by default (see [subagents.md](/subagents)), so a reviewer level and its helper subagents form one isolated group. The subagent-only `contact_supervisor` channel still reaches the supervisor across group boundaries through a broker capability bound to the child/supervisor relationship and restored across reconnects; ordinary client `send` frames never gain cross-group authority from a channel flag.
 
-The builtin `goal` and `ralph` workflows use this to isolate each reviewer level into its own group (`goal-reviewers-turn-N` / `ralph-reviewers-iter-N`): same-level reviewers coordinate with each other but cannot reach the worker, orchestrator, parent chat, or other levels, which also keeps reviewer intercom chatter out of the main/parent context window.
+Use isolated groups for peer reviewers that need to coordinate while remaining separate from workers, the parent chat, and unrelated runs. Give every reviewer in one level the same invocation-scoped group name; use distinct names for later levels.
 
 **Recommended default:** unless the user requests otherwise, give each workflow invocation its own intercom group. To share one group across every stage of the invocation, mint one invocation-scoped literal name inside the workflow's `run` function (for example `const group = "myflow-" + randomUUID();` from `node:crypto`) and pass it via the `group` option on each stage, task, or parallel step; note that `group: true` is only shared per `ctx.parallel(...)` set and mints a fresh UUID per non-parallel stage, so it isolates stages from each other rather than grouping the whole run. Ungrouped sessions all collapse into the shared `"default"` group, so an ungrouped workflow's stage and subagent intercom traffic — including async subagent-result notices — can reach the parent chat and other concurrent runs. The shipped workflow prompt guidance instructs agents to isolate invocations this way by default.
 
@@ -2254,8 +1920,8 @@ List or inspect unfamiliar workflows before running them. If required inputs are
 
 ```ts
 workflow({ action: "list" })
-workflow({ action: "get", workflow: "deep-research-codebase" })
-workflow({ action: "inputs", workflow: "deep-research-codebase" })
+workflow({ action: "get", workflow: "fan-out-and-synthesize" })
+workflow({ action: "inputs", workflow: "fan-out-and-synthesize" })
 workflow({ action: "models" })
 ```
 
@@ -2280,15 +1946,15 @@ Run a named workflow with inputs:
 ```ts
 workflow({
   action: "run",
-  workflow: "deep-research-codebase",
-  inputs: { prompt: "map workflow runtime", max_concurrency: 4 },
+  workflow: "fan-out-and-synthesize",
+  inputs: { prompt: "map workflow runtime by subsystem", max_concurrency: 4 },
 })
 ```
 
 Slash equivalent:
 
 ```text
-/workflow deep-research-codebase prompt="map workflow runtime" max_concurrency=4
+/workflow fan-out-and-synthesize prompt="map workflow runtime by subsystem" max_concurrency=4
 ```
 
 <p align="center"><img src="images/workflow-command.png" alt="Running a Workflow Command" width="600" /></p>
@@ -3165,14 +2831,17 @@ This runtime migration stub exists only so old modules fail at the callsite with
 
 ```typescript
 import {
-  deepResearchCodebase,
-  goal,
+  adversarialVerification,
+  classifyAndAct,
+  fanOutAndSynthesize,
+  generateAndFilter,
+  loopUntilDone,
   openClaudeDesign,
-  ralph,
+  tournament,
 } from "@bastani/workflows/builtin";
 ```
 
-Each builtin is a workflow definition. The barrel and individual module paths also export the six pattern workflows documented below. See [Compose with builtin workflows](#compose-with-builtin-workflows) for the import table and a parent workflow example.
+Each export is a workflow definition. The same seven definitions are available through individual module paths. See [Compose with builtin workflows](#compose-with-builtin-workflows) for a parent workflow example.
 
 
 ## Fast Inference for Workflow Stages
@@ -3214,7 +2883,7 @@ Context mode is an execution property configured with `context`/`forkFromSession
 - **Forked continuation prompts send only the delta.** A forked stage already carries the role, contracts, guidance, and output format from its own earlier prompts, so repeating them uses more tokens and can make the two copies diverge. Send what changed since the fork point — new artifacts, updated state, the next action — plus a one-line pointer back ("the contracts and report format established earlier in this thread still apply unchanged") instead of re-injecting the full text.
 - **Keep one canonical copy of shared contracts.** When fresh and forked variants of a stage share guidance, render the full contract only in the prompt that first establishes it and reference it from continuations. If a continuation needs a contract restated (for example, after a schema change), that is a new contract version, not a repeat.
 
-The builtin `goal` and `ralph` workflows follow this pattern: their first worker/orchestrator prompts include the full contracts, while forked continuation turns send only the per-turn state (new receipts, the latest review artifacts, the rewritten research file) with a pointer back to the established guidance.
+Long-running worker/reviewer workflows should follow this pattern: establish the complete contract once, then send forked continuation turns only the latest state and artifact paths with a pointer back to the established guidance.
 
 ### Context Fundamentals
 
@@ -3493,13 +3162,13 @@ Good workflows are information-flow systems, not just prompt sequences. Keep sta
 - Do not guess input keys; inspect with `inputs` or `get` first.
 - Do not call `create`, `update`, or `delete` on the workflow tool; definitions are code-authored.
 - Do not use legacy workflow tool fields like `agent`, `stage`, or run-control `name`.
-- Do not pass strings such as `"goal"` or path objects to `ctx.workflow(...)`; import the workflow definition from `@bastani/workflows/builtin` or another TypeScript module first.
+- Do not pass strings or path objects to `ctx.workflow(...)`; import the workflow definition from `@bastani/workflows/builtin` or another TypeScript module first.
 - Do not rely on undeclared child outputs; returning a key that is not declared in `outputs` fails the run. Declare every child-workflow field you expose in `outputs` — including `result` — and return values matching those schemas from `run` (see [Outputs](#outputs)).
 - Do not expect to select or rename child outputs at the call site; parent workflows receive the child's declared output contract as `child.outputs` after checking `child.exited === false`, and a partial declared-output map when `child.exited === true`.
 - Do not expect named workflow runs to block the chat turn; they are background tasks.
 - Use `interrupt` or `pause` when the user asks to pause specific live work resumably; use `quit` for a graceful run-level process boundary.
 - Keep stage names readable because they appear in workflow status and UI.
-- Do not ask a stage to reason from workflow or stage names that are only orchestration labels. Model stages see their local prompt/artifacts/tools; describe the action to perform and the evidence to use (`review the current code delta`, `create/update the review request`) instead of relying on labels such as `this Goal run` or `the Ralph reviewer` — see the prompt-vocabulary item in the [Design Checklist](#design-checklist).
+- Do not ask a stage to reason from workflow or stage names that are only orchestration labels. Model stages see their local prompt, artifacts, tools, and reads; describe the concrete action and evidence instead of referring to an implementation-specific nickname.
 - Do not write stage prompts that depend on hidden workflow-wide awareness; make each model stage locally scoped and self-described ([Locally Scoped Stage Prompts](#locally-scoped-stage-prompts)).
 - Do not parse model gate decisions from ad-hoc prose with regular expressions; configure `schema` on a focused workflow item and consume `result.structured`.
 - Do not make reviewers fail an implementation gate solely because an authorized final action has not run yet. Represent that remainder as a post-approval next action (for example `finalActionRemaining` / `nextAction`) and let the final stage perform it.

@@ -88,8 +88,8 @@ describe("MockExtensionAPI — slash command registration", () => {
 
   test("/workflow getArgumentCompletions covers subcommand arguments", async () => {
     const cmd = getCommand(mock.commands, "workflow")!;
-    const inputs = (await cmd.options.getArgumentCompletions?.("inputs de")) ?? [];
-    assert.ok(inputs.some((c) => c.value === "inputs deep-research-codebase "));
+    const inputs = (await cmd.options.getArgumentCompletions?.("inputs fa")) ?? [];
+    assert.ok(inputs.some((c) => c.value === "inputs fan-out-and-synthesize "));
 
     const status = (await cmd.options.getArgumentCompletions?.("status --")) ?? [];
     assert.equal(status.some((c) => c.value === "status --all "), false);
@@ -104,11 +104,11 @@ describe("MockExtensionAPI — slash command registration", () => {
 
   test("/workflow getArgumentCompletions covers workflow run inputs and flags", async () => {
     const cmd = getCommand(mock.commands, "workflow")!;
-    const inputKeys = (await cmd.options.getArgumentCompletions?.("deep-research-codebase p")) ?? [];
-    assert.ok(inputKeys.some((c) => c.value === "deep-research-codebase prompt="));
+    const inputKeys = (await cmd.options.getArgumentCompletions?.("fan-out-and-synthesize p")) ?? [];
+    assert.ok(inputKeys.some((c) => c.value === "fan-out-and-synthesize prompt="));
 
-    const flags = (await cmd.options.getArgumentCompletions?.("deep-research-codebase --")) ?? [];
-    assert.ok(flags.some((c) => c.value === "deep-research-codebase --no-picker "));
+    const flags = (await cmd.options.getArgumentCompletions?.("fan-out-and-synthesize --")) ?? [];
+    assert.ok(flags.some((c) => c.value === "fan-out-and-synthesize --no-picker "));
   });
 
 });
@@ -232,7 +232,7 @@ describe("renderCall — all action branches", () => {
 
   test("respects host render width", () => {
     const out = renderCall(
-      { action: "run", workflow: "deep-research-codebase-with-a-long-name" },
+      { action: "run", workflow: "repository-analysis-workflow-with-a-long-name" },
       { width: 24 },
     );
     assert.ok(visibleWidth(out) <= 24);
@@ -272,8 +272,8 @@ describe("renderResult — all action branches", () => {
         action: "list",
         items: [
           {
-            name: "deep-research-codebase-with-a-very-long-name",
-            description: "Scout and aggregate a long codebase research pass.",
+            name: "repository-analysis-workflow-with-a-very-long-name",
+            description: "Scout and aggregate a long repository analysis pass.",
             inputs: [{ name: "prompt", required: true }],
           },
         ],
@@ -290,7 +290,7 @@ describe("renderResult — all action branches", () => {
     const cases: WorkflowToolResult[] = [
       {
         action: "get",
-        workflow: "deep-research-codebase",
+        workflow: "fan-out-and-synthesize",
         details: {
           action: "get",
           mode: "inspection",
@@ -329,7 +329,7 @@ describe("renderResult — all action branches", () => {
     const out = renderResult(
       {
         action: "inputs",
-        name: "deep-research-codebase-with-a-long-name",
+        name: "repository-analysis-workflow-with-a-long-name",
         inputs: [
           {
             name: "prompt_with_a_very_long_name",
@@ -405,14 +405,14 @@ describe("renderResult — all action branches", () => {
     const out = renderResult(
       {
         action: "run",
-        name: "deep-research-codebase",
+        name: "fan-out-and-synthesize",
         runId: "abcdef123456",
         status: "running",
         message: "started",
       },
       { width, runInputs: { prompt: "map the repo" } },
     );
-    assert.match(out, /deep-research-codebase/);
+    assert.match(out, /fan-out-and-synthesize/);
     assert.match(out, /prompt/);
     assert.match(out, /\/workflow connect abcdef12/);
     for (const line of out.split("\n")) {

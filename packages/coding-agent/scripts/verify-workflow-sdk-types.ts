@@ -41,8 +41,8 @@ const TARBALL_DEP = "__TARBALL__";
 // Workflow file exercising the documented authoring import + a builtin composition import.
 const WORKFLOW_FILE = `import { workflow } from "@bastani/workflows";
 import { Type, type Static } from "typebox";
-import goal from "@bastani/workflows/builtin/goal";
-import { ralph } from "@bastani/workflows/builtin";
+import openClaudeDesignDefault from "@bastani/workflows/builtin/open-claude-design";
+import { openClaudeDesign } from "@bastani/workflows/builtin";
 
 const NameSchema = Type.String({ default: "world" });
 type Name = Static<typeof NameSchema>;
@@ -54,8 +54,11 @@ export default workflow({
   outputs: { greeting: Type.String() },
   run: async (ctx) => {
     const who: Name = ctx.inputs.name;
-    await ctx.workflow(goal, { inputs: { objective: \`greet \${who}\` }, stageName: "goal" });
-    await ctx.workflow(ralph, { inputs: { prompt: "noop" } });
+    await ctx.workflow(openClaudeDesignDefault, {
+      inputs: { prompt: \`design a greeting for \${who}\`, max_refinements: 1 },
+      stageName: "design",
+    });
+    await ctx.workflow(openClaudeDesign, { inputs: { prompt: "refine the greeting" } });
     return { greeting: \`hello \${who}\` };
   },
 });

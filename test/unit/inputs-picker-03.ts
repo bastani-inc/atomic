@@ -25,7 +25,7 @@ export function registerInputsPickerSuite3(): void {
     const lines = renderInputsPicker({
       width: 80,
       theme,
-      workflowName: "ralph",
+      workflowName: "tournament",
       fields: FIELDS,
       state,
       cursorOn: true,
@@ -39,7 +39,7 @@ export function registerInputsPickerSuite3(): void {
     assert.match(joined, /text · required · task to do/);
     assert.doesNotMatch(joined, /loop a thinker/);
     assert.match(joined, /WORKFLOW/);
-    assert.match(joined, /ralph/);
+    assert.match(joined, /tournament/);
     assert.match(joined, /1 \/ 4/);
     assert.match(joined, /╭/);
     assert.match(joined, /╰/);
@@ -57,7 +57,7 @@ export function registerInputsPickerSuite3(): void {
     const lines = renderInputsPicker({
       width: 80,
       theme,
-      workflowName: "ralph",
+      workflowName: "tournament",
       fields: FIELDS,
       state,
       cursorOn: true,
@@ -82,7 +82,7 @@ export function registerInputsPickerSuite3(): void {
     const lines = renderInputsPicker({
       width: 80,
       theme,
-      workflowName: "ralph",
+      workflowName: "tournament",
       fields: FIELDS,
       state,
       cursorOn: true,
@@ -104,7 +104,7 @@ export function registerInputsPickerSuite3(): void {
     const lines = renderInputsPicker({
       width: 80,
       theme,
-      workflowName: "ralph",
+      workflowName: "tournament",
       fields,
       state,
       cursorOn: true,
@@ -127,7 +127,7 @@ export function registerInputsPickerSuite3(): void {
     const lines = renderInputsPicker({
       width,
       theme,
-      workflowName: "ralph",
+      workflowName: "tournament",
       fields,
       state,
       cursorOn: true,
@@ -153,7 +153,7 @@ export function registerInputsPickerSuite3(): void {
     const lines = renderInputsPicker({
       width: 80,
       theme,
-      workflowName: "ralph",
+      workflowName: "tournament",
       fields: FIELDS,
       state,
       cursorOn: true,
@@ -175,7 +175,7 @@ export function registerInputsPickerSuite3(): void {
     const lines = renderInputsPicker({
       width: 16,
       theme,
-      workflowName: "ralph",
+      workflowName: "tournament",
       fields,
       state,
       cursorOn: true,
@@ -193,7 +193,7 @@ export function registerInputsPickerSuite3(): void {
     const lines = renderInputsPicker({
       width,
       theme,
-      workflowName: "ralph",
+      workflowName: "tournament",
       fields: FIELDS,
       state,
       cursorOn: true,
@@ -251,7 +251,7 @@ export function registerInputsPickerSuite3(): void {
       const lines = renderInputsPicker({
         width,
         theme,
-        workflowName: "deep-research-codebase",
+        workflowName: "fan-out-and-synthesize",
         fields: FIELDS,
         state,
         cursorOn: true,
@@ -277,7 +277,7 @@ export function registerInputsPickerSuite3(): void {
       stripAnsi(renderInputsPicker({
         width,
         theme,
-        workflowName: "ralph",
+        workflowName: "tournament",
         fields: FIELDS,
         state,
         cursorOn: true,

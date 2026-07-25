@@ -122,7 +122,7 @@ function makeMockApi(): MockApi {
   };
 }
 
-/** Run the workflow tool for deep-research-codebase with a minimal prompt input. */
+/** Run a builtin that reaches the prompt adapter before structured-output stages. */
 async function runWorkflowTool(
   mock: MockApi,
 ): Promise<WorkflowToolResult> {
@@ -133,8 +133,8 @@ async function runWorkflowTool(
   const out = await execute(
     "test-tool-call",
     {
-      workflow: "deep-research-codebase",
-      inputs: { prompt: "test research question", max_partitions: 1 },
+      workflow: "adversarial-verification",
+      inputs: { task: "test candidate", verifier_count: 1, max_repairs: 0 },
       action: "run",
     },
     undefined,
@@ -165,7 +165,7 @@ describe("runtime-wiring — SDK session invoked through workflow tool", () => {
     assert.equal(mock.tools[0]?.opts.name, "workflow");
   });
 
-  test("exec is not called when running deep-research-codebase through workflow tool", async () => {
+  test("exec is not called when running a bundled workflow through the workflow tool", async () => {
     await runWorkflowTool(mock);
     assert.equal(mock.execCalls.length, 0);
   }, 15_000);
@@ -261,8 +261,8 @@ describe("runtime-wiring — pre-discovery: initial runtime carries adapters", (
 
     await dispatchAndWait(initialRuntime, {
       action: "run",
-      workflow: "deep-research-codebase",
-      inputs: { prompt: "test pre-discovery" },
+      workflow: "adversarial-verification",
+      inputs: { task: "test pre-discovery", verifier_count: 1, max_repairs: 0 },
     });
 
     // Adapter must have been called (not test stub, not "not configured" error)
@@ -280,8 +280,8 @@ describe("runtime-wiring — pre-discovery: initial runtime carries adapters", (
 
     await dispatchAndWait(initialRuntime, {
       action: "run",
-      workflow: "deep-research-codebase",
-      inputs: { prompt: "pre-discovery-research" },
+      workflow: "adversarial-verification",
+      inputs: { task: "pre-discovery candidate", verifier_count: 1, max_repairs: 0 },
     });
 
     const promptCalls = calls.filter((c) => c.startsWith("prompt:"));
@@ -299,8 +299,8 @@ describe("runtime-wiring — pre-discovery: initial runtime carries adapters", (
 
     await dispatchAndWait(initialRuntime, {
       action: "run",
-      workflow: "deep-research-codebase",
-      inputs: { prompt: "test-complete" },
+      workflow: "adversarial-verification",
+      inputs: { task: "test-complete", verifier_count: 1, max_repairs: 0 },
     });
 
     const completeCalls = calls.filter((c) => c.startsWith("complete:"));
@@ -328,8 +328,8 @@ describe("runtime-wiring — post-discovery: swapped runtime preserves adapters"
 
     await dispatchAndWait(swappedRuntime, {
       action: "run",
-      workflow: "deep-research-codebase",
-      inputs: { prompt: "test post-discovery" },
+      workflow: "adversarial-verification",
+      inputs: { task: "test post-discovery", verifier_count: 1, max_repairs: 0 },
     });
 
     assert.ok(calls.length > 0);
@@ -347,8 +347,8 @@ describe("runtime-wiring — post-discovery: swapped runtime preserves adapters"
 
     await dispatchAndWait(swappedRuntime, {
       action: "run",
-      workflow: "deep-research-codebase",
-      inputs: { prompt: "post-discovery-question" },
+      workflow: "adversarial-verification",
+      inputs: { task: "post-discovery candidate", verifier_count: 1, max_repairs: 0 },
     });
 
     const promptCalls = calls.filter((c) => c.startsWith("prompt:"));
@@ -366,8 +366,8 @@ describe("runtime-wiring — post-discovery: swapped runtime preserves adapters"
     });
     await dispatchAndWait(initialRuntime, {
       action: "run",
-      workflow: "deep-research-codebase",
-      inputs: { prompt: "initial" },
+      workflow: "adversarial-verification",
+      inputs: { task: "initial", verifier_count: 1, max_repairs: 0 },
     });
     const callsAfterInitial = calls.length;
     assert.ok(callsAfterInitial > 0);
@@ -380,17 +380,17 @@ describe("runtime-wiring — post-discovery: swapped runtime preserves adapters"
     });
     await dispatchAndWait(swappedRuntime, {
       action: "run",
-      workflow: "deep-research-codebase",
-      inputs: { prompt: "swapped" },
+      workflow: "adversarial-verification",
+      inputs: { task: "swapped", verifier_count: 1, max_repairs: 0 },
     });
 
     // Both runs must have invoked the adapters
     assert.ok(calls.length > callsAfterInitial);
   });
 
-  test("deep-research-codebase is present in discovered registry (bundled workflows survive swap)", async () => {
+  test("the remaining builtin set is present after discovery swap", async () => {
     const discoveredResult = await discoverWorkflows({ includeBundled: true });
-    assert.ok(discoveredResult.registry.names().includes("deep-research-codebase"));
+    assert.ok(discoveredResult.registry.names().includes("fan-out-and-synthesize"));
   });
 });
 

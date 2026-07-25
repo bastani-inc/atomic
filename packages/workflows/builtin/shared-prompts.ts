@@ -23,7 +23,7 @@ export function renderE2eQaVideoReviewGuidance(
   knownVideoPath?: string,
 ): string {
   const target = knownVideoPath === undefined || knownVideoPath.length === 0
-    ? "Look for QA E2E video references in the goal ledger, implementation receipt, implementation notes, orchestrator report, or other review context artifacts."
+    ? "Look for QA E2E video references in the progress ledger, implementation receipt, implementation notes, orchestrator report, or other review context artifacts."
     : `Known QA E2E video path for this run: ${knownVideoPath}`;
   return [
     target,

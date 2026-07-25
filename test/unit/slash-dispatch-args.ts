@@ -179,16 +179,16 @@ describe("tokenizeWorkflowArgs", () => {
 
     test.serial("end-to-end: tokenize + parse unquotes the string value", () => {
         const tokens = tokenizeWorkflowArgs(
-            'deep-research-codebase prompt="map the codebase" max_partitions=4',
+            'fan-out-and-synthesize prompt="map the codebase" max_branches=4',
         );
         assert.deepEqual(tokens, [
-            "deep-research-codebase",
+            "fan-out-and-synthesize",
             'prompt="map the codebase"',
-            "max_partitions=4",
+            "max_branches=4",
         ]);
         assert.deepEqual(parseWorkflowArgs(tokens.slice(1)), {
             prompt: "map the codebase",
-            max_partitions: 4,
+            max_branches: 4,
         });
     });
 });

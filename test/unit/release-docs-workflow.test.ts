@@ -13,7 +13,7 @@ import {
     nextDocsValidationPhase,
     releaseDocsUpdateTaskKey,
     requireNonBaseBranch,
-    requireResearchDocPath,
+    requireResearchArtifactPath,
     verifyReleaseDocsPr,
     type StaleDocTask,
     type UpdateArtifactStatus,
@@ -144,15 +144,15 @@ describe("release-docs workflow guards", () => {
         assert.throws(() => requireNonBaseBranch("feature/docs", "   "), /non-empty PR base branch/);
     });
 
-    test("requires deep research to return a concrete research artifact path", () => {
-        assert.equal(requireResearchDocPath("research/report.md"), "research/report.md");
+    test("requires a concrete repository research artifact path", () => {
+        assert.equal(requireResearchArtifactPath("research/report.md"), "research/report.md");
         assert.throws(
-            () => requireResearchDocPath(undefined),
-            /did not return research_doc_path/,
+            () => requireResearchArtifactPath(undefined),
+            /without a repository research artifact path/,
         );
         assert.throws(
-            () => requireResearchDocPath("   "),
-            /did not return research_doc_path/,
+            () => requireResearchArtifactPath("   "),
+            /without a repository research artifact path/,
         );
     });
 

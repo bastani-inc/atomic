@@ -92,40 +92,33 @@ For an interactive tour any time, run `/atomic` inside the TUI; `/atomic overvie
 
 ### Try the built-in workflows
 
-Atomic ships with ten workflows you can run immediately. Use `/workflow list` to see them and `/workflow inputs <name>` to inspect their inputs in your environment.
+Atomic ships with seven workflows you can run immediately. Use `/workflow list` to see them and `/workflow inputs <name>` to inspect their inputs in your environment.
 
 | Workflow | When to use | Example |
 |---|---|---|
 | `classify-and-act` | Route requests through structured classification and low-confidence human fallback. | `/workflow classify-and-act prompt="Triage and handle this request"` |
-| `fan-out-and-synthesize` | Partition independent slices and synthesize their artifact evidence. | `/workflow fan-out-and-synthesize prompt="Review every API package"` |
+| `fan-out-and-synthesize` | Partition independent slices, including repository-focused research, and synthesize their artifact evidence. | `/workflow fan-out-and-synthesize prompt="Map payment retries by subsystem and synthesize cited findings"` |
 | `adversarial-verification` | Challenge a candidate with fresh verifiers and bounded repair. | `/workflow adversarial-verification task="Verify the migration patch"` |
 | `generate-and-filter` | Generate, dedupe, filter, optionally judge, and shortlist candidates. | `/workflow generate-and-filter prompt="Propose names for the new command"` |
 | `tournament` | Compare whole solutions through balanced pairwise judging. | `/workflow tournament prompt="Design the retry strategy"` |
 | `loop-until-done` | Iterate with a durable ledger until completion or bound exhaustion. | `/workflow loop-until-done prompt="Repair failures until the test suite passes"` |
-| `deep-research-codebase` | Heavy research for tasks requiring comprehensive, whole-repository context. | `/workflow deep-research-codebase prompt="How do payment retries work end to end?"` |
-| `goal` | Clearly delegated autonomous work that materially benefits from a durable goal ledger, bounded sub-agent orchestration turns, named validation, and reviewer gates. It stops as `complete`, `blocked`, or `needs_human`, with optional final-stage PR creation through `create_pr=true` after approval. | `/workflow goal objective="Update the CLI docs for --json, include one example, run the docs build, and finish when the build passes"` |
-| `ralph` | Clearly delegated autonomous work that materially benefits from a durable research-first pipeline, delegated implementation, and iterative review. Ralph can start from a spec file, GitHub issue, or crisp ticket description and optionally lets only the final stage attempt PR creation with `create_pr=true`. | `/workflow ralph prompt="Implement specs/2026-03-rate-limit.md and validate burst traffic returns 429"` |
-| `open-claude-design` | UI and design-system work with separate forked generate and feedback chains; renders a live `preview.html` you can iterate against. | `/workflow open-claude-design prompt="Refresh the settings page hierarchy as a page"` |
+| `open-claude-design` | UI and design-system work with separate generate and feedback chains and a live `preview.html`. | `/workflow open-claude-design prompt="Refresh the settings page hierarchy as a page"` |
 
 <p align="center"><img src="images/workflow-list.png" alt="Workflow List" width="600" /></p>
 
-Inputs are bare `key=value` tokens. Values are JSON-parsed when possible, so `count=5`, `flag=true`, and `objective="multi word value"` preserve useful types. Some workflows expose reusable worktree inputs; for example, add `git_worktree_dir=../atomic-ralph-wt` to `ralph` to run its stages in a created/reused Git worktree while preserving your current repo-relative cwd. Goal and Ralph skip PR creation by default; prompt text alone does not opt in. Add `create_pr=true` only when you want the final `pull-request` stage to inspect provider credentials and attempt provider-appropriate PR/MR/review creation after the workflow's review gate approves, such as GitHub `gh`, Azure Repos `az repos pr create`, or Sapling/Phabricator tooling; the PR-creation instructions live in that final stage. If you call `/workflow <name>` without required inputs, the TUI opens an inline picker; pass `--no-picker` to skip it.
+Inputs are bare `key=value` tokens. Values are JSON-parsed when possible, so `count=5`, `flag=true`, and `prompt="multi word value"` preserve useful types. If you call `/workflow <name>` without required inputs, the TUI opens an inline picker; pass `--no-picker` to skip it. Inspect a workflow's declared inputs before assuming it supports worktree isolation or final actions.
 
-You can also launch workflows with **natural language** — just describe the task in chat and ask Atomic to run the matching workflow:
+You can also launch workflows with **natural language** — describe the task in chat and ask Atomic to run a matching installed workflow or author a task-specific one:
 
 ```text
-Run a deep codebase research workflow on how the rate limiter behaves under burst traffic.
+Fan out repository research by subsystem, save cited findings as artifacts, and synthesize the evidence.
 ```
 
 ```text
-Use the goal workflow to update the CLI docs for --json, include one example, run the docs build, and finish when the build passes.
+Create a worker → fresh verifier → reducer workflow that updates the CLI docs, runs the docs build, and repairs evidence-backed findings until it passes or reaches a bounded stop.
 ```
 
-Atomic picks the workflow, fills in inputs from the request, and confirms before launch.
-
-For a clearly delegated broad autonomous implementation job that benefits from a research/review loop, `ralph` is one available builtin. Give it a spec file, GitHub issue, or crisp ticket description; it refines the prompt, researches as needed, delegates implementation, reviews, records a QA proof video for UI/full-stack changes when practical, and iterates. Add `create_pr=true` only when you want the final PR handoff after the review gate approves.
-
-For an autonomous one-off job that materially benefits from a durable goal ledger, bounded sub-agent orchestration turns, and reviewer gates, use `goal` with a concrete task description that names the work surface, desired outcome, and validation. Goal's orchestrator delegates investigation, edits, and checks through focused subagents, records their work in its receipt, and coordinates follow-up work until the objective is ready for review. An ordinary small-to-medium change does not require it merely because it has tests, validation, or multiple files, but loop or stop-condition wording is a key workflow signal when the user delegates execution. Goal captures receipts, stops as `complete`, `blocked`, or `needs_human`, and can optionally run only the final PR handoff with `create_pr=true` after approval.
+Atomic chooses a complete execution shape, fills inputs from the request, and confirms before launch. For repository-wide uncertainty, prefer repository-focused `fan-out-and-synthesize` branches with artifact paths and a synthesis barrier. For domain-specific implementation, author a custom worker/reviewer loop with literal acceptance criteria, deterministic checks, bounded repairs, and any final PR action kept separate from implementation approval.
 
 ### Monitor and steer a run
 
@@ -159,7 +152,7 @@ Skills are reusable expert instructions. Trigger one with `/skill:<name>` follow
 | `playwright-cli` | Drive a real browser for end-to-end UI checks, screenshots, and reviewable proof videos. | `/skill:playwright-cli` |
 | `liteparse` | Pull text, tables, or values out of PDF, DOCX, PPTX, XLSX, and image files locally. | `/skill:liteparse` |
 
-Use `/skill:research-codebase` for a focused area and `/workflow deep-research-codebase` when a clearly delegated repo-wide research job benefits from durable stages and artifacts. Keep conversation-led planning and implementation inline, or use bounded subagents while the parent remains in control. When an autonomous implementation job needs durable execution, use `/workflow goal` for a goal ledger, bounded sub-agent orchestration turns, and reviewer-gated completion, or `/workflow ralph` for a research-first pipeline with delegated implementation and iterative review. Task size alone does not select either workflow. Add `create_pr=true` only when you want the workflow's final pull-request stage after approval.
+Use `/skill:research-codebase` for a focused subsystem or question. For repository-wide research, use `fan-out-and-synthesize` with distinct repository partitions, artifact-backed branches, and a synthesis prompt that cites concrete paths and resolves conflicting findings. Keep conversation-led planning and implementation inline, use bounded subagents while the parent remains in control, or author a task-specific durable workflow when execution needs tracked evidence, review gates, or a bounded repair loop.
 
 ### Create your own workflow in natural language
 
@@ -180,7 +173,7 @@ Atomic will:
 - write a `.atomic/workflows/<name>.ts` definition that uses `workflow({ ... })` and imports `Type` from `typebox`,
 - and run `/workflow reload` so the generated workflow is rediscovered and can be launched with `/workflow <name>`.
 
-The same plain-chat approach works for editing or hardening an existing workflow — ask Atomic to add a stage, switch a model, save artifacts, or wire in a human approval gate. For the full authoring reference, see [Workflows](/workflows). The authoring guide also covers [workflow composition](/workflows#workflow-composition), including calling user-defined workflows or builtin workflows such as `deep-research-codebase`, `goal`, and `ralph` from `@bastani/workflows/builtin`.
+The same plain-chat approach works for editing or hardening an existing workflow — ask Atomic to add a stage, switch a model, save artifacts, or wire in a human approval gate. For the full authoring reference, see [Workflows](/workflows). The authoring guide also covers [workflow composition](/workflows#workflow-composition), including calling user-defined workflows and the seven supported builtins from `@bastani/workflows/builtin`.
 
 ### Default tools and prompts
 

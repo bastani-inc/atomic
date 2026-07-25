@@ -418,12 +418,12 @@ describe("InteractiveMode deferred workflow autocomplete", () => {
 		const provider = createDeferredWorkflowProvider();
 
 		expect(await suggestionValues(provider, "/wor")).toContain("workflow");
-		expect(await suggestionValues(provider, "/workflow ")).toContain("deep-research-codebase ");
+		expect(await suggestionValues(provider, "/workflow ")).toContain("fan-out-and-synthesize ");
 		expect(await suggestionValues(provider, "/workflow list")).toEqual([]);
-		expect(await suggestionValues(provider, "/workflow de")).toEqual(["deep-research-codebase "]);
-		expect(await suggestionValues(provider, "/workflow inputs de")).toEqual(["inputs deep-research-codebase "]);
-		expect(await suggestionValues(provider, "/workflow deep-research-codebase p")).toEqual([
-			"deep-research-codebase prompt=",
+		expect(await suggestionValues(provider, "/workflow fa")).toEqual(["fan-out-and-synthesize "]);
+		expect(await suggestionValues(provider, "/workflow inputs fa")).toEqual(["inputs fan-out-and-synthesize "]);
+		expect(await suggestionValues(provider, "/workflow fan-out-and-synthesize p")).toEqual([
+			"fan-out-and-synthesize prompt=",
 		]);
 	});
 });

@@ -139,15 +139,15 @@ describe("workflow select input", () => {
 describe("workflow normalizedName", () => {
   test("workflow sets normalizedName from name", () => {
     const def = workflow({
-      name: "Deep Research Codebase",
+      name: "Fan Out And Synthesize",
       description: "",
       inputs: {},
       outputs: {},
       run: async () => ({}),
     });
 
-    assert.equal(def.normalizedName, "deep-research-codebase");
-    assert.equal(def.name, "Deep Research Codebase");
+    assert.equal(def.normalizedName, "fan-out-and-synthesize");
+    assert.equal(def.name, "Fan Out And Synthesize");
   });
 
   test("normalizedName used as registry key", () => {

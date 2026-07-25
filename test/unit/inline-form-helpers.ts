@@ -50,7 +50,7 @@ export function makeState(overrides: Partial<Parameters<typeof createForm>[0]> =
   _resetForms();
   return createForm({
     formId: "wf-test",
-    workflowName: "ralph",
+    workflowName: "tournament",
     fields: FIELDS,
     rawText: { prompt: "", iters: "5", focus: "standard", verbose: "false" },
     focusedIdx: 0,

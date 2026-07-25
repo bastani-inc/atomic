@@ -275,7 +275,7 @@ describe("/workflow resume — overlay integration", () => {
     const wfCmd = commands["workflow"]!;
     const { ctx, customCalls } = buildPrintCtxWithRealCustom();
 
-    await wfCmd.options.handler("deep-research-codebase prompt=test", ctx);
+    await wfCmd.options.handler("fan-out-and-synthesize prompt=test", ctx);
 
     assert.equal(customCalls.length, 0);
   });

@@ -115,7 +115,7 @@ describe("renderFlatBand", () => {
     const theme = deriveGraphTheme({});
     const out = renderFlatBand({
       label: "DISPATCHED",
-      subtitle: "enterprise-deep-research-codebase-with-multi-stage-fan-out-and-aggregation",
+      subtitle: "enterprise-fan-out-and-synthesize-with-multi-stage-fan-out-and-aggregation",
       badges: [{ text: "● running", fg: theme.warning }],
       width: 80,
       theme,
@@ -174,7 +174,7 @@ describe("renderTaggedCard", () => {
     const theme = deriveGraphTheme({});
     const out = renderTaggedCard({
       tag: "7c4a91",
-      title: "enterprise-deep-research-codebase-with-multi-stage-fan-out-and-aggregation",
+      title: "enterprise-fan-out-and-synthesize-with-multi-stage-fan-out-and-aggregation",
       trailing: { text: "● running", fg: theme.warning },
       accent: theme.warning,
       width: 60,

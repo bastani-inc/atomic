@@ -257,31 +257,31 @@ describe("discoverWorkflows — DUPLICATE_NAME precedence", () => {
     assert.equal(srcs[0]!.kind, "project-local");
   });
 
-  test("project-local beats bundled: bundled emits DUPLICATE_NAME, name=ralph", async () => {
+  test("project-local beats bundled: bundled emits DUPLICATE_NAME, name=tournament", async () => {
     const cwd = makeTempDir("dup-pl-vs-bundled");
     const wfDir = join(cwd, ".atomic", "workflows");
     mkdirSync(wfDir, { recursive: true });
-    // Use same normalizedName as bundled "ralph"
-    writeWorkflowJs(wfDir, "override-ralph.js", "ralph", "ralph");
+    // Use same normalizedName as bundled "tournament"
+    writeWorkflowJs(wfDir, "override-tournament.js", "tournament", "tournament");
 
     const { registry, sources, errors } = await discoverWorkflows({
       cwd,
-      homeDir: makeTempDir("empty-home-ralph"),
+      homeDir: makeTempDir("empty-home-tournament"),
       includeBundled: true,
     });
 
     // Custom wins
-    assert.equal(registry.get("ralph")?.name, "ralph");
+    assert.equal(registry.get("tournament")?.name, "tournament");
 
-    // Bundled ralph emits DUPLICATE_NAME
-    const dupes = errors.filter((e) => e.code === "DUPLICATE_NAME" && e.source === "ralph");
+    // Bundled tournament emits DUPLICATE_NAME
+    const dupes = errors.filter((e) => e.code === "DUPLICATE_NAME" && e.source === "tournament");
     assert.equal(dupes.length, 1);
     assert.equal(dupes[0]!.level, "warn");
 
-    // Only one source for ralph
-    const ralphSrcs = sources.filter((s) => s.id === "ralph");
-    assert.equal(ralphSrcs.length, 1);
-    assert.equal(ralphSrcs[0]!.kind, "project-local");
+    // Only one source for tournament
+    const tournamentSrcs = sources.filter((s) => s.id === "tournament");
+    assert.equal(tournamentSrcs.length, 1);
+    assert.equal(tournamentSrcs[0]!.kind, "project-local");
   });
 
   test("settings-global beats user-global: user-global emits DUPLICATE_NAME", async () => {
@@ -309,11 +309,11 @@ describe("discoverWorkflows — DUPLICATE_NAME precedence", () => {
     assert.equal(srcs[0]!.kind, "settings-global");
   });
 
-  test("user-global beats bundled: bundled emits DUPLICATE_NAME, name=deep-research-codebase", async () => {
+  test("user-global beats bundled: bundled emits DUPLICATE_NAME, name=fan-out-and-synthesize", async () => {
     const homeDir = makeTempDir("home-ug-bundled");
     const ugDir = join(homeDir, ".atomic", "agent", "workflows");
     mkdirSync(ugDir, { recursive: true });
-    writeWorkflowJs(ugDir, "override-drc.js", "deep-research-codebase", "deep-research-codebase");
+    writeWorkflowJs(ugDir, "override-fanout.js", "fan-out-and-synthesize", "fan-out-and-synthesize");
     const cwd = makeTempDir("proj-ug-bundled");
 
     const { registry, sources, errors } = await discoverWorkflows({
@@ -322,11 +322,11 @@ describe("discoverWorkflows — DUPLICATE_NAME precedence", () => {
       includeBundled: true,
     });
 
-    assert.equal(registry.get("deep-research-codebase")?.name, "deep-research-codebase");
-    const dupes = errors.filter((e) => e.code === "DUPLICATE_NAME" && e.source === "deep-research-codebase");
+    assert.equal(registry.get("fan-out-and-synthesize")?.name, "fan-out-and-synthesize");
+    const dupes = errors.filter((e) => e.code === "DUPLICATE_NAME" && e.source === "fan-out-and-synthesize");
     assert.equal(dupes.length, 1);
 
-    const srcs = sources.filter((s) => s.id === "deep-research-codebase");
+    const srcs = sources.filter((s) => s.id === "fan-out-and-synthesize");
     assert.equal(srcs.length, 1);
     assert.equal(srcs[0]!.kind, "user-global");
   });
@@ -340,8 +340,8 @@ describe("discoverWorkflows — includeBundled", () => {
   test("includeBundled=true (default) loads bundled workflows", async () => {
     const cwd = makeTempDir("bundled-true");
     const { registry } = await discoverWorkflows({ cwd, homeDir: makeTempDir("empty-b") });
-    assert.equal(registry.has("ralph"), true);
-    assert.equal(registry.has("deep-research-codebase"), true);
+    assert.equal(registry.has("tournament"), true);
+    assert.equal(registry.has("fan-out-and-synthesize"), true);
     assert.equal(registry.has("open-claude-design"), true);
   });
 
@@ -352,8 +352,8 @@ describe("discoverWorkflows — includeBundled", () => {
       homeDir: makeTempDir("empty-b2"),
       includeBundled: false,
     });
-    assert.equal(registry.has("ralph"), false);
-    assert.equal(registry.has("deep-research-codebase"), false);
+    assert.equal(registry.has("tournament"), false);
+    assert.equal(registry.has("fan-out-and-synthesize"), false);
     assert.equal(registry.has("open-claude-design"), false);
   });
 
@@ -369,6 +369,6 @@ describe("discoverWorkflows — includeBundled", () => {
       includeBundled: false,
     });
     assert.equal(registry.has("local-only"), true);
-    assert.equal(registry.has("ralph"), false);
+    assert.equal(registry.has("tournament"), false);
   });
 });

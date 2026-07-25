@@ -16,6 +16,16 @@ import type {
   PiToolOpts,
 } from "./mock-extension-api-helpers.js";
 
+const BUILTIN_WORKFLOW_NAMES = [
+  "adversarial-verification",
+  "classify-and-act",
+  "fan-out-and-synthesize",
+  "generate-and-filter",
+  "loop-until-done",
+  "open-claude-design",
+  "tournament",
+] as const;
+
 describe("MockExtensionAPI — tool list returns bundled workflow names", () => {
   let mock: ReturnType<typeof makeMock>;
 
@@ -24,20 +34,16 @@ describe("MockExtensionAPI — tool list returns bundled workflow names", () => 
     factory(mock);
   });
 
-  test("action='list' returns bundled workflow names", async () => {
+  test("action='list' returns the exact bundled workflow names", async () => {
     const execute = mock.tools[0]!.opts.execute;
     const result = await runTool(execute, { inputs: {}, action: "list" });
     assert.equal(result.action, "list");
     const r = result as { action: "list"; items: { name: string }[] };
-    const names = r.items.map((i) => i.name);
-    assert.ok(names.includes("deep-research-codebase"));
-    assert.ok(names.includes("ralph"));
-    assert.ok(names.includes("open-claude-design"));
-    assert.ok(r.items.length >= 3);
+    assert.deepEqual(r.items.map((item) => item.name).sort(), [...BUILTIN_WORKFLOW_NAMES].sort());
   });
 });
 
-describe("MockExtensionAPI — tool inputs returns schema for deep-research-codebase", () => {
+describe("MockExtensionAPI — tool inputs returns schema for fan-out-and-synthesize", () => {
   let mock: ReturnType<typeof makeMock>;
 
   beforeEach(() => {
@@ -45,25 +51,23 @@ describe("MockExtensionAPI — tool inputs returns schema for deep-research-code
     factory(mock);
   });
 
-  test("action='inputs' for deep-research-codebase returns prompt and max_partitions fields", async () => {
+  test("action='inputs' returns prompt and bounded fan-out fields", async () => {
     const execute = mock.tools[0]!.opts.execute;
-    const result = await runTool(execute, { workflow: "deep-research-codebase", inputs: {}, action: "inputs" });
+    const result = await runTool(execute, { workflow: "fan-out-and-synthesize", inputs: {}, action: "inputs" });
     assert.equal(result.action, "inputs");
     const r = result as { action: "inputs"; name: string; inputs: Array<{ name: string; type: string; required?: boolean; default?: unknown }> };
-    assert.equal(r.name, "deep-research-codebase");
-    assert.notEqual(r.inputs, undefined);
-    const byName = Object.fromEntries(r.inputs.map((i) => [i.name, i]));
-    assert.notEqual(byName["prompt"], undefined);
+    assert.equal(r.name, "fan-out-and-synthesize");
+    const byName = Object.fromEntries(r.inputs.map((input) => [input.name, input]));
     assert.equal(byName["prompt"]?.type, "text");
     assert.equal(byName["prompt"]?.required, true);
-    assert.notEqual(byName["max_partitions"], undefined);
-    assert.equal(byName["max_partitions"]?.type, "number");
-    assert.equal(byName["max_partitions"]?.default, 100);
+    assert.equal(byName["max_branches"]?.type, "integer");
+    assert.equal(byName["max_branches"]?.default, 4);
+    assert.equal(byName["max_concurrency"]?.default, 4);
   });
 
-  test("action='inputs' for deep-research-codebase has no error field", async () => {
+  test("action='inputs' has no error field", async () => {
     const execute = mock.tools[0]!.opts.execute;
-    const result = await runTool(execute, { workflow: "deep-research-codebase", inputs: {}, action: "inputs" });
+    const result = await runTool(execute, { workflow: "fan-out-and-synthesize", inputs: {}, action: "inputs" });
     const r = result as { action: "inputs"; error?: string };
     assert.equal(r.error, undefined);
   });
@@ -77,13 +81,14 @@ describe("MockExtensionAPI — tool run returns non-placeholder runId and termin
     factory(mock);
   });
 
-  test("action='run' for deep-research-codebase with prompt input returns non-placeholder runId", async () => {
+  test("action='run' for fan-out-and-synthesize returns a non-placeholder runId", async () => {
     const execute = mock.tools[0]!.opts.execute;
-    // deep-research-codebase requires prompt. Background dispatch returns
-    // `status: "running"` synchronously with a real UUID runId; the eventual
-    // terminal status (completed | failed) lives on the store after the
-    // background promise settles.
-    const result = await runTool(execute, { workflow: "deep-research-codebase", inputs: { prompt: "test query", max_partitions: 1 }, action: "run" });
+    // Background dispatch returns `status: "running"` synchronously with a real UUID.
+    const result = await runTool(execute, {
+      workflow: "fan-out-and-synthesize",
+      inputs: { prompt: "test query", max_branches: 1 },
+      action: "run",
+    });
     assert.equal(result.action, "run");
     const r = result as {
       action: "run";
@@ -108,9 +113,13 @@ describe("MockExtensionAPI — tool run returns non-placeholder runId and termin
     assert.ok(["completed", "failed"].includes(settled!.status));
   }, 15_000);
 
-  test("action='run' for deep-research-codebase without adapters reports honest failure, not stub", async () => {
+  test("action='run' without adapters reports honest failure, not a stub", async () => {
     const execute = mock.tools[0]!.opts.execute;
-    const result = await runTool(execute, { workflow: "deep-research-codebase", inputs: { prompt: "test", max_partitions: 1 }, action: "run" });
+    const result = await runTool(execute, {
+      workflow: "fan-out-and-synthesize",
+      inputs: { prompt: "test", max_branches: 1 },
+      action: "run",
+    });
     const r = result as {
       action: "run";
       runId: string;
@@ -187,24 +196,18 @@ describe("MockExtensionAPI — completions include admin subcommands and workflo
     }
     assert.equal(labels.includes("session"), false);
 
-    // Bundled workflow names
-    assert.ok(labels.includes("deep-research-codebase"));
-    assert.ok(labels.includes("ralph"));
-    assert.ok(labels.includes("open-claude-design"));
+    for (const name of BUILTIN_WORKFLOW_NAMES) assert.ok(labels.includes(name));
   });
 
-  test("/workflow completions filter partial 'deep' to workflow name", async () => {
+  test("/workflow completions filter partial input to a workflow name", async () => {
     const cmd = getCommand(mock.commands, "workflow")!;
-    const completions = await cmd.options.getArgumentCompletions?.("deep") ?? [];
+    const completions = await cmd.options.getArgumentCompletions?.("fan") ?? [];
     const labels = completions.map((c) => c.label);
-    assert.ok(labels.includes("deep-research-codebase"));
-    assert.equal(labels.every((l) => l.startsWith("deep")), true);
+    assert.deepEqual(labels, ["fan-out-and-synthesize"]);
   });
 });
 
-// ---------------------------------------------------------------------------
-// /workflow deep-research-codebase prompt=test dispatches run, not unknown subcommand
-// ---------------------------------------------------------------------------
+// /workflow <name> prompt=test dispatches run, not unknown subcommand.
 
 describe("MockExtensionAPI — /workflow <name> dispatches run not unknown-subcommand", () => {
   let mock: ReturnType<typeof makeMock>;
@@ -214,10 +217,10 @@ describe("MockExtensionAPI — /workflow <name> dispatches run not unknown-subco
     factory(mock);
   });
 
-  test("/workflow deep-research-codebase prompt=test dispatches run (not unknown subcommand)", async () => {
+  test("/workflow fan-out-and-synthesize prompt=test dispatches run", async () => {
     const cmd = getCommand(mock.commands, "workflow")!;
     const messages: string[] = [];
-    await cmd.options.handler("deep-research-codebase prompt=test", { ui: { notify: (m: string) => messages.push(m) } });
+    await cmd.options.handler("fan-out-and-synthesize prompt=test", { ui: { notify: (m: string) => messages.push(m) } });
 
     // Must not say "unknown subcommand"
     assert.equal(messages.some((m) => m.toLowerCase().includes("unknown subcommand")), false);
@@ -280,7 +283,7 @@ describe("MockExtensionAPI — tool list/status without name or inputs", () => {
     const execute = mock.tools[0]!.opts.execute;
     const result = await runTool(execute, { action: "list" });
     const r = result as { action: "list"; items: { name: string }[] };
-    assert.ok(r.items.some((i) => i.name === "deep-research-codebase"));
+    assert.ok(r.items.some((i) => i.name === "fan-out-and-synthesize"));
   });
 
   // Tool execute: { action: "status" } — no name, no inputs

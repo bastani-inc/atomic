@@ -22,18 +22,19 @@ describe("repo-local release workflow discovery imports", () => {
     );
   });
 
-  test("release-docs imports builtin child workflows through the virtual workflow SDK", () => {
+  test("release-docs owns its generic repository research stages", () => {
     const source = repoFile(".atomic/workflows/release-docs.ts");
 
-    assert.match(
-      source,
-      /from\s+["']@bastani\/workflows\/builtin\/deep-research-codebase["']/,
-      "release-docs should use the builtin workflow specifier virtualized by the workflow module loader",
-    );
     assert.doesNotMatch(
       source,
-      /\.\.\/\.\.\/packages\/workflows\/builtin\/deep-research-codebase\.js/,
-      "release-docs should not bypass the workflow loader with a repo-relative builtin import",
+      /@bastani\/workflows\/builtin\//,
+      "release-docs should not depend on a bundled child workflow",
+    );
+    assert.match(source, /ctx\.parallel\(/, "release-docs should fan out repository research");
+    assert.match(
+      source,
+      /synthesize-current-code-docs-gaps/,
+      "release-docs should synthesize its research artifacts before docs updates",
     );
   });
 });

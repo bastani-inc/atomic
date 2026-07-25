@@ -42,7 +42,7 @@ test("overlay: openInlineInputsForm emits a custom message and swaps editor", as
 
   // Kick off — don't await; the promise won't resolve until the editor exits.
   const pending = openInlineInputsForm(pi as never, ctx as never, {
-    workflowName: "ralph",
+    workflowName: "tournament",
     fields: FIELDS,
     theme,
   });
@@ -98,7 +98,7 @@ test("overlay: openInlineInputsForm works with pi runtime UI shape", async () =>
   };
 
   const pending = openInlineInputsForm(pi as never, ctx as never, {
-    workflowName: "ralph",
+    workflowName: "tournament",
     fields: FIELDS,
     theme: deriveGraphTheme({}),
   });
@@ -149,7 +149,7 @@ test("overlay: installed editor accepts pi setup before card render", async () =
   };
 
   const pending = openInlineInputsForm(pi as never, ctx as never, {
-    workflowName: "ralph",
+    workflowName: "tournament",
     fields: FIELDS,
     theme: deriveGraphTheme({}),
   });
@@ -185,7 +185,7 @@ test("overlay: host editor setup failure resolves unsupported without emitting c
   };
 
   const result = await openInlineInputsForm(pi as never, ctx as never, {
-    workflowName: "ralph",
+    workflowName: "tournament",
     fields: FIELDS,
     theme: deriveGraphTheme({}),
   });
@@ -200,7 +200,7 @@ test("overlay: cancelling via esc returns {kind:'cancel'} and renders no artefac
   registerInlineFormRenderer(pi as never, deriveGraphTheme({}));
   const ctx = makeFakeCtx();
   const pending = openInlineInputsForm(pi as never, ctx as never, {
-    workflowName: "ralph",
+    workflowName: "tournament",
     fields: FIELDS,
     theme: deriveGraphTheme({}),
   });
@@ -238,7 +238,7 @@ test("overlay: late settle after host editor reset does not restore stale previo
   };
 
   const pending = openInlineInputsForm(pi as never, ctx as never, {
-    workflowName: "ralph",
+    workflowName: "tournament",
     fields: FIELDS,
     theme: deriveGraphTheme({}),
   });
@@ -268,7 +268,7 @@ test("overlay: missing setEditorComponent → immediate unsupported (headless)",
   const { pi } = makeFakePi();
   const ctx = { ui: {} } as never;
   const result = await openInlineInputsForm(pi as never, ctx, {
-    workflowName: "ralph",
+    workflowName: "tournament",
     fields: FIELDS,
     theme: deriveGraphTheme({}),
   });
@@ -280,7 +280,7 @@ test("overlay: prefilled values seed rawText", async () => {
   const { pi, sentMessages } = makeFakePi();
   const ctx = makeFakeCtx();
   const pending = openInlineInputsForm(pi as never, ctx as never, {
-    workflowName: "ralph",
+    workflowName: "tournament",
     fields: FIELDS,
     prefilled: { prompt: "already typed", focus: "exhaustive" },
     theme: deriveGraphTheme({}),
@@ -352,7 +352,7 @@ test("store: clearForms empties the registry so resumed sessions have no live fo
   _resetForms();
   createForm({
     formId: "wf-clear",
-    workflowName: "ralph",
+    workflowName: "tournament",
     fields: FIELDS,
     rawText: { prompt: "hi" },
     focusedIdx: 0,

@@ -9,7 +9,7 @@ export const DEFAULT_PROMPT_INPUT: WorkflowInput = {
 };
 
 export const WORKFLOWS: Workflow[] = [
-  { name: "deep-research-codebase", description: "Deterministic deep codebase research: scout → LOC-driven parallel explorers → aggregator.", source: "local", agents: ["copilot"] },
+  { name: "fan-out-and-synthesize", description: "Partition independent work, run bounded artifact branches, and synthesize the evidence.", source: "local", agents: ["copilot"] },
   { name: "generate-spec", description: "Convert research docs into detailed execution specs with file paths and test plans.", source: "local", agents: ["claude", "copilot"], inputs: [
     { name: "research_doc", type: "string", required: true, description: "path to the research doc to convert", placeholder: "research/docs/2026-04-11-auth.md" },
     { name: "focus", type: "enum", required: true, description: "how aggressively to scope the spec", values: ["minimal", "standard", "exhaustive"], default: "standard" },

@@ -23,7 +23,7 @@ test("session list renders the band-header chrome with both runs and a detail hi
   const theme = deriveGraphTheme({});
   const now = 100_000;
   const runs = [
-    makeRun({ id: "11111111-...", name: "ralph", status: "running", startedAt: now - 30_000 }),
+    makeRun({ id: "11111111-...", name: "tournament", status: "running", startedAt: now - 30_000 }),
     makeRun({ id: "22222222-...", name: "research", status: "completed", startedAt: now - 60_000, endedAt: now - 10_000, durationMs: 50_000, stages: [{ id: "s", name: "x", status: "completed", parentIds: [], toolEvents: [] }] }),
   ];
   const out = renderSessionList(runs, { theme, includeAll: false, now });
@@ -31,7 +31,7 @@ test("session list renders the band-header chrome with both runs and a detail hi
   assert.match(out, /BACKGROUND/);
   assert.match(out, /2 runs/);
   // Both runs are listed with bolded names.
-  assert.match(out, /ralph/);
+  assert.match(out, /tournament/);
   assert.match(out, /research/);
   // Short-id (6 chars) leads each entry.
   assert.match(out, /111111/);

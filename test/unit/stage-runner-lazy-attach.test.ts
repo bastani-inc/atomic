@@ -240,7 +240,7 @@ describe("createStageContext — lazy attach", () => {
     });
 
     test("terminating tool result wins over assistant prose emitted before the tool call", async () => {
-        // Mirrors the real review_decision (goal/ralph) case: the model narrates in
+        // Mirrors the real review_decision (worker/reviewer) case: the model narrates in
         // prose and then ends the turn on the terminating structured-output tool.
         // The deterministic turn output must be the tool result JSON, not the prose.
         const verdict =

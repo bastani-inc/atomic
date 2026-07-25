@@ -13,7 +13,7 @@
  * - Strip any characters that are not alphanumeric or hyphens
  *
  * @example
- * normalizeWorkflowName("Deep Research Codebase") // "deep-research-codebase"
+ * normalizeWorkflowName("Repository Audit") // "repository-audit"
  * normalizeWorkflowName("my_workflow")             // "my-workflow"
  * normalizeWorkflowName("  My Workflow  ")         // "my-workflow"
  */

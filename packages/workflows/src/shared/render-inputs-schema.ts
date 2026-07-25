@@ -22,13 +22,13 @@
  * The layout in pretty mode mirrors bastani-inc/atomic's `renderInputsText` so a
  * dev moving between the atomic CLI and the pi extension feels at home:
  *
- *     INPUTS FOR ralph
+ *     INPUTS FOR repository-audit
  *
  *     prompt          text · required
- *       The high-level task to plan and execute.
+ *       The repository area to inspect.
  *
  *     iterations      number · optional
- *       Loop budget before bailing out.
+ *       Loop budget before stopping.
  *       default: 5
  *
  *     focus           select · required

@@ -208,7 +208,7 @@
     <div class="page">
       <h1>@bastani/workflows · dispatch confirmation, compact</h1>
       <p class="lede">
-        After typing <code class="blue">/workflow deep-research-codebase prompt="explore the codebase" max_partitions=4</code>, the current chat surface emits <strong>seven lines of chrome</strong> for a single dispatch event. The run identity, workflow name, status, and inputs are each restated 2&ndash;3 times across a band, a tagged card, and two hint rows. Below: a side-by-side with the current rendering on the left and a compressed two-line replacement on the right, plus three edge cases (no inputs, long inputs, narrow terminal) showing the new layout holds shape.
+        After typing <code class="blue">/workflow fan-out-and-synthesize prompt="explore the codebase" max_branches=4</code>, the current chat surface emits <strong>seven lines of chrome</strong> for a single dispatch event. The run identity, workflow name, status, and inputs are each restated 2&ndash;3 times across a band, a tagged card, and two hint rows. Below: a side-by-side with the current rendering on the left and a compressed two-line replacement on the right, plus three edge cases (no inputs, long inputs, narrow terminal) showing the new layout holds shape.
       </p>
 
       <!-- ============================================================
@@ -221,14 +221,14 @@
         <div>
           <div class="label before">▼ before — 7 chat-surface rows, 4 restatements</div>
           <div class="terminal">
-            <pre><span class="green">✓</span> <span class="b text">submitted</span>  <span class="faint">·</span>  <span class="dim">/workflow deep-research-codebase prompt=&quot;explore the codebase&quot; max_partitions=4</span>
+            <pre><span class="green">✓</span> <span class="b text">submitted</span>  <span class="faint">·</span>  <span class="dim">/workflow fan-out-and-synthesize prompt=&quot;explore the codebase&quot; max_branches=4</span>
 
-<span class="green">✓</span> <span class="b text">submitted</span>  <span class="faint">·</span>  <span class="dim">/workflow deep-research-codebase</span></pre>
-            <span class="band"><span class="blue b">[ DISPATCHED ]</span>  <span class="muted">deep-research-codebase</span>                                                <span class="yellow">●</span> <span class="muted">running</span></span>
+<span class="green">✓</span> <span class="b text">submitted</span>  <span class="faint">·</span>  <span class="dim">/workflow fan-out-and-synthesize</span></pre>
+            <span class="band"><span class="blue b">[ DISPATCHED ]</span>  <span class="muted">fan-out-and-synthesize</span>                                                <span class="yellow">●</span> <span class="muted">running</span></span>
             <div class="card yellow">
               <span class="stripe"></span>
               <div class="body"><span class="tag">be3181c1</span><span class="muted">run id</span>
-   <span class="muted">inputs</span>    <span class="text">prompt</span><span class="faint">=</span><span class="text">&quot;explore the codebase&quot;</span>  <span class="faint">·</span>  <span class="text">max_partitions</span><span class="faint">=</span><span class="text">4</span>
+   <span class="muted">inputs</span>    <span class="text">prompt</span><span class="faint">=</span><span class="text">&quot;explore the codebase&quot;</span>  <span class="faint">·</span>  <span class="text">max_branches</span><span class="faint">=</span><span class="text">4</span>
    <span class="muted">status</span>    <span class="dim">starting…</span></div>
             </div>
             <div class="hints">
@@ -252,10 +252,10 @@
         <div>
           <div class="label after">▶ after — 2 chat-surface rows, identity said once</div>
           <div class="terminal">
-            <pre><span class="green">✓</span> <span class="b text">submitted</span>  <span class="faint">·</span>  <span class="dim">/workflow deep-research-codebase prompt=&quot;explore the codebase&quot; max_partitions=4</span></pre>
+            <pre><span class="green">✓</span> <span class="b text">submitted</span>  <span class="faint">·</span>  <span class="dim">/workflow fan-out-and-synthesize prompt=&quot;explore the codebase&quot; max_branches=4</span></pre>
             <div class="card yellow tight">
               <span class="stripe"></span>
-              <div class="body"><span class="tag">be3181c1</span><span class="b text">deep-research-codebase</span>  <span class="faint">·</span>  <span class="text">prompt</span><span class="faint">=</span><span class="text">&quot;explore the codebase&quot;</span>  <span class="faint">·</span>  <span class="text">max_partitions</span><span class="faint">=</span><span class="text">4</span>      <span class="yellow">●</span> <span class="muted">running</span></div>
+              <div class="body"><span class="tag">be3181c1</span><span class="b text">fan-out-and-synthesize</span>  <span class="faint">·</span>  <span class="text">prompt</span><span class="faint">=</span><span class="text">&quot;explore the codebase&quot;</span>  <span class="faint">·</span>  <span class="text">max_branches</span><span class="faint">=</span><span class="text">4</span>      <span class="yellow">●</span> <span class="muted">running</span></div>
             </div>
             <div class="hints">
               <div class="row-line"><span class="arrow">▸</span> <span class="cmd">/workflow connect be3181c1</span> <span class="hint">attach &amp; watch</span></div>
@@ -294,10 +294,10 @@
         <div>
           <div class="label after">▶ b · long inputs (overflow)</div>
           <div class="terminal">
-            <pre><span class="green">✓</span> <span class="b text">submitted</span>  <span class="faint">·</span>  <span class="dim">/workflow enterprise-research prompt=&quot;map every TypeScript file…&quot; model=&quot;claude-opus-4&quot; max_partitions=12 …</span></pre>
+            <pre><span class="green">✓</span> <span class="b text">submitted</span>  <span class="faint">·</span>  <span class="dim">/workflow enterprise-research prompt=&quot;map every TypeScript file…&quot; model=&quot;claude-opus-4&quot; max_branches=12 …</span></pre>
             <div class="card yellow">
               <span class="stripe"></span>
-              <div class="body"><span class="tag">7c4a91bf</span><span class="b text">enterprise-deep-research-codebase-with-multi-stage-fan…</span>                  <span class="yellow">●</span> <span class="muted">running</span>
+              <div class="body"><span class="tag">7c4a91bf</span><span class="b text">enterprise-fan-out-and-synthesize-with-multi-stage-fan…</span>                  <span class="yellow">●</span> <span class="muted">running</span>
    <span class="text">prompt</span><span class="faint">=</span><span class="text">&quot;map every TypeScript file in the codebase, focu…&quot;</span>  <span class="faint">·</span>  <span class="text">model</span><span class="faint">=</span><span class="text">&quot;claude-opus-4&quot;</span>  <span class="faint">·</span>  <span class="dim b">+3 more</span></div>
             </div>
             <div class="hints">
@@ -313,11 +313,11 @@
         <div>
           <div class="label after">▶ c · narrow terminal (60 columns)</div>
           <div class="terminal" style="max-width: 60ch">
-            <pre><span class="green">✓</span> <span class="b text">submitted</span>  <span class="faint">·</span>  <span class="dim">/workflow deep-research-codebase prompt=&quot;explore the c…&quot;</span></pre>
+            <pre><span class="green">✓</span> <span class="b text">submitted</span>  <span class="faint">·</span>  <span class="dim">/workflow fan-out-and-synthesize prompt=&quot;explore the c…&quot;</span></pre>
             <div class="card yellow">
               <span class="stripe"></span>
-              <div class="body"><span class="tag">be3181c1</span><span class="b text">deep-research-codebase</span>      <span class="yellow">●</span> <span class="muted">running</span>
-   <span class="text">prompt</span><span class="faint">=</span><span class="text">&quot;explore the codeb…&quot;</span>  <span class="faint">·</span>  <span class="text">max_partitions</span><span class="faint">=</span><span class="text">4</span></div>
+              <div class="body"><span class="tag">be3181c1</span><span class="b text">fan-out-and-synthesize</span>      <span class="yellow">●</span> <span class="muted">running</span>
+   <span class="text">prompt</span><span class="faint">=</span><span class="text">&quot;explore the codeb…&quot;</span>  <span class="faint">·</span>  <span class="text">max_branches</span><span class="faint">=</span><span class="text">4</span></div>
             </div>
             <div class="hints">
               <div class="row-line"><span class="arrow">▸</span> <span class="cmd">/workflow connect be3181c1</span> <span class="hint">attach</span></div>
@@ -330,9 +330,9 @@
         <div>
           <div class="label after">▶ d · plain mode (NO_COLOR / logs)</div>
           <div class="terminal">
-            <pre><span class="muted">✓ submitted  ·  /workflow deep-research-codebase prompt=&quot;explore the codebase&quot; max_partitions=4</span>
+            <pre><span class="muted">✓ submitted  ·  /workflow fan-out-and-synthesize prompt=&quot;explore the codebase&quot; max_branches=4</span>
 
-<span class="muted">│ be3181c1  deep-research-codebase  ·  prompt=&quot;explore the codebase&quot;  ·  max_partitions=4    ● running
+<span class="muted">│ be3181c1  fan-out-and-synthesize  ·  prompt=&quot;explore the codebase&quot;  ·  max_branches=4    ● running
 ▸ /workflow connect be3181c1   attach &amp; watch</span></pre>
           </div>
           <p class="note"><span class="k">policy</span> · stripe degrades to <code>│</code>; same shape, no color · pi's chat echo prints once; we print one row + one hint · same 2-line footprint</p>

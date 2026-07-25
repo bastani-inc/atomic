@@ -30,15 +30,15 @@ ctrl+s Sort · ctrl+n Named · ctrl+d Delete · ctrl+p Path (off)
 >
 
 › resume-hierarchy-e2e  ✓ completed  39 checkpoints                                                                               Completed workflow runs 39 now
-  goal  crashed  4 checkpoints                                                                                                       Durable workflow runs 4 28m
+  loop-until-done  crashed  4 checkpoints                                                                                            Durable workflow runs 4 28m
   publish-release  ✓ completed  35 checkpoints                                                                                    Completed workflow runs 35 12h
   dummy-structured-followup  ✓ completed  3 checkpoints                                                                            Completed workflow runs 3 13h
-  goal  ✓ completed  26 checkpoints                                                                                               Completed workflow runs 26 14h
-  goal  ✓ completed  47 checkpoints                                                                                               Completed workflow runs 47 14h
-  goal  ✓ completed  25 checkpoints                                                                                               Completed workflow runs 25 14h
-  goal  ✓ completed  26 checkpoints                                                                                               Completed workflow runs 26 15h
-  goal  ✓ completed  47 checkpoints                                                                                               Completed workflow runs 47 15h
-  goal  ✓ completed  25 checkpoints                                                                                               Completed workflow runs 25 15h
+  loop-until-done  ✓ completed  26 checkpoints                                                                                    Completed workflow runs 26 14h
+  loop-until-done  ✓ completed  47 checkpoints                                                                                    Completed workflow runs 47 14h
+  loop-until-done  ✓ completed  25 checkpoints                                                                                    Completed workflow runs 25 14h
+  loop-until-done  ✓ completed  26 checkpoints                                                                                    Completed workflow runs 26 15h
+  loop-until-done  ✓ completed  47 checkpoints                                                                                    Completed workflow runs 47 15h
+  loop-until-done  ✓ completed  25 checkpoints                                                                                    Completed workflow runs 25 15h
   (1/167)
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────

@@ -175,10 +175,10 @@ describe("MockExtensionAPI — tool registration", () => {
 
   test("tool execute accepts canonical workflow field for action='inputs'", async () => {
     const execute = mock.tools[0]!.opts.execute;
-    const result = await runTool(execute, { workflow: "deep-research-codebase", action: "inputs" });
+    const result = await runTool(execute, { workflow: "fan-out-and-synthesize", action: "inputs" });
     assert.equal(result.action, "inputs");
     const r = result as { action: "inputs"; name: string; inputs: Array<{ name: string }> };
-    assert.equal(r.name, "deep-research-codebase");
+    assert.equal(r.name, "fan-out-and-synthesize");
     assert.ok(r.inputs.some((input) => input.name === "prompt"));
   });
 
@@ -218,7 +218,7 @@ describe("MockExtensionAPI — tool registration", () => {
 
   test("tool execute returns read-only workflow details for action='get'", async () => {
     const execute = mock.tools[0]!.opts.execute;
-    const result = await runTool(execute, { workflow: "deep-research-codebase", action: "get" });
+    const result = await runTool(execute, { workflow: "fan-out-and-synthesize", action: "get" });
 
     assert.equal(result.action, "get");
     const r = result as {
@@ -239,10 +239,10 @@ describe("MockExtensionAPI — tool registration", () => {
     assert.equal(r.details?.mode, "inspection");
     assert.equal(r.details?.action, "get");
     assert.equal(r.details?.status, "completed");
-    assert.equal(r.details?.output?.workflow, "deep-research-codebase");
+    assert.equal(r.details?.output?.workflow, "fan-out-and-synthesize");
     assert.equal(
       r.details?.output?.description,
-      "Heavy research for tasks requiring comprehensive, whole-repository context.",
+      "Partition a task, run bounded independent artifact branches, then synthesize all evidence at an explicit barrier.",
     );
     assert.ok(r.details?.output?.inputs?.some((input) => input.name === "prompt" && input.required === true));
   });

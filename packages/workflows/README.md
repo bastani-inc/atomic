@@ -188,31 +188,34 @@ Prefer regular TypeScript module imports for reusable child workflows: import th
 ```typescript
 import { workflow } from "@bastani/workflows";
 import { Type } from "typebox";
-import goal from "@bastani/workflows/builtin/goal";
-import sharedResearch from "./shared-research.js";
+import { adversarialVerification, fanOutAndSynthesize } from "@bastani/workflows/builtin";
 
 export default workflow({
-  name: "research-and-synthesize",
-  description: "Run shared research, implement from it, then synthesize the result.",
-  inputs: {
-    topic: Type.String(),
-  },
+  name: "research-and-verify",
+  description: "Map repository slices, synthesize cited evidence, then verify the report.",
+  inputs: { topic: Type.String() },
   outputs: {
-    final: Type.String({ description: "Synthesis of the child research and implementation." }),
+    report_path: Type.String(),
+    approved: Type.Boolean(),
   },
   run: async (ctx) => {
-    const child = await ctx.workflow(sharedResearch, {
-      inputs: { topic: ctx.inputs.topic },
+    const research = await ctx.workflow(fanOutAndSynthesize, {
+      inputs: {
+        prompt: `Partition repository research for: ${ctx.inputs.topic}. Save cited findings per slice and synthesize conflicts.`,
+        max_branches: 6,
+      },
     });
+    if (research.exited) return ctx.exit({ status: research.status, reason: research.exitReason ?? "research stopped early" });
 
-    const implementation = await ctx.workflow(goal, {
-      inputs: { objective: `Implement improvements based on: ${String(child.outputs.summary)}` },
+    const verification = await ctx.workflow(adversarialVerification, {
+      inputs: { task: `Verify the cited report at ${research.outputs.synthesis_path}` },
     });
+    if (verification.exited) return ctx.exit({ status: verification.status, reason: verification.exitReason ?? "verification stopped early" });
 
-    const final = await ctx.task("synthesize", {
-      prompt: `Synthesize this research and implementation:\n\n${String(child.outputs.summary)}\n\n${String(implementation.outputs.result)}`,
-    });
-    return { final: final.text };
+    return {
+      report_path: research.outputs.synthesis_path,
+      approved: verification.outputs.approved,
+    };
   },
 });
 ```
@@ -255,11 +258,15 @@ Builtin workflows are also callable as modules for reuse:
 
 ```typescript
 import {
-  adversarialVerification, classifyAndAct, deepResearchCodebase,
-  fanOutAndSynthesize, generateAndFilter, goal, loopUntilDone,
-  openClaudeDesign, ralph, tournament,
+  adversarialVerification,
+  classifyAndAct,
+  fanOutAndSynthesize,
+  generateAndFilter,
+  loopUntilDone,
+  openClaudeDesign,
+  tournament,
 } from "@bastani/workflows/builtin";
-import goalWorkflow from "@bastani/workflows/builtin/goal";
+import fanOutAndSynthesizeWorkflow from "@bastani/workflows/builtin/fan-out-and-synthesize";
 import openClaudeDesignWorkflow from "@bastani/workflows/builtin/open-claude-design";
 ```
 
@@ -700,68 +707,17 @@ const convergence = await ctx.workflow(loopUntilDone, {
 
 The parent can consume `fixes.outputs`, `verification.outputs`, and `convergence.outputs` directly, and can repeat the verification child per patch when its own typed input lists individual patch artifacts.
 
-### `deep-research-codebase`
+### Repository-wide research
 
-Heavy research for tasks requiring comprehensive, whole-repository context.
-
-```text
-/workflow deep-research-codebase prompt="How does session persistence work?"
-```
-
-| Input             | Type     | Required | Default | Description                                               |
-| ----------------- | -------- | -------- | ------- | --------------------------------------------------------- |
-| `prompt`          | `text`   | ✓        | —       | Research question or topic to investigate.                |
-| `max_partitions`  | `number` | —        | `100`   | Maximum number of codebase partitions to explore.         |
-| `max_concurrency` | `number` | —        | `100`   | Maximum number of workflow stages to run concurrently.    |
-
-Final Markdown research documents are written to dated `research/` paths relative to the current working directory, with a numeric suffix if needed to avoid overwriting an existing document. Hidden run artifacts are written under `research/.deep-research-<run-id>/`.
-
-Child workflow outputs: `result`, `findings`, `research_doc_path`, `artifact_dir`, `manifest_path`, `partitions`, `explorer_count`, `specialist_count`, `max_concurrency`, and `history`.
-
-### `goal`
-
-Goal Runner workflow: initialize a persisted goal ledger with a per-run goal id, immutable `acceptance_criteria`, and lifecycle events; then run bounded `orchestrator-N` turns, append receipts, run three independent reviewers with objective-alignment findings and clause-by-clause requirements traceability, and let a TypeScript reducer decide `complete`, `continue`, `blocked`, or `needs_human`. The orchestrator is a supervisor rather than the direct implementer: it uses the `subagent` tool as its primary implementation path, tracks delegated work with todos, coordinates focused agents for investigation, edits, tests, docs, and follow-up repairs, and writes `orchestrator-receipt.md`. Goal keeps this orchestrator model configuration local while copying Ralph's exact xhigh orchestrator model and fallback chain. Each review round's findings are consolidated into a deduplicated `consolidated_findings` batch that the next orchestrator turn delegates as a whole, with durable regression evidence required for reproduced findings. All three reviewers start in clean, non-forked contexts like Ralph's reviewers. Goal's independent reviewer chain remains led by Claude Fable 5 and places GPT-5.6 ahead of Kimi K3 within both the leading direct-provider group and the OpenRouter group while preserving each group's position in the full chain. Reviewers coordinate expensive or conflicting checks through Intercom while still inspecting the patch and returning verdicts independently. Goal skips PR creation by default; prompt text alone does not opt in. Pass `create_pr=true` to authorize only the final `pull-request` stage to attempt a provider-appropriate PR/MR/review handoff after Goal reaches `complete` within the turn budget.
-
-Resource release is itself a coordinated update: after releasing a claim, the reviewer explicitly notifies its siblings through Intercom rather than treating release as a silent local action.
+For broad repository uncertainty, compose `fan-out-and-synthesize` with a partition prompt that produces distinct subsystem slices, writes each branch to an artifact, and requires the synthesis barrier to cite concrete paths and resolve conflicting findings. Use `/skill:research-codebase` when one focused subsystem or question is enough.
 
 ```text
-/workflow goal objective="Migrate the database layer to Drizzle ORM" base_branch=develop
-/workflow goal objective="Migrate the database layer to Drizzle ORM and open a PR when complete" base_branch=develop create_pr=true
+/workflow fan-out-and-synthesize prompt="Partition session persistence by subsystem, save cited findings per branch, and synthesize the end-to-end flow"
 ```
 
-| Input         | Type     | Required | Default       | Description                                                   |
-| ------------- | -------- | -------- | ------------- | ------------------------------------------------------------- |
-| `objective`   | `text`   | ✓        | —             | Goal-runner objective or delta.                               |
-| `acceptance_criteria` | `text` | — | objective | Original immutable task contract; pass the original task text when launching follow-up Goal runs from reviewer findings. |
-| `max_turns`   | `number` | —        | `10`          | Maximum orchestrator/review turns before human follow-up is needed. |
-| `base_branch` | `string` | —        | `origin/main` | Branch reviewers and the optional final stage compare the current delta with. |
-| `create_pr`    | `boolean` | —        | `false`       | Safe-by-default PR creation flag. Omitted or `false` skips the final `pull-request` stage and omits `pr_report`; prompt text alone does not opt in, and only strict `true` authorizes the final `pull-request` stage to attempt provider-appropriate PR/MR/review creation after Goal reaches `complete`. |
+### Task-specific implementation and review
 
-`goal` defaults to 10 orchestrator/review turns. Reviewer quorum is fixed internally at 2 reviewer `complete` votes, and approval is deterministic on each reviewer's self-reported `stop_review_loop` boolean: a reviewer approves exactly when it returns `stop_review_loop=true` with no `reviewer_error` (parse failures count as non-approval), and the reducer completes the run when quorum of those booleans is met. Findings and `requirements_traceability` remain required audit evidence and drive the reviewer prompts that derive the flag (`required_by_objective` findings mean `false` at any priority, P3 included; `consistent_with_objective` P3 nice-to-haves, out-of-scope observations, the quorum process itself, and the authorized post-approval PR final action must not hold the flag at `false`), but the harness does not recompute approval from those arrays. Without quorum, the decision reason records the reviewers' remaining work, and the bounded loop stops inspectably at `max_turns` as `needs_human`. The repeated-blocker threshold defaults to 3 consecutive same-blocker turns and is clamped to `max_turns` when you run fewer than 3 turns.
-
-Child workflow outputs: `result`, `status`, `approved`, `goal_id`, `objective`, `acceptance_criteria`, `ledger_path`, `turns_completed`, `iterations_completed`, `receipts`, `remaining_work`, `review_report`, and `review_report_path`. `pr_report` is included only when `create_pr=true`, Goal reaches `complete`, and the final `pull-request` stage runs.
-
-### `ralph`
-
-Raw prompt → prompt-engineering research → orchestrate → review workflow with optional final-stage PR handoff: use the raw prompt as the operative objective, keep optional `acceptance_criteria` as the immutable original task contract (defaulting to `prompt`), transform the prompt into a codebase and online research question with `/skill:prompt-engineer`, run `/skill:research-codebase` against it, write findings under `research/`, delegate implementation through sub-agents from that research, run parallel reviewers across Claude Fable 5 and GPT-5.5 Codex model families, and iterate until approval or the loop limit. At review start, each concurrent Ralph reviewer checks Intercom, discovers same-run sibling reviewers, communicates its validation plan, claims expensive or lock-prone checks, and coordinates serialization of conflicting shared-checkout/shared-environment commands. Reviewers announce coordinated check starts and finishes, release claimed resources, and share reusable command evidence, but each still independently inspects the patch and returns its own verdict. Ralph's research, orchestrator, and reviewer prompts receive the objective next to the literal acceptance contract; when launching follow-up Ralph runs from reviewer findings, pass the ORIGINAL task text as `acceptance_criteria` so deltas cannot drift from the contract. The orchestrator begins from an observable acceptance/contract matrix derived from the literal prompt/acceptance criteria, models states/transitions/invariants explicitly for stateful work, and repairs unresolved reviewer findings as one consolidated batch (the round artifact carries a deduplicated cross-reviewer `consolidated_findings` list) with durable regression evidence for reproduced findings. Reviewers independently derive adversarial checks from the literal contract before relying on the implementation notes, orchestrator report, or worker-authored tests, and each reviewer derives a single authoritative `stop_review_loop` boolean from that evidence (`required_by_objective` findings mean `false` at any priority, P3 included, while `consistent_with_objective` P3 nice-to-haves stay non-blocking); the loop gate approves deterministically on that boolean plus a null `reviewer_error` without recomputing approval from the findings arrays. Ralph's orchestrator and reviewers are prompted to verify user-visible behavior end-to-end when practical with `playwright-cli`-skilled subagents for web/frontend flows that may depend on backend/API behavior and tmux-skilled subagents for TUI or terminal-app scenarios. They must assume credentials/auth/environment access exists until concrete non-destructive checks plus an actual launch/flow attempt prove otherwise; skipped E2E is valid only when exact attempted commands and observed failure output are recorded. For UI-applicable or full-stack changes, the orchestrator runs a `playwright-cli` end-to-end QA pass and records a reviewable proof video, references it in the implementation notes, and exposes it as the `qa_video_path` output; reviewers receive that path and inspect the actual video before treating it as proof. Review decisions include `requirements_traceability`, a non-empty clause-by-clause map over every prompt/acceptance-criteria requirement kept as audit evidence for deriving the flag; worker-authored tests/snapshots passing are circular evidence unless tied to independent current-state proof, and process-only clauses (reviewer quorum, the authorized post-approval PR final action) must never hold `stop_review_loop` at `false`. When `create_pr=true`, the final `pull-request` stage attaches or links that video to the created PR/MR/review. Follow-up iterations pass unresolved review artifacts into prompt-engineering/research and fork research from prior research session data when available. Ralph skips PR creation by default; prompt text alone does not opt in. Pass `create_pr=true` to authorize only the final `pull-request` stage to inspect provider credentials and attempt provider-appropriate PR/MR/review creation (for example GitHub `gh`, Azure Repos `az repos pr create`, or Sapling/Phabricator tooling). Ralph's own PR-creation instructions live in that final stage. Reviewers inspect repository infrastructure directly as needed; Ralph no longer runs separate `infra-*` discovery stages.
-
-Resource release is itself a coordinated update: after releasing a claim, the reviewer explicitly notifies its sibling through Intercom rather than treating release as a silent local action.
-
-```text
-/workflow ralph prompt="Migrate the database layer to Drizzle ORM" max_loops=3 base_branch=develop
-/workflow ralph prompt="Migrate the database layer to Drizzle ORM" max_loops=3 base_branch=develop create_pr=true
-```
-
-| Input                 | Type      | Required | Default       | Description                                                   |
-| --------------------- | --------- | -------- | ------------- | ------------------------------------------------------------- |
-| `prompt`              | `text`    | ✓        | —             | Task, feature request, issue summary, or spec path to research, execute, refine, and review. |
-| `acceptance_criteria` | `text`    | —        | prompt        | Original immutable task contract; pass the original task text when launching follow-up Ralph runs from reviewer findings. |
-| `max_loops`           | `number`  | —        | `10`          | Maximum research/orchestrate/review iterations before completion or optional final handoff. |
-| `base_branch`         | `string`  | —        | `origin/main` | Branch reviewers and the optional final stage compare the current delta with; also used to create a missing worktree. |
-| `git_worktree_dir`    | `string`  | —        | `""`          | Optional reusable Git worktree root. Empty runs in the invoking checkout; non-empty values run Ralph stages in the created/reused worktree. |
-| `create_pr`           | `boolean` | —        | `false`       | Safe-by-default PR creation flag. Omitted or `false` skips the final `pull-request` stage and omits `pr_report`; prompt text alone does not opt in, and only strict `true` authorizes the final `pull-request` stage to attempt provider-appropriate PR/MR/review creation. |
-
-Child workflow outputs: `result`, `plan` (latest transformed research question), `plan_path` (compatibility alias for `research_path`), `research`, `research_path`, `implementation_notes_path`, `qa_video_path` (reviewable QA end-to-end proof video recorded with `playwright-cli` for UI-applicable changes, when produced), `approved`, `iterations_completed`, `review_report`, and `review_report_path`. `pr_report` is included only when `create_pr=true` and the final `pull-request` stage runs.
+Domain-specific implementation should use a custom worker → fresh verifier → reducer graph when no installed pattern covers the complete contract. Keep literal acceptance criteria visible to each reviewer, execute deterministic checks through workflow-owned tools, consolidate evidence-backed findings into bounded repair rounds, and stop on explicit approval, blocked evidence, or iteration exhaustion. Keep PR/MR creation, release, deployment, and publication as separately authorized post-approval actions.
 
 ### `open-claude-design`
 

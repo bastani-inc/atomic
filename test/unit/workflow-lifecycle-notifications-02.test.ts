@@ -382,7 +382,7 @@ describe("installWorkflowLifecycleNotifications", () => {
       kind: "completed",
       scope: "run",
       runId: "a3df3bfb-bea6-4c68-a05c-3f7bac10cd13",
-      workflowName: "deep-research-codebase",
+      workflowName: "fan-out-and-synthesize",
       status: "completed",
       createdAt: 1,
     };

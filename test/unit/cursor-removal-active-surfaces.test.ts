@@ -10,12 +10,7 @@ const read = (path: string): string => readFileSync(join(root, path), "utf8");
 
 describe("removed provider active surfaces", () => {
   test("builtin workflow and subagent model policies contain no removed-provider candidates", () => {
-    for (const path of [
-      "packages/workflows/builtin/ralph-models.ts",
-      "packages/workflows/builtin/goal-models.ts",
-      "packages/workflows/builtin/deep-research-codebase-utils.ts",
-      "packages/workflows/builtin/open-claude-design-runner.ts",
-    ]) {
+    for (const path of ["packages/workflows/builtin/open-claude-design-runner.ts"]) {
       assert.doesNotMatch(read(path), /cursor\//iu, path);
     }
 

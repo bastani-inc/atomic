@@ -136,7 +136,7 @@ describe("installWorkflowLifecycleNotifications", () => {
 
   test("uses blocked lifecycle notices for legacy completed runs whose returned status needs human", () => {
     const { store, sent } = install();
-    startRun(store, "run-needs-human", "goal");
+    startRun(store, "run-needs-human", "adversarial-verification");
 
     assert.equal(store.recordRunEnd("run-needs-human", "completed", {
       status: "needs_human",
@@ -153,7 +153,7 @@ describe("installWorkflowLifecycleNotifications", () => {
 
   test("uses blocked lifecycle notices for structured recoverable stage failures without returned status", () => {
     const { store, sent } = install();
-    startRun(store, "run-structured-auth", "goal");
+    startRun(store, "run-structured-auth", "adversarial-verification");
     const failure = { failureKind: "auth" as const, failureCode: "missing_api_key" as const, failureRecoverability: "recoverable" as const, failureDisposition: "active_blocked" as const, failureMessage: "No API key for provider: github-copilot" };
     const reviewer = runningStage({ id: "reviewer-a", name: "reviewer-a" });
     store.recordStageStart("run-structured-auth", reviewer);

@@ -70,18 +70,12 @@ describe("standalone workflow package typing", () => {
   run,
 } from "@bastani/workflows";
 import { Type } from "typebox";
-import { goal, openClaudeDesign, ralph } from "@bastani/workflows/builtin";
-import goalDefault from "@bastani/workflows/builtin/goal";
+import { openClaudeDesign } from "@bastani/workflows/builtin";
 import openClaudeDesignDefault from "@bastani/workflows/builtin/open-claude-design";
-import ralphDefault from "@bastani/workflows/builtin/ralph";
 import type {
-  DeepResearchCodebaseWorkflowOutputs,
-  GoalWorkflowOutputs,
-  GoalWorkflowRunInputs,
-  GoalWorkflowStatus,
+  FanOutAndSynthesizeWorkflowOutputs,
+  FanOutAndSynthesizeWorkflowRunInputs,
   OpenClaudeDesignWorkflowOutputs,
-  RalphWorkflowOutputs,
-  RalphWorkflowRunInputs,
 } from "@bastani/workflows/builtin";
 import type { ExtensionUIContext, KeybindingsManager, Theme } from "@bastani/atomic";
 import type { Component, OverlayHandle, OverlayOptions, TUI } from "@earendil-works/pi-tui";
@@ -327,38 +321,31 @@ run(authoredWorkflow, {});
 // @ts-expect-error pickedNoDefault has no default and remains required.
 run(authoredWorkflow, { message: "hello", omittedNoDefault: { enabled: true } });
 run(optionalOutputWorkflow, {}); run(postRunEditedWorkflow, {});
-run(goal, { objective: "x" }); run(goal, { objective: "x", create_pr: true });
-run(goalDefault, { objective: "x", create_pr: false });
-run(ralph, { prompt: "x" });
-run(ralph, { prompt: "x", create_pr: true });
-run(ralphDefault, { prompt: "x", create_pr: false });
 run(openClaudeDesign, { prompt: "x" });
 run(openClaudeDesignDefault, { prompt: "x", discover_references: false });
-run(goal, { objective: "x" }).then((runResult) => {
-  const status: GoalWorkflowStatus | undefined = runResult.result?.status;
-  const firstReceiptPath: string | undefined = runResult.result?.receipts?.[0]?.artifact_path;
-  void status;
-  void firstReceiptPath;
-});
-const typedGoalOutputs: GoalWorkflowOutputs = { status: "complete", approved: true, receipts: [{ turn: 1, stage: "worker", artifact_path: "worker.md", summary: "done" }] };
-const typedDesignOutputs: OpenClaudeDesignWorkflowOutputs = { approved_for_export: true, preview_path: "preview.html", refinements_completed: 1 };
-const typedDeepResearchOutputs: DeepResearchCodebaseWorkflowOutputs = { partitions: ["core"], explorer_count: 1, research_doc_path: "research.md" };
-const typedRalphOutputs: RalphWorkflowOutputs = { approved: true, iterations_completed: 1, research_path: "research.md" };
-const typedGoalRunInputs: GoalWorkflowRunInputs = { objective: "x", create_pr: true };
-const typedRalphRunInputs: RalphWorkflowRunInputs = { prompt: "x", create_pr: true };
-void typedGoalOutputs; void typedGoalRunInputs; void typedDesignOutputs; void typedDeepResearchOutputs; void typedRalphOutputs; void typedRalphRunInputs;
-// @ts-expect-error builtin goal status is a declared literal union.
-const invalidGoalOutputs: GoalWorkflowOutputs = { status: "done" };
+const typedFanOutOutputs: FanOutAndSynthesizeWorkflowOutputs = {
+  result: "done",
+  partitions: ["core"],
+  branch_artifact_paths: ["core.md"],
+  synthesis_path: "synthesis.md",
+  artifact_dir: ".artifacts",
+  manifest_path: "manifest.json",
+};
+const typedFanOutInputs: FanOutAndSynthesizeWorkflowRunInputs = { prompt: "x", max_concurrency: 2 };
+const typedDesignOutputs: OpenClaudeDesignWorkflowOutputs = {
+  approved_for_export: true,
+  preview_path: "preview.html",
+  refinements_completed: 1,
+};
+void typedFanOutOutputs;
+void typedFanOutInputs;
+void typedDesignOutputs;
 // @ts-expect-error builtin open-claude-design no longer accepts output_type as an input.
 run(openClaudeDesign, { prompt: "x", output_type: "prototype" });
-// @ts-expect-error builtin goal create_pr must be boolean.
-run(goal, { objective: "x", create_pr: "true" });
-// @ts-expect-error builtin ralph create_pr must be boolean.
-run(ralph, { prompt: "x", create_pr: "true" });
-// @ts-expect-error builtin goal requires an objective input.
-run(goal, {});
-// @ts-expect-error builtin goal default export requires an objective input.
-run(goalDefault, {});
+// @ts-expect-error builtin open-claude-design requires a prompt input.
+run(openClaudeDesign, {});
+// @ts-expect-error builtin open-claude-design max_refinements must be numeric.
+run(openClaudeDesignDefault, { prompt: "x", max_refinements: "two" });
 // @ts-expect-error WorkflowDefinition is non-structural; only workflow({...}) can produce it.
 const forgedWorkflow: WorkflowDefinition = { __piWorkflow: true, name: "forged", normalizedName: "forged", description: "forged", inputs: {}, run: () => ({}) };
 const forgedRunnable = { __piWorkflow: true, name: "forged", normalizedName: "forged", description: "forged", inputs: {}, run: () => ({}) } as const;

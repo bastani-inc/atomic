@@ -74,9 +74,8 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
     });
   }
 
-  // Anthropic-heavy chain for design taste; sonnet-5/sonnet-4.6 dropped as
-  // strictly dominated in Atomic's benchmark (see ralph-models.ts). Opus stays
-  // at :xhigh here — visual quality, not $/task, is the objective for design.
+  // Anthropic-heavy chain for design taste. Opus stays at :xhigh here because
+  // visual quality, rather than cost per task, is the primary objective.
   const designModelConfig = {
     model: "anthropic/claude-fable-5:high",
     fallbackModels: [

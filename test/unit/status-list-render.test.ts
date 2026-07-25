@@ -162,7 +162,7 @@ describe("renderStatusList — populated", () => {
     const out = renderStatusList([
       makeRun({
         id: "old123uuid",
-        name: "goal",
+        name: "adversarial-verification",
         status: "completed",
         startedAt: now - 10_000,
         endedAt: now - 1_000,
@@ -174,7 +174,7 @@ describe("renderStatusList — populated", () => {
     ], { now, width: 100 });
 
     assert.match(out, /↑ 1 blocked/);
-    assert.match(out, /↑\s+old123\s+goal\s+↑ blocked/);
+    assert.match(out, /↑\s+old123\s+adversarial-verification\s+↑ blocked/);
     assert.doesNotMatch(out, /✓ 1/);
     assert.doesNotMatch(out, /✓ completed/);
   });
@@ -184,7 +184,7 @@ describe("renderStatusList — populated", () => {
     const out = renderStatusList([
       makeRun({
         id: "auth00uuid",
-        name: "goal",
+        name: "adversarial-verification",
         status: "completed",
         startedAt: now - 10_000,
         endedAt: now - 1_000,
@@ -206,7 +206,7 @@ describe("renderStatusList — populated", () => {
     ], { now, width: 100 });
 
     assert.match(out, /↑ 1 blocked/);
-    assert.match(out, /↑\s+auth00\s+goal\s+↑ blocked/);
+    assert.match(out, /↑\s+auth00\s+adversarial-verification\s+↑ blocked/);
     assert.doesNotMatch(out, /✓ 1/);
     assert.doesNotMatch(out, /✓ completed/);
   });
@@ -216,7 +216,7 @@ describe("renderStatusList — populated", () => {
     const out = renderStatusList([
       makeRun({
         id: "okauthuuid",
-        name: "ralph",
+        name: "tournament",
         status: "completed",
         startedAt: now - 10_000,
         endedAt: now - 1_000,
@@ -236,7 +236,7 @@ describe("renderStatusList — populated", () => {
     ], { now, width: 100 });
 
     assert.match(out, /✓ 1/);
-    assert.match(out, /✓\s+okauth\s+ralph\s+✓ completed/);
+    assert.match(out, /✓\s+okauth\s+tournament\s+✓ completed/);
     assert.doesNotMatch(out, /↑ 1 blocked/);
     assert.doesNotMatch(out, /↑ blocked/);
   });
@@ -364,7 +364,7 @@ describe("renderStatusList — populated", () => {
     const now = 1_000_000;
     const run = makeRun({
       id: "kill0aaa",
-      name: "deep-research-codebase",
+      name: "fan-out-and-synthesize",
       status: "killed",
       startedAt: now - 4_000,
       endedAt: now - 1_000,

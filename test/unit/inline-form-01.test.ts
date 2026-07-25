@@ -67,7 +67,7 @@ test("card (live): renders workflow header and continuous footer chrome", () => 
   const lines = renderInlineCard({ width: 80, state, theme: deriveGraphTheme({}) });
   const txt = plain(lines);
   assert.match(txt, /WORKFLOW/);
-  assert.match(txt, /ralph/);
+  assert.match(txt, /tournament/);
   assert.match(txt, /1 \/ 4/);
   assert.doesNotMatch(txt, /←/);
   assert.doesNotMatch(txt, /✓ Submit/);

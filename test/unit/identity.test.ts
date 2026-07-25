@@ -12,7 +12,7 @@ describe("normalizeWorkflowName", () => {
   });
 
   test("replaces spaces with hyphens", () => {
-    assert.equal(normalizeWorkflowName("deep research codebase"), "deep-research-codebase");
+    assert.equal(normalizeWorkflowName("fan out and synthesize"), "fan-out-and-synthesize");
   });
 
   test("replaces underscores with hyphens", () => {
@@ -32,7 +32,7 @@ describe("normalizeWorkflowName", () => {
   });
 
   test("full example from spec", () => {
-    assert.equal(normalizeWorkflowName("Deep Research Codebase"), "deep-research-codebase");
+    assert.equal(normalizeWorkflowName("Fan Out And Synthesize"), "fan-out-and-synthesize");
   });
 
   test("throws on empty string", () => {

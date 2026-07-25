@@ -17,13 +17,10 @@ import "./discovery-invalid-duplicates.test.js";
 const BUNDLED_WORKFLOW_NAMES = [
   "adversarial-verification",
   "classify-and-act",
-  "deep-research-codebase",
   "fan-out-and-synthesize",
   "generate-and-filter",
-  "goal",
   "loop-until-done",
   "open-claude-design",
-  "ralph",
   "tournament",
 ] as const;
 
@@ -36,7 +33,7 @@ describe("discoverStartupWorkflowsSync — bundled manifest", () => {
     assert.equal(Array.isArray(result.errors), true);
   });
 
-  test("registers exactly the ten bundled workflows", async () => {
+  test("registers exactly the seven bundled workflows", async () => {
     const { registry } = await discoverStartupWorkflowsSync();
     assert.deepEqual(registry.names().sort(), [...BUNDLED_WORKFLOW_NAMES].sort());
   });
@@ -149,12 +146,12 @@ describe("discoverStartupWorkflowsSync — duplicate handling", () => {
     const diag: DiscoveryDiagnostic = {
       level: "warn",
       code: "DUPLICATE_NAME",
-      message: 'Bundled export "ralph2" skipped: normalizedName "ralph" already registered',
-      source: "ralph2",
+      message: 'Bundled export "tournament2" skipped: normalizedName "tournament" already registered',
+      source: "tournament2",
     };
     assert.equal(diag.level, "warn");
     assert.equal(diag.code, "DUPLICATE_NAME");
-    assert.equal(diag.source, "ralph2");
+    assert.equal(diag.source, "tournament2");
   });
 });
 

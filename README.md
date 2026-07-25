@@ -170,25 +170,19 @@ Focused codebase research:
 /skill:research-codebase how the rate limiter works in src/middleware/
 ```
 
-Deep codebase research:
+Repository-wide research with durable artifacts:
 
 ```text
-/workflow deep-research-codebase prompt="Map every callsite of the legacy auth middleware so we can migrate to session-v2"
+/workflow fan-out-and-synthesize prompt="Partition the repository by subsystem, map every legacy auth middleware callsite, and synthesize cited migration findings"
 ```
 
-A research-first implementation with Ralph:
+A task-specific implementation and review loop:
 
 ```text
-Run ralph to implement specs/2026-03-rate-limit.md, run the focused rate-limit tests, and finish when burst traffic returns 429 with Retry-After.
+Create and run a workflow that implements specs/2026-03-rate-limit.md, runs focused tests, sends the patch to fresh verifiers, and repairs findings until burst traffic returns 429 with Retry-After or the iteration bound is reached.
 ```
 
-A reviewer-gated one-off run with Goal:
-
-```text
-Use goal to update the CLI docs for --json, include one example, run the docs build, and finish when the build passes.
-```
-
-`goal` keeps receipts in a ledger and gates completion through independent reviewers and a deterministic reducer. `ralph` adds durable research and delegated implementation before iterative review. Add `create_pr=true` only when you want either workflow to run its pull-request stage after approval; prompt text alone does not opt in.
+Use the reusable pattern builtins when they match the control flow. For domain-specific implementation, compose a custom worker → fresh verifier → reducer loop with explicit evidence and bounded repair rather than force-fitting a broad workflow. Keep PR creation as a separately authorized post-approval action.
 
 ---
 
@@ -200,13 +194,13 @@ Atomic ships three top-level building blocks: workflows, skills, and specialized
 
 Workflows define inputs, stages, branches, parallelism, retries, checks, artifacts, checkpoints, and human review gates. Atomic can author TypeScript `workflow({...})` definitions, import reusable project or package workflows, and nest workflows with `ctx.workflow(...)` within a configured `maxDepth`.
 
-| Workflow                 | What it does                                                                                                                                                         | Example input                                                                                                                   |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `goal`                   | Bounded autonomous work with receipts in a goal ledger, named validation, and reviewer-gated completion.                                                             | `/workflow goal objective="Update the CLI docs for --json, include one example, run the docs build, and finish when it passes"` |
-| `ralph`                  | Research-first work with prompt refinement, codebase research, delegated implementation, and iterative review.                                                       | `/workflow ralph prompt="Port the rate-limit rollout to the new API gateway" create_pr=true`                                    |
-| `deep-research-codebase` | Repo-wide research with parallel specialist waves and durable artifacts under `research/`.                                                                           | `/workflow deep-research-codebase prompt="How do payment retries work end to end?"`                                             |
-| `open-claude-design`     | Design generation that gathers requirements and references, discovers the design system, refines output, and exports a handoff.                                      | `/workflow open-claude-design prompt="Team activity feed prototype using ./mocks/feed.png as a reference"`                      |
-| _author your own_        | Issue-to-PR, migration, triage, release, compliance, or another process your team needs. Start with the [workflow guide](./packages/coding-agent/docs/workflows.md). | _“Create a workflow that plans, implements, runs tests and lint, reviews the diff, then stops for approval.”_                   |
+| Workflow | What it does | Example input |
+| --- | --- | --- |
+| `fan-out-and-synthesize` | Partitions independent slices, writes branch artifacts, and synthesizes their evidence. | `/workflow fan-out-and-synthesize prompt="Map payment retries by subsystem and synthesize cited findings"` |
+| `adversarial-verification` | Challenges a candidate with fresh verifiers and bounded repair. | `/workflow adversarial-verification task="Verify the rate-limit migration patch"` |
+| `loop-until-done` | Iterates with a durable ledger until explicit completion evidence or bound exhaustion. | `/workflow loop-until-done prompt="Repair failures until the test suite passes"` |
+| `open-claude-design` | Gathers requirements and references, discovers the design system, refines output, and exports a handoff. | `/workflow open-claude-design prompt="Team activity feed prototype using ./mocks/feed.png as a reference"` |
+| _author your own_ | Issue-to-PR, migration, triage, release, compliance, or another process your team needs. Start with the [workflow guide](./packages/coding-agent/docs/workflows.md). | _“Create a workflow that plans, implements, runs tests and lint, reviews the diff, then stops for approval.”_ |
 
 Run `/workflow list` to see installed workflows and `/workflow inputs <name>` for input schemas. Use `/workflow status <id>`, `/workflow connect <id>`, `/workflow quit <id>`, and `/workflow resume <id>` to manage runs. Quitting pauses work so it can resume later. Runnable references live in [`packages/coding-agent/examples/`](./packages/coding-agent/examples).
 
@@ -344,7 +338,6 @@ MIT — see [LICENSE](LICENSE).
 - [Pi](https://pi.dev)
 - [Superpowers](https://github.com/obra/superpowers)
 - [Anthropic Skills](https://github.com/anthropics/skills)
-- [Ralph Wiggum Method](https://ghuntley.com/ralph/)
 - [OpenAI Codex Cookbook](https://github.com/openai/openai-cookbook)
 - [HumanLayer](https://github.com/humanlayer/humanlayer)
 - [Impeccable](https://github.com/pbakaus/impeccable)

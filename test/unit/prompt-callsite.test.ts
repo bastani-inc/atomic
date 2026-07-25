@@ -63,12 +63,12 @@ describe("prompt callsite stack frame filtering", () => {
       "test/unit/executor.test.ts:800:20",
     );
     assert.equal(
-      normalizedPromptCallsiteFrame("    at workflow (packages/workflows/builtin/ralph.ts:618:12)"),
-      "packages/workflows/builtin/ralph.ts:618:12",
+      normalizedPromptCallsiteFrame("    at workflow (packages/workflows/builtin/tournament.ts:618:12)"),
+      "packages/workflows/builtin/tournament.ts:618:12",
     );
     assert.equal(
-      normalizedPromptCallsiteFrame("    at workflow (packages/coding-agent/dist/builtin/workflows/builtin/ralph.ts:618:12)"),
-      "packages/coding-agent/dist/builtin/workflows/builtin/ralph.ts:618:12",
+      normalizedPromptCallsiteFrame("    at workflow (packages/coding-agent/dist/builtin/workflows/builtin/tournament.ts:618:12)"),
+      "packages/coding-agent/dist/builtin/workflows/builtin/tournament.ts:618:12",
     );
   });
 
@@ -77,8 +77,8 @@ describe("prompt callsite stack frame filtering", () => {
     assert.equal(isWorkflowRuntimeFrame("packages/coding-agent/dist/builtin/workflows/src/runs/foreground/executor.ts"), true);
     assert.equal(isWorkflowRuntimeFrame("node_modules/@bastani/workflows/src/runs/foreground/executor.ts"), true);
     assert.equal(isWorkflowRuntimeFrame(".atomic/workflows/packages/workflows/src/review.ts"), false);
-    assert.equal(isWorkflowRuntimeFrame("packages/workflows/builtin/ralph.ts"), false);
-    assert.equal(isWorkflowRuntimeFrame("packages/coding-agent/dist/builtin/workflows/builtin/ralph.ts"), false);
+    assert.equal(isWorkflowRuntimeFrame("packages/workflows/builtin/tournament.ts"), false);
+    assert.equal(isWorkflowRuntimeFrame("packages/coding-agent/dist/builtin/workflows/builtin/tournament.ts"), false);
   });
 
   test("selects an author frame from a real Bun Error stack", () => {

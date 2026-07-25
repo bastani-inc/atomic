@@ -272,7 +272,7 @@ export default workflow({
         assert.match(listMessage.content ?? "", /WORKFLOWS/);
         assert.match(
             listMessage.content ?? "",
-            /deep-research-codebase|ralph|open-claude-design/,
+            /fan-out-and-synthesize|tournament|open-claude-design/,
         );
         assert.doesNotMatch(
             listMessage.content ?? "",
@@ -324,7 +324,7 @@ export default workflow({
         const { handler, sent } = await registerWorkflowCommand();
         const { ctx, messages } = commandCtx(false);
 
-        await handler("inputs ralph", ctx);
+        await handler("inputs tournament", ctx);
 
         assert.deepEqual(messages, []);
         assert.equal(
@@ -339,11 +339,11 @@ export default workflow({
         assert.equal(typeof output.content, "string");
         assert.match(
             output.content ?? "",
-            /INPUTS FOR RALPH|Inputs for "ralph":/,
+            /INPUTS FOR TOURNAMENT|Inputs for "tournament":/,
         );
         assert.deepEqual(output.details, {
             command: "inputs",
-            workflowName: "ralph",
+            workflowName: "tournament",
         });
     });
 
@@ -351,7 +351,7 @@ export default workflow({
         const { handler, sent } = await registerWorkflowCommand();
         const { ctx, messages } = commandCtx(false);
 
-        await handler("deep-research-codebase --help", ctx);
+        await handler("fan-out-and-synthesize --help", ctx);
 
         assert.deepEqual(messages, []);
         assert.equal(store.runs().length, 0, "--help must not dispatch a run");
@@ -369,11 +369,11 @@ export default workflow({
         assert.equal(typeof output.content, "string");
         assert.match(
             output.content ?? "",
-            /INPUTS FOR DEEP-RESEARCH-CODEBASE|Inputs for "deep-research-codebase":/,
+            /INPUTS FOR FAN-OUT-AND-SYNTHESIZE|Inputs for "fan-out-and-synthesize":/,
         );
         assert.deepEqual(output.details, {
             command: "help",
-            workflowName: "deep-research-codebase",
+            workflowName: "fan-out-and-synthesize",
         });
     });
 
@@ -382,7 +382,7 @@ export default workflow({
         const { ctx, messages, pickerCalls } = commandCtx(false);
 
         await assertRejectsHeadlessCommand(
-            () => handler("deep-research-codebase", ctx),
+            () => handler("fan-out-and-synthesize", ctx),
             /required input "prompt" not provided/,
         );
 

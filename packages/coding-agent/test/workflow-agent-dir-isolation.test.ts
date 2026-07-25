@@ -40,7 +40,7 @@ function setupIsolatedAgentDir(): { root: string; cwd: string; homeAgentDir: str
   return { root, cwd, homeAgentDir, isolatedAgentDir };
 }
 
-function writeShadowWorkflow(agentDir: string, name: "goal" | "ralph"): void {
+function writeShadowWorkflow(agentDir: string, name: "fan-out-and-synthesize" | "loop-until-done"): void {
   const workflowsDir = join(agentDir, "workflows");
   mkdirSync(workflowsDir, { recursive: true });
   writeFileSync(
@@ -79,17 +79,17 @@ describe("workflow agent dir isolation", () => {
     expect(result.diagnostics.some((diagnostic) => diagnostic.source?.startsWith(homeAgentDir))).toBe(false);
   });
 
-  it("does not let home-global goal or ralph workflows shadow bundled workflow targets", async () => {
+  it("does not let home-global workflows shadow bundled workflow targets", async () => {
     const { cwd, homeAgentDir } = setupIsolatedAgentDir();
-    writeShadowWorkflow(homeAgentDir, "goal");
-    writeShadowWorkflow(homeAgentDir, "ralph");
+    writeShadowWorkflow(homeAgentDir, "fan-out-and-synthesize");
+    writeShadowWorkflow(homeAgentDir, "loop-until-done");
 
     const result = await discoverWorkflows({ cwd });
-    const goalSource = result.sources.find((source) => source.id === "goal");
-    const ralphSource = result.sources.find((source) => source.id === "ralph");
+    const fanOutSource = result.sources.find((source) => source.id === "fan-out-and-synthesize");
+    const loopSource = result.sources.find((source) => source.id === "loop-until-done");
 
-    expect(goalSource?.kind).toBe("bundled");
-    expect(ralphSource?.kind).toBe("bundled");
+    expect(fanOutSource?.kind).toBe("bundled");
+    expect(loopSource?.kind).toBe("bundled");
     expect(result.errors.some((diagnostic) => diagnostic.source?.startsWith(homeAgentDir))).toBe(false);
   });
 });

@@ -223,13 +223,13 @@
         <div>
           <div class="label before">▼ before — 6 lines, three restatements</div>
           <div class="terminal">
-            <pre><span class="green">✓</span> <span class="b text">submitted</span>  <span class="faint">·</span>  <span class="dim">/workflow deep-research-codebase prompt=&quot;map the codebase&quot; max_partitions=4</span>
+            <pre><span class="green">✓</span> <span class="b text">submitted</span>  <span class="faint">·</span>  <span class="dim">/workflow fan-out-and-synthesize prompt=&quot;map the codebase&quot; max_branches=4</span>
 
-<span class="green">✓</span> <span class="text">Workflow &quot;deep-research-codebase&quot; started</span>   <span class="muted">runId 0391c9c1</span>
+<span class="green">✓</span> <span class="text">Workflow &quot;fan-out-and-synthesize&quot; started</span>   <span class="muted">runId 0391c9c1</span>
   <span class="muted">attach</span>   <span class="blue">/workflow connect 0391c9c1</span>
   <span class="muted">monitor</span>  <span class="blue">/workflow status</span></pre>
             <span class="band"><span class="blue b">[ BACKGROUND ]</span>  <span class="muted">1 run</span>                                          <span class="yellow">● 1</span></span>
-            <pre>   <span class="yellow">●</span>  <span class="blue">0391c9</span>  <span class="b text">deep-research-codebase</span>  <span class="yellow">running   </span><span class="muted">single · 0/1 · 0s</span></pre>
+            <pre>   <span class="yellow">●</span>  <span class="blue">0391c9</span>  <span class="b text">fan-out-and-synthesize</span>  <span class="yellow">running   </span><span class="muted">single · 0/1 · 0s</span></pre>
           </div>
           <p class="note"><span class="k">issues</span> · echoes the command we just typed · duplicates run identity across three places · plain-text hint lines drift away from the brand chrome</p>
         </div>
@@ -237,12 +237,12 @@
         <div>
           <div class="label after">▶ after — one full-width band, one card</div>
           <div class="terminal">
-            <pre><span class="green">✓</span> <span class="b text">submitted</span>  <span class="faint">·</span>  <span class="dim">/workflow deep-research-codebase</span></pre>
-            <span class="band"><span class="blue b">[ DISPATCHED ]</span>  <span class="muted">deep-research-codebase</span>                       <span class="yellow">●</span> <span class="muted">running</span></span>
+            <pre><span class="green">✓</span> <span class="b text">submitted</span>  <span class="faint">·</span>  <span class="dim">/workflow fan-out-and-synthesize</span></pre>
+            <span class="band"><span class="blue b">[ DISPATCHED ]</span>  <span class="muted">fan-out-and-synthesize</span>                       <span class="yellow">●</span> <span class="muted">running</span></span>
             <div class="card yellow">
               <span class="stripe"></span>
               <div class="body"><span class="tag">0391c9c1</span><span class="muted">run id</span>
-   <span class="muted">inputs</span>    <span class="text">prompt</span><span class="faint">=</span><span class="text">&quot;map the codebase&quot;</span>  <span class="faint">·</span>  <span class="text">max_partitions</span><span class="faint">=</span><span class="text">4</span>
+   <span class="muted">inputs</span>    <span class="text">prompt</span><span class="faint">=</span><span class="text">&quot;map the codebase&quot;</span>  <span class="faint">·</span>  <span class="text">max_branches</span><span class="faint">=</span><span class="text">4</span>
    <span class="muted">mode</span>      <span class="text">chain</span>  <span class="faint">·</span>  <span class="muted">starting…</span></div>
             </div>
             <div class="hints">
@@ -269,9 +269,9 @@
             <pre><span class="text">/workflow status</span></pre>
             <span class="band"><span class="blue b">[ BACKGROUND ]</span>  <span class="muted">2 runs</span>                                          <span class="red">⊘ 2</span></span>
             <pre>
-   <span class="red">⊘</span>  <span class="blue">939629</span>  <span class="b text">deep-research-codebase</span>  <span class="red">killed    </span><span class="muted">single · 8s ago</span>
+   <span class="red">⊘</span>  <span class="blue">939629</span>  <span class="b text">fan-out-and-synthesize</span>  <span class="red">killed    </span><span class="muted">single · 8s ago</span>
      <span class="red">✗</span> <span class="text">scout       </span>  <span class="red">failed    </span>          <span class="dim">6s</span>
-   <span class="red">⊘</span>  <span class="blue">0391c9</span>  <span class="b text">deep-research-codebase</span>  <span class="red">killed    </span><span class="muted">chain · 2/2 · 4m24s ago</span>
+   <span class="red">⊘</span>  <span class="blue">0391c9</span>  <span class="b text">fan-out-and-synthesize</span>  <span class="red">killed    </span><span class="muted">chain · 2/2 · 4m24s ago</span>
      <span class="green">✓</span> <span class="text">scout       </span>  <span class="green">completed </span>          <span class="dim">22s</span>
      <span class="red">✗</span> <span class="text">partition   </span>  <span class="red">failed    </span>          <span class="dim">0s</span>
 
@@ -287,12 +287,12 @@
             <span class="band"><span class="blue b">[ BACKGROUND ]</span>  <span class="muted">2 runs</span>                                          <span class="red">⊘ 2</span></span>
             <div class="card red">
               <span class="stripe"></span>
-              <div class="body"><span class="tag">939629</span><span class="b text">deep-research-codebase</span>                          <span class="red">⊘ killed</span>
+              <div class="body"><span class="tag">939629</span><span class="b text">fan-out-and-synthesize</span>                          <span class="red">⊘ killed</span>
    <span class="muted">single</span>    <span class="red">[✗]</span>                                       <span class="dim">scout · 6s · 8s ago</span></div>
             </div>
             <div class="card red">
               <span class="stripe"></span>
-              <div class="body"><span class="tag">0391c9</span><span class="b text">deep-research-codebase</span>                          <span class="red">⊘ killed</span>
+              <div class="body"><span class="tag">0391c9</span><span class="b text">fan-out-and-synthesize</span>                          <span class="red">⊘ killed</span>
    <span class="muted">chain </span>    <span class="green">[✓]</span><span class="red">[✗]</span>                                    <span class="dim">failed at partition · 4m24s ago</span></div>
             </div>
             <div class="hints">
@@ -326,9 +326,9 @@
      <span class="dim">○</span> <span class="text">smoke       </span>  <span class="dim">pending   </span>          <span class="dim">—</span>
    <span class="green">✓</span>  <span class="blue">5b91ee</span>  <span class="b text">open-claude-design  </span>  <span class="green">completed </span><span class="muted">single · 18s ago</span>
      <span class="green">✓</span> <span class="text">primer      </span>  <span class="green">completed </span>          <span class="dim">11.3s</span>
-   <span class="red">⊘</span>  <span class="blue">939629</span>  <span class="b text">deep-research-codeb…</span>  <span class="red">killed    </span><span class="muted">single · 8s ago</span>
+   <span class="red">⊘</span>  <span class="blue">939629</span>  <span class="b text">fan-out-and-synthesi…</span>  <span class="red">killed    </span><span class="muted">single · 8s ago</span>
      <span class="red">✗</span> <span class="text">scout       </span>  <span class="red">failed    </span>          <span class="dim">6s</span>
-   <span class="red">⊘</span>  <span class="blue">0391c9</span>  <span class="b text">deep-research-codeb…</span>  <span class="red">killed    </span><span class="muted">chain · 2/2 · 4m24s</span>
+   <span class="red">⊘</span>  <span class="blue">0391c9</span>  <span class="b text">fan-out-and-synthesi…</span>  <span class="red">killed    </span><span class="muted">chain · 2/2 · 4m24s</span>
      <span class="green">✓</span> <span class="text">scout       </span>  <span class="green">completed </span>          <span class="dim">22s</span>
      <span class="red">✗</span> <span class="text">partition   </span>  <span class="red">failed    </span>          <span class="dim">0s</span></pre>
           </div>
@@ -352,12 +352,12 @@
             </div>
             <div class="card red">
               <span class="stripe"></span>
-              <div class="body"><span class="tag">939629</span><span class="b text">deep-research-codebase</span>                      <span class="red">⊘ killed</span>
+              <div class="body"><span class="tag">939629</span><span class="b text">fan-out-and-synthesize</span>                      <span class="red">⊘ killed</span>
    <span class="muted">single</span>    <span class="red">[✗]</span>                                       <span class="dim">scout · 6s · 8s ago</span></div>
             </div>
             <div class="card red">
               <span class="stripe"></span>
-              <div class="body"><span class="tag">0391c9</span><span class="b text">deep-research-codebase</span>                      <span class="red">⊘ killed</span>
+              <div class="body"><span class="tag">0391c9</span><span class="b text">fan-out-and-synthesize</span>                      <span class="red">⊘ killed</span>
    <span class="muted">chain </span>    <span class="green">[✓]</span><span class="red">[✗]</span>                                    <span class="dim">failed at partition · 4m24s ago</span></div>
             </div>
             <div class="hints">
@@ -383,7 +383,7 @@
           <div class="terminal">
             <pre><span class="text">/workflow list</span>
 
-<span class="muted">Registered workflows:</span> <span class="text">deep-research-codebase, open-claude-design, ralph</span></pre>
+<span class="muted">Registered workflows:</span> <span class="text">fan-out-and-synthesize, open-claude-design, tournament</span></pre>
           </div>
           <p class="note"><span class="k">issues</span> · no description · no input hints · no entry path to inputs or run</p>
         </div>
@@ -395,9 +395,9 @@
             <span class="band"><span class="mauve b">[ WORKFLOWS ]</span>  <span class="muted">3 registered</span></span>
             <div class="card mauve">
               <span class="stripe"></span>
-              <div class="body"><span class="tag">deep-research-codebase</span>
+              <div class="body"><span class="tag">fan-out-and-synthesize</span>
    <span class="muted">Partitioned, parallel research across a codebase.</span>
-   <span class="dim">inputs</span>    <span class="text">prompt</span>  <span class="faint">·</span>  <span class="text">max_partitions</span><span class="dim">?</span></div>
+   <span class="dim">inputs</span>    <span class="text">prompt</span>  <span class="faint">·</span>  <span class="text">max_branches</span><span class="dim">?</span></div>
             </div>
             <div class="card mauve">
               <span class="stripe"></span>
@@ -407,9 +407,9 @@
             </div>
             <div class="card mauve">
               <span class="stripe"></span>
-              <div class="body"><span class="tag">ralph</span>
-   <span class="muted">Ralph-the-rabbit improvement loop until an exit condition trips.</span>
-   <span class="dim">inputs</span>    <span class="text">prompt</span>  <span class="faint">·</span>  <span class="text">iterations</span><span class="dim">?</span></div>
+              <div class="body"><span class="tag">tournament</span>
+   <span class="muted">Compare independent attempts through balanced pairwise judging.</span>
+   <span class="dim">inputs</span>    <span class="text">prompt</span>  <span class="faint">·</span>  <span class="text">num_attempts</span><span class="dim">?</span></div>
             </div>
             <div class="hints">
               <div class="row-line"><span class="arrow">▸</span> <span class="cmd">/workflow &lt;name&gt; …</span> <span class="hint">run a workflow</span></div>
@@ -433,12 +433,12 @@
           <div class="label after">▶ §1 dispatched — long &amp; many inputs</div>
           <div class="terminal">
             <pre><span class="green">✓</span> <span class="b text">submitted</span>  <span class="faint">·</span>  <span class="dim">/workflow ship-feature</span></pre>
-            <span class="band"><span class="blue b">[ DISPATCHED ]</span>  <span class="muted">enterprise-deep-research-codebase-with-multi-stage-fan…</span>            <span class="yellow">●</span> <span class="muted">running</span></span>
+            <span class="band"><span class="blue b">[ DISPATCHED ]</span>  <span class="muted">enterprise-fan-out-and-synthesize-with-multi-stage-fan…</span>            <span class="yellow">●</span> <span class="muted">running</span></span>
             <div class="card yellow">
               <span class="stripe"></span>
               <div class="body"><span class="tag">7c4a91bf</span><span class="muted">run id</span>
    <span class="muted">inputs</span>    <span class="text">prompt</span><span class="faint">=</span><span class="text">&quot;map every TypeScript file in the codebase, focu…&quot;</span>
-             <span class="text">model</span><span class="faint">=</span><span class="text">&quot;claude-opus-4&quot;</span>  <span class="faint">·</span>  <span class="text">max_partitions</span><span class="faint">=</span><span class="text">12</span>  <span class="dim">·</span>  <span class="dim b">+3 more</span>
+             <span class="text">model</span><span class="faint">=</span><span class="text">&quot;claude-opus-4&quot;</span>  <span class="faint">·</span>  <span class="text">max_branches</span><span class="faint">=</span><span class="text">12</span>  <span class="dim">·</span>  <span class="dim b">+3 more</span>
    <span class="muted">mode</span>      <span class="text">chain</span>  <span class="faint">·</span>  <span class="muted">starting…</span></div>
             </div>
             <div class="hints">
@@ -456,12 +456,12 @@
             <span class="band"><span class="blue b">[ BACKGROUND ]</span>  <span class="muted">2 runs</span>                                          <span class="yellow">● 1</span>  <span class="red">⊘ 1</span></span>
             <div class="card yellow">
               <span class="stripe"></span>
-              <div class="body"><span class="tag">7c4a91</span><span class="b text">enterprise-deep-research-codebase-with-mu…</span>      <span class="yellow">● running</span>
+              <div class="body"><span class="tag">7c4a91</span><span class="b text">enterprise-fan-out-and-synthesize-with-mu…</span>      <span class="yellow">● running</span>
    <span class="muted">chain </span>    <span class="green">[✓]</span><span class="green">[✓]</span><span class="yellow">[●]</span><span class="dim">[</span><span class="overlay1">○</span><span class="dim">]</span><span class="dim">[</span><span class="overlay1">○</span><span class="dim">]</span><span class="dim">[</span><span class="overlay1">○</span><span class="dim">]</span><span class="dim">[</span><span class="overlay1">○</span><span class="dim">]</span><span class="dim">[</span><span class="overlay1">○</span><span class="dim">]</span><span class="dim">[</span><span class="overlay1">○</span><span class="dim">]</span><span class="dim">[</span><span class="overlay1">○</span><span class="dim">]</span><span class="dim">[</span><span class="overlay1">○</span><span class="dim">]</span><span class="dim">[</span><span class="overlay1">○</span><span class="dim">]</span>     <span class="dim">3/12 · cross-repo-analy… · 1m42s</span></div>
             </div>
             <div class="card red">
               <span class="stripe"></span>
-              <div class="body"><span class="tag">939629</span><span class="b text">deep-research-codebase</span>                          <span class="red">⊘ killed</span>
+              <div class="body"><span class="tag">939629</span><span class="b text">fan-out-and-synthesize</span>                          <span class="red">⊘ killed</span>
    <span class="muted">single</span>    <span class="red">[✗]</span>                                       <span class="dim">scout-and-partition… · 6s · 8s ago</span></div>
             </div>
             <div class="hints">
@@ -480,15 +480,15 @@
             <span class="band"><span class="mauve b">[ WORKFLOWS ]</span>  <span class="muted">2 registered</span></span>
             <div class="card mauve">
               <span class="stripe"></span>
-              <div class="body"><span class="tag">enterprise-deep-research-codebase-with-multi-stage…</span>
+              <div class="body"><span class="tag">enterprise-fan-out-and-synthesize-with-multi-stage…</span>
    <span class="muted">Partitioned, parallel research across a large codebase with specialist sub-agents fanning…</span>
-   <span class="dim">inputs</span>    <span class="text">prompt</span>  <span class="faint">·</span>  <span class="text">max_partitions</span><span class="dim">?</span>  <span class="faint">·</span>  <span class="text">model</span><span class="dim">?</span>  <span class="faint">·</span>  <span class="dim b">+2 more</span></div>
+   <span class="dim">inputs</span>    <span class="text">prompt</span>  <span class="faint">·</span>  <span class="text">max_branches</span><span class="dim">?</span>  <span class="faint">·</span>  <span class="text">model</span><span class="dim">?</span>  <span class="faint">·</span>  <span class="dim b">+2 more</span></div>
             </div>
             <div class="card mauve">
               <span class="stripe"></span>
-              <div class="body"><span class="tag">ralph</span>
-   <span class="muted">Ralph-the-rabbit improvement loop until an exit condition trips.</span>
-   <span class="dim">inputs</span>    <span class="text">prompt</span>  <span class="faint">·</span>  <span class="text">iterations</span><span class="dim">?</span></div>
+              <div class="body"><span class="tag">tournament</span>
+   <span class="muted">Compare independent attempts through balanced pairwise judging.</span>
+   <span class="dim">inputs</span>    <span class="text">prompt</span>  <span class="faint">·</span>  <span class="text">num_attempts</span><span class="dim">?</span></div>
             </div>
             <div class="hints">
               <div class="row-line"><span class="arrow">▸</span> <span class="cmd">/workflow inputs &lt;name&gt;</span> <span class="hint">full description + input schema</span></div>
@@ -509,7 +509,7 @@
             </div>
             <div class="card red">
               <span class="stripe"></span>
-              <div class="body"><span class="tag">939629</span><span class="b text">deep-research-codebase</span>  <span class="red">⊘ killed</span>
+              <div class="body"><span class="tag">939629</span><span class="b text">fan-out-and-synthesize</span>  <span class="red">⊘ killed</span>
    <span class="muted">single</span>    <span class="red">[✗]</span>                       <span class="dim">scout · 6s ago</span></div>
             </div>
             <div class="hints">

@@ -47,12 +47,12 @@ test("selectRunsForPicker buckets active vs retained terminal by default", () =>
 
 test("selectRunsForPicker filters by name and runId prefix", () => {
   const runs: RunSnapshot[] = [
-    makeRun({ id: "abc12345-0000-0000-0000-000000000000", name: "ralph" }),
+    makeRun({ id: "abc12345-0000-0000-0000-000000000000", name: "tournament" }),
     makeRun({ id: "def67890-0000-0000-0000-000000000000", name: "deep-research" }),
   ];
-  assert.equal(selectRunsForPicker(runs, "ralph", true).length, 1);
+  assert.equal(selectRunsForPicker(runs, "tournament", true).length, 1);
   assert.equal(selectRunsForPicker(runs, "research", true).length, 1);
-  assert.equal(selectRunsForPicker(runs, "abc", true)[0]?.run.name, "ralph");
+  assert.equal(selectRunsForPicker(runs, "abc", true)[0]?.run.name, "tournament");
   assert.equal(selectRunsForPicker(runs, "zzz", true).length, 0);
 });
 
@@ -133,7 +133,7 @@ test("renderSessionPicker emits header, sections, and footer hints", () => {
   const theme = deriveGraphTheme({});
   const state = createSessionPickerState();
   const rows = [
-    { run: makeRun({ id: "aaaa1111-0000-0000-0000-000000000000", name: "ralph" }), bucket: "active" as const },
+    { run: makeRun({ id: "aaaa1111-0000-0000-0000-000000000000", name: "tournament" }), bucket: "active" as const },
     { run: makeRun({ id: "bbbb2222-0000-0000-0000-000000000000", name: "deep-research", status: "completed", endedAt: 2000 }), bucket: "terminal" as const },
   ];
   const lines = renderSessionPicker({ width: 80, theme, rows, state });
@@ -142,7 +142,7 @@ test("renderSessionPicker emits header, sections, and footer hints", () => {
   assert.match(joined, /ACTIVE/);
   assert.match(joined, /TERMINAL/);
   assert.match(joined, /aaaa1111/);
-  assert.match(joined, /ralph/);
+  assert.match(joined, /tournament/);
   assert.match(joined, /Navigate/);
   assert.match(joined, /Connect/);
   assert.doesNotMatch(joined, /Kill/);
@@ -185,7 +185,7 @@ test("renderSessionPicker emits a clean ╰────╯ bottom border with hi
   const theme = deriveGraphTheme({});
   const state = createSessionPickerState();
   const rows = [
-    { run: makeRun({ id: "aaaa1111-0000-0000-0000-000000000000", name: "ralph" }), bucket: "active" as const },
+    { run: makeRun({ id: "aaaa1111-0000-0000-0000-000000000000", name: "tournament" }), bucket: "active" as const },
   ];
   const lines = renderSessionPicker({ width: 80, theme, rows, state });
   // The last visible chrome row is the hints text — no border glyphs.

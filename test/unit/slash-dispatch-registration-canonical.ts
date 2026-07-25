@@ -75,14 +75,14 @@ describe("/workflow <name> --help prints schema without dispatching", () => {
         const { ctx, messages } = buildCtx();
 
         await workflowCmd!.options.handler(
-            "deep-research-codebase --help",
+            "fan-out-and-synthesize --help",
             ctx,
         );
 
         // Schema printer prints the pretty themed header or the plain text header.
         assert.ok(
             messages.some((m) =>
-                /INPUTS FOR DEEP-RESEARCH-CODEBASE|Inputs for "deep-research-codebase":/.test(
+                /INPUTS FOR FAN-OUT-AND-SYNTHESIZE|Inputs for "fan-out-and-synthesize":/.test(
                     m,
                 ),
             ),

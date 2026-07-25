@@ -51,7 +51,6 @@ describe("first-run onboarding", () => {
     expect(ONBOARDING_COPY).toContain("run `/login` first");
     expect(ONBOARDING_COPY).not.toContain("Paste a ticket");
     expect(ONBOARDING_COPY).not.toContain("/chat");
-    expect(ONBOARDING_COPY).not.toMatch(/goal.*ralph|ralph.*goal/);
   });
 
   it("gates first-run onboarding on an empty started session and missing onboardedVersion", () => {

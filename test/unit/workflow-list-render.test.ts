@@ -44,11 +44,11 @@ describe("renderWorkflowList — populated", () => {
     const out = renderWorkflowList(
       [
         {
-          name: "deep-research-codebase",
-          description: "Heavy research for tasks requiring comprehensive, whole-repository context.",
+          name: "fan-out-and-synthesize",
+          description: "Partition independent work and synthesize artifact-backed results.",
           inputs: [
             { name: "prompt", required: true },
-            { name: "max_partitions", required: false },
+            { name: "max_branches", required: false },
           ],
         },
         {
@@ -57,11 +57,11 @@ describe("renderWorkflowList — populated", () => {
           inputs: [{ name: "target", required: true }],
         },
         {
-          name: "ralph",
-          description: "Ralph-the-rabbit improvement loop until an exit condition trips.",
+          name: "tournament",
+          description: "Compare independent attempts through balanced pairwise judging.",
           inputs: [
             { name: "prompt", required: true },
-            { name: "iterations", required: false },
+            { name: "num_attempts", required: false },
           ],
         },
       ],
@@ -73,17 +73,17 @@ describe("renderWorkflowList — populated", () => {
     assert.match(plain, /3 registered/);
 
     // Tag + description per workflow.
-    for (const name of ["deep-research-codebase", "open-claude-design", "ralph"]) {
+    for (const name of ["fan-out-and-synthesize", "open-claude-design", "tournament"]) {
       assert.ok(plain.includes(name), `tag missing for ${name}`);
     }
-    assert.match(plain, /Heavy research for tasks requiring comprehensive, whole-repository context\./);
+    assert.match(plain, /Partition independent work/);
     assert.match(plain, /impeccable design skill/);
-    assert.match(plain, /improvement loop/);
+    assert.match(plain, /balanced pairwise judging/);
 
     // Inputs row: required and optional names; optional carries `?`.
     assert.match(plain, /inputs\s+prompt/);
-    assert.match(plain, /max_partitions\?/);
-    assert.match(plain, /iterations\?/);
+    assert.match(plain, /max_branches\?/);
+    assert.match(plain, /num_attempts\?/);
 
     // Hint rows.
     assert.match(plain, /▸ \/workflow <name> …/);

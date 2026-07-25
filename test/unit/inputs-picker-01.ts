@@ -47,7 +47,7 @@ export function registerInputsPickerSuite1(): void {
     const result = await openInputsPicker(
       { setWorkingVisible: (visible) => workingCalls.push(visible) },
       {
-        workflowName: "ralph",
+        workflowName: "tournament",
         fields: OVERLAY_FIELDS,
         prefilled: { prompt: "ready" },
         theme: deriveGraphTheme({}),

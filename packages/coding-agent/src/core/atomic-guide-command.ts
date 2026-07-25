@@ -29,17 +29,20 @@ Atomic turns non-trivial work into executable, inspectable workflows. Default to
 | On-call / broken behavior | Use a focused workflow to reproduce, diagnose, repair, and validate; direct debugger/subagent calls remain useful as stages or for tiny deterministic diagnosis |
 | Research → spec → implementation | Chain \`/skill:research-codebase\` → \`/skill:create-spec\` → a named or custom implementation workflow with explicit validation and review |
 | Testing / regression hardening | Use a workflow for test/fix loops so retries, evidence, and the passing stop condition are tracked |
-| Large repo discovery | Run \`/parallel codebase-locator "map the area" -> codebase-analyzer "trace the current flow" -> codebase-pattern-finder "find patterns" --bg\`, or \`/workflow deep-research-codebase\` for whole-repo synthesis |
+| Large repo discovery | Run \`/parallel codebase-locator "map the area" -> codebase-analyzer "trace the current flow" -> codebase-pattern-finder "find patterns" --bg\`, or use repository-focused \`fan-out-and-synthesize\` branches plus a synthesis barrier |
 | UI / product polish | Run \`/skill:impeccable\` for interface critique and refinement, or \`/workflow open-claude-design\` for generation + refinement loops |
 
 ## Built-in workflows
 
 | Workflow | When to use | How to run |
 |---|---|---|
-| \`deep-research-codebase\` | broad repo or cross-cutting research before you decide what to change (for one area, use \`/skill:research-codebase\`; this indexes the whole repo) | \`/workflow deep-research-codebase prompt="How do payment retries work end to end?"\` |
-| \`goal\` | autonomous work that benefits from a durable goal ledger, bounded sub-agent orchestration turns, named validation, and reviewer-gated completion; add \`create_pr=true\` only for final PR handoff after approval | \`/workflow goal objective="Implement specs/<date>-<topic>.md, run focused tests, and validate the changed behavior"\` |
-| \`ralph\` | autonomous work that benefits from a durable research-first pipeline, delegated implementation, and iterative review | \`/workflow ralph prompt="Migrate the database layer to Drizzle" create_pr=true\` |
-| \`open-claude-design\` | UI and design-system work that benefits from generation and refinement loops | \`/workflow open-claude-design prompt="Refresh the settings page hierarchy"\` |
+| \`classify-and-act\` | structured routing with a low-confidence human fallback | \`/workflow classify-and-act prompt="Triage this request"\` |
+| \`fan-out-and-synthesize\` | independent slices or repository-focused research with artifact synthesis | \`/workflow fan-out-and-synthesize prompt="Map payment retries by subsystem"\` |
+| \`adversarial-verification\` | fresh verification and bounded repair of a candidate | \`/workflow adversarial-verification task="Verify the migration patch"\` |
+| \`generate-and-filter\` | generate many candidates and keep a distinct shortlist | \`/workflow generate-and-filter prompt="Propose command names"\` |
+| \`tournament\` | compare whole solutions through balanced pairwise judging | \`/workflow tournament prompt="Design the retry strategy"\` |
+| \`loop-until-done\` | iterate until explicit evidence passes or the bound is exhausted | \`/workflow loop-until-done prompt="Repair failures until tests pass"\` |
+| \`open-claude-design\` | UI and design-system generation and refinement | \`/workflow open-claude-design prompt="Refresh the settings page hierarchy"\` |
 
 Use \`/workflow list\` to see what is available and \`/workflow inputs <name>\` to inspect inputs in your environment.
 
@@ -87,9 +90,9 @@ Use \`/skill:research-codebase\` for a scoped area, subsystem, or directory:
 
 \`/skill:research-codebase how the rate limiter works in src/middleware/\`
 
-Use \`deep-research-codebase\` when the answer spans the whole repo or a cross-cutting implementation path:
+For repository-wide research, use \`fan-out-and-synthesize\` with distinct subsystem partitions, artifact outputs, and a synthesis prompt that cites concrete paths:
 
-\`/workflow deep-research-codebase prompt="How do payment retries work end to end?"\`
+\`/workflow fan-out-and-synthesize prompt="Partition payment retries by subsystem and synthesize cited end-to-end findings"\`
 
 If the research prompt is vague, tighten it first with \`/skill:prompt-engineer\`:
 
@@ -105,25 +108,15 @@ Skip this if the implementation request is already precise.
 
 Default to a workflow for non-trivial implementation and review. Use direct chat only for tiny deterministic low-risk edits; use focused subagents inside workflow stages or for bounded specialist passes. Choose an installed workflow when it fits, or author a custom TypeScript workflow inline from the starter patterns when the task needs a richer graph.
 
-For work that fits a durable goal ledger, bounded sub-agent orchestration turns, and reviewer-gated completion, use \`goal\`:
+For implementation with review built in, author a task-specific worker → fresh verifier → reducer loop. Give it literal acceptance criteria, deterministic checks, evidence-backed repair payloads, and a bounded stop condition:
 
-\`/workflow goal objective="Implement specs/<date>-<topic>.md, run focused tests, and finish when the documented behavior is validated"\`
+\`Create and run a workflow that implements specs/<date>-<topic>.md, runs focused tests, sends the patch to fresh verifiers, and repairs findings until the documented behavior passes or the iteration bound is reached.\`
 
-Loop or stop-condition phrasing is a key workflow signal. When the user delegates a loop such as \`do X until Y\`, \`repeat until\`, \`iterate until\`, \`review/fix until passing\`, \`run checks and fix until green\`, or \`keep going until done\`, make the stop condition explicit in the Goal objective:
-
-\`/workflow goal objective="Fix the flaky checkout test, adjust the smallest necessary code, and finish when the focused test passes three times"\`
-
-When a clearly delegated autonomous job benefits from a durable research-first pipeline with orchestration and iterative review, use \`ralph\`:
-
-\`/workflow ralph prompt="Migrate the database layer to Drizzle"\`
-
-Add \`create_pr=true\` only when you want the final pull-request stage and report after the review gate approves.
+Loop or stop-condition phrasing is a key workflow signal. Encode \`do X until Y\`, \`review/fix until passing\`, or \`run checks and fix until green\` as explicit bounded workflow gates rather than informal retries.
 
 ## 4. Decide and land
 
-If you used \`goal\`, the workflow already persisted receipts in a goal ledger and reviewer-gated completion. Use its final status — \`complete\`, \`blocked\`, or \`needs_human\` — plus the remaining-work report to decide whether to ship, unblock, or clarify. If you enabled \`create_pr=true\`, use its final pull-request report to decide whether to ship or iterate again.
-
-If you used \`ralph\`, the workflow transformed the prompt into a research question, researched the codebase, delegated implementation through sub-agents, reviewed, and iterated. If you enabled \`create_pr=true\`, use its final pull-request report to decide whether to ship or iterate again.
+Use the workflow's deterministic evidence, verifier decision, remaining-work report, and bound-exhaustion state to decide whether to ship, repair, unblock, or clarify. Keep PR/MR creation, deployment, and publication as separately authorized post-approval actions.
 
 If you implemented directly instead of using a workflow, you can still run:
 
@@ -150,14 +143,15 @@ Workflow-first is not builtin-only or monolithic. Atomic can author custom TypeS
 
 | Workflow | When to use | How to run |
 |---|---|---|
-| \`deep-research-codebase\` | broad repo or cross-cutting research before you decide what to change (for one area, use \`/skill:research-codebase\`; this indexes the whole repo) | \`/workflow deep-research-codebase prompt="How do payment retries work end to end?"\` |
-| \`goal\` | autonomous work that benefits from a durable goal ledger, bounded sub-agent orchestration turns, named validation, and reviewer-gated completion; add \`create_pr=true\` only for final PR handoff after approval | \`/workflow goal objective="Update the CLI docs, include one usage example, and verify the docs build passes"\` |
-| \`ralph\` | autonomous work that benefits from a durable research-first pipeline, delegated implementation, and iterative review | \`/workflow ralph prompt="Migrate the database layer to Drizzle" create_pr=true\` |
-| \`open-claude-design\` | frontend and product design work | \`/workflow open-claude-design prompt="Refresh the settings page hierarchy"\` |
+| \`classify-and-act\` | structured routing | \`/workflow classify-and-act prompt="Triage this request"\` |
+| \`fan-out-and-synthesize\` | independent slices or repository research | \`/workflow fan-out-and-synthesize prompt="Map payment retries by subsystem"\` |
+| \`adversarial-verification\` | fresh verification and bounded repair | \`/workflow adversarial-verification task="Verify the patch"\` |
+| \`generate-and-filter\` | candidate generation and shortlisting | \`/workflow generate-and-filter prompt="Propose command names"\` |
+| \`tournament\` | balanced whole-solution comparison | \`/workflow tournament prompt="Design the retry strategy"\` |
+| \`loop-until-done\` | bounded convergence on explicit evidence | \`/workflow loop-until-done prompt="Repair failures until tests pass"\` |
+| \`open-claude-design\` | frontend and product design | \`/workflow open-claude-design prompt="Refresh the settings page hierarchy"\` |
 
-Use \`/workflow inputs <name>\` to inspect the exact inputs in your environment.
-
-Use \`/skill:research-codebase ...\` when you want research on one subsystem, directory, or focused question. Use \`/workflow deep-research-codebase ...\` when the answer needs end-to-end tracing across many parts of the repo.
+Use \`/workflow inputs <name>\` to inspect exact inputs. Use \`/skill:research-codebase\` for one focused subsystem; use repository-focused \`fan-out-and-synthesize\` when you need independent whole-repository slices and an artifact synthesis barrier.
 
 If you are drafting research, reviewer, or synthesis prompts for a workflow, use \`/skill:prompt-engineer\` first. It is a good fit when a stage prompt feels vague, overloaded, or underspecified.
 
@@ -196,13 +190,13 @@ Why this is good:
 
 \`/workflow list\`
 
-\`/workflow inputs goal\`
+\`/workflow inputs fan-out-and-synthesize\`
 
-\`/workflow goal objective="Fix the settings form validation bug, add the focused test, and finish when invalid emails show the inline error without submitting"\`
+\`/workflow fan-out-and-synthesize prompt="Partition the settings flow by subsystem and synthesize cited findings"\`
 
-\`/workflow inputs ralph\`
+\`/workflow inputs adversarial-verification\`
 
-\`/workflow ralph prompt="Migrate the database layer to Drizzle" create_pr=true\`
+\`/workflow adversarial-verification task="Verify the settings form validation patch"\`
 
 \`/workflow status\`
 
