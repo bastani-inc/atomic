@@ -1,4 +1,6 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, test } from "bun:test";
 import { DEFAULT_PROMPT_GUIDANCE as workflowGuidance, WORKFLOW_TOOL_DESCRIPTION } from "../../packages/workflows/src/extension/workflow-prompts.js";
 import { WorkflowParametersSchema } from "../../packages/workflows/src/extension/workflow-schema.js";
@@ -172,7 +174,7 @@ describe("workflow-first execution routing", () => {
     }
   });
 
-  test("requires a pre-launch coverage pass and one composed execution shape", () => {
+  test("requires a pre-launch coverage pass and selected execution shape", () => {
     for (const phrase of [
       "workflow-architecture pass",
       "implementation lifecycle needs",
@@ -183,8 +185,8 @@ describe("workflow-first execution routing", () => {
       "requirement/risk | required evidence | workflow/stage that produces it | gap",
       "covers the lifecycle and produces evidence for every material requirement/risk",
       'Do not treat "has reviewers" as proof that a task-specific risk is covered',
-      "first named workflow launch commits the execution shape for the turn",
-      "chain unrelated top-level workflow launches",
+      "first named workflow launch commits the selected execution shape for the turn",
+      "chain unplanned unrelated launches",
       "design one custom parent before launch",
       "Choose the cheapest graph",
       "Avoid decorative composition and duplicated research or review loops",
@@ -242,6 +244,49 @@ describe("workflow-first execution routing", () => {
     expect(rootReadme).not.toContain("bounded loops and retries must create distinct tracked work");
   });
 
+  test("routes independent implementation queues to bounded top-level runs", async () => {
+    for (const phrase of [
+      "enumerate every item before launch", "independent, dependent, or clustered", "For a mixed queue with dependent A → B and unrelated C",
+      "prerequisites are already merged into each selected base", "compose only the A → B dependency cluster", "shared files, API contracts, migrations, generated artifacts",
+      "Launch C as its own concurrent top-level named workflow with its own root failure boundary", 'Do not infer a cross-item sequence from list order or from "create a PR after"', "does not put the whole queue in one parent",
+      "Prove the dependency before serializing independent workflow items", "separate concurrent top-level named workflow runs with bounded concurrency", "complete bounded wave of planned per-item top-level launches",
+      "item → run ID → worktree → branch → result/PR map", "first item's review, repair, or check failure must not block unrelated items", "checkout isolation, not concurrent top-level execution",
+    ]) {
+      expect(workflowGuidance.join("\n")).toContain(phrase);
+    }
+    const documentation = await readRepositoryFile("packages/coding-agent/docs/workflows.md");
+    for (const phrase of [
+      "Interpret ordering words locally unless a cross-item dependency is explicit", "already merged into the base each run will use", "A shared unmerged contract can create a dependency",
+      "Independent clusters with internal dependencies", "Workflow run isolation and Git worktree isolation are separate guarantees", "missing target is created as a detached checkout from `baseBranch`",
+      "two independent top-level issue runs with a bound of 2", "Item | Run ID | Worktree | Branch | Result / PR", "does not cancel, pause, or roll back the first run",
+      "failed child call normally fails its parent", "Lifecycle notices carry terminal status/error, not declared workflow outputs", "task-queue triage and bounded per-item dispatch rule", "detail.result.pr_url",
+    ]) {
+      expect(documentation).toContain(phrase);
+    }
+    const statusInspectionSource = documentation.match(/After each terminal lifecycle notice[^\n]*\n\n```ts\n([\s\S]*?)\n```/)?.[1] ?? "";
+    expect([...statusInspectionSource.matchAll(/workflow\(\{\s*action: "status",\s*runId: "([^"]+)",\s*format: "json"\s*\}\)/g)].map((match) => match[1])).toEqual(["<run-id-for-#2101>", "<run-id-for-#2102>"]);
+    const definitionMatch = documentation.match(/```ts\n\/\/ \.atomic\/workflows\/issue-to-pr\.ts\n([\s\S]*?)\n```/);
+    expect(definitionMatch).not.toBeNull();
+    const definitionSource = definitionMatch?.[1];
+    if (definitionSource === undefined) throw new Error("issue-to-pr example definition is missing");
+    for (const contract of [
+      'name: "issue-to-pr"', 'worktreeFromInputs: { gitWorktreeDir: "git_worktree_dir", baseBranch: "base_ref" }', "const cwd = ctx.cwd ?? ctx.inputs.git_worktree_dir",
+      '["git", "switch", "-c", branch, baseRef]', 'ctx.task("implement"', 'ctx.task(`review-${round}`', 'ctx.task(`repair-${round}`',
+      'ctx.tool(`check-${index + 1}`', '["gh", "pr", "create"', 'ctx.tool("push-feature-branch"',
+    ]) expect(definitionSource).toContain(contract);
+    const tempDirectory = await mkdtemp(resolve(repositoryRoot, "test", ".issue-to-pr-example-"));
+    const definitionPath = resolve(tempDirectory, "issue-to-pr.ts");
+    try {
+      await writeFile(definitionPath, definitionSource);
+      const loaded = (await import(`${pathToFileURL(definitionPath).href}?test=${Date.now()}`)) as { default: { readonly name: string; readonly inputs: Readonly<Record<string, object>>; readonly inputBindings?: { readonly worktree?: { readonly gitWorktreeDir: string; readonly baseBranch?: string } } } };
+      expect(loaded.default.name).toBe("issue-to-pr");
+      expect(Object.keys(loaded.default.inputs)).toEqual(["issue", "git_worktree_dir", "base_ref", "pr_base", "branch", "checks"]);
+      expect(loaded.default.inputBindings?.worktree).toEqual({ gitWorktreeDir: "git_worktree_dir", baseBranch: "base_ref" });
+    } finally {
+      await rm(tempDirectory, { recursive: true, force: true });
+    }
+  });
+
   test("retains every risk-based routing signal in model-visible guidance", () => {
     for (const phrase of [
       "broad repository uncertainty → Fan-out-and-synthesize with repository-focused branches",
@@ -288,7 +333,7 @@ describe("workflow-first execution routing", () => {
       "Does an installed graph supply complete coverage?",
       "Broad repository uncertainty points to repository-focused Fan-out-and-synthesize",
       "implementation work to a task-specific worker/reviewer loop",
-      "first named workflow launch commits the execution shape for the turn",
+      "first named workflow launch commits the selected execution shape for the turn",
       "one custom parent",
       "Choose the cheapest complete graph",
       "grumpy/skeptical-but-fair reviewer",
@@ -311,8 +356,9 @@ describe("workflow-first execution routing", () => {
   test("routes worktree isolation through declared named-workflow inputs", () => {
     for (const phrase of [
       "Natural-language instructions to create or use a worktree do not enable runner isolation",
-      "named workflow must declare and implement any worktree inputs",
-      "inspect its inputs before launching",
+      "named workflow must declare and implement any worktree and feature-branch inputs",
+      "pass a distinct path and branch for each concurrent item",
+      "existing same-repository worktree as-is; neither case checks out a separate feature-branch input",
     ]) {
       expect(combinedGuidance).toContain(phrase);
     }

@@ -112,6 +112,8 @@ List and run it like any other workflow:
 
 Named workflow runs execute in the background. By default, after launch expect a run id and monitor it with `/workflow status <run-id>`, F2, or `/workflow connect <run-id>`. A definition with `autoAttach: true` instead opens the graph overlay as soon as an interactive top-level named launch through `/workflow <name>` or the registered `workflow` tool is accepted. This option does not affect headless launches or nested `ctx.workflow(...)` calls, and existing input-form launch behavior is unchanged.
 
+For a request with several implementation items, do not turn list order into one serial workflow by default. Triage dependencies first, then launch independent items as a bounded wave of separate top-level runs; see [Task queues and software factories](#task-queues-and-software-factories).
+
 While a workflow is running, the visible below-editor `BACKGROUND` panel advances its elapsed label every second from the moment the run starts; it does not require opening or switching to the orchestrator. Updates repaint the existing mounted panel in place, paused timers stay frozen, and terminal cards retain their short recent-run expiry.
 
 ### Or hand-write the TypeScript
@@ -186,6 +188,8 @@ If inline work drifts past roughly ten exploratory tool calls without an artifac
 
 "Use a workflow" is not one decision — it covers several execution shapes with different costs and guarantees. This section is written as agent-facing guidance: it is the self-prompt an orchestrating agent should run before the first tool call on a new request, and it doubles as documentation for humans who want to steer that choice explicitly.
 
+> **Multi-item routing rule:** Enumerate requested implementation items and prove their dependencies before launch. Run independent items as separate concurrent top-level workflow runs with bounded concurrency, one explicit worktree and root failure boundary per item. Preserve ordered composition only for real code, artifact, contract, decision, approval, or merged-result dependencies.
+
 The shapes, cheapest first:
 
 | Shape | What it is | Guarantees you gain | Cost you pay |
@@ -230,14 +234,14 @@ Ask these questions in order and stop at the cheapest shape that satisfies every
 1. **Is the outcome provable?** If success can be stated as evidence (tests green, artifact exists, behavior demonstrated, reviewer approves), the task fits a workflow. If no proof is possible or needed, inline is probably fine.
 2. **Is there structure?** Multiple subtasks, dependencies, handoffs, or parallel slices rule out inline execution. A single focused evidence-gathering pass does not.
 3. **Is there a loop or gate?** Any "until Y", "fix until passing", review/approval gate, or unknown-length repair cycle requires a workflow that enforces the stop condition, never an improvised inline retry loop or a stretched subagent chain.
-4. **Is it one task or a queue of tasks?** "Address all open issues" or "fix every ticket assigned to me" is a factory request, not one workflow. Enumerate and dependency-classify the items first, then follow [Task queues and software factories](#task-queues-and-software-factories): independent items become separate per-item runs; dependent items share one composed graph.
+4. **Is it one task or a queue of tasks?** "Address all open issues" or "fix every ticket assigned to me" is a factory request, not one workflow. Enumerate and dependency-classify the items first, then follow [Task queues and software factories](#task-queues-and-software-factories): independent items become bounded concurrent top-level per-item runs; dependent items share one ordered composed graph; independent dependency clusters become separate top-level runs.
 5. **Does an installed graph supply complete coverage?** Run a named workflow only if its objective, inputs, lifecycle, and produced evidence cover every material row. Do not force-fit a broad-but-partial match ([When to Use Workflows](#when-to-use-workflows)).
 6. **What routing signals shape the graph?** Broad repository uncertainty points to repository-focused Fan-out-and-synthesize; independent slices to Fan-out-and-synthesize; plausible-but-wrong contract risk to Adversarial verification or a task-specific verification stage; competing architectures or implementations to Generate-and-filter or Tournament; an explicit repeat-until condition to Loop until done; implementation work to a task-specific worker/reviewer loop; and exact API/build/schema requirements to dedicated deterministic gates.
 7. **Does a tested graph solve only part of the task?** Author one custom parent and nest that definition with `ctx.workflow(...)`, placing the missing research, verification, or deterministic gates around it instead of copying its prompts and gates.
 8. **Is it only specialist evidence-gathering?** If the parent keeps control, no completion gate is needed, and the work is bounded (a debug pass, a parallel research fanout, one noisy investigation), inline subagents are enough—and cheaper than a workflow.
 9. **Is it truly tiny?** Deterministic, low-risk, single-file/no-test/no-review—answer or edit inline and stop.
 
-A first named workflow launch commits the execution shape for the turn, and the parent ends its turn after launch. Do not plan to casually chain unrelated top-level workflow launches afterward. When the task needs multiple workflow capabilities, design composition **before** launch: author one custom parent, import project/package definitions or builtins from `@bastani/workflows/builtin`, and call `ctx.workflow(...)`. Nested children preserve their stages and guarantees within the expanded graph up to `maxDepth`.
+A first named workflow launch commits the selected execution shape for the turn. For one task, end the turn after that launch. For an independent queue, the selected shape is a bounded launch wave: issue every planned per-item top-level launch up to the concurrency bound before ending the turn. Do not casually chain unplanned unrelated top-level workflow launches. When one task needs multiple workflow capabilities or dependent items need ordered handoffs, design composition **before** launch: author one custom parent, import project/package definitions or builtins from `@bastani/workflows/builtin`, and call `ctx.workflow(...)`. Nested children preserve their stages and guarantees within the expanded graph up to `maxDepth`, but they remain under the parent's root lifecycle and failure boundary.
 
 Choose the cheapest complete graph. Routing cues are not a reason to add decorative stages: avoid duplicated research and review loops. Before launch, state the selected graph, why one broad builtin is sufficient or insufficient, the evidence each major stage produces, and the stop/repair conditions. A simple direct match can be one sentence; a composed graph should briefly name its children and task-specific gates.
 
@@ -274,21 +278,215 @@ The rubric prevents two common misuses: using parent-controlled subagent calls f
 
 #### Task queues and software factories
 
-Some requests are not one task but a queue of them: "address all open issues", "fix every Linear ticket assigned to me", "burn down the TODO backlog", "upgrade every service to the new SDK". These fire-and-forget factory requests need a separate decision step because one monolithic workflow would process the queue serially in a single growing context.
+Some requests are not one task but a queue of them: "address all open issues", "fix every Linear ticket assigned to me", "burn down the TODO backlog", or "implement issue A and create a PR after; also implement issue B and create a PR after". One monolithic worker loop would process the queue serially in a growing context and make unrelated work share one root failure boundary.
 
-**Triage the queue before choosing the shape.** The first action is always a cheap enumeration-and-dependency pass, not implementation: list the items (issue tracker query, ticket API, grep for TODOs), then classify how they relate:
+**Interpret ordering words locally unless a cross-item dependency is explicit.** "Implement A and create PR A after; implement B and create PR B after" normally means `implement A → validate A → PR A` and `implement B → validate B → PR B`; those two item lifecycles may run concurrently. It does not mean `PR A → start B`. Serialize only when the user or repository evidence says, for example, "implement B after A is merged", "B builds on A's branch", "use A's generated schema in B", or "do these in order". Do not infer a cross-item sequence from list order or from "create a PR after" when "after" naturally refers to that item's own implementation. Prove the dependency before serializing independent workflow items. If wording remains materially ambiguous after dependency research, ask one grouped clarification instead of silently serializing.
 
-- **Independent items** — different subsystems, no shared files, no ordering constraints, each individually verifiable.
-- **Dependent items** — one blocks another, they touch the same files/modules, they share a migration or API change, or their acceptance criteria reference each other.
-- **Clustered** — the queue splits into groups: dependencies inside a group, independence between groups.
+**Triage before dispatch:**
 
-**Independent items → many small runs, not one big one.** Spawn one task-specific workflow run per item, each in its own explicitly requested worktree when isolation is needed. One run per item gives each task clean context, independent evidence, its own failure boundary, and real parallelism. Dispatch a bounded number at a time and report the item → run id → worktree map.
+1. Enumerate every requested item.
+2. Inspect stated issue, PR, branch, and approval dependencies.
+3. Check whether each prerequisite is already merged into the base each run will use. A merged prerequisite does not serialize current items when every base contains it. An unmerged prerequisite delays only the item or dependency cluster that consumes it; unrelated items remain eligible for separate concurrent workflow runs under the queue's bound.
+4. Check likely shared files, API contracts, migrations, generated artifacts, and release or deployment effects. A shared unmerged contract can create a dependency even when items edit different files.
+5. Classify items as **independent**, **dependent**, or **clustered**.
+6. Dispatch independent items or clusters concurrently with an explicit concurrency bound; preserve dependency order inside each cluster.
+7. Report an item → run ID → worktree → branch → result/PR map. After each terminal lifecycle notice, inspect that run's status detail before updating its result/PR fields.
 
-**Dependent items → one graph that encodes the ordering.** When items block each other or share files, use a composed parent workflow that runs per-item child definitions in dependency order and passes declared outputs or artifacts to dependents. Use one monolithic graph only when the items form one tightly coupled task.
+| Relationship | Execution shape |
+|---|---|
+| Independent issues in separate code areas | Separate top-level workflow runs in bounded parallel waves |
+| A prerequisite is already merged into every selected base | Treat the prerequisite as satisfied; run otherwise independent items in parallel |
+| Same files or a shared unmerged API, schema, migration, or generated artifact | One ordered/composed workflow, or one ordered run per dependent cluster |
+| One issue explicitly builds on another branch, PR, artifact, decision, approval, or merged result | Sequential dependency |
+| Independent clusters with internal dependencies | Separate cluster runs in parallel; compose or sequence items inside each cluster |
+| Material dependency remains unclear | Ask one grouped clarification before implementation |
 
-**Clustered queues → both.** Compose within a cluster and fan out across clusters. Each cluster becomes one run, while independent clusters run in bounded parallel waves.
+**Workflow run isolation and Git worktree isolation are separate guarantees.** A top-level run provides its own context, progress, lifecycle controls, retry state, and root failure boundary. A worktree provides a separate checkout and Git state; it is not an operating-system sandbox. Several worktrees inside one sequential root do not create concurrent top-level runs or independent root failure boundaries, while concurrent writer runs without separate worktrees can still conflict. Use both for independent implementation items.
 
-The factory self-prompt is: **enumerate → classify dependencies → fan out runs where independent → compose graphs where dependent → dispatch in bounded waves → report the plan.**
+A natural-language request for a worktree does not configure runner isolation. Inspect the named workflow's inputs first. Each per-item definition must declare and implement its reusable-worktree and branch inputs, and the dispatcher must pass distinct values explicitly. With `worktreeFromInputs`, a missing target is created as a detached checkout from `baseBranch`, while an existing same-repository worktree is reused as-is. Neither case checks out the feature branch named by a separate `branch` input, so the item workflow must enforce that branch step itself.
+
+**Supported example: two independent top-level issue runs with a bound of 2.** First save this complete project workflow as `.atomic/workflows/issue-to-pr.ts`, then run `/workflow reload`. It is a user-defined workflow built only from supported authoring APIs, not a bundled workflow name that Atomic installs by default.
+
+```ts
+// .atomic/workflows/issue-to-pr.ts
+import { workflow } from "@bastani/workflows";
+import { Type, type Static } from "typebox";
+
+const reviewDecision = Type.Object(
+  {
+    approved: Type.Boolean(),
+    findings: Type.Array(Type.String()),
+  },
+  { additionalProperties: false },
+);
+
+function runCommand(argv: readonly string[], cwd: string): string {
+  const result = Bun.spawnSync([...argv], { cwd, stdout: "pipe", stderr: "pipe" });
+  const stdout = result.stdout.toString().trim();
+  const stderr = result.stderr.toString().trim();
+  if (result.exitCode !== 0) {
+    throw new Error(`${argv.join(" ")} failed (${result.exitCode})\n${stderr || stdout}`);
+  }
+  return stdout;
+}
+
+export default workflow({
+  name: "issue-to-pr",
+  description: "Implement, review, check, and open one issue PR in its own worktree.",
+  inputs: {
+    issue: Type.String(),
+    git_worktree_dir: Type.String(),
+    base_ref: Type.String({ default: "origin/main" }),
+    pr_base: Type.String({ default: "main" }),
+    branch: Type.String(),
+    checks: Type.Array(Type.Array(Type.String(), { minItems: 1 }), { minItems: 1 }),
+  },
+  outputs: {
+    result: Type.String(),
+    pr_url: Type.String(),
+    branch: Type.String(),
+    worktree: Type.String(),
+  },
+  worktreeFromInputs: { gitWorktreeDir: "git_worktree_dir", baseBranch: "base_ref" },
+  run: async (ctx) => {
+    const { issue, branch, checks } = ctx.inputs;
+    const cwd = ctx.cwd ?? ctx.inputs.git_worktree_dir;
+    const baseRef = ctx.inputs.base_ref;
+
+    await ctx.tool("select-feature-branch", { branch, base_ref: baseRef }, async () => {
+      const probe = Bun.spawnSync(
+        ["git", "show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
+        { cwd, stdout: "pipe", stderr: "pipe" },
+      );
+      if (probe.exitCode === 0) return runCommand(["git", "switch", branch], cwd);
+      if (probe.exitCode !== 1) throw new Error(probe.stderr.toString().trim());
+      return runCommand(["git", "switch", "-c", branch, baseRef], cwd);
+    });
+
+    await ctx.task("implement", {
+      context: "fork",
+      prompt: [
+        `Implement ${issue}.`,
+        "Add or update tests, make the smallest correct change, and commit all changes.",
+        "Do not create the PR; this workflow does that only after review and checks pass.",
+      ].join("\n"),
+    });
+
+    let approved = false;
+    for (let round = 1; round <= 2; round += 1) {
+      const review = await ctx.task(`review-${round}`, {
+        context: "fresh",
+        schema: reviewDecision,
+        prompt: [
+          `Review the current ${branch} diff against ${baseRef} for ${issue}.`,
+          "Inspect the code and tests. Approve only when the issue is fully met and the patch is safe.",
+          "Return structured_output with approved and evidence-backed findings.",
+        ].join("\n"),
+      });
+      const decision = review.structured as Static<typeof reviewDecision>;
+      if (decision.approved) {
+        approved = true;
+        break;
+      }
+      if (round === 2) {
+        throw new Error(`review bound exhausted: ${decision.findings.join("; ")}`);
+      }
+      await ctx.task(`repair-${round}`, {
+        context: "fork",
+        prompt: [
+          `Repair ${issue} on ${branch}.`,
+          ...decision.findings.map((finding) => `- ${finding}`),
+          "Run relevant checks and commit the repair. Do not create a PR.",
+        ].join("\n"),
+      });
+    }
+    if (!approved) throw new Error("review did not approve the patch");
+
+    await ctx.tool("require-clean-commit", { branch }, async () => {
+      const pending = runCommand(["git", "status", "--porcelain"], cwd);
+      if (pending !== "") throw new Error("implementation left uncommitted changes");
+      return { commit: runCommand(["git", "rev-parse", "HEAD"], cwd) };
+    });
+
+    for (const [index, argv] of checks.entries()) {
+      await ctx.tool(`check-${index + 1}`, { argv }, async () => runCommand(argv, cwd));
+    }
+
+    await ctx.tool("push-feature-branch", { branch }, async () =>
+      runCommand(["git", "push", "--set-upstream", "origin", branch], cwd),
+    );
+    const prUrl = await ctx.tool("create-pr", { issue, branch, base: ctx.inputs.pr_base }, async () =>
+      runCommand(
+        ["gh", "pr", "create", "--base", ctx.inputs.pr_base, "--head", branch, "--title", issue, "--body", `Implements ${issue}.`],
+        cwd,
+      ),
+    );
+
+    return {
+      result: `completed ${issue}`,
+      pr_url: prUrl,
+      branch,
+      worktree: cwd,
+    };
+  },
+});
+```
+
+The workflow binding creates or validates the reusable worktree before `run` starts. The first durable tool then creates or checks out the requested feature branch, so worktree setup's detached checkout never becomes the implementation branch. The item run owns branch setup → implementation → bounded review/repair → deterministic checks → push → PR creation. A failed review or check fails that item before push/PR.
+
+Inspect the new target with `workflow({ action: "inputs", workflow: "issue-to-pr" })`. Then issue these two ordinary named-run tool calls in the same dispatch turn and end the turn. Interactive named launches return after startup admission instead of waiting for terminal completion, so the two run bodies overlap. Starting exactly two item runs and admitting no third until one ends enforces the bound of 2; the top-level tool has no batch-only worker loop or hidden concurrency field.
+
+```ts
+workflow({
+  action: "run",
+  workflow: "issue-to-pr",
+  inputs: {
+    issue: "#2101 fix cache-key normalization",
+    git_worktree_dir: "../atomic-issue-2101",
+    base_ref: "origin/main",
+    pr_base: "main",
+    branch: "fix/2101-cache-key",
+    checks: [["bun", "test", "test/unit/cache-key.test.ts"]],
+  },
+})
+
+workflow({
+  action: "run",
+  workflow: "issue-to-pr",
+  inputs: {
+    issue: "#2102 correct CLI help output",
+    git_worktree_dir: "../atomic-issue-2102",
+    base_ref: "origin/main",
+    pr_base: "main",
+    branch: "fix/2102-cli-help",
+    checks: [["bun", "test", "test/unit/cli-help.test.ts"]],
+  },
+})
+```
+
+For a longer queue, wait for a terminal lifecycle notice before filling an open slot; do not poll. Keep each returned top-level run ID with its item metadata. Lifecycle notices carry terminal status/error, not declared workflow outputs.
+
+After each terminal lifecycle notice, inspect the completed or failed run by its returned ID with the supported per-run status action:
+
+```ts
+workflow({ action: "status", runId: "<run-id-for-#2101>", format: "json" })
+workflow({ action: "status", runId: "<run-id-for-#2102>", format: "json" })
+```
+
+Each JSON response has `action: "statusDetail"` and a `detail` object. Read `detail.status` and `detail.error`. For a completed run, read its declared outputs from `detail.result` and require a string `detail.result.pr_url` before filling that item's result/PR fields; do not infer the PR URL from the lifecycle notice or stage prose. A completed detail without the required result or `pr_url` is a reporting-contract failure.
+
+For a failed run, record `detail.error` and leave the PR field as `no PR` when the failure occurred before `create-pr`. If failure may have occurred during or after that durable tool, inspect its status/tool detail or the GitHub PR list before retrying so the dispatcher does not create a duplicate PR. In either case, free the dispatcher slot, keep unrelated top-level runs active, and do not treat a failed run's partial result as successful output. Only after these per-run inspections should the dispatcher fill the final map:
+
+| Item | Run ID | Worktree | Branch | Result / PR |
+|---|---|---|---|---|
+| `#2101` | `7f31a2c0-...` | `../atomic-issue-2101` | `fix/2101-cache-key` | `completed` / `<PR-2101-URL>` |
+| `#2102` | `b84d090e-...` | `../atomic-issue-2102` | `fix/2102-cli-help` | `failed: review/repair bound exhausted` / no PR |
+
+The second failure does not cancel, pause, or roll back the first run, and it does not block unrelated later items from using an open dispatcher slot. A first item's review, repair, or check failure must not block unrelated items; if it would, reconsider whether the queue was placed in one root workflow by mistake.
+
+This example uses **top-level named runs**, not nested `ctx.workflow(...)` children. Each launch appears in top-level status, gets its own lifecycle notices and controls, and owns an independent root failure boundary. Nested children are hidden from top-level run lists and expand inside one parent graph; a failed child call normally fails its parent, and parent exit cancels in-flight children. Use nested children to preserve ordered composition inside a truly dependent item or cluster, not to claim separate root lifecycles for independent queue items.
+
+The factory self-prompt is: **enumerate → inspect and classify dependencies → fan out top-level runs where independent → compose where dependent → dispatch in bounded waves → report the map.**
 
 #### Prompting the choice
 
@@ -299,11 +497,9 @@ Humans can steer the shape directly:
 - **State the loop.** "Iterate until tests pass" or "review and fix until approved" defines a hard workflow stop condition.
 - **State the evidence.** A QA video, test output, generated artifact, or reviewer sign-off tells the graph which gates it needs.
 - **State the boundary.** "Work in a separate worktree", "do not create a PR", or "stop after implementation" separates implementation from final actions.
-- **State the queue policy.** Say how to split, order, isolate, and bound queued items; otherwise Atomic triages dependencies first.
+- **State the queue policy.** Say how to split, order, isolate, and bound queued items; otherwise Atomic runs the [dependency-triage and bounded-dispatch playbook](#task-queues-and-software-factories) before implementation. Ordinary list order and per-item "create a PR after" wording do not create a cross-item dependency.
 
-Absent these controls, Atomic applies the self-prompt and rubric above.
-
-Absent these levers, the agent applies the self-prompt and rubric above — so a prompt that mentions none of them is delegating the shape decision, not avoiding it.
+Absent these controls, Atomic applies the self-prompt and rubric above; a prompt that names none of them delegates the shape decision rather than avoiding it.
 
 ### Atomic vs Claude Code Dynamic Workflows
 
@@ -3318,6 +3514,8 @@ The core workflow pattern is:
 Objective -> Scope -> Done criteria -> Run -> Inspect -> Steer -> Validate -> Summarize
 ```
 
+Apply this loop per independently verifiable implementation item. When a request contains several items, first use the [task-queue triage and bounded per-item dispatch rule](#task-queues-and-software-factories); do not make one item's inspect/steer/validate cycle block an unrelated item.
+
 Use this sequence:
 
 1. Define the end state.
@@ -3493,6 +3691,8 @@ Summarize root cause, proposed fix, files involved, validation plan, and remaini
 For workflows larger than one tracked task, choose a small control-flow pattern before writing prompts. **Workflow authors should favor these common patterns by default:** naming the pattern up front keeps the stage graph understandable, makes validation gates explicit, and helps reviewers see why work is split across model sessions. Reach for a bespoke structure only when none of these patterns fit.
 
 These patterns are composable and the headings below link to runnable builtins. For example, a migration workflow can nest [**fan-out-and-synthesize**](#six-composable-pattern-builtins) for call-site fixes, [**adversarial-verification**](#six-composable-pattern-builtins) per patch, and [**loop-until-done**](#six-composable-pattern-builtins) while tests still fail. Import and compose the builtin definitions instead of copying their prompts/graphs.
+
+These graph patterns organize work **inside one root lifecycle**. They do not replace the [task-queue rule](#task-queues-and-software-factories): independent whole implementation items normally get separate top-level runs and failure boundaries, while real dependency clusters may use these patterns inside each cluster run.
 
 | Pattern | Use it when | Atomic shape |
 |---|---|---|
@@ -3998,6 +4198,7 @@ These anti-patterns target run prompts; [Common Mistakes](#common-mistakes) cove
 | Continuing stale runs | Pause, stop, or rerun with updated context. |
 | Reading every log | Inspect status, then stages, then only relevant details. |
 | Publishing without gates | Require release validation and explicit stop conditions. |
+| Serializing independent issues from list order | Triage dependencies, then launch separate top-level item runs under a concurrency bound. |
 
 ---
 
@@ -4013,6 +4214,7 @@ Before starting a workflow, include:
 - [ ] Validation command
 - [ ] Reporting requirements
 - [ ] Stop conditions
+- [ ] Queue dependency classification, concurrency bound, and item → run/worktree/branch map (when several implementation items are requested)
 
 Before accepting a workflow result, ask:
 
