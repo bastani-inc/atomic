@@ -990,6 +990,8 @@ Emitted when a message begins and completes. The `message` field contains an `Ag
 {"type": "message_end", "message": {...}}
 ```
 
+The built-in `RpcClient` checks each `message_start` before notifying listeners, and reusable interactive chat hosts apply the same check before creating transcript entries. Starts are ignored when the message is missing, its role is not a string, or fields needed by a built-in renderer are unsafe. Other string roles pass through unchanged because extensions can add `CustomAgentMessages` through TypeScript declaration merging. Unsafe starts can appear anywhere in the received lifecycle stream without stopping later well-formed events. If an assistant start is absent or rejected, interactive mode creates the streaming view from the next valid `message_update` or `message_end`, so the response still renders. Aborted end snapshots are normalized before that first render, including retry-count text. When buffering is active, a rejected start flushes pending updates before it is ignored; ordinary buffering may still coalesce rapid update frames. RPC producers must still emit the documented `AgentMessage` shape.
+
 ### message_update (Streaming)
 
 Emitted during streaming of assistant messages. Contains both the partial message and a streaming delta event.

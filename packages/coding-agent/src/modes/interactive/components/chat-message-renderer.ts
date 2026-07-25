@@ -5,6 +5,7 @@ import type { TSchema } from "typebox";
 import type { MessageRenderer, ToolDefinition } from "../../../core/extensions/types.ts";
 import { isVerbatimCompactionMessage, type BashExecutionMessage, type BranchSummaryMessage, type CustomMessage } from "../../../core/messages.ts";
 import { parseSkillBlock } from "../../../core/agent-session.ts";
+import { isSafeMessageStartMessage } from "../../../core/message-event-validation.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 import { AssistantMessageComponent } from "./assistant-message.ts";
 import { BashExecutionComponent } from "./bash-execution.ts";
@@ -186,16 +187,17 @@ export class LiveChatEntriesController {
     this.pendingToolIndexes.clear();
   }
   private handleMessageStart(message: unknown): boolean {
-    if (!isAgentMessageLike(message)) return false;
-    if (message.role === "assistant") {
+    if (!isSafeMessageStartMessage(message)) return false;
+    const agentMessage = message as AgentMessage;
+    if (agentMessage.role === "assistant") {
       this.streamingAssistantIndex = undefined;
-      return this.updateAssistantMessage(message as AssistantMessage);
+      return this.updateAssistantMessage(agentMessage);
     }
-    if (message.role === "toolResult") {
-      const toolResult = message as ToolResultMessage;
+    if (agentMessage.role === "toolResult") {
+      const toolResult = agentMessage as ToolResultMessage;
       if (this.findToolEntryIndex(toolResult.toolCallId) >= 0) return true;
     }
-    const entries = chatEntriesFromAgentMessages([message as AgentMessage]);
+    const entries = chatEntriesFromAgentMessages([agentMessage]);
     if (entries.length === 0) return false;
     this.entries.push(...entries);
     this.reindexPendingTools();

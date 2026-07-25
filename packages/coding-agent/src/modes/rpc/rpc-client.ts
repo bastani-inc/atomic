@@ -7,6 +7,7 @@ import type { ActivityWatchdogDiagnostic } from "../interactive-engine/activity-
 import { InteractiveEngineMonitor } from "../interactive-engine/engine-monitor.ts";
 import { INTERACTIVE_ENGINE_MAX_FRAME_BYTES, serializeInteractiveEngineFrame, type EngineKeybindingState, type InteractiveEngineCommand, type InteractiveEngineMessage } from "../interactive-engine/protocol.ts";
 import { sleep } from "../../utils/sleep.ts";
+import { isSafeMessageStartMessage } from "../../core/message-event-validation.ts";
 import { createInteractiveJsonlOptions, spawnRpcClientProcess, terminateRpcClientProcess } from "./rpc-client-process.ts";
 import { RpcClientApi, type RpcCommandBody } from "./rpc-client-api.ts";
 import { RpcEventBuffer } from "./rpc-event-buffer.ts";
@@ -334,6 +335,10 @@ export class RpcClient extends RpcClientApi {
 				const pending = this.pendingRequests.get(data.id)!;
 				this.pendingRequests.delete(data.id);
 				pending.resolve(data as RpcResponse);
+				return;
+			}
+			if (data.type === "message_start" && !isSafeMessageStartMessage(Reflect.get(data, "message"))) {
+				this.eventBuffer?.flush();
 				return;
 			}
 			const event = data as RpcEvent;

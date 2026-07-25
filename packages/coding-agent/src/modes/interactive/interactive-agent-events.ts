@@ -1,5 +1,5 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
-import { type Message, type AgentSessionEvent, Loader, Spacer, Text, pickWhimsicalWorkingMessage, AssistantMessageComponent, CountdownTimer, keyText, ToolExecutionComponent, theme } from "./interactive-mode-deps.ts";
+import { type AssistantMessage, type Message, type AgentSessionEvent, Loader, Spacer, Text, pickWhimsicalWorkingMessage, AssistantMessageComponent, CountdownTimer, keyText, ToolExecutionComponent, theme } from "./interactive-mode-deps.ts";
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.ts";
 import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
@@ -22,6 +22,24 @@ function createToolComponent(
     : new ToolExecutionComponent(
         toolName, toolCallId, args, options, mode.getRegisteredToolDefinition(toolName), mode.ui, mode.sessionManager.getCwd(),
       );
+}
+
+function renderAssistantSnapshot(mode: InteractiveModeBase, message: AssistantMessage): void {
+  let component = mode.streamingComponent;
+  if (!component) {
+    // RPC may drop an unsafe start; the first valid update or end restores the view.
+    component = new AssistantMessageComponent(
+      undefined,
+      mode.hideThinkingBlock,
+      mode.getMarkdownThemeWithSettings(),
+      mode.hiddenThinkingLabel,
+      mode.outputPad,
+    );
+    mode.streamingComponent = component;
+    mode.chatContainer.addChild(component);
+  }
+  mode.streamingMessage = message;
+  component.updateContent(message);
 }
 
 InteractiveModeBase.prototype.subscribeToAgent = function(this: InteractiveModeBase): void {
@@ -139,26 +157,16 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
           this.updatePendingMessagesDisplay();
           this.ui.requestRender();
         } else if (event.message.role === "assistant") {
-          this.streamingComponent = new AssistantMessageComponent(
-            undefined,
-            this.hideThinkingBlock,
-            this.getMarkdownThemeWithSettings(),
-            this.hiddenThinkingLabel,
-            this.outputPad,
-          );
-          this.streamingMessage = event.message;
-          this.chatContainer.addChild(this.streamingComponent);
-          this.streamingComponent.updateContent(this.streamingMessage);
+          renderAssistantSnapshot(this, event.message);
           this.ui.requestRender();
         }
         break;
 
       case "message_update":
-        if (this.streamingComponent && event.message.role === "assistant") {
-          this.streamingMessage = event.message;
-          this.streamingComponent.updateContent(this.streamingMessage);
+        if (event.message.role === "assistant") {
+          renderAssistantSnapshot(this, event.message);
 
-          for (const content of this.streamingMessage.content) {
+          for (const content of event.message.content) {
             if (content.type === "toolCall") {
               if (!this.pendingTools.has(content.id)) {
                 const component = createToolComponent(this, content.name, content.id, content.arguments);
@@ -179,13 +187,12 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
 
       case "message_end":
         if (event.message.role === "user") break;
-        if (this.streamingComponent && event.message.role === "assistant") {
-          this.streamingMessage = event.message;
+        if (event.message.role === "assistant") {
           let errorMessage: string | undefined;
-          if (this.streamingMessage.stopReason === "aborted") {
+          if (event.message.stopReason === "aborted") {
             const existingAbortMessage =
-              this.streamingMessage.errorMessage && this.streamingMessage.errorMessage !== "Request was aborted"
-                ? this.streamingMessage.errorMessage
+              event.message.errorMessage && event.message.errorMessage !== "Request was aborted"
+                ? event.message.errorMessage
                 : undefined;
             const retryAttempt = this.session.retryAttempt;
             errorMessage = existingAbortMessage ?? (
@@ -193,16 +200,16 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
                 ? `Aborted after ${retryAttempt} retry attempt${retryAttempt > 1 ? "s" : ""}`
                 : "Operation aborted"
             );
-            this.streamingMessage.errorMessage = errorMessage;
+            event.message.errorMessage = errorMessage;
           }
-          this.streamingComponent.updateContent(this.streamingMessage);
+          renderAssistantSnapshot(this, event.message);
 
           if (
-            this.streamingMessage.stopReason === "aborted" ||
-            this.streamingMessage.stopReason === "error"
+            event.message.stopReason === "aborted" ||
+            event.message.stopReason === "error"
   ) {
             if (!errorMessage) {
-              errorMessage = this.streamingMessage.errorMessage || "Error";
+              errorMessage = event.message.errorMessage || "Error";
             }
             for (const [, component] of this.pendingTools.entries()) {
               component.updateResult({

@@ -5,8 +5,10 @@ import {
   ChatTranscriptComponent,
   chatEntriesFromAgentMessages,
   LiveChatEntriesController,
+  renderChatMessageEntry,
   ScrollableComponentViewport,
 } from "../../packages/coding-agent/src/modes/interactive/components/index.js";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 
 describe("chat message renderer utilities", () => {
   test("pairs assistant tool calls with later tool results while preserving args", () => {
@@ -137,6 +139,45 @@ describe("chat message renderer utilities", () => {
     assert.deepEqual(live.pendingToolIds(), []);
   });
 
+  test("ignores malformed tool-result starts and renders a later valid result", () => {
+    const entries = [] as ReturnType<typeof chatEntriesFromAgentMessages>;
+    const live = new LiveChatEntriesController(entries);
+
+    assert.equal(live.applyEvent({
+      type: "message_start",
+      message: { role: "toolResult", toolCallId: "call-1", toolName: "read" },
+    }), false);
+    assert.deepEqual(entries, []);
+
+    const validResult = {
+      role: "toolResult",
+      toolCallId: "call-1",
+      toolName: "read",
+      content: [{ type: "text", text: "done" }],
+      isError: false,
+      timestamp: 1,
+    };
+    assert.equal(live.applyEvent({ type: "message_start", message: validResult }), true);
+    assert.equal(entries.length, 1);
+    initTheme("dark");
+    assert.doesNotThrow(() => renderChatMessageEntry(entries[0]!, {
+      ui: { requestRender: () => {} },
+      cwd: process.cwd(),
+    }));
+  });
+
+  test("preserves an extension-defined message start", () => {
+    const entries = [] as ReturnType<typeof chatEntriesFromAgentMessages>;
+    const live = new LiveChatEntriesController(entries);
+
+    assert.equal(live.applyEvent({
+      type: "message_start",
+      message: { role: "extensionProgress", progress: 0.5, label: "Working", timestamp: 1 },
+    }), true);
+    assert.deepEqual(entries, [
+      { role: "system", kind: "system", text: "extensionProgress" },
+    ]);
+  });
   test("scrollable viewport defaults to sticky bottom and handles PageUp/PageDown", () => {
     const viewport = new ScrollableComponentViewport();
     viewport.setVisibleRows(3);
