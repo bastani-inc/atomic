@@ -72,7 +72,7 @@ export type InteractiveEngineCommand =
 	| { type: "engine_custom_input"; componentId: string; data: string }
 	| { type: "engine_custom_dispose"; componentId: string }
 	| { type: "engine_tool_render"; componentId: string; requestId: number; width: number; toolName: string; toolCallId: string; args: JsonValue; result?: JsonObject; executionStarted: boolean; argsComplete: boolean; isPartial: boolean; expanded: boolean; showImages: boolean; imageWidthCells: number }
-	| { type: "engine_message_render"; componentId: string; requestId: number; width: number; message: JsonObject; expanded: boolean }
+	| { type: "engine_message_render"; componentId: string; requestId: number; width: number; message: JsonObject; expanded: boolean; outputPad: number }
 	| { type: "engine_render_dispose"; componentId: string }
 	| { type: "engine_session_picker_select"; componentId: string; path: string }
 	| { type: "engine_session_picker_cancel"; componentId: string }
@@ -307,8 +307,8 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 			expanded: value.expanded, showImages: value.showImages, imageWidthCells: value.imageWidthCells };
 	}
 	if (value.type === "engine_message_render" && typeof value.requestId === "number" && typeof value.width === "number" &&
-		isJsonObject(value.message) && typeof value.expanded === "boolean") {
-		return { type: value.type, componentId: value.componentId, requestId: value.requestId, width: value.width, message: value.message, expanded: value.expanded };
+		isJsonObject(value.message) && typeof value.expanded === "boolean" && typeof value.outputPad === "number") {
+		return { type: value.type, componentId: value.componentId, requestId: value.requestId, width: value.width, message: value.message, expanded: value.expanded, outputPad: value.outputPad };
 	}
 	return undefined;
 }

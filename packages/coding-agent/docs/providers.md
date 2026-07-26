@@ -19,8 +19,15 @@ Use `/login` in interactive mode, then select a provider:
 - ChatGPT Plus/Pro (Codex)
 - Claude Pro/Max
 - GitHub Copilot
+- OpenRouter
+- Kimi Code
 - xAI (Grok/X subscription)
 - Radius
+
+Use `/login <provider>` (for example `/login openrouter` or `/login kimi-coding`) to jump directly to a provider, then select subscription or API-key authentication when both are available. OpenRouter opens its provider-owned browser PKCE flow and asks whether it should mint a new API key; complete the browser redirect before returning to Atomic. Kimi Code displays its provider-owned device URL/code and polls until approval, then refreshes expired tokens automatically. Built-in and extension-provided OAuth use the same direct and isolated-session lifecycle: engine-only extensions expose only safe display metadata to the terminal, while acquisition, transactional persistence, model refresh, rollback, and logout remain engine-owned. Credentials and executable provider functions never cross to the isolated frontend.
+
+Escape or Ctrl+C quietly cancels the matching login, including immediate/pre-device native aborts, and leaves the previously committed credential and catalog unchanged. Provider denial, device expiry, timeout, browser/network/protocol failure, malformed responses, token exchange, persistence, and post-login refresh failures remain visible. Atomic does not claim success until the provider flow and credential transaction complete.
+
 Use `/logout` to clear credentials. Logout immediately invalidates authentication in the active interactive engine and removes the selected provider from both `~/.atomic/agent/auth.json` and any effective legacy `~/.pi/agent/auth.json`, so the provider remains logged out after restart. Environment variables, command-line credentials, and `models.json` configuration cannot be cleared by Atomic; when one of those sources still authenticates the provider, the logout status names the remaining source. Stored tokens auto-refresh when expired.
 
 ### OpenAI Codex
@@ -37,6 +44,12 @@ Run `/fast` in interactive mode to enable OpenAI priority service tier separatel
 ### Claude Pro/Max
 
 Anthropic subscription auth is active for Claude Pro/Max accounts. Third-party harness usage draws from [extra usage](https://claude.ai/settings/usage) and is billed per token, not against Claude plan limits.
+
+For gateway-issued Anthropic bearer credentials, set `ANTHROPIC_AUTH_TOKEN` without `ANTHROPIC_API_KEY` or `ANTHROPIC_OAUTH_TOKEN`. A populated bearer token counts as configured Anthropic authentication, so `/model`, saved/default selection, cycling, RPC catalogs, and isolated model pickers keep Anthropic models available. Atomic sends it as `Authorization: Bearer …` for normal turns, branch summaries, and Verbatim Compaction without replacing caller-supplied custom headers.
+
+Claude Opus 5 is available from the bundled/dynamic Anthropic and Amazon Bedrock catalogs. With bearer-only Anthropic auth, select the exact `anthropic/claude-opus-5-*` entry through `/model`; Bedrock uses its catalog-advertised inference profile. `xhigh` appears only when the chosen entry advertises it. Bedrock requests retain adaptive thinking, prompt caching, and AWS validation/error details from the provider runtime.
+
+`ANTHROPIC_AUTH_TOKEN` is specifically for Anthropic-compatible gateways that require a bearer header. It does not synthesize an API key or `x-api-key`, and callers may still add independent custom headers/base URLs through `models.json` or an extension. Empty environment variables do not count as configured. If token and API-key sources are both configured, normal credential resolution rules apply; avoid setting both accidentally.
 
 ### GitHub Copilot
 
@@ -71,9 +84,11 @@ atomic
 
 After a successful API-key or OAuth login, Atomic refreshes provider credentials and model discovery in the active session. Newly authenticated models are immediately available in `/model` without restarting Atomic, including providers with dynamically discovered catalogs.
 
+Remote pi.dev catalogs persist their ETag and are revalidated with `If-None-Match`; an empty `304` keeps the cached models and counts as a successful check. Atomic renders the cached snapshot immediately, preserves each provider's last usable catalog on refresh failure, and prefers newer bundled data over stale remote overlays. See [Custom Models](/models#catalog-freshness-and-precedence).
+
 | Provider | Environment Variable | `auth.json` key |
 |----------|----------------------|------------------|
-| Anthropic | `ANTHROPIC_API_KEY` | `anthropic` |
+| Anthropic | `ANTHROPIC_API_KEY` or bearer-only `ANTHROPIC_AUTH_TOKEN` | `anthropic` |
 | Ant Ling | `ANT_LING_API_KEY` | `ant-ling` |
 | Azure OpenAI Responses | `AZURE_OPENAI_API_KEY` | `azure-openai-responses` |
 | OpenAI | `OPENAI_API_KEY` | `openai` |

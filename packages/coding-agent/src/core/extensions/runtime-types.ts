@@ -157,6 +157,7 @@ export interface ExtensionActions {
  */
 export interface ExtensionContextActions {
 	getModel: () => Model<Api> | undefined;
+	getThinkingLevel: () => ThinkingLevel | undefined;
 	isIdle: () => boolean;
 	isProjectTrusted: () => boolean;
 	getSignal: () => AbortSignal | undefined;

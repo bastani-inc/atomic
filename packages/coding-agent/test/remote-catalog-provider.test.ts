@@ -1,8 +1,4 @@
 import { createProvider, InMemoryModelsStore, type Model } from "@earendil-works/pi-ai";
-import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { VERSION } from "../src/config.ts";
 import { withRemoteCatalog } from "../src/core/remote-catalog-provider.ts";
@@ -67,39 +63,31 @@ describe("remote catalog provider", () => {
 		});
 	});
 
-	it("ignores persisted catalogs that are not newer than the bundled catalog", async () => {
-		const directory = mkdtempSync(join(tmpdir(), "atomic-catalog-"));
-		const localCatalog = join(directory, "test-provider.json");
-		writeFileSync(localCatalog, "{}");
-		utimesSync(localCatalog, new Date(200_000), new Date(200_000));
-		try {
-			const createWrappedProvider = () => withRemoteCatalog(
-				createProvider({
-					id: "test-provider",
-					auth: { apiKey: { name: "Test", resolve: async () => ({ auth: {} }) } },
-					models: [model("static")],
-					api: {
-						stream: () => { throw new Error("not used"); },
-						streamSimple: () => { throw new Error("not used"); },
-					},
-				}),
-				"https://catalog.example.test",
-				pathToFileURL(localCatalog),
-			);
-			for (const entry of [
-				{ models: [model("legacy")], checkedAt: Date.now() },
-				{ models: [model("stale")], checkedAt: Date.now(), lastModified: 100_000 },
-				{ models: [model("fresh")], checkedAt: Date.now(), lastModified: 300_000 },
-			]) {
-				const provider = createWrappedProvider();
-				const store = new InMemoryModelsStore();
-				await store.write(provider.id, entry);
-				await provider.refreshModels?.({ credential: { type: "api_key" }, store: providerStore(store), allowNetwork: false });
-				const expected = entry.lastModified === 300_000 ? ["static", "fresh"] : ["static"];
-				expect(provider.getModels().map((candidate) => candidate.id)).toEqual(expected);
-			}
-		} finally {
-			rmSync(directory, { recursive: true, force: true });
+	it("ignores persisted catalogs that are not newer than the bundled generation timestamp", async () => {
+		const createWrappedProvider = () => withRemoteCatalog(
+			createProvider({
+				id: "test-provider",
+				auth: { apiKey: { name: "Test", resolve: async () => ({ auth: {} }) } },
+				models: [model("static")],
+				api: {
+					stream: () => { throw new Error("not used"); },
+					streamSimple: () => { throw new Error("not used"); },
+				},
+			}),
+			"https://catalog.example.test",
+			200_000,
+		);
+		for (const entry of [
+			{ models: [model("legacy")], checkedAt: Date.now() },
+			{ models: [model("stale")], checkedAt: Date.now(), lastModified: 100_000 },
+			{ models: [model("fresh")], checkedAt: Date.now(), lastModified: 300_000 },
+		]) {
+			const provider = createWrappedProvider();
+			const store = new InMemoryModelsStore();
+			await store.write(provider.id, entry);
+			await provider.refreshModels?.({ credential: { type: "api_key" }, store: providerStore(store), allowNetwork: false });
+			const expected = entry.lastModified === 300_000 ? ["static", "fresh"] : ["static"];
+			expect(provider.getModels().map((candidate) => candidate.id)).toEqual(expected);
 		}
 	});
 

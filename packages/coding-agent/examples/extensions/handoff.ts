@@ -12,6 +12,7 @@
  * The generated prompt appears as a draft in the editor for review/editing.
  */
 
+import { uuidv7 } from "@earendil-works/pi-ai";
 import { complete, type Message } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI } from "@bastani/atomic";
 import { BorderedLoader, buildSessionContext, convertToLlm, serializeConversation } from "@bastani/atomic";
@@ -97,7 +98,13 @@ export default function (pi: ExtensionAPI) {
 					const response = await complete(
 						auth.baseUrl === undefined ? ctx.model! : { ...ctx.model!, baseUrl: auth.baseUrl },
 						{ systemPrompt: SYSTEM_PROMPT, messages: [userMessage] },
-						{ apiKey: auth.apiKey, headers: auth.headers, signal: loader.signal },
+						{
+							apiKey: auth.apiKey,
+							headers: auth.headers,
+							signal: loader.signal,
+							cacheRetention: "none",
+							sessionId: uuidv7(),
+						},
 					);
 
 					if (response.stopReason === "aborted") {

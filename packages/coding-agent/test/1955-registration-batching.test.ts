@@ -65,6 +65,43 @@ for (const origin of ["inherited-pi", "bundled"] as const) {
 	});
 }
 
+test("preserves constrainedSampling own-property state in staged inherited inspection", () => {
+	const runtime = createExtensionRuntime();
+	const candidate = extension("sampling", "inherited-pi");
+	const pi = createExtensionAPI(candidate, runtime, "/tmp", createEventBus());
+	const grammar = {
+		type: "grammar" as const,
+		variants: { openai_lark: 'start: "α" | "β"\n', openai_regex: "^(a|a)$" },
+	};
+	runtime.getAllTools = () => [];
+	runtime.beginResourceRegistrationBatch?.();
+	try {
+		const registrations = [
+			{ name: "omitted" },
+			{ name: "explicit-undefined", constrainedSampling: undefined },
+			{ name: "disabled", constrainedSampling: false as const },
+			{ name: "grammar", constrainedSampling: grammar },
+		];
+		for (const registration of registrations) {
+			pi.registerTool({
+				...registration,
+				label: registration.name,
+				description: registration.name,
+				parameters: {} as never,
+				execute: async () => ({ content: [] }),
+			});
+		}
+		const tools = runtime.getAllToolsAfterRegistration?.(candidate) ?? [];
+		expect(tools.map((tool) => Object.hasOwn(tool, "constrainedSampling"))).toEqual([false, true, true, true]);
+		expect(tools[1]?.constrainedSampling).toBeUndefined();
+		expect(tools[2]?.constrainedSampling).toBe(false);
+		expect(tools[3]?.constrainedSampling).toBe(grammar);
+		expect(Object.keys(grammar.variants)).toEqual(["openai_lark", "openai_regex"]);
+	} finally {
+		runtime.endResourceRegistrationBatch?.();
+	}
+});
+
 test("keeps original event order while committing only the bundled collision winner", async () => {
 	const runtime = createExtensionRuntime();
 	const inherited = extension("inherited", "inherited-pi");

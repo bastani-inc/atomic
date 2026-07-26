@@ -104,7 +104,12 @@ InteractiveModeBase.prototype.chatMessageRenderOptions = function(this: Interact
         return component;
       } : undefined,
       createCustomMessageComponent: isolated ? (message) => {
-        const component = new RemoteCustomMessageComponent(message, this.runtimeHost as IsolatedInteractiveRuntime, () => this.ui.requestRender());
+        const component = new RemoteCustomMessageComponent(
+          message,
+          this.runtimeHost as IsolatedInteractiveRuntime,
+          () => this.ui.requestRender(),
+          this.outputPad,
+        );
         component.setExpanded(this.toolOutputExpanded);
         return component;
       } : undefined,
@@ -162,11 +167,12 @@ InteractiveModeBase.prototype.addMessageToChat = function(this: InteractiveModeB
       case "custom": {
         if (message.display) {
           const component = this.runtimeHost instanceof IsolatedInteractiveRuntime
-            ? new RemoteCustomMessageComponent(message, this.runtimeHost, () => this.ui.requestRender())
+            ? new RemoteCustomMessageComponent(message, this.runtimeHost, () => this.ui.requestRender(), this.outputPad)
             : new CustomMessageComponent(
                 message,
                 this.session.extensionRunner.getMessageRenderer(message.customType),
                 this.getMarkdownThemeWithSettings(),
+                this.outputPad,
               );
           component.setExpanded(this.toolOutputExpanded);
           this.chatContainer.addChild(component);

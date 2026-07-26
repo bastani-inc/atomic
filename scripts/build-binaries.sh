@@ -161,6 +161,7 @@ echo "==> Copying runtime dependencies..."
 runtime_deps_dir="binaries/.runtime-node_modules"
 rm -rf "$runtime_deps_dir"
 bun run scripts/copy-runtime-dependencies.ts "$runtime_deps_dir"
+bun run scripts/assert-pi-runtime-assets.ts --node-modules "$runtime_deps_dir" --app "$shared_app_dir/app.js"
 clipboard_copy_args=()
 if [[ "$SKIP_DEPS" == "true" ]]; then
     # Local builds reuse whichever optional native packages are already present.

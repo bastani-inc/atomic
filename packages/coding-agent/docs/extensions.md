@@ -1609,7 +1609,7 @@ mode and would not execute if sent via `prompt`.
 
 ### pi.registerMessageRenderer(customType, renderer)
 
-Register a custom TUI renderer for messages with your `customType`. See [Custom UI](#custom-ui).
+Register a custom TUI renderer for messages with your `customType`. The renderer options contain `expanded` and the current numeric `outputPad`, so custom output can align with built-in messages. The same options are provided in normal and isolated-engine rendering. See [Custom UI](#custom-ui).
 
 ### pi.registerShortcut(shortcut, options)
 
@@ -1968,6 +1968,34 @@ async execute(toolCallId, params) {
 ```
 
 **Important:** Use `StringEnum` from `@bastani/atomic` for string enums. It retains Pi's Google-compatible schema and composes with Atomic's direct TypeBox types; `Type.Union`/`Type.Literal` doesn't work with Google's API.
+
+#### Constrained sampling
+
+`ToolDefinition.constrainedSampling` is preserved for extension tools, SDK `customTools`, wrappers, and isolated execution. It accepts `false` or the exported `ConstrainedSamplingConfig`:
+
+```typescript
+pi.registerTool({
+  name: "strict_edit",
+  label: "Strict edit",
+  description: "Edit one file",
+  parameters: Type.Object({ path: Type.String(), content: Type.String() }),
+  constrainedSampling: { type: "json_schema", strict: "prefer" },
+  async execute(_id, params) {
+    return { content: [{ type: "text", text: params.path }], details: {} };
+  },
+});
+```
+
+Exact modes:
+
+- `{ type: "json_schema", strict: "prefer" }` requests strict provider enforcement and falls back to ordinary tool calling when unavailable.
+- `{ type: "json_schema", strict: "require" }` fails the request rather than silently weakening the constraint.
+- `{ type: "grammar", variants: { openai_lark?: string, openai_regex?: string } }` requests an OpenAI custom grammar tool; Lark wins when both non-empty variants are present.
+- `false` explicitly opts out. Its runtime effect matches omission, but public tool inspection preserves `false` as a present property.
+
+Atomic preserves the optional property's exact own-key state across wrappers, active-session inspection, staged extension inspection, bundled tools, and isolated transport: omission stays absent; explicitly present `undefined` stays present; `false` and config objects remain unchanged. This distinction matters to SDK/extension code that uses `Object.hasOwn()` rather than an ordinary property read.
+
+Grammar tools require an object schema with exactly one required string property. They are emitted only when model metadata advertises `supportsOpenAIGrammarTools` (also exposed as Atomic's `supportsGrammarTools` alias); otherwise provider handling falls back to the normal function/JSON-schema path. Older OpenAI models and gateways that rewrite schemas cannot honor custom grammar tools. Typed RPC clients receive these claims through optional `ModelInfo.compat`. See [Custom Models](/models#constrained-tool-sampling) and [RPC](/rpc#get_available_models).
 
 **Argument preparation:** `prepareArguments(args)` is optional. If defined, it runs before schema validation and before `execute()`. Use it only when a custom tool must normalize arguments before validation. Return the object you want validated against `parameters`, keep the public schema strict, and avoid advertising deprecated fields.
 
@@ -2629,7 +2657,7 @@ Register a custom renderer for messages with your `customType`:
 import { Text } from "@earendil-works/pi-tui";
 
 pi.registerMessageRenderer("my-extension", (message, options, theme) => {
-  const { expanded } = options;
+  const { expanded, outputPad } = options;
   let text = theme.fg("accent", `[${message.customType}] `);
   text += message.content;
 
@@ -2637,7 +2665,7 @@ pi.registerMessageRenderer("my-extension", (message, options, theme) => {
     text += "\n" + theme.fg("dim", JSON.stringify(message.details, null, 2));
   }
 
-  return new Text(text, 0, 0);
+  return new Text(text, outputPad, 0);
 });
 ```
 

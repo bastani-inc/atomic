@@ -365,6 +365,10 @@ pi.on("session_before_tree", async (event, ctx) => {
 
 See `SessionBeforeTreeEvent` and `TreePreparation` in the types file.
 
+## Summary request isolation
+
+Verbatim planning and branch summarization are standalone provider requests. Each receives a fresh routing session ID instead of reusing the chat's provider-affinity ID, and sets cache retention to `none` so it cannot write summary/planner prompts into the main prompt cache. Existing API-key, header-only `ANTHROPIC_AUTH_TOKEN`, custom-header, abort, and bounded retry behavior still applies. These controls affect provider request routing/cache writes only; successful results are persisted through the normal Atomic session lifecycle.
+
 ## Settings
 
 Configure compaction in `~/.atomic/agent/settings.json` or `<project-dir>/.atomic/settings.json` (legacy `.pi` paths are also supported):

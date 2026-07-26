@@ -11,9 +11,9 @@
 			"dependencies": {
 				"@bastani/atomic-natives": "0.0.0",
 				"@dbos-inc/dbos-sdk": "4.23.6",
-				"@earendil-works/pi-agent-core": "^0.81.1",
-				"@earendil-works/pi-ai": "^0.81.1",
-				"@earendil-works/pi-tui": "^0.81.1",
+				"@earendil-works/pi-agent-core": "^0.82.1",
+				"@earendil-works/pi-ai": "^0.82.1",
+				"@earendil-works/pi-tui": "^0.82.1",
 				"@modelcontextprotocol/ext-apps": "^1.7.4",
 				"@modelcontextprotocol/sdk": "^1.25.1",
 				"@mozilla/readability": "^0.6.0",
@@ -641,12 +641,13 @@
 			}
 		},
 		"node_modules/@earendil-works/pi-agent-core": {
-			"version": "0.81.1",
-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-0.81.1.tgz",
-			"integrity": "sha512-yqbh68CyhqxMov/jUogFJfMqlu2Gd37GAki+tr59YCmAPHfomiCA5ESzusXtpGzABeiZFC/OrRdQ4GwCCOMIHA==",
+			"version": "0.82.1",
+			"resolved": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-0.82.1.tgz",
+			"integrity": "sha512-Z3kloziJIE2dmrisRckZX8zDca/gIv9/YdFAzeoqpHiLV2wsni6bL4hInNSjVKLbqT+4kqLIkph2JQLKvSepjg==",
 			"license": "MIT",
 			"dependencies": {
-				"@earendil-works/pi-ai": "^0.81.1",
+				"@earendil-works/pi-ai": "^0.82.1",
+				"diff": "8.0.4",
 				"ignore": "7.0.5",
 				"typebox": "1.1.38",
 				"yaml": "2.9.0"
@@ -671,9 +672,9 @@
 			"license": "MIT"
 		},
 		"node_modules/@earendil-works/pi-ai": {
-			"version": "0.81.1",
-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-0.81.1.tgz",
-			"integrity": "sha512-hzHE7Z8l5mgJk+ke67Lge0rwS2+wbKJrFKl9o5M1R1rh33+cCT7D1AHz1OAtX5wFs90E1/BTGhyJRTUHaMxGvQ==",
+			"version": "0.82.1",
+			"resolved": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-0.82.1.tgz",
+			"integrity": "sha512-3WFYRhEp3lQB3444EhPMBcM7zSaEUE3eJgHOR7s4081NLqbw/FsWilIKWXSua0Gv3sRr7m9xMidR3pPDE7jI/A==",
 			"license": "MIT",
 			"dependencies": {
 				"@anthropic-ai/sdk": "0.91.1",
@@ -702,9 +703,9 @@
 			"license": "MIT"
 		},
 		"node_modules/@earendil-works/pi-tui": {
-			"version": "0.81.1",
-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-0.81.1.tgz",
-			"integrity": "sha512-OMEe+Zt8oQYi/rCq3upxsTlIScWL0FPhXwQus34TbQb3EmTx88S7Uzx32JxvQiEeWOw8eDCdJf2PBUBE9r6wIg==",
+			"version": "0.82.1",
+			"resolved": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-0.82.1.tgz",
+			"integrity": "sha512-9yN8hALfKaxZq7n54EMxqhFCWnMi6LHkraMJ/1YjHiATq75XrI6XDMVppn9EDtiK7Fks8hUe1SDXUTrIvwRWfQ==",
 			"license": "MIT",
 			"dependencies": {
 				"get-east-asian-width": "1.6.0",
@@ -4158,9 +4159,9 @@
 			}
 		},
 		"node_modules/protobufjs": {
-			"version": "7.6.4",
-			"resolved": "https://registry.npmjs.org/protobufjs/-/protobufjs-7.6.4.tgz",
-			"integrity": "sha512-RJJPTTpvFfHcWLkIa2JFWK4XvtSzS0yEWDmunqHXli1h3JlkbcQZXDZdcWxv+JK3Xsl5/UFDPZ0iGm7DAengYw==",
+			"version": "7.6.5",
+			"resolved": "https://registry.npmjs.org/protobufjs/-/protobufjs-7.6.5.tgz",
+			"integrity": "sha512-/FPD0nUc9jH6rfFjji9IBqOz4pcSE3CsT1m7Ep6Mdb0LxSUMj8hgl6GomOvZzpNpAqqGaXA0P3VSrZLFzIhQrw==",
 			"license": "BSD-3-Clause",
 			"dependencies": {
 				"@protobufjs/aspromise": "^1.1.2",

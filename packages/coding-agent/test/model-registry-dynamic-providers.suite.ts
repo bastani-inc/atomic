@@ -351,7 +351,7 @@ describeModelRegistry((context) => {
 					...good,
 					refreshModels: async () => providerConfig("https://good.test/v1", [{ id: "new-good" }]).models!,
 				});
-				registry.registerProvider("bad", { ...bad, refreshModels: async () => { throw new Error("catalog failed"); } });
+				registry.registerProvider("bad", { ...bad, refreshModels: async ({ allowNetwork }) => { throw new Error(allowNetwork ? "catalog failed" : "cache fallback failed"); } });
 
 				const result = await registry.refresh();
 

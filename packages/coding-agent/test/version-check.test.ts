@@ -13,6 +13,7 @@ const originalOffline = process.env.ATOMIC_OFFLINE;
 
 afterEach(() => {
 	vi.restoreAllMocks();
+	vi.unstubAllEnvs();
 	if (originalSkipVersionCheck === undefined) {
 		delete process.env.ATOMIC_SKIP_VERSION_CHECK;
 	} else {
@@ -65,14 +66,29 @@ describe("version checks", () => {
 		await expect(getLatestPiRelease()).resolves.toEqual({ packageName: "@bastani/atomic", version: "1.2.4" });
 	});
 
-	it("skips api calls when version checks are disabled", async () => {
-		process.env.ATOMIC_SKIP_VERSION_CHECK = "1";
-		const fetchMock = vi.fn(async () => Response.json({}));
-		vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
+	it.each(["ATOMIC_SKIP_VERSION_CHECK", "PI_SKIP_VERSION_CHECK"])(
+		"skips automatic api calls when %s is set",
+		async (name) => {
+			vi.stubEnv(name, "1");
+			const fetchMock = vi.fn(async () => Response.json({ version: "1.2.4" }));
+			vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
 
-		await expect(getLatestPiVersion()).resolves.toBeUndefined();
-		expect(fetchMock).not.toHaveBeenCalled();
-	});
+			await expect(checkForNewPiVersion("1.2.3")).resolves.toBeUndefined();
+			expect(fetchMock).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(["ATOMIC_SKIP_VERSION_CHECK", "PI_SKIP_VERSION_CHECK"])(
+		"allows explicit release checks when %s disables startup checks",
+		async (name) => {
+			vi.stubEnv(name, "1");
+			const fetchMock = vi.fn(async () => Response.json({ version: "1.2.4" }));
+			vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
+
+			await expect(getLatestPiVersion()).resolves.toBe("1.2.4");
+			expect(fetchMock).toHaveBeenCalledOnce();
+		},
+	);
 
 	it("treats the versionless placeholder as a dev build", () => {
 		expect(isDevVersion("0.0.0")).toBe(true);

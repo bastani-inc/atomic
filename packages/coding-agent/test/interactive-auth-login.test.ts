@@ -57,6 +57,114 @@ describe("interactive API-key login persistence failures", () => {
 	});
 });
 
+
+describe("interactive OAuth cancellation", () => {
+	it("restores the editor silently for a native AbortError", async () => {
+		const showError = vi.fn();
+		const completeProviderAuthentication = vi.fn();
+		const editor = {};
+		const harness = {
+			session: {
+				model: undefined,
+				modelRegistry: { authStorage: { getOAuthProviders: () => [{ id: "kimi-coding", usesCallbackServer: false }] } },
+			},
+			runtimeHost: { loginOAuthProvider: async () => { throw new DOMException("The operation was aborted.", "AbortError"); } },
+			ui: { setFocus: vi.fn(), requestRender: vi.fn() },
+			editorContainer: { clear: vi.fn(), addChild: vi.fn() },
+			editor,
+			showError,
+			completeProviderAuthentication,
+			showOAuthLoginSelect: vi.fn(),
+		};
+		const showLoginDialog = InteractiveModeBase.prototype.showLoginDialog as (
+			this: typeof harness, providerId: string, providerName: string,
+		) => Promise<void>;
+
+		await showLoginDialog.call(harness, "kimi-coding", "Kimi For Coding");
+
+		expect(showError).not.toHaveBeenCalled();
+		expect(completeProviderAuthentication).not.toHaveBeenCalled();
+		expect(harness.editorContainer.addChild).toHaveBeenLastCalledWith(editor);
+	});
+
+	it("does not refresh a second time after an isolated engine login returns a refreshed catalog", async () => {
+		const completeProviderAuthentication = vi.fn(async () => {});
+		const editor = {};
+		const harness = {
+			session: {
+				model: undefined,
+				modelRegistry: { authStorage: { getOAuthProviders: () => [{ id: "corp-oauth", usesCallbackServer: false }] } },
+			},
+			runtimeHost: { loginOAuthProvider: async () => ({ modelsRefreshed: true }) },
+			ui: { setFocus: vi.fn(), requestRender: vi.fn() },
+			editorContainer: { clear: vi.fn(), addChild: vi.fn() },
+			editor,
+			showError: vi.fn(),
+			completeProviderAuthentication,
+			showOAuthLoginSelect: vi.fn(),
+		};
+		const showLoginDialog = InteractiveModeBase.prototype.showLoginDialog as (
+			this: typeof harness, providerId: string, providerName: string,
+		) => Promise<void>;
+
+		await showLoginDialog.call(harness, "corp-oauth", "Corp OAuth");
+
+		expect(completeProviderAuthentication).toHaveBeenCalledWith(
+			"corp-oauth", "Corp OAuth", "oauth", undefined, { modelsRefreshed: true },
+		);
+	});
+
+	it("keeps a post-login refresh AbortError visible", async () => {
+		const refreshFailure = new DOMException("catalog refresh aborted", "AbortError");
+		const showError = vi.fn();
+		const editor = {};
+		const harness = {
+			session: {
+				model: undefined,
+				modelRegistry: { authStorage: { getOAuthProviders: () => [{ id: "corp-oauth", usesCallbackServer: false }] } },
+			},
+			runtimeHost: { loginOAuthProvider: async () => ({ modelsRefreshed: false }) },
+			ui: { setFocus: vi.fn(), requestRender: vi.fn() },
+			editorContainer: { clear: vi.fn(), addChild: vi.fn() },
+			editor,
+			showError,
+			completeProviderAuthentication: async () => { throw refreshFailure; },
+			showOAuthLoginSelect: vi.fn(),
+		};
+		const showLoginDialog = InteractiveModeBase.prototype.showLoginDialog as (
+			this: typeof harness, providerId: string, providerName: string,
+		) => Promise<void>;
+
+		await showLoginDialog.call(harness, "corp-oauth", "Corp OAuth");
+
+		expect(showError).toHaveBeenCalledWith("Failed to login to Corp OAuth: catalog refresh aborted");
+	});
+
+	it("keeps genuine provider denial visible", async () => {
+		const showError = vi.fn();
+		const editor = {};
+		const harness = {
+			session: {
+				model: undefined,
+				modelRegistry: { authStorage: { getOAuthProviders: () => [{ id: "kimi-coding", usesCallbackServer: false }] } },
+			},
+			runtimeHost: { loginOAuthProvider: async () => { throw new Error("Kimi Code login was denied."); } },
+			ui: { setFocus: vi.fn(), requestRender: vi.fn() },
+			editorContainer: { clear: vi.fn(), addChild: vi.fn() },
+			editor,
+			showError,
+			completeProviderAuthentication: vi.fn(),
+			showOAuthLoginSelect: vi.fn(),
+		};
+		const showLoginDialog = InteractiveModeBase.prototype.showLoginDialog as (
+			this: typeof harness, providerId: string, providerName: string,
+		) => Promise<void>;
+
+		await showLoginDialog.call(harness, "kimi-coding", "Kimi For Coding");
+
+		expect(showError).toHaveBeenCalledWith("Failed to login to Kimi For Coding: Kimi Code login was denied.");
+	});
+});
 describe("post-login model refresh", () => {
 	for (const scenario of [
 		{ provider: "kimi-coding", name: "Kimi For Coding", authType: "api_key" as const, modelId: "kimi-for-coding" },
@@ -100,4 +208,35 @@ describe("post-login model refresh", () => {
 			expect(showStatus).toHaveBeenCalledWith(expect.stringContaining(`Selected ${scenario.modelId}`));
 		});
 	}
+
+	it("keeps a provider-specific model refresh failure visible after credential commit", async () => {
+		const refreshFailure = new Error("catalog unavailable");
+		const showStatus = vi.fn();
+		const harness = {
+			session: {
+				modelRegistry: {
+					refresh: async () => ({ aborted: false, errors: new Map([["corp-oauth", refreshFailure]]) }),
+					getAvailable: () => [],
+				},
+			},
+			updateAvailableProviderCount: vi.fn(),
+			setupAutocompleteProvider: vi.fn(),
+			footer: { invalidate: vi.fn() },
+			updateEditorBorderColor: vi.fn(),
+			showStatus,
+			showError: vi.fn(),
+			maybeWarnAboutAnthropicSubscriptionAuth: vi.fn(),
+			checkDaxnutsEasterEgg: vi.fn(),
+		};
+		const complete = InteractiveModeBase.prototype.completeProviderAuthentication as (
+			this: typeof harness,
+			providerId: string,
+			providerName: string,
+			authType: "oauth" | "api_key",
+			previousModel: Model<Api> | undefined,
+		) => Promise<void>;
+
+		await expect(complete.call(harness, "corp-oauth", "Corp OAuth", "oauth", undefined)).rejects.toBe(refreshFailure);
+		expect(showStatus).not.toHaveBeenCalled();
+	});
 });

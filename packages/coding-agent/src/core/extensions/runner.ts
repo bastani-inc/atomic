@@ -387,7 +387,7 @@ export class ExtensionRunner {
 			getCwd: () => this.cwd,
 			getSessionManager: () => this.sessionManager,
 			getModelRegistry: () => this.modelRegistry,
-			getModel: () => this.getModel(),
+			getModel: () => this.getModel(), getThinkingLevel: () => this.runtime.getThinkingLevel(),
 			getOrchestrationContext: () => this.orchestrationContext,
 			isIdle: () => this.isIdleFn(),
 			isProjectTrusted: () => this.isProjectTrustedFn(),

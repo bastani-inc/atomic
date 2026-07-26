@@ -212,6 +212,55 @@ describe("branch summarization with archival compaction entries", () => {
 		}
 	});
 
+	it("dispatches branch summaries with header-only bearer authentication", async () => {
+		resetIds();
+		const model = nonCopilotModel();
+		let observedApiKey: string | undefined = "not-called";
+		let observedHeaders: Record<string, string | null> | undefined;
+		let observedCacheRetention: string | undefined;
+		let observedSessionId: string | undefined;
+		const result = await generateBranchSummary([entry(user("summarize with gateway bearer auth"))], {
+			model,
+			headers: { Authorization: "Bearer gateway-token", "X-Custom": "preserved" },
+			signal: new AbortController().signal,
+			streamFn: async (requestModel, _context, options) => {
+				observedApiKey = options?.apiKey;
+				observedHeaders = options?.headers;
+				observedCacheRetention = options?.cacheRetention;
+				observedSessionId = options?.sessionId;
+				const stream = createAssistantMessageEventStream();
+				stream.end({
+					...assistantBlocks([{ type: "text", text: "bearer summary" }]),
+					api: requestModel.api,
+					provider: requestModel.provider,
+					model: requestModel.id,
+				});
+				return stream;
+			},
+		});
+
+		expect(result.error).toBeUndefined();
+		expect(observedApiKey).toBeUndefined();
+		expect(observedHeaders).toEqual({
+			Authorization: "Bearer gateway-token",
+			"X-Custom": "preserved",
+		});
+		expect(observedCacheRetention).toBe("none");
+		expect(observedSessionId).toEqual(expect.any(String));
+		const firstSessionId = observedSessionId;
+		await generateBranchSummary([entry(user("summarize again"))], {
+			model,
+			signal: new AbortController().signal,
+			streamFn: async (requestModel, _context, options) => {
+				observedSessionId = options?.sessionId;
+				const stream = createAssistantMessageEventStream();
+				stream.end({ ...assistantBlocks([{ type: "text", text: "again" }]), api: requestModel.api, provider: requestModel.provider, model: requestModel.id });
+				return stream;
+			},
+		});
+		expect(observedSessionId).not.toBe(firstSessionId);
+	});
+
 	it("treats legacy logical-deletion records as inert when preparing prompt input", () => {
 		resetIds();
 		const deletedEntrySentinel = "ITER7_BRANCH_DELETED_ENTRY_SENTINEL";

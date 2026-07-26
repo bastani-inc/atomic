@@ -22,7 +22,7 @@ afterEach(() => {
 const describeExternalEditor = process.platform === "win32" ? describe.skip : describe;
 
 describeExternalEditor("openExternalEditorForText", () => {
-	it("uses an unpredictable atomic-branded temp file", () => {
+	it("uses an unpredictable Atomic-branded private temp directory", async () => {
 		const testDir = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-editor-test-"));
 		createdDirs.push(testDir);
 		const capturedPathFile = path.join(testDir, "captured-path.txt");
@@ -39,19 +39,18 @@ describeExternalEditor("openExternalEditorForText", () => {
 			requestRender: () => {},
 		};
 
-		const updated = openExternalEditorForText("initial", host, {
+		const updated = await openExternalEditorForText("initial", host, {
 			editorCommand: editorScript,
 		});
 
 		expect(updated).toBe("initial\nupdated");
 		const tmpFile = fs.readFileSync(capturedPathFile, "utf-8");
-		expect(path.basename(tmpFile)).toMatch(
-			/^atomic-editor-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.atomic\.md$/i,
-		);
+		expect(path.basename(tmpFile)).toBe("prompt.md");
+		expect(path.basename(path.dirname(tmpFile))).toMatch(/^atomic-editor-.+$/);
 		expect(fs.existsSync(tmpFile)).toBe(false);
 	});
 
-	it("opens quoted editor commands whose paths contain spaces", () => {
+	it("opens quoted editor commands whose paths contain spaces", async () => {
 		const testDir = fs.mkdtempSync(path.join(os.tmpdir(), "atomic editor test-"));
 		createdDirs.push(testDir);
 		const editorScript = path.join(testDir, "editor with spaces.sh");
@@ -67,11 +66,18 @@ describeExternalEditor("openExternalEditorForText", () => {
 			requestRender: () => {},
 		};
 
-		const updated = openExternalEditorForText("initial", host, {
+		const updated = await openExternalEditorForText("initial", host, {
 			editorCommand: `${JSON.stringify(editorScript)}`,
 		});
 
 		expect(updated).toBe("initial\nquoted command worked");
+	});
+
+	it("addresses one exact temp file without scanning a dense temp directory", () => {
+		const source = openExternalEditorForText.toString();
+		expect(source).not.toContain("readdir");
+		expect(source).not.toContain("glob");
+		expect(source).toContain("editInExternalEditor");
 	});
 });
 

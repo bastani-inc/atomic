@@ -1,0 +1,1177 @@
+commit b4f293684bba718d59cc1157679bcf6157b3a7f5
+Author:     Armin Ronacher <armin.ronacher@active-4.com>
+AuthorDate: Sat Jul 25 14:37:11 2026 +0200
+Commit:     Armin Ronacher <armin.ronacher@active-4.com>
+CommitDate: Sat Jul 25 14:37:11 2026 +0200
+
+    Release v0.82.1
+
+ package-lock.json                                  | 40 +++++++++++-----------
+ packages/agent/CHANGELOG.md                        |  2 +-
+ packages/agent/package.json                        |  4 +--
+ packages/ai/CHANGELOG.md                           |  2 +-
+ packages/ai/package.json                           |  2 +-
+ packages/coding-agent/CHANGELOG.md                 |  2 +-
+ .../custom-provider-anthropic/package-lock.json    |  4 +--
+ .../custom-provider-anthropic/package.json         |  2 +-
+ .../custom-provider-gitlab-duo/package.json        |  2 +-
+ .../examples/extensions/gondolin/package-lock.json |  4 +--
+ .../examples/extensions/gondolin/package.json      |  2 +-
+ .../examples/extensions/sandbox/package-lock.json  |  4 +--
+ .../examples/extensions/sandbox/package.json       |  2 +-
+ .../extensions/with-deps/package-lock.json         |  4 +--
+ .../examples/extensions/with-deps/package.json     |  2 +-
+ .../coding-agent/install-lock/package-lock.json    | 30 ++++++++--------
+ packages/coding-agent/install-lock/package.json    |  4 +--
+ packages/coding-agent/npm-shrinkwrap.json          | 24 ++++++-------
+ packages/coding-agent/package.json                 |  8 ++---
+ packages/evals/package.json                        |  4 +--
+ packages/server/CHANGELOG.md                       |  2 +-
+ packages/server/package.json                       |  4 +--
+ packages/storage/sqlite-node/CHANGELOG.md          |  2 +-
+ packages/storage/sqlite-node/package.json          |  6 ++--
+ packages/tui/CHANGELOG.md                          |  2 +-
+ packages/tui/package.json                          |  2 +-
+ 26 files changed, 83 insertions(+), 83 deletions(-)
+
+commit 6173017a7b5a9df4935a1da4c0f0b696afa0f6de
+Author:     Armin Ronacher <armin.ronacher@active-4.com>
+AuthorDate: Sat Jul 25 14:36:32 2026 +0200
+Commit:     Armin Ronacher <armin.ronacher@active-4.com>
+CommitDate: Sat Jul 25 14:36:32 2026 +0200
+
+    fix: drop harness-pi-ai and its legacy registry aliases from evals
+    
+    The harness declared peer deps on the pre-rename @mariozechner/pi-ai and
+    @mariozechner/pi-agent-core names, so npm auto-installed our own code from the
+    registry under an alias. sync-versions bumped those aliases in lockstep, which
+    made every release fail because the new version is not published yet.
+    
+    Build the eval harness on createHarness from vitest-evals core instead. The
+    pi-specific code was already ours; the harness only contributed agent-lifecycle
+    plumbing and unused tool replay.
+
+ package-lock.json                  | 106 -------------------------------
+ packages/evals/README.md           |  14 ++---
+ packages/evals/package.json        |   3 -
+ packages/evals/src/pi-ai-compat.ts |   5 --
+ packages/evals/src/pi-harness.ts   | 126 ++++++++++++++++---------------------
+ packages/evals/vitest.config.ts    |  14 +----
+ scripts/sync-versions.js           |  20 ++----
+ scripts/sync-versions.test.mjs     |   4 +-
+ 8 files changed, 66 insertions(+), 226 deletions(-)
+
+commit 62a7074188b98ea3a7ebfe03aa3a7975c7091fce
+Author:     Armin Ronacher <armin.ronacher@active-4.com>
+AuthorDate: Sat Jul 25 14:09:45 2026 +0200
+Commit:     Armin Ronacher <armin.ronacher@active-4.com>
+CommitDate: Sat Jul 25 14:09:45 2026 +0200
+
+    docs: audit changelogs for commits since v0.82.0
+    
+    Add missing entries for the llama.cpp catalog cache and resource loader
+    directory fix, duplicate ai-side changes into coding-agent, add missing
+    external PR attributions, restore the 0.82.0 section that was modified
+    after release, and add the New Features section.
+
+ packages/ai/CHANGELOG.md           |  2 +-
+ packages/coding-agent/CHANGELOG.md | 20 +++++++++++++++++---
+ 2 files changed, 18 insertions(+), 4 deletions(-)
+
+commit 58c0bc2fba29baf5e3bb6268baac00a49d8df1cf
+Author:     Duncan Ogilvie <mr.exodia.tpodt@gmail.com>
+AuthorDate: Sat Jul 25 14:05:16 2026 +0200
+Commit:     GitHub <noreply@github.com>
+CommitDate: Sat Jul 25 14:05:16 2026 +0200
+
+    fix(coding-agent): exclude directories from resource loader (#7106)
+    
+    This fixes the following warning:
+    
+    Warning: Could not read /Users/duncan/Projects/AGENTS.md: Error: EISDIR: illegal operation on a directory, read
+
+ packages/coding-agent/src/core/resource-loader.ts  |  3 +++
+ packages/coding-agent/test/resource-loader.test.ts | 18 +++++++++++++++++-
+ 2 files changed, 20 insertions(+), 1 deletion(-)
+
+commit b711e26616a741a110f092b9dd761e1a7eb30939
+Author:     Armin Ronacher <armin.ronacher@active-4.com>
+AuthorDate: Sat Jul 25 12:41:22 2026 +0200
+Commit:     Armin Ronacher <armin.ronacher@active-4.com>
+CommitDate: Sat Jul 25 12:41:22 2026 +0200
+
+    fix: stop issue analysis from reporting failed runs as finished
+    
+    Only comment the analysis summary when the pi run succeeded, add an explicit
+    failure comment, skip unchanged auth secret writes, and document that
+    PI_AUTH_UPDATE_TOKEN needs the Environments permission.
+
+ .github/workflows/issue-analysis.yml | 66 ++++++++++++++++++++++++++++++++----
+ 1 file changed, 60 insertions(+), 6 deletions(-)
+
+commit 4cf0a729c4eeef6628b2687cd8238cc6874c9a73
+Author:     Armin Ronacher <armin.ronacher@active-4.com>
+AuthorDate: Sat Jul 25 12:41:15 2026 +0200
+Commit:     Armin Ronacher <armin.ronacher@active-4.com>
+CommitDate: Sat Jul 25 12:41:15 2026 +0200
+
+    fix(ai): keep the underlying cause in ModelsError messages
+    
+    Auth failures surfaced only the wrapper text, so CI logs showed a bare
+    "OAuth refresh failed for openai-codex" with no provider response.
+
+ packages/ai/CHANGELOG.md                |  1 +
+ packages/ai/src/auth/resolve.ts         | 11 ++++++++++-
+ packages/ai/test/models-runtime.test.ts | 22 ++++++++++++++++++++++
+ 3 files changed, 33 insertions(+), 1 deletion(-)
+
+commit b1c444d956b70e5c437d3d2782b01d157fa05ba3
+Author:     Armin Ronacher <armin.ronacher@active-4.com>
+AuthorDate: Sat Jul 25 12:21:41 2026 +0200
+Commit:     Armin Ronacher <armin.ronacher@active-4.com>
+CommitDate: Sat Jul 25 12:26:19 2026 +0200
+
+    feat(coding-agent): revalidate remote model catalogs with ETag
+
+ packages/ai/CHANGELOG.md                           |  1 +
+ packages/ai/src/models-store.ts                    |  5 ++
+ packages/coding-agent/CHANGELOG.md                 |  4 ++
+ .../src/core/remote-catalog-provider.ts            | 20 ++++++-
+ .../test/remote-catalog-provider.test.ts           | 70 ++++++++++++++++++++++
+ 5 files changed, 99 insertions(+), 1 deletion(-)
+
+commit 518855dd502220d0c6480fb8863e2e7f8799893f
+Author:     Alexey Zaytsev <alexey.zaytsev@gmail.com>
+AuthorDate: Sat Jul 25 03:29:34 2026 -0300
+Commit:     GitHub <noreply@github.com>
+CommitDate: Sat Jul 25 08:29:34 2026 +0200
+
+    feat(coding-agent): expose output padding to custom renderers (#7045)
+    
+    Co-authored-by: Mario Zechner <badlogicgames@gmail.com>
+
+ packages/coding-agent/CHANGELOG.md                 |  2 +
+ packages/coding-agent/docs/extensions.md           |  4 +-
+ .../examples/extensions/message-renderer.ts        |  4 +-
+ packages/coding-agent/src/core/extensions/types.ts |  2 +
+ .../modes/interactive/components/custom-message.ts | 16 +++++++-
+ .../src/modes/interactive/interactive-mode.ts      | 13 ++++++-
+ packages/coding-agent/test/custom-message.test.ts  | 44 ++++++++++++++++++++++
+ 7 files changed, 78 insertions(+), 7 deletions(-)
+
+commit 2a2b0a39f08923b3563a4f53d4b1cedf130d1391
+Author:     David Brailovsky <davidbrai@gmail.com>
+AuthorDate: Sat Jul 25 08:27:05 2026 +0200
+Commit:     GitHub <noreply@github.com>
+CommitDate: Sat Jul 25 08:27:05 2026 +0200
+
+    fix(coding-agent): cache llama.cpp model catalog (#7072)
+
+ .../coding-agent/src/extensions/llama/provider.ts  |  9 +++++
+ packages/coding-agent/test/llama-extension.test.ts | 46 +++++++++++++++++++++-
+ 2 files changed, 54 insertions(+), 1 deletion(-)
+
+commit af3b934fa6ba3b6a273dcb1540a3fc391b686410
+Author:     Burak Varlı <unexge@gmail.com>
+AuthorDate: Sat Jul 25 08:25:23 2026 +0200
+Commit:     GitHub <noreply@github.com>
+CommitDate: Sat Jul 25 08:25:23 2026 +0200
+
+    feat(ai): support Claude Opus 5 on Bedrock (#7081)
+
+ packages/ai/CHANGELOG.md                           |  1 +
+ packages/ai/scripts/generate-models.ts             | 13 +++++++++++-
+ packages/ai/src/api/bedrock-converse-stream.ts     | 12 ++++++++---
+ packages/ai/src/utils/error-body.ts                | 11 +++++++---
+ packages/ai/test/bedrock-models.test.ts            |  5 +++++
+ packages/ai/test/bedrock-thinking-payload.test.ts  | 20 ++++++++++++++++++
+ packages/ai/test/error-body.test.ts                | 21 +++++++++++++++++++
+ .../ai/test/provider-error-body-regression.test.ts | 24 ++++++++++++++++++++++
+ packages/ai/test/supports-xhigh.test.ts            | 14 +++++++++++++
+ 9 files changed, 114 insertions(+), 7 deletions(-)
+
+commit eafe11fb94fe7fcb89487da621a578278a6a67f1
+Author:     Christian Klotz <hello@christianklotz.co.uk>
+AuthorDate: Sat Jul 25 09:22:32 2026 +0300
+Commit:     GitHub <noreply@github.com>
+CommitDate: Sat Jul 25 08:22:32 2026 +0200
+
+    feat(coding-agent): add vitest eval harness (#7085)
+
+ package-lock.json                            | 1471 ++++++++++----------------
+ package.json                                 |    4 +-
+ packages/coding-agent/vitest.config.ts       |   60 +-
+ packages/evals/README.md                     |   34 +
+ packages/evals/package.json                  |   21 +
+ packages/evals/scripts/run-evals.mjs         |   78 ++
+ packages/evals/src/general-knowledge.eval.ts |   15 +
+ packages/evals/src/pi-ai-compat.ts           |    5 +
+ packages/evals/src/pi-harness.ts             |  182 ++++
+ packages/evals/tsconfig.json                 |   10 +
+ packages/evals/vitest.config.ts              |   31 +
+ scripts/sync-versions.js                     |   68 +-
+ scripts/sync-versions.test.mjs               |   75 ++
+ vitest.base.ts                               |   28 +
+ 14 files changed, 1117 insertions(+), 965 deletions(-)
+
+commit 440689dfc7b02a2cc9e3a80aa4891379486e2b72
+Author:     github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+AuthorDate: Sat Jul 25 06:15:33 2026 +0000
+Commit:     github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+CommitDate: Sat Jul 25 06:15:33 2026 +0000
+
+    chore: approve contributors from issue #7078
+
+ .github/APPROVED_CONTRIBUTORS | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit a3ee1d286e95b501b3d9d7bb26367a0edea46166
+Author:     Christian Klotz <hello@christianklotz.co.uk>
+AuthorDate: Sat Jul 25 08:19:56 2026 +0300
+Commit:     GitHub <noreply@github.com>
+CommitDate: Sat Jul 25 07:19:56 2026 +0200
+
+    fix(coding-agent): expose unavailable scoped models (#7032)
+    
+    * fix(coding-agent): expose unavailable scoped models
+    
+    Keep missing configured models editable in the scoped-model selector. This fixes #6949.
+    
+    * fix(coding-agent): reuse model scope diagnostics
+    
+    * fix(coding-agent): classify model scope diagnostics
+
+ packages/coding-agent/CHANGELOG.md                 |   1 +
+ packages/coding-agent/src/core/model-resolver.ts   |  17 ++-
+ .../components/scoped-models-selector.ts           |  53 ++++---
+ .../src/modes/interactive/interactive-mode.ts      |  48 +++++--
+ packages/coding-agent/test/model-resolver.test.ts  |   2 +
+ .../6949-unavailable-scoped-model.test.ts          | 160 +++++++++++++++++++++
+ 6 files changed, 244 insertions(+), 37 deletions(-)
+
+commit 8eef62ed3ea62d646a7fad92fa583fc8d71fec17
+Author:     David Brailovsky <davidbrai@gmail.com>
+AuthorDate: Fri Jul 24 19:05:08 2026 +0000
+Commit:     David Brailovsky <davidbrai@gmail.com>
+CommitDate: Fri Jul 24 19:05:08 2026 +0000
+
+    fix tests
+
+ packages/ai/test/anthropic-adaptive-thinking-models.test.ts | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+commit 921c3543522ee7f4f7be2032ef28a8f64f2289fb
+Author:     David Brailovsky <davidbrai@gmail.com>
+AuthorDate: Fri Jul 24 20:57:46 2026 +0200
+Commit:     GitHub <noreply@github.com>
+CommitDate: Fri Jul 24 20:57:46 2026 +0200
+
+    add opus-5 models settings (#7083)
+
+ packages/ai/scripts/generate-models.ts | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+commit 7304d8f8af892893868b66254d34ffb9382fdec1
+Author:     David Brailovsky <davidbrai@gmail.com>
+AuthorDate: Fri Jul 24 18:52:56 2026 +0000
+Commit:     David Brailovsky <davidbrai@gmail.com>
+CommitDate: Fri Jul 24 18:52:56 2026 +0000
+
+    fix tests: use updated models
+
+ packages/ai/test/openai-responses-reasoning-replay-e2e.test.ts | 4 ++--
+ packages/ai/test/xhigh.test.ts                                 | 4 ++--
+ 2 files changed, 4 insertions(+), 4 deletions(-)
+
+commit a9f5b1c123a4f13457e88522a3be89aeb4823d66
+Author:     Armin Ronacher <armin.ronacher@active-4.com>
+AuthorDate: Fri Jul 24 16:12:44 2026 +0200
+Commit:     Armin Ronacher <armin.ronacher@active-4.com>
+CommitDate: Fri Jul 24 16:12:44 2026 +0200
+
+    fix(ai): route Radius OAuth through gateway
+
+ packages/ai/CHANGELOG.md              |   4 ++
+ packages/ai/src/auth/oauth/radius.ts  |  90 ++++++++++++------------
+ packages/ai/test/radius-oauth.test.ts | 125 ++++++++++++++++++++++++++++++++++
+ 3 files changed, 173 insertions(+), 46 deletions(-)
+
+commit 24e5cc04f413206956cfd21839a7026de673f354
+Author:     Armin Ronacher <armin.ronacher@active-4.com>
+AuthorDate: Fri Jul 24 15:13:22 2026 +0200
+Commit:     GitHub <noreply@github.com>
+CommitDate: Fri Jul 24 15:13:22 2026 +0200
+
+    fix(ai): support Anthropic bearer token env (#6148)
+    
+    Fixes #5871
+
+ packages/ai/CHANGELOG.md                           |   4 +
+ packages/ai/src/env-api-keys.ts                    |  12 +-
+ packages/ai/src/providers/anthropic.ts             |  36 +++-
+ packages/ai/test/anthropic-auth-token.test.ts      | 183 +++++++++++++++++++++
+ packages/ai/test/env-api-keys.test.ts              |  56 +++++++
+ packages/ai/test/providers.test.ts                 |  21 ++-
+ packages/coding-agent/CHANGELOG.md                 |   4 +
+ packages/coding-agent/src/cli/args.ts              |   1 +
+ packages/coding-agent/src/core/agent-session.ts    |  10 +-
+ .../test/suite/agent-session-compaction.test.ts    |  35 ++++
+ 10 files changed, 346 insertions(+), 16 deletions(-)
+
+commit 7df73a00c6cf85c000bf1ce1594c9284067a92f0
+Author:     Armin Ronacher <armin.ronacher@active-4.com>
+AuthorDate: Fri Jul 24 08:00:35 2026 +0200
+Commit:     Armin Ronacher <armin.ronacher@active-4.com>
+CommitDate: Fri Jul 24 08:00:35 2026 +0200
+
+    Add [Unreleased] section for next cycle
+
+ packages/agent/CHANGELOG.md               | 2 ++
+ packages/ai/CHANGELOG.md                  | 2 ++
+ packages/coding-agent/CHANGELOG.md        | 2 ++
+ packages/server/CHANGELOG.md              | 2 ++
+ packages/storage/sqlite-node/CHANGELOG.md | 2 ++
+ packages/tui/CHANGELOG.md                 | 2 ++
+ 6 files changed, 12 insertions(+)
+
+commit 083e61621276bff9f6faefab87ce07fcd98734e2
+Author:     Armin Ronacher <armin.ronacher@active-4.com>
+AuthorDate: Fri Jul 24 08:00:31 2026 +0200
+Commit:     Armin Ronacher <armin.ronacher@active-4.com>
+CommitDate: Fri Jul 24 08:00:31 2026 +0200
+
+    Release v0.82.0
+
+ package-lock.json                                  | 57 +++++++++++++++-------
+ packages/agent/CHANGELOG.md                        |  2 +-
+ packages/agent/package.json                        |  4 +-
+ packages/ai/CHANGELOG.md                           |  2 +-
+ packages/ai/package.json                           |  2 +-
+ packages/coding-agent/CHANGELOG.md                 |  2 +-
+ .../custom-provider-anthropic/package-lock.json    |  4 +-
+ .../custom-provider-anthropic/package.json         |  2 +-
+ .../custom-provider-gitlab-duo/package.json        |  2 +-
+ .../examples/extensions/gondolin/package-lock.json |  4 +-
+ .../examples/extensions/gondolin/package.json      |  2 +-
+ .../examples/extensions/sandbox/package-lock.json  |  4 +-
+ .../examples/extensions/sandbox/package.json       |  2 +-
+ .../extensions/with-deps/package-lock.json         |  4 +-
+ .../examples/extensions/with-deps/package.json     |  2 +-
+ .../coding-agent/install-lock/package-lock.json    | 30 ++++++------
+ packages/coding-agent/install-lock/package.json    |  4 +-
+ packages/coding-agent/npm-shrinkwrap.json          | 24 ++++-----
+ packages/coding-agent/package.json                 |  8 +--
+ packages/server/CHANGELOG.md                       |  2 +-
+ packages/server/package.json                       |  4 +-
+ packages/storage/sqlite-node/CHANGELOG.md          |  2 +-
+ packages/storage/sqlite-node/package.json          |  6 +--
+ packages/tui/CHANGELOG.md                          |  2 +-
+ packages/tui/package.json                          |  2 +-
+ 25 files changed, 100 insertions(+), 79 deletions(-)
+
+commit e8d97fee1a9cc583c60c77d52ecca0e755b274ec
+Author:     Armin Ronacher <armin.ronacher@active-4.com>
+AuthorDate: Fri Jul 24 07:59:40 2026 +0200
+Commit:     Armin Ronacher <armin.ronacher@active-4.com>
+CommitDate: Fri Jul 24 07:59:40 2026 +0200
+
+    feat(ai): update generated image models
+
+ packages/ai/src/image-models.generated.ts | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+commit e16172069ff3e1bf3c335157001c6ca0d61c4248
+Author:     Armin Ronacher <armin.ronacher@active-4.com>
+AuthorDate: Fri Jul 24 07:56:05 2026 +0200
+Commit:     Armin Ronacher <armin.ronacher@active-4.com>
+CommitDate: Fri Jul 24 07:56:05 2026 +0200
+
+    docs(coding-agent): add model reload changelog entry
+
+ packages/coding-agent/CHANGELOG.md | 1 +
+ 1 file changed, 1 insertion(+)
+
+commit f87468131fac4c4e53cf2f9c1ad4a253acbe4e75
+Author:     Armin Ronacher <armin.ronacher@active-4.com>
+AuthorDate: Fri Jul 24 07:52:49 2026 +0200
+Commit:     GitHub <noreply@github.com>
+CommitDate: Fri Jul 24 07:52:49 2026 +0200
+
+    fix(coding-agent): reload model config in picker (#7036)
+
+ packages/coding-agent/src/core/model-registry.ts   |  4 +-
+ packages/coding-agent/src/core/model-runtime.ts    |  6 +-
+ packages/coding-agent/test/suite/harness.ts        | 11 +++-
+ .../6999-models-json-hot-reload.test.ts            | 68 ++++++++++++++++++++++
+ 4 files changed, 79 insertions(+), 10 deletions(-)
+
+commit 8472c486f424d716e4d0a9f71c0cbe9590bfc1dd
+Author:     Armin Ronacher <armin.ronacher@active-4.com>
+AuthorDate: Fri Jul 24 07:40:57 2026 +0200
+Commit:     Armin Ronacher <armin.ronacher@active-4.com>
+CommitDate: Fri Jul 24 07:40:57 2026 +0200
+
+    docs(coding-agent): add missing clipboard changelog entry
+
+ packages/coding-agent/CHANGELOG.md | 1 +
+ 1 file changed, 1 insertion(+)
+
+commit fc8048d2370ab4252966aa3bf220373d1358dce2
+Author:     Armin Ronacher <armin.ronacher@active-4.com>
+AuthorDate: Fri Jul 24 07:32:53 2026 +0200
+Commit:     Armin Ronacher <armin.ronacher@active-4.com>
+CommitDate: Fri Jul 24 07:33:09 2026 +0200
+
+    fix(coding-agent): bundle model data in release source
+
+ .github/workflows/build-binaries.yml |  4 ++++
+ README.md                            |  4 ++--
+ packages/coding-agent/CHANGELOG.md   |  1 +
+ scripts/build-binaries.sh            | 27 +++++++++++++++++--------
+ scripts/create-source-archive.sh     | 39 +++++++++++++++++++++++++++++++++---
+ 5 files changed, 62 insertions(+), 13 deletions(-)
+
+commit ee0dca45b4542c38df5547d3fe113e31a869101a
+Author:     Armin Ronacher <armin.ronacher@active-4.com>
+AuthorDate: Fri Jul 24 00:02:52 2026 +0200
+Commit:     Armin Ronacher <armin.ronacher@active-4.com>
+CommitDate: Fri Jul 24 07:33:09 2026 +0200
+
+    docs: audit unreleased changelog entries
+
+ packages/ai/CHANGELOG.md           | 20 ++++++++++++++++++--
+ packages/coding-agent/CHANGELOG.md | 31 ++++++++++++++++++++++++++++---
+ packages/tui/CHANGELOG.md          |  3 ++-
+ 3 files changed, 48 insertions(+), 6 deletions(-)
+
+commit edbf941dad7f94edcf028f254db311b0efe44b6f
+Author:     github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+AuthorDate: Fri Jul 24 05:07:50 2026 +0000
+Commit:     github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+CommitDate: Fri Jul 24 05:07:50 2026 +0000
+
+    chore: approve contributors from issue #7040
+
+ .github/APPROVED_CONTRIBUTORS | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit 2d3f555429935ffccdf23d9adae09ef7e0b85ca7
+Author:     Shakti <rkfshakti@gmail.com>
+AuthorDate: Fri Jul 24 10:28:37 2026 +0530
+Commit:     GitHub <noreply@github.com>
+CommitDate: Fri Jul 24 06:58:37 2026 +0200
+
+    fix: await wl-copy exit code and fall through to xclip on failure (#7009)
+    
+    The /copy command always set copied=true after spawning wl-copy without
+    awaiting its exit code. When wl-copy fails (e.g. in a sandboxed
+    environment that inherits WAYLAND_DISPLAY but not the socket), the
+    xclip/OSC 52 fallbacks never ran because copied was already true.
+    
+    Fix: await the wl-copy spawn exit code and only claim success on exit
+    code 0. On failure, fall through to the x11 clipboard fallback.
+    
+    Fixes #6872.
+
+ packages/coding-agent/src/utils/clipboard.ts | 26 ++++++++++++++++++--------
+ 1 file changed, 18 insertions(+), 8 deletions(-)
+
+commit 24bace27cf308c89707cf8005b4795d873e23f17
+Author:     Armin Ronacher <armin.ronacher@active-4.com>
+AuthorDate: Thu Jul 23 23:48:40 2026 +0200
+Commit:     GitHub <noreply@github.com>
+CommitDate: Thu Jul 23 23:48:40 2026 +0200
+
+    feat(ai): support constrained sampling (#6341)
+    
+    Add the constrained sampling API and provider plumbing for OpenAI and Anthropic tool calls, including grammar sampling variants and model capability metadata.
+
+ packages/ai/CHANGELOG.md                           |   3 +
+ packages/ai/README.md                              |  37 +++
+ packages/ai/scripts/generate-models.ts             |  39 +++
+ packages/ai/src/api/anthropic-messages.ts          |  33 ++-
+ packages/ai/src/api/azure-openai-responses.ts      |  25 +-
+ packages/ai/src/api/bedrock-converse-stream.ts     |  27 +-
+ packages/ai/src/api/constrained-sampling.ts        | 148 +++++++++++
+ packages/ai/src/api/google-generative-ai.ts        |  19 +-
+ packages/ai/src/api/google-shared.ts               |  26 +-
+ packages/ai/src/api/google-vertex.ts               |  19 +-
+ packages/ai/src/api/mistral-conversations.ts       |  22 +-
+ packages/ai/src/api/openai-codex-responses.ts      |  38 ++-
+ packages/ai/src/api/openai-completions.ts          | 188 +++++++++++---
+ packages/ai/src/api/openai-responses-shared.ts     | 277 +++++++++++++++------
+ packages/ai/src/api/openai-responses.ts            |  36 ++-
+ packages/ai/src/types.ts                           |  43 +++-
+ .../test/anthropic-eager-tool-input-compat.test.ts |  39 +++
+ packages/ai/test/azure-openai-base-url.test.ts     |  30 ++-
+ packages/ai/test/bedrock-convert-messages.test.ts  |  33 ++-
+ packages/ai/test/constrained-sampling.test.ts      | 229 +++++++++++++++++
+ packages/ai/test/deferred-tools.test.ts            |   1 +
+ .../ai/test/google-shared-convert-tools.test.ts    |  18 +-
+ packages/ai/test/mistral-tool-schema.test.ts       |   3 +
+ packages/ai/test/openai-codex-stream.test.ts       | 166 +++++++++---
+ .../openai-completions-thinking-as-text.test.ts    |   1 +
+ .../ai/test/openai-completions-tool-choice.test.ts |   1 +
+ .../openai-completions-tool-result-images.test.ts  |   1 +
+ packages/ai/test/providers.test.ts                 |  13 +-
+ packages/coding-agent/docs/custom-provider.md      |   3 +
+ packages/coding-agent/docs/models.md               |   6 +-
+ packages/coding-agent/src/core/extensions/types.ts |   3 +
+ packages/coding-agent/src/core/model-config.ts     |   6 +
+ .../src/core/tools/tool-definition-wrapper.ts      |   2 +
+ 33 files changed, 1325 insertions(+), 210 deletions(-)
+
+commit ec1a87e856502f29a55a5762d129bb845f094bd7
+Author:     Armin Ronacher <armin.ronacher@active-4.com>
+AuthorDate: Thu Jul 23 23:16:07 2026 +0200
+Commit:     Armin Ronacher <armin.ronacher@active-4.com>
+CommitDate: Thu Jul 23 23:16:07 2026 +0200
+
+    fix(coding-agent): require protobufjs 7.6.5, closes #7005
+
+ package-lock.json                                    | 6 +++---
+ package.json                                         | 1 +
+ packages/coding-agent/CHANGELOG.md                   | 1 +
+ packages/coding-agent/install-lock/package-lock.json | 6 +++---
+ packages/coding-agent/install-lock/package.json      | 1 +
+ packages/coding-agent/npm-shrinkwrap.json            | 6 +++---
+ packages/coding-agent/package.json                   | 1 +
+ scripts/generate-coding-agent-install-lock.mjs       | 2 +-
+ scripts/generate-coding-agent-shrinkwrap.mjs         | 2 +-
+ 9 files changed, 15 insertions(+), 11 deletions(-)
+
+commit 6abb4b06409912ac4f0c58fde0f37fd5f1d4c76a
+Author:     Christian Klotz <hello@christianklotz.co.uk>
+AuthorDate: Fri Jul 24 00:06:03 2026 +0300
+Commit:     GitHub <noreply@github.com>
+CommitDate: Thu Jul 23 23:06:03 2026 +0200
+
+    fix(coding-agent): use llama context for output limit (#7034)
+    
+    Fixes #6994.
+
+ packages/coding-agent/src/extensions/llama/provider.ts | 4 +---
+ packages/coding-agent/test/llama-extension.test.ts     | 6 +++---
+ 2 files changed, 4 insertions(+), 6 deletions(-)
+
+commit 241431c69baf667e09a0eadf8ffc34ee2f643ef0
+Author:     Thomas Mustier <6326440+tmustier@users.noreply.github.com>
+AuthorDate: Thu Jul 23 22:03:23 2026 +0100
+Commit:     GitHub <noreply@github.com>
+CommitDate: Thu Jul 23 23:03:23 2026 +0200
+
+    fix(agent,ai): don't cache write compaction or branch summaries (#6618)
+    
+    avoid cache writes for compaction and branch summaries
+    
+    Co-authored-by: Armin Ronacher <armin.ronacher@active-4.com>
+
+ packages/agent/CHANGELOG.md                        |   4 +
+ .../agent/src/harness/compaction/compaction.ts     |  14 +-
+ packages/agent/test/harness/compaction.test.ts     |   3 +
+ packages/ai/CHANGELOG.md                           |   1 +
+ packages/ai/README.md                              |   2 +-
+ packages/ai/scripts/generate-models.ts             |  13 ++
+ packages/ai/src/api/openai-codex-responses.ts      |  24 ++--
+ packages/ai/src/api/openai-responses.ts            |   5 +-
+ packages/ai/src/types.ts                           |   2 +
+ packages/ai/test/cache-retention.test.ts           |  43 +++++-
+ packages/ai/test/openai-codex-stream.test.ts       | 145 +++++++++++++++++++++
+ packages/coding-agent/docs/compaction.md           |   2 +-
+ .../examples/extensions/custom-compaction.ts       |   3 +
+ .../coding-agent/examples/extensions/handoff.ts    |  10 +-
+ .../coding-agent/examples/extensions/summarize.ts  |   3 +
+ 15 files changed, 253 insertions(+), 21 deletions(-)
+
+commit 249008144c951b5cf63b0a3b24d21b6f65426fe4
+Author:     Petr Houška <houskape@gmail.com>
+AuthorDate: Thu Jul 23 22:49:16 2026 +0200
+Commit:     GitHub <noreply@github.com>
+CommitDate: Thu Jul 23 22:49:16 2026 +0200
+
+    fix: target intended users in lgtm approvals (#7023)
+    
+    Maintainers frequently direct lgtm at tagged users who volunteer on an issue, but approval previously applied to the issue or PR author. Mentioned users are now approval targets, with the author as the fallback.
+    
+    Prose and examples can also contain lgtm without intending approval. Only treat lgtm or lgtmi at the start, after leading mentions, or at the end as commands. Process PR comments too, where approvals previously had no effect.
+
+ .github/workflows/approve-contributor.yml | 132 ++++++++++++++++++++----------
+ .github/workflows/issue-gate.yml          |   2 +-
+ .github/workflows/pr-gate.yml             |   4 +-
+ CONTRIBUTING.md                           |   6 +-
+ 4 files changed, 94 insertions(+), 50 deletions(-)
+
+commit 37bedb7f0b189f2ed0aed4f715c490c791baa01f
+Author:     Christian Klotz <hello@christianklotz.co.uk>
+AuthorDate: Thu Jul 23 21:47:11 2026 +0300
+Commit:     GitHub <noreply@github.com>
+CommitDate: Thu Jul 23 20:47:11 2026 +0200
+
+    fix(tui): truncate narrow editor scroll indicators (#7015)
+    
+    Fixes #6962
+
+ packages/tui/CHANGELOG.md             |  4 ++++
+ packages/tui/src/components/editor.ts | 27 ++++++++++++++++-----------
+ packages/tui/test/editor.test.ts      | 25 +++++++++++++++++++++++++
+ 3 files changed, 45 insertions(+), 11 deletions(-)
+
+commit 65ff8e7f6db447dcddb1a9c8fd05f081c5cda76a
+Author:     David Brailovsky <davidbrai@gmail.com>
+AuthorDate: Thu Jul 23 13:45:10 2026 +0000
+Commit:     David Brailovsky <davidbrai@gmail.com>
+CommitDate: Thu Jul 23 13:45:10 2026 +0000
+
+    fix lint
+
+ packages/ai/src/auth/oauth/load.ts | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit ab55c15fbdbca4ce2d5628f1613a3bd30d847868
+Merge: fc85bdd8 bc3d3647
+Author:     David Brailovsky <davidbrai@gmail.com>
+AuthorDate: Thu Jul 23 15:42:22 2026 +0200
+Commit:     GitHub <noreply@github.com>
+CommitDate: Thu Jul 23 15:42:22 2026 +0200
+
+    Merge pull request #7016 from earendil-works/fix/bundled-models-generated-time
+    
+    fix bundled models generation time
+
+commit bc3d36474256b271f277d8ffe9ae870fa96fb896
+Author:     David Brailovsky <davidbrai@gmail.com>
+AuthorDate: Thu Jul 23 13:34:51 2026 +0000
+Commit:     David Brailovsky <davidbrai@gmail.com>
+CommitDate: Thu Jul 23 13:34:51 2026 +0000
+
+    fix bundled models generation time
+    
+    Fresh package installs could give bundled model catalog
+    files newer filesystem mtimes than the remote catalog’s Last-Modified timestamp,
+    causing Pi to ignore newer remote models.
+    Use the catalog’s recorded generation time instead of installation-dependent file metadata.
+
+ packages/ai/scripts/generate-models.ts             |  4 +++-
+ packages/ai/scripts/model-data.ts                  |  8 +++++++-
+ packages/ai/src/providers/all.ts                   |  8 +++++---
+ packages/ai/test/model-data-validation.test.ts     | 14 ++++++++++++--
+ packages/coding-agent/src/core/model-runtime.ts    |  9 ++-------
+ .../src/core/remote-catalog-provider.ts            | 22 +++++-----------------
+ .../test/remote-catalog-provider.test.ts           | 14 ++++++--------
+ 7 files changed, 40 insertions(+), 39 deletions(-)
+
+commit fc85bdd88be93b1e9a6b6bcfa41c684282ec79cc
+Author:     Anantha Kumaran <ananthakumaran@gmail.com>
+AuthorDate: Thu Jul 23 15:58:12 2026 +0530
+Commit:     GitHub <noreply@github.com>
+CommitDate: Thu Jul 23 12:28:12 2026 +0200
+
+    feat(coding-agent): emit bash_execution_update events (#6971)
+
+ packages/coding-agent/docs/rpc.md                  | 29 +++++++++++++++-----
+ packages/coding-agent/src/core/agent-session.ts    | 12 ++++++---
+ .../src/modes/interactive/interactive-mode.ts      |  4 +++
+ packages/coding-agent/src/modes/rpc/rpc-mode.ts    |  1 +
+ .../suite/agent-session-bash-persistence.test.ts   | 31 ++++++++++++++++++++++
+ 5 files changed, 68 insertions(+), 9 deletions(-)
+
+commit 7af8533c6f22ab922fff29f252d2d3657b821d99
+Author:     Petr Houška <houskape@gmail.com>
+AuthorDate: Thu Jul 23 12:25:37 2026 +0200
+Commit:     GitHub <noreply@github.com>
+CommitDate: Thu Jul 23 12:25:37 2026 +0200
+
+    fix(ai): make provider retries abortable (#6980)
+    
+    Replace OpenAI and Anthropic SDK retries with local request retries that
+    preserve configured retry counts, enforce maxRetryDelayMs, and make retry
+    backoff interruptible through AbortSignal.
+    
+    Alternatives considered: Racing SDK requests against AbortSignal would make
+    cancellation observable but would not let Pi enforce maxRetryDelayMs before
+    the SDK enters its retry sleep. Patching private SDK internals would be brittle,
+    while disabling provider retries entirely would ignore explicitly configured
+    maxRetries.
+    
+    Also, align the custom OpenAI Codex retry loop with the documented
+    maxRetryDelayMs behavior. Oversized server-requested delays now fail immediately
+    instead of being clamped, allowing the visible, abortable agent-level retry
+    policy to handle the failure.
+    
+    Fixes #6911
+
+ packages/ai/CHANGELOG.md                           |   1 +
+ packages/ai/src/api/anthropic-messages.ts          |  12 +-
+ packages/ai/src/api/azure-openai-responses.ts      |  12 +-
+ packages/ai/src/api/openai-codex-responses.ts      |  21 +++-
+ packages/ai/src/api/openai-completions.ts          |  14 ++-
+ packages/ai/src/api/openai-responses.ts            |  12 +-
+ packages/ai/src/api/openrouter-images.ts           |  17 ++-
+ packages/ai/src/utils/provider-retry.ts            | 125 +++++++++++++++++++++
+ packages/ai/test/openai-codex-stream.test.ts       |  40 +++++++
+ packages/ai/test/openai-completions-retry.test.ts  |  71 ++++++++++--
+ packages/ai/test/provider-retry.test.ts            |  81 +++++++++++++
+ packages/coding-agent/docs/settings.md             |   2 +-
+ .../coding-agent/test/sdk-stream-options.test.ts   |  13 ++-
+ 13 files changed, 389 insertions(+), 32 deletions(-)
+
+commit e66e3e588b6385d57db6ecd29c02f14f254aa228
+Author:     Christian Klotz <hello@christianklotz.co.uk>
+AuthorDate: Thu Jul 23 13:21:06 2026 +0300
+Commit:     GitHub <noreply@github.com>
+CommitDate: Thu Jul 23 12:21:06 2026 +0200
+
+    fix: isolate test environment (#6965)
+
+ test.sh | 142 +++++++++++++++++++++++++++++++---------------------------------
+ 1 file changed, 69 insertions(+), 73 deletions(-)
+
+commit 34f3719a942ecbf3e6d23e67098f47ba2867de0a
+Author:     github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+AuthorDate: Thu Jul 23 09:05:13 2026 +0000
+Commit:     github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+CommitDate: Thu Jul 23 09:05:13 2026 +0000
+
+    chore: approve contributor christianbasch
+
+ .github/APPROVED_CONTRIBUTORS | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit da8dd87260513101add46a802c3ace94a71e2d70
+Author:     David Brailovsky <davidbrai@gmail.com>
+AuthorDate: Thu Jul 23 08:23:24 2026 +0000
+Commit:     David Brailovsky <davidbrai@gmail.com>
+CommitDate: Thu Jul 23 08:23:24 2026 +0000
+
+    fix(coding-agent): resolve bracketed scoped model ids as literals
+    
+    fixes #6210
+
+ packages/coding-agent/src/core/model-resolver.ts  |  8 ++++
+ packages/coding-agent/test/model-resolver.test.ts | 47 +++++++++++++++++++++++
+ 2 files changed, 55 insertions(+)
+
+commit 9b3a2059171bcc74ad9d2cadeea6d186776cf2db
+Author:     Armin Ronacher <armin.ronacher@active-4.com>
+AuthorDate: Wed Jul 22 23:54:57 2026 +0200
+Commit:     Armin Ronacher <armin.ronacher@active-4.com>
+CommitDate: Wed Jul 22 23:54:57 2026 +0200
+
+    fix(coding-agent): isolate summarization requests
+
+ packages/coding-agent/CHANGELOG.md                         |  1 +
+ packages/coding-agent/src/core/compaction/compaction.ts    | 14 +++++++++++---
+ .../coding-agent/test/compaction-summary-reasoning.test.ts | 12 ++++++++++++
+ 3 files changed, 24 insertions(+), 3 deletions(-)
+
+commit ecb9410c5c5c3f8c0f0f444f386043276b9f0d3a
+Author:     Armin Ronacher <armin.ronacher@active-4.com>
+AuthorDate: Wed Jul 22 20:28:39 2026 +0200
+Commit:     Armin Ronacher <armin.ronacher@active-4.com>
+CommitDate: Wed Jul 22 20:53:35 2026 +0200
+
+    fix(coding-agent): let manual updates bypass skip check
+    
+    closes #6977
+
+ packages/coding-agent/CHANGELOG.md                 |  4 ++++
+ packages/coding-agent/src/utils/version-check.ts   |  4 +++-
+ .../test/package-command-paths.test.ts             | 26 ++++++++++++++++++++++
+ packages/coding-agent/test/version-check.test.ts   | 13 +++++++++--
+ 4 files changed, 44 insertions(+), 3 deletions(-)
+
+commit bb3d7d399c06e5fe284f34eb66b15b037ab18649
+Author:     Armin Ronacher <armin.ronacher@active-4.com>
+AuthorDate: Wed Jul 22 20:15:02 2026 +0200
+Commit:     GitHub <noreply@github.com>
+CommitDate: Wed Jul 22 20:15:02 2026 +0200
+
+    feat(coding-agent): expose session metadata to bash tools (#6967)
+
+ packages/coding-agent/CHANGELOG.md                 |  4 +
+ packages/coding-agent/README.md                    | 13 ++++
+ .../coding-agent/docs/environment-variables.md     | 88 ++++++++++++++++++++++
+ packages/coding-agent/docs/extensions.md           | 14 +++-
+ packages/coding-agent/docs/index.md                |  1 +
+ packages/coding-agent/docs/usage.md                | 13 ----
+ .../coding-agent/src/core/extensions/runner.ts     |  4 +
+ packages/coding-agent/src/core/extensions/types.ts |  2 +
+ packages/coding-agent/src/core/system-prompt.ts    |  2 +-
+ packages/coding-agent/src/core/tools/bash.ts       | 47 ++++++++++--
+ .../src/core/tools/tool-definition-wrapper.ts      |  4 +-
+ .../src/modes/interactive/interactive-mode.ts      |  1 +
+ .../test/agent-session-dynamic-tools.test.ts       | 71 +++++++++++++++++
+ .../coding-agent/test/sdk-session-manager.test.ts  | 36 +++++++++
+ packages/coding-agent/test/system-prompt.test.ts   |  1 +
+ .../test/tool-execution-component.test.ts          |  4 +-
+ 16 files changed, 278 insertions(+), 27 deletions(-)
+
+commit c55ae2faa5d850e0e4650bd573f7f241b10e2e0b
+Author:     David Brailovsky <davidbrai@gmail.com>
+AuthorDate: Wed Jul 22 16:08:21 2026 +0200
+Commit:     GitHub <noreply@github.com>
+CommitDate: Wed Jul 22 16:08:21 2026 +0200
+
+    fix(coding-agent): display path of sibling dependent extensions (#6964)
+    
+    fixes: #6619
+
+ .../src/modes/interactive/interactive-mode.ts      | 12 +++-
+ .../test/interactive-mode-status.test.ts           | 78 ++++++++++++++++++++++
+ 2 files changed, 88 insertions(+), 2 deletions(-)
+
+commit 75e6123aba58342d5e464c5b8417effa3dc441d2
+Author:     Christian Klotz <hello@christianklotz.co.uk>
+AuthorDate: Wed Jul 22 16:49:01 2026 +0300
+Commit:     GitHub <noreply@github.com>
+CommitDate: Wed Jul 22 15:49:01 2026 +0200
+
+    fix(coding-agent): speed up external editor launch (#6903)
+    
+    * fix(coding-agent): speed up external editor launch
+    
+    Fixes #6774
+    
+    * refactor(coding-agent): clarify external editor handling
+    
+    * refactor(coding-agent): simplify external editor result
+    
+    * refactor(coding-agent): model external editor lifecycle
+    
+    * fix(coding-agent): rename external editor test fake
+    
+    * fix(coding-agent): secure external editor temp files
+    
+    * fix(coding-agent): simplify external editor temp path
+    
+    * fix(coding-agent): restore system temp editor files
+
+ packages/coding-agent/CHANGELOG.md                 |  1 +
+ packages/coding-agent/src/core/settings-manager.ts |  2 +-
+ .../interactive/components/extension-editor.ts     | 69 ++++++----------------
+ .../src/modes/interactive/external-editor.ts       | 45 ++++++++++++++
+ .../src/modes/interactive/interactive-mode.ts      | 56 ++++--------------
+ packages/coding-agent/test/external-editor.test.ts | 63 ++++++++++++++++++++
+ .../test/fixtures/fake-external-editor.mjs         | 25 ++++++++
+ 7 files changed, 162 insertions(+), 99 deletions(-)
+
+commit 7b52cef2e62b35caa5dcbf7a45d5c56c7b3bd573
+Author:     Saryev Rustam <70219513+rsaryev@users.noreply.github.com>
+AuthorDate: Wed Jul 22 16:48:39 2026 +0300
+Commit:     GitHub <noreply@github.com>
+CommitDate: Wed Jul 22 15:48:39 2026 +0200
+
+    feat(ai): add OpenRouter OAuth support (#6927)
+    
+    Closes #6814
+
+ packages/ai/README.md                          |   3 +-
+ packages/ai/src/auth/oauth/load.ts             |   6 +
+ packages/ai/src/auth/oauth/openrouter.ts       | 246 +++++++++++++++++++++++++
+ packages/ai/src/bun-oauth.ts                   |   2 +
+ packages/ai/src/providers/openrouter-images.ts |  12 +-
+ packages/ai/src/providers/openrouter.ts        |  12 +-
+ packages/ai/test/oauth-auth.test.ts            |   7 +
+ packages/ai/test/openrouter-oauth.test.ts      | 231 +++++++++++++++++++++++
+ packages/coding-agent/docs/providers.md        |   9 +-
+ 9 files changed, 522 insertions(+), 6 deletions(-)
+
+commit fe42ba5b386a655b20a95205ff7c162126ac1f45
+Author:     David Brailovsky <davidbrai@gmail.com>
+AuthorDate: Wed Jul 22 15:48:25 2026 +0200
+Commit:     GitHub <noreply@github.com>
+CommitDate: Wed Jul 22 15:48:25 2026 +0200
+
+    write tui debug/crash logs into the configured pi agent dir (#6958)
+    
+    fixes #6652
+
+ packages/coding-agent/src/cli/config-selector.ts   |  2 +-
+ packages/coding-agent/src/cli/startup-ui.ts        |  2 +-
+ .../src/modes/interactive/interactive-mode.ts      |  2 +-
+ packages/tui/src/tui.ts                            |  9 +++++---
+ packages/tui/test/tui-render.test.ts               | 25 ++++++++++++++++++++++
+ 5 files changed, 34 insertions(+), 6 deletions(-)
+
+commit 346c85473d2b8a72b2d9006db684d9c49a9c65cc
+Merge: 5dc40fee e32c1491
+Author:     Mario Zechner <badlogicgames@gmail.com>
+AuthorDate: Wed Jul 22 15:36:28 2026 +0200
+Commit:     Mario Zechner <badlogicgames@gmail.com>
+CommitDate: Wed Jul 22 15:36:28 2026 +0200
+
+    Merge branch 'agent-harness-tools'
+
+commit e32c1491b5ca25df64e4642d88c92334ca47de56
+Author:     Mario Zechner <badlogicgames@gmail.com>
+AuthorDate: Wed Jul 22 15:36:06 2026 +0200
+Commit:     Mario Zechner <badlogicgames@gmail.com>
+CommitDate: Wed Jul 22 15:36:06 2026 +0200
+
+    feat(agent): align harness execution tools
+
+ packages/agent/CHANGELOG.md                       |   6 +-
+ packages/agent/docs/agent-harness.md              |   4 +-
+ packages/agent/src/harness/agent-harness.ts       |   3 +-
+ packages/agent/src/harness/env/nodejs.ts          | 174 ++++++++++---
+ packages/agent/src/harness/tools/bash.ts          |  80 +++---
+ packages/agent/src/harness/tools/edit.ts          |  14 +-
+ packages/agent/src/harness/tools/index.ts         |  10 +-
+ packages/agent/src/harness/tools/read.ts          |  10 +-
+ packages/agent/src/harness/tools/tool-context.ts  |   6 +
+ packages/agent/src/harness/tools/write.ts         |  10 +-
+ packages/agent/src/harness/types.ts               |  49 +++-
+ packages/agent/src/harness/utils/shell-output.ts  | 116 +++++----
+ packages/agent/src/harness/utils/truncate.ts      |  12 +-
+ packages/agent/test/harness/agent-harness.test.ts |   2 +-
+ packages/agent/test/harness/nodejs-env.test.ts    | 127 ++++++++++
+ packages/agent/test/harness/tool-context.types.ts |  17 ++
+ packages/agent/test/harness/tools.test.ts         | 282 +++++++++++++++++++++-
+ packages/agent/test/harness/truncate.test.ts      |   9 +
+ packages/agent/test/scratch/simple.ts             |   6 +-
+ 19 files changed, 763 insertions(+), 174 deletions(-)
+
+commit 5dc40fee330023200e35938fdced2ae0735b5310
+Author:     Armin Ronacher <armin.ronacher@active-4.com>
+AuthorDate: Wed Jul 22 13:11:21 2026 +0200
+Commit:     Armin Ronacher <armin.ronacher@active-4.com>
+CommitDate: Wed Jul 22 13:13:36 2026 +0200
+
+    feat(ai): derive generated model types from JSON
+
+ packages/ai/README.md                              |    4 +-
+ packages/ai/scripts/generate-models.ts             |   90 +-
+ packages/ai/scripts/model-data.ts                  |  168 +--
+ packages/ai/src/model-catalog.ts                   |   27 +
+ packages/ai/src/models.generated.ts                |   42 +-
+ packages/ai/src/providers/amazon-bedrock.models.ts |  442 +-------
+ packages/ai/src/providers/ant-ling.models.ts       |   18 +-
+ packages/ai/src/providers/anthropic.models.ts      |   62 +-
+ .../src/providers/azure-openai-responses.models.ts |  190 +---
+ packages/ai/src/providers/cerebras.models.ts       |   18 +-
+ .../src/providers/cloudflare-ai-gateway.models.ts  |  174 +---
+ .../src/providers/cloudflare-workers-ai.models.ts  |   58 +-
+ packages/ai/src/providers/deepseek.models.ts       |   14 +-
+ packages/ai/src/providers/fireworks.models.ts      |   70 +-
+ packages/ai/src/providers/github-copilot.models.ts |  118 +--
+ packages/ai/src/providers/google-vertex.models.ts  |   46 +-
+ packages/ai/src/providers/google.models.ts         |   78 +-
+ packages/ai/src/providers/groq.models.ts           |   34 +-
+ packages/ai/src/providers/huggingface.models.ts    |  202 +---
+ packages/ai/src/providers/kimi-coding.models.ts    |   18 +-
+ packages/ai/src/providers/minimax-cn.models.ts     |   18 +-
+ packages/ai/src/providers/minimax.models.ts        |   18 +-
+ packages/ai/src/providers/mistral.models.ts        |  126 +--
+ packages/ai/src/providers/moonshotai-cn.models.ts  |   46 +-
+ packages/ai/src/providers/moonshotai.models.ts     |   46 +-
+ packages/ai/src/providers/nvidia.models.ts         |   82 +-
+ packages/ai/src/providers/openai-codex.models.ts   |   34 +-
+ packages/ai/src/providers/openai.models.ts         |  190 +---
+ packages/ai/src/providers/opencode-go.models.ts    |   66 +-
+ packages/ai/src/providers/opencode.models.ts       |  230 +---
+ packages/ai/src/providers/openrouter.models.ts     | 1098 +-------------------
+ .../ai/src/providers/qwen-token-plan-cn.models.ts  |   66 +-
+ .../ai/src/providers/qwen-token-plan.models.ts     |   66 +-
+ packages/ai/src/providers/together.models.ts       |   70 +-
+ .../ai/src/providers/vercel-ai-gateway.models.ts   |  774 +-------------
+ packages/ai/src/providers/xai.models.ts            |   18 +-
+ .../src/providers/xiaomi-token-plan-ams.models.ts  |   18 +-
+ .../src/providers/xiaomi-token-plan-cn.models.ts   |   18 +-
+ .../src/providers/xiaomi-token-plan-sgp.models.ts  |   18 +-
+ packages/ai/src/providers/xiaomi.models.ts         |   30 +-
+ packages/ai/src/providers/zai-coding-cn.models.ts  |   30 +-
+ packages/ai/src/providers/zai.models.ts            |   30 +-
+ packages/ai/test/model-catalog-types.test.ts       |    9 +
+ packages/ai/test/model-data-validation.test.ts     |   45 +-
+ scripts/check-browser-smoke.mjs                    |   16 +
+ 45 files changed, 366 insertions(+), 4669 deletions(-)
+
+commit 906b40a75329bc3a4c19865f0279903f6be6d476
+Merge: bc41f612 c5dcb260
+Author:     David Brailovsky <davidbrai@gmail.com>
+AuthorDate: Wed Jul 22 12:41:58 2026 +0200
+Commit:     GitHub <noreply@github.com>
+CommitDate: Wed Jul 22 12:41:58 2026 +0200
+
+    Merge pull request #6955 from earendil-works/fix/handle-openai-previous-response-not-found-error
+    
+    handle openai websocket previous_response_not_found error
+
+commit c5dcb26000c887deeea6658f43cf33f2d075fb9f
+Author:     David Brailovsky <davidbrai@gmail.com>
+AuthorDate: Wed Jul 22 10:26:24 2026 +0000
+Commit:     David Brailovsky <davidbrai@gmail.com>
+CommitDate: Wed Jul 22 10:26:24 2026 +0000
+
+    handle openai websocket previous_response_not_found error
+    
+    fixes #6931
+
+ packages/ai/src/api/openai-codex-responses.ts |  26 ++-
+ packages/ai/test/openai-codex-stream.test.ts  | 218 ++++++++++++++++++++++++++
+ 2 files changed, 238 insertions(+), 6 deletions(-)
+
+commit 2d0b2294cd212e52e3c23decb3d2e19dbcf9b9dd
+Merge: 37eb243d bc41f612
+Author:     Mario Zechner <badlogicgames@gmail.com>
+AuthorDate: Wed Jul 22 11:56:35 2026 +0200
+Commit:     Mario Zechner <badlogicgames@gmail.com>
+CommitDate: Wed Jul 22 11:56:35 2026 +0200
+
+    feat(agent): merge main into agent-harness-tools
+
+commit bc41f612da8c15c4acc5f7ab7a7178a4fe17c942
+Author:     Matthew <84196639+mteam88@users.noreply.github.com>
+AuthorDate: Wed Jul 22 02:48:33 2026 -0700
+Commit:     GitHub <noreply@github.com>
+CommitDate: Wed Jul 22 11:48:33 2026 +0200
+
+    fix(ai): cache OpenRouter tool results
+    
+    closes #6940
+
+ packages/ai/src/api/openai-completions.ts          |  5 ++-
+ ...openai-completions-cache-control-format.test.ts | 46 +++++++++++++++++++++-
+ 2 files changed, 47 insertions(+), 4 deletions(-)
+
+commit 6f95a33888da4e94924b553b586fa9a923957194
+Author:     Mario Zechner <badlogicgames@gmail.com>
+AuthorDate: Wed Jul 22 11:46:21 2026 +0200
+Commit:     Mario Zechner <badlogicgames@gmail.com>
+CommitDate: Wed Jul 22 11:46:21 2026 +0200
+
+    fix(ai): enable cache control for OpenRouter aliases
+    
+    closes #6940
+
+ packages/ai/CHANGELOG.md                                 |  4 ++++
+ packages/ai/scripts/generate-models.ts                   |  3 ++-
+ packages/ai/src/providers/opencode.models.ts             |  4 ++++
+ packages/ai/src/providers/openrouter.models.ts           |  8 ++++++++
+ packages/ai/src/providers/vercel-ai-gateway.models.ts    |  8 ++++++++
+ packages/ai/src/types.ts                                 |  2 +-
+ packages/ai/test/openrouter-cache-control-models.test.ts | 15 +++++++++++++++
+ packages/coding-agent/docs/custom-provider.md            |  4 ++--
+ packages/coding-agent/docs/models.md                     |  2 +-
+ 9 files changed, 45 insertions(+), 5 deletions(-)
+
+commit 33e40c3e155a7f7c1bd67ea7dbdeca258eca7547
+Author:     Christian Klotz <hello@christianklotz.co.uk>
+AuthorDate: Wed Jul 22 12:26:19 2026 +0300
+Commit:     GitHub <noreply@github.com>
+CommitDate: Wed Jul 22 11:26:19 2026 +0200
+
+    fix(ai): retry DNS transport failures (#6946)
+    
+    Fixes #6904
+
+ packages/ai/src/utils/retry.ts                     |  3 +++
+ packages/ai/test/retry.test.ts                     | 11 +++++++++
+ .../regressions/6904-dns-transport-retry.test.ts   | 28 ++++++++++++++++++++++
+ 3 files changed, 42 insertions(+)
+
+commit a5afc3f171e422e08a2ccc342827719f9952f38a
+Author:     zay <richardicruz25@gmail.com>
+AuthorDate: Wed Jul 22 02:35:03 2026 -0400
+Commit:     GitHub <noreply@github.com>
+CommitDate: Wed Jul 22 08:35:03 2026 +0200
+
+    feat(ai): add Kimi Code subscription OAuth login (#6935)
+    
+    Add a device authorization grant flow (RFC 8628) for the kimi-coding
+    provider, mirroring the official Kimi Code CLI: device authorization and
+    token polling against https://auth.kimi.com, refresh-token rotation with
+    retry/backoff, and Bearer auth via toAuth headers. The provider now
+    offers 'Sign in with Kimi Code' alongside the existing KIMI_API_KEY
+    auth. Host is overridable via KIMI_CODE_OAUTH_HOST / KIMI_OAUTH_HOST.
+    
+    Co-authored-by: Mario Zechner <badlogicgames@gmail.com>
+
+ packages/ai/CHANGELOG.md                   |   1 +
+ packages/ai/src/auth/oauth/kimi-coding.ts  | 302 +++++++++++++++++++++++++++++
+ packages/ai/src/auth/oauth/load.ts         |   6 +
+ packages/ai/src/bun-oauth.ts               |   2 +
+ packages/ai/src/providers/kimi-coding.ts   |  12 +-
+ packages/ai/test/kimi-coding-oauth.test.ts | 260 +++++++++++++++++++++++++
+ 6 files changed, 581 insertions(+), 2 deletions(-)
+
+commit 1ae064099cee34302984c56ff637e63dad44a8c4
+Author:     David Brailovsky <davidbrai@gmail.com>
+AuthorDate: Wed Jul 22 08:33:34 2026 +0200
+Commit:     GitHub <noreply@github.com>
+CommitDate: Wed Jul 22 08:33:34 2026 +0200
+
+    generate-models: use reasoning options from models.dev (#6928)
+    
+    * generate-models: use reasoning options from models.dev
+    
+    * fix tests
+
+ packages/ai/scripts/generate-models.ts             | 84 +++++++++++++++++----
+ .../ai/scripts/models-dev-reasoning-options.ts     | 30 ++++++++
+ packages/ai/test/reasoning-options.test.ts         | 36 +++++++++
+ packages/ai/test/supports-xhigh.test.ts            | 16 ++--
+ packages/ai/test/together-models.test.ts           | 10 ++-
+ scripts/diff-model-catalog.mjs                     | 86 +++++++++++++++++++---
+ scripts/generate-thinking-capabilities.mjs         | 30 ++++++++
+ 7 files changed, 259 insertions(+), 33 deletions(-)
+
+commit db647e421fbc3e7cbf75371e36373eda19f13925
+Author:     github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+AuthorDate: Wed Jul 22 06:30:37 2026 +0000
+Commit:     github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+CommitDate: Wed Jul 22 06:30:37 2026 +0000
+
+    chore: approve contributor mteam88
+
+ .github/APPROVED_CONTRIBUTORS | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit dd6bea41efa8caa7a10fe5a6401676dc5699f83f
+Author:     Mario Zechner <badlogicgames@gmail.com>
+AuthorDate: Tue Jul 21 18:40:11 2026 +0200
+Commit:     Mario Zechner <badlogicgames@gmail.com>
+CommitDate: Tue Jul 21 18:40:11 2026 +0200
+
+    Add [Unreleased] section for next cycle
+
+ packages/agent/CHANGELOG.md               | 2 ++
+ packages/ai/CHANGELOG.md                  | 2 ++
+ packages/coding-agent/CHANGELOG.md        | 2 ++
+ packages/server/CHANGELOG.md              | 2 ++
+ packages/storage/sqlite-node/CHANGELOG.md | 2 ++
+ packages/tui/CHANGELOG.md                 | 2 ++
+ 6 files changed, 12 insertions(+)
+
+commit 37eb243d2644976e97f69fd6ec4726b7dbef89b4
+Author:     Mario Zechner <badlogicgames@gmail.com>
+AuthorDate: Tue Jul 21 17:03:28 2026 +0200
+Commit:     Mario Zechner <badlogicgames@gmail.com>
+CommitDate: Tue Jul 21 17:03:28 2026 +0200
+
+    feat(agent): add AgentHarness execution tools
+
+ package-lock.json                                  |   1 +
+ packages/agent/CHANGELOG.md                        |   8 +
+ packages/agent/docs/agent-harness.md               |  10 +-
+ packages/agent/package.json                        |   1 +
+ packages/agent/src/harness/agent-harness.ts        |  53 ++-
+ packages/agent/src/harness/tools/bash.ts           | 159 +++++++
+ packages/agent/src/harness/tools/edit-diff.ts      | 500 +++++++++++++++++++++
+ packages/agent/src/harness/tools/edit.ts           | 129 ++++++
+ .../agent/src/harness/tools/file-mutation-queue.ts |  56 +++
+ packages/agent/src/harness/tools/image.ts          | 104 +++++
+ packages/agent/src/harness/tools/index.ts          |  25 ++
+ packages/agent/src/harness/tools/path-utils.ts     |  30 ++
+ packages/agent/src/harness/tools/read.ts           | 148 ++++++
+ packages/agent/src/harness/tools/write.ts          |  43 ++
+ packages/agent/src/harness/types.ts                |  39 +-
+ packages/agent/src/harness/utils/shell-output.ts   |  72 ++-
+ packages/agent/src/index.ts                        |   1 +
+ .../test/harness/agent-harness-stream.test.ts      |   8 +-
+ packages/agent/test/harness/agent-harness.test.ts  | 105 +++--
+ packages/agent/test/harness/tools.test.ts          | 338 ++++++++++++++
+ packages/agent/test/scratch/simple.ts              |   9 +-
+ .../coding-agent/install-lock/package-lock.json    |   1 +
+ packages/coding-agent/npm-shrinkwrap.json          |   1 +
+ 23 files changed, 1766 insertions(+), 75 deletions(-)

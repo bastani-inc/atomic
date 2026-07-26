@@ -1,4 +1,5 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { isRetryableAssistantError } from "@earendil-works/pi-ai";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai/compat";
 import { clampThinkingLevel, isContextOverflow, modelsAreEqual } from "@earendil-works/pi-ai/compat";
 import { sleep } from "../utils/sleep.ts";
@@ -96,6 +97,9 @@ export function _isRetryableError(this: AgentSession, message: AssistantMessage)
 	if (provider && isCodexTokenInvalidationError(provider, message.errorMessage)) return false;
 
 	if (hasProviderTransportDiagnostic(message) || hasProviderModelUnavailableDiagnostic(message)) return true;
+	// Keep Atomic-specific terminal exclusions above, then inherit pi-ai's
+	// transport classifier (including getaddrinfo, ENOTFOUND, and EAI_AGAIN).
+	if (isRetryableAssistantError(message)) return true;
 	if (!message.errorMessage) return false;
 
 	const err = message.errorMessage;

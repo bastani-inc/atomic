@@ -8,6 +8,7 @@ import {
 } from "@earendil-works/pi-ai/compat";
 import { warnDeprecation } from "../utils/deprecation.ts";
 import { normalizeContextWindowOptions, validateContextWindowValue } from "./context-window.ts";
+import { normalizeGrammarToolCapability } from "./model-capabilities.ts";
 import { applyModelOverride } from "./model-registry-builtins.ts";
 import type { DynamicProviderApplyInput, ProviderConfigInput } from "./model-registry-types.ts";
 import { registerLegacyOAuthProvider, unregisterLegacyOAuthProviders } from "./oauth-provider-bridge.ts";
@@ -223,7 +224,7 @@ export function applyProviderConfigToModels(input: DynamicProviderApplyInput): M
 				]),
 				maxTokens: modelDef.maxTokens,
 				headers: undefined,
-				compat: modelDef.compat,
+				compat: normalizeGrammarToolCapability(modelDef.compat),
 			} as Model<Api>;
 			models.push(modelOverride ? applyModelOverride(model, modelOverride) : model);
 		}

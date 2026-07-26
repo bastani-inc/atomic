@@ -225,6 +225,7 @@ export function _bindExtensionCore(this: AgentSession, runner: ExtensionRunner):
 		},
 		{
 			getModel: () => this.model,
+			getThinkingLevel: () => this.thinkingLevel,
 			isIdle: () => !this.isStreaming,
 			isProjectTrusted: () => this.settingsManager.isProjectTrusted(),
 			getSignal: () => this.agent.signal,

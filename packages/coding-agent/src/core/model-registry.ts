@@ -14,9 +14,10 @@ import {
 	type MutableModels,
 	type Provider,
 } from "@earendil-works/pi-ai";
-import { builtinProviders, getBuiltinModelDataUrl, type BuiltinProvider } from "@earendil-works/pi-ai/providers/all";
+import { builtinProviders, getBuiltinModelDataGeneratedAt } from "@earendil-works/pi-ai/providers/all";
 import { type Api, type Model } from "@earendil-works/pi-ai/compat";
 import { dirname, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { getAgentConfigPaths } from "../config.ts";
 import { normalizePath } from "../utils/paths.ts";
 import type { AuthStatus, AuthStorage } from "./auth-storage.ts";
@@ -24,6 +25,7 @@ import { copilotApiBaseUrlFromToken, copilotCatalogCachePath, copilotTokenFromEn
 import { getModelRequestAuth, getApiKeyForProviderFromConfig, getProviderAuthStatusFromConfig, getProviderResolvedAuth } from "./model-registry-auth.ts";
 import { applyProviderConfigToModels, migrateLegacyRegisterProviderConfigValues, unregisterProviderRuntime, validateProviderConfig } from "./model-registry-dynamic.ts";
 import { loadModelRegistryModels } from "./model-registry-loader.ts";
+import { refreshExtensionProvider } from "./model-registry-extension-refresh.ts";
 import type { ProviderConfigInput, ProviderRequestConfig, ResolvedRequestAuth } from "./model-registry-types.ts";
 import type { ModelOverride } from "./model-registry-schemas.ts";
 import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "./provider-display-names.ts";
@@ -95,24 +97,28 @@ export class ModelRegistry {
 	private configuredProviderIds = new Set<string>();
 
 	declare readonly authStorage: AuthStorage;
-	declare private modelsJsonPaths: string[];
+	declare private readonly modelsJsonPaths: string[];
+	declare private readonly modelDataDir: string | undefined;
 
 	private constructor(
 		authStorage: AuthStorage,
 		modelsJsonPaths: string[],
+		modelDataDir?: string,
 	) {
 		this.authStorage = authStorage;
 		this.modelsJsonPaths = modelsJsonPaths.map((path) => normalizePath(path));
-		this.modelsStore = this.modelsJsonPaths.length > 0
-			? new FileModelsStore(join(dirname(this.modelsJsonPaths[0]), "models-store.json"))
-			: new InMemoryCodingAgentModelsStore();
+		this.modelDataDir = modelDataDir ? normalizePath(modelDataDir) : this.modelsJsonPaths[0] ? dirname(this.modelsJsonPaths[0]) : undefined;
+		this.modelsStore = this.modelDataDir ? new FileModelsStore(join(this.modelDataDir, "models-store.json")) : new InMemoryCodingAgentModelsStore();
 		this.credentialStore = authStorage.asCredentialStore();
 		this.providerModels = createModels({
 			credentials: createProviderCredentialStore(this.credentialStore),
 			modelsStore: this.modelsStore,
 		});
+		const builtinModelDataGeneratedAt = getBuiltinModelDataGeneratedAt();
 		for (const provider of builtinProviders()) {
-			const configured = provider.id === "radius" ? provider : withRemoteCatalog(provider, undefined, getBuiltinModelDataUrl(provider.id as BuiltinProvider));
+			const configured = provider.id === "radius"
+				? provider
+				: withRemoteCatalog(provider, undefined, builtinModelDataGeneratedAt);
 			this.defaultProviders.set(provider.id, configured);
 			this.providerModels.setProvider(configured);
 		}
@@ -121,18 +127,19 @@ export class ModelRegistry {
 	}
 
 	private seedCopilotModelCatalogFromCache(): void {
-		if (this.modelsJsonPaths.length === 0) return;
+		if (!this.modelDataDir) return;
 		const cred = this.authStorage.get("github-copilot");
 		const token = cred?.type === "oauth" && typeof cred.access === "string" ? cred.access : copilotTokenFromEnvironment();
 		if (!token) return;
-		seedActiveCopilotModelCatalogFromCache(token, copilotCatalogCachePath(dirname(this.modelsJsonPaths[0])));
+		seedActiveCopilotModelCatalogFromCache(token, copilotCatalogCachePath(this.modelDataDir));
 	}
 
 	static create(
 		authStorage: AuthStorage,
 		modelsJsonPath: string | string[] = getAgentConfigPaths("models.json"),
+		modelDataDir?: string,
 	): ModelRegistry {
-		return new ModelRegistry(authStorage, Array.isArray(modelsJsonPath) ? modelsJsonPath : [modelsJsonPath]);
+		return new ModelRegistry(authStorage, Array.isArray(modelsJsonPath) ? modelsJsonPath : [modelsJsonPath], modelDataDir);
 	}
 
 	static inMemory(authStorage: AuthStorage): ModelRegistry { return new ModelRegistry(authStorage, []); }
@@ -202,22 +209,21 @@ export class ModelRegistry {
 						if (configuredApiKey !== undefined) credential = { type: "api_key", key: configuredApiKey };
 					}
 					if (!isCurrentExtensionRefresh()) return;
-					const models = await config.refreshModels({
+					const refreshed = await refreshExtensionProvider({
+						config,
 						credential,
 						store,
 						allowNetwork: options.allowNetwork ?? true,
 						force: options.force,
 						signal: controller.signal,
+						isCurrent: isCurrentExtensionRefresh,
 					});
 					if (!isCurrentExtensionRefresh()) return;
-					const refreshed = { ...config, models };
-					this.registeredProviders.set(providerName, refreshed);
+					if (refreshed.error) errors.set(providerName, refreshed.error);
+					if (!refreshed.models) return;
+					this.registeredProviders.set(providerName, { ...config, models: refreshed.models });
 					this.rebuildProviderModels();
-				} catch (error) {
-					if (generation === this.refreshGeneration && !controller.signal.aborted) {
-						errors.set(providerName, error instanceof Error ? error : new Error(String(error)));
-					}
-				}
+				} catch (error) { if (isCurrentExtensionRefresh()) errors.set(providerName, error instanceof Error ? error : new Error(String(error))); }
 			});
 			const builtinRefresh = controller.signal.aborted
 				? Promise.resolve()
@@ -264,7 +270,11 @@ export class ModelRegistry {
 		for (const provider of loaded.configuredProviders.values()) this.providerModels.setProvider(provider);
 		this.configuredProviderIds = new Set(loaded.configuredProviders.keys());
 		this.modelOverrides = loaded.modelOverrides;
-		this.models = loaded.models;
+		const previousModels = new Map(this.models.map((model) => [`${model.provider}\0${model.id}`, model]));
+		this.models = loaded.models.map((model) => {
+			const previous = previousModels.get(`${model.provider}\0${model.id}`);
+			return previous && isDeepStrictEqual(previous, model) ? previous : model;
+		});
 		this.providerRequestConfigs = loaded.providerRequestConfigs;
 		this.modelRequestHeaders = loaded.modelRequestHeaders;
 		this.builtInProviders = loaded.builtInProviders;

@@ -4,6 +4,8 @@ export type {
 	AgentSettledEvent,
 	AgentStartEvent,
 	AgentToolResult,
+	ConstrainedSamplingConfig,
+	AtomicProviderCompat,
 	AgentToolUpdateCallback,
 	AppKeybinding,
 	AutocompleteProviderFactory,

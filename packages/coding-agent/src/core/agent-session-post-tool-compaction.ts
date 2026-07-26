@@ -46,7 +46,7 @@ export async function _preflightPostToolContext(
 		const result = await this._applyVerbatimCompaction({
 			resolvePlannerAuth: async () => {
 				const auth = await this._modelRegistry.getApiKeyAndHeaders(model);
-				return auth.ok && auth.apiKey
+				return auth.ok && (auth.apiKey || auth.headers)
 					? { apiKey: auth.apiKey, headers: auth.headers, baseUrl: auth.baseUrl }
 					: undefined;
 			},

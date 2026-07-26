@@ -9,7 +9,7 @@ import type { AgentSessionInternalSurface as AgentSession } from "./agent-sessio
 import { COPILOT_CONTEXT_WINDOW_SELECTION_OPTIONS, THINKING_LEVELS, type ContextWindowReplayRequest, type ContextWindowReplaySource, type ModelCycleResult } from "./agent-session-types.ts";
 
 export async function _getRequiredRequestAuth(this: AgentSession, model: Model<Api>): Promise<{
-	apiKey: string;
+	apiKey?: string;
 	headers?: ProviderHeaders;
 	baseUrl?: string;
 }> {
@@ -20,7 +20,7 @@ export async function _getRequiredRequestAuth(this: AgentSession, model: Model<A
 		}
 		throw new Error(result.error);
 	}
-	if (result.apiKey) {
+	if (result.apiKey || result.headers) {
 		return { apiKey: result.apiKey, headers: result.headers, baseUrl: result.baseUrl };
 	}
 

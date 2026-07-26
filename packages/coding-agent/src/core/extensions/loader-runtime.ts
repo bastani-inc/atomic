@@ -140,7 +140,16 @@ export function createExtensionRuntime(): ExtensionRuntime {
       for (const pending of pendingTools.values()) {
         if (names.has(pending.name)) continue;
         const { definition, sourceInfo } = pending.registration;
-        tools.push({ name: definition.name, description: definition.description, parameters: definition.parameters, promptGuidelines: definition.promptGuidelines, sourceInfo });
+        tools.push({
+          name: definition.name,
+          description: definition.description,
+          parameters: definition.parameters,
+          ...(Object.hasOwn(definition, "constrainedSampling")
+            ? { constrainedSampling: definition.constrainedSampling }
+            : {}),
+          promptGuidelines: definition.promptGuidelines,
+          sourceInfo,
+        });
         names.add(pending.name);
       }
       return tools;

@@ -467,7 +467,7 @@ export function renderChatMessageEntry(
         return compactionBoundaryFromMessage(messageEntry.message, options.toolOutputExpanded ?? false);
       }
       if (options.createCustomMessageComponent) return options.createCustomMessageComponent(messageEntry.message);
-      const component = new CustomMessageComponent(messageEntry.message, options.getCustomMessageRenderer?.(messageEntry.message.customType), markdownTheme);
+      const component = new CustomMessageComponent(messageEntry.message, options.getCustomMessageRenderer?.(messageEntry.message.customType), markdownTheme, options.outputPad ?? 1);
       component.setExpanded(options.toolOutputExpanded ?? false);
       return component;
     }

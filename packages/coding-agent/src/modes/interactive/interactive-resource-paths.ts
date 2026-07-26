@@ -2,32 +2,35 @@ import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { type SourceInfo, path, parseGitUrl, theme } from "./interactive-mode-deps.ts";
 
 InteractiveModeBase.prototype.getShortPath = function(this: InteractiveModeBase, fullPath: string, sourceInfo?: SourceInfo): string {
+    const normalizedFullPath = fullPath.replace(/\\/g, "/");
     const baseDir = sourceInfo?.baseDir;
     if (baseDir && this.isPackageSource(sourceInfo)) {
-      const relativePath = path.relative(
-        path.resolve(baseDir),
-        path.resolve(fullPath),
-      );
+      const normalizedBaseDir = baseDir.replace(/\\/g, "/");
+      const npmRootMatch = normalizedBaseDir.match(/^(.*\/node_modules)\/(@?[^/]+(?:\/[^/]+)?)$/);
+      if (npmRootMatch?.[1] && normalizedFullPath.startsWith(`${npmRootMatch[1]}/`)) {
+        return path.posix.relative(normalizedBaseDir, normalizedFullPath);
+      }
+      const relativePath = path.relative(path.resolve(baseDir), path.resolve(fullPath));
       if (
         relativePath &&
         relativePath !== "." &&
         !relativePath.startsWith("..") &&
         !relativePath.startsWith(`..${path.sep}`) &&
         !path.isAbsolute(relativePath)
-  ) {
+      ) {
         return relativePath.replace(/\\/g, "/");
       }
     }
 
     const source = sourceInfo?.source ?? "";
-    const npmMatch = fullPath.match(
+    const npmMatch = normalizedFullPath.match(
       /node_modules\/(@?[^/]+(?:\/[^/]+)?)\/(.*)/,
     );
     if (npmMatch && source.startsWith("npm:")) {
       return npmMatch[2];
     }
 
-    const gitMatch = fullPath.match(/git\/[^/]+\/[^/]+\/(.*)/);
+    const gitMatch = normalizedFullPath.match(/git\/[^/]+\/[^/]+\/(.*)/);
     if (gitMatch && source.startsWith("git:")) {
       return gitMatch[1];
     }

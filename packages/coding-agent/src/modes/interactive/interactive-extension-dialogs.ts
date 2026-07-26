@@ -127,6 +127,8 @@ InteractiveModeBase.prototype.showExtensionEditor = function(this: InteractiveMo
           this.hideExtensionEditor();
           resolve(undefined);
         },
+        undefined,
+        this.settingsManager.getExternalEditorCommand(),
       );
 
       this.editorContainer.clear();

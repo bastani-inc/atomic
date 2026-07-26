@@ -95,7 +95,7 @@ Override defaults when you need specific values:
 }
 ```
 
-The file reloads each time you open `/model`. Edit during session; no restart needed.
+Atomic reloads every configured `models.json` layer each time you open `/model`: legacy global/project `.pi` sources first, then primary global/project `.atomic` sources. Provider definitions, complete per-model overrides, dynamic catalogs, and isolated-engine model state are rebuilt from that fresh layered view, so edits take effect without restarting. Invalid edits report an error and do not silently reuse a different layer.
 
 ## Google AI Studio Example
 
@@ -217,6 +217,8 @@ Current behavior:
 - `/model`, `--list-models`, and the interactive footer display entries by model `id`.
 - The configured `name` is used for model matching and secondary model detail text. It does not replace the footer/status-bar model id.
 
+
+Model references resolve the complete, unmodified ID before Atomic interprets thinking suffixes or glob syntax. For example, if the catalog contains the literal ID `provider/literal[free]:high`, that complete model wins and `:high` remains part of its ID; it does not become a thinking-level suffix and `[free]` is not treated as a character class. Only when the complete ID is absent does Atomic parse a valid thinking suffix, try the stripped exact ID, then apply glob/fuzzy matching. This preserves literal provider IDs without changing ordinary `*`, `?`, bracket-glob, ambiguity, ordering, or deduplication behavior.
 ### Request-wide Cost Tiers
 
 Custom models can declare request-wide long-context pricing under `cost.tiers`. The base `cost` and every tier must provide all four rates: `input`, `output`, `cacheRead`, and `cacheWrite`, in cost per million tokens. Each tier also requires `inputTokensAbove`.
@@ -529,11 +531,25 @@ For providers with partial OpenAI compatibility, use the `compat` field.
 | `thinkingFormat`                              | Use `reasoning_effort`, `openrouter`, `deepseek`, `together`, `zai`, `qwen`, `chat-template`, or `qwen-chat-template` thinking parameters                                                                                            |
 | `chatTemplateKwargs`                          | `chat_template_kwargs` values for `thinkingFormat: "chat-template"`; use `{ "$var": "thinking.enabled" }` or `{ "$var": "thinking.effort" }` for Atomic-controlled thinking values                                          |
 | `cacheControlFormat`                          | Use Anthropic-style `cache_control` markers on the system prompt, last tool definition, and last user/assistant text content. Currently only `anthropic` is supported.                                                               |
-| `supportsStrictMode`                          | Include the `strict` field in tool definitions                                                                                                                                                                                       |
+| `supportsStrictMode`                          | OpenAI-compatible strict JSON-schema function tools. This is not a general guarantee for every API. |
+| `supportsStrictTools`                         | Anthropic/Bedrock strict-tool capability, normally generated from verified model metadata. |
+| `supportsOpenAIGrammarTools`                  | Canonical Pi capability for OpenAI Lark/regex custom tools. Keep false unless the endpoint passes custom tools through unchanged. |
+| `supportsGrammarTools`                        | Atomic compatibility alias for `supportsOpenAIGrammarTools`; the canonical field wins if both disagree. |
 | `supportsLongCacheRetention`                  | Whether the provider accepts long cache retention when cache retention is `long`: `prompt_cache_retention: "24h"` for OpenAI prompt caching, or `cache_control.ttl: "1h"` when `cacheControlFormat` is `anthropic`. Default: `true`. |
 | `openRouterRouting`                           | OpenRouter provider routing preferences. This object is sent as-is in the `provider` field of the [OpenRouter API request](https://openrouter.ai/docs/guides/routing/provider-selection).                                            |
 | `vercelGatewayRouting`                        | Vercel AI Gateway routing config for provider selection (`only`, `order`)                                                                                                                                                            |
 
+### Constrained tool sampling
+
+Tools may request `{ type: "json_schema", strict: "prefer" | "require" }` or `{ type: "grammar", variants: { openai_lark?: string, openai_regex?: string } }`. `prefer` may fall back to ordinary tool calling; `require` must fail if the active provider/model cannot enforce the schema. Grammar tools use OpenAI custom-tool syntax and fall back to normal function handling when grammar capability is absent. Do not infer support from a provider name: Atomic carries the model's explicit capability metadata through built-in catalogs, dynamic catalogs, overrides, SDK/RPC model objects, and isolated execution.
+
+Strict JSON-schema support currently includes OpenAI, Anthropic, capable Bedrock Converse models, Mistral, and Gemini 3 through Google/Vertex. Earlier Gemini models cannot enforce required parameters: `prefer` falls back and `require` fails. OpenAI grammar tools are limited to capable GPT-5+ models on endpoints known to preserve custom tools; gateways such as OpenRouter may normalize and break them.
+
+### Catalog freshness and precedence
+
+Authenticated remote catalogs are cached in `models-store.json`. Atomic revalidates pi.dev catalogs with the stored ETag through `If-None-Match`; an empty `304 Not Modified` is success and retains the cached body while updating its check time. A newer bundled catalog wins over an older persisted overlay even when package file mtimes are misleading. Final visibility is built-ins, persisted/remote data subject to freshness, configured `.pi` then `.atomic` layers, and live provider catalogs/overrides. Provider failures retain the last usable provider-specific snapshot.
+
+Claude Opus 5 is present in the generated Anthropic and Amazon Bedrock catalogs. Its metadata enables adaptive thinking, including `xhigh` where advertised. Bedrock uses its generated inference-profile ID, prompt-caching and strict-tool metadata, and preserves provider/AWS validation errors. Custom entries must reproduce those capabilities honestly rather than copying a display name alone.
 `openrouter` uses `reasoning: { effort }`. `together` uses `reasoning: { enabled }` and also `reasoning_effort` when `supportsReasoningEffort` is enabled. `qwen` uses top-level `enable_thinking`. Use `qwen-chat-template` for local Qwen-compatible servers that require `chat_template_kwargs.enable_thinking` and `preserve_thinking`. Use `chat-template` for vLLM/Hugging Face chat templates that need configurable `chat_template_kwargs`, such as `chatTemplateKwargs: { "thinking": { "$var": "thinking.enabled" } }` for DeepSeek V3.x templates.
 
 `cacheControlFormat: "anthropic"` is for OpenAI-compatible providers that expose Anthropic-style prompt caching through `cache_control` markers on text content and tool definitions.

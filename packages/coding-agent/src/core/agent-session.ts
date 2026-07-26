@@ -110,7 +110,7 @@ export class AgentSession {
 	protected _retryAttempt = 0;
 	protected _retryPromise: Promise<void> | undefined = undefined;
 	protected _retryResolve: (() => void) | undefined = undefined;
-	protected _bashAbortController: AbortController | undefined = undefined;
+	protected _bashAbortControllers = new Map<string | symbol, AbortController>();
 	protected _pendingBashMessages: BashExecutionMessage[] = [];
 	protected _extensionRunner!: ExtensionRunner;
 	protected _turnIndex = 0;

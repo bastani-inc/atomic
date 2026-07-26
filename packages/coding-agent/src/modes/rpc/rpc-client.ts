@@ -1,5 +1,7 @@
 
 import type { ChildProcess } from "node:child_process";
+import type { BashResult } from "../../core/bash-executor.ts";
+import type { BashOutputChannel } from "../../core/tools/bash.ts";
 import type { ImageContent } from "@earendil-works/pi-ai/compat";
 import { QueuedWriter } from "./queued-writer.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
@@ -290,6 +292,24 @@ export class RpcClient extends RpcClientApi {
 	async requestInternal<T>(command: RpcCommandBody): Promise<T> {
 		return this.data<T>(await this.request(command));
 	}
+	async userBashWithUpdates(
+		command: string,
+		onUpdate: (delta: string, channel: BashOutputChannel) => void,
+		options?: { excludeFromContext?: boolean; onRequestId?: (id: string) => void },
+	): Promise<BashResult> {
+		let requestId: string | undefined;
+		const unsubscribe = this.onEvent((event) => {
+			if (event.type === "bash_execution_update" && event.id === requestId) onUpdate(event.delta, event.channel);
+		});
+		try {
+			return this.data(await this.request(
+				{ type: "user_bash", command, excludeFromContext: options?.excludeFromContext },
+				(id) => { requestId = id; options?.onRequestId?.(id); },
+			));
+		} finally {
+			unsubscribe();
+		}
+	}
 	getStderr(): string {
 		return this.stderr;
 	}
@@ -381,7 +401,7 @@ export class RpcClient extends RpcClientApi {
 			});
 		});
 	}
-	protected async request(command: RpcCommandBody): Promise<RpcResponse> {
+	protected async request(command: RpcCommandBody, onRequestId?: (id: string) => void): Promise<RpcResponse> {
 		const childProcess = this.process;
 		if (!childProcess) throw new Error("Client not started");
 		if (this.exitError) throw this.exitError;
@@ -391,6 +411,7 @@ export class RpcClient extends RpcClientApi {
 			throw error;
 		}
 		const id = `req_${++this.requestId}`;
+		onRequestId?.(id);
 		const fullCommand = { ...command, id } as RpcCommand;
 		let timeout: ReturnType<typeof setTimeout> | undefined;
 		let rejectResponse!: (error: Error) => void;

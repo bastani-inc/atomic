@@ -6,7 +6,7 @@
  */
 
 import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
-import { retryAssistantCall, type ProviderHeaders, type RetryCallbacks, type RetryPolicy } from "@earendil-works/pi-ai";
+import { retryAssistantCall, type ProviderHeaders, type RetryCallbacks, type RetryPolicy, uuidv7 } from "@earendil-works/pi-ai";
 import type { Api, Model, SimpleStreamOptions, Usage } from "@earendil-works/pi-ai/compat";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
 import { formatCopilotProviderError } from "../copilot-errors.ts";
@@ -63,8 +63,8 @@ export interface CollectEntriesResult {
 export interface GenerateBranchSummaryOptions {
 	/** Model to use for summarization */
 	model: Model<Api>;
-	/** API key for the model */
-	apiKey: string;
+	/** API key for the model; omitted for header-only bearer authentication. */
+	apiKey?: string;
 	/** Request headers for the model */
 	headers?: ProviderHeaders;
 	/** Credential-specific request endpoint for the model */
@@ -351,7 +351,14 @@ export async function generateBranchSummary(
 	// Call LLM for summarization. Prefer the session stream function so SDK
 	// request behavior stays consistent without mutating agent state.
 	const context = { systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages };
-	const requestOptions: SimpleStreamOptions = { apiKey, headers, signal, maxTokens: 2048 };
+	const requestOptions: SimpleStreamOptions = {
+		apiKey,
+		headers,
+		signal,
+		maxTokens: 2048,
+		cacheRetention: "none",
+		sessionId: uuidv7(),
+	};
 	const requestModel = baseUrl === undefined || baseUrl === model.baseUrl ? model : { ...model, baseUrl };
 	const response = await (async () => {
 		try {

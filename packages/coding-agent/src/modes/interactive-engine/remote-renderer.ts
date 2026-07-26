@@ -143,16 +143,20 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 export class RemoteCustomMessageComponent extends RemoteRenderer {
 	private readonly message: CustomMessage<unknown>;
 	private expanded = false;
+	private outputPad: number;
 	constructor(
 		message: CustomMessage<unknown>,
 		runtime: IsolatedInteractiveRuntime,
 		requestRender: () => void,
+		outputPad = 1,
 	) {
 		super(runtime, requestRender);
 		this.message = message;
+		this.outputPad = outputPad;
 	}
 
 	setExpanded(expanded: boolean): void { this.expanded = expanded; this.changed(); }
+	setOutputPad(outputPad: number): void { this.outputPad = outputPad; this.changed(); }
 
 	protected command(requestId: number, width: number): InteractiveEngineCommand {
 		return {
@@ -162,6 +166,7 @@ export class RemoteCustomMessageComponent extends RemoteRenderer {
 			width,
 			message: jsonValue(this.message) as JsonObject,
 			expanded: this.expanded,
+			outputPad: this.outputPad,
 		};
 	}
 }

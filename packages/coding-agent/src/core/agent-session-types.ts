@@ -72,6 +72,7 @@ export type AgentSessionEvent =
 			reason: "manual" | "threshold" | "overflow";
 	  }
 	| { type: "summarization_retry_finished" }
+	| { type: "bash_execution_update"; id?: string; channel: "stdout" | "stderr"; delta: string }
 	| { type: "model_fallback_start"; from: string; to: string; reason: string; attempt: number }
 	| { type: "model_fallback_end"; success: boolean; from?: string; to?: string; finalError?: string };
 

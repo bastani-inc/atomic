@@ -1,3 +1,4 @@
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai/compat";
 import type { VerbatimCompactionResult } from "../compaction/index.ts";
 import type { CustomMessage } from "../messages.ts";
@@ -92,6 +93,8 @@ export interface ExtensionContext {
 	modelRegistry: ModelRegistry;
 	/** Current model (may be undefined) */
 	model: Model<Api> | undefined;
+	/** Current thinking level, resolved from the active session at access time. */
+	thinkingLevel?: ThinkingLevel;
 	/** Session-scoped internal resource router (e.g. artifact:// resolver). */
 	readonly internalResourceRouter?: import("../tools/resource-selectors.ts").InternalResourceRouter;
 	/** Whether the agent is idle (not streaming) */

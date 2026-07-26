@@ -52,6 +52,20 @@ function osc52Writes(): string[] {
 	return stdoutWrites.filter((write) => write.startsWith("\x1b]52;c;"));
 }
 
+function mockWlCopyExit(code: number): void {
+	const child = {
+		once(event: string, listener: (value: number | null) => void) {
+			if (event === "close") queueMicrotask(() => listener(code));
+			return child;
+		},
+		stdin: {
+			on() { return child.stdin; },
+			end: vi.fn(),
+		},
+	};
+	mockedSpawn.mockReturnValue(child as unknown as ReturnType<typeof spawn>);
+}
+
 beforeEach(() => {
 	vi.unstubAllEnvs();
 	vi.stubEnv("SSH_CONNECTION", "");
@@ -144,5 +158,48 @@ describe("copyToClipboard", () => {
 
 		await expect(copyToClipboard("x".repeat(80_000))).rejects.toThrow("Failed to copy to clipboard");
 		expect(osc52Writes()).toHaveLength(0);
+	});
+
+	test("awaits successful wl-copy before reporting Wayland success", async () => {
+		mockedPlatform.mockReturnValue("linux");
+		mocks.isWaylandSession.mockReturnValue(true);
+		vi.stubEnv("WAYLAND_DISPLAY", "wayland-1");
+		mockWlCopyExit(0);
+		mockedExecSync.mockReturnValue(Buffer.alloc(0));
+
+		await copyToClipboard("hello");
+
+		expect(mockedSpawn).toHaveBeenCalledWith("wl-copy", [], { stdio: ["pipe", "ignore", "ignore"] });
+		expect(mockedExecSync.mock.calls.map(([command]) => command)).toEqual(["which wl-copy"]);
+		expect(osc52Writes()).toHaveLength(0);
+	});
+
+	test("falls through to X11 when wl-copy exits unsuccessfully", async () => {
+		mockedPlatform.mockReturnValue("linux");
+		mocks.isWaylandSession.mockReturnValue(true);
+		vi.stubEnv("WAYLAND_DISPLAY", "wayland-1");
+		vi.stubEnv("DISPLAY", ":0");
+		mockWlCopyExit(1);
+		mockedExecSync.mockReturnValue(Buffer.alloc(0));
+
+		await copyToClipboard("hello");
+
+		expect(mockedExecSync.mock.calls.map(([command]) => command)).toEqual([
+			"which wl-copy",
+			"xclip -selection clipboard",
+		]);
+		expect(osc52Writes()).toHaveLength(0);
+	});
+
+	test("falls through to OSC 52 when failed wl-copy has no X11 display", async () => {
+		mockedPlatform.mockReturnValue("linux");
+		mocks.isWaylandSession.mockReturnValue(true);
+		vi.stubEnv("WAYLAND_DISPLAY", "wayland-1");
+		mockWlCopyExit(1);
+		mockedExecSync.mockReturnValue(Buffer.alloc(0));
+
+		await copyToClipboard("hello");
+
+		expect(osc52Writes()).toHaveLength(1);
 	});
 });

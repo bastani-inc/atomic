@@ -1,5 +1,6 @@
 import { isKeyRelease, type Component, type OverlayHandle, type OverlayOptions, type Terminal } from "@earendil-works/pi-tui";
 import { TUI } from "@earendil-works/pi-tui";
+import { getAgentDir } from "../../config.ts";
 import { runCallback } from "../../core/callback-activity.ts";
 import type { KeybindingsManager } from "../../core/keybindings.ts";
 import type { Theme } from "../interactive/theme/theme.ts";
@@ -107,7 +108,7 @@ export class EngineCustomUiService {
 		const componentId = `remote_widget_${++this.nextId}`;
 		this.widgetIds.set(key, componentId);
 		const terminal = new RemoteTerminal(() => this.send({ type: "engine_custom_invalidate", componentId }));
-		const tui = new TUI(terminal);
+		const tui = new TUI(terminal, undefined, getAgentDir());
 		void runCallback(
 			{ kind: "renderer", name: `widget:${key}` },
 			() => factory(tui, theme),
@@ -162,7 +163,7 @@ export class EngineCustomUiService {
 			() => this.send({ type: "engine_custom_invalidate", componentId }),
 			(control) => this.send({ type: "engine_custom_terminal", componentId, control }),
 		);
-		const tui = new TUI(terminal);
+		const tui = new TUI(terminal, undefined, getAgentDir());
 		const component = await factory(tui, theme, this.keybindings, done);
 		tui.addChild(component);
 		tui.setFocus(component);

@@ -380,7 +380,7 @@ export async function _runAutoCompaction(this: AgentSession, reason: "overflow" 
 		const result = await this._applyVerbatimCompaction({
 			resolvePlannerAuth: async () => {
 				const authResult = await this._modelRegistry.getApiKeyAndHeaders(model);
-				if (!authResult.ok || !authResult.apiKey) {
+				if (!authResult.ok || (!authResult.apiKey && !authResult.headers)) {
 					return undefined;
 				}
 				return { apiKey: authResult.apiKey, headers: authResult.headers, baseUrl: authResult.baseUrl };

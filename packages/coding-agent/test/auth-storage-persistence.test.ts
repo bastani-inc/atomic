@@ -79,6 +79,48 @@ describe("AuthStorage persistence failures", () => {
 		expect(storage.get("anthropic")).toEqual({ type: "api_key", key: "existing" });
 	});
 
+	test("OAuth login persistence failure preserves the previously committed credential", async () => {
+		const backend = new ControllableAuthBackend(JSON.stringify({
+			openrouter: { type: "api_key", key: "previous-key" },
+		}));
+		const storage = AuthStorage.fromStorage(backend);
+		registerLegacyOAuthProvider("openrouter", {
+			name: "OpenRouter test",
+			login: async () => ({ refresh: "", access: "minted-key", expires: Number.MAX_SAFE_INTEGER }),
+			refreshToken: async (credentials) => credentials,
+			getApiKey: (credentials) => credentials.access,
+		});
+		backend.writeError = new Error("auth.json is read-only");
+
+		await expect(storage.login("openrouter", {
+			onAuth: () => {},
+			onDeviceCode: () => {},
+			onPrompt: async () => "",
+			onSelect: async () => undefined,
+		})).rejects.toThrow("auth.json is read-only");
+		expect(storage.get("openrouter")).toEqual({ type: "api_key", key: "previous-key" });
+	});
+
+	test("cancelled OAuth login preserves the previously committed credential", async () => {
+		const storage = AuthStorage.inMemory({
+			"kimi-coding": { type: "api_key", key: "previous-key" },
+		});
+		registerLegacyOAuthProvider("kimi-coding", {
+			name: "Kimi Code test",
+			login: async () => { throw new Error("Login cancelled"); },
+			refreshToken: async (credentials) => credentials,
+			getApiKey: (credentials) => credentials.access,
+		});
+
+		await expect(storage.login("kimi-coding", {
+			onAuth: () => {},
+			onDeviceCode: () => {},
+			onPrompt: async () => "",
+			onSelect: async () => undefined,
+		})).rejects.toThrow("Login cancelled");
+		expect(storage.get("kimi-coding")).toEqual({ type: "api_key", key: "previous-key" });
+	});
+
 	test("failed async logout keeps the persisted credential in memory", async () => {
 		const backend = new ControllableAuthBackend(
 			JSON.stringify({ anthropic: { type: "api_key", key: "existing" } }),

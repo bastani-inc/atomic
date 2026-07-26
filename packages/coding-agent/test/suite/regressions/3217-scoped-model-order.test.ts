@@ -101,4 +101,24 @@ describe("issue #3217 scoped model ordering", () => {
 
 		expect(orderedIds).toEqual([modelTwo.id, modelOne.id, modelThree.id]);
 	});
+
+	it("keeps unavailable scoped IDs visible and removable", async () => {
+		const harness = await createHarness({ models: [{ id: "available", name: "Available", reasoning: false }] });
+		harnesses.push(harness);
+		const availableId = `${harness.models[0]!.provider}/${harness.models[0]!.id}`;
+		const unavailableId = `${harness.models[0]!.provider}/retired[free]`;
+		const changes: Array<string[] | null> = [];
+		const selector = new ScopedModelsSelectorComponent(
+			{ allModels: [...harness.models], enabledModelIds: [unavailableId, availableId] },
+			{
+				onChange: (enabledModelIds) => { changes.push(enabledModelIds); },
+				onPersist: () => {},
+				onCancel: () => {},
+			},
+		);
+
+		expect(stripAnsi(selector.render(120).join("\n"))).toContain(`${unavailableId} [unavailable]`);
+		selector.handleInput("\r");
+		expect(changes.at(-1)).toEqual([availableId]);
+	});
 });

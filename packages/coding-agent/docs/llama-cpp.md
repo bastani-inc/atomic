@@ -55,7 +55,9 @@ Run `/llama` in interactive mode:
 
 Hugging Face search uses `HF_TOKEN` when set, then checks `$HF_TOKEN_PATH`, `$HF_HOME/token`, `$XDG_CACHE_HOME/huggingface/token`, and `~/.cache/huggingface/token`. Unauthenticated search has lower rate limits. Atomic warns before gated downloads and links to the access page. Because llama.cpp performs the download, its process must also have `HF_TOKEN` for gated repositories.
 
-Atomic asks before unloading other models, never silently unloads models, and never deletes model files. `/llama` always displays the router's current state because other clients may share it. Only loaded models appear in `/model`; load one first, then select it there. If the router disconnects, choose **Retry** to reconnect and refresh state without replaying the interrupted operation.
+Atomic asks before unloading other models, never silently unloads models, and never deletes model files. `/llama` always displays the router's current state because other clients may share it. Only loaded models appear in `/model`; load one first, then select it there. Atomic persists the last successful loaded-model catalog in `~/.atomic/agent/models-store.json` (or the active custom agent directory), so those entries remain selectable after restart and before the first successful refresh. If that first online refresh fails, Atomic reports the original router error while continuing to expose the validated persisted catalog; a later successful refresh replaces those stale loaded-state entries without duplicates. If the router disconnects, choose **Retry** to reconnect and refresh state without replaying the interrupted operation.
+
+Each llama model uses the router-reported loaded context (`meta.n_ctx`, then training context, otherwise Atomic's fallback) for both `contextWindow` and `maxTokens`; Atomic no longer applies a separate 16K output cap. The server remains authoritative and may impose a smaller practical generation limit.
 
 ## Troubleshooting
 

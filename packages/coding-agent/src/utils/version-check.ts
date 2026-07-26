@@ -43,7 +43,7 @@ export function isNewerPackageVersion(candidateVersion: string, currentVersion: 
 export async function getLatestPiRelease(
 	options: { timeoutMs?: number } = {},
 ): Promise<LatestPiRelease | undefined> {
-	if (getEnvValue(ENV_SKIP_VERSION_CHECK) || getEnvValue(ENV_OFFLINE)) return undefined;
+	if (getEnvValue(ENV_OFFLINE)) return undefined;
 
 	const response = await fetch(LATEST_VERSION_URL, {
 		headers: {
@@ -67,6 +67,7 @@ export async function getLatestPiVersion(
 }
 
 export async function checkForNewPiVersion(currentVersion: string): Promise<string | undefined> {
+	if (getEnvValue(ENV_SKIP_VERSION_CHECK)) return undefined;
 	// Dev builds always read the versionless `0.0.0` placeholder, which is older
 	// than any published release, so the registry check would always nag. Skip it
 	// (and the network call) for source-tree/dev runs.

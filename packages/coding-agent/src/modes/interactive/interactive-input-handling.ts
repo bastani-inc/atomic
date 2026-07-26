@@ -84,9 +84,9 @@ InteractiveModeBase.prototype.setupKeyHandlers = function(this: InteractiveModeB
     this.defaultEditor.onAction("app.thinking.toggle", () =>
       this.toggleThinkingBlockVisibility(),
     );
-    this.defaultEditor.onAction("app.editor.external", () =>
-      this.openExternalEditor(),
-    );
+    this.defaultEditor.onAction("app.editor.external", () => {
+      void this.openExternalEditor();
+    });
     this.defaultEditor.onAction("app.message.followUp", () =>
       this.handleFollowUp(),
     );

@@ -94,9 +94,9 @@ InteractiveModeBase.prototype.toggleThinkingBlockVisibility = function(this: Int
     );
   };
 
-InteractiveModeBase.prototype.openExternalEditor = function(this: InteractiveModeBase): void {
+InteractiveModeBase.prototype.openExternalEditor = async function(this: InteractiveModeBase): Promise<void> {
     const currentText = this.editor.getExpandedText?.() ?? this.editor.getText();
-    const updated = openExternalEditorForText(currentText, this.ui, {
+    const updated = await openExternalEditorForText(currentText, this.ui, {
       editorCommand: this.settingsManager.getExternalEditorCommand(),
       showWarning: (message) => this.showWarning(message),
     });

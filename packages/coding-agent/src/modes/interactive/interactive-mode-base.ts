@@ -413,6 +413,7 @@ export class InteractiveModeBase {
     this.ui = new TUI(
       options.terminal ?? new ProcessTerminal(),
       this.settingsManager.getShowHardwareCursor(),
+      runtimeHost.services.agentDir,
     );
     this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
     this.headerContainer = new Container();

@@ -1,11 +1,8 @@
 import type {
-	AnthropicMessagesCompat,
 	Api,
 	AssistantMessageEventStream,
 	Context,
 	Model,
-	OpenAICompletionsCompat,
-	OpenAIResponsesCompat,
 	SimpleStreamOptions,
 } from "@earendil-works/pi-ai/compat";
 import type { Provider, ProviderHeaders } from "@earendil-works/pi-ai";
@@ -14,10 +11,11 @@ import type { RefreshModelsContext } from "@earendil-works/pi-ai";
 import type { AuthStorage } from "./auth-storage.ts";
 import type { ModelOverride } from "./model-registry-schemas.ts";
 import type { ProviderApiKeyAuth } from "./extensions/provider-types.ts";
+import type { AtomicProviderCompat } from "./model-capabilities.ts";
 
 export interface ProviderOverride {
 	baseUrl?: string;
-	compat?: Model<Api>["compat"];
+	compat?: AtomicProviderCompat;
 }
 
 export interface ProviderRequestConfig {
@@ -75,10 +73,7 @@ export interface DynamicProviderApplyInput {
 	storeModelHeaders: (providerName: string, modelId: string, headers?: Record<string, string>) => void;
 }
 
-export type ProviderCompat =
-	| OpenAICompletionsCompat
-	| OpenAIResponsesCompat
-	| AnthropicMessagesCompat;
+export type ProviderCompat = AtomicProviderCompat;
 
 export interface ProviderConfigInput {
 	name?: string;
@@ -104,6 +99,6 @@ export interface ProviderConfigInput {
 		contextWindowOptions?: readonly number[];
 		maxTokens: number;
 		headers?: Record<string, string>;
-		compat?: Model<Api>["compat"];
+		compat?: AtomicProviderCompat;
 	}>;
 }

@@ -281,6 +281,16 @@ Response contains an array of full [Model](#model) objects:
 }
 ```
 
+The subprocess protocol returns full `Model` objects. The exported TypeScript `RpcClient.getAvailableModels()` keeps its smaller backward-compatible `ModelInfo` shape (`provider`, `id`, `contextWindow`, `reasoning`) and adds optional `compat`. When present, `compat` exposes constrained-sampling capability claims including `supportsStrictTools`, `supportsStrictMode`, canonical `supportsOpenAIGrammarTools`, and Atomic's synchronized `supportsGrammarTools` alias. Treat absence as unknown/unsupported; do not infer enforcement from the provider name.
+
+```typescript
+const models = await client.getAvailableModels();
+const capabilities = models[0]?.compat;
+if (capabilities?.supportsStrictTools) {
+  // The selected model advertises Anthropic/Bedrock strict-tool support.
+}
+```
+
 #### logout_provider
 
 Remove a provider's stored credential in the authoritative agent process, refresh its available-model catalog, and return the remaining authentication status and new catalog. Environment variables and `models.json` authentication are reported but are not modified.
@@ -568,6 +578,15 @@ Response:
 }
 ```
 
+While the command runs, Atomic emits ordered deltas correlated by the command `id`:
+
+```json
+{"type":"bash_execution_update","id":"req-1","channel":"stdout","delta":"building...\n"}
+{"type":"bash_execution_update","id":"req-1","channel":"stderr","delta":"warning\n"}
+```
+
+`channel` is exactly `"stdout"` or `"stderr"`. Deltas preserve the order observed for that request; concurrent bash requests may interleave globally but never share IDs. Request ownership survives `new_session`, `switch_session`, `import_session`, fork, and clone while the command is running: later deltas still stream under the original ID, the replacement session is not contaminated, and exactly one ordinary `response` remains the terminal record for completion, cancellation, or error.
+
 If output was truncated, includes `fullOutputPath`:
 ```json
 {
@@ -586,7 +605,7 @@ If output was truncated, includes `fullOutputPath`:
 
 **How bash results reach the LLM:**
 
-The `bash` command executes immediately and returns a `BashResult`. Internally, a `BashExecutionMessage` is created and stored in the agent's message state. This message does NOT emit an event.
+The `bash` command executes immediately and returns a `BashResult`. Internally, a `BashExecutionMessage` is created and stored exactly once in the session where that request started, even if an RPC session replacement completes before the command. The message does NOT emit an event.
 
 When the next `prompt` command is sent, all messages (including `BashExecutionMessage`) are transformed before being sent to the LLM. The `BashExecutionMessage` is converted to a `UserMessage` with this format:
 
@@ -605,15 +624,15 @@ This means:
 
 #### abort_bash
 
-Abort a running bash command.
+Abort running bash commands. Omit `requestId` to retain the legacy behavior of aborting every active RPC-owned bash request, including requests that began before a session replacement, or provide the target bash command's `id` to cancel only that request. Targeted and legacy cancellation remain isolated across concurrent IDs. Closing RPC cancels and drains remaining owned requests before shutdown.
 
 ```json
-{"type": "abort_bash"}
+{"id":"cancel-1","type":"abort_bash","requestId":"req-1"}
 ```
 
 Response:
 ```json
-{"type": "response", "command": "abort_bash", "success": true}
+{"id":"cancel-1","type":"response","command":"abort_bash","success":true}
 ```
 
 ### Session
@@ -921,7 +940,7 @@ Each command has:
 
 ## Events
 
-Events are streamed to stdout as JSON lines during agent operation. Events do NOT include an `id` field (only responses do).
+Events are streamed to stdout as JSON lines. Most events do not include an `id`; `bash_execution_update` is the deliberate exception and uses the originating bash request ID.
 
 ### Event Types
 
@@ -937,6 +956,7 @@ Events are streamed to stdout as JSON lines during agent operation. Events do NO
 | `tool_execution_start` | Tool begins execution |
 | `tool_execution_update` | Tool execution progress (streaming output) |
 | `tool_execution_end` | Tool completes |
+| `bash_execution_update` | Correlated direct-bash stdout/stderr delta |
 | `queue_update` | Pending steering/follow-up queue changed |
 | `context_window_changed` | Active context-window token budget changed |
 | `compaction_start` | Verbatim line compaction begins |
@@ -1078,6 +1098,10 @@ When complete:
 ```
 
 Use `toolCallId` to correlate events. The `partialResult` in `tool_execution_update` contains the accumulated output so far (not just the delta), allowing clients to simply replace their display on each update.
+
+### bash_execution_update
+
+Emitted only for direct `bash` and non-intercepted `user_bash` RPC execution. Each event is `{type, id?, channel, delta}` where `channel` is `"stdout"` or `"stderr"`; use `id` to keep concurrent streams separate. Tool-call bash continues to use `tool_execution_update` and its `toolCallId`.
 
 ### queue_update
 

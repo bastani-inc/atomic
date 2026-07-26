@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
-import { getAgentConfigPaths, getAgentDir } from "../config.ts";
+import { getAgentDir, getModelsConfigPaths } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { AuthStorage } from "./auth-storage.ts";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
@@ -153,10 +153,6 @@ export async function createAgentSessionServices(
 	const settingsSpan = startTimingSpan("createAgentSessionServices.settingsManager");
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
 	endTimingSpan(settingsSpan);
-	const modelRegistrySpan = startTimingSpan("createAgentSessionServices.modelRegistry");
-	const modelsJsonPaths = agentDir === getAgentDir() ? getAgentConfigPaths("models.json") : join(agentDir, "models.json");
-	const modelRegistry = options.modelRuntime?.modelRegistry ?? options.modelRegistry ?? ModelRegistry.create(authStorage, modelsJsonPaths);
-	endTimingSpan(modelRegistrySpan);
 	const resourceLoader = new DefaultResourceLoader({
 		...(options.resourceLoaderOptions ?? {}),
 		cwd,
@@ -166,6 +162,13 @@ export async function createAgentSessionServices(
 	const reloadSpan = startTimingSpan("createAgentSessionServices.resourceLoader.reload");
 	await resourceLoader.reload(options.resourceLoaderReloadOptions);
 	endTimingSpan(reloadSpan);
+	const modelRegistrySpan = startTimingSpan("createAgentSessionServices.modelRegistry");
+	const modelRegistry = options.modelRuntime?.modelRegistry ?? options.modelRegistry ?? ModelRegistry.create(
+		authStorage,
+		getModelsConfigPaths(cwd, agentDir, settingsManager.isProjectTrusted()),
+		agentDir,
+	);
+	endTimingSpan(modelRegistrySpan);
 
 	const diagnostics: AgentSessionRuntimeDiagnostic[] = [];
 	const providerSpan = startTimingSpan("createAgentSessionServices.providerRegistrations");

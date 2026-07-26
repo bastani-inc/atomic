@@ -60,7 +60,8 @@ test("offline scoped-model selector refresh stays cache-only", async () => {
 	const refresh = vi.fn(async () => ({ aborted: false, errors: new Map() }));
 	const showStatus = vi.fn();
 	const mode = {
-		session: { modelRegistry: { refresh, getAvailable: () => [] } },
+		session: { scopedModels: [], modelRegistry: { refresh, getAvailable: () => [] } },
+		settingsManager: { getEnabledModels: () => undefined },
 		showStatus,
 	};
 

@@ -65,11 +65,12 @@
     "build": "tsgo -p tsconfig.build.json && shx chmod +x dist/cli.js dist/rpc-entry.js && bun run copy-assets",
     "bundle:dev": "bun build src/cli.ts --target=bun --minify --external mupdf --define process.env.ATOMIC_BUNDLED_BUILD=\"'1'\" --outfile dist-dev/cli.js",
     "start:fast": "bun run bundle:dev && bun dist-dev/cli.js",
-    "build:binary": "bun --cwd ../tui run build && bun --cwd ../ai run build && bun --cwd ../agent run build && bun run build && bun build --target=bun --format=cjs --external mupdf ./dist/bun/cli.js --outfile dist/app.js && bun build --target=bun --format=cjs --external mupdf ./src/utils/image-resize-worker.ts --outfile dist/image-resize-worker.js && bun build --compile --bytecode --format=cjs --external mupdf --no-compile-autoload-dotenv --no-compile-autoload-bunfig ./dist/bun/split-loader.js --outfile dist/atomic && bun run copy-binary-assets",
+    "build:binary": "bun run clean && bun run build && bun build --target=bun --format=cjs --external mupdf ./dist/bun/cli.js --outfile dist/app.js && bun build --target=bun --format=cjs --external mupdf ./src/utils/image-resize-worker.ts --outfile dist/image-resize-worker.js && bun build --compile --bytecode --format=cjs --external mupdf --no-compile-autoload-dotenv --no-compile-autoload-bunfig ./dist/bun/split-loader.js --outfile dist/atomic && bun run copy-binary-assets && bun run assert-binary-assets",
     "copy-assets": "shx mkdir -p dist/modes/interactive/theme && shx cp src/modes/interactive/theme/*.json dist/modes/interactive/theme/ && shx mkdir -p dist/modes/interactive/assets && shx cp src/modes/interactive/assets/*.png dist/modes/interactive/assets/ && shx mkdir -p dist/core/export-html/vendor dist/core/export-html/template-js && shx cp src/core/export-html/template.html src/core/export-html/template.css src/core/export-html/template.js dist/core/export-html/ && shx cp src/core/export-html/template-js/*.js dist/core/export-html/template-js/ && shx cp src/core/export-html/vendor/*.js dist/core/export-html/vendor/ && bun run copy-builtin-packages",
     "copy-binary-assets": "shx cp package.json dist/ && shx cp README.md dist/ && shx cp CHANGELOG.md dist/ && shx mkdir -p dist/theme && shx cp src/modes/interactive/theme/*.json dist/theme/ && shx mkdir -p dist/assets && shx cp src/modes/interactive/assets/*.png dist/assets/ && shx mkdir -p dist/export-html/vendor dist/export-html/template-js && shx cp src/core/export-html/template.html src/core/export-html/template.css src/core/export-html/template.js dist/export-html/ && shx cp src/core/export-html/template-js/*.js dist/export-html/template-js/ && shx cp src/core/export-html/vendor/*.js dist/export-html/vendor/ && shx mkdir -p dist/native/win32/prebuilds && shx cp -r ../../node_modules/@earendil-works/pi-tui/native/win32/prebuilds/win32-* dist/native/win32/prebuilds/ && shx cp -r docs dist/ && shx cp -r examples dist/ && shx cp ../../node_modules/@silvia-odwyer/photon-node/photon_rs_bg.wasm dist/ && bun run copy-builtin-packages",
     "copy-builtin-packages": "bun run scripts/copy-builtin-packages.ts",
     "copy-builtin-workflows": "bun run copy-builtin-packages",
+    "assert-binary-assets": "bun run scripts/assert-pi-runtime-assets.ts --app dist/app.js",
     "docs:check": "bun run scripts/validate-docs-links.ts",
     "verify:workflow-types": "bun run scripts/verify-workflow-sdk-types.ts",
     "test": "vitest --run",
@@ -79,9 +80,9 @@
   "dependencies": {
     "@bastani/atomic-natives": "0.0.0",
     "@dbos-inc/dbos-sdk": "4.23.6",
-    "@earendil-works/pi-agent-core": "^0.81.1",
-    "@earendil-works/pi-ai": "^0.81.1",
-    "@earendil-works/pi-tui": "^0.81.1",
+    "@earendil-works/pi-agent-core": "^0.82.1",
+    "@earendil-works/pi-ai": "^0.82.1",
+    "@earendil-works/pi-tui": "^0.82.1",
     "@modelcontextprotocol/ext-apps": "^1.7.4",
     "@modelcontextprotocol/sdk": "^1.25.1",
     "@mozilla/readability": "^0.6.0",
@@ -112,6 +113,7 @@
     "zod": "^3.25.0 || ^4.0.0"
   },
   "overrides": {
+    "protobufjs": "7.6.5",
     "rimraf": "6.1.2",
     "gaxios": {
       "rimraf": "6.1.2"

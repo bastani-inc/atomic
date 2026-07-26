@@ -114,6 +114,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		keybindings,
 		reloadCoordinator,
 		inputForm,
+		pendingExtensionRequests,
 	});
 
 	async function shutdown(exitCode = 0, signal?: NodeJS.Signals): Promise<never> {
@@ -121,6 +122,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			process.exit(exitCode);
 		}
 		shuttingDown = true;
+		detachInput();
+		process.stdin.pause();
+		await handleCommand.disposeActiveBash();
 		for (const cleanup of signalCleanupHandlers) {
 			cleanup();
 		}
@@ -132,8 +136,6 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		inputForm?.dispose();
 		outputBuffer.dispose();
 		await runtimeHost.dispose();
-		detachInput();
-		process.stdin.pause();
 		if (signal !== "SIGTERM") {
 			await flushRawStdout();
 		}

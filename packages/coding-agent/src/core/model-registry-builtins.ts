@@ -8,6 +8,7 @@ import {
 	type OpenAICompletionsCompat,
 } from "@earendil-works/pi-ai/compat";
 import { normalizeContextWindowOptions, withContextWindowOptions } from "./context-window.ts";
+import { normalizeGrammarToolCapability } from "./model-capabilities.ts";
 import { copilotApiBaseUrlFromToken, copilotTokenFromEnvironment, DEFAULT_COPILOT_API_BASE_URL, getActiveCopilotModelCatalog } from "./copilot-model-catalog.ts";
 import { copilotTemplateFromModels, copilotThinkingLevelMapFor, synthesizeCopilotCatalogModels } from "./copilot-model-synthesis.ts";
 import { getStaticCopilotModelFallback } from "./copilot-model-static-fallbacks.ts";
@@ -78,7 +79,7 @@ export function mergeCompat(
 	baseCompat: Model<Api>["compat"],
 	overrideCompat: ModelOverride["compat"] | Model<Api>["compat"],
 ): Model<Api>["compat"] | undefined {
-	if (!overrideCompat) return baseCompat;
+	if (!overrideCompat) return normalizeGrammarToolCapability(baseCompat);
 
 	const base = baseCompat as ProviderCompat | undefined;
 	const override = overrideCompat as ProviderCompat;
@@ -109,7 +110,7 @@ export function mergeCompat(
 		};
 	}
 
-	return merged as Model<Api>["compat"];
+	return normalizeGrammarToolCapability(merged);
 }
 
 export function applyModelOverride(model: Model<Api>, override: ModelOverride): Model<Api> {
@@ -168,7 +169,10 @@ export function loadBuiltInModels(
 		const perModelOverrides = modelOverrides.get(provider);
 
 		return models.map((candidate) => {
-			let model = withCopilotEnvironmentBaseUrl(candidate);
+			let model = withCopilotEnvironmentBaseUrl({
+				...candidate,
+				compat: normalizeGrammarToolCapability(candidate.compat),
+			});
 			if (providerOverride) {
 				model = {
 					...model,

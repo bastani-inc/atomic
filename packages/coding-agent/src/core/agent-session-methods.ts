@@ -44,7 +44,7 @@ import type {
 import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.ts";
 
 export interface VerbatimCompactionApplyOptions {
-	resolvePlannerAuth: () => Promise<{ apiKey: string; headers?: ProviderHeaders; baseUrl?: string } | undefined>;
+	resolvePlannerAuth: () => Promise<{ apiKey?: string; headers?: ProviderHeaders; baseUrl?: string } | undefined>;
 	abortController: AbortController;
 	backupLabel: string;
 	compression_ratio?: number;
@@ -110,7 +110,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	readonly extensionRunner: ExtensionRunner;
 
 	_handleAgentEvent(event: AgentEvent): Promise<void> | void;
-	_getRequiredRequestAuth(model: Model<Api>): Promise<{ apiKey: string; headers?: ProviderHeaders; baseUrl?: string }>;
+	_getRequiredRequestAuth(model: Model<Api>): Promise<{ apiKey?: string; headers?: ProviderHeaders; baseUrl?: string }>;
 	_installAgentToolHooks(): void;
 	_installAgentNextTurnRefresh(): void;
 	_emit(event: AgentSessionEvent): void;
@@ -244,9 +244,9 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	waitForRetry(): Promise<void>;
 	setAutoRetryEnabled(enabled: boolean): void;
 
-	executeBash(command: string, onChunk?: (chunk: string) => void, options?: { excludeFromContext?: boolean; operations?: BashOperations }): Promise<BashResult>;
-	recordBashResult(command: string, result: BashResult, options?: { excludeFromContext?: boolean }): void;
-	abortBash(): void;
+	executeBash(command: string, onChunk?: (chunk: string, channel: "stdout" | "stderr") => void, options?: { excludeFromContext?: boolean; id?: string; operations?: BashOperations; pty?: boolean; emitEvent?: boolean; recordResult?: boolean }): Promise<BashResult>;
+	recordBashResult(command: string, result: BashResult, options?: { excludeFromContext?: boolean; persist?: boolean; defer?: boolean }): void;
+	abortBash(id?: string): void;
 	_flushPendingBashMessages(): void;
 
 	setSessionName(name: string): void;
@@ -388,7 +388,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_retryAttempt: number;
 	_retryPromise: Promise<void> | undefined;
 	_retryResolve: (() => void) | undefined;
-	_bashAbortController: AbortController | undefined;
+	_bashAbortControllers: Map<string | symbol, AbortController>;
 	_pendingBashMessages: BashExecutionMessage[];
 	_extensionRunner: ExtensionRunner;
 	_turnIndex: number;

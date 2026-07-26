@@ -1,3 +1,4 @@
+import { uuidv7 } from "@earendil-works/pi-ai";
 import { complete, getModel } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI, ExtensionCommandContext } from "@bastani/atomic";
 import { DynamicBorder, getMarkdownTheme } from "@bastani/atomic";
@@ -192,6 +193,8 @@ export default function (pi: ExtensionAPI) {
 					apiKey: auth.apiKey,
 					headers: auth.headers,
 					reasoningEffort: "high",
+					cacheRetention: "none",
+					sessionId: uuidv7(),
 				},
 			);
 

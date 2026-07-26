@@ -1,13 +1,13 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
-import { type Api, type Model, getAgentDir, findExactModelReferenceMatch, resolveModelScope, ContextWindowSelectorComponent, formatContextWindow, copilotApiBaseUrlFromToken, copilotCatalogCacheHost, copilotCatalogCachePath, fetchCopilotModelCatalog, readCopilotCatalogCache, setActiveCopilotModelCatalog, writeCopilotCatalogCache, ModelSelectorComponent, ScopedModelsSelectorComponent, UserMessageSelectorComponent } from "./interactive-mode-deps.ts";
+import { type Api, type Model, getAgentDir, findExactModelReferenceMatch, resolveModelScope, resolveModelScopeWithDiagnostics, ContextWindowSelectorComponent, formatContextWindow, copilotApiBaseUrlFromToken, copilotCatalogCacheHost, copilotCatalogCachePath, fetchCopilotModelCatalog, readCopilotCatalogCache, setActiveCopilotModelCatalog, writeCopilotCatalogCache, ModelSelectorComponent, ScopedModelsSelectorComponent, UserMessageSelectorComponent } from "./interactive-mode-deps.ts";
 import { ANTHROPIC_SUBSCRIPTION_AUTH_WARNING, isAnthropicSubscriptionAuthKey } from "./interactive-mode-helpers.ts";
 import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
 
 InteractiveModeBase.prototype.handleModelCommand = async function(this: InteractiveModeBase, searchTerm?: string): Promise<void> {
-    if (!searchTerm) {
-      this.showModelSelector();
-      return;
-    }
+	if (!searchTerm) {
+		this.showModelSelector();
+		return;
+	}
 
     const model = await this.findExactModelMatch(searchTerm);
     if (model) {
@@ -197,67 +197,47 @@ InteractiveModeBase.prototype.showContextWindowSelector = function(this: Interac
   };
 
 InteractiveModeBase.prototype.showModelsSelector = async function(this: InteractiveModeBase): Promise<void> {
-    // Get all available models
 	await this.session.modelRegistry.refresh({ allowNetwork: !isOfflineModeEnabled() });
-    const allModels = this.session.modelRegistry.getAvailable();
+	const allModels = this.session.modelRegistry.getAvailable();
+	const allModelIds = new Set(allModels.map((model) => `${model.provider}/${model.id}`));
+	const configuredPatterns = this.settingsManager.getEnabledModels();
+	const sessionScopedModels = this.session.scopedModels;
 
-    if (allModels.length === 0) {
-      this.showStatus("No models available");
-      return;
-    }
+	if (allModels.length === 0 && !configuredPatterns?.length && sessionScopedModels.length === 0) {
+		this.showStatus("No models available");
+		return;
+	}
 
-    // Check if session has scoped models (from previous session-only changes or CLI --models)
-    const sessionScopedModels = this.session.scopedModels;
-    const hasSessionScope = sessionScopedModels.length > 0;
+	const configuredScope = configuredPatterns?.length
+		? await resolveModelScopeWithDiagnostics(configuredPatterns, this.session.modelRegistry)
+		: undefined;
+	const hasSessionScope = sessionScopedModels.length > 0;
+	let currentEnabledIds: string[] | null = null;
+	if (hasSessionScope) {
+		currentEnabledIds = sessionScopedModels.map((scoped) => `${scoped.model.provider}/${scoped.model.id}`);
+	} else if (configuredScope) {
+		currentEnabledIds = configuredScope.scopedModels.map((scoped) => `${scoped.model.provider}/${scoped.model.id}`);
+	}
+	for (const diagnostic of configuredScope?.diagnostics ?? []) {
+		if (diagnostic.code !== "no-match") continue;
+		currentEnabledIds ??= [];
+		if (!currentEnabledIds.includes(diagnostic.pattern)) currentEnabledIds.push(diagnostic.pattern);
+	}
 
-    // Build enabled model IDs from session state or settings
-    let currentEnabledIds: string[] | null = null;
-
-    if (hasSessionScope) {
-      // Use current session's scoped models
-      currentEnabledIds = sessionScopedModels.map(
-        (scoped) => `${scoped.model.provider}/${scoped.model.id}`,
-      );
-    } else {
-      // Fall back to settings
-      const patterns = this.settingsManager.getEnabledModels();
-      if (patterns !== undefined && patterns.length > 0) {
-        const scopedModels = await resolveModelScope(
-          patterns,
-          this.session.modelRegistry,
-        );
-        currentEnabledIds = scopedModels.map(
-          (scoped) => `${scoped.model.provider}/${scoped.model.id}`,
-        );
-      }
-    }
-
-    // Helper to update session's scoped models (session-only, no persist)
-    const updateSessionModels = async (enabledIds: string[] | null) => {
-      currentEnabledIds = enabledIds === null ? null : [...enabledIds];
-      if (
-        enabledIds &&
-        enabledIds.length > 0 &&
-        enabledIds.length < allModels.length
-  ) {
-        const newScopedModels = await resolveModelScope(
-          enabledIds,
-          this.session.modelRegistry,
-        );
-        this.session.setScopedModels(
-          newScopedModels.map((sm) => ({
-            model: sm.model,
-            thinkingLevel: sm.thinkingLevel,
-          })),
-        );
-      } else {
-        // All enabled or none enabled = no filter
-        this.session.setScopedModels([]);
-      }
-      await this.updateAvailableProviderCount();
-      this.setupAutocompleteProvider();
-      this.ui.requestRender();
-    };
+	const updateSessionModels = async (enabledIds: string[] | null) => {
+		currentEnabledIds = enabledIds === null ? null : [...enabledIds];
+		const hasEnabledAvailableModel = enabledIds?.some((id) => allModelIds.has(id)) ?? false;
+		const allAvailableModelsEnabled = enabledIds !== null && [...allModelIds].every((id) => enabledIds.includes(id));
+		if (enabledIds && hasEnabledAvailableModel && !allAvailableModelsEnabled) {
+			const newScopedModels = await resolveModelScope(enabledIds, this.session.modelRegistry);
+			this.session.setScopedModels(newScopedModels.map((sm) => ({ model: sm.model, thinkingLevel: sm.thinkingLevel })));
+		} else {
+			this.session.setScopedModels([]);
+		}
+		await this.updateAvailableProviderCount();
+		this.setupAutocompleteProvider();
+		this.ui.requestRender();
+	};
 
     this.showSelector((done) => {
       const selector = new ScopedModelsSelectorComponent(
@@ -269,15 +249,12 @@ InteractiveModeBase.prototype.showModelsSelector = async function(this: Interact
           onChange: async (enabledIds) => {
             await updateSessionModels(enabledIds);
           },
-          onPersist: (enabledIds) => {
-            // Persist to settings
-            const newPatterns =
-              enabledIds === null || enabledIds.length === allModels.length
-                ? undefined // All enabled = clear filter
-                : enabledIds;
-            this.settingsManager.setEnabledModels(
-              newPatterns ? [...newPatterns] : undefined,
-            );
+			onPersist: (enabledIds) => {
+				const allEnabled = enabledIds !== null
+					&& enabledIds.length === allModels.length
+					&& enabledIds.every((id) => allModelIds.has(id));
+				const newPatterns = enabledIds === null || allEnabled ? undefined : enabledIds;
+				this.settingsManager.setEnabledModels(newPatterns ? [...newPatterns] : undefined);
             this.showStatus("Model selection saved to settings");
           },
           onCancel: () => {

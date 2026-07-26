@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline";
 import { ProcessTerminal, setKeybindings, TUI } from "@earendil-works/pi-tui";
 import chalk from "chalk";
+import { getAgentDir } from "./config.ts";
 import type { Args } from "./cli/args.ts";
 import { selectSession } from "./cli/session-picker.ts";
 import {
@@ -242,7 +243,7 @@ export async function promptForMissingSessionCwd(
 	setKeybindings(KeybindingsManager.create());
 
 	return new Promise((resolve) => {
-		const ui = new TUI(new ProcessTerminal(), settingsManager.getShowHardwareCursor());
+		const ui = new TUI(new ProcessTerminal(), settingsManager.getShowHardwareCursor(), getAgentDir());
 		ui.setClearOnShrink(settingsManager.getClearOnShrink());
 
 		let settled = false;

@@ -1,6 +1,9 @@
+import { randomUUID } from "node:crypto";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai/compat";
+import type { AtomicProviderCompat } from "../../core/model-capabilities.ts";
 import type { SessionStats } from "../../core/agent-session.ts";
+import type { AuthCredential } from "../../core/auth-storage.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
@@ -10,6 +13,7 @@ import type {
 	RpcContextWindowInfo,
 	RpcLoginProviderResult,
 	RpcLogoutProviderResult,
+	RpcModelCatalog,
 	RpcModelRefreshResult,
 	RpcResponse,
 	RpcSessionState,
@@ -24,6 +28,8 @@ export interface ModelInfo {
 	id: string;
 	contextWindow: number;
 	reasoning: boolean;
+	/** Provider/model capability metadata used to gate constrained sampling. */
+	compat?: AtomicProviderCompat;
 }
 
 export abstract class RpcClientApi {
@@ -52,17 +58,21 @@ export abstract class RpcClientApi {
 		return this.data<{ models: ModelInfo[] }>(await this.request({ type: "get_available_models" })).models;
 	}
 	async loginProvider(provider: string, signal?: AbortSignal): Promise<RpcLoginProviderResult> {
+		const loginId = randomUUID();
 		if (signal?.aborted) return { provider, cancelled: true };
-		const cancel = () => { void this.cancelLoginProvider(provider).catch(() => {}); };
+		const cancel = () => { void this.cancelLoginProvider(provider, loginId).catch(() => {}); };
 		signal?.addEventListener("abort", cancel, { once: true });
 		try {
-			return this.data(await this.request({ type: "login_provider", provider }));
+			return this.data(await this.request({ type: "login_provider", provider, loginId }));
 		} finally {
 			signal?.removeEventListener("abort", cancel);
 		}
 	}
-	async cancelLoginProvider(provider: string): Promise<void> {
-		await this.request({ type: "cancel_login_provider", provider });
+	async saveProviderCredential(provider: string, credential: AuthCredential): Promise<RpcModelCatalog> {
+		return this.data(await this.request({ type: "save_provider_credential", provider, credential }));
+	}
+	async cancelLoginProvider(provider: string, loginId?: string): Promise<void> {
+		await this.request({ type: "cancel_login_provider", provider, loginId });
 	}
 	async logoutProvider(provider: string): Promise<RpcLogoutProviderResult> {
 		return this.data(await this.request({ type: "logout_provider", provider }));
@@ -93,7 +103,7 @@ export abstract class RpcClientApi {
 	async setAutoRetry(enabled: boolean): Promise<void> { await this.request({ type: "set_auto_retry", enabled }); }
 	async abortRetry(): Promise<void> { await this.request({ type: "abort_retry" }); }
 	async bash(command: string): Promise<BashResult> { return this.data(await this.request({ type: "bash", command })); }
-	async abortBash(): Promise<void> { await this.request({ type: "abort_bash" }); }
+	async abortBash(requestId?: string): Promise<void> { await this.request({ type: "abort_bash", requestId }); }
 	async getSessionStats(): Promise<SessionStats> { return this.data(await this.request({ type: "get_session_stats" })); }
 	async exportHtml(outputPath?: string): Promise<{ path: string }> { return this.data(await this.request({ type: "export_html", outputPath })); }
 	async switchSession(sessionPath: string): Promise<{ cancelled: boolean }> {
