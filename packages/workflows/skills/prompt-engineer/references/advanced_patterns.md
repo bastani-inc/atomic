@@ -1,271 +1,115 @@
 # Advanced Prompting Patterns
 
-This document covers sophisticated prompt engineering techniques for complex tasks requiring structured reasoning, long-form content, or multi-step processing.
+Use these patterns for agents, tools, long context, multi-stage work, or model-specific tuning. Keep the common prompt portable; add a model-specific branch only when behavior or API controls differ.
 
-## Chain of Thought (CoT) Prompting
+## Model-Family Guidance
 
-### What is Chain of Thought?
+### GPT-5.6
 
-Chain of thought prompting encourages the model to break down complex problems systematically. Giving the model space to think can dramatically improve its performance on research, analysis, and problem-solving tasks.
+- Prefer a lean, outcome-first contract with explicit success criteria, dependencies, tool routes, and stopping conditions. GPT-5-class models follow contracts closely, so remove contradictions and repeated rules.
+- Set `text.verbosity` (`low`, `medium`, or `high`) for the request's default detail, then specify task-specific length and structure in the prompt. GPT-5.6 is concise by default; broad brevity instructions can make it too terse.
+- Preserve the existing reasoning effort as a baseline. Compare that level and one lower on representative evals; use `high`, `xhigh`, or `max` only when measured quality justifies the cost.
+- Expose only relevant tools. Parallelize independent reads, keep dependent calls sequential, and synthesize retrieved results before acting.
+- Prefer the Responses API for reasoning with tools. In Chat Completions, function tools require effective reasoning `none`; do not silently trade away required tools or reasoning.
 
-### Key Benefits
+OpenAI measured leaner system prompts improving internal coding-agent scores by roughly 10–15% while reducing total tokens 41–66% and cost 33–67%. Treat these as directional and validate on your workload.
 
-- **Accuracy**: Stepping through problems reduces errors, especially in math, logic, analysis, or generally complex tasks
-- **Coherence**: Structured reasoning produces more organized responses
-- **Debugging**: Observing the model's thought process reveals unclear prompt areas
+### Claude Opus 5
 
-### When to Use CoT
+- Give the complete specification up front and allow the model to execute. Remove generic self-review instructions: Opus 5 already self-corrects and repeated rechecks add cost without quality gain.
+- Start at `high` effort, compare `low` and `medium` where quality holds, and use `xhigh` for demanding coding or agentic work. Effort controls reasoning volume, cost, and latency; it does **not** reliably shorten visible responses.
+- Constrain user-facing and written deliverable length explicitly, for example: “Lead with the outcome; use at most 300 words and three short sections.”
+- Set a sparse progress cadence because Opus 5 produces frequent agentic updates: one sentence before the first tool call, then updates only for material findings or plan changes.
+- Limit task expansion and delegation. It can perform large end-to-end tasks, but may add work or spawn subagents unless the prompt defines scope and a delegation decision rule.
+- Keep adaptive thinking enabled when practical. Disabling it can leak tool calls as text or internal XML; at `xhigh` and `max`, disabling thinking returns a 400 error.
 
-Apply CoT for tasks that a human would need to think through, like:
+### Claude Fable 5
 
-- Complex math or logic problems
-- Multi-step analysis
-- Writing complex documents
-- Decisions with many factors
-- Planning specs
+- Remove legacy prescriptive scaffolding. Fable 5 follows brief instructions strongly, sustains long autonomous runs, and can overplan or overbuild when higher effort meets an ambiguous task.
+- Start at `high`; use `xhigh` for the hardest capability-sensitive work and `medium` or `low` for routine or interactive work. Adaptive thinking is required; manual extended-thinking budgets and disabling thinking are unsupported.
+- Add grounded progress reporting for long runs: each completion claim should point to a tool result from the current session, with failed, skipped, or unverified work labeled accurately. Anthropic reports this nearly eliminated fabricated status reports in its tests.
+- Define action boundaries and a no-promise stop rule. If an autonomous turn ends with an unexecuted plan or a request for permission already granted, continue with tools; stop only when complete or blocked on user-only input.
+- Avoid surfacing context-token countdowns because they can prompt early wrap-up.
+- Requests to echo, narrate, or explain internal reasoning as response text can trigger the `reasoning_extraction` refusal category and force fallback. Request cited evidence, conclusions, observed outputs, and validation receipts instead. If an application needs available reasoning visibility, consume API-provided summarized adaptive-thinking blocks rather than asking the model to generate a reconstruction.
 
-**Trade-off**: Increased output length may impact latency, so avoid using CoT for straightforward tasks.
+## Agentic Prompt Structure
 
-### Three CoT Techniques (Least to Most Complex)
+Use this compact structure for autonomous or tool-using prompts:
 
-**1. Basic Prompt**
-Include "Think step-by-step" in your request. Simple but lacks specific guidance.
-
-**2. Guided Prompt**
-Outline specific steps for the model's reasoning process. Provides direction without structuring the output format, making answer extraction more difficult.
-
-**3. Structured Prompt**
-Use XML tags like `<thinking>` and `<answer>` to separate reasoning from final answers. This enables easy parsing of both thought process and conclusions.
-
-Example:
-
-```
-Please analyze this problem and provide your reasoning.
-
-Put your step-by-step thinking in <thinking> tags.
-Put your final answer in <answer> tags.
-```
-
-### Critical Implementation Note
-
-**"Always have the model output its thinking. Without outputting its thought process, no thinking occurs!"** Visible reasoning is essential for CoT effectiveness.
-
----
-
-## Multishot Prompting
-
-### Core Concept
-
-Multishot prompting (also called few-shot prompting) involves providing a few well-crafted examples in your prompt to improve the model's output quality. This technique is particularly effective for tasks requiring structured outputs or adherence to specific formats.
-
-### Key Benefits
-
-- **Accuracy**: Examples reduce misinterpretation of instructions
-- **Consistency**: Examples enforce uniform structure and style
-- **Performance**: Well-chosen examples boost the model's ability to handle complex tasks
-
-### Crafting Effective Examples
-
-Examples should be:
-
-1. **Relevant** — Mirror your actual use case
-2. **Diverse** — Cover edge cases and vary sufficiently to avoid unintended pattern recognition
-3. **Clear** — Wrapped in `<example>` tags (multiple examples nested in `<examples>` tags)
-
-### Optimal Quantity
-
-Include 3-5 diverse, relevant examples. More examples = better performance, especially for complex tasks.
-
-### Template Structure
-
-```xml
-<examples>
-  <example>
-    <input>Sample input 1</input>
-    <output>Expected output 1</output>
-  </example>
-
-  <example>
-    <input>Sample input 2</input>
-    <output>Expected output 2</output>
-  </example>
-
-  <example>
-    <input>Sample input 3</input>
-    <output>Expected output 3</output>
-  </example>
-</examples>
+```text
+Role: Maintain the customer account workflow.
+Goal: Resolve the reported issue end to end.
+Success criteria:
+- decide eligibility from policy and account evidence
+- complete every authorized action
+- return completed_actions, customer_message, and blockers
+Constraints: Keep changes in scope; confirm external, destructive, or costly actions.
+Tools: Retrieve policy before deciding; use the account tool only after identity and eligibility are established.
+Output: Lead with the outcome; return the three required fields in valid JSON.
+Stop rules: Answer when required evidence and actions are complete. If one required fact is missing, ask for that smallest field. Stop on a permission or policy block and name it.
 ```
 
----
+State the current work layer—research, design, implementation, review, or external coordination—when crossing layers would change authorization. For long work, request a short initial preamble and sparse outcome-based progress updates, not routine tool-call narration.
 
-## Prompt Chaining
+## Tool Routing
 
-### Core Concept
+Tool descriptions should say what the tool does, when it applies, important return fields, side effects, permissions, and error behavior. Omit tools the agent cannot call or the task cannot need.
 
-Prompt chaining breaks complex tasks into smaller, sequential subtasks, with each step receiving the model's focused attention. This approach improves accuracy, clarity, and traceability compared to handling everything in a single prompt.
+Write decision rules rather than aggressive triggers:
 
-### Key Benefits
+```text
+Check the recent local cache first. Fetch only when the required artifact is absent or stale.
+Before an account mutation, retrieve the governing policy and current account state.
+If a search is empty or suspiciously narrow, try one or two materially different queries before reporting no result.
+```
 
-1. **Accuracy**: Each subtask gets full attention, reducing errors
-2. **Clarity**: Simpler instructions produce clearer outputs
-3. **Traceability**: Issues can be pinpointed and fixed in specific steps
+Independent reads can run in parallel; calls whose parameters depend on earlier output stay sequential. Do not guess tool arguments. Define retries, fallback, and a stop condition. Validate the final user-visible result as well as tool success.
 
-### When to Use Chaining
+Use programmatic tool calling only for bounded deterministic reduction such as filtering, joining, ranking, deduplication, batching, or aggregation of large structured results. Prefer direct calls when each result changes the next decision, approval is required, or citations and semantic judgment must remain visible.
 
-Apply this technique for multi-step tasks involving:
+## Delegation Damping
 
-- Research synthesis and document analysis
-- Iterative content creation
-- Multiple transformations or citations
-- Tasks where the model might miss or mishandle steps
+Both Opus 5 and Fable 5 can over-delegate. For an orchestrator, use one decision rule:
 
-### Core Techniques
+```text
+Delegate only work that is genuinely independent and too large to finish in a handful of tool calls. Do not use subagents merely to recheck your own work. Prefer one subagent over several and cap concurrency.
+```
 
-**1. Identify Subtasks**
-Break work into distinct, sequential steps with single, clear objectives.
+Keep orchestration asynchronous when the harness supports it, synthesize all returned work, and prevent agents from editing the same surface concurrently.
 
-**2. Structure with XML**
-Use XML tags to pass outputs between prompts for clear handoffs between steps.
+## Long Context
 
-**3. Single-Task Goals**
-Each subtask should focus on one objective to maintain clarity.
-
-**4. Iterate & Refine**
-Adjust subtasks based on the model's performance.
-
-### Workflow Examples
-
-- **Content pipelines**: Research → Outline → Draft → Edit → Format
-- **Data processing**: Extract → Transform → Analyze → Visualize
-- **Decision-making**: Gather info → List options → Analyze → Recommend
-- **Verification loops**: Generate → Review → Refine → Re-review
-- **Writing Specs**: Research → Plan → Implement (see detailed example below)
-
-### Complex Example: Spec Workflow
-
-This workflow represents a research-driven, AI-augmented software development process that emphasizes thorough planning and human oversight before implementation. It's designed to maximize quality and alignment by incorporating both AI assistance and human feedback at critical decision points.
-
-**Phase 1: Research & Requirements**
-
-1. **Deep Research** — Begin with comprehensive research into the problem space: understanding user needs, exploring existing solutions, reviewing relevant technologies, and identifying constraints. Build a solid foundation of knowledge before defining what to build.
-
-2. **Product Requirements Document (PRD)** — Distill research findings into a formal PRD that articulates the _what_ and _why_. Define the problem statement, target users, success metrics, user stories, and business objectives. Remain technology-agnostic, focusing purely on outcomes rather than implementation details.
-
-**Phase 2: AI-Assisted Design**
-
-3. **Brainstorm with Coding Agent** — This is where the workflow diverges from traditional approaches. Engineers collaborate with an AI coding agent to explore technical possibilities. This brainstorming session generates multiple implementation approaches, identifies potential challenges, discusses trade-offs, and leverages AI's knowledge of patterns and best practices. It's an exploratory phase that surfaces ideas that might not emerge from human-only brainstorming.
-
-4. **Technical Design/Spec** — Formalize the brainstorming output into a technical specification describing the _how_: architecture decisions, API designs, data models, technology stack choices, system components and their interactions, scalability considerations, and security/performance requirements. This becomes the engineering blueprint for implementation.
-
-**Phase 3: Human Validation Loop**
-
-5. **Human Feedback** — A critical checkpoint where experienced engineers, architects, or technical leads review the spec. This human oversight ensures the AI-assisted design is sound, catches edge cases or concerns, validates assumptions, and aligns the technical approach with organizational standards and long-term architecture. This phase acknowledges that AI assistance needs human verification.
-
-6. **Refined Technical Design/Spec** — Incorporate feedback to improve the specification. This might involve adjusting the architecture, adding clarifications, addressing edge cases, or reconsidering technology choices. The refined spec represents the agreed-upon technical approach with human validation baked in.
-
-**Phase 4: Execution**
-
-7. **Implementation Plan Doc** — Break down the refined spec into an actionable plan. Include task decomposition, effort estimates, dependency mapping, milestone definitions, and sprint/timeline planning. This bridges the gap between "what we'll build" and "how we'll actually execute it."
-
-8. **Implementation** — Engineers build the solution according to the plan and spec. The detailed planning from previous phases helps implementation proceed smoothly, though real-world discoveries may still require spec updates.
-
-9. **Testing** — The final validation phase ensures the implementation meets requirements through unit tests, integration tests, QA validation, performance testing, and verification against both the PRD objectives and technical spec requirements.
-
-**Key Characteristics:**
-
-- **AI-Augmented but Human-Validated**: The workflow embraces AI assistance for exploration and design while maintaining human oversight at critical junctures. This balances the speed and breadth of AI with the judgment and experience of senior engineers.
-
-- **Separation of Concerns**: The workflow clearly distinguishes between product requirements (PRD), technical design (Spec), and execution planning (Plan Doc). This separation ensures each artifact serves its specific purpose without conflation.
-
-- **Feedback Integration**: Unlike linear waterfall processes, this workflow explicitly includes a feedback loop after the initial spec, acknowledging that first drafts benefit from review and iteration.
-
-- **Research-Driven**: Starting with deep research rather than jumping straight to requirements ensures decisions are grounded in solid understanding of the problem space.
-
-This workflow is particularly well-suited for complex projects where upfront investment in planning pays dividends, teams working with AI coding tools, and organizations that want to leverage AI capabilities while maintaining human control over critical technical decisions.
-
-### Advanced: Self-Correction Chains
-
-Chain prompts so the model reviews its own work, catching errors and refining outputs—especially valuable for high-stakes tasks.
-
-### Optimization Tip
-
-For independent subtasks (like analyzing multiple documents), create separate prompts and run them in parallel for speed.
-
----
-
-## Long Context Tips
-
-### Key Techniques
-
-**1. Document Placement**
-Place lengthy documents (100K+ tokens) at the beginning of prompts rather than at the end. Queries at the end can improve response quality by up to 30% in tests, especially with complex, multi-document inputs.
-
-**2. Structural Organization**
-Implement XML tags to organize multiple documents clearly. The recommended approach wraps each item in `<document>` tags containing `<document_content>` and `<source>` subtags, enabling better information retrieval.
-
-Example:
+Place long documents and data near the top, with the instruction or query at the end. Anthropic measured up to about 30% better response quality from query-last ordering, especially for complex multi-document inputs.
 
 ```xml
 <documents>
-  <document>
-    <source>Report A</source>
-    <document_content>
-      Content here...
-    </document_content>
+  <document index="1">
+    <source>report-a.pdf</source>
+    <document_content>...</document_content>
   </document>
-
-  <document>
-    <source>Report B</source>
-    <document_content>
-      Content here...
-    </document_content>
+  <document index="2">
+    <source>report-b.csv</source>
+    <document_content>...</document_content>
   </document>
 </documents>
 
-Now analyze these documents and answer: [Your question here]
+Using only these documents, compare the reported risks. Cite the source beside each claim and state material conflicts or missing evidence. Return at most 500 words.
 ```
 
-**3. Quote Grounding**
-Request that the model extract relevant quotes from source materials before completing the primary task. This method helps the model navigate through extraneous content and focus on pertinent information.
+Quote grounding can focus retrieval in noisy inputs. Require only quotes that support consequential claims; excessive extraction can waste context and obscure synthesis.
 
-### Practical Example
+## Adaptive Thinking and Effort
 
-For medical diagnostics, request quotes from patient records placed in `<quotes>` tags, followed by diagnostic analysis in `<info>` tags. This two-step approach ensures responses remain anchored to specific document passages.
+Current Claude models allocate reasoning adaptively. Set effort first, then add a targeted prompt only if measured triggering remains wrong. `effort` is soft guidance; `max_tokens` is the hard per-request cap shared by reasoning and response text. Leave enough room for both.
 
-### Context Window Advantage
+Do not use visible chain-of-thought instructions or private-deliberation tags as a prompting technique. They are obsolete and can trigger Fable 5 safeguards. Ask for an answer supported by evidence, calculations, test results, or a concise decision rationale that does not solicit private deliberation.
 
-Modern language models support large context windows (100K–1M+ tokens), enabling complex, data-rich analysis across multiple documents simultaneously—making these organizational techniques particularly valuable for sophisticated tasks.
+In instruction prose, prefer “evaluate,” “assess,” or “consider” over “think,” particularly when Claude reasoning is disabled. Keep thinking configuration and effort stable within cache-sensitive conversations; changing effort invalidates Claude prompt-cache breakpoints.
 
----
+## Prompt Chaining and Examples
 
-## Extended Thinking Tips
+Chain prompts when distinct stages need separate context, permissions, models, or output contracts—not merely because a task has several steps. Each stage gets one goal, a validated handoff schema, and its own stop rule. Useful pipelines include Research → Outline → Draft → Edit and Extract → Transform → Analyze → Present.
 
-### Core Prompting Techniques
+Run independent stages in parallel when they do not share mutable state. Use fresh-context review for genuinely high-risk artifacts when independence adds value; avoid automatic generate-review-repeat loops that duplicate current models' native self-correction.
 
-**General Over Prescriptive Instructions**
-Rather than providing step-by-step guidance, models often perform better with high-level directives. Ask the model to "think about this thoroughly and in great detail" and "consider multiple approaches" rather than numbering specific steps it must follow.
-
-**Multishot Prompting**
-When you provide examples using XML tags like `<thinking>` or `<scratchpad>`, the model generalizes these patterns to its formal extended thinking process. This helps the model follow similar reasoning trajectories for new problems.
-
-**Instruction Following Enhancement**
-Extended thinking significantly improves how well the model follows instructions by allowing it to reason about them internally before executing them in responses. For complex instructions, breaking them into numbered steps that the model can methodically work through yields better results.
-
-### Advanced Strategies
-
-**Debugging and Steering**
-You can examine the model's thinking output to understand its logic, though this method isn't perfectly reliable. Importantly, you should not pass the model's thinking back as user input, as this degrades performance.
-
-**Long-Form Output Optimization**
-For extensive content generation, explicitly request detailed outputs and increase both thinking budget and maximum token limits. For very long pieces (20,000+ words), request detailed outlines with paragraph-level word counts.
-
-**Verification and Error Reduction**
-Prompt the model to verify its work with test cases before completion. For coding tasks, ask it to run through test scenarios within extended thinking itself.
-
-### Technical Considerations
-
-- Thinking tokens require a minimum budget of 1,024 tokens
-- Extended thinking functions optimally in English
-- With large context windows, thinking budgets can scale significantly higher
-- Traditional chain-of-thought prompting with XML tags works for smaller thinking requirements
+Few-shot examples remain useful for unusual formats, classifications, and edge cases. Keep 3–5 only when evals show value, use `<examples>` and `<example>` tags for mixed prompts, and ensure every example obeys the written contract.

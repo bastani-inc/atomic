@@ -199,7 +199,7 @@ describe("ralph", () => {
         );
         assert.match(
             ctx.calls.prompts["research-2"]?.[0] ?? "",
-            /explicitly research unresolved reviewer findings/,
+            /Research whether each unresolved finding still applies/,
         );
         assert.equal(
             existsSync(join(researchDir, `${date}-collision-research-2.md`)),
@@ -280,7 +280,7 @@ describe("ralph", () => {
         // report format from its forked history and must not repeat them.
         assert.match(
             forkedOrchestratorPrompt,
-            /previously established guidance still applies unchanged/i,
+            /inherited objective[\s\S]*report contracts remain unchanged/i,
         );
         assert.doesNotMatch(
             forkedOrchestratorPrompt,
@@ -379,8 +379,8 @@ describe("ralph", () => {
 
         const reviewerPrompt = ctx.calls.prompts["reviewer-a"]?.[0] ?? "";
         assert.match(reviewerPrompt, /<structured_decision_assurance>/);
-        assert.match(reviewerPrompt, /Always return findings as an array/);
-        assert.match(reviewerPrompt, /requirements_traceability as a non-empty array/);
+        assert.match(reviewerPrompt, /findings is always an array/);
+        assert.match(reviewerPrompt, /requirements_traceability is a non-empty array/);
         assert.doesNotMatch(reviewerPrompt, /structured_output/i);
         assert.doesNotMatch(reviewerPrompt, /output_format/i);
     });

@@ -534,6 +534,8 @@ Atomic bundles nine workflows: six reusable control-flow patterns, two autonomou
 | `ralph` | Prompt refinement → codebase research → delegated implementation → multi-model review loop. | Research-first autonomous implementation with bounded review and repair. |
 | `open-claude-design` | Guided discovery and reference research → HTML generation → feedback loop → export and handoff. | UI, page, component, theme, or design-token work. |
 
+Across these builtins, model-facing stages use compact, outcome-first contracts tuned for GPT-5.6, Claude Opus 5, and Claude Fable 5. Long artifacts and receipts are rendered before the final instruction, reporting stages ground completion claims in current tool evidence, and user-facing or downstream reports have explicit shape and length bounds. Orchestrators delegate only genuinely independent work that is too large for a handful of tool calls, rather than spawning agents to recheck their own work.
+
 ### Six composable pattern builtins
 
 The six common patterns are full definitions exported from `@bastani/workflows/builtin`:
@@ -574,6 +576,8 @@ All six can run by name or as nested definitions. Prefer composition over copyin
 
 Goal persists the literal objective and immutable acceptance criteria in a run ledger, delegates implementation through bounded orchestrator turns, records receipts, and asks independent reviewers to inspect the current delta. A TypeScript reducer returns `complete`, `blocked`, or `needs_human` rather than trusting free-form completion claims.
 
+Goal reviewers derive checks from the literal objective before consulting implementation receipts, inspect the actual checkout delta, and report commands, observed output, and file:line evidence rather than internal reasoning. Shared contracts cover acceptance-matrix traceability, contract-fidelity risks, end-to-end and QA-video evidence, and independent verification. `stop_review_loop` is the authoritative convergence signal: it remains `false` for P0–P2 findings, any `required_by_objective` finding, or unproven implementation/validation requirements; it becomes `true` only when independent evidence proves the objective and only non-blocking or authorized post-approval work remains. The deterministic reducer consumes that signal without reinterpreting free-form prose.
+
 | Input | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `objective` | text | yes | — | Task to implement and validate. Keep PR/MR creation out of this text. |
@@ -593,6 +597,8 @@ Declared outputs include `result`, `status`, `approved`, `goal_id`, `objective`,
 ### `ralph`
 
 Ralph starts from the raw task, refines it into a research question, runs codebase research, delegates implementation from the research artifact, and sends the patch to independent model-family reviewers. It repeats research, orchestration, and review until reviewers approve or `max_loops` is exhausted.
+
+Ralph uses the same canonical reviewer evidence and convergence contracts as Goal. Its reviewer prompt receives artifacts first and the review objective last, requires independently derived probes before implementation-authored evidence, and preserves unresolved findings when the bounded loop ends. Forked continuation prompts send only changed state and artifact paths instead of repeating the full established contract.
 
 | Input | Type | Required | Default | Description |
 |---|---|---|---|---|
@@ -3600,13 +3606,16 @@ A workflow is an information-flow system, not just a list of prompts. Most workf
 
 ### Locally Scoped Stage Prompts
 
-Stage prompts should define local contracts, not describe the full workflow runtime. Write prompts as if the stage could be executed independently from a fresh session with only the listed inputs. Include:
+Stage prompts should define local contracts, not describe the full workflow runtime. Write prompts as if the stage could be executed independently from a fresh session with only the listed inputs. A useful compact shape is `Role · Goal · Success criteria · Constraints · Tools · Output · Stop rules`; omit sections that do not change behavior. Include:
 
 - the stage's current objective and what is out of scope for this stage
-- the exact files, artifacts, child outputs, or user inputs it may use
-- the expected output format, or the schema it must return when the workflow item is schema-enabled
-- the checks, tools, or deterministic commands it should run when relevant
-- the success criteria that let this stage stop
+- the exact files, artifacts, child outputs, or user inputs it may use; put long inputs before the final instruction
+- context-dependent tool routes and permission boundaries, without describing tools the stage cannot call
+- the expected output format and length, or the schema it must return when the workflow item is schema-enabled
+- the checks, tools, or deterministic commands it should run when relevant, plus evidence required for progress or completion claims
+- the success criteria and blocker conditions that let this stage stop
+
+State important constraints once. Reserve absolute wording for safety, required fields, forbidden actions, gating derivations, and other true invariants; express search, iteration, and delegation choices as decision rules. Ask for conclusions, commands, observed results, and citations—not private reasoning or generic self-verification.
 
 Avoid unrelated workflow internals such as reducer algorithms, future PR stages, sibling reviewer names, loop implementation details, or project-specific nicknames unless they are explicitly part of the current stage contract. If a term such as a gate name, ledger field, or workflow nickname is necessary, define it in the prompt before using it.
 
@@ -3643,10 +3652,10 @@ Watch for these failure modes in long or multi-stage workflows:
 
 | Pattern | Symptom | Mitigation |
 |---------|---------|------------|
-| Lost in the middle | Important constraints are ignored in long prompts | Repeat critical constraints near the end; shorten handoffs |
+| Lost in the middle | Important constraints are ignored in long prompts | Shorten the handoff; place documents first and the final query/critical contract last |
 | Context poisoning | Bad or obsolete information steers later stages | Validate sources, overwrite stale artifacts, cite evidence |
 | Distraction | Irrelevant context crowds out useful context | Pass only stage-specific files and summaries |
-| Confusion | Similar instructions or duplicate facts conflict | Consolidate instructions and name artifacts clearly |
+| Confusion | Similar instructions or duplicate facts conflict | Consolidate each shared contract into one canonical copy and name artifacts clearly |
 | Clash | User, system, or stage instructions disagree | Resolve conflicts before launching downstream stages |
 
 Use compaction, file references, and bounded loops before context fills with transcript noise. In attached workflow stage chat, manual compaction shows `Compacting context...`, threshold compaction shows `Auto-compacting...`, and overflow recovery shows `Context overflow detected. Auto-compacting...` in the same animated status row used for normal model work. A successful compaction leaves the normal expandable `✻ Context compacted` boundary in the transcript; the boundary is reconstructed from the durable session and has a typed live fallback if the refreshed session snapshot is temporarily unavailable.
@@ -3731,11 +3740,11 @@ Build validation into the workflow instead of waiting for a final manual check. 
 - reviewer stages: fresh-context reviewers that inspect artifacts and current files
 - LLM-as-judge stages: direct scoring, pairwise comparison, or rubric-based grading for subjective outputs
 
-Prefer schema-enabled workflow items for model review and gate decisions. Atomic passes the schema directly to the final-answer tool and captures the tool arguments; it no longer adds separate structured-output parsing, object-root restrictions, or sidecar validation. Object-shaped decision schemas with explicit booleans/enums, findings arrays, confidence, evidence fields, and error reporting are usually easiest to consume, but array or primitive schemas are valid when they fit the handoff. Avoid brittle regular-expression matching against free-form prose such as “looks good”, “approved”, or “PASS”.
+Prefer schema-enabled workflow items for model review and gate decisions. Atomic passes the schema directly to the final-answer tool and captures the tool arguments; it no longer adds separate structured-output parsing, object-root restrictions, or sidecar validation. Object-shaped decision schemas with explicit booleans/enums, findings arrays, confidence, evidence fields, and error reporting are usually easiest to consume, but array or primitive schemas are valid when they fit the handoff. Avoid brittle regular-expression matching against free-form prose such as “looks good”, “approved”, or “PASS”. Define each convergence field's derivation once and consume it deterministically rather than recomputing approval from narrative text.
 
-Use small dedicated model stages for adaptive gates when deterministic code alone cannot decide what to check. For example, a stage can read an artifact, inspect the repo, run a named tool or command, and then emit a structured decision by configuring `schema` on that workflow item. Keep that stage's prompt narrow: tell it the specific check to perform, the files/tools it may use, and the structured decision it must return.
+Use small dedicated model stages for adaptive gates when deterministic code alone cannot decide what to check. For example, a stage can read an artifact, inspect the repo, run a named tool or command, and then emit a structured decision by configuring `schema` on that workflow item. Keep that stage's prompt narrow: tell it the specific check to perform, the files/tools it may use, the evidence to report, and the structured decision it must return. Require progress and completion claims to map to current tool results; when evidence is unavailable, the stage should identify the unverified claim or blocker rather than infer success.
 
-When using LLM judges, reduce bias by defining score anchors, asking for evidence, calibrating against examples, and keeping length/order effects in mind. Track pass rates and failures over time for reusable workflows.
+When using LLM judges, reduce bias by defining score anchors, requesting observable evidence and criteria-based justification, calibrating against examples, and keeping length/order effects in mind. Do not ask for chain-of-thought or reconstructed internal reasoning. Track pass rates and failures over time for reusable workflows.
 
 ### Tools, MCP, Memory, and Hosted Execution
 

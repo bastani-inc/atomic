@@ -15,6 +15,9 @@ import {
 } from "./open-claude-design-feedback.js";
 import { buildLivePreviewDisplayPrompt } from "./open-claude-design-setup.js";
 
+const GROUNDED_REPORTING =
+  "Before reporting progress, audit each claim against a tool result from this session. Report only work you can point to evidence for; say so explicitly when something is unverified.";
+
 type DesignContext = {
   task(name: string, options: object): Promise<WorkflowTaskResult>;
   parallel(steps: readonly object[], options: { readonly task: string }): Promise<WorkflowTaskResult[]>;
@@ -142,11 +145,6 @@ function buildInitialGeneratePrompt(args: {
   readonly importContext: string;
 }): string {
   return taggedPrompt([
-    ["role", "You are an opinionated staff design engineer."],
-    [
-      "objective",
-      `Generate the first revision of a production-ready ${args.outputType} for: ${args.prompt}. Write it to disk as an interactive HTML preview the user can open in a browser. Apply the impeccable \`craft\` sub-skill to build the design with deliberate ordering and impeccable attention to detail. Every design decision must trace back to the brief, and every visual trait must be justified by the references, design system, or reference context.`,
-    ],
     ["design_brief", args.prompt],
     ["design_system", args.designSystem],
     ["reference_context", args.importContext],
@@ -155,28 +153,32 @@ function buildInitialGeneratePrompt(args: {
     ["preview_artifact_path", args.previewPath],
     ["html_rules", HTML_PREVIEW_RULES],
     ["anti_design_slop_rules", ANTI_SLOP_RULES],
+    ["role", "You are an opinionated staff design engineer."],
+    [
+      "objective",
+      `Create the first production-ready ${args.outputType} for: ${args.prompt}. Write an interactive browser preview and apply impeccable \`craft\`; each decision must trace to the brief, references, design system, or reference context.`,
+    ],
     [
       "instructions",
       [
-        `1. Create the HTML artifact at exactly this path: ${args.previewPath}.`,
-        "2. Follow the `<reference_precedence>` rule: user-provided references in `<reference_context>` win over DESIGN.md/PRODUCT.md where they conflict; DESIGN.md fills gaps the references do not cover.",
-        "3. Heavily reference the `<reference_inspiration>` block while staying consistent with the imported user references; never copy a reference wholesale or invent traits it does not contain.",
-        `4. Build the artifact as the requested output_type (${args.outputType}). For prototypes/pages, render full layouts with realistic content. For components, render the component in 3+ representative contexts.`,
-        "5. Include structure, states, accessibility behavior, responsive behavior, and integration notes — but keep them in HTML comments inside the file so the rendered preview stays clean.",
-        "6. Do not use generic placeholder language when project conventions are available.",
-        "7. After writing the file, return a short markdown summary (NOT the HTML body) describing what you built, decisions made, and assumptions left for the user to confirm.",
+        `Create the HTML artifact exactly at ${args.previewPath}.`,
+        "Follow <reference_precedence>; heavily reference <reference_inspiration> without copying wholesale or inventing traits.",
+        `Build the requested output_type (${args.outputType}): render full realistic layouts for prototypes/pages, or the component in at least three representative contexts.`,
+        "Include structure, states, accessibility, responsive behavior, and integration notes as HTML comments so the preview stays clean.",
+        "Use project language rather than generic placeholders when conventions exist. Add no features or abstractions beyond this design brief.",
       ].join("\n"),
     ],
     [
       "output_format",
       [
-        "Return markdown with the headings below. DO NOT paste the HTML; the file at preview_artifact_path is the artifact.",
+        "In at most 500 words, return Markdown, not the HTML body:",
         "1. Artifact overview",
-        "2. Files written (must include the absolute path to preview.html)",
-        "3. UI structure and states (referenced by HTML section IDs)",
+        "2. Files written (including the absolute preview.html path)",
+        "3. UI structure and states (by HTML section ID)",
         "4. Accessibility and responsive behavior",
         "5. Implementation notes",
         "6. Assumptions / open questions",
+        GROUNDED_REPORTING,
       ].join("\n"),
     ],
   ]);
@@ -194,11 +196,6 @@ function buildGenerateRevisionPrompt(args: {
 }): string {
   const annotations = userAnnotationsBlock([args.feedback]);
   return taggedPrompt([
-    ["role", "You are an opinionated staff design engineer."],
-    [
-      "objective",
-      `Generate the next ${args.outputType} revision for: ${args.prompt}. Update the HTML preview in place using only the user's captured feedback from the latest live review. Apply the impeccable \`craft\` and \`polish\` sub-skills with deliberate restraint: this is a focused revision, not an internal critique pass.`,
-    ],
     ["design_system", args.designSystem],
     ["reference_inspiration", args.referencesBrief],
     ["reference_context", args.importContext],
@@ -208,25 +205,29 @@ function buildGenerateRevisionPrompt(args: {
     ["current_design_summary", args.latestDesign],
     ["html_rules", HTML_PREVIEW_RULES],
     ["anti_design_slop_rules", ANTI_SLOP_RULES],
+    ["role", "You are an opinionated staff design engineer."],
+    [
+      "objective",
+      `Revise the ${args.outputType} for: ${args.prompt}. Update the preview in place from only the latest live-review feedback, applying impeccable \`craft\` and \`polish\` with restraint rather than adding an internal critique.`,
+    ],
     [
       "instructions",
       [
-        "1. Read the current HTML at preview_artifact_path with your file-read tool.",
-        "2. Treat `<user_feedback>` as the only refinement brief. Do not invent separate critique, screenshot, audit, or gate findings.",
-        "3. Every user note or accepted live change MUST be visibly addressed in the revised preview, or explicitly explained as a conflict with DESIGN.md/reference precedence in your summary.",
-        `4. Overwrite ${args.previewPath} with the revised self-contained HTML file. Do not branch the artifact and do not create extra preview files.`,
-        "5. Preserve strong existing design decisions unless the user feedback requires a change.",
-        "6. After writing, return a concise markdown summary of what changed and any user feedback you could not apply. Do NOT paste the HTML body.",
+        "Read the current HTML at preview_artifact_path. Treat <user_feedback> as the only refinement brief; do not invent critique, screenshot, audit, or gate findings.",
+        "Address every user note and accepted live change visibly, or identify its DESIGN.md/reference-precedence conflict in the summary.",
+        `Overwrite ${args.previewPath} with one revised self-contained HTML file; do not branch or create extra previews.`,
+        "Preserve strong decisions unless feedback requires change; add no unrelated features or abstractions.",
       ].join("\n"),
     ],
     [
       "output_format",
       [
-        "Markdown with headings:",
+        "In at most 400 words, return Markdown, not the HTML body:",
         "1. Revised artifact (path only)",
-        "2. User feedback addressed (each note/live change → how it was applied, or why it was deferred/conflicts)",
+        "2. User feedback addressed (each note/live change and its application or conflict)",
         "3. Changes applied",
         "4. Trade-offs / unresolved user feedback",
+        GROUNDED_REPORTING,
       ].join("\n"),
     ],
   ]);
@@ -252,34 +253,30 @@ export async function exportOpenClaudeDesign(options: ExportOptions): Promise<{ 
 
   const handoff = await designContext.task("exporter", {
     prompt: taggedPrompt([
-      ["role", "You are an opinionated staff design engineer."],
-      [
-        "objective",
-        `Export the final ${outputType} for "${prompt}" as a rich HTML spec the engineering team can read directly in a browser. The spec must embed or link the approved preview so reviewers see exactly what is being implemented. Apply the impeccable \`document\` sub-skill to produce a rich HTML spec that bundles the approved preview together with implementation guidance for another design/frontend engineer to implement.`,
-      ],
       ["design_system", designSystem],
       ["preview_artifact_path", previewPath],
       ["spec_artifact_path", specPath],
       ["final_design_summary", "{previous}"],
+      ["html_rules", HTML_PREVIEW_RULES],
+      ["anti_design_slop_rules", ANTI_SLOP_RULES],
+      ["role", "You are an opinionated staff design engineer."],
+      [
+        "objective",
+        `Export the final ${outputType} for "${prompt}" as a rich browser-readable HTML spec. Apply impeccable \`document\` and embed or link the approved preview so implementation reviewers see the agreed design.`,
+      ],
       [
         "instructions",
         [
-          `1. Read the approved HTML at preview_artifact_path. Use it as the canonical source of truth for the agreed design.`,
-          `2. Use the Write tool to create a rich HTML document at exactly: ${specPath}. The spec must be a single self-contained HTML5 file.`,
-          "3. The spec MUST contain, in order: (a) a sticky header with the design title + status + run id, (b) an Executive Summary section, (c) a 'Live Preview' section that EMBEDS the approved design via either an `<iframe srcdoc=\"...\">` containing the full preview HTML or a side-by-side rendered copy of the preview inside an `<article class=\"preview-frame\">` container, (d) the six DESIGN.md sections (Overview, Colors, Typography, Elevation, Components, Do's and Don'ts) rendered with swatches/tables/code blocks, (e) Implementation handoff (Recommended files + components | Implementation steps | Usage example | Accessibility & responsive checklist | Validation commands | Known limitations), (f) Appendix linking to the raw preview file path.",
-          "4. Style the spec itself with care: high-density legible typography, generous whitespace, code blocks with monospaced font, swatches that render with the actual hex/oklch values, copy-to-clipboard hints in HTML comments.",
-          `5. Embed the absolute preview path (${previewPath}) and file URL (${previewFileUrl}) prominently so the user can open the live preview separately.`,
-          "6. Preserve assumptions and known limitations so implementers do not treat uncertain items as facts.",
-          "7. Do not introduce design requirements that were absent from the final design or DESIGN.md.",
-          "8. After writing, return a concise markdown summary of what is in the spec (NOT the HTML).",
+          "Read preview_artifact_path as the canonical approved design, then use the Write tool to create one self-contained HTML5 file at spec_artifact_path.",
+          "In order, include: sticky header with title/status/run id; Executive Summary; Live Preview embedding the full preview via `<iframe srcdoc=\"...\">` or a side-by-side rendered copy in `<article class=\"preview-frame\">`; the six DESIGN.md sections (Overview, Colors, Typography, Elevation, Components, Do's and Don'ts) rendered with swatches, tables, and code blocks; Implementation handoff (Recommended files + components, Implementation steps, Usage example, Accessibility & responsive checklist, Validation commands, Known limitations); and an appendix linking the raw preview path.",
+          "Use dense legible typography, generous whitespace, monospaced code, rendered hex/oklch swatches, and copy-to-clipboard hints in HTML comments.",
+          `Show the absolute preview path (${previewPath}) and file URL (${previewFileUrl}) prominently. Preserve assumptions and limitations; introduce no requirement absent from the final design or DESIGN.md.`,
         ].join("\n"),
       ],
-      ["html_rules", HTML_PREVIEW_RULES],
-      ["anti_design_slop_rules", ANTI_SLOP_RULES],
       [
         "output_format",
         [
-          "Return markdown with headings (NOT the HTML):",
+          "In at most 600 words, return Markdown, not the HTML:",
           "1. Spec written to (absolute path)",
           "2. Sections included",
           "3. How to open the spec (playwright-cli command + manual fallback path)",
@@ -289,6 +286,7 @@ export async function exportOpenClaudeDesign(options: ExportOptions): Promise<{ 
           "7. Accessibility / responsive checklist",
           "8. Validation commands",
           "9. Known limitations",
+          GROUNDED_REPORTING,
         ].join("\n"),
       ],
     ]),
@@ -299,29 +297,28 @@ export async function exportOpenClaudeDesign(options: ExportOptions): Promise<{ 
   await designContext
     .task("final-display", {
       prompt: taggedPrompt([
-        ["role", "You are an opinionated staff design engineer."],
-        [
-          "objective",
-          "Make the rich HTML spec visible to the user. Open the final spec.html with the playwright-cli skill's `playwright-cli` command so the user can review the agreed design and implementation handoff. This is post-export — do NOT solicit change requests; if the user wants more changes, tell them to re-run the workflow. Degrade gracefully if browser automation is unavailable.",
-        ],
         ["spec_path", specPath],
         ["spec_file_url", specFileUrl],
         ["preview_path", previewPath],
         ["preview_file_url", previewFileUrl],
         ["browser_use_guidelines", browserBootstrapRules],
+        ["role", "You are an opinionated staff design engineer."],
+        [
+          "objective",
+          "Show the exported spec with the playwright-cli skill's `playwright-cli` command. Export is complete, so do not solicit changes; direct further changes to a new `/workflow open-claude-design` run and degrade gracefully when browser automation is unavailable.",
+        ],
         [
           "instructions",
           [
-            "1. Probe for `playwright-cli` availability using the bootstrap rules above.",
-            `2. If available, run \`playwright-cli open ${specFileUrl}\`. If that reports a missing browser executable, follow the bootstrap rules and retry once, then \`playwright-cli snapshot\`.`,
-            "3. Do NOT run `show --annotate` or otherwise invite change requests: export is done and there is no further refinement pass. If the user wants changes, tell them to re-run `/workflow open-claude-design`.",
-            `4. Always print, prominently, the absolute paths so the user can open them manually:\n   - Final spec: ${specPath}\n   - Approved preview: ${previewPath}`,
-            "5. Do not block the workflow; return a structured summary even if no tooling worked.",
+            `Use the bootstrap rules, run \`playwright-cli open ${specFileUrl}\`, and if a browser executable is missing follow those rules and retry once before \`playwright-cli snapshot\`.`,
+            "Do not run `show --annotate` or invite changes because no refinement pass remains.",
+            `Prominently print the manual paths:\n- Final spec: ${specPath}\n- Approved preview: ${previewPath}`,
+            "Unavailable tooling must not block the workflow; return the structured summary.",
           ].join("\n"),
         ],
         [
           "output_format",
-          "Markdown with: `display_method` | `spec_path` | `preview_path` | `manual_open_instructions` | `next_action_hint` (how to re-run the workflow for further changes).",
+          `Under 250 words, return Markdown with: \`display_method\` | \`spec_path\` | \`preview_path\` | \`manual_open_instructions\` | \`next_action_hint\` (how to re-run the workflow). ${GROUNDED_REPORTING}`,
         ],
       ]),
       ...designModelConfig,

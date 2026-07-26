@@ -2,25 +2,27 @@
 description: Parallel external + local research builders into an implementation handoff plan
 ---
 
-Use parallel subagents to understand the request, compare any external references, inspect the local codebase, and produce a grounded implementation handoff plan with a final implementation-ready meta-prompt.
+## Goal
+
+Produce a grounded implementation handoff plan and implementation-ready meta-prompt by comparing applicable external evidence, local behavior, established patterns, and prior decisions.
 
 Primary request, target, or focus:
 
 $@
 
-Use `context: "fresh"` unless I explicitly ask for forked context. First read or fetch any URLs, issue links, PRs, screenshots, plans, docs, or local files mentioned in the request. Treat them as primary scope, not optional context.
+## Constraints and tools
 
-Use the `subagent` tool in chain mode. The chain has one parallel discovery step followed by a parent-side synthesis pass (there is no dedicated synthesizer subagent in this skill):
+First read or fetch every URL, issue, PR, screenshot, plan, doc, or local file named in the request; these define primary scope. Use the `subagent` tool in chain mode with `context: "fresh"` unless I explicitly request forked context. Run one parallel discovery step, then synthesize parent-side rather than launching a synthesizer subagent.
 
-Parallel discovery step. Choose the specialists that apply:
+Choose specialists by evidence need:
 
-- `codebase-online-researcher` — required whenever the request mentions external projects, libraries, docs, APIs, recent changes, or best-practice guidance. It web-searches, fetches authoritative sources, and persists keepers under `research/web/`.
-- `codebase-locator` — required for any non-trivial code change. Find the local files, tests, fixtures, and configs the change would touch.
-- `codebase-analyzer` — required when the local behavior matters. Trace the relevant flow with `file:line` references.
-- `codebase-pattern-finder` — add when transferable conventions or analogous implementations would shape the plan.
-- `codebase-research-locator` and `codebase-research-analyzer` — add when prior `research/` or `specs/` docs likely apply. Run them sequentially (locator first, then analyzer) or pair them inside the parallel step with distinct output paths.
+- Use `codebase-online-researcher` when external projects, libraries, docs, APIs, recent changes, or best practices could shape the plan. It should inspect linked projects, docs, issues, examples, source, or prompt guidance; identify behavior, APIs, implementation files, constraints, and transferable ideas; use `fetch_content` first, then `/llms.txt`, then `Accept: text/markdown`, and fall back to `browser` only for required JS or auth; persist high-value sources to `research/web/<YYYY-MM-DD>-<topic>.md`; and return links, repo paths, evidence, risks, and implementation implications.
+- Use `codebase-locator` for non-trivial code changes to map relevant local files, tests, fixtures, and configs by purpose.
+- Use `codebase-analyzer` when local behavior matters to trace the located implementation, control flow, transformations, and constraints with `file:line` citations. Locator and analyzer cover where the work lives and how it works without overlap.
+- Add `codebase-pattern-finder` when analogous implementations or conventions could shape the plan; include useful snippets with `file:line` references.
+- Add `codebase-research-locator` then `codebase-research-analyzer` when prior `research/` or `specs/` may apply. The locator finds relevant dated docs; the analyzer extracts current decisions, constraints, and lessons while flagging superseded guidance. Run them sequentially, or pair them in the parallel step with distinct outputs when the dependency is already resolved.
 
-Use distinct output paths, `label` values, and `as` names under the chain directory. Example outputs:
+Give tasks distinct `output` paths, `label` values, and `as` names under the chain directory, for example:
 
 - `handoff/external-reference.md`
 - `handoff/local-files.md`
@@ -28,52 +30,18 @@ Use distinct output paths, `label` values, and `as` names under the chain direct
 - `handoff/local-patterns.md`
 - `handoff/prior-research.md`
 
-Use phases such as `Research`, `Local context`, and `Synthesis` so async status is readable. Prefer `{outputs.externalReference}`, `{outputs.localContext}`, and `{outputs.implementationStrategy}` in the synthesis task when those specific inputs are available; keep `{previous}` only when the whole parallel fan-in summary is the desired input.
+Use phases such as `Research`, `Local context`, and `Synthesis` for readable async status. In synthesis, prefer `{outputs.externalReference}`, `{outputs.localContext}`, and `{outputs.implementationStrategy}` when available; use `{previous}` only for the whole parallel fan-in. Do not persist these artifacts in the repository unless I explicitly request it.
 
-Do not write these artifacts into the repository unless I explicitly ask for persistent files.
+Delegate only independent work too large for a handful of tool calls; do not delegate auditing your own work, and prefer one subagent over several. Parallelize independent reads; stay sequential when one result determines the next; synthesize after retrieval. Keep work within the requested scope.
 
-Role guidance:
+## Output
 
-External researcher (`codebase-online-researcher`):
+Compare external evidence with local architecture and write `handoff/final-handoff-plan.md` yourself, or summarize inline when no persisted artifact was requested. The downstream writer needs roughly 700–1,200 words covering: intended behavior; lessons from external references; local implications; recommended approach; likely files; constraints and non-goals; edge cases, validation commands, risks, and approval decisions; unresolved questions; and a compact implementation-ready meta-prompt.
 
-- Study linked projects, docs, issues, examples, source code, or prompt guidance.
-- Identify the behavior, API, implementation files, constraints, and transferable ideas.
-- Use `fetch_content` first, then `/llms.txt`, then `Accept: text/markdown`, and only fall back to `browser` when JS execution or auth is required.
-- Persist any high-value fetch to `research/web/<YYYY-MM-DD>-<topic>.md`.
-- Return source links, repo paths, key evidence, risks, and what matters for this implementation.
+Then give the user a concise summary with the recommendation, artifact paths, final meta-prompt, and remaining questions or assumptions. Lead with the outcome; keep facts, decisions, caveats, and next steps; drop background and repetition; stay readable rather than compressed into fragments.
 
-Local locator + analyzer (`codebase-locator`, `codebase-analyzer`):
+Before reporting progress, audit each claim against a tool result from this session. Report only work you can point to evidence for; say so explicitly when something is unverified.
 
-- Locator returns the full file map grouped by purpose.
-- Analyzer reads the located files and traces the current implementation, control flow, transformations, and constraints with `file:line` citations.
-- Together they cover "where it lives" and "how it works today" without overlap.
+## Stop rule
 
-Local pattern-finder (`codebase-pattern-finder`), when used:
-
-- Find similar implementations or conventions worth modeling after. Include working snippets with `file:line` references.
-
-Prior research (`codebase-research-locator` → `codebase-research-analyzer`), when used:
-
-- Locator surfaces the relevant dated docs from `research/` and `specs/`.
-- Analyzer extracts the decisions, constraints, and lessons that are still applicable, flagging anything superseded by newer docs.
-
-Parent-side synthesis after the discovery step returns:
-
-- Compare external evidence against the local architecture.
-- Propose the safest implementation shape, the likely files to change, edge cases, validation commands, and decisions that need approval.
-- Write `handoff/final-handoff-plan.md` yourself, or summarize inline if I didn't ask for a persisted artifact.
-
-Include in the final handoff:
-
-- what the feature or change should do;
-- what the external reference teaches;
-- what the local codebase implies;
-- the recommended approach;
-- likely files to change;
-- constraints, non-goals, validation, risks;
-- unresolved questions;
-- a compact implementation-ready meta-prompt for the next writer.
-
-After the chain returns, summarize the result for me with the recommended approach, artifact paths, the final meta-prompt, and any questions or assumptions that remain.
-
-Do not start implementation from this command unless I explicitly ask for it.
+Done means discovery evidence has been compared, the final handoff exists at the requested destination or inline, and the user has the recommendation, paths, meta-prompt, and unresolved decisions. Do not start implementation unless I explicitly ask.

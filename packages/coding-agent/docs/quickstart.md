@@ -156,7 +156,7 @@ Skills are reusable expert instructions. Trigger one with `/skill:<name>` follow
 |---|---|---|
 | `research-codebase` | Scoped research that writes a grounded artifact for one subsystem or question. | `/skill:research-codebase how the rate limiter works in src/middleware/` |
 | `create-spec` | Turn research into an implementation-ready plan. | `/skill:create-spec from research/docs/2026-03-rate-limit.md` |
-| `prompt-engineer` | Tighten a vague prompt before a long run. | `/skill:prompt-engineer Draft a sharper repo-research prompt for payment retries end to end.` |
+| `prompt-engineer` | Create, optimize, evaluate, or troubleshoot prompts for GPT-5.6, Claude Opus 5, and Claude Fable 5. | `/skill:prompt-engineer Draft a sharper repo-research prompt for payment retries end to end.` |
 | `tdd` | Test-first feature or bug work. | `/skill:tdd` |
 | `impeccable` | Critique or refine web/native frontend and product UI; includes detector hooks. | `/skill:impeccable` |
 | `playwright-cli` | Drive a real browser for end-to-end UI checks, screenshots, and reviewable proof videos. | `/skill:playwright-cli` |

@@ -32,6 +32,9 @@ type SetupDesignContext = {
   task(name: string, options: object): Promise<WorkflowTaskResult>;
 };
 
+const GROUNDED_REPORTING =
+  "Before reporting progress, audit each claim against a tool result from this session. Report only work you can point to evidence for; say so explicitly when something is unverified.";
+
 // ---------------------------------------------------------------------------
 // 0. Discovery + init front door (one workflow stage)
 // ---------------------------------------------------------------------------
@@ -56,36 +59,31 @@ function buildDiscoveryInitPrompt(prompt: string): string {
 /skill:impeccable init
 
 ${taggedPrompt([
-    [
-      "role",
-      "You are an opinionated staff designer running the open-claude-design front door.",
-    ],
+    ["role", "You are an opinionated staff designer running the open-claude-design front door."],
     [
       "objective",
-      `In ONE workflow stage, first shape the request into a confirmed design brief, output type, and reference list for: ${prompt}. Then immediately run impeccable's \`init\` setup so PRODUCT.md and DESIGN.md are detected, created, or reconciled before downstream design research. Do not ask for or wait on a separate init stage.`,
+      `In one stage, confirm the design brief, output type, and references for: ${prompt}. Then run impeccable's \`init\` so PRODUCT.md and DESIGN.md are detected, created, or reconciled before design research; do not wait for another init stage.`,
     ],
     [
       "interview",
       [
-        "Use your `ask_user_question` tool for important gaps you cannot infer from the request or repo.",
-        `Cover: (a) what to build and core jobs/screens; (b) output type — one of ${outputTypes}; (c) references to emulate (URLs, local paths, screenshots, or design docs).`,
-        "Ask 2-3 questions per round; propose inferred answers as options, not finished facts.",
-        "User-provided references are the PRIMARY visual authority and take precedence over DESIGN.md/PRODUCT.md where they conflict.",
+        "Use `ask_user_question` for important gaps not inferable from the request or repository.",
+        `Cover the product and core jobs/screens, one output type (${outputTypes}), and references to emulate (URLs, local paths, screenshots, or design docs).`,
+        "Ask 2-3 questions per round and present inferred answers as options rather than facts.",
+        "User references are the PRIMARY visual authority and override conflicting DESIGN.md/PRODUCT.md guidance.",
       ].join("\n"),
     ],
     [
       "init_instructions",
       [
-        "After the brief is confirmed, run `/skill:impeccable init` in this same stage.",
-        "Let impeccable init perform its own PRODUCT.md/DESIGN.md detection; do not rely on precomputed detection from the workflow runner.",
-        "Create missing PRODUCT.md and/or DESIGN.md when needed, and reconcile existing files against the confirmed brief. Never silently overwrite existing files.",
-        "When the files already exist, keep it light: load them, reconcile against the brief, and only ask about genuine gaps.",
-        "If headless, infer the most defensible brief/register from the prompt and repo signals, write explicit `## Gaps / Assumptions`, and never block.",
+        "After confirmation, run `/skill:impeccable init` in this stage. Let impeccable init perform its own PRODUCT.md/DESIGN.md detection rather than relying on runner detection.",
+        "Create missing files when needed and reconcile existing ones without silently overwriting them; ask only about genuine gaps.",
+        "When headless, infer the most defensible brief/register from the prompt and repository, record explicit `## Gaps / Assumptions`, and do not block.",
       ].join("\n"),
     ],
     [
       "output_format",
-      `Return the structured final answer with: \`brief\` (confirmed expanded design brief), \`output_type\` (one of ${outputTypes}), and \`references\` (array of verbatim URLs/paths; empty array when none). In your visible summary, also include PRODUCT.md/DESIGN.md files written or reconciled and any assumptions.`,
+      `Return the structured fields \`brief\`, \`output_type\` (one of ${outputTypes}), and \`references\` (verbatim URL/path array, empty when none). In at most 250 words, summarize PRODUCT.md/DESIGN.md changes and assumptions. ${GROUNDED_REPORTING}`,
     ],
   ])}`;
 }
@@ -143,44 +141,41 @@ export function buildReferenceDiscoveryPrompt(args: {
     (site, index) => `${index + 1}. ${site.name} — ${site.url}`,
   ).join("\n");
   return taggedPrompt([
-    [
-      "role",
-      "You are an opinionated staff design engineer and design researcher curating best-in-class, current visual references.",
-    ],
-    [
-      "objective",
-      `Find beautiful, current reference designs the team can heavily reference to build a stunning ${args.outputType} for: ${args.prompt}. Open each gallery, CLICK THROUGH to the actual design pages of interest, and — ideally — record a scroll-through video of each page so its ANIMATIONS are captured (with a full-page screenshot as a supplement/fallback) plus its real destination URL. Apply the impeccable \`extract\` sub-skill to lift concrete, citable design traits — never vague adjectives.`,
-    ],
     ["reference_galleries", siteList],
     ["design_context", args.designContextHint],
     ["browser_use_guidelines", args.browserBootstrapRules],
     ["screenshot_dir", args.artifactDir],
     [
+      "role",
+      "You are an opinionated staff design engineer curating current, best-in-class visual references.",
+    ],
+    [
+      "objective",
+      `Curate references for a ${args.outputType} serving: ${args.prompt}. Open actual design pages, capture motion with scroll-through video when possible and a full-page screenshot as fallback, record destination URLs, and apply impeccable \`extract\` to report concrete observed traits.`,
+    ],
+    [
       "instructions",
       [
-        "1. Use the playwright-cli skill to open each gallery above; if `playwright-cli` reports a missing browser executable, follow the bootstrap rules and retry once.",
-        "2. On each gallery, scan the thumbnail grid and pick 1-3 designs of interest whose aesthetic fits this brief.",
-        "3. CLICK INTO each chosen design to open its ACTUAL page — the live site or project detail the thumbnail links to (for example the gallery's 'visit site' / shot-detail link). Do NOT capture the gallery grid or the thumbnail; navigate to the real design page first.",
-        `4. Capture the design's MOTION, not just a still: record a scroll-through video of the ENTIRE page so scroll-triggered animations, parallax, reveals, and transitions are captured. Start with \`playwright-cli video-start ${join(args.artifactDir, "ref-<site>-<n>.webm")}\`, then scroll smoothly from top to bottom — a \`playwright-cli run-code\` script that scrolls in small increments with short waits, or repeated \`playwright-cli mousewheel 0 600\` with pauses — so animations fire and lazy content loads, then \`playwright-cli video-stop\`.`,
-        `5. ALSO take a FULL-PAGE still as a supplement/fallback: \`playwright-cli screenshot --full-page --filename=${join(args.artifactDir, "ref-<site>-<n>.png")}\`. If video recording is unavailable, the full-page screenshot is the minimum.`,
-        "6. Record the FULL destination URL you actually landed on (the live site / project URL, not the gallery listing URL), plus the work's title and author.",
-        "7. For every reference, extract the CONCRETE transferable trait (layout topology, type pairing, color strategy, spacing rhythm) AND the MOTION vocabulary you saw in the recording (entrance animations, scroll reveals, easing, parallax, hover/active states) — cite what you observed on the real page, not what you imagine.",
-        "8. For on-brand fit, consult the project's DESIGN.md / PRODUCT.md and the ds-* discovery evidence in <design_context>; prefer references that fit, and flag any that would require departing from the project's system.",
-        "9. After curating the strongest options, use ask_user_question to ask the user which reference direction they prefer. Offer 2-4 concise choices drawn from the best references/directions and include a clear `None of these fit` choice when appropriate.",
-        "10. If the user says none of the discovered references align with their preference, ask them to provide a reference image, screenshot, URL, or local file path for best results, and include that request and any answer in the final brief.",
-        "11. If `playwright-cli` is unavailable or a site blocks automation, fall back to web search / page fetch to reach the actual design pages, and clearly mark any reference you could not capture with a recording or full-page screenshot.",
-        "12. Never fabricate references or visual claims; if a gallery yielded nothing usable, say so.",
+        "Use the playwright-cli skill to open each gallery; if `playwright-cli` reports a missing browser executable, follow the bootstrap rules and retry once.",
+        "From each gallery, choose 1-3 fitting designs and CLICK INTO each actual live or project-detail page; do not capture only the grid or thumbnail.",
+        `Capture motion across the entire page: start \`playwright-cli video-start ${join(args.artifactDir, "ref-<site>-<n>.webm")}\`, scroll smoothly in small increments with waits (using \`playwright-cli run-code\` or repeated \`playwright-cli mousewheel 0 600\`) so animations fire and lazy content loads, then run \`playwright-cli video-stop\`.`,
+        `Also run \`playwright-cli screenshot --full-page --filename=${join(args.artifactDir, "ref-<site>-<n>.png")}\`; this still is the minimum when video is unavailable.`,
+        "Record the actual destination URL, title, and author. For each reference, cite observed layout, typography, color, spacing, and motion traits rather than inferred traits.",
+        "Assess fit against DESIGN.md, PRODUCT.md, and the ds-* discovery evidence in <design_context>; prefer on-brand references and flag departures.",
+        "Use ask_user_question to ask which reference direction they prefer, offering 2-4 strongest options plus `None of these fit`. If none fit, ask them to provide a reference image, screenshot, URL, or local file path and record the answer.",
+        "If `playwright-cli` is unavailable or automation is blocked, use web search / page fetch to reach actual pages and mark missing recordings or screenshots. Never fabricate references or visual claims; report galleries with no usable result.",
       ].join("\n"),
     ],
     [
       "output_format",
       [
-        "Markdown sections:",
+        "In at most 900 words, return these Markdown sections:",
         "1. Curated references (table: Source gallery | Work (title/author) | Full page URL (destination) | Scroll-through video path | Full-page screenshot path | Transferable trait (incl. motion) | On-brand?)",
-        "2. User preference check: which curated direction/reference the user preferred, or that none aligned and a reference image/screenshot/URL/path was requested for best results.",
-        "3. Synthesis: the 3-5 strongest directions to emulate for THIS design, ranked by fit, calling out motion/animation worth reproducing.",
-        "4. What to avoid (anti-references observed on the real pages).",
-        "5. Verification notes (which references have a scroll-through recording and/or full-page screenshot of the actual design page vs search-only).",
+        "2. User preference check (selected direction, or none plus the requested/provided reference)",
+        "3. Synthesis (3-5 strongest directions ranked by fit, including motion to reproduce)",
+        "4. What to avoid (observed anti-references)",
+        "5. Verification notes (actual-page video/screenshot versus search-only)",
+        GROUNDED_REPORTING,
       ].join("\n"),
     ],
   ]);
@@ -250,23 +245,23 @@ export function buildLivePreviewDisplayPrompt(args: {
         "`next_action_hint`",
       ].join("\n");
   return taggedPrompt([
-    [
-      "role",
-      "You are an opinionated staff design engineer running interactive `live` QA so the user can iterate on the design in a real browser.",
-    ],
-    ["objective", objective],
     ["preview_path", args.previewPath],
     ["preview_file_url", args.previewFileUrl],
     ["browser_use_guidelines", args.browserBootstrapRules],
+    [
+      "role",
+      "You are an opinionated staff design engineer running interactive `live` QA in a real browser.",
+    ],
+    ["objective", objective],
     ["interactive_live_qa", interactiveQa],
     [
       "graceful_degradation",
       [
-        `If \`/skill:impeccable live\` cannot boot (no dev server/HMR for the static file, missing config, or sandbox limits), fall back to opening the preview directly: \`playwright-cli open ${args.previewFileUrl}\`, then \`playwright-cli snapshot\`${isFinal ? "" : " and `playwright-cli show --annotate` so the user can draw/type notes on the page"}. If a \`playwright-cli\` command reports a missing browser executable, follow the bootstrap rules and retry once.`,
-        `If \`playwright-cli\` is also unavailable, print a clear instruction block telling the user to open the file manually at ${args.previewPath} (or ${args.previewFileUrl}).`,
-        "Never block the workflow on unavailable tooling; always exit with a non-empty status string.",
+        `If \`/skill:impeccable live\` cannot boot, open the preview with \`playwright-cli open ${args.previewFileUrl}\`, then run \`playwright-cli snapshot\`${isFinal ? "" : " and `playwright-cli show --annotate` for user notes"}. If the browser executable is missing, follow the bootstrap rules and retry once.`,
+        `If \`playwright-cli\` is unavailable, tell the user to open ${args.previewPath} or ${args.previewFileUrl} manually.`,
+        "Unavailable tooling must not block the workflow; return a non-empty status.",
       ].join("\n"),
     ],
-    ["output_format", outputFormat],
+    ["output_format", `${outputFormat}\nKeep the report under 250 words. ${GROUNDED_REPORTING}`],
   ]);
 }

@@ -22,7 +22,7 @@ describe("removed provider active surfaces", () => {
 
     assert.match(
       read("packages/subagents/agents/codebase-pattern-finder.md"),
-      /Cursor-based pagination example/u,
+      /\bpagination\b/u,
       "ordinary pagination terminology must remain intact",
     );
   });

@@ -1,0 +1,79 @@
+### packages/subagents/agents/code-simplifier.md
+name: code-simplifier
+description: |
+  Clean up, simplify, or refine recently written or modified code without changing behavior. Improves readability, removes duplication, clarifies naming, tightens control flow, and aligns with project conventions. Reads the code as a set of *doors* — the entrypoints where intent lives — and works to make those boundaries legible and honest while preserving every public contract. Scopes to recently modified code by default unless the caller asks for broader scope.
+
+  Triggers:
+  - Cleanup right after implementing a feature ("clean up the payment module").
+  - Production-quality refinement of a working draft ("ugly but working CSV parser").
+  - Code that has gotten messy after several iterations.
+tools: read, edit, write, search, find, ls, bash, todo
+model: openai-codex/gpt-5.6-sol:medium
+fallbackModels: github-copilot/gpt-5.6-sol:medium, openai/gpt-5.6-sol:medium, anthropic/claude-opus-5:low, github-copilot/claude-opus-5:low, openai-codex/gpt-5.5:medium, github-copilot/gpt-5.5:medium, openai/gpt-5.5:medium, anthropic/claude-fable-5:low, github-copilot/claude-fable-5:low, anthropic/claude-opus-4-8:medium, github-copilot/claude-opus-4.8:medium, xai/grok-4.5:high, zai/glm-5.2:high, zai-coding-cn/glm-5.2:high, openrouter/openai/gpt-5.6-sol:medium, openrouter/anthropic/claude-opus-5:low, openrouter/openai/gpt-5.5:medium, openrouter/anthropic/claude-fable-5:low, openrouter/anthropic/claude-opus-4-8:medium, openrouter/x-ai/grok-4.5, openrouter/z-ai/glm-5.2:xhigh
+skills: tdd, playwright-cli, tmux
+
+### packages/subagents/agents/codebase-analyzer.md
+name: codebase-analyzer
+description: Analyzes codebase implementation details. Call the codebase-analyzer agent when you need to find detailed information about specific components.
+tools: read, search, find, ls, todo
+model: openai-codex/gpt-5.6-sol:medium
+fallbackModels: github-copilot/gpt-5.6-sol:medium, openai/gpt-5.6-sol:medium, anthropic/claude-opus-5:low, github-copilot/claude-opus-5:low, openai-codex/gpt-5.5:medium, github-copilot/gpt-5.5:medium, openai/gpt-5.5:medium, anthropic/claude-fable-5:low, github-copilot/claude-fable-5:low, anthropic/claude-opus-4-8:medium, github-copilot/claude-opus-4.8:medium, xai/grok-4.5:high, zai/glm-5.2:high, zai-coding-cn/glm-5.2:high, openrouter/openai/gpt-5.6-sol:medium, openrouter/anthropic/claude-opus-5:low, openrouter/openai/gpt-5.5:medium, openrouter/anthropic/claude-fable-5:low, openrouter/anthropic/claude-opus-4-8:medium, openrouter/x-ai/grok-4.5, openrouter/z-ai/glm-5.2:xhigh
+skills: tdd, playwright-cli, tmux
+
+### packages/subagents/agents/codebase-locator.md
+name: codebase-locator
+description: Locates files, directories, and components relevant to a feature or task. Basically a "super search/find/ls tool."
+tools: read, search, find, ls
+model: openai-codex/gpt-5.6-terra:high
+fallbackModels: github-copilot/gpt-5.6-terra:high, openai/gpt-5.6-terra:high, anthropic/claude-opus-5:low, github-copilot/claude-opus-5:low, openai-codex/gpt-5.5:low, github-copilot/gpt-5.5:low, openai/gpt-5.5:low, anthropic/claude-opus-4-8:low, github-copilot/claude-opus-4.8:low, xai/grok-4.5:high, zai/glm-5.2:high, zai-coding-cn/glm-5.2:high, openrouter/openai/gpt-5.6-terra:high, openrouter/anthropic/claude-opus-5:low, openrouter/openai/gpt-5.5:low, openrouter/anthropic/claude-opus-4-8:low, openrouter/x-ai/grok-4.5, openrouter/z-ai/glm-5.2:xhigh
+
+### packages/subagents/agents/codebase-online-researcher.md
+name: codebase-online-researcher
+description: Online research for up-to-date documentation and library-source knowledge. Use when you need authoritative external information — official docs, ecosystem context, version-specific behavior, GitHub permalinks into open-source libraries, or video tutorials.
+tools: read, search, find, ls, bash, web_search, fetch_content, get_search_content, todo
+model: openai-codex/gpt-5.6-sol:medium
+fallbackModels: github-copilot/gpt-5.6-sol:medium, openai/gpt-5.6-sol:medium, anthropic/claude-opus-5:low, github-copilot/claude-opus-5:low, openai-codex/gpt-5.5:medium, github-copilot/gpt-5.5:medium, openai/gpt-5.5:medium, anthropic/claude-fable-5:low, github-copilot/claude-fable-5:low, anthropic/claude-opus-4-8:medium, github-copilot/claude-opus-4.8:medium, xai/grok-4.5:high, zai/glm-5.2:high, zai-coding-cn/glm-5.2:high, openrouter/openai/gpt-5.6-sol:medium, openrouter/anthropic/claude-opus-5:low, openrouter/openai/gpt-5.5:medium, openrouter/anthropic/claude-fable-5:low, openrouter/anthropic/claude-opus-4-8:medium, openrouter/x-ai/grok-4.5, openrouter/z-ai/glm-5.2:xhigh
+skills: playwright-cli
+
+### packages/subagents/agents/codebase-pattern-finder.md
+name: codebase-pattern-finder
+description: Find similar implementations, usage examples, or existing patterns in the codebase that can be modeled after.
+tools: read, search, find, ls
+model: openai-codex/gpt-5.6-terra:high
+fallbackModels: github-copilot/gpt-5.6-terra:high, openai/gpt-5.6-terra:high, anthropic/claude-opus-5:low, github-copilot/claude-opus-5:low, openai-codex/gpt-5.5:low, github-copilot/gpt-5.5:low, openai/gpt-5.5:low, anthropic/claude-opus-4-8:low, github-copilot/claude-opus-4.8:low, xai/grok-4.5:high, zai/glm-5.2:high, zai-coding-cn/glm-5.2:high, openrouter/openai/gpt-5.6-terra:high, openrouter/anthropic/claude-opus-5:low, openrouter/openai/gpt-5.5:low, openrouter/anthropic/claude-opus-4-8:low, openrouter/x-ai/grok-4.5, openrouter/z-ai/glm-5.2:xhigh
+
+### packages/subagents/agents/codebase-research-analyzer.md
+name: codebase-research-analyzer
+description: Analyzes local research documents to extract high-value insights, decisions, and technical details while filtering out noise. Use this when you want to deep dive on a research topic or understand the rationale behind decisions.
+tools: read, search, find, ls, todo
+model: openai-codex/gpt-5.6-sol:medium
+fallbackModels: github-copilot/gpt-5.6-sol:medium, openai/gpt-5.6-sol:medium, anthropic/claude-opus-5:low, github-copilot/claude-opus-5:low, openai-codex/gpt-5.5:medium, github-copilot/gpt-5.5:medium, openai/gpt-5.5:medium, anthropic/claude-fable-5:low, github-copilot/claude-fable-5:low, anthropic/claude-opus-4-8:medium, github-copilot/claude-opus-4.8:medium, xai/grok-4.5:high, zai/glm-5.2:high, zai-coding-cn/glm-5.2:high, openrouter/openai/gpt-5.6-sol:medium, openrouter/anthropic/claude-opus-5:low, openrouter/openai/gpt-5.5:medium, openrouter/anthropic/claude-fable-5:low, openrouter/anthropic/claude-opus-4-8:medium, openrouter/x-ai/grok-4.5, openrouter/z-ai/glm-5.2:xhigh
+
+### packages/subagents/agents/codebase-research-locator.md
+name: codebase-research-locator
+description: Discovers local research documents that are relevant to the current research task.
+tools: read, search, find, ls
+model: openai-codex/gpt-5.6-terra:high
+fallbackModels: github-copilot/gpt-5.6-terra:high, openai/gpt-5.6-terra:high, anthropic/claude-opus-5:low, github-copilot/claude-opus-5:low, openai-codex/gpt-5.5:low, github-copilot/gpt-5.5:low, openai/gpt-5.5:low, anthropic/claude-opus-4-8:low, github-copilot/claude-opus-4.8:low, xai/grok-4.5:high, zai/glm-5.2:high, zai-coding-cn/glm-5.2:high, openrouter/openai/gpt-5.6-terra:high, openrouter/anthropic/claude-opus-5:low, openrouter/openai/gpt-5.5:low, openrouter/anthropic/claude-opus-4-8:low, openrouter/x-ai/grok-4.5, openrouter/z-ai/glm-5.2:xhigh
+
+### packages/subagents/agents/debugger.md
+name: debugger
+description: Debug and fix errors, test failures, and unexpected behavior. Use PROACTIVELY when encountering issues, analyzing stack traces, or investigating system problems.
+tools: read, edit, write, search, find, ls, bash, web_search, fetch_content, get_search_content, intercom, contact_supervisor, todo
+model: openai-codex/gpt-5.6-sol:xhigh
+fallbackModels: github-copilot/gpt-5.6-sol:xhigh, openai/gpt-5.6-sol:xhigh, anthropic/claude-opus-5:high, github-copilot/claude-opus-5:high, anthropic/claude-fable-5:high, github-copilot/claude-fable-5:high, kimi-coding/k3:max, moonshotai/kimi-k3:max, moonshotai-cn/kimi-k3:max, openai-codex/gpt-5.5:xhigh, github-copilot/gpt-5.5:xhigh, openai/gpt-5.5:xhigh, anthropic/claude-opus-4-8:high, github-copilot/claude-opus-4.8:high, xai/grok-4.5:high, zai/glm-5.2:xhigh, zai-coding-cn/glm-5.2:xhigh, openrouter/openai/gpt-5.6-sol:xhigh, openrouter/anthropic/claude-opus-5:high, openrouter/anthropic/claude-fable-5:high, openrouter/moonshotai/kimi-k3:max, openrouter/sakana/fugu-ultra:high, openrouter/openai/gpt-5.5:xhigh, openrouter/anthropic/claude-opus-4-8:high, openrouter/x-ai/grok-4.5, openrouter/z-ai/glm-5.2:xhigh
+skills: tdd, playwright-cli, tmux
+
+### packages/subagents/agents/worker.md
+name: worker
+description: Implementation agent for normal tasks and approved orchestrator handoffs.
+systemPromptMode: replace
+inheritProjectContext: true
+inheritSkills: false
+tools: read, edit, write, search, find, ls, bash, web_search, fetch_content, get_search_content, intercom, contact_supervisor, todo
+model: openai-codex/gpt-5.6-sol:medium
+fallbackModels: github-copilot/gpt-5.6-sol:medium, openai/gpt-5.6-sol:medium, anthropic/claude-opus-5:low, github-copilot/claude-opus-5:low, openai-codex/gpt-5.5:medium, github-copilot/gpt-5.5:medium, openai/gpt-5.5:medium, anthropic/claude-fable-5:low, github-copilot/claude-fable-5:low, anthropic/claude-opus-4-8:medium, github-copilot/claude-opus-4.8:medium, xai/grok-4.5:high, zai/glm-5.2:high, zai-coding-cn/glm-5.2:high, openrouter/openai/gpt-5.6-sol:medium, openrouter/anthropic/claude-opus-5:low, openrouter/openai/gpt-5.5:medium, openrouter/anthropic/claude-fable-5:low, openrouter/anthropic/claude-opus-4-8:medium, openrouter/x-ai/grok-4.5, openrouter/z-ai/glm-5.2:xhigh
+skills: tdd, playwright-cli, tmux
+defaultContext: fork
+defaultProgress: true
+
