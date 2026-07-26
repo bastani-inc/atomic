@@ -520,7 +520,7 @@ Atomic's category is broader and more explicit: it is the loop engine for engine
 
 ## Built-in Workflows
 
-Atomic bundles seven workflows: six reusable control-flow patterns and one end-to-end design workflow. They are available in every session. Use `/workflow list` to confirm the current set and `/workflow inputs <name>` to inspect a contract before launch.
+Atomic bundles nine workflows: six reusable control-flow patterns, two autonomous implementation loops, and one end-to-end design workflow. They are available in every session. Use `/workflow list` to confirm the current set and `/workflow inputs <name>` to inspect a contract before launch.
 
 | Workflow | What it does | When to use |
 |---|---|---|
@@ -530,6 +530,8 @@ Atomic bundles seven workflows: six reusable control-flow patterns and one end-t
 | `generate-and-filter` | Candidate fan-out → rubric dedupe/filter → optional judge → shortlist. | Explore more options than needed and keep the strongest distinct few. |
 | `tournament` | Whole-task attempts → balanced pairwise judges → bracket reducer. | Compare subjective or approach-sensitive solutions. |
 | `loop-until-done` | Durable ledger → iteration/evaluator loop → success or inspectable bound exhaustion. | Continue until explicit evidence proves completion. |
+| `goal` | Durable goal ledger → bounded sub-agent orchestration → parallel review → deterministic reducer. | Autonomous implementation that needs receipts and reviewer-gated completion. |
+| `ralph` | Prompt refinement → codebase research → delegated implementation → multi-model review loop. | Research-first autonomous implementation with bounded review and repair. |
 | `open-claude-design` | Guided discovery and reference research → HTML generation → feedback loop → export and handoff. | UI, page, component, theme, or design-token work. |
 
 ### Six composable pattern builtins
@@ -551,7 +553,9 @@ import {
   classifyAndAct,
   fanOutAndSynthesize,
   generateAndFilter,
+  goal,
   loopUntilDone,
+  ralph,
   tournament,
 } from "@bastani/workflows/builtin";
 
@@ -565,6 +569,48 @@ const research = await ctx.workflow(fanOutAndSynthesize, {
 ```
 
 All six can run by name or as nested definitions. Prefer composition over copying prompts or graphs: nested children contribute stages, gates, artifacts, HIL nodes, and declared outputs to the expanded parent graph. For broad repository work, write a precise partition prompt, give branches distinct artifact paths, and make synthesis cite concrete files and resolve conflicts. For implementation, author a task-specific parent around the pattern builtins so its literal contract, deterministic checks, repair policy, and final actions stay explicit.
+
+### `goal`
+
+Goal persists the literal objective and immutable acceptance criteria in a run ledger, delegates implementation through bounded orchestrator turns, records receipts, and asks independent reviewers to inspect the current delta. A TypeScript reducer returns `complete`, `blocked`, or `needs_human` rather than trusting free-form completion claims.
+
+| Input | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `objective` | text | yes | — | Task to implement and validate. Keep PR/MR creation out of this text. |
+| `acceptance_criteria` | text | no | objective | Immutable original contract, especially for follow-up runs. |
+| `max_turns` | number | no | `10` | Maximum orchestrator/review turns. |
+| `base_branch` | string | no | `origin/main` | Review and optional final-action comparison base. |
+| `git_worktree_dir` | string | no | `""` | Optional reusable worktree, only when explicitly requested. |
+| `create_pr` | boolean | no | `false` | Authorize the post-approval PR/MR/review stage. Prompt text alone never opts in. |
+
+```text
+/workflow goal objective="Update the CLI docs for --json, add one example, and validate the docs build"
+/workflow goal objective="Implement specs/rate-limit.md and run focused checks" create_pr=true
+```
+
+Declared outputs include `result`, `status`, `approved`, `goal_id`, `objective`, `acceptance_criteria`, `ledger_path`, turn counts, receipts, remaining work, review artifacts, and optional `pr_report`.
+
+### `ralph`
+
+Ralph starts from the raw task, refines it into a research question, runs codebase research, delegates implementation from the research artifact, and sends the patch to independent model-family reviewers. It repeats research, orchestration, and review until reviewers approve or `max_loops` is exhausted.
+
+| Input | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `prompt` | text | yes | — | Task, issue, or spec to research, implement, and review. Keep PR/MR creation out of this text. |
+| `acceptance_criteria` | text | no | prompt | Immutable original contract, especially for follow-up runs. |
+| `max_loops` | number | no | `10` | Maximum research/orchestrate/review iterations. |
+| `base_branch` | string | no | `origin/main` | Review and optional final-action comparison base. |
+| `git_worktree_dir` | string | no | `""` | Optional reusable worktree, only when explicitly requested. |
+| `create_pr` | boolean | no | `false` | Authorize the post-approval PR/MR/review stage. Prompt text alone never opts in. |
+
+```text
+/workflow ralph prompt="Migrate the database layer to Drizzle" max_loops=3
+/workflow ralph prompt="Implement specs/rate-limit.md and validate burst behavior" create_pr=true
+```
+
+Declared outputs include `result`, the latest research question and artifact paths, implementation notes, optional QA video and PR reports, approval, iteration count, and review artifacts.
+
+Goal and Ralph both support reusable worktree binding through `git_worktree_dir` and `base_branch`. Use `create_pr=true` only for an explicitly authorized final action after implementation approval. For follow-up runs based on reviewer findings, pass the original task text as `acceptance_criteria` to prevent contract drift.
 
 ### `open-claude-design`
 
@@ -1065,8 +1111,10 @@ import {
   classifyAndAct,
   fanOutAndSynthesize,
   generateAndFilter,
+  goal,
   loopUntilDone,
   openClaudeDesign,
+  ralph,
   tournament,
 } from "@bastani/workflows/builtin";
 ```
@@ -1074,7 +1122,8 @@ import {
 Or import one individual module:
 
 ```ts
-import fanOutAndSynthesize from "@bastani/workflows/builtin/fan-out-and-synthesize";
+import goal from "@bastani/workflows/builtin/goal";
+import ralph from "@bastani/workflows/builtin/ralph";
 ```
 
 Example parent that maps a repository and verifies the synthesis:
@@ -3556,13 +3605,15 @@ import {
   classifyAndAct,
   fanOutAndSynthesize,
   generateAndFilter,
+  goal,
   loopUntilDone,
   openClaudeDesign,
+  ralph,
   tournament,
 } from "@bastani/workflows/builtin";
 ```
 
-Each export is a workflow definition. The same seven definitions are available through individual module paths. See [Compose with builtin workflows](#compose-with-builtin-workflows) for a parent workflow example.
+Each export is a workflow definition. All nine definitions are available through individual module paths. See [Compose with builtin workflows](#compose-with-builtin-workflows) for a parent workflow example.
 
 
 ## Fast Inference for Workflow Stages

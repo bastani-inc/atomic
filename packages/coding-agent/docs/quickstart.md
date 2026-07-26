@@ -92,7 +92,7 @@ For an interactive tour any time, run `/atomic` inside the TUI; `/atomic overvie
 
 ### Try the built-in workflows
 
-Atomic ships with seven workflows you can run immediately. Use `/workflow list` to see them and `/workflow inputs <name>` to inspect their inputs in your environment.
+Atomic ships with nine workflows you can run immediately. Use `/workflow list` to see them and `/workflow inputs <name>` to inspect their inputs in your environment.
 
 | Workflow | When to use | Example |
 |---|---|---|
@@ -102,11 +102,13 @@ Atomic ships with seven workflows you can run immediately. Use `/workflow list` 
 | `generate-and-filter` | Generate, dedupe, filter, optionally judge, and shortlist candidates. | `/workflow generate-and-filter prompt="Propose names for the new command"` |
 | `tournament` | Compare whole solutions through balanced pairwise judging. | `/workflow tournament prompt="Design the retry strategy"` |
 | `loop-until-done` | Iterate with a durable ledger until completion or bound exhaustion. | `/workflow loop-until-done prompt="Repair failures until the test suite passes"` |
+| `goal` | Autonomous work that needs a durable ledger, bounded sub-agent orchestration, receipts, and reviewer-gated completion. | `/workflow goal objective="Update the CLI docs, add one example, and validate the docs build"` |
+| `ralph` | Research-first autonomous work with prompt refinement, delegated implementation, and iterative multi-model review. | `/workflow ralph prompt="Implement specs/rate-limit.md and validate burst traffic"` |
 | `open-claude-design` | UI and design-system work with separate generate and feedback chains and a live `preview.html`. | `/workflow open-claude-design prompt="Refresh the settings page hierarchy as a page"` |
 
 <p align="center"><img src="images/workflow-list.png" alt="Workflow List" width="600" /></p>
 
-Inputs are bare `key=value` tokens. Values are JSON-parsed when possible, so `count=5`, `flag=true`, and `prompt="multi word value"` preserve useful types. If you call `/workflow <name>` without required inputs, the TUI opens an inline picker; pass `--no-picker` to skip it. Inspect a workflow's declared inputs before assuming it supports worktree isolation or final actions.
+Inputs are bare `key=value` tokens. Values are JSON-parsed when possible, so `count=5`, `flag=true`, and `prompt="multi word value"` preserve useful types. If you call `/workflow <name>` without required inputs, the TUI opens an inline picker; pass `--no-picker` to skip it. Goal and Ralph support `git_worktree_dir` only when you explicitly want a reusable worktree, and skip PR creation unless you set `create_pr=true` for the post-approval final stage.
 
 You can also launch workflows with **natural language** — describe the task in chat and ask Atomic to run a matching installed workflow or author a task-specific one:
 
@@ -118,7 +120,15 @@ Fan out repository research by subsystem, save cited findings as artifacts, and 
 Create a worker → fresh verifier → reducer workflow that updates the CLI docs, runs the docs build, and repairs evidence-backed findings until it passes or reaches a bounded stop.
 ```
 
-Atomic chooses a complete execution shape, fills inputs from the request, and confirms before launch. For repository-wide uncertainty, prefer repository-focused `fan-out-and-synthesize` branches with artifact paths and a synthesis barrier. For domain-specific implementation, author a custom worker/reviewer loop with literal acceptance criteria, deterministic checks, bounded repairs, and any final PR action kept separate from implementation approval.
+```text
+Use goal to update the CLI docs, include one example, run the docs build, and finish only when reviewers approve the evidence.
+```
+
+```text
+Use ralph to research and implement specs/rate-limit.md, then review and repair it within three loops.
+```
+
+Atomic chooses a complete execution shape, fills inputs from the request, and confirms before launch. Use Goal when a durable ledger and receipt-backed reviewer gate fit the task. Use Ralph when the job benefits from a research-first implementation/review loop. For exact domain contracts that either builtin does not cover, author a custom graph with deterministic checks and bounded repairs.
 
 ### Monitor and steer a run
 
@@ -152,7 +162,7 @@ Skills are reusable expert instructions. Trigger one with `/skill:<name>` follow
 | `playwright-cli` | Drive a real browser for end-to-end UI checks, screenshots, and reviewable proof videos. | `/skill:playwright-cli` |
 | `liteparse` | Pull text, tables, or values out of PDF, DOCX, PPTX, XLSX, and image files locally. | `/skill:liteparse` |
 
-Use `/skill:research-codebase` for a focused subsystem or question. For repository-wide research, use `fan-out-and-synthesize` with distinct repository partitions, artifact-backed branches, and a synthesis prompt that cites concrete paths and resolves conflicting findings. Keep conversation-led planning and implementation inline, use bounded subagents while the parent remains in control, or author a task-specific durable workflow when execution needs tracked evidence, review gates, or a bounded repair loop.
+Use `/skill:research-codebase` for a focused subsystem or question. For repository-wide research, use `fan-out-and-synthesize` with distinct repository partitions and an artifact synthesis barrier. Use Goal for ledger-backed bounded orchestration and Ralph for research-first delegated implementation with iterative review; task size alone does not select either workflow.
 
 ### Create your own workflow in natural language
 
@@ -173,7 +183,7 @@ Atomic will:
 - write a `.atomic/workflows/<name>.ts` definition that uses `workflow({ ... })` and imports `Type` from `typebox`,
 - and run `/workflow reload` so the generated workflow is rediscovered and can be launched with `/workflow <name>`.
 
-The same plain-chat approach works for editing or hardening an existing workflow — ask Atomic to add a stage, switch a model, save artifacts, or wire in a human approval gate. For the full authoring reference, see [Workflows](/workflows). The authoring guide also covers [workflow composition](/workflows#workflow-composition), including calling user-defined workflows and the seven supported builtins from `@bastani/workflows/builtin`.
+The same plain-chat approach works for editing or hardening an existing workflow. For the full authoring reference, see [Workflows](/workflows), including composition with user-defined workflows and all nine builtins from `@bastani/workflows/builtin`.
 
 ### Default tools and prompts
 

@@ -1,0 +1,171 @@
+import type { BlockerObservation, GoalLedger, ReducerOutcome, ReviewRecord } from "./goal-types.js";
+import {
+  summarizeReviewConvergence,
+  type ReviewNextAction,
+} from "./review-convergence.js";
+
+function reducerSummary(
+  reviews: readonly ReviewRecord[],
+  approved: boolean,
+  nextAction: ReviewNextAction,
+) {
+  return summarizeReviewConvergence({
+    parsed: reviews.every((review) => review.parsed),
+    approved,
+    stopReviewLoop: approved,
+    nextAction,
+    diagnostics: reviews.flatMap((review) => review.parse_diagnostics),
+  });
+}
+
+export function normalizeBlocker(blocker: string): string {
+  return blocker.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+export function blockerCandidate(
+  turn: number,
+  decisions: readonly ReviewRecord[],
+): BlockerObservation | undefined {
+  const counts = new Map<string, { blocker: string; reviewers: string[] }>();
+  for (const decision of decisions) {
+    if (decision.decision !== "blocked" || !decision.blocker?.trim()) {
+      continue;
+    }
+    const key = normalizeBlocker(decision.blocker);
+    const existing = counts.get(key) ?? { blocker: decision.blocker.trim(), reviewers: [] };
+    existing.reviewers.push(decision.reviewer);
+    counts.set(key, existing);
+  }
+
+  let selected: { blocker: string; reviewers: string[] } | undefined;
+  for (const entry of counts.values()) {
+    if (selected === undefined || entry.reviewers.length > selected.reviewers.length) {
+      selected = entry;
+    }
+  }
+
+  return selected === undefined
+    ? undefined
+    : { turn, blocker: selected.blocker, reviewers: selected.reviewers };
+}
+
+export function consecutiveBlockerTurns(
+  blockers: readonly BlockerObservation[],
+  blocker: string,
+  currentTurn: number,
+): number {
+  const normalized = normalizeBlocker(blocker);
+  let expectedTurn = currentTurn;
+  let count = 0;
+
+  for (const observation of [...blockers].reverse()) {
+    if (observation.turn > expectedTurn) continue;
+    if (observation.turn < expectedTurn) break;
+    if (normalizeBlocker(observation.blocker) !== normalized) break;
+    count += 1;
+    expectedTurn -= 1;
+  }
+
+  return count;
+}
+
+export function collectRemainingWork(reviews: readonly ReviewRecord[]): string {
+  const gaps = reviews.flatMap((review) => review.gaps);
+  const blockers = reviews
+    .map((review) => review.blocker)
+    .filter((blocker): blocker is string => typeof blocker === "string" && blocker.trim().length > 0);
+  const items = [...gaps, ...blockers];
+  return items.length > 0 ? items.join("; ") : "Reviewer quorum did not prove completion.";
+}
+
+export function reduceGoalDecision(
+  ledger: GoalLedger,
+  turnReviews: readonly ReviewRecord[],
+  options: {
+    readonly turn: number;
+    readonly maxTurns: number;
+    readonly reviewQuorum: number;
+    readonly blockerThreshold: number;
+    readonly nextActionOnComplete: ReviewNextAction;
+  },
+): ReducerOutcome {
+  const completeVotes = turnReviews.filter(
+    (review) => review.decision === "complete",
+  ).length;
+  const quorumMet = completeVotes >= options.reviewQuorum;
+
+  // Deterministic boolean convergence: each review's `decision` is derived
+  // solely from the reviewer's self-reported `stop_review_loop` flag (plus the
+  // reviewer_error/parse-failure guards). The reducer completes on quorum of
+  // those booleans and does not re-litigate findings arrays or traceability
+  // statuses — reviewer prompts own deriving the flag from that evidence.
+  if (quorumMet) {
+    const summary = reducerSummary(turnReviews, true, options.nextActionOnComplete);
+    return {
+      status: "complete",
+      decision: {
+        ...summary,
+        turn: options.turn,
+        decision: "complete",
+        reason: `Reviewer quorum met: ${completeVotes}/${options.reviewQuorum} reviewers independently reported stop_review_loop=true with no reviewer execution errors.`,
+        complete_votes: completeVotes,
+        review_quorum: options.reviewQuorum,
+      },
+    };
+  }
+
+  const observation = blockerCandidate(options.turn, turnReviews);
+  const blockerCount = observation === undefined
+    ? 0
+    : consecutiveBlockerTurns(
+        [...ledger.blockers, observation],
+        observation.blocker,
+        options.turn,
+      );
+
+  if (observation !== undefined && blockerCount >= options.blockerThreshold) {
+    return {
+      status: "blocked",
+      blockerObservation: observation,
+      decision: {
+        ...reducerSummary(turnReviews, false, "blocked"),
+        turn: options.turn,
+        decision: "blocked",
+        reason: `Same blocker repeated for ${blockerCount}/${options.blockerThreshold} consecutive controller observations.`,
+        complete_votes: completeVotes,
+        review_quorum: options.reviewQuorum,
+        blocker: observation.blocker,
+      },
+    };
+  }
+
+  if (options.turn >= options.maxTurns) {
+    return {
+      status: "needs_human",
+      blockerObservation: observation,
+      decision: {
+        ...reducerSummary(turnReviews, false, "needs_human"),
+        turn: options.turn,
+        decision: "needs_human",
+        reason: `Orchestrator attempt budget reached without reviewer quorum. Remaining work: ${collectRemainingWork(turnReviews)}`,
+        complete_votes: completeVotes,
+        review_quorum: options.reviewQuorum,
+        ...(observation ? { blocker: observation.blocker } : {}),
+      },
+    };
+  }
+
+  return {
+    status: "active",
+    blockerObservation: observation,
+    decision: {
+      ...reducerSummary(turnReviews, false, "implementation"),
+      turn: options.turn,
+      decision: "continue",
+      reason: `Reviewer quorum not met. Remaining work: ${collectRemainingWork(turnReviews)}`,
+      complete_votes: completeVotes,
+      review_quorum: options.reviewQuorum,
+      ...(observation ? { blocker: observation.blocker } : {}),
+    },
+  };
+}

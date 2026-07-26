@@ -42,6 +42,8 @@ Atomic turns non-trivial work into executable, inspectable workflows. Default to
 | \`generate-and-filter\` | generate many candidates and keep a distinct shortlist | \`/workflow generate-and-filter prompt="Propose command names"\` |
 | \`tournament\` | compare whole solutions through balanced pairwise judging | \`/workflow tournament prompt="Design the retry strategy"\` |
 | \`loop-until-done\` | iterate until explicit evidence passes or the bound is exhausted | \`/workflow loop-until-done prompt="Repair failures until tests pass"\` |
+| \`goal\` | ledger-backed autonomous work with receipts and reviewer-gated completion | \`/workflow goal objective="Update CLI docs and validate the docs build"\` |
+| \`ralph\` | research-first delegated implementation with bounded multi-model review | \`/workflow ralph prompt="Implement specs/rate-limit.md"\` |
 | \`open-claude-design\` | UI and design-system generation and refinement | \`/workflow open-claude-design prompt="Refresh the settings page hierarchy"\` |
 
 Use \`/workflow list\` to see what is available and \`/workflow inputs <name>\` to inspect inputs in your environment.
@@ -149,9 +151,11 @@ Workflow-first is not builtin-only or monolithic. Atomic can author custom TypeS
 | \`generate-and-filter\` | candidate generation and shortlisting | \`/workflow generate-and-filter prompt="Propose command names"\` |
 | \`tournament\` | balanced whole-solution comparison | \`/workflow tournament prompt="Design the retry strategy"\` |
 | \`loop-until-done\` | bounded convergence on explicit evidence | \`/workflow loop-until-done prompt="Repair failures until tests pass"\` |
+| \`goal\` | durable ledger, bounded orchestration, and reviewer-gated completion | \`/workflow goal objective="Update CLI docs and validate the docs build"\` |
+| \`ralph\` | research-first delegated implementation and iterative review | \`/workflow ralph prompt="Implement specs/rate-limit.md"\` |
 | \`open-claude-design\` | frontend and product design | \`/workflow open-claude-design prompt="Refresh the settings page hierarchy"\` |
 
-Use \`/workflow inputs <name>\` to inspect exact inputs. Use \`/skill:research-codebase\` for one focused subsystem; use repository-focused \`fan-out-and-synthesize\` when you need independent whole-repository slices and an artifact synthesis barrier.
+Use \`/workflow inputs <name>\` to inspect exact inputs. Goal and Ralph skip PR creation unless \`create_pr=true\` explicitly authorizes their post-approval final stage. Use \`/skill:research-codebase\` for one focused subsystem and repository-focused \`fan-out-and-synthesize\` for independent whole-repository slices.
 
 If you are drafting research, reviewer, or synthesis prompts for a workflow, use \`/skill:prompt-engineer\` first. It is a good fit when a stage prompt feels vague, overloaded, or underspecified.
 

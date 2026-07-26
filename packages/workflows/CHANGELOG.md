@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - Added opt-in `ctx.tool(..., { failureMode: "return" })` outcomes for checks that may fail during repair flows. Exhausted callback failures now preserve bounded, best-effort redacted `exitCode`, `stdout`, and `stderr` as typed durable data; replay returns the same outcome without rerunning the callback; failed tool nodes remain truthful while explicit downstream repair and bounded reruns continue; and default failures, cancellation, admission errors, and storage faults still throw ([#1993](https://github.com/bastani-inc/atomic/issues/1993)).
+- Re-added the built-in Goal and Ralph workflows, including their typed composition exports, command metadata, focused tests, and user-facing docs.
 
 ### Changed
 
@@ -30,7 +31,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Removed
 
 - Removed Cursor model fallbacks and Cursor-branded Impeccable harness compatibility from shipped workflows and skills ([#1994](https://github.com/bastani-inc/atomic/issues/1994)).
-- Removed the built-in Goal, Ralph, and `deep-research-codebase` workflows.
+- Removed the built-in `deep-research-codebase` workflow.
 
 ## [0.9.11-alpha.5] - 2026-07-23
 
