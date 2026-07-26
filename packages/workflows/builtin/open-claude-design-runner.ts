@@ -77,19 +77,23 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
   // Anthropic-heavy chain for design taste. Opus stays at :xhigh here because
   // visual quality, rather than cost per task, is the primary objective.
   const designModelConfig = {
-    model: "anthropic/claude-fable-5:high",
+    model: "anthropic/claude-opus-5:high",
     fallbackModels: [
-      "github-copilot/claude-opus-4.8:high",
-      "anthropic/claude-opus-4-8:high",
+      "github-copilot/claude-opus-5:high",
+      "anthropic/claude-fable-5:high",
+      "github-copilot/claude-fable-5:high",
       "kimi-coding/k3:max",
       "moonshotai/kimi-k3:max",
       "moonshotai-cn/kimi-k3:max",
+      "anthropic/claude-opus-4-8:high",
+      "github-copilot/claude-opus-4.8:high",
       "openai-codex/gpt-5.6-sol:xhigh",
       "github-copilot/gpt-5.6-sol:xhigh",
       "openai/gpt-5.6-sol:xhigh",
       "xai/grok-4.5:high",
       "zai/glm-5.2:xhigh",
       "zai-coding-cn/glm-5.2:xhigh",
+      "openrouter/anthropic/claude-opus-5:high",
       "openrouter/anthropic/claude-fable-5:high",
       "openrouter/anthropic/claude-opus-4-8:high",
       "openrouter/moonshotai/kimi-k3:max",

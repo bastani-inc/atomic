@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Adopted Claude Opus 5 across every builtin subagent `fallbackModels` policy and normalized provider ordering. Each Anthropic family now lists its direct `anthropic/...` candidate ahead of the `github-copilot/...` mirror, Opus 5 leads the Anthropic group (`:high` for the debugger, `:low` elsewhere), `claude-fable-5` gains its missing Copilot mirror, and the OpenRouter tail lists `openrouter/anthropic/claude-opus-5` before the older Anthropic mirrors.
+
 ### Removed
 
 - Removed Cursor MCP compatibility imports from delegated direct-tool resolution and removed Cursor model candidates from every builtin subagent fallback policy ([#1994](https://github.com/bastani-inc/atomic/issues/1994)).
