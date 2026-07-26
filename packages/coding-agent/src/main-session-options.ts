@@ -74,10 +74,6 @@ export function buildSessionOptions(
 		options.thinkingLevel = parsed.thinking;
 	}
 
-	if (parsed.contextWindow !== undefined) {
-		options.contextWindow = parsed.contextWindow;
-		options.contextWindowStrict = true;
-	}
 
 	// Scoped models for CTRL+P cycling
 	// Keep thinking level undefined when not explicitly set in the model pattern.

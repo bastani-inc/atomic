@@ -21,7 +21,6 @@ import { isDeepStrictEqual } from "node:util";
 import { getAgentConfigPaths } from "../config.ts";
 import { normalizePath } from "../utils/paths.ts";
 import type { AuthStatus, AuthStorage } from "./auth-storage.ts";
-import { copilotApiBaseUrlFromToken, copilotCatalogCachePath, copilotTokenFromEnvironment, seedActiveCopilotModelCatalogFromCache } from "./copilot-model-catalog.ts";
 import { getModelRequestAuth, getApiKeyForProviderFromConfig, getProviderAuthStatusFromConfig, getProviderResolvedAuth } from "./model-registry-auth.ts";
 import { applyProviderConfigToModels, migrateLegacyRegisterProviderConfigValues, unregisterProviderRuntime, validateProviderConfig } from "./model-registry-dynamic.ts";
 import { loadModelRegistryModels } from "./model-registry-loader.ts";
@@ -36,10 +35,6 @@ import { clearConfigValueCache, isConfigValueConfigured } from "./resolve-config
 const REMOTE_CATALOG_PROVIDERS = new Set(["github-copilot", "openrouter", "vercel-ai-gateway"]);
 const OPENAI_COMPATIBLE_APIS = new Set<Api>(["openai-completions", "openai-responses"]);
 let nextRegistryRegistrationId = 0;
-
-function copilotBaseUrlFromRuntimeToken(apiKey: string): string | undefined {
-	return /(?:^|;)proxy-ep=[^;]+/.test(apiKey) ? copilotApiBaseUrlFromToken(apiKey) : undefined;
-}
 
 function overlayRuntimeApiKey(
 	runtimeApiKey: string,
@@ -122,16 +117,7 @@ export class ModelRegistry {
 			this.defaultProviders.set(provider.id, configured);
 			this.providerModels.setProvider(configured);
 		}
-		this.seedCopilotModelCatalogFromCache();
 		this.loadModels();
-	}
-
-	private seedCopilotModelCatalogFromCache(): void {
-		if (!this.modelDataDir) return;
-		const cred = this.authStorage.get("github-copilot");
-		const token = cred?.type === "oauth" && typeof cred.access === "string" ? cred.access : copilotTokenFromEnvironment();
-		if (!token) return;
-		seedActiveCopilotModelCatalogFromCache(token, copilotCatalogCachePath(this.modelDataDir));
 	}
 
 	static create(
@@ -379,12 +365,9 @@ export class ModelRegistry {
 			const storedOAuthAuth = runtimeApiKey !== undefined && !extensionReplacesOAuth && storedCredential?.type === "oauth"
 				? await oauthCredentialToAuth(model.provider, storedCredential)
 				: undefined;
-			const runtimeBaseUrl = runtimeApiKey !== undefined && model.provider === "github-copilot"
-				? copilotBaseUrlFromRuntimeToken(runtimeApiKey)
-				: undefined;
 			const providerAuth = runtimeApiKey === undefined
 				? resolvedProviderAuth
-				: overlayRuntimeApiKey(runtimeApiKey, resolvedProviderAuth, storedOAuthAuth, runtimeBaseUrl);
+				: overlayRuntimeApiKey(runtimeApiKey, resolvedProviderAuth, storedOAuthAuth, undefined);
 			return getModelRequestAuth(
 				model,
 				this.authStorage,

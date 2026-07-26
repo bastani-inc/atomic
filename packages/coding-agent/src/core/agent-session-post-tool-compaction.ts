@@ -1,5 +1,4 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { getEffectiveInputBudget } from "./context-window.ts";
 import { estimateContextTokens, shouldCompact, type VerbatimCompactionResult } from "./compaction/index.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { scrubPreCompactionAssistantUsage } from "./provider-context-usage.ts";
@@ -23,7 +22,7 @@ export async function _preflightPostToolContext(
 	const settings = this.settingsManager.getCompactionSettings();
 	if (!model || !settings.enabled) return messages;
 
-	const hardInputLimit = getEffectiveInputBudget(model);
+	const hardInputLimit = model.contextWindow;
 	if (!shouldCompact(estimateContextTokens(messages).tokens, hardInputLimit, settings)) return messages;
 
 	// Tool-result persistence is ordered on AgentSession's event queue, while Pi

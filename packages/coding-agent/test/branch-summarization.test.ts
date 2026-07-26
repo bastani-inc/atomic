@@ -130,39 +130,6 @@ function contextEntry(targets: ContextCompactionEntry["deletedTargets"]): Contex
 }
 
 describe("branch summarization with archival compaction entries", () => {
-	it("adds Copilot long-context guidance to prompt-limit summarization errors", async () => {
-		resetIds();
-		const rawError = "prompt token count of 500000 exceeds the limit of 400000";
-		const model = copilotModel();
-		const entries: SessionEntry[] = [entry(user("summarize this Copilot branch"))];
-		const result = await generateBranchSummary(entries, {
-			model,
-			apiKey: "test-key",
-			signal: new AbortController().signal,
-			streamFn: async (requestModel) => assistantErrorStream(requestModel, rawError),
-		});
-
-		expect(result.error).toContain(rawError);
-		expect(result.error).toContain("Copilot long-context/usage-based billing");
-	});
-
-	it("adds Copilot long-context guidance to thrown prompt-limit summarization errors", async () => {
-		resetIds();
-		const rawError = "prompt token count of 500000 exceeds the limit of 400000";
-		const entries: SessionEntry[] = [entry(user("summarize this Copilot branch"))];
-		const result = await generateBranchSummary(entries, {
-			model: copilotModel(),
-			apiKey: "test-key",
-			signal: new AbortController().signal,
-			streamFn: async () => {
-				throw new Error(rawError);
-			},
-		});
-
-		expect(result.error).toContain(rawError);
-		expect(result.error).toContain("Copilot long-context/usage-based billing");
-	});
-
 	it("leaves non-Copilot prompt-limit summarization errors unchanged", async () => {
 		resetIds();
 		const rawError = "prompt token count of 500000 exceeds the limit of 400000";

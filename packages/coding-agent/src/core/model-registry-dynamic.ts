@@ -7,7 +7,7 @@ import {
 	unregisterApiProviders,
 } from "@earendil-works/pi-ai/compat";
 import { warnDeprecation } from "../utils/deprecation.ts";
-import { normalizeContextWindowOptions, validateContextWindowValue } from "./context-window.ts";
+import { validateContextWindowValue } from "./model-registry-validation.ts";
 import { normalizeGrammarToolCapability } from "./model-capabilities.ts";
 import { applyModelOverride } from "./model-registry-builtins.ts";
 import type { DynamicProviderApplyInput, ProviderConfigInput } from "./model-registry-types.ts";
@@ -68,14 +68,6 @@ export function unregisterProviderRuntime(sourceId: string): void {
 	unregisterRuntimeApiProvider(sourceId);
 	unregisterLegacyOAuthProviders(sourceId);
 }
-function validateContextWindowOptions(providerName: string, modelId: string, options: readonly number[] | undefined): void {
-	for (const option of options ?? []) {
-		if (validateContextWindowValue(option)) {
-			throw new Error(`Provider ${providerName}, model ${modelId}: invalid contextWindowOptions value`);
-		}
-	}
-}
-
 function migrateLegacyRegisterProviderConfigValue(providerName: string, field: string, value: string): string {
 	if (!isLegacyEnvVarNameConfigValue(value) || process.env[value] === undefined) return value;
 	warnDeprecation(
@@ -171,7 +163,6 @@ export function validateProviderConfig(providerName: string, config: ProviderCon
 		if (validateContextWindowValue(modelDef.contextWindow)) {
 			throw new Error(`Provider ${providerName}, model ${modelDef.id}: invalid contextWindow`);
 		}
-		validateContextWindowOptions(providerName, modelDef.id, modelDef.contextWindowOptions);
 		if (modelDef.maxTokens <= 0) {
 			throw new Error(`Provider ${providerName}, model ${modelDef.id}: invalid maxTokens`);
 		}
@@ -217,11 +208,6 @@ export function applyProviderConfigToModels(input: DynamicProviderApplyInput): M
 				input: modelDef.input as ("text" | "image")[],
 				cost: modelDef.cost,
 				contextWindow: modelDef.contextWindow,
-				defaultContextWindow: modelDef.contextWindow,
-				contextWindowOptions: normalizeContextWindowOptions([
-					modelDef.contextWindow,
-					...(modelDef.contextWindowOptions ?? []),
-				]),
 				maxTokens: modelDef.maxTokens,
 				headers: undefined,
 				compat: normalizeGrammarToolCapability(modelDef.compat),

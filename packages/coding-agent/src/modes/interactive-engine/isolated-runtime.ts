@@ -346,13 +346,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 					return level;
 				},
 			},
-			setContextWindow: {
-				configurable: true,
-				value: (tokens: number) => {
-					if (session.agent.state.model) session.agent.state.model = { ...session.agent.state.model, contextWindow: tokens };
-					this.dispatchBestEffort("set context window", this.client.setContextWindow(tokens));
-				},
-			},
 			setSteeringMode: {
 				configurable: true,
 				value: (mode: "all" | "one-at-a-time") => {
@@ -481,9 +474,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				break;
 			case "thinking_level_changed":
 				session.agent.state.thinkingLevel = event.level;
-				break;
-			case "context_window_changed":
-				if (session.agent.state.model) session.agent.state.model = { ...session.agent.state.model, contextWindow: event.contextWindow };
 				break;
 			case "session_info_changed":
 				this.remoteSessionName = event.name;

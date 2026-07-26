@@ -31,8 +31,6 @@ import type {
 	AgentSessionEvent,
 	AgentSessionEventListener,
 	AgentSessionReloadOptions,
-	ContextWindowReplayRequest,
-	ContextWindowReplaySource,
 	DrainedAgentQueues,
 	ExtensionBindings,
 	InterruptQueueHold,
@@ -67,12 +65,6 @@ export interface RuntimeBuildOptions {
 	activeToolNames?: string[];
 	flagValues?: Map<string, boolean | string>;
 	includeAllExtensionTools?: boolean;
-}
-
-export interface ContextWindowReplayResult {
-	model: Model<Api>;
-	contextWindow: number;
-	wouldWarn: boolean;
 }
 
 export interface AgentSessionQueuePauseControl {
@@ -194,24 +186,12 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	supportsThinking(): boolean;
 	_getThinkingLevelForModelSwitch(explicitLevel?: ThinkingLevel): ThinkingLevel;
 	_clampThinkingLevel(level: ThinkingLevel, availableLevels: ThinkingLevel[]): ThinkingLevel;
-	getAvailableContextWindows(): number[];
-	supportsContextWindowSelection(): boolean;
-	setContextWindow(contextWindow: number, options?: { persistDefault?: boolean }): void;
-	_withContextWindowForModelSwitch(model: Model<Api>): Model<Api>;
-	_shouldCarryCurrentContextWindowForModelSwitch(currentModel: Model<Api>, settingsDefaultContextWindow: number | undefined): boolean;
-	_getSettingsContextWindowRequestForModel(model: Model<Api>): ContextWindowReplayRequest | undefined;
-	_getContextWindowReplayForModel(model: Model<Api>, requestedContextWindow: number | undefined, source: ContextWindowReplaySource | undefined): ContextWindowReplayResult;
-	_getDefaultContextWindowReplayForModel(model: Model<Api>, wouldWarn: boolean): ContextWindowReplayResult;
-	_getResumeContextWindowReplayForModel(model: Model<Api>): ContextWindowReplayResult;
-	_applyContextWindowReplay(contextWindow: number | undefined): void;
-	_appendContextWindowChangeIfChanged(previousModel: Model<Api> | undefined, nextModel: Model<Api>): void;
 
 	_applyVerbatimCompaction(options: VerbatimCompactionApplyOptions): Promise<VerbatimCompactionResult | undefined>;
 	compact(options?: Partial<VerbatimCompactionParameters>): Promise<VerbatimCompactionResult>;
 	abortCompaction(): void;
 	abortBranchSummary(): void;
 	_checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck?: boolean): Promise<void>;
-	_isCopilotServerCapBelowSelectedContextWindow(assistantMessage: AssistantMessage): boolean;
 	_dropTrailingAutoCompactionRetryAssistantIfPresent(): void;
 	_schedulePostAutoCompactionContinuationProbe(reason: "overflow" | "threshold", willRetry: boolean): void;
 	_awaitPendingPostCompactionContinuation(): Promise<void>;
@@ -235,7 +215,6 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	reload(options?: AgentSessionReloadOptions): Promise<void>;
 
 	_isRetryableError(message: AssistantMessage): boolean;
-	_normalizePersistedGeminiToolArgs(message: AssistantMessage): void;
 	_isEmptyCompletion(message: AssistantMessage): boolean;
 	_isSafetyRefusal(message: AssistantMessage): boolean;
 	_handleRetryableError(message: AssistantMessage): Promise<boolean>;
@@ -317,9 +296,6 @@ export interface AgentSessionPublicSurface extends Pick<AgentSessionMethodSurfac
 	| "cycleThinkingLevel"
 	| "getAvailableThinkingLevels"
 	| "supportsThinking"
-	| "getAvailableContextWindows"
-	| "supportsContextWindowSelection"
-	| "setContextWindow"
 	| "setSteeringMode"
 	| "setFollowUpMode"
 	| "compact"

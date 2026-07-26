@@ -8,7 +8,6 @@ import {
 	createRpcErrorResponse,
 	createRpcSuccessResponse,
 	formatRpcErrorMessage,
-	parseRpcContextWindow,
 	type RpcOutput,
 } from "./rpc-responses.ts";
 import { RpcBashRequestOwners } from "./rpc-bash-request-owners.ts";
@@ -205,20 +204,6 @@ export function createRpcCommandHandler({
 			case "get_available_thinking_levels": {
 				return createRpcSuccessResponse(id, "get_available_thinking_levels", {
 					levels: session.getAvailableThinkingLevels(),
-				});
-			}
-
-			case "set_context_window": {
-				const contextWindow = parseRpcContextWindow(command.contextWindow);
-				session.setContextWindow(contextWindow);
-				return createRpcSuccessResponse(id, "set_context_window");
-			}
-
-			case "get_available_context_windows": {
-				return createRpcSuccessResponse(id, "get_available_context_windows", {
-					contextWindows: session.getAvailableContextWindows(),
-					currentContextWindow: session.model?.contextWindow,
-					supportsSelection: session.supportsContextWindowSelection(),
 				});
 			}
 

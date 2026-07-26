@@ -6,7 +6,6 @@ import {
 	getProjectConfigPaths,
 } from "../config.ts";
 import { parseJsonFileContent } from "../utils/json.ts";
-import { parseContextWindowValue, validateContextWindowValue } from "./context-window.ts";
 import { deepMergeSettings } from "./settings-merge.ts";
 import { FileSettingsStorage, InMemorySettingsStorage } from "./settings-storage.ts";
 import type { Settings, SettingsError, SettingsManagerCreateOptions, SettingsScope, SettingsStorage } from "./settings-types.ts";
@@ -139,61 +138,8 @@ export class SettingsManager {
 		}
 	}
 
-	private static validateLoadedSettings(scope: SettingsScope, settings: Settings): SettingsError[] {
-		const errors: SettingsError[] = [];
-		const configured = (settings as Record<string, unknown>).defaultContextWindow;
-		if (configured !== undefined) {
-			const error = SettingsManager.validateContextWindowSettingValue(configured, "defaultContextWindow");
-			if (error) {
-				errors.push({ scope, error });
-			}
-		}
-		const configuredByModel = (settings as Record<string, unknown>).defaultContextWindows;
-		if (configuredByModel !== undefined) {
-			if (!SettingsManager.isPlainRecord(configuredByModel)) {
-				errors.push({
-					scope,
-					error: new Error(
-						`Invalid defaultContextWindows: expected an object keyed by "provider/modelId", got ${SettingsManager.formatSettingValue(configuredByModel)}.`,
-					),
-				});
-			} else {
-				for (const [key, value] of Object.entries(configuredByModel)) {
-					const error = SettingsManager.validateContextWindowSettingValue(value, `defaultContextWindows.${key}`);
-					if (error) {
-						errors.push({ scope, error });
-					}
-				}
-			}
-		}
-		return errors;
-	}
-
-	private static isPlainRecord(value: unknown): value is Record<string, unknown> {
-		return typeof value === "object" && value !== null && !Array.isArray(value);
-	}
-
-	private static validateContextWindowSettingValue(value: unknown, fieldName: string): Error | undefined {
-		if (typeof value === "number") {
-			const validationError = validateContextWindowValue(value);
-			return validationError ? new Error(`Invalid ${fieldName}: ${validationError}.`) : undefined;
-		}
-		if (typeof value === "string") {
-			const parsed = parseContextWindowValue(value);
-			return parsed.error ? new Error(`Invalid ${fieldName}: ${parsed.error}`) : undefined;
-		}
-		return new Error(
-			`Invalid ${fieldName}: expected a positive integer token count or compact string like "400k" or "1m", got ${SettingsManager.formatSettingValue(value)}.`,
-		);
-	}
-
-	private static formatSettingValue(value: unknown): string {
-		try {
-			const serialized = JSON.stringify(value);
-			return serialized ?? String(value);
-		} catch {
-			return String(value);
-		}
+	private static validateLoadedSettings(_scope: SettingsScope, _settings: Settings): SettingsError[] {
+		return [];
 	}
 
 	/** Migrate old settings format to new format */

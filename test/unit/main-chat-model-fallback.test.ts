@@ -16,7 +16,6 @@ function model(provider: string, id: string): Model<Api> {
     id,
     api: provider as Api,
     contextWindow: 200_000,
-    defaultContextWindow: 200_000,
     reasoning: true,
   } as Model<Api>;
 }

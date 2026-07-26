@@ -158,7 +158,7 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
   /**
    * Context-window token budget for the stage session. May also be expressed
    * per-model via a parenthesized token in a `model`/`fallbackModels` entry
-   * (e.g. `github-copilot/claude-opus-4.8 (1m):xhigh`), which is preferred when
+   * (e.g. `github-copilot/claude-opus-4.8:xhigh`), which is preferred when
    * only specific fallbacks should use a larger window. Non-strict by default:
    * an unsupported value keeps the model's default window (see
    * `contextWindowStrict`).

@@ -1,7 +1,7 @@
 import { type Api, type BuiltinProvider, getModels, getProviders, type Model } from "@earendil-works/pi-ai/compat";
 import { radiusProvider } from "@earendil-works/pi-ai/providers/all";
 import { existsSync, readFileSync } from "fs";
-import { normalizeContextWindowOptions, validateContextWindowValue } from "./context-window.ts";
+import { validateContextWindowValue } from "./model-registry-validation.ts";
 import { mergeCompat, mergeCustomModels } from "./model-registry-builtins.ts";
 import {
 	formatValidationPath,
@@ -122,14 +122,6 @@ function collectModelHeaders(
 	modelHeaderSources.set(key, source);
 }
 
-function validateContextWindowOptions(providerName: string, modelId: string, options: readonly number[] | undefined): void {
-	for (const option of options ?? []) {
-		if (validateContextWindowValue(option)) {
-			throw new Error(`Provider ${providerName}, model ${modelId}: invalid contextWindowOptions value`);
-		}
-	}
-}
-
 function validateConfig(config: ModelsConfig): void {
 	const builtInProviders = new Set<string>(getProviders());
 
@@ -168,7 +160,6 @@ function validateConfig(config: ModelsConfig): void {
 			if (modelDef.contextWindow !== undefined && validateContextWindowValue(modelDef.contextWindow)) {
 				throw new Error(`Provider ${providerName}, model ${modelDef.id}: invalid contextWindow`);
 			}
-			validateContextWindowOptions(providerName, modelDef.id, modelDef.contextWindowOptions);
 			if (modelDef.maxTokens !== undefined && modelDef.maxTokens <= 0) {
 				throw new Error(`Provider ${providerName}, model ${modelDef.id}: invalid maxTokens`);
 			}
@@ -178,7 +169,6 @@ function validateConfig(config: ModelsConfig): void {
 			if (modelOverride.contextWindow !== undefined && validateContextWindowValue(modelOverride.contextWindow)) {
 				throw new Error(`Provider ${providerName}, model ${modelId}: invalid contextWindow`);
 			}
-			validateContextWindowOptions(providerName, modelId, modelOverride.contextWindowOptions);
 			if (modelOverride.maxTokens !== undefined && modelOverride.maxTokens <= 0) {
 				throw new Error(`Provider ${providerName}, model ${modelId}: invalid maxTokens`);
 			}
@@ -233,8 +223,6 @@ function parseModels(
 				input: (modelDef.input ?? ["text"]) as ("text" | "image")[],
 				cost: modelDef.cost ?? defaultCost,
 				contextWindow,
-				defaultContextWindow: contextWindow,
-				contextWindowOptions: normalizeContextWindowOptions([contextWindow, ...(modelDef.contextWindowOptions ?? [])]),
 				maxTokens: modelDef.maxTokens ?? 16384,
 				headers: undefined,
 				compat,

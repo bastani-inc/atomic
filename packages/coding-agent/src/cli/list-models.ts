@@ -6,7 +6,6 @@ import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { fuzzyFilter } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import { formatNoModelsAvailableMessage } from "../core/auth-guidance.ts";
-import { getSupportedContextWindows } from "../core/context-window.ts";
 import type { ModelRegistry } from "../core/model-registry.ts";
 
 /**
@@ -62,7 +61,7 @@ export async function listModels(modelRegistry: ModelRegistry, searchPattern?: s
 	const rows = filteredModels.map((m) => ({
 		provider: m.provider,
 		model: m.id,
-		context: getSupportedContextWindows(m).map(formatTokenCount).join("/"),
+		context: formatTokenCount(m.contextWindow),
 		maxOut: formatTokenCount(m.maxTokens),
 		thinking: m.reasoning ? "yes" : "no",
 		images: m.input.includes("image") ? "yes" : "no",

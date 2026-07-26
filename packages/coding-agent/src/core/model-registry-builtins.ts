@@ -1,4 +1,3 @@
-import type { ProviderHeaders } from "@earendil-works/pi-ai";
 import {
 	type Api,
 	getModels,
@@ -7,73 +6,10 @@ import {
 	type Model,
 	type OpenAICompletionsCompat,
 } from "@earendil-works/pi-ai/compat";
-import { normalizeContextWindowOptions, withContextWindowOptions } from "./context-window.ts";
 import { normalizeGrammarToolCapability } from "./model-capabilities.ts";
-import { copilotApiBaseUrlFromToken, copilotTokenFromEnvironment, DEFAULT_COPILOT_API_BASE_URL, getActiveCopilotModelCatalog } from "./copilot-model-catalog.ts";
-import { copilotTemplateFromModels, copilotThinkingLevelMapFor, synthesizeCopilotCatalogModels } from "./copilot-model-synthesis.ts";
-import { getStaticCopilotModelFallback } from "./copilot-model-static-fallbacks.ts";
 import type { ModelOverride } from "./model-registry-schemas.ts";
 import type { ProviderCompat, ProviderOverride } from "./model-registry-types.ts";
 
-const GITHUB_COPILOT_API_VERSION_HEADER = "X-GitHub-Api-Version";
-const GITHUB_COPILOT_API_VERSION = "2026-06-01";
-
-function withDynamicGitHubCopilotModels(provider: string, models: Model<Api>[]): Model<Api>[] {
-	if (provider !== "github-copilot") return models;
-	const existingIds = new Set(models.map((model) => model.id));
-	const template = copilotTemplateFromModels(models);
-	const dynamicModels = synthesizeCopilotCatalogModels(getActiveCopilotModelCatalog(), existingIds, template);
-	return dynamicModels.length === 0 ? models : [...models, ...dynamicModels];
-}
-
-function hasHeader(headers: ProviderHeaders | undefined, headerName: string): boolean {
-	if (!headers) return false;
-	const normalizedHeaderName = headerName.toLowerCase();
-	return Object.keys(headers).some((key) => key.toLowerCase() === normalizedHeaderName);
-}
-
-export function withGitHubCopilotApiVersionHeader(
-	model: Model<Api>,
-	headers: ProviderHeaders | undefined,
-): ProviderHeaders | undefined {
-	if (model.provider !== "github-copilot" || hasHeader(headers, GITHUB_COPILOT_API_VERSION_HEADER)) {
-		return headers;
-	}
-	return { ...(headers ?? {}), [GITHUB_COPILOT_API_VERSION_HEADER]: GITHUB_COPILOT_API_VERSION };
-}
-
-function withCopilotEnvironmentBaseUrl(model: Model<Api>): Model<Api> {
-	if (model.provider !== "github-copilot") return model;
-	const resolvedBaseUrl = copilotApiBaseUrlFromToken(copilotTokenFromEnvironment());
-	if (resolvedBaseUrl === DEFAULT_COPILOT_API_BASE_URL || resolvedBaseUrl === model.baseUrl) return model;
-	return { ...model, baseUrl: resolvedBaseUrl };
-}
-
-function withCopilotThinkingLevelMap(model: Model<Api>): Model<Api> {
-	if (model.provider !== "github-copilot") return model;
-	const context = getActiveCopilotModelCatalog().get(model.id);
-	if (!context?.supports?.reasoningEffortLevels) return model;
-	const thinkingLevelMap = copilotThinkingLevelMapFor(context, model.api);
-	return thinkingLevelMap ? { ...model, thinkingLevelMap } : model;
-}
-
-function withCopilotContextWindowOptions(model: Model<Api>): Model<Api> {
-	if (model.provider !== "github-copilot") return model;
-	// The live CAPI catalog (or its disk cache) is authoritative. Without an
-	// entry (cold start, fetch failure, offline), fall back to the bundled
-	// static CAPI snapshot: several bundled pi-ai definitions overstate the
-	// enforced default-tier window or understate output caps, which lets
-	// sessions sail past the server-side limits before compaction fires
-	// (issue #1608). Fallback entries carry the same tier structure as catalog
-	// entries so long-context (1M-class) tiers stay selectable offline.
-	const context = getActiveCopilotModelCatalog().get(model.id) ?? getStaticCopilotModelFallback(model.id);
-	if (!context) return model;
-	const base = { ...model, contextWindow: context.contextWindow, maxInputTokens: context.maxInputTokens, maxTokens: context.maxTokens ?? model.maxTokens };
-	if (context.contextWindowOptions && context.contextWindowOptions.length > 1) {
-		return withContextWindowOptions(base, context.contextWindowOptions);
-	}
-	return base;
-}
 
 export function mergeCompat(
 	baseCompat: Model<Api>["compat"],
@@ -122,16 +58,7 @@ export function applyModelOverride(model: Model<Api>, override: ModelOverride): 
 		result.thinkingLevelMap = { ...model.thinkingLevelMap, ...override.thinkingLevelMap };
 	}
 	if (override.input !== undefined) result.input = override.input as ("text" | "image")[];
-	if (override.contextWindow !== undefined) {
-		result.contextWindow = override.contextWindow;
-		result.defaultContextWindow = override.contextWindow;
-		if (override.contextWindowOptions === undefined) {
-			result.contextWindowOptions = undefined;
-		}
-	}
-	if (override.contextWindowOptions !== undefined) {
-		result.contextWindowOptions = normalizeContextWindowOptions(override.contextWindowOptions);
-	}
+	if (override.contextWindow !== undefined) result.contextWindow = override.contextWindow;
 	if (override.maxTokens !== undefined) result.maxTokens = override.maxTokens;
 
 	if (override.cost) {
@@ -164,15 +91,15 @@ export function loadBuiltInModels(
 		const providerModels = baseModels
 			? baseModels.filter((model) => model.provider === provider)
 			: getModels(provider as BuiltinProvider) as Model<Api>[];
-		const models = withDynamicGitHubCopilotModels(provider, [...providerModels]);
+		const models = [...providerModels];
 		const providerOverride = overrides.get(provider);
 		const perModelOverrides = modelOverrides.get(provider);
 
 		return models.map((candidate) => {
-			let model = withCopilotEnvironmentBaseUrl({
+			let model: Model<Api> = {
 				...candidate,
 				compat: normalizeGrammarToolCapability(candidate.compat),
-			});
+			};
 			if (providerOverride) {
 				model = {
 					...model,
@@ -180,7 +107,6 @@ export function loadBuiltInModels(
 					compat: mergeCompat(model.compat, providerOverride.compat),
 				};
 			}
-			model = withCopilotThinkingLevelMap(withCopilotContextWindowOptions(model));
 			const modelOverride = perModelOverrides?.get(candidate.id);
 			return modelOverride ? applyModelOverride(model, modelOverride) : model;
 		});

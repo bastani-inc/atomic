@@ -1,6 +1,4 @@
 import {
-  getModelDefaultContextWindow,
-  getSupportedContextWindows,
   SessionManager,
   type CreateAgentSessionOptions,
 } from "@bastani/atomic";
@@ -22,22 +20,11 @@ export function buildStageSessionOptions(input: StageSessionOptionsInput): Stage
         ...(input.effectiveStageOptions ?? {}),
         model: input.candidate.value,
         ...(input.candidate.reasoningLevel !== undefined ? { thinkingLevel: input.candidate.reasoningLevel } : {}),
-        ...(input.candidate.contextWindow !== undefined ? { contextWindow: input.candidate.contextWindow } : {}),
         fallbackModels: undefined,
         fallbackThinkingLevels: undefined,
       };
   if (input.restoreSavedModel === true) delete options.model;
 
-  if (
-    input.restoreSavedModel !== true &&
-    input.reattachSessionFile === undefined &&
-    options.contextWindow === undefined &&
-    input.candidate !== undefined &&
-    typeof input.candidate.value !== "string" &&
-    getSupportedContextWindows(input.candidate.value).length > 1
-  ) {
-    options.contextWindow = getModelDefaultContextWindow(input.candidate.value);
-  }
   if (input.reattachSessionFile !== undefined && options.sessionManager === undefined) {
     const cwd = options.cwd ?? process.cwd();
     options.sessionManager = SessionManager.open(input.reattachSessionFile, options.sessionDir, cwd);

@@ -63,8 +63,6 @@ export type DefaultProjectTrust = "ask" | "always" | "never";
 
 export type TransportSetting = Transport;
 
-export type ContextWindowSetting = number | string;
-export type ModelContextWindowSettings = Record<string, ContextWindowSetting>;
 
 /**
  * Package source for npm/git packages.
@@ -96,8 +94,6 @@ export interface Settings {
 	defaultModel?: string;
 	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	fallbackModels?: string[]; // Ordered main-chat fallback models, optionally suffixed with :thinkingLevel
-	defaultContextWindow?: ContextWindowSetting; // Optional global fallback; model picker writes defaultContextWindows instead.
-	defaultContextWindows?: ModelContextWindowSettings; // Per-model defaults keyed as "provider/modelId".
 	transport?: TransportSetting; // default: "auto"
 	steeringMode?: "all" | "one-at-a-time";
 	followUpMode?: "all" | "one-at-a-time";

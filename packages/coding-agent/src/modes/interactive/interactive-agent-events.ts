@@ -110,12 +110,6 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
         this.updateEditorBorderColor();
         break;
 
-      case "context_window_changed":
-        this.footer.invalidate();
-        this.usageMeter.invalidate();
-        this.ui.requestRender();
-        break;
-
       case "entry_appended":
         if (event.entry.type === "custom") this.addCustomEntryToChat(event.entry);
         this.ui.requestRender();

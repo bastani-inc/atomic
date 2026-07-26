@@ -116,13 +116,6 @@ export class InteractiveModeBase {
   isInitialized = false;
 
 
-  // GitHub Copilot CAPI context-window catalog load state (gated on the Copilot provider).
-  copilotCatalogApplied = false;
-
-
-  copilotCatalogInFlight?: Promise<void>;
-
-
   onInputCallback?: (text: string) => void;
 
 

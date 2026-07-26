@@ -1,6 +1,5 @@
 import type { OpenAICompletionsCompat } from "@earendil-works/pi-ai/compat";
 import { describe, expect, test } from "vitest";
-import { getSupportedContextWindows } from "../src/core/context-window.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
 
@@ -182,47 +181,6 @@ describeModelRegistry((context) => {
 			expect(models.find((m) => m.id === "nonexistent/model-id")).toBeUndefined();
 			// Should not crash or show error
 			expect(registry.getError()).toBeUndefined();
-		});
-
-		test("scalar contextWindow override clears inherited contextWindowOptions", () => {
-			writeRawModelsJson({
-				"github-copilot": {
-					modelOverrides: {
-						"gpt-5.5": {
-							contextWindow: 128_000,
-						},
-					},
-				},
-			});
-
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
-			const model = registry.find("github-copilot", "gpt-5.5");
-
-			expect(model?.contextWindow).toBe(128_000);
-			expect(model?.defaultContextWindow).toBe(128_000);
-			expect(model?.contextWindowOptions).toBeUndefined();
-			expect(model ? getSupportedContextWindows(model) : []).toEqual([128_000]);
-		});
-
-		test("explicit contextWindowOptions override is honored with scalar contextWindow override", () => {
-			writeRawModelsJson({
-				"github-copilot": {
-					modelOverrides: {
-						"gpt-5.5": {
-							contextWindow: 128_000,
-							contextWindowOptions: [1_000_000, 256_000],
-						},
-					},
-				},
-			});
-
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
-			const model = registry.find("github-copilot", "gpt-5.5");
-
-			expect(model?.contextWindow).toBe(128_000);
-			expect(model?.defaultContextWindow).toBe(128_000);
-			expect(model?.contextWindowOptions).toEqual([256_000, 1_000_000]);
-			expect(model ? getSupportedContextWindows(model) : []).toEqual([128_000, 256_000, 1_000_000]);
 		});
 
 		test("model override can change cost fields partially", () => {

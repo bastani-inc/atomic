@@ -56,7 +56,6 @@ const ThinkingLevelMapSchema = Type.Object({
 	xhigh: Type.Optional(ThinkingLevelMapValueSchema),
 	max: Type.Optional(ThinkingLevelMapValueSchema),
 });
-const ContextWindowOptionsSchema = Type.Array(Type.Number());
 const ChatTemplateKwargScalarSchema = Type.Union([Type.String(), Type.Number(), Type.Boolean(), Type.Null()]);
 const ChatTemplateKwargVariableSchema = Type.Object({
 	$var: Type.Union([Type.Literal("thinking.enabled"), Type.Literal("thinking.effort")]),
@@ -167,7 +166,6 @@ const ModelDefinitionSchema = Type.Object({
 	input: Type.Optional(Type.Array(Type.Union([Type.Literal("text"), Type.Literal("image")]))),
 	cost: Type.Optional(ModelCostSchema),
 	contextWindow: Type.Optional(Type.Number()),
-	contextWindowOptions: Type.Optional(ContextWindowOptionsSchema),
 	maxTokens: Type.Optional(Type.Number()),
 	headers: Type.Optional(Type.Record(Type.String(), Type.String())),
 	compat: Type.Optional(ProviderCompatSchema),
@@ -180,7 +178,6 @@ const ModelOverrideSchema = Type.Object({
 	input: Type.Optional(Type.Array(Type.Union([Type.Literal("text"), Type.Literal("image")]))),
 	cost: Type.Optional(ModelCostOverrideSchema),
 	contextWindow: Type.Optional(Type.Number()),
-	contextWindowOptions: Type.Optional(ContextWindowOptionsSchema),
 	maxTokens: Type.Optional(Type.Number()),
 	headers: Type.Optional(Type.Record(Type.String(), Type.String())),
 	compat: Type.Optional(ProviderCompatSchema),

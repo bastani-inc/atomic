@@ -2341,7 +2341,7 @@ await ctx.task("review", {
   task: "Review the diff",
   model: "anthropic/claude-fable-5:high",
   // The copilot opus fallback runs at its largest advertised (long-context) window.
-  // Use (long) for a size-agnostic marker, or a rounded long-tier label like (1m).
+  // Use (long) for a size-agnostic marker, or a rounded long-tier label like.
   fallbackModels: ["github-copilot/claude-opus-4.8 (long):xhigh", "anthropic/claude-opus-4-8:xhigh"],
 });
 ```

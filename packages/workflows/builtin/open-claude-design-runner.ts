@@ -79,7 +79,7 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
   const designModelConfig = {
     model: "anthropic/claude-fable-5:high",
     fallbackModels: [
-      "github-copilot/claude-opus-4.8 (1m):high",
+      "github-copilot/claude-opus-4.8:high",
       "anthropic/claude-opus-4-8:high",
       "kimi-coding/k3:max",
       "moonshotai/kimi-k3:max",

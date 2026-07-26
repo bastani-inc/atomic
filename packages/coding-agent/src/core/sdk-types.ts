@@ -32,7 +32,6 @@ export interface CreateAgentSessionOptions {
   /** Context window token count. Default: model scalar contextWindow, or settings/session override when supported. */
   contextWindow?: number;
   /** Treat unsupported contextWindow as an error instead of a warning/fallback. */
-  contextWindowStrict?: boolean;
   /** Models available for cycling (Ctrl+P in interactive mode) */
   scopedModels?: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
 
@@ -89,8 +88,6 @@ export interface CreateAgentSessionResult {
   /** Semantic reason for modelFallbackMessage; suitable for mode control flow. */
   modelFallbackReason?: ModelFallbackReason;
   /** Warning if a saved/default context window could not be applied to the selected model. */
-  contextWindowWarning?: string;
   /** Error if an explicit strict context-window selection is unsupported. */
-  contextWindowError?: string;
 }
 

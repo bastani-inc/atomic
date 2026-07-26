@@ -118,21 +118,6 @@ export {
 	type CodexFastModeResolvedSettings,
 	type CodexFastModeScope,
 } from "./core/codex-fast-mode.ts";
-export {
-	formatContextWindow,
-	getEffectiveInputBudget,
-	getModelDefaultContextWindow,
-	getSupportedContextWindows,
-	normalizeContextWindowOptions,
-	parseContextWindowValue,
-	selectContextWindow,
-	validateContextWindowValue,
-	withContextWindowOptions,
-	type ContextWindowParseResult,
-	type ContextWindowSelection,
-	type ContextWindowSelectionError,
-	type ContextWindowSelectionOptions,
-} from "./core/context-window.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./core/event-bus.ts";
 export { areExperimentalFeaturesEnabled } from "./core/experimental.ts";
 export {

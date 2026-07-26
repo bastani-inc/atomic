@@ -1,5 +1,5 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
-import { type Api, type Model, getAgentDir, findExactModelReferenceMatch, resolveModelScope, resolveModelScopeWithDiagnostics, ContextWindowSelectorComponent, formatContextWindow, copilotApiBaseUrlFromToken, copilotCatalogCacheHost, copilotCatalogCachePath, fetchCopilotModelCatalog, readCopilotCatalogCache, setActiveCopilotModelCatalog, writeCopilotCatalogCache, ModelSelectorComponent, ScopedModelsSelectorComponent, UserMessageSelectorComponent } from "./interactive-mode-deps.ts";
+import { type Api, type Model, findExactModelReferenceMatch, resolveModelScope, resolveModelScopeWithDiagnostics, ModelSelectorComponent, ScopedModelsSelectorComponent, UserMessageSelectorComponent } from "./interactive-mode-deps.ts";
 import { ANTHROPIC_SUBSCRIPTION_AUTH_WARNING, isAnthropicSubscriptionAuthKey } from "./interactive-mode-helpers.ts";
 import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
 
@@ -38,46 +38,11 @@ InteractiveModeBase.prototype.getModelCandidates = async function(this: Interact
     }
 
     const allowNetwork = !isOfflineModeEnabled();
-    if (allowNetwork) await this.refreshCopilotModelCatalog();
     await this.session.modelRegistry.refresh({ allowNetwork });
     try {
       return await this.session.modelRegistry.getAvailable();
     } catch {
       return [];
-    }
-  };
-
-InteractiveModeBase.prototype.refreshCopilotModelCatalog = async function(this: InteractiveModeBase): Promise<void> {
-    if (this.copilotCatalogApplied) return;
-    if (!this.copilotCatalogInFlight) {
-      this.copilotCatalogInFlight = this.loadCopilotModelCatalog();
-    }
-    try {
-      await this.copilotCatalogInFlight;
-    } finally {
-      this.copilotCatalogInFlight = undefined;
-    }
-  };
-
-InteractiveModeBase.prototype.loadCopilotModelCatalog = async function(this: InteractiveModeBase): Promise<void> {
-    const registry = this.session.modelRegistry;
-    // Gate: do nothing unless the user has a Copilot token, including COPILOT_GITHUB_TOKEN env auth.
-    try {
-      const token = await registry.getApiKeyForProvider("github-copilot");
-      if (!token) return;
-      const baseUrl = copilotApiBaseUrlFromToken(token);
-      const cachePath = copilotCatalogCachePath(getAgentDir());
-      let catalog = readCopilotCatalogCache(cachePath, { host: copilotCatalogCacheHost(baseUrl) });
-      if (!catalog) {
-        catalog = await fetchCopilotModelCatalog({ token, baseUrl });
-        writeCopilotCatalogCache(cachePath, baseUrl, catalog);
-      }
-      setActiveCopilotModelCatalog(catalog);
-      await registry.refresh();
-      this.session.refreshCurrentModelFromRegistry();
-      this.copilotCatalogApplied = true;
-    } catch {
-      // Best-effort: leave the active catalog as-is on any failure (offline, auth, parse).
     }
   };
 
@@ -137,11 +102,7 @@ InteractiveModeBase.prototype.showModelSelector = function(this: InteractiveMode
             done();
             void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
             this.checkDaxnutsEasterEgg(model);
-            if (this.session.supportsContextWindowSelection()) {
-              this.showContextWindowSelector(model);
-            } else {
-              this.showStatus(`Model: ${model.id}`);
-            }
+            this.showStatus(`Model: ${model.id}`);
           } catch (error) {
             done();
             this.showError(
@@ -154,43 +115,6 @@ InteractiveModeBase.prototype.showModelSelector = function(this: InteractiveMode
           this.ui.requestRender();
         },
         initialSearchInput,
-      );
-      return { component: selector, focus: selector };
-    });
-  };
-
-InteractiveModeBase.prototype.showContextWindowSelector = function(this: InteractiveModeBase, model: Model<Api>): void {
-    const availableContextWindows = this.session.getAvailableContextWindows();
-    const currentContextWindow =
-      this.session.model?.contextWindow ?? availableContextWindows[0] ?? 0;
-    this.showSelector((done) => {
-      const selector = new ContextWindowSelectorComponent(
-        model.name ?? model.id,
-        availableContextWindows,
-        currentContextWindow,
-        async (contextWindow) => {
-          try {
-            this.session.setContextWindow(contextWindow, {
-              persistDefault: true,
-            });
-            this.footer.invalidate();
-            this.usageMeter.invalidate();
-            this.updateEditorBorderColor();
-            done();
-            this.showStatus(
-              `Model: ${model.id} \u00b7 ${formatContextWindow(contextWindow)} context`,
-            );
-          } catch (error) {
-            done();
-            this.showError(
-              error instanceof Error ? error.message : String(error),
-            );
-          }
-        },
-        () => {
-          done();
-          this.showStatus(`Model: ${model.id}`);
-        },
       );
       return { component: selector, focus: selector };
     });

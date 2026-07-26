@@ -96,7 +96,6 @@ export interface ProviderConfigInput {
 		input: ("text" | "image")[];
 		cost: Model<Api>["cost"];
 		contextWindow: number;
-		contextWindowOptions?: readonly number[];
 		maxTokens: number;
 		headers?: Record<string, string>;
 		compat?: AtomicProviderCompat;

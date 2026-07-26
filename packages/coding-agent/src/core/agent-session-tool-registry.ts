@@ -1,5 +1,4 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { normalizeToolArgumentsForModel } from "./copilot-gemini-tool-arguments.ts";
 import { ExtensionRunner, wrapRegisteredTools, type ToolDefinition } from "./extensions/index.ts";
 import { createSyntheticSourceInfo } from "./source-info.ts";
 import { createAllToolDefinitions, defaultToolNames } from "./tools/index.ts";
@@ -81,25 +80,7 @@ export function _refreshToolRegistry(this: AgentSession, options?: { activeToolN
 	for (const tool of wrappedExtensionTools as AgentTool[]) {
 		toolRegistry.set(tool.name, tool);
 	}
-	// GitHub Copilot Gemini serializes array/object tool-call arguments as
-	// flattened `name[index]` keys (confirmed on the raw CAPI wire). Reconstruct
-	// them into proper arrays/objects before per-tool preparation and schema
-	// validation, so tool calls (notably structured_output) don't fail and loop.
-	// Gated to Copilot Gemini at call time via this.model; a no-op otherwise.
-	// `prepareArguments` is a plain function field (no `this` binding), and the
-	// `{ ...tool }` spread assumes AgentTools are plain objects — matching the
-	// existing tool-definition-wrapper pattern; a class-instance tool would lose
-	// prototype members here.
-	this._toolRegistry = new Map(
-		Array.from(toolRegistry, ([name, tool]) => {
-			const basePrepareArguments = tool.prepareArguments;
-			const prepareArguments = (args: unknown): unknown => {
-				const normalized = normalizeToolArgumentsForModel(args, this.model, tool.parameters);
-				return basePrepareArguments ? basePrepareArguments(normalized) : normalized;
-			};
-			return [name, { ...tool, prepareArguments } as AgentTool] as const;
-		}),
-	);
+	this._toolRegistry = toolRegistry;
 
 	const nextActiveToolNames = (
 		options?.activeToolNames ? [...options.activeToolNames] : [...previousActiveToolNames]

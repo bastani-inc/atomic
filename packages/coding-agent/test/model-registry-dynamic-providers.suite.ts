@@ -84,7 +84,6 @@ describeModelRegistry((context) => {
 						input: ["text"],
 						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 						contextWindow: 128000,
-						contextWindowOptions: [256000],
 						maxTokens: 4096,
 						headers: { "X-Base": "base", "X-Shared": "base" },
 					},
@@ -94,8 +93,7 @@ describeModelRegistry((context) => {
 			const model = registry.find("extension-provider", "demo-model");
 			expect(model?.name).toBe("Overridden Demo");
 			expect(model?.thinkingLevelMap).toEqual({ low: "medium", xhigh: "xhigh", high: "high" });
-			expect(model?.defaultContextWindow).toBe(128000);
-			expect(model?.contextWindowOptions).toEqual([128000, 256000]);
+			expect(model?.contextWindow).toBe(128000);
 			if (!model) throw new Error("missing extension model");
 			expect(await registry.getApiKeyAndHeaders(model)).toMatchObject({
 				ok: true,

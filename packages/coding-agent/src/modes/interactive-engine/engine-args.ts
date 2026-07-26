@@ -31,7 +31,6 @@ export function buildInteractiveEngineArgs(
 	appendValue(args, "--provider", parsed.provider);
 	appendValue(args, "--model", parsed.model);
 	appendValue(args, "--thinking", parsed.thinking);
-	appendValue(args, "--context-window", parsed.contextWindow);
 	appendValue(args, "--system-prompt", parsed.systemPrompt);
 	appendValues(args, "--append-system-prompt", parsed.appendSystemPrompt);
 	if (parsed.models) appendValue(args, "--models", parsed.models.join(","));

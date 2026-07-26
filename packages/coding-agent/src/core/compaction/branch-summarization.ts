@@ -9,7 +9,6 @@ import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
 import { retryAssistantCall, type ProviderHeaders, type RetryCallbacks, type RetryPolicy, uuidv7 } from "@earendil-works/pi-ai";
 import type { Api, Model, SimpleStreamOptions, Usage } from "@earendil-works/pi-ai/compat";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
-import { formatCopilotProviderError } from "../copilot-errors.ts";
 import { convertToLlm, createBranchSummaryMessage, createCustomMessage } from "../messages.ts";
 import type { ReadonlySessionManager, SessionEntry } from "../session-manager.ts";
 import { estimateTokens } from "./compaction.ts";
@@ -384,7 +383,7 @@ export async function generateBranchSummary(
 		return { aborted: true };
 	}
 	if (response.stopReason === "error") {
-		return { error: formatCopilotProviderError(model.provider, response.errorMessage || "Summarization failed") };
+		return { error: response.errorMessage || "Summarization failed" };
 	}
 
 	let summary = response.content

@@ -1,18 +1,15 @@
 /**
  * Canonical reconstruction of flattened tool-call arguments.
  *
- * Some upstream providers — notably GitHub Copilot Gemini models proxied through
- * Google's GenAI API — serialize array/object function-call arguments as
+ * Some upstream providers serialize array/object function-call arguments as
  * flattened, indexed keys on the wire. For example a tool called with
  * `{ keywords: ["a", "b"] }` arrives as `{ "keywords[0]": "a", "keywords[1]": "b" }`,
  * and `{ files: [{ path }] }` as `{ "files[0].path": "..." }`.
  *
  * This module is the single source of truth for turning those flattened keys
- * back into nested arrays/objects. Both the host runtime's per-tool
- * normalization (gated to Copilot Gemini, schema-aware) and the MCP `callTool`
- * boundary (provider-agnostic, bracket self-gating) delegate here so the two
- * paths cannot drift — in particular so the prototype-pollution guard lives in
- * exactly one place.
+ * back into nested arrays/objects. The MCP `callTool` boundary
+ * (provider-agnostic, bracket self-gating) delegates here so the
+ * prototype-pollution guard lives in exactly one place.
  *
  * Security: argument keys cross a trust boundary (model/provider wire → tool /
  * MCP server validation). A key path that walks through `__proto__`,

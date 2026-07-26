@@ -100,8 +100,6 @@ export interface ProviderModelConfig {
 	cost: Model<Api>["cost"];
 	/** Default/effective context window size in tokens. */
 	contextWindow: number;
-	/** Selectable context-window sizes in tokens; omit when the model has only one supported window. */
-	contextWindowOptions?: readonly number[];
 	/** Maximum output tokens. */
 	maxTokens: number;
 	/** Custom headers for this model. */

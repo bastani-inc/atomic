@@ -226,12 +226,9 @@ declare module "./interactive-mode-base.ts" {
   handleModelCommand(searchTerm?: string): Promise<void>;
   findExactModelMatch(searchTerm: string): Promise<Model<Api> | undefined>;
   getModelCandidates(): Promise<Model<Api>[]>;
-  refreshCopilotModelCatalog(): Promise<void>;
-  loadCopilotModelCatalog(): Promise<void>;
   updateAvailableProviderCount(): Promise<void>;
   maybeWarnAboutAnthropicSubscriptionAuth(model?: Model<Api> | undefined, targetContainer?: Container): Promise<void>;
   showModelSelector(initialSearchInput?: string): void;
-  showContextWindowSelector(model: Model<Api>): void;
   showModelsSelector(): Promise<void>;
   showUserMessageSelector(): Promise<void>;
   handleCloneCommand(): Promise<void>;

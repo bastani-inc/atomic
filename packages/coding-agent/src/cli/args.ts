@@ -14,7 +14,6 @@ import {
 	ENV_SHARE_VIEWER_URL,
 	ENV_TELEMETRY,
 } from "../config.ts";
-import { parseContextWindowValue } from "../core/context-window.ts";
 import type { ExtensionFlag } from "../core/extensions/types.ts";
 
 export type Mode = "text" | "json" | "rpc";
@@ -26,7 +25,6 @@ export interface Args {
 	systemPrompt?: string;
 	appendSystemPrompt?: string[];
 	thinking?: ThinkingLevel;
-	contextWindow?: number;
 	continue?: boolean;
 	resume?: boolean;
 	help?: boolean;
@@ -165,18 +163,6 @@ export function parseArgs(args: string[]): Args {
 					type: "warning",
 					message: `Invalid thinking level "${level}". Valid values: ${VALID_THINKING_LEVELS.join(", ")}`,
 				});
-			}
-		} else if (arg === "--context-window") {
-			if (i + 1 >= args.length) {
-				result.diagnostics.push({ type: "error", message: "--context-window requires a value" });
-			} else {
-				const rawValue = args[++i];
-				const parsed = parseContextWindowValue(rawValue);
-				if (parsed.value !== undefined) {
-					result.contextWindow = parsed.value;
-				} else {
-					result.diagnostics.push({ type: "error", message: parsed.error ?? `Invalid context window "${rawValue}"` });
-				}
 			}
 		} else if (arg === "--print" || arg === "-p") {
 			result.print = true;
