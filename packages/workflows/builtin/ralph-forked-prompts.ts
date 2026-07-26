@@ -43,7 +43,9 @@ export function renderForkedResearchPrompt(args: {
     [
       "research_artifact",
       [
-        `Rewrite the research findings for this workflow run at: ${args.researchPath}`,
+        "Return the rewritten research report for this iteration as your final message. This workflow saves that final message verbatim as the run's research artifact; downstream implementation and review stages read it from that file.",
+        `Do not write ${args.researchPath} yourself. Anything written there during this stage is replaced by your final message, so a file you author is lost and a final message that only points at the path leaves later stages with no findings. Skill-owned notes under research/docs/ and research/web/ are unaffected.`,
+        "Restate the still-applicable findings in full rather than referring back to the previous iteration's artifact; it is overwritten by this message.",
         "Do not author an RFC/spec or implement code changes.",
       ].join("\n"),
     ],

@@ -386,7 +386,8 @@ export function renderResearchPrompt(args: {
     [
       "research_artifact",
       [
-        `Write research findings for this workflow run to: ${args.researchPath}`,
+        "Return the complete research report as your final message. This workflow saves that final message verbatim as the run's research artifact; downstream implementation and review stages read it from that file.",
+        `Do not write ${args.researchPath} yourself. Anything written there during this stage is replaced by your final message, so a file you author is lost and a final message that only points at the path leaves later stages with no findings. Skill-owned notes under research/docs/ and research/web/ are unaffected.`,
         "Produce a complete Markdown report with codebase and useful online/contextual findings, implementation guidance, relevant files/tests/docs, unresolved-finding analysis, and validation recommendations. Lead with conclusions; keep facts, caveats, and implementation-relevant next steps; drop background and repetition.",
         "Before reporting progress, audit each claim against a tool result from this session. Report only work you can point to evidence for; say so explicitly when something is unverified.",
         "Do not author an RFC/spec or implement code changes.",

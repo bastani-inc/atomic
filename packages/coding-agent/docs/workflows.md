@@ -2158,13 +2158,17 @@ readonly outputMode?: "inline" | "file-only";
 
 Writes stage/task output to a path or disables output persistence with `false`. `outputMode` defaults to `inline`; `file-only` keeps the parent result compact by returning an artifact reference instead of full text and requires an output path.
 
+The runner writes the stage's **final message** to `output` after the stage ends, so that path belongs to the runner. Never point `output` at a file the same stage's prompt asks the agent to author: the agent's file is overwritten by its closing message, and downstream stages read the leftover summary instead of the work. Pick one owner per artifact — either the stage returns the content as its final message and the runner saves it, or the prompt tells the agent to write a path the stage does not declare as `output`.
+
 ### `reads`
 
 ```typescript
 readonly reads?: readonly string[] | false;
 ```
 
-Provides files for the stage to read before running, or disables inherited reads with `false`. Paths are supplied as readonly strings.
+Names files for the stage to read before running, or disables inherited reads with `false`. Paths are supplied as readonly strings.
+
+`reads` passes **paths, not content**. It prepends a `[Read from: <paths>]` directive to the prompt and the stage reads those files itself with its own read tool, so a stage sees whatever is on disk when it runs — not a snapshot taken when the path was passed. Any stage that rewrites an artifact between producer and consumer changes what the consumer reads. This keeps large artifacts out of the prompt; state the expectation in the prompt too, for example `Read the file at ${artifactPath} before continuing.`
 
 ### `maxOutput`
 
