@@ -252,7 +252,7 @@ export class InteractiveModeBase {
 
 
   // Auto-compaction state
-  autoCompactionLoader: Loader | undefined = undefined;
+  autoCompactionLoader: AtomicWorkingLoader | undefined = undefined;
 
 
   autoCompactionEscapeHandler?: () => void;

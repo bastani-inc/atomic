@@ -185,6 +185,24 @@ describe("InteractiveMode compaction events", () => {
 		});
 	}
 
+	it("shows Atomic's ∀ indicator and a cancel hint while auto-compacting", async () => {
+		const { mode } = makeMode();
+
+		await emit(mode, { type: "compaction_start", reason: "threshold" });
+
+		const status = renderedText(mode.statusContainer);
+		expect(status).toContain("∀ Auto-compacting... (esc Cancel)");
+		expect(status).not.toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
+
+		await emit(mode, {
+			type: "compaction_end",
+			reason: "threshold",
+			result,
+			aborted: false,
+			willRetry: false,
+		});
+	});
+
 	it("does not render a boundary for aborted or failed compaction", async () => {
 		for (const event of [
 			{ type: "compaction_end", reason: "manual", result, aborted: true, willRetry: false },

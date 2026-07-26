@@ -6,6 +6,7 @@ import { RemoteToolExecutionComponent } from "../interactive-engine/remote-rende
 import { handleSummarizationRetryEvent } from "./interactive-summarization-retry-events.ts";
 import { CACHE_TTL_MS, detectCacheMiss } from "../../core/cache-stats.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
+import { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 
 function createToolComponent(
   mode: InteractiveModeBase,
@@ -315,9 +316,9 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
           event.reason === "manual"
             ? `Compacting context... ${cancelHint}`
             : `${isOverflowAutoCompaction ? "Context overflow detected. " : ""}Auto-compacting... ${cancelHint}`;
-        this.autoCompactionLoader = new Loader(
+        this.autoCompactionLoader = new AtomicWorkingLoader(
           this.ui,
-          (spinner) => theme.fg("accent", spinner),
+          undefined,
           (text) => theme.fg(isOverflowAutoCompaction ? "warning" : "muted", text),
           label,
         );

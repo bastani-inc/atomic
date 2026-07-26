@@ -89,7 +89,7 @@ export function syncChatSessionAnimationTick<
     process.env.ATOMIC_REDUCED_MOTION !== "1" &&
     (state.workingLifecycleActive || state.compacting);
   if (shouldAnimate && !state.animationTimer) {
-    const intervalMs = state.workingLifecycleActive
+    const intervalMs = state.workingLifecycleActive || state.compacting
       ? ATOMIC_WORKING_FRAME_MS
       : ANIMATION_FRAME_MS;
     const timer = setInterval(() => {
@@ -100,7 +100,7 @@ export function syncChatSessionAnimationTick<
       ) {
         return;
       }
-      if (state.workingLifecycleActive) {
+      if (state.workingLifecycleActive || state.compacting) {
         state.workingFrame = (state.workingFrame + 1) % ATOMIC_WORKING_FRAMES.length;
       }
       state.requestRender?.();

@@ -80,16 +80,20 @@ export function renderChatSessionWorkingStatus<
 >(state: ChatSessionHostState<TExtraEntry>, width: number): string[] {
   if (!isChatSessionStreaming(state)) return [];
   if (state.statusMessage && !state.compacting) return [];
+  const palette = state.style.workingIndicatorPalette;
+  const useCallerStyling = !palette && state.style.workingIndicatorUseGlobalTheme !== true && process.env.NO_COLOR === undefined;
   if (state.compacting) {
+    const cancelHint = `(${state.getActionKeyDisplay?.("app.interrupt") ?? "esc"} Cancel)`;
     return new WorkingStatusComponent({
-      spinner: "",
-      message: state.statusMessage || "Compacting context...",
+      frame: state.workingFrame,
+      message: `${state.statusMessage || "Compacting context..."} ${cancelHint}`,
+      palette,
+      spinnerColor: useCallerStyling ? (text) => state.style.accent(text) : undefined,
+      spinnerBoldColor: useCallerStyling ? (text) => state.style.accentBold(text) : undefined,
       messageColor: (text) => state.style.textMuted(text),
     }).render(width);
   }
   if (!state.workingLifecycleActive) return [];
-  const palette = state.style.workingIndicatorPalette;
-  const useCallerStyling = !palette && state.style.workingIndicatorUseGlobalTheme !== true && process.env.NO_COLOR === undefined;
   return new WorkingStatusComponent({
     frame: state.workingFrame,
     message: state.workingMessage ?? "Working...",
