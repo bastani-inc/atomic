@@ -89,6 +89,18 @@ const BUNDLED_WORKFLOW_COMPLETION_METADATA: WorkflowCompletionMetadata[] = [
 		},
 	},
 	{
+		name: "goal",
+		description: "Goal Runner workflow with bounded sub-agent orchestration turns, immutable acceptance criteria, ledger artifacts, parallel reviewers, and reducer-gated completion. When launching follow-up goal runs from review findings, pass the ORIGINAL task text as acceptance_criteria so deltas cannot drift from the literal contract. If the task includes submitting a pull request (or MR/review), remove that final action from the objective text and set create_pr=true instead when preparing the workflow inputs.",
+		inputs: {
+			objective: { description: "The objective or delta for this Goal Runner workflow run. Do not include PR/MR submission instructions here; strip them from the task text and request them via create_pr=true instead.", kind: "string" },
+			acceptance_criteria: { description: "Original immutable task contract this run must remain consistent with. Defaults to objective. Orchestrators launching follow-up runs from reviewer findings should pass the ORIGINAL task text here.", kind: "string" },
+			max_turns: { description: "Maximum orchestrator/review turns before Goal Runner stops as needs_human.", kind: "number" },
+			base_branch: { description: "Optional branch reviewers compare the current code delta against (default origin/main).", kind: "string" },
+			git_worktree_dir: { description: "Optional Git worktree path. Leave at the default unless the user explicitly requested worktree isolation — stages never create git worktrees on their own. Must start inside a Git repo; absolute paths are used as-is, relative paths resolve from the repo root, existing Git worktrees from the invoking repository are reused/shared as-is, and missing paths are created from base_branch.", kind: "string" },
+			create_pr: { description: "Whether to run the final pull-request creation stage after reviewer/reducer approval. Defaults to false; prompt text alone does not opt in. If the task asks to submit a PR/MR/review, remove that from the objective text and set this to true — only the final stage then attempts provider-appropriate PR/MR/review creation after Goal completes.", kind: "boolean" },
+		},
+	},
+	{
 		name: "loop-until-done",
 		description: "Repeat evidence-producing work and independent completion evaluation against a durable ledger until done or an inspectable iteration-limit failure.",
 		inputs: {
@@ -103,6 +115,18 @@ const BUNDLED_WORKFLOW_COMPLETION_METADATA: WorkflowCompletionMetadata[] = [
 			prompt: { description: "What to design (for example, a dashboard, page, component, or prototype). The discovery stage refines this into a confirmed brief and asks for the output type and references.", kind: "string" },
 			discover_references: { description: "Discover beautiful, current reference designs from notable design websites (Awwwards, recent.design, Dribbble, Monet, Motionsites) and feed them to generation. Set false to skip the network/browser reference pass.", kind: "boolean" },
 			max_refinements: { description: "Maximum generate/user-feedback loop iterations (default 3).", kind: "number" },
+		},
+	},
+	{
+		name: "ralph",
+		description: "Raw prompt → research-prompt-refinement → research → orchestrate → multi-model parallel review loop with bounded iteration and immutable acceptance criteria. When launching follow-up ralph runs from review findings, pass the ORIGINAL task text as acceptance_criteria so deltas cannot drift from the literal contract. If the task includes submitting a pull request (or MR/review), remove that final action from the prompt text and set create_pr=true instead when preparing the workflow inputs.",
+		inputs: {
+			prompt: { description: "The task or goal to research, execute, and refine. Do not include PR/MR submission instructions here; strip them from the task text and request them via create_pr=true instead.", kind: "string" },
+			acceptance_criteria: { description: "Original immutable task contract this run must remain consistent with. Defaults to prompt. Orchestrators launching follow-up runs from reviewer findings should pass the ORIGINAL task text here.", kind: "string" },
+			max_loops: { description: "Maximum research/orchestrate/review iterations (default 10).", kind: "number" },
+			base_branch: { description: "Branch reviewers compare the current code delta against (default origin/main).", kind: "string" },
+			git_worktree_dir: { description: "Optional Git worktree path. Leave at the default unless the user explicitly requested worktree isolation — stages never create git worktrees on their own. Must start inside a Git repo; absolute paths are used as-is, relative paths resolve from the repo root, existing Git worktrees from the invoking repository are reused/shared as-is, and missing paths are created from base_branch.", kind: "string" },
+			create_pr: { description: "Whether to run the final pull-request creation stage. Defaults to false; prompt text alone does not opt in. If the task asks to submit a PR/MR/review, remove that from the prompt text and set this to true — only the final stage then attempts provider-appropriate PR/MR/review creation.", kind: "boolean" },
 		},
 	},
 	{

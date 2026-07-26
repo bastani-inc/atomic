@@ -11,8 +11,10 @@ const expectedBuiltinNames = [
   "classify-and-act",
   "fan-out-and-synthesize",
   "generate-and-filter",
+  "goal",
   "loop-until-done",
   "open-claude-design",
+  "ralph",
   "tournament",
 ] as const;
 
@@ -21,8 +23,10 @@ const expectedExports = [
   "classifyAndAct",
   "fanOutAndSynthesize",
   "generateAndFilter",
+  "goal",
   "loopUntilDone",
   "openClaudeDesign",
+  "ralph",
   "tournament",
 ] as const;
 
@@ -41,19 +45,13 @@ describe("builtin workflow manifest", () => {
     }
   });
 
-  test("contains no files for retired builtin workflows", () => {
+  test("contains no files for the retired deep-research-codebase workflow", () => {
     const builtinRoot = join(import.meta.dir, "../../packages/workflows/builtin");
-    const retiredStems = [
-      ["deep", "research", "codebase"].join("-"),
-      ["go", "al"].join(""),
-      ["ral", "ph"].join(""),
-    ];
+    const stem = ["deep", "research", "codebase"].join("-");
     const suffixes = [".ts", ".d.ts", "-runner.ts", "-utils.ts", "-models.ts"];
 
-    for (const stem of retiredStems) {
-      for (const suffix of suffixes) {
-        assert.equal(existsSync(join(builtinRoot, `${stem}${suffix}`)), false, `${stem}${suffix}`);
-      }
+    for (const suffix of suffixes) {
+      assert.equal(existsSync(join(builtinRoot, `${stem}${suffix}`)), false, `${stem}${suffix}`);
     }
   });
 

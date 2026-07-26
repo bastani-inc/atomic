@@ -6,6 +6,7 @@ import type {
   RunStatus,
   StageSnapshot,
   StageStatus,
+  ToolNodeSnapshot,
   WorkflowFailureCode,
   WorkflowFailureDisposition,
   WorkflowFailureKind,
@@ -263,6 +264,29 @@ function numericDuration(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
+function restoreFailedToolNode(value: unknown): ToolNodeSnapshot | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const node = value as Partial<ToolNodeSnapshot>;
+  if (node.kind !== "tool" || typeof node.id !== "string" || typeof node.name !== "string"
+    || typeof node.argsHash !== "string" || typeof node.ordinal !== "number" || !Number.isInteger(node.ordinal)
+    || !Array.isArray(node.parentIds) || !node.parentIds.every((parentId) => typeof parentId === "string")
+    || node.status !== "failed" || typeof node.error !== "string") return undefined;
+  return {
+    kind: "tool",
+    id: node.id,
+    name: node.name,
+    argsHash: node.argsHash,
+    ordinal: node.ordinal,
+    parentIds: Object.freeze([...node.parentIds]),
+    status: "failed",
+    ...(typeof node.executionOrder === "number" && Number.isFinite(node.executionOrder) ? { executionOrder: node.executionOrder } : {}),
+    ...(numericTimestamp(node.startedAt) !== undefined ? { startedAt: node.startedAt } : {}),
+    ...(numericTimestamp(node.endedAt) !== undefined ? { endedAt: node.endedAt } : {}),
+    error: node.error,
+    attachable: false,
+  };
+}
+
 export function findRunBlockedMetadata(
   entries: readonly SessionEntry[],
   runId: string,
@@ -342,6 +366,8 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
     const exited = end["exited"];
     const exitReason = end["exitReason"];
     const resumable = end["resumable"];
+    const failedToolNodeId = end["failedToolNodeId"];
+    const failedToolNode = restoreFailedToolNode(end["failedToolNode"]);
     const restoredAuthorExit = isWorkflowExitTerminalStatus(status) &&
       (exited === true || typeof exitReason === "string");
     if (status === "completed" && !restoredAuthorExit && stages.some((stage) => stage.status !== "completed")) continue;
@@ -351,6 +377,9 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
       inputs: start.inputs,
       status: "running",
       stages,
+      ...(typeof failedToolNodeId === "string" && failedToolNode?.id === failedToolNodeId
+        ? { toolNodes: [failedToolNode] }
+        : {}),
       startedAt: start.startTs,
       ...(runMeta.parentRunId !== undefined ? { parentRunId: runMeta.parentRunId } : {}),
       ...(runMeta.parentStageId !== undefined ? { parentStageId: runMeta.parentStageId } : {}),
@@ -369,7 +398,6 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
     const retryAfterMs = numericRetryAfterMs(end["retryAfterMs"]);
     const failureMessage = end["failureMessage"];
     const failedStageId = end["failedStageId"];
-    const failedToolNodeId = end["failedToolNodeId"];
     const restoredEndedAt = numericTimestamp(end["endedAt"]);
     const restoredDurationMs = numericDuration(end["durationMs"]);
     store.recordRunEnd(

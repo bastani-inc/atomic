@@ -274,11 +274,15 @@ import {
   classifyAndAct,
   fanOutAndSynthesize,
   generateAndFilter,
+  goal,
   loopUntilDone,
   openClaudeDesign,
+  ralph,
   tournament,
 } from "@bastani/workflows/builtin";
 import fanOutAndSynthesizeWorkflow from "@bastani/workflows/builtin/fan-out-and-synthesize";
+import goalWorkflow from "@bastani/workflows/builtin/goal";
+import ralphWorkflow from "@bastani/workflows/builtin/ralph";
 import openClaudeDesignWorkflow from "@bastani/workflows/builtin/open-claude-design";
 ```
 
@@ -730,6 +734,28 @@ For broad repository uncertainty, compose `fan-out-and-synthesize` with a partit
 ### Task-specific implementation and review
 
 Domain-specific implementation should use a custom worker → fresh verifier → reducer graph when no installed pattern covers the complete contract. Keep literal acceptance criteria visible to each reviewer, execute deterministic checks through workflow-owned tools, consolidate evidence-backed findings into bounded repair rounds, and stop on explicit approval, blocked evidence, or iteration exhaustion. Keep PR/MR creation, release, deployment, and publication as separately authorized post-approval actions.
+
+### `goal`
+
+Goal runs a bounded autonomous implementation loop with a durable objective ledger, immutable acceptance criteria, sub-agent orchestration receipts, parallel reviewers, and a deterministic reducer. It returns `complete`, `blocked`, or `needs_human`; set `create_pr=true` only to authorize the final PR/MR/review stage after approval.
+
+```text
+/workflow goal objective="Update CLI docs, add one example, and validate the docs build"
+```
+
+Inputs: required `objective`; optional `acceptance_criteria`, `max_turns=10`, `base_branch=origin/main`, `git_worktree_dir=""`, and `create_pr=false`.
+
+### `ralph`
+
+Ralph runs prompt refinement, codebase research, delegated implementation, and independent multi-model review in a bounded loop. It can start from a task, issue, or spec path; set `create_pr=true` only to authorize the post-approval final stage.
+
+```text
+/workflow ralph prompt="Implement specs/rate-limit.md and validate burst traffic" max_loops=3
+```
+
+Inputs: required `prompt`; optional `acceptance_criteria`, `max_loops=10`, `base_branch=origin/main`, `git_worktree_dir=""`, and `create_pr=false`.
+
+For either workflow, keep PR/MR creation out of the task text and pass the original task as `acceptance_criteria` on follow-up runs to prevent contract drift.
 
 ### `open-claude-design`
 

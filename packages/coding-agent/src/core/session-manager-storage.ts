@@ -7,6 +7,8 @@ import {
 	readdirSync,
 	readSync,
 	statSync,
+	truncateSync,
+	unlinkSync,
 	writeFileSync,
 } from "fs";
 import { join } from "path";
@@ -171,18 +173,45 @@ export function writeSessionEntries(filePath: string, entries: FileEntry[]): voi
 	writeFileSync(filePath, serializeSessionEntries(entries));
 }
 
+function appendSessionPayload(filePath: string, payload: string): void {
+	const existed = existsSync(filePath);
+	const offset = existed ? statSync(filePath).size : 0;
+	try {
+		appendFileSync(filePath, payload);
+	} catch (writeError) {
+		try {
+			if (existed) truncateSync(filePath, offset);
+			else if (existsSync(filePath)) unlinkSync(filePath);
+		} catch (rollbackError) {
+			throw new AggregateError([writeError, rollbackError], "Session append and rollback failed");
+		}
+		throw writeError;
+	}
+}
+
 export function appendSessionEntry(filePath: string, entry: FileEntry): void {
-	appendFileSync(filePath, `${JSON.stringify(entry)}\n`);
+	appendSessionPayload(filePath, `${JSON.stringify(entry)}\n`);
 }
 
 export function appendSessionEntries(filePath: string, entries: FileEntry[]): void {
-	for (const entry of entries) {
-		appendSessionEntry(filePath, entry);
-	}
+	if (entries.length === 0) return;
+	appendSessionPayload(filePath, serializeSessionEntries(entries));
 }
 
 export function hasAssistantMessage(entries: FileEntry[]): boolean {
 	return entries.some((entry): entry is SessionEntry => entry.type === "message" && entry.message.role === "assistant");
+}
+
+/**
+ * Append one already-published entry. Buffered entries stay unwritten until an
+ * assistant message exists; the first write after that flushes them together.
+ * Returns the new flushed state and throws without changing it on write failure.
+ */
+export function persistAppendedEntry(filePath: string, entries: FileEntry[], entry: FileEntry, flushed: boolean): boolean {
+	if (!hasAssistantMessage(entries)) return false;
+	if (flushed) appendSessionEntry(filePath, entry);
+	else appendSessionEntries(filePath, entries);
+	return true;
 }
 
 export function ensureDirectory(dir: string): void {

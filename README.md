@@ -182,7 +182,19 @@ A task-specific implementation and review loop:
 Create and run a workflow that implements specs/2026-03-rate-limit.md, runs focused tests, sends the patch to fresh verifiers, and repairs findings until burst traffic returns 429 with Retry-After or the iteration bound is reached.
 ```
 
-Use the reusable pattern builtins when they match the control flow. For domain-specific implementation, compose a custom worker → fresh verifier → reducer loop with explicit evidence and bounded repair rather than force-fitting a broad workflow. Keep PR creation as a separately authorized post-approval action.
+A reviewer-gated run with Goal:
+
+```text
+/workflow goal objective="Update the CLI docs for --json, add one example, and validate the docs build"
+```
+
+A research-first implementation with Ralph:
+
+```text
+/workflow ralph prompt="Implement specs/2026-03-rate-limit.md and validate burst traffic" create_pr=true
+```
+
+Use Goal when a durable ledger, receipts, bounded sub-agent orchestration, and reviewer-gated completion fit the task. Use Ralph when the job benefits from prompt refinement, codebase research, delegated implementation, and iterative multi-model review. Both skip PR creation unless `create_pr=true` explicitly authorizes the post-approval final stage.
 
 ---
 
@@ -199,6 +211,8 @@ Workflows define inputs, stages, branches, parallelism, retries, checks, artifac
 | `fan-out-and-synthesize` | Partitions independent slices, writes branch artifacts, and synthesizes their evidence. | `/workflow fan-out-and-synthesize prompt="Map payment retries by subsystem and synthesize cited findings"` |
 | `adversarial-verification` | Challenges a candidate with fresh verifiers and bounded repair. | `/workflow adversarial-verification task="Verify the rate-limit migration patch"` |
 | `loop-until-done` | Iterates with a durable ledger until explicit completion evidence or bound exhaustion. | `/workflow loop-until-done prompt="Repair failures until the test suite passes"` |
+| `goal` | Runs bounded autonomous implementation with a durable ledger, receipts, parallel review, and reducer-gated completion. | `/workflow goal objective="Update CLI docs and validate the docs build"` |
+| `ralph` | Runs research-first delegated implementation with bounded multi-model review and repair. | `/workflow ralph prompt="Implement specs/rate-limit.md" create_pr=true` |
 | `open-claude-design` | Gathers requirements and references, discovers the design system, refines output, and exports a handoff. | `/workflow open-claude-design prompt="Team activity feed prototype using ./mocks/feed.png as a reference"` |
 | _author your own_ | Issue-to-PR, migration, triage, release, compliance, or another process your team needs. Start with the [workflow guide](./packages/coding-agent/docs/workflows.md). | _“Create a workflow that plans, implements, runs tests and lint, reviews the diff, then stops for approval.”_ |
 
@@ -338,6 +352,7 @@ MIT — see [LICENSE](LICENSE).
 - [Pi](https://pi.dev)
 - [Superpowers](https://github.com/obra/superpowers)
 - [Anthropic Skills](https://github.com/anthropics/skills)
+- [Ralph Wiggum Method](https://ghuntley.com/ralph/)
 - [OpenAI Codex Cookbook](https://github.com/openai/openai-cookbook)
 - [HumanLayer](https://github.com/humanlayer/humanlayer)
 - [Impeccable](https://github.com/pbakaus/impeccable)

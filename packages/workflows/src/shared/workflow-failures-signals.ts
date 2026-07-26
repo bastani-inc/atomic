@@ -13,6 +13,64 @@ export function field(value: unknown, key: string): unknown {
   return asRecord(value)?.[key];
 }
 
+function safeField(value: unknown, key: string): unknown {
+  try {
+    return field(value, key);
+  } catch {
+    return undefined;
+  }
+}
+
+function nonZeroExitCode(value: unknown): boolean {
+  if (typeof value === "number") return Number.isFinite(value) && value !== 0;
+  if (typeof value !== "string") return false;
+  const parsed = Number(value.trim());
+  return Number.isFinite(parsed) && parsed !== 0;
+}
+
+function nonEmptyProcessOutput(value: unknown): boolean {
+  if (typeof value === "string") return value.length > 0;
+  if (value instanceof ArrayBuffer) return value.byteLength > 0;
+  return ArrayBuffer.isView(value) && value.byteLength > 0;
+}
+
+function findProcessFailureError(value: unknown, seen: Set<object>, depth: number): unknown | undefined {
+  if (value === null || typeof value !== "object" || depth >= 8 || seen.has(value)) return undefined;
+  seen.add(value);
+  if (nonZeroExitCode(safeField(value, "exitCode"))) return value;
+  if (nonEmptyProcessOutput(safeField(value, "stdout"))) return value;
+  if (nonEmptyProcessOutput(safeField(value, "stderr"))) return value;
+
+  for (const key of ["cause", "error", "response", "body"] as const) {
+    const selected = findProcessFailureError(safeField(value, key), seen, depth + 1);
+    if (selected !== undefined) return selected;
+  }
+  const diagnostics = safeField(value, "diagnostics");
+  if (Array.isArray(diagnostics)) {
+    for (const diagnostic of diagnostics) {
+      const selected = findProcessFailureError(safeField(diagnostic, "error") ?? diagnostic, seen, depth + 1);
+      if (selected !== undefined) return selected;
+    }
+  }
+  const errors = safeField(value, "errors");
+  if (!Array.isArray(errors)) return undefined;
+  for (const error of errors) {
+    const selected = findProcessFailureError(error, seen, depth + 1);
+    if (selected !== undefined) return selected;
+  }
+  return undefined;
+}
+
+/** Select the first nested value that proves a process command failed. */
+export function selectProcessFailureError(error: unknown): unknown {
+  return findProcessFailureError(error, new Set<object>(), 0) ?? error;
+}
+
+/** A nonzero exit or nonempty process output outranks cancellation-like wrapper fields. */
+export function hasProcessFailureEvidence(error: unknown): boolean {
+  return findProcessFailureError(error, new Set<object>(), 0) !== undefined;
+}
+
 function stringField(value: unknown, key: string): string | undefined {
   const raw = field(value, key);
   return typeof raw === "string" && raw.length > 0 ? raw : undefined;

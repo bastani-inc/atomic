@@ -14,8 +14,10 @@ import adversarialVerification from "../../builtin/adversarial-verification.js";
 import classifyAndAct from "../../builtin/classify-and-act.js";
 import fanOutAndSynthesize from "../../builtin/fan-out-and-synthesize.js";
 import generateAndFilter from "../../builtin/generate-and-filter.js";
+import goal from "../../builtin/goal.js";
 import loopUntilDone from "../../builtin/loop-until-done.js";
 import openClaudeDesign from "../../builtin/open-claude-design.js";
+import ralph from "../../builtin/ralph.js";
 import tournament from "../../builtin/tournament.js";
 
 const WORKFLOWS_MODULE_SPECIFIER = "@bastani/workflows";
@@ -30,8 +32,10 @@ const WORKFLOWS_BUILTIN_MODULE: Record<string, unknown> = {
   classifyAndAct,
   fanOutAndSynthesize,
   generateAndFilter,
+  goal,
   loopUntilDone,
   openClaudeDesign,
+  ralph,
   tournament,
 };
 const TYPEBOX_MODULE: Record<string, unknown> = {
@@ -45,8 +49,10 @@ const WORKFLOWS_VIRTUAL_MODULES: Record<string, unknown> = {
   [`${WORKFLOWS_BUILTIN_MODULE_SPECIFIER}/classify-and-act`]: { default: classifyAndAct },
   [`${WORKFLOWS_BUILTIN_MODULE_SPECIFIER}/fan-out-and-synthesize`]: { default: fanOutAndSynthesize },
   [`${WORKFLOWS_BUILTIN_MODULE_SPECIFIER}/generate-and-filter`]: { default: generateAndFilter },
+  [`${WORKFLOWS_BUILTIN_MODULE_SPECIFIER}/goal`]: { default: goal },
   [`${WORKFLOWS_BUILTIN_MODULE_SPECIFIER}/loop-until-done`]: { default: loopUntilDone },
   [`${WORKFLOWS_BUILTIN_MODULE_SPECIFIER}/open-claude-design`]: { default: openClaudeDesign },
+  [`${WORKFLOWS_BUILTIN_MODULE_SPECIFIER}/ralph`]: { default: ralph },
   [`${WORKFLOWS_BUILTIN_MODULE_SPECIFIER}/tournament`]: { default: tournament },
 };
 

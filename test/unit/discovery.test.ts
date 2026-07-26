@@ -19,8 +19,10 @@ const BUNDLED_WORKFLOW_NAMES = [
   "classify-and-act",
   "fan-out-and-synthesize",
   "generate-and-filter",
+  "goal",
   "loop-until-done",
   "open-claude-design",
+  "ralph",
   "tournament",
 ] as const;
 
@@ -33,7 +35,7 @@ describe("discoverStartupWorkflowsSync — bundled manifest", () => {
     assert.equal(Array.isArray(result.errors), true);
   });
 
-  test("registers exactly the seven bundled workflows", async () => {
+  test("registers exactly the nine bundled workflows", async () => {
     const { registry } = await discoverStartupWorkflowsSync();
     assert.deepEqual(registry.names().sort(), [...BUNDLED_WORKFLOW_NAMES].sort());
   });

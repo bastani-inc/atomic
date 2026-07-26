@@ -1,5 +1,22 @@
 import type { WorkflowDefinition, WorkflowOutputValues } from "../src/authoring.js";
 
+export {
+  default as goal,
+  type GoalWorkflowDefinition,
+  type GoalWorkflowInputs,
+  type GoalWorkflowOutputs,
+  type GoalWorkflowReceipt,
+  type GoalWorkflowRunInputs,
+  type GoalWorkflowStatus,
+} from "./goal.js";
+export {
+  default as ralph,
+  type RalphWorkflowDefinition,
+  type RalphWorkflowInputs,
+  type RalphWorkflowOutputs,
+  type RalphWorkflowRunInputs,
+} from "./ralph.js";
+
 export type OpenClaudeDesignOutputType = "prototype" | "wireframe" | "page" | "component" | "theme" | "tokens";
 export type OpenClaudeDesignWorkflowInputs = {
   readonly prompt: string;

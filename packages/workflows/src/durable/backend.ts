@@ -12,6 +12,7 @@ import type {
   DurableStageCheckpoint,
   DurableWorkflowHandle,
   DurableWorkflowStatus,
+  DurableWorkflowFailureMetadata,
   ResumableWorkflowEntry,
 } from "./types.js";
 export interface DurableWorkflowCatalogEntries {
@@ -98,7 +99,7 @@ export interface DurableWorkflowBackend {
   getLoadableWorkflow(workflowId: string): DurableWorkflowHandle | undefined;
 
   /** Update workflow status (running/paused/completed/failed/cancelled/blocked). */
-  setWorkflowStatus(workflowId: string, status: DurableWorkflowStatus, pendingPrompts?: number, resumable?: boolean): void;
+  setWorkflowStatus(workflowId: string, status: DurableWorkflowStatus, pendingPrompts?: number, resumable?: boolean, failure?: DurableWorkflowFailureMetadata): void;
   /** Atomically update status only when the authoritative status is expected. */
   transitionWorkflowStatus(
     workflowId: string,
@@ -194,6 +195,9 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
       ...(handle.label !== undefined ? { label: handle.label } : {}),
       ...(handle.rootWorkflowId !== undefined ? { rootWorkflowId: handle.rootWorkflowId } : {}),
       ...(handle.resumable !== undefined ? { resumable: handle.resumable } : {}),
+      ...workflowFailureFields(handle.error !== undefined
+        ? handle
+        : handle.status === "running" ? undefined : existing?.handle),
       ...(handle.ownerExecutorId !== undefined ? { ownerExecutorId: handle.ownerExecutorId } : existing?.handle.ownerExecutorId !== undefined ? { ownerExecutorId: existing.handle.ownerExecutorId } : {}),
     };
     if (existing) existing.handle = full;
@@ -209,7 +213,8 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
     rec.checkpoints.set(key, currentCheckpoint);
     if (currentCheckpoint.kind === "tool") {
       const existing = rec.toolByHash.get(currentCheckpoint.argsHash);
-      if (existing === undefined || currentCheckpoint.completedAt >= existing.completedAt) {
+      if (currentCheckpoint.throwingFailureError === undefined
+        && (existing === undefined || currentCheckpoint.completedAt >= existing.completedAt)) {
         rec.toolByHash.set(currentCheckpoint.argsHash, currentCheckpoint);
       }
     } else if (currentCheckpoint.kind === "ui") {
@@ -295,10 +300,23 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
     return { resumable: this.listResumableWorkflows(), completed: this.listCompletedWorkflows() };
   }
 
-  setWorkflowStatus(workflowId: string, status: DurableWorkflowStatus, pendingPrompts?: number, resumable?: boolean): void {
+  setWorkflowStatus(workflowId: string, status: DurableWorkflowStatus, pendingPrompts?: number, resumable?: boolean, failure?: DurableWorkflowFailureMetadata): void {
     const rec = this.workflows.get(workflowId);
     if (!rec) return;
-    rec.handle = { ...rec.handle, status, updatedAt: Date.now(), ...(pendingPrompts !== undefined ? { pendingPrompts } : {}), ...(resumable !== undefined ? { resumable } : {}) };
+    rec.handle = {
+      ...rec.handle,
+      error: undefined,
+      failureKind: undefined,
+      failureCode: undefined,
+      failureRecoverability: undefined,
+      failureDisposition: undefined,
+      failedToolNodeId: undefined,
+      status,
+      updatedAt: Date.now(),
+      ...(pendingPrompts !== undefined ? { pendingPrompts } : {}),
+      ...(resumable !== undefined ? { resumable } : {}),
+      ...(status === "failed" ? failure ?? {} : {}),
+    };
     if (pendingPrompts !== undefined) this.promptReservations.delete(workflowId);
   }
 
@@ -366,7 +384,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 
   listCompletedWorkflows(): readonly ResumableWorkflowEntry[] {
     return [...this.workflows.values()]
-      .filter((rec) => isRootWorkflow(rec.handle) && isCompletedHandle(rec.handle))
+      .filter((rec) => isRootWorkflow(rec.handle) && isHistoricalHandle(rec.handle))
       .map((rec) => toResumableEntry(rec.handle));
   }
 
@@ -389,6 +407,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
       ...(h.label !== undefined ? { label: h.label } : {}),
       ...(h.rootWorkflowId !== undefined ? { rootWorkflowId: h.rootWorkflowId } : {}),
       ...(h.resumable !== undefined ? { resumable: h.resumable } : {}),
+      ...workflowFailureFields(h),
       ...(h.invocationCwd !== undefined ? { invocationCwd: h.invocationCwd } : {}),
       ...(h.workflowCwd !== undefined ? { workflowCwd: h.workflowCwd } : {}),
       ...(h.repositoryRoot !== undefined ? { repositoryRoot: h.repositoryRoot } : {}),
@@ -431,8 +450,21 @@ function hasResumeProgress(handle: DurableWorkflowHandle): boolean {
   return handle.completedCheckpoints > 0 || handle.pendingPrompts > 0;
 }
 
-function isCompletedHandle(handle: DurableWorkflowHandle): boolean {
-  return handle.status === "completed" && hasResumeProgress(handle);
+function isHistoricalHandle(handle: DurableWorkflowHandle): boolean {
+  return handle.status === "completed" && hasResumeProgress(handle)
+    || handle.status === "failed" && !isDurableWorkflowResumable(handle) && hasResumeProgress(handle);
+}
+
+function workflowFailureFields(handle: Partial<DurableWorkflowHandle> | undefined): Partial<DurableWorkflowFailureMetadata> {
+  if (handle === undefined) return {};
+  return {
+    ...(handle.error !== undefined ? { error: handle.error } : {}),
+    ...(handle.failureKind !== undefined ? { failureKind: handle.failureKind } : {}),
+    ...(handle.failureCode !== undefined ? { failureCode: handle.failureCode } : {}),
+    ...(handle.failureRecoverability !== undefined ? { failureRecoverability: handle.failureRecoverability } : {}),
+    ...(handle.failureDisposition !== undefined ? { failureDisposition: handle.failureDisposition } : {}),
+    ...(handle.failedToolNodeId !== undefined ? { failedToolNodeId: handle.failedToolNodeId } : {}),
+  };
 }
 
 /** Convert a durable workflow handle into a resume-catalog entry. */
@@ -452,6 +484,7 @@ function toResumableEntry(handle: DurableWorkflowHandle): ResumableWorkflowEntry
     ...(handle.label !== undefined ? { label: handle.label } : {}),
     ...(handle.rootWorkflowId !== undefined ? { rootWorkflowId: handle.rootWorkflowId } : {}),
     ...(handle.resumable !== undefined ? { resumable: handle.resumable } : {}),
+    ...workflowFailureFields(handle),
     ...(handle.invocationCwd !== undefined ? { invocationCwd: handle.invocationCwd } : {}),
     ...(handle.workflowCwd !== undefined ? { workflowCwd: handle.workflowCwd } : {}),
     ...(handle.repositoryRoot !== undefined ? { repositoryRoot: handle.repositoryRoot } : {}),

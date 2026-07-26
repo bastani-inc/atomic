@@ -7,6 +7,11 @@ import { completedWorkflowRunSnapshots } from "../../packages/workflows/src/dura
 import { createToolPrimitive } from "../../packages/workflows/src/durable/tool-primitive.js";
 import type { DurableCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
+import {
+  createWorkflowLifecycleNotificationState,
+  installWorkflowLifecycleNotifications,
+  type WorkflowLifecycleNoticeDetails,
+} from "../../packages/workflows/src/extension/lifecycle-notifications.js";
 import type { WorkflowToolFailure } from "../../packages/workflows/src/shared/types.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 
@@ -138,7 +143,11 @@ describe("ctx.tool recoverable failures", () => {
         await ctx.tool("cancelled-check", {}, async () => {
           entered.resolve();
           await release.promise;
-          throw new Error("ordinary failure must not win");
+          throw Object.assign(new Error("ordinary failure must not win"), {
+            code: "CANCELLED",
+            exitCode: 1,
+            stderr: "late command failure",
+          });
         }, { failureMode: "return" });
         return { done: true };
       },
@@ -159,8 +168,19 @@ describe("ctx.tool recoverable failures", () => {
     assert.equal(backend.listCheckpoints(result.runId).some((entry) => entry.kind === "tool" && entry.name === "cancelled-check"), false);
   });
 
-  test("keeps callback-origin AbortError throwing in return mode", async () => {
+  test("fails and notifies for a nested callback-origin AbortError without a run abort", async () => {
     const backend = new InMemoryDurableBackend();
+    const store = createStore();
+    const notices: WorkflowLifecycleNoticeDetails[] = [];
+    const unsubscribe = installWorkflowLifecycleNotifications({
+      store,
+      config: { enabled: true, notifyOn: ["failed"] },
+      state: createWorkflowLifecycleNotificationState(),
+      seedExisting: false,
+      sendMessage(message) {
+        notices.push((message as { details: WorkflowLifecycleNoticeDetails }).details);
+      },
+    });
     let downstreamRan = false;
     let callbackCalls = 0;
     const definition = workflow({
@@ -171,23 +191,29 @@ describe("ctx.tool recoverable failures", () => {
       run: async (ctx) => {
         await ctx.tool("callback-abort", {}, async () => {
           callbackCalls += 1;
-          throw new DOMException("operator aborted", "AbortError");
+          throw { message: "callback wrapper", error: new DOMException("operator aborted", "AbortError") };
         }, { failureMode: "return", retriesAllowed: true, maxAttempts: 3, intervalMs: 0 });
         downstreamRan = true;
         return { done: true };
       },
     });
 
-    const result = await run(definition, {}, {
-      store: createStore(),
-      durableBackend: backend,
-    });
+    const result = await run(definition, {}, { store, durableBackend: backend });
+    unsubscribe();
 
-    assert.equal(result.status, "killed");
+    const snapshot = store.runs()[0];
+    assert.equal(result.status, "failed");
+    assert.equal(snapshot?.failureKind, "unknown");
+    assert.equal(snapshot?.failureCode, "unknown");
+    assert.equal(snapshot?.failureDisposition, "terminal_failed");
     assert.equal(downstreamRan, false);
     assert.equal(callbackCalls, 1);
     assert.equal(result.toolNodes?.[0]?.status, "failed");
-    assert.equal(backend.listCheckpoints(result.runId).some((entry) => entry.kind === "tool" && entry.name === "callback-abort"), false);
+    assert.equal(notices.length, 1);
+    assert.equal(notices[0]?.kind, "failed");
+    assert.match(notices[0]?.error ?? "", /operator aborted/);
+    assert.equal(backend.listCheckpoints(result.runId).some((entry) => entry.kind === "tool" && entry.name === "callback-abort" && entry.throwingFailureError !== undefined), true);
+    assert.equal(backend.getToolCheckpoint(result.runId, result.toolNodes![0]!.argsHash), undefined);
   });
 
   test("retries process errors whose message contains cancellation words", async () => {
@@ -203,6 +229,8 @@ describe("ctx.tool recoverable failures", () => {
         const outcome = await ctx.tool("cancelled-command-text", {}, async () => {
           callbackCalls += 1;
           throw Object.assign(new Error("Command failed: 2 tests cancelled after worker crash"), {
+            name: "AbortError",
+            stopReason: "aborted",
             code: "CANCELLED",
             exitCode: 1,
             stderr: "worker crashed",
@@ -223,7 +251,7 @@ describe("ctx.tool recoverable failures", () => {
     assert.deepEqual(observed, {
       ok: false,
       error: {
-        name: "Error",
+        name: "AbortError",
         message: "Command failed: 2 tests cancelled after worker crash",
         exitCode: 1,
         stderr: "worker crashed",

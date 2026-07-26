@@ -521,7 +521,7 @@ Atomic's category is broader and more explicit: it is the loop engine for engine
 
 ## Built-in Workflows
 
-Atomic bundles seven workflows: six reusable control-flow patterns and one end-to-end design workflow. They are available in every session. Use `/workflow list` to confirm the current set and `/workflow inputs <name>` to inspect a contract before launch.
+Atomic bundles nine workflows: six reusable control-flow patterns, two autonomous implementation loops, and one end-to-end design workflow. They are available in every session. Use `/workflow list` to confirm the current set and `/workflow inputs <name>` to inspect a contract before launch.
 
 | Workflow | What it does | When to use |
 |---|---|---|
@@ -531,6 +531,8 @@ Atomic bundles seven workflows: six reusable control-flow patterns and one end-t
 | `generate-and-filter` | Candidate fan-out → rubric dedupe/filter → optional judge → shortlist. | Explore more options than needed and keep the strongest distinct few. |
 | `tournament` | Whole-task attempts → balanced pairwise judges → bracket reducer. | Compare subjective or approach-sensitive solutions. |
 | `loop-until-done` | Durable ledger → iteration/evaluator loop → success or inspectable bound exhaustion. | Continue until explicit evidence proves completion. |
+| `goal` | Durable goal ledger → bounded sub-agent orchestration → parallel review → deterministic reducer. | Autonomous implementation that needs receipts and reviewer-gated completion. |
+| `ralph` | Prompt refinement → codebase research → delegated implementation → multi-model review loop. | Research-first autonomous implementation with bounded review and repair. |
 | `open-claude-design` | Guided discovery and reference research → HTML generation → feedback loop → export and handoff. | UI, page, component, theme, or design-token work. |
 
 ### Six composable pattern builtins
@@ -552,7 +554,9 @@ import {
   classifyAndAct,
   fanOutAndSynthesize,
   generateAndFilter,
+  goal,
   loopUntilDone,
+  ralph,
   tournament,
 } from "@bastani/workflows/builtin";
 
@@ -566,6 +570,48 @@ const research = await ctx.workflow(fanOutAndSynthesize, {
 ```
 
 All six can run by name or as nested definitions. Prefer composition over copying prompts or graphs: nested children contribute stages, gates, artifacts, HIL nodes, and declared outputs to the expanded parent graph. For broad repository work, write a precise partition prompt, give branches distinct artifact paths, and make synthesis cite concrete files and resolve conflicts. For implementation, author a task-specific parent around the pattern builtins so its literal contract, deterministic checks, repair policy, and final actions stay explicit.
+
+### `goal`
+
+Goal persists the literal objective and immutable acceptance criteria in a run ledger, delegates implementation through bounded orchestrator turns, records receipts, and asks independent reviewers to inspect the current delta. A TypeScript reducer returns `complete`, `blocked`, or `needs_human` rather than trusting free-form completion claims.
+
+| Input | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `objective` | text | yes | — | Task to implement and validate. Keep PR/MR creation out of this text. |
+| `acceptance_criteria` | text | no | objective | Immutable original contract, especially for follow-up runs. |
+| `max_turns` | number | no | `10` | Maximum orchestrator/review turns. |
+| `base_branch` | string | no | `origin/main` | Review and optional final-action comparison base. |
+| `git_worktree_dir` | string | no | `""` | Optional reusable worktree, only when explicitly requested. |
+| `create_pr` | boolean | no | `false` | Authorize the post-approval PR/MR/review stage. Prompt text alone never opts in. |
+
+```text
+/workflow goal objective="Update the CLI docs for --json, add one example, and validate the docs build"
+/workflow goal objective="Implement specs/rate-limit.md and run focused checks" create_pr=true
+```
+
+Declared outputs include `result`, `status`, `approved`, `goal_id`, `objective`, `acceptance_criteria`, `ledger_path`, turn counts, receipts, remaining work, review artifacts, and optional `pr_report`.
+
+### `ralph`
+
+Ralph starts from the raw task, refines it into a research question, runs codebase research, delegates implementation from the research artifact, and sends the patch to independent model-family reviewers. It repeats research, orchestration, and review until reviewers approve or `max_loops` is exhausted.
+
+| Input | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `prompt` | text | yes | — | Task, issue, or spec to research, implement, and review. Keep PR/MR creation out of this text. |
+| `acceptance_criteria` | text | no | prompt | Immutable original contract, especially for follow-up runs. |
+| `max_loops` | number | no | `10` | Maximum research/orchestrate/review iterations. |
+| `base_branch` | string | no | `origin/main` | Review and optional final-action comparison base. |
+| `git_worktree_dir` | string | no | `""` | Optional reusable worktree, only when explicitly requested. |
+| `create_pr` | boolean | no | `false` | Authorize the post-approval PR/MR/review stage. Prompt text alone never opts in. |
+
+```text
+/workflow ralph prompt="Migrate the database layer to Drizzle" max_loops=3
+/workflow ralph prompt="Implement specs/rate-limit.md and validate burst behavior" create_pr=true
+```
+
+Declared outputs include `result`, the latest research question and artifact paths, implementation notes, optional QA video and PR reports, approval, iteration count, and review artifacts.
+
+Goal and Ralph both support reusable worktree binding through `git_worktree_dir` and `base_branch`. Use `create_pr=true` only for an explicitly authorized final action after implementation approval. For follow-up runs based on reviewer findings, pass the original task text as `acceptance_criteria` to prevent contract drift.
 
 ### `open-claude-design`
 
@@ -1066,8 +1112,10 @@ import {
   classifyAndAct,
   fanOutAndSynthesize,
   generateAndFilter,
+  goal,
   loopUntilDone,
   openClaudeDesign,
+  ralph,
   tournament,
 } from "@bastani/workflows/builtin";
 ```
@@ -1075,7 +1123,8 @@ import {
 Or import one individual module:
 
 ```ts
-import fanOutAndSynthesize from "@bastani/workflows/builtin/fan-out-and-synthesize";
+import goal from "@bastani/workflows/builtin/goal";
+import ralph from "@bastani/workflows/builtin/ralph";
 ```
 
 Example parent that maps a repository and verifies the synthesis:
@@ -2826,7 +2875,7 @@ Atomic emits deduplicated main-chat notices when top-level workflow runs complet
 
 Previously, the streaming `persistWhenStreaming` path directly appended the visible card. It did not enqueue a native steer/follow-up or schedule a later model step. Therefore, an earlier provider context snapshot could finish with an uncorrected running claim.
 
-Streaming lifecycle delivery now deliberately splits display from reconciliation. Before send admission resolves, Atomic appends one `display: true`, `excludeFromContext: true` lifecycle card to agent state and `SessionManager`. It separately submits the same raw notice text as a `display: false` internal reconciliation through the native steer boundary. This fixes the former direct-context race: a visible entry cannot become provider input between an assistant `workflow` call and its required `status=running` result, while a notice that arrives during final text still causes a later correcting step. The lifecycle path never aborts the active chat itself.
+Streaming lifecycle delivery now deliberately splits display from reconciliation. Before send admission resolves, Atomic appends one `display: true`, `excludeFromContext: true` lifecycle card to agent state and `SessionManager`; that same durable entry atomically carries the recovery marker for its hidden turn. Atomic separately submits the same raw notice text as a `display: false` internal reconciliation through the native steer boundary. This fixes the former direct-context race: a visible entry cannot become provider input between an assistant `workflow` call and its required `status=running` result, while a notice that arrives during final text still causes a later correcting step. The lifecycle path never aborts the active chat itself.
 
 | Parent state when the notice arrives | Card and prompt transition | Invariants |
 | --- | --- | --- |
@@ -2835,7 +2884,7 @@ Streaming lifecycle delivery now deliberately splits display from reconciliation
 | Active with the workflow tool result pending | Waits for earlier event writes, commits the context-excluded card, then lets the hidden steer follow the matching result. | Provider and reopened-file order remains assistant tool call → `status=running` tool result → lifecycle reconciliation. |
 | Active final-text streaming | Commits the card without stopping the current text; the hidden steer then creates a safe continuation that can correct a stale progress claim. | The unrelated text finishes normally unless another caller aborts it, and an ordinary abort cannot clear the admitted reconciliation. |
 
-The visible card preserves the lifecycle custom type, raw notice text, exact details payload (including omitted optional fields), and display behavior. Each deduplicated occurrence has exactly one visible/persisted lifecycle card; the internal reconciliation is hidden and persisted separately only after agent-core consumes it at the provider-safe boundary. Protection is registered before public card listeners run. Session replacement and shutdown fail closed while the hidden input remains queued, since persisting it before a pending tool result would break provider protocol order; host-owned invalidation work does not run on that failed teardown. A transient reconciliation write failure retries persistence without re-queueing model input or creating another card. Before session replacement or shutdown can discard consumed in-memory recovery state, Atomic flushes the reconciliation again; if that write still fails, disposal stops and keeps the current session recoverable. `clearQueue()` restores only protected references it actually removed, so a reference already drained into core-local in-flight state is not aliased. Stage-session delivery transfer moves protection only with transferred queued references and leaves in-flight ownership at the source. Delivery is acknowledged only after the display card append succeeds; while the invoking chat remains active, a rejected admission retains its original payload and retries with capped backoff even if the run changes state or notification configuration is reinstalled. Session replacement cancels those admission attempts and clears their payloads rather than waking an unrelated chat with an uninspectable old run. Awaiting-input workflow states are tracked for dedupe/restore, but they do not enqueue main-chat connect cards or wake the model; prompt state remains visible through workflow status/connect surfaces.
+The visible card preserves the lifecycle custom type, raw notice text, exact details payload (including omitted optional fields), and display behavior. Each deduplicated occurrence has exactly one visible/persisted lifecycle card; the internal reconciliation is hidden and persisted separately only after agent-core consumes it at the provider-safe boundary. If the process exits after card admission but before consumption, startup finds the unresolved marker and queues that hidden correction once; repeated startup binding skips an already queued intent, and the persisted hidden completion suppresses all later restores. Protection is registered before public card listeners run. Session replacement and shutdown fail closed while the hidden input remains queued, since persisting it before a pending tool result would break provider protocol order; host-owned invalidation work does not run on that failed teardown. A transient reconciliation write failure retries persistence without re-queueing model input or creating another card. Physical session appends restore the exact prior file length after a partial write failure, so a later card or reconciliation retry cannot inherit a malformed JSONL tail or phantom parent. Before session replacement or shutdown can discard consumed in-memory recovery state, Atomic flushes the reconciliation again; if that write still fails, disposal stops and keeps the current session recoverable. `clearQueue()` restores only protected references it actually removed, so a reference already drained into core-local in-flight state is not aliased. Stage-session delivery transfer moves protection only with transferred queued references and leaves in-flight ownership at the source. Delivery is acknowledged only after the display card append succeeds; while the invoking chat remains active, a rejected admission retains its original payload and retries with capped backoff even if the run changes state or notification configuration is reinstalled. Session replacement cancels those admission attempts and clears their payloads rather than waking an unrelated chat with an uninspectable old run. Awaiting-input workflow states are tracked for dedupe/restore, but they do not enqueue main-chat connect cards or wake the model; prompt state remains visible through workflow status/connect surfaces.
 
 When an active recoverable block is resumed in-process, Atomic dispatches a fresh-ID continuation that replays the source's completed stages and re-runs the failed one. The durable source is left untouched (stays `blocked`/resumable) so it remains discoverable and recoverable — including a zero-checkpoint first-stage block — if the process dies before the continuation settles; the local source snapshot is killed so the same session will not re-resume it. A process-local claim prevents a concurrent same-session double-dispatch.
 
@@ -2911,13 +2960,13 @@ Repeated, sibling, sequential, parallel, and multi-level child calls keep indepe
 
 The `ctx.tool(name, args, fn, options?)` primitive runs arbitrary TypeScript code as a first-class durable graph node and caches the result durably. The node is non-attachable and has no stage chat controls. It is valid before, between, after, or without model stages, so a tool-only workflow completes normally; a workflow that returns normally without any stage, child, tool, or explicit exit remains invalid. On resume, if that ordinal tool call already completed (matched by call order plus content hash of `name` + `args`), the runtime returns the cached result without re-executing the function—ensuring completed side effects are not repeated while still preserving two intentional same-name/same-args calls as distinct ordered nodes. Legacy child checkpoints without topology keep that cached output authoritative even if the additive ownership-migration write is temporarily unavailable: current replay uses inferred child ownership, a later replay retries the metadata write, and fresh completed inspection falls back to root ownership with topology unavailable until a migration succeeds.
 
-When the workflow body fulfills but one or more admitted tool calls failed, Atomic promotes the first admitted failure to the terminal run failure and persists that selected tool-node identity for status inspection and lifecycle output. An ordinary workflow-body rejection—including a direct uncaught `await ctx.tool(...)` rejection—retains the original error and failed graph node but does not claim a terminal tool origin: transparent native promise rejection carries no source-promise identity, so a later body throw that reuses the same object or primitive is observationally indistinguishable. Stage and workflow-body failures are therefore never mislabeled as tool failures.
+When the workflow body fulfills but one or more admitted tool calls failed, Atomic promotes the first observed failure to the terminal run failure, regardless of admission order, and persists that selected tool-node identity for status inspection and lifecycle output. A direct uncaught `await ctx.tool(...)` rejection keeps the original error and persists its failed-node link through session and durable restore. First-event arbitration also preserves the selected node when concurrent failures throw the same object or primitive; unrelated later stage or body errors do not inherit a caught tool's origin. Tool admission remains open while author code can catch a failure and continue. Once the body settles and failure has won before any real cancellation, Atomic closes admission, cancels remaining non-failed tool nodes, waits for observed failed nodes to finish publication, and publishes the failed root without waiting for callbacks that ignore cancellation.
 
 Set `failureMode: "return"` when a failed check is expected data for a later repair stage. Atomic runs all configured retries first, then returns a `WorkflowToolOutcome<TValue>`. A successful callback returns `{ ok: true, value, attempts, cached }`. An exhausted callback failure returns `{ ok: false, error, attempts, cached }`; `error` preserves integer `exitCode` and string or byte-buffer `stdout`/`stderr` when the thrown value exposes them. The live and restored tool node stays `failed`, while the workflow body may continue and complete. On replay, Atomic returns the same stored outcome with `cached: true` and does not run the callback again.
 
 Recoverable output is explicit data flow. Atomic does not add a failed tool outcome to a later stage prompt. The workflow author must place the needed fields in `prompt`, `previous`, an output, or an artifact. Each persisted error text field is best-effort secret-redacted with the workflow persistence rules and limited to 16 KiB of UTF-8; truncated fields keep the final bytes with a marker. Keep the database sensitive even with this filter.
 
-Cancellation, closed tool admission, and durable-storage faults still throw. They never become ordinary `{ ok: false }` callback outcomes. Omitting `failureMode: "return"` also keeps the existing behavior: an exhausted callback error rejects `ctx.tool` and fails the workflow unless author code catches it.
+Cancellation, closed tool admission, and durable-storage faults still throw. They never become ordinary `{ ok: false }` callback outcomes. Omitting `failureMode: "return"` also keeps the existing behavior: an exhausted callback error rejects `ctx.tool` and fails the workflow unless author code catches it. Atomic persists that failed node and the root's selected tool link for later inspection, but excludes the failure record from the replay cache, so a resume or rerun calls the function again. Command failures that expose `exitCode`, `stdout`, or `stderr` remain failures even when a wrapper also uses cancellation-like text or codes; only a real run cancellation that wins the terminal race produces a killed/cancelled root.
 
 Tool admission stays open while the workflow body runs and while already-admitted tools drain, including immediate promise-settlement continuations. Before any completed, failed, blocked, exited, or cancelled executor outcome is published, admission closes atomically. A detached call through a retained `ctx.tool` function after that point returns a rejected native promise without starting its callback, retries, graph node, or durable checkpoint; ignoring that promise does not emit an unhandled rejection.
 
@@ -2974,9 +3023,9 @@ Ctrl+D deletes a highlighted inactive durable or completed row after confirmatio
 
 Only current-format DBOS records are selectable. Atomic hides unsupported or malformed records without reinterpreting them.
 
-Selecting a paused, failed, blocked, or crash-recovery target follows the existing resume path unchanged: Atomic re-dispatches the workflow with its cached inputs and the **original workflow id**. Every nested invocation validates and reuses its durable boundary and child identity before dispatch. Previously completed `ctx.tool`, `ctx.ui`, stage/task/chain/parallel items, and child boundaries replay from checkpoints instead of executing again; only incomplete work continues.
+Selecting a paused, resumable failed, blocked, or crash-recovery target follows the existing resume path unchanged: Atomic re-dispatches the workflow with its cached inputs and the **original workflow id**. Every nested invocation validates and reuses its durable boundary and child identity before dispatch. Previously completed `ctx.tool`, `ctx.ui`, stage/task/chain/parallel items, and child boundaries replay from checkpoints instead of executing again; only incomplete work continues.
 
-Selecting a completed target follows a separate read-only open path. Atomic reconstructs root and reciprocal nested child-run snapshots from authoritative checkpoints, remaps persisted source-stage, boundary, and tool references into a stable expanded hierarchy, and never calls the resume dispatcher or runs workflow code, tools, tasks, or prompts. Completed graphs remain inspectable even when no retained chat transcript survives, including tool-only graphs.
+Selecting a completed target—or a checkpointed failed target marked non-resumable—follows a separate read-only open path. Atomic reconstructs root and reciprocal nested child-run snapshots from authoritative checkpoints, remaps persisted source-stage, boundary, and tool references into a stable expanded hierarchy, and never calls the resume dispatcher or runs workflow code, tools, tasks, or prompts. These graphs remain inspectable even when no retained chat transcript survives, including tool-only graphs.
 
 A terminal child stage with a valid retained session may be reopened for detached post-mortem conversation through `/workflow attach` or completed graph inspection. Follow-up is routed to that real child `{runId, stageId}` and may append chat, but it cannot pause, resume, retry, mutate root or child execution state, write a terminal checkpoint, or emit a duplicate lifecycle notice. Programmatic `workflow send` rejects the terminal root before nested-owner routing or session probing. Tool nodes never offer chat attachment.
 
@@ -2991,13 +3040,13 @@ Fresh completed inspection does not currently persist the workflow's declared ro
 /workflows <workflow-id-or-prefix>        # Alias for targeted resume/open
 ```
 
-Explicit full IDs take precedence, while prefixes resolve across top-level live, resumable durable, and completed targets as one namespace. An exact loadable paused top-level live target resumes directly from in-session state without enumerating the durable completed-history catalog; this keeps explicit live resume responsive even when retained durable history is large and preserves live-over-durable precedence for duplicate IDs. Nested child runs remain excluded from this top-level target namespace even when addressed by an exact ID.
+Explicit full IDs take precedence, while prefixes resolve across top-level live, resumable durable, and completed targets as one namespace. An exact loadable paused top-level live target resumes directly from in-session state without enumerating the durable completed-history catalog; this keeps explicit live resume responsive even when retained durable history is large and preserves live-over-durable precedence for duplicate IDs. If a stale or concurrent catalog view presents the same failed root as both resumable and read-only history, the resumable durable target wins for exact and prefix routing. Nested child runs remain excluded from this top-level target namespace even when addressed by an exact ID.
 
 The non-interactive `workflow({ action: "resume", runId: "<id-or-prefix>" })` surface uses the same durable resumable-target lookup behavior for explicit targets. If the target is absent locally, Atomic loads workflow resources, queries the authoritative DBOS resumable catalog, and only then reports a missing run. This targeted hydration does not change `workflow({ action: "status" })`: an empty session-local status before explicit resume does not imply that DBOS deleted the workflow.
 
-Prefixes and other targets continue through the combined catalog so ambiguity and completed-inspection behavior remain unchanged. Ambiguous prefixes use the existing-style diagnostic. A current completed backend row with valid graph checkpoints remains inspectable even if every retained stage conversation is unavailable. Missing, empty, directory, context-empty, or partially malformed transcript paths are stripped from chat attachment while the graph stays read-only and visible.
+Prefixes and other targets continue through the combined catalog so ambiguity and read-only inspection behavior remain unchanged. Ambiguous prefixes use the existing-style diagnostic. A current completed or non-resumable failed backend row with valid graph checkpoints remains inspectable even if every retained stage conversation is unavailable. Missing, empty, directory, context-empty, or partially malformed transcript paths are stripped from chat attachment while the graph stays read-only and visible.
 
-Validation uses the final retained transcript for a repeated stage replay key, so an obsolete superseded checkpoint path does not hide an otherwise valid completed graph. Reopening inspection refreshes a changed authoritative retained-chat handle. Session-cache-only rows are hidden because the backend is authoritative. Cancelled, killed, non-resumable failed, and other terminal non-success states are never added. Normal `/resume`, `atomic -r`, and `--continue` behavior for internal workflow stage sessions is unchanged.
+Validation uses the final retained transcript for a repeated stage replay key, so an obsolete superseded checkpoint path does not hide an otherwise valid read-only graph. Reopening inspection refreshes a changed authoritative retained-chat handle. Session-cache-only rows are hidden because the backend is authoritative. Checkpointed non-resumable failed roots appear only in read-only history; cancelled, killed, blocked non-resumable, failed roots without saved progress, and other terminal non-success states are never added. Normal `/resume`, `atomic -r`, and `--continue` behavior for internal workflow stage sessions is unchanged.
 
 ### Cancellation, failure, and retry semantics
 
@@ -3005,7 +3054,7 @@ Validation uses the final retained transcript for a repeated stage replay key, s
 | --- | --- |
 | **Internally cancelled workflow** | Marked `cancelled` in durable state and excluded from `/workflow resume` discovery. Start a new workflow run if you intentionally want to retry cancelled work. |
 | **Stage failure (recoverable)** | Workflow marked `failed` or `blocked` and remains resumable by default. `/workflow resume <id>` continues from the last completed checkpoint unless durable metadata explicitly sets `resumable: false`. |
-| **Stage failure (non-recoverable)** | Workflow marked `failed` or `blocked` with `resumable: false`, so it is excluded from resume discovery. |
+| **Stage failure (non-recoverable)** | Workflow marked `failed` or `blocked` with `resumable: false`, so it cannot resume execution. A failed root with saved checkpoint progress may still appear in read-only history for inspection; a blocked root does not. |
 | **Process crash** | Workflow remains `running` in durable state. On next session start, it appears in resume discovery when it has a durable checkpoint or pending prompt. Resume re-executes from the last completed checkpoint. |
 | **`ctx.tool` retry/default failure** | When `retriesAllowed: true`, the tool function is retried with exponential backoff. Cancellation is checked before each attempt and during retry backoff. Without `failureMode: "return"`, an exhausted callback error propagates and the workflow fails. |
 | **Recoverable `ctx.tool` failure** | With `failureMode: "return"`, exhausted callback failures are durably returned after retries. The tool node remains failed, downstream handoff is explicit, and replay returns the same outcome with `cached: true`. Cancellation and storage faults still throw. |
@@ -3557,13 +3606,15 @@ import {
   classifyAndAct,
   fanOutAndSynthesize,
   generateAndFilter,
+  goal,
   loopUntilDone,
   openClaudeDesign,
+  ralph,
   tournament,
 } from "@bastani/workflows/builtin";
 ```
 
-Each export is a workflow definition. The same seven definitions are available through individual module paths. See [Compose with builtin workflows](#compose-with-builtin-workflows) for a parent workflow example.
+Each export is a workflow definition. All nine definitions are available through individual module paths. See [Compose with builtin workflows](#compose-with-builtin-workflows) for a parent workflow example.
 
 
 ## Fast Inference for Workflow Stages

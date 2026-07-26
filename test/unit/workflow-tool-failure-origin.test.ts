@@ -109,7 +109,7 @@ async function runCaughtThenThrowSameValue(shared: unknown) {
 
 
 describe("ctx.tool failure origin", () => {
-  test("multiple failures attribute the selected first admission independent of settlement order", async () => {
+  test("multiple failures attribute the first observed failure independent of admission order", async () => {
     const store = createStore();
     const { sent, unsubscribe } = installFailureNotices(store);
     const persisted: Array<{ type: string; payload: Record<string, unknown> }> = [];
@@ -137,24 +137,24 @@ describe("ctx.tool failure origin", () => {
     const result = await pending;
     unsubscribe();
 
-    const firstNodeId = result.toolNodes?.[0]?.id;
+    const observedNodeId = result.toolNodes?.[1]?.id;
     assert.equal(result.status, "failed");
-    assert.match(result.error ?? "", /FIRST_ERROR/);
-    assert.equal(store.runs()[0]?.failedToolNodeId, firstNodeId);
+    assert.match(result.error ?? "", /SECOND_ERROR/);
+    assert.equal(store.runs()[0]?.failedToolNodeId, observedNodeId);
     const inspection = inspectRun(result.runId, { store });
-    assert.equal(inspection.ok && inspection.detail.failedToolNodeId, firstNodeId);
-    assert.equal(result.failedToolNodeId, firstNodeId);
+    assert.equal(inspection.ok && inspection.detail.failedToolNodeId, observedNodeId);
+    assert.equal(result.failedToolNodeId, observedNodeId);
     const runEnd = persisted.find((entry) => entry.type === "workflow.run.end");
-    assert.equal(runEnd?.payload["failedToolNodeId"], firstNodeId);
+    assert.equal(runEnd?.payload["failedToolNodeId"], observedNodeId);
     assert.equal(sent.length, 1);
-    assert.equal(sent[0]?.details?.toolNodeId, firstNodeId);
-    assert.equal(sent[0]?.details?.toolName, "first-admitted");
-    assert.match(sent[0]?.content ?? "", /tool first-admitted.*FIRST_ERROR/);
-    assert.doesNotMatch(sent[0]?.content ?? "", /second-admitted/);
+    assert.equal(sent[0]?.details?.toolNodeId, observedNodeId);
+    assert.equal(sent[0]?.details?.toolName, "second-admitted");
+    assert.match(sent[0]?.content ?? "", /tool second-admitted.*SECOND_ERROR/);
+    assert.doesNotMatch(sent[0]?.content ?? "", /first-admitted/);
     const card = renderLifecycleCard(sent[0]!.details!);
-    assert.match(card, /tool\s+first-admitted/);
-    assert.match(card, /FIRST_ERROR/);
-    assert.doesNotMatch(card, /second-admitted|SECOND_ERROR/);
+    assert.match(card, /tool\s+second-admitted/);
+    assert.match(card, /SECOND_ERROR/);
+    assert.doesNotMatch(card, /first-admitted|FIRST_ERROR/);
   });
 
   test("duplicate error messages do not confuse selected tool identity", async () => {
@@ -179,7 +179,7 @@ describe("ctx.tool failure origin", () => {
   });
 
 
-  test("reused Error failures omit an ambiguous catch-path tool origin", async () => {
+  test("reused Error failures retain the first selected tool origin", async () => {
     const shared = new Error("shared awaited rejection");
     const store = createStore();
     const { sent, unsubscribe } = installFailureNotices(store);
@@ -195,15 +195,15 @@ describe("ctx.tool failure origin", () => {
     }), {}, { store });
     unsubscribe();
 
-    assert.equal(result.failedToolNodeId, undefined);
-    assert.equal(store.runs()[0]?.failedToolNodeId, undefined);
-    assert.equal(sent[0]?.details?.toolName, undefined);
-    assert.equal(sent[0]?.details?.toolNodeId, undefined);
-    assert.match(sent[0]?.content ?? "", /shared awaited rejection/);
-    assert.doesNotMatch(sent[0]?.content ?? "", /tool (first-caught|second-uncaught)/);
+    const selectedNode = result.toolNodes?.find((node) => node.name === "first-caught");
+    assert.equal(result.failedToolNodeId, selectedNode?.id);
+    assert.equal(store.runs()[0]?.failedToolNodeId, selectedNode?.id);
+    assert.equal(sent[0]?.details?.toolName, "first-caught");
+    assert.equal(sent[0]?.details?.toolNodeId, selectedNode?.id);
+    assert.match(sent[0]?.content ?? "", /tool first-caught.*shared awaited rejection/);
   });
 
-  test("reused primitive failures omit an ambiguous catch-path tool origin", async () => {
+  test("reused primitive failures retain the first selected tool origin", async () => {
     const shared = "shared primitive rejection";
     const store = createStore();
     const { sent, unsubscribe } = installFailureNotices(store);
@@ -219,15 +219,15 @@ describe("ctx.tool failure origin", () => {
     }), {}, { store });
     unsubscribe();
 
-    assert.equal(result.failedToolNodeId, undefined);
-    assert.equal(store.runs()[0]?.failedToolNodeId, undefined);
-    assert.equal(sent[0]?.details?.toolName, undefined);
-    assert.equal(sent[0]?.details?.toolNodeId, undefined);
-    assert.match(sent[0]?.content ?? "", /shared primitive rejection/);
-    assert.doesNotMatch(sent[0]?.content ?? "", /tool (first-primitive|second-primitive)/);
+    const selectedNode = result.toolNodes?.find((node) => node.name === "first-primitive");
+    assert.equal(result.failedToolNodeId, selectedNode?.id);
+    assert.equal(store.runs()[0]?.failedToolNodeId, selectedNode?.id);
+    assert.equal(sent[0]?.details?.toolName, "first-primitive");
+    assert.equal(sent[0]?.details?.toolNodeId, selectedNode?.id);
+    assert.match(sent[0]?.content ?? "", /tool first-primitive.*shared primitive rejection/);
   });
 
-  test("an ordinary awaited tool rejection omits terminal tool origin", async () => {
+  test("an ordinary awaited tool rejection retains its selected terminal tool origin", async () => {
     const shared = new Error("shared concurrent rejection");
     const firstRelease = Promise.withResolvers<void>();
     const secondEntered = Promise.withResolvers<void>();
@@ -250,18 +250,19 @@ describe("ctx.tool failure origin", () => {
     await secondEntered.promise;
     await Bun.sleep(0);
     assert.deepEqual(store.runs()[0]?.toolNodes?.map((node) => [node.name, node.status]), [
-      ["first-delayed", "running"],
+      ["first-delayed", "cancelled"],
       ["second-awaited", "failed"],
     ]);
     firstRelease.resolve();
     const result = await pending;
 
-    assert.equal(result.failedToolNodeId, undefined);
-    assert.equal(store.runs()[0]?.failedToolNodeId, undefined);
+    const selectedNode = result.toolNodes?.find((node) => node.name === "second-awaited");
+    assert.equal(result.failedToolNodeId, selectedNode?.id);
+    assert.equal(store.runs()[0]?.failedToolNodeId, selectedNode?.id);
   });
 
 
-  test("already-observed same-value failures omit an ambiguous tool origin", async () => {
+  test("already-observed same-value failures retain the first observed tool origin", async () => {
     const shared = new Error("shared observation order");
     const awaitedEntered = Promise.withResolvers<void>();
     const awaitedRelease = Promise.withResolvers<void>();
@@ -291,19 +292,19 @@ describe("ctx.tool failure origin", () => {
     const result = await pending;
     unsubscribe();
 
-    assert.equal(result.failedToolNodeId, undefined);
-    assert.equal(store.runs()[0]?.failedToolNodeId, undefined);
-    assert.equal(sent[0]?.details?.toolName, undefined);
-    assert.equal(sent[0]?.details?.toolNodeId, undefined);
-    assert.match(sent[0]?.content ?? "", /shared observation order/);
-    assert.doesNotMatch(sent[0]?.content ?? "", /tool (awaited-first|later-unawaited)/);
+    const selectedNode = result.toolNodes?.find((node) => node.name === "later-unawaited");
+    assert.equal(result.failedToolNodeId, selectedNode?.id);
+    assert.equal(store.runs()[0]?.failedToolNodeId, selectedNode?.id);
+    assert.equal(sent[0]?.details?.toolName, "later-unawaited");
+    assert.equal(sent[0]?.details?.toolNodeId, selectedNode?.id);
+    assert.match(sent[0]?.content ?? "", /tool later-unawaited.*shared observation order/);
   });
 
   for (const [label, shared] of [
     ["Error", new Error("same-turn shared rejection")],
     ["primitive", "same-turn shared rejection"],
   ] as const) {
-    test(`same-turn ${label} failures omit an ambiguous catch-path tool origin`, async () => {
+    test(`same-turn ${label} failures retain the first selected tool origin`, async () => {
       const { result, sent, store } = await runSimultaneousSameValueFailures(shared);
 
       assert.equal(result.status, "failed");
@@ -312,14 +313,15 @@ describe("ctx.tool failure origin", () => {
         ["awaited-first", "failed"],
         ["later-unawaited", "failed"],
       ]);
-      assert.equal(result.failedToolNodeId, undefined);
-      assert.equal(store.runs()[0]?.failedToolNodeId, undefined);
-      assert.equal(sent[0]?.details?.toolNodeId, undefined);
-      assert.equal(sent[0]?.details?.toolName, undefined);
-      assert.doesNotMatch(sent[0]?.content ?? "", /tool (awaited-first|later-unawaited)/);
+      const selectedNode = result.toolNodes?.find((node) => node.name === "awaited-first");
+      assert.equal(result.failedToolNodeId, selectedNode?.id);
+      assert.equal(store.runs()[0]?.failedToolNodeId, selectedNode?.id);
+      assert.equal(sent[0]?.details?.toolNodeId, selectedNode?.id);
+      assert.equal(sent[0]?.details?.toolName, "awaited-first");
+      assert.match(sent[0]?.content ?? "", /tool awaited-first.*same-turn shared rejection/);
     });
   }
-  test("catching and rethrowing the same rejection cannot prove terminal tool origin", async () => {
+  test("catching and rethrowing one matching rejection retains terminal tool origin", async () => {
     const shared = new Error("rethrow same rejection");
     const store = createStore();
     const result = await run(workflow({
@@ -334,31 +336,34 @@ describe("ctx.tool failure origin", () => {
       },
     }), {}, { store });
 
+    const failedNodeId = result.toolNodes?.[0]?.id;
     assert.match(result.error ?? "", /rethrow same rejection/);
-    assert.equal(result.failedToolNodeId, undefined);
-    assert.equal(store.runs()[0]?.failedToolNodeId, undefined);
+    assert.equal(result.failedToolNodeId, failedNodeId);
+    assert.equal(store.runs()[0]?.failedToolNodeId, failedNodeId);
   });
-  test("an independent body throw reusing a caught tool Error has no tool origin", async () => {
+  test("a unique same-value body throw retains the only matching tool origin", async () => {
     const { result, sent, store } = await runCaughtThenThrowSameValue(new Error("independent shared Error"));
 
+    const failedNodeId = result.toolNodes?.[0]?.id;
     assert.match(result.error ?? "", /independent shared Error/);
     assert.deepEqual(result.toolNodes?.map((node) => [node.name, node.status]), [["caught-same-value", "failed"]]);
-    assert.equal(result.failedToolNodeId, undefined);
-    assert.equal(store.runs()[0]?.failedToolNodeId, undefined);
-    assert.equal(sent[0]?.details?.toolNodeId, undefined);
-    assert.equal(sent[0]?.details?.toolName, undefined);
-    assert.doesNotMatch(sent[0]?.content ?? "", /tool caught-same-value/);
+    assert.equal(result.failedToolNodeId, failedNodeId);
+    assert.equal(store.runs()[0]?.failedToolNodeId, failedNodeId);
+    assert.equal(sent[0]?.details?.toolNodeId, failedNodeId);
+    assert.equal(sent[0]?.details?.toolName, "caught-same-value");
+    assert.match(sent[0]?.content ?? "", /tool caught-same-value/);
   });
-  test("an independent body throw reusing a caught tool primitive has no tool origin", async () => {
+  test("a unique same-value primitive throw retains the only matching tool origin", async () => {
     const { result, sent, store } = await runCaughtThenThrowSameValue("independent shared primitive");
 
+    const failedNodeId = result.toolNodes?.[0]?.id;
     assert.match(result.error ?? "", /independent shared primitive/);
     assert.equal(result.toolNodes?.[0]?.status, "failed");
-    assert.equal(result.failedToolNodeId, undefined);
-    assert.equal(store.runs()[0]?.failedToolNodeId, undefined);
-    assert.equal(sent[0]?.details?.toolNodeId, undefined);
-    assert.equal(sent[0]?.details?.toolName, undefined);
-    assert.doesNotMatch(sent[0]?.content ?? "", /tool caught-same-value/);
+    assert.equal(result.failedToolNodeId, failedNodeId);
+    assert.equal(store.runs()[0]?.failedToolNodeId, failedNodeId);
+    assert.equal(sent[0]?.details?.toolNodeId, failedNodeId);
+    assert.equal(sent[0]?.details?.toolName, "caught-same-value");
+    assert.match(sent[0]?.content ?? "", /tool caught-same-value/);
   });
   test("an uncaught body error has no false origin from a caught failed tool", async () => {
     const store = createStore();
@@ -444,7 +449,7 @@ describe("ctx.tool failure origin", () => {
 
     const parentSnapshot = store.runs().find((candidate) => candidate.id === result.runId);
     const childSnapshot = store.runs().find((candidate) => candidate.parentRunId === result.runId);
-    assert.equal(childSnapshot?.failedToolNodeId, undefined);
+    assert.equal(childSnapshot?.failedToolNodeId, childSnapshot?.toolNodes?.[0]?.id);
     assert.equal(parentSnapshot?.failedStageId, parentSnapshot?.stages[0]?.id);
     assert.equal(parentSnapshot?.failedToolNodeId, undefined);
     assert.equal(result.failedToolNodeId, undefined);

@@ -31,6 +31,7 @@ import {
   finalizeKilledByFailure,
   recordActiveBlockedFailure,
   normalizeStageLessFailureMetadata,
+  normalizeFailureWinnerMetadata,
   reconcileTerminalRunResult,
   selectRunFailureDisposition,
 } from "../runs/foreground/executor-lifecycle.js";
@@ -38,7 +39,7 @@ import { assertWorkflowRunOutputs, normalizeWorkflowRunOutput } from "../runs/fo
 import { isWorkflowDefinition, workflowDefinitionRequirementMessage } from "../runs/foreground/executor-child-helpers.js";
 import { getDurableBackend } from "../durable/factory.js";
 import { classifyReturnedRunStatus } from "./run-returned-status.js";
-import { createToolPrimitive, createCheckpointIdGenerator } from "../durable/tool-primitive.js";
+import { createCheckpointIdGenerator } from "../durable/tool-primitive.js";
 import { createDurableStagePrimitive, createDurableTaskPrimitive, createStageReplayKeyGenerator } from "../durable/stage-primitive.js";
 import { inheritedRunElapsedMs, recordRunTimingCheckpoint } from "../durable/run-timing.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
@@ -49,8 +50,9 @@ import { createDurableStageSessionRecorder } from "./run-durable-stage-session.j
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { createDurableCachedStageRecorder, createDurableStageDeps, createDurableStageEndRecorder, createDurableStageTopologyResolver, durableRunTopology, recordDurableActiveStage } from "./run-durable-topology.js";
 import { admitDurableRootRun, durableRootRegistrationForRun } from "./run-durable-admission.js";
-import { createToolNodeLifecycle } from "./run-tool-node-lifecycle.js";
-import { createAdmittedToolExecutionTracker } from "./run-tool-execution-tracker.js";
+import { createTrackedToolPrimitive } from "./run-tool-node-lifecycle.js";
+import { createRunTerminalEventArbiter } from "./run-terminal-event.js";
+import { finalizeTerminalFailure } from "./run-terminal-failure.js";
 type WorkflowRunInputArgument = Parameters<typeof resolveAndValidateInputs>[1];
 export function run<
   TInputs extends WorkflowInputValues,
@@ -93,6 +95,8 @@ export async function run<
   const runId = opts.runId ?? crypto.randomUUID();
   const exitScope = Symbol(`workflow-exit:${runId}`);
   const ownController = new AbortController();
+  const terminalEvents = createRunTerminalEventArbiter(runId);
+  ownController.signal.addEventListener("abort", () => { terminalEvents.selectCancellation(ownController.signal.reason); }, { once: true });
   const callerSignal = opts.signal;
   if (callerSignal) {
     if (callerSignal.aborted) ownController.abort(callerSignal.reason);
@@ -309,21 +313,18 @@ export async function run<
     hasPersistence: opts.persistence !== undefined, isChildRun: opts.parentRun !== undefined,
     continuationSourceId: opts.continuation?.source.id,
   });
-  const admittedTools = createAdmittedToolExecutionTracker();
-  let selectedAdmittedToolFailure: ReturnType<typeof admittedTools.firstFailure> = undefined;
-  const tool = createToolPrimitive({
+  const { tool, admittedTools } = createTrackedToolPrimitive({
     workflowId: runId,
     backend: durableBackend,
     nextCheckpointId: checkpointIdGenerator,
-    throwIfCancelled: () => {
-      if (ownController.signal.aborted) {
-        throw new Error("atomic-workflows: workflow cancelled");
-      }
-    },
-    signal: ownController.signal,
-    trackExecution: admittedTools.track,
-    ...createToolNodeLifecycle({ store: activeStore, tracker, run: runSnapshot, sourceToReplayedNodeIds }),
+    controller: ownController,
+    terminalEvents,
+    store: activeStore,
+    tracker,
+    run: runSnapshot,
+    sourceToReplayedNodeIds,
   });
+  let selectedAdmittedToolFailure: ReturnType<typeof admittedTools.firstFailure> = undefined;
   // Prompt-node mode re-materializes metadata before returning a durable ctx.ui cache hit.
   const resolvePromptNodeTopology = createDurableStageTopologyResolver(durableBackend, runId);
   let promptNodeUi: ReturnType<typeof buildPromptNodeUiAdapter> | undefined;
@@ -394,6 +395,7 @@ export async function run<
     tool,
     ...(opts.models !== undefined ? { models: opts.models } : {}),
   };
+  terminalEvents.register();
   try {
     if (opts.deferWorkflowStart === true) {
       await nextEventLoopTurn();
@@ -414,15 +416,16 @@ export async function run<
     if (opts.deferWorkflowStart === true) opts.onWorkflowStartReady?.();
     const rawResult = await runWorkflowDefinitionCallback(def.name, runId, () => def.run(ctx));
     await admittedTools.closeAndDrain();
-    if (ownController.signal.aborted) {
-      const selectedExit = findWorkflowExitSignal(ownController.signal.reason, exitScope);
+    const normalTerminalEvent = terminalEvents.winner();
+    if (normalTerminalEvent?.kind === "cancellation") {
+      const selectedExit = findWorkflowExitSignal(normalTerminalEvent.reason, exitScope);
       if (selectedExit !== undefined) return await finalizers.finalizeWorkflowExit(selectedExit);
-      const parentExit = parentWorkflowExitAbortReason(ownController.signal.reason);
+      const parentExit = parentWorkflowExitAbortReason(normalTerminalEvent.reason);
       if (parentExit !== undefined) return await finalizers.finalizeParentWorkflowExitCancellation(parentExit);
       return finalizeKilled(runId, runSnapshot, activeStore, opts.persistence, opts.onRunEnd);
     }
     selectedAdmittedToolFailure = admittedTools.firstFailure();
-    if (selectedAdmittedToolFailure !== undefined) throw selectedAdmittedToolFailure.error;
+    if (normalTerminalEvent?.kind === "failure") throw normalTerminalEvent.error;
 
     const result = normalizeWorkflowRunOutput(def.name, rawResult);
     assertWorkflowRunOutputs(def.name, result, def.outputs);
@@ -436,19 +439,24 @@ export async function run<
     await durableBackend.flush();
     return reconcileTerminalRunResult(runId, runSnapshot, activeStore, { status: returned.status, result, error: returned.error }, opts.onRunEnd);
   } catch (err) {
-    const observedAdmittedToolFailure = selectedAdmittedToolFailure;
+    terminalEvents.selectFailure(err);
     await admittedTools.closeAndDrain();
+    const observedAdmittedToolFailure = selectedAdmittedToolFailure ?? admittedTools.uniqueFailureFor(err);
     const selectedExit = findWorkflowExitSignal(err, exitScope) ?? findWorkflowExitSignal(ownController.signal.reason, exitScope);
     if (selectedExit !== undefined) return await finalizers.finalizeWorkflowExit(selectedExit);
-    if (ownController.signal.aborted) {
-      const parentExit = parentWorkflowExitAbortReason(ownController.signal.reason);
+    const catchTerminalEvent = terminalEvents.winner();
+    if (catchTerminalEvent?.kind === "cancellation") {
+      const parentExit = parentWorkflowExitAbortReason(catchTerminalEvent.reason);
       if (parentExit !== undefined) return await finalizers.finalizeParentWorkflowExitCancellation(parentExit);
       return finalizeKilled(runId, runSnapshot, activeStore, opts.persistence, opts.onRunEnd);
     }
     const failure = classifyExecutorFailure(err);
-    const selectedMetadata = normalizeStageLessFailureMetadata(selectRunFailureDisposition({ outerFailure: failure, thrownError: err, stages: runSnapshot.stages, classifyFailure: classifyExecutorFailure }), runSnapshot.stages.length);
+    const selectedMetadata = normalizeFailureWinnerMetadata(normalizeStageLessFailureMetadata(selectRunFailureDisposition({ outerFailure: failure, thrownError: err, stages: runSnapshot.stages, classifyFailure: classifyExecutorFailure }), runSnapshot.stages.length));
     const failedToolNodeId = selectedMetadata.failedStageId === undefined && selectedMetadata.failureKind !== "cancelled" && selectedMetadata.failureDisposition !== "terminal_killed"
-      ? observedAdmittedToolFailure?.nodeId : undefined;
+      ? catchTerminalEvent?.kind === "failure" && Object.is(catchTerminalEvent.error, err)
+        ? catchTerminalEvent.nodeId ?? observedAdmittedToolFailure?.nodeId
+        : observedAdmittedToolFailure?.nodeId
+      : undefined;
     const metadata = failedToolNodeId === undefined ? selectedMetadata : { ...selectedMetadata, failedToolNodeId };
 
     if (metadata.failureDisposition === "terminal_killed") {
@@ -466,25 +474,9 @@ export async function run<
       });
     }
 
-    const recorded = activeStore.recordRunEnd(runId, "failed", undefined, metadata.errorMessage, metadata);
-    appendRunEndWhenRecorded(opts.persistence, recorded, {
-      runId,
-      status: "failed",
-      error: metadata.errorMessage,
-      failureKind: metadata.failureKind,
-      ...(metadata.failureCode !== undefined ? { failureCode: metadata.failureCode } : {}),
-      ...(metadata.failureRecoverability !== undefined ? { failureRecoverability: metadata.failureRecoverability } : {}),
-      ...(metadata.failureDisposition !== undefined ? { failureDisposition: metadata.failureDisposition } : {}),
-      failureMessage: metadata.failureMessage,
-      ...(metadata.failedStageId !== undefined ? { failedStageId: metadata.failedStageId } : {}),
-      ...(metadata.failedToolNodeId !== undefined ? { failedToolNodeId: metadata.failedToolNodeId } : {}),
-      resumable: metadata.resumable,
-      ...(metadata.retryAfterMs !== undefined ? { retryAfterMs: metadata.retryAfterMs } : {}),
-      ...(runSnapshot.endedAt !== undefined ? { endedAt: runSnapshot.endedAt } : {}),
-      ...(runSnapshot.durationMs !== undefined ? { durationMs: runSnapshot.durationMs } : {}),
-      ts: Date.now(),
+    return finalizeTerminalFailure({
+      runId, runSnapshot, store: activeStore, persistence: opts.persistence, metadata, onRunEnd: opts.onRunEnd,
     });
-    return reconcileTerminalRunResult(runId, runSnapshot, activeStore, { status: "failed", error: metadata.errorMessage }, opts.onRunEnd);
   } finally {
     try {
       await finalizeDurableTerminalStatus({
@@ -494,7 +486,11 @@ export async function run<
         durableBackend,
       });
     } finally {
-      gitWorktreeSetupCacheOwner.release(() => opts.cancellation?.unregister(runId));
+      try {
+        gitWorktreeSetupCacheOwner.release(() => opts.cancellation?.unregister(runId));
+      } finally {
+        terminalEvents.dispose();
+      }
     }
   }
 }

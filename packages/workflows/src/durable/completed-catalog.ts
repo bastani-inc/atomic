@@ -94,7 +94,7 @@ export function completedWorkflowRunSnapshots(
   entry: ResumableWorkflowEntry,
 ): readonly RunSnapshot[] {
   const handle = backend.getWorkflow(entry.workflowId);
-  if (handle === undefined || handle.status !== "completed") return [];
+  if (handle === undefined || (handle.status !== "completed" && handle.status !== "failed")) return [];
   const checkpoints = backend.listCheckpoints(entry.workflowId);
   if (checkpoints.length === 0) return [];
   const runs = runSnapshotsFromCheckpoints(checkpoints, handle.workflowId, handle.name, handle.updatedAt)
@@ -106,10 +106,17 @@ export function completedWorkflowRunSnapshots(
   const root: RunSnapshot = {
     ...runs[rootIndex]!,
     inputs: { ...handle.inputs } as WorkflowInputValues,
+    status: handle.status,
     startedAt: handle.createdAt,
     endedAt: handle.updatedAt,
     durationMs: rootDuration,
-    resumable: false,
+    ...(handle.error !== undefined ? { error: handle.error } : {}),
+    ...(handle.failureKind !== undefined ? { failureKind: handle.failureKind } : {}),
+    ...(handle.failureCode !== undefined ? { failureCode: handle.failureCode } : {}),
+    ...(handle.failureRecoverability !== undefined ? { failureRecoverability: handle.failureRecoverability } : {}),
+    ...(handle.failureDisposition !== undefined ? { failureDisposition: handle.failureDisposition } : {}),
+    ...(handle.failedToolNodeId !== undefined ? { failedToolNodeId: handle.failedToolNodeId } : {}),
+    resumable: handle.resumable ?? false,
   };
   return [root, ...runs.filter((_, index) => index !== rootIndex)];
 }
@@ -179,7 +186,9 @@ function completedToolNodes(
     const outcome = checkpoint.outcomeKind === undefined
       ? undefined
       : workflowToolOutcomeFromValue(checkpoint.output);
-    const failed = checkpoint.outcomeKind === "return_failure";
+    const failed = checkpoint.outcomeKind === "return_failure" || checkpoint.throwingFailureError !== undefined;
+    const failureError = checkpoint.throwingFailureError
+      ?? (outcome?.ok === false ? outcome.error.message : undefined);
     return [{
       kind: "tool" as const,
       id: topology?.nodeId ?? checkpoint.checkpointId,
@@ -194,7 +203,7 @@ function completedToolNodes(
       ...(topology?.startedAt !== undefined ? { startedAt: topology.startedAt } : {}),
       endedAt: topology?.endedAt ?? checkpoint.completedAt,
       ...(failed
-        ? { error: outcome?.ok === false ? outcome.error.message : "Invalid durable ctx.tool failure outcome" }
+        ? { error: failureError ?? "Invalid durable ctx.tool failure outcome" }
         : { resultSummary: summarizeCompletedToolResult(checkpoint.output) }),
       attachable: false as const,
     }];

@@ -42,6 +42,7 @@ export function appendRunEndWhenRecorded(
     readonly failureMessage?: string;
     readonly failedStageId?: string;
     readonly failedToolNodeId?: string;
+    readonly failedToolNode?: import("../../shared/store-types.js").ToolNodeSnapshot;
     readonly resumable?: boolean;
     readonly retryAfterMs?: number;
     readonly ts: number;
@@ -346,6 +347,21 @@ export function normalizeStageLessFailureMetadata(
     return metadata;
   }
   return { ...metadata, failureDisposition: "terminal_failed" };
+}
+
+/** A cancellation-shaped thrown error fails unless the run arbiter observed cancellation first. */
+export function normalizeFailureWinnerMetadata(
+  metadata: SelectedRunFailureMetadata,
+): SelectedRunFailureMetadata {
+  if (metadata.failureKind !== "cancelled" && metadata.failureCode !== "cancelled") return metadata;
+  return {
+    ...metadata,
+    failureKind: "unknown",
+    failureCode: "unknown",
+    failureRecoverability: "unknown",
+    failureDisposition: "terminal_failed",
+    resumable: true,
+  };
 }
 
 export function stageReplayFields(stage: StageSnapshot): Partial<Pick<StageSnapshot, "replayKey" | "replayedFromStageId" | "replayed">> {

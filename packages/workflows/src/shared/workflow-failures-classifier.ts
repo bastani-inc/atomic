@@ -29,6 +29,8 @@ import {
   errorMessage,
   errorName,
   field,
+  hasProcessFailureEvidence,
+  selectProcessFailureError,
   nestedProviderError,
   normalizeCode,
   redactSensitiveText,
@@ -252,15 +254,19 @@ function failureForDecision(decision: WorkflowFailureDecision, message: string, 
 }
 
 export function classifyWorkflowFailure(error: unknown): WorkflowFailure {
-  const message = errorMessage(error);
+  const displayError = selectProcessFailureError(error);
+  const message = errorMessage(displayError);
+  const hasProcessFailure = displayError !== error || hasProcessFailureEvidence(error);
   const structured = structuredClassification(error);
-  if (structured !== undefined) {
-    const structuredMessage = structured.message ?? message;
+  if (structured !== undefined && !(hasProcessFailure && structured.decision.code === "cancelled")) {
+    const structuredMessage = hasProcessFailure ? message : structured.message ?? message;
     return failureForDecision(structured.decision, structuredMessage, error);
   }
 
-  const fallback = fallbackDecisionFromMessage(message, errorName(error));
-  if (fallback !== undefined) return failureForDecision(fallback, message, error);
+  const fallback = fallbackDecisionFromMessage(message, errorName(displayError));
+  if (fallback !== undefined && !(hasProcessFailure && fallback.code === "cancelled")) {
+    return failureForDecision(fallback, message, error);
+  }
 
   return failureForDecision(unknownDecision(), message, error);
 }

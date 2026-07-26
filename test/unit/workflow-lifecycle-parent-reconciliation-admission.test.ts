@@ -7,6 +7,8 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall, type Context } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { convertToLlm } from "../../packages/coding-agent/src/core/messages.js";
+import type { AgentSessionInternalSurface } from "../../packages/coding-agent/src/core/agent-session-methods.js";
+import { PROTECTED_RECONCILIATION_CUSTOM_TYPE } from "../../packages/coding-agent/src/core/agent-session-persistent-custom-messages.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { createHarness, getMessageText, type Harness } from "../../packages/coding-agent/test/suite/harness.js";
 import {
@@ -247,6 +249,58 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 		).length, 1);
 	});
 
+	test("prompt startup failure retries the hidden correction without duplicating its durable card", async () => {
+		const runId = "run-prompt-start-retry";
+		const store = createStore();
+		store.recordRunStart({ id: runId, name: "prompt-start-retry", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const promptSession = harness.session as unknown as AgentSessionInternalSurface;
+		const originalRunAgentPrompt = promptSession._runAgentPrompt.bind(promptSession);
+		let promptStarts = 0;
+		promptSession._runAgentPrompt = (messages, promptStarted) => {
+			promptStarts += 1;
+			if (promptStarts === 1) return Promise.reject(new Error("prompt startup rejected"));
+			return originalRunAgentPrompt(messages, promptStarted);
+		};
+		const providerStarted = Promise.withResolvers<void>();
+		let providerContext: Context | undefined;
+		harness.setResponses([(context) => {
+			providerContext = context;
+			providerStarted.resolve();
+			return fauxAssistantMessage("Recovered the failed workflow after prompt startup retry.");
+		}]);
+		unsubscriptions.push(installWorkflowLifecycleNotifications({
+			store,
+			config: lifecycleConfig,
+			seedExisting: false,
+			sendMessage: (message, options) => harness.session.sendCustomMessage(message, options),
+		}));
+
+		assert.equal(store.recordRunEnd(runId, "failed", undefined, "durable tool rejected"), true);
+		await Promise.race([
+			providerStarted.promise,
+			Bun.sleep(1_000).then(() => { throw new Error("hidden reconciliation retry did not start"); }),
+		]);
+		await harness.session.agent.waitForIdle();
+
+		assert.equal(promptStarts, 1, "the failed prompt must not restart lifecycle card delivery");
+		assert.equal(harness.faux.state.callCount, 1, "the queued hidden correction must retry once");
+		assert.equal(harness.session.messages.filter(
+			(message) => message.role === "custom" && message.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE,
+		).length, 1, "prompt retry must reuse the physically persisted lifecycle card");
+		assert.equal(harness.sessionManager.getEntries().filter(
+			(entry) => entry.type === "custom_message" && entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE,
+		).length, 1);
+		assert.equal(harness.sessionManager.getEntries().filter(
+			(entry) => entry.type === "custom_message" && entry.customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE,
+		).length, 1);
+		assert.ok(providerContext);
+		assert.equal(providerContext.messages.filter(
+			(message) => message.role === "user" && getMessageText(message).includes(`failed (run ${runId}`),
+		).length, 1);
+	});
+
 	test("a paced ordinary abort stops the stale turn but completes one correcting lifecycle response", async () => {
 		const store = createStore();
 		store.recordRunStart({ id: "run-abort-survival", name: "abort-survival", inputs: {}, status: "running", stages: [], startedAt: 1 });
@@ -312,5 +366,101 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 		assert.equal(harness.sessionManager.getEntries().filter(
 			(entry) => entry.type === "custom_message" && entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE,
 		).length, 1);
+	});
+
+	test("restores one queued hidden correction after a crash between card admission and consumption", async () => {
+		const runId = "run-crash-reconciliation";
+		const sessionDir = mkdtempSync(join(tmpdir(), "atomic-lifecycle-crash-session-"));
+		tempDirs.push(sessionDir);
+		const sessionManager = SessionManager.create(process.cwd(), sessionDir);
+		sessionManager.appendMessage(fauxAssistantMessage("Prior durable turn."));
+		const original = await createHarness({ sessionManager });
+		harnesses.push(original);
+		original.session.pauseQueuedMessages();
+		const store = createStore();
+		store.recordRunStart({ id: runId, name: "crash-reconciliation", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		let delivery: Promise<void> | undefined;
+		unsubscriptions.push(installWorkflowLifecycleNotifications({
+			store,
+			config: lifecycleConfig,
+			seedExisting: false,
+			sendMessage(message, options) {
+				delivery = original.session.sendCustomMessage(message, options);
+				return delivery;
+			},
+		}));
+
+		assert.equal(store.recordRunEnd(runId, "failed", undefined, "commit hook rejected docs"), true);
+		await delivery;
+		const sessionFile = sessionManager.getSessionFile();
+		assert.ok(sessionFile);
+		const persistedCards = sessionManager.getBranch().filter(
+			(entry) => entry.type === "custom_message" && entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE,
+		);
+		assert.equal(persistedCards.length, 1);
+		assert.deepEqual(
+			(persistedCards[0] as { protectedReconciliation?: { delivery?: string } } | undefined)?.protectedReconciliation,
+			{ delivery: "steer" },
+			"the durable card must atomically carry its recoverable hidden-turn intent",
+		);
+
+		// Simulate process loss: discard native queue/protection without a graceful flush.
+		(original.session as typeof original.session & { _protectedStreamingCustomMessages: object[] })
+			._protectedStreamingCustomMessages = [];
+		original.session.clearQueue();
+
+		const reopened = SessionManager.open(sessionFile, sessionDir, process.cwd());
+		const restored = await createHarness({ sessionManager: reopened });
+		restored.session.agent.state.messages = reopened.buildSessionContext().messages;
+		restored.session.pauseQueuedMessages();
+		harnesses.push(restored);
+		let correctionContext: Context | undefined;
+		restored.setResponses([(context) => {
+			correctionContext = context;
+			return fauxAssistantMessage("Recovered the failed workflow after restart.");
+		}]);
+		const restoredStore = createStore();
+		restoredStore.recordRunStart({ id: runId, name: "crash-reconciliation", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		restoredStore.recordRunEnd(runId, "failed", undefined, "commit hook rejected docs");
+		unsubscriptions.push(installWorkflowLifecycleNotifications({
+			store: restoredStore,
+			config: lifecycleConfig,
+			sendMessage: (message, options) => restored.session.sendCustomMessage(message, options),
+		}));
+		await restored.session.bindExtensions({});
+		await restored.session.bindExtensions({});
+		const restoredInternals = restored.session as typeof restored.session & {
+			_protectedStreamingCustomMessages: object[];
+			_continueQueuedAgentMessages(): Promise<void>;
+		};
+		assert.equal(
+			restoredInternals._protectedStreamingCustomMessages.length,
+			1,
+			"repeated startup binding must not queue the same durable intent twice",
+		);
+		assert.equal(await restored.session.resumeQueuedMessages(), true);
+		await restoredInternals._continueQueuedAgentMessages();
+		await restored.session.agent.waitForIdle();
+
+		assert.equal(restored.faux.state.callCount, 1);
+		assert.ok(correctionContext);
+		assert.equal(correctionContext.messages.filter(
+			(message) => message.role === "user" && getMessageText(message).includes(`failed (run ${runId}`),
+		).length, 1);
+		assert.equal(reopened.getBranch().filter(
+			(entry) => entry.type === "custom_message" && entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE,
+		).length, 1, "restore must not duplicate the visible lifecycle card");
+		assert.equal(reopened.getBranch().filter(
+			(entry) => entry.type === "custom_message" && entry.customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE,
+		).length, 1, "the recovered correction must resolve its durable intent once");
+
+		const reopenedAgain = SessionManager.open(sessionFile, sessionDir, process.cwd());
+		const later = await createHarness({ sessionManager: reopenedAgain });
+		later.session.agent.state.messages = reopenedAgain.buildSessionContext().messages;
+		harnesses.push(later);
+		later.setResponses([() => fauxAssistantMessage("unexpected duplicate correction")]);
+		await later.session.bindExtensions({});
+		await Bun.sleep(0);
+		assert.equal(later.faux.state.callCount, 0, "a later restore must not repeat the resolved correction");
 	});
 });

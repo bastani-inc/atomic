@@ -39,7 +39,17 @@ export async function finalizeDurableTerminalStatus(input: DurableTerminalFinali
     if (durableStatus === "failed" || durableStatus === "blocked") {
       recordRunTimingCheckpoint(input.durableBackend, input.runSnapshot);
     }
-    input.durableBackend.setWorkflowStatus(input.runId, durableStatus, undefined, input.runSnapshot.resumable);
+    const failure = durableStatus === "failed" && input.runSnapshot.error !== undefined
+      ? {
+          error: input.runSnapshot.error,
+          ...(input.runSnapshot.failureKind !== undefined ? { failureKind: input.runSnapshot.failureKind } : {}),
+          ...(input.runSnapshot.failureCode !== undefined ? { failureCode: input.runSnapshot.failureCode } : {}),
+          ...(input.runSnapshot.failureRecoverability !== undefined ? { failureRecoverability: input.runSnapshot.failureRecoverability } : {}),
+          ...(input.runSnapshot.failureDisposition !== undefined ? { failureDisposition: input.runSnapshot.failureDisposition } : {}),
+          ...(input.runSnapshot.failedToolNodeId !== undefined ? { failedToolNodeId: input.runSnapshot.failedToolNodeId } : {}),
+        }
+      : undefined;
+    input.durableBackend.setWorkflowStatus(input.runId, durableStatus, undefined, input.runSnapshot.resumable, failure);
   }
   await input.durableBackend.flush();
 }

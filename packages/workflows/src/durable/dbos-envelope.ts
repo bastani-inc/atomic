@@ -50,6 +50,7 @@ export interface DbosCheckpointEnvelope extends WorkflowSerializableObject {
   readonly argsHash?: string;
   readonly promptKind?: UiPromptKind;
   readonly outcomeKind?: "return_success" | "return_failure";
+  readonly throwingFailureError?: string;
   readonly message?: string;
   readonly promptHash?: string;
   readonly replayKey?: string;
@@ -100,6 +101,7 @@ export function encodeCheckpoint(checkpoint: DurableCheckpoint): DbosCheckpointE
       name: t.name,
       argsHash: t.argsHash,
       ...(t.outcomeKind !== undefined ? { outcomeKind: t.outcomeKind } : {}),
+      ...(t.throwingFailureError !== undefined ? { throwingFailureError: t.throwingFailureError } : {}),
       ...(t.topology !== undefined ? { topology: {
         version: t.topology.version,
         nodeId: t.topology.nodeId,
@@ -198,7 +200,8 @@ function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): Durabl
   const common = { workflowId, checkpointId: env.checkpointId, completedAt: env.completedAt };
   if (env.kind === "tool") {
     if (typeof env.argsHash !== "string" || env.output === undefined
-      || (env.outcomeKind !== undefined && env.outcomeKind !== "return_success" && env.outcomeKind !== "return_failure")) return undefined;
+      || (env.outcomeKind !== undefined && env.outcomeKind !== "return_success" && env.outcomeKind !== "return_failure")
+      || (env.throwingFailureError !== undefined && typeof env.throwingFailureError !== "string")) return undefined;
     const outcome = env.outcomeKind === undefined ? undefined : workflowToolOutcomeFromValue(env.output);
     if ((env.outcomeKind === "return_success" && outcome?.ok !== true)
       || (env.outcomeKind === "return_failure" && outcome?.ok !== false)) return undefined;
@@ -211,6 +214,7 @@ function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): Durabl
       argsHash: env.argsHash,
       output: env.output,
       ...(env.outcomeKind !== undefined ? { outcomeKind: env.outcomeKind } : {}),
+      ...(env.throwingFailureError !== undefined ? { throwingFailureError: env.throwingFailureError } : {}),
       ...(topology !== undefined ? { topology } : {}),
     } as DurableToolCheckpoint;
   }

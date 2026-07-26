@@ -11,7 +11,12 @@ import {
   installWorkflowLifecycleNotifications,
   seedWorkflowLifecycleNotificationState,
 } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
-import { handleRunControlCommand, type WorkflowRunControlDeps } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
+import {
+  prepareWorkflowResumeCatalog,
+  resolveWorkflowResumeTarget,
+  type WorkflowRunControlDeps,
+} from "../../packages/workflows/src/extension/workflow-durable-resume-command.js";
+import { handleRunControlCommand } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
 import { collectResumePickerLiveRuns } from "../../packages/workflows/src/extension/workflow-resume-picker-rows.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
 
@@ -285,6 +290,61 @@ describe("/workflow resume completed target", () => {
       assert.match(result.messages.join("\n"), new RegExp(`resumed ${status}`));
     });
   }
+
+  test("routes checkpointed resumable failures through durable resume instead of completed inspection", async () => {
+    const backend = new InMemoryDurableBackend();
+    setDurableBackend(backend);
+    const id = "failed-resumable-command-target";
+    backend.registerWorkflow({
+      workflowId: id,
+      name: "failed-resumable-flow",
+      inputs: {},
+      createdAt: 1,
+      status: "failed",
+      resumable: true,
+      error: "durable tool failed",
+    });
+    backend.recordCheckpoint({
+      kind: "tool",
+      workflowId: id,
+      checkpointId: "tool-failure:1",
+      name: "failed-tool",
+      argsHash: "failed-tool-hash",
+      output: null,
+      throwingFailureError: "durable tool failed",
+      completedAt: 2,
+    });
+    const resumableRow = backend.listResumableWorkflows()[0]!;
+    const completedCollision = { ...resumableRow, resumable: false };
+    let resumeCalls = 0;
+    let completedOpenCalls = 0;
+    const runtime = {
+      registry: { has: () => true },
+      prepareDurableResumable: async () => [resumableRow],
+      prepareCompletedDurable: async () => [completedCollision],
+      resumeDurableWorkflow() {
+        resumeCalls += 1;
+        return Promise.resolve({ ok: true as const, runId: id, workflowId: id, name: "failed-resumable-flow", message: "resumed failed durable run" });
+      },
+      openCompletedDurableWorkflow() {
+        completedOpenCalls += 1;
+        return { ok: false as const, reason: "not_found" as const, message: "must not open completed history" };
+      },
+    } as unknown as ExtensionRuntime;
+
+    const catalog = await prepareWorkflowResumeCatalog(runtime, new Set(), id);
+    assert.deepEqual(catalog.resumable.map((entry) => entry.workflowId), [id]);
+    assert.deepEqual(catalog.completed.map((entry) => entry.workflowId), [id], "the collision must exist in both catalogs");
+    assert.equal(resolveWorkflowResumeTarget(id, [], catalog.resumable, catalog.completed).kind, "durable");
+    assert.equal(resolveWorkflowResumeTarget("failed-resumable-command", [], catalog.resumable, catalog.completed).kind, "durable");
+
+    const result = await resume("failed-resumable-command", runtime);
+
+    assert.equal(resumeCalls, 1);
+    assert.equal(completedOpenCalls, 0);
+    assert.deepEqual(result.errors, []);
+    assert.match(result.messages.join("\n"), /resumed failed durable run/);
+  });
 
   test("keeps exact full live ids on the existing paused resume path without listing completed durable runs", async () => {
     const backend = new InMemoryDurableBackend();

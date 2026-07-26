@@ -21,8 +21,10 @@ const BUILTIN_WORKFLOW_NAMES = [
   "classify-and-act",
   "fan-out-and-synthesize",
   "generate-and-filter",
+  "goal",
   "loop-until-done",
   "open-claude-design",
+  "ralph",
   "tournament",
 ] as const;
 

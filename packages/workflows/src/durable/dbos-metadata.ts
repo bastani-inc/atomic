@@ -3,6 +3,12 @@ import type { DbosStepRecord } from "./dbos-backend.js";
 import { isCurrentDurableFormat, DURABLE_FORMAT_VERSION } from "./format-version.js";
 import type { DurableWorkflowMetadata, DurableWorkflowStatus } from "./types.js";
 import { isAbsorbingDurableStatus } from "./workflow-status-transition.js";
+import {
+  isWorkflowFailureCode,
+  isWorkflowFailureDisposition,
+  isWorkflowFailureKind,
+  isWorkflowFailureRecoverability,
+} from "../shared/workflow-failures.js";
 
 const METADATA_STEP_PREFIX = "__atomic_metadata";
 
@@ -52,6 +58,12 @@ export function encodeMetadata(metadata: DurableWorkflowMetadata): WorkflowSeria
       ...(metadata.label !== undefined ? { label: metadata.label } : {}),
       ...(metadata.rootWorkflowId !== undefined ? { rootWorkflowId: metadata.rootWorkflowId } : {}),
       ...(metadata.resumable !== undefined ? { resumable: metadata.resumable } : {}),
+      ...(metadata.error !== undefined ? { error: metadata.error } : {}),
+      ...(metadata.failureKind !== undefined ? { failureKind: metadata.failureKind } : {}),
+      ...(metadata.failureCode !== undefined ? { failureCode: metadata.failureCode } : {}),
+      ...(metadata.failureRecoverability !== undefined ? { failureRecoverability: metadata.failureRecoverability } : {}),
+      ...(metadata.failureDisposition !== undefined ? { failureDisposition: metadata.failureDisposition } : {}),
+      ...(metadata.failedToolNodeId !== undefined ? { failedToolNodeId: metadata.failedToolNodeId } : {}),
       ...(metadata.invocationCwd !== undefined ? { invocationCwd: metadata.invocationCwd } : {}),
       ...(metadata.workflowCwd !== undefined ? { workflowCwd: metadata.workflowCwd } : {}),
       ...(metadata.repositoryRoot !== undefined ? { repositoryRoot: metadata.repositoryRoot } : {}),
@@ -132,6 +144,12 @@ function parseDurableWorkflowMetadata(
     || (metadata.label !== undefined && typeof metadata.label !== "string")
     || (metadata.rootWorkflowId !== undefined && typeof metadata.rootWorkflowId !== "string")
     || (metadata.resumable !== undefined && typeof metadata.resumable !== "boolean")
+    || (metadata.error !== undefined && typeof metadata.error !== "string")
+    || (metadata.failureKind !== undefined && !isWorkflowFailureKind(metadata.failureKind))
+    || (metadata.failureCode !== undefined && !isWorkflowFailureCode(metadata.failureCode))
+    || (metadata.failureRecoverability !== undefined && !isWorkflowFailureRecoverability(metadata.failureRecoverability))
+    || (metadata.failureDisposition !== undefined && !isWorkflowFailureDisposition(metadata.failureDisposition))
+    || (metadata.failedToolNodeId !== undefined && typeof metadata.failedToolNodeId !== "string")
     || (metadata.invocationCwd !== undefined && typeof metadata.invocationCwd !== "string")
     || (metadata.workflowCwd !== undefined && typeof metadata.workflowCwd !== "string")
     || (metadata.repositoryRoot !== undefined && typeof metadata.repositoryRoot !== "string")

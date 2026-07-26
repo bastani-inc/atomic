@@ -11,6 +11,7 @@ import type {
   WorkflowFailureCode,
   WorkflowFailureDisposition,
   WorkflowFailureKind,
+  ToolNodeSnapshot,
 } from "./store-types.js";
 
 // ---------------------------------------------------------------------------
@@ -113,6 +114,7 @@ export interface RunEndPayload {
   readonly failureMessage?: string;
   readonly failedStageId?: string;
   readonly failedToolNodeId?: string;
+  readonly failedToolNode?: ToolNodeSnapshot;
   readonly resumable?: boolean;
   readonly retryAfterMs?: number;
   readonly endedAt?: number;
@@ -259,6 +261,7 @@ export function appendRunEnd(api: PersistenceAPI, payload: RunEndPayload): void 
     ...(terminalPayload.failureMessage !== undefined ? { failureMessage: terminalPayload.failureMessage } : {}),
     ...(terminalPayload.failedStageId !== undefined ? { failedStageId: terminalPayload.failedStageId } : {}),
     ...(terminalPayload.failedToolNodeId !== undefined ? { failedToolNodeId: terminalPayload.failedToolNodeId } : {}),
+    ...(terminalPayload.failedToolNode !== undefined ? { failedToolNode: terminalPayload.failedToolNode } : {}),
     ...(terminalPayload.resumable !== undefined ? { resumable: terminalPayload.resumable } : {}),
     ...(terminalPayload.retryAfterMs !== undefined ? { retryAfterMs: terminalPayload.retryAfterMs } : {}),
     ...(terminalPayload.endedAt !== undefined ? { endedAt: terminalPayload.endedAt } : {}),

@@ -34,12 +34,10 @@ import { listAllSessions, listProjectSessions } from "./session-manager-list.ts"
 import { migrateToCurrentVersion } from "./session-manager-migrations.ts";
 import { getDefaultSessionDir, getDefaultSessionDirPath } from "./session-manager-paths.ts";
 import {
-	appendSessionEntries,
-	appendSessionEntry,
 	ensureDirectory,
 	findMostRecentSession,
-	hasAssistantMessage,
 	loadEntriesFromFile,
+	persistAppendedEntry,
 	writeSessionEntries,
 } from "./session-manager-storage.ts";
 import type {
@@ -208,26 +206,23 @@ export class SessionManager {
 
 	_persist(entry: SessionEntry): void {
 		if (!this.persist || !this.sessionFile) return;
-
-		if (!hasAssistantMessage(this.fileEntries)) {
-			// Mark as not flushed so when assistant arrives, all entries get written
-			this.flushed = false;
-			return;
-		}
-
-		if (!this.flushed) {
-			appendSessionEntries(this.sessionFile, this.fileEntries);
-			this.flushed = true;
-		} else {
-			appendSessionEntry(this.sessionFile, entry);
-		}
+		this.flushed = persistAppendedEntry(this.sessionFile, this.fileEntries, entry, this.flushed);
 	}
 
 	private _appendEntry(entry: SessionEntry): void {
+		const previousLeafId = this.leafId;
 		this.fileEntries.push(entry);
 		this.byId.set(entry.id, entry);
 		this.leafId = entry.id;
-		this._persist(entry);
+		try {
+			this._persist(entry);
+		} catch (error) {
+			// Unpublish on write failure, so retries cannot point at an unwritten parent.
+			this.fileEntries.pop();
+			this.byId.delete(entry.id);
+			this.leafId = previousLeafId;
+			throw error;
+		}
 	}
 
 	/** Append a message as child of current leaf, then advance leaf. Returns entry id. */
@@ -296,8 +291,9 @@ export class SessionManager {
 		display: boolean,
 		details?: T,
 		excludeFromContext?: boolean,
+		protectedReconciliation?: { delivery: "steer" | "followUp" },
 	): string {
-		const entry = createCustomMessageEntry(customType, content, display, details, excludeFromContext, this.byId, this.leafId);
+		const entry = createCustomMessageEntry(customType, content, display, details, excludeFromContext, protectedReconciliation, this.byId, this.leafId);
 		this._appendEntry(entry);
 		return entry.id;
 	}

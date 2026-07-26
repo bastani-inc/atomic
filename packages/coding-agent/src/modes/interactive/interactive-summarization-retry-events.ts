@@ -1,6 +1,7 @@
 import type { AgentSessionEvent } from "./interactive-mode-deps.ts";
-import { CountdownTimer, Loader, theme } from "./interactive-mode-deps.ts";
+import { CountdownTimer, keyText, Loader, theme } from "./interactive-mode-deps.ts";
 import type { InteractiveModeBase } from "./interactive-mode-base.ts";
+import { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 
 type RetryEvent = Extract<AgentSessionEvent, { type: `summarization_retry_${string}` }>;
 const activeSources = new WeakMap<InteractiveModeBase, "branchSummary" | "compaction">();
@@ -23,8 +24,13 @@ export function handleSummarizationRetryEvent(mode: InteractiveModeBase, event: 
 		mode.retryLoader?.stop();
 		mode.retryLoader = undefined;
 		mode.statusContainer.clear();
-		const message = event.source === "branchSummary" ? "Summarizing branch..." : event.reason === "manual" ? "Compacting context..." : "Auto-compacting...";
-		mode.autoCompactionLoader = new Loader(mode.ui, (spinner) => theme.fg("accent", spinner), (text) => theme.fg("muted", text), message);
+		const cancelHint = `(${keyText("app.interrupt")} Cancel)`;
+		const message = event.source === "branchSummary"
+			? "Summarizing branch..."
+			: event.reason === "manual"
+				? `Compacting context... ${cancelHint}`
+				: `Auto-compacting... ${cancelHint}`;
+		mode.autoCompactionLoader = new AtomicWorkingLoader(mode.ui, undefined, (text) => theme.fg("muted", text), message);
 		mode.statusContainer.addChild(mode.autoCompactionLoader);
 	} else {
 		mode.retryCountdown?.dispose();

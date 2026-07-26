@@ -6,6 +6,7 @@ import type { ExtensionRunner } from "./extensions/index.ts";
 import type { ResourceExtensionPaths } from "./resource-loader.ts";
 import type { PathMetadata } from "./package-manager.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
+import { recoverProtectedStreamingCustomMessages } from "./agent-session-persistent-custom-messages.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 
 export async function bindExtensions(this: AgentSession, bindings: ExtensionBindings): Promise<void> {
@@ -28,6 +29,9 @@ export async function bindExtensions(this: AgentSession, bindings: ExtensionBind
 	this._applyExtensionBindings(this._extensionRunner);
 	await this._extensionRunner.emit(this._sessionStartEvent);
 	await this.extendResourcesFromExtensions(this._sessionStartEvent.reason === "reload" ? "reload" : "startup");
+	if (recoverProtectedStreamingCustomMessages(this) > 0) {
+		await this._continueQueuedAgentMessages();
+	}
 }
 
 

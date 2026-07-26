@@ -9,6 +9,10 @@ type ProtectedPhase = "queued" | "consumed-unpersisted" | "persistence-failed";
 
 export const PROTECTED_RECONCILIATION_CUSTOM_TYPE = "atomic:protected-streaming-reconciliation";
 
+interface ProtectedReconciliationDetails {
+	protectedReconciliationOf: string;
+}
+
 export interface ProtectedStreamingCustomMessage {
 	message: CustomMessage;
 	delivery: ProtectedDelivery;
@@ -22,18 +26,21 @@ function protectedMessages(session: AgentSession): ProtectedStreamingCustomMessa
 function appendDurableDisplayCard(
 	session: AgentSession,
 	message: CustomMessage,
-): CustomMessage & { excludeFromContext: true } {
+	delivery: ProtectedDelivery,
+): { readonly card: CustomMessage & { excludeFromContext: true }; readonly intentEntryId: string } {
 	const card = { ...message, excludeFromContext: true } satisfies CustomMessage & { excludeFromContext: true };
-	// Persist first: an admission receipt must never precede the durable card.
-	session.sessionManager.appendCustomMessageEntry(
+	// The card and recovery marker share one append, so either both survive a
+	// process exit or neither does.
+	const intentEntryId = session.sessionManager.appendCustomMessageEntry(
 		card.customType,
 		card.content,
 		card.display,
 		card.details,
 		true,
+		{ delivery },
 	);
 	session.agent.state.messages.push(card);
-	return card;
+	return { card, intentEntryId };
 }
 
 function emitDurableDisplayCard(session: AgentSession, card: CustomMessage): void {
@@ -48,15 +55,61 @@ function emitDurableDisplayCard(session: AgentSession, card: CustomMessage): voi
 	} catch {}
 }
 
-function createProtectedReconciliation(message: CustomMessage): CustomMessage {
+function createProtectedReconciliation(message: CustomMessage, intentEntryId: string): CustomMessage {
 	return {
 		role: "custom",
 		customType: PROTECTED_RECONCILIATION_CUSTOM_TYPE,
 		content: message.content,
 		display: false,
-		details: undefined,
+		details: { protectedReconciliationOf: intentEntryId } satisfies ProtectedReconciliationDetails,
 		timestamp: message.timestamp,
 	};
+}
+
+function completedReconciliationIntent(details: unknown): string | undefined {
+	if (details === null || typeof details !== "object") return undefined;
+	const intent = (details as { protectedReconciliationOf?: unknown }).protectedReconciliationOf;
+	return typeof intent === "string" ? intent : undefined;
+}
+
+function protectedDelivery(marker: unknown): ProtectedDelivery | undefined {
+	if (marker === null || typeof marker !== "object") return undefined;
+	const delivery = (marker as { delivery?: unknown }).delivery;
+	return delivery === "steer" || delivery === "followUp" ? delivery : undefined;
+}
+
+/** Requeue each durable card intent that has no persisted hidden completion. */
+export function recoverProtectedStreamingCustomMessages(session: AgentSession): number {
+	const branch = session.sessionManager.getBranch();
+	const completed = new Set(branch.flatMap((entry) =>
+		entry.type === "custom_message" && entry.customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE
+			? [completedReconciliationIntent(entry.details)].filter((intent): intent is string => intent !== undefined)
+			: []
+	));
+	const scheduled = new Set(protectedMessages(session).flatMap((entry) => {
+		const intent = completedReconciliationIntent(entry.message.details);
+		return intent === undefined ? [] : [intent];
+	}));
+	let recovered = 0;
+	for (const entry of branch) {
+		if (entry.type !== "custom_message") continue;
+		const delivery = protectedDelivery(entry.protectedReconciliation);
+		if (delivery === undefined || completed.has(entry.id) || scheduled.has(entry.id)) continue;
+		const parsedTimestamp = Date.parse(entry.timestamp);
+		const card: CustomMessage = {
+			role: "custom",
+			customType: entry.customType,
+			content: entry.content,
+			display: entry.display,
+			details: entry.details,
+			timestamp: Number.isFinite(parsedTimestamp) ? parsedTimestamp : Date.now(),
+		};
+		const reconciliation = createProtectedReconciliation(card, entry.id);
+		protectedMessages(session).push({ message: reconciliation, delivery, phase: "queued" });
+		session._queueAgentMessage(reconciliation, delivery);
+		recovered += 1;
+	}
+	return recovered;
 }
 
 interface ProtectedAdmission {
@@ -76,8 +129,12 @@ async function prepareProtectedAdmission(
 	// be queued synchronously so agent-core's next native poll observes it.
 	if (session.agent.state.pendingToolCalls.size > 0) await session._agentEventQueue;
 	const owner = resolveWorkflowStageDeliveryTarget(session);
-	const cards = messages.map((message) => appendDurableDisplayCard(owner, message));
-	const reconciliations = messages.map(createProtectedReconciliation);
+	const prepared = messages.map((message) => {
+		const { card, intentEntryId } = appendDurableDisplayCard(owner, message, delivery);
+		return { card, reconciliation: createProtectedReconciliation(message, intentEntryId) };
+	});
+	const cards = prepared.map((entry) => entry.card);
+	const reconciliations = prepared.map((entry) => entry.reconciliation);
 	protectedMessages(owner).push(...reconciliations.map((message) => ({ message, delivery, phase: "queued" as const })));
 	return { owner, cards, reconciliations };
 }
