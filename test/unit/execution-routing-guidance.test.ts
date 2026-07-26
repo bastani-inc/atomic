@@ -10,7 +10,7 @@ import { SUBAGENT_TOOL_DESCRIPTION } from "../../packages/subagents/src/extensio
 const repositoryRoot = resolve(import.meta.dir, "../..");
 
 async function readRepositoryFile(path: string): Promise<string> {
-  return Bun.file(resolve(repositoryRoot, path)).text();
+  return (await Bun.file(resolve(repositoryRoot, path)).text()).replaceAll("\r\n", "\n");
 }
 
 const combinedGuidance = [...workflowGuidance, ...subagentGuidance].join("\n");
