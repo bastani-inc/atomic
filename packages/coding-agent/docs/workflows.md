@@ -1519,12 +1519,15 @@ export default workflow({
     const guardResult = branches[1];
     if (guardResult?.structured === undefined) throw new Error("scope guard returned no coordination status");
     const coordination = guardResult.structured as Coordination;
-    const transcriptReads = coordination.status === "available" && guardResult.sessionFile !== undefined
-      ? [guardResult.sessionFile]
-      : [];
+    const guardTranscript = coordination.status === "available"
+      ? guardResult.sessionFile
+      : undefined;
+    const transcriptReads = guardTranscript === undefined ? [] : [guardTranscript];
     const effectiveStatus = fallbackPolicy === "off"
       ? "off"
-      : transcriptReads.length === 1 ? "available" : "unavailable";
+      : coordination.status === "available" && guardTranscript !== undefined
+        ? "available"
+        : "unavailable";
     const humanDecision = effectiveStatus === "unavailable" && fallbackPolicy === "block"
       ? await ctx.ui.editor("Intercom is unavailable. Resolve scope before any blocked expansion continues.")
       : "No fallback human decision required.";

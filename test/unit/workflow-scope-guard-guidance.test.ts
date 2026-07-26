@@ -246,7 +246,8 @@ describe("workflow scope-guard guidance", () => {
                 if (stageName === "scope guard") {
                   return {
                     ...structuredOutputMockSession(options, { status, evidence: `intercom ${status}` }),
-                    sessionFile: status === "available" ? guardTranscript : undefined,
+                    // A normal stage transcript can exist even when Intercom is unavailable.
+                    sessionFile: guardTranscript,
                   };
                 }
                 return textSession(stageName, new Map());
