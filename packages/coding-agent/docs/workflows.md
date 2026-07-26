@@ -34,6 +34,7 @@ Default to a workflow for non-trivial work with a verifiable objective — see [
 - [When to Use Workflows](#when-to-use-workflows)
 - [Built-in Workflows](#built-in-workflows)
 - [Writing a Workflow](#writing-a-workflow)
+- [Scope-Guard Starter Pattern](#scope-guard-starter-pattern)
 - [The `workflow()` Definition](#the-workflow-definition)
 - [WorkflowContext](#workflowcontext)
 - [Task and Stage Options](#task-and-stage-options)
@@ -1166,6 +1167,409 @@ If a parent workflow exits through `ctx.exit(...)` while a child workflow is in 
 The child executor writes each skipped child `workflow.stage.end` exactly once before its child `workflow.run.end`, and parent exit finalization waits for that child cleanup before writing the parent `workflow.run.end`, so restored sessions do not reconstruct the child as interrupted or failed. The skipped parent boundary clears any live child-run edge before store or persistence updates, so status/graph views do not display stale child stages from a boundary that did not complete. A delayed parent branch that calls `ctx.workflow(...)` after the exit gate is selected does not create a boundary or child run.
 
 Continuation replay treats the parent child-workflow boundary as the durable checkpoint: a previously completed child boundary replays with the original exposed outputs and without re-running the child, while a child that failed or was interrupted before completion starts again from the beginning on continuation. If `ctx.exit(...)` wins while a completed boundary is being replayed but before replay finalization, the boundary is finalized as skipped and its preloaded child metadata is omitted from store, persistence, restore, and expanded graph views.
+
+## Scope-Guard Starter Pattern
+
+Use a scope guard when a worker may find valid adjacent work and a later reviewer or repair stage could treat that finding as part of the current task. The guard is an independent reviewer built from existing workflow composition. It controls scope only: code reviewers and deterministic checks still decide whether the candidate is correct.
+
+Do not add a `watchdog` field, stage option, or custom runtime primitive for this pattern. Choose the lightest existing shape that fits the boundary:
+
+| Need | Shape |
+|---|---|
+| One check at a plan, handoff, repair, or completion boundary | A fresh `ctx.task(...)` downstream of the worker |
+| One checker session that needs several prompts or explicit timing | A fresh `ctx.stage(...)`, with all of its turns completed before downstream dependency work starts |
+| Steering while the worker generation is open | Fresh guard and forked worker items in one `ctx.parallel(...)`, using inherited same-group Intercom |
+
+### Canonical scope contract
+
+Create one inspectable contract artifact before guarded work starts. Treat it as immutable for that run and include:
+
+- the literal objective;
+- required scope and allowed files or systems;
+- explicit non-goals;
+- stage boundaries and expected lifecycle order; and
+- acceptance criteria and required evidence.
+
+Every worker, guard, reviewer, and repair continuation reads the same path. Do not copy the contract into several prompts that can drift, and do not let a stage overwrite it. If a human changes the objective, write a new versioned contract and start a new guarded unit of work instead of silently changing the active contract.
+
+Large plans, diffs, logs, reviewer reports, and decision history belong in artifacts. Pass their paths with `reads` where the primitive supports it, tell fresh stages to read the needed sections, and keep Intercom messages short. A fresh guard must not rely on a sibling transcript or hidden graph state.
+
+### Decision contract and actions
+
+For each proposed material expansion, the guard records one evidence-backed classification and action:
+
+| Classification | Evidence threshold | Action |
+|---|---|---|
+| `required` | The literal objective, stated review feedback, acceptance criteria, or required validation directly demands it. | Permit the smallest change that satisfies that demand. |
+| `dependent` | The selected in-scope implementation would otherwise violate a cited existing contract or proven prerequisite. | Permit only the prerequisite and record the contract that makes it necessary. |
+| `follow-up` | The finding is valid but the current objective and selected implementation do not require it. | Record it once and continue without implementing it. It does not block this run. |
+| `unclear` | Evidence cannot decide a material product, public API, security, migration, or scope choice. | Block that expansion and request a supervisor or human decision through a blocking Intercom exchange or `ctx.ui`. |
+
+Use a stable key for each proposal, such as `public-error-shape` or `transport-timeout`. Keep one row per key, merge repeated evidence into that row, and cap the log (the examples use 20 entries). Do not let the guard and worker echo the same finding back and forth. The persisted decision artifact is the source for later review and repair stages; chat messages only steer the open turn.
+
+A useful decision record contains `key`, `classification`, concrete `evidence`, and `action`. A guard failure or missing coordination channel never means approval.
+
+### Fallback policy
+
+Pick and document one policy before the run:
+
+| Policy | When Intercom or the guard is unavailable |
+|---|---|
+| `warn` | Mark live steering unavailable, forbid unreviewed expansion, and run a fresh boundary `ctx.task(...)` before the next material change. |
+| `block` | Stop before expansion and request a decision with `ctx.ui`; in headless mode, fail with the unresolved decision instead of widening scope. |
+| `off` | Skip the guard only because the workflow author or user explicitly disabled it. Preserve the original scope and do not infer approval for adjacent work. |
+
+Use `block` for risky public contracts, data changes, security behavior, releases, or publication. `warn` is a practical default when a boundary review can replace live steering. Never degrade silently from `block` to `warn` or from guarded execution to `off`.
+
+Intercom capability is tool-gated. A stage with `noTools: "all"`, a `tools` allowlist that omits `intercom`, or `excludedTools: ["intercom"]` cannot use live steering. Use a boundary task or the selected fallback policy for that stage.
+
+### Lifecycle, topology, and context rules
+
+- Keep the graph acyclic. A boundary guard is an ordinary downstream reviewer node. Live Intercom steering is activity inside already-running parallel stages, not a new graph edge.
+- Never make a guard watch itself, recursively start another guard, reopen a terminal task, or add a dependency from the current frontier to an ancestor. Complete all turns on a retained guard before starting downstream dependency work.
+- Messages admitted before a worker generation closes drain through that stage boundary. Late messages do not reopen or mutate its terminal workflow state. Give each live branch a bounded stop rule; `ctx.parallel(...)` releases downstream work only after all started branches settle, even when one finishes first.
+- Persist decisions under stable keys. Pause/resume, model fallback, durable replay, and nested workflows then reread the artifact instead of sending duplicate interventions.
+- Omit `group` for ordinary use. The worker, guard, nested workflows, and delegated subagents inherit the top-level workflow invocation's stable Intercom group. Set an explicit group only for intentional isolation; an override separates that stage from ordinary same-group peers.
+- Use `context: "fresh"` for guards, reviewers, and judges. They should see only the contract, candidate, decision artifacts, and current files.
+- Use `context: "fork"` plus `forkFromSessionFile` for implementation, debugging, and repair roles that need continuity with an owned earlier session. `context: "fork"` alone does not name a fork source; an initial worker with no prior lineage may start fresh. A later continuation should use the earlier worker's `sessionFile` when available. Do not fork an independent guard from the worker it judges.
+- Send a forked continuation only the delta after the fork point: new evidence, the decision artifact, any human answer, and the next action. Keep the full shared contract in its canonical file.
+
+Expected lifecycle state is not a defect. If the contract says `candidate → validation → approval → push/publish`, a guard at the candidate or validation boundary must not reject the patch merely because it is unpushed or unpublished. Only the later publication stage owns that action.
+
+### Runnable boundary-task example
+
+Use a fresh task when one check at a material boundary is enough. This complete project workflow keeps the worker lineage coherent, saves a structured decision log, and sends ambiguity to `ctx.ui` before the continuation:
+
+```ts
+// .atomic/workflows/scope-guard-boundary.ts
+import { workflow } from "@bastani/workflows";
+import { Type, type Static } from "typebox";
+
+const decisionLogSchema = Type.Object(
+  {
+    decisions: Type.Array(
+      Type.Object(
+        {
+          key: Type.String(),
+          classification: Type.Union([
+            Type.Literal("required"),
+            Type.Literal("dependent"),
+            Type.Literal("follow-up"),
+            Type.Literal("unclear"),
+          ]),
+          evidence: Type.Array(Type.String(), { minItems: 1 }),
+          action: Type.String(),
+        },
+        { additionalProperties: false },
+      ),
+      { maxItems: 20 },
+    ),
+  },
+  { additionalProperties: false },
+);
+
+type DecisionLog = Static<typeof decisionLogSchema>;
+
+function continueWorker(sessionFile: string | undefined) {
+  return sessionFile === undefined
+    ? { context: "fork" as const }
+    : { context: "fork" as const, forkFromSessionFile: sessionFile };
+}
+
+export default workflow({
+  name: "scope-guard-boundary",
+  description: "Check scope at an implementation boundary.",
+  inputs: {
+    scope_contract: Type.String(),
+    artifact_dir: Type.String({ default: ".atomic/workflows/runs/scope-guard-boundary" }),
+  },
+  outputs: {
+    decision_log: Type.String(),
+  },
+  run: async (ctx) => {
+    const contract = ctx.inputs.scope_contract;
+    const candidate = `${ctx.inputs.artifact_dir}/candidate.md`;
+    const decisionLog = `${ctx.inputs.artifact_dir}/scope-decisions.json`;
+
+    const worker = await ctx.task("prepare candidate", {
+      context: "fresh",
+      reads: [contract],
+      prompt: [
+        `Read the immutable scope contract at ${contract}.`,
+        "Implement only the required scope and summarize changed files and evidence.",
+        "Do not implement valid adjacent findings; include them in the candidate summary.",
+      ].join("\n"),
+      output: candidate,
+      outputMode: "file-only",
+    });
+
+    const checked = await ctx.task("scope boundary", {
+      context: "fresh",
+      reads: [contract, candidate],
+      schema: decisionLogSchema,
+      prompt: [
+        `Read ${contract} and ${candidate}. Inspect the current candidate.`,
+        "Classify each material expansion as required, dependent, follow-up, or unclear.",
+        "Cite concrete evidence and state the action. Return at most 20 unique keys.",
+        "Follow-up work must not block. Unclear expansion requires a human decision.",
+        "Judge scope only; do not approve implementation correctness.",
+      ].join("\n"),
+      output: decisionLog,
+      outputMode: "file-only",
+    });
+
+    if (checked.structured === undefined) throw new Error("scope guard returned no decision log");
+    const decisions = checked.structured as DecisionLog;
+    const unclear = decisions.decisions.filter((item) => item.classification === "unclear");
+    const humanDecision = unclear.length === 0
+      ? "No unclear scope decisions."
+      : await ctx.ui.editor([
+          "Resolve these scope decisions before the worker continues:",
+          ...unclear.map((item) => `- ${item.key}: ${item.evidence.join("; ")}`),
+        ].join("\n"));
+
+    await ctx.task("continue worker", {
+      ...continueWorker(worker.sessionFile),
+      reads: [contract, decisionLog],
+      prompt: [
+        `Read the decision log at ${decisionLog}.`,
+        `Human decision: ${humanDecision}`,
+        "Apply only required and dependent actions. Record follow-up items without implementing them.",
+        "The original contract and output rules remain unchanged.",
+      ].join("\n"),
+    });
+
+    return { decision_log: decisionLog };
+  },
+});
+```
+
+The materialized order is `prepare candidate → scope boundary → optional human prompt → continue worker`. Each step is new downstream work; no edge points back to the original worker.
+
+### Runnable retained-stage example
+
+Use `ctx.stage(...)` when one independent checker needs a retained conversation. Run its tracked `prompt()` once, then use `sendUserMessage(...)` for a bounded post-prompt turn on that same session; a second tracked `prompt()` on the finalized stage is invalid.
+
+```ts
+// .atomic/workflows/scope-guard-retained.ts
+import { workflow } from "@bastani/workflows";
+import { Type } from "typebox";
+
+function continueWorker(sessionFile: string | undefined) {
+  return sessionFile === undefined
+    ? { context: "fork" as const }
+    : { context: "fork" as const, forkFromSessionFile: sessionFile };
+}
+
+export default workflow({
+  name: "scope-guard-retained",
+  description: "Retain one independent checker for a bounded multi-turn review.",
+  inputs: {
+    scope_contract: Type.String(),
+    artifact_dir: Type.String({ default: ".atomic/workflows/runs/scope-guard-retained" }),
+  },
+  outputs: {
+    decision_log: Type.String(),
+  },
+  run: async (ctx) => {
+    const contract = ctx.inputs.scope_contract;
+    const candidate = `${ctx.inputs.artifact_dir}/candidate.md`;
+    const decisionLog = `${ctx.inputs.artifact_dir}/scope-decisions.md`;
+
+    const worker = await ctx.task("prepare candidate", {
+      context: "fresh",
+      reads: [contract],
+      prompt: `Read ${contract}, prepare the scoped candidate, and summarize evidence.`,
+      output: candidate,
+      outputMode: "file-only",
+    });
+
+    const guard = ctx.stage("retained scope guard", { context: "fresh" });
+    await guard.prompt([
+      `Read the immutable contract at ${contract} and candidate at ${candidate}.`,
+      "Classify each material proposal as required, dependent, follow-up, or unclear.",
+      "Write one deduplicated row per stable key, at most 20 rows, with evidence and action.",
+      "Follow-up means record only; unclear means request a human decision.",
+      "Judge scope only, not implementation correctness.",
+    ].join("\n"), { output: decisionLog, outputMode: "file-only" });
+    await guard.sendUserMessage([
+      `Recheck the complete candidate against ${contract}.`,
+      `If evidence changes a classification, use the write tool to replace ${decisionLog}.`,
+      "Keep the artifact complete, deduplicated, and bounded to 20 rows; do not return a delta.",
+      "If no decision changes, leave the artifact unchanged and say so.",
+    ].join("\n"));
+
+
+    const humanDecision = await ctx.ui.editor(
+      `Review ${decisionLog}. Resolve each unclear row, or state that none remain.`,
+    );
+
+    await ctx.task("apply retained decision", {
+      ...continueWorker(worker.sessionFile),
+      reads: [contract, decisionLog],
+      prompt: [
+        `Read ${decisionLog}.`,
+        `Human decision: ${humanDecision}`,
+        "Apply required and dependent actions only. Do not implement follow-up rows.",
+      ].join("\n"),
+    });
+
+    return { decision_log: decisionLog };
+  },
+});
+```
+
+The tracked prompt creates the guard node and decision artifact. `sendUserMessage(...)` starts one retained follow-on turn after that node finalizes; it does not create or reopen graph work. The follow-on updates the artifact directly only when evidence changes, and it finishes before the human prompt or worker continuation starts.
+
+### Runnable live-parallel example
+
+Use a live peer only when steering during generation adds clear value. Both branches omit `group`, so Atomic places them in the workflow invocation's same Intercom group. The guard first performs a bounded Intercom status handshake and returns; later blocking `intercom.ask` calls can reopen its retained conversation for classification. After both parallel branches settle, a fresh task reads that transcript and persists the final deduplicated decision artifact. Normal late sends are not part of this handshake.
+
+```ts
+// .atomic/workflows/scope-guard-live.ts
+import { workflow } from "@bastani/workflows";
+import { Type, type Static } from "typebox";
+
+const coordinationSchema = Type.Object(
+  {
+    status: Type.Union([
+      Type.Literal("available"),
+      Type.Literal("unavailable"),
+      Type.Literal("off"),
+    ]),
+    evidence: Type.String(),
+  },
+  { additionalProperties: false },
+);
+
+type Coordination = Static<typeof coordinationSchema>;
+
+function workerContext(sessionFile: string | undefined) {
+  return sessionFile === undefined
+    ? { context: "fresh" as const }
+    : { context: "fork" as const, forkFromSessionFile: sessionFile };
+}
+
+export default workflow({
+  name: "scope-guard-live",
+  description: "Run a worker with a live same-group scope peer.",
+  inputs: {
+    scope_contract: Type.String(),
+    worker_session_file: Type.Optional(Type.String({
+      description: "Earlier worker session to continue; omit when no worker lineage exists.",
+    })),
+    fallback_policy: Type.Union([
+      Type.Literal("warn"),
+      Type.Literal("block"),
+      Type.Literal("off"),
+    ], { default: "warn" }),
+    artifact_dir: Type.String({ default: ".atomic/workflows/runs/scope-guard-live" }),
+  },
+  outputs: {
+    decision_log: Type.String(),
+    review: Type.String(),
+  },
+  run: async (ctx) => {
+    const contract = ctx.inputs.scope_contract;
+    const fallbackPolicy = ctx.inputs.fallback_policy;
+    const candidate = `${ctx.inputs.artifact_dir}/candidate.md`;
+    const coordinationPath = `${ctx.inputs.artifact_dir}/scope-coordination.json`;
+    const decisionLog = `${ctx.inputs.artifact_dir}/scope-decisions.md`;
+
+    const branches = await ctx.parallel(
+      [
+        {
+          name: "worker",
+          ...workerContext(ctx.inputs.worker_session_file),
+          reads: [contract],
+          prompt: [
+            `Read the immutable scope contract at ${contract}.`,
+            `The declared Intercom fallback policy is ${fallbackPolicy}.`,
+            "Unless policy is off, connect to Intercom and find the scope-guard peer in this workflow group.",
+            "Before material expansion, send at most 20 blocking asks with a stable key and evidence.",
+            "Apply required or dependent replies only. Record follow-up findings without implementing them.",
+            "For an unclear reply, wait for human input instead of widening scope.",
+            "If Intercom is unavailable: warn forbids expansion, block stops before expansion, and off keeps the original scope without a guard.",
+            "Return the complete candidate summary; do not send a late ready notice.",
+          ].join("\n"),
+          output: candidate,
+          outputMode: "file-only",
+        },
+        {
+          name: "scope guard",
+          context: "fresh",
+          reads: [contract],
+          schema: coordinationSchema,
+          prompt: [
+            `Read the immutable scope contract at ${contract}.`,
+            `The declared fallback policy is ${fallbackPolicy}.`,
+            "If policy is off, do not connect; return status off with evidence.",
+            "Otherwise call intercom status once and return available or unavailable with evidence.",
+            "When a later blocking ask reopens this conversation, classify its stable key as required, dependent, follow-up, or unclear.",
+            "Reply with concrete evidence and one action. Do not approve implementation correctness.",
+            "Never originate another guard or send a normal late message.",
+          ].join("\n"),
+          output: coordinationPath,
+          outputMode: "file-only",
+        },
+      ],
+      { concurrency: 2, failFast: true },
+    );
+
+    const guardResult = branches[1];
+    if (guardResult?.structured === undefined) throw new Error("scope guard returned no coordination status");
+    const coordination = guardResult.structured as Coordination;
+    const transcriptReads = coordination.status === "available" && guardResult.sessionFile !== undefined
+      ? [guardResult.sessionFile]
+      : [];
+    const effectiveStatus = fallbackPolicy === "off"
+      ? "off"
+      : transcriptReads.length === 1 ? "available" : "unavailable";
+    const humanDecision = effectiveStatus === "unavailable" && fallbackPolicy === "block"
+      ? await ctx.ui.editor("Intercom is unavailable. Resolve scope before any blocked expansion continues.")
+      : "No fallback human decision required.";
+
+    if (fallbackPolicy === "off") {
+      await ctx.task("record scope guard off", {
+        context: "fresh",
+        prompt: "Record that the scope guard was explicitly off and that no expansion was approved.",
+        output: decisionLog,
+        outputMode: "file-only",
+      });
+    } else {
+      await ctx.task("persist scope decisions", {
+        context: "fresh",
+        reads: [contract, candidate, coordinationPath, ...transcriptReads],
+        prompt: [
+          `Read ${contract}, ${candidate}, ${coordinationPath}, and any supplied guard transcript.`,
+          `Effective coordination status: ${effectiveStatus}. Fallback policy: ${fallbackPolicy}.`,
+          `Fallback human decision: ${humanDecision}`,
+          "Persist one complete decision log with at most 20 unique stable keys.",
+          "Classify each expansion as required, dependent, follow-up, or unclear with evidence and action.",
+          "When warn has no transcript, perform the fresh boundary scope check here.",
+          "Follow-up does not block. Unclear remains blocked unless the human decision resolves it.",
+        ].join("\n"),
+        output: decisionLog,
+        outputMode: "file-only",
+      });
+    }
+
+    const review = await ctx.task("independent correctness review", {
+      context: "fresh",
+      reads: [contract, candidate, decisionLog],
+      prompt: [
+        `Read ${contract}, ${candidate}, and ${decisionLog}.`,
+        "Inspect the current files and run the required checks.",
+        "Review correctness independently; do not turn follow-up scope findings into blockers.",
+      ].join("\n"),
+    });
+
+    return { decision_log: decisionLog, review: review.text };
+  },
+});
+```
+
+The parallel fan-out has one shared parent frontier and downstream persistence waits for both branches. Blocking asks use the guard's retained conversation; the fresh persistence task turns the final transcript into the bounded artifact before correctness review. If Intercom is unavailable, `warn` runs that task as a boundary check, `block` requires `ctx.ui`, and `off` records that no guard approval exists.
 
 ## The `workflow()` Definition
 
@@ -3465,6 +3869,7 @@ Before implementing or shipping a non-trivial workflow, answer these questions:
 - **Context size:** Can downstream stages succeed from the handoff alone? Should large transcripts, logs, or research bundles be summarized or saved as artifacts?
 - **Control flow:** Should the workflow use `ctx.chain`, `ctx.parallel`, `ctx.ui`, bounded loops, `failFast`, or `fallbackModels`?
 - **Acyclic topology:** What node and dependency shape can each branch, bounded loop, and nested workflow boundary materialize? Which stages repeat, does each iteration create distinct tracked work with stable identity and call order, and what is the current frontier before each repeat? Could any proposed parent edge target the node itself or an ancestor? Are nested children composed through `ctx.workflow(...)` boundaries rather than recursive `run` invocation? Redesign or stop before launch if any self-edge or back-edge remains.
+- **Scope control:** Could valid adjacent findings expand the patch? If so, where will a fresh scope guard read the immutable contract, how will it classify and persist bounded decisions, which `warn`/`block`/`off` fallback applies, and which worker session owns any forked continuation?
 - **User experience:** Are stage names readable in status and graph views? Is the final output compact? Are important artifacts saved with stable paths?
 - **Validation:** What success criteria, review gates, deterministic checks, or evaluator stages prove the workflow did the right thing? Are model gates schema-backed instead of regex/prose-matched, and do adaptive gates run as focused model stages with explicit tool/check instructions?
 - **Final actions:** Does the workflow distinguish implementation/review convergence from post-approval final actions such as PR/MR/review creation, release tagging, deployment, or publication? Are reviewers and reducers prompted to approve and hand off when implementation and validation criteria are proven and only an explicitly authorized final action remains?
@@ -3490,6 +3895,7 @@ Good workflows are information-flow systems, not just prompt sequences. Keep sta
 - Do not write stage prompts that depend on hidden workflow-wide awareness; make each model stage locally scoped and self-described ([Locally Scoped Stage Prompts](#locally-scoped-stage-prompts)).
 - Do not parse model gate decisions from ad-hoc prose with regular expressions; configure `schema` on a focused workflow item and consume `result.structured`.
 - Do not make reviewers fail an implementation gate solely because an authorized final action has not run yet. Represent that remainder as a post-approval next action (for example `finalActionRemaining` / `nextAction`) and let the final stage perform it.
+- Do not let scope guards approve correctness or turn follow-up findings into blockers. Keep scope decisions separate from code review and deterministic validation, and do not reject expected pre-publication state assigned to a later lifecycle stage.
 - Return compact structured decisions and save large artifacts to files; artifact handoffs should still use files when the next stage does not need the whole payload in context.
 
 These mistakes cover workflow tool usage and authoring. For run-prompt anti-patterns, see the [Anti-patterns](#anti-patterns) table in [Workflow Best Practices](#workflow-best-practices).
@@ -3690,7 +4096,7 @@ Summarize root cause, proposed fix, files involved, validation plan, and remaini
 
 For workflows larger than one tracked task, choose a small control-flow pattern before writing prompts. **Workflow authors should favor these common patterns by default:** naming the pattern up front keeps the stage graph understandable, makes validation gates explicit, and helps reviewers see why work is split across model sessions. Reach for a bespoke structure only when none of these patterns fit.
 
-These patterns are composable and the headings below link to runnable builtins. For example, a migration workflow can nest [**fan-out-and-synthesize**](#six-composable-pattern-builtins) for call-site fixes, [**adversarial-verification**](#six-composable-pattern-builtins) per patch, and [**loop-until-done**](#six-composable-pattern-builtins) while tests still fail. Import and compose the builtin definitions instead of copying their prompts/graphs.
+The first six patterns below have runnable builtins. For example, a migration workflow can nest [**fan-out-and-synthesize**](#six-composable-pattern-builtins) for call-site fixes, [**adversarial-verification**](#six-composable-pattern-builtins) per patch, and [**loop-until-done**](#six-composable-pattern-builtins) while tests still fail. Import and compose the builtin definitions instead of copying their prompts/graphs. **Scope guard** is an authoring starter pattern rather than a builtin; compose its [boundary-task, retained-stage, or live-parallel form](#scope-guard-starter-pattern) from current primitives.
 
 These graph patterns organize work **inside one root lifecycle**. They do not replace the [task-queue rule](#task-queues-and-software-factories): independent whole implementation items normally get separate top-level runs and failure boundaries, while real dependency clusters may use these patterns inside each cluster run.
 
@@ -3702,6 +4108,7 @@ These graph patterns organize work **inside one root lifecycle**. They do not re
 | **Generate-and-filter** | You need many candidate ideas, plans, names, fixes, or hypotheses before selecting the best few. | Generator fan-out → dedupe/filter stage → optional verifier/judge → final shortlist. |
 | **Tournament** | The whole task is subjective or approach-sensitive, and comparative judgment is more reliable than absolute scoring. | Several agents attempt the same task → pairwise judges compare results → bracket reducer returns winners. |
 | **Loop until done** | The amount of work is unknown up front, such as finding all failures, mining repeated issues, or iterating until checks pass. | Bounded loop with an explicit stop condition, progress ledger, per-iteration artifacts, and a max-iteration escape hatch. |
+| **Scope guard** | A worker or repair stage may turn valid adjacent findings into unplanned work. | Immutable contract artifact → fresh boundary or live scope checker → bounded decision artifact → forked worker continuation; correctness review stays separate. |
 
 #### Pattern diagrams
 
@@ -3872,6 +4279,7 @@ Best practices:
 - Pick **generate-and-filter** when output quality depends on exploring a large option space.
 - Pick **tournament** when multiple whole-solution strategies should compete under one rubric.
 - Pick **loop until done** when the workflow should continue until evidence says it is finished, not until a preselected number of stages completes.
+- Pick **scope guard** when valid adjacent findings could expand a worker or repair stage beyond its immutable contract; choose a boundary task by default and live parallel steering only when timing requires it.
 
 Record the selected pattern in your spec or workflow README, then adapt the diagram to the stage graph. If the final design does not resemble any common pattern, explain why in the workflow's design notes.
 
