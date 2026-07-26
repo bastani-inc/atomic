@@ -150,6 +150,10 @@ export interface SessionInfoEntry extends SessionEntryBase {
  * - false: hidden entirely
  * - true: rendered with distinct styling (different from user messages)
  */
+export interface ProtectedReconciliationMarker {
+	delivery: "steer" | "followUp";
+}
+
 export interface CustomMessageEntry<T = unknown> extends SessionEntryBase {
 	type: "custom_message";
 	customType: string;
@@ -157,6 +161,8 @@ export interface CustomMessageEntry<T = unknown> extends SessionEntryBase {
 	details?: T;
 	display: boolean;
 	excludeFromContext?: boolean;
+	/** Internal crash-recovery marker for a model-facing protected turn. */
+	protectedReconciliation?: ProtectedReconciliationMarker;
 }
 
 /** Session entry - has id/parentId for tree structure (returned by "read" methods in SessionManager) */

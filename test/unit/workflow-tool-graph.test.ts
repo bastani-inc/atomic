@@ -101,7 +101,8 @@ describe("ctx.tool workflow graph execution", () => {
     assert.equal(store.runs()[0]?.failedStageId, undefined);
     assert.equal(result.toolNodes?.[0]?.status, "failed");
     assert.match(result.toolNodes?.[0]?.error ?? "", /original tool failure/);
-    assert.equal(backend.listCheckpoints(result.runId).some((entry) => entry.kind === "tool" && entry.name === "fails-late"), false);
+    assert.equal(backend.listCheckpoints(result.runId).some((entry) => entry.kind === "tool" && entry.name === "fails-late" && entry.throwingFailureError === "original tool failure"), true);
+    assert.equal(backend.getToolCheckpoint(result.runId, result.toolNodes![0]!.argsHash), undefined);
   });
 
   test("preserves tool-before, between, after, duplicate order with stage topology", async () => {

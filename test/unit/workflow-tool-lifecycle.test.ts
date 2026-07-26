@@ -63,12 +63,12 @@ describe("ctx.tool lifecycle notices", () => {
     assert.match(result.error ?? "", /remote publish rejected/);
     assert.equal(sent.length, 1);
     assert.equal(sent[0]?.details?.kind, "failed");
-    assert.equal(sent[0]?.details?.toolName, undefined);
-    assert.equal(sent[0]?.details?.toolNodeId, undefined);
+    assert.equal(sent[0]?.details?.toolName, "publish-failure");
+    assert.equal(sent[0]?.details?.toolNodeId, result.toolNodes?.[0]?.id);
     assert.equal(sent[0]?.details?.failedStageId, undefined);
     assert.match(sent[0]?.content ?? "", /remote publish rejected/);
     assert.equal(result.toolNodes?.[0]?.status, "failed");
-    assert.equal(store.runs()[0]?.failedToolNodeId, undefined);
+    assert.equal(store.runs()[0]?.failedToolNodeId, result.toolNodes?.[0]?.id);
   });
 
   test("caught tool failure still emits exactly one failed lifecycle notice", async () => {

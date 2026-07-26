@@ -16,7 +16,7 @@
  */
 
 import { runCallback } from "@bastani/atomic";
-import { field, normalizeCode } from "../shared/workflow-failures-signals.js";
+import { field, hasProcessFailureEvidence, normalizeCode } from "../shared/workflow-failures-signals.js";
 import type { ToolNodeSnapshot } from "../shared/store-types.js";
 import type {
   WorkflowSerializableValue,
@@ -32,6 +32,7 @@ import {
   workflowToolOutcomeFromValue,
   workflowToolSuccess,
 } from "./tool-outcome.js";
+import { recordThrowingToolFailure } from "./tool-failure-checkpoint.js";
 import { DURABLE_TOOL_TOPOLOGY_VERSION, type DurableCheckpoint, type DurableStageRunTopology, type DurableToolCheckpoint } from "./types.js";
 export type { WorkflowToolOptions, WorkflowToolPrimitive } from "../shared/types.js";
 
@@ -54,6 +55,8 @@ export interface CreateToolPrimitiveInput {
   readonly signal?: AbortSignal;
   /** Track the final logical execution promise and bind it to its graph node. */
   readonly trackExecution?: <T>(execution: Promise<T>) => WorkflowToolExecutionAdmission | void;
+  /** Observe a logical throwing-mode failure before graph publication or promise rejection. */
+  readonly onFailureObserved?: (error: unknown, nodeId: string) => void;
   /** Admit/update a first-class graph node around the durable call. */
   readonly onNodeStart?: (node: ToolNodeSnapshot) => void;
   readonly onNodeRunning?: (nodeId: string, startedAt: number) => void;
@@ -154,6 +157,7 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
       return output;
     } catch (error) {
       const status = input.signal?.aborted === true ? "cancelled" : "failed";
+      if (status === "failed") input.onFailureObserved?.(error, node.id);
       input.onNodeEnd?.(node.id, { status, endedAt: Date.now(), error: error instanceof Error ? error.message : String(error) });
       input.onNodeSettle?.(node.id);
       throw error;
@@ -227,12 +231,15 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
     }
     const callbackFailure = callbackError ?? error;
     if (returnFailure && !callbackCompleted && isExplicitCallbackCancellation(callbackFailure)) {
-      const cancellationMessage = workflowToolFailure(callbackFailure, attempts, false).error.message;
-      input.onNodeEnd?.(node.id, {
-        status: "failed",
-        endedAt: Date.now(),
-        error: cancellationMessage,
-      });
+      input.onFailureObserved?.(callbackFailure, node.id);
+      const failure = await recordThrowingToolFailure(
+        input,
+        node,
+        { name, argsHash, ordinal, startedAt },
+        callbackFailure,
+        attempts,
+      );
+      input.onNodeEnd?.(node.id, { status: "failed", endedAt: failure.failedAt, error: failure.message });
       input.onNodeSettle?.(node.id);
       throw callbackFailure;
     }
@@ -262,6 +269,7 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
       try {
         await recordCheckpointDurably(input.backend, checkpoint);
       } catch (persistenceError) {
+        input.onFailureObserved?.(persistenceError, node.id);
         input.onNodeEnd?.(node.id, {
           status: "failed",
           endedAt: Date.now(),
@@ -275,11 +283,15 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
       throwIfInvocationCancelled(input);
       return outcome;
     }
-    input.onNodeEnd?.(node.id, {
-      status: "failed",
-      endedAt: Date.now(),
-      error: error instanceof Error ? error.message : String(error),
-    });
+    input.onFailureObserved?.(error, node.id);
+    const failure = await recordThrowingToolFailure(
+      input,
+      node,
+      { name, argsHash, ordinal, startedAt },
+      error,
+      attempts,
+    );
+    input.onNodeEnd?.(node.id, { status: "failed", endedAt: failure.failedAt, error: failure.message });
     input.onNodeSettle?.(node.id);
     throw error;
   }
@@ -327,29 +339,40 @@ function hasCancellationMarker(markers: ReadonlySet<string>, value: unknown): bo
     && markers.has(normalizeCode(value) ?? "");
 }
 
-function hasProcessFailureEvidence(error: unknown): boolean {
-  return safeCancellationField(error, "exitCode") !== undefined
-    || safeCancellationField(error, "stdout") !== undefined
-    || safeCancellationField(error, "stderr") !== undefined;
-}
-
 function isExplicitCallbackCancellation(error: unknown): boolean {
   const seen = new Set<object>();
-  let current: unknown = error;
-  for (let depth = 0; current !== undefined && current !== null && depth < 8; depth += 1) {
-    if (typeof current === "object") {
-      if (seen.has(current)) return false;
-      seen.add(current);
+  const pending: Array<{ readonly value: unknown; readonly depth: number }> = [{ value: error, depth: 0 }];
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    if (current.value === undefined || current.value === null || current.depth >= 8) continue;
+    if (typeof current.value === "object") {
+      if (seen.has(current.value)) continue;
+      seen.add(current.value);
     }
-    if (hasCancellationMarker(CALLBACK_CANCELLATION_NAMES, safeCancellationField(current, "name"))) return true;
-    if (hasCancellationMarker(CALLBACK_CANCELLATION_STOP_REASONS, safeCancellationField(current, "stopReason"))) return true;
-    if (!hasProcessFailureEvidence(current)
-      && hasCancellationMarker(CALLBACK_CANCELLATION_CODES, safeCancellationField(current, "code"))) return true;
-    current = safeCancellationField(current, "cause");
+    const hasProcessFailure = hasProcessFailureEvidence(current.value);
+    if (!hasProcessFailure
+      && hasCancellationMarker(CALLBACK_CANCELLATION_NAMES, safeCancellationField(current.value, "name"))) return true;
+    if (!hasProcessFailure
+      && hasCancellationMarker(CALLBACK_CANCELLATION_STOP_REASONS, safeCancellationField(current.value, "stopReason"))) return true;
+    if (!hasProcessFailure
+      && hasCancellationMarker(CALLBACK_CANCELLATION_CODES, safeCancellationField(current.value, "code"))) return true;
+
+    for (const key of ["cause", "error", "response", "body"] as const) {
+      pending.push({ value: safeCancellationField(current.value, key), depth: current.depth + 1 });
+    }
+    for (const key of ["diagnostics", "errors"] as const) {
+      const entries = safeCancellationField(current.value, key);
+      if (!Array.isArray(entries)) continue;
+      for (const entry of entries) {
+        pending.push({
+          value: key === "diagnostics" ? safeCancellationField(entry, "error") ?? entry : entry,
+          depth: current.depth + 1,
+        });
+      }
+    }
   }
   return false;
 }
-
 
 async function recordReplayedToolTopology(
   input: CreateToolPrimitiveInput,

@@ -69,7 +69,18 @@ export async function commitAdmittedCustomMessage<T>(
 		let resolveAdmission!: () => void;
 		const admission = new Promise<void>((resolve) => { resolveAdmission = resolve; });
 		const turn = self._runAgentPrompt(promptMessage, resolveAdmission);
-		await Promise.race([admission, turn]);
+		try {
+			await Promise.race([admission, turn]);
+		} catch (error) {
+			if (!useProtectedReconciliation) throw error;
+			// The visible card is already durable. Retry only its hidden turn so
+			// lifecycle delivery never appends a second card for this occurrence.
+			self._queueAgentMessage(
+				promptMessage,
+				options?.deliverAs === "followUp" ? "followUp" : "steer",
+			);
+			void self._continueQueuedAgentMessages().catch(() => {});
+		}
 	} else {
 		self._appendCustomMessage(appMessage);
 	}

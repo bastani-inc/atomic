@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { durableHash } from "../../packages/workflows/src/durable/backend.js";
 import { createToolPrimitive } from "../../packages/workflows/src/durable/tool-primitive.js";
+import { completedWorkflowRunSnapshots } from "../../packages/workflows/src/durable/completed-catalog.js";
 import type { DurableToolCheckpoint, DurableUiCheckpoint, DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
 import { createMockSdk, seedMockWorkflow, seedMockCheckpoint } from "./durable-dbos-backend-helpers.js";
@@ -94,6 +95,98 @@ describe("DbosDurableBackend hydration (fresh process)", () => {
     assert.equal(callbackCalls, 0);
     assert.equal(nodeStatus, "failed");
     assert.equal(fresh.getToolCheckpoint(workflowId, argsHash)?.outcomeKind, "return_failure");
+  });
+
+  test("fresh hydration restores an inspection-only throwing failure and root attribution", async () => {
+    const workflowId = "wf-throwing-failure";
+    const argsHash = durableHash({ name: "commit-docs", args: {}, ordinal: 1 });
+    const session1 = new DbosDurableBackend(sdk);
+    session1.registerWorkflow({ workflowId, name: "throwing-failure", inputs: {}, createdAt: 10, status: "running" });
+    session1.recordCheckpoint({
+      kind: "tool",
+      workflowId,
+      checkpointId: "tool-failure:commit-docs:1",
+      name: "commit-docs",
+      argsHash,
+      output: null,
+      throwingFailureError: "commit hook rejected docs",
+      completedAt: 20,
+      topology: {
+        version: 1,
+        nodeId: "tool:commit-docs",
+        ordinal: 1,
+        order: 1,
+        parentIds: [],
+        startedAt: 15,
+        endedAt: 20,
+        run: { runId: workflowId, runName: "throwing-failure" },
+      },
+    });
+    session1.setWorkflowStatus(workflowId, "failed", undefined, true, {
+      error: "commit hook rejected docs",
+      failureKind: "unknown",
+      failureCode: "unknown",
+      failureRecoverability: "unknown",
+      failureDisposition: "terminal_failed",
+      failedToolNodeId: "tool:commit-docs",
+    });
+    await session1.flush();
+
+    const fresh = new DbosDurableBackend(sdk);
+    await fresh.hydrateWorkflow(workflowId);
+    assert.equal(fresh.getToolCheckpoint(workflowId, argsHash), undefined, "inspection records must not replay");
+    const entry = fresh.listResumableWorkflows().find((candidate) => candidate.workflowId === workflowId);
+    assert.ok(entry);
+    assert.equal(fresh.listCompletedWorkflows().some((candidate) => candidate.workflowId === workflowId), false);
+    const restored = completedWorkflowRunSnapshots(fresh, entry)[0];
+    assert.equal(restored?.status, "failed");
+    assert.equal(restored?.error, "commit hook rejected docs");
+    assert.equal(restored?.failureKind, "unknown");
+    assert.equal(restored?.failureCode, "unknown");
+    assert.equal(restored?.failureRecoverability, "unknown");
+    assert.equal(restored?.failureDisposition, "terminal_failed");
+    assert.equal(restored?.failedToolNodeId, "tool:commit-docs");
+    assert.equal(restored?.toolNodes?.[0]?.id, "tool:commit-docs");
+    assert.equal(restored?.toolNodes?.[0]?.status, "failed");
+    assert.equal(restored?.toolNodes?.[0]?.error, "commit hook rejected docs");
+
+    await Bun.sleep(2);
+    session1.registerWorkflow({ workflowId, name: "throwing-failure", inputs: {}, createdAt: 10, status: "running" });
+    session1.recordCheckpoint({
+      kind: "tool",
+      workflowId,
+      checkpointId: `tool:${argsHash}`,
+      name: "commit-docs",
+      argsHash,
+      output: "committed",
+      completedAt: 30,
+      topology: {
+        version: 1,
+        nodeId: "tool:commit-docs",
+        ordinal: 1,
+        order: 1,
+        parentIds: [],
+        startedAt: 25,
+        endedAt: 30,
+        run: { runId: workflowId, runName: "throwing-failure" },
+      },
+    });
+    session1.setWorkflowStatus(workflowId, "completed", undefined, false);
+    await session1.flush();
+
+    const afterSuccess = new DbosDurableBackend(sdk);
+    await afterSuccess.hydrateWorkflow(workflowId);
+    const completedEntry = afterSuccess.listCompletedWorkflows().find((candidate) => candidate.workflowId === workflowId);
+    assert.ok(completedEntry);
+    const completed = completedWorkflowRunSnapshots(afterSuccess, completedEntry)[0];
+    assert.equal(completed?.status, "completed");
+    assert.equal(completed?.error, undefined);
+    assert.equal(completed?.failureKind, undefined);
+    assert.equal(completed?.failureCode, undefined);
+    assert.equal(completed?.failureRecoverability, undefined);
+    assert.equal(completed?.failureDisposition, undefined);
+    assert.equal(completed?.failedToolNodeId, undefined);
+    assert.equal(completed?.toolNodes?.[0]?.status, "cached");
   });
 
   test("hydrateWorkflow reconstructs UI checkpoints from DBOS envelopes", async () => {

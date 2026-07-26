@@ -1,6 +1,7 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { DbosDurableBackend, type DbosSdkHandle, type DbosStepRecord, type DbosWorkflowInfo } from "../../packages/workflows/src/durable/dbos-backend.js";
+import { parseCurrentMetadataRecord } from "../../packages/workflows/src/durable/dbos-metadata.js";
 import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
 
 interface MockDbosState {
@@ -73,4 +74,35 @@ test("DBOS hydration hides malformed and non-current metadata without mutating i
   assert.equal(fresh.getWorkflow("wf-meta-valid"), undefined);
   assert.deepEqual(sdk.state.deletions, []);
   assert.equal(sdk.state.workflows.has("wf-meta-valid"), true);
+});
+
+test("DBOS metadata rejects invalid workflow failure enums", () => {
+  const metadata = {
+    workflowId: "wf-invalid-failure-enum",
+    name: "invalid-failure-enum",
+    inputs: {},
+    status: "failed",
+    createdAt: 10,
+    completedCheckpoints: 1,
+    pendingPrompts: 0,
+    promptReservationEpoch: "epoch-1",
+    updatedAt: 20,
+    error: "failed",
+  };
+  for (const [field, value] of [
+    ["failureKind", "invalid_kind"],
+    ["failureCode", "invalid_code"],
+    ["failureRecoverability", "invalid_recoverability"],
+    ["failureDisposition", "invalid_disposition"],
+  ] as const) {
+    const record: DbosStepRecord = {
+      stepName: `__atomic_metadata:20:${field}`,
+      output: {
+        __atomicDurableMetadata: true,
+        version: 3,
+        metadata: { ...metadata, [field]: value },
+      },
+    };
+    assert.equal(parseCurrentMetadataRecord(record, metadata.workflowId), undefined);
+  }
 });

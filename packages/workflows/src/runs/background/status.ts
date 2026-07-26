@@ -21,6 +21,7 @@ import { topLevelWorkflowRuns } from "../../shared/run-visibility.js";
 import { effectiveRunStatus } from "../../shared/returned-run-status.js";
 import { markDurableResumed } from "./durable-resume-transition.js";
 import { resumeAcknowledgementMessage, settleResumeAcknowledgements, waitForResumeReconciliation } from "./resume-acknowledgements.js";
+import { selectedRunTerminalEvent } from "../../engine/run-terminal-event.js";
 import { aggregateWorkflowRootRunId, expandedControlRunIds, workflowHasPausedStages } from "./workflow-lifecycle-aggregate.js";
 // ---------------------------------------------------------------------------
 // Types
@@ -130,6 +131,9 @@ export function killRun(
   // Abort active executor (no-op if not registered)
   const errorMessage = "workflow killed";
   opts?.cancellation?.abort(runId, errorMessage);
+  if (selectedRunTerminalEvent(runId)?.kind === "failure") {
+    return { ok: true, runId, previousStatus };
+  }
 
   const metadata = {
     failureKind: "cancelled",

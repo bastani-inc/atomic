@@ -178,7 +178,9 @@ export function resolveWorkflowResumeTarget(
     targets.set(entry.workflowId, { kind: "durable", workflowId: entry.workflowId, name: entry.name });
   }
   for (const entry of completed) {
-    targets.set(entry.workflowId, { kind: "completed", workflowId: entry.workflowId, name: entry.name });
+    if (!targets.has(entry.workflowId)) {
+      targets.set(entry.workflowId, { kind: "completed", workflowId: entry.workflowId, name: entry.name });
+    }
   }
   for (const run of liveRuns.filter(isExplicitResumeCandidate)) {
     targets.set(run.id, {

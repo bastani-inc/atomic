@@ -5,7 +5,7 @@ import type {
   WorkflowToolOutcome,
   WorkflowToolSuccess,
 } from "../shared/types.js";
-import { errorMessage, errorName, field, redactSensitiveText } from "../shared/workflow-failures-signals.js";
+import { errorMessage, errorName, field, redactSensitiveText, selectProcessFailureError } from "../shared/workflow-failures-signals.js";
 
 export const TOOL_FAILURE_TEXT_LIMIT_BYTES = 16_384;
 const TRUNCATION_PREFIX = "[workflow tool output truncated; showing final bytes]\n";
@@ -59,6 +59,7 @@ function safeErrorText(error: unknown): string {
 }
 
 export function normalizeWorkflowToolError(error: unknown): WorkflowToolError {
+  error = selectProcessFailureError(error);
   const exitCode = safeField(error, "exitCode");
   const stdout = exposedText(error, "stdout");
   const stderr = exposedText(error, "stderr");

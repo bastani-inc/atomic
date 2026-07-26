@@ -1,5 +1,5 @@
 /** DBOS-backed durable backend adapter. */
-import type { DurableCheckpoint, DurableWorkflowHandle, DurableWorkflowStatus, ResumableWorkflowEntry } from "./types.js";
+import type { DurableCheckpoint, DurableWorkflowFailureMetadata, DurableWorkflowHandle, DurableWorkflowStatus, ResumableWorkflowEntry } from "./types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import type { WorkflowSerializableObject as DurableInputs } from "./types.js";
 import { InMemoryDurableBackend, type DurableInactiveDeleteResult, type DurableWorkflowBackend, type DurableWorkflowCatalogEntries, type WorkflowRegistrationInput } from "./backend.js";
@@ -225,12 +225,12 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
   getWorkflow(workflowId: string): DurableWorkflowHandle | undefined { return this.mem.getWorkflow(workflowId); }
   getLoadableWorkflow(workflowId: string): DurableWorkflowHandle | undefined { return this.isWorkflowLoadable(workflowId) ? this.mem.getWorkflow(workflowId) : undefined; }
 
-  setWorkflowStatus(workflowId: string, status: DurableWorkflowStatus, pendingPrompts?: number, resumable?: boolean): void {
+  setWorkflowStatus(workflowId: string, status: DurableWorkflowStatus, pendingPrompts?: number, resumable?: boolean, failure?: DurableWorkflowFailureMetadata): void {
     if (!this.isWorkflowLoadable(workflowId)) return;
     if (pendingPrompts !== undefined) {
       this.promptReservations.setBaseline(workflowId, pendingPrompts);
     }
-    this.mem.setWorkflowStatus(workflowId, status, pendingPrompts, resumable);
+    this.mem.setWorkflowStatus(workflowId, status, pendingPrompts, resumable, failure);
     this.enqueueWrite(async () => {
       if (!this.isWorkflowLoadable(workflowId)) return;
       if (status === "cancelled") await this.sdk.cancelWorkflow(workflowId);
@@ -476,25 +476,8 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
     workflowId: string,
     metadata: import("./types.js").DurableWorkflowMetadata,
   ): void {
-    this.mem.registerWorkflow({
-      workflowId,
-      name: metadata.name,
-      inputs: metadata.inputs,
-      createdAt: metadata.createdAt,
-      updatedAt: metadata.updatedAt,
-      status: metadata.status,
-      completedCheckpoints: metadata.completedCheckpoints,
-      pendingPrompts: metadata.pendingPrompts,
-      ...(metadata.ownerExecutorId !== undefined ? { ownerExecutorId: metadata.ownerExecutorId } : {}),
-      ...(metadata.sessionFile !== undefined ? { sessionFile: metadata.sessionFile } : {}),
-      ...(metadata.label !== undefined ? { label: metadata.label } : {}),
-      ...(metadata.rootWorkflowId !== undefined ? { rootWorkflowId: metadata.rootWorkflowId } : {}),
-      ...(metadata.resumable !== undefined ? { resumable: metadata.resumable } : {}),
-      ...(metadata.invocationCwd !== undefined ? { invocationCwd: metadata.invocationCwd } : {}),
-      ...(metadata.workflowCwd !== undefined ? { workflowCwd: metadata.workflowCwd } : {}),
-      ...(metadata.repositoryRoot !== undefined ? { repositoryRoot: metadata.repositoryRoot } : {}),
-      ...(metadata.gitWorktreeRoot !== undefined ? { gitWorktreeRoot: metadata.gitWorktreeRoot } : {}),
-    });
+    if (metadata.workflowId !== workflowId) return;
+    this.mem.registerWorkflow(metadata);
   }
 }
 // Metadata encoding/classification lives in dbos-metadata.ts to keep this adapter focused.

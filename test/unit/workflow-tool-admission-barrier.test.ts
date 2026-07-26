@@ -121,7 +121,8 @@ describe("ctx.tool admitted execution barrier", () => {
     assert.match(result.error ?? "", /caught original tool failure/);
     assert.equal(result.toolNodes?.[0]?.status, "failed");
     assert.equal(store.runs()[0]?.failedStageId, undefined);
-    assert.equal(backend.listCheckpoints(result.runId).some((checkpoint) => checkpoint.kind === "tool" && checkpoint.name === "caught-failure"), false);
+    assert.equal(backend.listCheckpoints(result.runId).some((checkpoint) => checkpoint.kind === "tool" && checkpoint.name === "caught-failure" && checkpoint.throwingFailureError === "caught original tool failure"), true);
+    assert.equal(backend.getToolCheckpoint(result.runId, result.toolNodes![0]!.argsHash), undefined);
   });
 
   test("unawaited rejection is observed and fails root without an unhandled rejection", async () => {
@@ -153,7 +154,8 @@ describe("ctx.tool admitted execution barrier", () => {
       assert.match(result.error ?? "", /unawaited original failure/);
       assert.equal(result.toolNodes?.[0]?.status, "failed");
       assert.deepEqual(unhandled, []);
-      assert.equal(backend.listCheckpoints(result.runId).some((checkpoint) => checkpoint.kind === "tool" && checkpoint.name === "unawaited-failure"), false);
+      assert.equal(backend.listCheckpoints(result.runId).some((checkpoint) => checkpoint.kind === "tool" && checkpoint.name === "unawaited-failure" && checkpoint.throwingFailureError === "unawaited original failure"), true);
+      assert.equal(backend.getToolCheckpoint(result.runId, result.toolNodes![0]!.argsHash), undefined);
     } finally {
       process.off("unhandledRejection", onUnhandled);
     }
@@ -247,7 +249,7 @@ describe("ctx.tool admitted execution barrier", () => {
     assert.equal(backend.listCheckpoints(result.runId).some((checkpoint) => checkpoint.kind === "tool" && checkpoint.name === "cancelled-by-exit"), false);
   });
 
-  test("multiple failures select the first admitted original error", async () => {
+  test("first observed failure cancels remaining admitted work", async () => {
     const firstRelease = Promise.withResolvers<void>();
     const secondRelease = Promise.withResolvers<void>();
     const firstError = new Error("first admitted failure");
@@ -266,13 +268,32 @@ describe("ctx.tool admitted execution barrier", () => {
     firstRelease.resolve();
     const result = await pending;
     assert.equal(result.status, "failed");
-    assert.match(result.error ?? "", /first admitted failure/);
+    assert.match(result.error ?? "", /second admitted failure/);
     assert.deepEqual(result.toolNodes?.map((node) => [node.name, node.status]), [
-      ["first-failure", "failed"],
+      ["first-failure", "cancelled"],
       ["second-failure", "failed"],
     ]);
   });
 
+
+  test("unawaited pre-node validation rejection fails the root", async () => {
+    let callbackCalls = 0;
+    const result = await run(workflow({
+      name: "unawaited-pre-node-validation", description: "", inputs: {}, outputs: {},
+      run: async (ctx) => {
+        void ctx.tool("invalid-attempts", {}, async () => {
+          callbackCalls += 1;
+          return "must not run";
+        }, { retriesAllowed: true, maxAttempts: 0 });
+        return {};
+      },
+    }), {});
+
+    assert.equal(result.status, "failed");
+    assert.match(result.error ?? "", /maxAttempts.*positive integer/);
+    assert.equal(callbackCalls, 0);
+    assert.equal(result.toolNodes?.length ?? 0, 0);
+  });
   test("unawaited retry exhaustion fails with the final original retry error", async () => {
     const errors = [new Error("retry one"), new Error("retry final")];
     let attempts = 0;

@@ -9,6 +9,7 @@
  * cross-ref: issue #1498
  */
 
+import type { WorkflowFailureCode, WorkflowFailureDisposition, WorkflowFailureKind, WorkflowFailureRecoverability } from "../shared/store-types.js";
 import type { WorkflowModelAttempt, WorkflowSerializableValue } from "../shared/types.js";
 
 // ---------------------------------------------------------------------------
@@ -52,6 +53,12 @@ export interface DurableWorkflowHandle {
   readonly rootWorkflowId?: string;
   /** Explicit resumability flag for failed/blocked runs. */
   readonly resumable?: boolean;
+  readonly error?: string;
+  readonly failureKind?: WorkflowFailureKind;
+  readonly failureCode?: WorkflowFailureCode;
+  readonly failureRecoverability?: WorkflowFailureRecoverability;
+  readonly failureDisposition?: WorkflowFailureDisposition;
+  readonly failedToolNodeId?: string;
   /** Executor id of the Atomic process that last wrote this workflow's metadata. */
   readonly ownerExecutorId?: string;
 }
@@ -105,6 +112,8 @@ export interface DurableToolCheckpoint {
   readonly output: WorkflowSerializableValue;
   /** Explicit return-mode result kind; absent for legacy/default successful tools. */
   readonly outcomeKind?: "return_success" | "return_failure";
+  /** Inspection-only error for a throwing-mode failure; never used as a replay cache hit. */
+  readonly throwingFailureError?: string;
   readonly completedAt: number;
   /** Additive graph topology; omitted by pre-#1991 checkpoints. */
   readonly topology?: DurableToolTopology;
@@ -255,6 +264,12 @@ export interface DurableWorkflowMetadata {
   readonly transitionClaimId?: string;
   readonly sessionFile?: string;
   readonly label?: string;
+  readonly error?: string;
+  readonly failureKind?: WorkflowFailureKind;
+  readonly failureCode?: WorkflowFailureCode;
+  readonly failureRecoverability?: WorkflowFailureRecoverability;
+  readonly failureDisposition?: WorkflowFailureDisposition;
+  readonly failedToolNodeId?: string;
   readonly rootWorkflowId?: string;
   readonly resumable?: boolean;
   readonly invocationCwd?: string;
@@ -274,6 +289,12 @@ export interface ResumableWorkflowEntry {
   readonly pendingPrompts: number;
   readonly sessionFile?: string;
   readonly label?: string;
+  readonly error?: string;
+  readonly failureKind?: WorkflowFailureKind;
+  readonly failureCode?: WorkflowFailureCode;
+  readonly failureRecoverability?: WorkflowFailureRecoverability;
+  readonly failureDisposition?: WorkflowFailureDisposition;
+  readonly failedToolNodeId?: string;
   readonly rootWorkflowId?: string;
   readonly resumable?: boolean;
   readonly invocationCwd?: string;
@@ -282,4 +303,13 @@ export interface ResumableWorkflowEntry {
   readonly gitWorktreeRoot?: string;
   readonly createdAt: number;
   readonly updatedAt: number;
+}
+
+export interface DurableWorkflowFailureMetadata {
+  readonly error: string;
+  readonly failureKind?: WorkflowFailureKind;
+  readonly failureCode?: WorkflowFailureCode;
+  readonly failureRecoverability?: WorkflowFailureRecoverability;
+  readonly failureDisposition?: WorkflowFailureDisposition;
+  readonly failedToolNodeId?: string;
 }
