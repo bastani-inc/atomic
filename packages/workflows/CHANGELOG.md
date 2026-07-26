@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - Added opt-in `ctx.tool(..., { failureMode: "return" })` outcomes for checks that may fail during repair flows. Exhausted callback failures now preserve bounded, best-effort redacted `exitCode`, `stdout`, and `stderr` as typed durable data; replay returns the same outcome without rerunning the callback; failed tool nodes remain truthful while explicit downstream repair and bounded reruns continue; and default failures, cancellation, admission errors, and storage faults still throw ([#1993](https://github.com/bastani-inc/atomic/issues/1993)).
+- Added workflow-authoring guidance so, after creating and reloading a custom workflow, Atomic reports `Custom workflow created. You can inspect its code at: <workflow-folder-path>` only for newly created custom workflows, explicitly excluding builtin and pre-existing workflows ([#1978](https://github.com/bastani-inc/atomic/issues/1978)).
 
 ### Changed
 
