@@ -173,7 +173,6 @@ function getMessageFromEntry(entry: SessionEntry): AgentMessage | undefined {
 
 		// These don't contribute to conversation content
 		case "thinking_level_change":
-		case "context_window_change":
 		case "model_change":
 		case "custom":
 		case "label":

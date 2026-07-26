@@ -6,7 +6,7 @@ branch: detached HEAD (origin/main contains commit)
 repository: atomic-issue-1995
 topic: Pi v0.82.1 upstream commit and file port matrix for Atomic issue #1995
 tags: [implementation, evidence, pi-0.82.1, port-matrix, issue-1995]
-status: lifecycle-repairs-final-tree-green-kimi-and-built-rpc-captures-pending
+status: complete
 last_updated: 2026-07-26
 last_updated_by: GPT-5.6 Sol
 breaking_changes_allowed: false
@@ -15,7 +15,9 @@ compatibility_context: Preserve Atomic public SDK, branding, CLI, paths, legacy 
 
 # Pi v0.82.1 Port Matrix
 
-This implementation matrix classifies every upstream commit and changed file using current Atomic source, focused regressions, exact dependency artifacts, documentation, completed commands, and live tmux evidence. “Ported” identifies Atomic-owned behavior now present; “inherited” identifies exact Pi 0.82.1 production behavior, with Atomic-wrapper verification where Atomic owns a seam; dependency-maintainer tests/docs/generators excluded from published artifacts are N/A **as files** rather than mislabeled inherited; “equivalent” and “adapted” cite matching Atomic architecture. Earlier full suites and tmux captures remain historical proof. Two reviewer rounds exposed nine further Atomic-owned gaps; all are now repaired with focused evidence. The newest four repairs retain a validated llama catalog after a failed first restart refresh, keep RPC bash request ownership across session replacement, transport engine-only custom OAuth descriptors/callbacks without credentials, and normalize intentional OAuth cancellation without hiding genuine failures. The three active reviewer probes, real isolated child, built deterministic RPC/custom-OAuth probes, full repository suites, clean build, host binary, Darwin arm64 archive, guardrail/secret audits, and final frozen install are green. Only the requested replacement tmux Kimi quiet-cancellation capture and built RPC session-swap capture remain pending.
+This implementation matrix classifies every upstream commit and changed file using current Atomic source, focused regressions, exact dependency artifacts, documentation, completed commands, and live tmux evidence. “Ported” identifies Atomic-owned behavior now present; “inherited” identifies exact Pi 0.82.1 production behavior, with Atomic-wrapper verification where Atomic owns a seam; dependency-maintainer tests/docs/generators excluded from published artifacts are N/A **as files** rather than mislabeled inherited; “equivalent” and “adapted” cite matching Atomic architecture. Earlier full suites and tmux captures remain historical proof. Two reviewer rounds exposed nine further Atomic-owned gaps; all were repaired with focused evidence. Those repairs retain a validated llama catalog after a failed first restart refresh, keep RPC bash request ownership across session replacement, transport engine-only custom OAuth descriptors/callbacks without credentials, and normalize intentional OAuth cancellation without hiding genuine failures. The reviewer probes, real isolated child, built deterministic RPC/custom-OAuth probes, full repository suites, guardrail/secret audits, and frozen install were green.
+
+**Superseded in part.** A later change removed all Atomic-specific GitHub Copilot handling and the entire short/long context-window selection feature so `github-copilot` behaves exactly like upstream pi. Matrix rows describing Atomic's Copilot CAPI catalog, static CAPI limit snapshot, Copilot base-URL routing, Copilot request/response shims, and context-window selection no longer reflect the shipped tree; see the `[Unreleased]` Breaking Changes entries in `packages/coding-agent/CHANGELOG.md`.
 
 ## Source and counting basis
 

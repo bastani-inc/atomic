@@ -54,11 +54,6 @@ export interface ThinkingLevelChangeEntry extends SessionEntryBase {
 	thinkingLevel: string;
 }
 
-export interface ContextWindowChangeEntry extends SessionEntryBase {
-	type: "context_window_change";
-	contextWindow: number;
-}
-
 export interface ModelChangeEntry extends SessionEntryBase {
 	type: "model_change";
 	provider: string;
@@ -169,7 +164,6 @@ export interface CustomMessageEntry<T = unknown> extends SessionEntryBase {
 export type SessionEntry =
 	| SessionMessageEntry
 	| ThinkingLevelChangeEntry
-	| ContextWindowChangeEntry
 	| ModelChangeEntry
 	| CompactionEntry
 	| ContextCompactionEntry
@@ -195,7 +189,6 @@ export interface SessionTreeNode {
 export interface SessionContext {
 	messages: AgentMessage[];
 	thinkingLevel: string;
-	contextWindow: number | undefined;
 	model: { provider: string; modelId: string } | null;
 }
 

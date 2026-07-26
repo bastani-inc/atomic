@@ -658,9 +658,6 @@ interface ProviderModelConfig {
   /** Default/effective context window size in tokens. */
   contextWindow: number;
 
-  /** Optional selectable context-window sizes in tokens. */
-  contextWindowOptions?: readonly number[];
-
   /** Maximum output tokens. */
   maxTokens: number;
 

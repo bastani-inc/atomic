@@ -13,7 +13,6 @@ atomic --mode rpc [options]
 Common options:
 - `--provider <name>`: Set the LLM provider (anthropic, openai, google, etc.)
 - `--model <pattern>`: Model pattern or ID (supports `provider/id` and optional `:<thinking>`)
-- `--context-window <tokens>`: Select a supported context-window size for the startup model (`400k`, `1m`, or raw tokens)
 - `--name <name>` / `-n <name>`: Set the session display name at startup
 - `--no-session`: Disable session persistence
 - `--session-dir <path>`: Custom session storage directory
@@ -195,7 +194,7 @@ Response:
 }
 ```
 
-The `model` field is a full [Model](#model) object or `null`. Its `contextWindow` is the active/effective token budget; selectable models may also include `defaultContextWindow` and `contextWindowOptions`. The `sessionName` field is the display name set via `set_session_name`, or omitted if not set.
+The `model` field is a full [Model](#model) object or `null`. Its `contextWindow` is the model's token budget. The `sessionName` field is the display name set via `set_session_name`, or omitted if not set.
 
 #### get_messages
 
@@ -317,66 +316,6 @@ Response:
 
 `models` preserves the refreshed catalog order. `scopedModels` is optional. If authentication remains through an environment variable, `authStatus.source` is `"environment"` and `authStatus.label` names the variable.
 
-
-### Context Window
-
-#### get_available_context_windows
-
-List the context-window token budgets supported by the current model and read the active/effective runtime selection.
-
-```json
-{"type": "get_available_context_windows"}
-```
-
-Response:
-```json
-{
-  "type": "response",
-  "command": "get_available_context_windows",
-  "success": true,
-  "data": {
-    "contextWindows": [400000, 1000000],
-    "currentContextWindow": 400000,
-    "supportsSelection": true
-  }
-}
-```
-
-- `contextWindows`: supported token budgets for the active model, sorted ascending.
-- `currentContextWindow`: the active/effective token budget on `model.contextWindow`; omitted when no model is selected.
-- `supportsSelection`: `true` when the active model exposes more than one supported budget.
-
-#### set_context_window
-
-Set the active context-window token budget for the current model at runtime.
-
-```json
-{"type": "set_context_window", "contextWindow": 1000000}
-```
-
-Compact string values are also accepted:
-```json
-{"type": "set_context_window", "contextWindow": "1m"}
-```
-
-Response:
-```json
-{"type": "response", "command": "set_context_window", "success": true}
-```
-
-This command calls `AgentSession.setContextWindow(...)` without `{ persistDefault: true }`: it updates the active model, appends a `context_window_change` session entry and emits `context_window_changed` when the budget changes, but it does **not** write context-window defaults to settings. Use startup `--context-window` or an interactive context-window selection when you intentionally want the effective selection persisted under `defaultContextWindows["provider/modelId"]`.
-
-Unsupported or malformed selections return the standard RPC error response:
-```json
-{
-  "type": "response",
-  "command": "set_context_window",
-  "success": false,
-  "error": "Context window 2m is not supported by custom/selectable-context. Supported values: 400k, 1m."
-}
-```
-
-Larger provider context windows may consume more credits/cost. For catalog-advertised GitHub Copilot long-context models (including `github-copilot/gpt-5.5`, `github-copilot/claude-sonnet-5`, and `github-copilot/gemini-3.1-pro-preview`), selecting `1m` raises Atomic's local budget and sends `X-GitHub-Api-Version: 2026-06-01`; GitHub applies the long-context billing tier server-side by prompt token count. That tier consumes more Copilot AI credits and requires Copilot long-context/usage-based billing entitlement, otherwise requests over GitHub's server cap are rejected with a friendly hint.
 
 ### Thinking
 
@@ -958,7 +897,6 @@ Events are streamed to stdout as JSON lines. Most events do not include an `id`;
 | `tool_execution_end` | Tool completes |
 | `bash_execution_update` | Correlated direct-bash stdout/stderr delta |
 | `queue_update` | Pending steering/follow-up queue changed |
-| `context_window_changed` | Active context-window token budget changed |
 | `compaction_start` | Verbatim line compaction begins |
 | `compaction_end` | Verbatim line compaction completes |
 | `auto_retry_start` | Auto-retry begins (after transient error) |
@@ -1114,19 +1052,6 @@ Emitted whenever the pending steering or follow-up queue changes.
   "followUp": ["After that, summarize the result"]
 }
 ```
-
-### context_window_changed
-
-Emitted when the active context-window token budget changes through RPC `set_context_window`, `AgentSession.setContextWindow()` in an SDK-backed runtime, or because in-place tree navigation replayed a branch-scoped `context_window_change` entry. Navigation replay updates the active model for accurate budgeting and compaction but does not append another session entry or write context-window defaults to settings.
-
-```json
-{
-  "type": "context_window_changed",
-  "contextWindow": 1000000
-}
-```
-
-Larger provider context windows may consume more credits/cost. Prefer the model default unless the additional repository/session context is useful for the current task. For catalog-advertised GitHub Copilot long-context models such as `github-copilot/gpt-5.5`, `github-copilot/claude-sonnet-5`, and `github-copilot/gemini-3.1-pro-preview`, a `1m` selection raises Atomic's local budget and sends `X-GitHub-Api-Version: 2026-06-01`; GitHub applies the long-context billing tier server-side by prompt size, consumes more Copilot AI credits, and requires long-context/usage-based billing entitlement.
 
 ### compaction_start / compaction_end
 
@@ -1483,8 +1408,6 @@ Source files and installed definitions:
   "reasoning": true,
   "input": ["text", "image"],
   "contextWindow": 200000,
-  "defaultContextWindow": 200000,
-  "contextWindowOptions": [200000, 1000000],
   "maxTokens": 16384,
   "cost": {
     "input": 3.0,
@@ -1495,7 +1418,7 @@ Source files and installed definitions:
 }
 ```
 
-`contextWindow` is the active/effective token budget used by Atomic's local budgeting, footer/stats, and compaction logic. `defaultContextWindow` is the model's scalar default before a session/runtime override, and `contextWindowOptions` lists selectable token budgets when the model supports more than one size. RPC clients can read/select the active runtime budget with `get_available_context_windows` and `set_context_window`; the runtime command does not persist context-window defaults to settings.
+`contextWindow` is the model's token budget used by Atomic's local budgeting, footer/stats, and compaction logic.
 
 ### UserMessage
 

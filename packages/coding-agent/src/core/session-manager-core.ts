@@ -16,7 +16,6 @@ import {
 import {
 	createBranchSummaryEntry,
 	createCompactionEntry,
-	createContextWindowChangeEntry,
 	createCustomEntry,
 	createCustomMessageEntry,
 	createLabelEntry,
@@ -235,13 +234,6 @@ export class SessionManager {
 	/** Append a thinking level change as child of current leaf, then advance leaf. Returns entry id. */
 	appendThinkingLevelChange(thinkingLevel: string): string {
 		const entry = createThinkingLevelChangeEntry(thinkingLevel, this.byId, this.leafId);
-		this._appendEntry(entry);
-		return entry.id;
-	}
-
-	/** Append a context window change as child of current leaf, then advance leaf. Returns entry id. */
-	appendContextWindowChange(contextWindow: number): string {
-		const entry = createContextWindowChangeEntry(contextWindow, this.byId, this.leafId);
 		this._appendEntry(entry);
 		return entry.id;
 	}

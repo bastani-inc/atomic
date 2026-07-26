@@ -2062,7 +2062,7 @@ Authors do not need to generate or pass a group through ordinary stages, tasks, 
 readonly model?: WorkflowModelValue; // string or supported SDK model object
 ```
 
-Selects the primary stage model. String values can carry reasoning and context-window suffixes described under [Reasoning levels](#reasoning-levels) and [Context windows](#context-windows).
+Selects the primary stage model. String values can carry the reasoning suffix described under [Reasoning levels](#reasoning-levels).
 
 ### `fallbackModels` / `fallbackThinkingLevels`
 
@@ -2086,15 +2086,6 @@ readonly thinkingLevel?: WorkflowThinkingLevel;
 ```
 
 Sets the default reasoning effort for candidates without a suffix. A suffix on the model string wins.
-
-### `contextWindow` / `contextWindowStrict`
-
-```typescript
-readonly contextWindow?: number;
-readonly contextWindowStrict?: boolean;
-```
-
-Applies a stage-wide context-window token budget. The runtime rejects unsupported values when `contextWindowStrict` is `true`; otherwise, the model keeps its default.
 
 ### `scopedModels`
 
@@ -2331,31 +2322,6 @@ The standalone `thinkingLevel` stage option is deprecated. It still applies as a
 ```
 
 This applies everywhere a stage accepts a model: direct `ctx.task`/`ctx.chain`/`ctx.parallel` options, `ctx.stage` options, builtin workflow stage definitions, and workflow parameters. `fallbackThinkingLevels` is an optional compatibility helper aligned by index to `fallbackModels`; it applies only to fallback entries that do not already carry a suffix. Each `WorkflowModelAttempt` reports the resolved model and the effective reasoning effort used for that attempt.
-
-### Context windows
-
-A `model`/`fallbackModels` entry may also request a context-window budget with a parenthesized size token in the model-name portion. Place the token *before or after* the optional `:reasoning` suffix to prevent a conflict with the reasoning level. This mirrors GitHub Copilot's `Claude Opus 4.8 (1M context)` model-name convention:
-
-```ts
-await ctx.task("review", {
-  task: "Review the diff",
-  model: "anthropic/claude-fable-5:high",
-  // The copilot opus fallback runs at its largest advertised (long-context) window.
-  // Use (long) for a size-agnostic marker, or a rounded long-tier label like.
-  fallbackModels: ["github-copilot/claude-opus-4.8 (long):xhigh", "anthropic/claude-opus-4-8:xhigh"],
-});
-```
-
-The token accepts the same compact sizes as the `--context-window` flag (`1m`, `1.1m`, `936k`, `400k`, or a raw token count), plus a generic `(long)` marker, and the runtime resolves it against that specific candidate model's advertised windows:
-
-- `(long)` — a size-agnostic long-context marker that selects the model's advertised long tier regardless of its exact size, so the same token works across models with different long tiers;
-- a request at or below the model's default window keeps the default;
-- a request above the default selects the long tier — an exact supported window is used as-is, otherwise the smallest supported window at or above the request is selected, rounding **up** so a rounded marker like `(1m)` or `(1.1m)` lands on the long tier even when it sits slightly above or below the marker size (e.g. `(1m)` selects claude-opus-4.8's 1M tier and gpt-5.5's 1.05M tier; `(1.1m)` matches gpt-5.5's rounded long-tier label);
-- when the model exposes no larger tier (or is unavailable), the runtime drops the request and the session keeps the model's default (short) window—a non-strict, automatic fallback.
-
-The budget applies only to the candidate that carries the token; other primary and fallback models in the same chain are unaffected. A parenthesized token that is not a valid size (for example `(preview)`) is left attached to the model id rather than being treated as a context window. Without the token, a tiered model **pins its natural default (short) window** in a workflow stage, so a persisted interactive long-context preference does not leak into workflow runs — use the `(1m)` token or the `contextWindow` stage option to opt into long context.
-
-For stage-wide selection you can instead set the `contextWindow` (and `contextWindowStrict`) stage option, which maps to the SDK `createAgentSession` options of the same name.
 
 ## StageContext
 

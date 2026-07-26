@@ -62,7 +62,6 @@ export interface CreateAgentSessionFromServicesOptions {
 	model?: Model<Api>;
 	thinkingLevel?: ThinkingLevel;
 	fallbackModels?: CreateAgentSessionOptions["fallbackModels"];
-	contextWindow?: number;
 	scopedModels?: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
 	tools?: CreateAgentSessionOptions["tools"];
 	excludedTools?: CreateAgentSessionOptions["excludedTools"];
@@ -225,7 +224,6 @@ export async function createAgentSessionFromServices(
 		model: options.model,
 		thinkingLevel: options.thinkingLevel,
 		fallbackModels: options.fallbackModels,
-		contextWindow: options.contextWindow,
 		scopedModels: options.scopedModels,
 		tools: options.tools,
 		excludedTools: options.excludedTools,

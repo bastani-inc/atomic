@@ -11,6 +11,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Added opt-in `ctx.tool(..., { failureMode: "return" })` outcomes for checks that may fail during repair flows. Exhausted callback failures now preserve bounded, best-effort redacted `exitCode`, `stdout`, and `stderr` as typed durable data; replay returns the same outcome without rerunning the callback; failed tool nodes remain truthful while explicit downstream repair and bounded reruns continue; and default failures, cancellation, admission errors, and storage faults still throw ([#1993](https://github.com/bastani-inc/atomic/issues/1993)).
 - Re-added the built-in Goal and Ralph workflows, including their typed composition exports, command metadata, focused tests, and user-facing docs.
 
+### Removed
+
+- Removed the parenthesized context-window authoring token from workflow model strings. `(1m)`, `(1.1m)`, `(936k)`, and the generic `(long)` marker are no longer parsed from `model` / `fallbackModels` entries, and the `contextWindow` / `contextWindowStrict` stage options are gone. Builtin workflow model policies now use plain ids such as `github-copilot/claude-opus-4.8:high`, and every stage session uses its model's catalog context window.
+
 ### Changed
 
 - Changed workflow stage chat to render Atomic's exact one-cell `∀` with a pronounced, theme-aware dark → accent → bright/bold → accent → dark luminance ramp at 88ms and the ordinary one-row working geometry, while preserving `NO_COLOR` weight activity, reduced-motion static accent styling, blocked/prompt chrome suppression, composer space, and factual-state precedence.

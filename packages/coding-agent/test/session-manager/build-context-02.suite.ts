@@ -5,7 +5,6 @@ import {
 	type BranchSummaryEntry,
 	buildSessionContext,
 	type CompactionEntry,
-	type ContextWindowChangeEntry,
 	type ModelChangeEntry,
 	type SessionEntry,
 	type SessionMessageEntry,
@@ -91,9 +90,6 @@ function thinkingLevel(id: string, parentId: string | null, level: string): Thin
 	return { type: "thinking_level_change", id, parentId, timestamp: "2025-01-01T00:00:00Z", thinkingLevel: level };
 }
 
-function contextWindow(id: string, parentId: string | null, value: number): ContextWindowChangeEntry {
-	return { type: "context_window_change", id, parentId, timestamp: "2025-01-01T00:00:00Z", contextWindow: value };
-}
 
 function modelChange(id: string, parentId: string | null, provider: string, modelId: string): ModelChangeEntry {
 	return { type: "model_change", id, parentId, timestamp: "2025-01-01T00:00:00Z", provider, modelId };

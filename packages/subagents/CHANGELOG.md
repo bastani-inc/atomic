@@ -5,6 +5,7 @@
 ### Removed
 
 - Removed Cursor MCP compatibility imports from delegated direct-tool resolution and removed Cursor model candidates from every builtin subagent fallback policy ([#1994](https://github.com/bastani-inc/atomic/issues/1994)).
+- Removed the `(1m)` context-window token from every builtin subagent `fallbackModels` policy. Atomic no longer parses a parenthesized context-window token in model strings, so `github-copilot/claude-opus-4.8 (1m):medium` is now `github-copilot/claude-opus-4.8:medium` and the candidate uses the model's catalog context window.
 
 ## [0.9.11-alpha.5] - 2026-07-23
 

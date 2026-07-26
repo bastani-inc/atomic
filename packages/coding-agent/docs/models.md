@@ -207,7 +207,6 @@ If your command is slow, expensive, rate-limited, or should keep using a previou
 | `thinkingLevelMap` | No       | omitted           | Maps Atomic thinking levels to provider values and marks unsupported levels (see below)                    |
 | `input`            | No       | `["text"]`        | Input types: `["text"]` or `["text", "image"]`                                                             |
 | `contextWindow`    | No       | `128000`          | Default/effective context window size in tokens                                                            |
-| `contextWindowOptions` | No   | omitted           | Additional/selectable context windows in tokens (see below)                                                |
 | `maxTokens`        | No       | `16384`           | Maximum output tokens                                                                                      |
 | `cost`             | No       | all zeros         | Complete base rates per million tokens plus optional request-wide `tiers` (see below)                    |
 | `compat`           | No       | provider `compat` | Provider compatibility overrides. Merged with provider-level `compat` when both are set.                   |
@@ -310,43 +309,21 @@ Example for a model where thinking cannot be disabled:
 
 Migration: older configs that used `compat.reasoningEffortMap` should move that mapping to model-level `thinkingLevelMap`. Use `null` for levels that should not appear in the UI.
 
-### Context Window Options
+### Context Window
 
-`contextWindow` remains the scalar default and is always valid. Models that support multiple context sizes can also declare `contextWindowOptions` as positive token counts. Atomic hides unsupported choices in the `/model` selection flow and rejects unsupported `--context-window` values for the selected model. The active selection changes Atomic's effective `model.contextWindow`, so local budgeting, compaction, footer/stats, session replay, RPC/SDK state, and extensions all use the selected token budget while the model's scalar default remains unchanged.
+`contextWindow` is the model's context size in tokens and drives local budgeting,
+compaction thresholds, footer/stats, session replay, and RPC/SDK state.
 
 ```json
 {
   "id": "long-context-model",
   "reasoning": true,
-  "contextWindow": 400000,
-  "contextWindowOptions": [400000, 1000000]
+  "contextWindow": 400000
 }
 ```
 
-Users can select a supported context window independently from thinking level:
-
-```bash
-atomic --model custom/long-context-model --thinking high --context-window 1m
-```
-
-In interactive mode, run `/model` and pick a model; when the chosen model exposes more than one window, Atomic immediately prompts for the context window as a follow-up step — a GitHub Copilot CLI-style picker that lists numbered `Default` and `Long context` tiers with their token counts (for example `272k tokens` / `922k tokens` for `github-copilot/gpt-5.5`, or `200k tokens` / `936k tokens` for Claude/Gemini long-context models such as `github-copilot/claude-sonnet-5`) — so you can choose one of the active model's supported budgets. Persisted interactive selections are stored per model under `defaultContextWindows["provider/modelId"]` (raw token counts and compact labels such as `400k` or `1m` are accepted), so a Copilot-specific prompt cap does not leak into other providers. GitHub Copilot long-context requests treat `1m` as a branded budget request and resolve it to the model's largest advertised long-context tier not exceeding the request (for example `936k` for Copilot Claude models), while other providers continue to require one of their own exact supported windows or use their natural scalar default. Successful explicit startup selections are recorded as `context_window_change` entries even when the chosen value equals the scalar default, preserving the user's explicit budget choice across future settings changes and resume.
-
-Use larger context windows deliberately. Some providers charge more for larger windows, and Atomic preserves each model's default unless the user explicitly opts in through `--context-window`, the `/model` selection flow, per-model `defaultContextWindows`, or the optional global `defaultContextWindow` fallback.
-
-#### GitHub Copilot context windows
-
-GitHub Copilot context windows are measured in **input (prompt) tokens**, exactly like every other provider's `contextWindow`, and are derived **dynamically from GitHub's live CAPI model catalog** (`GET {baseUrl}/models`) rather than a hardcoded model list — so plain Copilot model ids GitHub adds, removes, or retiers are reflected automatically. Atomic fetches the catalog only when you actually have the GitHub Copilot provider authenticated, caches it on disk for 30 minutes, and refreshes the active interactive session's model metadata as soon as that catalog is applied. Dynamic model creation is intentionally limited to picker-enabled, non-disabled `chat` entries with plain, non-namespaced ids; enterprise/org-deployed catalog ids containing `/` (for example `octodemo/Octodemo_Foundry/DeepSeek-V3.2`) are skipped instead of being exposed as `github-copilot/*` models. The same catalog also supplies Copilot output-token caps and selectable thinking levels: when CAPI advertises `capabilities.limits.max_output_tokens`, Atomic uses that live value as the model's `maxTokens` instead of the bundled fallback; when CAPI advertises `capabilities.supports.reasoning_effort` as an array, Atomic hides unsupported thinking levels for both dynamically synthesized Copilot models and bundled `pi-ai` Copilot models. Models that only advertise thinking budgets or a boolean reasoning-effort flag keep their existing thinking-level behavior.
-
-Each selectable Copilot window is a prompt/input budget. Atomic reads `capabilities.limits.max_prompt_tokens` for the full prompt cap, `capabilities.limits.max_output_tokens` for the maximum response/output cap, and treats `capabilities.limits.max_context_window_tokens` as the model's total context capacity (prompt plus output reserve) and a compatibility fallback only when the prompt cap is absent. Models with tiered pricing expose their per-tier prompt budgets through `billing.token_prices.<tier>.context_max`: the `default` tier becomes the base window and a larger `long_context` tier is offered as a selectable option. For example `github-copilot/gpt-5.5` resolves to a `272k` default / `922k` long prompt budget, `github-copilot/mai-code-1-flash-picker` advertises a `128k` prompt cap with a `256k` total context window, and `github-copilot/claude-sonnet-5` plus other Claude/Gemini long-context models resolve to `200k` default / `936k` long. When the request is a rounded budget such as `1m`, Atomic selects the largest advertised Copilot long-context prompt tier at or below that budget instead of falling back to the base `200k`/`272k` window. Offline, unauthenticated, or non-Copilot sessions leave the built-in scalar window and output-token cap untouched and show no picker.
-
-Selecting the long-context window does two client-side things:
-
-1. Raises Atomic's local token budget (e.g. `922_000` for `gpt-5.5`) for context collection, compaction thresholds, footer/stats, session replay, and SDK/RPC metadata.
-2. Sends `X-GitHub-Api-Version: 2026-06-01` on Copilot requests so GitHub returns/enforces the absolute long-context limits for eligible accounts.
-
-Atomic does **not** send a request body field, `contextTier`, or model-id variant for Copilot long context. GitHub chooses the larger `long_context` billing tier server-side automatically when the prompt token count exceeds the model's default budget. That tier consumes more Copilot AI credits and requires the account/actor to have Copilot long-context/usage-based billing entitlement enabled. If the account or selected model is still capped by GitHub's server-side limit, the request is rejected (for example, `prompt token count of N exceeds the limit of M`) and Atomic surfaces a friendly entitlement/cost/server-cap hint instead of silently truncating context.
-
-Custom `models.json` entries remain the escape hatch for providers, proxies, or Copilot accounts where the live catalog is unavailable. To adjust an existing built-in model, use `modelOverrides`:
+Built-in models take their `contextWindow` from the bundled `pi-ai` catalog. To
+change one, use `modelOverrides`:
 
 ```json
 {
@@ -354,10 +331,7 @@ Custom `models.json` entries remain the escape hatch for providers, proxies, or 
     "github-copilot": {
       "modelOverrides": {
         "gpt-5.5": {
-          "contextWindowOptions": [272000, 922000]
-        },
-        "gemini-3.1-pro-preview": {
-          "contextWindowOptions": [200000, 936000]
+          "contextWindow": 272000
         }
       }
     }
@@ -365,7 +339,7 @@ Custom `models.json` entries remain the escape hatch for providers, proxies, or 
 }
 ```
 
-To add a new Copilot model id under the built-in provider, define it in `models`:
+To add a new model id under a built-in provider, define it in `models`:
 
 ```json
 {
@@ -374,16 +348,13 @@ To add a new Copilot model id under the built-in provider, define it in `models`
       "models": [
         {
           "id": "my-copilot-model",
-          "contextWindow": 400000,
-          "contextWindowOptions": [1000000]
+          "contextWindow": 400000
         }
       ]
     }
   }
 }
 ```
-
-SDK and extension consumers can import the public helper API from the package root: `parseContextWindowValue()`, `formatContextWindow()`, `getSupportedContextWindows()`, `getModelDefaultContextWindow()`, `withContextWindowOptions()`, and `selectContextWindow()` are exported from `@bastani/atomic` alongside their TypeScript helper types. The root export also carries the `Model<Api>` augmentation for `contextWindowOptions` and `defaultContextWindow`.
 
 ## Overriding Built-in Providers
 
@@ -445,7 +416,7 @@ Use `modelOverrides` to customize specific models without replacing the provider
 }
 ```
 
-`modelOverrides` supports these fields per model: `name`, `reasoning`, `thinkingLevelMap`, `input`, `cost` (partial scalar rates plus optional full tier-array replacement), `contextWindow`, `contextWindowOptions`, `maxTokens`, `headers`, `compat`.
+`modelOverrides` supports these fields per model: `name`, `reasoning`, `thinkingLevelMap`, `input`, `cost` (partial scalar rates plus optional full tier-array replacement), `contextWindow`, `maxTokens`, `headers`, `compat`.
 
 When both `~/.pi/agent/models.json` and `~/.atomic/agent/models.json` define `modelOverrides`, Atomic merges their nested provider/model maps in that order. Different model IDs survive from both files. For the same provider and model ID, the primary `.atomic` entry replaces the entire legacy `.pi` override entry rather than deep-merging individual fields. This complete-entry rule includes `headers`: a primary exact override without headers removes headers that came from the legacy override, but does not erase a surviving custom model definition's own headers. An empty primary override (`{}`) therefore restores the model's built-in values for that entry.
 

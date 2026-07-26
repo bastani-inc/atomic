@@ -29,9 +29,6 @@ export interface CreateAgentSessionOptions {
   thinkingLevel?: ThinkingLevel;
   /** Ordered fallback models for main chat, as provider/model strings with optional :thinkingLevel suffix. Default: settings.fallbackModels */
   fallbackModels?: string[];
-  /** Context window token count. Default: model scalar contextWindow, or settings/session override when supported. */
-  contextWindow?: number;
-  /** Treat unsupported contextWindow as an error instead of a warning/fallback. */
   /** Models available for cycling (Ctrl+P in interactive mode) */
   scopedModels?: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
 
@@ -87,7 +84,5 @@ export interface CreateAgentSessionResult {
   modelFallbackMessage?: string;
   /** Semantic reason for modelFallbackMessage; suitable for mode control flow. */
   modelFallbackReason?: ModelFallbackReason;
-  /** Warning if a saved/default context window could not be applied to the selected model. */
-  /** Error if an explicit strict context-window selection is unsupported. */
 }
 

@@ -15,7 +15,7 @@ import { RpcEventBuffer } from "./rpc-event-buffer.ts";
 import { collectRpcEvents, waitForRpcIdle } from "./rpc-client-waits.ts";
 import type { RpcCommand, RpcExtensionUIRequest, RpcExtensionUIResponse, RpcEvent, RpcResponse } from "./rpc-types.ts";
 export type { ModelInfo, RpcCommandBody } from "./rpc-client-api.ts";
-export type { RpcContextWindowInfo, RpcEvent } from "./rpc-types.ts";
+export type { RpcEvent } from "./rpc-types.ts";
 
 
 function restartArgs(args: readonly string[] | undefined, sessionFile: string | undefined): string[] {
@@ -36,7 +36,6 @@ export interface RpcClientOptions {
 	env?: Record<string, string>;
 	provider?: string;
 	model?: string;
-	contextWindow?: number | string;
 	args?: string[];
 	runtimeExecutable?: string;
 	runtimeArgs?: string[];
@@ -126,9 +125,6 @@ export class RpcClient extends RpcClientApi {
 		}
 		if (this.options.model) {
 			args.push("--model", this.options.model);
-		}
-		if (this.options.contextWindow !== undefined) {
-			args.push("--context-window", String(this.options.contextWindow));
 		}
 		if (this.options.args) {
 			args.push(...this.options.args);

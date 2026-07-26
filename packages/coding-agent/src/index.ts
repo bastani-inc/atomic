@@ -317,7 +317,6 @@ export {
 	RpcClient,
 	type RpcClientOptions,
 	type RpcCommand,
-	type RpcContextWindowInfo,
 	type RpcEvent,
 	type RpcEventListener,
 	type RpcExtensionUIRequest,

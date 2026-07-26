@@ -76,7 +76,7 @@ export function buildSessionContext(
 	let leaf: SessionEntry | undefined;
 	if (leafId === null) {
 		// Explicitly null - return no messages (navigated to before first entry)
-		return { messages: [], thinkingLevel: "off", contextWindow: undefined, model: null };
+		return { messages: [], thinkingLevel: "off", model: null };
 	}
 	if (leafId) {
 		leaf = byId.get(leafId);
@@ -87,7 +87,7 @@ export function buildSessionContext(
 	}
 
 	if (!leaf) {
-		return { messages: [], thinkingLevel: "off", contextWindow: undefined, model: null };
+		return { messages: [], thinkingLevel: "off", model: null };
 	}
 
 	// Walk from leaf to root, collecting path
@@ -95,15 +95,12 @@ export function buildSessionContext(
 
 	// Extract settings
 	let thinkingLevel = "off";
-	let contextWindow: number | undefined;
 	let model: { provider: string; modelId: string } | null = null;
 
 	for (const entry of path) {
 		if (entry.type === "thinking_level_change") {
 			thinkingLevel = entry.thinkingLevel;
-		} else if (entry.type === "context_window_change") {
-			contextWindow = entry.contextWindow;
-		} else if (entry.type === "model_change") {
+				} else if (entry.type === "model_change") {
 			model = { provider: entry.provider, modelId: entry.modelId };
 		} else if (entry.type === "message" && entry.message.role === "assistant") {
 			model = { provider: entry.message.provider, modelId: entry.message.model };
@@ -133,7 +130,7 @@ export function buildSessionContext(
 	const boundary = getLatestCompactionBoundaryEntry(path);
 	if (!boundary) {
 		for (const entry of path) appendMessage(entry);
-		return { messages, thinkingLevel, contextWindow, model };
+		return { messages, thinkingLevel, model };
 	}
 
 	const boundaryIndex = path.findIndex((entry) => entry.id === boundary.id);
@@ -146,7 +143,7 @@ export function buildSessionContext(
 	}
 	for (let i = boundaryIndex + 1; i < path.length; i++) appendMessage(path[i]);
 
-	return { messages, thinkingLevel, contextWindow, model };
+	return { messages, thinkingLevel, model };
 }
 
 export interface SessionIndex {

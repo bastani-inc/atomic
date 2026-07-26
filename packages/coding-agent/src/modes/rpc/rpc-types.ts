@@ -71,10 +71,6 @@ export type RpcCommand =
 	| { id?: string; type: "cycle_thinking_level" }
 	| { id?: string; type: "get_available_thinking_levels" }
 
-	// Context Window
-	| { id?: string; type: "set_context_window"; contextWindow: number | string }
-	| { id?: string; type: "get_available_context_windows" }
-
 	// Queue modes
 	| { id?: string; type: "set_steering_mode"; mode: "all" | "one-at-a-time" }
 	| { id?: string; type: "set_follow_up_mode"; mode: "all" | "one-at-a-time" }
@@ -170,12 +166,6 @@ export interface RpcSessionState {
 	resourceOverlaps?: ResourceOverlap[];
 }
 
-export interface RpcContextWindowInfo {
-	contextWindows: number[];
-	currentContextWindow?: number;
-	supportsSelection: boolean;
-}
-
 export interface RpcLogoutProviderResult {
 	provider: string;
 	authStatus: AuthStatus;
@@ -266,16 +256,6 @@ export type RpcResponse =
 			command: "get_available_thinking_levels";
 			success: true;
 			data: { levels: ThinkingLevel[] };
-	  }
-
-	// Context Window
-	| { id?: string; type: "response"; command: "set_context_window"; success: true }
-	| {
-			id?: string;
-			type: "response";
-			command: "get_available_context_windows";
-			success: true;
-			data: RpcContextWindowInfo;
 	  }
 
 	// Queue modes

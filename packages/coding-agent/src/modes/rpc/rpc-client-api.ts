@@ -10,7 +10,6 @@ import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.t
 import type {
 	RpcCommand,
 	RpcAutocompleteItem,
-	RpcContextWindowInfo,
 	RpcLoginProviderResult,
 	RpcLogoutProviderResult,
 	RpcModelCatalog,
@@ -89,12 +88,6 @@ export abstract class RpcClientApi {
 		return this.data<{ levels: ThinkingLevel[] }>(
 			await this.request({ type: "get_available_thinking_levels" }),
 		).levels;
-	}
-	async setContextWindow(contextWindow: number | string): Promise<void> {
-		this.data(await this.request({ type: "set_context_window", contextWindow }));
-	}
-	async getAvailableContextWindows(): Promise<RpcContextWindowInfo> {
-		return this.data(await this.request({ type: "get_available_context_windows" }));
 	}
 	async setSteeringMode(mode: "all" | "one-at-a-time"): Promise<void> { await this.request({ type: "set_steering_mode", mode }); }
 	async setFollowUpMode(mode: "all" | "one-at-a-time"): Promise<void> { await this.request({ type: "set_follow_up_mode", mode }); }

@@ -35,7 +35,6 @@ import { KeybindingsReloadCoordinator } from "./rpc-keybindings-reload.ts";
 // Re-export types for consumers
 export type {
 	RpcCommand,
-	RpcContextWindowInfo,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
 	RpcResponse,

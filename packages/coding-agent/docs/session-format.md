@@ -224,16 +224,6 @@ Emitted when the user changes the thinking/reasoning level.
 {"type":"thinking_level_change","id":"e5f6g7h8","parentId":"d4e5f6g7","timestamp":"2024-12-03T14:06:00.000Z","thinkingLevel":"high"}
 ```
 
-### ContextWindowChangeEntry
-
-Emitted when the user selects a supported context-window size for the active model. The value is a token count, independent of thinking/reasoning level. Explicit startup selections are journaled even when they equal the model's scalar default so the user's budget choice survives later settings changes and resume.
-
-```json
-{"type":"context_window_change","id":"f6g7h8i9","parentId":"e5f6g7h8","timestamp":"2024-12-03T14:07:00.000Z","contextWindow":1000000}
-```
-
-`buildSessionContext()` replays the latest `context_window_change` on the active branch. In-place tree navigation also applies the branch's replayed context window to the active model without appending another `context_window_change` entry or writing context-window defaults to settings. If a historical value is no longer supported by the current model, session creation/navigation falls back to the model default the same way other context-window restore paths do.
-
 ### CompactionEntry
 
 Created by `/compact`, RPC `compact`, and automatic compaction. The `summary` field contains the mechanically reconstructed verbatim transcript string, not generated summary prose. `firstKeptEntryId` is the first context-visible entry retained outside compaction, or `null` when no pre-boundary context-visible message is retained (including `preserve_recent: 0`).
@@ -380,9 +370,6 @@ for (const line of lines) {
       break;
     case "thinking_level_change":
       console.log(`[${entry.id}] Thinking: ${entry.thinkingLevel}`);
-      break;
-    case "context_window_change":
-      console.log(`[${entry.id}] Context window: ${entry.contextWindow}`);
       break;
   }
 }

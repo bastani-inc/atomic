@@ -296,25 +296,15 @@ When multiple sources specify a session directory, precedence is `--session-dir`
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `enabledModels` | string[] | - | Model patterns for CTRL+P cycling (same format as `--models` CLI flag). In interactive TTY startup, these patterns are resolved again after deferred extension/resource loading so extension-provided providers can match without blocking first paint. |
-| `defaultContextWindow` | number \| string | model default | Optional global fallback context window for models that expose selectable context windows. Accepts raw token counts or compact labels such as `400k` and `1m`. Unsupported values are ignored for models that do not support them. |
-| `defaultContextWindows` | object | `{}` | Per-model preferred context windows keyed as `provider/modelId`. The interactive `/model` context picker writes this setting so a provider-specific prompt cap such as Copilot's `936k` does not leak into other providers. |
 
 ```json
 {
   "enabledModels": ["claude-*", "gpt-4o", "gemini-2*"],
-  "fallbackModels": ["anthropic/claude-opus-4-8:xhigh", "github-copilot/gpt-5.5:high"],
-  "defaultContextWindow": "1m",
-  "defaultContextWindows": {
-    "github-copilot/claude-opus-4.8": "936k",
-    "github-copilot/claude-sonnet-5": "936k",
-    "github-copilot/gpt-5.5": "922k"
-  }
+  "fallbackModels": ["anthropic/claude-opus-4-8:xhigh", "github-copilot/gpt-5.5:high"]
 }
 ```
 
-Context-window settings are independent of `defaultThinkingLevel`: selecting a larger context window does not change reasoning effort. Interactive users can change the active model's budget through the `/model` selection flow, which prompts for a context window whenever the chosen model supports more than one window and persists the effective selection under `defaultContextWindows["provider/modelId"]`. Atomic treats `defaultContextWindow` as a broad fallback only: if the active model does not support that value, the model's own default is used without a startup warning; targeted `defaultContextWindows` entries still warn when they become unsupported for their exact model. Larger provider context windows can carry higher usage cost. For catalog-advertised GitHub Copilot long-context models (including dynamically populated plain catalog ids such as `github-copilot/claude-sonnet-5`, while namespaced enterprise deployment ids containing `/` are skipped), selecting `1m` raises Atomic's local prompt budget to the largest advertised long-context tier at or below that rounded request (for example `922k` or `936k`) and sends `X-GitHub-Api-Version: 2026-06-01`; GitHub then applies the long-context tier server-side by prompt token count. That tier consumes more Copilot AI credits and requires Copilot long-context/usage-based billing entitlement, otherwise requests over the server cap are rejected with a friendly hint. Custom providers and explicit model overrides can still declare their own selectable `contextWindowOptions`.
-
-`fallbackModels` is independent of both context-window defaults and `enabledModels`: it is consulted only after a retryable main-chat provider/model failure, and each fallback candidate applies its own model-specific context-window defaults when selected.
+`fallbackModels` is independent of `enabledModels`: it is consulted only after a retryable main-chat provider/model failure.
 
 ### Markdown
 
@@ -374,7 +364,6 @@ See [Atomic packages](/packages) for package management details.
   "defaultProvider": "anthropic",
   "defaultModel": "claude-sonnet-4-20250514",
   "defaultThinkingLevel": "medium",
-  "defaultContextWindow": "400k",
   "theme": "dark",
   "compaction": {
     "enabled": true,
