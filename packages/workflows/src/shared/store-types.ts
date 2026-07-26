@@ -282,9 +282,12 @@ export interface StageSnapshot {
 	/**
 	 * Effective reasoning/thinking level in force for this stage's session
 	 * (e.g. "off", "low", "high"). Populated on the live snapshot alongside
-	 * {@link model} so background-run surfaces can show the same model +
-	 * thinking identity the main session footer shows. Optional: absent for
-	 * restored runs and stages whose model has no reasoning control.
+	 * {@link model} so the `/workflow connect` graph node cards can show the
+	 * same model + thinking identity the main session footer shows, and
+	 * restored onto replayed stages from the durable checkpoint so
+	 * `/workflow resume` keeps that identity. Optional: absent for stages
+	 * whose model has no reasoning control, and for runs checkpointed before
+	 * this field was persisted.
 	 */
 	thinkingLevel?: string;
 	/** True when Codex fast mode applied to this workflow stage. */

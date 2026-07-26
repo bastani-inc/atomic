@@ -109,6 +109,9 @@ export function createWorkflowStageFactory(input: {
 						...(replaySource.result !== undefined ? { result: replaySource.result } : {}),
 						...(replaySource.sessionId !== undefined ? { sessionId: replaySource.sessionId } : {}),
 						...(replaySource.sessionFile !== undefined ? { sessionFile: replaySource.sessionFile } : {}),
+						...(replaySource.model !== undefined ? { model: replaySource.model } : {}),
+						...(replaySource.thinkingLevel !== undefined ? { thinkingLevel: replaySource.thinkingLevel } : {}),
+						...(replaySource.fastMode !== undefined ? { fastMode: replaySource.fastMode } : {}),
 						replayedFromStageId: replaySource.id,
 						replayed: true,
 					}
