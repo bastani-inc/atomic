@@ -7,43 +7,30 @@ export function serializeJsonLine(value: object | boolean | null | number | stri
 
 export interface JsonlReaderOptions {
 	maxBytesPerTurn?: number;
-	maxFrameBytes?: number;
-	/** @deprecated Use maxFrameBytes. Retained for source compatibility; measured as UTF-8 bytes. */
-	maxLineChars?: number;
 	maxLinesPerTurn?: number;
-	onOversizedLine?: () => void;
 }
 
 /**
- * Attach a strict LF-only, UTF-8 byte-bounded JSONL reader.
+ * Attach a strict LF-only JSONL reader.
  *
  * The stream is paused before queued chunks are drained, so one turn cannot parse
- * an unbounded number of frames. Oversized records are discarded through their LF;
- * the next bounded record remains readable.
+ * an unbounded number of frames.
  */
 export function attachJsonlLineReader(
 	stream: Readable,
 	onLine: (line: string) => void,
 	options: JsonlReaderOptions = {},
 ): () => void {
-	const maxFrameBytes = options.maxFrameBytes ?? options.maxLineChars ?? Number.POSITIVE_INFINITY;
 	const maxBytesPerTurn = options.maxBytesPerTurn ?? Number.POSITIVE_INFINITY;
 	const maxLinesPerTurn = options.maxLinesPerTurn ?? Number.POSITIVE_INFINITY;
 	const chunks: Buffer[] = [];
 	let frameParts: Buffer[] = [];
 	let frameBytes = 0;
-	let discarding = false;
 	let scheduled: ReturnType<typeof setImmediate> | undefined;
 	let ended = false;
 	let detached = false;
 
 	const finishFrame = (): void => {
-		if (discarding) {
-			discarding = false;
-			frameParts = [];
-			frameBytes = 0;
-			return;
-		}
 		const frame = Buffer.concat(frameParts, frameBytes);
 		frameParts = [];
 		frameBytes = 0;
@@ -59,15 +46,8 @@ export function attachJsonlLineReader(
 			const newline = chunk.indexOf(0x0a, offset);
 			const end = newline !== -1 && newline < budgetEnd ? newline : budgetEnd;
 			const part = chunk.subarray(offset, end);
-			if (!discarding && frameBytes + part.length <= maxFrameBytes) {
-				if (part.length > 0) frameParts.push(part);
-				frameBytes += part.length;
-			} else if (!discarding) {
-				discarding = true;
-				frameParts = [];
-				frameBytes = 0;
-				options.onOversizedLine?.();
-			}
+			if (part.length > 0) frameParts.push(part);
+			frameBytes += part.length;
 			offset = end;
 			if (newline === end) {
 				offset += 1;
@@ -99,7 +79,7 @@ export function attachJsonlLineReader(
 		}
 		if (chunks.length > 0) schedule();
 		else if (ended) {
-			if (!discarding && frameBytes > 0) finishFrame();
+			if (frameBytes > 0) finishFrame();
 			frameParts = [];
 			frameBytes = 0;
 		} else stream.resume();
@@ -115,7 +95,7 @@ export function attachJsonlLineReader(
 			clearImmediate(scheduled);
 			scheduled = undefined;
 			drain();
-		} else if (chunks.length === 0 && !discarding && frameBytes > 0) finishFrame();
+		} else if (chunks.length === 0 && frameBytes > 0) finishFrame();
 	};
 	stream.on("data", onData);
 	stream.on("end", onEnd);

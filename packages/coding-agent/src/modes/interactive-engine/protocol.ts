@@ -3,7 +3,6 @@ import type { HostInputFormField, HostSessionPickerRow } from "../../core/extens
 import type { KeyId } from "../../core/keybindings.ts";
 
 export const INTERACTIVE_ENGINE_PROTOCOL_VERSION = 1;
-export const INTERACTIVE_ENGINE_MAX_FRAME_BYTES = 1_048_576;
 
 export interface JsonObject {
 	[key: string]: JsonValue;
@@ -199,7 +198,6 @@ function parseKeybindingState(value: JsonValue | undefined): EngineKeybindingSta
 }
 
 function parseJsonObject(line: string): JsonObject | undefined {
-	if (Buffer.byteLength(line, "utf8") > INTERACTIVE_ENGINE_MAX_FRAME_BYTES) return undefined;
 	let value: JsonValue;
 	try {
 		value = JSON.parse(line) as JsonValue;
@@ -316,11 +314,7 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 }
 
 export function serializeInteractiveEngineFrame(message: InteractiveEngineMessage | InteractiveEngineCommand): string {
-	const line = JSON.stringify(message);
-	if (Buffer.byteLength(line, "utf8") > INTERACTIVE_ENGINE_MAX_FRAME_BYTES) {
-		throw new Error("Interactive engine frame exceeds 1 MiB");
-	}
-	return `${line}\n`;
+	return `${JSON.stringify(message)}\n`;
 }
 
 export const serializeInteractiveEngineMessage = serializeInteractiveEngineFrame;

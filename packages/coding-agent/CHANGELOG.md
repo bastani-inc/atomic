@@ -5,6 +5,7 @@
 ### Changed
 
 - Reworked interactive startup and ordinary working motion around Atomic's revision-3 identity system: the ∀ banner assembles inward in whole-column steps before its identity and manifesto beat land; main and workflow-stage work surfaces keep the exact one-cell `∀` visible while following a pronounced, theme-aware dark → accent → bright/bold → accent → dark luminance ramp at an 88ms cadence and retaining all 453 original randomized whimsical working verbs. Optional partial theme palettes can specify any phase exactly—including the approved Catppuccin Mocha prototype and terminal indices 0–255—while omitted tones derive from semantic selected-surface, accent, and text roles. `NO_COLOR` retains regular/bold activity without foreground-color escapes; reduced motion keeps a static regular accent `∀`; extension indicator frame and interval values remain verbatim while their phase/cadence restarts each turn; and factual status/prompt/receipt surfaces keep precedence. The inline icon and longest message fit tested standard/64-column layouts ([#1883](https://github.com/bastani-inc/atomic/issues/1883)).
+- Removed the fixed 1 MiB size limit from RPC and isolated interactive-engine JSONL transport. Commands, responses, events, queued writes, and render frames now pass through in full instead of being rejected, dropped, or truncated; clients remain responsible for the memory and latency cost of large records ([#1985](https://github.com/bastani-inc/atomic/issues/1985)).
 
 ### Fixed
 

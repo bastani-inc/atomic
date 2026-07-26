@@ -1,11 +1,11 @@
 
 import type { ChildProcess } from "node:child_process";
 import type { ImageContent } from "@earendil-works/pi-ai/compat";
-import { BoundedWriter } from "./bounded-writer.ts";
+import { QueuedWriter } from "./queued-writer.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type { ActivityWatchdogDiagnostic } from "../interactive-engine/activity-watchdog.ts";
 import { InteractiveEngineMonitor } from "../interactive-engine/engine-monitor.ts";
-import { INTERACTIVE_ENGINE_MAX_FRAME_BYTES, serializeInteractiveEngineFrame, type EngineKeybindingState, type InteractiveEngineCommand, type InteractiveEngineMessage } from "../interactive-engine/protocol.ts";
+import { serializeInteractiveEngineFrame, type EngineKeybindingState, type InteractiveEngineCommand, type InteractiveEngineMessage } from "../interactive-engine/protocol.ts";
 import { sleep } from "../../utils/sleep.ts";
 import { createInteractiveJsonlOptions, spawnRpcClientProcess, terminateRpcClientProcess } from "./rpc-client-process.ts";
 import { RpcClientApi, type RpcCommandBody } from "./rpc-client-api.ts";
@@ -92,7 +92,6 @@ export class RpcClient extends RpcClientApi {
 	private engineMessageListeners: Array<(message: InteractiveEngineMessage) => void> = [];
 	private latestEngineKeybindingState: EngineKeybindingState | undefined;
 	private pendingEngineMessages: InteractiveEngineMessage[] = [];
-	private pendingEngineMessageBytes = 0;
 	private pendingRequests: Map<string, { resolve: (response: RpcResponse) => void; reject: (error: Error) => void }> =
 		new Map();
 	private requestId = 0;
@@ -100,7 +99,7 @@ export class RpcClient extends RpcClientApi {
 	private exitError: Error | null = null;
 	private engineMonitor: InteractiveEngineMonitor | undefined;
 	private eventBuffer: RpcEventBuffer | undefined;
-	private stdinWriter: BoundedWriter | undefined;
+	private stdinWriter: QueuedWriter | undefined;
 	private generation = 0;
 	private readonly activeActivityIds = new Set<string>();
 	private enginePid: number | undefined;
@@ -155,10 +154,7 @@ export class RpcClient extends RpcClientApi {
 			interactiveEngine: this.engineMonitor !== undefined,
 		});
 		this.process = childProcess;
-		this.stdinWriter = new BoundedWriter(childProcess.stdin!, {
-			maxFrameBytes: INTERACTIVE_ENGINE_MAX_FRAME_BYTES,
-			maxQueuedBytes: 2 * INTERACTIVE_ENGINE_MAX_FRAME_BYTES,
-		});
+		this.stdinWriter = new QueuedWriter(childProcess.stdin!);
 
 		childProcess.once("exit", (code, signal) => {
 			if (generation !== this.generation) return;
@@ -192,19 +188,10 @@ export class RpcClient extends RpcClientApi {
 				: `${Buffer.from(next).subarray(-256 * 1024).toString("utf8")}\n[stderr truncated]`;
 			process.stderr.write(data);
 		});
-		const readerOptions = createInteractiveJsonlOptions(
-			this.engineMonitor !== undefined,
-			this.options.interactiveEngine?.onDiagnostic,
-		);
+		const readerOptions = createInteractiveJsonlOptions(this.engineMonitor !== undefined);
 		this.stopReadingStdout = attachJsonlLineReader(childProcess.stdout!, (line) => {
 			if (generation === this.generation) this.handleLine(line);
-		}, {
-			...readerOptions,
-			onOversizedLine: () => {
-				readerOptions.onOversizedLine?.();
-				if (generation === this.generation) this.failTransport(new Error("Interactive engine emitted an oversized RPC frame"));
-			},
-		});
+		}, readerOptions);
 		if (this.engineMonitor) await this.engineMonitor.waitUntilReady();
 		else await sleep(100);
 
@@ -261,7 +248,6 @@ export class RpcClient extends RpcClientApi {
 	onInteractiveEngineMessage(listener: (message: InteractiveEngineMessage) => void): () => void {
 		this.engineMessageListeners.push(listener);
 		for (const message of this.pendingEngineMessages.splice(0)) listener(message);
-		this.pendingEngineMessageBytes = 0;
 		return () => {
 			const index = this.engineMessageListeners.indexOf(listener);
 			if (index !== -1) this.engineMessageListeners.splice(index, 1);
@@ -348,15 +334,7 @@ export class RpcClient extends RpcClientApi {
 	}
 	private emitInteractiveEngineMessage(message: InteractiveEngineMessage): void {
 		if (this.engineMessageListeners.length === 0 && message.type.startsWith("engine_custom_")) {
-			const bytes = Buffer.byteLength(JSON.stringify(message), "utf8");
-			while (this.pendingEngineMessages.length > 0 && this.pendingEngineMessageBytes + bytes > INTERACTIVE_ENGINE_MAX_FRAME_BYTES) {
-				const removed = this.pendingEngineMessages.shift()!;
-				this.pendingEngineMessageBytes -= Buffer.byteLength(JSON.stringify(removed), "utf8");
-			}
-			if (bytes <= INTERACTIVE_ENGINE_MAX_FRAME_BYTES) {
-				this.pendingEngineMessages.push(message);
-				this.pendingEngineMessageBytes += bytes;
-			}
+			this.pendingEngineMessages.push(message);
 		}
 		for (const listener of this.engineMessageListeners) listener(message);
 	}
@@ -390,7 +368,7 @@ export class RpcClient extends RpcClientApi {
 			activity: undefined, elapsedMs: 0, level: "unresponsive", message: error.message,
 		});
 	}
-	private requireWriter(): BoundedWriter {
+	private requireWriter(): QueuedWriter {
 		if (!this.stdinWriter) throw new Error("Agent process stdin is not writable");
 		return this.stdinWriter;
 	}

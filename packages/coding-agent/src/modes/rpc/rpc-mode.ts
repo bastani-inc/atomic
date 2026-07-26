@@ -22,7 +22,7 @@ import { EngineInputFormService } from "../interactive-engine/engine-input-form.
 import { EngineRenderService } from "../interactive-engine/engine-render-service.ts";
 import { EngineSessionPickerService } from "../interactive-engine/engine-session-picker.ts";
 import { startInteractiveEngineLiveness } from "../interactive-engine/engine-child-liveness.ts";
-import { INTERACTIVE_ENGINE_MAX_FRAME_BYTES, serializeInteractiveEngineMessage } from "../interactive-engine/protocol.ts";
+import { serializeInteractiveEngineMessage } from "../interactive-engine/protocol.ts";
 import { attachJsonlLineReader } from "./jsonl.ts";
 import { createRpcCommandHandler } from "./rpc-command-handler.ts";
 import { createRpcInputLineHandler } from "./rpc-input.ts";
@@ -181,8 +181,6 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		const scheduleInputLine = createRpcInputScheduler(handleInputLine);
 		const detachJsonl = attachJsonlLineReader(process.stdin, scheduleInputLine, {
 			maxBytesPerTurn: 256 * 1024,
-			maxFrameBytes: INTERACTIVE_ENGINE_MAX_FRAME_BYTES,
-			onOversizedLine: () => output({ type: "response", command: "parse", success: false, error: "RPC command exceeded the 1 MiB frame limit" }),
 		});
 		return () => {
 			detachJsonl();

@@ -6,7 +6,6 @@ import type { CustomMessage } from "../../core/messages.ts";
 import { CustomMessageComponent } from "../interactive/components/custom-message.ts";
 import { ToolExecutionComponent } from "../interactive/components/tool-execution.ts";
 import {
-	INTERACTIVE_ENGINE_MAX_FRAME_BYTES,
 	type InteractiveEngineCommand,
 	type InteractiveEngineMessage,
 	parseInteractiveEngineCommand,
@@ -53,18 +52,6 @@ class RenderTerminal implements Terminal {
 	setProgress(): void {}
 }
 
-function boundedLines(lines: string[]): string[] {
-	let remaining = INTERACTIVE_ENGINE_MAX_FRAME_BYTES - 512;
-	const result: string[] = [];
-	for (const line of lines) {
-		if (remaining <= 0) break;
-		const bytes = Buffer.from(line);
-		const value = bytes.length <= remaining ? line : bytes.subarray(0, remaining).toString("utf8");
-		result.push(value);
-		remaining -= Buffer.byteLength(value, "utf8");
-	}
-	return result;
-}
 
 export class EngineRenderService {
 	private readonly records = new Map<string, RenderRecord>();
@@ -152,7 +139,7 @@ export class EngineRenderService {
 		if (command.result) {
 			tool.updateResult(command.result as unknown as Parameters<ToolExecutionComponent["updateResult"]>[0], command.isPartial);
 		}
-		return boundedLines(tool.render(command.width));
+		return tool.render(command.width);
 	}
 
 	private renderMessage(command: MessageRenderCommand): string[] {
@@ -172,7 +159,7 @@ export class EngineRenderService {
 			record.terminal.columns = Math.max(1, command.width);
 		}
 		record.component.setExpanded(command.expanded);
-		return boundedLines(record.component.render(command.width));
+		return record.component.render(command.width);
 	}
 
 	private disposeRecord(id: string): void {

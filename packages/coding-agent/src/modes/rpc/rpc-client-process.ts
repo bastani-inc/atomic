@@ -5,8 +5,6 @@ import { join } from "node:path";
 import { flushPersistentCompileCache } from "../../utils/compile-cache.ts";
 import { killProcessTree, trackDetachedChildPid, untrackDetachedChildPid } from "../../utils/shell.ts";
 import { sleep } from "../../utils/sleep.ts";
-import type { ActivityWatchdogDiagnostic } from "../interactive-engine/activity-watchdog.ts";
-import { INTERACTIVE_ENGINE_MAX_FRAME_BYTES } from "../interactive-engine/protocol.ts";
 
 export interface RpcClientProcessOptions {
 	cliPath: string;
@@ -77,19 +75,6 @@ export async function terminateRpcClientProcess(child: ChildProcess, processTree
 	if (guardianFile) await rm(guardianFile, { force: true });
 }
 
-export function createInteractiveJsonlOptions(
-	enabled: boolean,
-	onDiagnostic: ((diagnostic: ActivityWatchdogDiagnostic) => void) | undefined,
-): { maxBytesPerTurn?: number; maxFrameBytes?: number; onOversizedLine?: () => void } {
-	if (!enabled) return {};
-	return {
-		maxBytesPerTurn: 256 * 1024,
-		maxFrameBytes: INTERACTIVE_ENGINE_MAX_FRAME_BYTES,
-		onOversizedLine: () => onDiagnostic?.({
-			activity: undefined,
-			elapsedMs: 0,
-			level: "unresponsive",
-			message: "Interactive engine violated the 1 MiB protocol frame limit; pending requests were cancelled",
-		}),
-	};
+export function createInteractiveJsonlOptions(enabled: boolean): { maxBytesPerTurn?: number } {
+	return enabled ? { maxBytesPerTurn: 256 * 1024 } : {};
 }

@@ -32,6 +32,8 @@ If a complete saved provider/model default names a provider that remains unsuppo
 
 RPC mode uses strict JSONL semantics with LF (`\n`) as the only record delimiter.
 
+Atomic does not impose a size limit on RPC or isolated interactive-engine JSONL records. Commands, responses, events, and render frames are serialized in full. Clients and extensions must account for the memory and latency cost of large records and must not add a smaller line limit unless they intend to reject valid Atomic output.
+
 This matters for clients:
 - Split records on `\n` only
 - Accept optional `\r\n` input by stripping a trailing `\r`

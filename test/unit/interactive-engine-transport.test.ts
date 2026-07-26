@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { Readable, Writable } from "node:stream";
 import { runSynchronousCallback, setCallbackActivityReporter } from "../../packages/coding-agent/src/core/callback-activity.ts";
 import { ActivityWatchdog, shouldRenderEngineDiagnosticAsChatError, type ActivityWatchdogDiagnostic } from "../../packages/coding-agent/src/modes/interactive-engine/activity-watchdog.ts";
-import { BoundedWriter } from "../../packages/coding-agent/src/modes/rpc/bounded-writer.ts";
+import { QueuedWriter } from "../../packages/coding-agent/src/modes/rpc/queued-writer.ts";
 import { attachJsonlLineReader } from "../../packages/coding-agent/src/modes/rpc/jsonl.ts";
 
 class SlowWritable extends Writable {
@@ -12,31 +12,28 @@ class SlowWritable extends Writable {
 	}
 }
 
-test("interactive JSONL limits UTF-8 bytes and preserves the following frame", async () => {
-	const oversized = JSON.stringify({ value: "🙂".repeat(300_000) });
-	const stream = Readable.from([`${oversized}\n{"type":"terminal"}\n`]);
+test("interactive JSONL preserves large UTF-8 frames", async () => {
+	const large = JSON.stringify({ value: "🙂".repeat(300_000) });
+	const stream = Readable.from([`${large}\n{\"type\":\"terminal\"}\n`]);
 	const lines: string[] = [];
-	let violations = 0;
-	attachJsonlLineReader(stream, (line) => lines.push(line), {
-		maxFrameBytes: 1_048_576,
-		maxBytesPerTurn: 128 * 1024,
-		onOversizedLine: () => { violations += 1; },
+	await new Promise<void>((resolve) => {
+		attachJsonlLineReader(stream, (line) => {
+			lines.push(line);
+			if (lines.length === 2) resolve();
+		}, { maxBytesPerTurn: 128 * 1024 });
 	});
-	await new Promise<void>((resolve) => stream.once("end", () => setTimeout(resolve, 10)));
-	assert.equal(violations, 1);
-	assert.deepEqual(lines, ['{"type":"terminal"}']);
+	assert.equal(lines[0], large);
+	assert.equal(lines[1], '{\"type\":\"terminal\"}');
 });
 
-test("bounded writer applies byte admission pressure without losing critical frames", async () => {
-	const writer = new BoundedWriter(new SlowWritable(), { maxFrameBytes: 1024, maxQueuedBytes: 2048 });
-	const writes: Promise<void>[] = [];
-	let peak = 0;
+test("queued writer preserves large critical frames", async () => {
+	const writer = new QueuedWriter(new SlowWritable());
+	const writes = [writer.write(`${JSON.stringify({ value: "x".repeat(2 * 1024 * 1024) })}\n`)];
 	for (let index = 0; index < 100; index += 1) {
 		writes.push(writer.write(`${JSON.stringify({ index, value: "x".repeat(400) })}\n`));
-		peak = Math.max(peak, writer.pendingBytes);
 	}
 	await Promise.all(writes);
-	assert.ok(peak <= 2048, `queued ${peak} bytes`);
+	assert.equal(writer.pendingBytes, 0);
 });
 
 test("activity watchdog retains nested and concurrent attribution", async () => {

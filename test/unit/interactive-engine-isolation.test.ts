@@ -172,17 +172,16 @@ test.serial("blocking extension initialization cannot delay creation of the inte
 	assert.ok(maximumGap(ticks) <= 100, "host heartbeat stalled during extension initialization");
 });
 
-test("interactive JSONL drainage discards oversized frames before parsing", async () => {
-	const stream = Readable.from([`${"x".repeat(1_100_000)}\n{\"ok\":true}\n`]);
+test("interactive JSONL drainage preserves frames larger than 1 MiB", async () => {
+	const large = "x".repeat(1_100_000);
+	const stream = Readable.from([`${large}\n{\"ok\":true}\n`]);
 	const lines: string[] = [];
-	let oversized = 0;
-	const ended = new Promise<void>((resolve) => stream.once("end", resolve));
-	attachJsonlLineReader(stream, (line) => lines.push(line), {
-		maxLineChars: 1_048_576,
-		maxLinesPerTurn: 64,
-		onOversizedLine: () => { oversized += 1; },
+	await new Promise<void>((resolve) => {
+		attachJsonlLineReader(stream, (line) => {
+			lines.push(line);
+			if (lines.length === 2) resolve();
+		}, { maxBytesPerTurn: 64 * 1024, maxLinesPerTurn: 64 });
 	});
-	await ended;
-	assert.equal(oversized, 1);
-	assert.deepEqual(lines, ['{\"ok\":true}']);
+	assert.equal(lines[0], large);
+	assert.equal(lines[1], '{\"ok\":true}');
 });

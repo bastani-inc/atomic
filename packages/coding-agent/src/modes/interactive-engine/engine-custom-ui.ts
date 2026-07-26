@@ -5,7 +5,6 @@ import type { KeybindingsManager } from "../../core/keybindings.ts";
 import type { Theme } from "../interactive/theme/theme.ts";
 import { theme } from "../interactive/theme/theme.ts";
 import {
-	INTERACTIVE_ENGINE_MAX_FRAME_BYTES,
 	isJsonValue,
 	parseInteractiveEngineCommand,
 	serializeInteractiveEngineMessage,
@@ -87,18 +86,6 @@ function jsonResult(value: object | boolean | null | number | string | undefined
 	return decoded;
 }
 
-function boundedLines(lines: string[]): string[] {
-	let remaining = INTERACTIVE_ENGINE_MAX_FRAME_BYTES - 512;
-	const bounded: string[] = [];
-	for (const line of lines) {
-		if (remaining <= 0) break;
-		const bytes = Buffer.from(line, "utf8");
-		const next = bytes.length <= remaining ? line : bytes.subarray(0, remaining).toString("utf8");
-		bounded.push(next);
-		remaining -= Buffer.byteLength(next, "utf8");
-	}
-	return bounded;
-}
 
 export class EngineCustomUiService {
 	private readonly widgetIds = new Map<string, string>();
@@ -246,7 +233,7 @@ export class EngineCustomUiService {
 					type: "engine_custom_frame",
 					componentId: command.componentId,
 					requestId: command.requestId,
-					lines: boundedLines(lines),
+					lines,
 				})).catch((error: Error) => this.send({
 					type: "engine_custom_frame",
 					componentId: command.componentId,
