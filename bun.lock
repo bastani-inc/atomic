@@ -111,7 +111,7 @@
       "name": "@bastani/atomic-natives",
       "version": "0.0.0",
       "devDependencies": {
-        "@napi-rs/cli": "3.7.3",
+        "@napi-rs/cli": "3.7.4",
       },
     },
     "packages/subagents": {
@@ -434,7 +434,7 @@
 
     "@mozilla/readability": ["@mozilla/readability@0.6.0", "", {}, "sha512-juG5VWh4qAivzTAeMzvY9xs9HY5rAcr2E4I7tiSSCokRFi7XIZCAu92ZkSTsIj1OPceCifL3cpfteP3pDT9/QQ=="],
 
-    "@napi-rs/cli": ["@napi-rs/cli@3.7.3", "", { "dependencies": { "@inquirer/prompts": "^8.5.2", "@napi-rs/cross-toolchain": "^1.0.3", "@napi-rs/wasm-tools": "^1.0.1", "@octokit/rest": "^22.0.1", "clipanion": "^4.0.0-rc.4", "colorette": "^2.0.20", "emnapi": "^1.11.1", "es-toolkit": "^1.47.0", "js-yaml": "^4.2.0", "obug": "^2.1.2", "semver": "^7.8.2", "typanion": "^3.14.0" }, "peerDependencies": { "@emnapi/runtime": "^1.7.1" }, "optionalPeers": ["@emnapi/runtime"], "bin": { "napi": "dist/cli.js", "napi-raw": "cli.mjs" } }, "sha512-iu5BOoYjYVixp5jwE7JniHvg72XuKWXUfXteu+6Gt/XY4/mslsS+Qbipleg1+3CAUGHkWc+ebaMJj7Pc93BXSQ=="],
+    "@napi-rs/cli": ["@napi-rs/cli@3.7.4", "", { "dependencies": { "@inquirer/prompts": "^8.5.2", "@napi-rs/cross-toolchain": "^1.0.3", "@napi-rs/wasm-tools": "^1.0.1", "@octokit/rest": "^22.0.1", "clipanion": "^4.0.0-rc.4", "colorette": "^2.0.20", "emnapi": "^1.11.1", "es-toolkit": "^1.47.0", "js-yaml": "^4.2.0", "obug": "^2.1.2", "semver": "^7.8.2", "typanion": "^3.14.0" }, "peerDependencies": { "@emnapi/runtime": "^1.7.1" }, "optionalPeers": ["@emnapi/runtime"], "bin": { "napi": "dist/cli.js", "napi-raw": "cli.mjs" } }, "sha512-idELIUceJ9zPgx/shcMt1fSSsteFG68v56RIXi4qUm7OYuJOt7CoMj2KnHVmbOqXgUHWQU1lCULrtQdZDG4F5A=="],
 
     "@napi-rs/cross-toolchain": ["@napi-rs/cross-toolchain@1.0.3", "", { "dependencies": { "@napi-rs/lzma": "^1.4.5", "@napi-rs/tar": "^1.1.0", "debug": "^4.4.1" }, "peerDependencies": { "@napi-rs/cross-toolchain-arm64-target-aarch64": "^1.0.3", "@napi-rs/cross-toolchain-arm64-target-armv7": "^1.0.3", "@napi-rs/cross-toolchain-arm64-target-ppc64le": "^1.0.3", "@napi-rs/cross-toolchain-arm64-target-s390x": "^1.0.3", "@napi-rs/cross-toolchain-arm64-target-x86_64": "^1.0.3", "@napi-rs/cross-toolchain-x64-target-aarch64": "^1.0.3", "@napi-rs/cross-toolchain-x64-target-armv7": "^1.0.3", "@napi-rs/cross-toolchain-x64-target-ppc64le": "^1.0.3", "@napi-rs/cross-toolchain-x64-target-s390x": "^1.0.3", "@napi-rs/cross-toolchain-x64-target-x86_64": "^1.0.3" }, "optionalPeers": ["@napi-rs/cross-toolchain-arm64-target-aarch64", "@napi-rs/cross-toolchain-arm64-target-armv7", "@napi-rs/cross-toolchain-arm64-target-ppc64le", "@napi-rs/cross-toolchain-arm64-target-s390x", "@napi-rs/cross-toolchain-arm64-target-x86_64", "@napi-rs/cross-toolchain-x64-target-aarch64", "@napi-rs/cross-toolchain-x64-target-armv7", "@napi-rs/cross-toolchain-x64-target-ppc64le", "@napi-rs/cross-toolchain-x64-target-s390x", "@napi-rs/cross-toolchain-x64-target-x86_64"] }, "sha512-ENPfLe4937bsKVTDA6zdABx4pq9w0tHqRrJHyaGxgaPq03a2Bd1unD5XSKjXJjebsABJ+MjAv1A2OvCgK9yehg=="],
 
