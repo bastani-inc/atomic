@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Type } from "typebox";
 import type { WorkflowRunContext, WorkflowSerializableValue } from "../src/shared/types.js";
@@ -38,11 +38,6 @@ function actionTools(category: string): readonly string[] {
   }
   if (normalized.includes("research")) return ["read", "web_search", "fetch_content"];
   return ["read"];
-}
-
-
-async function artifactText(path: string, fallback: string): Promise<string> {
-  try { return await readFile(path, "utf8"); } catch { return fallback; }
 }
 
 /**
@@ -105,6 +100,9 @@ export async function runClassifyAndAct(ctx: WorkflowRunContext<Inputs>): Promis
     output: actionPath,
     outputMode: "file-only",
   });
-  const result = await artifactText(actionPath, action.text);
+  // `file-only` already returns a compact artifact reference. Reading the file
+  // back here would defeat that and push the whole report into the caller's
+  // context; `action_path` is returned for callers that want the contents.
+  const result = action.text;
   return { result, category, confidence, action: action.stageName, classification_path: classificationPath, action_path: actionPath, artifact_dir: artifactDir };
 }

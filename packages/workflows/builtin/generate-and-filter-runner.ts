@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Type, type Static } from "typebox";
 import type { WorkflowRunContext, WorkflowSerializableValue } from "../src/shared/types.js";
@@ -67,9 +67,12 @@ export async function runGenerateAndFilter(ctx: WorkflowRunContext<Inputs>): Pro
     decisionPath = judgePath;
   }
   const finalPath = join(root, "shortlist.md");
-  await ctx.task("final-shortlist", {
+  const finalShortlist = await ctx.task("final-shortlist", {
     prompt: renderFinalShortlistPrompt(ctx.inputs.prompt, decisionPath), context: "fresh",
     reads: [decisionPath, ...shortlist], output: finalPath, outputMode: "file-only",
   });
-  return { result: await readFile(finalPath, "utf8"), shortlist, candidate_artifact_paths: candidatePaths, filter_path: filterPath, judge_path: judgePath, final_path: finalPath, artifact_dir: root, manifest_path: manifestPath };
+  // `file-only` already returns a compact artifact reference. Reading the file
+  // back here would defeat that and push the whole report into the caller's
+  // context; `final_path` is returned for callers that want the contents.
+  return { result: finalShortlist.text, shortlist, candidate_artifact_paths: candidatePaths, filter_path: filterPath, judge_path: judgePath, final_path: finalPath, artifact_dir: root, manifest_path: manifestPath };
 }

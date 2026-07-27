@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Type } from "typebox";
 import type { WorkflowRunContext, WorkflowSerializableValue, WorkflowTaskStep } from "../src/shared/types.js";
@@ -30,9 +30,6 @@ export type FanOutAndSynthesizeResult = {
 function safeName(value: string, index: number): string {
   const normalized = value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
   return `${String(index + 1).padStart(2, "0")}-${normalized || "branch"}`;
-}
-async function artifactText(path: string, fallback: string): Promise<string> {
-  try { return await readFile(path, "utf8"); } catch { return fallback; }
 }
 function parsedPartitions(value: WorkflowSerializableValue | undefined, limit: number, prompt: string): Partition[] {
   if (typeof value !== "object" || value === null || !("partitions" in value) || !Array.isArray(value.partitions)) {
@@ -86,7 +83,10 @@ export async function runFanOutAndSynthesize(ctx: WorkflowRunContext<Inputs>): P
     outputMode: "file-only",
   });
   return {
-    result: await artifactText(synthesisPath, synthesis.text),
+    // `file-only` already returns a compact artifact reference. Reading the file
+    // back here would defeat that and push the whole report into the caller's
+    // context; `synthesis_path` is returned for callers that want the contents.
+    result: synthesis.text,
     partitions: partitions.map((partition) => partition.label),
     branch_artifact_paths: branchPaths,
     synthesis_path: synthesisPath,

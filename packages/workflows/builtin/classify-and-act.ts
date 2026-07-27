@@ -23,7 +23,7 @@ export default workflow({
     }),
   },
   outputs: {
-    result: Type.String({ description: "Category-specific action report." }),
+    result: Type.String({ description: "Compact reference to the category-specific action report artifact; read `action_path` for the full report." }),
     category: Type.String({ description: "Selected category, including any human fallback selection." }),
     confidence: Type.Number({ minimum: 0, maximum: 1, description: "Classifier confidence before fallback." }),
     action: Type.String({ description: "Executed category-specific action stage name." }),

@@ -21,7 +21,7 @@ export default workflow({
     }),
   },
   outputs: {
-    result: Type.String({ description: "Evidence-citing synthesized report." }),
+    result: Type.String({ description: "Compact reference to the evidence-citing synthesis artifact; read `synthesis_path` for the full report." }),
     partitions: Type.Array(Type.String(), { description: "Ordered labels for executed partitions." }),
     branch_artifact_paths: Type.Array(Type.String(), { description: "Ordered branch artifact paths consumed by synthesis." }),
     synthesis_path: Type.String({ description: "Final synthesis artifact path." }),

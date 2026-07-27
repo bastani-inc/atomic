@@ -158,6 +158,9 @@ export async function runLoopUntilDone(ctx: WorkflowRunContext<LoopInputs>) {
         context: "fresh",
         reads: [ledgerPath, iterationPath],
         output: resultPath,
+        // Keep the completion report out of the caller's context window;
+        // `result_path` below carries it for callers that want the contents.
+        outputMode: "file-only",
       });
       return {
         result: final.text,

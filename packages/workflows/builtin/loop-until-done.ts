@@ -15,7 +15,7 @@ export default workflow({
     }),
   },
   outputs: {
-    result: Type.String({ description: "Evidence-backed completion report or deterministic exhaustion report." }),
+    result: Type.String({ description: "Compact reference to the evidence-backed completion report, or the deterministic exhaustion report; read `result_path` for the full report." }),
     status: Type.Union([Type.Literal("complete"), Type.Literal("failed")], {
       description: "Complete when evidence satisfies the stop condition; failed when max_iterations is exhausted.",
     }),

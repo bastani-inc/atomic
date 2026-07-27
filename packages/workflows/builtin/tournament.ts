@@ -21,7 +21,7 @@ export default workflow({
     }),
   },
   outputs: {
-    result: Type.String({ description: "Final reducer report containing the winning solution and decision trail." }),
+    result: Type.String({ description: "Compact reference to the final reducer report holding the winning solution and decision trail; read `result_path` for the full report." }),
     winner: Type.String({ description: "Stable attempt label selected as the tournament winner." }),
     winner_artifact_path: Type.String({ description: "Path to the original winning attempt artifact." }),
     result_path: Type.String({ description: "Path to the final reducer report artifact." }),
