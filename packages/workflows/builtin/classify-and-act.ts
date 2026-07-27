@@ -1,5 +1,6 @@
 import { Type } from "typebox";
 import { workflow } from "../src/authoring/workflow.js";
+import { withSteeringPropagationContext } from "./steering-context.js";
 import { runClassifyAndAct } from "./classify-and-act-runner.js";
 
 export const DEFAULT_ACTION_CATEGORIES = ["analysis", "implementation", "research"] as const;
@@ -31,5 +32,5 @@ export default workflow({
     action_path: Type.String({ description: "Category action report artifact path." }),
     artifact_dir: Type.String({ description: "Per-run artifact directory." }),
   },
-  run: async (ctx) => await runClassifyAndAct(ctx),
+  run: async (ctx) => await runClassifyAndAct(withSteeringPropagationContext(ctx)),
 });

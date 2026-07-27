@@ -32,6 +32,7 @@ Default to a workflow for non-trivial work with a verifiable objective — see [
 
 - [Quick Start](#quick-start)
 - [When to Use Workflows](#when-to-use-workflows)
+- [The Run Contract](#the-run-contract)
 - [Built-in Workflows](#built-in-workflows)
 - [Writing a Workflow](#writing-a-workflow)
 - [Scope-Guard Starter Pattern](#scope-guard-starter-pattern)
@@ -548,6 +549,71 @@ Atomic's category is broader and more explicit: it is the loop engine for engine
 | Extensibility | Built on Pi extensions: add tools, TUI, MCP, web access, intercom, skills, prompt templates, themes, custom providers, and packaged workflows. | Optimized for Claude Code's built-in dynamic orchestration experience rather than an open extension SDK you own in-repo. |
 | Artifacts and auditability | Research docs, specs, logs, transcripts, reviewer notes, check output, and final summaries can live in the repo or workflow run directory. | Progress is saved and resumable, but the orchestration is primarily a Claude Code runtime behavior. |
 | Cost/scale posture | You choose the graph and concurrency. Atomic can be small and deterministic, or broad when you intentionally design a larger workflow. | Designed for large fan-outs, including tens to hundreds of subagents; Anthropic notes it can consume substantially more tokens than a typical Claude Code session. |
+
+## The Run Contract
+
+**A run's contract is its objective plus its acceptance criteria. Only the user may change it. Every stage that receives a change must hand it to the next stage.**
+
+This is the single most important rule for getting predictable results out of a multi-stage run, and it is the rule most often broken by accident.
+
+### Only the user may change the contract
+
+A workflow launches with a contract: the objective and, when supplied, explicit acceptance criteria. Two parties relate to it very differently:
+
+- **You may amend it at any time.** A mid-run message — steering, a follow-up, resume text — is authoritative. If you say "also handle the detached path," that is a new requirement, and the run adopts it from that moment.
+- **Agents may not amend it at all.** An implementer that notices a nearby bug, a cleaner abstraction, or a missing feature has found *deferred work*, not a new criterion. It records the observation and keeps building to the contract.
+
+### Amendments must reach the next stage
+
+An amendment that stays inside the session that received it is invisible to everything downstream. That produces the failure this rule exists to prevent:
+
+> You steer the implementation stage to add a requirement. The implementer adopts it and builds it. The reviewers were launched with the original criteria, so they score the added work as unrequested scope and the original criteria as contradicted. The run then burns review loops arguing about a contract mismatch nobody can see.
+
+So every builtin stage prompt carries a **steering propagation contract**:
+
+- Restate every objective-relevant steering message in your report or handoff artifact, under an explicit `Contract amendments received` heading, verbatim when short.
+- Keep user-authored amendments visibly separate from your own observations, so the next stage can tell a required clause from an agent proposal.
+- Treat amendments inherited from an upstream stage as contract clauses. Cover them in acceptance and traceability work; never classify them as out-of-scope.
+- Resolve ambiguity before implementing. Use `intercom` to ask the supervisor or originating stage when one is reachable; otherwise state the conflict and implement the narrowest reading consistent with the launch contract.
+- Propagate nothing else this way. Tool preferences, working style, and your own ideas are not amendments.
+
+Every bundled workflow wraps its run context once at the definition entry point, so each `ctx.task`, `ctx.chain`, and `ctx.parallel` prompt carries the contract automatically. Do the same in a custom workflow:
+
+```ts
+import { withSteeringPropagationContext } from "@bastani/workflows/builtin/steering-context";
+
+export default workflow({
+  name: "my-workflow",
+  // ...
+  run: async (ctx) => await runMyWorkflow(withSteeringPropagationContext(ctx)),
+});
+```
+
+Wrapping the context rather than each call site means a stage added later inherits the pattern instead of silently dropping amendments.
+
+### Scope discipline
+
+The mirror of "only the user may amend" is that the agent holds the line. Every builtin implementation stage carries this contract:
+
+> Before writing code, state the goal in one sentence and list the acceptance criteria. That list is the contract. Freeze it.
+
+While implementing:
+
+- **Done means the contract, not "good."** When all criteria pass, stop. Polish, refactors, and "while I'm here" fixes are new work, not this work.
+- **Every addition must trace to a criterion.** If you cannot point at the criterion a change serves, do not make it. Log it instead.
+- **Keep a deferred list, not a growing diff.** When you notice a bug, smell, or missing feature outside the contract, write one line in a deferred note and move on. Surface it at the end.
+- **Distinguish blockers from improvements.** Change scope only if a criterion is impossible or wrong as written — and say so explicitly before proceeding, rather than silently absorbing the work.
+- **Watch for the tells.** "It would be cleaner if…", "we should also…", "this really ought to…" mean you are about to move the goalpost. Stop and check the contract.
+- **Prefer the smallest diff that satisfies the contract.** Fewer files touched, fewer abstractions introduced, no speculative generality for futures nobody asked for.
+
+At the end, report three things: what the contract was, evidence each criterion passes, and the deferred list. Scope changes belong in the report, never in the diff.
+
+### Practical consequences
+
+- **Steer freely — it is the supported amendment channel.** You do not need to restart a run to add a requirement.
+- **Say what you mean as a requirement.** "It would be nice if…" reads as guidance; "also handle X" reads as a clause. Stages are told to distinguish them.
+- **Expect amendments in the reports.** If a stage received one and its report has no `Contract amendments received` section, the amendment did not propagate and downstream stages will not honor it.
+- **A growing diff with no new criteria is a defect.** That is the tell that scope discipline slipped, and it is a legitimate reason to stop a run.
 
 ## Built-in Workflows
 

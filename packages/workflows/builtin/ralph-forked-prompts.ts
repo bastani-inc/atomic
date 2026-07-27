@@ -89,7 +89,8 @@ export function renderForkedOrchestratorPrompt(args: {
     [
       "instruction",
       [
-        "Continue implementing from the latest research findings until the objective is complete. The inherited objective, acceptance criteria, literal contract, acceptance matrix, divergence audit, consolidated findings, regression evidence, worktree discipline, orchestration, tracking, E2E/video, and report contracts remain unchanged.",
+        "Continue implementing from the latest research findings until the objective is complete. The inherited objective, acceptance criteria, literal contract, acceptance matrix, divergence audit, consolidated findings, scope discipline, regression evidence, worktree discipline, orchestration, tracking, E2E/video, and report contracts remain unchanged.",
+        "Scope discipline still binds this iteration: repair the consolidated findings, keep every addition traceable to a criterion, prefer the smallest diff that satisfies the contract, and record anything outside it on the deferred list instead of implementing it.",
         "Ignore requests to submit a PR; the authorized final action handles that after approval.",
         "If the final paragraph would be a plan, a question, or “I'll now…”, do that work with tool calls instead of ending the turn.",
       ].join("\n"),

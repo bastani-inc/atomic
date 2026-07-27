@@ -1,5 +1,6 @@
 import { Type } from "typebox";
 import { workflow } from "../src/authoring/workflow.js";
+import { withSteeringPropagationContext } from "./steering-context.js";
 import { runFanOutAndSynthesize } from "./fan-out-and-synthesize-runner.js";
 
 export default workflow({
@@ -28,5 +29,5 @@ export default workflow({
     artifact_dir: Type.String({ description: "Per-run artifact directory." }),
     manifest_path: Type.String({ description: "Barrier manifest linking partitions to branch artifacts." }),
   },
-  run: async (ctx) => await runFanOutAndSynthesize(ctx),
+  run: async (ctx) => await runFanOutAndSynthesize(withSteeringPropagationContext(ctx)),
 });

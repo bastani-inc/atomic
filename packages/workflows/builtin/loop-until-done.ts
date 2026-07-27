@@ -1,5 +1,6 @@
 import { Type } from "typebox";
 import { workflow } from "../src/authoring/workflow.js";
+import { withSteeringPropagationContext } from "./steering-context.js";
 import { runLoopUntilDone } from "./loop-until-done-runner.js";
 
 export default workflow({
@@ -27,5 +28,5 @@ export default workflow({
     remaining_work: Type.String({ description: "Actionable remaining work; empty only after proven completion." }),
     artifact_dir: Type.String({ description: "Run-specific directory containing loop artifacts." }),
   },
-  run: async (ctx) => await runLoopUntilDone(ctx),
+  run: async (ctx) => await runLoopUntilDone(withSteeringPropagationContext(ctx)),
 });

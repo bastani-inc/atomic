@@ -9,6 +9,7 @@ import {
   FINDINGS_CONSOLIDATION_CONTRACT,
   LITERAL_OBJECTIVE_CONTRACT,
   REGRESSION_EVIDENCE_CONTRACT,
+  SCOPE_DISCIPLINE_CONTRACT,
   WORKER_PREFLIGHT_CONTRACT,
   WORKTREE_DISCIPLINE_CONTRACT,
 } from "./shared-prompts.js";
@@ -124,6 +125,7 @@ export async function runRalphWorkflow(
         ["acceptance_matrix", ACCEPTANCE_MATRIX_CONTRACT],
         ["divergence_audit", CONTRACT_FIDELITY_AUDIT],
         ["findings_batch", FINDINGS_CONSOLIDATION_CONTRACT],
+        ["scope_discipline", SCOPE_DISCIPLINE_CONTRACT],
         ["regression_evidence", REGRESSION_EVIDENCE_CONTRACT],
         workflowCwdContext,
         [
@@ -298,20 +300,40 @@ export async function runRalphWorkflow(
     if (approved) break;
   }
   const qaVideoAvailable = existsSync(qaVideoPath);
-  if (createPr === true && approved) {
+  // An exhausted loop budget still produced real work on a real branch. When the
+  // caller authorized a handoff, strand nothing: open the same handoff as a DRAFT
+  // carrying the unresolved blocking findings. Without create_pr the workflow
+  // never touches a PR, approved or not.
+  const unapprovedHandoff = createPr === true && !approved;
+  if (createPr === true) {
     const prResult = await ctx.task("pull-request", {
       prompt: taggedPrompt([
         workflowCwdContext,
         [
           "handoff_context",
           [
-            `Approved changes are relative to base branch: ${comparisonBaseBranch}`,
+            unapprovedHandoff
+              ? `Review did not converge within ${iterationsCompleted} iteration(s). Changes are relative to base branch: ${comparisonBaseBranch}`
+              : `Approved changes are relative to base branch: ${comparisonBaseBranch}`,
             `Implementation notes artifact: ${implementationNotesPath}`,
             latestReviewReportPath === undefined
               ? "No review-round artifact is available."
-              : `Approved review-round artifact: ${latestReviewReportPath}`,
+              : unapprovedHandoff
+                ? `Final unapproved review-round artifact: ${latestReviewReportPath}`
+                : `Approved review-round artifact: ${latestReviewReportPath}`,
           ].join("\n"),
         ],
+        ...(unapprovedHandoff
+          ? [[
+              "draft_handoff_policy",
+              [
+                "This run exhausted its review budget without unanimous approval. Create the handoff as a DRAFT and never mark it ready for review.",
+                "Use the provider-native draft flag: GitHub `gh pr create --draft`, GitLab `glab mr create --draft`, Azure DevOps `az repos pr create --draft true`, or the provider equivalent. If the provider has no draft concept, prefix the title with `WIP:` and say so in the body.",
+                "Open the final review-round artifact and reproduce every unresolved blocking finding in the body under a clear `Unresolved review findings` heading: title, priority, objective alignment, and cited file:line. Do not paraphrase them away or imply they are resolved.",
+                "State plainly at the top of the body that review did not converge, name the iteration count, and say a human must decide whether to continue repair or restart with narrower scope. Do not claim approval, and do not request reviewers.",
+              ].join("\n"),
+            ] as const]
+          : []),
         [
           "qa_video_attachment",
           qaVideoAvailable
@@ -337,7 +359,9 @@ export async function runRalphWorkflow(
             "Use the full implementation notes as the review body, then make a provider-appropriate comment containing the implementation notes file contents as the last action after successful creation or update.",
             "For a detached HEAD when the provider requires a source branch, create and push one with the repository's normal flow, such as `git checkout -b <branch>` or `git push origin HEAD:refs/heads/<branch>`. Leave the worktree intact for retries or user recovery.",
             "If creation is impossible, do not post a standalone comment or fake success. Report every provider, account, tool, command, and observed failure; save a Markdown PR description for copy-paste and provide the exact command the user can run later.",
-            "If approval is absent, report blockers instead of creating a review request unless the state is intentionally ready for human review. Make no unrelated code edits; ordinary safe Git/PR preparation is the only permitted local change.",
+            unapprovedHandoff
+              ? "Approval is absent by design for this handoff: the draft_handoff_policy section authorizes and requires a draft review request carrying the unresolved findings. Create it rather than reporting blockers instead. Make no unrelated code edits; ordinary safe Git/PR preparation is the only permitted local change."
+              : "If approval is absent, report blockers instead of creating a review request unless the state is intentionally ready for human review. Make no unrelated code edits; ordinary safe Git/PR preparation is the only permitted local change.",
           ].join("\n"),
         ],
         [

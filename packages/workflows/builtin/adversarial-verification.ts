@@ -1,5 +1,6 @@
 import { Type } from "typebox";
 import { workflow } from "../src/authoring/workflow.js";
+import { withSteeringPropagationContext } from "./steering-context.js";
 import { runAdversarialVerification } from "./adversarial-verification-runner.js";
 
 export default workflow({
@@ -20,5 +21,5 @@ export default workflow({
     artifact_dir: Type.String({ description: "Directory containing run artifacts." }),
     remaining_work: Type.Array(Type.String(), { description: "Unresolved blocking findings when not approved." }),
   },
-  run: runAdversarialVerification,
+  run: async (ctx) => await runAdversarialVerification(withSteeringPropagationContext(ctx)),
 });

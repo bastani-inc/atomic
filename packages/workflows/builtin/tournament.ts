@@ -1,5 +1,6 @@
 import { Type } from "typebox";
 import { workflow } from "../src/authoring/workflow.js";
+import { withSteeringPropagationContext } from "./steering-context.js";
 import { runTournament } from "./tournament-runner.js";
 
 export default workflow({
@@ -30,5 +31,5 @@ export default workflow({
     bracket_path: Type.String({ description: "Path to the durable JSON bracket with matches, byes, rationales, and winner." }),
     artifact_dir: Type.String({ description: "Run-specific directory containing tournament artifacts." }),
   },
-  run: async (ctx) => await runTournament(ctx),
+  run: async (ctx) => await runTournament(withSteeringPropagationContext(ctx)),
 });

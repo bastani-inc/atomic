@@ -1,5 +1,6 @@
 import { Type } from "typebox";
 import { workflow } from "../src/authoring/workflow.js";
+import { withSteeringPropagationContext } from "./steering-context.js";
 import { runGenerateAndFilter } from "./generate-and-filter-runner.js";
 
 export default workflow({
@@ -22,5 +23,5 @@ export default workflow({
     artifact_dir: Type.String({ description: "Directory containing run artifacts." }),
     manifest_path: Type.String({ description: "Path to the candidate artifact manifest." }),
   },
-  run: runGenerateAndFilter,
+  run: async (ctx) => await runGenerateAndFilter(withSteeringPropagationContext(ctx)),
 });

@@ -1,3 +1,43 @@
+/**
+ * Steering propagation is a whole-repository pattern, not a per-workflow
+ * option: every builtin stage prompt carries STEERING_PROPAGATION_CONTRACT
+ * through `withSteeringPropagation`, and `test/unit/builtin-workflow-steering-propagation.test.ts`
+ * fails when a stage prompt omits it.
+ *
+ * A run's contract can change mid-flight, but only the user may change it. A
+ * steered amendment that stays inside one stage's session is invisible to every
+ * later stage, so the implementer builds to the amended contract while reviewers
+ * still score the launch contract and mark the added work as unrequested scope.
+ * Each stage therefore restates the amendments it received in its own handoff.
+ */
+export const STEERING_PROPAGATION_CONTRACT = [
+  "Steering propagation contract:",
+  "- Mid-run user messages (steering, follow-ups, resume text) are authoritative and may amend this run's objective or acceptance criteria. Adopt an amendment as required behavior from the moment you receive it.",
+  "- An amendment that stays in your session is lost. Restate every objective-relevant steering message in your final report or handoff artifact, verbatim when short, under an explicit `Contract amendments received` heading.",
+  "- Keep user-authored amendments visibly separate from your own observations, so later stages can tell a required clause from an agent proposal.",
+  "- Treat amendments inherited from an upstream stage as contract clauses. Cover them in acceptance and traceability work; never classify inherited user amendments as beyond_objective, unrequested scope, or speculative expansion.",
+  "- If an amendment is ambiguous, or conflicts with the launch contract or another amendment, resolve it before implementing: ask through `intercom` when a supervisor or originating stage is reachable, otherwise state the conflict in your report and implement the narrowest reading consistent with the launch contract.",
+  "- Propagate nothing else this way. Guidance about how to work, tool preferences, and your own improvement ideas are not amendments; those follow the scope discipline contract.",
+].join("\n");
+
+/**
+ * Add the steering propagation contract to a stage prompt. Builtin runners wrap
+ * every `ctx.task` / `ctx.parallel` / `ctx.chain` prompt with this so the pattern
+ * cannot be forgotten when a stage is added.
+ *
+ * Stage prompts in this package deliberately end with their `<instruction>`
+ * section, which carries the strongest positional weight. The contract is
+ * inserted immediately before that closing section rather than after it, so a
+ * stage's final words remain its instruction.
+ */
+export function withSteeringPropagation(prompt: string): string {
+  if (prompt.includes("<steering_propagation>")) return prompt;
+  const tagged = `<steering_propagation>\n${STEERING_PROPAGATION_CONTRACT}\n</steering_propagation>`;
+  const instructionAt = prompt.lastIndexOf("\n\n<instruction>");
+  if (instructionAt === -1) return `${prompt}\n\n${tagged}`;
+  return `${prompt.slice(0, instructionAt)}\n\n${tagged}${prompt.slice(instructionAt)}`;
+}
+
 export const WORKER_PREFLIGHT_CONTRACT = [
   "Before implementation delegation, infer the checkout's language, framework, build system, and setup requirements from repository evidence rather than ecosystem assumptions.",
   "Inspect source layout, setup docs, manifests, lockfiles, toolchain and codegen files, CI/workflow configuration, scripts, and generated-artifact conventions for missing dependencies, generated files, toolchains, submodules, or other initialization artifacts.",
@@ -31,7 +71,8 @@ export function renderE2eQaVideoReviewGuidance(
 
 export const LITERAL_OBJECTIVE_CONTRACT = [
   "Literal objective contract:",
-  "- The objective and acceptance criteria are the sole literal source of required behavior; acceptance criteria are immutable and the run objective must not contradict them.",
+  "- The objective and acceptance criteria are the sole literal source of required behavior; the run objective must not contradict them.",
+  "- Only the user may change the contract. A mid-run user message — steering, a follow-up, or resume text — is authoritative: adopt it as required behavior from that point on, and carry it forward under the steering propagation contract. You may never widen the contract yourself; an improvement you thought of is deferred work, not a new criterion.",
   "- Surface objective/criteria conflicts as blockers or findings. When explicit wording conflicts with specs, upstream issues, comments, best practice, or reviewer speculation, the objective/criteria control; do not silently favor external knowledge.",
   "- For an enumerated error, message, or rejection, prefer the widest plausible trigger over silently reinterpreting ambiguous nearby input. Narrow it only when the contract or pre-existing required tests explicitly require acceptance.",
   "- That loud-error preference applies only to enumerated errors. Otherwise accept permissively: do not invent behavior, restrictions, validation errors, required fields, uniqueness/format constraints, or follow-up requirements.",
@@ -86,6 +127,18 @@ export const REGRESSION_EVIDENCE_CONTRACT = [
 export const FINDINGS_CONSOLIDATION_CONTRACT = [
   "Treat the latest review round as one consolidated batch: read all blocking findings, group shared root causes, and repair the full batch with validation and durable regression evidence in this turn.",
   "Defer only a genuinely blocked or contract-contradicting finding, recording the reason in the receipt.",
+].join("\n");
+
+export const SCOPE_DISCIPLINE_CONTRACT = [
+  "Scope discipline:",
+  "- Before writing code, state the goal in one sentence and list the acceptance criteria. That list is the contract. Freeze it.",
+  "- Done means the contract, not \"good.\" When all criteria pass, stop. Polish, refactors, and \"while I'm here\" fixes are new work, not this work.",
+  "- Every addition must trace to a criterion. If you cannot point at the criterion a change serves, do not make it. Log it instead.",
+  "- Keep a deferred list, not a growing diff. When you notice a bug, smell, or missing feature outside the contract, write one line in a deferred note and move on. Surface it at the end.",
+  "- Distinguish blockers from improvements. Change scope only if a criterion is impossible or wrong as written — and say so explicitly before proceeding; never silently absorb the work.",
+  "- Watch for the tells. \"It would be cleaner if...\", \"we should also...\", \"this really ought to...\" mean you are about to move the goalpost. Stop and check the contract.",
+  "- Prefer the smallest diff that satisfies the contract: fewer files touched, fewer abstractions introduced, no speculative generality for futures nobody asked for.",
+  "- Report three things at the end: what the contract was, evidence each criterion passes, and the deferred list. Scope changes belong in the report, never in the diff.",
 ].join("\n");
 
 export const EVIDENCE_CLOSURE_POLICY = [
