@@ -63,7 +63,7 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function(this: Int
       if (this.deferLoadedResourcesDisclosureUntilAgentEnd) {
         this.pendingLoadedResourcesDisclosure = true;
       } else {
-        this.showLoadedResources({ force: true, showDiagnosticsWhenQuiet: true, targetContainer: this.startupNoticesContainer });
+        this.showLoadedResources({ force: true, showDiagnosticsWhenQuiet: true, targetContainer: this.resourceDisclosureContainer });
         // Keep the subscription warning after the RESOURCES disclosure.
         void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
         this.showStartupNoticesIfNeeded(this.startupNoticesContainer);

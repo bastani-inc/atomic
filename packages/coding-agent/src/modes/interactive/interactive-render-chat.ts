@@ -329,12 +329,18 @@ InteractiveModeBase.prototype.renderSessionEntries = function(
 };
 
 InteractiveModeBase.prototype.attachStartupNoticesContainer = function(this: InteractiveModeBase, options: { resetDetached?: boolean } = {}): void {
-    const isAttached = this.chatContainer.children.includes(this.startupNoticesContainer);
-    if (isAttached) return;
-    if (options.resetDetached) {
-      this.startupNoticesContainer.clear();
+    const disclosureIndex = this.chatContainer.children.indexOf(this.resourceDisclosureContainer);
+    const noticesIndex = this.chatContainer.children.indexOf(this.startupNoticesContainer);
+    if (disclosureIndex >= 0 && noticesIndex >= 0) return;
+    if (disclosureIndex < 0) {
+      if (options.resetDetached) this.resourceDisclosureContainer.clear();
+      if (noticesIndex >= 0) this.chatContainer.children.splice(noticesIndex, 0, this.resourceDisclosureContainer);
+      else this.chatContainer.addChild(this.resourceDisclosureContainer);
     }
-    this.chatContainer.addChild(this.startupNoticesContainer);
+    if (noticesIndex < 0) {
+      if (options.resetDetached) this.startupNoticesContainer.clear();
+      this.chatContainer.addChild(this.startupNoticesContainer);
+    }
   };
 
 InteractiveModeBase.prototype.renderInitialMessages = function(this: InteractiveModeBase): void {

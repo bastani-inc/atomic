@@ -43,7 +43,7 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function(
       this.showLoadedResources({
         force: true,
         showDiagnosticsWhenQuiet: true,
-        targetContainer: this.startupNoticesContainer,
+        targetContainer: this.resourceDisclosureContainer,
       });
       void this.maybeWarnAboutAnthropicSubscriptionAuth(
         undefined,

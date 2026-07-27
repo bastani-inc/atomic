@@ -57,10 +57,8 @@ export class InteractiveModeBase {
 
 
   chatContainer: Container;
-
+  resourceDisclosureContainer: Container;
   startupNoticesContainer: Container;
-
-
   pendingMessagesContainer: Container;
 
 
@@ -276,7 +274,7 @@ export class InteractiveModeBase {
 
   // Deferred extension load state (first paint happens before extensions load)
   deferredStartupPending = false;
-
+  initialStartupBinding = false;
   deferredStartupPromise: Promise<void> | undefined = undefined;
 
 
@@ -417,6 +415,7 @@ export class InteractiveModeBase {
     this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
     this.headerContainer = new Container();
     this.chatContainer = new Container();
+    this.resourceDisclosureContainer = new Container();
     this.startupNoticesContainer = new Container();
     this.pendingMessagesContainer = new Container();
     this.statusContainer = new Container();

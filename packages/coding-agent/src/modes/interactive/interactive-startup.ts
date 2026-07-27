@@ -7,6 +7,7 @@ import { ONBOARDING_COPY } from "./interactive-onboarding.ts";
 import { onInteractiveEngineRemoteCommandsChanged, waitForInteractiveEngineBound } from "../interactive-engine/extension-ui-bridge.ts";
 import { restoreTerminalTitleAfterPackageCheck } from "./interactive-terminal-title.ts";
 import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
+import { bindInitialEagerSession } from "./interactive-initial-session-binding.ts";
 
 export const shouldRefreshCatalogsOnStartup = (): boolean => !isOfflineModeEnabled();
 
@@ -92,12 +93,11 @@ InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): 
 
     this.registerSignalHandlers();
 
-    // Changelog and first-run onboarding are prepared lazily after first paint.
-
     // Add header container as first child. Populate it after theme initialization.
     this.ui.addChild(this.headerContainer);
 
     this.ui.addChild(this.chatContainer);
+    this.attachStartupNoticesContainer();
     this.ui.addChild(this.pendingMessagesContainer);
     this.ui.addChild(this.statusContainer);
     this.renderWidgets(); // Initialize with default spacer
@@ -186,7 +186,7 @@ InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): 
       this.updateEditorBorderColor();
       this.updateTerminalTitle();
     } else {
-      await this.rebindCurrentSession();
+      await bindInitialEagerSession(this);
     }
 
     this.attachStartupNoticesContainer();

@@ -74,6 +74,7 @@ type HandleEventContext = {
 
 type StartupContainerContext = {
   chatContainer: Container;
+  resourceDisclosureContainer: Container;
   startupNoticesContainer: Container;
   firstRunNoticeVisible: boolean;
   firstRunOnboardingNoticeComponents: Component[];
@@ -293,10 +294,12 @@ describe("coding-agent deferred startup input", () => {
   test("startup notices container reattaches cleanly after chat clears", () => {
     const chatContainer = new Container();
     const startupNoticesContainer = new Container();
+    const resourceDisclosureContainer = new Container();
     const staleNotice = new Text("old notice", 0, 0);
     startupNoticesContainer.addChild(staleNotice);
     const mode: StartupContainerContext = {
       chatContainer,
+      resourceDisclosureContainer,
       startupNoticesContainer,
       firstRunNoticeVisible: false,
       firstRunOnboardingNoticeComponents: [],
@@ -305,17 +308,21 @@ describe("coding-agent deferred startup input", () => {
 
     interactivePrototype.attachStartupNoticesContainer.call(mode, { resetDetached: true });
 
-    assert.equal(chatContainer.children[0], startupNoticesContainer);
+    assert.equal(chatContainer.children[0], resourceDisclosureContainer);
+    assert.equal(chatContainer.children[1], startupNoticesContainer);
+    assert.equal(resourceDisclosureContainer.children.length, 0);
     assert.equal(startupNoticesContainer.children.length, 0);
   });
 
   test("clears first-run onboarding components from startup notices container", () => {
     const chatContainer = new Container();
     const startupNoticesContainer = new Container();
+    const resourceDisclosureContainer = new Container();
     const onboarding = new Text("onboarding", 0, 0);
     startupNoticesContainer.addChild(onboarding);
     const mode: StartupContainerContext = {
       chatContainer,
+      resourceDisclosureContainer,
       startupNoticesContainer,
       firstRunNoticeVisible: true,
       firstRunOnboardingNoticeComponents: [onboarding],
