@@ -250,6 +250,12 @@ export class InteractiveModeBase {
 
   autoCompactionEscapeHandler?: () => void;
 
+  /** True once the pre-compaction Escape handler has been captured for restore. */
+  autoCompactionEscapeHandlerSaved = false;
+
+  /** True while `runUserPromptTurn()` owns the working loader. */
+  promptTurnWorkingLoaderActive = false;
+
 
 
   // Auto-retry state

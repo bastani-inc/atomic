@@ -45,7 +45,12 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function(this: Int
       await this.bindCurrentSessionExtensions();
       await this.session.reload({ reason: "startup" });
 
-      this.stopWorkingLoader();
+      // A prompt turn keeps its own working loader mounted from submit until
+      // `agent_start` or `compaction_start` takes over; tearing it down here
+      // would leave the rest of startup and prompt preflight with no indicator.
+      if (!this.promptTurnWorkingLoaderActive) {
+        this.stopWorkingLoader();
+      }
       this.deferredStartupPending = false;
       recordTimeSinceReset("deferred-extension-load");
 
@@ -71,7 +76,11 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function(this: Int
       this.updateEditorBorderColor();
       this.ui.requestRender();
     } catch (error) {
-      this.stopWorkingLoader();
+      // Same ownership rule as the success path: this catch swallows the error,
+      // so prompt preflight continues and must keep its indicator.
+      if (!this.promptTurnWorkingLoaderActive) {
+        this.stopWorkingLoader();
+      }
       this.deferredStartupPending = false;
       this.showError(
         `Extension loading failed: ${error instanceof Error ? error.message : String(error)}`,

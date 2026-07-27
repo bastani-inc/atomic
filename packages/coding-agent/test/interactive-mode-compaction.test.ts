@@ -203,6 +203,34 @@ describe("InteractiveMode compaction events", () => {
 		});
 	});
 
+	it("releases the previous loader and keeps the original escape handler across duplicate compaction starts", async () => {
+		const { mode } = makeMode();
+		const state = mode as unknown as {
+			autoCompactionLoader?: { stop: () => void };
+			autoCompactionEscapeHandler?: () => void;
+			defaultEditor: { onEscape?: () => void };
+		};
+		const originalEscape = state.defaultEditor.onEscape;
+
+		await emit(mode, { type: "compaction_start", reason: "manual" });
+		const firstLoader = state.autoCompactionLoader;
+		expect(firstLoader).toBeDefined();
+		const firstStop = vi.spyOn(firstLoader as { stop: () => void }, "stop");
+
+		await emit(mode, { type: "compaction_start", reason: "manual" });
+
+		expect(firstStop).toHaveBeenCalledTimes(1);
+		expect(state.autoCompactionLoader).toBeDefined();
+		expect(state.autoCompactionLoader).not.toBe(firstLoader);
+		expect(state.autoCompactionEscapeHandler).toBe(originalEscape);
+		expect(state.defaultEditor.onEscape).not.toBe(originalEscape);
+
+		await emit(mode, { type: "compaction_end", reason: "manual", result, aborted: false, willRetry: false });
+
+		expect(state.defaultEditor.onEscape).toBe(originalEscape);
+		expect(state.autoCompactionLoader).toBeUndefined();
+	});
+
 	it("does not render a boundary for aborted or failed compaction", async () => {
 		for (const event of [
 			{ type: "compaction_end", reason: "manual", result, aborted: true, willRetry: false },

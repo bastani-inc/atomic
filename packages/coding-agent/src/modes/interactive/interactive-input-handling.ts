@@ -5,6 +5,7 @@ import { interruptBlockedInteractiveEngine } from "../interactive-engine/extensi
 import { routeGlobalClearInput } from "./interactive-global-clear.ts";
 import { StartupIdentityComponent } from "./components/startup-identity.ts";
 import { pauseAndAbortInteractiveSession } from "./interactive-pause.ts";
+import { COMPACTION_ALREADY_IN_PROGRESS_WARNING } from "./interactive-bash-compact.ts";
 export function registerStartupInputListeners(mode: InteractiveModeBase): void {
 	mode.ui.addInputListener(() => mode.builtInHeader instanceof StartupIdentityComponent ? void mode.builtInHeader.settle() : undefined);
 	mode.ui.addInputListener((data) => routeGlobalClearInput(data, {
@@ -350,6 +351,12 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function(this: Interact
         this.editor.setText("");
         if (text !== "/compact") {
           this.showWarning("Usage: /compact");
+          return;
+        }
+        // Evaluated before the general compaction queue gate below, so reject
+        // here: queueing would merely defer a duplicate compaction.
+        if (this.session.isCompacting) {
+          this.showWarning(COMPACTION_ALREADY_IN_PROGRESS_WARNING);
           return;
         }
         await this.handleCompactCommand();

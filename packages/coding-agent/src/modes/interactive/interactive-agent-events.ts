@@ -298,8 +298,18 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
         if (this.settingsManager.getShowTerminalProgress()) {
           this.ui.terminal.setProgress(true);
         }
+        // Release any loader left behind by an earlier start before mounting a
+        // new one; dropping the reference alone leaks its animation timer.
+        if (this.autoCompactionLoader) {
+          this.autoCompactionLoader.stop();
+          this.autoCompactionLoader = undefined;
+        }
         // Keep editor active; submissions are queued during compaction.
-        this.autoCompactionEscapeHandler = this.defaultEditor.onEscape;
+        // Never clobber an already-saved handler with our own abort closure.
+        if (!this.autoCompactionEscapeHandlerSaved) {
+          this.autoCompactionEscapeHandler = this.defaultEditor.onEscape;
+          this.autoCompactionEscapeHandlerSaved = true;
+        }
         this.defaultEditor.onEscape = () => {
           this.session.abortCompaction();
         };
@@ -325,9 +335,10 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
         if (this.settingsManager.getShowTerminalProgress()) {
           this.ui.terminal.setProgress(false);
         }
-        if (this.autoCompactionEscapeHandler) {
+        if (this.autoCompactionEscapeHandlerSaved) {
           this.defaultEditor.onEscape = this.autoCompactionEscapeHandler;
           this.autoCompactionEscapeHandler = undefined;
+          this.autoCompactionEscapeHandlerSaved = false;
         }
         if (this.autoCompactionLoader) {
           this.autoCompactionLoader.stop();

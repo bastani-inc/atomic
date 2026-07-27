@@ -333,8 +333,19 @@ function overflowUnresolved(reason: "overflow" | "threshold", aborted = false): 
 }
 
 export async function _runAutoCompaction(this: AgentSession, reason: "overflow" | "threshold", willRetry: boolean): Promise<void> {
-	this._emit({ type: "compaction_start", reason });
+	// Publish automatic ownership before notifying listeners. `_emit()` invokes
+	// public listeners synchronously, so a `compaction_start` listener that calls
+	// `compact()` must already observe this controller and be rejected rather than
+	// racing the run that was just announced.
 	this._autoCompactionAbortController = new AbortController();
+	try {
+		this._emit({ type: "compaction_start", reason });
+	} catch (error) {
+		// A throwing start listener still propagates, matching current behavior,
+		// but must not leave ownership published with no owner running.
+		this._autoCompactionAbortController = undefined;
+		throw error;
+	}
 
 	try {
 		if (!this.model) {

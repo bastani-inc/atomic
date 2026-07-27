@@ -12,6 +12,7 @@ import type {
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai/compat";
+import type { VerbatimCompactionResult } from "./compaction/index.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
@@ -96,6 +97,7 @@ export class AgentSession {
 		phase: "queued" | "consumed-unpersisted" | "persistence-failed";
 	}> = [];
 	protected _compactionAbortController: AbortController | undefined = undefined;
+	protected _manualCompactionPromise: Promise<VerbatimCompactionResult> | undefined = undefined;
 	protected _autoCompactionAbortController: AbortController | undefined = undefined;
 	protected _overflowRecoveryAttempted = false;
 	protected _pendingPostCompactionContinuation: Promise<void> | undefined = undefined;

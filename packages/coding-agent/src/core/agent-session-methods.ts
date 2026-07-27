@@ -357,6 +357,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 		phase: "queued" | "consumed-unpersisted" | "persistence-failed";
 	}>;
 	_compactionAbortController: AbortController | undefined;
+	_manualCompactionPromise: Promise<VerbatimCompactionResult> | undefined;
 	_autoCompactionAbortController: AbortController | undefined;
 	_overflowRecoveryAttempted: boolean;
 	_branchSummaryAbortController: AbortController | undefined;
