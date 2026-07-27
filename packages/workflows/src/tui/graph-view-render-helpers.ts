@@ -6,7 +6,7 @@ import {
   OVERLAY_LINE_COUNT,
   OVERLAY_VERTICAL_MARGIN_ROWS,
 } from "./graph-view-constants.js";
-import { WORKFLOW_STATUS_KEY } from "./workflow-status.js";
+import { OVERLAY_HIDDEN_STATUS_KEYS, WORKFLOW_STATUS_KEY } from "./workflow-status.js";
 import { GraphViewState } from "./graph-view-state.js";
 import { renderOutlinePill } from "./header.js";
 import { NODE_H, NODE_W } from "./layout.js";
@@ -85,7 +85,8 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
       .filter(([key, value]) => (
         value.trim().length > 0 &&
         key !== WORKFLOW_STATUS_KEY &&
-        !key.startsWith(`${WORKFLOW_STATUS_KEY}:`)
+        !key.startsWith(`${WORKFLOW_STATUS_KEY}:`) &&
+        !OVERLAY_HIDDEN_STATUS_KEYS.has(key)
       ))
       .sort(([a], [b]) => a.localeCompare(b));
     if (entries.length === 0) return null;

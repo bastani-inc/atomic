@@ -8,8 +8,6 @@
  *    without remounting the popup.
  *  - Ctrl+X in chat mode swaps back to graph with the same focused
  *    stage id preserved.
- *  - When a `uiStatus.setStatus` surface is provided, attach/detach
- *    flips the `pi-workflows` tag through `<workflow>/<stage>`.
  *
  * cross-ref: src/tui/workflow-attach-pane.ts
  */
@@ -23,10 +21,7 @@ import {
     type TUI,
 } from "@earendil-works/pi-tui";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import {
-    WorkflowAttachPane,
-    type AttachUiStatusSurface,
-} from "../../packages/workflows/src/tui/workflow-attach-pane.js";
+import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import type { StageControlHandle } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
@@ -330,36 +325,5 @@ describe("WorkflowAttachPane", () => {
         assert.equal(pane._hasChatView, false);
         assert.equal(pane._lastAttachedStageId, "stage-a");
         pane.dispose();
-    });
-
-    test("attach updates pi-workflows status tag with workflow/stage", () => {
-        const store = createStore();
-        setupRun(store, "run-1", [{ id: "stage-a", name: "review-a" }]);
-        const registry = createStageControlRegistry();
-        registry.register(makeHandle("run-1", "stage-a"));
-        const calls: Array<{ key: string; value: string | undefined }> = [];
-        const uiStatus: AttachUiStatusSurface = {
-            setStatus: (key, value) => calls.push({ key, value }),
-        };
-        const pane = new WorkflowAttachPane({
-            store,
-            graphTheme: deriveGraphTheme({}),
-            runId: "run-1",
-            stageControlRegistry: registry,
-            uiStatus,
-            onClose: () => {},
-        });
-        // Base status: pi-workflows/<workflow>
-        assert.equal(calls[0]!.value, "pi-workflows/test-wf");
-        pane.handleInput(Key.enter);
-        // After attach: pi-workflows/<workflow>/<stage>
-        const afterAttach = calls[calls.length - 1]!;
-        assert.equal(afterAttach.value, "pi-workflows/test-wf/review-a");
-        pane.dispose();
-        // After dispose: the tag is cleared so subsequent chat messages
-        // don't keep rendering `pi-workflows/...` in their header band.
-        const lastCall = calls[calls.length - 1]!;
-        assert.equal(lastCall.key, "pi-workflows");
-        assert.equal(lastCall.value, undefined);
     });
 });
