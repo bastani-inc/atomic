@@ -62,7 +62,7 @@ The effective parameters appear in extension events and successful results:
 | `preserve_recent` | `2` | Exact number of newest context-visible messages protected client-side |
 | `query` | Last visible user message | Relevance focus for deciding which older lines to retain |
 
-`preserve_recent` counts context-visible messages without aligning the boundary to a user turn. An assistant message or tool result may therefore begin the kept tail. A value of `0` protects no messages and makes the entire active transcript compactable. If `query` is absent, Atomic derives it from the last visible user message.
+`preserve_recent` counts context-visible messages without aligning the boundary to a user turn. An assistant message or tool result may therefore begin the kept tail. Because such a tail can start or end mid-turn, the kept messages are not replayed as structured message blocks: they are serialized with the same transcript grammar as the compacted region and appended to the end of the boundary string, so the whole boundary reaches the provider as one text message. A value of `0` protects no messages and makes the entire active transcript compactable. If `query` is absent, Atomic derives it from the last visible user message.
 
 Configure defaults in `~/.atomic/agent/settings.json` or `.atomic/settings.json`:
 
@@ -155,7 +155,7 @@ A successful run appends the existing pi-style `type:"compaction"` entry shape:
 }
 ```
 
-A `compaction` entry is active only when `details.strategy === "verbatim-lines"`. On rebuild, Atomic emits a visible custom-role boundary message containing the durable `summary`, followed by the original messages beginning at `firstKeptEntryId`. When no pre-boundary context-visible message is retained—such as with `preserve_recent: 0`—`firstKeptEntryId` is `null`. Messages appended after the boundary are always replayed. The boundary is converted to a user-role provider message and shown in the TUI as a collapsible compaction card.
+A `compaction` entry is active only when `details.strategy === "verbatim-lines"`. On rebuild, Atomic emits one visible custom-role boundary message: the durable `summary` with the kept tail—the entries from `firstKeptEntryId` up to the boundary—serialized and concatenated onto its end. The tail is never restored as separate assistant/tool-result blocks, so a tail that starts or ends mid-turn cannot produce out-of-order provider blocks. When no pre-boundary context-visible message is retained—such as with `preserve_recent: 0`—`firstKeptEntryId` is `null` and the boundary carries the `summary` alone. Messages appended after the boundary are always replayed as real messages. The boundary is converted to a user-role provider message and shown in the TUI as a collapsible compaction card.
 
 Resume does not rerun planning or re-derive deletions: the exact compacted string and nullable tail boundary are already in JSONL. Existing records with a string `firstKeptEntryId` keep their original resume behavior. Legacy `context_compaction` logical-deletion records and old `compaction` summary records without the discriminator are inert archival data. Their historical omissions are not reapplied when an old session resumes.
 

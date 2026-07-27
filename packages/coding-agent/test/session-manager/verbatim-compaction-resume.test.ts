@@ -35,7 +35,7 @@ describe("verbatim compaction persistence and resume", () => {
 		for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 	});
 
-	it("persists the exact string and rebuilds the boundary plus kept tail across open", () => {
+	it("persists the exact string and appends the kept tail to the boundary text across open", () => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-verbatim-resume-"));
 		tempDirs.push(cwd);
 		const manager = SessionManager.create(cwd, cwd);
@@ -59,14 +59,16 @@ describe("verbatim compaction persistence and resume", () => {
 		expect(isVerbatimCompactionMessage(builtContext.messages[0] as CustomMessage)).toBe(true);
 		expect(isVerbatimCompactionMessage({ ...builtContext.messages[0] } as CustomMessage)).toBe(false);
 		const beforeResume = convertToLlm(builtContext.messages);
-		expect(beforeResume).toHaveLength(4);
+		// One boundary text message (compacted string + kept tail) plus the post-boundary message.
+		expect(beforeResume).toHaveLength(2);
 		expect(beforeResume[0]).toMatchObject({
 			role: "user",
-			content: [{ type: "text", text: VERBATIM_COMPACTION_PREFIX + compactedText }],
+			content: [{
+				type: "text",
+				text: `${VERBATIM_COMPACTION_PREFIX + compactedText}\n\n[User]: kept user\n\n[Assistant]: kept answer`,
+			}],
 		});
 		expect(JSON.stringify(beforeResume)).not.toContain("historical answer");
-		expect(JSON.stringify(beforeResume)).toContain("kept user");
-		expect(JSON.stringify(beforeResume)).toContain("kept answer");
 		expect(JSON.stringify(beforeResume)).toContain("post boundary");
 
 		const file = manager.getSessionFile();
@@ -75,6 +77,45 @@ describe("verbatim compaction persistence and resume", () => {
 		const resumedContext = resumed.buildSessionContext();
 		expect(isVerbatimCompactionMessage(resumedContext.messages[0] as CustomMessage)).toBe(true);
 		expect(convertToLlm(resumedContext.messages)).toEqual(beforeResume);
+	});
+
+	it("flattens a mid-turn kept tail instead of replaying unpaired tool blocks", () => {
+		const before = messageEntry("m1", null, "compacted away");
+		const danglingToolCall: SessionEntry = {
+			type: "message",
+			id: "m2",
+			parentId: "m1",
+			timestamp: "2026-01-01T00:00:01.000Z",
+			message: {
+				...assistantMsg("looking"),
+				content: [
+					{ type: "text", text: "looking" },
+					{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "old.ts" } },
+				],
+				stopReason: "toolUse",
+			},
+		};
+		const boundary: SessionEntry = {
+			type: "compaction",
+			id: "c1",
+			parentId: "m2",
+			timestamp: "2026-01-01T00:00:02.000Z",
+			summary: "[User]: durable",
+			firstKeptEntryId: "m2",
+			tokensBefore: 20,
+			details: details(),
+		};
+		const messages = buildSessionContext([before, danglingToolCall, boundary]).messages;
+
+		expect(messages).toHaveLength(1);
+		expect(messages.every((message) => message.role !== "assistant")).toBe(true);
+		expect(convertToLlm(messages)[0]).toMatchObject({
+			role: "user",
+			content: [{
+				type: "text",
+				text: `${VERBATIM_COMPACTION_PREFIX}[User]: durable\n\n[Assistant]: looking\n\n[Assistant tool calls]: read(path="old.ts")`,
+			}],
+		});
 	});
 
 	it("durably rebuilds a zero-retention boundary without restoring a hidden message", () => {

@@ -1,8 +1,46 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { createBranchSummaryMessage, createCustomMessage, createVerbatimCompactionMessage, normalizeMessageContent } from "./messages.ts";
+import { convertToLlm, createBranchSummaryMessage, createCustomMessage, createVerbatimCompactionMessage, normalizeMessageContent } from "./messages.ts";
 import { normalizeDerivedSessionEntries } from "./session-entry-normalization.ts";
+import { serializeConversationForCompaction } from "./compaction/transcript-serialization.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import type { CompactionEntry, FileEntry, SessionContext, SessionEntry, SessionTreeNode } from "./session-manager-types.ts";
+
+/** Build the single context message a durable entry contributes, if any. */
+function contextMessageFromEntry(entry: SessionEntry): AgentMessage | undefined {
+	if (entry.type === "message") return normalizeMessageContent(entry.message);
+	if (entry.type === "custom_message") {
+		return createCustomMessage(
+			entry.customType,
+			entry.content,
+			entry.display,
+			entry.details,
+			entry.timestamp,
+			entry.excludeFromContext,
+		);
+	}
+	if (entry.type === "branch_summary" && typeof entry.summary === "string" && entry.summary.length > 0) {
+		return createBranchSummaryMessage(entry.summary, entry.fromId, entry.timestamp);
+	}
+	return undefined;
+}
+
+/**
+ * Serialize the kept tail into the compaction boundary's transcript grammar.
+ *
+ * The tail is concatenated onto the end of the boundary string instead of being
+ * replayed as structured messages. A tail that starts mid-turn (a tool result whose
+ * tool call was compacted away, or a trailing unanswered tool call) would otherwise
+ * emit ill-ordered provider blocks and fail the request.
+ */
+function serializeKeptTail(entries: SessionEntry[]): string {
+	const messages: AgentMessage[] = [];
+	for (const entry of entries) {
+		const message = contextMessageFromEntry(entry);
+		if (message) messages.push(message);
+	}
+	if (messages.length === 0) return "";
+	return serializeConversationForCompaction(convertToLlm(messages));
+}
 
 export function getLatestCompactionBoundaryEntry(
 	entries: SessionEntry[],
@@ -55,9 +93,9 @@ export function buildContextEntries(
 /**
  * Build the session context from entries using tree traversal.
  * If leafId is provided, walks from that entry to root.
- * Emits the latest verbatim compaction boundary (compacted string as a custom-role
- * boundary message) followed by the kept tail when firstKeptEntryId is non-null,
- * and includes branch summaries along the path.
+ * Emits the latest verbatim compaction boundary as one custom-role text message: the
+ * compacted string with the kept tail serialized and appended to its end, rather than
+ * the tail being replayed as separate structured messages.
  */
 export function buildSessionContext(
 	entries: SessionEntry[],
@@ -109,21 +147,7 @@ export function buildSessionContext(
 
 	const messages: AgentMessage[] = [];
 	const appendMessage = (entry: SessionEntry): void => {
-		let message: AgentMessage | undefined;
-		if (entry.type === "message") {
-			message = normalizeMessageContent(entry.message);
-		} else if (entry.type === "custom_message") {
-			message = createCustomMessage(
-				entry.customType,
-				entry.content,
-				entry.display,
-				entry.details,
-				entry.timestamp,
-				entry.excludeFromContext,
-			);
-		} else if (entry.type === "branch_summary" && typeof entry.summary === "string" && entry.summary.length > 0) {
-			message = createBranchSummaryMessage(entry.summary, entry.fromId, entry.timestamp);
-		}
+		const message = contextMessageFromEntry(entry);
 		if (message) messages.push(message);
 	};
 
@@ -134,13 +158,12 @@ export function buildSessionContext(
 	}
 
 	const boundaryIndex = path.findIndex((entry) => entry.id === boundary.id);
-	messages.push(createVerbatimCompactionMessage(boundary.summary, boundary.tokensBefore, boundary.timestamp, boundary.details));
 	const firstKeptIndex = path.findIndex(
 		(entry, index) => index < boundaryIndex && entry.id === boundary.firstKeptEntryId,
 	);
-	if (firstKeptIndex >= 0) {
-		for (let i = firstKeptIndex; i < boundaryIndex; i++) appendMessage(path[i]);
-	}
+	const keptTailText = firstKeptIndex >= 0 ? serializeKeptTail(path.slice(firstKeptIndex, boundaryIndex)) : "";
+	const boundaryText = [boundary.summary, keptTailText].filter((text) => text.length > 0).join("\n\n");
+	messages.push(createVerbatimCompactionMessage(boundaryText, boundary.tokensBefore, boundary.timestamp, boundary.details));
 	for (let i = boundaryIndex + 1; i < path.length; i++) appendMessage(path[i]);
 
 	return { messages, thinkingLevel, model };
