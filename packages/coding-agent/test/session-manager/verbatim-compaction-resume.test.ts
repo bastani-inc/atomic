@@ -118,6 +118,64 @@ describe("verbatim compaction persistence and resume", () => {
 		});
 	});
 
+	it("keeps retained images and full tool output when flattening the kept tail", () => {
+		const before = messageEntry("m1", null, "compacted away");
+		const toolCall: SessionEntry = {
+			type: "message",
+			id: "m2",
+			parentId: "m1",
+			timestamp: "2026-01-01T00:00:01.000Z",
+			message: {
+				...assistantMsg("reading"),
+				content: [
+					{ type: "text", text: "reading" },
+					{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "shot.png" } },
+				],
+				stopReason: "toolUse",
+			},
+		};
+		const longOutput = "y".repeat(16_050);
+		const toolResult: SessionEntry = {
+			type: "message",
+			id: "m3",
+			parentId: "m2",
+			timestamp: "2026-01-01T00:00:02.000Z",
+			message: {
+				role: "toolResult",
+				toolCallId: "call-1",
+				toolName: "read",
+				content: [
+					{ type: "text", text: longOutput },
+					{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+				],
+				isError: false,
+				timestamp: 1,
+			},
+		};
+		const boundary: SessionEntry = {
+			type: "compaction",
+			id: "c1",
+			parentId: "m3",
+			timestamp: "2026-01-01T00:00:03.000Z",
+			summary: "[User]: durable",
+			firstKeptEntryId: "m2",
+			tokensBefore: 20,
+			details: details(),
+		};
+		const converted = convertToLlm(buildSessionContext([before, toolCall, toolResult, boundary]).messages);
+
+		expect(converted).toHaveLength(1);
+		expect(converted[0].role).toBe("user");
+		const content = converted[0].content as ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[];
+		expect(content).toHaveLength(2);
+		expect(content[0]).toMatchObject({
+			type: "text",
+			text: `${VERBATIM_COMPACTION_PREFIX}[User]: durable\n\n[Assistant]: reading\n\n[Assistant tool calls]: read(path="shot.png")\n\n[Tool result]: ${longOutput}\n`,
+		});
+		expect(content[0].type === "text" && content[0].text).not.toContain("more characters truncated");
+		expect(content[1]).toEqual({ type: "image", data: "aW1hZ2U=", mimeType: "image/png" });
+	});
+
 	it("durably rebuilds a zero-retention boundary without restoring a hidden message", () => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-verbatim-zero-tail-"));
 		tempDirs.push(cwd);

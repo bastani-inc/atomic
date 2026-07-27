@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { convertToLlm, createBranchSummaryMessage, createCustomMessage, createVerbatimCompactionMessage, normalizeMessageContent } from "./messages.ts";
 import { normalizeDerivedSessionEntries } from "./session-entry-normalization.ts";
-import { serializeConversationForCompaction } from "./compaction/transcript-serialization.ts";
+import { serializeRetainedTranscript, type TranscriptChunk } from "./compaction/transcript-serialization.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import type { CompactionEntry, FileEntry, SessionContext, SessionEntry, SessionTreeNode } from "./session-manager-types.ts";
 
@@ -30,16 +30,18 @@ function contextMessageFromEntry(entry: SessionEntry): AgentMessage | undefined 
  * The tail is concatenated onto the end of the boundary string instead of being
  * replayed as structured messages. A tail that starts mid-turn (a tool result whose
  * tool call was compacted away, or a trailing unanswered tool call) would otherwise
- * emit ill-ordered provider blocks and fail the request.
+ * emit ill-ordered provider blocks and fail the request. Serialization is lossless:
+ * tool results keep their full text and images stay as image blocks, because the tail
+ * is exactly the span `preserve_recent` promised to keep.
  */
-function serializeKeptTail(entries: SessionEntry[]): string {
+function serializeKeptTail(entries: SessionEntry[]): TranscriptChunk[] {
 	const messages: AgentMessage[] = [];
 	for (const entry of entries) {
 		const message = contextMessageFromEntry(entry);
 		if (message) messages.push(message);
 	}
-	if (messages.length === 0) return "";
-	return serializeConversationForCompaction(convertToLlm(messages));
+	if (messages.length === 0) return [];
+	return serializeRetainedTranscript(convertToLlm(messages));
 }
 
 export function getLatestCompactionBoundaryEntry(
@@ -161,9 +163,14 @@ export function buildSessionContext(
 	const firstKeptIndex = path.findIndex(
 		(entry, index) => index < boundaryIndex && entry.id === boundary.firstKeptEntryId,
 	);
-	const keptTailText = firstKeptIndex >= 0 ? serializeKeptTail(path.slice(firstKeptIndex, boundaryIndex)) : "";
-	const boundaryText = [boundary.summary, keptTailText].filter((text) => text.length > 0).join("\n\n");
-	messages.push(createVerbatimCompactionMessage(boundaryText, boundary.tokensBefore, boundary.timestamp, boundary.details));
+	const keptTail = firstKeptIndex >= 0 ? serializeKeptTail(path.slice(firstKeptIndex, boundaryIndex)) : [];
+	const separator: TranscriptChunk[] = keptTail.length > 0 && boundary.summary.length > 0 ? [{ type: "text", text: "\n\n" }] : [];
+	messages.push(
+		createVerbatimCompactionMessage(boundary.summary, boundary.tokensBefore, boundary.timestamp, boundary.details, [
+			...separator,
+			...keptTail,
+		]),
+	);
 	for (let i = boundaryIndex + 1; i < path.length; i++) appendMessage(path[i]);
 
 	return { messages, thinkingLevel, model };
