@@ -11,6 +11,7 @@ import { ExtensionEditorComponent } from "../src/modes/interactive/components/ex
 import {
 	type ExternalEditorResult,
 	editInExternalEditor,
+	quoteWindowsShellArgument,
 	resolveExternalEditorCommand,
 } from "../src/modes/interactive/external-editor.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
@@ -103,6 +104,103 @@ describe("editInExternalEditor", () => {
 		expect(source).not.toMatch(/\bspawnSync\s*\(/);
 		expect(source).not.toContain("readdir");
 		expect(source).not.toContain("glob");
+	});
+
+	it("quotes every shell token so cmd.exe cannot split arguments on spaces", () => {
+		const source = readFileSync(externalEditorSourcePath, "utf-8");
+		// Node leaves the command line unquoted under `shell: true`, so the
+		// spawn call itself must route both the editor and its arguments
+		// through the quoter rather than passing raw values.
+		expect(source).toContain("useShell ? quoteWindowsShellArgument(editor) : editor");
+		expect(source).toContain("useShell ? spawnArgs.map(quoteWindowsShellArgument) : spawnArgs");
+	});
+});
+
+/**
+ * Reference implementation of the `CommandLineToArgvW` rules that Windows
+ * programs use to split a command line back into arguments. Quoting is only
+ * correct if a quoted line parses back to the exact arguments we started
+ * with, so the round-trip below is the real assertion.
+ */
+function parseWindowsCommandLine(commandLine: string): string[] {
+	const argv: string[] = [];
+	let current = "";
+	let inQuotes = false;
+	let started = false;
+	let index = 0;
+
+	while (index < commandLine.length) {
+		const character = commandLine[index];
+		if (character === "\\") {
+			let slashes = 0;
+			while (commandLine[index] === "\\") {
+				slashes += 1;
+				index += 1;
+			}
+			if (commandLine[index] === '"') {
+				current += "\\".repeat(Math.floor(slashes / 2));
+				if (slashes % 2 === 1) current += '"';
+				else inQuotes = !inQuotes;
+				index += 1;
+			} else {
+				current += "\\".repeat(slashes);
+			}
+			started = true;
+			continue;
+		}
+		index += 1;
+		if (character === '"') {
+			inQuotes = !inQuotes;
+			started = true;
+			continue;
+		}
+		if (!inQuotes && /\s/.test(character)) {
+			if (started) {
+				argv.push(current);
+				current = "";
+				started = false;
+			}
+			continue;
+		}
+		current += character;
+		started = true;
+	}
+
+	if (started) argv.push(current);
+	return argv;
+}
+
+describe("quoteWindowsShellArgument", () => {
+	it("wraps plain values and values containing spaces", () => {
+		expect(quoteWindowsShellArgument("notepad")).toBe('"notepad"');
+		expect(quoteWindowsShellArgument(String.raw`C:\Temp\capture output.json`)).toBe(
+			String.raw`"C:\Temp\capture output.json"`,
+		);
+		expect(quoteWindowsShellArgument("")).toBe('""');
+	});
+
+	it("doubles a trailing backslash run so it cannot escape the closing quote", () => {
+		expect(quoteWindowsShellArgument("C:\\Program Files\\")).toBe('"C:\\Program Files\\\\"');
+	});
+
+	it("escapes embedded quotes and the backslashes preceding them", () => {
+		expect(quoteWindowsShellArgument('a"b')).toBe('"a\\"b"');
+		expect(quoteWindowsShellArgument('a\\"b')).toBe('"a\\\\\\"b"');
+	});
+
+	it("round-trips a full command line back to the exact original arguments", () => {
+		const args = [
+			String.raw`C:\Program Files\Microsoft VS Code\Code.exe`,
+			"--wait",
+			String.raw`C:\Temp\atomic-editor-x\capture output.json`,
+			String.raw`C:\Temp\atomic editor capture y\prompt.md`,
+			"C:\\trailing\\",
+			'quote"inside',
+			"",
+		];
+
+		const commandLine = args.map(quoteWindowsShellArgument).join(" ");
+		expect(parseWindowsCommandLine(commandLine)).toEqual(args);
 	});
 });
 

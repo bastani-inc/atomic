@@ -60,6 +60,21 @@ function parseEditorCommand(command: string): string[] {
 	return args;
 }
 
+/**
+ * Quote one argument for `cmd.exe`.
+ *
+ * Node does not quote arguments when `shell: true`, so any value holding a
+ * space would otherwise be split into several arguments by the shell.
+ * Backslashes are only special when they precede a quote, so double just
+ * those runs (plus a trailing run, which would escape the closing quote),
+ * escape embedded quotes, then wrap the result.
+ */
+export function quoteWindowsShellArgument(value: string): string {
+	if (value === "") return '""';
+	const escaped = value.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, "$1$1");
+	return `"${escaped}"`;
+}
+
 export function resolveExternalEditorCommand(
 	configuredCommand?: string,
 	environment: Readonly<Partial<NodeJS.ProcessEnv>> = process.env,
@@ -91,11 +106,18 @@ export async function editInExternalEditor(
 
 		// Do not use spawnSync. On Windows, synchronous child_process calls can
 		// leave a console read active and race the editor for keyboard input.
+		//
+		// The shell is required on Windows so `.cmd`/`.bat` editor launchers
+		// still run, but Node hands the command line to cmd.exe unquoted, so
+		// quote every token here or paths containing spaces get split apart.
+		const useShell = process.platform === "win32";
+		const spawnArgs = [...editorArgs, filePath];
 		const exitCode = await new Promise<number | null>((resolve) => {
-			const child = spawn(editor, [...editorArgs, filePath], {
-				stdio: "inherit",
-				shell: process.platform === "win32",
-			});
+			const child = spawn(
+				useShell ? quoteWindowsShellArgument(editor) : editor,
+				useShell ? spawnArgs.map(quoteWindowsShellArgument) : spawnArgs,
+				{ stdio: "inherit", shell: useShell },
+			);
 			child.once("error", () => resolve(null));
 			child.once("close", (code) => resolve(code));
 		});
