@@ -255,6 +255,37 @@ When an arbitrary task-specific workflow has plausible-but-wrong contract risk, 
 
 Use `ctx.tool` for workflow-owned external checks and side effects that benefit from durable checkpointing. Leave pure transformations as ordinary TypeScript; do not wrap every model-stage action in a tool call. A custom-loop pre-launch declaration must name the skeptical reviewer, deterministic verifier gates, how model-selected plans become tool executions, how evidence reaches evaluation/repair, and the bounded success/failure condition.
 
+#### Judging task complexity
+
+Complexity is a property of risk, not effort. Score a task on five axes and let the **worst axis dominate** — complexity is not the sum:
+
+| Axis | Low | High |
+|---|---|---|
+| **Blast radius** | one file, one function | crosses module/package boundaries; touches shared contracts (APIs, schemas, migrations) |
+| **Uncertainty** | the exact edit is known before opening the file | the location or cause of the behavior is unknown |
+| **Verifiability cost** | type-checker or a glance confirms it | multi-step validation: build + tests + runtime behavior + artifact checks |
+| **Dependency structure** | independent steps | ordered handoffs where an early mistake propagates |
+| **Failure cost** | reversible edit | wire formats, published APIs, data migrations, releases |
+
+A one-line change to a serialization format is complex (high failure cost, exact contract). A 500-line mechanical rename is simple (zero uncertainty, type-checker-verified). The common trap is judging by effort instead of risk: long-but-mechanical is simple; short-but-contractual is not.
+
+Fast tells, usable in the first 30 seconds:
+
+- **Done-condition test:** if the success condition does not fit in one sentence, the task is complex or underspecified — clarify before guessing.
+- **The "and" test:** "fix X and update docs and add a test" is three tasks in one sentence; enumerate and classify each.
+- **Loop words:** "until it passes", "keep trying" make the task at least moderate — iteration is expected.
+- **Working-memory test:** more than about three interacting constraints at once means complex.
+
+**Threshold.** A task earns a workflow when at least two of these are true, or any one is strongly true:
+
+1. Two or more distinct phases with a real handoff (research → implement, implement → verify), not just steps.
+2. The done-condition needs proof — tests, builds, review, or a contract check. If "how do you know it works?" is a fair question, a verification stage is waiting to exist.
+3. Iteration is expected — an anticipated repair loop, not a straight line.
+4. Failure cost is high — even a one-line change gets adversarial verification.
+5. The work outlives one attention span — losing mid-task state is a real risk.
+
+The honest form of the threshold is a comparison: workflow overhead is roughly constant and small, while the cost of being wrong inline scales with uncertainty × failure cost — so the line crosses at "moderate" on any single axis. Guard against the ratchet failure mode: a task that looked simple, then accumulated exploratory calls, ad-hoc fixes, and an untracked mental TODO list is a workflow being run badly in-head; apply the ten-call rule from [When to Use Workflows](#when-to-use-workflows). Map axes to action: all low → inline now; only uncertainty high → short recon, then re-judge; any axis high with a checkable outcome → workflow with a stage producing evidence for the worst axis; failure cost high → add deterministic or adversarial gates regardless of the rest. When the mapping stays ambiguous, fall through to the [scoring rubric](#scoring-rubric) below.
+
 #### Scoring rubric
 
 When the ladder is ambiguous, score the task on six dimensions (0–2 each):
