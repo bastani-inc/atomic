@@ -2335,6 +2335,8 @@ const text = await ctx.ui.editor("Edit:", "prefilled text");
 ctx.ui.notify("Done!", "info");  // "info" | "warning" | "error"
 ```
 
+Notifications emitted while extensions load or startup is in progress always appear below the startup `RESOURCES` disclosure line, never above it.
+
 #### Timed Dialogs with Countdown
 
 Dialogs support a `timeout` option that auto-dismisses with a live countdown display:
