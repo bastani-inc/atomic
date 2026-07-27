@@ -12,6 +12,7 @@ import { attachInteractiveEngineHost } from "../interactive-engine/extension-ui-
 import type { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import { KeybindingsReloadCoordinator } from "../rpc/rpc-keybindings-reload.ts";
 import type { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
+import { StartupChatContainer } from "./interactive-startup-chat-container.ts";
 
 function isCommandLikeStartupInput(text: string): boolean {
   const trimmed = text.trimStart();
@@ -414,7 +415,7 @@ export class InteractiveModeBase {
     );
     this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
     this.headerContainer = new Container();
-    this.chatContainer = new Container();
+    this.chatContainer = new StartupChatContainer();
     this.resourceDisclosureContainer = new Container();
     this.startupNoticesContainer = new Container();
     this.pendingMessagesContainer = new Container();

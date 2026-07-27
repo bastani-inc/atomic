@@ -7,6 +7,7 @@ import { handleSummarizationRetryEvent } from "./interactive-summarization-retry
 import { CACHE_TTL_MS, detectCacheMiss } from "../../core/cache-stats.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
 import { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
+import { releaseStartupChatOutput } from "./interactive-startup-chat-container.ts";
 
 function createToolComponent(
   mode: InteractiveModeBase,
@@ -284,10 +285,14 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
 		if (this.pendingLoadedResourcesDisclosure) {
 			this.pendingLoadedResourcesDisclosure = false;
 			this.deferLoadedResourcesDisclosureUntilAgentEnd = false;
-			this.showLoadedResources({ force: true, showDiagnosticsWhenQuiet: true, targetContainer: this.resourceDisclosureContainer });
-			// Keep the subscription warning after the RESOURCES disclosure.
-			void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
-			this.showStartupNoticesIfNeeded(this.startupNoticesContainer);
+			try {
+				this.showLoadedResources({ force: true, showDiagnosticsWhenQuiet: true, targetContainer: this.resourceDisclosureContainer });
+				// Keep the subscription warning after the RESOURCES disclosure.
+				void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
+				this.showStartupNoticesIfNeeded(this.startupNoticesContainer);
+			} finally {
+				releaseStartupChatOutput(this);
+			}
 		}
         await this.checkShutdownRequested();
 
