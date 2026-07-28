@@ -11,7 +11,37 @@
 
 import { chmodSync, writeFileSync } from "fs";
 import { basename, dirname, join } from "path";
+import { uuidv7 } from "@earendil-works/pi-ai";
 import type { Api, AssistantMessage, Model, Usage } from "@earendil-works/pi-ai/compat";
+
+/**
+ * Write one private sidecar, never replacing an existing record.
+ *
+ * Names were previously millisecond-only, so two attempts inside the same
+ * millisecond — easy to hit across overflow trims or a fast fallback walk —
+ * selected the same path and the second write silently replaced the first.
+ * A `uuidv7()` discriminator plus exclusive creation (`flag: "wx"`) keeps one
+ * durable record per attempt. Retry on collision; every other failure stays
+ * best-effort and never changes the planner outcome.
+ */
+function writeSidecar(sessionFilePath: string, kind: string, payload: unknown): string | undefined {
+	const dir = dirname(sessionFilePath);
+	const base = basename(sessionFilePath, ".jsonl");
+	const timestamp = Date.now();
+	const body = JSON.stringify(payload, null, 2);
+	for (let attempt = 0; attempt < 4; attempt++) {
+		const filePath = join(dir, `${base}-compaction-${kind}-${timestamp}-${uuidv7()}.json`);
+		try {
+			writeFileSync(filePath, body, { encoding: "utf-8", mode: 0o600, flag: "wx" });
+			try { chmodSync(filePath, 0o600); } catch { /* best-effort on non-POSIX */ }
+			return filePath;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException)?.code === "EEXIST") continue;
+			return undefined;
+		}
+	}
+	return undefined;
+}
 
 /** Failure categories emitted in diagnostic sidecars. */
 export type DiagnosticFailureCategory =
@@ -22,7 +52,9 @@ export type DiagnosticFailureCategory =
 	/** Length stop, no usable record, and billed reasoning tokens. */
 	| "starved"
 	/** Transient throttling after the retry budget, or quota/billing exhaustion. */
-	| "rate_limited";
+	| "rate_limited"
+	/** The planner request itself exceeded the model's context window. */
+	| "context_overflow";
 
 /** Recovery categories emitted in recovery diagnostic sidecars. */
 export type DiagnosticRecoveryCategory = "partial_length_recovery";
@@ -117,8 +149,9 @@ function buildDiagnosticPayload(ctx: DiagnosticContext): CompactionDiagnostic {
 export function diagnosticSidecarPath(sessionFilePath: string): string {
 	const dir = dirname(sessionFilePath);
 	const base = basename(sessionFilePath, ".jsonl");
-	const ts = Date.now();
-	return join(dir, `${base}-compaction-diagnostic-${ts}.json`);
+	// Includes a per-attempt discriminator so two attempts inside one millisecond
+	// cannot select the same path; see `writeSidecar`.
+	return join(dir, `${base}-compaction-diagnostic-${Date.now()}-${uuidv7()}.json`);
 }
 
 /**
@@ -131,16 +164,7 @@ export function diagnosticSidecarPath(sessionFilePath: string): string {
 export function writeDiagnosticSidecar(ctx: DiagnosticContext): string | undefined {
 	if (!ctx.sessionFilePath) return undefined;
 
-	const payload = buildDiagnosticPayload(ctx);
-	const filePath = diagnosticSidecarPath(ctx.sessionFilePath);
-
-	try {
-		writeFileSync(filePath, JSON.stringify(payload, null, 2), { encoding: "utf-8", mode: 0o600 });
-		try { chmodSync(filePath, 0o600); } catch { /* best-effort on non-POSIX */ }
-		return filePath;
-	} catch {
-		return undefined;
-	}
+	return writeSidecar(ctx.sessionFilePath, "diagnostic", buildDiagnosticPayload(ctx));
 }
 
 /**
@@ -187,19 +211,7 @@ function buildRecoveryPayload(ctx: RecoveryDiagnosticContext): RecoveryDiagnosti
 export function writeRecoveryDiagnosticSidecar(ctx: RecoveryDiagnosticContext): string | undefined {
 	if (!ctx.sessionFilePath) return undefined;
 
-	const payload = buildRecoveryPayload(ctx);
-	const dir = dirname(ctx.sessionFilePath);
-	const base = basename(ctx.sessionFilePath, ".jsonl");
-	const ts = Date.now();
-	const filePath = join(dir, `${base}-compaction-recovery-${ts}.json`);
-
-	try {
-		writeFileSync(filePath, JSON.stringify(payload, null, 2), { encoding: "utf-8", mode: 0o600 });
-		try { chmodSync(filePath, 0o600); } catch { /* best-effort on non-POSIX */ }
-		return filePath;
-	} catch {
-		return undefined;
-	}
+	return writeSidecar(ctx.sessionFilePath, "recovery", buildRecoveryPayload(ctx));
 }
 
 export { buildRecoveryPayload };
@@ -259,18 +271,7 @@ function buildSuccessPayload(ctx: SuccessDiagnosticContext): SuccessDiagnostic {
 export function writeSuccessDiagnosticSidecar(ctx: SuccessDiagnosticContext): string | undefined {
 	if (!ctx.sessionFilePath) return undefined;
 
-	const payload = buildSuccessPayload(ctx);
-	const dir = dirname(ctx.sessionFilePath);
-	const base = basename(ctx.sessionFilePath, ".jsonl");
-	const filePath = join(dir, `${base}-compaction-success-${Date.now()}.json`);
-
-	try {
-		writeFileSync(filePath, JSON.stringify(payload, null, 2), { encoding: "utf-8", mode: 0o600 });
-		try { chmodSync(filePath, 0o600); } catch { /* best-effort on non-POSIX */ }
-		return filePath;
-	} catch {
-		return undefined;
-	}
+	return writeSidecar(ctx.sessionFilePath, "success", buildSuccessPayload(ctx));
 }
 
 export { buildSuccessPayload };

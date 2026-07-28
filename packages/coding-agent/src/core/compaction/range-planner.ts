@@ -204,9 +204,15 @@ function providerFailureOutcome(
 		const diagnosticPath = emitDiagnostic(options, model, recorded, text, "rate_limited", message, exhausted);
 		return { kind: "rateLimited", exhausted, message, ...(diagnosticPath ? { diagnosticPath } : {}) };
 	}
+	if (failure === "overflow") {
+		// Overflow is typed distinctly in code, so it must be distinct in the
+		// durable record too; `provider_error` would make it indistinguishable
+		// from an ordinary provider failure for anyone reading the sidecar.
+		const diagnosticPath = emitDiagnostic(options, model, recorded, text, "context_overflow", message);
+		return { kind: "overflowed", ...(diagnosticPath ? { diagnosticPath } : {}) };
+	}
 	const category: DiagnosticFailureCategory = transport ? "stream_error" : "provider_error";
 	const diagnosticPath = emitDiagnostic(options, model, recorded, text, category, message);
-	if (failure === "overflow") return { kind: "overflowed", ...(diagnosticPath ? { diagnosticPath } : {}) };
 	return { kind: "providerError", message, ...(diagnosticPath ? { diagnosticPath } : {}) };
 }
 

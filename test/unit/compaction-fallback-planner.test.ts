@@ -162,3 +162,90 @@ test("unqualified entries resolve against available models and prefer the curren
 	);
 	assert.equal(borrowedPlanner?.model.provider, "backup");
 });
+
+test("one ordered pass: an auth-unusable candidate is consumed, never re-inspected", async () => {
+	// The runner calls the borrower once per terminal planner outcome. Without
+	// consuming an auth-unusable candidate, the walk restarts from the top each
+	// time and resolves its credentials again — the A, B, A traversal RFC §5.3
+	// forbids.
+	const seen: string[] = [];
+	const attempted = new Set<string>(["primary/planner-a:high"]);
+	const authUnusableB = async (model: Model<Api>): Promise<PlannerAuth | undefined> => {
+		seen.push(model.id);
+		return model.id === "planner-b" ? undefined : authFor(model);
+	};
+
+	const first = await borrowFallbackPlanner(context(), attempted, authUnusableB);
+	assert.equal(first?.model.id, "planner-c");
+	assert.deepEqual(seen, ["planner-b", "planner-c"]);
+	assert.ok(attempted.has("backup/planner-b:minimal"), "the unusable candidate was not retired");
+
+	// C then fails at the planner, so the runner records it and borrows again.
+	attempted.add(plannerAttemptKey(first!));
+	assert.equal(await borrowFallbackPlanner(context(), attempted, authUnusableB), undefined);
+	assert.deepEqual(seen, ["planner-b", "planner-c"]);
+});
+
+test("a rejected auth resolver retires its candidate exactly like an undefined one", async () => {
+	const seen: string[] = [];
+	const attempted = new Set<string>(["primary/planner-a:high"]);
+	const authThrowsForB = async (model: Model<Api>): Promise<PlannerAuth> => {
+		seen.push(model.id);
+		if (model.id === "planner-b") throw new Error("auth backend down");
+		return authFor(model);
+	};
+
+	const first = await borrowFallbackPlanner(context(), attempted, authThrowsForB);
+	assert.equal(first?.model.id, "planner-c");
+	assert.ok(attempted.has("backup/planner-b:minimal"));
+
+	attempted.add(plannerAttemptKey(first!));
+	assert.equal(await borrowFallbackPlanner(context(), attempted, authThrowsForB), undefined);
+	assert.deepEqual(seen, ["planner-b", "planner-c"]);
+});
+
+test("configured order cannot rewind if an unusable candidate's auth later works", async () => {
+	let backupHasAuth = false;
+	const seen: string[] = [];
+	const attempted = new Set<string>(["primary/planner-a:high"]);
+	const flakyAuth = async (model: Model<Api>): Promise<PlannerAuth | undefined> => {
+		seen.push(model.id);
+		if (model.id === "planner-b" && !backupHasAuth) return undefined;
+		return authFor(model);
+	};
+
+	const first = await borrowFallbackPlanner(context(), attempted, flakyAuth);
+	assert.equal(first?.model.id, "planner-c");
+	attempted.add(plannerAttemptKey(first!));
+
+	backupHasAuth = true;
+	assert.equal(await borrowFallbackPlanner(context(), attempted, flakyAuth), undefined);
+	assert.deepEqual(seen, ["planner-b", "planner-c"]);
+});
+
+test("duplicate configured entries resolve auth once", async () => {
+	const seen: string[] = [];
+	const countingAuth = async (model: Model<Api>): Promise<PlannerAuth | undefined> => {
+		seen.push(model.id);
+		return model.id === "planner-b" ? undefined : authFor(model);
+	};
+	const borrowedPlanner = await borrowFallbackPlanner(
+		context({ fallbackModels: ["backup/planner-b:minimal", "backup/planner-b:minimal", "spare/planner-c"] }),
+		new Set<string>(),
+		countingAuth,
+	);
+	assert.equal(borrowedPlanner?.model.id, "planner-c");
+	assert.deepEqual(seen, ["planner-b", "planner-c"]);
+});
+
+test("consuming candidates only writes the run-owned set", async () => {
+	// The borrower touches only the set it is handed, which the compaction run
+	// owns; the main chat's `_fallbackAttemptedKeys` is a different object.
+	const mainChatKeys = new Set<string>(["main/chat:high"]);
+	const runKeys = new Set<string>(["primary/planner-a:high"]);
+	await borrowFallbackPlanner(context(), runKeys, async (model) =>
+		model.id === "planner-b" ? undefined : authFor(model),
+	);
+	assert.deepEqual([...mainChatKeys], ["main/chat:high"]);
+	assert.ok(runKeys.has("backup/planner-b:minimal"));
+});

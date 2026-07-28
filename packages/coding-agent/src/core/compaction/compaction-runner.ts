@@ -53,8 +53,11 @@ export type CompactionRungResult = CompactedTranscript & {
 	keptTail: boolean;
 };
 
-/** A fresh context window. Total: no provider, no failure mode. */
-export type FreshContextWindow = CompactedTranscript & { readonly keptTail: boolean };
+/** Runner-internal fresh-window build: the transcript plus the tail decision. */
+interface FreshWindowBuild {
+	transcript: CompactedTranscript;
+	keptTail: boolean;
+}
 
 /**
  * Calculate the single global line threshold directly from the prepared setting.
@@ -91,6 +94,28 @@ function withWholeContextStats(
 }
 
 /**
+ * Build a fresh context window and the tail decision that goes with it.
+ *
+ * Private on purpose: `keptTail` is runner bookkeeping that persistence needs in
+ * order to write `firstKeptEntryId: null` when the protected tail is dropped. It
+ * is deliberately absent from the public door's return value, which is exactly a
+ * `CompactedTranscript`.
+ */
+function buildFreshContextWindow(
+	preparation: VerbatimCompactionPreparation,
+	hardInputLimit: number,
+): FreshWindowBuild {
+	const region = preparation.region;
+	const whole: RawLineRange[] = region.lines.length > 0 ? [{ start: 1, end: region.lines.length }] : [];
+	const transcript = reconstructCompactedTranscript(region, validateDeletedRanges(whole, region));
+	const limit = Number.isFinite(hardInputLimit) && hardInputLimit > 0 ? hardInputLimit : Number.POSITIVE_INFINITY;
+	return {
+		transcript,
+		keptTail: transcript.stats.tokensAfter + getKeptTailTokenEstimate(preparation) <= limit,
+	};
+}
+
+/**
  * Discard every compactable line and start a fresh context window.
  *
  * TOTAL. No provider, no credentials, no network, no signal, no failure mode,
@@ -101,20 +126,17 @@ function withWholeContextStats(
  *
  * The whole region is emitted as one deletion range and handed to the unchanged
  * `validateDeletedRanges` → `reconstructCompactedTranscript` path, which splits
- * around protected spans and folds prior markers. `keptTail` reports whether the
- * `preserve_recent` protected tail is retained; it is dropped only when keeping
- * it would still exceed `hardInputLimit`.
+ * around protected spans and folds prior markers.
+ *
+ * Returns exactly a `CompactedTranscript` — `text`, `ranges`, `stats` and
+ * nothing else. Whether the `preserve_recent` tail survives is a persistence
+ * concern and travels on `CompactionRungResult.keptTail`, not on this door.
  */
 export function startNewContextWindow(
 	preparation: VerbatimCompactionPreparation,
 	hardInputLimit: number,
-): FreshContextWindow {
-	const region = preparation.region;
-	const whole: RawLineRange[] = region.lines.length > 0 ? [{ start: 1, end: region.lines.length }] : [];
-	const transcript = reconstructCompactedTranscript(region, validateDeletedRanges(whole, region));
-	const limit = Number.isFinite(hardInputLimit) && hardInputLimit > 0 ? hardInputLimit : Number.POSITIVE_INFINITY;
-	const keptTail = transcript.stats.tokensAfter + getKeptTailTokenEstimate(preparation) <= limit;
-	return { ...transcript, keptTail };
+): CompactedTranscript {
+	return buildFreshContextWindow(preparation, hardInputLimit).transcript;
 }
 
 /**
@@ -136,7 +158,7 @@ export function smallRegionNeedsFreshWindow(
 	hardInputLimit: number,
 ): boolean {
 	if (preparation.tokensBefore > hardInputLimit) return true;
-	return !startNewContextWindow(preparation, hardInputLimit).keptTail;
+	return !buildFreshContextWindow(preparation, hardInputLimit).keptTail;
 }
 
 function plannedResult(
@@ -254,9 +276,9 @@ function freshResult(
 	preparation: VerbatimCompactionPreparation,
 	hardInputLimit: number,
 ): CompactionRungResult {
-	const fresh = startNewContextWindow(preparation, hardInputLimit);
+	const fresh = buildFreshContextWindow(preparation, hardInputLimit);
 	return {
-		...withWholeContextStats(fresh, preparation, fresh.keptTail),
+		...withWholeContextStats(fresh.transcript, preparation, fresh.keptTail),
 		rung: "fresh",
 		keptTail: fresh.keptTail,
 	};

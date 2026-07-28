@@ -252,7 +252,10 @@ describe("compaction diagnostics: persisted sidecar", () => {
 		const result = diagnosticSidecarPath(sessionFile);
 
 		expect(dirname(result)).toBe(sessionDir);
-		expect(basename(result)).toMatch(/^2026-07-15_abc123-compaction-diagnostic-\d+\.json$/);
+		// Timestamp plus a per-attempt discriminator: a millisecond-only name let
+		// two attempts in the same millisecond replace each other's record.
+		expect(basename(result)).toMatch(/^2026-07-15_abc123-compaction-diagnostic-\d+-[0-9a-f-]{36}\.json$/);
+		expect(diagnosticSidecarPath(sessionFile)).not.toBe(result);
 	});
 
 	it("unusable outcome carries the diagnostic path when a sidecar is written", async () => {

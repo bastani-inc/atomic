@@ -54,10 +54,18 @@ export function plannerAttemptKey(planner: BorrowedPlanner): string {
  *
  * Exhaustion returns `undefined` — that is the only exit. It never throws and
  * never falls back to the session model.
+ *
+ * `attempted` is the compaction run's own set and is **consumed**: a candidate
+ * whose credentials reject or resolve to nothing is recorded before the walk
+ * moves on, so a later call cannot resolve its auth a second time or reorder the
+ * configured walk around it. Without that, `A(no auth), B, C` would re-inspect
+ * `A` on every call and violate RFC §5.3's one ordered pass with at most one
+ * auth resolution and one planner request per candidate. The set is run-local;
+ * the main chat's `_fallbackAttemptedKeys` is never touched.
  */
 export async function borrowFallbackPlanner(
 	context: FallbackPlannerContext,
-	attempted: ReadonlySet<string>,
+	attempted: Set<string>,
 	resolveAuth: (model: Model<Api>) => Promise<PlannerAuth | undefined>,
 ): Promise<BorrowedPlanner | undefined> {
 	for (const entry of context.fallbackModels) {
@@ -66,15 +74,20 @@ export async function borrowFallbackPlanner(
 		// Resolve the budget first: the attempted key depends on the effective
 		// reasoning level, which inheritance may supply.
 		const budget = resolvePlannerRequest(candidate.model, context.sessionThinkingLevel, candidate.thinkingLevel);
-		if (attempted.has(fallbackKey(candidate.model, budget.reasoning))) continue;
+		const key = fallbackKey(candidate.model, budget.reasoning);
+		if (attempted.has(key)) continue;
 		let auth: PlannerAuth | undefined;
 		try {
 			auth = await resolveAuth(candidate.model);
 		} catch {
 			// A candidate whose credentials cannot be resolved is simply unusable.
+			auth = undefined;
+		}
+		if (!auth) {
+			// Consumed: unavailable credentials retire this candidate for the run.
+			attempted.add(key);
 			continue;
 		}
-		if (!auth) continue;
 		return { model: candidate.model, budget, auth };
 	}
 	return undefined;

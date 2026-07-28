@@ -10,6 +10,7 @@ import {
 	startNewContextWindow,
 } from "../../packages/coding-agent/src/core/compaction/compaction-runner.js";
 import { RangePlanError } from "../../packages/coding-agent/src/core/compaction/range-planner.js";
+import type { CompactedTranscript } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
 import { preparation, region, runRequest, scriptedStream, testModel } from "./compaction-rung-support.js";
 
 const MARKER = /^\(filtered \d+ lines\)$/;
@@ -57,18 +58,40 @@ test("property: retained lines are byte-identical and in input order for arbitra
 	}
 });
 
-test("the preserve_recent tail is kept when it fits under the hard input limit", () => {
-	const prep = preparation({ region: region(40), tokensBefore: 10_000 });
-	const fresh = startNewContextWindow(prep, 1_000_000);
-	assert.equal(fresh.keptTail, true);
+test("the public door returns exactly a CompactedTranscript", () => {
+	const fresh = startNewContextWindow(preparation({ region: region(40) }), 1_000_000);
+	// The RFC §5.1 return type: assignable to `CompactedTranscript`, with no
+	// extra field observable at runtime. `keptTail` is runner bookkeeping and
+	// travels on `CompactionRungResult`, not on this door.
+	const transcript: CompactedTranscript = fresh;
+	assert.deepEqual(Object.keys(transcript).sort(), ["ranges", "stats", "text"]);
+	assert.equal("keptTail" in (fresh as object), false);
 });
 
-test("the tail is dropped only when keeping it would still exceed the hard input limit", () => {
+test("the preserve_recent tail is kept when it fits under the hard input limit", async () => {
+	const prep = preparation({ region: region(40), tokensBefore: 10_000 });
+	const stream = scriptedStream({ default: [{ errorMessage: "429 Too Many Requests" }] });
+	const result = await runVerbatimCompaction(
+		prep,
+		testModel(),
+		runRequest({ streamFn: stream.streamFn, urgency: "load_bearing" }),
+	);
+	assert.equal(result.rung, "fresh");
+	assert.equal(result.keptTail, true);
+});
+
+test("the tail is dropped only when keeping it would still exceed the hard input limit", async () => {
 	// tokensBefore far exceeds the region estimate, so the tail alone is huge.
 	const prep = preparation({ region: region(40), tokensBefore: 500_000 });
-	const fresh = startNewContextWindow(prep, 1_000);
-	assert.equal(fresh.keptTail, false);
-	assert.ok(fresh.stats.tokensAfter <= 1_000);
+	const stream = scriptedStream({ default: [{ errorMessage: "429 Too Many Requests" }] });
+	const result = await runVerbatimCompaction(
+		prep,
+		testModel({ contextWindow: 1_000 }),
+		runRequest({ streamFn: stream.streamFn, urgency: "load_bearing" }),
+	);
+	assert.equal(result.rung, "fresh");
+	assert.equal(result.keptTail, false);
+	assert.ok(result.stats.tokensAfter <= 1_000);
 });
 
 test("recoverable urgency cannot reach the fresh rung and fails honestly", async () => {

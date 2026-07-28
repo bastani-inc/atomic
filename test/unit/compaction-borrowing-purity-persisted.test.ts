@@ -77,6 +77,8 @@ interface PersistedHarness {
 	session: AgentSession;
 	manager: SessionManager;
 	events: AgentSessionEvent[];
+	/** Every event emitted on the *extension* channel, where `model_select` lives. */
+	extensionEvents: string[];
 	continueCalls: () => number;
 	models: string[];
 	sessionFile: string;
@@ -127,7 +129,29 @@ function createPersistedSession(directory: string): PersistedHarness {
 	const events: AgentSessionEvent[] = [];
 	session.subscribe((event) => events.push(event));
 
-	return { session, manager, events, continueCalls: () => continued, models, sessionFile, dispose: () => session.dispose() };
+	// `model_select` is an extension event, not an `AgentSessionEvent`, so
+	// filtering the session event list for it proves nothing. Instrument the
+	// channel it actually travels on: `_emitModelSelect` calls
+	// `_extensionRunner.emit({ type: "model_select", ... })`.
+	const extensionEvents: string[] = [];
+	const runner = (session as unknown as { _extensionRunner: { emit: (event: { type?: string }) => Promise<unknown> } })
+		._extensionRunner;
+	const realEmit = runner.emit.bind(runner);
+	runner.emit = (event: { type?: string }) => {
+		extensionEvents.push(String(event?.type ?? ""));
+		return realEmit(event);
+	};
+
+	return {
+		session,
+		manager,
+		events,
+		extensionEvents,
+		continueCalls: () => continued,
+		models,
+		sessionFile,
+		dispose: () => session.dispose(),
+	};
 }
 
 function attemptedKeys(session: AgentSession): string[] {
@@ -192,10 +216,22 @@ test("a rescued compaction appends exactly one durable boundary and nothing else
 			);
 		}
 
-		// `model_select` is an extension event and is not representable on
-		// AgentSessionEvent; compare as strings so its absence is asserted anyway.
-		const forbidden = new Set(["model_changed", "model_select", "model_fallback_start"]);
-		assert.deepEqual(harness.events.filter((event) => forbidden.has(event.type as string)), []);
+		// Session-channel events: no model change or fallback announcement.
+		const forbiddenSessionEvents = new Set(["model_changed", "model_fallback_start"]);
+		assert.deepEqual(harness.events.filter((event) => forbiddenSessionEvents.has(event.type as string)), []);
+
+		// Extension-channel events: `model_select` travels here, not on
+		// AgentSessionEvent, so its absence is proved on the instrumented channel
+		// rather than by filtering a union that cannot contain it.
+		assert.ok(
+			!harness.extensionEvents.includes("model_select"),
+			`the rescue emitted model_select: ${harness.extensionEvents.join(", ")}`,
+		);
+		// The channel really is live — the compaction hooks did fire through it.
+		assert.ok(
+			harness.extensionEvents.includes("session_compact"),
+			`the extension channel was not exercised: ${harness.extensionEvents.join(", ")}`,
+		);
 		assert.equal(harness.continueCalls(), 0);
 	} finally {
 		harness.dispose();

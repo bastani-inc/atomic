@@ -89,7 +89,6 @@ export {
 	type CompactionRunRequest,
 	type CompactionRungResult,
 	type CompactionUrgency,
-	type FreshContextWindow,
 	type PlannerAuth,
 	type PlannerBudget,
 	type PlannerOutcome,
