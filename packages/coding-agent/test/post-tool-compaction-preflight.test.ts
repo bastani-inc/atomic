@@ -89,6 +89,63 @@ describe("post-tool compaction preflight", () => {
 		expect(harness.session.getLastAssistantText()).toBe("completed after compaction");
 	});
 
+	// Regression: the compaction preflight used to return `agent.state.messages`, whose
+	// getter hands back the live internal array. The agent loop adopted it as
+	// `currentContext.messages`, so from the following turn on both `runLoop` and the
+	// `message_end` reducer appended to the same array. Every message was duplicated and
+	// the provider rejected two `tool_result` blocks sharing one `tool_use` id with a 400.
+	it("keeps turns after a mid-turn parallel-tool compaction structurally valid", async () => {
+		const harness = await createHarnessWithExtensions({
+			contextWindow: 1_000,
+			settings: {
+				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+			},
+			responses: [
+				{
+					toolCalls: [
+						{ id: "call-a", name: "large_result", args: {} },
+						{ id: "call-b", name: "large_result", args: {} },
+						{ id: "call-c", name: "large_result", args: {} },
+					],
+					usage: { input: 700, output: 20, totalTokens: 720 },
+				},
+				{
+					toolCalls: [{ id: "call-d", name: "large_result", args: {} }],
+					usage: { input: 100, output: 10, totalTokens: 110 },
+				},
+				"completed after compaction",
+			],
+			baseToolsOverride: { large_result: largeResultTool },
+			extensionFactories: [compactOffline],
+		});
+		harnesses.push(harness);
+		await wireHarness(harness);
+
+		await harness.session.prompt(longPrompt);
+
+		expect(harness.faux.callCount).toBe(3);
+		expect(harness.eventsOfType("compaction_start")).toHaveLength(1);
+		// The turn after the boundary carries the new call and exactly one result for it.
+		expect(harness.faux.contexts[2]?.messages.map((message) => message.role)).toEqual([
+			"user",
+			"assistant",
+			"toolResult",
+		]);
+		for (const context of harness.faux.contexts) {
+			const toolResultIds = context.messages
+				.filter((message) => message.role === "toolResult")
+				.map((message) => (message as { toolCallId: string }).toolCallId);
+			expect(toolResultIds).toEqual([...new Set(toolResultIds)]);
+			const toolCallIds = context.messages
+				.filter((message) => message.role === "assistant")
+				.flatMap((message) => (message.content as Array<{ type: string; id?: string }>)
+					.filter((block) => block.type === "toolCall")
+					.map((block) => block.id as string));
+			expect(toolCallIds).toEqual([...new Set(toolCallIds)]);
+		}
+		expect(harness.session.getLastAssistantText()).toBe("completed after compaction");
+	});
+
 	it("leaves below-threshold tool turns unchanged", async () => {
 		const harness = await createHarnessWithExtensions({
 			contextWindow: 1_000,

@@ -1,5 +1,6 @@
 import type { PrepareNextTurnContext } from "@earendil-works/pi-agent-core";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { assertToolPairingInvariant } from "./context-tool-pairing.js";
 import { redirectOversizedToolResult } from "./tools/oversized-tool-result.js";
 
 export function _installAgentToolHooks(this: AgentSession): void {
@@ -88,7 +89,11 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 		const transformed = previousTransformContext
 			? await previousTransformContext(messages, signal)
 			: messages;
-		return this._finishPostToolCompactionPreflight(transformed);
+		const guarded = this._finishPostToolCompactionPreflight(transformed);
+		// Last checkpoint before provider conversion: a structurally invalid context
+		// here becomes an unrecoverable provider 400, so surface it as an Atomic error.
+		assertToolPairingInvariant(guarded);
+		return guarded;
 	};
 	this.agent.prepareNextTurnWithContext = async (turn, signal) => {
 		const previousSnapshot = await previousPrepareNextTurnWithContext?.(turn, signal);

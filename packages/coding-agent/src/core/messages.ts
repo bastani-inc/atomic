@@ -250,19 +250,29 @@ function getToolResultCallId(message: Message): string | undefined {
 	return typeof toolCallId === "string" ? toolCallId : undefined;
 }
 
+/**
+ * Enforce the provider's tool-pairing invariant on a converted message list.
+ *
+ * A provider rejects both an orphaned `tool_result` and a second `tool_result`
+ * carrying a `tool_use` id that was already answered. Keep exactly the first
+ * result for each id the preceding assistant message announced.
+ */
 export function repairOrphanToolResults(messages: Message[]): Message[] {
 	let allowedToolCallIds: Set<string> | undefined;
+	let answeredToolCallIds: Set<string> | undefined;
 	let changed = false;
 	const repaired: Message[] = [];
 	for (const message of messages) {
 		if (message.role === "assistant") {
 			allowedToolCallIds = collectAssistantToolCallIds(message);
+			answeredToolCallIds = new Set<string>();
 			repaired.push(message);
 			continue;
 		}
 		if (message.role === "toolResult") {
 			const toolCallId = getToolResultCallId(message);
-			if (toolCallId && allowedToolCallIds?.has(toolCallId)) {
+			if (toolCallId && allowedToolCallIds?.has(toolCallId) && answeredToolCallIds?.has(toolCallId) === false) {
+				answeredToolCallIds.add(toolCallId);
 				repaired.push(message);
 				continue;
 			}
@@ -270,6 +280,7 @@ export function repairOrphanToolResults(messages: Message[]): Message[] {
 			continue;
 		}
 		allowedToolCallIds = undefined;
+		answeredToolCallIds = undefined;
 		repaired.push(message);
 	}
 	return changed ? repaired : messages;

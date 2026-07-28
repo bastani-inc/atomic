@@ -57,6 +57,39 @@ describe("convertToLlm", () => {
 		expect(converted.map((message) => message.role)).toEqual(["user", "assistant", "user"]);
 	});
 
+	test("collapses a duplicated tool result for one tool call id", () => {
+		const converted = convertToLlm([
+			assistantWithToolCalls(["call-a", "call-b"]),
+			toolResult("call-a"),
+			toolResult("call-b"),
+			toolResult("call-a"),
+			toolResult("call-b"),
+		]);
+
+		expect(converted.map((message) => message.role)).toEqual(["assistant", "toolResult", "toolResult"]);
+		expect(
+			converted
+				.filter((message) => message.role === "toolResult")
+				.map((message) => (message as ToolResultMessage).toolCallId),
+		).toEqual(["call-a", "call-b"]);
+	});
+
+	test("re-arms pairing per assistant turn so a reused id is kept once each turn", () => {
+		const converted = convertToLlm([
+			assistantWithToolCalls(["call-a"]),
+			toolResult("call-a"),
+			assistantWithToolCalls(["call-a"]),
+			toolResult("call-a"),
+		]);
+
+		expect(converted.map((message) => message.role)).toEqual([
+			"assistant",
+			"toolResult",
+			"assistant",
+			"toolResult",
+		]);
+	});
+
 	test("normalizes null and omitted assistant content without mutating durable messages", () => {
 		const nullContent = { ...assistantWithToolCalls([]), content: null } as unknown as AgentMessage;
 		const omittedContent = { ...assistantWithToolCalls([]) } as unknown as Record<string, unknown>;
