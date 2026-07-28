@@ -332,3 +332,125 @@ test("remounting while a delivery is active replays it onto the new view", () =>
     second.dispose();
   }
 });
+
+test("the terminal fence returns after a no-turn delivery settles", () => {
+  const { handle, emit, emitDeliveryActivity } = makeHandle(undefined, [], "running");
+  const { view, store } = stageViewFor(handle, () => {}, "running");
+
+  try {
+    completeStage(store);
+    emitDeliveryActivity({ type: "delivery_start", deliveryId: 1 });
+    emitDeliveryActivity({ type: "delivery_settled", deliveryId: 1 });
+    assert.doesNotMatch(renderText(view), /Working/);
+
+    emit({ type: "agent_start" } as AgentSessionEvent);
+    assert.doesNotMatch(
+      renderText(view),
+      /Working/,
+      "a start after the last post-terminal delivery settled must stay suppressed",
+    );
+    emit({ type: "turn_start" } as AgentSessionEvent);
+    assert.doesNotMatch(renderText(view), /Working/);
+    assert.equal(view._hasAnimationTick, false);
+  } finally {
+    view.dispose();
+  }
+});
+
+test("the terminal fence returns after a completed retained turn settles", () => {
+  const { handle, emit, emitDeliveryActivity } = makeHandle(undefined, [], "running");
+  const { view, store } = stageViewFor(handle, () => {}, "running");
+
+  try {
+    completeStage(store);
+    emitDeliveryActivity({ type: "delivery_start", deliveryId: 2 });
+    emit({ type: "agent_start" } as AgentSessionEvent);
+    emit({ type: "turn_start" } as AgentSessionEvent);
+    assert.match(renderText(view), /∀\s+\S/, "the accepted retained turn must show Working");
+
+    emit({ type: "turn_end" } as AgentSessionEvent);
+    emit({ type: "agent_end", messages: [] } as AgentSessionEvent);
+    emitDeliveryActivity({ type: "delivery_settled", deliveryId: 2 });
+    assert.doesNotMatch(renderText(view), /Working/);
+
+    emit({ type: "agent_start" } as AgentSessionEvent);
+    emit({ type: "turn_start" } as AgentSessionEvent);
+    assert.doesNotMatch(
+      renderText(view),
+      /Working/,
+      "a start after the retained turn finished must stay suppressed",
+    );
+    assert.equal(view._hasAnimationTick, false);
+  } finally {
+    view.dispose();
+  }
+});
+
+test("settling one of several leases keeps the others authorized", () => {
+  const { handle, emit, emitDeliveryActivity } = makeHandle(undefined, [], "running");
+  const { view, store } = stageViewFor(handle, () => {}, "running");
+
+  try {
+    completeStage(store);
+    emitDeliveryActivity({ type: "delivery_start", deliveryId: 1 });
+    emitDeliveryActivity({ type: "delivery_start", deliveryId: 2 });
+    emitDeliveryActivity({ type: "delivery_settled", deliveryId: 1 });
+
+    emit({ type: "agent_start" } as AgentSessionEvent);
+    assert.match(renderText(view), /Working/, "lease 2 must still authorize the turn");
+    assert.equal(view._hasAnimationTick, true);
+
+    emit({ type: "agent_end", messages: [] } as AgentSessionEvent);
+    emitDeliveryActivity({ type: "delivery_settled", deliveryId: 2 });
+    emit({ type: "agent_start" } as AgentSessionEvent);
+    assert.doesNotMatch(renderText(view), /Working/, "the final settlement must rearm the fence");
+    assert.equal(view._hasAnimationTick, false);
+  } finally {
+    view.dispose();
+  }
+});
+
+test("unknown and invalidated settlements leave the fence untouched", () => {
+  const { handle, emit, emitDeliveryActivity } = makeHandle(undefined, [], "running");
+  const { view, store } = stageViewFor(handle, () => {}, "running");
+
+  try {
+    emitDeliveryActivity({ type: "delivery_start", deliveryId: 1 });
+    completeStage(store);
+    // Lease 1 was dropped by the transition; its settlement must not reopen it.
+    emitDeliveryActivity({ type: "delivery_settled", deliveryId: 1 });
+    emitDeliveryActivity({ type: "delivery_settled", deliveryId: 42 });
+
+    emit({ type: "agent_start" } as AgentSessionEvent);
+    assert.doesNotMatch(renderText(view), /Working/);
+    assert.equal(view._hasAnimationTick, false);
+
+    // A genuinely new delivery still reopens authorization.
+    emitDeliveryActivity({ type: "delivery_start", deliveryId: 5 });
+    emit({ type: "agent_start" } as AgentSessionEvent);
+    assert.match(renderText(view), /Working/);
+    assert.equal(view._hasAnimationTick, true);
+  } finally {
+    view.dispose();
+  }
+});
+
+test("a non-terminal stage keeps ordinary agent work visible after a delivery settles", () => {
+  const { handle, emit, emitDeliveryActivity } = makeHandle(undefined, [], "running");
+  const { view } = stageViewFor(handle, () => {}, "running");
+
+  try {
+    emitDeliveryActivity({ type: "delivery_start", deliveryId: 1 });
+    emitDeliveryActivity({ type: "delivery_settled", deliveryId: 1 });
+
+    emit({ type: "agent_start" } as AgentSessionEvent);
+    assert.match(
+      renderText(view),
+      /Working/,
+      "a running stage must keep showing ordinary agent work",
+    );
+    assert.equal(view._hasAnimationTick, true);
+  } finally {
+    view.dispose();
+  }
+});

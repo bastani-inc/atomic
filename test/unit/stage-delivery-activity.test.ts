@@ -28,6 +28,29 @@ function contextFor(session: StageSessionRuntime): InternalStageContext {
   return createStageContext(makeOpts({ adapters: { agentSession } })) as InternalStageContext;
 }
 
+function gatedContext(session: StageSessionRuntime): {
+  readonly ctx: InternalStageContext;
+  readonly creationEntered: Promise<void>;
+  readonly releaseCreation: () => void;
+  readonly failCreation: (error: Error) => void;
+} {
+  const entered = Promise.withResolvers<void>();
+  const gate = Promise.withResolvers<void>();
+  const agentSession: AgentSessionAdapter = {
+    async create() {
+      entered.resolve();
+      await gate.promise;
+      return session;
+    },
+  };
+  return {
+    ctx: createStageContext(makeOpts({ adapters: { agentSession } })) as InternalStageContext,
+    creationEntered: entered.promise,
+    releaseCreation: () => gate.resolve(),
+    failCreation: (error) => gate.reject(error),
+  };
+}
+
 describe("StageDeliveryActivity", () => {
   test("settles outstanding deliveries exactly once on dispose", () => {
     const activity = new StageDeliveryActivity();
@@ -240,5 +263,147 @@ describe("stage runner delivery activity", () => {
 
     turn.resolve();
     await delivery;
+  });
+});
+
+describe("stage runner delivery activity during session restore", () => {
+  test("an accepted delivery reports activity while the saved session is still restoring", async () => {
+    const { session } = makeMockSession({ async sendUserMessage() {} });
+    const gated = gatedContext(session);
+    const activity = recordActivity(gated.ctx);
+
+    const delivery = gated.ctx.__sendUserMessage("restore then deliver");
+    await gated.creationEntered;
+
+    assert.deepEqual(
+      activity.types(),
+      ["delivery_start"],
+      "expected Working activity to cover the retained-session restore wait",
+    );
+
+    gated.releaseCreation();
+    assert.equal(await delivery, "prompt");
+    assert.deepEqual(activity.types(), ["delivery_start", "delivery_settled"]);
+    assert.equal(activity.events[0]!.deliveryId, activity.events[1]!.deliveryId);
+  });
+
+  test("a failed session restore settles the correlated delivery", async () => {
+    const { session } = makeMockSession({ async sendUserMessage() {} });
+    const gated = gatedContext(session);
+    const activity = recordActivity(gated.ctx);
+
+    const delivery = gated.ctx.__sendUserMessage("doomed restore");
+    await gated.creationEntered;
+    assert.deepEqual(activity.types(), ["delivery_start"]);
+
+    gated.failCreation(new Error("saved session is unreadable"));
+    await assert.rejects(delivery, /saved session is unreadable/);
+
+    assert.deepEqual(activity.types(), ["delivery_start", "delivery_settled"]);
+    assert.equal(activity.events[0]!.deliveryId, activity.events[1]!.deliveryId);
+  });
+
+  test("a controlled pause starts one restore lease only after resume", async () => {
+    const { session } = makeMockSession({ async sendUserMessage() {} });
+    let creationStarted = false;
+    const creationEntered = Promise.withResolvers<void>();
+    const releaseCreation = Promise.withResolvers<void>();
+    const agentSession: AgentSessionAdapter = {
+      async create() {
+        creationStarted = true;
+        creationEntered.resolve();
+        await releaseCreation.promise;
+        return session;
+      },
+    };
+    const ctx = createStageContext(makeOpts({ adapters: { agentSession } })) as InternalStageContext;
+    const activity = recordActivity(ctx);
+
+    await ctx.__requestPause();
+    const delivery = ctx.__sendUserMessage("held until resume");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.deepEqual(activity.types(), [], "a paused delivery must stay invisible");
+    assert.equal(creationStarted, false, "a paused delivery must not start session restore");
+
+    const resume = ctx.__resume();
+    await creationEntered.promise;
+    assert.deepEqual(
+      activity.types(),
+      ["delivery_start"],
+      "exactly one lease must cover the pending restore after resume",
+    );
+
+    releaseCreation.resolve();
+    assert.equal(await delivery, "prompt");
+    await resume;
+    assert.deepEqual(activity.types(), ["delivery_start", "delivery_settled"]);
+    assert.equal(activity.events[0]!.deliveryId, activity.events[1]!.deliveryId);
+  });
+
+  test("initial eligibility rejects before activity or session creation", async () => {
+    const { session } = makeMockSession({ async sendUserMessage() {} });
+    let creationStarted = false;
+    const agentSession: AgentSessionAdapter = {
+      async create() {
+        creationStarted = true;
+        return session;
+      },
+    };
+    const ctx = createStageContext(makeOpts({ adapters: { agentSession } })) as InternalStageContext;
+    const activity = recordActivity(ctx);
+
+    await assert.rejects(
+      ctx.__sendUserMessage("already terminal", undefined, undefined, {
+        beforePreparation() {
+          throw new DOMException("root already terminal", "AbortError");
+        },
+      }),
+      /root already terminal/,
+    );
+
+    assert.equal(creationStarted, false);
+    assert.deepEqual(activity.types(), []);
+  });
+
+  test("a root that terminates during restore is rechecked before SDK mutation", async () => {
+    const sdkMessages: string[] = [];
+    const { session } = makeMockSession({
+      async sendUserMessage(content) {
+        sdkMessages.push(String(content));
+      },
+    });
+    const gated = gatedContext(session);
+    const activity = recordActivity(gated.ctx);
+    let terminal = false;
+
+    const delivery = gated.ctx.__sendUserMessage(
+      "must not land after terminal restore",
+      undefined,
+      () => {
+        if (terminal) throw new DOMException("root terminated during restore", "AbortError");
+      },
+    );
+    await gated.creationEntered;
+    assert.deepEqual(activity.types(), ["delivery_start"]);
+
+    terminal = true;
+    gated.releaseCreation();
+    await assert.rejects(delivery, /root terminated during restore/);
+
+    assert.deepEqual(sdkMessages, []);
+    assert.deepEqual(activity.types(), ["delivery_start", "delivery_settled"]);
+    assert.equal(activity.events[0]!.deliveryId, activity.events[1]!.deliveryId);
+  });
+
+  test("a streaming delivery reports no activity even when a session already exists", async () => {
+    const { session } = makeMockSession({ isStreaming: true, async sendUserMessage() {} });
+    const ctx = contextFor(session);
+    await ctx.__ensureSession();
+    const activity = recordActivity(ctx);
+
+    assert.equal(await ctx.__sendUserMessage("queued while streaming"), "followUp");
+    assert.deepEqual(activity.types(), []);
   });
 });

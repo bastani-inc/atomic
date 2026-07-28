@@ -1,21 +1,31 @@
 import type { StageControlHandle, AgentSessionEventListener } from "./stage-control-registry.js";
 import type { LiveStageRuntime } from "./executor-stage-types.js";
-import type { StageUserMessageDeliveryAction } from "./stage-runner-types.js";
+import type { StageUserMessageDeliveryAction, StageUserMessagePreparation } from "./stage-runner-types.js";
 import { isTerminalStage } from "./executor-scheduler.js";
 import { StageToolExecutionBuffer } from "./stage-tool-execution-buffer.js";
 
 export function createStageControlHandle(runtime: LiveStageRuntime): StageControlHandle {
-  const ensureMessagingSession = async (): Promise<void> => {
+  const messagePreparation = (): StageUserMessagePreparation => {
     const meta = runtime.innerCtx.__sessionMeta();
-    if (meta.sessionId !== undefined || meta.sessionFile !== undefined) return;
+    if (meta.sessionId !== undefined || meta.sessionFile !== undefined) {
+      return { beforePreparation: runtime.throwIfStageMutationBlocked };
+    }
     if (runtime.stageSnapshot.sessionFile !== undefined) {
-      await runtime.innerCtx.__ensureSessionFromFile(runtime.stageSnapshot.sessionFile);
-      runtime.captureStageSessionMeta();
-      return;
+      return {
+        sessionFile: runtime.stageSnapshot.sessionFile,
+        beforePreparation: runtime.throwIfStageMutationBlocked,
+      };
     }
     if (isTerminalStage(runtime.stageSnapshot)) {
       throw new Error(`atomic-workflows: cannot message stage "${runtime.name}" because no retained session metadata is available.`);
     }
+    return { beforePreparation: runtime.throwIfStageMutationBlocked };
+  };
+  const ensureMessagingSession = async (): Promise<void> => {
+    const sessionFile = messagePreparation().sessionFile;
+    if (sessionFile === undefined) return;
+    await runtime.innerCtx.__ensureSessionFromFile(sessionFile);
+    runtime.captureStageSessionMeta();
   };
   const toolExecutions = new StageToolExecutionBuffer();
   const unsubscribeToolExecutions = runtime.innerCtx.subscribe((event) => toolExecutions.record(event));
@@ -57,8 +67,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
     },
     async sendUserMessage(text, options, beforeDelivery) {
       runtime.throwIfStageMutationBlocked();
-      await ensureMessagingSession();
-      runtime.throwIfStageMutationBlocked();
+      const preparation = messagePreparation();
       const admitDelivery = (): void => {
         runtime.throwIfStageMutationBlocked();
         beforeDelivery?.();
@@ -68,6 +77,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
           text,
           options,
           admitDelivery,
+          preparation,
         );
         if (action === "steer" || action === "followUp") {
           runtime.state.resumeContinuationPending = "queued-user-message";
@@ -79,13 +89,14 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
     },
     async prompt(text: string) {
       runtime.throwIfStageMutationBlocked();
-      await ensureMessagingSession();
+      const preparation = messagePreparation();
       let action: StageUserMessageDeliveryAction | undefined;
       try {
         action = await runtime.innerCtx.__sendUserMessage(
           text,
           undefined,
           runtime.throwIfStageMutationBlocked,
+          preparation,
         );
       } finally {
         runtime.captureStageSessionMeta();

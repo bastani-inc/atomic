@@ -93,3 +93,62 @@ test("stage-control resume rechecks admission after awaited __resume setup", asy
   assert.equal(nativeReleaseMutations, 0);
   assert.equal(snapshotMutations, 0);
 });
+
+test("stage-control send keeps saved-session restore inside final message admission", async () => {
+  const sendEntered = Promise.withResolvers<void>();
+  const finishRestore = Promise.withResolvers<void>();
+  const events: string[] = [];
+  let terminal = false;
+  let sdkMutations = 0;
+  const runtime = {
+    runId: "run-restore-race",
+    stageId: "stage-restore-race",
+    name: "restore race",
+    stageSnapshot: {
+      status: "completed",
+      sessionFile: "/tmp/retained-restore.jsonl",
+    },
+    state: { liveHandleReleased: false },
+    innerCtx: {
+      __sessionMeta: () => ({ sessionId: undefined, sessionFile: undefined }),
+      subscribe: () => () => {},
+      async __ensureSessionFromFile() {
+        events.push("outer_restore");
+      },
+      async __sendUserMessage(
+        _text: string,
+        _options: undefined,
+        beforeDelivery: () => void,
+        preparation: {
+          sessionFile?: string;
+          beforePreparation?: () => void;
+        } | undefined,
+      ) {
+        events.push("inner_send");
+        preparation?.beforePreparation?.();
+        sendEntered.resolve();
+        assert.equal(preparation?.sessionFile, "/tmp/retained-restore.jsonl");
+        await finishRestore.promise;
+        beforeDelivery();
+        sdkMutations += 1;
+        return "prompt" as const;
+      },
+    },
+    throwIfStageMutationBlocked() {
+      if (terminal) throw new DOMException("root terminated during restore", "AbortError");
+    },
+    captureStageSessionMeta() {},
+  };
+  const handle = createStageControlHandle(runtime as never);
+
+  const delivery = handle.sendUserMessage?.("late retained message");
+  assert.ok(delivery);
+  void delivery.catch(() => {});
+  await sendEntered.promise;
+  assert.deepEqual(events, ["inner_send"], "restore must not happen before controller admission");
+
+  terminal = true;
+  finishRestore.resolve();
+  await assert.rejects(delivery, /root terminated during restore/);
+  assert.equal(sdkMutations, 0, "final admission must run before SDK mutation");
+});

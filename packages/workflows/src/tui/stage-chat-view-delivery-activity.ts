@@ -15,6 +15,7 @@
  * cross-ref: src/runs/foreground/stage-delivery-activity.ts
  */
 import type { StageDeliveryActivityEvent } from "../runs/foreground/stage-delivery-activity.js";
+import { isTerminalStageChatState } from "./stage-chat-view-status.js";
 import type { StageChatViewContext } from "./stage-chat-view-types.js";
 
 export function subscribeStageChatDeliveryActivity(
@@ -44,11 +45,26 @@ export function applyStageChatDeliveryActivityEvent(
   const generation = ctx.deliveryLifecycles.get(event.deliveryId);
   ctx.deliveryLifecycles.delete(event.deliveryId);
   ctx.chatHost.settleExternalPromptLifecycle(generation);
+  // The map is the reference count: overlapping leases keep authorization open,
+  // and the last one to settle on a finished stage restores stale-start
+  // suppression. Otherwise the fence stayed open forever after the first
+  // post-terminal delivery and a late start could repaint a settled chat.
+  if (!hasActiveStageChatDelivery(ctx) && isStageChatContextTerminal(ctx)) {
+    ctx.terminalLifecycleFenced = true;
+  }
 }
 
 /** True while at least one admitted delivery still owns this chat's Working period. */
 export function hasActiveStageChatDelivery(ctx: StageChatViewContext): boolean {
   return ctx.deliveryLifecycles.size > 0;
+}
+
+/** True when the last observed run or stage status is terminal. */
+export function isStageChatContextTerminal(ctx: StageChatViewContext): boolean {
+  return (
+    isTerminalStageChatState(ctx.lastObservedRunStatus) ||
+    isTerminalStageChatState(ctx.lastObservedStageStatus)
+  );
 }
 
 /**

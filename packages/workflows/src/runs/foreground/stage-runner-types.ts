@@ -29,6 +29,12 @@ export type WorkflowFastModeSettingsManager = {
 
 export type StageUserMessageDeliveryAction = "prompt" | "steer" | "followUp" | "handled";
 
+/** Internal session preparation and side-effect-free eligibility boundary. */
+export interface StageUserMessagePreparation {
+  readonly sessionFile?: string;
+  readonly beforePreparation?: () => void;
+}
+
 export interface StageUserMessageDeliveryHooks {
   readonly beforeDelivery?: () => void;
   /** Releases serialized admission once an idle prompt synchronously owns the turn. */
@@ -152,6 +158,7 @@ export interface InternalStageContext extends StageContext {
     content: StageUserMessageContent,
     options?: StageSendUserMessageOptions,
     beforeDelivery?: () => void,
+    preparation?: StageUserMessagePreparation,
   ): Promise<StageUserMessageDeliveryAction>;
   /**
    * Internal: subscribe to workflow-owned delivery lifecycle facts for this

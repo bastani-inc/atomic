@@ -34,6 +34,7 @@ import {
   type StageControlHandle,
   type StageControlRegistry,
 } from "./stage-control-registry.js";
+import type { StageUserMessagePreparation } from "./stage-runner-types.js";
 
 /** Why a terminal stage could not be revived as an interactive post-mortem chat. */
 export type PostMortemUnavailableReason =
@@ -153,10 +154,18 @@ export function createPostMortemStageHandle(
     ...(defaultSessionDir !== undefined ? { defaultSessionDir } : {}),
   });
   let disposed = false;
-  const ensureAttached = async (): Promise<void> => {
+  const throwIfClosed = (): void => {
     if (disposed) throw new Error(`Post-mortem stage chat "${stage.name}" is closed.`);
-    if (context.__sessionMeta().sessionFile === undefined) {
-      await context.__ensureSessionFromFile(sessionFile);
+  };
+  const messagePreparation = (): StageUserMessagePreparation => ({
+    ...(context.__sessionMeta().sessionFile === undefined ? { sessionFile } : {}),
+    beforePreparation: throwIfClosed,
+  });
+  const ensureAttached = async (): Promise<void> => {
+    throwIfClosed();
+    const sessionFileToRestore = messagePreparation().sessionFile;
+    if (sessionFileToRestore !== undefined) {
+      await context.__ensureSessionFromFile(sessionFileToRestore);
     }
   };
   return {
@@ -172,8 +181,13 @@ export function createPostMortemStageHandle(
     get agentSession() { return context.__agentSession(); },
     async ensureAttached() { await ensureAttached(); },
     async sendUserMessage(text, options, beforeDelivery) {
-      await ensureAttached();
-      return context.__sendUserMessage(text, options, beforeDelivery);
+      throwIfClosed();
+      const preparation = messagePreparation();
+      const admitDelivery = (): void => {
+        throwIfClosed();
+        beforeDelivery?.();
+      };
+      return context.__sendUserMessage(text, options, admitDelivery, preparation);
     },
     async prompt(text: string) {
       await ensureAttached();

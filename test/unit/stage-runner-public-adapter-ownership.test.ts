@@ -69,6 +69,7 @@ describe("public AgentSessionAdapter prompt ownership", () => {
   test("retains public agent_start ownership while isStreaming publication lags", async () => {
     const allowPromptStart = Promise.withResolvers<void>();
     const promptStarted = Promise.withResolvers<void>();
+    const followUpRouted = Promise.withResolvers<void>();
     const firstTurn = Promise.withResolvers<void>();
     let streaming = false;
     let promptStarts = 0;
@@ -92,7 +93,10 @@ describe("public AgentSessionAdapter prompt ownership", () => {
         for (const listener of listeners) listener({ type: "agent_end", messages: [] });
         streaming = false;
       },
-      async followUp(text) { consumed.push(text); },
+      async followUp(text) {
+        consumed.push(text);
+        followUpRouted.resolve();
+      },
     });
     Object.defineProperty(session, "isStreaming", { get: () => streaming });
     const adapter = {
@@ -107,14 +111,15 @@ describe("public AgentSessionAdapter prompt ownership", () => {
     void second.then(() => { secondSettled = true; });
     allowPromptStart.resolve();
     await promptStarted.promise;
-    await flushMicrotasks();
+    await followUpRouted.promise;
+    const secondOutcome = await second;
     const settledBeforeTurnEnd = secondSettled;
 
     firstTurn.resolve();
-    const outcomes = await Promise.all([first, second]);
+    const firstOutcome = await first;
 
     assert.equal(settledBeforeTurnEnd, true);
-    assert.deepEqual(outcomes, ["prompt", "followUp"]);
+    assert.deepEqual([firstOutcome, secondOutcome], ["prompt", "followUp"]);
     assert.equal(promptStarts, 1);
     assert.deepEqual(consumed, ["first", "second"]);
   });

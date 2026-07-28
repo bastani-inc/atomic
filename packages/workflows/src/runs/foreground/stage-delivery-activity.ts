@@ -58,6 +58,16 @@ export class StageDeliveryActivity {
     return deliveryId;
   }
 
+  /** Keep one correlated delivery active for the full asynchronous operation. */
+  async runWithLease<T>(operation: () => Promise<T>): Promise<T> {
+    const deliveryId = this.start();
+    try {
+      return await operation();
+    } finally {
+      this.settle(deliveryId);
+    }
+  }
+
   /** Report that a delivery finished, failed, or started no turn at all. */
   settle(deliveryId: number | undefined): void {
     if (deliveryId === undefined || !this.active.delete(deliveryId)) return;
