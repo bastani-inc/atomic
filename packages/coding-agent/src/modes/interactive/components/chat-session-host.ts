@@ -30,6 +30,9 @@ import {
   disposeChatSession,
   isChatSessionBashRunning,
   isChatSessionStreaming,
+  reassertChatSessionExternalPromptLifecycle,
+  settleChatSessionPromptLifecycle,
+  startChatSessionExternalPromptLifecycle,
   syncChatSessionAnimationTick,
 } from "./chat-session-host-runtime.ts";
 import { ChatSessionHostState } from "./chat-session-host-state.ts";
@@ -202,6 +205,30 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 
   clearBusyForTerminalWorkflowStage(): void {
     clearChatSessionBusyForTerminalWorkflowStage(this.state);
+  }
+
+  /**
+   * Start Working for an accepted prompt delivered outside this host — a
+   * workflow definition auto-sending to its own retained stage. Returns the
+   * lifecycle token to hand back to `settleExternalPromptLifecycle`.
+   */
+  beginExternalPromptLifecycle(): number | undefined {
+    return startChatSessionExternalPromptLifecycle(this.state);
+  }
+
+  /**
+   * Reopen Working for a delivery still active after a temporary overlay — a
+   * pre-turn compaction — cleared it. Preserves factual status text.
+   */
+  reassertExternalPromptLifecycle(): number | undefined {
+    return reassertChatSessionExternalPromptLifecycle(this.state);
+  }
+
+  /** Settle a lifecycle from `beginExternalPromptLifecycle`. Stale tokens no-op. */
+  settleExternalPromptLifecycle(generation: number | undefined): void {
+    settleChatSessionPromptLifecycle(this.state, generation);
+    syncChatSessionAnimationTick(this.state);
+    this.state.requestRender?.();
   }
 
   dispose(): void {

@@ -1,4 +1,5 @@
 import type { StageSendUserMessageOptions, StageUserMessageContent } from "../../shared/types.js";
+import type { StageDeliveryActivity } from "./stage-delivery-activity.js";
 import type { StageMessageAdmission, StageMessageTurn } from "./stage-runner-message-admission.js";
 import type { StageSessionRuntime, StageUserMessageDeliveryAction } from "./stage-runner-types.js";
 
@@ -59,6 +60,7 @@ export async function sendStageUserMessage(
   beforeDelivery?: () => void,
   promptStarted?: () => void,
   admission?: StageMessageAdmission,
+  activity?: StageDeliveryActivity,
 ): Promise<StageUserMessageDeliveryAction> {
   const streaming = activeSession.isStreaming || admission?.isOwned(activeSession) === true;
   const deliverAs = streaming ? options?.deliverAs ?? "followUp" : options?.deliverAs;
@@ -71,6 +73,9 @@ export async function sendStageUserMessage(
         ? createLocalPromptOwnershipObserver(activeSession, promptStarted)
         : coordinatedPromptOwnershipObserver(admission.startTurn(activeSession, promptStarted ?? (() => {})));
     ownership?.arm();
+    // An admitted idle delivery owns the visible Working period from here until
+    // it settles; a streaming delivery joins a turn that already owns it.
+    const deliveryId = streaming ? undefined : activity?.start();
     try {
       const delivery = activeSession.sendUserMessage(content, {
         ...(deliverAs === undefined ? {} : { deliverAs }),
@@ -89,6 +94,7 @@ export async function sendStageUserMessage(
       throw error;
     } finally {
       ownership?.dispose();
+      activity?.settle(deliveryId);
     }
   }
   if (typeof content !== "string") throw unsupportedContentError();
@@ -102,6 +108,7 @@ export async function sendStageUserMessage(
     ? createLocalPromptOwnershipObserver(activeSession, promptStarted)
     : coordinatedPromptOwnershipObserver(admission.startTurn(activeSession, promptStarted ?? (() => {})));
   ownership.arm();
+  const deliveryId = activity?.start();
   try {
     const turn = activeSession.prompt(content);
     ownership.observeStreaming();
@@ -113,5 +120,6 @@ export async function sendStageUserMessage(
     throw error;
   } finally {
     ownership.dispose();
+    activity?.settle(deliveryId);
   }
 }

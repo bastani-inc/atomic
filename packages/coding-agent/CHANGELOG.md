@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed attached workflow-stage chats missing Working during workflow-authored idle follow-ups, including chats attached or remounted while the turn is already starting. Working now persists through prompt startup and pre-turn compaction, while live-turn `followUp`/`steer` queueing and factual retry, fallback, compaction, cancellation, and error status precedence remain intact; terminal cleanup keeps a leftover start from restarting it.
+
 ## [0.9.11-alpha.6] - 2026-07-28
 
 ### Added

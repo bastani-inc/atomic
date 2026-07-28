@@ -126,6 +126,10 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
       return controller.subscribe(listener);
     },
 
+    __subscribeDeliveryActivity(listener) {
+      return controller.subscribeDeliveryActivity(listener);
+    },
+
     get sessionFile() {
       return controller.currentSession?.sessionFile;
     },

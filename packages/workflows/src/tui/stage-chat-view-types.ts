@@ -162,8 +162,12 @@ export interface StageChatViewContext {
   lastObservedStageStatus: StageStatus | undefined;
   lastObservedRunStatus: RunStatus | undefined;
   seenNoticeIds: Set<string>;
+  deliveryLifecycles: Map<number, number | undefined>;
+  /** True once this chat observed a terminal transition and cleaned up in-flight work. */
+  terminalLifecycleFenced: boolean;
   _unsubscribeStore: (() => void) | null;
   _unsubscribeHandle: (() => void) | null;
+  _unsubscribeDeliveryActivity: (() => void) | null;
   _unsubscribeFooterData: (() => void) | null;
   _unregisterStageUiHost: (() => void) | null;
 }

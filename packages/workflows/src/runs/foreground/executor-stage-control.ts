@@ -197,6 +197,9 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
     subscribe(listener: AgentSessionEventListener) {
       return runtime.innerCtx.subscribe(listener);
     },
+    subscribeDeliveryActivity(listener) {
+      return runtime.innerCtx.__subscribeDeliveryActivity(listener);
+    },
     async dispose() {
       unsubscribeToolExecutions();
       toolExecutions.clear();

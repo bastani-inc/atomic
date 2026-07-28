@@ -100,6 +100,7 @@ export function createReplayStageContext(input: {
     steer: async () => rejectReplayMutation("steer"),
     followUp: async () => rejectReplayMutation("follow up"),
     subscribe: () => () => {},
+    __subscribeDeliveryActivity: () => () => {},
     get sessionFile() { return replaySource.sessionFile; },
     get sessionId() { return replaySource.sessionId ?? ""; },
     setModel: async () => rejectReplayMutation("set model"),

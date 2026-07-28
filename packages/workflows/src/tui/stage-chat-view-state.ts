@@ -18,6 +18,10 @@ import {
 } from "./stage-chat-view-types.js";
 import { noticeRow, noticeSummary } from "./stage-chat-view-transcript.js";
 import { applyStageChatLiveHandleEvent } from "./stage-chat-view-live-events.js";
+import {
+  invalidateStageChatDeliveryLifecycles,
+  subscribeStageChatDeliveryActivity,
+} from "./stage-chat-view-delivery-activity.js";
 import { replayPendingToolExecutions } from "./stage-chat-view-pending-tools.js";
 import { chatHostStyle, stageChatRenderSettings } from "./stage-chat-view-render-settings.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
@@ -66,8 +70,11 @@ export function initializeStageChatView(
   ctx.lastObservedStageStatus = undefined;
   ctx.lastObservedRunStatus = undefined;
   ctx.seenNoticeIds = new Set<string>();
+  ctx.deliveryLifecycles = new Map<number, number | undefined>();
+  ctx.terminalLifecycleFenced = false;
   ctx._unsubscribeStore = null;
   ctx._unsubscribeHandle = null;
+  ctx._unsubscribeDeliveryActivity = null;
   ctx._unsubscribeFooterData = null;
   ctx._unregisterStageUiHost = null;
   installFocusHold(ctx);
@@ -98,6 +105,10 @@ export function initializeStageChatView(
   ctx._unsubscribeFooterData = ctx.footerData?.onBranchChange(() => ctx.requestRender?.()) ?? null;
 
   if (ctx.handle) {
+    // Delivery activity first: its replay must be in place before the SDK
+    // stream, so a synchronously replayed `agent_start` on a retained terminal
+    // stage can see that a live delivery authorizes it.
+    ctx._unsubscribeDeliveryActivity = subscribeStageChatDeliveryActivity(ctx);
     ctx._unsubscribeHandle = ctx.handle.subscribe((event) => applyStageChatLiveHandleEvent(ctx, event));
   }
   ctx.chatHost.syncAnimationTick();
@@ -209,6 +220,8 @@ function handleStoreUpdate(ctx: StageChatViewContext): void {
   }
   if (isTerminalStageChatTransition(ctx.lastObservedStageStatus, currentStageStatus) || isTerminalStageChatTransition(ctx.lastObservedRunStatus, currentRunStatus)) {
     ctx.chatHost.clearBusyForTerminalWorkflowStage();
+    // Leases admitted before this transition can no longer authorize activity.
+    invalidateStageChatDeliveryLifecycles(ctx);
     changed = true;
   }
   ctx.lastObservedRunStatus = currentRunStatus;
@@ -468,6 +481,9 @@ export function disposeStageChatView(ctx: StageChatViewContext): void {
   ctx._unsubscribeStore = null;
   ctx._unsubscribeHandle?.();
   ctx._unsubscribeHandle = null;
+  ctx._unsubscribeDeliveryActivity?.();
+  ctx._unsubscribeDeliveryActivity = null;
+  ctx.deliveryLifecycles.clear();
   ctx._unsubscribeFooterData?.();
   ctx._unsubscribeFooterData = null;
   releaseMountedCustomUi(ctx);

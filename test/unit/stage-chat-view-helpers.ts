@@ -29,6 +29,8 @@ import {
     type TUI,
 } from "@earendil-works/pi-tui";
 import type { StageControlHandle } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
+import { StageDeliveryActivity } from "../../packages/workflows/src/runs/foreground/stage-delivery-activity.js";
+import type { StageDeliveryActivityEvent } from "../../packages/workflows/src/runs/foreground/stage-delivery-activity.js";
 import { StageToolExecutionBuffer } from "../../packages/workflows/src/runs/foreground/stage-tool-execution-buffer.js";
 import type { PendingPrompt } from "../../packages/workflows/src/shared/store-types.js";
 import {
@@ -67,7 +69,14 @@ export function makeHandle(
     handle: StageControlHandle;
     state: HandleState;
     emit: (event: AgentSessionEvent) => void;
+    emitDeliveryActivity: (event: StageDeliveryActivityEvent) => void;
+    deliveryActivity: StageDeliveryActivity;
+    deliveryActivityListeners: () => number;
 } {
+    const rawDeliveryListeners = new Set<(event: StageDeliveryActivityEvent) => void>();
+    // A real channel so replay-on-subscribe is exercised end to end; the raw set
+    // stays available for tests that need exact synthetic delivery ids.
+    const deliveryActivity = new StageDeliveryActivity();
     let listener: ((e: AgentSessionEvent) => void) | undefined;
     const toolExecutions = new StageToolExecutionBuffer();
     let handleStatus = status;
@@ -113,6 +122,14 @@ export function makeHandle(
                 listener = undefined;
             };
         },
+        subscribeDeliveryActivity(l) {
+            rawDeliveryListeners.add(l);
+            const unsubscribeChannel = deliveryActivity.subscribe(l);
+            return () => {
+                rawDeliveryListeners.delete(l);
+                unsubscribeChannel();
+            };
+        },
     };
     return {
         handle,
@@ -121,6 +138,11 @@ export function makeHandle(
             toolExecutions.record(event);
             listener?.(event);
         },
+        emitDeliveryActivity: (event: StageDeliveryActivityEvent) => {
+            for (const deliveryListener of [...rawDeliveryListeners]) deliveryListener(event);
+        },
+        deliveryActivity,
+        deliveryActivityListeners: () => rawDeliveryListeners.size,
     };
 }
 
@@ -398,4 +420,12 @@ export {
     StageUiBroker,
     SessionManager,
 };
-export type { AgentSession, AgentSessionEvent, Component, EditorComponent, StageControlHandle, TUI };
+export type {
+    AgentSession,
+    AgentSessionEvent,
+    Component,
+    EditorComponent,
+    StageControlHandle,
+    StageDeliveryActivityEvent,
+    TUI,
+};

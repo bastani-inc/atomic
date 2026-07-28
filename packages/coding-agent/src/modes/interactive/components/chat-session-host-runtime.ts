@@ -66,6 +66,74 @@ export function stopChatSessionWorkingLifecycle<
   state.immediateEventRenderPending = !state.disposed && immediateEventRender;
 }
 
+/**
+ * Begin a Working lifecycle for a prompt this host did not submit itself —
+ * currently a workflow-authored `sendUserMessage()` accepted on an idle
+ * retained stage. Mirrors the manual submit path so an accepted delivery paints
+ * immediately and then hands the same visible period to the agent turn.
+ *
+ * Returns the lifecycle generation that identifies this delivery. Pass it back
+ * to `settleChatSessionPromptLifecycle` so a stale settlement cannot clear a
+ * newer turn.
+ */
+export function startChatSessionExternalPromptLifecycle<
+  TExtraEntry extends ChatTranscriptEntryLike,
+>(state: ChatSessionHostState<TExtraEntry>): number | undefined {
+  // Compaction status outranks ordinary Working and owns its own indicator.
+  return openChatSessionExternalPromptLifecycle(state, state.compacting);
+}
+
+/**
+ * Reopen the Working lifecycle for a delivery that is still active after a
+ * temporary overlay ended — a pre-turn compaction clears busy state and the
+ * lifecycle even though the accepted delivery has not started its turn yet.
+ *
+ * Unlike the initial start, this preserves `statusMessage` verbatim, so a
+ * compaction error stays visible and keeps outranking ordinary Working.
+ */
+export function reassertChatSessionExternalPromptLifecycle<
+  TExtraEntry extends ChatTranscriptEntryLike,
+>(state: ChatSessionHostState<TExtraEntry>): number | undefined {
+  return openChatSessionExternalPromptLifecycle(state, true);
+}
+
+function openChatSessionExternalPromptLifecycle<
+  TExtraEntry extends ChatTranscriptEntryLike,
+>(
+  state: ChatSessionHostState<TExtraEntry>,
+  preserveStatusMessage: boolean,
+): number | undefined {
+  if (state.disposed) return undefined;
+  if (!preserveStatusMessage) state.statusMessage = "";
+  state.sdkBusy = true;
+  startChatSessionWorkingLifecycle(state);
+  syncChatSessionAnimationTick(state);
+  state.requestRender?.();
+  return state.workingLifecycleGeneration;
+}
+
+/**
+ * Settle a prompt lifecycle started by this host. A replaced generation means a
+ * newer turn owns the indicator, so only its own owner may clear busy state.
+ */
+export function settleChatSessionPromptLifecycle<
+  TExtraEntry extends ChatTranscriptEntryLike,
+>(
+  state: ChatSessionHostState<TExtraEntry>,
+  submittedGeneration: number | undefined,
+): void {
+  if (submittedGeneration === undefined) {
+    state.sdkBusy = false;
+    return;
+  }
+  const lifecycleWasReplaced = state.workingLifecycleGeneration !== submittedGeneration;
+  if (lifecycleWasReplaced && state.workingLifecycleActive) return;
+  state.sdkBusy = false;
+  if (!lifecycleWasReplaced && !isChatSessionStreaming(state)) {
+    stopChatSessionWorkingLifecycle(state);
+  }
+}
+
 function clearChatSessionAnimation<
   TExtraEntry extends ChatTranscriptEntryLike,
 >(state: ChatSessionHostState<TExtraEntry>): void {

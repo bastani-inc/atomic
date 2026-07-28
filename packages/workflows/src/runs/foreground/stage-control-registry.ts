@@ -26,6 +26,7 @@
  */
 
 import type { AgentSession, AgentSessionEvent } from "@bastani/atomic";
+import type { StageDeliveryActivityEvent } from "./stage-delivery-activity.js";
 import type { StageUserMessageDeliveryAction } from "./stage-runner-types.js";
 
 export type StageControlStatus =
@@ -98,6 +99,15 @@ export interface StageControlHandle {
    * before the session exists are buffered and bound on first attach.
    */
   subscribe(listener: AgentSessionEventListener): () => void;
+  /**
+   * Subscribe to workflow-owned delivery lifecycle facts. Present only for
+   * handles backed by a live stage runner. An accepted idle delivery reports
+   * `delivery_start` before the public `agent_start` is published, letting an
+   * attached chat show Working for the whole turn.
+   */
+  subscribeDeliveryActivity?(
+    listener: (event: StageDeliveryActivityEvent) => void,
+  ): () => void;
   /** Release the underlying SDK session and unregister this direct chat handle. */
   dispose?(): void | Promise<void>;
 }

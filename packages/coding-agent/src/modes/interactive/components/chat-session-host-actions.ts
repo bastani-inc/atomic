@@ -12,6 +12,7 @@ import {
   notifyChatSessionStatus,
   notifyChatSessionWarning,
   requiredChatSessionCommand,
+  settleChatSessionPromptLifecycle,
   startChatSessionWorkingLifecycle,
   stopChatSessionWorkingLifecycle,
   syncChatSessionAnimationTick,
@@ -202,23 +203,7 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
   }
 }
 
-function settleSubmittedPromptLifecycle<
-  TExtraEntry extends ChatTranscriptEntryLike,
->(
-  state: ChatSessionHostState<TExtraEntry>,
-  submittedGeneration: number | undefined,
-): void {
-  if (submittedGeneration === undefined) {
-    state.sdkBusy = false;
-    return;
-  }
-  const lifecycleWasReplaced = state.workingLifecycleGeneration !== submittedGeneration;
-  if (lifecycleWasReplaced && state.workingLifecycleActive) return;
-  state.sdkBusy = false;
-  if (!lifecycleWasReplaced && !isChatSessionStreaming(state)) {
-    stopChatSessionWorkingLifecycle(state);
-  }
-}
+const settleSubmittedPromptLifecycle = settleChatSessionPromptLifecycle;
 
 export async function abortChatSessionCompaction<
   TExtraEntry extends ChatTranscriptEntryLike,

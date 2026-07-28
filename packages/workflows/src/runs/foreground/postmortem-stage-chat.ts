@@ -194,6 +194,7 @@ export function createPostMortemStageHandle(
       throw new Error("Post-mortem stage chat cannot pause or resume workflow execution.");
     },
     subscribe(listener: AgentSessionEventListener) { return context.subscribe(listener); },
+    subscribeDeliveryActivity(listener) { return context.__subscribeDeliveryActivity(listener); },
     async dispose() {
       if (disposed) return;
       disposed = true;
