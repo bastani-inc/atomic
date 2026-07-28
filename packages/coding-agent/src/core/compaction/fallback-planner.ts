@@ -1,15 +1,15 @@
 /**
  * Borrow a configured fallback model for one compaction planner request.
  *
- * This is deliberately a *weaker* capability than main-chat model fallback.
- * `borrowFallbackPlanner` returns a `BorrowedPlanner` **value**: it holds no
- * session handle, so it cannot write `agent.state.model`, append a model-change
- * entry, change the session thinking level, refresh the system prompt, emit
+ * This is deliberately a *weaker* capability than main-chat model fallback. The
+ * borrowing door returns a `BorrowedPlanner` **value**: it holds no session
+ * handle, so it cannot write `agent.state.model`, append a model-change entry,
+ * change the session thinking level, refresh the system prompt, emit
  * `model_changed`/`model_select`, or call `agent.continue()`.
  * `_trySwitchToFallbackModel` does all of those and is not reused or modified.
  *
- * The attempted-key set is owned by the compaction run, so borrowing never
- * touches the main chat's `_fallbackAttemptedKeys`.
+ * The attempted-key set belongs to the compaction run and is read-only here, so
+ * borrowing never touches the main chat's `_fallbackAttemptedKeys`.
  */
 
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
