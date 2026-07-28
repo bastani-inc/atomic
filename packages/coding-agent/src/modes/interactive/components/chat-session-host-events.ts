@@ -105,14 +105,20 @@ function transcriptHasBoundaryForResult(
   return transcript.some((entry) => {
     const candidate = entry as ChatTranscriptEntryLike & {
       readonly kind?: string;
-      readonly message?: CustomMessage;
+      readonly message?: CustomMessage<VerbatimCompactionDetails>;
     };
-    return (
-      candidate.kind === "custom" &&
-      candidate.message?.role === "custom" &&
-      isVerbatimCompactionMessage(candidate.message) &&
-      customMessageText(candidate.message).endsWith(result.compactedText)
-    );
+    if (
+      candidate.kind !== "custom" ||
+      candidate.message?.role !== "custom" ||
+      !isVerbatimCompactionMessage(candidate.message)
+    ) {
+      return false;
+    }
+    // The rung is part of the identity, not decoration. A planned and a fresh
+    // boundary can carry identical text, and treating them as the same result
+    // silently swallows the fresh event — the one the user is meant to see.
+    if (candidate.message?.details?.rung !== result.rung) return false;
+    return customMessageText(candidate.message).endsWith(result.compactedText);
   });
 }
 

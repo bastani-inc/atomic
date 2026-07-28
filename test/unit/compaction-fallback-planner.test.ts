@@ -11,7 +11,8 @@ import {
 	type FallbackPlannerContext,
 } from "../../packages/coding-agent/src/core/compaction/fallback-planner.js";
 import type { PlannerAuth } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
-import { registryOf, testModel } from "./compaction-rung-support.js";
+import { planDeletedLineRanges, resolvePlannerRequest } from "../../packages/coding-agent/src/core/compaction/range-planner.js";
+import { PARAMETERS, region, registryOf, scriptedStream, testModel } from "./compaction-rung-support.js";
 
 const primary = testModel();
 const secondary = testModel({ provider: "backup", id: "planner-b", baseUrl: "https://backup.example" });
@@ -82,15 +83,31 @@ test("the same model at a different explicit level stays a distinct candidate", 
 	assert.equal(plannerAttemptKey(borrowedPlanner!), "primary/planner-a:low");
 });
 
-test("a non-reasoning model keys with no effective level", async () => {
+test("a non-reasoning model keeps its configured level in the budget and key", async () => {
+	// The suffix stays in the identity even though the request will omit it:
+	// dropping it would collapse `plain/planner-d:high` and `plain/planner-d:low`
+	// into one attempt key.
 	const plain = testModel({ provider: "plain", id: "planner-d", reasoning: false });
 	const borrowedPlanner = await borrowFallbackPlanner(
 		context({ fallbackModels: ["plain/planner-d:high"], registry: registryOf([primary, plain]) }),
 		new Set(),
 		authFor,
 	);
-	assert.equal(borrowedPlanner?.budget.reasoning, undefined);
-	assert.equal(plannerAttemptKey(borrowedPlanner!), "plain/planner-d:");
+	assert.equal(borrowedPlanner?.budget.reasoning, "high");
+	assert.equal(plannerAttemptKey(borrowedPlanner!), "plain/planner-d:high");
+});
+
+test("a non-reasoning model still sends no reasoning parameter", async () => {
+	const plain = testModel({ provider: "plain", id: "planner-d", reasoning: false });
+	const stream = scriptedStream({ default: [{ text: "1,10\n" }] });
+	await planDeletedLineRanges(
+		region(),
+		PARAMETERS,
+		{ model: plain, budget: resolvePlannerRequest(plain, "high"), auth: { apiKey: "plain-key" } },
+		30,
+		{ streamFn: stream.streamFn },
+	);
+	assert.equal("reasoning" in stream.calls[0].options, false);
 });
 
 test("a candidate `model:level` suffix wins over the inherited session level", async () => {

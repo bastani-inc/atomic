@@ -38,8 +38,12 @@ test("resolvePlannerRequest inherits the session level and prefers a candidate s
 	assert.equal(resolvePlannerRequest(testModel(), "high").reasoning, "high");
 	assert.equal(resolvePlannerRequest(testModel(), "high", "minimal").reasoning, "minimal");
 	assert.equal(resolvePlannerRequest(testModel(), undefined).reasoning, undefined);
-	// A non-reasoning model spends nothing on reasoning.
-	assert.equal(resolvePlannerRequest(testModel({ reasoning: false }), "high").reasoning, undefined);
+	// A non-reasoning model keeps the exact inherited value. The budget is the
+	// attempt's identity source, so erasing it here would erase a configured
+	// `:level` suffix from the attempt key; the runtime request separately omits
+	// `reasoning` for a model that cannot use it.
+	assert.equal(resolvePlannerRequest(testModel({ reasoning: false }), "high").reasoning, "high");
+	assert.equal(resolvePlannerRequest(testModel({ reasoning: false }), "high", "low").reasoning, "low");
 });
 
 test("resolvePlannerRequest is identical on every attempt for a given model", () => {

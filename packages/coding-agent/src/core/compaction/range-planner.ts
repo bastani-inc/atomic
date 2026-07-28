@@ -1,6 +1,7 @@
 import type { StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { retryAssistantCall, type RetryCallbacks, type RetryPolicy, uuidv7 } from "@earendil-works/pi-ai";
 import type { Api, AssistantMessage, Model, SimpleStreamOptions } from "@earendil-works/pi-ai/compat";
+import { isContextOverflow } from "@earendil-works/pi-ai/compat";
 import { validateDeletedRanges } from "./deleted-ranges.js";
 import type {
 	BorrowedPlanner,
@@ -151,18 +152,19 @@ function responseText(message: AssistantMessage): string {
  * codex's posture and it is what makes inheriting the session reasoning level
  * safe — there is no artificial budget for thinking to exhaust.
  *
- * Precedence: a `model:level` fallback suffix wins over the inherited session
- * level. There is no per-attempt variation.
+ * `reasoning` is exactly `candidateThinkingLevel ?? sessionThinkingLevel`, kept
+ * even for a model that cannot use it. The budget is also the attempt's identity
+ * source, so dropping a configured `:level` suffix here would erase it from
+ * `plannerAttemptKey` and let two distinct configured candidates collide. The
+ * runtime request separately omits `reasoning` for a non-reasoning model.
  */
 export function resolvePlannerRequest(
 	model: Model<Api>,
 	sessionThinkingLevel: ThinkingLevel | undefined,
 	candidateThinkingLevel?: ThinkingLevel,
 ): PlannerBudget {
-	return {
-		maxTokens: undefined,
-		reasoning: model.reasoning ? (candidateThinkingLevel ?? sessionThinkingLevel) : undefined,
-	};
+	void model;
+	return { maxTokens: undefined, reasoning: candidateThinkingLevel ?? sessionThinkingLevel };
 }
 
 /** Apply credential-specific endpoints without mutating the registry model. */
@@ -195,12 +197,17 @@ function providerFailureOutcome(
 	text: string,
 	message: string,
 	transport: boolean,
+	retryWasScheduled: boolean,
 ): PlannerOutcome {
 	// A thrown transport failure has no real assistant response to record.
 	const recorded = transport ? undefined : response;
 	const failure = classifyPlannerFailure(response, model.contextWindow);
 	if (failure === "quota" || failure === "rate_limited") {
-		const exhausted = failure === "rate_limited";
+		// `exhausted` means a retry budget was actually spent. With retry disabled,
+		// or for a status pi-ai does not schedule backoff for, one throttled
+		// request spends nothing — reporting `true` there would be a claim about
+		// work that never happened. Quota never spends backoff by construction.
+		const exhausted = failure === "rate_limited" && retryWasScheduled;
 		const diagnosticPath = emitDiagnostic(options, model, recorded, text, "rate_limited", message, exhausted);
 		return { kind: "rateLimited", exhausted, message, ...(diagnosticPath ? { diagnosticPath } : {}) };
 	}
@@ -214,6 +221,29 @@ function providerFailureOutcome(
 	const category: DiagnosticFailureCategory = transport ? "stream_error" : "provider_error";
 	const diagnosticPath = emitDiagnostic(options, model, recorded, text, category, message);
 	return { kind: "providerError", message, ...(diagnosticPath ? { diagnosticPath } : {}) };
+}
+
+/**
+ * Observe whether `retryAssistantCall` actually scheduled a retry.
+ *
+ * Every caller callback is forwarded unchanged, including its arguments and any
+ * promise it returns, so lifecycle reporting is untouched.
+ */
+function observeRetryActivity(callbacks: RetryCallbacks | undefined): {
+	callbacks: RetryCallbacks;
+	scheduled: () => boolean;
+} {
+	let scheduled = false;
+	return {
+		callbacks: {
+			...callbacks,
+			onRetryScheduled: async (...args: Parameters<NonNullable<RetryCallbacks["onRetryScheduled"]>>) => {
+				scheduled = true;
+				await callbacks?.onRetryScheduled?.(...args);
+			},
+		},
+		scheduled: () => scheduled,
+	};
 }
 
 /**
@@ -249,24 +279,34 @@ export async function planDeletedLineRanges(
 		sessionId: uuidv7(),
 		...(model.reasoning && reasoning && reasoning !== "off" ? { reasoning } : {}),
 	};
+	const retry = observeRetryActivity(options.callbacks);
 	let response: AssistantMessage;
 	try {
 		response = await retryAssistantCall(
 			async () => (await options.streamFn(model, context, request)).result(),
 			options.retry,
 			signal,
-			options.callbacks,
+			retry.callbacks,
 		);
 	} catch (error) {
 		if (signal?.aborted) throw new Error("Compaction cancelled");
 		const message = error instanceof Error ? error.message : String(error);
-		return providerFailureOutcome(options, model, syntheticErrorResponse(model, message), "", message, true);
+		const synthetic = syntheticErrorResponse(model, message);
+		return providerFailureOutcome(options, model, synthetic, "", message, true, retry.scheduled());
 	}
 	const text = responseText(response);
 	if (response.stopReason === "aborted" || signal?.aborted) throw new Error("Compaction cancelled");
 	if (response.stopReason === "error") {
 		const message = response.errorMessage || "Compaction provider failed";
-		return providerFailureOutcome(options, model, response, text, message, false);
+		return providerFailureOutcome(options, model, response, text, message, false, retry.scheduled());
+	}
+	// A silent overflow arrives as an ordinary `stop` or `length` completion whose
+	// usage already exceeds the window. Classify it before parsing: otherwise
+	// valid-looking range text, truncated recovery, or a starvation verdict wins
+	// and the ladder never gets the chance to trim and retry the same model.
+	if (isContextOverflow(response, model.contextWindow)) {
+		const message = response.errorMessage || "Compaction planner request exceeded the model context window";
+		return providerFailureOutcome(options, model, response, text, message, false, retry.scheduled());
 	}
 	if (response.stopReason === "length") {
 		const recovery = recoverTruncatedRecords(text);

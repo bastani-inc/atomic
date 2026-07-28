@@ -134,16 +134,48 @@ test("a trimmed region that succeeds past the old three-trim cap is still accept
 	}
 });
 
-test("every trimmed attempt carries the original whole-preparation keep target", async () => {
+test("each trimmed view derives its own keep target from compression_ratio", async () => {
 	const { streamFn, calls } = plannerScript({ anthropic: [OVERFLOW, OVERFLOW, { text: "1,2\n" }] });
 	const built = createRungSession({ streamFn });
 	try {
 		await built.session.compact({ preserve_recent: 2 });
-		const targets = calls.map((call) => call.keepTarget);
-		assert.equal(targets.length, 3);
-		// `compression_ratio` is a whole-preparation setting: recomputing it from
-		// each shrinking suffix would silently over-delete.
-		for (const target of targets) assert.equal(target, targets[0]);
+		assert.equal(calls.length, 3);
+
+		// Reusing the original whole-preparation target would ask a halved region
+		// to keep every visible line — a request for zero deletions, whose
+		// obedient empty answer then hits the zero-range rejection.
+		for (const call of calls) {
+			assert.equal(
+				call.keepTarget,
+				Math.round(call.regionLines * 0.5),
+				`view of ${call.regionLines} lines asked to keep ${call.keepTarget}`,
+			);
+			assert.ok(
+				call.regionLines - (call.keepTarget ?? 0) > 0,
+				`view of ${call.regionLines} lines asked for zero deletions`,
+			);
+		}
+		// The targets shrink with the views rather than staying pinned.
+		assert.ok(calls[1].keepTarget! < calls[0].keepTarget!);
+		assert.ok(calls[2].keepTarget! < calls[1].keepTarget!);
+	} finally {
+		built.dispose();
+	}
+});
+
+test("a 20-line region halved to 10 still asks for deletions", async () => {
+	// The exact shape from the finding: ratio 0.5 over 20 lines asks to keep 10;
+	// carrying that target into the 10-line view would request zero deletions.
+	const { streamFn, calls } = plannerScript({ anthropic: [OVERFLOW, { text: "1,2\n" }] });
+	const built = createRungSession({ streamFn, turns: 4 });
+	try {
+		await built.session.compact({ preserve_recent: 2 });
+		assert.ok(calls.length >= 2);
+		const [first, second] = calls;
+		assert.equal(first.keepTarget, Math.round(first.regionLines * 0.5));
+		assert.equal(second.keepTarget, Math.round(second.regionLines * 0.5));
+		assert.ok(second.regionLines < first.regionLines);
+		assert.ok(second.regionLines - second.keepTarget! > 0);
 	} finally {
 		built.dispose();
 	}

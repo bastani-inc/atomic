@@ -70,24 +70,30 @@ const LOCAL_USAGE_LIMIT_PATTERN = /usage.?limit/i;
 
 /**
  * Transient throttling and provider-load failures. This is the rate-limit
- * subset of pi-ai's `RETRYABLE_PROVIDER_ERROR_PATTERN`: reaching this classifier
- * means `retryAssistantCall` already spent the configured backoff budget.
+ * subset of pi-ai's `RETRYABLE_PROVIDER_ERROR_PATTERN`, minus the individual
+ * status codes, which `HTTP_5XX_PATTERN` generalizes below.
  */
 const RATE_LIMITED_PATTERN = buildProviderErrorPattern([
 	"overloaded",
 	"rate.?limit",
 	"too many requests",
 	"429",
-	"500",
-	"502",
-	"503",
-	"504",
-	"524",
 	"service.?unavailable",
 	"server.?error",
 	"internal.?error",
 	"ResourceExhausted",
 ]);
+
+/**
+ * The whole HTTP 5xx class, bounded so it cannot match inside a longer number.
+ *
+ * A deliberate local broadening: the RFC and the acceptance contract enumerate
+ * `5xx`, while pi-ai lists only 500/502/503/504/524, so a `501` would otherwise
+ * fall through to `providerError`. The consequence is that pi-ai may schedule no
+ * backoff for a status Atomic types as rate limiting — which is exactly why
+ * `exhausted` reports *observed* retry activity rather than assuming it.
+ */
+const HTTP_5XX_PATTERN = /(?<![\d.])5\d\d(?![\d.])/;
 
 /** How a failed planner response is classified before an outcome is built. */
 export type PlannerFailureClass = "overflow" | "quota" | "rate_limited" | "provider_error";
@@ -104,7 +110,7 @@ export function classifyPlannerFailure(response: AssistantMessage, contextWindow
 	if (isContextOverflow(response, contextWindow)) return "overflow";
 	const message = response.errorMessage ?? "";
 	if (QUOTA_EXHAUSTED_PATTERN.test(message) || LOCAL_USAGE_LIMIT_PATTERN.test(message)) return "quota";
-	if (RATE_LIMITED_PATTERN.test(message)) return "rate_limited";
+	if (RATE_LIMITED_PATTERN.test(message) || HTTP_5XX_PATTERN.test(message)) return "rate_limited";
 	return "provider_error";
 }
 

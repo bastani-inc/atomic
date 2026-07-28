@@ -146,3 +146,31 @@ test("a malformed result is still refused", () => {
 	applyChatSessionAgentEvent(state, endEvent(broken));
 	assert.deepEqual(boundaryDetails(state), []);
 });
+
+test("a fresh boundary is not swallowed by an identical-text planned boundary", () => {
+	// Deduplication used to compare only the boundary text, so a fresh result
+	// whose text matched an existing planned boundary was dropped and the
+	// degraded notice never appeared.
+	const state = makeState();
+	applyChatSessionAgentEvent(state, endEvent(compactionResult("planned")));
+	applyChatSessionAgentEvent(state, endEvent(compactionResult("fresh")));
+
+	const rungs = boundaryDetails(state).map((details) => details.rung);
+	assert.deepEqual(rungs, ["planned", "fresh"]);
+
+	const rendered = stripVTControlCharacters(
+		new CompactionBoundaryMessageComponent({
+			text: "[User]: retained\n(filtered 12 lines)",
+			stats: boundaryDetails(state)[1].stats,
+			rung: boundaryDetails(state)[1].rung,
+		}).render(200).join("\n"),
+	);
+	assert.ok(rendered.includes("✻ Context cleared (compaction degraded)"), rendered);
+});
+
+test("a repeated same-rung, same-text result is still deduplicated", () => {
+	const state = makeState();
+	applyChatSessionAgentEvent(state, endEvent(compactionResult("fresh")));
+	applyChatSessionAgentEvent(state, endEvent(compactionResult("fresh")));
+	assert.deepEqual(boundaryDetails(state).map((details) => details.rung), ["fresh"]);
+});

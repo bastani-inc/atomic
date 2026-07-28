@@ -69,16 +69,23 @@ describe("AgentSession auth-missing compaction failure semantics", () => {
 		sessionManager.appendMessage(text("user", "Only one context-eligible entry is not enough to compact."));
 	}
 
-	it("surfaces a terminal overflow error when no compactable transcript can be prepared", async () => {
+	it("completes load-bearing overflow recovery even when the region is barely compactable", async () => {
+		// A load-bearing caller must reach a terminal rung. Refusing here is what
+		// left a mid-turn preflight with nothing to do and killed the active turn,
+		// so a sub-minimum region now goes straight to the credential-free fresh
+		// rung instead of raising "nothing more was safely deletable".
 		seedUnpreparableBranch();
 		await (session as unknown as AutoCompactionSurface)._runAutoCompaction("overflow", false);
 
 		const end = events.find((event) => event.type === "compaction_end" && event.reason === "overflow");
-		expect(end).toMatchObject({ type: "compaction_end", reason: "overflow", result: undefined, aborted: false });
+		expect(end).toMatchObject({ type: "compaction_end", reason: "overflow", aborted: false });
 		if (end?.type !== "compaction_end") throw new Error("missing compaction_end");
-		expect(end.errorMessage).toContain("Context overflow recovery failed");
-		expect(end.errorMessage).toContain("nothing more was safely deletable");
-		expect(sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(0);
+		expect(end.errorMessage).toBeUndefined();
+		expect(end.result?.rung).toBe("fresh");
+
+		const boundaries = sessionManager.getEntries().filter((entry) => entry.type === "compaction");
+		expect(boundaries).toHaveLength(1);
+		expect((boundaries[0] as { details?: { rung?: string } }).details?.rung).toBe("fresh");
 	});
 
 	it("keeps threshold auto-compaction with no preparable transcript as a silent no-op", async () => {

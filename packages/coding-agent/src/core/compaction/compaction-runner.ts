@@ -109,10 +109,12 @@ function buildFreshContextWindow(
 	const whole: RawLineRange[] = region.lines.length > 0 ? [{ start: 1, end: region.lines.length }] : [];
 	const transcript = reconstructCompactedTranscript(region, validateDeletedRanges(whole, region));
 	const limit = Number.isFinite(hardInputLimit) && hardInputLimit > 0 ? hardInputLimit : Number.POSITIVE_INFINITY;
-	return {
-		transcript,
-		keptTail: transcript.stats.tokensAfter + getKeptTailTokenEstimate(preparation) <= limit,
-	};
+	// The rule is "tail under the limit ⇒ tail kept", so the comparison is the
+	// tail alone. Explicit protected lines are a hard floor that survives either
+	// way, and counting the reconstructed protected/marker text here would drop a
+	// tail that fits. A rebuilt context that still cannot be sent is the post-tool
+	// gate's problem, not a reason for this rung to discard more.
+	return { transcript, keptTail: getKeptTailTokenEstimate(preparation) <= limit };
 }
 
 /**
@@ -137,28 +139,6 @@ export function startNewContextWindow(
 	hardInputLimit: number,
 ): CompactedTranscript {
 	return buildFreshContextWindow(preparation, hardInputLimit).transcript;
-}
-
-/**
- * Whether a region below the planner minimum should still reach the fresh rung.
- *
- * `MIN_COMPACTABLE_REGION_LINES` exists to stop pointless repeat compaction, and
- * that reasoning still holds whenever the context fits. The load-bearing
- * exception is narrow and concrete: one oversized tool result can push the whole
- * context past the provider hard input limit while leaving very few compactable
- * lines, and refusing there makes the "always completes" guarantee hollow.
- *
- * So the small-region fresh rung applies only when the context genuinely does
- * not fit, or when the `preserve_recent` tail alone must be dropped. Otherwise
- * callers keep the pre-existing "nothing to compact" refusal rather than
- * destroying context for no gain.
- */
-export function smallRegionNeedsFreshWindow(
-	preparation: VerbatimCompactionPreparation,
-	hardInputLimit: number,
-): boolean {
-	if (preparation.tokensBefore > hardInputLimit) return true;
-	return !buildFreshContextWindow(preparation, hardInputLimit).keptTail;
 }
 
 function plannedResult(
@@ -217,20 +197,28 @@ type PlannerAttempt =
  * trimming when the request itself overflows the context window.
  *
  * Trimming continues until no strictly smaller view exists; `nextTrimOffset`
- * halves the remaining suffix, so the walk is finite. Only then is
- * `overflowed` terminal and the ladder advances. Every attempt carries the same
- * whole-preparation keep target.
+ * halves the remaining suffix, so the walk is finite. Only then is `overflowed`
+ * terminal and the ladder advances.
+ *
+ * Each view gets its own keep target from `compression_ratio`. Reusing the
+ * original whole-preparation target is what asked a halved 20-line region to
+ * keep 10 of its 10 visible lines — a request for zero deletions, whose obedient
+ * empty answer then hits the non-negotiable zero-range rejection. Extra
+ * reduction still comes only from the head the runner withheld.
  */
 async function planWithTrimming(
 	preparation: VerbatimCompactionPreparation,
 	planner: BorrowedPlanner,
-	keepTarget: number,
 	options: CompactionPlanOptions & { signal?: AbortSignal },
 ): Promise<PlannerAttempt> {
 	let offset = 0;
 	for (;;) {
 		const region = offset === 0 ? preparation.region : trimRegionHead(preparation.region, offset);
 		if (!region) return { kind: "terminal", outcome: { kind: "overflowed" } };
+		const keepTarget = Math.max(
+			region.protectedLineNumbers?.size ?? 0,
+			Math.round(region.lines.length * preparation.parameters.compression_ratio),
+		);
 		const outcome = await planDeletedLineRanges(region, preparation.parameters, planner, keepTarget, options);
 		if (outcome.kind === "ranked" || outcome.kind === "recovered") {
 			if (offset === 0) return { kind: "planned", ranges: outcome.ranges };
@@ -320,7 +308,6 @@ export async function runVerbatimCompaction(
 		return freshResult(preparation, hardInputLimit);
 	}
 
-	const keepTarget = targetKeepLines(preparation);
 	const attempted = new Set<string>();
 	const primaryBudget = resolvePlannerRequest(model, request.thinkingLevel);
 	const primaryAuth = await resolvePlannerAuth(request.resolveAuth, model);
@@ -340,7 +327,7 @@ export async function runVerbatimCompaction(
 	}
 
 	while (planner) {
-		const attempt = await planWithTrimming(preparation, planner, keepTarget, plannerOptions);
+		const attempt = await planWithTrimming(preparation, planner, plannerOptions);
 		if (signal?.aborted) throw new Error("Compaction cancelled");
 		if (attempt.kind === "planned") {
 			const plannerModel = borrowed ? borrowedIdentity(planner) : undefined;

@@ -1,9 +1,7 @@
 import { formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import type { AgentSessionInternalSurface as AgentSession, VerbatimCompactionApplyOptions } from "./agent-session-methods.ts";
 import {
-	smallRegionNeedsFreshWindow,
 	getKeptTailTokenEstimate,
-	MIN_COMPACTABLE_REGION_LINES,
 	prepareCompactionBoundary,
 	runVerbatimCompaction,
 	VERBATIM_COMPACTION_PROMPT_VERSION,
@@ -72,7 +70,13 @@ export async function _applyVerbatimCompaction(
 	const pathEntries = this.sessionManager.getBranch();
 	const settings = this.settingsManager.getCompactionSettings();
 	const loadBearing = options.urgency === "load_bearing";
-	const prepared = prepareCompactionBoundary(
+	// A load-bearing caller must be able to reach a terminal rung even when the
+	// compactable region is below the planner minimum — one oversized tool result
+	// can blow the context with very few compactable lines. Every admitted
+	// preparation goes to the runner, which routes a sub-minimum region straight
+	// to `fresh` without invoking a planner. Second-guessing that here is what
+	// left a mid-turn preflight with nothing to do and killed the turn.
+	const preparation = prepareCompactionBoundary(
 		pathEntries,
 		settings,
 		{
@@ -80,20 +84,8 @@ export async function _applyVerbatimCompaction(
 			...(options.preserve_recent === undefined ? {} : { preserve_recent: options.preserve_recent }),
 			...(options.query === undefined ? {} : { query: options.query }),
 		},
-		// A load-bearing caller must be able to reach the fresh rung even when the
-		// compactable region is below the planner minimum — one oversized tool
-		// result can exceed the context window with very few compactable lines.
 		{ allowSmallRegion: loadBearing },
 	);
-	// A small region is admitted only when the context genuinely does not fit.
-	// Otherwise this stays the pre-existing "nothing to compact" refusal rather
-	// than destroying context for no gain.
-	const preparation = prepared
-		&& loadBearing
-		&& prepared.region.lines.length < MIN_COMPACTABLE_REGION_LINES
-		&& !smallRegionNeedsFreshWindow(prepared, model.contextWindow > 0 ? model.contextWindow : Number.POSITIVE_INFINITY)
-		? undefined
-		: prepared;
 	if (!preparation) {
 		if (options.reason === "overflow") throw new Error("Context compaction found no compactable transcript entries; nothing more was safely deletable");
 		return undefined;

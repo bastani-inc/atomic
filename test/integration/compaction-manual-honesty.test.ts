@@ -61,7 +61,8 @@ test("manual compaction with every model rate limited reports a real diagnostic 
 			model: { provider: string };
 		};
 		assert.equal(payload.failureCategory, "rate_limited");
-		assert.equal(payload.rateLimitExhausted, true);
+		// Retry is disabled in this fixture, so no backoff budget was spent.
+		assert.equal(payload.rateLimitExhausted, false);
 
 		// Still usable: a later attempt runs and succeeds.
 		const rescued = plannerScript({ default: [{ text: "3,9\n" }] });
@@ -116,12 +117,10 @@ test("an over-limit post-tool context with a tiny region persists a fresh bounda
 	}
 });
 
-test("a small region under a fitting context keeps the pre-existing refusal", () => {
-	// Observed live: with a very large `reserveTokens` the threshold fires while
-	// the context is still far under the model's window. A region below the
-	// planner minimum is refused there, exactly as it was before small regions
-	// were admitted at all — the fresh rung is for contexts that do not fit, not
-	// for every load-bearing trigger.
+test("a small load-bearing region reaches fresh even when the context fits", async () => {
+	// The threshold can fire far below the provider hard limit. A load-bearing
+	// caller must still reach a terminal rung: refusing here is what left the
+	// mid-turn preflight with nothing to do and killed the active turn.
 	const { streamFn, calls } = plannerScript({ default: [{ text: "1,2\n" }] });
 	const built = createRungSession({
 		streamFn,
@@ -133,21 +132,50 @@ test("a small region under a fitting context keeps the pre-existing refusal", ()
 	try {
 		const apply = (
 			built.session as unknown as {
-				_applyVerbatimCompaction: (options: Record<string, unknown>) => Promise<unknown>;
+				_applyVerbatimCompaction: (options: Record<string, unknown>) => Promise<{ rung?: string } | undefined>;
 			}
 		)._applyVerbatimCompaction.bind(built.session);
 
-		return apply({
+		const result = await apply({
 			resolvePlannerAuth: async () => ({ apiKey: "anthropic-key" }),
 			abortController: new AbortController(),
 			backupLabel: "auto-compact",
 			reason: "threshold",
 			urgency: "load_bearing",
-		}).then((result) => {
-			assert.equal(result, undefined);
-			assert.deepEqual(built.manager.getBranch().filter((entry) => entry.type === "compaction"), []);
-			assert.equal(calls.length, 0);
 		});
+
+		assert.equal(result?.rung, "fresh");
+		// A region this small cannot be made rankable by changing models.
+		assert.equal(calls.length, 0);
+		const boundary = built.manager.getBranch().find((entry) => entry.type === "compaction");
+		assert.ok(boundary, "no boundary was persisted for the small load-bearing region");
+		assert.equal((boundary as { details?: VerbatimCompactionDetails }).details?.rung, "fresh");
+	} finally {
+		built.dispose();
+	}
+});
+
+test("a small recoverable region is still refused, never cleared", async () => {
+	const { streamFn, calls } = plannerScript({ default: [{ text: "1,2\n" }] });
+	const built = createRungSession({ streamFn, turns: 2 });
+	try {
+		const apply = (
+			built.session as unknown as {
+				_applyVerbatimCompaction: (options: Record<string, unknown>) => Promise<unknown>;
+			}
+		)._applyVerbatimCompaction.bind(built.session);
+
+		const result = await apply({
+			resolvePlannerAuth: async () => ({ apiKey: "anthropic-key" }),
+			abortController: new AbortController(),
+			backupLabel: "compact",
+			reason: "manual",
+			urgency: "recoverable",
+		});
+
+		assert.equal(result, undefined);
+		assert.deepEqual(built.manager.getBranch().filter((entry) => entry.type === "compaction"), []);
+		assert.equal(calls.length, 0);
 	} finally {
 		built.dispose();
 	}

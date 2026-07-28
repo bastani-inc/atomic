@@ -587,3 +587,134 @@ under a fitting context keeps the pre-existing refusal.
 
 Once ordinary conversation existed, the same prompt compacted successfully — that
 is sections R2 through R5 above.
+
+
+---
+
+# F. Final re-verification after the seven-finding review round
+
+Two live sessions against the final tree. Same worktree CLI, same provider and model, real
+subscription credentials, success paths only — no faked 429 and no faked reasoning
+starvation, per the standing amendment.
+
+| Fact | Value |
+| --- | --- |
+| Provider / model | `anthropic` / `claude-opus-5`, thinking level `high` |
+| Session A JSONL | `/Users/tonystark/.atomic/agent/sessions/--private-tmp-atomic-e2e-final2--/2026-07-28T10-21-11-922Z_019fa83e-2172-7edb-a3e6-496407109c0a.jsonl` |
+| Session B JSONL | `/Users/tonystark/.atomic/agent/sessions/--private-tmp-atomic-e2e-final3--/2026-07-28T10-26-16-676Z_019fa842-c7e4-7763-83a4-bd548968ba6d.jsonl` |
+| tmux | sessions `atomic-final2` and `atomic-final3`, 200x50 |
+| Marker token | `TANGERINE-VAULT-9158` (synthetic, created by this run) |
+
+## F1. The §R6 refusal is fixed — a small load-bearing region now completes
+
+Session A ran the exact sequence that produced the §R6 failure: a marker turn, then an
+immediate large ranged read, so the compactable region was still tiny when the post-tool
+threshold fired. §R6 recorded:
+
+```text
+Error: Post-tool context compaction failed before the next provider request: no compactable transcript entries were available
+```
+
+Against the final tree that message does not appear. The session JSONL instead records a
+completed terminal rung on a 13-line region — far below the 20-line planner minimum:
+
+```sh
+SF=/Users/tonystark/.atomic/agent/sessions/--private-tmp-atomic-e2e-final2--/2026-07-28T10-21-11-922Z_019fa83e-2172-7edb-a3e6-496407109c0a.jsonl
+python3 -c 'import json,sys; [print(json.dumps(e["details"])) for e in map(json.loads, open(sys.argv[1])) if e.get("type")=="compaction"]' "$SF"
+```
+
+```json
+{"rung": "fresh", "strategy": "verbatim-lines", "plannerModel_present": false, "linesBefore": 13}
+{"rung": "planned", "strategy": "verbatim-lines", "plannerModel_present": false, "linesBefore": 308}
+```
+
+```text
+entry kinds: {"session": 1, "model_change": 1, "thinking_level_change": 1, "message": 16, "compaction": 2}
+```
+
+The first entry is `"rung": "fresh"` with `linesBefore: 13`. That is the repaired path: the
+compaction completes rather than refusing, and the session went on to a normal `planned`
+compaction of a 308-line region.
+
+Session A then hit the pre-existing duplicate-`tool_result` provider 400 documented in
+section 9 — the model issued parallel tool calls after a mid-turn compaction. That defect
+reproduces on the unmodified base and is unrelated to this work; it is why the remaining
+checklist was completed in a second session.
+
+## F2. Success-path checklist on the final tree (session B)
+
+```sh
+tmux send-keys -t atomic-final3 'Read marker.txt and tell me exactly what it says. Then stop.' Enter
+tmux capture-pane -p -t atomic-final3
+```
+
+```text
+
+                                                                                                                                     ↑4 • ↓115 • R45k • W12k • CH99.6% • $0.098 (sub) • 2.9%/1.0M (auto)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+(anthropic) claude-opus-5 high • /private/tmp/atomic-e2e-final3
+```
+
+Real work crossing the threshold, with the compaction succeeding mid-turn:
+
+```text
+
+
+ ✻ Context compacted
+
+ Compacted from 53,778 tokens (ctrl+o to expand)
+
+
+                                                                                                                                   ↑20 • ↓655 • R274k • W79k • CH52.8% • $0.650 (sub) • 5.4%/1.0M (auto)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+(anthropic) claude-opus-5 high • /private/tmp/atomic-e2e-final3
+```
+
+Manual `/compact`:
+
+```text
+
+                                                                                                                                   ↑20 • ↓655 • R274k • W79k • CH52.8% • $0.650 (sub) • 5.4%/1.0M (auto)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+(anthropic) claude-opus-5 high • /private/tmp/atomic-e2e-final3
+```
+
+Recall of a fact established before five boundaries:
+
+```text
+
+ The secret build token was TANGERINE-VAULT-9158.
+
+                                                                                                                                   ↑22 • ↓700 • R302k • W81k • CH94.0% • $0.677 (sub) • 3.0%/1.0M (auto)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+(anthropic) claude-opus-5 high • /private/tmp/atomic-e2e-final3
+```
+
+## F3. Durable entries and unchanged session identity (session B)
+
+```json
+{"rung": "planned", "strategy": "verbatim-lines", "plannerModel_present": false, "linesBefore": 44}
+{"rung": "planned", "strategy": "verbatim-lines", "plannerModel_present": false, "linesBefore": 335}
+{"rung": "planned", "strategy": "verbatim-lines", "plannerModel_present": false, "linesBefore": 506}
+{"rung": "planned", "strategy": "verbatim-lines", "plannerModel_present": false, "linesBefore": 245}
+{"rung": "planned", "strategy": "verbatim-lines", "plannerModel_present": false, "linesBefore": 88}
+```
+
+```text
+entry kinds: {"session": 1, "model_change": 1, "thinking_level_change": 1, "message": 22, "compaction": 5}
+```
+
+Five `planned` `verbatim-lines` boundaries, none carrying `plannerModel` (the session model
+ranked them itself), and exactly one `model_change` / `thinking_level_change` pair written at
+session start before any compaction — the session model and thinking level were never
+mutated. The footer reads `(anthropic) claude-opus-5 high` throughout. No diagnostic,
+recovery, or success sidecar was written, which is correct: no planner attempt failed and
+nothing was borrowed.

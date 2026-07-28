@@ -35,9 +35,6 @@ vi.mock("../src/core/compaction/index.js", () => ({
 	estimateContextTokens: compactionMocks.estimateContextTokens,
 	generateBranchSummary: async () => ({ summary: "", aborted: false, readFiles: [], modifiedFiles: [] }),
 	MIN_COMPACTABLE_REGION_LINES: 20,
-	// Small regions never reach the fresh rung in these suites: the mocked
-	// preparation is only used to drive the mocked runner.
-	smallRegionNeedsFreshWindow: () => false,
 	prepareCompactionBoundary: (entries: Array<{ id: string }>) => entries[0] ? ({
 		firstKeptEntryId: entries[0].id,
 		region: { __brand: "NumberedRegion", lines: ["[User]: test", ...Array.from({ length: 24 }, (_, index) => `body ${index + 1}`)], headerLineNumbers: new Set([1]), priorMarkerNs: new Map(), tokenEstimate: 10 },

@@ -2,7 +2,6 @@ import type { StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { CompactionRunRequest } from "../src/core/compaction/compaction-runner.ts";
 import type { BorrowedPlanner, PlannerAuth } from "../src/core/compaction/compaction-types.ts";
-import { fallbackKey } from "../src/core/fallback-models.ts";
 import { resolvePlannerRequest } from "../src/core/compaction/range-planner.ts";
 
 /** Build a session-model `BorrowedPlanner` for a direct planner call. */
@@ -15,7 +14,6 @@ export function planner(
 		model,
 		budget: resolvePlannerRequest(model, thinkingLevel),
 		auth,
-		key: fallbackKey(model, thinkingLevel),
 	};
 }
 
