@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Synchronized the complete bundled `impeccable` skill tree with pbakaus/impeccable at `14c27e43af190cbed3793d0b76e33feea4a8859a` (previously `630fc2682a5bd39b25a8e61f74b6b3f14f2b1e21`). Impeccable 4.0.3 replaces the brand/product register split with four surface modes (Persuade, Operate, Read, Experience), routes work through new `routing.md`, `new-work.md`, and mandatory `craft-floor.md` guidance in place of the deprecated `craft` ownership model, adds a `doctor` drift check with repair steps, adds documenter and finish-reviewer agents with degraded-mode reference fallbacks, adds surface briefs plus concept/composition catalogs, staleness checks, and image generation, and expands live review with generation preflight, source search and locking, poll lanes, and TanStack support alongside updated detector rules, static-HTML analysis, hooks, and platform guidance. Atomic's divergences are preserved: scanner-based HTML/script/style/comment filtering, argument-separated `git check-ignore`, backslash-safe live-preview selector escaping, the CodeQL CSS-property fix, and no removed-editor hook/provider compatibility.
+- Verified the complete bundled `playwright-cli` skill tree against microsoft/playwright-cli at `eee5a185c98e6b04d88f580d45a854e9692ab50b` (previously `793cfb32572733cbcb401e6f28d05a7a914ce408`). Every bundled file is already byte-identical to that commit, so its browser, session, tracing, and test-generation guidance is unchanged.
+
+### Fixed
+
+- Stopped a broad Python packaging ignore rule from excluding `scripts/lib/` files inside bundled upstream skill trees, so a synchronized skill ships its complete set of modules instead of silently losing part of the tree.
+
 ## [0.9.11-alpha.6] - 2026-07-28
 
 ### Added

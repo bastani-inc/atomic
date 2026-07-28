@@ -4,7 +4,7 @@ import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/resource-loader.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { clearSkillCache, resolveSkills } from "../../packages/subagents/src/agents/skills.js";
@@ -33,6 +33,15 @@ function assertRegularTree(path: string): void {
     assert.equal(lstatSync(child).isSymbolicLink(), false, `unexpected symlink: ${child}`);
     if (entry.isDirectory()) assertRegularTree(child);
   }
+}
+
+function collectFiles(path: string, into: string[] = []): string[] {
+  for (const entry of readdirSync(path, { withFileTypes: true })) {
+    const child = join(path, entry.name);
+    if (entry.isDirectory()) collectFiles(child, into);
+    else into.push(relative(root, child));
+  }
+  return into;
 }
 
 function assertNoScaffolding(base: string): void {
@@ -86,10 +95,21 @@ describe("synced upstream skill trees", () => {
     ]);
     assertFiles(join(subagentSkills, "liteparse"), ["SKILL.md", "scripts/search.py"]);
     assertFiles(join(workflowSkills, "impeccable"), [
-      "SKILL.md", "agents/openai.yaml", "reference/live.md", "reference/hooks.md",
+      "SKILL.md", "agents/openai.yaml", "agents/impeccable_documenter.toml", "agents/impeccable_finish_reviewer.toml",
+      "reference/live.md", "reference/hooks.md", "reference/craft-floor.md", "reference/doctor.md",
+      "reference/new-work.md", "reference/operate.md", "reference/routing.md", "reference/visualize.md",
+      "reference/degraded/asset-producer.md", "reference/degraded/documenter.md",
+      "reference/degraded/finish-reviewer.md", "reference/degraded/manual-edit-applier.md",
       "scripts/command-metadata.json", "scripts/lib/provider.mjs", "scripts/detector/cli/main.mjs",
+      "scripts/doctor.mjs", "scripts/concept-seed.mjs", "scripts/generate-image.mjs", "scripts/surface-brief.mjs",
+      "scripts/lib/staleness.mjs", "scripts/lib/staleness-deep.mjs", "scripts/lib/surface-briefs.mjs",
+      "scripts/live/generation-preflight.mjs", "scripts/live/poll-lanes.mjs", "scripts/live/tanstack-adapter.mjs",
       "scripts/live/browser-script-parts.mjs", "scripts/modern-screenshot.umd.js",
     ]);
+    assert.match(readFileSync(join(workflowSkills, "impeccable/SKILL.md"), "utf8"), /^version: 4\.0\.3\r?$/m);
+    for (const stale of ["reference/brand.md", "reference/codex.md", "reference/interaction-design.md", "reference/product.md"]) {
+      assert.equal(existsSync(join(workflowSkills, "impeccable", stale)), false, `stale upstream file: ${stale}`);
+    }
     assertNoScaffolding(join(subagentSkills, "playwright-cli"));
     assertNoScaffolding(join(subagentSkills, "liteparse"));
     assertNoScaffolding(join(workflowSkills, "impeccable"));
@@ -105,6 +125,24 @@ describe("synced upstream skill trees", () => {
     assertRegularTree(join(subagentSkills, "playwright-cli"));
     assertRegularTree(join(subagentSkills, "liteparse"));
     assertRegularTree(join(workflowSkills, "impeccable"));
+  });
+
+  test("tracks every bundled skill file instead of silently ignoring part of a synced tree", () => {
+    const skillFiles = [...collectFiles(subagentSkills), ...collectFiles(workflowSkills)];
+    assert.ok(skillFiles.length > 100, `expected a complete bundled skill inventory, saw ${skillFiles.length}`);
+    // `--no-index` reports ignore rules even for already-tracked paths, so a broad
+    // rule (such as the Python packaging `lib/`) cannot silently truncate a sync.
+    const ignored = Bun.spawnSync(["git", "check-ignore", "--no-index", "--stdin"], {
+      cwd: root,
+      env: createGitEnvironment(),
+      stdin: Buffer.from(`${skillFiles.join("\n")}\n`),
+    });
+    assert.equal(ignored.stdout.toString().trim(), "", "bundled skill files are excluded by .gitignore");
+    const tracked = Bun.spawnSync(["git", "ls-files", "packages/workflows/skills/impeccable"], { cwd: root, env: createGitEnvironment() });
+    assert.equal(tracked.exitCode, 0, tracked.stderr.toString());
+    for (const path of ["scripts/lib/staleness.mjs", "scripts/lib/surface-briefs.mjs", "scripts/lib/provider.mjs"]) {
+      assert.ok(tracked.stdout.toString().includes(`packages/workflows/skills/impeccable/${path}\n`), `untracked bundled file: ${path}`);
+    }
   });
 
   test("keeps synced HTML filtering robust against nested sanitization and permissive closing tags", async () => {
@@ -126,6 +164,19 @@ describe("synced upstream skill trees", () => {
     const pageModulePath = join(workflowSkills, "impeccable/scripts/detector/shared/page.mjs");
     const pageModule = await import(pageModulePath) as { isFullPage(content: string): boolean };
     assert.equal(pageModule.isFullPage("<!<!--- hidden --->><section>partial</section>"), false);
+    // Upstream's regex comment strip misses the permissive `--!>` ending and reports this as a full page.
+    assert.equal(pageModule.isFullPage("<!--<html>--!>"), false);
+  });
+
+  test("keeps synced live-preview selector and CSS-property hardening", () => {
+    const browser = readFileSync(join(workflowSkills, "impeccable/scripts/live-browser.js"), "utf8");
+    // A backslash-bearing session ID must be escaped before it reaches the attribute selector.
+    assert.ok(
+      browser.includes("String(sessionId).replace(/\\\\/g, '\\\\\\\\').replace(/\"/g, '\\\\\"')"),
+      "preview selector lost its backslash escaping",
+    );
+    // The ineffective `-ms-` self-replacement stays removed (CodeQL useless-assignment fix).
+    assert.doesNotMatch(browser, /replace\(\/\^-ms-\/, '-ms-'\)/u);
   });
 
   test("initializes its fixture without mutating an ambient linked worktree", () => {

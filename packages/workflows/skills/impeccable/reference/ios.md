@@ -2,7 +2,7 @@
 
 For native iOS / iPadOS apps: SwiftUI, UIKit, React Native, Expo, Flutter shipping to Apple hardware.
 
-On native, register narrows. HIG conformance governs structure, navigation, and interaction whatever the register; brand expresses through the expressive layer the platform provides (tint, type, motion, content). Calm, Duolingo, and Spotify carry strong identity entirely inside HIG conventions.
+On native, the visitor mode narrows what expression may override. HIG conformance governs structure, navigation, and interaction in every mode; brand expresses through the layer the platform leaves open (tint, type, motion, content).
 
 ## The iOS slop test
 
