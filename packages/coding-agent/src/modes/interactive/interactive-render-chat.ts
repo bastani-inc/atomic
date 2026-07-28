@@ -398,9 +398,13 @@ InteractiveModeBase.prototype.getUserInput = async function(this: InteractiveMod
 
 InteractiveModeBase.prototype.rebuildChatFromMessages = function(
   this: InteractiveModeBase,
-  options: { suppressCompactionBoundary?: VerbatimCompactionResult } = {},
+  options: {
+    suppressCompactionBoundary?: VerbatimCompactionResult;
+    resetStartupDisclosure?: boolean;
+  } = {},
 ): void {
     this.chatContainer.clear();
+    if (options.resetStartupDisclosure) this.resourceDisclosureContainer.clear();
     this.attachStartupNoticesContainer();
     const entries = buildContextEntries(
       this.sessionManager.getEntries(),

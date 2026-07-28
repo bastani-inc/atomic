@@ -1,5 +1,5 @@
-import { test } from "bun:test";
 import assert from "node:assert/strict";
+import { test } from "vitest";
 import { Container, Text } from "@earendil-works/pi-tui";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
@@ -355,6 +355,26 @@ test("empty reserved startup slots render no blank line or spacer", () => {
 	mode.chatContainer.addChild(new Text("first visible message", 0, 0));
 
 	assert.equal(normalizeStartupOutput(mode.chatContainer), "first visible message");
+});
+
+test("reload-style rebuild replaces the stale startup disclosure with one current-bottom block", () => {
+	const mode = createOrderingMode();
+	releaseStartupChatOutput(mode);
+	mode.resourceDisclosureContainer.addChild(new Text("RESOURCES stale", 0, 0));
+	Object.defineProperty(mode, "sessionManager", {
+		configurable: true,
+		value: { getEntries: () => [], getLeafId: () => null },
+	});
+	mode.renderSessionEntries = () => {
+		mode.chatContainer.addChild(new Text("restored transcript", 0, 0));
+	};
+
+	InteractiveMode.prototype.rebuildChatFromMessages.call(mode, { resetStartupDisclosure: true });
+	mode.chatContainer.addChild(new Text("RESOURCES current", 0, 0));
+
+	const output = normalizeStartupOutput(mode.chatContainer);
+	assert.equal(output.match(/RESOURCES/g)?.length, 1, output);
+	assert.ok(output.indexOf("restored transcript") < output.indexOf("RESOURCES current"), output);
 });
 
 test("a post-startup runtime rebind appends RESOURCES at the current chat bottom", async () => {

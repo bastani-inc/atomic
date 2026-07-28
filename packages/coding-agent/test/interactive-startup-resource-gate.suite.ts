@@ -1,13 +1,15 @@
-import { test } from "bun:test";
 import assert from "node:assert/strict";
+import { test } from "vitest";
 import { Container, Text } from "@earendil-works/pi-tui";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { bindInitialEagerSession } from "../src/modes/interactive/interactive-initial-session-binding.ts";
+import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import {
 	StartupChatContainer,
 	releaseStartupChatOutput,
 } from "../src/modes/interactive/interactive-startup-chat-container.ts";
 
+initTheme("dark");
 function createGateMode(): InteractiveMode {
 	const mode = Object.create(InteractiveMode.prototype) as InteractiveMode;
 	Object.assign(mode, {

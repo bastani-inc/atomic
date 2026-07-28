@@ -86,6 +86,7 @@ function makeMode(messages: AgentMessage[] = persistedContextMessages) {
 	}));
 	const workingLoaders: Array<Text & { stop: ReturnType<typeof vi.fn> }> = [];
 	const chatContainer = new Container();
+	const resourceDisclosureContainer = new Container();
 	const startupNoticesContainer = new Container();
 	startupNoticesContainer.addChild(new Text("startup notice", 0, 0));
 	const mode = {
@@ -98,6 +99,7 @@ function makeMode(messages: AgentMessage[] = persistedContextMessages) {
 		defaultEditor: { onEscape: vi.fn() },
 		statusContainer: new Container(),
 		chatContainer,
+		resourceDisclosureContainer,
 		startupNoticesContainer,
 		pendingTools: new Map(),
 		compactionQueuedMessages: [],
@@ -356,6 +358,9 @@ describe("InteractiveMode compaction events", () => {
 
 		rebuild.call(mode);
 
+		expect(chatContainer.children).not.toContain(undefined);
+		expect(chatContainer.children[0]).toBe(mode.resourceDisclosureContainer);
+		expect(chatContainer.children[1]).toBe(mode.startupNoticesContainer);
 		expect(visibleBoundaries(chatContainer)).toHaveLength(1);
 		expect(renderedText(chatContainer).match(/✻ Context compacted/g)).toHaveLength(1);
 	});

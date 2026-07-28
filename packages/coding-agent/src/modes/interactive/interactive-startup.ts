@@ -97,7 +97,6 @@ InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): 
     this.ui.addChild(this.headerContainer);
 
     this.ui.addChild(this.chatContainer);
-    this.attachStartupNoticesContainer();
     this.ui.addChild(this.pendingMessagesContainer);
     this.ui.addChild(this.statusContainer);
     this.renderWidgets(); // Initialize with default spacer

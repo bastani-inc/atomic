@@ -76,7 +76,7 @@ InteractiveModeBase.prototype.handleReloadCommand = async function(this: Interac
       this.setupAutocompleteProvider();
       const runner = this.session.extensionRunner;
       this.setupExtensionShortcuts(runner);
-      this.rebuildChatFromMessages();
+      this.rebuildChatFromMessages({ resetStartupDisclosure: true });
       dismissReloadBox(this.editor as Component);
       const savedImplicitProjectTrust = this.maybeSaveImplicitProjectTrustAfterReload();
       this.showLoadedResources({
