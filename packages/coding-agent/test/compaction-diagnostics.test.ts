@@ -8,7 +8,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "fs";
 import { basename, dirname, join } from "path";
 import { tmpdir } from "os";
 import type { Api, AssistantMessage, Model, Usage } from "@earendil-works/pi-ai/compat";
@@ -292,6 +292,80 @@ describe("compaction diagnostics: persisted sidecar", () => {
 		// Verify the sidecar does NOT contain the API key
 		const content = readFileSync(caughtError!.diagnosticPath!, "utf-8");
 		expect(content).not.toContain("test-key");
+	});
+
+	it("records only the final exhausted length response and usage without request secrets", async () => {
+		const sessionFile = join(testDir, "retry-session.jsonl");
+		const model = createMockModel();
+		const region = createMinimalRegion(50);
+		region.lines[10] = "SECRET-TRANSCRIPT-LINE";
+		const params: VerbatimCompactionParameters = {
+			compression_ratio: 0.5,
+			preserve_recent: 2,
+			query: "SECRET-PLANNER-QUERY",
+		};
+		const firstUsage: Usage = {
+			...createMockUsage(),
+			input: 111,
+			output: 11,
+			totalTokens: 122,
+		};
+		const finalUsage: Usage = {
+			...createMockUsage(),
+			input: 777,
+			output: 88,
+			totalTokens: 865,
+		};
+		const firstResponse = createMockResponse("FIRST-ATTEMPT-ONLY", "length");
+		const finalResponse = createMockResponse("FINAL-ATTEMPT-ONLY", "length");
+		firstResponse.usage = firstUsage;
+		finalResponse.usage = finalUsage;
+		const responses = [firstResponse, finalResponse];
+		let callCount = 0;
+		const mockStreamFn = async () => {
+			const response = responses[callCount++]!;
+			return {
+				result: async () => response,
+				events: async function* () {
+					yield { type: "done" as const, reason: "length" as const, message: response };
+				},
+			};
+		};
+
+		let caughtError: RangePlanError | undefined;
+		try {
+			await planDeletedLineRanges(
+				region,
+				params,
+				model,
+				{ apiKey: "SECRET-API-KEY", headers: { "x-secret": "SECRET-HEADER-VALUE" } },
+				undefined,
+				undefined,
+				16384,
+				25,
+				{ streamFn: mockStreamFn as never, sessionFilePath: sessionFile },
+			);
+		} catch (error) {
+			caughtError = error as RangePlanError;
+		}
+
+		expect(caughtError).toBeInstanceOf(RangePlanError);
+		expect(caughtError!.attempts).toBe(2);
+		expect(callCount).toBe(2);
+		expect(caughtError!.diagnosticPath).toBeDefined();
+		const diagnosticFiles = readdirSync(testDir).filter((name) => name.includes("compaction-"));
+		expect(diagnosticFiles).toHaveLength(1);
+		const serialized = readFileSync(caughtError!.diagnosticPath!, "utf-8");
+		const diagnostic = JSON.parse(serialized) as CompactionDiagnostic;
+		expect(diagnostic.rawResponse).toBe("FINAL-ATTEMPT-ONLY");
+		expect(diagnostic.usage).toEqual(finalUsage);
+		expect(serialized).not.toContain("FIRST-ATTEMPT-ONLY");
+		expect(serialized).not.toContain("SECRET-API-KEY");
+		expect(serialized).not.toContain("x-secret");
+		expect(serialized).not.toContain("SECRET-HEADER-VALUE");
+		expect(serialized).not.toContain("SECRET-PLANNER-QUERY");
+		expect(serialized).not.toContain("SECRET-TRANSCRIPT-LINE");
+		expect(serialized).not.toContain("numbered-transcript");
 	});
 });
 

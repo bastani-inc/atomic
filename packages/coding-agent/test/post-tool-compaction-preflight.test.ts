@@ -1,9 +1,11 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { SimpleStreamOptions } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionFactory } from "../src/core/extensions/index.ts";
+import { RANGE_PLANNER_SYSTEM_PROMPT } from "../src/core/compaction/range-planner.ts";
 import { convertToLlm } from "../src/core/messages.ts";
-import { createHarnessWithExtensions, type Harness } from "./test-harness.ts";
+import { createHarnessWithExtensions, fauxModel, type Harness } from "./test-harness.ts";
 
 const largeResultTool: AgentTool = {
 	name: "large_result",
@@ -89,6 +91,109 @@ describe("post-tool compaction preflight", () => {
 		expect(harness.session.getLastAssistantText()).toBe("completed after compaction");
 	});
 
+
+	it("recovers an empty post-tool length plan at minimal reasoning before the next provider response", async () => {
+		const harness = await createHarnessWithExtensions({
+			contextWindow: 1_000,
+			model: { ...fauxModel, reasoning: true },
+			settings: {
+				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+				retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 },
+			},
+			responses: [
+				{
+					toolCalls: [{ id: "call-planner-recovery", name: "large_result", args: {} }],
+					usage: { input: 700, output: 20, totalTokens: 720 },
+				},
+				{ text: "", stopReason: "length" },
+				"2,20\n",
+				"completed after recovered planning",
+			],
+			baseToolsOverride: { large_result: largeResultTool },
+		});
+		harnesses.push(harness);
+		await wireHarness(harness);
+		harness.agent.state.thinkingLevel = "max";
+		const plannerRequests: SimpleStreamOptions[] = [];
+		const streamFunction = harness.agent.streamFunction;
+		harness.agent.streamFunction = (candidate, context, options) => {
+			if (context.systemPrompt === RANGE_PLANNER_SYSTEM_PROMPT) plannerRequests.push(options ?? {});
+			return streamFunction(candidate, context, options);
+		};
+		const continueSpy = vi.spyOn(harness.agent, "continue");
+
+		await harness.session.prompt(longPrompt);
+
+		expect(harness.faux.callCount).toBe(4);
+		expect(plannerRequests.map((request) => request.reasoning)).toEqual(["low", "minimal"]);
+		expect(harness.faux.contexts.filter((context) => context.systemPrompt === RANGE_PLANNER_SYSTEM_PROMPT)).toHaveLength(2);
+		expect(harness.faux.contexts.filter((context) => context.systemPrompt !== RANGE_PLANNER_SYSTEM_PROMPT)).toHaveLength(2);
+		expect(harness.eventsOfType("compaction_start")).toEqual([
+			expect.objectContaining({ reason: "threshold", midTurn: true }),
+		]);
+		expect(harness.eventsOfType("compaction_end")).toEqual([
+			expect.objectContaining({ reason: "threshold", aborted: false, willRetry: false, midTurn: true }),
+		]);
+		expect(harness.eventsOfType("auto_retry_start")).toHaveLength(0);
+		expect(harness.eventsOfType("model_fallback_start")).toHaveLength(0);
+		expect(continueSpy).not.toHaveBeenCalled();
+		expect(harness.session.getLastAssistantText()).toBe("completed after recovered planning");
+	});
+
+	it("stops after two empty post-tool length plans without an ordinary follow-up request", async () => {
+		const harness = await createHarnessWithExtensions({
+			contextWindow: 1_000,
+			model: { ...fauxModel, reasoning: true },
+			settings: {
+				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+				retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 },
+			},
+			responses: [
+				{
+					toolCalls: [{ id: "call-planner-exhaustion", name: "large_result", args: {} }],
+					usage: { input: 700, output: 20, totalTokens: 720 },
+				},
+				{ text: "", stopReason: "length" },
+				{ text: "", stopReason: "length" },
+				"must not be requested",
+			],
+			baseToolsOverride: { large_result: largeResultTool },
+		});
+		harnesses.push(harness);
+		await wireHarness(harness);
+		harness.agent.state.thinkingLevel = "high";
+		const plannerRequests: SimpleStreamOptions[] = [];
+		const streamFunction = harness.agent.streamFunction;
+		harness.agent.streamFunction = (candidate, context, options) => {
+			if (context.systemPrompt === RANGE_PLANNER_SYSTEM_PROMPT) plannerRequests.push(options ?? {});
+			return streamFunction(candidate, context, options);
+		};
+		const continueSpy = vi.spyOn(harness.agent, "continue");
+
+		await harness.session.prompt(longPrompt);
+
+		expect(harness.faux.callCount).toBe(3);
+		expect(plannerRequests.map((request) => request.reasoning)).toEqual(["low", "minimal"]);
+		expect(harness.faux.contexts.filter((context) => context.systemPrompt === RANGE_PLANNER_SYSTEM_PROMPT)).toHaveLength(2);
+		expect(harness.faux.contexts.filter((context) => context.systemPrompt !== RANGE_PLANNER_SYSTEM_PROMPT)).toHaveLength(1);
+		expect(harness.eventsOfType("auto_retry_start")).toHaveLength(0);
+		expect(harness.eventsOfType("model_fallback_start")).toHaveLength(0);
+		expect(continueSpy).not.toHaveBeenCalled();
+		expect(harness.eventsOfType("compaction_end")).toEqual([
+			expect.objectContaining({
+				reason: "threshold",
+				aborted: false,
+				willRetry: false,
+				errorMessage: expect.stringContaining("malformed output"),
+			}),
+		]);
+		expect(harness.session.messages.at(-1)).toMatchObject({
+			role: "assistant",
+			stopReason: "error",
+			errorMessage: "Post-tool context compaction failed before the next provider request: Compaction range planning returned malformed output",
+		});
+		expect(harness.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
+	});
 	it("leaves below-threshold tool turns unchanged", async () => {
 		const harness = await createHarnessWithExtensions({
 			contextWindow: 1_000,

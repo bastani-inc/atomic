@@ -161,7 +161,7 @@ describe("compaction boundary preparation", () => {
 	});
 });
 
-describe("one-pass range planner", () => {
+describe("range planner", () => {
 	it("parses bare start,end line records", () => {
 		expect(extractDeletedRanges("2,4\n8,6\n")).toEqual([
 			{ start: 2, end: 4 },
@@ -199,49 +199,138 @@ describe("one-pass range planner", () => {
 		expect(prompt.indexOf("</numbered-transcript>")).toBeLessThan(prompt.indexOf("120,180"));
 	});
 
-	it("makes exactly one request and forwards model, auth, headers, and reasoning unchanged", async () => {
+	it.each([
+		{ name: "a non-reasoning model", modelReasoning: false, thinkingLevel: "high" as const, expectedReasoning: undefined },
+		{ name: "an undefined level", modelReasoning: true, thinkingLevel: undefined, expectedReasoning: undefined },
+		{ name: "off", modelReasoning: true, thinkingLevel: "off" as const, expectedReasoning: undefined },
+		{ name: "minimal", modelReasoning: true, thinkingLevel: "minimal" as const, expectedReasoning: "minimal" },
+		{ name: "low", modelReasoning: true, thinkingLevel: "low" as const, expectedReasoning: "low" },
+		{ name: "medium", modelReasoning: true, thinkingLevel: "medium" as const, expectedReasoning: "low" },
+		{ name: "high", modelReasoning: true, thinkingLevel: "high" as const, expectedReasoning: "low" },
+		{ name: "xhigh", modelReasoning: true, thinkingLevel: "xhigh" as const, expectedReasoning: "low" },
+		{ name: "max", modelReasoning: true, thinkingLevel: "max" as const, expectedReasoning: "low" },
+	])("applies the exact first-attempt reasoning cap for $name", async ({ modelReasoning, thinkingLevel, expectedReasoning }) => {
 		const prep = preparation();
 		const faux = createFauxStreamFn(["1,20\n"]);
-		const calls: Array<{ candidate: Model<Api>; request: SimpleStreamOptions }> = [];
+		const reasoningModel: Model<Api> = { ...model, reasoning: modelReasoning, maxTokens: 20_000 };
+		let capturedCandidate: Model<Api> | undefined;
+		let capturedRequest: SimpleStreamOptions | undefined;
 		const capture = (candidate: Model<Api>, context: Parameters<typeof faux.streamFn>[1], request?: SimpleStreamOptions) => {
-			calls.push({ candidate, request: request ?? {} });
+			capturedCandidate = candidate;
+			capturedRequest = request;
 			return faux.streamFn(candidate, context, request);
 		};
-		const reasoningModel = { ...model, reasoning: true };
+
 		const ranges = await planDeletedLineRanges(
 			prep.region,
 			prep.parameters,
 			reasoningModel,
 			{ apiKey: "key", headers: { "x-test": "value" } },
 			undefined,
-			"medium",
+			thinkingLevel,
 			prep.settings.reserveTokens,
 			10,
 			{ streamFn: capture },
 		);
+
 		expect(ranges).toEqual([{ start: 1, end: 20 }]);
 		expect(faux.state.callCount).toBe(1);
-		expect(calls[0].candidate).toBe(reasoningModel);
-		expect(calls[0].request.apiKey).toBe("key");
-		expect(calls[0].request.headers).toEqual({ "x-test": "value" });
-		expect(calls[0].request.reasoning).toBe("medium");
-		expect(calls[0].request.maxTokens).toBe(Math.min(reasoningModel.maxTokens, Math.floor(prep.settings.reserveTokens * 0.8)));
-		expect(calls[0].request.cacheRetention).toBe("none");
-		expect(calls[0].request.sessionId).toEqual(expect.any(String));
-		const firstSessionId = calls[0].request.sessionId;
-		await planDeletedLineRanges(
-			prep.region, prep.parameters, reasoningModel, { apiKey: "key" }, undefined, "off",
-			prep.settings.reserveTokens, 10, { streamFn: capture },
+		expect(capturedCandidate).toBe(reasoningModel);
+		expect(capturedRequest?.apiKey).toBe("key");
+		expect(capturedRequest?.headers).toEqual({ "x-test": "value" });
+		expect(capturedRequest?.reasoning).toBe(expectedReasoning);
+		expect(capturedRequest?.maxTokens).toBe(Math.min(reasoningModel.maxTokens, Math.floor(prep.settings.reserveTokens * 0.8)));
+		expect(capturedRequest?.cacheRetention).toBe("none");
+		expect(capturedRequest?.sessionId).toEqual(expect.any(String));
+	});
+
+	it("retries an empty length stop once at minimal reasoning and accepts the second plan", async () => {
+		const prep = preparation();
+		const faux = createFauxStreamFn([
+			{ text: "", stopReason: "length" },
+			"3,20\n",
+		]);
+		const requests: SimpleStreamOptions[] = [];
+		const capture = (candidate: Model<Api>, context: Parameters<typeof faux.streamFn>[1], request?: SimpleStreamOptions) => {
+			requests.push(request ?? {});
+			return faux.streamFn(candidate, context, request);
+		};
+
+		const ranges = await planDeletedLineRanges(
+			prep.region,
+			prep.parameters,
+			{ ...model, reasoning: true },
+			{ apiKey: "key" },
+			undefined,
+			"max",
+			prep.settings.reserveTokens,
+			10,
+			{ streamFn: capture },
 		);
-		expect(calls[1].request.cacheRetention).toBe("none");
-		expect(calls[1].request.sessionId).not.toBe(firstSessionId);
+
+		expect(ranges).toEqual([{ start: 3, end: 20 }]);
+		expect(faux.state.callCount).toBe(2);
+		expect(requests.map((request) => request.reasoning)).toEqual(["low", "minimal"]);
+		expect(requests.map((request) => request.cacheRetention)).toEqual(["none", "none"]);
+		expect(requests[0]?.sessionId).toEqual(expect.any(String));
+		expect(requests[1]?.sessionId).toEqual(expect.any(String));
+		expect(requests[1]?.sessionId).not.toBe(requests[0]?.sessionId);
+	});
+
+	it("accepts a usable newline-terminated range from a partial length response without retrying", async () => {
+		const prep = preparation();
+		const faux = createFauxStreamFn([{ text: "3,20\n21", stopReason: "length" }]);
+
+		const ranges = await planDeletedLineRanges(
+			prep.region,
+			prep.parameters,
+			model,
+			{ apiKey: "key" },
+			undefined,
+			"off",
+			prep.settings.reserveTokens,
+			10,
+			{ streamFn: faux.streamFn },
+		);
+
+		expect(ranges).toEqual([{ start: 3, end: 20 }]);
+		expect(faux.state.callCount).toBe(1);
+	});
+
+	it.each([
+		{ name: "empty", response: "", expectedMessage: "Compaction range planning returned malformed output" },
+		{ name: "protected-only", response: "1,1\n", expectedMessage: "Compaction range planning produced no usable deleted ranges" },
+	])("fails after exactly two $name length responses", async ({ response, expectedMessage }) => {
+		const prep = preparation();
+		prep.region.protectedLineNumbers = new Set([1]);
+		const faux = createFauxStreamFn([
+			{ text: response, stopReason: "length" },
+			{ text: response, stopReason: "length" },
+		]);
+
+		const error = await planDeletedLineRanges(
+			prep.region,
+			prep.parameters,
+			model,
+			{ apiKey: "key" },
+			undefined,
+			"off",
+			prep.settings.reserveTokens,
+			10,
+			{ streamFn: faux.streamFn },
+		).catch((caught: unknown) => caught);
+
+		expect(error).toBeInstanceOf(RangePlanError);
+		expect((error as RangePlanError).attempts).toBe(2);
+		expect((error as RangePlanError).message).toBe(expectedMessage);
+		expect(faux.state.callCount).toBe(2);
 	});
 
 	it.each([
 		["malformed", "not valid records"],
 		["empty", ""],
 		["unusable", "nan,null\n"],
-	])("fails after one %s response with no semantic retry", async (_label, response) => {
+	])("fails after one normal-stop %s response with no semantic retry", async (_label, response) => {
 		const prep = preparation();
 		const faux = createFauxStreamFn([response]);
 		await expect(planDeletedLineRanges(
