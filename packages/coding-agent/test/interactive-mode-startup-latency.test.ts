@@ -79,8 +79,6 @@ type InitContext = {
 type PromptTurnContext = {
 	deferredStartupPending: boolean;
 	deferredStartupPromise?: Promise<void>;
-	deferLoadedResourcesDisclosureUntilAgentEnd: boolean;
-	pendingLoadedResourcesDisclosure: boolean;
 	session: {
 		isStreaming: boolean;
 		resumeQueuedMessages: () => Promise<boolean>;
@@ -117,8 +115,6 @@ function createPromptTurnContext(options: {
 	return {
 		deferredStartupPending: options.deferredStartupPending ?? false,
 		deferredStartupPromise: options.deferredStartupPromise,
-		deferLoadedResourcesDisclosureUntilAgentEnd: false,
-		pendingLoadedResourcesDisclosure: false,
 		session: {
 			isStreaming: false,
 			resumeQueuedMessages: vi.fn(async () => false),
@@ -268,7 +264,6 @@ describe("InteractiveMode startup latency hooks", () => {
 
 		expect(order).toEqual(["deferred", "prompt"]);
 		expect(context.session.prompt).toHaveBeenCalledWith("hello");
-		expect(context.deferLoadedResourcesDisclosureUntilAgentEnd).toBe(false);
 	});
 
 	it("waits for deferred startup already in flight before prompting", async () => {

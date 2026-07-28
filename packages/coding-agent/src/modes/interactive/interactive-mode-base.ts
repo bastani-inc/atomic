@@ -283,10 +283,6 @@ export class InteractiveModeBase {
 
   firstSubmitRecorded = false;
 
-  deferLoadedResourcesDisclosureUntilAgentEnd = false;
-
-
-  pendingLoadedResourcesDisclosure = false;
 
 
 
@@ -418,6 +414,11 @@ export class InteractiveModeBase {
     this.chatContainer = new StartupChatContainer();
     this.resourceDisclosureContainer = new Container();
     this.startupNoticesContainer = new Container();
+    // The isolated engine can emit session_start UI requests as soon as its
+    // bridge attaches below, before init() mounts chat in the TUI. Reserve the
+    // ordering slots now so those messages can never precede RESOURCES.
+    this.chatContainer.addChild(this.resourceDisclosureContainer);
+    this.chatContainer.addChild(this.startupNoticesContainer);
     this.pendingMessagesContainer = new Container();
     this.statusContainer = new Container();
     this.widgetContainerAbove = new Container();

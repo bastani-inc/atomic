@@ -13,8 +13,6 @@ type PromptTurnContext = {
 	promptTurnWorkingLoaderActive: boolean;
 	deferredStartupPending: boolean;
 	deferredStartupPromise: Promise<void> | undefined;
-	deferLoadedResourcesDisclosureUntilAgentEnd: boolean;
-	pendingLoadedResourcesDisclosure: boolean;
 	options: { deferredModelScopePatterns?: string[] };
 	session: {
 		isStreaming: boolean;
@@ -73,8 +71,6 @@ function createContext(overrides: {
 		promptTurnWorkingLoaderActive: false,
 		deferredStartupPending: true,
 		deferredStartupPromise: undefined,
-		deferLoadedResourcesDisclosureUntilAgentEnd: false,
-		pendingLoadedResourcesDisclosure: false,
 		options: {},
 		session: {
 			isStreaming: false,

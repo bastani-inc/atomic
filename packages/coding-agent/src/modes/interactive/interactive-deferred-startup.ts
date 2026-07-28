@@ -42,7 +42,6 @@ InteractiveModeBase.prototype.ensureDeferredStartupComplete = async function(thi
  * the same post-load UI wiring as /reload and discloses loaded resources.
  */
 InteractiveModeBase.prototype.completeDeferredStartup = async function(this: InteractiveModeBase): Promise<void> {
-    let disclosurePending = false;
     try {
       await this.bindCurrentSessionExtensions();
       await this.session.reload({ reason: "startup" });
@@ -62,15 +61,10 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function(this: Int
       this.setupExtensionShortcuts(this.session.extensionRunner);
       await applyDeferredModelScope(this);
       await this.retryDeferredModelRestore(this.startupNoticesContainer);
-      if (this.deferLoadedResourcesDisclosureUntilAgentEnd) {
-        this.pendingLoadedResourcesDisclosure = true;
-        disclosurePending = true;
-      } else {
-        this.showLoadedResources({ force: true, showDiagnosticsWhenQuiet: true, targetContainer: this.resourceDisclosureContainer });
-        // Keep the subscription warning after the RESOURCES disclosure.
-        void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
-        this.showStartupNoticesIfNeeded(this.startupNoticesContainer);
-      }
+      this.showLoadedResources({ force: true, showDiagnosticsWhenQuiet: true, targetContainer: this.resourceDisclosureContainer });
+      // Keep the subscription warning after the RESOURCES disclosure.
+      void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
+      this.showStartupNoticesIfNeeded(this.startupNoticesContainer);
       const modelsJsonError = this.session.modelRegistry.getError();
       if (modelsJsonError) {
         this.showError(`models.json error: ${modelsJsonError}`);
@@ -85,15 +79,15 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function(this: Int
         this.stopWorkingLoader();
       }
       this.deferredStartupPending = false;
-      disclosurePending = false;
-      this.pendingLoadedResourcesDisclosure = false;
       this.showError(
         `Extension loading failed: ${error instanceof Error ? error.message : String(error)}`,
       );
       // The RESOURCES disclosure will not render; surface the held warning.
       void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
     } finally {
-      if (!disclosurePending) releaseStartupChatOutput(this);
+      // Extension loading has either produced the disclosure or definitively
+      // failed, so startup ordering is resolved before any prompt can run.
+      releaseStartupChatOutput(this);
     }
   };
 

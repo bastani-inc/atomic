@@ -52,8 +52,6 @@ type EscapeHost = {
 	stopWorkingLoader: () => void;
 	deferredStartupPending: boolean;
 	deferredStartupPromise: Promise<void> | undefined;
-	deferLoadedResourcesDisclosureUntilAgentEnd: boolean;
-	pendingLoadedResourcesDisclosure: boolean;
 	discardDeferredRenderedUserInput: () => void;
   showError: (message: string) => void;
   isExtensionCommand(text: string): boolean;
@@ -116,8 +114,6 @@ function createEscapeHost(session: AgentSession): EscapeHost {
 		stopWorkingLoader() {},
 		deferredStartupPending: false,
 		deferredStartupPromise: undefined,
-		deferLoadedResourcesDisclosureUntilAgentEnd: false,
-		pendingLoadedResourcesDisclosure: false,
 		isExtensionCommand(candidate) {
 			if (!candidate.startsWith("/")) return false;
 			const spaceIndex = candidate.indexOf(" ");

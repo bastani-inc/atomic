@@ -2,7 +2,6 @@ import type { AgentSessionInternalSurface } from "../../core/agent-session-metho
 import { tryExecuteSessionSlashCommand } from "../../core/agent-session-prompt.ts";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
-import { releaseStartupChatOutput } from "./interactive-startup-chat-container.ts";
 
 InteractiveModeBase.prototype.runUserPromptTurn = async function(
   this: InteractiveModeBase,
@@ -15,9 +14,6 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function(
   this.showWorkingLoaderNow();
   const deferredStartupNeedsPromptGate =
     this.deferredStartupPending || this.deferredStartupPromise !== undefined;
-  if (deferredStartupNeedsPromptGate) {
-    this.deferLoadedResourcesDisclosureUntilAgentEnd = true;
-  }
   // Yield once so the freshly-mounted spinner paints before synchronous
   // preflight work can block the event loop.
   await yieldToEventLoop();
@@ -38,28 +34,12 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function(
       await this.session.resumeQueuedMessages();
       await this.session.prompt(userInput);
     }
-    this.deferLoadedResourcesDisclosureUntilAgentEnd = false;
-    if (this.pendingLoadedResourcesDisclosure) {
-      this.pendingLoadedResourcesDisclosure = false;
-      this.showLoadedResources({
-        force: true,
-        showDiagnosticsWhenQuiet: true,
-        targetContainer: this.resourceDisclosureContainer,
-      });
-      void this.maybeWarnAboutAnthropicSubscriptionAuth(
-        undefined,
-        this.startupNoticesContainer,
-      );
-      this.showStartupNoticesIfNeeded(this.startupNoticesContainer);
-    }
   } catch (error) {
-    this.deferLoadedResourcesDisclosureUntilAgentEnd = false;
     this.discardDeferredRenderedUserInput(userInput);
     const errorMessage =
       error instanceof Error ? error.message : "Unknown error occurred";
     this.showError(errorMessage);
   } finally {
-    releaseStartupChatOutput(this);
     this.promptTurnWorkingLoaderActive = false;
     // A submission that resolves without starting an agent turn (e.g. a
     // handled slash command) never emits `agent_end`, so clear the pre-shown

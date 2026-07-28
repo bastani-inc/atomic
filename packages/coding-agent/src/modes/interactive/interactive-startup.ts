@@ -233,10 +233,9 @@ InteractiveModeBase.prototype.run = async function(this: InteractiveModeBase): P
 		this.checkTmuxKeyboardSetup().then((warning) => {
 			if (warning) this.showWarning(warning, startupNoticesContainer);
 		});
-		// When startup is deferred, the RESOURCES disclosure renders after the
-		// deferred extension load; hold the subscription warning until then so
-		// the disclosure always appears first.
-		if (!this.deferredStartupPending && !this.deferredStartupPromise && !this.pendingLoadedResourcesDisclosure) {
+		// Deferred startup releases chat output immediately after rendering the
+		// disclosure, so wait only while that startup work remains in flight.
+		if (!this.deferredStartupPending && !this.deferredStartupPromise) {
 			void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, startupNoticesContainer);
 		}
 	}, 500);

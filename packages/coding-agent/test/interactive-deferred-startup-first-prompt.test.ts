@@ -14,8 +14,6 @@ import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 type PromptTurnHarness = {
 	deferredStartupPending: boolean;
 	deferredStartupPromise?: Promise<void>;
-	deferLoadedResourcesDisclosureUntilAgentEnd: boolean;
-	pendingLoadedResourcesDisclosure: boolean;
 	session: {
 		readonly isStreaming: boolean;
 		resumeQueuedMessages: () => Promise<boolean>;
@@ -116,8 +114,6 @@ describe("interactive deferred startup first prompt readiness", () => {
 			const harness: PromptTurnHarness = {
 				deferredStartupPending: true,
 				deferredStartupPromise: undefined,
-				deferLoadedResourcesDisclosureUntilAgentEnd: false,
-				pendingLoadedResourcesDisclosure: false,
 				session: {
 					get isStreaming() {
 						return session.isStreaming;
