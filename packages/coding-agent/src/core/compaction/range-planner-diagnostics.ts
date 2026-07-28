@@ -203,3 +203,74 @@ export function writeRecoveryDiagnosticSidecar(ctx: RecoveryDiagnosticContext): 
 }
 
 export { buildRecoveryPayload };
+
+/** Success categories emitted in success diagnostic sidecars. */
+export type DiagnosticSuccessCategory = "borrowed_planner";
+
+/**
+ * Success diagnostic payload written when a *borrowed* fallback model ranked
+ * the lines. The RFC requires the borrowed identity to appear in diagnostics but
+ * defines no payload; this is the chosen shape, and it carries only safe data —
+ * no key, headers, auth, prompt, or transcript.
+ */
+export interface SuccessDiagnostic {
+	version: 1;
+	timestamp: string;
+	successCategory: DiagnosticSuccessCategory;
+	/** Effective reasoning level of the successful planner request, when it had one. */
+	thinkingLevel?: string;
+	/** Undefined since the planner sends no output cap. */
+	requestMaxTokens: number | undefined;
+	model: DiagnosticModelMeta;
+}
+
+export interface SuccessDiagnosticContext {
+	sessionFilePath: string | undefined;
+	/** The model that actually produced the accepted ranking. */
+	model: Model<Api>;
+	successCategory: DiagnosticSuccessCategory;
+	thinkingLevel?: string;
+}
+
+function buildSuccessPayload(ctx: SuccessDiagnosticContext): SuccessDiagnostic {
+	return {
+		version: 1,
+		timestamp: new Date().toISOString(),
+		successCategory: ctx.successCategory,
+		...(ctx.thinkingLevel === undefined ? {} : { thinkingLevel: ctx.thinkingLevel }),
+		requestMaxTokens: undefined,
+		model: {
+			provider: ctx.model.provider,
+			id: ctx.model.id,
+			api: ctx.model.api,
+			contextWindow: ctx.model.contextWindow,
+			maxTokens: ctx.model.maxTokens,
+		},
+	};
+}
+
+/**
+ * Write a success sidecar naming the borrowed model that ranked the lines.
+ *
+ * Best-effort: an in-memory session or a write failure never changes compaction
+ * success. The filename uses a distinct `-compaction-success-<ts>.json` suffix so
+ * it cannot collide with the primary model's failure sidecar.
+ */
+export function writeSuccessDiagnosticSidecar(ctx: SuccessDiagnosticContext): string | undefined {
+	if (!ctx.sessionFilePath) return undefined;
+
+	const payload = buildSuccessPayload(ctx);
+	const dir = dirname(ctx.sessionFilePath);
+	const base = basename(ctx.sessionFilePath, ".jsonl");
+	const filePath = join(dir, `${base}-compaction-success-${Date.now()}.json`);
+
+	try {
+		writeFileSync(filePath, JSON.stringify(payload, null, 2), { encoding: "utf-8", mode: 0o600 });
+		try { chmodSync(filePath, 0o600); } catch { /* best-effort on non-POSIX */ }
+		return filePath;
+	} catch {
+		return undefined;
+	}
+}
+
+export { buildSuccessPayload };

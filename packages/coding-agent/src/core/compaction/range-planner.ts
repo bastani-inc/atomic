@@ -264,10 +264,12 @@ export async function planDeletedLineRanges(
 	}
 	if (response.stopReason === "length") {
 		const recovery = recoverTruncatedRecords(text);
-		if (recovery && validateDeletedRanges(recovery.ranges, region).length > 0) {
+		// The airlock returns validated line numbers, never raw model output.
+		const recovered = recovery ? validateDeletedRanges(recovery.ranges, region) : undefined;
+		if (recovery && recovered && recovered.length > 0) {
 			// Silent success — write private recovery diagnostic, never surface it.
 			emitRecoveryDiagnostic(options, model, response, text, recovery.recoveredCount);
-			return { kind: "recovered", ranges: recovery.ranges, recoveredCount: recovery.recoveredCount };
+			return { kind: "recovered", ranges: [...recovered], recoveredCount: recovery.recoveredCount };
 		}
 		if (isReasoningStarved(response, false)) {
 			return unusableOutcome(options, model, response, text, "starved", NO_USABLE_RANGES_MESSAGE);
@@ -277,10 +279,11 @@ export async function planDeletedLineRanges(
 	}
 	const extracted = extractDeletedRanges(text);
 	if (!extracted) return unusableOutcome(options, model, response, text, "malformed_output", MALFORMED_OUTPUT_MESSAGE);
-	if (validateDeletedRanges(extracted, region).length === 0) {
+	const validated = validateDeletedRanges(extracted, region);
+	if (validated.length === 0) {
 		return unusableOutcome(options, model, response, text, "no_usable_ranges", NO_USABLE_RANGES_MESSAGE);
 	}
-	return { kind: "ranked", ranges: extracted };
+	return { kind: "ranked", ranges: [...validated] };
 }
 
 function emitDiagnostic(

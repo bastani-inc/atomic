@@ -82,11 +82,30 @@ function latestActiveBoundary(entries: SessionEntry[]): { entry: CompactionEntry
 	return undefined;
 }
 
+/**
+ * Planner eligibility, kept separate from boundary preparation.
+ *
+ * `MIN_COMPACTABLE_REGION_LINES` exists to stop repeated pointless *planned*
+ * compaction. A load-bearing caller has a different problem: one oversized tool
+ * result can blow the context window while producing fewer than 20 compactable
+ * lines, and refusing to prepare a boundary there makes the "always completes"
+ * guarantee hollow — the fresh rung and its tail-drop rule become unreachable.
+ */
+export interface CompactionBoundaryControl {
+	/**
+	 * Prepare a boundary even when the region is below the planner minimum.
+	 * Only `load_bearing` callers set this; the runner routes such a region
+	 * straight to the fresh rung without invoking a planner.
+	 */
+	allowSmallRegion?: boolean;
+}
+
 /** Prepare the complete compactable transcript and its exact context-visible message tail. */
 export function prepareCompactionBoundary(
 	pathEntries: SessionEntry[],
 	settings: CompactionSettings,
 	options: Partial<VerbatimCompactionParameters> = {},
+	control: CompactionBoundaryControl = {},
 ): VerbatimCompactionPreparation | undefined {
 	const entries = normalizeDerivedSessionEntries(pathEntries);
 	const previous = latestActiveBoundary(entries);
@@ -107,7 +126,7 @@ export function prepareCompactionBoundary(
 	const serialized = serializeConversationForCompaction(convertToLlm(regionMessages.map((item) => item.message)));
 	const regionText = [previous?.entry.summary, serialized].filter((text): text is string => typeof text === "string" && text.length > 0).join("\n");
 	const region = createNumberedRegion(regionText);
-	if (region.lines.length < MIN_COMPACTABLE_REGION_LINES) return undefined;
+	if (!control.allowSmallRegion && region.lines.length < MIN_COMPACTABLE_REGION_LINES) return undefined;
 
 	const preparation: VerbatimCompactionPreparation = {
 		firstKeptEntryId: tailMessages[0]?.entry.id ?? null,

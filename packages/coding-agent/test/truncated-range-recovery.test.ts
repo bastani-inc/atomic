@@ -217,14 +217,25 @@ describe("planDeletedLineRanges: non-length malformed output", () => {
 	});
 });
 
-// 5. Priority-order normalization (host sorts afterward)
+// 5. Priority-order parsing, then normalization at the airlock
 describe("planDeletedLineRanges: priority order", () => {
-	it("returns ranges in output order (not numeric order)", async () => {
-		// Model outputs highest-confidence deletion first (120,180 before 6,40)
+	it("parses priority-ordered output and returns it normalized", async () => {
+		// The model emits highest-confidence deletions first (120,180 before 6,40).
+		// `parseRangeRecords` preserves that order, which is what truncation
+		// recovery depends on. The planner door then returns *validated* line
+		// numbers, so they arrive sorted and merged — reconstruction sorted them
+		// anyway, and returning raw output would break the door's own guarantee.
+		expect(parseRangeRecords("120,180\n6,40\n50,55\n")).toEqual([
+			{ start: 120, end: 180 },
+			{ start: 6, end: 40 },
+			{ start: 50, end: 55 },
+		]);
 		const result = await plan("120,180\n6,40\n50,55\n", "stop", { lineCount: 200 });
-		expect(result[0]).toEqual({ start: 120, end: 180 });
-		expect(result[1]).toEqual({ start: 6, end: 40 });
-		expect(result[2]).toEqual({ start: 50, end: 55 });
+		expect(result).toEqual([
+			{ start: 6, end: 40 },
+			{ start: 50, end: 55 },
+			{ start: 120, end: 180 },
+		]);
 	});
 });
 
@@ -243,14 +254,17 @@ describe("truncated recovery: validation integration", () => {
 		expect(error).toBeInstanceOf(RangePlanError);
 	});
 
-	it("mixed ranges with some protected lines still succeeds", async () => {
+	it("mixed ranges keep only the unprotected part", async () => {
+		// Lines 1-3 are protected, so the door strips them and returns only the
+		// deletable remainder rather than handing a protected span downstream.
 		const result = await plan("1,3\n10,20\n", "length");
-		expect(result).toEqual([{ start: 1, end: 3 }, { start: 10, end: 20 }]);
+		expect(result).toEqual([{ start: 10, end: 20 }]);
 	});
 
 	it("out-of-bounds ranges are clamped through validation", async () => {
+		// The region is 50 lines, so 40,60 comes back clamped to the region bound.
 		const result = await plan("10,20\n40,60\n", "length", { lineCount: 50 });
-		expect(result).toEqual([{ start: 10, end: 20 }, { start: 40, end: 60 }]);
+		expect(result).toEqual([{ start: 10, end: 20 }, { start: 40, end: 50 }]);
 	});
 });
 

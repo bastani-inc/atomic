@@ -106,10 +106,29 @@ Each planner attempt ends in exactly one typed outcome:
 |---|---|---|
 | ranked | Valid deletion records | Boundary written, `rung: "planned"` |
 | recovered | A length-truncated response with usable complete records | Boundary written silently, `rung: "planned"` |
-| overflowed | The planner request itself exceeded the context window | The oldest region lines are withheld and the *same* model retried, up to three trims; the withheld head becomes a deterministic deletion |
-| rateLimited | `429` / rate limit / overloaded / `5xx` after the retry budget (`exhausted: true`), or quota/billing exhaustion returned without backoff (`exhausted: false`) | Advance to the next configured model |
+| overflowed | The planner request itself exceeded the context window | The oldest region lines are withheld and the *same* model retried, repeatedly, until no strictly smaller view remains; the withheld head becomes a deterministic deletion |
+| rateLimited | `429` / rate limit / overloaded / `5xx` after the retry budget (`exhausted: true`), or quota, billing, or usage-limit exhaustion returned without backoff (`exhausted: false`) | Advance to the next configured model |
 | unusable | Malformed output, no usable safe ranges, or reasoning starvation (`starved`) | Advance to the next configured model |
 | providerError | Any other provider or transport failure | Advance to the next configured model |
+
+Each trimmed retry halves the remaining suffix, so the walk is finite, and every
+attempt carries the same whole-preparation keep target — withholding a head never
+silently tightens `compression_ratio` beyond what you configured. The planner
+door returns validated line numbers, so no unvalidated model output leaves it,
+and the runner still validates once more before writing a boundary.
+
+Generic usage-limit wording, such as `The usage limit has been reached`, is
+classified as quota exhaustion (`exhausted: false`). That is a deliberate local
+addition rather than a copy of pi-ai's tables: pi-ai lists it in neither its
+retryable nor its non-retryable set, so it never spends a backoff, and reporting
+it as transient throttling would claim a retry budget that was never used.
+
+Unavailable credentials are ladder control flow, not an early failure. If the
+session model has no usable credentials, no request is attempted for it, that
+candidate is marked attempted, and a configured fallback with its own working
+credentials can still rank the lines. A load-bearing caller with no usable
+credentials anywhere still reaches the credential-free fresh rung; a recoverable
+caller reports the original authentication error and writes nothing.
 
 `settings.retry` still governs transport attempts *within* one candidate, with its existing backoff. When a candidate is exhausted, Atomic borrows the next entry from `settings.fallbackModels`, resolving that candidate's own credentials. Each candidate is tried at most once per compaction run, in configured order, keyed by `provider/model:thinkingLevel`.
 
@@ -130,7 +149,7 @@ A syntactically valid usable result is accepted once after safety-only normaliza
 
 ### The fresh context window rung
 
-`startNewContextWindow` is total: no provider, no credentials, no network, no failure mode. It discards the compactable region and any prior durable summary, keeps explicit protected spans, and keeps the `preserve_recent` protected tail — dropping the tail only when keeping it would still exceed the provider hard input limit, in which case the boundary persists `firstKeptEntryId: null`. It emits the whole region as one deletion range and hands it to the same validation and reconstruction path as every other rung, so retained lines stay byte-identical.
+`startNewContextWindow` is total: no provider, no credentials, no network, no failure mode. A load-bearing compaction also routes here when the compactable region is below the planner minimum and the context genuinely does not fit — one oversized tool result can exceed the hard input limit with very few compactable lines, and no planner change could make that region rankable. When the context already fits, a region that small is still refused rather than cleared. It discards the compactable region and any prior durable summary, keeps explicit protected spans, and keeps the `preserve_recent` protected tail — dropping the tail only when keeping it would still exceed the provider hard input limit, in which case the boundary persists `firstKeptEntryId: null`. It emits the whole region as one deletion range and hands it to the same validation and reconstruction path as every other rung, so retained lines stay byte-identical.
 
 The fresh rung destroys conversation, so it is loud: the boundary reads `✻ Context cleared (compaction degraded)` instead of `✻ Context compacted`, in the main chat and in attached workflow stage chat alike, and `details.rung` records `"fresh"` durably. The precise cause stays in the `0600` diagnostic sidecar.
 
@@ -166,7 +185,7 @@ Compaction range planning returned malformed output (diagnostic: /path/session-c
 
 The private sidecar uses `0600` permissions where supported and records the full planner response text, stop reason, provider error, usage, the request `maxTokens` (absent — no cap is sent), timestamp, failure category, and non-secret model metadata for **the model that made that attempt**, so a run rescued by a fallback leaves per-model evidence. It does not record API keys, request headers, the planner prompt, or the numbered transcript request. The raw response itself may contain sensitive text if the model echoed input, so treat the sidecar with the same care as its adjacent session file.
 
-Diagnostic categories distinguish malformed output, valid output with no usable ranges, provider errors, stream failures, reasoning starvation (`starved`), and rate limiting (`rate_limited`). A `rate_limited` record additionally sets `rateLimitExhausted`: `true` when transient throttling spent the retry budget, `false` for quota/billing exhaustion returned without backoff. In-memory sessions do not create sidecars. If the diagnostic write fails, Atomic preserves the original classification rather than replacing the planner outcome.
+Diagnostic categories distinguish malformed output, valid output with no usable ranges, provider errors, stream failures, reasoning starvation (`starved`), and rate limiting (`rate_limited`). When a *borrowed* fallback model produces the accepted ranking, a separate `<session>-compaction-success-<ts>.json` sidecar records that model and its effective thinking level, so a rescued run leaves evidence for both the model that failed and the model that succeeded. A `rate_limited` record additionally sets `rateLimitExhausted`: `true` when transient throttling spent the retry budget, `false` for quota/billing exhaustion returned without backoff. In-memory sessions do not create sidecars. If the diagnostic write fails, Atomic preserves the original classification rather than replacing the planner outcome.
 
 Interactive main chat and attached workflow stage chat treat `compaction_end` as the authority for cancellation and failure UI. A failed or cancelled `/compact` stops its spinner, shows the event-provided status or diagnostic path without a duplicate stack trace, writes no boundary, and leaves the session usable for another `/compact` attempt or a normal follow-up turn.
 

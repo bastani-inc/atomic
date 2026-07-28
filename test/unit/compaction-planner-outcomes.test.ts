@@ -7,6 +7,9 @@
 
 import { test } from "bun:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { RetryCallbacks } from "@earendil-works/pi-ai";
 import { planDeletedLineRanges } from "../../packages/coding-agent/src/core/compaction/range-planner.js";
 import { PARAMETERS, borrowed, region, scriptedStream, testModel } from "./compaction-rung-support.js";
@@ -92,6 +95,69 @@ test("quota exhaustion produces rateLimited/not-exhausted with zero backoff", as
 	if (outcome.kind === "rateLimited") assert.equal(outcome.exhausted, false);
 	assert.deepEqual(scheduled, []);
 	assert.equal(stream.calls.length, 1);
+});
+
+test("generic usage-limit wording is quota exhaustion, not spent backoff", async () => {
+	// pi-ai lists `usage limit` in neither its retryable nor its non-retryable
+	// pattern, so `retryAssistantCall` schedules nothing for it. Reporting
+	// `exhausted: true` would claim a retry budget that was never spent.
+	const scheduled: number[] = [];
+	const { outcome, stream } = await plan(
+		{ default: [{ errorMessage: "Codex error: The usage limit has been reached" }] },
+		{ onRetryScheduled: (attempt: number) => { scheduled.push(attempt); } },
+	);
+	assert.equal(outcome.kind, "rateLimited");
+	if (outcome.kind === "rateLimited") assert.equal(outcome.exhausted, false);
+	assert.deepEqual(scheduled, []);
+	assert.equal(stream.calls.length, 1);
+});
+
+test("the sidecar records the quota/throttle split for a usage limit", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "compaction-usage-limit-"));
+	try {
+		const sessionFilePath = join(directory, "session.jsonl");
+		const stream = scriptedStream({ default: [{ errorMessage: "Monthly usage limit reached" }] });
+		const outcome = await planDeletedLineRanges(
+			region(),
+			PARAMETERS,
+			borrowed(testModel(), "high"),
+			30,
+			{ streamFn: stream.streamFn, sessionFilePath },
+		);
+		assert.equal(outcome.kind, "rateLimited");
+		const written = readdirSync(directory).filter((name) => name.includes("compaction-diagnostic"));
+		assert.equal(written.length, 1);
+		const payload = JSON.parse(readFileSync(join(directory, written[0]), "utf-8")) as {
+			failureCategory: string;
+			rateLimitExhausted?: boolean;
+		};
+		assert.equal(payload.failureCategory, "rate_limited");
+		assert.equal(payload.rateLimitExhausted, false);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+test("a throttle that did spend backoff records rateLimitExhausted true", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "compaction-throttle-"));
+	try {
+		const sessionFilePath = join(directory, "session.jsonl");
+		const stream = scriptedStream({ default: [{ errorMessage: "429 Too Many Requests" }] });
+		await planDeletedLineRanges(region(), PARAMETERS, borrowed(testModel(), "high"), 30, {
+			streamFn: stream.streamFn,
+			sessionFilePath,
+			retry: { enabled: true, maxRetries: 1, baseDelayMs: 0 },
+		});
+		const written = readdirSync(directory).filter((name) => name.includes("compaction-diagnostic"));
+		const payload = JSON.parse(readFileSync(join(directory, written[0]), "utf-8")) as {
+			failureCategory: string;
+			rateLimitExhausted?: boolean;
+		};
+		assert.equal(payload.failureCategory, "rate_limited");
+		assert.equal(payload.rateLimitExhausted, true);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
 });
 
 test("context overflow is classified through isContextOverflow", async () => {

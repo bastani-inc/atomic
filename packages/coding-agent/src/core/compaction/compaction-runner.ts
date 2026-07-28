@@ -1,10 +1,9 @@
 import type { StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { RetryCallbacks, RetryPolicy } from "@earendil-works/pi-ai";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
-import { fallbackKey } from "../fallback-models.js";
 import { getKeptTailTokenEstimate } from "./compaction-boundary.js";
 import { reconstructCompactedTranscript, validateDeletedRanges } from "./deleted-ranges.js";
-import { borrowFallbackPlanner, type FallbackPlannerContext } from "./fallback-planner.js";
+import { borrowFallbackPlanner, plannerAttemptKey, type FallbackPlannerContext } from "./fallback-planner.js";
 import type { TerminalPlannerOutcome } from "./planner-outcome.js";
 import {
 	MALFORMED_OUTPUT_MESSAGE,
@@ -13,22 +12,18 @@ import {
 	RangePlanError,
 	resolvePlannerRequest,
 } from "./range-planner.js";
-import {
-	MAX_OVERFLOW_TRIM_ATTEMPTS,
-	nextTrimOffset,
-	rebaseTrimmedRanges,
-	trimRegionHead,
-} from "./region-trimming.js";
+import { writeSuccessDiagnosticSidecar } from "./range-planner-diagnostics.js";
+import { nextTrimOffset, rebaseTrimmedRanges, trimRegionHead } from "./region-trimming.js";
 import type {
 	BorrowedPlanner,
 	CompactedTranscript,
 	CompactionPlannerModel,
 	CompactionUrgency,
-	NumberedRegion,
 	PlannerAuth,
 	RawLineRange,
 	VerbatimCompactionPreparation,
 } from "./compaction-types.js";
+import { MIN_COMPACTABLE_REGION_LINES } from "./compaction-types.js";
 
 export interface CompactionPlanOptions {
 	streamFn: StreamFn;
@@ -61,13 +56,19 @@ export type CompactionRungResult = CompactedTranscript & {
 /** A fresh context window. Total: no provider, no failure mode. */
 export type FreshContextWindow = CompactedTranscript & { readonly keptTail: boolean };
 
-/** Calculate the single global line threshold directly from the prepared setting. */
+/**
+ * Calculate the single global line threshold directly from the prepared setting.
+ *
+ * It is a whole-preparation target: overflow trimming reuses this same number for
+ * every trimmed view, so withholding a head never silently tightens
+ * `compression_ratio` beyond what the user configured.
+ */
 export function targetKeepLines(preparation: VerbatimCompactionPreparation): number {
-	return targetKeepLinesForRegion(preparation.region, preparation.parameters.compression_ratio);
-}
-
-function targetKeepLinesForRegion(region: NumberedRegion, compressionRatio: number): number {
-	return Math.max(region.protectedLineNumbers?.size ?? 0, Math.round(region.lines.length * compressionRatio));
+	const region = preparation.region;
+	return Math.max(
+		region.protectedLineNumbers?.size ?? 0,
+		Math.round(region.lines.length * preparation.parameters.compression_ratio),
+	);
 }
 
 function hardInputLimitFor(model: Model<Api>): number {
@@ -114,6 +115,28 @@ export function startNewContextWindow(
 	const limit = Number.isFinite(hardInputLimit) && hardInputLimit > 0 ? hardInputLimit : Number.POSITIVE_INFINITY;
 	const keptTail = transcript.stats.tokensAfter + getKeptTailTokenEstimate(preparation) <= limit;
 	return { ...transcript, keptTail };
+}
+
+/**
+ * Whether a region below the planner minimum should still reach the fresh rung.
+ *
+ * `MIN_COMPACTABLE_REGION_LINES` exists to stop pointless repeat compaction, and
+ * that reasoning still holds whenever the context fits. The load-bearing
+ * exception is narrow and concrete: one oversized tool result can push the whole
+ * context past the provider hard input limit while leaving very few compactable
+ * lines, and refusing there makes the "always completes" guarantee hollow.
+ *
+ * So the small-region fresh rung applies only when the context genuinely does
+ * not fit, or when the `preserve_recent` tail alone must be dropped. Otherwise
+ * callers keep the pre-existing "nothing to compact" refusal rather than
+ * destroying context for no gain.
+ */
+export function smallRegionNeedsFreshWindow(
+	preparation: VerbatimCompactionPreparation,
+	hardInputLimit: number,
+): boolean {
+	if (preparation.tokensBefore > hardInputLimit) return true;
+	return !startNewContextWindow(preparation, hardInputLimit).keptTail;
 }
 
 function plannedResult(
@@ -170,35 +193,73 @@ type PlannerAttempt =
 /**
  * Run one planner model, retrying the same model after oldest-first input
  * trimming when the request itself overflows the context window.
+ *
+ * Trimming continues until no strictly smaller view exists; `nextTrimOffset`
+ * halves the remaining suffix, so the walk is finite. Only then is
+ * `overflowed` terminal and the ladder advances. Every attempt carries the same
+ * whole-preparation keep target.
  */
 async function planWithTrimming(
 	preparation: VerbatimCompactionPreparation,
 	planner: BorrowedPlanner,
+	keepTarget: number,
 	options: CompactionPlanOptions & { signal?: AbortSignal },
 ): Promise<PlannerAttempt> {
 	let offset = 0;
-	for (let attempt = 0; ; attempt++) {
+	for (;;) {
 		const region = offset === 0 ? preparation.region : trimRegionHead(preparation.region, offset);
 		if (!region) return { kind: "terminal", outcome: { kind: "overflowed" } };
-		const outcome = await planDeletedLineRanges(
-			region,
-			preparation.parameters,
-			planner,
-			targetKeepLinesForRegion(region, preparation.parameters.compression_ratio),
-			options,
-		);
+		const outcome = await planDeletedLineRanges(region, preparation.parameters, planner, keepTarget, options);
 		if (outcome.kind === "ranked" || outcome.kind === "recovered") {
 			if (offset === 0) return { kind: "planned", ranges: outcome.ranges };
 			const validated = validateDeletedRanges(outcome.ranges, region);
 			return { kind: "planned", ranges: rebaseTrimmedRanges(validated, offset) };
 		}
-		if (outcome.kind !== "overflowed" || attempt >= MAX_OVERFLOW_TRIM_ATTEMPTS) {
-			return { kind: "terminal", outcome };
-		}
+		if (outcome.kind !== "overflowed") return { kind: "terminal", outcome };
+		if (options.signal?.aborted) throw new Error("Compaction cancelled");
 		const next = nextTrimOffset(preparation.region, offset);
 		if (next === undefined) return { kind: "terminal", outcome };
 		offset = next;
 	}
+}
+
+const MISSING_AUTH_MESSAGE = "Compaction provider authentication is unavailable";
+
+/**
+ * A runner-local terminal cause with no provider attempt behind it.
+ *
+ * Missing credentials are not a provider outcome — no request was made — so no
+ * synthetic response is fabricated and no diagnostic sidecar is written. It is
+ * carried as `providerError` purely so the ladder can advance past it.
+ */
+function authFailureOutcome(error: unknown): TerminalPlannerOutcome {
+	const message = error instanceof Error ? error.message : error === undefined ? MISSING_AUTH_MESSAGE : String(error);
+	return { kind: "providerError", message: message || MISSING_AUTH_MESSAGE };
+}
+
+/** Resolve one model's credentials, normalizing a rejection and `undefined` alike. */
+async function resolvePlannerAuth(
+	resolveAuth: CompactionRunRequest["resolveAuth"],
+	model: Model<Api>,
+): Promise<{ auth: PlannerAuth } | { failure: TerminalPlannerOutcome }> {
+	try {
+		const auth = await resolveAuth(model);
+		return auth ? { auth } : { failure: authFailureOutcome(undefined) };
+	} catch (error) {
+		return { failure: authFailureOutcome(error) };
+	}
+}
+
+function freshResult(
+	preparation: VerbatimCompactionPreparation,
+	hardInputLimit: number,
+): CompactionRungResult {
+	const fresh = startNewContextWindow(preparation, hardInputLimit);
+	return {
+		...withWholeContextStats(fresh, preparation, fresh.keptTail),
+		rung: "fresh",
+		keptTail: fresh.keptTail,
+	};
 }
 
 /**
@@ -208,6 +269,10 @@ async function planWithTrimming(
  * borrowed for one planner request, then — only under `load_bearing` urgency —
  * a fresh context window. A manual `/compact` runs at `recoverable` urgency and
  * therefore cannot reach the context-destroying rung; it fails honestly instead.
+ *
+ * Unavailable credentials are ladder control flow, not an early throw: a
+ * borrowed candidate with its own working credentials can still rank the lines,
+ * and a load-bearing caller still reaches the credential-free fresh rung.
  */
 export async function runVerbatimCompaction(
 	preparation: VerbatimCompactionPreparation,
@@ -224,27 +289,53 @@ export async function runVerbatimCompaction(
 		signal,
 	};
 	const hardInputLimit = hardInputLimitFor(model);
-	const sessionAuth = await request.resolveAuth(model);
-	if (!sessionAuth) throw new Error("Compaction provider authentication is unavailable");
 
+	// A region below the planner minimum cannot be made rankable by changing
+	// models, so no planner is invoked. Only a load-bearing caller can reach a
+	// preparation this small; recoverable callers were refused before the runner.
+	if (preparation.region.lines.length < MIN_COMPACTABLE_REGION_LINES) {
+		if (request.urgency !== "load_bearing") throw new RangePlanError(NO_USABLE_RANGES_MESSAGE, 0, "", false);
+		return freshResult(preparation, hardInputLimit);
+	}
+
+	const keepTarget = targetKeepLines(preparation);
 	const attempted = new Set<string>();
-	let planner: BorrowedPlanner | undefined = {
-		model,
-		budget: resolvePlannerRequest(model, request.thinkingLevel),
-		auth: sessionAuth,
-		key: fallbackKey(model, request.thinkingLevel),
-	};
+	const primaryBudget = resolvePlannerRequest(model, request.thinkingLevel);
+	const primaryAuth = await resolvePlannerAuth(request.resolveAuth, model);
+	let lastTerminal: TerminalPlannerOutcome | undefined = "failure" in primaryAuth ? primaryAuth.failure : undefined;
 	let borrowed = false;
-	let lastTerminal: TerminalPlannerOutcome | undefined;
+	let planner: BorrowedPlanner | undefined;
+
+	if ("auth" in primaryAuth) {
+		planner = { model, budget: primaryBudget, auth: primaryAuth.auth };
+	} else {
+		// No request was made, but this candidate must not be retried.
+		attempted.add(plannerAttemptKey({ model, budget: primaryBudget, auth: {} }));
+		planner = request.fallback
+			? await borrowFallbackPlanner(request.fallback, attempted, request.resolveAuth)
+			: undefined;
+		borrowed = planner !== undefined;
+	}
 
 	while (planner) {
-		const attempt = await planWithTrimming(preparation, planner, plannerOptions);
+		const attempt = await planWithTrimming(preparation, planner, keepTarget, plannerOptions);
 		if (signal?.aborted) throw new Error("Compaction cancelled");
 		if (attempt.kind === "planned") {
-			return plannedResult(preparation, attempt.ranges, borrowed ? borrowedIdentity(planner) : undefined);
+			const plannerModel = borrowed ? borrowedIdentity(planner) : undefined;
+			if (plannerModel) {
+				// Best-effort: the durable entry already records the borrowed model;
+				// a sidecar write failure never affects compaction success.
+				writeSuccessDiagnosticSidecar({
+					sessionFilePath: request.sessionFilePath,
+					model: planner.model,
+					successCategory: "borrowed_planner",
+					...(plannerModel.thinkingLevel === undefined ? {} : { thinkingLevel: plannerModel.thinkingLevel }),
+				});
+			}
+			return plannedResult(preparation, attempt.ranges, plannerModel);
 		}
 		lastTerminal = attempt.outcome;
-		attempted.add(planner.key);
+		attempted.add(plannerAttemptKey(planner));
 		planner = request.fallback
 			? await borrowFallbackPlanner(request.fallback, attempted, request.resolveAuth)
 			: undefined;
@@ -253,10 +344,5 @@ export async function runVerbatimCompaction(
 	}
 
 	if (request.urgency !== "load_bearing") throw terminalError(lastTerminal);
-	const fresh = startNewContextWindow(preparation, hardInputLimit);
-	return {
-		...withWholeContextStats(fresh, preparation, fresh.keptTail),
-		rung: "fresh",
-		keptTail: fresh.keptTail,
-	};
+	return freshResult(preparation, hardInputLimit);
 }

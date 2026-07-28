@@ -1,0 +1,148 @@
+/**
+ * The chat host's event-only fallback path must accept a `fresh` boundary.
+ *
+ * The snapshot path usually hides this: persisted messages are normally rebuilt
+ * before `compaction_end` arrives. When no agent-session snapshot is available,
+ * the host synthesizes the boundary from the event alone, and a hard-coded
+ * `planned | extension` guard there would silently drop the fresh rung — the one
+ * rung the user is supposed to see.
+ */
+
+import { beforeAll, test } from "bun:test";
+import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
+import { Text, type Component, type EditorTheme } from "@earendil-works/pi-tui";
+import { applyChatSessionAgentEvent } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host-events.js";
+import { ChatSessionHostState } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host-state.js";
+import type {
+	ChatSessionHostOpts,
+	ChatSessionHostStyle,
+} from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host-types.js";
+import { CompactionBoundaryMessageComponent } from "../../packages/coding-agent/src/modes/interactive/components/compaction-boundary-message.js";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import type {
+	CompactionRung,
+	VerbatimCompactionDetails,
+	VerbatimCompactionResult,
+} from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
+import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
+
+beforeAll(() => initTheme("dark"));
+
+const identity = (text: string): string => text;
+
+const style: ChatSessionHostStyle = {
+	dim: identity,
+	text: identity,
+	textMuted: identity,
+	accent: identity,
+	accentBold: identity,
+	rule: (_hex, text) => text,
+	cursor: () => "",
+	blank: (width) => " ".repeat(width),
+	editorRuleColor: () => "#ffffff",
+};
+
+const editorTheme: EditorTheme = {
+	borderColor: identity,
+	selectList: {
+		selectedPrefix: identity,
+		selectedText: identity,
+		description: identity,
+		scrollInfo: identity,
+		noMatch: identity,
+	},
+};
+
+function makeState(): ChatSessionHostState {
+	const opts: ChatSessionHostOpts = { style, editorTheme, isStreaming: () => false };
+	// No `getAgentSession`: this is exactly the event-only fallback path.
+	return new ChatSessionHostState(opts, {
+		renderEntry: (): Component => new Text("", 0, 0),
+		transcriptCacheKey: () => "",
+	});
+}
+
+function compactionResult(rung: CompactionRung, extra: Partial<VerbatimCompactionResult> = {}): VerbatimCompactionResult {
+	return {
+		compactedText: "[User]: retained\n(filtered 12 lines)",
+		firstKeptEntryId: null,
+		tokensBefore: 51_234,
+		stats: {
+			linesBefore: 20,
+			linesDeleted: 12,
+			linesKept: 8,
+			rangeCount: 1,
+			tokensBefore: 51_234,
+			tokensAfter: 2_000,
+			percentReduction: 96.1,
+		},
+		parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "focus" },
+		promptVersion: 3,
+		rung,
+		...extra,
+	};
+}
+
+function endEvent(result: VerbatimCompactionResult): AgentSessionEvent {
+	return {
+		type: "compaction_end",
+		reason: "overflow",
+		result,
+		aborted: false,
+		willRetry: false,
+	} as AgentSessionEvent;
+}
+
+function boundaryDetails(state: ChatSessionHostState): VerbatimCompactionDetails[] {
+	return state.transcript
+		.filter((entry) => entry.kind === "custom")
+		.map((entry) => (entry as { message?: { details?: VerbatimCompactionDetails } }).message?.details)
+		.filter((details): details is VerbatimCompactionDetails => details !== undefined);
+}
+
+test("an event-only fresh boundary is appended, not dropped", () => {
+	const state = makeState();
+	assert.equal(applyChatSessionAgentEvent(state, endEvent(compactionResult("fresh"))), true);
+
+	const details = boundaryDetails(state);
+	assert.equal(details.length, 1);
+	assert.equal(details[0].rung, "fresh");
+});
+
+test("the appended fresh boundary renders the degraded notice", () => {
+	const state = makeState();
+	applyChatSessionAgentEvent(state, endEvent(compactionResult("fresh")));
+	const details = boundaryDetails(state)[0];
+
+	const rendered = stripVTControlCharacters(
+		new CompactionBoundaryMessageComponent({
+			text: "[User]: retained\n(filtered 12 lines)",
+			stats: details.stats,
+			rung: details.rung,
+		}).render(200).join("\n"),
+	);
+	assert.ok(rendered.includes("✻ Context cleared (compaction degraded)"), rendered);
+});
+
+test("planned and extension boundaries still reach the event-only path", () => {
+	for (const rung of ["planned", "extension"] as const) {
+		const state = makeState();
+		applyChatSessionAgentEvent(state, endEvent(compactionResult(rung)));
+		assert.deepEqual(boundaryDetails(state).map((details) => details.rung), [rung]);
+	}
+});
+
+test("the event-only path preserves the borrowed planner identity", () => {
+	const state = makeState();
+	const plannerModel = { provider: "openai", id: "gpt-5.1", thinkingLevel: "high" as const };
+	applyChatSessionAgentEvent(state, endEvent(compactionResult("planned", { plannerModel })));
+	assert.deepEqual(boundaryDetails(state)[0].plannerModel, plannerModel);
+});
+
+test("a malformed result is still refused", () => {
+	const state = makeState();
+	const broken = { ...compactionResult("fresh"), promptVersion: 2 } as unknown as VerbatimCompactionResult;
+	applyChatSessionAgentEvent(state, endEvent(broken));
+	assert.deepEqual(boundaryDetails(state), []);
+});

@@ -57,6 +57,18 @@ const QUOTA_EXHAUSTED_PATTERN = buildProviderErrorPattern([
 ]);
 
 /**
+ * Generic usage-limit wording, e.g. Codex's "The usage limit has been reached".
+ *
+ * This is a deliberate **local addition**, not a mirror: pi-ai lists it in
+ * neither its non-retryable nor its retryable pattern, so `retryAssistantCall`
+ * never schedules a backoff for it. Classifying it as transient throttling would
+ * report `exhausted: true` for a retry budget that was never spent, so Atomic
+ * treats it as quota exhaustion (`exhausted: false`). pi-ai's own
+ * `Monthly usage limit reached` entry above already covers the specific form.
+ */
+const LOCAL_USAGE_LIMIT_PATTERN = /usage.?limit/i;
+
+/**
  * Transient throttling and provider-load failures. This is the rate-limit
  * subset of pi-ai's `RETRYABLE_PROVIDER_ERROR_PATTERN`: reaching this classifier
  * means `retryAssistantCall` already spent the configured backoff budget.
@@ -64,7 +76,6 @@ const QUOTA_EXHAUSTED_PATTERN = buildProviderErrorPattern([
 const RATE_LIMITED_PATTERN = buildProviderErrorPattern([
 	"overloaded",
 	"rate.?limit",
-	"usage.?limit",
 	"too many requests",
 	"429",
 	"500",
@@ -92,7 +103,7 @@ export type PlannerFailureClass = "overflow" | "quota" | "rate_limited" | "provi
 export function classifyPlannerFailure(response: AssistantMessage, contextWindow: number): PlannerFailureClass {
 	if (isContextOverflow(response, contextWindow)) return "overflow";
 	const message = response.errorMessage ?? "";
-	if (QUOTA_EXHAUSTED_PATTERN.test(message)) return "quota";
+	if (QUOTA_EXHAUSTED_PATTERN.test(message) || LOCAL_USAGE_LIMIT_PATTERN.test(message)) return "quota";
 	if (RATE_LIMITED_PATTERN.test(message)) return "rate_limited";
 	return "provider_error";
 }

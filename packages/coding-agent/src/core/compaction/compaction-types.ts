@@ -90,13 +90,18 @@ export interface PlannerBudget {
 	readonly reasoning: ThinkingLevel | undefined;
 }
 
-/** A planner-only model borrowing. Cannot be confused with a session model switch. */
+/**
+ * A planner-only model borrowing. Cannot be confused with a session model switch.
+ *
+ * It carries no attempted-set key: the effective identity of an attempt is
+ * `provider/model:<effective reasoning>`, derived from `model` and
+ * `budget.reasoning` by `plannerAttemptKey`. Storing a key resolved from the raw
+ * optional suffix would let the same effective request run twice.
+ */
 export interface BorrowedPlanner {
 	readonly model: Model<Api>;
 	readonly budget: PlannerBudget;
 	readonly auth: PlannerAuth;
-	/** `provider/model:level` identity of this candidate. */
-	readonly key: string;
 }
 
 /** Identity of the model that ranked the deleted lines, when it was borrowed. */

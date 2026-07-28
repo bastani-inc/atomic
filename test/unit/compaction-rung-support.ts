@@ -16,7 +16,6 @@ import type {
 } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
 import { resolvePlannerRequest } from "../../packages/coding-agent/src/core/compaction/range-planner.js";
 import { DEFAULT_COMPACTION_SETTINGS } from "../../packages/coding-agent/src/core/compaction/compaction.js";
-import { fallbackKey } from "../../packages/coding-agent/src/core/fallback-models.js";
 
 export const PARAMETERS: VerbatimCompactionParameters = {
 	compression_ratio: 0.5,
@@ -132,12 +131,7 @@ export function borrowed(
 	thinkingLevel: ThinkingLevel | undefined,
 	auth: PlannerAuth = { apiKey: "primary-key" },
 ): BorrowedPlanner {
-	return {
-		model,
-		budget: resolvePlannerRequest(model, thinkingLevel),
-		auth,
-		key: fallbackKey(model, thinkingLevel),
-	};
+	return { model, budget: resolvePlannerRequest(model, thinkingLevel), auth };
 }
 
 /** Minimal `FallbackModelLookup` over a fixed candidate set. */

@@ -5,7 +5,11 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
-import { borrowFallbackPlanner, type FallbackPlannerContext } from "../../packages/coding-agent/src/core/compaction/fallback-planner.js";
+import {
+	borrowFallbackPlanner,
+	plannerAttemptKey,
+	type FallbackPlannerContext,
+} from "../../packages/coding-agent/src/core/compaction/fallback-planner.js";
 import type { PlannerAuth } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
 import { registryOf, testModel } from "./compaction-rung-support.js";
 
@@ -32,15 +36,61 @@ test("candidates are returned in configured order, each at most once", async () 
 	const attempted = new Set<string>(["primary/planner-a:high"]);
 	const first = await borrowFallbackPlanner(context(), attempted, authFor);
 	assert.equal(first?.model.id, "planner-b");
-	assert.equal(first?.key, "backup/planner-b:minimal");
-	attempted.add(first!.key);
+	assert.equal(plannerAttemptKey(first!), "backup/planner-b:minimal");
+	attempted.add(plannerAttemptKey(first!));
 
 	const second = await borrowFallbackPlanner(context(), attempted, authFor);
 	assert.equal(second?.model.id, "planner-c");
-	assert.equal(second?.key, "spare/planner-c:");
-	attempted.add(second!.key);
+	// The unsuffixed entry inherits the session level, so its effective key is
+	// `:high`, not the raw `:` the configured string alone would imply.
+	assert.equal(plannerAttemptKey(second!), "spare/planner-c:high");
+	attempted.add(plannerAttemptKey(second!));
 
 	assert.equal(await borrowFallbackPlanner(context(), attempted, authFor), undefined);
+});
+
+test("an unsuffixed entry naming an already-attempted effective model is skipped", async () => {
+	// The primary ran as primary/planner-a at the inherited `high`; a configured
+	// unsuffixed entry naming the same model is the identical effective request.
+	const attempted = new Set<string>(["primary/planner-a:high"]);
+	const borrowedPlanner = await borrowFallbackPlanner(
+		context({ fallbackModels: ["primary/planner-a", "spare/planner-c"] }),
+		attempted,
+		authFor,
+	);
+	assert.equal(borrowedPlanner?.model.id, "planner-c");
+});
+
+test("an explicit same-level entry for an already-attempted model is skipped", async () => {
+	const attempted = new Set<string>(["primary/planner-a:high"]);
+	const borrowedPlanner = await borrowFallbackPlanner(
+		context({ fallbackModels: ["primary/planner-a:high", "spare/planner-c"] }),
+		attempted,
+		authFor,
+	);
+	assert.equal(borrowedPlanner?.model.id, "planner-c");
+});
+
+test("the same model at a different explicit level stays a distinct candidate", async () => {
+	const attempted = new Set<string>(["primary/planner-a:high"]);
+	const borrowedPlanner = await borrowFallbackPlanner(
+		context({ fallbackModels: ["primary/planner-a:low"] }),
+		attempted,
+		authFor,
+	);
+	assert.equal(borrowedPlanner?.model.id, "planner-a");
+	assert.equal(plannerAttemptKey(borrowedPlanner!), "primary/planner-a:low");
+});
+
+test("a non-reasoning model keys with no effective level", async () => {
+	const plain = testModel({ provider: "plain", id: "planner-d", reasoning: false });
+	const borrowedPlanner = await borrowFallbackPlanner(
+		context({ fallbackModels: ["plain/planner-d:high"], registry: registryOf([primary, plain]) }),
+		new Set(),
+		authFor,
+	);
+	assert.equal(borrowedPlanner?.budget.reasoning, undefined);
+	assert.equal(plannerAttemptKey(borrowedPlanner!), "plain/planner-d:");
 });
 
 test("a candidate `model:level` suffix wins over the inherited session level", async () => {

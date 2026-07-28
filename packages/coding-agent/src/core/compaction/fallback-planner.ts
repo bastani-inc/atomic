@@ -38,6 +38,18 @@ export interface FallbackPlannerContext {
 }
 
 /**
+ * Identity of one planner attempt: `provider/model:<effective reasoning>`.
+ *
+ * The key must be derived from the *effective* level the request will carry,
+ * not from the raw optional `model:level` suffix. An unsuffixed entry for the
+ * session model inherits the session level, so keying it as `provider/model:`
+ * would let the identical request run a second time.
+ */
+export function plannerAttemptKey(planner: BorrowedPlanner): string {
+	return fallbackKey(planner.model, planner.budget.reasoning);
+}
+
+/**
  * Return the next configured fallback model usable for one planner request.
  *
  * Exhaustion returns `undefined` — that is the only exit. It never throws and
@@ -51,8 +63,10 @@ export async function borrowFallbackPlanner(
 	for (const entry of context.fallbackModels) {
 		const candidate = resolveFallbackModel(entry, context.registry, context.preferredProvider);
 		if (!candidate) continue;
-		const key = fallbackKey(candidate.model, candidate.thinkingLevel);
-		if (attempted.has(key)) continue;
+		// Resolve the budget first: the attempted key depends on the effective
+		// reasoning level, which inheritance may supply.
+		const budget = resolvePlannerRequest(candidate.model, context.sessionThinkingLevel, candidate.thinkingLevel);
+		if (attempted.has(fallbackKey(candidate.model, budget.reasoning))) continue;
 		let auth: PlannerAuth | undefined;
 		try {
 			auth = await resolveAuth(candidate.model);
@@ -61,12 +75,7 @@ export async function borrowFallbackPlanner(
 			continue;
 		}
 		if (!auth) continue;
-		return {
-			model: candidate.model,
-			budget: resolvePlannerRequest(candidate.model, context.sessionThinkingLevel, candidate.thinkingLevel),
-			auth,
-			key,
-		};
+		return { model: candidate.model, budget, auth };
 	}
 	return undefined;
 }

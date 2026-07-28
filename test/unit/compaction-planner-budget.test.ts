@@ -16,10 +16,22 @@ import { PARAMETERS, borrowed, region, scriptedStream, testModel } from "./compa
 
 test("resolvePlannerRequest never produces an output cap", () => {
 	const budget = resolvePlannerRequest(testModel(), "high");
-	// Static: the declared type is `undefined`, so a number cannot be assigned.
-	const staticallyUndefined: PlannerBudget["maxTokens"] = budget.maxTokens;
-	assert.equal(staticallyUndefined, undefined);
 	assert.equal(budget.maxTokens, undefined);
+});
+
+test("PlannerBudget.maxTokens rejects every number at the type level", () => {
+	// A negative compile assertion, not an assignment check. If the field ever
+	// widens to `number | undefined`, these `@ts-expect-error` comments become
+	// unused and `bun run typecheck` fails — that is the regression that matters.
+	// A plain `const x: PlannerBudget["maxTokens"] = budget.maxTokens` would keep
+	// compiling after such a widening and prove nothing.
+	// @ts-expect-error PlannerBudget.maxTokens must reject every number.
+	const forbiddenCap: PlannerBudget["maxTokens"] = 1;
+	void forbiddenCap;
+	// @ts-expect-error the invented 0.8 * reserveTokens cap must stay unrepresentable.
+	const forbiddenReserveCap: PlannerBudget["maxTokens"] = Math.floor(0.8 * 16384);
+	void forbiddenReserveCap;
+	assert.equal(resolvePlannerRequest(testModel(), "high").maxTokens, undefined);
 });
 
 test("resolvePlannerRequest inherits the session level and prefers a candidate suffix", () => {

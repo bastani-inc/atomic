@@ -83,9 +83,11 @@ test("overflow trimming retries the same model on a smaller region before advanc
 	}
 });
 
-test("overflow trimming that cannot fix the region advances to a fallback model", async () => {
+const OVERFLOW = { errorMessage: "prompt is too long: context_length_exceeded" };
+
+test("overflow trimming continues until no smaller region exists, then advances", async () => {
 	const { streamFn, calls } = plannerScript({
-		anthropic: [{ errorMessage: "prompt is too long: context_length_exceeded" }],
+		anthropic: [OVERFLOW],
 		openai: [{ text: "3,9\n" }],
 	});
 	const built = createRungSession({ streamFn, fallbackModels: ["openai/gpt-5.1"] });
@@ -93,9 +95,55 @@ test("overflow trimming that cannot fix the region advances to a fallback model"
 		const result = await built.session.compact({ preserve_recent: 2 });
 		assert.equal(result.rung, "planned");
 		assert.deepEqual(result.plannerModel, { provider: "openai", id: "gpt-5.1", thinkingLevel: "high" });
-		// One initial attempt plus the bounded trim retries, then exactly one borrow.
-		assert.equal(calls.filter((call) => call.provider === "anthropic").length, 4);
+
+		const primary = calls.filter((call) => call.provider === "anthropic");
+		// Trimming halves the remaining suffix each time and only stops when no
+		// strictly smaller view exists, so it runs well past the four attempts the
+		// old three-trim cap allowed.
+		assert.ok(primary.length > 4, `expected more than 4 primary attempts, saw ${primary.length}`);
+		for (let index = 1; index < primary.length; index++) {
+			assert.ok(
+				primary[index].regionLines < primary[index - 1].regionLines,
+				`attempt ${index} showed ${primary[index].regionLines} lines, not fewer than ${primary[index - 1].regionLines}`,
+			);
+		}
+		assert.equal(primary[primary.length - 1].regionLines, 1);
 		assert.equal(calls.filter((call) => call.provider === "openai").length, 1);
+	} finally {
+		built.dispose();
+	}
+});
+
+test("a trimmed region that succeeds past the old three-trim cap is still accepted", async () => {
+	// Four overflows then a success: the removed cap would have advanced the
+	// ladder before this fifth attempt ever ran.
+	const { streamFn, calls } = plannerScript({
+		anthropic: [OVERFLOW, OVERFLOW, OVERFLOW, OVERFLOW, { text: "1,2\n" }],
+		openai: [{ text: "3,9\n" }],
+	});
+	const built = createRungSession({ streamFn, fallbackModels: ["openai/gpt-5.1"] });
+	try {
+		const result = await built.session.compact({ preserve_recent: 2 });
+		assert.equal(result.rung, "planned");
+		// The session model itself succeeded, so nothing was borrowed.
+		assert.equal(result.plannerModel, undefined);
+		assert.equal(calls.filter((call) => call.provider === "anthropic").length, 5);
+		assert.equal(calls.filter((call) => call.provider === "openai").length, 0);
+	} finally {
+		built.dispose();
+	}
+});
+
+test("every trimmed attempt carries the original whole-preparation keep target", async () => {
+	const { streamFn, calls } = plannerScript({ anthropic: [OVERFLOW, OVERFLOW, { text: "1,2\n" }] });
+	const built = createRungSession({ streamFn });
+	try {
+		await built.session.compact({ preserve_recent: 2 });
+		const targets = calls.map((call) => call.keepTarget);
+		assert.equal(targets.length, 3);
+		// `compression_ratio` is a whole-preparation setting: recomputing it from
+		// each shrinking suffix would silently over-delete.
+		for (const target of targets) assert.equal(target, targets[0]);
 	} finally {
 		built.dispose();
 	}

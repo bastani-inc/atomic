@@ -31,6 +31,8 @@ export interface PlannerCall {
 	id: string;
 	reasoning: ThinkingLevel | undefined;
 	regionLines: number;
+	/** `Target lines to keep` as stated in the planner prompt. */
+	keepTarget: number | undefined;
 }
 
 /** Answer each planner request from a per-provider script; the last entry repeats. */
@@ -40,7 +42,14 @@ export function plannerScript(script: Record<string, ScriptedTurn[]>): { streamF
 	const streamFn = ((model: Model<Api>, context: { messages: Array<{ content: Array<{ text?: string }> }> }, options?: { reasoning?: ThinkingLevel }) => {
 		const prompt = context.messages[0]?.content?.[0]?.text ?? "";
 		const numbered = prompt.match(/^\d+→/gm)?.length ?? 0;
-		calls.push({ provider: model.provider, id: model.id, reasoning: options?.reasoning, regionLines: numbered });
+		const keepTarget = prompt.match(/^Target lines to keep: (\d+)$/m)?.[1];
+		calls.push({
+			provider: model.provider,
+			id: model.id,
+			reasoning: options?.reasoning,
+			regionLines: numbered,
+			keepTarget: keepTarget === undefined ? undefined : Number(keepTarget),
+		});
 		const entries = script[model.provider] ?? script.default ?? [{ text: "1,10\n" }];
 		const index = Math.min(cursors.get(model.provider) ?? 0, entries.length - 1);
 		cursors.set(model.provider, index + 1);
@@ -87,16 +96,27 @@ export interface RungSessionOptions {
 	reserveTokens?: number;
 	turns?: number;
 	authenticateFallback?: boolean;
+	/** Reported usage on each seeded assistant turn; drives the context estimate. */
+	usageTokens?: number;
+	/** Persist the session in this directory so diagnostic sidecars can be written. */
+	sessionDir?: string;
 }
 
-function assistantTurn(text: string, timestamp: number): AssistantMessage {
+function assistantTurn(text: string, timestamp: number, totalTokens: number): AssistantMessage {
 	return {
 		role: "assistant",
 		content: [{ type: "text", text }],
 		api: "anthropic-messages",
 		provider: "anthropic",
 		model: "claude-sonnet-4-5",
-		usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		usage: {
+			input: totalTokens,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
 		stopReason: "stop",
 		timestamp,
 	} as AssistantMessage;
@@ -106,7 +126,9 @@ export function createRungSession(options: RungSessionOptions): RungSession {
 	const model = options.contextWindow === undefined
 		? SESSION_MODEL
 		: ({ ...SESSION_MODEL, contextWindow: options.contextWindow } as Model<Api>);
-	const manager = SessionManager.inMemory();
+	const manager = options.sessionDir === undefined
+		? SessionManager.inMemory()
+		: SessionManager.create(options.sessionDir, options.sessionDir);
 	const agent = new Agent({
 		getApiKey: () => "test-key",
 		initialState: {
@@ -148,9 +170,10 @@ export function createRungSession(options: RungSessionOptions): RungSession {
 	});
 
 	const now = Date.now();
+	const usageTokens = options.usageTokens ?? 2;
 	for (let turn = 0; turn < (options.turns ?? 8); turn++) {
 		manager.appendMessage({ role: "user", content: `task ${turn}\nline a\nline b`, timestamp: now + turn * 2 });
-		manager.appendMessage(assistantTurn(`answer ${turn}\nline c\nline d`, now + turn * 2 + 1));
+		manager.appendMessage(assistantTurn(`answer ${turn}\nline c\nline d`, now + turn * 2 + 1, usageTokens));
 	}
 	agent.state.messages = manager.buildSessionContext().messages;
 

@@ -18,8 +18,10 @@
 
 import type { LineRange, NumberedRegion, RawLineRange } from "./compaction-types.js";
 
-/** Maximum overflow trims attempted against one planner model before advancing. */
-export const MAX_OVERFLOW_TRIM_ATTEMPTS = 3;
+// Trimming continues while a strictly smaller view exists. `nextTrimOffset`
+// halves the remaining suffix, so the walk is finite and logarithmic. RFC §5.3
+// makes "overflowed with trimming exhausted" the terminal condition and
+// authorizes no attempt cap.
 
 function rebaseSet(source: ReadonlySet<number> | undefined, offset: number): Set<number> {
 	const rebased = new Set<number>();

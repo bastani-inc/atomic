@@ -420,3 +420,170 @@ grep -rIn -iE "sk-[A-Za-z0-9_-]{12,}|Bearer [A-Za-z0-9._-]{12,}|Authorization|ap
 
 Returned no matches. `APRICOT-LEDGER-7731` is a synthetic string this run created solely to
 test recall across a compaction boundary; it is not a credential.
+
+
+---
+
+# Re-verification after the review-repair iteration
+
+The review round changed the planner airlock to return **validated** ranges instead
+of raw parsed ones, which is on the ordinary planned path, so the live success run
+was repeated rather than assumed. Same worktree, same command, same provider and
+model; only the marker token and working directory differ.
+
+| Fact | Value |
+| --- | --- |
+| Session cwd | `/private/tmp/atomic-e2e-verify` |
+| Session JSONL | `/Users/tonystark/.atomic/agent/sessions/--private-tmp-atomic-e2e-verify--/2026-07-28T07-05-08-751Z_019fa78a-a38f-7684-a14b-d801e3795c4e.jsonl` |
+| Provider / model | `anthropic` / `claude-opus-5`, thinking level `high` |
+| tmux session | `atomic-verify`, 200x50 |
+| Marker token | `PELICAN-QUARRY-4402` (synthetic, created by this run) |
+
+## R1. Pre-boundary fact
+
+```sh
+tmux send-keys -t atomic-verify 'Read marker.txt and tell me exactly what it says. Then stop.' Enter
+tmux capture-pane -p -t atomic-verify
+```
+
+```text
+
+ PELICAN-QUARRY-4402 is the secret build token for this session.
+
+                                                                                                                                      ↑4 • ↓87 • R28k • W29k • CH99.7% • $0.195 (sub) • 2.9%/1.0M (auto)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+(anthropic) claude-opus-5 high • /private/tmp/atomic-e2e-verify
+```
+
+## R2. Real work compacts mid-turn
+
+```sh
+tmux send-keys -t atomic-verify 'Now read big-source-dump.txt in three steps. Issue exactly ONE read tool call per assistant message, never two in the same message: first lines 1-1200, then 1201-2400, then 2401 to the end. After the third read returns, reply with one sentence describing the file and make no further tool calls.' Enter
+tmux capture-pane -p -t atomic-verify
+```
+
+```text
+
+ ∀ Auto-compacting... (esc Cancel)
+
+                                                                                                                                     ↑8 • ↓428 • R86k • W51k • CH56.7% • $0.370 (sub) • 5.1%/1.0M (auto)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+esc to interrupt
+```
+
+```text
+
+
+ ✻ Context compacted
+
+ Compacted from 55,455 tokens (ctrl+o to expand)
+
+
+                                                                                                                                 ↑16 • ↓1.5k • R199k • W132k • CH51.3% • $0.962 (sub) • 5.5%/1.0M (auto)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+(anthropic) claude-opus-5 high • /private/tmp/atomic-e2e-verify
+```
+
+## R3. Manual `/compact`
+
+```sh
+tmux send-keys -t atomic-verify '/compact' Enter
+tmux capture-pane -p -t atomic-verify
+```
+
+```text
+ Compacted from 2,855 tokens (ctrl+o to expand)
+
+
+                                                                                                                                 ↑16 • ↓1.5k • R199k • W132k • CH51.3% • $0.962 (sub) • 5.5%/1.0M (auto)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+(anthropic) claude-opus-5 high • /private/tmp/atomic-e2e-verify
+```
+
+## R4. The boundary is still coherent
+
+```sh
+tmux send-keys -t atomic-verify 'Without using any tools, what was the secret build token from marker.txt that I asked you about at the very start of this session?' Enter
+tmux capture-pane -p -t atomic-verify
+```
+
+```text
+ Without using any tools, what was the secret build token from marker.txt that I asked you about at the very start of this session?
+
+
+ PELICAN-QUARRY-4402
+
+                                                                                                                                 ↑18 • ↓1.5k • R227k • W136k • CH88.7% • $0.999 (sub) • 3.2%/1.0M (auto)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+(anthropic) claude-opus-5 high • /private/tmp/atomic-e2e-verify
+```
+
+The footer still reads `(anthropic) claude-opus-5 high`.
+
+## R5. Durable entries
+
+```sh
+SF=/Users/tonystark/.atomic/agent/sessions/--private-tmp-atomic-e2e-verify--/2026-07-28T07-05-08-751Z_019fa78a-a38f-7684-a14b-d801e3795c4e.jsonl
+python3 -c 'import json,sys; [print(json.dumps(e["details"])) for e in map(json.loads, open(sys.argv[1])) if e.get("type")=="compaction"]' "$SF"
+```
+
+```json
+{"rung": "planned", "strategy": "verbatim-lines", "plannerModel_present": false, "linesBefore": 317, "linesDeleted": 246}
+{"rung": "planned", "strategy": "verbatim-lines", "plannerModel_present": false, "linesBefore": 102, "linesDeleted": 54}
+{"rung": "planned", "strategy": "verbatim-lines", "plannerModel_present": false, "linesBefore": 376, "linesDeleted": 190}
+{"rung": "planned", "strategy": "verbatim-lines", "plannerModel_present": false, "linesBefore": 611, "linesDeleted": 303}
+{"rung": "planned", "strategy": "verbatim-lines", "plannerModel_present": false, "linesBefore": 415, "linesDeleted": 276}
+{"rung": "planned", "strategy": "verbatim-lines", "plannerModel_present": false, "linesBefore": 180, "linesDeleted": 93}
+```
+
+```text
+entry kinds: {"session": 1, "model_change": 1, "thinking_level_change": 1, "message": 20, "compaction": 6}
+```
+
+Six planned boundaries, all `"strategy": "verbatim-lines"` and `"rung": "planned"`,
+none carrying `plannerModel` (the session model ranked them itself). Exactly one
+`model_change` / `thinking_level_change` pair, written at session start before any
+compaction, so the session model and thinking level were never mutated. No
+diagnostic, recovery, or success sidecar was written, which is correct: no planner
+attempt failed and nothing was borrowed.
+
+## R6. One refusal observed, and why it is not a regression
+
+The first attempt in this run produced, verbatim from the pane:
+
+```text
+Error: Post-tool context compaction failed before the next provider request: no compactable transcript entries were available
+```
+
+This run configures `reserveTokens: 960000` against a 1,000,000-token window purely
+to force compaction quickly, so the auto-compaction *threshold* fires while the
+context is still ~40k tokens — nowhere near the provider hard input limit. At that
+moment the conversation had only a few messages, so the compactable region was
+below the 20-line planner minimum while the large tool result was still inside the
+preserved `preserve_recent` tail.
+
+A region that small is refused, and that refusal predates this work: on the base
+commit `prepareCompactionBoundary` returns `undefined` below
+`MIN_COMPACTABLE_REGION_LINES` and the post-tool caller raises the identical
+message. The load-bearing small-region exception added in this iteration is
+deliberately narrower than "any load-bearing trigger": it applies only when the
+context genuinely does not fit, or when the `preserve_recent` tail alone must be
+dropped. Clearing context that already fits would destroy conversation for no gain.
+
+Both halves are covered by tests rather than by this prose:
+`test/integration/compaction-manual-honesty.test.ts` asserts the over-limit small
+region persists a `fresh` boundary with zero planner calls, and that a small region
+under a fitting context keeps the pre-existing refusal.
+
+Once ordinary conversation existed, the same prompt compacted successfully — that
+is sections R2 through R5 above.

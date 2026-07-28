@@ -2,6 +2,7 @@ import type { AgentSession, AgentSessionEvent } from "../../../core/agent-sessio
 import {
   VERBATIM_COMPACTION_PROMPT_VERSION,
   VERBATIM_COMPACTION_STRATEGY,
+  type CompactionRung,
   type VerbatimCompactionDetails,
   type VerbatimCompactionResult,
 } from "../../../core/compaction/index.ts";
@@ -46,6 +47,15 @@ function hasVerbatimCompactionMessage(messages: AgentSession["messages"]): boole
   );
 }
 
+/**
+ * Every durable rung, derived from the union so a new member cannot be silently
+ * rejected here. The event-only path (no session snapshot) is the one place a
+ * `fresh` boundary would otherwise be dropped.
+ */
+const COMPACTION_RUNGS: ReadonlySet<CompactionRung> = new Set(
+  ["planned", "extension", "fresh"] as const satisfies readonly CompactionRung[],
+);
+
 function isCompleteCompactionResult(result: VerbatimCompactionResult): boolean {
   return (
     typeof result.compactedText === "string" &&
@@ -53,7 +63,7 @@ function isCompleteCompactionResult(result: VerbatimCompactionResult): boolean {
     result.stats !== undefined &&
     result.parameters !== undefined &&
     result.promptVersion === VERBATIM_COMPACTION_PROMPT_VERSION &&
-    (result.rung === "planned" || result.rung === "extension")
+    COMPACTION_RUNGS.has(result.rung)
   );
 }
 
@@ -67,6 +77,9 @@ function boundaryMessageFromResult(
     parameters: result.parameters,
     stats: result.stats,
     rung: result.rung,
+    // Preserve the borrowed-planner identity; the event-only path is otherwise
+    // the one place it is lost.
+    ...(result.plannerModel === undefined ? {} : { plannerModel: result.plannerModel }),
     ...(result.backupPath === undefined ? {} : { backupPath: result.backupPath }),
   } satisfies VerbatimCompactionDetails;
   return createVerbatimCompactionMessage(

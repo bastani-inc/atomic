@@ -91,15 +91,24 @@ describe("AgentSession auth-missing compaction failure semantics", () => {
 		expect(sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(0);
 	});
 
-	it("fails overflow compaction without deterministic eviction or persistence when auth is missing", async () => {
+	it("completes load-bearing overflow compaction on the fresh rung when auth is missing", async () => {
+		// Missing credentials are ladder control flow, not an early throw: overflow
+		// recovery is load-bearing, so it falls through to the credential-free
+		// fresh rung instead of killing the turn.
 		seedCompactableBranch();
 		await (session as unknown as AutoCompactionSurface)._runAutoCompaction("overflow", true);
 
 		const end = events.find((event) => event.type === "compaction_end" && event.reason === "overflow");
-		expect(end).toMatchObject({ type: "compaction_end", reason: "overflow", result: undefined, aborted: false, willRetry: false });
+		expect(end).toMatchObject({ type: "compaction_end", reason: "overflow", aborted: false, willRetry: true });
 		if (end?.type !== "compaction_end") throw new Error("missing compaction_end");
-		expect(end.errorMessage).toContain("Compaction provider authentication is unavailable");
-		expect(sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(0);
+		expect(end.errorMessage).toBeUndefined();
+		expect(end.result?.rung).toBe("fresh");
+		// Nothing was borrowed: no fallback models are configured here.
+		expect(end.result?.plannerModel).toBeUndefined();
+
+		const boundaries = sessionManager.getEntries().filter((entry) => entry.type === "compaction");
+		expect(boundaries).toHaveLength(1);
+		expect((boundaries[0] as { details?: { rung?: string } }).details?.rung).toBe("fresh");
 	});
 
 	it("fails threshold compaction without persistence when auth is missing", async () => {

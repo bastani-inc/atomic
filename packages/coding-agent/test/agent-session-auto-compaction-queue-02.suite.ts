@@ -53,9 +53,13 @@ vi.mock("../src/core/compaction/index.js", () => ({
 		return { tokens: 0, usageTokens: 0, trailingTokens: 0, lastUsageIndex: null };
 	},
 	generateBranchSummary: async () => ({ summary: "", aborted: false, readFiles: [], modifiedFiles: [] }),
+	MIN_COMPACTABLE_REGION_LINES: 20,
+	// Small regions never reach the fresh rung in these suites: the mocked
+	// preparation is only used to drive the mocked runner.
+	smallRegionNeedsFreshWindow: () => false,
 	prepareCompactionBoundary: (entries: Array<{ id: string }>) => entries[0] ? ({
 		firstKeptEntryId: entries[0].id,
-		region: { __brand: "NumberedRegion", lines: ["[User]: test", "body"], headerLineNumbers: new Set([1]), priorMarkerNs: new Map(), tokenEstimate: 10 },
+		region: { __brand: "NumberedRegion", lines: ["[User]: test", ...Array.from({ length: 24 }, (_, index) => `body ${index + 1}`)], headerLineNumbers: new Set([1]), priorMarkerNs: new Map(), tokenEstimate: 10 },
 		regionEntryIds: [entries[0].id], keptTailMessageCount: 1, tokensBefore: 100,
 		parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
 		settings: { enabled: true, reserveTokens: 16384, compression_ratio: 0.5, preserve_recent: 2 },
