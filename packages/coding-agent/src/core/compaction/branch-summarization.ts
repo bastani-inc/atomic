@@ -5,13 +5,14 @@
  * a summary of the branch being left so context isn't lost.
  */
 
-import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { retryAssistantCall, type ProviderHeaders, type RetryCallbacks, type RetryPolicy, uuidv7 } from "@earendil-works/pi-ai";
 import type { Api, Model, SimpleStreamOptions, Usage } from "@earendil-works/pi-ai/compat";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
 import { convertToLlm, createBranchSummaryMessage, createCustomMessage } from "../messages.ts";
 import type { ReadonlySessionManager, SessionEntry } from "../session-manager.ts";
 import { estimateTokens } from "./compaction.ts";
+import { resolvePlannerRequest } from "./range-planner.ts";
 import {
 	computeFileLists,
 	createFileOps,
@@ -76,6 +77,11 @@ export interface GenerateBranchSummaryOptions {
 	replaceInstructions?: boolean;
 	/** Tokens reserved for prompt + LLM response (default 16384) */
 	reserveTokens?: number;
+	/**
+	 * Session reasoning level, inherited by the summarization request.
+	 * No output cap is sent, so thinking has no artificial budget to exhaust.
+	 */
+	thinkingLevel?: ThinkingLevel;
 	/** Optional session stream function. Used to preserve SDK request behavior without mutating agent state. */
 	streamFn?: StreamFn;
 	/** Retry policy for transient summarization failures. */
@@ -307,6 +313,7 @@ export async function generateBranchSummary(
 		customInstructions,
 		replaceInstructions,
 		reserveTokens = 16384,
+		thinkingLevel,
 		streamFn,
 		retry,
 		callbacks,
@@ -349,15 +356,20 @@ export async function generateBranchSummary(
 	// Call LLM for summarization. Prefer the session stream function so SDK
 	// request behavior stays consistent without mutating agent state.
 	const context = { systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages };
+	const requestModel = baseUrl === undefined || baseUrl === model.baseUrl ? model : { ...model, baseUrl };
+	// Same budget rule as the compaction planner: no output cap is sent, so
+	// pi-ai's context clamp is the only bound and the inherited reasoning level
+	// has no artificial budget to exhaust. `reserveTokens` keeps its input-side
+	// meaning above, unchanged.
+	const budget = resolvePlannerRequest(requestModel, thinkingLevel);
 	const requestOptions: SimpleStreamOptions = {
 		apiKey,
 		headers,
 		signal,
-		maxTokens: 2048,
 		cacheRetention: "none",
 		sessionId: uuidv7(),
+		...(budget.reasoning && budget.reasoning !== "off" ? { reasoning: budget.reasoning } : {}),
 	};
-	const requestModel = baseUrl === undefined || baseUrl === model.baseUrl ? model : { ...model, baseUrl };
 	const response = await (async () => {
 		try {
 			return await retryAssistantCall(

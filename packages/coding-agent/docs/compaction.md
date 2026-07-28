@@ -2,13 +2,15 @@
 
 LLMs have finite context windows. Atomic reduces transcript context with **verbatim line compaction** while preserving an exact count of recent context-visible messages as ordinary messages. Branch summarization is a separate, intentionally lossy feature used only when navigating away from a branch.
 
-Compaction runs entirely locally with the active session model; no external compaction service is involved. The model only selects which lines to delete — Atomic reconstructs the retained text mechanically, so surviving lines are never rewritten.
+Compaction runs entirely locally; no external compaction service is involved. It normally uses the active session model. If that model cannot rank the lines — a rate limit, a quota exhaustion, a provider error, a context overflow, or an empty plan — Atomic *borrows* the next model from your configured `fallbackModels` for that one planner request. **A configured fallback model may therefore receive the compaction transcript**, and it is sent with that provider's own credentials. Borrowing never changes the session's model or thinking level. The model only selects which lines to delete — Atomic reconstructs the retained text mechanically, so surviving lines are never rewritten.
 
 ## Overview
 
 | Mechanism | Trigger | Model output | Durable result |
 |---|---|---|---|
 | Verbatim compaction | `/compact`, RPC `compact`, or automatic threshold/overflow recovery | Bare `start,end` deletion records (one per line) | A `CompactionEntry` whose `summary` is mechanically reconstructed transcript text |
+| Planner fallback borrowing | Any terminal planner outcome on the current planner model | Same deletion records, from a configured `fallbackModels` entry | The same `"planned"` boundary, with `details.plannerModel` naming the borrowed model |
+| Fresh context window | Load-bearing compaction after every configured model failed | *(none — no model call)* | A `CompactionEntry` with `details.rung: "fresh"` |
 | Branch summarization | Optional `/tree` navigation | Generated summary prose | A `BranchSummaryEntry` |
 
 There is one context-compaction door: `compact`.
@@ -90,19 +92,55 @@ Exactly the configured recent-message tail is outside the compactable region; At
 
 Manual compaction is single-flight. A manual request made while another manual compaction is still in flight joins that run and receives its result instead of starting a second model call, so it emits no extra `compaction_start`/`compaction_end` pair and appends no extra boundary; `abortCompaction()` (Escape) still cancels the single owning run for every waiter. A manual request made while an automatic compaction is in flight is rejected immediately with an "automatic compaction is already in progress" error rather than racing it. In the interactive TUI, `/compact` typed while any compaction is active is refused with a warning; it is not queued, because queueing would only defer a duplicate compaction. Ordinary text typed during compaction is still queued as usual.
 
-The post-tool check stays inside the active Pi loop: it runs at most one ordinary verbatim compaction attempt for that completed tool turn, returns the rebuilt context to the loop, and never calls or schedules `agent.continue()`. Normal context reconstruction preserves provider tool-call/result protocol validity. Below-threshold tool turns follow the unchanged request path. Because the same active run resumes without emitting another `agent_start`, the interactive TUI replaces the compaction loader with its working spinner as soon as successful mid-turn compaction ends; streaming feedback therefore resumes immediately without waiting for another user interaction.
+The post-tool check stays inside the active Pi loop: it runs the rung ladder once for that completed tool turn, returns the rebuilt context to the loop, and never calls or schedules `agent.continue()`. Normal context reconstruction preserves provider tool-call/result protocol validity. Below-threshold tool turns follow the unchanged request path. Because the same active run resumes without emitting another `agent_start`, the interactive TUI replaces the compaction loader with its working spinner as soon as successful mid-turn compaction ends; streaming feedback therefore resumes immediately without waiting for another user interaction.
 
-## One-pass planning and failure behavior
+## Planning rungs and failure behavior
 
-Atomic asks the active session model, at the active reasoning level and through the normal session stream/provider wrapper, to rank every eligible line in one global pass and apply one threshold. The entire compactable region is sent in exactly one classifier request; it is never split into chunks. Manual, threshold, and overflow compaction all calculate the line target directly from the prepared `compression_ratio`. Explicit protected lines form a hard keep floor.
+Atomic asks a planner model, at the inherited session reasoning level and through the normal session stream/provider wrapper, to rank every eligible line in one global pass and apply one threshold. The entire compactable region is sent in one classifier request; it is never split into chunks. Manual, threshold, and overflow compaction all calculate the line target directly from the prepared `compression_ratio`. Explicit protected lines form a hard keep floor.
 
-The request uses the same provider path and failure handling as pi's summary compaction. Provider/API errors, overflow, abort, malformed output, or empty/unusable safe ranges fail after that one request. These failures write no compaction entry and schedule no continuation. During the post-tool preflight, failure or cancellation also stops the active loop before its follow-up provider request, is surfaced through the normal compaction lifecycle, and is not admitted to ordinary provider retry or model fallback. There is no semantic retry, critical rung, deterministic fallback, or deterministic target correction.
+**The planner sends no output cap.** Only the provider's own context clamp bounds the response, so reasoning tokens cannot crowd out the deletion records. The reasoning level is inherited from the session and is never modified between attempts; a `model:level` suffix on a `fallbackModels` entry sets the level for that candidate only.
 
-A syntactically valid usable result is accepted once after safety-only normalization, even when it deletes fewer lines or tokens than requested. Atomic never adds or restores model-selected deletions to force a target. During overflow recovery, the existing one-shot compact-and-retry continuation may therefore surface unresolved overflow naturally. During a post-tool preflight, Atomic likewise does not add a second compaction strategy or attempt; if the rebuilt context is still known to exceed the provider's hard input limit, it refuses to send the follow-up request and reports the limit failure clearly.
+Each planner attempt ends in exactly one typed outcome:
+
+| Outcome | Meaning | What happens next |
+|---|---|---|
+| ranked | Valid deletion records | Boundary written, `rung: "planned"` |
+| recovered | A length-truncated response with usable complete records | Boundary written silently, `rung: "planned"` |
+| overflowed | The planner request itself exceeded the context window | The oldest region lines are withheld and the *same* model retried, up to three trims; the withheld head becomes a deterministic deletion |
+| rateLimited | `429` / rate limit / overloaded / `5xx` after the retry budget (`exhausted: true`), or quota/billing exhaustion returned without backoff (`exhausted: false`) | Advance to the next configured model |
+| unusable | Malformed output, no usable safe ranges, or reasoning starvation (`starved`) | Advance to the next configured model |
+| providerError | Any other provider or transport failure | Advance to the next configured model |
+
+`settings.retry` still governs transport attempts *within* one candidate, with its existing backoff. When a candidate is exhausted, Atomic borrows the next entry from `settings.fallbackModels`, resolving that candidate's own credentials. Each candidate is tried at most once per compaction run, in configured order, keyed by `provider/model:thinkingLevel`.
+
+Borrowing never mutates the session: no `agent.state.model` write, no model-change or thinking-level entry, no system-prompt refresh, no `model_changed`/`model_select`/`model_fallback_start`, and no `agent.continue()`. After compaction returns, `session.model` is exactly what it was before, and the main chat's own fallback bookkeeping is untouched.
+
+When every configured model is exhausted, what happens depends on how much the caller can afford to lose:
+
+| Call site | Urgency | Can borrow a model | Can start a fresh context window |
+|---|---|---|---|
+| `/compact`, `ctx.compact()`, `session.compact()`, RPC `compact` | recoverable | yes | no |
+| Threshold auto-compaction | recoverable | yes | no |
+| Overflow recovery | load-bearing | yes | yes |
+| Post-tool preflight | load-bearing | yes | yes |
+
+A recoverable compaction fails honestly: it writes no compaction entry, schedules no continuation, and reports the typed cause through `compaction_end`. A load-bearing compaction always completes, falling through to the **fresh context window** rung described below.
+
+A syntactically valid usable result is accepted once after safety-only normalization, even when it deletes fewer lines or tokens than requested. Atomic never adds or restores model-selected deletions to force a target. During overflow recovery, the existing one-shot compact-and-retry continuation may therefore surface unresolved overflow naturally.
+
+### The fresh context window rung
+
+`startNewContextWindow` is total: no provider, no credentials, no network, no failure mode. It discards the compactable region and any prior durable summary, keeps explicit protected spans, and keeps the `preserve_recent` protected tail — dropping the tail only when keeping it would still exceed the provider hard input limit, in which case the boundary persists `firstKeptEntryId: null`. It emits the whole region as one deletion range and hands it to the same validation and reconstruction path as every other rung, so retained lines stay byte-identical.
+
+The fresh rung destroys conversation, so it is loud: the boundary reads `✻ Context cleared (compaction degraded)` instead of `✻ Context compacted`, in the main chat and in attached workflow stage chat alike, and `details.rung` records `"fresh"` durably. The precise cause stays in the `0600` diagnostic sidecar.
+
+The ladder guarantees that *compaction* completes. It does not guarantee the *turn* succeeds: if every configured model is rate limited, the follow-up request will be too. What it buys is that a compaction failure does not additionally destroy the turn, that a healthy fallback model rescues quality when one exists, and that the retry starts from a small context.
+
+During a post-tool preflight, Atomic still gates the rebuilt context: if it is known to exceed the provider's hard input limit even after compaction, Atomic refuses to send the follow-up request and reports the limit failure clearly. The fresh rung's tail-dropping rule exists so that gate is reachable rather than hollow.
 
 ### Length-truncated response recovery
 
-When the planner model's output is truncated by `max_tokens` (indicated by `stopReason: "length"`), Atomic silently recovers complete newline-terminated deletion records from the truncated response. A deterministic line parser validates each completed line (those followed by a newline) against the strict `start,end` grammar. The final fragment after the last newline is always discarded — even if it looks syntactically complete — because EOF may have cut a multi-digit integer (e.g. `300,30` could have intended `300,305`). If any completed line has invalid syntax or zero usable records survive validation, recovery fails and the normal `RangePlanError` path applies.
+When the planner model's output is truncated at the provider's own limit (indicated by `stopReason: "length"`), Atomic silently recovers complete newline-terminated deletion records from the truncated response. Atomic sends no `max_tokens` of its own, so this reflects the provider's context clamp rather than a caller-imposed cap. A deterministic line parser validates each completed line (those followed by a newline) against the strict `start,end` grammar. The final fragment after the last newline is always discarded — even if it looks syntactically complete — because EOF may have cut a multi-digit integer (e.g. `300,30` could have intended `300,305`). If any completed line has invalid syntax or zero usable records survive validation, the attempt becomes an `unusable` outcome and the ladder advances.
 
 Example of truncated output:
 
@@ -116,19 +154,19 @@ Recovery yields `120,180` and `6,40`; discards `300,` without guessing. The plan
 
 Successful partial recovery is an ordinary successful compaction: no warning, banner, toast, or special status copy appears. The UI shows the normal spinner then `✻ Context compacted`.
 
-For operational observability, a private recovery diagnostic sidecar is written beside persisted sessions with `0600` permissions. It records the full raw response, stop reason, usage, request `maxTokens`, model metadata, recovered range count, and recovery category. The sidecar path is never surfaced in the success UI, error messages, or user-visible status. In-memory sessions and sidecar write failures do not affect the successful recovery.
+For operational observability, a private recovery diagnostic sidecar is written beside persisted sessions with `0600` permissions. It records the full raw response, stop reason, usage (including `usage.reasoning`), the request `maxTokens` (now always absent, since no cap is sent), model metadata, recovered range count, and recovery category. The sidecar path is never surfaced in the success UI, error messages, or user-visible status. In-memory sessions and sidecar write failures do not affect the successful recovery.
 
 ### Planner failure diagnostics
 
-For a persisted session, a failed planner call writes a JSON sidecar beside the session JSONL and includes its path in the `RangePlanError`, for example:
+For a persisted session, each failed planner attempt writes its own JSON sidecar beside the session JSONL and carries the path on the typed outcome. When a recoverable compaction exhausts every configured model, the resulting `RangePlanError` includes that path, for example:
 
 ```text
 Compaction range planning returned malformed output (diagnostic: /path/session-compaction-diagnostic-….json)
 ```
 
-The private sidecar uses `0600` permissions where supported and records the full planner response text, stop reason, provider error, usage, request `maxTokens`, timestamp, failure category, and non-secret model metadata. It does not record API keys, request headers, the planner prompt, or the numbered transcript request. The raw response itself may contain sensitive text if the model echoed input, so treat the sidecar with the same care as its adjacent session file.
+The private sidecar uses `0600` permissions where supported and records the full planner response text, stop reason, provider error, usage, the request `maxTokens` (absent — no cap is sent), timestamp, failure category, and non-secret model metadata for **the model that made that attempt**, so a run rescued by a fallback leaves per-model evidence. It does not record API keys, request headers, the planner prompt, or the numbered transcript request. The raw response itself may contain sensitive text if the model echoed input, so treat the sidecar with the same care as its adjacent session file.
 
-Diagnostic categories distinguish malformed output, valid output with no usable ranges, provider errors, and stream failures. In-memory sessions do not create sidecars. If the diagnostic write fails, Atomic preserves the original error and classification rather than replacing the planner failure.
+Diagnostic categories distinguish malformed output, valid output with no usable ranges, provider errors, stream failures, reasoning starvation (`starved`), and rate limiting (`rate_limited`). A `rate_limited` record additionally sets `rateLimitExhausted`: `true` when transient throttling spent the retry budget, `false` for quota/billing exhaustion returned without backoff. In-memory sessions do not create sidecars. If the diagnostic write fails, Atomic preserves the original classification rather than replacing the planner outcome.
 
 Interactive main chat and attached workflow stage chat treat `compaction_end` as the authority for cancellation and failure UI. A failed or cancelled `/compact` stops its spinner, shows the event-provided status or diagnostic path without a duplicate stack trace, writes no boundary, and leaves the session usable for another `/compact` attempt or a normal follow-up turn.
 
@@ -156,6 +194,19 @@ A successful run appends the existing pi-style `type:"compaction"` entry shape:
   }
 }
 ```
+
+`details.rung` is one of `"planned"` (a model ranked the lines — the session model **or** a borrowed fallback, including silent partial recovery), `"extension"` (a `session_before_compact` override), or `"fresh"` (the compactable conversation was discarded and a new context window started). `details.plannerModel` is present **only** when a borrowed fallback model ranked the lines:
+
+```json
+"details": {
+  "strategy": "verbatim-lines",
+  "promptVersion": 3,
+  "rung": "planned",
+  "plannerModel": {"provider": "openai", "id": "gpt-5.1", "thinkingLevel": "high"}
+}
+```
+
+There is no format-version bump and no new entry type. Both `"fresh"` and `plannerModel` are additive: they are absent on every existing entry and on any compaction that used the session model, so old readers are unaffected. A `"fresh"` boundary that had to drop the `preserve_recent` tail persists `firstKeptEntryId: null`.
 
 A `compaction` entry is active only when `details.strategy === "verbatim-lines"`. On rebuild, Atomic emits one visible custom-role boundary message: the durable `summary` with the kept tail—the entries from `firstKeptEntryId` up to the boundary—serialized and concatenated onto its end. The tail is never restored as separate assistant/tool-result blocks, so a tail that starts or ends mid-turn cannot produce out-of-order provider blocks; images inside the tail ride along as image blocks on that same boundary message. When no pre-boundary context-visible message is retained—such as with `preserve_recent: 0`—`firstKeptEntryId` is `null` and the boundary carries the `summary` alone. Messages appended after the boundary are always replayed as real messages. The boundary is converted to a user-role provider message and shown in the TUI as a collapsible compaction card.
 
@@ -187,8 +238,9 @@ After persistence, Atomic emits an observe-only event:
 
 ```typescript
 pi.on("session_compact", async (event) => {
-  console.log(event.result.rung, event.result.stats);
-  console.log(event.compactionEntry.details.strategy); // "verbatim-lines"
+  console.log(event.result.rung, event.result.stats);   // rung: "planned" | "extension" | "fresh"
+  console.log(event.result.plannerModel);               // set only when a fallback model was borrowed
+  console.log(event.compactionEntry.details.strategy);  // "verbatim-lines"
   console.log(event.fromExtension);
 });
 ```
@@ -369,7 +421,9 @@ See `SessionBeforeTreeEvent` and `TreePreparation` in the types file.
 
 ## Summary request isolation
 
-Verbatim planning and branch summarization are standalone provider requests. Each receives a fresh routing session ID instead of reusing the chat's provider-affinity ID, and sets cache retention to `none` so it cannot write summary/planner prompts into the main prompt cache. Existing API-key, header-only `ANTHROPIC_AUTH_TOKEN`, custom-header, abort, and bounded retry behavior still applies. These controls affect provider request routing/cache writes only; successful results are persisted through the normal Atomic session lifecycle.
+Verbatim planning and branch summarization are standalone provider requests. Each receives a fresh routing session ID instead of reusing the chat's provider-affinity ID, and sets cache retention to `none` so it cannot write summary/planner prompts into the main prompt cache. Neither sends a `max_tokens` of its own. Existing API-key, header-only `ANTHROPIC_AUTH_TOKEN`, custom-header, abort, and bounded retry behavior still applies. These controls affect provider request routing/cache writes only; successful results are persisted through the normal Atomic session lifecycle.
+
+**Isolation is per model, not per session.** When compaction borrows a fallback model, that request is built with the borrowed candidate's own API key, headers, and base URL; the session model's credentials are never sent to another provider. The corollary is a real data-flow change: **a model listed in `settings.fallbackModels` may receive the compaction transcript.** The list is user-authored, so the set of providers that can see it is yours to control — remove an entry if you do not want it to see transcript content.
 
 ## Settings
 
@@ -387,7 +441,9 @@ Configure compaction in `~/.atomic/agent/settings.json` or `<project-dir>/.atomi
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `enabled` | `true` | Enable automatic Verbatim Compaction. |
-| `reserveTokens` | `16384` | Tokens to reserve for the next LLM response; threshold auto-compaction starts when completed-response usage or a prospective post-tool context exceeds the model's effective input budget minus this reserve. |
+| `reserveTokens` | `16384` | Tokens to reserve for the next LLM response; threshold auto-compaction starts when completed-response usage or a prospective post-tool context exceeds the model's effective input budget minus this reserve. It is an **input-side** reserve only and never caps planner output. |
+
+Compaction has no configuration key of its own for fallback borrowing: it reuses `settings.fallbackModels`, the same ordered `provider/model[:thinkingLevel]` list that main-chat model fallback walks. With no `fallbackModels` configured, compaction behaves as before: one planner model, then either an honest failure (recoverable) or a fresh context window (load-bearing).
 
 Disable auto-compaction with `"enabled": false`. You can still compact manually with `/compact`.
 

@@ -37,7 +37,7 @@ Settings and trust JSON files may start with a UTF-8 BOM, as commonly written by
 | `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in output |
 | `thinkingBudgets` | object | - | Custom token budgets per thinking level |
 | `showCacheMissNotices` | boolean | `false` | Show transcript notices for significant prompt-cache misses and their attributed wasted tokens |
-| `fallbackModels` | string[] | - | Ordered main-chat fallback models, written as `"provider/model"` with optional model-supported reasoning suffixes such as `:high`, `:xhigh`, or `:max` |
+| `fallbackModels` | string[] | - | Ordered fallback models, written as `"provider/model"` with optional model-supported reasoning suffixes such as `:high`, `:xhigh`, or `:max`. Used by main-chat turns and, since compaction fallback rungs, borrowed for compaction planner requests |
 
 `defaultProvider` and `defaultModel` form one exact saved selection when both are present. Atomic waits for built-in, configured, and extension provider registration before classifying that provider. If it remains unsupported, Atomic does not silently switch providers: interactive mode stays live with a generic configuration warning; print and JSON modes write the warning to stderr and exit nonzero before prompting (with JSON stdout remaining JSONL-clean); and RPC rejects `prompt` until a successful explicit `set_model` selects an available model or an explicit model cycle returns a different available model. A null or unchanged cycle does not clear the condition. If the provider is supported but its saved model is unknown or lacks configured authentication, normal automatic selection of an available authenticated model remains enabled; the same is true when either field is omitted. Valid extension-provider defaults can resolve after deferred extension loading. Update an unsupported pair or choose a model with `/model`.
 
@@ -56,7 +56,9 @@ Settings and trust JSON files may start with a UTF-8 BOM, as commonly written by
 
 #### fallbackModels
 
-`fallbackModels` gives ordinary main-chat turns an ordered model fallback chain. Atomic starts with the selected/default model. If that model exhausts the normal same-model auto-retry loop for a retryable provider/model failure — including rate limits and quota/usage-limit exhaustion such as a provider reporting `The usage limit has been reached` — Atomic switches to the next configured fallback model and continues the same turn. If `retry.enabled` is `false`, Atomic skips same-model retries and moves directly to the next fallback for retryable failures. Non-retryable task failures, cancellations, and context-overflow compaction paths do not trigger model fallback.
+`fallbackModels` gives ordinary main-chat turns an ordered model fallback chain. Atomic starts with the selected/default model. If that model exhausts the normal same-model auto-retry loop for a retryable provider/model failure — including rate limits and quota/usage-limit exhaustion such as a provider reporting `The usage limit has been reached` — Atomic switches to the next configured fallback model and continues the same turn. If `retry.enabled` is `false`, Atomic skips same-model retries and moves directly to the next fallback for retryable failures. Non-retryable task failures and cancellations do not trigger model fallback.
+
+The same list is also **borrowed by compaction**. When the compaction range planner cannot produce a usable plan on the current model — a rate limit, quota exhaustion, provider error, context overflow, or an empty plan — Atomic runs one planner request against the next configured candidate, using that candidate's own credentials. **A configured fallback model may therefore receive the compaction transcript.** Borrowing is planner-only: it never changes the session model, thinking level, or model history, it appends no model-change entry, and it emits no fallback status. See [Compaction](/compaction#planning-rungs-and-failure-behavior).
 
 Fallback entries should be fully qualified `provider/model` ids. Add a reasoning suffix to a candidate to override the effort for that fallback only; valid suffixes are `:off`, `:minimal`, `:low`, `:medium`, `:high`, `:xhigh`, and `:max`. Atomic clamps or hides levels that the selected model's capability map does not support.
 
@@ -304,7 +306,7 @@ When multiple sources specify a session directory, precedence is `--session-dir`
 }
 ```
 
-`fallbackModels` is independent of `enabledModels`: it is consulted only after a retryable main-chat provider/model failure.
+`fallbackModels` is independent of `enabledModels`: it is consulted only after a retryable main-chat provider/model failure or a terminal compaction planner outcome.
 
 ### Markdown
 

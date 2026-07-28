@@ -364,10 +364,9 @@ export async function _runAutoCompaction(this: AgentSession, reason: "overflow" 
 		// compaction or provide compacted text, so local extension compaction does not
 		// require provider credentials. Missing auth then fails model-driven compaction
 		// before persistence or continuation, matching other provider-call failures.
-		const model = this.model;
 		const result = await this._applyVerbatimCompaction({
-			resolvePlannerAuth: async () => {
-				const authResult = await this._modelRegistry.getApiKeyAndHeaders(model);
+			resolvePlannerAuth: async (candidate) => {
+				const authResult = await this._modelRegistry.getApiKeyAndHeaders(candidate);
 				if (!authResult.ok || (!authResult.apiKey && !authResult.headers)) {
 					return undefined;
 				}
@@ -376,6 +375,9 @@ export async function _runAutoCompaction(this: AgentSession, reason: "overflow" 
 			abortController: this._autoCompactionAbortController,
 			backupLabel: reason === "overflow" ? "overflow-auto-compact" : "auto-compact",
 			reason,
+			// Overflow recovery is load-bearing: the turn cannot continue without it.
+			// A threshold crossing has already passed its turn boundary, so failing is safe.
+			urgency: reason === "overflow" ? "load_bearing" : "recoverable",
 		});
 		if (!result) {
 			this._emit({

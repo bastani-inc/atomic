@@ -19,7 +19,8 @@ import {
 	diagnosticSidecarPath,
 	writeDiagnosticSidecar,
 } from "../src/core/compaction/range-planner-diagnostics.ts";
-import { RangePlanError, planDeletedLineRanges } from "../src/core/compaction/range-planner.ts";
+import { planDeletedLineRanges } from "../src/core/compaction/range-planner.ts";
+import { planner } from "./compaction-planner-fixtures.ts";
 import type { NumberedRegion, VerbatimCompactionParameters } from "../src/core/compaction/compaction-types.ts";
 
 const testPosixFileMode = process.platform === "win32" ? it.skip : it;
@@ -254,7 +255,7 @@ describe("compaction diagnostics: persisted sidecar", () => {
 		expect(basename(result)).toMatch(/^2026-07-15_abc123-compaction-diagnostic-\d+\.json$/);
 	});
 
-	it("RangePlanError.message includes diagnostic path when sidecar is written", async () => {
+	it("unusable outcome carries the diagnostic path when a sidecar is written", async () => {
 		const sessionFile = join(testDir, "test-session.jsonl");
 		const model = createMockModel();
 		const region = createMinimalRegion(50);
@@ -270,27 +271,20 @@ describe("compaction diagnostics: persisted sidecar", () => {
 			events: async function* () { yield { type: "done" as const, reason: "stop" as const, message: createMockResponse("") }; },
 		});
 
-		let caughtError: RangePlanError | undefined;
-		try {
-			await planDeletedLineRanges(
-				region, params, model,
-				{ apiKey: "test-key" },
-				undefined, undefined, 16384, 25,
-				{ streamFn: mockStreamFn as never, sessionFilePath: sessionFile },
-			);
-		} catch (error) {
-			caughtError = error as RangePlanError;
-		}
+		const outcome = await planDeletedLineRanges(
+			region, params,
+			planner(model, undefined, { apiKey: "test-key" }),
+			25,
+			{ streamFn: mockStreamFn as never, sessionFilePath: sessionFile },
+		);
 
-		expect(caughtError).toBeInstanceOf(RangePlanError);
-		expect(caughtError!.name).toBe("RangePlanError");
-		expect(caughtError!.message).toContain("malformed output");
-		expect(caughtError!.message).toContain("(diagnostic:");
-		expect(caughtError!.diagnosticPath).toBeDefined();
-		expect(existsSync(caughtError!.diagnosticPath!)).toBe(true);
+		expect(outcome).toMatchObject({ kind: "unusable", category: "malformed_output" });
+		const diagnosticPath = (outcome as { diagnosticPath?: string }).diagnosticPath;
+		expect(diagnosticPath).toBeDefined();
+		expect(existsSync(diagnosticPath!)).toBe(true);
 
 		// Verify the sidecar does NOT contain the API key
-		const content = readFileSync(caughtError!.diagnosticPath!, "utf-8");
+		const content = readFileSync(diagnosticPath!, "utf-8");
 		expect(content).not.toContain("test-key");
 	});
 });
@@ -330,7 +324,7 @@ describe("compaction diagnostics: in-memory and write-failure fallback", () => {
 		expect(path).toBeUndefined();
 	});
 
-	it("RangePlanError preserves original message when sidecar write fails", async () => {
+	it("unusable outcome omits the diagnostic path when the sidecar write fails", async () => {
 		const model = createMockModel();
 		const region = createMinimalRegion(50);
 		const params: VerbatimCompactionParameters = {
@@ -344,29 +338,18 @@ describe("compaction diagnostics: in-memory and write-failure fallback", () => {
 			events: async function* () { yield { type: "done" as const, reason: "stop" as const, message: createMockResponse("") }; },
 		});
 
-		let caughtError: RangePlanError | undefined;
-		try {
-			await planDeletedLineRanges(
-				region, params, model,
-				{ apiKey: "key" },
-				undefined, undefined, 16384, 25,
-				// Non-existent path → write will fail → fallback
-				{ streamFn: mockStreamFn as never, sessionFilePath: "/no/such/dir/session.jsonl" },
-			);
-		} catch (error) {
-			caughtError = error as RangePlanError;
-		}
+		const outcome = await planDeletedLineRanges(
+			region, params,
+			planner(model, undefined, { apiKey: "key" }),
+			25,
+			// Non-existent path → write will fail → fallback
+			{ streamFn: mockStreamFn as never, sessionFilePath: "/no/such/dir/session.jsonl" },
+		);
 
-		expect(caughtError).toBeInstanceOf(RangePlanError);
-		expect(caughtError!.name).toBe("RangePlanError");
-		expect(caughtError!.message).toBe("Compaction range planning returned malformed output");
-		expect(caughtError!.diagnosticPath).toBeUndefined();
-		// Original error classification preserved
-		expect(caughtError!.attempts).toBe(1);
-		expect(caughtError!.providerOverflow).toBe(false);
+		expect(outcome).toEqual({ kind: "unusable", category: "malformed_output", excerpt: "not json" });
 	});
 
-	it("RangePlanError preserves original message for in-memory session", async () => {
+	it("unusable outcome omits the diagnostic path for an in-memory session", async () => {
 		const model = createMockModel();
 		const region = createMinimalRegion(50);
 		const params: VerbatimCompactionParameters = {
@@ -380,25 +363,18 @@ describe("compaction diagnostics: in-memory and write-failure fallback", () => {
 			events: async function* () { yield { type: "done" as const, reason: "stop" as const, message: createMockResponse("") }; },
 		});
 
-		let caughtError: RangePlanError | undefined;
-		try {
-			await planDeletedLineRanges(
-				region, params, model,
-				{ apiKey: "key" },
-				undefined, undefined, 16384, 25,
-				// No sessionFilePath → in-memory
-				{ streamFn: mockStreamFn as never },
-			);
-		} catch (error) {
-			caughtError = error as RangePlanError;
-		}
+		const outcome = await planDeletedLineRanges(
+			region, params,
+			planner(model, undefined, { apiKey: "key" }),
+			25,
+			// No sessionFilePath → in-memory
+			{ streamFn: mockStreamFn as never },
+		);
 
-		expect(caughtError).toBeInstanceOf(RangePlanError);
-		expect(caughtError!.message).toBe("Compaction range planning returned malformed output");
-		expect(caughtError!.diagnosticPath).toBeUndefined();
+		expect(outcome).toEqual({ kind: "unusable", category: "malformed_output", excerpt: "not json" });
 	});
 
-	it("preserves RangePlanError type classification for callers", async () => {
+	it("classifies a provider context overflow as the overflowed outcome", async () => {
 		const model = createMockModel();
 		const region = createMinimalRegion(50);
 		const params: VerbatimCompactionParameters = {
@@ -416,23 +392,13 @@ describe("compaction diagnostics: in-memory and write-failure fallback", () => {
 			events: async function* () { yield { type: "error" as const, reason: "error" as const, error: errorResponse }; },
 		});
 
-		let caughtError: RangePlanError | undefined;
-		try {
-			await planDeletedLineRanges(
-				region, params, model,
-				{ apiKey: "key" },
-				undefined, undefined, 16384, 25,
-				{ streamFn: mockStreamFn as never },
-			);
-		} catch (error) {
-			caughtError = error as RangePlanError;
-		}
+		const outcome = await planDeletedLineRanges(
+			region, params,
+			planner(model, undefined, { apiKey: "key" }),
+			25,
+			{ streamFn: mockStreamFn as never },
+		);
 
-		expect(caughtError).toBeInstanceOf(RangePlanError);
-		expect(caughtError!.name).toBe("RangePlanError");
-		expect(caughtError!.attempts).toBe(1);
-		expect(caughtError!.lastResponseExcerpt).toBe("");
-		// Error type preserved for caller inspection
-		expect(caughtError instanceof Error).toBe(true);
+		expect(outcome).toEqual({ kind: "overflowed" });
 	});
 });

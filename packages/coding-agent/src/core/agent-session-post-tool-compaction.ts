@@ -43,8 +43,8 @@ export async function _preflightPostToolContext(
 
 	try {
 		const result = await this._applyVerbatimCompaction({
-			resolvePlannerAuth: async () => {
-				const auth = await this._modelRegistry.getApiKeyAndHeaders(model);
+			resolvePlannerAuth: async (candidate) => {
+				const auth = await this._modelRegistry.getApiKeyAndHeaders(candidate);
 				return auth.ok && (auth.apiKey || auth.headers)
 					? { apiKey: auth.apiKey, headers: auth.headers, baseUrl: auth.baseUrl }
 					: undefined;
@@ -52,6 +52,8 @@ export async function _preflightPostToolContext(
 			abortController,
 			backupLabel: "auto-compact",
 			reason: "threshold",
+			// Mid-turn: a compaction failure here kills the active turn.
+			urgency: "load_bearing",
 		});
 		if (!result) throw new Error("no compactable transcript entries were available");
 

@@ -27,7 +27,13 @@ export interface CreateAgentSessionOptions {
   model?: Model<Api>;
   /** Thinking level. Default: from settings, else 'medium' (clamped to model capabilities) */
   thinkingLevel?: ThinkingLevel;
-  /** Ordered fallback models for main chat, as provider/model strings with optional :thinkingLevel suffix. Default: settings.fallbackModels */
+  /**
+   * Ordered fallback models as provider/model strings with optional :thinkingLevel suffix.
+   * Used by main-chat turns and borrowed, planner-only, for compaction range planning when
+   * the current model cannot produce a usable plan — so a configured candidate may receive
+   * the compaction transcript. Borrowing never changes the session model or thinking level.
+   * Default: settings.fallbackModels
+   */
   fallbackModels?: string[];
   /** Models available for cycling (Ctrl+P in interactive mode) */
   scopedModels?: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;

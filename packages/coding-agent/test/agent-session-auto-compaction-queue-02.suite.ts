@@ -18,6 +18,7 @@ const compactionMocks = vi.hoisted(() => ({
 		text: "[User]: retained test context\n(filtered 1 lines)", ranges: [{ start: 2, end: 2 }],
 		stats: { linesBefore: 2, linesDeleted: 1, linesKept: 1, rangeCount: 1, tokensBefore: 100, tokensAfter: 50, percentReduction: 50 },
 		rung: "planned" as const,
+		keptTail: true,
 	})),
 }));
 

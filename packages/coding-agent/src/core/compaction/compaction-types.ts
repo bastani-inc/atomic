@@ -1,3 +1,6 @@
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ProviderHeaders } from "@earendil-works/pi-ai";
+import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { CompactionSettings } from "./compaction.js";
 
 export const VERBATIM_COMPACTION_PROMPT_VERSION = 3 as const;
@@ -58,12 +61,59 @@ export interface VerbatimCompactionStats {
 	percentReduction: number;
 }
 
+/** How much the caller can afford to lose if compaction does not happen. */
+export type CompactionUrgency =
+	/** Manual /compact, threshold auto-compaction — failing is safe. */
+	| "recoverable"
+	/** Overflow recovery, post-tool preflight — failing kills the turn. */
+	| "load_bearing";
+
+/** How a durable compaction boundary was produced. */
+export type CompactionRung = "planned" | "extension" | "fresh";
+
+/** Credentials for one planner request. Resolved per model, never shared. */
+export interface PlannerAuth {
+	apiKey?: string;
+	headers?: ProviderHeaders;
+	baseUrl?: string;
+}
+
+/**
+ * What one planner request may spend.
+ *
+ * `maxTokens` is declared `undefined`, not `number | undefined`: the type
+ * forbids reintroducing the `0.8 * reserveTokens` output cap without changing
+ * the type and failing review. pi-ai's `clampMaxTokensToContext` is the only bound.
+ */
+export interface PlannerBudget {
+	readonly maxTokens: undefined;
+	readonly reasoning: ThinkingLevel | undefined;
+}
+
+/** A planner-only model borrowing. Cannot be confused with a session model switch. */
+export interface BorrowedPlanner {
+	readonly model: Model<Api>;
+	readonly budget: PlannerBudget;
+	readonly auth: PlannerAuth;
+	/** `provider/model:level` identity of this candidate. */
+	readonly key: string;
+}
+
+/** Identity of the model that ranked the deleted lines, when it was borrowed. */
+export interface CompactionPlannerModel {
+	provider: string;
+	id: string;
+	thinkingLevel?: ThinkingLevel;
+}
+
 export interface VerbatimCompactionDetails {
 	strategy: typeof VERBATIM_COMPACTION_STRATEGY;
 	promptVersion: typeof VERBATIM_COMPACTION_PROMPT_VERSION;
 	parameters: VerbatimCompactionParameters;
 	stats: VerbatimCompactionStats;
-	rung: "planned" | "extension";
+	rung: CompactionRung;
+	/** Present only when a borrowed fallback model ranked the lines. */
+	plannerModel?: CompactionPlannerModel;
 	backupPath?: string;
 }
 
@@ -85,6 +135,8 @@ export interface VerbatimCompactionResult {
 	stats: VerbatimCompactionStats;
 	parameters: VerbatimCompactionParameters;
 	promptVersion: typeof VERBATIM_COMPACTION_PROMPT_VERSION;
-	rung: VerbatimCompactionDetails["rung"];
+	rung: CompactionRung;
+	/** Present only when a borrowed fallback model ranked the lines. */
+	plannerModel?: CompactionPlannerModel;
 	backupPath?: string;
 }

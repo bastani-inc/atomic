@@ -4,44 +4,21 @@ import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai/compat"
 import { clampThinkingLevel, isContextOverflow, modelsAreEqual } from "@earendil-works/pi-ai/compat";
 import { sleep } from "../utils/sleep.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
+import { fallbackKey, resolveFallbackModel as resolveConfiguredFallbackModel } from "./fallback-models.ts";
 import { isCodexTokenInvalidationError } from "./codex-errors.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 
-
-const THINKING_SUFFIXES = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ThinkingLevel[];
-const THINKING_SUFFIX_SET: ReadonlySet<string> = new Set(THINKING_SUFFIXES);
 
 function modelLabel(model: Model<Api> | undefined): string {
 	return model ? `${model.provider}/${model.id}` : "unknown model";
 }
 
-function splitFallbackModel(value: string): { modelId: string; thinkingLevel?: ThinkingLevel } {
-	const trimmed = value.trim();
-	const index = trimmed.lastIndexOf(":");
-	if (index < 0) return { modelId: trimmed };
-	const suffix = trimmed.slice(index + 1);
-	if (!THINKING_SUFFIX_SET.has(suffix)) return { modelId: trimmed };
-	return { modelId: trimmed.slice(0, index), thinkingLevel: suffix as ThinkingLevel };
-}
-
 function resolveFallbackModel(this: AgentSession, value: string): { model: Model<Api>; thinkingLevel?: ThinkingLevel } | undefined {
-	const parsed = splitFallbackModel(value);
-	if (!parsed.modelId.includes("/")) {
-		const available = this._modelRegistry.getAvailable().filter((model) => model.id === parsed.modelId);
-		const preferredProvider = this.model?.provider ?? this.settingsManager.getDefaultProvider();
-		const model = available.find((candidate) => candidate.provider === preferredProvider) ?? (available.length === 1 ? available[0] : undefined);
-		return model ? { model, thinkingLevel: parsed.thinkingLevel } : undefined;
-	}
-	const slash = parsed.modelId.indexOf("/");
-	const provider = parsed.modelId.slice(0, slash);
-	const modelId = parsed.modelId.slice(slash + 1);
-	const model = this._modelRegistry.find(provider, modelId);
-	if (!model || !this._modelRegistry.hasConfiguredAuth(model)) return undefined;
-	return { model, thinkingLevel: parsed.thinkingLevel };
-}
-
-function fallbackKey(model: Model<Api>, thinkingLevel: ThinkingLevel | undefined): string {
-	return `${model.provider}/${model.id}:${thinkingLevel ?? ""}`;
+	return resolveConfiguredFallbackModel(
+		value,
+		this._modelRegistry,
+		this.model?.provider ?? this.settingsManager.getDefaultProvider(),
+	);
 }
 
 function hasProviderTransportDiagnostic(value: unknown, seen = new Set<unknown>(), includeMessageFields = false): boolean {

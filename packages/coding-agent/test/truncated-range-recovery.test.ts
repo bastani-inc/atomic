@@ -13,7 +13,14 @@ import { join } from "path";
 import { tmpdir } from "os";
 import type { Api, AssistantMessage, Model, Usage } from "@earendil-works/pi-ai/compat";
 import { parseRangeRecords, recoverTruncatedRecords } from "../src/core/compaction/truncated-range-recovery.ts";
-import { buildRangePlannerPrompt, planDeletedLineRanges, RangePlanError } from "../src/core/compaction/range-planner.ts";
+import {
+	buildRangePlannerPrompt,
+	MALFORMED_OUTPUT_MESSAGE,
+	NO_USABLE_RANGES_MESSAGE,
+	planDeletedLineRanges,
+	RangePlanError,
+} from "../src/core/compaction/range-planner.ts";
+import { planner } from "./compaction-planner-fixtures.ts";
 import type { RecoveryDiagnostic } from "../src/core/compaction/range-planner-diagnostics.ts";
 import type { NumberedRegion, VerbatimCompactionParameters } from "../src/core/compaction/compaction-types.ts";
 
@@ -55,12 +62,23 @@ function recoveryFiles(dir: string): string[] {
 		.map((name) => join(dir, name));
 }
 
+/**
+ * Legacy ranges-or-throw adapter over the typed planner outcome, so these
+ * recovery/validation assertions keep their original shape.
+ */
 async function plan(text: string | string[], stopReason: string, opts?: { lineCount?: number; sessionFilePath?: string; apiKey?: string }) {
-	return planDeletedLineRanges(
-		region(opts?.lineCount ?? 100), params, mdl(),
-		{ apiKey: opts?.apiKey ?? "key" }, undefined, undefined, 16384, 50,
+	const outcome = await planDeletedLineRanges(
+		region(opts?.lineCount ?? 100), params,
+		planner(mdl(), undefined, { apiKey: opts?.apiKey ?? "key" }),
+		50,
 		{ streamFn: stream(text, stopReason) as never, sessionFilePath: opts?.sessionFilePath },
 	);
+	if (outcome.kind === "ranked" || outcome.kind === "recovered") return outcome.ranges;
+	if (outcome.kind === "unusable") {
+		const message = outcome.category === "malformed_output" ? MALFORMED_OUTPUT_MESSAGE : NO_USABLE_RANGES_MESSAGE;
+		throw new RangePlanError(message, 1, outcome.excerpt, false, outcome.diagnosticPath, outcome);
+	}
+	throw new RangePlanError(`planner outcome ${outcome.kind}`, 1, "", outcome.kind === "overflowed", outcome.diagnosticPath, outcome);
 }
 
 // 1. Complete output with/without terminal newline
@@ -277,7 +295,7 @@ describe("truncated recovery: private diagnostic sidecar", () => {
 		expect(content.rawResponse).toBe(truncatedText);
 		expect(content.stopReason).toBe("length");
 		expect(content.usage).toBeDefined();
-		expect(content.requestMaxTokens).toBeGreaterThan(0);
+		expect(content.requestMaxTokens).toBeUndefined();
 		expect(content.model.provider).toBe("copilot");
 		expect(content.model.id).toBe("gpt-4o");
 		expect(content.recoveredRangeCount).toBe(3);

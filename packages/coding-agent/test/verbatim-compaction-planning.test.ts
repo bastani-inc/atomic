@@ -9,8 +9,8 @@ import {
 	buildRangePlannerPrompt,
 	extractDeletedRanges,
 	planDeletedLineRanges,
-	RangePlanError,
 } from "../src/core/compaction/range-planner.js";
+import { planner, run } from "./compaction-planner-fixtures.js";
 import { createNumberedRegion } from "../src/core/compaction/transcript-serialization.js";
 import { buildSessionContext } from "../src/core/session-manager-history.js";
 import type { SessionEntry } from "../src/core/session-manager-types.js";
@@ -208,55 +208,56 @@ describe("one-pass range planner", () => {
 			return faux.streamFn(candidate, context, request);
 		};
 		const reasoningModel = { ...model, reasoning: true };
-		const ranges = await planDeletedLineRanges(
+		const outcome = await planDeletedLineRanges(
 			prep.region,
 			prep.parameters,
-			reasoningModel,
-			{ apiKey: "key", headers: { "x-test": "value" } },
-			undefined,
-			"medium",
-			prep.settings.reserveTokens,
+			planner(reasoningModel, "medium", { apiKey: "key", headers: { "x-test": "value" } }),
 			10,
 			{ streamFn: capture },
 		);
-		expect(ranges).toEqual([{ start: 1, end: 20 }]);
+		expect(outcome).toEqual({ kind: "ranked", ranges: [{ start: 1, end: 20 }] });
 		expect(faux.state.callCount).toBe(1);
 		expect(calls[0].candidate).toBe(reasoningModel);
 		expect(calls[0].request.apiKey).toBe("key");
 		expect(calls[0].request.headers).toEqual({ "x-test": "value" });
 		expect(calls[0].request.reasoning).toBe("medium");
-		expect(calls[0].request.maxTokens).toBe(Math.min(reasoningModel.maxTokens, Math.floor(prep.settings.reserveTokens * 0.8)));
+		expect("maxTokens" in calls[0].request).toBe(false);
 		expect(calls[0].request.cacheRetention).toBe("none");
 		expect(calls[0].request.sessionId).toEqual(expect.any(String));
 		const firstSessionId = calls[0].request.sessionId;
 		await planDeletedLineRanges(
-			prep.region, prep.parameters, reasoningModel, { apiKey: "key" }, undefined, "off",
-			prep.settings.reserveTokens, 10, { streamFn: capture },
+			prep.region, prep.parameters, planner(reasoningModel, "off", { apiKey: "key" }), 10, { streamFn: capture },
 		);
 		expect(calls[1].request.cacheRetention).toBe("none");
 		expect(calls[1].request.sessionId).not.toBe(firstSessionId);
 	});
 
 	it.each([
-		["malformed", "not valid records"],
-		["empty", ""],
-		["unusable", "nan,null\n"],
-	])("fails after one %s response with no semantic retry", async (_label, response) => {
+		["malformed", "not valid records", "malformed_output"],
+		["empty", "", "malformed_output"],
+		["unusable", "nan,null\n", "malformed_output"],
+	])("classifies one %s response as unusable with no semantic retry", async (_label, response, category) => {
 		const prep = preparation();
 		const faux = createFauxStreamFn([response]);
-		await expect(planDeletedLineRanges(
-			prep.region, prep.parameters, model, { apiKey: "key" }, undefined, "off", prep.settings.reserveTokens, 10, { streamFn: faux.streamFn },
-		)).rejects.toBeInstanceOf(RangePlanError);
+		const outcome = await planDeletedLineRanges(
+			prep.region, prep.parameters, planner(model, "off"), 10, { streamFn: faux.streamFn },
+		);
+		expect(outcome).toMatchObject({ kind: "unusable", category });
 		expect(faux.state.callCount).toBe(1);
 	});
 
-	it("fails provider errors and overflow after one request", async () => {
-		for (const error of ["provider unavailable", "prompt is too long: context_length_exceeded"]) {
+	it("classifies provider errors and overflow after one request", async () => {
+		const cases = [
+			["provider unavailable", "providerError"],
+			["prompt is too long: context_length_exceeded", "overflowed"],
+		] as const;
+		for (const [error, kind] of cases) {
 			const prep = preparation();
 			const faux = createFauxStreamFn([{ error }]);
-			await expect(planDeletedLineRanges(
-				prep.region, prep.parameters, model, { apiKey: "key" }, undefined, "off", prep.settings.reserveTokens, 10, { streamFn: faux.streamFn },
-			)).rejects.toBeInstanceOf(RangePlanError);
+			const outcome = await planDeletedLineRanges(
+				prep.region, prep.parameters, planner(model, "off"), 10, { streamFn: faux.streamFn },
+			);
+			expect(outcome.kind).toBe(kind);
 			expect(faux.state.callCount).toBe(1);
 		}
 	});
@@ -270,14 +271,10 @@ describe("one-pass range planner", () => {
 			onRetryAttemptStart: vi.fn(),
 			onRetryFinished: vi.fn(),
 		};
-		const ranges = await planDeletedLineRanges(
+		const outcome = await planDeletedLineRanges(
 			prep.region,
 			prep.parameters,
-			model,
-			{ apiKey: "key" },
-			undefined,
-			"off",
-			prep.settings.reserveTokens,
+			planner(model, "off"),
 			10,
 			{
 				streamFn: faux.streamFn,
@@ -286,7 +283,7 @@ describe("one-pass range planner", () => {
 			},
 		);
 
-		expect(ranges).toEqual([{ start: 1, end: 20 }]);
+		expect(outcome).toEqual({ kind: "ranked", ranges: [{ start: 1, end: 20 }] });
 		expect(faux.state.callCount).toBe(2);
 		expect(callbacks.onRetryScheduled).toHaveBeenCalledWith(1, 2, 0, "terminated");
 		expect(callbacks.onRetryAttemptStart).toHaveBeenCalledOnce();
@@ -298,7 +295,7 @@ describe("single planned compaction rung", () => {
 	it.each(["manual", "threshold", "overflow"] as const)("makes one whole-region provider call for %s compaction", async (_reason) => {
 		const prep = preparation();
 		const faux = createFauxStreamFn(["2,10\n"]);
-		await runVerbatimCompaction(prep, model, "key", undefined, undefined, "off", { streamFn: faux.streamFn });
+		await runVerbatimCompaction(prep, model, run({ streamFn: faux.streamFn }));
 		expect(faux.state.callCount).toBe(1);
 		expect(JSON.stringify(faux.state.contexts[0])).toContain(`<numbered-transcript>`);
 		expect(JSON.stringify(faux.state.contexts[0])).toContain(`${prep.region.lines.length}→`);
@@ -310,16 +307,13 @@ describe("single planned compaction rung", () => {
 		await runVerbatimCompaction(
 			preparation(),
 			model,
-			undefined,
-			{ Authorization: "Bearer gateway-token", "X-Custom": "preserved" },
-			undefined,
-			"off",
-			{
+			run({
+				auth: { headers: { Authorization: "Bearer gateway-token", "X-Custom": "preserved" } },
 				streamFn: (requestModel, context, options) => {
 					observedOptions = options;
 					return faux.streamFn(requestModel, context, options);
 				},
-			},
+			}),
 		);
 
 		expect(observedOptions?.apiKey).toBeUndefined();
@@ -332,9 +326,7 @@ describe("single planned compaction rung", () => {
 	it("accepts a valid undershooting result without top-up or another call", async () => {
 		const prep = preparation();
 		const faux = createFauxStreamFn(["2,2\n"]);
-		const result = await runVerbatimCompaction(prep, model, "key", undefined, undefined, "off", {
-			streamFn: faux.streamFn,
-		});
+		const result = await runVerbatimCompaction(prep, model, run({ streamFn: faux.streamFn }));
 		expect(result.rung).toBe("planned");
 		expect(result.stats.linesKept).toBeGreaterThan(targetKeepLines(prep));
 		expect(result.stats.linesDeleted).toBe(1);
@@ -349,6 +341,10 @@ describe("single planned compaction rung", () => {
 	it("honors abort before the request", async () => {
 		const controller = new AbortController();
 		controller.abort();
-		await expect(runVerbatimCompaction(preparation(), model, "key", undefined, controller.signal, undefined, { streamFn: createFauxStreamFn(["1,1\n"]).streamFn })).rejects.toThrow("Compaction cancelled");
+		await expect(runVerbatimCompaction(
+			preparation(),
+			model,
+			run({ signal: controller.signal, thinkingLevel: undefined, streamFn: createFauxStreamFn(["1,1\n"]).streamFn }),
+		)).rejects.toThrow("Compaction cancelled");
 	});
 });

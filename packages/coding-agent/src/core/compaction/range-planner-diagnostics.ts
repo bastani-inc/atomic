@@ -18,7 +18,11 @@ export type DiagnosticFailureCategory =
 	| "malformed_output"
 	| "no_usable_ranges"
 	| "provider_error"
-	| "stream_error";
+	| "stream_error"
+	/** Length stop, no usable record, and billed reasoning tokens. */
+	| "starved"
+	/** Transient throttling after the retry budget, or quota/billing exhaustion. */
+	| "rate_limited";
 
 /** Recovery categories emitted in recovery diagnostic sidecars. */
 export type DiagnosticRecoveryCategory = "partial_length_recovery";
@@ -42,7 +46,13 @@ export interface CompactionDiagnostic {
 	stopReason: string | undefined;
 	providerError: string | undefined;
 	usage: Usage | undefined;
-	requestMaxTokens: number;
+	/** Undefined since the planner sends no output cap. */
+	requestMaxTokens: number | undefined;
+	/**
+	 * For `rate_limited` only: `true` when transient throttling spent the retry
+	 * budget, `false` for quota/billing exhaustion returned without backoff.
+	 */
+	rateLimitExhausted?: boolean;
 	model: DiagnosticModelMeta;
 }
 
@@ -54,7 +64,7 @@ export interface RecoveryDiagnostic {
 	rawResponse: string;
 	stopReason: string | undefined;
 	usage: Usage | undefined;
-	requestMaxTokens: number;
+	requestMaxTokens: number | undefined;
 	model: DiagnosticModelMeta;
 	recoveredRangeCount: number;
 }
@@ -64,8 +74,8 @@ export interface DiagnosticContext {
 	sessionFilePath: string | undefined;
 	/** The model used for the planner request. */
 	model: Model<Api>;
-	/** The maxTokens value sent in the planner request. */
-	requestMaxTokens: number;
+	/** The maxTokens value sent in the planner request; undefined when no cap is sent. */
+	requestMaxTokens: number | undefined;
 	/** The full assistant response message, if one was received. */
 	response: AssistantMessage | undefined;
 	/** The full raw text extracted from the response. */
@@ -74,6 +84,8 @@ export interface DiagnosticContext {
 	failureCategory: DiagnosticFailureCategory;
 	/** The user-facing failure message. */
 	failureMessage: string;
+	/** Only meaningful for `rate_limited`; see CompactionDiagnostic. */
+	rateLimitExhausted?: boolean;
 }
 
 function buildDiagnosticPayload(ctx: DiagnosticContext): CompactionDiagnostic {
@@ -87,6 +99,7 @@ function buildDiagnosticPayload(ctx: DiagnosticContext): CompactionDiagnostic {
 		providerError: ctx.response?.errorMessage,
 		usage: ctx.response?.usage,
 		requestMaxTokens: ctx.requestMaxTokens,
+		...(ctx.rateLimitExhausted === undefined ? {} : { rateLimitExhausted: ctx.rateLimitExhausted }),
 		model: {
 			provider: ctx.model.provider,
 			id: ctx.model.id,
@@ -139,7 +152,7 @@ export { buildDiagnosticPayload };
 export interface RecoveryDiagnosticContext {
 	sessionFilePath: string | undefined;
 	model: Model<Api>;
-	requestMaxTokens: number;
+	requestMaxTokens: number | undefined;
 	response: AssistantMessage;
 	rawResponseText: string;
 	recoveryCategory: DiagnosticRecoveryCategory;

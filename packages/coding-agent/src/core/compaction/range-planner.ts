@@ -1,15 +1,17 @@
 import type { StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { retryAssistantCall, type RetryCallbacks, type RetryPolicy, uuidv7 } from "@earendil-works/pi-ai";
-import type { ProviderHeaders } from "@earendil-works/pi-ai";
 import type { Api, AssistantMessage, Model, SimpleStreamOptions } from "@earendil-works/pi-ai/compat";
-import { isContextOverflow } from "@earendil-works/pi-ai/compat";
 import { validateDeletedRanges } from "./deleted-ranges.js";
 import type {
+	BorrowedPlanner,
 	LineRange,
 	NumberedRegion,
+	PlannerBudget,
 	RawLineRange,
 	VerbatimCompactionParameters,
 } from "./compaction-types.js";
+import type { PlannerOutcome, TerminalPlannerOutcome } from "./planner-outcome.js";
+import { classifyPlannerFailure, isReasoningStarved, syntheticErrorResponse } from "./planner-outcome.js";
 import type { DiagnosticFailureCategory } from "./range-planner-diagnostics.js";
 import { writeDiagnosticSidecar, writeRecoveryDiagnosticSidecar } from "./range-planner-diagnostics.js";
 import { numberRegionLines } from "./transcript-serialization.js";
@@ -25,6 +27,8 @@ export class RangePlanError extends Error {
 	readonly lastResponseExcerpt: string;
 	readonly providerOverflow: boolean;
 	readonly diagnosticPath: string | undefined;
+	/** The typed planner outcome that exhausted the ladder, when one exists. */
+	readonly outcome: TerminalPlannerOutcome | undefined;
 
 	constructor(
 		message: string,
@@ -32,6 +36,7 @@ export class RangePlanError extends Error {
 		lastResponseExcerpt: string,
 		providerOverflow: boolean,
 		diagnosticPath?: string,
+		outcome?: TerminalPlannerOutcome,
 	) {
 		super(diagnosticPath ? `${message} (diagnostic: ${diagnosticPath})` : message);
 		this.name = "RangePlanError";
@@ -39,6 +44,7 @@ export class RangePlanError extends Error {
 		this.lastResponseExcerpt = lastResponseExcerpt;
 		this.providerOverflow = providerOverflow;
 		this.diagnosticPath = diagnosticPath;
+		this.outcome = outcome;
 	}
 }
 
@@ -60,7 +66,8 @@ export function extractDeletedRanges(text: string): RawLineRange[] | undefined {
 	return parseRangeRecords(text);
 }
 
-function contiguousRanges(lines: ReadonlySet<number>): LineRange[] {
+/** Collapse a sparse set of line numbers into ascending contiguous inclusive ranges. */
+export function contiguousRanges(lines: ReadonlySet<number>): LineRange[] {
 	const sorted = [...lines].sort((left, right) => left - right);
 	const ranges: LineRange[] = [];
 	for (const line of sorted) {
@@ -136,47 +143,105 @@ function responseText(message: AssistantMessage): string {
 	return message.content.filter((block) => block.type === "text").map((block) => block.text).join("");
 }
 
-function providerErrorMessage(model: Model<Api>, errorMessage: string): AssistantMessage {
+/**
+ * Resolve what one planner attempt may spend.
+ *
+ * No output cap is ever produced: `PlannerBudget.maxTokens` is typed
+ * `undefined`, so pi-ai's `clampMaxTokensToContext` is the only bound. This is
+ * codex's posture and it is what makes inheriting the session reasoning level
+ * safe — there is no artificial budget for thinking to exhaust.
+ *
+ * Precedence: a `model:level` fallback suffix wins over the inherited session
+ * level. There is no per-attempt variation.
+ */
+export function resolvePlannerRequest(
+	model: Model<Api>,
+	sessionThinkingLevel: ThinkingLevel | undefined,
+	candidateThinkingLevel?: ThinkingLevel,
+): PlannerBudget {
 	return {
-		role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id,
-		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-		stopReason: "error", errorMessage, timestamp: Date.now(),
+		maxTokens: undefined,
+		reasoning: model.reasoning ? (candidateThinkingLevel ?? sessionThinkingLevel) : undefined,
 	};
 }
 
-function outputTokenLimit(model: Model<Api>, reserveTokens: number): number {
-	return Math.min(
-		Math.floor(0.8 * reserveTokens),
-		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
-	);
+/** Apply credential-specific endpoints without mutating the registry model. */
+export function plannerRequestModel(planner: BorrowedPlanner): Model<Api> {
+	const baseUrl = planner.auth.baseUrl;
+	if (baseUrl === undefined || baseUrl === planner.model.baseUrl) return planner.model;
+	return { ...planner.model, baseUrl };
 }
-/** Plan ranges with exactly one whole-region classifier request. */
+
+export const NO_USABLE_RANGES_MESSAGE = "Compaction range planning produced no usable deleted ranges";
+export const MALFORMED_OUTPUT_MESSAGE = "Compaction range planning returned malformed output";
+
+function unusableOutcome(
+	options: RangePlannerOptions,
+	model: Model<Api>,
+	response: AssistantMessage,
+	text: string,
+	category: DiagnosticFailureCategory,
+	message: string,
+): PlannerOutcome {
+	const diagnosticPath = emitDiagnostic(options, model, response, text, category, message);
+	return { kind: "unusable", category, excerpt: text.slice(0, 500), ...(diagnosticPath ? { diagnosticPath } : {}) };
+}
+
+/** Turn one failed planner response into its typed outcome and diagnostic record. */
+function providerFailureOutcome(
+	options: RangePlannerOptions,
+	model: Model<Api>,
+	response: AssistantMessage,
+	text: string,
+	message: string,
+	transport: boolean,
+): PlannerOutcome {
+	// A thrown transport failure has no real assistant response to record.
+	const recorded = transport ? undefined : response;
+	const failure = classifyPlannerFailure(response, model.contextWindow);
+	if (failure === "quota" || failure === "rate_limited") {
+		const exhausted = failure === "rate_limited";
+		const diagnosticPath = emitDiagnostic(options, model, recorded, text, "rate_limited", message, exhausted);
+		return { kind: "rateLimited", exhausted, message, ...(diagnosticPath ? { diagnosticPath } : {}) };
+	}
+	const category: DiagnosticFailureCategory = transport ? "stream_error" : "provider_error";
+	const diagnosticPath = emitDiagnostic(options, model, recorded, text, category, message);
+	if (failure === "overflow") return { kind: "overflowed", ...(diagnosticPath ? { diagnosticPath } : {}) };
+	return { kind: "providerError", message, ...(diagnosticPath ? { diagnosticPath } : {}) };
+}
+
+/**
+ * Plan ranges with exactly one whole-region classifier request.
+ *
+ * This is the single place untrusted model text becomes trusted line numbers.
+ * It classifies the attempt into exactly one `PlannerOutcome` and never returns
+ * unvalidated ranges. It throws only on cancellation.
+ */
 export async function planDeletedLineRanges(
 	region: NumberedRegion,
 	parameters: VerbatimCompactionParameters,
-	model: Model<Api>,
-	auth: { apiKey?: string; headers?: ProviderHeaders },
-	signal: AbortSignal | undefined,
-	thinkingLevel: ThinkingLevel | undefined,
-	reserveTokens: number,
+	planner: BorrowedPlanner,
 	targetKeepLines: number,
-	options: RangePlannerOptions,
-): Promise<RawLineRange[]> {
+	options: RangePlannerOptions & { signal?: AbortSignal },
+): Promise<PlannerOutcome> {
+	const signal = options.signal;
 	if (signal?.aborted) throw new Error("Compaction cancelled");
 	const prompt = buildRangePlannerPrompt(region, parameters, targetKeepLines);
-	const maxTokens = outputTokenLimit(model, reserveTokens);
+	const model = plannerRequestModel(planner);
 	const context = {
 		systemPrompt: RANGE_PLANNER_SYSTEM_PROMPT,
 		messages: [{ role: "user" as const, content: [{ type: "text" as const, text: prompt }], timestamp: Date.now() }],
 	};
+	const reasoning = planner.budget.reasoning;
+	// No `maxTokens` property is constructed at all: pi-ai's context clamp is the
+	// only bound on planner output.
 	const request: SimpleStreamOptions = {
-		apiKey: auth.apiKey,
-		headers: auth.headers,
+		apiKey: planner.auth.apiKey,
+		headers: planner.auth.headers,
 		signal,
-		maxTokens,
 		cacheRetention: "none",
 		sessionId: uuidv7(),
-		...(model.reasoning && thinkingLevel && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
+		...(model.reasoning && reasoning && reasoning !== "off" ? { reasoning } : {}),
 	};
 	let response: AssistantMessage;
 	try {
@@ -189,70 +254,59 @@ export async function planDeletedLineRanges(
 	} catch (error) {
 		if (signal?.aborted) throw new Error("Compaction cancelled");
 		const message = error instanceof Error ? error.message : String(error);
-		const diagPath = emitDiagnostic(options, model, maxTokens, undefined, "", "stream_error", message);
-		throw new RangePlanError(message, 1, "", isContextOverflow(providerErrorMessage(model, message), model.contextWindow), diagPath);
+		return providerFailureOutcome(options, model, syntheticErrorResponse(model, message), "", message, true);
 	}
 	const text = responseText(response);
 	if (response.stopReason === "aborted" || signal?.aborted) throw new Error("Compaction cancelled");
 	if (response.stopReason === "error") {
-		const msg = response.errorMessage || "Compaction provider failed";
-		const diagPath = emitDiagnostic(options, model, maxTokens, response, text, "provider_error", msg);
-		throw new RangePlanError(msg, 1, text.slice(0, 500), isContextOverflow(response, model.contextWindow), diagPath);
+		const message = response.errorMessage || "Compaction provider failed";
+		return providerFailureOutcome(options, model, response, text, message, false);
 	}
 	if (response.stopReason === "length") {
 		const recovery = recoverTruncatedRecords(text);
-		if (recovery) {
-			const validated = validateDeletedRanges(recovery.ranges, region);
-			if (validated.length > 0) {
-				// Silent success — write private recovery diagnostic, never surface it.
-				emitRecoveryDiagnostic(options, model, maxTokens, response, text, recovery.recoveredCount);
-				return recovery.ranges;
-			}
-			const msg = "Compaction range planning produced no usable deleted ranges";
-			const diagPath = emitDiagnostic(options, model, maxTokens, response, text, "no_usable_ranges", msg);
-			throw new RangePlanError(msg, 1, text.slice(0, 500), false, diagPath);
+		if (recovery && validateDeletedRanges(recovery.ranges, region).length > 0) {
+			// Silent success — write private recovery diagnostic, never surface it.
+			emitRecoveryDiagnostic(options, model, response, text, recovery.recoveredCount);
+			return { kind: "recovered", ranges: recovery.ranges, recoveredCount: recovery.recoveredCount };
 		}
-	} else {
-		const extracted = extractDeletedRanges(text);
-		if (extracted) {
-			const validated = validateDeletedRanges(extracted, region);
-			if (validated.length === 0) {
-				const msg = "Compaction range planning produced no usable deleted ranges";
-				const diagPath = emitDiagnostic(options, model, maxTokens, response, text, "no_usable_ranges", msg);
-				throw new RangePlanError(msg, 1, text.slice(0, 500), false, diagPath);
-			}
-			return extracted;
+		if (isReasoningStarved(response, false)) {
+			return unusableOutcome(options, model, response, text, "starved", NO_USABLE_RANGES_MESSAGE);
 		}
+		if (recovery) return unusableOutcome(options, model, response, text, "no_usable_ranges", NO_USABLE_RANGES_MESSAGE);
+		return unusableOutcome(options, model, response, text, "malformed_output", MALFORMED_OUTPUT_MESSAGE);
 	}
-	const msg = "Compaction range planning returned malformed output";
-	const diagPath = emitDiagnostic(options, model, maxTokens, response, text, "malformed_output", msg);
-	throw new RangePlanError(msg, 1, text.slice(0, 500), false, diagPath);
+	const extracted = extractDeletedRanges(text);
+	if (!extracted) return unusableOutcome(options, model, response, text, "malformed_output", MALFORMED_OUTPUT_MESSAGE);
+	if (validateDeletedRanges(extracted, region).length === 0) {
+		return unusableOutcome(options, model, response, text, "no_usable_ranges", NO_USABLE_RANGES_MESSAGE);
+	}
+	return { kind: "ranked", ranges: extracted };
 }
 
 function emitDiagnostic(
 	options: RangePlannerOptions,
 	model: Model<Api>,
-	requestMaxTokens: number,
 	response: AssistantMessage | undefined,
 	rawResponseText: string,
 	failureCategory: DiagnosticFailureCategory,
 	failureMessage: string,
+	rateLimitExhausted?: boolean,
 ): string | undefined {
 	return writeDiagnosticSidecar({
 		sessionFilePath: options.sessionFilePath,
 		model,
-		requestMaxTokens,
+		requestMaxTokens: undefined,
 		response,
 		rawResponseText,
 		failureCategory,
 		failureMessage,
+		...(rateLimitExhausted === undefined ? {} : { rateLimitExhausted }),
 	});
 }
 
 function emitRecoveryDiagnostic(
 	options: RangePlannerOptions,
 	model: Model<Api>,
-	requestMaxTokens: number,
 	response: AssistantMessage,
 	rawResponseText: string,
 	recoveredRangeCount: number,
@@ -261,7 +315,7 @@ function emitRecoveryDiagnostic(
 	writeRecoveryDiagnosticSidecar({
 		sessionFilePath: options.sessionFilePath,
 		model,
-		requestMaxTokens,
+		requestMaxTokens: undefined,
 		response,
 		rawResponseText,
 		recoveryCategory: "partial_length_recovery",

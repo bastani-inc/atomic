@@ -29,7 +29,10 @@ export class CompactionBoundaryMessageComponent extends Box {
 	private updateDisplay(): void {
 		this.clear();
 		const tokenStr = this.view.stats.tokensBefore.toLocaleString();
-		const label = theme.fg("customMessageLabel", theme.bold("✻ Context compacted"));
+		// The fresh rung destroyed the compactable conversation; say so plainly.
+		const label = theme.fg("customMessageLabel", theme.bold(
+			this.view.rung === "fresh" ? "✻ Context cleared (compaction degraded)" : "✻ Context compacted",
+		));
 		this.addChild(new Text(label, 0, 0));
 		this.addChild(new Spacer(1));
 		if (this.expanded) {
