@@ -34,6 +34,15 @@ function sha256(contents: string | Buffer): string {
   return createHash("sha256").update(contents).digest("hex");
 }
 
+function canonicalText(contents: string | Buffer): string {
+  const text = typeof contents === "string" ? contents : contents.toString("utf8");
+  return text.replace(/\r\n/gu, "\n");
+}
+
+function assertLiteParseContent(path: string, expected: string, displayPath: string): void {
+  assert.equal(sha256(canonicalText(readFileSync(path))), expected, `LiteParse content drift: ${displayPath}`);
+}
+
 function runFixtureGit(cwd: string, args: readonly string[]): string {
   const result = Bun.spawnSync(["git", ...args], { cwd, env: createGitEnvironment() });
   assert.equal(result.exitCode, 0, result.stderr.toString());
@@ -157,10 +166,10 @@ describe("synced upstream skill trees", () => {
       liteparseTree.map(([path]) => path),
     );
     for (const [path, expected] of liteparseTree) {
-      assert.equal(sha256(readFileSync(join(liteparseSkill, path))), expected, `LiteParse content drift: ${path}`);
+      assertLiteParseContent(join(liteparseSkill, path), expected, path);
     }
     // Reversing both documented adaptations must reproduce upstream's SKILL.md exactly.
-    let canonical = readFileSync(join(liteparseSkill, "SKILL.md"), "utf8");
+    let canonical = canonicalText(readFileSync(join(liteparseSkill, "SKILL.md")));
     for (const [atomic, upstream] of liteparseAdaptations) {
       assert.ok(canonical.includes(atomic), `lost documented Atomic adaptation: ${JSON.stringify(atomic)}`);
       canonical = canonical.replace(atomic, upstream);
@@ -171,6 +180,29 @@ describe("synced upstream skill trees", () => {
       "LiteParse diverges from upstream beyond its two documented adaptations",
     );
     assert.doesNotMatch(readFileSync(join(liteparseSkill, "SKILL.md"), "utf8"), /effective-liteparse/u);
+  });
+
+  test("validates LiteParse content across LF and CRLF checkouts without hiding real drift", () => {
+    const fixture = mkdtempSync(join(tmpdir(), "atomic-liteparse-line-endings-"));
+    const expected = liteparseTree[0][1];
+    const canonicalContents = readFileSync(join(liteparseSkill, "SKILL.md"), "utf8").replace(/\r\n/gu, "\n");
+    const lf = join(fixture, "lf-SKILL.md");
+    const crlf = join(fixture, "crlf-SKILL.md");
+    const changed = join(fixture, "changed-SKILL.md");
+    try {
+      writeFileSync(lf, canonicalContents);
+      writeFileSync(crlf, canonicalContents.replace(/\n/gu, "\r\n"));
+      writeFileSync(changed, canonicalContents.replace("# LiteParse", "# Changed LiteParse").replace(/\n/gu, "\r\n"));
+
+      assertLiteParseContent(lf, expected, "SKILL.md");
+      assertLiteParseContent(crlf, expected, "SKILL.md");
+      assert.throws(
+        () => assertLiteParseContent(changed, expected, "SKILL.md"),
+        /LiteParse content drift: SKILL\.md/u,
+      );
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
   });
 
   test("tracks the LiteParse tree as non-executable and packs exactly its two files", () => {
