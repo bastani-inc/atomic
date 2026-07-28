@@ -50,45 +50,67 @@ export function plannerAttemptKey(planner: BorrowedPlanner): string {
 }
 
 /**
- * Return the next configured fallback model usable for one planner request.
+ * Run-local traversal state for one compaction's fallback walk.
  *
- * Exhaustion returns `undefined` — that is the only exit. It never throws and
- * never falls back to the session model.
- *
- * `attempted` is the compaction run's own set and is **consumed**: a candidate
- * whose credentials reject or resolve to nothing is recorded before the walk
- * moves on, so a later call cannot resolve its auth a second time or reorder the
- * configured walk around it. Without that, `A(no auth), B, C` would re-inspect
- * `A` on every call and violate RFC §5.3's one ordered pass with at most one
- * auth resolution and one planner request per candidate. The set is run-local;
- * the main chat's `_fallbackAttemptedKeys` is never touched.
+ * Kept out of the borrower's arguments and out of module scope: concurrent
+ * compactions each own one of these, so nothing is shared.
  */
-export async function borrowFallbackPlanner(
-	context: FallbackPlannerContext,
-	attempted: Set<string>,
+interface FallbackPlannerWalk {
+	/** Next configured list position to inspect. Only ever advances. */
+	nextIndex: number;
+	/** Effective `provider/model:level` identities already inspected this run. */
+	consumed: Set<string>;
+}
+
+/** The exact two-argument borrowing door, bound to one run's configuration. */
+export type BorrowFallbackPlanner = (
+	attempted: ReadonlySet<string>,
 	resolveAuth: (model: Model<Api>) => Promise<PlannerAuth | undefined>,
-): Promise<BorrowedPlanner | undefined> {
-	for (const entry of context.fallbackModels) {
-		const candidate = resolveFallbackModel(entry, context.registry, context.preferredProvider);
-		if (!candidate) continue;
-		// Resolve the budget first: the attempted key depends on the effective
-		// reasoning level, which inheritance may supply.
-		const budget = resolvePlannerRequest(candidate.model, context.sessionThinkingLevel, candidate.thinkingLevel);
-		const key = fallbackKey(candidate.model, budget.reasoning);
-		if (attempted.has(key)) continue;
-		let auth: PlannerAuth | undefined;
-		try {
-			auth = await resolveAuth(candidate.model);
-		} catch {
-			// A candidate whose credentials cannot be resolved is simply unusable.
-			auth = undefined;
+) => Promise<BorrowedPlanner | undefined>;
+
+/**
+ * Build the borrowing door for one compaction run.
+ *
+ * The RFC's top-level two-argument signature names no fallback list, registry,
+ * preferred provider, inherited reasoning level, or traversal cursor, so a
+ * stateless exported function cannot select a candidate without hidden shared
+ * state — unsafe under concurrent compactions. Binding the configuration and the
+ * run-local cursor in a closure keeps the returned door exactly two arguments
+ * while `attempted` stays a `ReadonlySet` the borrower never writes.
+ *
+ * The walk is one monotonic pass. Each list position is inspected at most once,
+ * whether it fails to resolve, has no usable credentials, duplicates an earlier
+ * identity, or yields a planner. Without the cursor, an entry that could not
+ * resolve earlier could be returned after a later candidate once the registry
+ * changed, producing a B→A order the configured list never asked for.
+ */
+export function createFallbackPlannerBorrower(context: FallbackPlannerContext): BorrowFallbackPlanner {
+	const walk: FallbackPlannerWalk = { nextIndex: 0, consumed: new Set<string>() };
+	return async (attempted, resolveAuth) => {
+		while (walk.nextIndex < context.fallbackModels.length) {
+			const entry = context.fallbackModels[walk.nextIndex];
+			// Advance before any work: this list position is spent either way.
+			walk.nextIndex += 1;
+
+			const candidate = resolveFallbackModel(entry, context.registry, context.preferredProvider);
+			if (!candidate) continue;
+			// Resolve the budget first: the identity depends on the effective
+			// reasoning level, which inheritance may supply.
+			const budget = resolvePlannerRequest(candidate.model, context.sessionThinkingLevel, candidate.thinkingLevel);
+			const key = fallbackKey(candidate.model, budget.reasoning);
+			if (attempted.has(key) || walk.consumed.has(key)) continue;
+			walk.consumed.add(key);
+
+			let auth: PlannerAuth | undefined;
+			try {
+				auth = await resolveAuth(candidate.model);
+			} catch {
+				// A candidate whose credentials cannot be resolved is simply unusable.
+				auth = undefined;
+			}
+			if (!auth) continue;
+			return { model: candidate.model, budget, auth };
 		}
-		if (!auth) {
-			// Consumed: unavailable credentials retire this candidate for the run.
-			attempted.add(key);
-			continue;
-		}
-		return { model: candidate.model, budget, auth };
-	}
-	return undefined;
+		return undefined;
+	};
 }

@@ -1095,6 +1095,8 @@ If compaction was aborted, `result` is `null` and `aborted` is `true`.
 
 If compaction failed (e.g., API quota exceeded), `result` is `null`, `aborted` is `false`, and `errorMessage` contains the error description.
 
+`result` and `errorMessage` are independent. A mid-turn post-tool compaction can commit a boundary and *then* fail the provider hard-input-limit gate, so one `compaction_end` may carry both a non-null `result` and an `errorMessage`. Treat the result as a committed durable boundary in that case; the error describes the follow-up request that was not sent.
+
 If overflow recovery exhausts the same-model compact-and-retry attempt, `compaction_end` includes `"unresolvedOverflow": true` and an `errorMessage`. Workflow orchestration treats that signal as a context-length failure that can advance configured model fallback tiers.
 
 There is no `context_compact` command; Atomic reports it as an unknown command. Use `compact`. Only `compaction_start` and `compaction_end` events are emitted.

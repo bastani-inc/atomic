@@ -75,7 +75,7 @@ test("overflow stays distinct from every other failure category", async () => {
 	const cases: Array<[{ errorMessage?: string; throws?: string }, string]> = [
 		[{ errorMessage: "This model's maximum context length is 100000 tokens" }, "context_overflow"],
 		[{ errorMessage: "429 Too Many Requests" }, "rate_limited"],
-		[{ errorMessage: "insufficient_quota" }, "rate_limited"],
+		[{ errorMessage: "insufficient_quota" }, "quota"],
 		[{ errorMessage: "malformed tool schema" }, "provider_error"],
 		[{ throws: "socket hang up" }, "stream_error"],
 	];
@@ -89,7 +89,7 @@ test("overflow stays distinct from every other failure category", async () => {
 		observed.push(category);
 		assert.equal(category, expected);
 	}
-	assert.equal(new Set(observed).size, 4, `expected four distinct categories, saw ${observed.join(", ")}`);
+	assert.equal(new Set(observed).size, 5, `expected five distinct categories, saw ${observed.join(", ")}`);
 });
 
 test("two failure sidecars written in the same millisecond both survive", () => {

@@ -46,12 +46,13 @@ function rendered(view: StageChatView): string {
 
 const COMPACTED_TEXT = "[User]: retained\n(filtered 12 lines)";
 
-function compactionEnd(rung: "planned" | "fresh"): AgentSessionEvent {
+function compactionEnd(rung: "planned" | "fresh", errorMessage?: string): AgentSessionEvent {
 	return {
 		type: "compaction_end",
 		reason: "threshold",
 		aborted: false,
 		willRetry: false,
+		...(errorMessage === undefined ? {} : { errorMessage }),
 		result: {
 			compactedText: COMPACTED_TEXT,
 			firstKeptEntryId: null,
@@ -104,5 +105,25 @@ describe("StageChatView fresh-rung visibility", () => {
 		const body = rendered(view);
 		assert.ok(body.includes("✻ Context compacted"), `stage chat lost the ordinary label:\n${body}`);
 		assert.ok(!body.includes("compaction degraded"), `stage chat showed the degraded notice:\n${body}`);
+	});
+
+	test("a committed fresh boundary stays visible when the final gate also errors", async () => {
+		// Attached stage chat delegates to the same ChatSessionHost, so the
+		// compound result-plus-error event must show both there too.
+		const error =
+			"Post-tool context remains over the provider hard input limit after compaction (9000 > 8000 tokens); the next provider request was not sent.";
+		const { view, emit } = createView(fakeFooterAgentSession(false) as AgentSession);
+
+		emit({ type: "compaction_start", reason: "threshold" } as AgentSessionEvent);
+		await flush();
+		emit(compactionEnd("fresh", error));
+		await flush();
+
+		const body = rendered(view);
+		assert.ok(
+			body.includes("✻ Context cleared (compaction degraded)"),
+			`stage chat hid the committed fresh boundary behind the error:\n${body}`,
+		);
+		assert.ok(!body.includes("Auto-compacting"), `the compaction status stayed active:\n${body}`);
 	});
 });

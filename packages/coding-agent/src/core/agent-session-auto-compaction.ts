@@ -378,6 +378,9 @@ export async function _runAutoCompaction(this: AgentSession, reason: "overflow" 
 			// Overflow recovery is load-bearing: the turn cannot continue without it.
 			// A threshold crossing has already passed its turn boundary, so failing is safe.
 			urgency: reason === "overflow" ? "load_bearing" : "recoverable",
+			// A real provider overflow already proved the context does not fit, so a
+			// sub-minimum region may reach the fresh rung.
+			...(reason === "overflow" ? { allowSmallRegion: true } : {}),
 		});
 		if (!result) {
 			this._emit({

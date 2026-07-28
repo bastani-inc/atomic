@@ -52,6 +52,16 @@ export interface VerbatimCompactionApplyOptions {
 	reason: "manual" | "threshold" | "overflow";
 	/** Only `load_bearing` may reach the context-destroying fresh rung. */
 	urgency: CompactionUrgency;
+	/**
+	 * Admit a compactable region below the planner minimum.
+	 *
+	 * Narrow on purpose. Overflow recovery sets it because a real provider
+	 * overflow is already known, and the post-tool preflight sets it only when its
+	 * projected context is genuinely over the provider hard input limit. A
+	 * threshold crossing that still fits must not clear context: the follow-up
+	 * request can be sent as-is.
+	 */
+	allowSmallRegion?: boolean;
 }
 
 export interface ExtensionResourcePathEntry {

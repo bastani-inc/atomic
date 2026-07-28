@@ -3,7 +3,12 @@ import type { RetryCallbacks, RetryPolicy } from "@earendil-works/pi-ai";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { getKeptTailTokenEstimate } from "./compaction-boundary.js";
 import { reconstructCompactedTranscript, validateDeletedRanges } from "./deleted-ranges.js";
-import { borrowFallbackPlanner, plannerAttemptKey, type FallbackPlannerContext } from "./fallback-planner.js";
+import {
+	createFallbackPlannerBorrower,
+	plannerAttemptKey,
+	type BorrowFallbackPlanner,
+	type FallbackPlannerContext,
+} from "./fallback-planner.js";
 import type { TerminalPlannerOutcome } from "./planner-outcome.js";
 import {
 	MALFORMED_OUTPUT_MESSAGE,
@@ -309,6 +314,11 @@ export async function runVerbatimCompaction(
 	}
 
 	const attempted = new Set<string>();
+	// One borrower per run owns the monotonic cursor, so the configured list is
+	// walked exactly once no matter how many terminal outcomes occur.
+	const borrow: BorrowFallbackPlanner | undefined = request.fallback
+		? createFallbackPlannerBorrower(request.fallback)
+		: undefined;
 	const primaryBudget = resolvePlannerRequest(model, request.thinkingLevel);
 	const primaryAuth = await resolvePlannerAuth(request.resolveAuth, model);
 	let lastTerminal: TerminalPlannerOutcome | undefined = "failure" in primaryAuth ? primaryAuth.failure : undefined;
@@ -320,9 +330,7 @@ export async function runVerbatimCompaction(
 	} else {
 		// No request was made, but this candidate must not be retried.
 		attempted.add(plannerAttemptKey({ model, budget: primaryBudget, auth: {} }));
-		planner = request.fallback
-			? await borrowFallbackPlanner(request.fallback, attempted, request.resolveAuth)
-			: undefined;
+		planner = borrow ? await borrow(attempted, request.resolveAuth) : undefined;
 		borrowed = planner !== undefined;
 	}
 
@@ -345,9 +353,7 @@ export async function runVerbatimCompaction(
 		}
 		lastTerminal = attempt.outcome;
 		attempted.add(plannerAttemptKey(planner));
-		planner = request.fallback
-			? await borrowFallbackPlanner(request.fallback, attempted, request.resolveAuth)
-			: undefined;
+		planner = borrow ? await borrow(attempted, request.resolveAuth) : undefined;
 		borrowed = planner !== undefined;
 		if (signal?.aborted) throw new Error("Compaction cancelled");
 	}

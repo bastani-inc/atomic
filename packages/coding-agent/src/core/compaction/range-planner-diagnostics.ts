@@ -51,8 +51,10 @@ export type DiagnosticFailureCategory =
 	| "stream_error"
 	/** Length stop, no usable record, and billed reasoning tokens. */
 	| "starved"
-	/** Transient throttling after the retry budget, or quota/billing exhaustion. */
+	/** Transient throttling, whether or not a retry was actually scheduled. */
 	| "rate_limited"
+	/** Quota, billing, or usage-limit exhaustion; never spends backoff. */
+	| "quota"
 	/** The planner request itself exceeded the model's context window. */
 	| "context_overflow";
 
@@ -81,8 +83,9 @@ export interface CompactionDiagnostic {
 	/** Undefined since the planner sends no output cap. */
 	requestMaxTokens: number | undefined;
 	/**
-	 * For `rate_limited` only: `true` when transient throttling spent the retry
-	 * budget, `false` for quota/billing exhaustion returned without backoff.
+	 * Whether a retry was actually scheduled before the final failure. It records
+	 * retry activity, not the failure identity: a `rate_limited` record with retry
+	 * disabled is `false`, and `quota` is always `false`.
 	 */
 	rateLimitExhausted?: boolean;
 	model: DiagnosticModelMeta;
@@ -116,7 +119,7 @@ export interface DiagnosticContext {
 	failureCategory: DiagnosticFailureCategory;
 	/** The user-facing failure message. */
 	failureMessage: string;
-	/** Only meaningful for `rate_limited`; see CompactionDiagnostic. */
+	/** Retry activity for a limit failure; see CompactionDiagnostic. */
 	rateLimitExhausted?: boolean;
 }
 

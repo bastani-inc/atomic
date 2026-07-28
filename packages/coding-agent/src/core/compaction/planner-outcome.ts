@@ -16,11 +16,27 @@ import { isContextOverflow } from "@earendil-works/pi-ai/compat";
 import type { RawLineRange } from "./compaction-types.js";
 import type { DiagnosticFailureCategory } from "./range-planner-diagnostics.js";
 
+/** Which limit a `rateLimited` outcome represents. */
+export type PlannerLimitClass = "quota" | "rate_limited";
+
 /** Every way one planner attempt can end. */
 export type PlannerOutcome =
 	| { kind: "ranked"; ranges: RawLineRange[] }
 	| { kind: "recovered"; ranges: RawLineRange[]; recoveredCount: number }
-	| { kind: "rateLimited"; exhausted: boolean; message: string; diagnosticPath?: string }
+	| {
+			kind: "rateLimited";
+			/**
+			 * Which limit this was, independent of retry activity. Quota/billing
+			 * exhaustion and transient throttling are different facts and must stay
+			 * separable in code and diagnostics; `exhausted` records only whether a
+			 * retry was actually scheduled, which cannot tell them apart when retry
+			 * is disabled.
+			 */
+			category: PlannerLimitClass;
+			exhausted: boolean;
+			message: string;
+			diagnosticPath?: string;
+	  }
 	| { kind: "unusable"; category: DiagnosticFailureCategory; excerpt: string; diagnosticPath?: string }
 	| { kind: "overflowed"; diagnosticPath?: string }
 	| { kind: "providerError"; message: string; diagnosticPath?: string };

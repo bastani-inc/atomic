@@ -84,13 +84,14 @@ function compactionResult(rung: CompactionRung, extra: Partial<VerbatimCompactio
 	};
 }
 
-function endEvent(result: VerbatimCompactionResult): AgentSessionEvent {
+function endEvent(result: VerbatimCompactionResult, errorMessage?: string): AgentSessionEvent {
 	return {
 		type: "compaction_end",
 		reason: "overflow",
 		result,
 		aborted: false,
 		willRetry: false,
+		...(errorMessage === undefined ? {} : { errorMessage }),
 	} as AgentSessionEvent;
 }
 
@@ -173,4 +174,55 @@ test("a repeated same-rung, same-text result is still deduplicated", () => {
 	applyChatSessionAgentEvent(state, endEvent(compactionResult("fresh")));
 	applyChatSessionAgentEvent(state, endEvent(compactionResult("fresh")));
 	assert.deepEqual(boundaryDetails(state).map((details) => details.rung), ["fresh"]);
+});
+
+const HARD_LIMIT_ERROR =
+	"Post-tool context remains over the provider hard input limit after compaction (9000 > 8000 tokens); the next provider request was not sent.";
+
+test("a committed fresh boundary stays visible when the final gate also errors", () => {
+	// The post-tool gate can fail *after* the boundary was persisted, so the event
+	// carries both a result and an error. Suppressing the boundary there hid a
+	// durable context destruction behind an error line.
+	const state = makeState();
+	assert.equal(applyChatSessionAgentEvent(state, endEvent(compactionResult("fresh"), HARD_LIMIT_ERROR)), true);
+
+	const details = boundaryDetails(state);
+	assert.equal(details.length, 1);
+	assert.equal(details[0].rung, "fresh");
+	// The error is still reported as the status.
+	assert.equal(state.statusMessage, HARD_LIMIT_ERROR);
+
+	const rendered = stripVTControlCharacters(
+		new CompactionBoundaryMessageComponent({
+			text: "[User]: retained\n(filtered 12 lines)",
+			stats: details[0].stats,
+			rung: details[0].rung,
+		}).render(200).join("\n"),
+	);
+	assert.ok(rendered.includes("✻ Context cleared (compaction degraded)"), rendered);
+});
+
+test("a failure with no result still appends no boundary", () => {
+	const state = makeState();
+	applyChatSessionAgentEvent(state, {
+		type: "compaction_end",
+		reason: "overflow",
+		result: undefined,
+		aborted: false,
+		willRetry: false,
+		errorMessage: "Compaction failed: 429 Too Many Requests",
+	} as AgentSessionEvent);
+	assert.deepEqual(boundaryDetails(state), []);
+});
+
+test("an aborted compaction with a result appends no boundary", () => {
+	const state = makeState();
+	applyChatSessionAgentEvent(state, {
+		type: "compaction_end",
+		reason: "overflow",
+		result: compactionResult("fresh"),
+		aborted: true,
+		willRetry: false,
+	} as AgentSessionEvent);
+	assert.deepEqual(boundaryDetails(state), []);
 });

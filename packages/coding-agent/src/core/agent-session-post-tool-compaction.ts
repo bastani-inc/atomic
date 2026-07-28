@@ -23,7 +23,12 @@ export async function _preflightPostToolContext(
 	if (!model || !settings.enabled) return messages;
 
 	const hardInputLimit = model.contextWindow;
-	if (!shouldCompact(estimateContextTokens(messages).tokens, hardInputLimit, settings)) return messages;
+	const projectedTokens = estimateContextTokens(messages).tokens;
+	if (!shouldCompact(projectedTokens, hardInputLimit, settings)) return messages;
+	// Only a context that genuinely will not fit may clear a sub-minimum region.
+	// The threshold sits at `contextWindow - reserveTokens`, well below the hard
+	// limit, so a crossing alone is no reason to destroy context.
+	const overHardLimit = hardInputLimit > 0 && projectedTokens > hardInputLimit;
 
 	// Tool-result persistence is ordered on AgentSession's event queue, while Pi
 	// may reach its next-turn hook as soon as its own listener barrier settles.
@@ -54,8 +59,22 @@ export async function _preflightPostToolContext(
 			reason: "threshold",
 			// Mid-turn: a compaction failure here kills the active turn.
 			urgency: "load_bearing",
+			...(overHardLimit ? { allowSmallRegion: true } : {}),
 		});
-		if (!result) throw new Error("no compactable transcript entries were available");
+		if (!result) {
+			// Nothing was compactable and the projected context still fits, so the
+			// follow-up request can be sent unchanged. That is a successful no-op,
+			// not a failure: raising here is what killed the active turn.
+			this._emit({
+				type: "compaction_end",
+				reason: "threshold",
+				result: undefined,
+				aborted: false,
+				willRetry: false,
+				midTurn: true,
+			});
+			return messages;
+		}
 
 		this._pendingPostToolCompactionGuard = { hardInputLimit, result };
 		return this.agent.state.messages;

@@ -91,6 +91,7 @@ export {
 	type CompactionUrgency,
 	type PlannerAuth,
 	type PlannerBudget,
+	type PlannerLimitClass,
 	type PlannerOutcome,
 	startNewContextWindow,
 	type VerbatimCompactionDetails,

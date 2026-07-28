@@ -117,10 +117,10 @@ test("an over-limit post-tool context with a tiny region persists a fresh bounda
 	}
 });
 
-test("a small load-bearing region reaches fresh even when the context fits", async () => {
-	// The threshold can fire far below the provider hard limit. A load-bearing
-	// caller must still reach a terminal rung: refusing here is what left the
-	// mid-turn preflight with nothing to do and killed the active turn.
+test("a fitting post-tool threshold crossing with a tiny region is a safe no-op", async () => {
+	// The threshold sits far below the hard limit, so this context still fits.
+	// Clearing a sub-minimum region here would destroy conversation for nothing;
+	// the follow-up provider request can be sent unchanged.
 	const { streamFn, calls } = plannerScript({ default: [{ text: "1,2\n" }] });
 	const built = createRungSession({
 		streamFn,
@@ -130,26 +130,79 @@ test("a small load-bearing region reaches fresh even when the context fits", asy
 		usageTokens: 45_000,
 	});
 	try {
-		const apply = (
+		const preflight = (
 			built.session as unknown as {
-				_applyVerbatimCompaction: (options: Record<string, unknown>) => Promise<{ rung?: string } | undefined>;
+				_preflightPostToolContext: (messages: unknown[], signal?: AbortSignal) => Promise<unknown[]>;
 			}
-		)._applyVerbatimCompaction.bind(built.session);
+		)._preflightPostToolContext.bind(built.session);
 
-		const result = await apply({
-			resolvePlannerAuth: async () => ({ apiKey: "anthropic-key" }),
-			abortController: new AbortController(),
-			backupLabel: "auto-compact",
-			reason: "threshold",
-			urgency: "load_bearing",
-		});
+		const before = built.agent.state.messages;
+		const rebuilt = await preflight(before);
 
-		assert.equal(result?.rung, "fresh");
+		// No throw, no boundary, no planner call, and the context is untouched.
+		assert.equal(rebuilt, before);
+		assert.deepEqual(built.manager.getBranch().filter((entry) => entry.type === "compaction"), []);
+		assert.equal(calls.length, 0);
+		assert.equal(built.continueCalls(), 0);
+
+		const ends = built.events.filter((event) => event.type === "compaction_end") as Array<{
+			errorMessage?: string;
+			result?: unknown;
+			midTurn?: boolean;
+		}>;
+		assert.equal(ends.length, 1);
+		assert.equal(ends[0].errorMessage, undefined);
+		assert.equal(ends[0].result, undefined);
+		assert.equal(ends[0].midTurn, true);
+	} finally {
+		built.dispose();
+	}
+});
+
+test("an over-hard-limit post-tool crossing with a tiny region reaches fresh", async () => {
+	const { streamFn, calls } = plannerScript({ default: [{ text: "1,2\n" }] });
+	const built = createRungSession({
+		streamFn,
+		turns: 2,
+		contextWindow: 4_000,
+		reserveTokens: 3_999,
+		usageTokens: 40_000,
+	});
+	try {
+		const preflight = (
+			built.session as unknown as {
+				_preflightPostToolContext: (messages: unknown[], signal?: AbortSignal) => Promise<unknown[]>;
+			}
+		)._preflightPostToolContext.bind(built.session);
+
+		await preflight(built.agent.state.messages);
+
+		const boundary = built.manager.getBranch().find((entry) => entry.type === "compaction");
+		assert.ok(boundary, "no boundary was persisted for the over-limit small region");
+		assert.equal((boundary as { details?: VerbatimCompactionDetails }).details?.rung, "fresh");
 		// A region this small cannot be made rankable by changing models.
 		assert.equal(calls.length, 0);
+		assert.equal(built.continueCalls(), 0);
+	} finally {
+		built.dispose();
+	}
+});
+
+test("real overflow recovery keeps fresh reachable for a tiny region", async () => {
+	const { streamFn, calls } = plannerScript({ default: [{ text: "1,2\n" }] });
+	const built = createRungSession({ streamFn, turns: 2, contextWindow: 1_000_000 });
+	try {
+		const runAutoCompaction = (
+			built.session as unknown as {
+				_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+			}
+		)._runAutoCompaction.bind(built.session);
+		await runAutoCompaction("overflow", false);
+
 		const boundary = built.manager.getBranch().find((entry) => entry.type === "compaction");
-		assert.ok(boundary, "no boundary was persisted for the small load-bearing region");
+		assert.ok(boundary, "overflow recovery persisted no boundary");
 		assert.equal((boundary as { details?: VerbatimCompactionDetails }).details?.rung, "fresh");
+		assert.equal(calls.length, 0);
 	} finally {
 		built.dispose();
 	}
@@ -176,6 +229,29 @@ test("a small recoverable region is still refused, never cleared", async () => {
 		assert.equal(result, undefined);
 		assert.deepEqual(built.manager.getBranch().filter((entry) => entry.type === "compaction"), []);
 		assert.equal(calls.length, 0);
+	} finally {
+		built.dispose();
+	}
+});
+
+test("a caller cannot inject load_bearing urgency through the public compact door", async () => {
+	// `session.compact()` projects only compaction parameters, so a widened or
+	// cast object cannot smuggle urgency in and reach the destructive rung.
+	const { streamFn, calls } = plannerScript({ anthropic: [THROTTLED] });
+	const built = createRungSession({ streamFn });
+	try {
+		const injected = { preserve_recent: 2, urgency: "load_bearing" } as unknown as { preserve_recent: number };
+		await assert.rejects(() => built.session.compact(injected), /429 Too Many Requests/);
+
+		assert.deepEqual(built.manager.getBranch().filter((entry) => entry.type === "compaction"), []);
+		assert.equal(calls.length, 1);
+		assert.equal(built.continueCalls(), 0);
+
+		const ends = built.events.filter((event) => event.type === "compaction_end") as Array<{
+			result?: { rung?: string };
+		}>;
+		assert.equal(ends.length, 1);
+		assert.equal(ends[0].result, undefined);
 	} finally {
 		built.dispose();
 	}

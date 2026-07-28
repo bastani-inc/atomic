@@ -92,7 +92,10 @@ test("quota exhaustion produces rateLimited/not-exhausted with zero backoff", as
 		{ onRetryScheduled: (attempt: number) => { scheduled.push(attempt); } },
 	);
 	assert.equal(outcome.kind, "rateLimited");
-	if (outcome.kind === "rateLimited") assert.equal(outcome.exhausted, false);
+	if (outcome.kind === "rateLimited") {
+		assert.equal(outcome.category, "quota");
+		assert.equal(outcome.exhausted, false);
+	}
 	assert.deepEqual(scheduled, []);
 	assert.equal(stream.calls.length, 1);
 });
@@ -107,7 +110,10 @@ test("generic usage-limit wording is quota exhaustion, not spent backoff", async
 		{ onRetryScheduled: (attempt: number) => { scheduled.push(attempt); } },
 	);
 	assert.equal(outcome.kind, "rateLimited");
-	if (outcome.kind === "rateLimited") assert.equal(outcome.exhausted, false);
+	if (outcome.kind === "rateLimited") {
+		assert.equal(outcome.category, "quota");
+		assert.equal(outcome.exhausted, false);
+	}
 	assert.deepEqual(scheduled, []);
 	assert.equal(stream.calls.length, 1);
 });
@@ -131,7 +137,9 @@ test("the sidecar records the quota/throttle split for a usage limit", async () 
 			failureCategory: string;
 			rateLimitExhausted?: boolean;
 		};
-		assert.equal(payload.failureCategory, "rate_limited");
+		// Quota is its own durable category, not a rate-limit record that happens
+		// to report no spent backoff.
+		assert.equal(payload.failureCategory, "quota");
 		assert.equal(payload.rateLimitExhausted, false);
 	} finally {
 		rmSync(directory, { recursive: true, force: true });
@@ -181,7 +189,12 @@ test("a thrown throttle failure classifies as rate limiting with no backoff spen
 	// The stream threw before `retryAssistantCall` scheduled anything, so no
 	// retry budget was consumed and `exhausted` must not claim otherwise.
 	const { outcome } = await plan({ default: [{ throws: "429 too many requests" }] });
-	assert.deepEqual(outcome, { kind: "rateLimited", exhausted: false, message: "429 too many requests" });
+	assert.deepEqual(outcome, {
+		kind: "rateLimited",
+		category: "rate_limited",
+		exhausted: false,
+		message: "429 too many requests",
+	});
 });
 
 test("cancellation still throws rather than producing an outcome", async () => {
@@ -244,7 +257,12 @@ test("exhausted is false when the retry budget was never spent", async () => {
 		streamFn: stream.streamFn,
 		retry: { enabled: false, maxRetries: 0, baseDelayMs: 0 },
 	});
-	assert.deepEqual(outcome, { kind: "rateLimited", exhausted: false, message: "429 Too Many Requests" });
+	assert.deepEqual(outcome, {
+		kind: "rateLimited",
+		category: "rate_limited",
+		exhausted: false,
+		message: "429 Too Many Requests",
+	});
 	assert.equal(stream.calls.length, 1);
 });
 

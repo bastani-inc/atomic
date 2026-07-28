@@ -718,3 +718,154 @@ session start before any compaction — the session model and thinking level wer
 mutated. The footer reads `(anthropic) claude-opus-5 high` throughout. No diagnostic,
 recovery, or success sidecar was written, which is correct: no planner attempt failed and
 nothing was borrowed.
+
+
+---
+
+# G. Final re-verification after the narrowed small-region rule
+
+Success paths only, per the standing amendment: no faked 429, overflow, or reasoning
+starvation. Two live sessions against the final tree, same worktree CLI, provider and model.
+
+| Fact | Value |
+| --- | --- |
+| Provider / model | `anthropic` / `claude-opus-5`, thinking level `high` |
+| Session G1 JSONL | `/Users/tonystark/.atomic/agent/sessions/--private-tmp-atomic-e2e-r7--/2026-07-28T11-39-49-885Z_019fa886-1efd-7f34-8734-ddba04abfb00.jsonl` |
+| Session G2 JSONL | `/Users/tonystark/.atomic/agent/sessions/--private-tmp-atomic-e2e-r8--/2026-07-28T11-49-35-667Z_019fa88f-0f33-7705-be34-fa1c8f123318.jsonl` |
+| tmux | sessions `atomic-r7` and `atomic-r8`, 200x50 |
+| Marker token | `MERIDIAN-COBALT-3307` (synthetic, created by this run) |
+
+## G1. The fitting small region is now a safe no-op
+
+Session G1 ran the same shape that section F1 recorded as a 13-line `fresh` boundary: a
+marker turn, then an immediate large ranged read, so the compactable region was still tiny
+when the post-tool threshold fired.
+
+```sh
+tmux send-keys -t atomic-r7 'Now read big-source-dump.txt lines 1-1000 with exactly ONE read tool call and nothing else, then reply with one sentence and make no further tool calls.' Enter
+tmux capture-pane -p -t atomic-r7
+```
+
+```text
+
+ Lines 1–1000 of big-source-dump.txt cover Atomic's agent retry/fallback logic, branch summarization, and verbatim compaction boundary code.
+
+                                                                                                                                     ↑8 • ↓241 • R86k • W47k • CH61.4% • $0.340 (sub) • 4.7%/1.0M (auto)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+(anthropic) claude-opus-5 high • /private/tmp/atomic-e2e-r7
+```
+
+No error, no boundary, no degraded notice — the turn simply completed. The session file
+confirms it, checked immediately after that turn:
+
+```sh
+python3 -c 'import json,sys; print(sum(1 for e in map(json.loads, open(sys.argv[1])) if e.get("type")=="compaction"))' "$SF"
+```
+
+```text
+boundaries so far:
+count: 0
+```
+
+Context sat at 4.7% of the 1,000,000-token window: the threshold was crossed, the hard limit
+was nowhere near, and nothing was destroyed.
+
+Later turns in the same session did cross into real compaction work:
+
+```text
+ ✻ Context compacted
+
+ Compacted from 51,653 tokens (ctrl+o to expand)
+
+
+                                                                                                                                   ↑14 • ↓566 • R189k • W90k • CH55.0% • $0.668 (sub) • 5.2%/1.0M (auto)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+(anthropic) claude-opus-5 high • /private/tmp/atomic-e2e-r7
+```
+
+```json
+{"rung": "planned", "strategy": "verbatim-lines", "plannerModel_present": false, "linesBefore": 321, "linesKept": 14}
+{"rung": "planned", "strategy": "verbatim-lines", "plannerModel_present": false, "linesBefore": 375, "linesKept": 136}
+{"rung": "planned", "strategy": "verbatim-lines", "plannerModel_present": false, "linesBefore": 151, "linesKept": 74}
+{"rung": "planned", "strategy": "verbatim-lines", "plannerModel_present": false, "linesBefore": 98, "linesKept": 49}
+```
+
+```text
+entry kinds: {"session": 1, "model_change": 1, "thinking_level_change": 1, "message": 16, "compaction": 4}
+```
+
+Four `planned` `verbatim-lines` boundaries, none borrowed, one session-start
+`model_change`/`thinking_level_change` pair only.
+
+**Honest caveat from this session.** Its first compaction kept 14 of 321 lines, and the
+planner ranked the marker line away, so the recall question could not be answered:
+
+```text
+
+                                                                                                                                   ↑16 • ↓767 • R217k • W91k • CH93.6% • $0.700 (sub) • 3.0%/1.0M (auto)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+(anthropic) claude-opus-5 high • /private/tmp/atomic-e2e-r7
+```
+
+That is a ranking outcome, not a boundary defect: the contract requires retained lines to be
+byte-identical, not that any particular fact survives an aggressive compaction. Section G2
+demonstrates the recall requirement on a session whose compactions were less destructive.
+
+## G2. Full success checklist, including recall across the boundary
+
+```text
+
+                                                                                                                                     ↑4 • ↓106 • R45k • W12k • CH99.6% • $0.098 (sub) • 2.9%/1.0M (auto)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+(anthropic) claude-opus-5 high • /private/tmp/atomic-e2e-r8
+```
+
+Real work crossing the threshold and compacting mid-turn:
+
+```text
+ Compacted from 47,029 tokens (ctrl+o to expand)
+
+
+                                                                                                                                   ↑14 • ↓353 • R189k • W31k • CH60.3% • $0.296 (sub) • 4.7%/1.0M (auto)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+(anthropic) claude-opus-5 high • /private/tmp/atomic-e2e-r8
+```
+
+Manual `/compact` followed by the recall question:
+
+```text
+
+                                                                                                                                   ↑16 • ↓370 • R217k • W32k • CH97.3% • $0.316 (sub) • 2.9%/1.0M (auto)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+(anthropic) claude-opus-5 high • /private/tmp/atomic-e2e-r8
+```
+
+```json
+{"rung": "planned", "strategy": "verbatim-lines", "plannerModel_present": false, "linesBefore": 31, "linesKept": 15}
+{"rung": "planned", "strategy": "verbatim-lines", "plannerModel_present": false, "linesBefore": 25, "linesKept": 13}
+{"rung": "planned", "strategy": "verbatim-lines", "plannerModel_present": false, "linesBefore": 23, "linesKept": 12}
+```
+
+```text
+entry kinds: {"session": 1, "model_change": 1, "thinking_level_change": 1, "message": 16, "compaction": 3}
+```
+
+Three `planned` `verbatim-lines` boundaries, no borrowed planner, the footer reading
+`(anthropic) claude-opus-5 high` throughout, exactly one session-start
+`model_change`/`thinking_level_change` pair, and `MERIDIAN-COBALT-3307` recalled correctly
+after the boundaries.
+
+No diagnostic, recovery, or success sidecar was written in either session, which is correct:
+no planner attempt failed and nothing was borrowed.

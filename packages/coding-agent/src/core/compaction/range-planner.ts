@@ -203,13 +203,15 @@ function providerFailureOutcome(
 	const recorded = transport ? undefined : response;
 	const failure = classifyPlannerFailure(response, model.contextWindow);
 	if (failure === "quota" || failure === "rate_limited") {
-		// `exhausted` means a retry budget was actually spent. With retry disabled,
-		// or for a status pi-ai does not schedule backoff for, one throttled
-		// request spends nothing — reporting `true` there would be a claim about
-		// work that never happened. Quota never spends backoff by construction.
-		const exhausted = failure === "rate_limited" && retryWasScheduled;
-		const diagnosticPath = emitDiagnostic(options, model, recorded, text, "rate_limited", message, exhausted);
-		return { kind: "rateLimited", exhausted, message, ...(diagnosticPath ? { diagnosticPath } : {}) };
+		// Two independent facts. `category` is which limit this was — quota/billing
+		// exhaustion and transient throttling stay separable in code and in the
+		// sidecar. `exhausted` is only whether a retry was actually scheduled: with
+		// retry disabled, or for a status pi-ai schedules no backoff for, nothing is
+		// spent, and claiming otherwise would report work that never happened.
+		const category = failure;
+		const exhausted = category === "rate_limited" && retryWasScheduled;
+		const diagnosticPath = emitDiagnostic(options, model, recorded, text, category, message, exhausted);
+		return { kind: "rateLimited", category, exhausted, message, ...(diagnosticPath ? { diagnosticPath } : {}) };
 	}
 	if (failure === "overflow") {
 		// Overflow is typed distinctly in code, so it must be distinct in the

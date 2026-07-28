@@ -237,7 +237,11 @@ export function applyChatSessionAgentEvent<
         state.workingMessage = undefined;
         stopChatSessionWorkingLifecycle(state);
       }
-      if (!compaction.aborted && !compaction.errorMessage && compaction.result) {
+      // `result` and `errorMessage` are independent facts. The post-tool gate can
+      // report a hard-input-limit failure *after* the boundary was already
+      // committed, and skipping the refresh there hid a durable context
+      // destruction behind an error line. Show the boundary, then the status.
+      if (!compaction.aborted && compaction.result) {
         refreshCompactedTranscript(state, compaction.result);
       }
       if (

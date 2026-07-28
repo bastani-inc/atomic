@@ -48,11 +48,11 @@ export default function blockingToolExtension(api: ExtensionAPI): void {
 			reasoning: true,
 			input: ["text"],
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			// Larger than the default 16_384 compaction reserve. At 8_192 the
-			// auto-compaction threshold (contextWindow - reserveTokens) was
-			// negative, so every turn in these renderer/process fixtures tripped a
-			// compaction they are not testing.
-			contextWindow: 200_000,
+			// Deliberately below the default 16_384 compaction reserve: the
+			// auto-compaction threshold is then negative, so every turn crosses it.
+			// Production must treat that as a safe no-op rather than clearing a
+			// context that still fits, which is what this fixture keeps covering.
+			contextWindow: 8_192,
 			maxTokens: 1_024,
 		}],
 		streamSimple: (_activeModel, context) => {

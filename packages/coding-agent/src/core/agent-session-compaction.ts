@@ -69,13 +69,12 @@ export async function _applyVerbatimCompaction(
 	const model = this.model;
 	const pathEntries = this.sessionManager.getBranch();
 	const settings = this.settingsManager.getCompactionSettings();
-	const loadBearing = options.urgency === "load_bearing";
-	// A load-bearing caller must be able to reach a terminal rung even when the
-	// compactable region is below the planner minimum — one oversized tool result
-	// can blow the context with very few compactable lines. Every admitted
-	// preparation goes to the runner, which routes a sub-minimum region straight
-	// to `fresh` without invoking a planner. Second-guessing that here is what
-	// left a mid-turn preflight with nothing to do and killed the turn.
+	// A sub-minimum region is admitted only when the caller already knows the
+	// context does not fit: overflow recovery, or a post-tool preflight over the
+	// provider hard input limit. A threshold crossing that still fits must not
+	// clear context — its follow-up request can be sent as-is. `load_bearing`
+	// alone does not mean "must destroy context".
+	const allowSmallRegion = options.urgency === "load_bearing" && options.allowSmallRegion === true;
 	const preparation = prepareCompactionBoundary(
 		pathEntries,
 		settings,
@@ -84,7 +83,7 @@ export async function _applyVerbatimCompaction(
 			...(options.preserve_recent === undefined ? {} : { preserve_recent: options.preserve_recent }),
 			...(options.query === undefined ? {} : { query: options.query }),
 		},
-		{ allowSmallRegion: loadBearing },
+		{ allowSmallRegion },
 	);
 	if (!preparation) {
 		if (options.reason === "overflow") throw new Error("Context compaction found no compactable transcript entries; nothing more was safely deletable");
@@ -205,10 +204,18 @@ async function runOwnedManualCompaction(
 	try {
 		if (!this.model) throw new Error(formatNoModelSelectedMessage());
 		const result = await this._applyVerbatimCompaction({
-			resolvePlannerAuth: (candidate) => this._getRequiredRequestAuth(candidate), abortController: controller,
-			// Manual compaction is recoverable: it may borrow a fallback model, but it
-			// can never reach the context-destroying fresh rung.
-			backupLabel: "compact", reason: "manual", urgency: "recoverable", ...options,
+			// Caller parameters are projected explicitly, so no extra runtime
+			// property survives. A widened or cast object could otherwise carry
+			// `urgency: "load_bearing"` through a public `session.compact()` call and
+			// reach the context-destroying rung, which manual compaction must never do.
+			...(options.compression_ratio === undefined ? {} : { compression_ratio: options.compression_ratio }),
+			...(options.preserve_recent === undefined ? {} : { preserve_recent: options.preserve_recent }),
+			...(options.query === undefined ? {} : { query: options.query }),
+			resolvePlannerAuth: (candidate) => this._getRequiredRequestAuth(candidate),
+			abortController: controller,
+			backupLabel: "compact",
+			reason: "manual",
+			urgency: "recoverable",
 		});
 		if (!result) throw new Error("Nothing to compact (session too small)");
 		this._emit({ type: "compaction_end", reason: "manual", result, aborted: false, willRetry: false });
