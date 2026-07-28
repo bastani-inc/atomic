@@ -11,8 +11,6 @@ import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "../src/modes
 import type { ExtensionUIContext } from "../src/core/extensions/index.ts";
 import { StartupChatContainer, releaseStartupChatOutput } from "../src/modes/interactive/interactive-startup-chat-container.ts";
 
-import "./interactive-startup-resource-gate.suite.ts";
-
 initTheme("dark");
 
 function createOrderingMode(): InteractiveMode {
