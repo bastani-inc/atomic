@@ -738,9 +738,9 @@ does not hold, urgency should collapse into a setting and the ladder simplifies.
 | --- | --- |
 | `compaction.*` settings and defaults | **Preserved.** `reserveTokens` keeps its meaning and `16384` default. No new keys. |
 | `settings.fallbackModels` | **Semantics widened.** Documented as main-chat-scoped (`sdk-types.ts:30`); compaction now borrows from the same list (§9.1 Q14). Requires a docs and changelog note. |
-| Persisted `CompactionEntry` shape | **Preserved.** No new fields, no format-version bump. `details.rung` widens from two values to three. |
+| Persisted `CompactionEntry` shape | **Preserved, additively.** No format-version bump and no new entry type. `details.rung` widens from two values to three, and `details` gains one optional field recording the borrowed planner model when one was used. Absent on every existing entry and on any compaction that used the session model, so old readers are unaffected. |
 | Existing sessions on resume | **Preserved.** Resume never reruns planning (`docs/compaction.md:162`). |
-| `session_before_compact` / `session_compact` events | **Preserved.** `event.result.rung` gains a third value — additive. |
+| `session_before_compact` / `session_compact` events | **Preserved, additively.** `event.result.rung` gains a third value, and `compaction_end` gains an optional borrowed-model field (§9.1 Q13). |
 | Extension `compactedText` override | **Preserved.** Still produces `rung: "extension"`, still needs no credentials. |
 | `settings.retry` behavior | **Preserved.** Same policy, backoff, and non-retryable set. |
 | Session model / thinking level after compaction | **Preserved by design and by test.** Borrowing never mutates them. |
@@ -766,3 +766,40 @@ await runVerbatimCompaction(prep, model, {
 Changelog entry under `### Breaking Changes` alongside the `### Fixed` / `### Added`
 entries from §7.3. The repository is on a versionless release base, so no manifest version
 is touched.
+
+## 11. Implementation Notes
+
+
+**File-length gate.** `bun run check:file-length` enforces 500 physical lines with no
+allowlist. Current sizes of the files this touches:
+
+| File | Lines | Pressure |
+| --- | ---: | --- |
+| `compaction/range-planner.ts` | 270 | **high** — gains `PlannerOutcome`, outcome classification, and rate-limit classification |
+| `core/agent-session-compaction.ts` | 222 | moderate — gains urgency plumbing and the `resolveAuth` change |
+| `compaction/range-planner-diagnostics.ts` | 192 | low — two new categories, one new recorded field |
+| `compaction/compaction-runner.ts` | 75 | moderate — becomes the rung ladder |
+| `compaction/compaction-types.ts` | 90 | low — rung union, urgency, details field |
+
+Plan for new modules rather than growth: `compaction/planner-outcome.ts` (the
+`PlannerOutcome` union and its classification, including the pi-ai error-pattern
+matching) and `compaction/fallback-planner.ts` (`borrowFallbackPlanner` plus candidate
+resolution). `startNewContextWindow` is small enough to live beside the runner.
+
+**Reusable pieces already in the tree** — none of these need reimplementing:
+
+- `resolveFallbackModel` / `splitFallbackModel` / `fallbackKey` (`agent-session-retry.ts:27-45`)
+  — candidate resolution already filters on `_modelRegistry.hasConfiguredAuth`. Extract
+  rather than copy; they are currently module-private to the retry file.
+- `settingsManager.getFallbackModels()` (`settings-manager-basic-accessors.ts:220`).
+- `retryAssistantCall` + `settings.retry` — the backoff loop, unchanged.
+- `contiguousRanges` (`range-planner.ts:63-72`) for the fresh rung's complement.
+- `validateDeletedRanges` → `reconstructCompactedTranscript` — every rung ends here.
+- `MIN_COMPACTABLE_REGION_LINES = 20` (`compaction-types.ts:8`) already prevents repeated
+  pointless compaction; no loop guard is needed.
+
+**Do not touch** `_trySwitchToFallbackModel` (`agent-session-retry.ts:225`). Borrowing is
+a separate, weaker capability (§3.2, §6 option E).
+
+**Environment.** The worktree at `../atomic-compaction-rungs` has no `node_modules`; run
+`bun install` before the first test run.
