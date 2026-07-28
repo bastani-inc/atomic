@@ -3,7 +3,7 @@
 | Document Metadata      | Details |
 | ---------------------- | ------- |
 | Author(s)              | Norin Lavaee |
-| Status                 | Draft (WIP) |
+| Status                 | In Review (RFC) — all open questions resolved |
 | Team / Owner           | `packages/coding-agent` — compaction |
 | Created / Last Updated | 2026-07-27 |
 | Research               | [`research/2026-07-27-compaction-reasoning-starvation-cross-harness.md`](../research/2026-07-27-compaction-reasoning-starvation-cross-harness.md) |
@@ -65,8 +65,11 @@ function outputTokenLimit(model: Model<Api>, reserveTokens: number): number {
 output cap is a conflation inherited verbatim from pi's `compaction.ts:637-639`. It is
 not a provider requirement: codex sets no output cap at all (research §5.2).
 
-**The inherited inheritance** — `range-planner.ts:179` forwards `this.thinkingLevel`
-straight from live session state.
+**The inherited reasoning level** — `range-planner.ts:179` forwards `this.thinkingLevel`
+straight from live session state. Codex does the same (`compact.rs:699`), so this is
+**not** a defect on its own; it becomes one only in combination with the cap above,
+which turns thinking tokens into a budget the deletion records then cannot fit in.
+Removing the cap (§5.3) is what makes inheritance safe, exactly as it is for codex.
 
 **Rate limits today.** `retryAssistantCall` already retries `429` / `rate limit` /
 `too many requests` / `overloaded` / `5xx` with exponential backoff and fails fast on
@@ -119,8 +122,9 @@ not soften that check.**
 
 ### 3.1 Functional Goals
 
-- [ ] Reasoning tokens can never starve the planner's visible output at any reasoning
-      level, on any provider, at any context size.
+- [ ] Reasoning tokens can never *fail* a compaction. Starvation may still occur — codex
+      lives with the same exposure and simply accepts the empty result — but it must
+      always be absorbed by model borrowing, then the fresh rung.
 - [ ] A rate-limited or failing session model does not cost compaction quality when a
       usable fallback model is configured.
 - [ ] A load-bearing compaction (overflow recovery, post-tool preflight) always
@@ -175,7 +179,6 @@ flowchart TB
     Caller -->|"urgency"| Plan
     Plan <--> Retry
     Plan -->|"ranked / recovered"| Done(["boundary · rung=planned"]):::door
-    Plan -->|"starved (1st)"| Plan
     Plan -->|"terminal"| Borrow
     Borrow -->|"candidate remains"| Plan
     Borrow -->|"candidates exhausted<br>+ load_bearing"| Fresh
@@ -211,6 +214,7 @@ Every element traces to a codex mechanism. The only substitution is the model's 
 | `"(no summary available)"` placeholder (`compact.rs:670`) | typed outcomes + explicit marker | Atomic can be stricter: it validates |
 | `CodexCompactionEvent` telemetry | existing `0600` diagnostic sidecar + `rung` on `compaction_end` | Atomic's per-failure evidence is finer-grained |
 | Local summarization (`SUMMARIZATION_PROMPT`) | **verbatim line planning** | ← the one intentional difference |
+| Inherits session `reasoning_effort` for compaction (`compact.rs:699`) | inherits session `thinkingLevel` | safe once the cap is gone (§9.1 Q4) |
 | `responses/compact` remote endpoint | *(none)* | no Atomic equivalent |
 
 ### 4.4 The Door Set at a Glance (Stranger-Across-Time View)
@@ -244,7 +248,6 @@ type CompactionRung = "planned" | "extension" | "fresh";
 type PlannerOutcome =
   | { kind: "ranked";        ranges: RawLineRange[] }
   | { kind: "recovered";     ranges: RawLineRange[]; recoveredCount: number }
-  | { kind: "starved";       usage: Usage; diagnosticPath?: string }
   | { kind: "rateLimited";   exhausted: boolean; message: string; diagnosticPath?: string }
   | { kind: "unusable";      category: DiagnosticFailureCategory; excerpt: string; diagnosticPath?: string }
   | { kind: "overflowed";    diagnosticPath?: string }
@@ -252,6 +255,12 @@ type PlannerOutcome =
 // "cancelled" is NOT a variant: abort throws, as today.
 // `rateLimited.exhausted` separates "retry budget spent" from non-retryable
 // quota/billing exhaustion, which never spends backoff.
+// Reasoning starvation is NOT a variant. Codex has no starvation concept — a
+// reasoning-only response is not an error there, it flows through to the
+// "(no summary available)" placeholder (compact.rs:349,670). Atomic validates, so it
+// cannot accept the empty plan, but it likewise does not branch on it: starvation is
+// an `unusable` outcome carrying a `starved` DiagnosticFailureCategory for the sidecar,
+// and advances the ladder exactly like any other unusable output.
 
 /** A planner-only model borrowing. Cannot be confused with a session model switch. */
 interface BorrowedPlanner {
@@ -259,6 +268,28 @@ interface BorrowedPlanner {
   readonly budget: PlannerBudget;
   readonly auth: { apiKey?: string; headers?: ProviderHeaders; baseUrl?: string };
 }
+
+/** What one planner request may spend. Cap and effort stay fused (§9.1 Q3). */
+interface PlannerBudget {
+  readonly maxTokens: undefined;       // ← literally `undefined`, not a number.
+                                       //   The type forbids reintroducing a cap.
+  readonly reasoning: ThinkingLevel | undefined;
+}
+
+resolvePlannerRequest(
+  model: Model<Api>,
+  sessionThinkingLevel: ThinkingLevel | undefined,   // inherited — codex parity (§9.1 Q4)
+  candidateThinkingLevel?: ThinkingLevel,            // from a `model:level` fallback entry
+): PlannerBudget
+// Guarantee: returns what this planner attempt may spend.
+// The structural protection lives in the TYPE, not in the argument list: `maxTokens` is
+// declared `undefined`, so no future edit can reintroduce `0.8 * reserveTokens` without
+// changing the type and failing review. Inheriting the session level is safe for the same
+// reason it is safe in codex: there is no artificial budget for thinking to exhaust.
+// Precedence: candidateThinkingLevel ?? sessionThinkingLevel. There is no per-attempt
+// variation — codex never modifies reasoning effort across compaction attempts
+// (compact.rs:699, compact_remote_v2.rs:349 are the only two occurrences, both
+// unmodified clones), so neither does Atomic.
 
 
 // ─── Door 1: the ranked planner (the airlock) ─────────────────────────────────
@@ -324,6 +355,7 @@ runVerbatimCompaction(
   request: {
     resolveAuth: (model: Model<Api>) => Promise<PlannerAuth | undefined>;
     signal?: AbortSignal;
+    thinkingLevel: ThinkingLevel | undefined;   // inherited by the planner (§9.1 Q4)
     urgency: CompactionUrgency;        // ← required; no default
   } & CompactionPlanOptions,
 ): Promise<CompactionRungResult>
@@ -333,7 +365,8 @@ runVerbatimCompaction(
 // argument that would let it destroy context.
 //
 // ⚠ BREAKING — §9.1 Q6. Published SDK export (`src/index.ts:102`). Positional
-// apiKey/headers/signal/thinkingLevel/options collapse into one request object, and
+// positional apiKey/headers/signal/thinkingLevel/options collapse into one request
+// object, and
 // pre-resolved credentials become a `resolveAuth(model)` callback because a borrowed
 // fallback model needs its OWN credentials, not the session model's. The existing
 // call site already passes `options.resolvePlannerAuth()`
@@ -374,14 +407,12 @@ No new entry type, no format-version bump. `details.stats` gains no fields.
 
 ```
 attempted := {}
-planner   := session model, resolvePlannerRequest(..., "first")
+planner   := session model, resolvePlannerRequest(model, sessionThinkingLevel)
 loop:
   outcome := planDeletedLineRanges(region, params, planner, ...)
       ── inside: retryAssistantCall applies settings.retry backoff to
          429 / rate limit / overloaded / 5xx; quota/billing returns immediately
   case ranked | recovered      → validate, reconstruct, rung="planned". DONE.
-  case starved (1st, this model) → planner.budget := resolvePlannerRequest(..., "starvationRetry")
-                                   continue                       // reasoning off
   case overflowed (region > 1 line, trims left)
                                → drop oldest region lines; continue   // codex parity
   case terminal                → attempted += key(planner.model)
@@ -394,8 +425,8 @@ loop:
 ```
 
 Terminal outcomes that advance to the next model: `rateLimited` (either kind),
-`providerError`, `unusable`, `overflowed` with trimming exhausted, and a second
-`starved` on the same model. This set mirrors codex's `should_retry_with_current_model`
+`providerError`, `unusable` (including the `starved` category), and `overflowed` with
+trimming exhausted. This set mirrors codex's `should_retry_with_current_model`
 (`compact_model_fallback.rs:8-20`), which likewise includes `InvalidRequest` and
 `UnexpectedStatus` — a model that keeps emitting malformed records is a model-specific
 failure, and another model may well succeed.
@@ -422,19 +453,22 @@ compaction returns, `session.model` is exactly what it was before.
 - `maxTokens`: always `undefined`. No cap is sent. `buildBaseOptions` already clamps every
   provider to `contextWindow − estimatedInput − 4096` (`simple-options.js:10-19`), so the
   context window remains the real bound — codex's posture.
-- `reasoning`: **pending §9.2 Q4.** A borrowed candidate's own `:thinkingLevel` suffix,
-  when present in the `fallbackModels` entry, takes precedence either way.
+- `reasoning`: the session `thinkingLevel`, inherited and never modified across attempts —
+  codex parity (§9.1 Q4, §9.3). A borrowed candidate's own `:thinkingLevel` suffix, when
+  present in the `fallbackModels` entry, takes precedence over the inherited level.
 
-**Starvation detection** (inside `planDeletedLineRanges`):
+**Starvation, as a diagnostic category only** (inside `planDeletedLineRanges`):
 
 ```ts
 stopReason === "length" && recoveredRanges.length === 0 && (usage.reasoning ?? 0) > 0
-  ⇒ { kind: "starved", usage, diagnosticPath }
+  ⇒ { kind: "unusable", category: "starved", ... }
 ```
 
 `Usage.reasoning` is a documented subset of `output` (`pi-ai/dist/types.d.ts:251-264`).
-A length stop with usable partial ranges still succeeds silently as today; a length stop
-with *no* reasoning tokens is `unusable`, not `starved`, and earns no starvation retry.
+This changes no control flow — a `starved` outcome advances the ladder exactly like any
+other `unusable` output. It exists so the `0600` sidecar can say *why* the plan was empty,
+which is what made the original report diagnosable. A length stop with usable partial
+ranges still succeeds silently as today.
 
 **Rate-limit classification**, using the same patterns pi-ai uses so the outcome is typed
 rather than string-matched downstream:
@@ -489,7 +523,8 @@ and that the retry starts from a small context. Codex has the same property.
 success: normal spinner, `✻ Context compacted`, `rung: "planned"`. The borrowed model is
 recorded in `details` and the diagnostic sidecar for anyone who looks. Rationale: the
 result is quality-equivalent, the session model did not change, and a banner would train
-users to ignore banners. §9.2 Q13 revisits whether `compaction_end` should carry it.
+users to ignore banners. `compaction_end` **does** carry the borrowed model so extensions
+and attached workflow stage chat can surface it if they choose (§9.1 Q13).
 
 **The fresh rung is loud.** It replaces `✻ Context compacted` with
 `✻ Context cleared (compaction degraded)` (§9.1 Q5 — one generic line; the precise cause
@@ -511,7 +546,7 @@ the critical path, and already documented as intentionally lossy
 
 | Option | Pros | Cons | Reason for Rejection |
 | --- | --- | --- | --- |
-| **A. PR #2048 as written** — cap reasoning at `low`, retry once at `minimal` | Small; already reviewed | `low` is a constant, not a bound; retries on any length stop; leaves the invented cap; still hard-fails mid-turn; no rate-limit or fallback path | Treats the symptom. Superseded; its reasoning-cap instinct survives in §5.3. |
+| **A. PR #2048 as written** — cap reasoning at `low`, retry once at `minimal` | Small; already reviewed | `low` is a constant, not a bound; retries on any length stop; leaves the invented cap in place; still hard-fails mid-turn; no rate-limit or fallback path | Treats the symptom. Superseded entirely: with the cap removed, capping reasoning is unnecessary (§9.1 Q4), and its retry trigger is replaced by the narrower starvation fingerprint. |
 | **B. Port `adjustMaxTokensForThinking` to all providers** | Mirrors the Anthropic path | The addition is clamped away near the limit; the real protection is a numeric `budget_tokens` floor OpenAI and adaptive Claude cannot express (research §3.1-3.2) | Ports the ineffective half. |
 | **C. Fix upstream in pi-ai only** | Fixes pi's silent bug too | pi auto-closes new-contributor issues (#6001 unfixed since 0.79.10); users blocked now | Deferred, §9.1 Q7. |
 | **D. Unranked deletion rung** — delete every unprotected line as the fallback | Gentler than a fresh window | Diverges from codex for no guarantee gain; outcome nearly identical to a fresh window; a third rung to test | Rejected for codex fidelity. |
@@ -535,7 +570,9 @@ the critical path, and already documented as intentionally lossy
 - **Transcript exposure.** Borrowing sends the compactable transcript to a *different
   provider* than the user selected. Candidates come only from the user's own
   `fallbackModels`, so the set is user-authored — but this is a real data-flow change and
-  §9.2 Q14 asks whether it needs an explicit opt-in.
+  §9.1 Q14 resolves this by reusing the user's own `fallbackModels` rather than adding an
+  opt-in, so the docs must state plainly that a configured fallback model may receive the
+  compaction transcript.
 - **Irreversible effects pass one chokepoint.** All rungs converge on the existing
   `reconstructCompactedTranscript` → `appendCompaction` path (rubric #8).
 - **Diagnostics.** The `0600` sidecar gains `starved` and `rate_limited` categories,
@@ -562,11 +599,13 @@ and the settings table all require amendment in the same change.
 
 ## 8. Test Plan
 
-- **Unit — budget:** `resolvePlannerRequest` returns `undefined` maxTokens and forces
-  `off` on `starvationRetry`.
+- **Unit — budget:** `resolvePlannerRequest` returns `undefined` maxTokens (assert at the
+  type level too, since `PlannerBudget.maxTokens` is declared `undefined`), inherits the
+  session level, prefers a candidate's `model:level` suffix over the inherited level, and
+  is identical on every attempt for a given model.
 - **Unit — outcome classification:** every `PlannerOutcome` variant from a synthetic
-  response. `length` + empty + `usage.reasoning > 0` ⇒ `starved`; `length` + empty +
-  `usage.reasoning === 0` ⇒ `unusable` (**no starvation retry**); `length` + partial
+  response. `length` + empty + `usage.reasoning > 0` ⇒ `unusable { category: "starved" }`;
+  `length` + empty + `usage.reasoning === 0` ⇒ `unusable` with a different category;
   valid records ⇒ `recovered` (**no retry**, silent); `429` after exhausted retries ⇒
   `rateLimited { exhausted: true }`; `insufficient_quota` ⇒ `rateLimited { exhausted:
   false }` with **zero** backoff sleeps observed.
@@ -593,8 +632,8 @@ and the settings table all require amendment in the same change.
 - **Integration — rate-limit exhaustion:** every configured model returns `429` in a
   post-tool preflight ⇒ `rung: "fresh"`, notice shown, exactly one follow-up provider
   request, `agent.continue()` not called.
-- **Integration — starvation:** two starved responses on the session model then a healthy
-  fallback ⇒ planner requests observed as `[low|inherited, off, <fallback>]`,
+- **Integration — starvation:** a starved response on the session model then a healthy
+  fallback ⇒ exactly **two** planner requests, both at the inherited reasoning level,
   `rung: "planned"`.
 - **Integration — overflow trimming then fallback:** overflow that trimming cannot fix ⇒
   advances to a larger-context fallback ⇒ `rung: "planned"`.
@@ -642,29 +681,54 @@ and the settings table all require amendment in the same change.
 - [x] **Q3 — `PlannerBudget` stays fused.** Internal taste with no user-visible effect;
       splitting re-opens the "cap without effort" hole.
 
+- [x] **Q4 — Planner reasoning → inherited from the session, codex parity.** Codex does
+      the same at `compact.rs:699`. With the cap removed, inheritance is safe for the same
+      reason it is safe for codex: there is no artificial budget for thinking to exhaust.
+      Starvation is accepted rather than retried, exactly as codex accepts its empty
+      summary, and is absorbed by model borrowing and then the fresh rung.
+      No new setting; `thinkingLevel` keeps its meaning and stays in the
+      `runVerbatimCompaction` request object, so the Q6 break is confined to collapsing
+      positional arguments and the credential resolver.
+- [x] **Q16 — No starvation retry.** Codex modifies reasoning effort on no compaction
+      attempt: `reasoning_effort` occurs exactly twice in its compaction code
+      (`compact.rs:699`, `compact_remote_v2.rs:349`), both unmodified clones, and its
+      retry loop fires only on `Err(e)` with backoff at the same effort. A reasoning-only
+      response is not an error there at all. An earlier draft of this spec added an
+      Atomic-invented `"off"` retry; it is removed. Starvation is one more `unusable`
+      outcome that advances the ladder.
+- [x] **Q13 — `compaction_end` carries the borrowed model; the default UI stays quiet.**
+      Extensions and attached workflow stage chat can surface it; the main chat does not,
+      because the result is quality-equivalent and a banner on an ordinary success trains
+      users to ignore banners.
+- [x] **Q14 — Borrowing reuses `settings.fallbackModels` as-is.** The list is already
+      user-authored, and `sdk-types.ts:30` documents it as main-chat-scoped, so widening
+      its scope is a documented behavior change either way. No new configuration key. The
+      docs and changelog must state plainly that a configured fallback model may receive
+      the compaction transcript.
+- [x] **Q15 — Ships as one change.** Docs, changelog and the breaking signature are
+      written once and the ladder is reviewed and tested as a whole, rather than landing
+      the budget fix first and revisiting every surface a second time.
+
 ### 9.2 Still open
 
-- [ ] **Q4 — Planner reasoning level.** Codex **does** inherit the session effort
-      (`compact.rs:699`), and with the cap removed inheriting is far less dangerous than
-      it was — starvation is caught by the `off` retry and then by model borrowing. **(A)
-      Inherit, codex-faithful:** no new setting, no divergence, and a user who chose
-      `high` may get better ranking; costs one wasted request per high-reasoning
-      compaction. **(B) Decouple via `compaction.plannerReasoning`, default `"low"`:**
-      fewer wasted requests, one more setting to support, diverges from codex.
-      **Coupling:** (A) keeps `thinkingLevel` meaningful, so it stays in the
-      `runVerbatimCompaction` request object and the Q6 break shrinks to "collapse
-      positional args"; (B) removes it.
-- [ ] **Q13 — Should `compaction_end` expose the borrowed model?** §5.4 keeps borrowing
-      quiet in the UI. Exposing it on the event (not the UI) would let extensions and
-      workflow stage chat surface it without training users to ignore banners.
-      **Recommend yes on the event, no in the default UI.**
-- [ ] **Q14 — Does borrowing need an explicit opt-in?** It sends the transcript to a
-      different provider than the user selected for the session. Candidates come only from
-      the user's own `fallbackModels`, which is arguably consent already. **(A)** Reuse
-      `fallbackModels` as-is. **(B)** Add `compaction.useFallbackModels` (default `true`).
-      **(C)** Add a separate `compaction.fallbackModels` list. **Recommend (A)**, since
-      `sdk-types.ts:30` documents the list as main-chat-scoped and widening it is a
-      documented behavior change either way.
+*None. All questions resolved; status moved to In Review (RFC).*
+
+### 9.3 Divergences from codex (the complete list)
+
+Everything else in this design traces to a codex mechanism (§4.3). These are the only
+places Atomic deliberately differs, and each needs a reason that survives review:
+
+| # | Divergence | Why |
+| --- | --- | --- |
+| 1 | **Verbatim line planning instead of summary generation** | The whole point of Verbatim Compaction; retained text is never rewritten. |
+| 2 | **Empty plans are rejected, not accepted** | Codex accepts a starved result and writes `"(no summary available)"`. Atomic validates, so it has no equivalent placeholder — an empty plan deletes nothing and is not a compaction. This is the property that made the original bug reportable and is not up for negotiation (§2.3). |
+| 3 | **`CompactionUrgency` gates the fresh rung** | Codex gates its `compact_token_budget` rung on a feature flag applied to manual and auto alike. Atomic has a mid-turn post-tool preflight that codex lacks, where failure kills an active turn, and a manual `/compact` where it does not. The gate distinguishes them so `/compact` fails honestly instead of clearing context. |
+| 4 | **Fresh rung keeps the `preserve_recent` tail** | Codex keeps no conversation. `preserve_recent` is a documented Atomic setting; it is honored whenever it fits and dropped only when keeping it would guarantee a hard-limit failure (§9.1 Q12). |
+| 5 | **Borrowing walks `settings.fallbackModels`** | Codex switches previous→current model under `ModelDownshift`; Atomic has no such split, so the user's configured list is the nearest equivalent (§9.1 Q14). |
+
+Divergence 3 is the one a reviewer should push hardest on: it is the only one that adds a
+type and a parameter rather than removing something. If the mid-turn preflight argument
+does not hold, urgency should collapse into a setting and the ladder simplifies.
 
 ## 10. Backwards Compatibility
 
@@ -672,8 +736,8 @@ and the settings table all require amendment in the same change.
 
 | Surface | Status |
 | --- | --- |
-| `compaction.*` settings and defaults | **Preserved.** `reserveTokens` keeps its meaning and `16384` default. Possible additive keys per §9.2 Q4/Q14. |
-| `settings.fallbackModels` | **Semantics widened.** Documented as main-chat-scoped (`sdk-types.ts:30`); compaction now borrows from the same list (§9.2 Q14). Requires a docs and changelog note. |
+| `compaction.*` settings and defaults | **Preserved.** `reserveTokens` keeps its meaning and `16384` default. No new keys. |
+| `settings.fallbackModels` | **Semantics widened.** Documented as main-chat-scoped (`sdk-types.ts:30`); compaction now borrows from the same list (§9.1 Q14). Requires a docs and changelog note. |
 | Persisted `CompactionEntry` shape | **Preserved.** No new fields, no format-version bump. `details.rung` widens from two values to three. |
 | Existing sessions on resume | **Preserved.** Resume never reruns planning (`docs/compaction.md:162`). |
 | `session_before_compact` / `session_compact` events | **Preserved.** `event.result.rung` gains a third value — additive. |
