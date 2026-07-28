@@ -2,6 +2,7 @@
 
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
@@ -13,6 +14,25 @@ import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-
 const root = resolve(import.meta.dir, "../..");
 const subagentSkills = join(root, "packages/subagents/skills");
 const workflowSkills = join(root, "packages/workflows/skills");
+const liteparseSkill = join(subagentSkills, "liteparse");
+
+// run-llama/llamaparse-agent-skills `main` at 2dcef7c62417bd2ec4671fce4621bb1e8cce48d0
+// ships exactly these two files under `skills/liteparse/`, both tracked as 100644.
+const liteparseTree: ReadonlyArray<readonly [path: string, sha256: string]> = [
+  ["SKILL.md", "b29e84f059c9b8848feaf8963f8212d8ce4d8d4a54b0ce2be55561b4f8b5cb02"],
+  ["scripts/search.py", "72d960a0600ebcef1252c558159c5fa6b9e7ee23baad36a07ca878dd42cc9bfd"],
+];
+// Reversing Atomic's two documented adaptations must reproduce the canonical upstream
+// SKILL.md byte-for-byte, which proves no undocumented local drift exists.
+const liteparseAdaptations: ReadonlyArray<readonly [atomic: string, canonical: string]> = [
+  ["# LiteParse\n", "# Effective LiteParse\n"],
+  ["\nscripts/search.py /tmp/doc.txt", "\n./.claude/skills/effective-liteparse/scripts/search.py /tmp/doc.txt"],
+];
+const liteparseCanonicalSkillSha256 = "c4982f937fe569cd109801e9c6f0bd80219df93835d9a206bae6958c5e3c841c";
+
+function sha256(contents: string | Buffer): string {
+  return createHash("sha256").update(contents).digest("hex");
+}
 
 function runFixtureGit(cwd: string, args: readonly string[]): string {
   const result = Bun.spawnSync(["git", ...args], { cwd, env: createGitEnvironment() });
@@ -35,11 +55,11 @@ function assertRegularTree(path: string): void {
   }
 }
 
-function collectFiles(path: string, into: string[] = []): string[] {
+function collectFiles(path: string, into: string[] = [], base: string = root): string[] {
   for (const entry of readdirSync(path, { withFileTypes: true })) {
     const child = join(path, entry.name);
-    if (entry.isDirectory()) collectFiles(child, into);
-    else into.push(relative(root, child));
+    if (entry.isDirectory()) collectFiles(child, into, base);
+    else into.push(relative(base, child).replace(/\\/g, "/"));
   }
   return into;
 }
@@ -50,11 +70,21 @@ function assertNoScaffolding(base: string): void {
   }
 }
 
-function assertPacked(packageDir: string, skillPaths: readonly string[]): void {
+function packedPaths(packageDir: string): string[] {
   const result = Bun.spawnSync(["bun", "pm", "pack", "--dry-run"], { cwd: packageDir });
   assert.equal(result.exitCode, 0, result.stderr.toString());
-  const output = result.stdout.toString();
-  for (const path of skillPaths) assert.ok(output.includes(` ${path}\n`), `packed archive omitted ${path}`);
+  return result.stdout
+    .toString()
+    .split("\n")
+    .flatMap((line) => {
+      const match = /^packed\s+\S+\s+(.+)$/u.exec(line.trim());
+      return match ? [match[1]] : [];
+    });
+}
+
+function assertPacked(packageDir: string, skillPaths: readonly string[]): void {
+  const packed = packedPaths(packageDir);
+  for (const path of skillPaths) assert.ok(packed.includes(path), `packed archive omitted ${path}`);
 }
 
 function assertFiles(base: string, paths: readonly string[]): void {
@@ -119,6 +149,49 @@ describe("synced upstream skill trees", () => {
     assertPacked(join(root, "packages/workflows"), [
       "skills/impeccable/scripts/live/svelte-component.mjs", "skills/impeccable/scripts/lib/provider.mjs",
     ]);
+  });
+
+  test("ships the exact canonical LiteParse tree with no undocumented drift", () => {
+    assert.deepEqual(
+      collectFiles(liteparseSkill, [], liteparseSkill).sort(),
+      liteparseTree.map(([path]) => path),
+    );
+    for (const [path, expected] of liteparseTree) {
+      assert.equal(sha256(readFileSync(join(liteparseSkill, path))), expected, `LiteParse content drift: ${path}`);
+    }
+    // Reversing both documented adaptations must reproduce upstream's SKILL.md exactly.
+    let canonical = readFileSync(join(liteparseSkill, "SKILL.md"), "utf8");
+    for (const [atomic, upstream] of liteparseAdaptations) {
+      assert.ok(canonical.includes(atomic), `lost documented Atomic adaptation: ${JSON.stringify(atomic)}`);
+      canonical = canonical.replace(atomic, upstream);
+    }
+    assert.equal(
+      sha256(canonical),
+      liteparseCanonicalSkillSha256,
+      "LiteParse diverges from upstream beyond its two documented adaptations",
+    );
+    assert.doesNotMatch(readFileSync(join(liteparseSkill, "SKILL.md"), "utf8"), /effective-liteparse/u);
+  });
+
+  test("tracks the LiteParse tree as non-executable and packs exactly its two files", () => {
+    const staged = Bun.spawnSync(
+      ["git", "ls-files", "--stage", "--", "packages/subagents/skills/liteparse"],
+      { cwd: root, env: createGitEnvironment() },
+    );
+    assert.equal(staged.exitCode, 0, staged.stderr.toString());
+    const trackedModes = staged.stdout.toString().trim().split("\n").map((line) => {
+      const [metadata, path] = line.split("\t");
+      return `${metadata.split(" ")[0]} ${path}`;
+    });
+    assert.deepEqual(
+      trackedModes,
+      liteparseTree.map(([path]) => `100644 packages/subagents/skills/liteparse/${path}`),
+    );
+    const packed = packedPaths(join(root, "packages/subagents"));
+    assert.deepEqual(
+      packed.filter((path) => path.includes("liteparse")),
+      liteparseTree.map(([path]) => `skills/liteparse/${path}`),
+    );
   });
 
   test("contains no accidental symlinks", () => {
