@@ -32,6 +32,7 @@ Default to a workflow for non-trivial work with a verifiable objective — see [
 
 - [Quick Start](#quick-start)
 - [When to Use Workflows](#when-to-use-workflows)
+- [The Run Contract](#the-run-contract)
 - [Built-in Workflows](#built-in-workflows)
 - [Writing a Workflow](#writing-a-workflow)
 - [Scope-Guard Starter Pattern](#scope-guard-starter-pattern)
@@ -255,6 +256,37 @@ When an arbitrary task-specific workflow has plausible-but-wrong contract risk, 
 4. After repair, rerun the deterministic verifier tools until the declared pass condition succeeds or the iteration budget is exhausted. Define pass, repair, failure, and iteration-limit conditions before launch.
 
 Use `ctx.tool` for workflow-owned external checks and side effects that benefit from durable checkpointing. Leave pure transformations as ordinary TypeScript; do not wrap every model-stage action in a tool call. A custom-loop pre-launch declaration must name the skeptical reviewer, deterministic verifier gates, how model-selected plans become tool executions, how evidence reaches evaluation/repair, and the bounded success/failure condition.
+
+#### Judging task complexity
+
+Complexity is a property of risk, not effort. Score a task on five axes and let the **worst axis dominate** — complexity is not the sum:
+
+| Axis | Low | High |
+|---|---|---|
+| **Blast radius** | one file, one function | crosses module/package boundaries; touches shared contracts (APIs, schemas, migrations) |
+| **Uncertainty** | the exact edit is known before opening the file | the location or cause of the behavior is unknown |
+| **Verifiability cost** | type-checker or a glance confirms it | multi-step validation: build + tests + runtime behavior + artifact checks |
+| **Dependency structure** | independent steps | ordered handoffs where an early mistake propagates |
+| **Failure cost** | reversible edit | wire formats, published APIs, data migrations, releases |
+
+A one-line change to a serialization format is complex (high failure cost, exact contract). A 500-line mechanical rename is simple (zero uncertainty, type-checker-verified). The common trap is judging by effort instead of risk: long-but-mechanical is simple; short-but-contractual is not.
+
+Fast tells, usable in the first 30 seconds:
+
+- **Done-condition test:** if the success condition does not fit in one sentence, the task is complex or underspecified — clarify before guessing.
+- **The "and" test:** "fix X and update docs and add a test" is three tasks in one sentence; enumerate and classify each.
+- **Loop words:** "until it passes", "keep trying" make the task at least moderate — iteration is expected.
+- **Working-memory test:** more than about three interacting constraints at once means complex.
+
+**Threshold.** A task earns a workflow when at least two of these are true, or any one is strongly true:
+
+1. Two or more distinct phases with a real handoff (research → implement, implement → verify), not just steps.
+2. The done-condition needs proof — tests, builds, review, or a contract check. If "how do you know it works?" is a fair question, a verification stage is waiting to exist.
+3. Iteration is expected — an anticipated repair loop, not a straight line.
+4. Failure cost is high — even a one-line change gets adversarial verification.
+5. The work outlives one attention span — losing mid-task state is a real risk.
+
+The honest form of the threshold is a comparison: workflow overhead is roughly constant and small, while the cost of being wrong inline scales with uncertainty × failure cost — so the line crosses at "moderate" on any single axis. Guard against the ratchet failure mode: a task that looked simple, then accumulated exploratory calls, ad-hoc fixes, and an untracked mental TODO list is a workflow being run badly in-head; apply the ten-call rule from [When to Use Workflows](#when-to-use-workflows). Map axes to action: all low → inline now; only uncertainty high → short recon, then re-judge; any axis high with a checkable outcome → workflow with a stage producing evidence for the worst axis; failure cost high → add deterministic or adversarial gates regardless of the rest. When the mapping stays ambiguous, fall through to the [scoring rubric](#scoring-rubric) below.
 
 #### Scoring rubric
 
@@ -519,6 +551,71 @@ Atomic's category is broader and more explicit: it is the loop engine for engine
 | Artifacts and auditability | Research docs, specs, logs, transcripts, reviewer notes, check output, and final summaries can live in the repo or workflow run directory. | Progress is saved and resumable, but the orchestration is primarily a Claude Code runtime behavior. |
 | Cost/scale posture | You choose the graph and concurrency. Atomic can be small and deterministic, or broad when you intentionally design a larger workflow. | Designed for large fan-outs, including tens to hundreds of subagents; Anthropic notes it can consume substantially more tokens than a typical Claude Code session. |
 
+## The Run Contract
+
+**A run's contract is its objective plus its acceptance criteria. Only the user may change it. Every stage that receives a change must hand it to the next stage.**
+
+This is the single most important rule for getting predictable results out of a multi-stage run, and it is the rule most often broken by accident.
+
+### Only the user may change the contract
+
+A workflow launches with a contract: the objective and, when supplied, explicit acceptance criteria. Two parties relate to it very differently:
+
+- **You may amend it at any time.** A mid-run message — steering, a follow-up, resume text — is authoritative. If you say "also handle the detached path," that is a new requirement, and the run adopts it from that moment.
+- **Agents may not amend it at all.** An implementer that notices a nearby bug, a cleaner abstraction, or a missing feature has found *deferred work*, not a new criterion. It records the observation and keeps building to the contract.
+
+### Amendments must reach the next stage
+
+An amendment that stays inside the session that received it is invisible to everything downstream. That produces the failure this rule exists to prevent:
+
+> You steer the implementation stage to add a requirement. The implementer adopts it and builds it. The reviewers were launched with the original criteria, so they score the added work as unrequested scope and the original criteria as contradicted. The run then burns review loops arguing about a contract mismatch nobody can see.
+
+So every builtin stage prompt carries a **steering propagation contract**:
+
+- Restate every objective-relevant steering message in your report or handoff artifact, under an explicit `Contract amendments received` heading, verbatim when short.
+- Keep user-authored amendments visibly separate from your own observations, so the next stage can tell a required clause from an agent proposal.
+- Treat amendments inherited from an upstream stage as contract clauses. Cover them in acceptance and traceability work; never classify them as out-of-scope.
+- Resolve ambiguity before implementing. Use `intercom` to ask the supervisor or originating stage when one is reachable; otherwise state the conflict and implement the narrowest reading consistent with the launch contract.
+- Propagate nothing else this way. Tool preferences, working style, and your own ideas are not amendments.
+
+Every bundled workflow wraps its run context once at the definition entry point, so each `ctx.task`, `ctx.chain`, and `ctx.parallel` prompt carries the contract automatically. Do the same in a custom workflow:
+
+```ts
+import { withSteeringPropagationContext } from "@bastani/workflows/builtin/steering-context";
+
+export default workflow({
+  name: "my-workflow",
+  // ...
+  run: async (ctx) => await runMyWorkflow(withSteeringPropagationContext(ctx)),
+});
+```
+
+Wrapping the context rather than each call site means a stage added later inherits the pattern instead of silently dropping amendments.
+
+### Scope discipline
+
+The mirror of "only the user may amend" is that the agent holds the line. Every builtin implementation stage carries this contract:
+
+> Before writing code, state the goal in one sentence and list the acceptance criteria. That list is the contract. Freeze it.
+
+While implementing:
+
+- **Done means the contract, not "good."** When all criteria pass, stop. Polish, refactors, and "while I'm here" fixes are new work, not this work.
+- **Every addition must trace to a criterion.** If you cannot point at the criterion a change serves, do not make it. Log it instead.
+- **Keep a deferred list, not a growing diff.** When you notice a bug, smell, or missing feature outside the contract, write one line in a deferred note and move on. Surface it at the end.
+- **Distinguish blockers from improvements.** Change scope only if a criterion is impossible or wrong as written — and say so explicitly before proceeding, rather than silently absorbing the work.
+- **Watch for the tells.** "It would be cleaner if…", "we should also…", "this really ought to…" mean you are about to move the goalpost. Stop and check the contract.
+- **Prefer the smallest diff that satisfies the contract.** Fewer files touched, fewer abstractions introduced, no speculative generality for futures nobody asked for.
+
+At the end, report three things: what the contract was, evidence each criterion passes, and the deferred list. Scope changes belong in the report, never in the diff.
+
+### Practical consequences
+
+- **Steer freely — it is the supported amendment channel.** You do not need to restart a run to add a requirement.
+- **Say what you mean as a requirement.** "It would be nice if…" reads as guidance; "also handle X" reads as a clause. Stages are told to distinguish them.
+- **Expect amendments in the reports.** If a stage received one and its report has no `Contract amendments received` section, the amendment did not propagate and downstream stages will not honor it.
+- **A growing diff with no new criteria is a defect.** That is the tell that scope discipline slipped, and it is a legitimate reason to stop a run.
+
 ## Built-in Workflows
 
 Atomic bundles nine workflows: six reusable control-flow patterns, two autonomous implementation loops, and one end-to-end design workflow. They are available in every session. Use `/workflow list` to confirm the current set and `/workflow inputs <name>` to inspect a contract before launch.
@@ -534,6 +631,8 @@ Atomic bundles nine workflows: six reusable control-flow patterns, two autonomou
 | `goal` | Durable goal ledger → bounded sub-agent orchestration → parallel review → deterministic reducer. | Autonomous implementation that needs receipts and reviewer-gated completion. |
 | `ralph` | Prompt refinement → codebase research → delegated implementation → multi-model review loop. | Research-first autonomous implementation with bounded review and repair. |
 | `open-claude-design` | Guided discovery and reference research → HTML generation → feedback loop → export and handoff. | UI, page, component, theme, or design-token work. |
+
+Across these builtins, model-facing stages use compact, outcome-first contracts tuned for GPT-5.6, Claude Opus 5, and Claude Fable 5. Long artifacts and receipts are rendered before the final instruction, reporting stages ground completion claims in current tool evidence, and user-facing or downstream reports have explicit shape and length bounds. Orchestrators delegate only genuinely independent work that is too large for a handful of tool calls, rather than spawning agents to recheck their own work.
 
 ### Six composable pattern builtins
 
@@ -575,6 +674,8 @@ All six can run by name or as nested definitions. Prefer composition over copyin
 
 Goal persists the literal objective and immutable acceptance criteria in a run ledger, delegates implementation through bounded orchestrator turns, records receipts, and asks independent reviewers to inspect the current delta. A TypeScript reducer returns `complete`, `blocked`, or `needs_human` rather than trusting free-form completion claims.
 
+Goal reviewers derive checks from the literal objective before consulting implementation receipts, inspect the actual checkout delta, and report commands, observed output, and file:line evidence rather than internal reasoning. Shared contracts cover acceptance-matrix traceability, contract-fidelity risks, end-to-end and QA-video evidence, and independent verification. `stop_review_loop` is the authoritative convergence signal: it remains `false` for P0–P2 findings, any `required_by_objective` finding, or unproven implementation/validation requirements; it becomes `true` only when independent evidence proves the objective and only non-blocking or authorized post-approval work remains. The deterministic reducer consumes that signal without reinterpreting free-form prose.
+
 | Input | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `objective` | text | yes | — | Task to implement and validate. Keep PR/MR creation out of this text. |
@@ -594,6 +695,8 @@ Declared outputs include `result`, `status`, `approved`, `goal_id`, `objective`,
 ### `ralph`
 
 Ralph starts from the raw task, refines it into a research question, runs codebase research, delegates implementation from the research artifact, and sends the patch to independent model-family reviewers. It repeats research, orchestration, and review until reviewers approve or `max_loops` is exhausted.
+
+Ralph uses the same canonical reviewer evidence and convergence contracts as Goal. Its reviewer prompt receives artifacts first and the review objective last, requires independently derived probes before implementation-authored evidence, and preserves unresolved findings when the bounded loop ends. Forked continuation prompts send only changed state and artifact paths instead of repeating the full established contract.
 
 | Input | Type | Required | Default | Description |
 |---|---|---|---|---|
@@ -2063,7 +2166,7 @@ Authors do not need to generate or pass a group through ordinary stages, tasks, 
 readonly model?: WorkflowModelValue; // string or supported SDK model object
 ```
 
-Selects the primary stage model. String values can carry reasoning and context-window suffixes described under [Reasoning levels](#reasoning-levels) and [Context windows](#context-windows).
+Selects the primary stage model. String values can carry the reasoning suffix described under [Reasoning levels](#reasoning-levels).
 
 ### `fallbackModels` / `fallbackThinkingLevels`
 
@@ -2087,15 +2190,6 @@ readonly thinkingLevel?: WorkflowThinkingLevel;
 ```
 
 Sets the default reasoning effort for candidates without a suffix. A suffix on the model string wins.
-
-### `contextWindow` / `contextWindowStrict`
-
-```typescript
-readonly contextWindow?: number;
-readonly contextWindowStrict?: boolean;
-```
-
-Applies a stage-wide context-window token budget. The runtime rejects unsupported values when `contextWindowStrict` is `true`; otherwise, the model keeps its default.
 
 ### `scopedModels`
 
@@ -2162,13 +2256,17 @@ readonly outputMode?: "inline" | "file-only";
 
 Writes stage/task output to a path or disables output persistence with `false`. `outputMode` defaults to `inline`; `file-only` keeps the parent result compact by returning an artifact reference instead of full text and requires an output path.
 
+The runner writes the stage's **final message** to `output` after the stage ends, so that path belongs to the runner. Never point `output` at a file the same stage's prompt asks the agent to author: the agent's file is overwritten by its closing message, and downstream stages read the leftover summary instead of the work. Pick one owner per artifact — either the stage returns the content as its final message and the runner saves it, or the prompt tells the agent to write a path the stage does not declare as `output`.
+
 ### `reads`
 
 ```typescript
 readonly reads?: readonly string[] | false;
 ```
 
-Provides files for the stage to read before running, or disables inherited reads with `false`. Paths are supplied as readonly strings.
+Names files for the stage to read before running, or disables inherited reads with `false`. Paths are supplied as readonly strings.
+
+`reads` passes **paths, not content**. It prepends a `[Read from: <paths>]` directive to the prompt and the stage reads those files itself with its own read tool, so a stage sees whatever is on disk when it runs — not a snapshot taken when the path was passed. Any stage that rewrites an artifact between producer and consumer changes what the consumer reads. This keeps large artifacts out of the prompt; state the expectation in the prompt too, for example `Read the file at ${artifactPath} before continuing.`
 
 ### `maxOutput`
 
@@ -2332,31 +2430,6 @@ The standalone `thinkingLevel` stage option is deprecated. It still applies as a
 ```
 
 This applies everywhere a stage accepts a model: direct `ctx.task`/`ctx.chain`/`ctx.parallel` options, `ctx.stage` options, builtin workflow stage definitions, and workflow parameters. `fallbackThinkingLevels` is an optional compatibility helper aligned by index to `fallbackModels`; it applies only to fallback entries that do not already carry a suffix. Each `WorkflowModelAttempt` reports the resolved model and the effective reasoning effort used for that attempt.
-
-### Context windows
-
-A `model`/`fallbackModels` entry may also request a context-window budget with a parenthesized size token in the model-name portion. Place the token *before or after* the optional `:reasoning` suffix to prevent a conflict with the reasoning level. This mirrors GitHub Copilot's `Claude Opus 4.8 (1M context)` model-name convention:
-
-```ts
-await ctx.task("review", {
-  task: "Review the diff",
-  model: "anthropic/claude-fable-5:high",
-  // The copilot opus fallback runs at its largest advertised (long-context) window.
-  // Use (long) for a size-agnostic marker, or a rounded long-tier label like (1m).
-  fallbackModels: ["github-copilot/claude-opus-4.8 (long):xhigh", "anthropic/claude-opus-4-8:xhigh"],
-});
-```
-
-The token accepts the same compact sizes as the `--context-window` flag (`1m`, `1.1m`, `936k`, `400k`, or a raw token count), plus a generic `(long)` marker, and the runtime resolves it against that specific candidate model's advertised windows:
-
-- `(long)` — a size-agnostic long-context marker that selects the model's advertised long tier regardless of its exact size, so the same token works across models with different long tiers;
-- a request at or below the model's default window keeps the default;
-- a request above the default selects the long tier — an exact supported window is used as-is, otherwise the smallest supported window at or above the request is selected, rounding **up** so a rounded marker like `(1m)` or `(1.1m)` lands on the long tier even when it sits slightly above or below the marker size (e.g. `(1m)` selects claude-opus-4.8's 1M tier and gpt-5.5's 1.05M tier; `(1.1m)` matches gpt-5.5's rounded long-tier label);
-- when the model exposes no larger tier (or is unavailable), the runtime drops the request and the session keeps the model's default (short) window—a non-strict, automatic fallback.
-
-The budget applies only to the candidate that carries the token; other primary and fallback models in the same chain are unaffected. A parenthesized token that is not a valid size (for example `(preview)`) is left attached to the model id rather than being treated as a context window. Without the token, a tiered model **pins its natural default (short) window** in a workflow stage, so a persisted interactive long-context preference does not leak into workflow runs — use the `(1m)` token or the `contextWindow` stage option to opt into long context.
-
-For stage-wide selection you can instead set the `contextWindow` (and `contextWindowStrict`) stage option, which maps to the SDK `createAgentSession` options of the same name.
 
 ## StageContext
 
@@ -3635,13 +3708,16 @@ A workflow is an information-flow system, not just a list of prompts. Most workf
 
 ### Locally Scoped Stage Prompts
 
-Stage prompts should define local contracts, not describe the full workflow runtime. Write prompts as if the stage could be executed independently from a fresh session with only the listed inputs. Include:
+Stage prompts should define local contracts, not describe the full workflow runtime. Write prompts as if the stage could be executed independently from a fresh session with only the listed inputs. A useful compact shape is `Role · Goal · Success criteria · Constraints · Tools · Output · Stop rules`; omit sections that do not change behavior. Include:
 
 - the stage's current objective and what is out of scope for this stage
-- the exact files, artifacts, child outputs, or user inputs it may use
-- the expected output format, or the schema it must return when the workflow item is schema-enabled
-- the checks, tools, or deterministic commands it should run when relevant
-- the success criteria that let this stage stop
+- the exact files, artifacts, child outputs, or user inputs it may use; put long inputs before the final instruction
+- context-dependent tool routes and permission boundaries, without describing tools the stage cannot call
+- the expected output format and length, or the schema it must return when the workflow item is schema-enabled
+- the checks, tools, or deterministic commands it should run when relevant, plus evidence required for progress or completion claims
+- the success criteria and blocker conditions that let this stage stop
+
+State important constraints once. Reserve absolute wording for safety, required fields, forbidden actions, gating derivations, and other true invariants; express search, iteration, and delegation choices as decision rules. Ask for conclusions, commands, observed results, and citations—not private reasoning or generic self-verification.
 
 Avoid unrelated workflow internals such as reducer algorithms, future PR stages, sibling reviewer names, loop implementation details, or project-specific nicknames unless they are explicitly part of the current stage contract. If a term such as a gate name, ledger field, or workflow nickname is necessary, define it in the prompt before using it.
 
@@ -3678,10 +3754,10 @@ Watch for these failure modes in long or multi-stage workflows:
 
 | Pattern | Symptom | Mitigation |
 |---------|---------|------------|
-| Lost in the middle | Important constraints are ignored in long prompts | Repeat critical constraints near the end; shorten handoffs |
+| Lost in the middle | Important constraints are ignored in long prompts | Shorten the handoff; place documents first and the final query/critical contract last |
 | Context poisoning | Bad or obsolete information steers later stages | Validate sources, overwrite stale artifacts, cite evidence |
 | Distraction | Irrelevant context crowds out useful context | Pass only stage-specific files and summaries |
-| Confusion | Similar instructions or duplicate facts conflict | Consolidate instructions and name artifacts clearly |
+| Confusion | Similar instructions or duplicate facts conflict | Consolidate each shared contract into one canonical copy and name artifacts clearly |
 | Clash | User, system, or stage instructions disagree | Resolve conflicts before launching downstream stages |
 
 Use compaction, file references, and bounded loops before context fills with transcript noise. In attached workflow stage chat, manual compaction shows `Compacting context...`, threshold compaction shows `Auto-compacting...`, and overflow recovery shows `Context overflow detected. Auto-compacting...` in the same animated status row used for normal model work. A successful compaction leaves the normal expandable `✻ Context compacted` boundary in the transcript; the boundary is reconstructed from the durable session and has a typed live fallback if the refreshed session snapshot is temporarily unavailable.
@@ -3699,14 +3775,20 @@ A compressed handoff includes:
 - rejected alternatives when they matter
 - next action expected from the downstream stage
 
-Use `output`, `outputMode: "file-only"`, and `reads` for large research bundles, logs, or reviewer outputs. Keep summaries compact and let downstream stages read full artifacts only when needed. In the downstream stage prompt, say `Read the file at ${artifactPath} before continuing.` Do not inject full session tails, all previous stage outputs, or every prior review round into later prompts by default; pass the latest relevant artifact paths and make older history discoverable from a ledger or index file.
+Pass file references, not content. This is the strongly encouraged default for every handoff — between stages and back to the caller — and it is what keeps a multi-stage run affordable. Use `output` with `outputMode: "file-only"` and `reads` for research bundles, logs, plans, diffs, reviewer reports, and any other stage product that can grow. In the downstream stage prompt, say `Read the file at ${artifactPath} before continuing.` Do not inject full session tails, all previous stage outputs, or every prior review round into later prompts by default; pass the latest relevant artifact paths and make older history discoverable from a ledger or index file.
 
-Substantial handoffs should travel through files or durable artifacts instead of hidden transcript assumptions. This keeps stage prompts small, makes review/audit possible, and lets later stages reread the authoritative material without depending on what a previous model summarized.
+Three rules make that work in practice:
+
+1. **One owner per artifact.** The runner writes the stage's final message to `output` after the stage ends. Do not also ask that stage's prompt to author the same path, or the agent's file is overwritten by its closing message. Either the stage returns the content and the runner saves it, or the prompt writes a path the stage does not declare as `output`.
+2. **Do not read an artifact back just to return it.** `outputMode: "file-only"` exists so the parent receives a compact reference. Calling `readFile` on that artifact and returning its text as a workflow output cancels the saving and drops the whole report into the caller's context window. Return the reference and a `*_path` output instead.
+3. **Return paths from the workflow.** Declared outputs are consumed by the calling session, so a workflow's `result` should be a reference plus explicit `*_path` outputs. Callers that need the body read the path; callers that only need the outcome pay nothing for it.
+
+Substantial handoffs should travel through files or durable artifacts instead of hidden transcript assumptions. This keeps stage prompts small, makes review/audit possible, and lets later stages reread the authoritative material without depending on what a previous model summarized. Remember that `reads` passes paths rather than content: a stage reads the file when it runs, so the artifact must hold the real report at that moment.
 
 ```ts
 const researchPath = ".atomic/workflows/runs/context-demo/research.md";
 await ctx.task("researcher", {
-  task: "Map the subsystem and save the report.",
+  task: "Map the subsystem and return the report as your final message; the workflow saves it.",
   output: researchPath,
   outputMode: "file-only",
 });
@@ -3766,11 +3848,11 @@ Build validation into the workflow instead of waiting for a final manual check. 
 - reviewer stages: fresh-context reviewers that inspect artifacts and current files
 - LLM-as-judge stages: direct scoring, pairwise comparison, or rubric-based grading for subjective outputs
 
-Prefer schema-enabled workflow items for model review and gate decisions. Atomic passes the schema directly to the final-answer tool and captures the tool arguments; it no longer adds separate structured-output parsing, object-root restrictions, or sidecar validation. Object-shaped decision schemas with explicit booleans/enums, findings arrays, confidence, evidence fields, and error reporting are usually easiest to consume, but array or primitive schemas are valid when they fit the handoff. Avoid brittle regular-expression matching against free-form prose such as “looks good”, “approved”, or “PASS”.
+Prefer schema-enabled workflow items for model review and gate decisions. Atomic passes the schema directly to the final-answer tool and captures the tool arguments; it no longer adds separate structured-output parsing, object-root restrictions, or sidecar validation. Object-shaped decision schemas with explicit booleans/enums, findings arrays, confidence, evidence fields, and error reporting are usually easiest to consume, but array or primitive schemas are valid when they fit the handoff. Avoid brittle regular-expression matching against free-form prose such as “looks good”, “approved”, or “PASS”. Define each convergence field's derivation once and consume it deterministically rather than recomputing approval from narrative text.
 
-Use small dedicated model stages for adaptive gates when deterministic code alone cannot decide what to check. For example, a stage can read an artifact, inspect the repo, run a named tool or command, and then emit a structured decision by configuring `schema` on that workflow item. Keep that stage's prompt narrow: tell it the specific check to perform, the files/tools it may use, and the structured decision it must return.
+Use small dedicated model stages for adaptive gates when deterministic code alone cannot decide what to check. For example, a stage can read an artifact, inspect the repo, run a named tool or command, and then emit a structured decision by configuring `schema` on that workflow item. Keep that stage's prompt narrow: tell it the specific check to perform, the files/tools it may use, the evidence to report, and the structured decision it must return. Require progress and completion claims to map to current tool results; when evidence is unavailable, the stage should identify the unverified claim or blocker rather than infer success.
 
-When using LLM judges, reduce bias by defining score anchors, asking for evidence, calibrating against examples, and keeping length/order effects in mind. Track pass rates and failures over time for reusable workflows.
+When using LLM judges, reduce bias by defining score anchors, requesting observable evidence and criteria-based justification, calibrating against examples, and keeping length/order effects in mind. Do not ask for chain-of-thought or reconstructed internal reasoning. Track pass rates and failures over time for reusable workflows.
 
 ### Tools, MCP, Memory, and Hosted Execution
 

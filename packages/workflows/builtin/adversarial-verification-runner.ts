@@ -47,7 +47,7 @@ export async function runAdversarialVerification(ctx: WorkflowRunContext<Inputs>
   const root = await stableArtifactRoot(ctx, "adversarial-verification");
   const rubricPath = join(root, "rubric.md");
   const candidatePath = join(root, "candidate.md");
-  await writeFile(rubricPath, ["# Verification rubric", "- The candidate satisfies the literal task.", "- Important claims cite observable evidence.", "- Relevant validation is executed and reported.", "- No blocking correctness, safety, or completeness gap remains."].join("\n"));
+  await writeFile(rubricPath, ["# Verification rubric", "- The candidate satisfies the literal task.", "- Important claims cite observable evidence.", "- Relevant validation is executed and reported with commands run and observed output.", "- File findings cite file:line evidence where applicable.", "- No blocking correctness, safety, or completeness gap remains."].join("\n"));
   await ctx.task("worker", { prompt: renderWorkerPrompt(ctx.inputs.task), context: "fresh", output: candidatePath, outputMode: "file-only" });
 
   let repairsCompleted = 0;

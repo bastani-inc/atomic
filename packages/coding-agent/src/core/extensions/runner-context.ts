@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { SessionManager } from "../session-manager.ts";
@@ -30,6 +31,7 @@ export interface ExtensionContextSource {
 	getSessionManager(): SessionManager;
 	getModelRegistry(): ModelRegistry;
 	getModel(): Model<Api> | undefined;
+	getThinkingLevel(): ThinkingLevel | undefined;
 	getOrchestrationContext(): OrchestrationContext | undefined;
 	isIdle(): boolean;
 	isProjectTrusted(): boolean;
@@ -85,6 +87,10 @@ export function createExtensionContext(source: ExtensionContextSource): Extensio
 		get model() {
 			source.assertActive();
 			return source.getModel();
+		},
+		get thinkingLevel() {
+			source.assertActive();
+			return source.getThinkingLevel();
 		},
 		get internalResourceRouter() {
 			source.assertActive();

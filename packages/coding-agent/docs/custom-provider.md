@@ -312,6 +312,12 @@ After registration, users can authenticate via `/login corporate-ai`.
 
 Existing extension OAuth definitions keep their `login`, `refreshToken`, `getApiKey`, and optional `modifyModels` methods. OAuth refresh is serialized so concurrent requests do not overwrite each other's credentials.
 
+In isolated interactive mode, extension code and executable OAuth methods remain in the engine process. Atomic transports only the JSON-safe provider description (`id`, `name`, `loginLabel`, and `usesCallbackServer`) to the terminal process; it never serializes provider functions or acquired credentials and does not load the extension a second time in the frontend. The engine executes the provider's login closure and correlates browser URLs, device codes, progress/info messages, prompts, selections, and manual-code callbacks with the originating login.
+
+After acquisition, the engine owns serialized credential persistence, model/current-model refresh, rollback on failure, and logout. The frontend applies the returned catalog only after the engine transaction succeeds. Escape or Ctrl+C cancels only the matching login and leaves the prior credential/catalog intact. Built-in OAuth and direct, non-isolated extension OAuth use the same persistence and cancellation semantics; later provider registrations continue to override earlier registrations by ID.
+
+Intentional cancellation is quiet, including native `AbortError`, an aborted signal or its exact reason, nested abort causes, and the legacy exact `Login cancelled` error. Provider denial, timeout, network/protocol errors, malformed responses, token exchange failures, storage failures, and post-login refresh failures remain visible.
+
 ## Dynamic model catalog refresh
 
 Providers whose catalogs change at runtime can add `refreshModels`. Atomic calls it during the asynchronous model refresh used by the model picker and authentication flows:
@@ -652,9 +658,6 @@ interface ProviderModelConfig {
   /** Default/effective context window size in tokens. */
   contextWindow: number;
 
-  /** Optional selectable context-window sizes in tokens. */
-  contextWindowOptions?: readonly number[];
-
   /** Maximum output tokens. */
   maxTokens: number;
 
@@ -667,12 +670,17 @@ interface ProviderModelConfig {
     supportsDeveloperRole?: boolean;
     supportsReasoningEffort?: boolean;
     supportsUsageInStreaming?: boolean;
+    supportsStrictMode?: boolean;
+    supportsOpenAIGrammarTools?: boolean;
+    /** Atomic alias for supportsOpenAIGrammarTools. */
+    supportsGrammarTools?: boolean;
     maxTokensField?: "max_completion_tokens" | "max_tokens";
     requiresToolResultName?: boolean;
     requiresAssistantAfterToolResult?: boolean;
     requiresThinkingAsText?: boolean;
     requiresReasoningContentOnAssistantMessages?: boolean;
     thinkingFormat?: "openai" | "openrouter" | "deepseek" | "together" | "zai" | "qwen" | "chat-template" | "qwen-chat-template" | "string-thinking" | "ant-ling";
+    supportsStrictTools?: boolean;
     chatTemplateKwargs?: Record<string, string | number | boolean | null | { "$var": "thinking.enabled" | "thinking.effort"; omitWhenOff?: boolean }>;
     cacheControlFormat?: "anthropic";
     sendSessionAffinityHeaders?: boolean;
@@ -687,5 +695,7 @@ The `cost` shape is equivalent to `Model<Api>["cost"]`. Base rates and every tie
 
 `openrouter` sends `reasoning: { effort }`. `deepseek` sends `thinking: { type: "enabled" | "disabled" }` and `reasoning_effort` when enabled. `together` sends `reasoning: { enabled }` and also `reasoning_effort` when `supportsReasoningEffort` is enabled. `qwen` is for DashScope-style top-level `enable_thinking`. Use `qwen-chat-template` for local Qwen-compatible servers that read `chat_template_kwargs.enable_thinking` and need `preserve_thinking`. Use `chat-template` for configurable `chat_template_kwargs`, for example DeepSeek V3.x behind vLLM with `chatTemplateKwargs: { "thinking": { "$var": "thinking.enabled" } }`.
 `cacheControlFormat: "anthropic"` applies Anthropic-style `cache_control` markers to the system prompt, last tool definition, and last user/assistant text content.
+
+Capability flags are enforcement claims, not preferences. `supportsStrictMode` controls strict JSON-schema tools for OpenAI-compatible APIs; Anthropic/Bedrock use `supportsStrictTools`; `supportsOpenAIGrammarTools` controls OpenAI Lark/regex custom tools. Atomic also accepts `supportsGrammarTools` as a compatibility alias and synchronizes it to the canonical OpenAI name; when both disagree, the canonical field wins. Leave these fields unset/false unless the endpoint and selected model actually preserve and enforce the corresponding request shape. See [Extensions](/extensions#constrained-sampling) for exact `constrainedSampling` modes.
 
 For `openai-responses` providers, set `compat.sessionAffinityFormat` to `"openai"` for `session_id` plus `x-client-request-id`, `"openai-nosession"` to omit `session_id` while retaining `x-client-request-id`, or `"openrouter"` for `x-session-id`. Responses-compatible providers may also set `supportsToolSearch` when they support deferred tool loading.

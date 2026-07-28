@@ -12,6 +12,7 @@ import type { Api, Model } from "@earendil-works/pi-ai/compat";
 
 export interface LegacyOAuthProvider {
 	name: string;
+	loginLabel?: string;
 	usesCallbackServer?: boolean;
 	login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials>;
 	refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials>;
@@ -24,6 +25,14 @@ export interface OAuthProviderDescriptor extends LegacyOAuthProvider {
 	loginLabel?: string;
 }
 
+
+/** JSON-safe OAuth metadata transported across isolated-engine boundaries. */
+export interface OAuthProviderMetadata {
+	id: string;
+	name: string;
+	loginLabel?: string;
+	usesCallbackServer?: boolean;
+}
 export interface AtomicOAuthLoginCallbacks extends OAuthLoginCallbacks {
 	onManualCodeCancel?(): void;
 	onInfo?(message: string, links: readonly AuthInfoLink[]): void;
@@ -32,6 +41,48 @@ export interface AtomicOAuthLoginCallbacks extends OAuthLoginCallbacks {
 const GLOBAL_LEGACY_SOURCE = "atomic:legacy-global";
 const legacyProviders = new Map<string, Map<string, LegacyOAuthProvider>>();
 const CALLBACK_SERVER_PROVIDERS = new Set(["anthropic", "openai-codex"]);
+/** Marks failures after credential acquisition so presentation never mistakes nested AbortErrors for cancellation. */
+export class OAuthLoginTransactionError extends Error {
+	constructor(cause: unknown) {
+		super(cause instanceof Error ? cause.message : String(cause), { cause });
+		this.name = "OAuthLoginTransactionError";
+	}
+}
+
+/** Cycle-safe classification shared by direct, provider-owned, and isolated OAuth. */
+export function isOAuthLoginCancelled(
+	error: unknown,
+	signal?: AbortSignal,
+	options: { includeActiveSignal?: boolean } = {},
+): boolean {
+	if (error instanceof OAuthLoginTransactionError) return false;
+	if (options.includeActiveSignal !== false && signal?.aborted) return true;
+	const reason = signal?.reason;
+	const seen = new Set<object>();
+	let current: unknown = error;
+	while (current !== undefined && current !== null) {
+		if (current === reason && reason !== undefined) return true;
+		if (current === "Login cancelled") return true;
+		if (typeof current !== "object") return false;
+		if (seen.has(current)) return false;
+		seen.add(current);
+		const candidate = current as { name?: unknown; message?: unknown; cause?: unknown };
+		if (candidate.name === "AbortError" || candidate.message === "Login cancelled") return true;
+		current = candidate.cause;
+	}
+	return false;
+}
+
+/** Canonicalize only intentional cancellation while retaining the provider error as cause. */
+export function normalizeOAuthLoginError(
+	error: unknown,
+	signal?: AbortSignal,
+	options?: { includeActiveSignal?: boolean },
+): unknown {
+	if (error instanceof Error && error.message === "Login cancelled" && error.cause !== undefined) return error;
+	if (!isOAuthLoginCancelled(error, signal, options)) return error;
+	return new Error("Login cancelled", { cause: error });
+}
 
 function abortable<T>(promise: Promise<T>, signal: AbortSignal | undefined, onAbort?: () => void): Promise<T> {
 	if (!signal) return promise;
@@ -162,15 +213,36 @@ export function getOAuthProviderDescriptors(): OAuthProviderDescriptor[] {
 	return [...descriptors.values()];
 }
 
+export function getOAuthProviderMetadata(): OAuthProviderMetadata[] {
+	return getOAuthProviderDescriptors().map(({ id, name, loginLabel, usesCallbackServer }) => ({
+		id,
+		name,
+		...(loginLabel === undefined ? {} : { loginLabel }),
+		...(usesCallbackServer === undefined ? {} : { usesCallbackServer }),
+	}));
+}
+
 export async function loginOAuthProvider(
 	providerId: string,
 	callbacks: AtomicOAuthLoginCallbacks,
 ): Promise<OAuthCredential> {
 	const legacy = latestLegacyProvider(providerId);
-	if (legacy) return { type: "oauth", ...(await legacy.login(callbacks)) };
-	const oauth = builtinOAuth(providerId);
-	if (!oauth) throw new Error(`Unknown OAuth provider: ${providerId}`);
-	return oauth.login(createAuthInteraction(callbacks));
+	const oauth = legacy ? undefined : builtinOAuth(providerId);
+	if (!legacy && !oauth) throw new Error(`Unknown OAuth provider: ${providerId}`);
+	if (callbacks.signal?.aborted) {
+		throw normalizeOAuthLoginError(callbacks.signal.reason, callbacks.signal);
+	}
+	try {
+		const credential = legacy
+			? { type: "oauth" as const, ...(await legacy.login(callbacks)) }
+			: await oauth!.login(createAuthInteraction(callbacks));
+		if (callbacks.signal?.aborted) {
+			throw normalizeOAuthLoginError(callbacks.signal.reason, callbacks.signal);
+		}
+		return credential;
+	} catch (error) {
+		throw normalizeOAuthLoginError(error, callbacks.signal);
+	}
 }
 
 export async function refreshOAuthProvider(
@@ -210,8 +282,8 @@ export async function getOAuthApiKey(
 	if (Date.now() >= credential.expires) {
 		try {
 			resolved = await refreshOAuthProvider(providerId, credential);
-		} catch {
-			throw new Error(`Failed to refresh OAuth token for ${providerId}`);
+		} catch (cause) {
+			throw new Error(`Failed to refresh OAuth token for ${providerId}`, { cause });
 		}
 	} else {
 		resolved = { credential, auth: await oauthCredentialToAuth(providerId, credential) };

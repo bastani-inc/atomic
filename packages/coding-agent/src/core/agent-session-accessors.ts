@@ -33,7 +33,7 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 		autoCompactionEnabled: { get() { return this.settingsManager.getCompactionEnabled(); } },
 		isRetrying: { get() { return this._retryPromise !== undefined; } },
 		autoRetryEnabled: { get() { return this.settingsManager.getRetryEnabled(); } },
-		isBashRunning: { get() { return this._bashAbortController !== undefined; } },
+		isBashRunning: { get() { return this._bashAbortControllers.size > 0; } },
 		hasPendingBashMessages: { get() { return this._pendingBashMessages.length > 0; } },
 		extensionRunner: { get() { return this._extensionRunner; } },
 	});

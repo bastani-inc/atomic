@@ -2,57 +2,33 @@
 description: Parallel research specialists for grounded answers
 ---
 
-Launch parallel research specialists to build a grounded answer to the current question or decision.
+## Goal
 
-Use fresh context, not forked context, unless I explicitly ask for forked context. Specialists should inspect sources directly instead of relying on the main conversation history.
+Build a grounded answer to the current question or decision from distinct external, local, convention, or prior-decision evidence.
 
-Choose specialists based on the question:
-
-- `codebase-online-researcher` — web, docs, standards, ecosystem, recent changes, benchmarks, and primary-source evidence.
-- `codebase-locator` — repository files that touch the question.
-- `codebase-analyzer` — how the relevant code currently works, with `file:line` references.
-- `codebase-pattern-finder` — comparable implementations or conventions already in the codebase.
-- `codebase-research-locator` and `codebase-research-analyzer` — prior `research/` or `specs/` docs that bear on the question (run locator first, then analyzer).
-
-Give each specialist a distinct angle. Unless I specify angles, use three of these (skip the ones that don't apply):
-
-1. External evidence — `codebase-online-researcher`
-   Find current, authoritative sources: official docs, specs, release notes, benchmarks, issue threads, or primary explanations.
-
-2. Local code context — `codebase-locator` and/or `codebase-analyzer`
-   Locate the relevant files and trace how they work today.
-
-3. Local conventions — `codebase-pattern-finder`
-   Surface analogous implementations or patterns the answer should respect.
-
-4. Prior decisions — `codebase-research-locator` followed by `codebase-research-analyzer`
-   When the topic has history in `research/` or `specs/`, extract the decisions and constraints that still apply.
-
-Adapt the angles when the question calls for it:
-
-- Library/API questions: include `codebase-online-researcher` for official docs and recent examples.
-- Architecture decisions: include `codebase-locator` and `codebase-pattern-finder` for module boundaries and dependency direction.
-- Debugging questions: include `codebase-analyzer` for call paths and `codebase-online-researcher` for the error message.
-- UI/product questions: include `codebase-pattern-finder` for analogous components and `codebase-online-researcher` for design precedent.
-- Time-sensitive topics: have the online researcher prefer 2026/2025 sources and persist findings to `research/web/`.
-
-Prefer two or three strong specialists over many vague ones. None of these agents should edit files — this is a research pass only unless I explicitly ask for implementation.
-
-Ask each specialist to return concise findings with evidence:
-
-- file paths and line ranges for local findings;
-- source links for external findings;
-- confidence level and gaps;
-- recommended next step or decision implication.
-
-After the specialists return, synthesize the answer into:
-
-- what we know;
-- what the local codebase implies;
-- tradeoffs and risks;
-- gaps or assumptions;
-- the recommended next move.
-
-If findings disagree, call out the disagreement instead of smoothing it over.
+Primary question or focus:
 
 $@
+
+## Constraints and tools
+
+Use fresh context unless I explicitly request forked context; specialists inspect sources directly rather than relying on the main conversation. Choose two or three strong specialists with distinct applicable angles, using my specified angles when provided:
+
+- **External evidence — `codebase-online-researcher`:** current authoritative sources such as official docs, standards, release notes, benchmarks, issue threads, and primary explanations.
+- **Local context — `codebase-locator` and/or `codebase-analyzer`:** relevant repository files and how they work, with `file:line` references.
+- **Local conventions — `codebase-pattern-finder`:** analogous implementations and patterns the answer should respect.
+- **Prior decisions — `codebase-research-locator` then `codebase-research-analyzer`:** applicable decisions and constraints from `research/` or `specs/`, with locator preceding analyzer.
+
+For library/API questions, include official docs and recent examples. For architecture decisions, cover module boundaries and dependency direction. For debugging, cover call paths and authoritative information about the error. For UI/product questions, cover analogous components and design precedent. For time-sensitive topics, have the online researcher prefer 2026/2025 sources and persist findings to `research/web/`.
+
+This is read-only research unless I explicitly request implementation. Delegate only independent work too large for a handful of tool calls; do not delegate auditing your own work, and prefer one subagent over several. Parallelize independent reads; stay sequential when one result determines the next; synthesize after retrieval. Keep work within the requested scope.
+
+## Output
+
+Each specialist returns concise evidence: local paths and line ranges or external links, confidence and gaps, and the decision implication or next step. Synthesize a user-facing answer of roughly 400–800 words covering what is known, local implications, tradeoffs and risks, gaps or assumptions, and the recommended move. Name disagreements rather than smoothing them over. Lead with the outcome; keep facts, decisions, caveats, and next steps; drop background and repetition; stay readable rather than compressed into fragments.
+
+Before reporting progress, audit each claim against a tool result from this session. Report only work you can point to evidence for; say so explicitly when something is unverified.
+
+## Stop rule
+
+Done means applicable specialists have returned direct evidence and the synthesis answers the question, identifies material uncertainty or disagreement, and recommends the next move. Do not edit files unless implementation was explicitly requested.

@@ -2,7 +2,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { ENV_OFFLINE, getEnvValue, setEnvValue } from "../src/config.ts";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
 import "../src/modes/interactive/interactive-model-routing.ts";
-import { shouldRefreshCopilotCatalogOnStartup } from "../src/modes/interactive/interactive-startup.ts";
+import { shouldRefreshCatalogsOnStartup } from "../src/modes/interactive/interactive-startup.ts";
 
 const originalOffline = getEnvValue(ENV_OFFLINE);
 
@@ -12,15 +12,14 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-test("offline deferred startup skips Copilot catalog refresh", () => {
+test("offline deferred startup skips the catalog refresh", () => {
 	setEnvValue(ENV_OFFLINE, "1");
-	expect(shouldRefreshCopilotCatalogOnStartup()).toBe(false);
+	expect(shouldRefreshCatalogsOnStartup()).toBe(false);
 });
 
 test("offline model candidate startup restores caches without catalog network refresh", async () => {
 	setEnvValue(ENV_OFFLINE, "1");
 	const refresh = vi.fn(async () => ({ aborted: false, errors: new Map() }));
-	const refreshCopilotModelCatalog = vi.fn(async () => {});
 	const mode = {
 		session: {
 			scopedModels: [],
@@ -29,12 +28,10 @@ test("offline model candidate startup restores caches without catalog network re
 				getAvailable: () => [],
 			},
 		},
-		refreshCopilotModelCatalog,
 	};
 
 	await InteractiveModeBase.prototype.getModelCandidates.call(mode as never);
 
-	expect(refreshCopilotModelCatalog).not.toHaveBeenCalled();
 	expect(refresh).toHaveBeenCalledWith({ allowNetwork: false });
 });
 
@@ -60,7 +57,8 @@ test("offline scoped-model selector refresh stays cache-only", async () => {
 	const refresh = vi.fn(async () => ({ aborted: false, errors: new Map() }));
 	const showStatus = vi.fn();
 	const mode = {
-		session: { modelRegistry: { refresh, getAvailable: () => [] } },
+		session: { scopedModels: [], modelRegistry: { refresh, getAvailable: () => [] } },
+		settingsManager: { getEnabledModels: () => undefined },
 		showStatus,
 	};
 

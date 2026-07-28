@@ -10,7 +10,6 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import ClassVar, cast, override
-from urllib.parse import urlparse
 
 from pier.agents.installed.base import (
     BaseInstalledAgent,
@@ -128,7 +127,6 @@ class Atomic(BaseInstalledAgent):
         "GOOGLE_GEMINI_BASE_URL",
         "GROQ_BASE_URL",
         "GITHUB_COPILOT_BASE_URL",
-        "GITHUB_SERVER_URL",
         "COPILOT_API_TARGET",
         # "HF_INFERENCE_ENDPOINT",  # disabled with the huggingface provider
         "MISTRAL_BASE_URL",
@@ -539,7 +537,17 @@ class Atomic(BaseInstalledAgent):
         await self.exec_as_agent(environment, command=command, env=env)
         self.populate_context_post_run(context)
 
-    def _copilot_api_base_url(self) -> str:
+    def _copilot_api_base_url(self) -> str | None:
+        """Explicit Copilot endpoint override, or None to use Atomic's default.
+
+        Atomic no longer derives a Copilot base URL: `github-copilot` is a plain
+        upstream pi provider pinned to `https://api.individual.githubcopilot.com`,
+        and `COPILOT_API_TARGET` / `GITHUB_COPILOT_BASE_URL` / `GITHUB_SERVER_URL`
+        are not read by the agent. This adapter keeps the two *explicit* override
+        variables as a harness-level escape hatch for enterprise/GHE runs, written
+        into models.json as a provider baseUrl override. When neither is set we
+        emit no override so the container matches what a normal user gets.
+        """
         api_target = self._get_env("COPILOT_API_TARGET")
         if api_target:
             return self._copilot_url_from_host_or_url(api_target)
@@ -548,29 +556,13 @@ class Atomic(BaseInstalledAgent):
         if override:
             return self._copilot_url_from_host_or_url(override)
 
-        server_url = self._get_env("GITHUB_SERVER_URL") or "https://github.com"
-        return self._copilot_api_base_url_from_server_url(server_url)
+        return None
 
     @staticmethod
     def _copilot_url_from_host_or_url(value: str) -> str:
         if value.startswith(("http://", "https://")):
             return value.rstrip("/")
         return f"https://{value}".rstrip("/")
-
-    @staticmethod
-    def _ghe_copilot_api_base_url(host: str) -> str:
-        prefix = "-".join(("copilot", "api"))
-        return f"https://{prefix}.{host}"
-
-    @staticmethod
-    def _copilot_api_base_url_from_server_url(server_url: str) -> str:
-        parsed_url = server_url if "://" in server_url else f"https://{server_url}"
-        host = urlparse(parsed_url).hostname
-        if not host or host == "github.com":
-            return "https://api.githubcopilot.com"
-        if host.endswith(".ghe.com"):
-            return Atomic._ghe_copilot_api_base_url(host)
-        return "https://api.enterprise.githubcopilot.com"
 
     @staticmethod
     def _copilot_models_config_command(base_url: str | None) -> str:

@@ -347,7 +347,8 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 		sessionManager.appendMessage(assistant);
 		session.agent.state.messages = [userMessage, assistant];
 		const continueSpy = vi.spyOn(session.agent, "continue").mockImplementation(async () => {
-			expect(session.agent.state.messages.at(-1)?.role).toBe("user");
+			// The compacted context ends on the boundary text message, never an assistant tail.
+			expect(session.agent.state.messages.at(-1)?.role).not.toBe("assistant");
 		});
 		const waitSpy = vi.spyOn(session, "waitForRetry").mockResolvedValue();
 		const drainSpy = vi
@@ -376,7 +377,7 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 		sessionManager.appendMessage(assistant);
 		session.agent.state.messages = [userMessage, assistant];
 		const continueSpy = vi.spyOn(session.agent, "continue").mockImplementation(async () => {
-			expect(session.agent.state.messages.at(-1)?.role).toBe("user");
+			expect(session.agent.state.messages.at(-1)?.role).not.toBe("assistant");
 		});
 		const waitSpy = vi.spyOn(session, "waitForRetry").mockResolvedValue();
 		const drainSpy = vi

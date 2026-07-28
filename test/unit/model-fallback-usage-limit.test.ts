@@ -119,7 +119,6 @@ describe("main-chat retry classifies usage-limit exhaustion as retryable", () =>
       id,
       api: provider as Api,
       contextWindow: 200_000,
-      defaultContextWindow: 200_000,
       reasoning: true,
     } as Model<Api>;
   }

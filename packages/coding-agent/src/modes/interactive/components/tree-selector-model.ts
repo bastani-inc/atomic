@@ -219,7 +219,6 @@ export function applyTreeFilter(state: TreeListState): void {
 			entry.type === "custom" ||
 			entry.type === "model_change" ||
 			entry.type === "thinking_level_change" ||
-			entry.type === "context_window_change" ||
 			entry.type === "session_info";
 
 		switch (state.filterMode) {

@@ -1,11 +1,10 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { isRetryableAssistantError } from "@earendil-works/pi-ai";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai/compat";
 import { clampThinkingLevel, isContextOverflow, modelsAreEqual } from "@earendil-works/pi-ai/compat";
 import { sleep } from "../utils/sleep.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import { isCodexTokenInvalidationError } from "./codex-errors.ts";
-import { isCopilotGeminiModel } from "./copilot-gemini-payload-sanitizer.ts";
-import { normalizeToolArgumentsForModel } from "./copilot-gemini-tool-arguments.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 
 
@@ -96,6 +95,9 @@ export function _isRetryableError(this: AgentSession, message: AssistantMessage)
 	if (provider && isCodexTokenInvalidationError(provider, message.errorMessage)) return false;
 
 	if (hasProviderTransportDiagnostic(message) || hasProviderModelUnavailableDiagnostic(message)) return true;
+	// Keep Atomic-specific terminal exclusions above, then inherit pi-ai's
+	// transport classifier (including getaddrinfo, ENOTFOUND, and EAI_AGAIN).
+	if (isRetryableAssistantError(message)) return true;
 	if (!message.errorMessage) return false;
 
 	const err = message.errorMessage;
@@ -117,29 +119,6 @@ export function _isRetryableError(this: AgentSession, message: AssistantMessage)
 	return /overloaded|provider.?returned.?error|rate.?limit|usage.?limit|quota|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|stream ended before message_stop|http2 request did not get a response|timed? out|timeout|terminated|retry delay|finish.?reason:?\s*error/i.test(
 		err,
 	);
-}
-
-/**
- * For GitHub Copilot Gemini, reconstruct flattened tool-call arguments
- * (for example `edits[0].newText`) into the nested arrays/objects Gemini
- * produced before the assistant message is persisted, so saved transcripts
- * never carry the flattened CAPI wire shape and replays loaded from disk match
- * the structure Gemini signed. In-place, gated to Copilot Gemini, and a no-op
- * for well-formed arguments or any other provider/model. The outbound replay
- * normalizer still heals already-persisted (legacy) sessions on the wire.
- */
-
-export function _normalizePersistedGeminiToolArgs(this: AgentSession, message: AssistantMessage): void {
-	const model = this.model;
-	if (!model || !isCopilotGeminiModel(model)) return;
-	for (const block of message.content) {
-		if (block.type !== "toolCall") continue;
-		const tool = this._toolRegistry.get(block.name);
-		const normalized = normalizeToolArgumentsForModel(block.arguments, model, tool?.parameters);
-		if (normalized !== block.arguments && normalized !== null && typeof normalized === "object") {
-			block.arguments = normalized as Record<string, unknown>;
-		}
-	}
 }
 
 /**
@@ -253,7 +232,7 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 		if (!candidate) continue;
 		const key = fallbackKey(candidate.model, candidate.thinkingLevel);
 		if (this._fallbackAttemptedKeys.has(key)) continue;
-		const nextModel = this._withContextWindowForModelSwitch(candidate.model);
+		const nextModel = candidate.model;
 		const nextLevel = clampThinkingLevel(
 			nextModel,
 			candidate.thinkingLevel ?? this.settingsManager.getDefaultThinkingLevel() ?? this.thinkingLevel ?? DEFAULT_THINKING_LEVEL,
@@ -281,7 +260,6 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 		}
 		this.agent.state.model = nextModel;
 		this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
-		this._appendContextWindowChangeIfChanged(fromModel, nextModel);
 		this.agent.state.thinkingLevel = nextLevel;
 		this.sessionManager.appendThinkingLevelChange(nextLevel);
 		this._refreshBaseSystemPromptFromActiveTools();
@@ -435,7 +413,6 @@ export function setAutoRetryEnabled(this: AgentSession, enabled: boolean): void 
 
 export const agentSessionRetryMethods = {
 	_isRetryableError,
-	_normalizePersistedGeminiToolArgs,
 	_isEmptyCompletion,
 	_isSafetyRefusal,
 	_handleRetryableError,

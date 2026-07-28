@@ -1,7 +1,5 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
 import { isContextOverflow } from "@earendil-works/pi-ai/compat";
-import { getEffectiveInputBudget } from "./context-window.ts";
-import { parseCopilotPromptLimitError } from "./copilot-errors.ts";
 import { calculateContextTokens, estimateContextTokens, shouldCompact } from "./compaction/index.ts";
 import { getLatestCompactionBoundaryEntry } from "./session-manager.ts";
 import { MIN_RESPONSES_MAX_OUTPUT_TOKENS } from "./openai-responses-payload-sanitizer.ts";
@@ -81,12 +79,6 @@ export async function _checkCompaction(this: AgentSession, assistantMessage: Ass
 	}
 
 	// Case 1: Overflow - LLM returned context overflow error
-	// When Copilot rejects a 1m client-budget prompt at a lower server cap (for example
-	// because long-context/usage-based billing entitlement is missing), leave the friendly
-	// error visible instead of auto-compacting down to a smaller server tier silently.
-	if (sameModel && this._isCopilotServerCapBelowSelectedContextWindow(assistantMessage)) {
-		return;
-	}
 	if (sameModel && isContextOverflow(assistantMessage, contextWindow)) {
 		const willRetry = assistantMessage.stopReason !== "stop";
 		if (!willRetry) {
@@ -142,11 +134,7 @@ export async function _checkCompaction(this: AgentSession, assistantMessage: Ass
 	} else {
 		contextTokens = calculateContextTokens(assistantMessage.usage, assistantMessage.api);
 	}
-	// Compact against the effective input budget (the hard prompt cap for providers like Copilot
-	// that advertise a larger total window) so we compact before overrunning the server-side limit
-	// rather than relying on reactive overflow recovery near the cap.
-	const compactionBudget = this.model ? getEffectiveInputBudget(this.model) : contextWindow;
-	if (shouldCompact(contextTokens, compactionBudget, settings)) {
+	if (shouldCompact(contextTokens, contextWindow, settings)) {
 		const willRetry = shouldRetryAfterThresholdCompaction(assistantMessage);
 		if (willRetry && isRetryWorthyOutputBudgetError(assistantMessage)) {
 			if (this._outputBudgetErrorContinuationAttempts >= MAX_OUTPUT_BUDGET_ERROR_CONTINUATION_ATTEMPTS) {
@@ -175,17 +163,6 @@ export async function _checkCompaction(this: AgentSession, assistantMessage: Ass
 	if (isLiveTurnCompletion && isRetryWorthyLengthStop(assistantMessage)) {
 		this._resumeAfterLengthTruncation();
 	}
-}
-
-
-export function _isCopilotServerCapBelowSelectedContextWindow(this: AgentSession, assistantMessage: AssistantMessage): boolean {
-	if (!this.model || this.model.provider !== "github-copilot" || !assistantMessage.errorMessage) return false;
-	const promptLimitError = parseCopilotPromptLimitError(assistantMessage.errorMessage);
-	// Compare against the effective input budget (the model's real prompt cap), not the displayed
-	// total window. A rejection at the prompt cap is a normal overflow we should compact-and-retry;
-	// only a rejection *below* the cap (e.g. a missing long-context entitlement dropping the account
-	// to a lower server tier) keeps the friendly error visible instead of silently compacting down.
-	return promptLimitError !== undefined && getEffectiveInputBudget(this.model) > promptLimitError.limitTokens;
 }
 
 export function isRetryWorthyLengthStop(assistantMessage: AssistantMessage): boolean {
@@ -356,8 +333,19 @@ function overflowUnresolved(reason: "overflow" | "threshold", aborted = false): 
 }
 
 export async function _runAutoCompaction(this: AgentSession, reason: "overflow" | "threshold", willRetry: boolean): Promise<void> {
-	this._emit({ type: "compaction_start", reason });
+	// Publish automatic ownership before notifying listeners. `_emit()` invokes
+	// public listeners synchronously, so a `compaction_start` listener that calls
+	// `compact()` must already observe this controller and be rejected rather than
+	// racing the run that was just announced.
 	this._autoCompactionAbortController = new AbortController();
+	try {
+		this._emit({ type: "compaction_start", reason });
+	} catch (error) {
+		// A throwing start listener still propagates, matching current behavior,
+		// but must not leave ownership published with no owner running.
+		this._autoCompactionAbortController = undefined;
+		throw error;
+	}
 
 	try {
 		if (!this.model) {
@@ -380,7 +368,7 @@ export async function _runAutoCompaction(this: AgentSession, reason: "overflow" 
 		const result = await this._applyVerbatimCompaction({
 			resolvePlannerAuth: async () => {
 				const authResult = await this._modelRegistry.getApiKeyAndHeaders(model);
-				if (!authResult.ok || !authResult.apiKey) {
+				if (!authResult.ok || (!authResult.apiKey && !authResult.headers)) {
 					return undefined;
 				}
 				return { apiKey: authResult.apiKey, headers: authResult.headers, baseUrl: authResult.baseUrl };
@@ -435,7 +423,6 @@ export async function _runAutoCompaction(this: AgentSession, reason: "overflow" 
 export const agentSessionAutoCompactionMethods = {
 	_awaitPendingPostCompactionContinuation,
 	_checkCompaction,
-	_isCopilotServerCapBelowSelectedContextWindow,
 	_dropTrailingAutoCompactionRetryAssistantIfPresent,
 	_schedulePostAutoCompactionContinuationProbe,
 	_resumeAfterAutoCompaction,

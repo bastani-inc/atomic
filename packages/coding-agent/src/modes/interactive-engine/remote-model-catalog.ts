@@ -2,6 +2,7 @@ import type { ModelsRefreshResult } from "@earendil-works/pi-ai";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { AgentSession } from "../../core/agent-session.ts";
 import type { ProviderApiKeyAuth } from "../../core/extensions/provider-types.ts";
+import type { OAuthProviderMetadata } from "../../core/oauth-provider-bridge.ts";
 import type { RpcClient } from "../rpc/rpc-client.ts";
 import type { RpcModelCatalog } from "../rpc/rpc-types.ts";
 
@@ -17,6 +18,7 @@ export class RemoteModelCatalog {
 	private models: Model<Api>[] = [];
 	private scopedModels: Array<{ model: Model<Api>; thinkingLevel?: AgentSession["thinkingLevel"] }> = [];
 	private customAuthProviders = new Map<string, string>();
+	private oauthProviders: OAuthProviderMetadata[] = [];
 	private refreshGeneration = 0;
 
 	constructor(client: RpcClient) {
@@ -26,6 +28,7 @@ export class RemoteModelCatalog {
 	apply(catalog: RpcModelCatalog): void {
 		this.applyModels(catalog);
 		this.customAuthProviders = new Map(catalog.customAuthProviders.map(({ id, name }) => [id, name]));
+		this.oauthProviders = catalog.oauthProviders ?? [];
 	}
 
 	applyModels(catalog: Pick<RpcModelCatalog, "models" | "scopedModels">): void {
@@ -37,6 +40,11 @@ export class RemoteModelCatalog {
 		const registry = session.modelRegistry;
 		const localGetCustomAuth = registry.getCustomApiKeyAuth?.bind(registry) ?? (() => undefined);
 		const localGetDisplayName = registry.getProviderDisplayName?.bind(registry) ?? ((provider: string) => provider);
+		const localOAuthProviders = registry.authStorage.getOAuthProviders.bind(registry.authStorage);
+		Object.defineProperty(registry.authStorage, "getOAuthProviders", {
+			configurable: true,
+			value: () => this.oauthProviders.length > 0 ? [...this.oauthProviders] : localOAuthProviders(),
+		});
 		Object.defineProperties(registry, {
 			refresh: { configurable: true, value: (options = {}) => this.refresh(options) },
 			getAvailable: { configurable: true, value: () => [...this.models] },
@@ -57,7 +65,9 @@ export class RemoteModelCatalog {
 			},
 			getProviderDisplayName: {
 				configurable: true,
-				value: (provider: string) => this.customAuthProviders.get(provider) ?? localGetDisplayName(provider),
+				value: (provider: string) => this.oauthProviders.find(({ id }) => id === provider)?.name
+					?? this.customAuthProviders.get(provider)
+					?? localGetDisplayName(provider),
 			},
 			getCustomApiKeyAuth: {
 				configurable: true,

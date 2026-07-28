@@ -3,25 +3,24 @@ import { runCallback } from "../../core/callback-activity.ts";
 import { KeybindingsManager } from "../../core/keybindings.ts";
 import type { AgentSession } from "../../core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
+import { getOAuthProviderMetadata } from "../../core/oauth-provider-bridge.ts";
 import {
 	createRpcErrorResponse,
 	createRpcSuccessResponse,
 	formatRpcErrorMessage,
-	parseRpcContextWindow,
 	type RpcOutput,
 } from "./rpc-responses.ts";
+import { RpcBashRequestOwners } from "./rpc-bash-request-owners.ts";
+import type { RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
 import type { KeybindingsReloadCoordinator } from "./rpc-keybindings-reload.ts";
 import { rejectUnsupportedProviderPrompt } from "./rpc-model-fallback-prompt.ts";
+import { RpcProviderAuth, type ProviderLoginInput } from "./rpc-provider-auth.ts";
 import type { RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand } from "./rpc-types.ts";
 
 export type RpcCommandHandler = (command: RpcCommand) => Promise<RpcResponse | undefined>;
+export type ManagedRpcCommandHandler = RpcCommandHandler & { disposeActiveBash(): Promise<void> };
 
-interface ProviderLoginInput {
-	open(
-		request: import("../../core/extensions/ui-types.ts").HostInputFormRequest,
-		signal?: AbortSignal,
-	): Promise<Record<string, string> | undefined>;
-}
+
 
 interface RpcCommandHandlerOptions {
 	runtimeHost: AgentSessionRuntime;
@@ -31,6 +30,7 @@ interface RpcCommandHandlerOptions {
 	keybindings?: KeybindingsManager;
 	reloadCoordinator?: KeybindingsReloadCoordinator<AgentSession>;
 	inputForm?: ProviderLoginInput;
+	pendingExtensionRequests?: RpcPendingExtensionRequests;
 }
 
 export function createRpcCommandHandler({
@@ -41,16 +41,21 @@ export function createRpcCommandHandler({
 	keybindings,
 	reloadCoordinator,
 	inputForm,
-}: RpcCommandHandlerOptions): RpcCommandHandler {
+	pendingExtensionRequests,
+}: RpcCommandHandlerOptions): ManagedRpcCommandHandler {
 	let fallbackShortcutKeybindings: KeybindingsManager | undefined;
-	const providerLoginControllers = new Map<string, AbortController>();
+	const providerAuth = new RpcProviderAuth(inputForm, {
+		output,
+		pending: pendingExtensionRequests ?? new Map(),
+	});
+	const bashOwners = new RpcBashRequestOwners(output);
 	const getShortcutBindings = () => {
 		if (keybindings) return keybindings.getEffectiveConfig();
 		if (fallbackShortcutKeybindings) fallbackShortcutKeybindings.reload();
 		else fallbackShortcutKeybindings = KeybindingsManager.create(runtimeHost.services.agentDir);
 		return fallbackShortcutKeybindings.getEffectiveConfig();
 	};
-	return async (command: RpcCommand): Promise<RpcResponse | undefined> => {
+	const handleCommand = (async (command: RpcCommand): Promise<RpcResponse | undefined> => {
 		const id = command.id;
 		const session = getSession();
 		switch (command.type) {
@@ -143,56 +148,27 @@ export function createRpcCommandHandler({
 					models,
 					scopedModels: session.scopedModels,
 					customAuthProviders: session.modelRegistry.getCustomApiKeyAuthProviders(),
+					oauthProviders: getOAuthProviderMetadata(),
 				});
 			}
 
 			case "login_provider": {
-				const customAuth = session.modelRegistry.getCustomApiKeyAuth(command.provider);
-				if (!customAuth) throw new Error(`Provider does not support custom API-key login: ${command.provider}`);
-				if (!inputForm) throw new Error("Provider login requires an interactive input host");
-				if (providerLoginControllers.has(command.provider)) throw new Error(`Login already in progress: ${command.provider}`);
-				const controller = new AbortController();
-				providerLoginControllers.set(command.provider, controller);
-				try {
-					const credential = await customAuth.login({
-						signal: controller.signal,
-						prompt: async (prompt) => {
-							const values = await inputForm.open({
-								title: prompt.message,
-								heading: "PROVIDER LOGIN",
-								submitLabel: "[ Submit ]",
-								fields: [{
-									name: "value", type: "string", required: false, initialValue: "",
-									placeholder: prompt.placeholder,
-								}],
-							}, controller.signal);
-							if (!values || controller.signal.aborted) throw new Error("Login cancelled");
-							return values.value ?? "";
-						},
-					});
-					if (controller.signal.aborted) return createRpcSuccessResponse(id, "login_provider", { provider: command.provider, cancelled: true });
-					session.modelRegistry.authStorage.set(command.provider, credential);
-					await session.modelRegistry.refresh();
-					return createRpcSuccessResponse(id, "login_provider", {
-						provider: command.provider, cancelled: false, credential,
-						models: session.modelRegistry.getAvailable(),
-						scopedModels: session.scopedModels,
-						customAuthProviders: session.modelRegistry.getCustomApiKeyAuthProviders(),
-					});
-				} catch (error) {
-					if (controller.signal.aborted || (error instanceof Error && error.message === "Login cancelled")) {
-						return createRpcSuccessResponse(id, "login_provider", { provider: command.provider, cancelled: true });
-					}
-					throw error;
-				} finally {
-					if (providerLoginControllers.get(command.provider) === controller) providerLoginControllers.delete(command.provider);
-				}
+				const result = command.authType === "oauth"
+					? await providerAuth.loginOAuth(session, command.provider, command.loginId)
+					: await providerAuth.login(session, command.provider, command.loginId);
+				return createRpcSuccessResponse(id, "login_provider", result);
 			}
 
-			case "cancel_login_provider": {
-				providerLoginControllers.get(command.provider)?.abort();
+			case "save_provider_credential":
+				return createRpcSuccessResponse(
+					id,
+					"save_provider_credential",
+					await providerAuth.save(session, command.provider, command.credential),
+				);
+
+			case "cancel_login_provider":
+				providerAuth.cancel(command.provider, command.loginId);
 				return createRpcSuccessResponse(id, "cancel_login_provider");
-			}
 
 			case "logout_provider": {
 				const result = await runtimeHost.logoutProvider(command.provider);
@@ -211,6 +187,7 @@ export function createRpcCommandHandler({
 					models: session.modelRegistry.getAvailable(),
 					scopedModels: session.scopedModels,
 					customAuthProviders: session.modelRegistry.getCustomApiKeyAuthProviders(),
+					oauthProviders: getOAuthProviderMetadata(),
 				});
 			}
 
@@ -230,20 +207,6 @@ export function createRpcCommandHandler({
 				});
 			}
 
-			case "set_context_window": {
-				const contextWindow = parseRpcContextWindow(command.contextWindow);
-				session.setContextWindow(contextWindow);
-				return createRpcSuccessResponse(id, "set_context_window");
-			}
-
-			case "get_available_context_windows": {
-				return createRpcSuccessResponse(id, "get_available_context_windows", {
-					contextWindows: session.getAvailableContextWindows(),
-					currentContextWindow: session.model?.contextWindow,
-					supportsSelection: session.supportsContextWindowSelection(),
-				});
-			}
-
 			case "set_steering_mode": {
 				session.setSteeringMode(command.mode);
 				return createRpcSuccessResponse(id, "set_steering_mode");
@@ -259,25 +222,14 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "compact", result);
 			}
 
-			case "set_auto_compaction": {
-				session.setAutoCompactionEnabled(command.enabled);
-				return createRpcSuccessResponse(id, "set_auto_compaction");
-			}
-
-			case "abort_compaction": {
-				session.abortCompaction();
-				return createRpcSuccessResponse(id, "abort_compaction");
-			}
-
-			case "set_auto_retry": {
-				session.setAutoRetryEnabled(command.enabled);
-				return createRpcSuccessResponse(id, "set_auto_retry");
-			}
-
-			case "abort_retry": {
-				session.abortRetry();
-				return createRpcSuccessResponse(id, "abort_retry");
-			}
+			case "set_auto_compaction":
+				session.setAutoCompactionEnabled(command.enabled); return createRpcSuccessResponse(id, "set_auto_compaction");
+			case "abort_compaction":
+				session.abortCompaction(); return createRpcSuccessResponse(id, "abort_compaction");
+			case "set_auto_retry":
+				session.setAutoRetryEnabled(command.enabled); return createRpcSuccessResponse(id, "set_auto_retry");
+			case "abort_retry":
+				session.abortRetry(); return createRpcSuccessResponse(id, "abort_retry");
 
 			case "clear_queue": {
 				return createRpcSuccessResponse(id, "clear_queue", session.clearQueue());
@@ -288,34 +240,47 @@ export function createRpcCommandHandler({
 			case "resume_queued_messages":
 				return createRpcSuccessResponse(id, "resume_queued_messages", { released: await session.resumeQueuedMessages() });
 			case "bash": {
-				const result = await session.executeBash(command.command, undefined, {
+				const result = await bashOwners.run({
+					id,
+					session,
+					command: command.command,
 					excludeFromContext: command.excludeFromContext,
-				});
+					isCurrent: () => getSession() === session,
+				}, (onUpdate) => session.executeBash(command.command, onUpdate, {
+					excludeFromContext: command.excludeFromContext,
+					id,
+					emitEvent: false,
+					recordResult: false,
+				}));
 				return createRpcSuccessResponse(id, "bash", result);
 			}
-
 			case "user_bash": {
-				const intercepted = await session.extensionRunner.emitUserBash({
-					type: "user_bash",
+				const result = await bashOwners.run({
+					id,
+					session,
 					command: command.command,
-					excludeFromContext: command.excludeFromContext === true,
-					cwd: session.sessionManager.getCwd(),
-				});
-				if (intercepted?.result) {
-					session.recordBashResult(command.command, intercepted.result, { excludeFromContext: command.excludeFromContext });
-					return createRpcSuccessResponse(id, "user_bash", intercepted.result);
-				}
-				const result = await session.executeBash(command.command, undefined, {
 					excludeFromContext: command.excludeFromContext,
-					operations: intercepted?.operations,
+					isCurrent: () => getSession() === session,
+				}, async (onUpdate) => {
+					const intercepted = await session.extensionRunner.emitUserBash({
+						type: "user_bash", command: command.command, excludeFromContext: command.excludeFromContext === true,
+						cwd: session.sessionManager.getCwd(),
+					});
+					if (intercepted?.result) return intercepted.result;
+					return session.executeBash(command.command, onUpdate, {
+						excludeFromContext: command.excludeFromContext,
+						id,
+						operations: intercepted?.operations,
+						emitEvent: false,
+						recordResult: false,
+					});
 				});
 				return createRpcSuccessResponse(id, "user_bash", result);
 			}
-
-			case "abort_bash": {
-				session.abortBash();
+			case "abort_bash":
+				bashOwners.abort(command.requestId);
+				session.abortBash(command.requestId);
 				return createRpcSuccessResponse(id, "abort_bash");
-			}
 
 			case "get_session_stats": {
 				return createRpcSuccessResponse(id, "get_session_stats", session.getSessionStats());
@@ -496,5 +461,7 @@ export function createRpcCommandHandler({
 				return createRpcErrorResponse(id, unknownCommand.type, `Unknown command: ${unknownCommand.type}`);
 			}
 		}
-	};
+	}) as ManagedRpcCommandHandler;
+	handleCommand.disposeActiveBash = () => bashOwners.dispose();
+	return handleCommand;
 }

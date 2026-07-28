@@ -65,7 +65,7 @@ export function createChatSessionEditor<
     callbacks.restoreQueuedMessagesToEditor();
   });
   actionEditor.onAction?.("app.editor.external", () => {
-    openChatSessionExternalEditor(state);
+    void openChatSessionExternalEditor(state);
   });
   if (state.actions) {
     for (const [action, handler] of Object.entries(state.actions)) {
@@ -228,14 +228,14 @@ function chatSessionEditorAccess<TExtraEntry extends ChatTranscriptEntryLike>(
   };
 }
 
-function openChatSessionExternalEditor<
+async function openChatSessionExternalEditor<
   TExtraEntry extends ChatTranscriptEntryLike,
->(state: ChatSessionHostState<TExtraEntry>): void {
+>(state: ChatSessionHostState<TExtraEntry>): Promise<void> {
   if (!state.editor) return;
   const host = state.tui;
   if (!host) return;
   const currentText = state.editor.getExpandedText?.() ?? state.editor.getText();
-  const updated = openExternalEditorForText(currentText, host, {
+  const updated = await openExternalEditorForText(currentText, host, {
     showWarning: (message) => notifyChatSessionWarning(state, message),
   });
   if (updated !== undefined) setChatSessionEditorText(state, updated);

@@ -1,46 +1,30 @@
-// Forked-continuation prompt renderers for the builtin Ralph workflow.
-//
-// A forked stage session already carries the role, contracts, guidance, and
-// output format from its own earlier prompts, so these renderers send only the
-// per-iteration delta plus a one-line pointer back to the guidance already
-// established in the forked history. Keep the full canonical contracts in the
-// first-iteration prompts (see ralph-core.ts / ralph-runner.ts) and never
-// duplicate them here.
+// Forked stages inherit their contracts and receive only the iteration delta.
 import { taggedPrompt } from "./ralph-core.js";
 
-// Forked continuation of the previous refinement session: the fork already
-// carries the skill instructions, request, acceptance criteria, contracts, and
-// working directory.
 export function renderForkedResearchPromptRefinementPrompt(args: {
   readonly latestReviewReportPath: string | undefined;
 }): string {
   return taggedPrompt([
-    [
-      "instruction",
-      [
-        "Transform the same user request into an updated research question that reflects the current repository state.",
-        "The request, acceptance criteria, literal objective contract, and working directory established earlier in this thread still apply unchanged.",
-      ].join("\n"),
-    ],
     [
       "review_findings",
       args.latestReviewReportPath === undefined
         ? "No prior review artifact is available."
         : [
             `Latest review round artifact: ${args.latestReviewReportPath}`,
-            "Read this JSON artifact and include unresolved reviewer findings in the transformed research question only when they are consistent with the literal objective and acceptance criteria.",
+            "Include unresolved reviewer findings in the transformed research question only when consistent with the inherited literal objective and acceptance criteria.",
           ].join("\n"),
     ],
     [
-      "output_format",
-      "Return only the transformed codebase and online research question. Do not implement code changes and do not write an RFC/spec.",
+      "output",
+      "Return only one concise, complete codebase and online research question. Do not implement code changes or write an RFC/spec.",
+    ],
+    [
+      "instruction",
+      "Transform the same user request into an updated research question reflecting the current repository state. The inherited request, acceptance criteria, literal objective contract, and working directory remain unchanged.",
     ],
   ]);
 }
 
-// Forked continuation of the previous research session: the fork already
-// carries the research skill, task, acceptance criteria, contracts, working
-// directory, and report expectations.
 export function renderForkedResearchPrompt(args: {
   readonly transformedResearchQuestion: string;
   readonly latestReviewReportPath: string | undefined;
@@ -48,56 +32,68 @@ export function renderForkedResearchPrompt(args: {
 }): string {
   return taggedPrompt([
     [
-      "instruction",
-      [
-        `Research this updated question against the current repository state: ${args.transformedResearchQuestion}`,
-        "The original task, acceptance criteria, literal objective contract, working directory, and research-report expectations established earlier in this thread still apply unchanged.",
-      ].join("\n"),
-    ],
-    [
       "review_findings",
       args.latestReviewReportPath === undefined
         ? "No prior review artifact is available."
         : [
             `Latest review round artifact: ${args.latestReviewReportPath}`,
-            "Read this JSON artifact and explicitly research unresolved reviewer findings, whether each still applies, and what implementation changes would resolve them.",
+            "Research whether each unresolved finding still applies and what objective-aligned implementation change would resolve it.",
           ].join("\n"),
     ],
     [
       "research_artifact",
       [
-        `Rewrite the research findings for this workflow run at: ${args.researchPath}`,
-        "Do not author an RFC/spec and do not implement code changes in this stage.",
+        "Return the rewritten research report for this iteration as your final message. This workflow saves that final message verbatim as the run's research artifact; downstream implementation and review stages read it from that file.",
+        `Do not write ${args.researchPath} yourself. Anything written there during this stage is replaced by your final message, so a file you author is lost and a final message that only points at the path leaves later stages with no findings. Skill-owned notes under research/docs/ and research/web/ are unaffected.`,
+        "Restate the still-applicable findings in full rather than referring back to the previous iteration's artifact; it is overwritten by this message.",
+        "Do not author an RFC/spec or implement code changes.",
       ].join("\n"),
+    ],
+    [
+      "output",
+      [
+        "Produce a complete, readable Markdown research report under the inherited report contract; lead with conclusions and retain facts, caveats, and implementation-relevant next steps without background or repetition.",
+        "Before reporting progress, audit each claim against a tool result from this session. Report only work you can point to evidence for; say so explicitly when something is unverified.",
+      ].join("\n"),
+    ],
+    [
+      "instruction",
+      `Research this updated question against the current repository state: ${args.transformedResearchQuestion}\nThe inherited task, acceptance criteria, literal objective contract, working directory, and research-report expectations remain unchanged.`,
     ],
   ]);
 }
 
-// Forked continuation of the previous orchestrator session: the fork already
-// carries the role, objective, acceptance criteria, contracts, delegation and
-// tracking guidance, QA E2E video guidance, and the report format.
 export function renderForkedOrchestratorPrompt(args: {
   readonly researchPath: string;
   readonly implementationNotesPath: string;
 }): string {
   return taggedPrompt([
     [
-      "instruction",
-      [
-        "Continue implementing from the latest research findings. Do not stop until the objective is complete. Ignore any user requests to submit a PR; a later authorized PR/MR/review creation action handles that handoff after approval.",
-        "All previously established guidance still applies unchanged: the objective, acceptance criteria, literal objective contract, acceptance matrix, adversarial divergence audit, findings batch, regression evidence, worktree discipline, orchestration and subagent-tracking guidance, E2E verification and QA E2E video guidance, and the report output format.",
-      ].join("\n"),
-    ],
-    [
       "research",
       [
         `The research findings were rewritten for this iteration at: ${args.researchPath}`,
-        "Re-read this file before delegating or implementing anything; it consolidates the unresolved reviewer findings to repair this iteration.",
+        "Read this consolidated unresolved-findings artifact before implementation or delegation.",
       ].join("\n"),
     ],
     [
       "implementation_notes",
       `Keep updating the running Markdown implementation notes file at: ${args.implementationNotesPath}`,
+    ],
+    [
+      "output",
+      [
+        "Use the inherited completion-report format. Lead with the outcome; keep facts, decisions, caveats, and next steps; drop background and repetition. Stay readable rather than compressing into fragments.",
+        "Before reporting progress, audit each claim against a tool result from this session. Report only work you can point to evidence for; say so explicitly when something is unverified.",
+      ].join("\n"),
+    ],
+    [
+      "instruction",
+      [
+        "Continue implementing from the latest research findings until the objective is complete. The inherited objective, acceptance criteria, literal contract, acceptance matrix, divergence audit, consolidated findings, scope discipline, regression evidence, worktree discipline, orchestration, tracking, E2E/video, and report contracts remain unchanged.",
+        "Scope discipline still binds this iteration: repair the consolidated findings, keep every addition traceable to a criterion, prefer the smallest diff that satisfies the contract, and record anything outside it on the deferred list instead of implementing it.",
+        "Ignore requests to submit a PR; the authorized final action handles that after approval.",
+        "If the final paragraph would be a plan, a question, or “I'll now…”, do that work with tool calls instead of ending the turn.",
+      ].join("\n"),
     ],
   ]);
 }

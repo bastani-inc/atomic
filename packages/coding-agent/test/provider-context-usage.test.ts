@@ -77,8 +77,10 @@ describe("provider-bound context usage", () => {
 		const oldAssistant = createAssistantMessage("pre-compaction answer", 1, oldUsage);
 
 		sessionManager.appendMessage(createUserMessage("before", 0));
-		sessionManager.appendMessage(oldAssistant);
 		appendTestCompaction(sessionManager, 243_928, 84_731);
+		// Retained pre-boundary messages are concatenated into the boundary text, so the stale
+		// usage anchors that still reach the provider are messages carrying pre-boundary timestamps.
+		sessionManager.appendMessage(oldAssistant);
 		sessionManager.appendMessage(createUserMessage("continue", Date.now() + 1));
 
 		const authStorage = AuthStorage.inMemory();
@@ -96,8 +98,8 @@ describe("provider-bound context usage", () => {
 		try {
 			expect(session.agent.transformContext).toBeDefined();
 			const transformed = await session.agent.transformContext!(session.agent.state.messages);
-			const transformedAssistant = getAssistantAt(transformed, 2);
-			const durableAssistant = getAssistantAt(session.agent.state.messages, 2);
+			const transformedAssistant = getAssistantAt(transformed, 1);
+			const durableAssistant = getAssistantAt(session.agent.state.messages, 1);
 
 			expect(transformedAssistant.content).toEqual(oldAssistant.content);
 			expect(transformedAssistant.usage).toMatchObject({
@@ -120,11 +122,11 @@ describe("provider-bound context usage", () => {
 	it("preserves fresh post-compaction usage while scrubbing older retained usage", () => {
 		const sessionManager = SessionManager.inMemory(cwd);
 		sessionManager.appendMessage(createUserMessage("before", 0));
-		sessionManager.appendMessage(createAssistantMessage("old", 1, createUsage(267_857)));
 		appendTestCompaction(sessionManager, 243_928, 84_731);
 		const boundary = getLatestCompactionBoundaryEntry(sessionManager.getBranch());
 		expect(boundary).not.toBeNull();
 
+		sessionManager.appendMessage(createAssistantMessage("old", 1, createUsage(267_857)));
 		const postCompactionTimestamp = Date.parse(boundary!.timestamp) + 1;
 		sessionManager.appendMessage(createUserMessage("after", postCompactionTimestamp));
 		sessionManager.appendMessage(createAssistantMessage("fresh", postCompactionTimestamp + 1, createUsage(25_000)));
@@ -132,8 +134,8 @@ describe("provider-bound context usage", () => {
 		const messages = sessionManager.buildSessionContext().messages;
 		const transformed = scrubPreCompactionAssistantUsage(messages, sessionManager.getBranch());
 
-		expect(getAssistantAt(transformed, 2).usage.totalTokens).toBe(0);
-		expect(getAssistantAt(transformed, 4).usage.totalTokens).toBe(25_000);
-		expect(getAssistantAt(messages, 2).usage.totalTokens).toBe(267_857);
+		expect(getAssistantAt(transformed, 1).usage.totalTokens).toBe(0);
+		expect(getAssistantAt(transformed, 3).usage.totalTokens).toBe(25_000);
+		expect(getAssistantAt(messages, 1).usage.totalTokens).toBe(267_857);
 	});
 });

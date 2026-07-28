@@ -7,7 +7,6 @@ import {
 	CURRENT_SESSION_VERSION,
 	type BranchSummaryEntry,
 	type CompactionEntry,
-	type ContextWindowChangeEntry,
 	type CustomEntry,
 	type CustomMessageEntry,
 	type FileEntry,
@@ -81,18 +80,6 @@ export function createThinkingLevelChangeEntry(
 		type: "thinking_level_change",
 		...entryBase(byId, parentId),
 		thinkingLevel,
-	};
-}
-
-export function createContextWindowChangeEntry(
-	contextWindow: number,
-	byId: { has(id: string): boolean },
-	parentId: string | null,
-): ContextWindowChangeEntry {
-	return {
-		type: "context_window_change",
-		...entryBase(byId, parentId),
-		contextWindow,
 	};
 }
 

@@ -176,23 +176,23 @@ export function prepareArtifactDir(cwd = process.cwd()): {
 }
 
 export const HTML_PREVIEW_RULES = [
-  "Produce a single self-contained HTML document. Inline all CSS in a <style> block and inline any JS in a <script> block; no external network requests except Google Fonts when explicitly required.",
-  "Embed realistic content that respects the design brief — no Lorem ipsum, no obvious placeholders.",
-  "Implement responsive behavior with sensible breakpoints (use container queries or media queries) so the file renders well from 360px up to 1440px.",
-  "Cover at minimum: default state, hover/focus state for every interactive element, empty state if relevant, loading state if relevant, error state if relevant.",
-  "Use accessible markup: semantic landmarks, labeled form controls, sufficient contrast (WCAG AA), visible focus styles, prefers-reduced-motion respected.",
-  "Annotate the file with HTML comments that mark sections, states, and design-system token references so engineers can read the intent quickly.",
+  "Produce one self-contained HTML document: inline CSS in <style> and JS in <script>; make no external requests except explicitly required Google Fonts.",
+  "Use realistic brief-specific content, not Lorem ipsum or obvious placeholders.",
+  "Render well from 360px to 1440px with sensible container or media-query breakpoints.",
+  "Include default and hover/focus states for every interactive element, plus empty, loading, and error states where relevant.",
+  "Use semantic landmarks, labeled controls, WCAG AA contrast, visible focus, and prefers-reduced-motion.",
+  "Add HTML comments marking sections, states, and design-system token references for engineering handoff.",
 ].join("\n");
 
 export const ANTI_SLOP_RULES = [
-  "Do not produce generic AI-slop palettes (purple/indigo gradients, blue-to-pink, neon glassmorphism stacks, nested card grids).",
-  "Avoid the AI design clichés impeccable's anti-pattern catalog calls out: gradient text for emphasis, side-tab borders, three-font headers, decorative shadows on flat-by-default systems.",
-  "Commit to a specific aesthetic direction; do not hedge with generic SaaS defaults.",
+  "Avoid generic AI palettes and structures: purple/indigo or blue-to-pink gradients, neon glassmorphism stacks, and nested card grids.",
+  "Avoid impeccable catalog clichés: gradient emphasis text, side-tab borders, three-font headers, and decorative shadows in flat-by-default systems.",
+  "Commit to a specific aesthetic rather than generic SaaS defaults.",
 ].join("\n");
 
 /** Reference-import precedence note shared by import, generation, and refinement. */
 export const REFERENCE_PRECEDENCE =
-  "User-provided references in <reference_context> are the PRIMARY visual authority: when they conflict with DESIGN.md/PRODUCT.md, follow the references. DESIGN.md governs decisions the references do not cover; PRODUCT.md still governs strategic register/voice.";
+  "User references in <reference_context> are the PRIMARY visual authority and override conflicting DESIGN.md/PRODUCT.md guidance. DESIGN.md governs uncovered design decisions; PRODUCT.md still governs strategic register/voice.";
 
 export type PlaywrightCliStatus = {
   /** Whether the `playwright-cli` command is expected to be available to downstream stages. */
@@ -299,21 +299,16 @@ export function ensurePlaywrightCli(): PlaywrightCliStatus {
   }
 }
 
-/**
- * Build the per-run browser bootstrap guidance injected into stage prompts.
- * When the deterministic setup step already ensured `playwright-cli` is installed,
- * the guidance tells stages to assume availability and not waste turns
- * reinstalling; otherwise it retains the original probe-and-install fallback.
- */
+/** Build browser guidance for downstream stage prompts. */
 export function buildPlaywrightCliBootstrapRules(status: PlaywrightCliStatus): string {
   const probeRule = status.available
-    ? "The workflow's deterministic setup step already ensured the playwright-cli skill's `playwright-cli` command is installed and on PATH; assume it is available and do NOT reinstall it. Only if a `playwright-cli` command reports it is missing should you re-probe with `which playwright-cli` (or `npx --no-install playwright-cli --version`) and run `npm install -g @playwright/cli@latest` once before retrying. Do not add project dependencies."
-    : `The workflow's deterministic setup step attempted to install the playwright-cli skill's \`playwright-cli\` command but it FAILED with: "${status.error ?? "unknown error"}". Treat this as a known starting condition to work around, not a hard blocker. Probe with \`which playwright-cli\` (or \`npx --no-install playwright-cli --version\`) and retry once with \`npm install -g @playwright/cli@latest\`; if it still fails, use the error above to diagnose a workaround (for example: EACCES/permission errors → retry with a user-writable global prefix; missing npm/Node → report it plainly; network/registry errors → surface them). If the command still cannot be made available, degrade gracefully and surface the manual file path / URL. Do not add project dependencies.`;
+    ? "The playwright-cli skill's `playwright-cli` command is on PATH. Do not reinstall it unless a command reports it missing; then probe with `which playwright-cli` (or `npx --no-install playwright-cli --version`), run `npm install -g @playwright/cli@latest` once, and retry. Do not add project dependencies."
+    : `The playwright-cli skill's \`playwright-cli\` command failed setup: "${status.error ?? "unknown error"}". Probe with \`which playwright-cli\` (or \`npx --no-install playwright-cli --version\`) and retry once with \`npm install -g @playwright/cli@latest\`. For permission errors, use a user-writable global prefix; report missing npm/Node or network/registry errors plainly. If still unavailable, surface the manual file path / URL. Do not add project dependencies.`;
   return [
     probeRule,
-    "Use `playwright-cli open <url>` when a generated local preview should be visible to the user, and use `playwright-cli snapshot` plus `playwright-cli screenshot --filename=<file>` for review evidence.",
-    "If a `playwright-cli` command reports a missing browser executable, install the browser once with `npx playwright install chromium` and retry.",
-    "If `playwright-cli` is unavailable after three attempts or the browser runtime still fails, degrade gracefully and surface the manual file path / URL.",
+    "Use `playwright-cli open <url>` to show a local preview; use `playwright-cli snapshot` and `playwright-cli screenshot --filename=<file>` for review evidence.",
+    "If a `playwright-cli` command reports a missing browser executable, run `npx playwright install chromium` once and retry.",
+    "If `playwright-cli` is unavailable after three attempts or the browser runtime still fails, surface the manual file path / URL.",
   ].join("\n");
 }
 

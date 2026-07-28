@@ -18,6 +18,7 @@
           "quickstart",
           "usage",
           "providers",
+          "environment-variables",
           "llama-cpp",
           "containerization",
           "security",

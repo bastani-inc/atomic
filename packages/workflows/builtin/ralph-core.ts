@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Type } from "typebox";
 import type { WorkflowTaskResult } from "../src/shared/types.js";
-import { LITERAL_OBJECTIVE_CONTRACT } from "./shared-prompts.js";
+import {
+  E2E_VERIFICATION_GUIDANCE,
+  LITERAL_OBJECTIVE_CONTRACT,
+} from "./shared-prompts.js";
 import type { ReviewDecision, ReviewFinding } from "./ralph-review-gate.js";
 import { reviewDecisionApproved } from "./ralph-review-gate.js";
 import {
@@ -177,7 +180,8 @@ export async function createImplementationNotesFile(prompt: string): Promise<str
     "",
     "## Running Notes",
     "",
-    "- Record implementation decisions, deviations from the research findings, tradeoffs, blockers, validation notes, and anything else the user should know.",
+    "- Record implementation decisions, deviations from research, tradeoffs, blockers, validation outcomes, and user-relevant facts. Keep entries concise and readable.",
+    "- Before reporting progress, audit each claim against a tool result from this session. Report only work you can point to evidence for; say so explicitly when something is unverified.",
   ].join("\n");
   await writeFile(notesPath, `${initialNotes}\n`, {
     encoding: "utf8",
@@ -198,12 +202,10 @@ export async function createQaEvidenceVideoPath(): Promise<string> {
 
 export function renderQaE2eVideoGuidance(qaVideoPath: string): string {
   return [
-    "QA the change end-to-end whenever it touches user-visible UI behavior, including full-stack changes whose UI correctness depends on backend/API behavior. Use the `playwright-cli` skill (or delegate to a subagent with `skill: \"playwright-cli\"`) to drive the running application like a user and prove the implemented scenario actually works.",
-    `Record that QA E2E pass as a reviewable video so the user can watch the feature working. After \`playwright-cli open\`, start recording with \`playwright-cli video-start ${qaVideoPath}\`, annotate the scenario with \`playwright-cli video-chapter\` / \`playwright-cli video-show-actions\`, exercise the full user scenario, then \`playwright-cli video-stop\`. Write the video to exactly this path and overwrite any prior recording so it always reflects the latest implemented state: ${qaVideoPath}`,
-    `After recording, add the video to the implementation notes as a reference: include a \`## QA E2E Video\` entry with the absolute path ${qaVideoPath} and a one-line description of the proven scenario, so the user can review the proof when this stage finishes.`,
-    "If the change has no user-visible UI scenario (pure refactor, docs, infra, or non-UI library code), do not fabricate a video; record in the implementation notes that no QA E2E video applies and why.",
-    "Assume credentials, auth, and browser environment access exist until a concrete attempt proves otherwise. Before declaring the QA E2E video impractical, check credential/auth state with non-destructive commands, attempt to launch the app/flow, and record the exact command(s) plus observed failure output.",
-    "If `playwright-cli` or a browser runtime is unavailable, install it once per the skill (`npm install -g @playwright/cli@latest`, then `npx playwright install chromium` for a missing browser executable). If it still cannot run, record the smallest validation actually performed and note that the QA E2E video could not be produced — never claim a video exists when it does not.",
+    E2E_VERIFICATION_GUIDANCE,
+    `For a user-visible UI scenario, record the QA pass for review. After \`playwright-cli open\`, use \`playwright-cli video-start ${qaVideoPath}\`, annotate with \`playwright-cli video-chapter\` / \`playwright-cli video-show-actions\`, exercise the complete scenario, then run \`playwright-cli video-stop\`. Write to exactly ${qaVideoPath}, overwriting stale evidence.`,
+    `Add a \`## QA E2E Video\` entry to the implementation notes with the absolute path ${qaVideoPath} and one sentence naming the proven scenario. For changes without a user-visible UI scenario, record why video does not apply; never fabricate one.`,
+    "If `playwright-cli` or its browser runtime is unavailable, install it once per the skill (`npm install -g @playwright/cli@latest`, then `npx playwright install chromium` when needed). If a concrete attempt still fails, record the commands, observed failure output, smallest validation performed, and that no video was produced.",
   ].join("\n");
 }
 
@@ -333,29 +335,29 @@ export function renderResearchPromptRefinementPrompt(args: {
   readonly workflowCwdContext: PromptSection;
   readonly latestReviewReportPath: string | undefined;
 }): string {
-  const basePrompt = `/skill:prompt-engineer Transform the following user request into a codebase and online research question which can be thoroughly explored: ${args.request}`;
-  return [
-    basePrompt,
-    taggedPrompt([
-      ["objective", `Research the full requested task: ${args.request}`],
-      ["acceptance_criteria", args.acceptanceCriteria],
-      ["literal_contract", LITERAL_OBJECTIVE_CONTRACT],
-      args.workflowCwdContext,
-      [
-        "review_findings",
-        args.latestReviewReportPath === undefined
-          ? "No prior review artifact is available."
-          : [
-              `Latest review round artifact: ${args.latestReviewReportPath}`,
-              "Read this JSON artifact and include unresolved reviewer findings in the transformed research question only when they are consistent with the literal objective and acceptance criteria.",
-            ].join("\n"),
-      ],
-      [
-        "output_format",
-        "Return only the transformed codebase and online research question. Do not implement code changes and do not write an RFC/spec.",
-      ],
-    ]),
-  ].join("\n\n");
+  return taggedPrompt([
+    ["acceptance_criteria", args.acceptanceCriteria],
+    ["literal_contract", LITERAL_OBJECTIVE_CONTRACT],
+    args.workflowCwdContext,
+    [
+      "review_findings",
+      args.latestReviewReportPath === undefined
+        ? "No prior review artifact is available."
+        : [
+            `Latest review round artifact: ${args.latestReviewReportPath}`,
+            "Include unresolved reviewer findings in the transformed research question only when consistent with the literal objective and acceptance criteria.",
+          ].join("\n"),
+    ],
+    ["objective", `Research the full requested task: ${args.request}`],
+    [
+      "output",
+      "Return only one concise, complete codebase and online research question. Do not implement code changes or write an RFC/spec.",
+    ],
+    [
+      "instruction",
+      `/skill:prompt-engineer Transform this request into a codebase and online research question that covers the full requested task: ${args.request}`,
+    ],
+  ]);
 }
 
 
@@ -367,33 +369,35 @@ export function renderResearchPrompt(args: {
   readonly latestReviewReportPath: string | undefined;
   readonly researchPath: string;
 }): string {
-  const basePrompt = `/skill:research-codebase ${args.transformedResearchQuestion}`;
-  return [
-    basePrompt,
-    taggedPrompt([
-      ["objective", `Research implementation requirements for: ${args.prompt}`],
-      ["acceptance_criteria", args.acceptanceCriteria],
-      ["literal_contract", LITERAL_OBJECTIVE_CONTRACT],
-      args.workflowCwdContext,
+  return taggedPrompt([
+    ["acceptance_criteria", args.acceptanceCriteria],
+    ["literal_contract", LITERAL_OBJECTIVE_CONTRACT],
+    args.workflowCwdContext,
+    [
+      "review_findings",
+      args.latestReviewReportPath === undefined
+        ? "No prior review artifact is available."
+        : [
+            `Latest review round artifact: ${args.latestReviewReportPath}`,
+            "Research whether each unresolved finding still applies and what objective-aligned implementation change would resolve it.",
+          ].join("\n"),
+    ],
+    ["objective", `Research implementation requirements for: ${args.prompt}`],
+    [
+      "research_artifact",
       [
-        "review_findings",
-        args.latestReviewReportPath === undefined
-          ? "No prior review artifact is available."
-          : [
-              `Latest review round artifact: ${args.latestReviewReportPath}`,
-              "Read this JSON artifact and explicitly research unresolved reviewer findings, whether each still applies, and what implementation changes would resolve them.",
-            ].join("\n"),
-      ],
-      [
-        "research_artifact",
-        [
-          `Write research findings for this workflow run to: ${args.researchPath}`,
-          "Return a complete Markdown research report with codebase findings, online/contextual findings when useful, concrete implementation guidance, relevant files/tests/docs, unresolved reviewer finding analysis, and validation recommendations.",
-          "Do not author an RFC/spec and do not implement code changes in this stage.",
-        ].join("\n"),
-      ],
-    ]),
-  ].join("\n\n");
+        "Return the complete research report as your final message. This workflow saves that final message verbatim as the run's research artifact; downstream implementation and review stages read it from that file.",
+        `Do not write ${args.researchPath} yourself. Anything written there during this stage is replaced by your final message, so a file you author is lost and a final message that only points at the path leaves later stages with no findings. Skill-owned notes under research/docs/ and research/web/ are unaffected.`,
+        "Produce a complete Markdown report with codebase and useful online/contextual findings, implementation guidance, relevant files/tests/docs, unresolved-finding analysis, and validation recommendations. Lead with conclusions; keep facts, caveats, and implementation-relevant next steps; drop background and repetition.",
+        "Before reporting progress, audit each claim against a tool result from this session. Report only work you can point to evidence for; say so explicitly when something is unverified.",
+        "Do not author an RFC/spec or implement code changes.",
+      ].join("\n"),
+    ],
+    [
+      "instruction",
+      `/skill:research-codebase ${args.transformedResearchQuestion}`,
+    ],
+  ]);
 }
 
 

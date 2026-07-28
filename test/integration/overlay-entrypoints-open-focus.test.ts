@@ -377,6 +377,11 @@ describe("buildGraphOverlayAdapter — open with pi.ui.custom", () => {
       ),
       "focused graph should hint that main chat has a pending question",
     );
+    assert.equal(
+      statusMessages.some((status) => status.key === "pi-workflows"),
+      false,
+      "the overlay no longer tags the footer with the workflow/stage name",
+    );
     assert.equal(calls.length, 1, "host question must not remount the overlay");
 
     hostCustomUi.setActive(false);

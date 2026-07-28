@@ -186,7 +186,7 @@ describe("logout credential invalidation (#1919)", () => {
 			await client.waitForInteractiveEngineBound();
 			const result = await client.logoutProvider("anthropic");
 			assert.deepEqual(result.authStatus, {
-				configured: false,
+				configured: true,
 				source: "environment",
 				label: "ANTHROPIC_API_KEY",
 			});
@@ -198,11 +198,16 @@ describe("logout credential invalidation (#1919)", () => {
 		}
 	});
 
-	test("the isolated host applies the child logout catalog and clears its local credential view", async () => {
+	test("the isolated host applies the child logout catalog and only reloads its local credential view", async () => {
 		const model = { provider: "github-copilot", id: "claude-haiku-4.5" };
 		const authStorage = AuthStorage.inMemory({
 			"github-copilot": { type: "api_key", key: "controlled-fake-key" },
 		});
+		let reloadCalls = 0;
+		authStorage.reload = () => { reloadCalls += 1; };
+		authStorage.logoutAsync = async () => {
+			throw new Error("frontend must not persist isolated logout");
+		};
 		const registry = {
 			authStorage,
 			getAvailable: () => [model],
@@ -252,7 +257,7 @@ describe("logout credential invalidation (#1919)", () => {
 		assert.deepEqual(await runtime.session.modelRegistry.getAvailable(), [model]);
 		await runtime.logoutProvider("github-copilot");
 		assert.deepEqual(await runtime.session.modelRegistry.getAvailable(), []);
-		assert.equal(authStorage.has("github-copilot"), false);
+		assert.equal(reloadCalls, 1);
 	});
 
 	test("logout status names remaining environment auth without changing ordinary success text", () => {

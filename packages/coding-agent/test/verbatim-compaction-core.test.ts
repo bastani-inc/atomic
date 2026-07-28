@@ -6,6 +6,7 @@ import {
 	filteredMarker,
 	numberRegionLines,
 	serializeConversationForCompaction,
+	serializeRetainedTranscript,
 } from "../src/core/compaction/transcript-serialization.js";
 import { reconstructCompactedTranscript, validateDeletedRanges } from "../src/core/compaction/deleted-ranges.js";
 import type { RawLineRange } from "../src/core/compaction/compaction-types.js";
@@ -98,6 +99,33 @@ describe("verbatim transcript serialization", () => {
 		const serialized = serializeConversationForCompaction([message]);
 		expect(serialized).toContain("x".repeat(16_000));
 		expect(serialized.endsWith("\n\n[... 10 more characters truncated]")).toBe(true);
+	});
+
+	it("keeps image blocks and untruncated tool output in the retained serializer", () => {
+		const longText = "x".repeat(16_010);
+		const messages: Message[] = [
+			{
+				role: "user",
+				content: [
+					{ type: "text", text: "request" },
+					{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+				],
+				timestamp: 1,
+			},
+			{
+				role: "toolResult",
+				toolCallId: "tc1",
+				toolName: "read",
+				content: [{ type: "text", text: longText }],
+				isError: false,
+				timestamp: 1,
+			},
+		];
+		expect(serializeRetainedTranscript(messages)).toEqual([
+			{ type: "text", text: "[User]: request\n" },
+			{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+			{ type: "text", text: `\n\n[Tool result]: ${longText}` },
+		]);
 	});
 
 	it("numbers lines and detects headers and prior markers", () => {

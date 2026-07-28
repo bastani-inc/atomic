@@ -26,7 +26,7 @@ test("Goal orchestrator uses a local copy of Ralph's exact xhigh model config", 
 
     const options = ctx.calls.taskOptions["orchestrator-1"]?.[0];
     assert.ok(options, "missing Goal orchestrator options");
-    assert.equal(options.model, "openai-codex/gpt-5.6-sol:xhigh");
+    assert.equal(options.model, "anthropic/claude-opus-5:high");
     assert.equal(options.model, ralphOrchestratorModelConfig.model);
     assert.deepEqual(options.fallbackModels, ralphOrchestratorModelConfig.fallbackModels);
     assert.deepEqual(options.excludedTools, ralphOrchestratorModelConfig.excludedTools);
@@ -69,7 +69,10 @@ test("Goal reviewers prioritize GPT-5.6 within direct and OpenRouter groups", as
             name,
         );
         const fallbacks = options.fallbackModels ?? [];
-        assert.deepEqual(fallbacks.slice(0, 6), [
+        assert.deepEqual(fallbacks.slice(0, 9), [
+            "github-copilot/claude-opus-5:high",
+            "anthropic/claude-fable-5:high",
+            "github-copilot/claude-fable-5:high",
             "openai-codex/gpt-5.6-sol:xhigh",
             "github-copilot/gpt-5.6-sol:xhigh",
             "openai/gpt-5.6-sol:xhigh",
@@ -77,6 +80,11 @@ test("Goal reviewers prioritize GPT-5.6 within direct and OpenRouter groups", as
             "moonshotai/kimi-k3:max",
             "moonshotai-cn/kimi-k3:max",
         ], name);
+        assert.ok(
+            fallbacks.indexOf("openai-codex/gpt-5.6-sol:xhigh")
+                < fallbacks.indexOf("kimi-coding/k3:max"),
+            name,
+        );
         assert.ok(
             fallbacks.indexOf("openrouter/openai/gpt-5.6-sol:xhigh")
                 < fallbacks.indexOf("openrouter/moonshotai/kimi-k3:max"),

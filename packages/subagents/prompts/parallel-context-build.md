@@ -2,56 +2,42 @@
 description: Parallel codebase specialists building handoff context for planning
 ---
 
-Launch fresh-context codebase specialists in parallel to build grounded handoff context for planning or implementation.
+## Goal
 
-Use the `subagent` tool in chain mode with a single parallel step, not top-level parallel tasks, so relative output files live under the temporary chain directory. Use `context: "fresh"` unless I explicitly ask for forked context. Give every parallel task a distinct `output` path, `label`, and `as` name, for example:
+Build grounded, implementation-ready handoff context for the next planner or writer without starting implementation.
+
+Primary request, target, or focus:
+
+$@
+
+## Constraints and tools
+
+Use the `subagent` tool in chain mode with one parallel step so relative outputs stay under the temporary chain directory. Use `context: "fresh"` unless I explicitly request forked context. Give every task a distinct `output` path, `label`, and `as` name, such as:
 
 - `context-build/where-it-lives.md`
 - `context-build/how-it-works.md`
 - `context-build/existing-patterns.md`
 - `context-build/prior-research.md`
 
-Use one phase such as `phase: "Context build"` for the parallel tasks so async status is readable. A later synthesis step can reference specific outputs with `{outputs.requestScope}`, `{outputs.codebasePatterns}`, and `{outputs.validationRisks}` instead of relying only on `{previous}`.
+Use one phase such as `phase: "Context build"` so async status is readable. A synthesis step can cite `{outputs.requestScope}`, `{outputs.codebasePatterns}`, and `{outputs.validationRisks}` when available, using `{previous}` only for the whole fan-in. Do not persist context artifacts in the repository unless I explicitly request it.
 
-Do not write these context artifacts into the repository unless I explicitly ask for persistent files.
+Read or fetch any supplied URL, issue link, file path, plan path, or freeform request before assigning angles, and pass that target into every specialist task. Choose two to four specialists according to the request:
 
-Treat the slash command arguments as the primary request, target, or focus:
+- **Locate — `codebase-locator`:** map every relevant file, directory, test, fixture, config, and doc by purpose, using full repo-root paths.
+- **Analyze — `codebase-analyzer`:** trace entry points, control flow, data transformations, side effects, and error handling with `file:line` citations.
+- **Pattern-find — `codebase-pattern-finder`:** provide comparable implementations, test patterns, conventions, and useful code snippets.
+- **Prior research — `codebase-research-locator` then `codebase-research-analyzer`:** when `research/` or `specs/` history applies, locate it before extracting current decisions, constraints, and rationale.
 
-$@
+For an issue or PR URL, include locator and analyzer coverage of mentioned files. For a plan, cover its files and their current behavior. For external API/library work, add `codebase-online-researcher` for current primary sources. For a large refactor, emphasize module-boundary and dependency-direction patterns. For UI/product work, cover analogous components and the surrounding render path.
 
-If the invocation provides a URL, issue link, file path, plan path, or freeform request, read or fetch that target before assigning angles, then pass the target explicitly into every subagent task.
+Every specialist is read-only and produces a compact handoff file containing only its unique contribution, ending with `## Open Questions`. Delegate only independent work too large for a handful of tool calls; do not delegate auditing your own work, and prefer one subagent over several. Parallelize independent reads; stay sequential when one result determines the next; synthesize after retrieval. Keep work within the requested scope.
 
-Choose two to four specialists based on the request. These are examples, not fixed defaults:
+## Output
 
-1. Locate — `codebase-locator`
-   Find every file, directory, test, fixture, config, and doc that touches the change. Group by purpose and return full paths from repo root.
+Synthesize the artifacts for the downstream planner or writer into roughly 500–900 words: the most important context, a compact implementation-ready meta-prompt, open questions or assumptions, and artifact paths. Lead with the outcome; keep facts, decisions, caveats, and next steps; drop background and repetition; stay readable rather than compressed into fragments.
 
-2. Analyze — `codebase-analyzer`
-   Explain how the relevant feature or flow currently works. Trace entry points, control flow, data transformations, side effects, and error handling with `file:line` citations.
+Before reporting progress, audit each claim against a tool result from this session. Report only work you can point to evidence for; say so explicitly when something is unverified.
 
-3. Pattern-find — `codebase-pattern-finder`
-   Surface comparable implementations, test patterns, and conventions already in the codebase that the next agent should model after.
+## Stop rule
 
-4. Prior research — `codebase-research-locator` followed by `codebase-research-analyzer`
-   When the topic has history in `research/` or `specs/`, locate relevant prior docs and then extract the decisions, constraints, and rationale that still apply.
-
-Adapt the specialists when the request calls for it:
-
-- Issue or PR URL: include locator and analyzer for files mentioned in the linked discussion.
-- Plan file: include locator (files mentioned by the plan) and analyzer (current behavior of those files).
-- External API/library work: add `codebase-online-researcher` for current docs or primary sources.
-- Large refactor: lean on `codebase-pattern-finder` for module-boundary and dependency-direction examples.
-- UI/product work: add `codebase-pattern-finder` for analogous components and `codebase-analyzer` for the surrounding render path.
-
-Ask each specialist to produce a compact handoff file with the information their role uniquely provides — locator returns file maps, analyzer returns flow narratives with `file:line` refs, pattern-finder returns code snippets, research agents return decision histories. Each file should end with a short `## Open Questions` section.
-
-None of these specialists should edit files. This is a read-only context-build pass.
-
-After the specialists return, synthesize their outputs yourself into:
-
-- the most important context the next agent needs;
-- a compact implementation-ready meta-prompt for the next planner or writer;
-- open questions or assumptions;
-- the output artifact paths.
-
-Do not start implementation from this command unless I explicitly ask for it.
+Done means the selected specialists have returned their distinct handoff files and the downstream synthesis names its evidence and artifact paths. Do not implement unless I explicitly ask.

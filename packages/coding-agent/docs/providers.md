@@ -19,8 +19,15 @@ Use `/login` in interactive mode, then select a provider:
 - ChatGPT Plus/Pro (Codex)
 - Claude Pro/Max
 - GitHub Copilot
+- OpenRouter
+- Kimi Code
 - xAI (Grok/X subscription)
 - Radius
+
+Use `/login <provider>` (for example `/login openrouter` or `/login kimi-coding`) to jump directly to a provider, then select subscription or API-key authentication when both are available. OpenRouter opens its provider-owned browser PKCE flow and asks whether it should mint a new API key; complete the browser redirect before returning to Atomic. Kimi Code displays its provider-owned device URL/code and polls until approval, then refreshes expired tokens automatically. Built-in and extension-provided OAuth use the same direct and isolated-session lifecycle: engine-only extensions expose only safe display metadata to the terminal, while acquisition, transactional persistence, model refresh, rollback, and logout remain engine-owned. Credentials and executable provider functions never cross to the isolated frontend.
+
+Escape or Ctrl+C quietly cancels the matching login, including immediate/pre-device native aborts, and leaves the previously committed credential and catalog unchanged. Provider denial, device expiry, timeout, browser/network/protocol failure, malformed responses, token exchange, persistence, and post-login refresh failures remain visible. Atomic does not claim success until the provider flow and credential transaction complete.
+
 Use `/logout` to clear credentials. Logout immediately invalidates authentication in the active interactive engine and removes the selected provider from both `~/.atomic/agent/auth.json` and any effective legacy `~/.pi/agent/auth.json`, so the provider remains logged out after restart. Environment variables, command-line credentials, and `models.json` configuration cannot be cleared by Atomic; when one of those sources still authenticates the provider, the logout status names the remaining source. Stored tokens auto-refresh when expired.
 
 ### OpenAI Codex
@@ -38,16 +45,18 @@ Run `/fast` in interactive mode to enable OpenAI priority service tier separatel
 
 Anthropic subscription auth is active for Claude Pro/Max accounts. Third-party harness usage draws from [extra usage](https://claude.ai/settings/usage) and is billed per token, not against Claude plan limits.
 
+For gateway-issued Anthropic bearer credentials, set `ANTHROPIC_AUTH_TOKEN` without `ANTHROPIC_API_KEY` or `ANTHROPIC_OAUTH_TOKEN`. A populated bearer token counts as configured Anthropic authentication, so `/model`, saved/default selection, cycling, RPC catalogs, and isolated model pickers keep Anthropic models available. Atomic sends it as `Authorization: Bearer …` for normal turns, branch summaries, and Verbatim Compaction without replacing caller-supplied custom headers.
+
+Claude Opus 5 is available from the bundled/dynamic Anthropic and Amazon Bedrock catalogs. With bearer-only Anthropic auth, select the exact `anthropic/claude-opus-5-*` entry through `/model`; Bedrock uses its catalog-advertised inference profile. `xhigh` appears only when the chosen entry advertises it. Bedrock requests retain adaptive thinking, prompt caching, and AWS validation/error details from the provider runtime.
+
+`ANTHROPIC_AUTH_TOKEN` is specifically for Anthropic-compatible gateways that require a bearer header. It does not synthesize an API key or `x-api-key`, and callers may still add independent custom headers/base URLs through `models.json` or an extension. Empty environment variables do not count as configured. If token and API-key sources are both configured, normal credential resolution rules apply; avoid setting both accidentally.
+
 ### GitHub Copilot
 
 - Press Enter for github.com, or enter your GitHub Enterprise Server domain
-- When using `COPILOT_GITHUB_TOKEN` instead of `/login`, Atomic uses the token's `proxy-ep` when present, honors `COPILOT_API_TARGET` or `GITHUB_COPILOT_BASE_URL` overrides, derives the tenant-specific GHE routing host from `GITHUB_SERVER_URL=*.ghe.com`, derives `https://api.enterprise.githubcopilot.com` from other non-`github.com` server URLs, and otherwise falls back to the public Copilot routing hub `https://api.githubcopilot.com` instead of the account-specific individual endpoint.
+- `COPILOT_GITHUB_TOKEN` is read as an API key when you prefer an environment variable over `/login`
+- Models come from the bundled `pi-ai` GitHub Copilot catalog; an OAuth credential narrows the list to the ids your account can actually use
 - If you get "model not supported", enable it in VS Code: Copilot Chat → model selector → select model → "Enable"
-- GitHub Copilot models are populated dynamically from Copilot's live CAPI `/models` catalog when Copilot auth is available. Atomic synthesizes only picker-enabled, non-disabled `chat` entries with plain ids (for example `github-copilot/claude-sonnet-5` and `github-copilot/mai-code-1-flash-picker`); namespaced enterprise deployments containing `/` are skipped rather than exposed as `github-copilot/*` models. Models that advertise long-context limits, such as `github-copilot/gpt-5.5`, `github-copilot/claude-opus-4.8`, and `github-copilot/gemini-3.1-pro-preview`, expose an opt-in long-context choice through `--context-window`, the `/model` selection flow, per-model `defaultContextWindows`, SDK, and RPC controls. The long-context option advertises the model's full context window (for example `1m` or `1.05m` — GitHub's `max_context_window_tokens`), matching how the native `openai/*` and `anthropic/*` providers report these models and what the chat footer shows. GitHub's lower server-side prompt cap (`max_prompt_tokens`, for example `936k` or `922k`) is retained internally as the effective input budget that drives compaction thresholds and overflow recovery, and GitHub's live output cap (`max_output_tokens`) replaces Atomic's bundled `maxTokens` fallback for provider requests. If CAPI advertises `capabilities.supports.reasoning_effort` as an array, Atomic also gates `/model` and thinking-level cycling to only those live levels for both dynamic Copilot models and bundled `pi-ai` Copilot models; budget-only or boolean-only reasoning metadata leaves the existing thinking map untouched. Active interactive sessions refresh from this metadata as soon as the catalog is applied, so a startup fallback model does not keep stale reasoning levels until restart. This lets Atomic display the branded context window, request the catalog-advertised output budget, and avoid offering unsupported Copilot reasoning levels.
-- Selecting long context sets Atomic's displayed window to the model's full capacity while compaction triggers against the effective prompt-token budget, and makes Copilot requests include `X-GitHub-Api-Version: 2026-06-01`. Atomic does not send a body field, `contextTier`, or model-id variant; GitHub automatically applies the server-side `long_context` tier when prompt tokens exceed the default budget.
-- Long-context Copilot requests consume more AI credits and require Copilot long-context/usage-based billing entitlement. A prompt that reaches the model's normal prompt cap is compacted and retried automatically. Only when GitHub rejects a prompt *below* that cap — for example because the account lacks the long-context/usage-based billing entitlement and is dropped to a smaller server tier — does Atomic surface a friendly entitlement/server-cap/cost hint rather than silently truncating context.
-- **Gemini models** (`github-copilot/gemini-3.1-pro-preview`, `github-copilot/gemini-3.5-flash`, …) are served through Copilot's CAPI gateway, which re-translates the OpenAI request into Google's GenAI format and enforces Gemini's stricter `FunctionDeclaration` schema (it rejects a tool-parameter `anyOf`/`oneOf` whose branch is a complex object, returning `400 invalid request body`). Atomic automatically sanitizes outbound tool/function JSON Schemas for these models into the supported subset — resolving object/array-bearing unions to their most expressive branch, converting `const`/literal unions to `enum`, collapsing nullable unions to `nullable`, and dropping non-portable keywords such as `additionalProperties`, `patternProperties`, `format`, and numeric/length bounds. Gemini also serializes array/object tool-call **arguments** as flattened indexed keys (`keywords[0]`, `keywords[1]`, …); Atomic reconstructs these back into proper arrays/objects before validation so tool calls (including `structured_output` and MCP tools) don't fail and loop. Both transforms are transparent and scoped to GitHub Copilot Gemini models only; no configuration is required and other providers/models are unaffected.
-- **Claude/Anthropic Messages models** served through GitHub Copilot use Copilot SSE transport. If Copilot cleanly ends a `/v1/messages` stream after Anthropic terminal stop-reason evidence but omits the required `message_stop` event, Atomic adds that one terminal event before provider parsing so the turn can finish normally, including when the final complete SSE frame reaches EOF without a trailing blank-line separator. The repair covers public Copilot hosts and GHE tenant routes such as `copilot-api.<enterprise>.ghe.com`, and is otherwise limited to closed, non-error Copilot Anthropic event streams; malformed, truncated, already well-formed, non-Copilot/look-alike host, non-SSE, Gemini, and OpenAI-style streams continue through the normal parser and retry behavior.
 
 ### xAI (Grok/X subscription)
 
@@ -71,9 +80,11 @@ atomic
 
 After a successful API-key or OAuth login, Atomic refreshes provider credentials and model discovery in the active session. Newly authenticated models are immediately available in `/model` without restarting Atomic, including providers with dynamically discovered catalogs.
 
+Remote pi.dev catalogs persist their ETag and are revalidated with `If-None-Match`; an empty `304` keeps the cached models and counts as a successful check. Atomic renders the cached snapshot immediately, preserves each provider's last usable catalog on refresh failure, and prefers newer bundled data over stale remote overlays. See [Custom Models](/models#catalog-freshness-and-precedence).
+
 | Provider | Environment Variable | `auth.json` key |
 |----------|----------------------|------------------|
-| Anthropic | `ANTHROPIC_API_KEY` | `anthropic` |
+| Anthropic | `ANTHROPIC_API_KEY` or bearer-only `ANTHROPIC_AUTH_TOKEN` | `anthropic` |
 | Ant Ling | `ANT_LING_API_KEY` | `ant-ling` |
 | Azure OpenAI Responses | `AZURE_OPENAI_API_KEY` | `azure-openai-responses` |
 | OpenAI | `OPENAI_API_KEY` | `openai` |

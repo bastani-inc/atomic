@@ -1,6 +1,10 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { type TruncationResult, BashExecutionComponent } from "./interactive-mode-deps.ts";
 
+/** Warning shown when `/compact` is submitted while a compaction is already running. */
+export const COMPACTION_ALREADY_IN_PROGRESS_WARNING =
+  "Compaction is already in progress. Wait for it to finish before running /compact again.";
+
 InteractiveModeBase.prototype.handleBashCommand = async function(this: InteractiveModeBase, command: string, excludeFromContext = false): Promise<void> {
     const extensionRunner = this.session.extensionRunner;
 
@@ -103,6 +107,13 @@ InteractiveModeBase.prototype.handleBashCommand = async function(this: Interacti
   };
 
 InteractiveModeBase.prototype.handleCompactCommand = async function(this: InteractiveModeBase): Promise<void> {
+    // Guard every caller, not just the `/compact` input branch: starting a second
+    // compaction would race the live one and append a duplicate boundary.
+    if (this.session.isCompacting) {
+      this.showWarning(COMPACTION_ALREADY_IN_PROGRESS_WARNING);
+      return;
+    }
+
     const entries = this.sessionManager.getEntries();
     const messageCount = entries.filter((e) => e.type === "message").length;
 

@@ -13,7 +13,6 @@ atomic --mode rpc [options]
 Common options:
 - `--provider <name>`: Set the LLM provider (anthropic, openai, google, etc.)
 - `--model <pattern>`: Model pattern or ID (supports `provider/id` and optional `:<thinking>`)
-- `--context-window <tokens>`: Select a supported context-window size for the startup model (`400k`, `1m`, or raw tokens)
 - `--name <name>` / `-n <name>`: Set the session display name at startup
 - `--no-session`: Disable session persistence
 - `--session-dir <path>`: Custom session storage directory
@@ -195,7 +194,7 @@ Response:
 }
 ```
 
-The `model` field is a full [Model](#model) object or `null`. Its `contextWindow` is the active/effective token budget; selectable models may also include `defaultContextWindow` and `contextWindowOptions`. The `sessionName` field is the display name set via `set_session_name`, or omitted if not set.
+The `model` field is a full [Model](#model) object or `null`. Its `contextWindow` is the model's token budget. The `sessionName` field is the display name set via `set_session_name`, or omitted if not set.
 
 #### get_messages
 
@@ -281,6 +280,16 @@ Response contains an array of full [Model](#model) objects:
 }
 ```
 
+The subprocess protocol returns full `Model` objects. The exported TypeScript `RpcClient.getAvailableModels()` keeps its smaller backward-compatible `ModelInfo` shape (`provider`, `id`, `contextWindow`, `reasoning`) and adds optional `compat`. When present, `compat` exposes constrained-sampling capability claims including `supportsStrictTools`, `supportsStrictMode`, canonical `supportsOpenAIGrammarTools`, and Atomic's synchronized `supportsGrammarTools` alias. Treat absence as unknown/unsupported; do not infer enforcement from the provider name.
+
+```typescript
+const models = await client.getAvailableModels();
+const capabilities = models[0]?.compat;
+if (capabilities?.supportsStrictTools) {
+  // The selected model advertises Anthropic/Bedrock strict-tool support.
+}
+```
+
 #### logout_provider
 
 Remove a provider's stored credential in the authoritative agent process, refresh its available-model catalog, and return the remaining authentication status and new catalog. Environment variables and `models.json` authentication are reported but are not modified.
@@ -307,66 +316,6 @@ Response:
 
 `models` preserves the refreshed catalog order. `scopedModels` is optional. If authentication remains through an environment variable, `authStatus.source` is `"environment"` and `authStatus.label` names the variable.
 
-
-### Context Window
-
-#### get_available_context_windows
-
-List the context-window token budgets supported by the current model and read the active/effective runtime selection.
-
-```json
-{"type": "get_available_context_windows"}
-```
-
-Response:
-```json
-{
-  "type": "response",
-  "command": "get_available_context_windows",
-  "success": true,
-  "data": {
-    "contextWindows": [400000, 1000000],
-    "currentContextWindow": 400000,
-    "supportsSelection": true
-  }
-}
-```
-
-- `contextWindows`: supported token budgets for the active model, sorted ascending.
-- `currentContextWindow`: the active/effective token budget on `model.contextWindow`; omitted when no model is selected.
-- `supportsSelection`: `true` when the active model exposes more than one supported budget.
-
-#### set_context_window
-
-Set the active context-window token budget for the current model at runtime.
-
-```json
-{"type": "set_context_window", "contextWindow": 1000000}
-```
-
-Compact string values are also accepted:
-```json
-{"type": "set_context_window", "contextWindow": "1m"}
-```
-
-Response:
-```json
-{"type": "response", "command": "set_context_window", "success": true}
-```
-
-This command calls `AgentSession.setContextWindow(...)` without `{ persistDefault: true }`: it updates the active model, appends a `context_window_change` session entry and emits `context_window_changed` when the budget changes, but it does **not** write context-window defaults to settings. Use startup `--context-window` or an interactive context-window selection when you intentionally want the effective selection persisted under `defaultContextWindows["provider/modelId"]`.
-
-Unsupported or malformed selections return the standard RPC error response:
-```json
-{
-  "type": "response",
-  "command": "set_context_window",
-  "success": false,
-  "error": "Context window 2m is not supported by custom/selectable-context. Supported values: 400k, 1m."
-}
-```
-
-Larger provider context windows may consume more credits/cost. For catalog-advertised GitHub Copilot long-context models (including `github-copilot/gpt-5.5`, `github-copilot/claude-sonnet-5`, and `github-copilot/gemini-3.1-pro-preview`), selecting `1m` raises Atomic's local budget and sends `X-GitHub-Api-Version: 2026-06-01`; GitHub applies the long-context billing tier server-side by prompt token count. That tier consumes more Copilot AI credits and requires Copilot long-context/usage-based billing entitlement, otherwise requests over GitHub's server cap are rejected with a friendly hint.
 
 ### Thinking
 
@@ -568,6 +517,15 @@ Response:
 }
 ```
 
+While the command runs, Atomic emits ordered deltas correlated by the command `id`:
+
+```json
+{"type":"bash_execution_update","id":"req-1","channel":"stdout","delta":"building...\n"}
+{"type":"bash_execution_update","id":"req-1","channel":"stderr","delta":"warning\n"}
+```
+
+`channel` is exactly `"stdout"` or `"stderr"`. Deltas preserve the order observed for that request; concurrent bash requests may interleave globally but never share IDs. Request ownership survives `new_session`, `switch_session`, `import_session`, fork, and clone while the command is running: later deltas still stream under the original ID, the replacement session is not contaminated, and exactly one ordinary `response` remains the terminal record for completion, cancellation, or error.
+
 If output was truncated, includes `fullOutputPath`:
 ```json
 {
@@ -586,7 +544,7 @@ If output was truncated, includes `fullOutputPath`:
 
 **How bash results reach the LLM:**
 
-The `bash` command executes immediately and returns a `BashResult`. Internally, a `BashExecutionMessage` is created and stored in the agent's message state. This message does NOT emit an event.
+The `bash` command executes immediately and returns a `BashResult`. Internally, a `BashExecutionMessage` is created and stored exactly once in the session where that request started, even if an RPC session replacement completes before the command. The message does NOT emit an event.
 
 When the next `prompt` command is sent, all messages (including `BashExecutionMessage`) are transformed before being sent to the LLM. The `BashExecutionMessage` is converted to a `UserMessage` with this format:
 
@@ -605,15 +563,15 @@ This means:
 
 #### abort_bash
 
-Abort a running bash command.
+Abort running bash commands. Omit `requestId` to retain the legacy behavior of aborting every active RPC-owned bash request, including requests that began before a session replacement, or provide the target bash command's `id` to cancel only that request. Targeted and legacy cancellation remain isolated across concurrent IDs. Closing RPC cancels and drains remaining owned requests before shutdown.
 
 ```json
-{"type": "abort_bash"}
+{"id":"cancel-1","type":"abort_bash","requestId":"req-1"}
 ```
 
 Response:
 ```json
-{"type": "response", "command": "abort_bash", "success": true}
+{"id":"cancel-1","type":"response","command":"abort_bash","success":true}
 ```
 
 ### Session
@@ -921,7 +879,7 @@ Each command has:
 
 ## Events
 
-Events are streamed to stdout as JSON lines during agent operation. Events do NOT include an `id` field (only responses do).
+Events are streamed to stdout as JSON lines. Most events do not include an `id`; `bash_execution_update` is the deliberate exception and uses the originating bash request ID.
 
 ### Event Types
 
@@ -937,8 +895,8 @@ Events are streamed to stdout as JSON lines during agent operation. Events do NO
 | `tool_execution_start` | Tool begins execution |
 | `tool_execution_update` | Tool execution progress (streaming output) |
 | `tool_execution_end` | Tool completes |
+| `bash_execution_update` | Correlated direct-bash stdout/stderr delta |
 | `queue_update` | Pending steering/follow-up queue changed |
-| `context_window_changed` | Active context-window token budget changed |
 | `compaction_start` | Verbatim line compaction begins |
 | `compaction_end` | Verbatim line compaction completes |
 | `auto_retry_start` | Auto-retry begins (after transient error) |
@@ -1079,6 +1037,10 @@ When complete:
 
 Use `toolCallId` to correlate events. The `partialResult` in `tool_execution_update` contains the accumulated output so far (not just the delta), allowing clients to simply replace their display on each update.
 
+### bash_execution_update
+
+Emitted only for direct `bash` and non-intercepted `user_bash` RPC execution. Each event is `{type, id?, channel, delta}` where `channel` is `"stdout"` or `"stderr"`; use `id` to keep concurrent streams separate. Tool-call bash continues to use `tool_execution_update` and its `toolCallId`.
+
 ### queue_update
 
 Emitted whenever the pending steering or follow-up queue changes.
@@ -1090,19 +1052,6 @@ Emitted whenever the pending steering or follow-up queue changes.
   "followUp": ["After that, summarize the result"]
 }
 ```
-
-### context_window_changed
-
-Emitted when the active context-window token budget changes through RPC `set_context_window`, `AgentSession.setContextWindow()` in an SDK-backed runtime, or because in-place tree navigation replayed a branch-scoped `context_window_change` entry. Navigation replay updates the active model for accurate budgeting and compaction but does not append another session entry or write context-window defaults to settings.
-
-```json
-{
-  "type": "context_window_changed",
-  "contextWindow": 1000000
-}
-```
-
-Larger provider context windows may consume more credits/cost. Prefer the model default unless the additional repository/session context is useful for the current task. For catalog-advertised GitHub Copilot long-context models such as `github-copilot/gpt-5.5`, `github-copilot/claude-sonnet-5`, and `github-copilot/gemini-3.1-pro-preview`, a `1m` selection raises Atomic's local budget and sends `X-GitHub-Api-Version: 2026-06-01`; GitHub applies the long-context billing tier server-side by prompt size, consumes more Copilot AI credits, and requires long-context/usage-based billing entitlement.
 
 ### compaction_start / compaction_end
 
@@ -1459,8 +1408,6 @@ Source files and installed definitions:
   "reasoning": true,
   "input": ["text", "image"],
   "contextWindow": 200000,
-  "defaultContextWindow": 200000,
-  "contextWindowOptions": [200000, 1000000],
   "maxTokens": 16384,
   "cost": {
     "input": 3.0,
@@ -1471,7 +1418,7 @@ Source files and installed definitions:
 }
 ```
 
-`contextWindow` is the active/effective token budget used by Atomic's local budgeting, footer/stats, and compaction logic. `defaultContextWindow` is the model's scalar default before a session/runtime override, and `contextWindowOptions` lists selectable token budgets when the model supports more than one size. RPC clients can read/select the active runtime budget with `get_available_context_windows` and `set_context_window`; the runtime command does not persist context-window defaults to settings.
+`contextWindow` is the model's token budget used by Atomic's local budgeting, footer/stats, and compaction logic.
 
 ### UserMessage
 

@@ -4,12 +4,14 @@ import chalk from "chalk";
 import { minimatch } from "minimatch";
 import { isValidThinkingLevel } from "../cli/args.ts";
 import type { ModelRegistry } from "./model-registry.ts";
-import { parseModelPattern } from "./model-resolver-patterns.ts";
+import { findExactModelReferenceMatch, parseModelPattern } from "./model-resolver-patterns.ts";
 import type { ScopedModel } from "./model-resolver-types.ts";
 
 export interface ModelScopeDiagnostic {
   type: "warning";
+  code: "no-match" | "invalid-thinking-level";
   message: string;
+  pattern: string;
 }
 
 export interface ResolveModelScopeResult {
@@ -54,15 +56,30 @@ export async function resolveModelScopeWithDiagnostics(
   const scopedModels: ScopedModel[] = [];
   const diagnostics: ModelScopeDiagnostic[] = [];
   for (const pattern of patterns) {
+    const completeExactMatch = findExactModelReferenceMatch(pattern, availableModels);
+    if (completeExactMatch) {
+      if (!scopedModels.find((sm) => modelsAreEqual(sm.model, completeExactMatch))) {
+        scopedModels.push({ model: completeExactMatch, thinkingLevel: undefined });
+      }
+      continue;
+    }
+
     if (hasGlobCharacters(pattern)) {
       const { globPattern, thinkingLevel } = parseGlobThinkingLevel(pattern);
+      const exactMatch = findExactModelReferenceMatch(globPattern, availableModels);
+      if (exactMatch) {
+        if (!scopedModels.find((sm) => modelsAreEqual(sm.model, exactMatch))) {
+          scopedModels.push({ model: exactMatch, thinkingLevel });
+        }
+        continue;
+      }
       const matchingModels = availableModels.filter((m) => {
         const fullId = `${m.provider}/${m.id}`;
         return minimatch(fullId, globPattern, { nocase: true }) || minimatch(m.id, globPattern, { nocase: true });
       });
 
       if (matchingModels.length === 0) {
-        diagnostics.push({ type: "warning", message: `No models match pattern "${pattern}"` });
+        diagnostics.push({ type: "warning", code: "no-match", message: `No models match pattern "${pattern}"`, pattern });
         continue;
       }
 
@@ -77,11 +94,11 @@ export async function resolveModelScopeWithDiagnostics(
     const { model, thinkingLevel, warning } = parseModelPattern(pattern, availableModels);
 
     if (warning) {
-      diagnostics.push({ type: "warning", message: warning });
+      diagnostics.push({ type: "warning", code: "invalid-thinking-level", message: warning, pattern });
     }
 
     if (!model) {
-      diagnostics.push({ type: "warning", message: `No models match pattern "${pattern}"` });
+      diagnostics.push({ type: "warning", code: "no-match", message: `No models match pattern "${pattern}"`, pattern });
       continue;
     }
 

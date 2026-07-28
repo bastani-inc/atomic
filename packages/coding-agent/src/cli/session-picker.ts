@@ -3,6 +3,7 @@
  */
 
 import { ProcessTerminal, setKeybindings, TUI } from "@earendil-works/pi-tui";
+import { getAgentDir } from "../config.ts";
 import { KeybindingsManager } from "../core/keybindings.ts";
 import type { SessionInfo, SessionListProgress } from "../core/session-manager.ts";
 import { SessionSelectorComponent } from "../modes/interactive/components/session-selector.ts";
@@ -15,7 +16,7 @@ export async function selectSession(
 	allSessionsLoader: SessionsLoader,
 ): Promise<string | null> {
 	return new Promise((resolve) => {
-		const ui = new TUI(new ProcessTerminal());
+		const ui = new TUI(new ProcessTerminal(), undefined, getAgentDir());
 		const keybindings = KeybindingsManager.create();
 		setKeybindings(keybindings);
 		let resolved = false;

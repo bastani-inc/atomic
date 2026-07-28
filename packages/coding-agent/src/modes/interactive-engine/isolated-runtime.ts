@@ -2,6 +2,7 @@ import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { AgentSession, AgentSessionEvent } from "../../core/agent-session.ts";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../../core/agent-session-runtime.ts";
 import type { PromptOptions } from "../../core/agent-session-types.ts";
+import { loginIsolatedOAuthProvider, type AtomicOAuthLoginCallbacks } from "./isolated-auth.ts";
 import { SessionManager } from "../../core/session-manager.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import type { RpcClient } from "../rpc/rpc-client.ts";
@@ -12,13 +13,12 @@ import { RemoteCommandCatalog, type RemoteCommandsListener } from "./remote-comm
 import { RemoteModelCatalog } from "./remote-model-catalog.ts";
 import { RemoteQueuePause } from "./remote-queue-pause.js";
 import { sleep } from "../../utils/sleep.ts";
-
 export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private readonly client: RpcClient;
 	private readonly patchedSessions = new WeakSet<AgentSession>();
 	private streaming = false;
 	private compacting = false;
-	private bashRunning = false;
+	private readonly activeBashRequestIds = new Map<string | symbol, string>();
 	private steeringMessages: string[] = [];
 	private followUpMessages: string[] = [];
 	private engineCallbackActive = false;
@@ -88,10 +88,14 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.remoteCommands.refresh();
 	}
 
+	override async loginOAuthProvider(provider: string, callbacks: AtomicOAuthLoginCallbacks) {
+		return loginIsolatedOAuthProvider(super.session, this.client, this.remoteModelCatalog, provider, callbacks);
+	}
+
 	override async logoutProvider(provider: string) {
 		const result = await this.client.logoutProvider(provider);
 		this.remoteModelCatalog.applyModels({ models: result.models, scopedModels: result.scopedModels ?? [] });
-		await super.session.modelRegistry.authStorage.logoutAsync(provider);
+		super.session.modelRegistry.authStorage.reload();
 		return result;
 	}
 
@@ -229,7 +233,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		Object.defineProperties(session, {
 			isStreaming: { configurable: true, get: () => this.streaming },
 			isCompacting: { configurable: true, get: () => this.compacting },
-			isBashRunning: { configurable: true, get: () => this.bashRunning },
+			isBashRunning: { configurable: true, get: () => this.activeBashRequestIds.size > 0 },
 			sessionName: { configurable: true, get: () => this.remoteSessionName },
 			sessionFile: { configurable: true, get: () => this.remoteSessionFile },
 			autoCompactionEnabled: { configurable: true, get: () => this.autoCompactionEnabled },
@@ -249,27 +253,18 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			steer: { configurable: true, value: (text: string) => this.client.steer(text) },
 			followUp: { configurable: true, value: (text: string) => this.client.followUp(text) },
 			abort: { configurable: true, value: () => this.abortAndRecover() },
-			executeBash: {
-				configurable: true,
-				value: async (
-					command: string,
-					onChunk?: (chunk: string) => void,
-					options?: { excludeFromContext?: boolean },
-				) => {
-					this.bashRunning = true;
-					try {
-						const result = await this.client.requestInternal<Awaited<ReturnType<AgentSession["executeBash"]>>>({
-							type: "user_bash", command, excludeFromContext: options?.excludeFromContext,
-						});
-						if (result.output) onChunk?.(result.output);
-						return result;
-					} finally {
-						this.bashRunning = false;
-					}
-				},
-			},
+			executeBash: { configurable: true, value: async (command: string, onChunk?: Parameters<AgentSession["executeBash"]>[1], options?: Parameters<AgentSession["executeBash"]>[2]) => {
+				const key = options?.id ?? Symbol("isolated-bash-request");
+				try { return await this.client.userBashWithUpdates(command, (delta, channel) => onChunk?.(delta, channel), {
+						excludeFromContext: options?.excludeFromContext, onRequestId: (requestId) => this.activeBashRequestIds.set(key, requestId),
+					});
+				} finally { this.activeBashRequestIds.delete(key); }
+			} },
 			recordBashResult: { configurable: true, value: () => {} },
-			abortBash: { configurable: true, value: () => this.dispatchBestEffort("abort bash", this.client.abortBash()) },
+			abortBash: { configurable: true, value: (id?: string) => {
+				if (id === undefined) this.dispatchBestEffort("abort bash", this.client.abortBash());
+				else { const requestId = this.activeBashRequestIds.get(id); if (requestId) this.dispatchBestEffort("abort bash", this.client.abortBash(requestId)); }
+			} },
 			compact: { configurable: true, value: () => this.client.compact() },
 			abortCompaction: { configurable: true, value: () => this.dispatchBestEffort("abort compaction", this.client.requestInternal<void>({ type: "abort_compaction" })) },
 			abortRetry: { configurable: true, value: () => this.dispatchBestEffort("abort retry", this.client.abortRetry()) },
@@ -349,13 +344,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 					session.agent.state.thinkingLevel = level;
 					this.dispatchBestEffort("cycle thinking level", this.client.setThinkingLevel(level));
 					return level;
-				},
-			},
-			setContextWindow: {
-				configurable: true,
-				value: (tokens: number) => {
-					if (session.agent.state.model) session.agent.state.model = { ...session.agent.state.model, contextWindow: tokens };
-					this.dispatchBestEffort("set context window", this.client.setContextWindow(tokens));
 				},
 			},
 			setSteeringMode: {
@@ -486,9 +474,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				break;
 			case "thinking_level_changed":
 				session.agent.state.thinkingLevel = event.level;
-				break;
-			case "context_window_changed":
-				if (session.agent.state.model) session.agent.state.model = { ...session.agent.state.model, contextWindow: event.contextWindow };
 				break;
 			case "session_info_changed":
 				this.remoteSessionName = event.name;

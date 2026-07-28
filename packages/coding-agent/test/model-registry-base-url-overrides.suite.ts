@@ -83,41 +83,6 @@ describeModelRegistry((context) => {
 			}
 		});
 
-		test("adds GitHub Copilot API version header only for github-copilot requests", async () => {
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
-			const copilotModel = registry.find("github-copilot", "gpt-5.5");
-			expect(copilotModel).toBeDefined();
-
-			const copilotAuth = await registry.getApiKeyAndHeaders(copilotModel!);
-			expect(copilotAuth.ok).toBe(true);
-			if (copilotAuth.ok) {
-				expect(copilotAuth.headers?.["X-GitHub-Api-Version"]).toBe("2026-06-01");
-			}
-
-			const openAiAuth = await registry.getApiKeyAndHeaders(openAiModel);
-			expect(openAiAuth.ok).toBe(true);
-			if (openAiAuth.ok) {
-				expect(openAiAuth.headers?.["X-GitHub-Api-Version"]).toBeUndefined();
-			}
-		});
-
-		test("routes GitHub Copilot env auth through the public hub by default", () => {
-			const previous = process.env.COPILOT_GITHUB_TOKEN;
-			process.env.COPILOT_GITHUB_TOKEN = "github_pat_enterprise";
-			try {
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
-				const copilotModels = getModelsForProvider(registry, "github-copilot");
-
-				expect(copilotModels.length).toBeGreaterThan(0);
-				for (const model of copilotModels) {
-					expect(model.baseUrl).toBe("https://api.githubcopilot.com");
-				}
-			} finally {
-				if (previous === undefined) delete process.env.COPILOT_GITHUB_TOKEN;
-				else process.env.COPILOT_GITHUB_TOKEN = previous;
-			}
-		});
-
 		test("models.json baseUrl override wins over GitHub Copilot env routing", () => {
 			const previous = process.env.COPILOT_GITHUB_TOKEN;
 			process.env.COPILOT_GITHUB_TOKEN = "github_pat_enterprise";

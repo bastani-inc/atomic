@@ -3,6 +3,8 @@
  */
 
 export type { SlashCommandInfo, SlashCommandSource } from "../slash-commands.ts";
+export type { AtomicProviderCompat } from "../model-capabilities.ts";
+export type { ConstrainedSamplingConfig } from "@earendil-works/pi-ai/compat";
 export type { SourceInfo } from "../source-info.ts";
 export {
 	createExtensionRuntime,

@@ -13,10 +13,6 @@ import {
   withCodexFastModeStreamOptions,
 } from "./codex-fast-mode.ts";
 import { restoreAnthropicReplayThinkingBlocks } from "./anthropic-thinking-guard.ts";
-import { sanitizeCopilotGeminiPayload } from "./copilot-gemini-payload-sanitizer.ts";
-import { restoreCopilotGeminiReasoningOpaque } from "./copilot-gemini-reasoning.ts";
-import { normalizeCopilotGeminiReplayToolArguments } from "./copilot-gemini-tool-arguments.ts";
-import { getModelDefaultContextWindow, getSupportedContextWindows, selectContextWindow } from "./context-window.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ExtensionRunner } from "./extensions/index.ts";
 import { convertToLlm } from "./messages.ts";
@@ -45,21 +41,6 @@ setDefaultStreamFn(streamSimple);
 
 function getDefaultAgentDir(): string {
   return getAgentDir();
-}
-
-type ContextWindowRequestSource = "explicit" | "incoming-model" | "session" | "model-settings" | "global-settings";
-
-const COPILOT_CONTEXT_WINDOW_SELECTION_OPTIONS = { allowCopilotLongContextFallback: true } as const;
-
-function getAlreadyAppliedContextWindow(model: Model<Api>): number | undefined {
-  const defaultContextWindow = getModelDefaultContextWindow(model);
-  if (model.contextWindow === defaultContextWindow) {
-    return undefined;
-  }
-
-  return getSupportedContextWindows(model).includes(model.contextWindow)
-    ? model.contextWindow
-    : undefined;
 }
 
 /**
@@ -221,46 +202,6 @@ export async function createAgentSession(
     thinkingLevel = clampThinkingLevel(model, thinkingLevel) as ThinkingLevel;
   }
 
-  let selectedContextWindow: number | undefined;
-  let contextWindowWarning: string | undefined;
-  let contextWindowError: string | undefined;
-  const explicitContextWindowSelection = options.contextWindow !== undefined;
-  const incomingModelContextWindow =
-    model && options.model ? getAlreadyAppliedContextWindow(model) : undefined;
-  const sessionContextWindow = hasExistingSession ? existingSession.contextWindow : undefined;
-  const modelSettingsContextWindow = model ? settingsManager.getDefaultContextWindowForModel(model.provider, model.id) : undefined;
-  const globalSettingsContextWindow = settingsManager.getDefaultContextWindow();
-  const contextWindowRequest:
-    | { contextWindow: number; source: ContextWindowRequestSource }
-    | undefined =
-    options.contextWindow !== undefined
-      ? { contextWindow: options.contextWindow, source: "explicit" }
-      : incomingModelContextWindow !== undefined
-        ? { contextWindow: incomingModelContextWindow, source: "incoming-model" }
-        : sessionContextWindow !== undefined
-          ? { contextWindow: sessionContextWindow, source: "session" }
-          : modelSettingsContextWindow !== undefined
-            ? { contextWindow: modelSettingsContextWindow, source: "model-settings" }
-            : globalSettingsContextWindow !== undefined
-              ? { contextWindow: globalSettingsContextWindow, source: "global-settings" }
-              : undefined;
-  if (model && contextWindowRequest !== undefined) {
-    const selected = selectContextWindow(
-      model,
-      contextWindowRequest.contextWindow,
-      COPILOT_CONTEXT_WINDOW_SELECTION_OPTIONS,
-    );
-    if ("error" in selected) {
-      if (options.contextWindowStrict) {
-        contextWindowError = selected.error;
-      } else if (contextWindowRequest.source !== "global-settings") {
-        contextWindowWarning = selected.error;
-      }
-    } else {
-      model = selected.model;
-      selectedContextWindow = selected.contextWindow;
-    }
-  }
 
   const allowedToolNames =
     options.tools ?? (options.noTools === "all" ? [] : undefined);
@@ -396,26 +337,7 @@ export async function createAgentSession(
           ? restoreAnthropicReplayThinkingBlocks(extensionPayload, sourceMessages, model)
           : extensionPayload;
       }
-      // GitHub Copilot Gemini models are served through CAPI, which translates
-      // the OpenAI request into Google GenAI and rejects tool schemas whose
-      // `anyOf`/`oneOf` wraps a complex object (HTTP 400 invalid request body).
-      // Sanitize tool JSON Schemas into Gemini's supported subset. No-op for
-      // every other provider/model, and runs last so it also covers tools
-      // injected by `before_provider_request` extensions.
-      const schemaSanitized = sanitizeCopilotGeminiPayload(finalPayload, model);
-      // Reconstruct flattened tool-call arguments on replayed assistant
-      // messages (for example `edits[0].newText` -> `edits: [{ newText }]`).
-      // CAPI parses replayed arguments straight into Gemini's FunctionCall,
-      // and a flattened/malformed prior call ends the next turn with
-      // `finish_reason: "error"`. No-op for well-formed args / other models.
-      const replayArgsNormalized = normalizeCopilotGeminiReplayToolArguments(schemaSanitized, model);
-      // CAPI carries Gemini thought signatures in a `reasoning_opaque` field it
-      // reads back off the assistant message on replay. Convert the
-      // `reasoning_details` the client re-emits (captured inbound by the SSE
-      // interceptor) into that field so multi-turn tool use keeps its thought
-      // signature instead of dying on an empty completion. No-op otherwise.
-      const reasoningRestored = restoreCopilotGeminiReasoningOpaque(replayArgsNormalized, model);
-      return sanitizeOpenAIResponsesPayload(reasoningRestored, model);
+      return sanitizeOpenAIResponsesPayload(finalPayload, model);
     },
     onResponse: async (response, _model) => {
       const runner = extensionRunnerRef.current;
@@ -444,15 +366,6 @@ export async function createAgentSession(
   // Restore messages if session has existing data
   if (hasExistingSession) {
     agent.state.messages = existingSession.messages;
-    const transcriptContextWindow = model
-      ? (existingSession.contextWindow ?? getModelDefaultContextWindow(model))
-      : undefined;
-    if (
-      selectedContextWindow !== undefined &&
-      (explicitContextWindowSelection || selectedContextWindow !== transcriptContextWindow)
-    ) {
-      sessionManager.appendContextWindowChange(selectedContextWindow);
-    }
     if (!hasThinkingEntry) {
       sessionManager.appendThinkingLevelChange(thinkingLevel);
     }
@@ -460,12 +373,6 @@ export async function createAgentSession(
     // Save initial model and thinking level for new sessions so they can be restored on resume
     if (model) {
       sessionManager.appendModelChange(model.provider, model.id);
-      if (
-        selectedContextWindow !== undefined &&
-        (explicitContextWindowSelection || selectedContextWindow !== getModelDefaultContextWindow(model))
-      ) {
-        sessionManager.appendContextWindowChange(selectedContextWindow);
-      }
     }
     sessionManager.appendThinkingLevelChange(thinkingLevel);
   }
@@ -494,7 +401,5 @@ export async function createAgentSession(
     extensionsResult,
     modelFallbackMessage,
     modelFallbackReason,
-    contextWindowWarning,
-    contextWindowError,
   };
 }

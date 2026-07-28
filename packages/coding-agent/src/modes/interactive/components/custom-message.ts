@@ -32,16 +32,19 @@ export class CustomMessageComponent extends Container {
 	private customComponent?: Component;
 	private markdownTheme: MarkdownTheme;
 	private _expanded = false;
+	private outputPad: number;
 
 	constructor(
 		message: CustomMessage<unknown>,
 		customRenderer?: MessageRenderer,
 		markdownTheme: MarkdownTheme = getMarkdownTheme(),
+		outputPad = 1,
 	) {
 		super();
 		this.message = message;
 		this.customRenderer = customRenderer;
 		this.markdownTheme = markdownTheme;
+		this.outputPad = outputPad;
 
 		// Create box with purple background (used for default rendering)
 		this.box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
@@ -56,6 +59,12 @@ export class CustomMessageComponent extends Container {
 			this._expanded = expanded;
 			this.rebuild();
 		}
+	}
+
+	setOutputPad(outputPad: number): void {
+		if (this.outputPad === outputPad) return;
+		this.outputPad = outputPad;
+		this.rebuild();
 	}
 
 	override invalidate(): void {
@@ -78,7 +87,11 @@ export class CustomMessageComponent extends Container {
 		// Try custom renderer first - it handles its own styling
 		if (this.customRenderer) {
 			try {
-				const component = this.customRenderer(this.message, { expanded: this._expanded }, theme);
+				const component = this.customRenderer(
+					this.message,
+					{ expanded: this._expanded, outputPad: this.outputPad },
+					theme,
+				);
 				// Explicit null = "handled; render nothing". Skip the leading spacer
 				// and the default box entirely so the entry occupies zero rows. The
 				// workflows inline-form renderer returns null for a rehydrated

@@ -68,11 +68,12 @@ Atomic currently bundles these agents from `@bastani/subagents`:
 | `codebase-pattern-finder` | Find similar implementations, conventions, and test examples to model after. | No |
 | `codebase-research-locator` | Locate prior `research/` and `specs/` documents related to the task. | No |
 | `codebase-research-analyzer` | Extract decisions, constraints, and still-relevant conclusions from prior local docs. | No |
-| `codebase-online-researcher` | Research official docs, ecosystem behavior, and open-source source references online. | Can write research notes |
-| `debugger` | Reproduce, prove the root cause, apply the smallest code or content fix, and rerun the failing scenario. It has the same write-capable tools as `worker`. | Yes |
-| `code-simplifier` | Clean up recently changed code while preserving behavior. | Yes |
+| `codebase-online-researcher` | Research official docs, ecosystem behavior, and open-source source references online; it may persist reusable research notes. | Research notes only |
+| `debugger` | Reproduce a concrete failure, prove its root cause, apply the smallest in-scope fix, and rerun the failing scenario. | Yes |
+| `code-simplifier` | Simplify recently changed code under its behavior-preservation “doors” rubric. | Yes |
+| `worker` | Implement an approved task or handoff, validate the narrow change, and escalate product, architecture, or scope decisions to its supervisor. | Yes |
 
-Read-oriented agents should inspect and report. `debugger` and `code-simplifier` can edit files, so run them with an explicit scope and validation target. The debugger should finish an in-scope diagnosis by applying and validating the fix, not stop at a proposed patch.
+The bundled definitions keep their routing and model frontmatter but use compact, outcome-first bodies: role and goal, success criteria, constraints and tool routes, output contract, and stop rules where applicable. Report-producing agents ground progress claims in tool results and return concise evidence rather than narrating internal reasoning. Read-oriented agents inspect and report. `debugger`, `code-simplifier`, and `worker` can edit files, so give them an explicit scope and validation target. The debugger should finish an in-scope diagnosis by applying and validating the fix, not stop at a proposed patch.
 
 ## Review compositions
 
@@ -94,7 +95,7 @@ Example request:
 Review the current diff with fresh-context specialists: analyze correctness, inspect failure modes without editing, and compare the implementation to existing patterns. Synthesize only issues worth fixing now.
 ```
 
-Useful prompt templates include `/parallel-review`, `/review-loop`, `/parallel-research`, `/parallel-context-build`, `/parallel-handoff-plan`, and `/parallel-cleanup`. Treat them as reusable compositions, not as separate bundled agent names.
+Useful prompt templates include `/parallel-review`, `/review-loop`, `/parallel-research`, `/parallel-context-build`, `/parallel-handoff-plan`, and `/parallel-cleanup`. Treat them as reusable compositions, not as separate bundled agent names. Their task templates define the requested outcome, evidence and delegation boundaries, downstream output shape, and an explicit stop rule; preserve those contracts when adapting a template.
 
 ## Background work and control
 
@@ -183,7 +184,7 @@ This keeps the parent session responsible for orchestration unless you deliberat
 
 ## Custom agents
 
-Custom agents are Markdown files with YAML frontmatter and a system prompt body. Common locations are:
+Custom agents are Markdown files with YAML frontmatter and a system prompt body. Keep the body outcome-first and locally complete: state the role or goal, observable success criteria, constraints and context-dependent tool routes, required output shape, and stop conditions. Reserve absolute wording for true invariants, request evidence and conclusions rather than private reasoning, and avoid repeated self-check instructions. Common locations are:
 
 | Scope | Path |
 |---|---|
@@ -202,7 +203,14 @@ fallbackModels: openai/gpt-5-mini
 inheritProjectContext: true
 ---
 
-You are a read-only inspector. Inspect the current diff, cite evidence with file paths, and return only issues worth fixing now. Do not edit files.
+## Role and goal
+Inspect the current diff for correctness and regressions without editing files.
+
+## Success criteria
+Cite each actionable issue with file:line evidence and the observed failure or risk.
+
+## Output and stop rule
+Return only issues worth fixing now. Stop when the relevant diff and affected call paths have been inspected, or name the evidence you could not access.
 ```
 
 If an agent or chain step uses an explicit empty `tools: []` allowlist together with `outputSchema`, Atomic starts the child with only `structured_output` enabled for the required final answer. It does not omit `--tools` and accidentally restore default tools. Path-only tool entries remain extension paths and do not create a builtin allowlist by themselves. The child prompt-runtime extension is loaded before user/tool extensions so its schema-backed `structured_output` tool is registered before explicit allowlists are applied.

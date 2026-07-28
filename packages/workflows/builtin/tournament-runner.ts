@@ -173,6 +173,9 @@ export async function runTournament(ctx: WorkflowRunContext<TournamentInputs>) {
     context: "fresh",
     reads: [bracketPath, winner.path, ...judgeArtifactPaths],
     output: resultPath,
+    // Keep the reducer report out of the caller's context window; `result_path`
+    // below carries it for callers that want the contents.
+    outputMode: "file-only",
   });
 
   return {

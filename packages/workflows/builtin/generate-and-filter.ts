@@ -1,5 +1,6 @@
 import { Type } from "typebox";
 import { workflow } from "../src/authoring/workflow.js";
+import { withSteeringPropagationContext } from "./steering-context.js";
 import { runGenerateAndFilter } from "./generate-and-filter-runner.js";
 
 export default workflow({
@@ -13,7 +14,7 @@ export default workflow({
     max_concurrency: Type.Integer({ minimum: 1, maximum: 12, default: 4, description: "Maximum simultaneous generator stages." }),
   },
   outputs: {
-    result: Type.String({ description: "Final human-readable shortlist report." }),
+    result: Type.String({ description: "Compact reference to the final shortlist report artifact; read `final_path` for the full report." }),
     shortlist: Type.Array(Type.String(), { description: "Ranked paths to selected candidate artifacts." }),
     candidate_artifact_paths: Type.Array(Type.String(), { description: "Paths to every generated candidate artifact." }),
     filter_path: Type.String({ description: "Path to the dedupe and filter decision." }),
@@ -22,5 +23,5 @@ export default workflow({
     artifact_dir: Type.String({ description: "Directory containing run artifacts." }),
     manifest_path: Type.String({ description: "Path to the candidate artifact manifest." }),
   },
-  run: runGenerateAndFilter,
+  run: async (ctx) => await runGenerateAndFilter(withSteeringPropagationContext(ctx)),
 });

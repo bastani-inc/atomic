@@ -106,14 +106,14 @@ uv run pier run \
 
 The Atomic Pier adapter reads `COPILOT_GITHUB_TOKEN` from the Pier process environment and passes it into the sandbox for Atomic. If your launcher does not inherit shell exports, pass it explicitly with `--agent-env COPILOT_GITHUB_TOKEN=...` instead.
 
-For GitHub Copilot in `allow_internet = false` tasks, the Pier adapter routes API traffic using the first available option:
+Atomic treats `github-copilot` as a plain upstream pi provider, so it no longer derives a Copilot endpoint from the environment: requests go to pi's default `https://api.individual.githubcopilot.com`, and `COPILOT_API_TARGET` / `GITHUB_COPILOT_BASE_URL` / `GITHUB_SERVER_URL` are not read by the agent.
+
+For enterprise or GHE runs, the Pier adapter keeps a harness-level escape hatch. When either variable below is set it writes a `providers.github-copilot.baseUrl` override into the container's `models.json`, using the first available option:
 
 1. `COPILOT_API_TARGET` if provided (host or URL)
 2. `GITHUB_COPILOT_BASE_URL` if provided (host or URL)
-3. `GITHUB_SERVER_URL` routing:
-    - `https://github.com` → `https://api.githubcopilot.com`
-    - `https://<tenant>.ghe.com` → the tenant-specific GHE Copilot routing host
-    - other GitHub Enterprise Server domains → `https://api.enterprise.githubcopilot.com`
+
+When neither is set the adapter writes no override, so the container hits the same endpoint a normal Atomic user does. Tenant-specific GHE hosts must now be named explicitly — they are no longer guessed from `GITHUB_SERVER_URL`.
 
 If you see `421 Misdirected Request`, force the target explicitly:
 

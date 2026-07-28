@@ -2,7 +2,6 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { spawnSync } from "node:child_process";
 import type { TUI } from "@earendil-works/pi-tui";
 import {
   extensionForImageMimeType,
@@ -10,6 +9,7 @@ import {
 } from "../../utils/clipboard-image.ts";
 import { readClipboardText } from "../../utils/clipboard.ts";
 import { APP_NAME } from "../../config.ts";
+import { editInExternalEditor, resolveExternalEditorCommand } from "./external-editor.ts";
 
 export interface ExternalEditorHost {
   stop(): void;
@@ -65,52 +65,6 @@ export function cleanupStaleClipboardFiles(now = Date.now()): void {
   }
 }
 
-function parseEditorCommand(command: string): string[] {
-  const args: string[] = [];
-  let current = "";
-  let quote: "'" | '"' | null = null;
-  let escaped = false;
-  let started = false;
-
-  for (const ch of command) {
-    if (escaped) {
-      current += ch;
-      escaped = false;
-      started = true;
-      continue;
-    }
-    if (ch === "\\" && quote !== "'") {
-      escaped = true;
-      started = true;
-      continue;
-    }
-    if (quote) {
-      if (ch === quote) quote = null;
-      else current += ch;
-      started = true;
-      continue;
-    }
-    if (ch === "'" || ch === '"') {
-      quote = ch;
-      started = true;
-      continue;
-    }
-    if (/\s/.test(ch)) {
-      if (started) {
-        args.push(current);
-        current = "";
-        started = false;
-      }
-      continue;
-    }
-    current += ch;
-    started = true;
-  }
-
-  if (escaped) current += "\\";
-  if (started) args.push(current);
-  return args;
-}
 
 export function combineQueuedMessagesForEditor(
   queuedMessages: readonly string[],
@@ -165,61 +119,26 @@ export async function pasteClipboardImageToEditor(
   }
 }
 
-export function openExternalEditorForText(
+export async function openExternalEditorForText(
   text: string,
   host: Pick<TUI, "stop" | "start" | "requestRender"> | ExternalEditorHost,
   options: ExternalEditorOptions = {},
-): string | undefined {
-  const editorCommand = options.editorCommand ?? process.env.VISUAL ?? process.env.EDITOR;
-  if (!editorCommand) {
-    options.showWarning?.("No editor configured. Set $VISUAL or $EDITOR environment variable.");
-    return undefined;
-  }
-
-  const tmpFile = path.join(
-    os.tmpdir(),
-    // Keep the app name in both the prefix and extension so editor tabs and
-    // file-type hints stay branded while preserving the legacy .<app>.md shape.
-    `${APP_NAME}-editor-${crypto.randomUUID()}.${APP_NAME}.md`,
-  );
-  let tmpFileCreated = false;
-  let hostStopped = false;
+): Promise<string | undefined> {
+  const editorCommand = resolveExternalEditorCommand(options.editorCommand);
+  host.stop();
   try {
-    fs.writeFileSync(tmpFile, text, {
-      encoding: "utf-8",
-      flag: "wx",
-      mode: 0o600,
+    const result = await editInExternalEditor({
+      command: editorCommand,
+      content: text,
     });
-    tmpFileCreated = true;
-    host.stop();
-    hostStopped = true;
-
-    const [editor, ...editorArgs] = parseEditorCommand(editorCommand);
-    if (!editor) return undefined;
-    const result = spawnSync(editor, [...editorArgs, tmpFile], {
-      stdio: "inherit",
-      // Windows editor commands often rely on shell resolution for .cmd/.bat
-      // launchers; keep this limited to trusted $VISUAL/$EDITOR input.
-      shell: process.platform === "win32",
-    });
-
-    if (result.error) {
-      options.showWarning?.(`Failed to open editor: ${result.error.message}`);
-      return undefined;
-    }
-    if (result.status !== 0) return undefined;
-    return fs.readFileSync(tmpFile, "utf-8").replace(/\n$/, "");
+    return result.status === "complete" ? result.content : undefined;
+  } catch (error) {
+    options.showWarning?.(
+      `Failed to open editor: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return undefined;
   } finally {
-    if (tmpFileCreated) {
-      try {
-        fs.unlinkSync(tmpFile);
-      } catch {
-        // Ignore cleanup errors.
-      }
-    }
-    if (hostStopped) {
-      host.start();
-      host.requestRender(true);
-    }
+    host.start();
+    host.requestRender(true);
   }
 }

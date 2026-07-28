@@ -226,6 +226,15 @@ describe("one-pass range planner", () => {
 		expect(calls[0].request.headers).toEqual({ "x-test": "value" });
 		expect(calls[0].request.reasoning).toBe("medium");
 		expect(calls[0].request.maxTokens).toBe(Math.min(reasoningModel.maxTokens, Math.floor(prep.settings.reserveTokens * 0.8)));
+		expect(calls[0].request.cacheRetention).toBe("none");
+		expect(calls[0].request.sessionId).toEqual(expect.any(String));
+		const firstSessionId = calls[0].request.sessionId;
+		await planDeletedLineRanges(
+			prep.region, prep.parameters, reasoningModel, { apiKey: "key" }, undefined, "off",
+			prep.settings.reserveTokens, 10, { streamFn: capture },
+		);
+		expect(calls[1].request.cacheRetention).toBe("none");
+		expect(calls[1].request.sessionId).not.toBe(firstSessionId);
 	});
 
 	it.each([
@@ -293,6 +302,31 @@ describe("single planned compaction rung", () => {
 		expect(faux.state.callCount).toBe(1);
 		expect(JSON.stringify(faux.state.contexts[0])).toContain(`<numbered-transcript>`);
 		expect(JSON.stringify(faux.state.contexts[0])).toContain(`${prep.region.lines.length}→`);
+	});
+
+	it("dispatches the planner with header-only bearer authentication", async () => {
+		const faux = createFauxStreamFn(["2,10\n"]);
+		let observedOptions: SimpleStreamOptions | undefined;
+		await runVerbatimCompaction(
+			preparation(),
+			model,
+			undefined,
+			{ Authorization: "Bearer gateway-token", "X-Custom": "preserved" },
+			undefined,
+			"off",
+			{
+				streamFn: (requestModel, context, options) => {
+					observedOptions = options;
+					return faux.streamFn(requestModel, context, options);
+				},
+			},
+		);
+
+		expect(observedOptions?.apiKey).toBeUndefined();
+		expect(observedOptions?.headers).toEqual({
+			Authorization: "Bearer gateway-token",
+			"X-Custom": "preserved",
+		});
 	});
 
 	it("accepts a valid undershooting result without top-up or another call", async () => {

@@ -1,4 +1,3 @@
-import { parseContextWindowValue } from "../../core/context-window.ts";
 import type { RpcCommand, RpcExtensionUIRequest, RpcResponse } from "./rpc-types.ts";
 
 export type RpcOutputRecord = RpcResponse | RpcExtensionUIRequest | object;
@@ -23,16 +22,3 @@ export function formatRpcErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-export function parseRpcContextWindow(value: number | string): number {
-	if (typeof value === "number") {
-		return value;
-	}
-	if (typeof value === "string") {
-		const parsed = parseContextWindowValue(value);
-		if (parsed.value !== undefined) {
-			return parsed.value;
-		}
-		throw new Error(parsed.error ?? "Invalid context window");
-	}
-	throw new Error("Context window must be a number of tokens or a compact value like 400k or 1m");
-}

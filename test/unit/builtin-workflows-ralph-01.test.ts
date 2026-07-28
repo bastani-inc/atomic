@@ -208,14 +208,10 @@ describe("ralph", () => {    let tempCwd: string | undefined;
         await mod.default.run({ ...ctx, cwd: requireRalphTempCwd() });
 
         const promptEngineerPrompt = ctx.calls.prompts["research-prompt-refinement-1"]?.[0] ?? "";
-        assert.equal(
-            promptEngineerPrompt.startsWith(
-                "/skill:prompt-engineer Transform the following user request into a codebase and online research question which can be thoroughly explored: Add a small feature",
-            ),
-            true,
-        );
+        assert.match(promptEngineerPrompt, /<instruction>\n\/skill:prompt-engineer /);
+        assert.equal(promptEngineerPrompt.trimEnd().endsWith("</instruction>"), true);
         const researchPrompt = ctx.calls.prompts["research-1"]?.[0] ?? "";
-        assert.equal(researchPrompt.startsWith("/skill:research-codebase "), true);
+        assert.match(researchPrompt, /<instruction>\n\/skill:research-codebase /); assert.equal(researchPrompt.trimEnd().endsWith("</instruction>"), true);
         assert.match(researchPrompt, /mock-task:research-prompt-refinement-1/);
         assert.equal(ctx.calls.task.includes("prompt-refinement"), false);
         assert.equal(ctx.calls.task.includes("planner-1"), false);
@@ -395,7 +391,7 @@ describe("ralph", () => {    let tempCwd: string | undefined;
         assert.doesNotMatch(orchestratorPrompt, /<pr_policy>/);
         assert.match(
             orchestratorPrompt,
-            /Keep delegated work focused on implementation, tests, docs, validation evidence, and implementation notes for the complete requested outcome\./,
+            /Delegate only work that is genuinely independent/,
         );
     });
 

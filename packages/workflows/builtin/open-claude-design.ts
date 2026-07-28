@@ -18,6 +18,7 @@
 
 import { Type } from "typebox";
 import { workflow } from "../src/authoring/workflow.js";
+import { withSteeringPropagationContext } from "./steering-context.js";
 import { runOpenClaudeDesignWorkflow } from "./open-claude-design-runner.js";
 import {
   DEFAULT_MAX_REFINEMENTS,
@@ -56,5 +57,5 @@ export default workflow({
     spec_file_url: Type.Optional(Type.String({ description: "file:// URL for the generated spec.html file." })),
     playwright_cli_status: Type.Optional(Type.String({ description: "Outcome of the initial deterministic step that ensures the playwright-cli skill's `playwright-cli` command is installed." })),
   },
-  run: async (ctx) => await runOpenClaudeDesignWorkflow(ctx),
+  run: async (ctx) => await runOpenClaudeDesignWorkflow(withSteeringPropagationContext(ctx)),
 });

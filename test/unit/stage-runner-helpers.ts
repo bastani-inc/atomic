@@ -132,21 +132,6 @@ export function makeMockSession(overrides: Partial<StageSessionRuntime> = {}): {
     return { session, state, emit };
 }
 
-export function copilotOpusInfo(contextWindowOptions: readonly number[] = [200_000, 936_000]): WorkflowModelInfo {
-    return {
-        provider: "github-copilot",
-        id: "claude-opus-4.8",
-        fullId: "github-copilot/claude-opus-4.8",
-        model: {
-            provider: "github-copilot",
-            id: "claude-opus-4.8",
-            contextWindow: 200_000,
-            defaultContextWindow: 200_000,
-            contextWindowOptions,
-        } as unknown as NonNullable<WorkflowModelInfo["model"]>,
-    };
-}
-
 export function flushMicrotasks(times = 8): Promise<void> {
     return new Promise<void>((resolve) => {
         let i = times;

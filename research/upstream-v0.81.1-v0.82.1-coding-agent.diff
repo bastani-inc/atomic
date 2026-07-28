@@ -1,0 +1,3606 @@
+diff --git a/packages/coding-agent/CHANGELOG.md b/packages/coding-agent/CHANGELOG.md
+index 9c7cba33..ba126725 100644
+--- a/packages/coding-agent/CHANGELOG.md
++++ b/packages/coding-agent/CHANGELOG.md
+@@ -1,5 +1,73 @@
+ # Changelog
+ 
++## [0.82.1] - 2026-07-25
++
++### New Features
++
++- **Claude Opus 5** — Available on Anthropic and Amazon Bedrock with adaptive thinking (including `xhigh`), inference profiles, and prompt caching. See [Providers](docs/providers.md#api-keys).
++- **Anthropic gateway bearer auth** — `ANTHROPIC_AUTH_TOKEN` authenticates against Anthropic-compatible gateways that require `Authorization: Bearer`, including compaction and branch summaries. See [Environment Variables or Auth File](docs/providers.md#environment-variables-or-auth-file).
++- **Faster, more resilient model catalogs** — pi.dev catalogs revalidate with `If-None-Match` so unchanged providers answer with an empty `304`, and llama.cpp models stay listed across restarts. See [llama.cpp](docs/llama-cpp.md).
++
++### Added
++
++- Exposed the `outputPad` setting to custom message renderers. See [Extensions](docs/extensions.md) ([#7045](https://github.com/earendil-works/pi/pull/7045) by [@xl0](https://github.com/xl0)).
++- Added inherited `ANTHROPIC_AUTH_TOKEN` bearer authentication for Anthropic-compatible gateways. See [Providers](docs/providers.md#environment-variables-or-auth-file) ([#5871](https://github.com/earendil-works/pi/issues/5871)).
++- Added inherited Claude Opus 5 support for Anthropic and Amazon Bedrock with adaptive thinking, inference profiles, prompt caching, and preserved AWS validation messages ([#7081](https://github.com/earendil-works/pi/pull/7081) by [@unexge](https://github.com/unexge), [#7083](https://github.com/earendil-works/pi/pull/7083) by [@davidbrai](https://github.com/davidbrai)).
++
++### Changed
++
++- Changed pi.dev model catalog refreshes to revalidate with `If-None-Match`, so unchanged provider catalogs answer with an empty `304` instead of a full download.
++- Changed inherited Radius OAuth device authorization, token exchange, and refresh requests to use the configured gateway directly.
++- Changed inherited model loading errors to append the underlying cause, so auth failures such as `OAuth refresh failed for openai-codex` report the provider response instead of a bare wrapper message.
++
++### Fixed
++
++- Fixed compaction and branch summaries for providers whose authentication resolves entirely to request headers ([#5871](https://github.com/earendil-works/pi/issues/5871))
++- Fixed unavailable scoped models being hidden from `/models`, allowing them to be removed without editing settings manually ([#6949](https://github.com/earendil-works/pi/issues/6949), [#7032](https://github.com/earendil-works/pi/pull/7032) by [@christianklotz](https://github.com/christianklotz)).
++- Fixed startup context file discovery to skip directories that match context file names such as `AGENTS.md`, which produced `EISDIR` warnings ([#7106](https://github.com/earendil-works/pi/pull/7106) by [@mrexodia](https://github.com/mrexodia)).
++- Fixed the llama.cpp extension to persist its model catalog, so llama.cpp models stay listed before the first successful refresh. See [llama.cpp](docs/llama-cpp.md) ([#7072](https://github.com/earendil-works/pi/pull/7072) by [@davidbrai](https://github.com/davidbrai)).
++
++## [0.82.0] - 2026-07-24
++
++### New Features
++
++- **Constrained tool sampling** — Tools can prefer or require strict JSON Schema sampling or use OpenAI Lark/regex grammars, with model capability metadata preventing unsupported requests. See [Constrained Sampling for Tools](../ai/README.md#constrained-sampling-for-tools).
++- **OpenRouter and Kimi Code sign-in** — Use `/login` to authorize OpenRouter or a Kimi Code subscription without manually configuring API keys. See [OpenRouter](docs/providers.md#openrouter).
++- **Session-aware, streaming bash integrations** — Bash tools receive current session/model metadata, while direct RPC bash commands stream correlated output. See [Bash Tool Session Environment](docs/environment-variables.md#bash-tool-session-environment) and [RPC bash events](docs/rpc.md#bash_execution_update).
++
++### Added
++
++- Added inherited `Tool.constrainedSampling` with strict JSON Schema (`prefer`/`require`) and OpenAI Lark/regex grammar variants across OpenAI, Anthropic, Amazon Bedrock, Google Gemini, and Mistral. See [Constrained Sampling for Tools](../ai/README.md#constrained-sampling-for-tools).
++- Added inherited `supportsGrammarTools` and `supportsStrictTools` compatibility flags, expanded `supportsStrictMode` coverage, and generated model capability metadata to gate constrained sampling.
++- Added inherited Kimi Code subscription OAuth login for the Kimi For Coding provider, including device authorization and automatic token refresh ([#6935](https://github.com/earendil-works/pi/pull/6935) by [@zaycruz](https://github.com/zaycruz)).
++- Added inherited OpenRouter OAuth PKCE login through `/login`, minting a user-controlled API key. See [OpenRouter](docs/providers.md#openrouter) ([#6927](https://github.com/earendil-works/pi/pull/6927) by [@rsaryev](https://github.com/rsaryev)).
++- Exposed `PI_SESSION_ID`, `PI_SESSION_FILE`, `PI_PROVIDER`, `PI_MODEL`, and `PI_REASONING_LEVEL` to commands run by built-in and factory-created bash tools. See [Bash Tool Session Environment](docs/environment-variables.md#bash-tool-session-environment).
++- Added streaming `bash_execution_update` events for direct RPC bash commands, correlated with request IDs. See [RPC bash events](docs/rpc.md#bash_execution_update) ([#6971](https://github.com/earendil-works/pi/pull/6971) by [@ananthakumaran](https://github.com/ananthakumaran)).
++
++### Changed
++
++- Changed inherited generated model catalogs to expose only provider-verified reasoning effort levels from models.dev ([#6928](https://github.com/earendil-works/pi/pull/6928) by [@davidbrai](https://github.com/davidbrai)).
++
++### Fixed
++
++- Fixed inherited DNS lookup failures such as `getaddrinfo`, `ENOTFOUND`, and `EAI_AGAIN` to trigger automatic assistant retries ([#6946](https://github.com/earendil-works/pi/pull/6946) by [@christianklotz](https://github.com/christianklotz)).
++- Fixed inherited OpenRouter Anthropic cache breakpoints to advance through tool results and enabled cache control for `~anthropic/*-latest` aliases ([#6941](https://github.com/earendil-works/pi/pull/6941) by [@mteam88](https://github.com/mteam88)).
++- Fixed inherited OpenAI Codex WebSocket sessions to retry once without a missing previous-response continuation after `previous_response_not_found` errors ([#6955](https://github.com/earendil-works/pi/pull/6955) by [@davidbrai](https://github.com/davidbrai)).
++- Fixed TUI debug and crash logs to respect custom agent directories instead of always writing under `~/.pi/agent` ([#6958](https://github.com/earendil-works/pi/pull/6958) by [@davidbrai](https://github.com/davidbrai)).
++- Fixed slow Ctrl+G external-editor startup when the system temporary directory contains many entries ([#6903](https://github.com/earendil-works/pi/pull/6903) by [@christianklotz](https://github.com/christianklotz)).
++- Fixed startup resource display to preserve relative paths for sibling npm extensions loaded by a package ([#6964](https://github.com/earendil-works/pi/pull/6964) by [@davidbrai](https://github.com/davidbrai)).
++- Fixed compaction and branch-summary requests to use fresh routing session IDs with prompt caching disabled where supported ([#6618](https://github.com/earendil-works/pi/pull/6618) by [@tmustier](https://github.com/tmustier)).
++- Fixed explicit self-updates when `PI_SKIP_VERSION_CHECK` is set ([#6977](https://github.com/earendil-works/pi/issues/6977)).
++- Fixed scoped model IDs containing brackets to resolve as literal exact matches before glob matching ([#6210](https://github.com/earendil-works/pi/issues/6210)).
++- Fixed inherited OpenAI and Anthropic provider retry waits to honor abort signals and configured delay limits ([#6980](https://github.com/earendil-works/pi/pull/6980) by [@petrroll](https://github.com/petrroll)).
++- Fixed fresh installs from preferring bundled model catalogs over newer remote catalogs because package file mtimes were newer ([#7016](https://github.com/earendil-works/pi/pull/7016) by [@davidbrai](https://github.com/davidbrai)).
++- Fixed inherited editor scroll indicators overflowing narrow terminals ([#7015](https://github.com/earendil-works/pi/pull/7015) by [@christianklotz](https://github.com/christianklotz)).
++- Fixed llama.cpp models to use the loaded context window as their output token limit instead of capping it at 16K ([#7034](https://github.com/earendil-works/pi/pull/7034) by [@christianklotz](https://github.com/christianklotz)).
++- Fixed release source archives to include the generated provider model data used to build standalone binaries.
++- Updated the packaged `protobufjs` dependency to 7.6.5 to address GHSA-j3f2-48v5-ccww ([#7005](https://github.com/earendil-works/pi/issues/7005)).
++- Fixed `/copy` on Wayland to fall back to X11 or OSC 52 when `wl-copy` fails ([#7009](https://github.com/earendil-works/pi/pull/7009) by [@rkfshakti](https://github.com/rkfshakti)).
++- Fixed `/model` to reload updated `models.json` configuration when opening the model picker ([#6999](https://github.com/earendil-works/pi/issues/6999)).
++
+ ## [0.81.1] - 2026-07-21
+ 
+ ### New Features
+diff --git a/packages/coding-agent/README.md b/packages/coding-agent/README.md
+index 2198d724..a6845476 100644
+--- a/packages/coding-agent/README.md
++++ b/packages/coding-agent/README.md
+@@ -662,6 +662,7 @@ pi --thinking high "Solve this complex problem"
+ 
+ | Variable | Description |
+ |----------|-------------|
++| `PI_CODING_AGENT` | Set to `true` by the CLI and RPC entry points so child processes can detect that they run inside Pi |
+ | `PI_CODING_AGENT_DIR` | Override config directory (default: `~/.pi/agent`) |
+ | `PI_CODING_AGENT_SESSION_DIR` | Override session storage directory (overridden by `--session-dir`) |
+ | `PI_PACKAGE_DIR` | Override package directory (useful for Nix/Guix where store paths tokenize poorly) |
+@@ -671,6 +672,18 @@ pi --thinking high "Solve this complex problem"
+ | `PI_CACHE_RETENTION` | Set to `long` for extended prompt cache (Anthropic: 1h, OpenAI: 24h) |
+ | `VISUAL`, `EDITOR` | Fallback external editor for Ctrl+G when `externalEditor` is unset; defaults to Notepad on Windows and `nano` elsewhere |
+ 
++Commands run by the LLM-callable bash tool also receive current session metadata:
++
++| Variable | Description |
++|----------|-------------|
++| `PI_SESSION_ID` | Current session ID |
++| `PI_SESSION_FILE` | Absolute session JSONL path; unset for ephemeral sessions |
++| `PI_PROVIDER` | Currently selected model provider |
++| `PI_MODEL` | Currently selected model ID |
++| `PI_REASONING_LEVEL` | Current effective reasoning level |
++
++These values are resolved when each command starts. See [Environment Variables](docs/environment-variables.md#bash-tool-session-environment) for semantics, examples, and custom-tool opt-out.
++
+ ---
+ 
+ ## Contributing & Development
+diff --git a/packages/coding-agent/docs/compaction.md b/packages/coding-agent/docs/compaction.md
+index d55c2136..b47a66a5 100644
+--- a/packages/coding-agent/docs/compaction.md
++++ b/packages/coding-agent/docs/compaction.md
+@@ -20,7 +20,7 @@ Pi has two summarization mechanisms:
+ | Compaction | Context exceeds threshold, or `/compact` | Summarize old messages to free up context |
+ | Branch summarization | `/tree` navigation | Preserve context when switching branches |
+ 
+-Both use the same structured summary format and track file operations cumulatively.
++Both use the same structured summary format and track file operations cumulatively. Compaction and branch-summary requests use fresh routing session IDs and, where supported by the provider, disable prompt-cache writes because these one-off prompts are unlikely to be reused.
+ 
+ ## Compaction
+ 
+diff --git a/packages/coding-agent/docs/custom-provider.md b/packages/coding-agent/docs/custom-provider.md
+index 5ddeab0e..83b9cff6 100644
+--- a/packages/coding-agent/docs/custom-provider.md
++++ b/packages/coding-agent/docs/custom-provider.md
+@@ -259,7 +259,7 @@ models: [{
+ ```
+ 
+ Use `openrouter` for OpenRouter-style `reasoning: { effort }` controls. Use `together` for Together-style `reasoning: { enabled }` controls; with `supportsReasoningEffort`, it also sends `reasoning_effort`. Use `qwen-chat-template` for local Qwen-compatible servers that read `chat_template_kwargs.enable_thinking` and need `preserve_thinking`.
+-Use `cacheControlFormat: "anthropic"` for OpenAI-compatible providers that expose Anthropic-style prompt caching via `cache_control` on the system prompt, last tool definition, and last user/assistant text content.
++Use `cacheControlFormat: "anthropic"` for OpenAI-compatible providers that expose Anthropic-style prompt caching via `cache_control` on the system prompt, last tool definition, and last user, assistant, or tool-result text content.
+ 
+ For Anthropic-compatible providers using `api: "anthropic-messages"`, set `compat.forceAdaptiveThinking: true` on models or providers whose upstream model requires adaptive thinking (`thinking.type: "adaptive"` plus `output_config.effort`). Built-in adaptive Claude models set this automatically. Set `compat.allowEmptySignature: true` only for providers that emit empty thinking signatures and expect `signature: ""` on replay.
+ 
+@@ -737,6 +737,8 @@ interface ProviderModelConfig {
+     supportsDeveloperRole?: boolean;
+     supportsReasoningEffort?: boolean;
+     supportsUsageInStreaming?: boolean;
++    supportsStrictMode?: boolean;
++    supportsOpenAIGrammarTools?: boolean; // openai-completions/openai-responses; false falls back to normal function tools
+     maxTokensField?: "max_completion_tokens" | "max_tokens";
+     requiresToolResultName?: boolean;
+     requiresAssistantAfterToolResult?: boolean;
+@@ -755,9 +757,10 @@ interface ProviderModelConfig {
+     supportsCacheControlOnTools?: boolean;
+     forceAdaptiveThinking?: boolean;
+     allowEmptySignature?: boolean;
++    supportsStrictTools?: boolean;
+   };
+ }
+ ```
+ 
+ `openrouter` sends `reasoning: { effort }`. `deepseek` sends `thinking: { type: "enabled" | "disabled" }` and `reasoning_effort` when enabled. `together` sends `reasoning: { enabled }` and also `reasoning_effort` when `supportsReasoningEffort` is enabled. `qwen` is for DashScope-style top-level `enable_thinking`. Use `qwen-chat-template` for local Qwen-compatible servers that read `chat_template_kwargs.enable_thinking` and need `preserve_thinking`. Use `chat-template` for configurable `chat_template_kwargs`, for example DeepSeek V3.x behind vLLM with `chatTemplateKwargs: { "thinking": { "$var": "thinking.enabled" } }`.
+-`cacheControlFormat: "anthropic"` applies Anthropic-style `cache_control` markers to the system prompt, last tool definition, and last user/assistant text content.
++`cacheControlFormat: "anthropic"` applies Anthropic-style `cache_control` markers to the system prompt, last tool definition, and last user, assistant, or tool-result text content.
+diff --git a/packages/coding-agent/docs/environment-variables.md b/packages/coding-agent/docs/environment-variables.md
+new file mode 100644
+index 00000000..072744ca
+--- /dev/null
++++ b/packages/coding-agent/docs/environment-variables.md
+@@ -0,0 +1,88 @@
++# Environment Variables
++
++Pi uses environment variables in three ways:
++
++- Variables such as `PI_OFFLINE` configure the Pi process.
++- Pi sets `PI_CODING_AGENT` so child processes can detect that they run inside Pi.
++- Commands run by the LLM-callable bash tool receive `PI_*` variables describing the current session.
++
++Provider API-key variables are documented separately in [Providers](providers.md#environment-variables-or-auth-file).
++
++## Process Marker
++
++The CLI and RPC entry points set `PI_CODING_AGENT=true`. Child processes inherit it and can use it to detect that they run inside Pi. It is not session-specific and is not set automatically when Pi is embedded through the SDK.
++
++## Bash Tool Session Environment
++
++Commands run by the bash tool receive the current Pi session state:
++
++| Variable | Description |
++|----------|-------------|
++| `PI_SESSION_ID` | Current session ID |
++| `PI_SESSION_FILE` | Absolute path to the current session JSONL file; unset for ephemeral sessions |
++| `PI_PROVIDER` | Currently selected model provider |
++| `PI_MODEL` | Currently selected model ID |
++| `PI_REASONING_LEVEL` | Current effective reasoning level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` |
++
++The values are resolved when each command starts. Switching models or changing the reasoning level therefore affects the next bash command without restarting Pi. `PI_PROVIDER` and `PI_MODEL` identify the selected Pi model, not a different upstream model that a router may choose internally.
++
++When asked which model or provider is running, inspect these variables instead of inferring the answer from the system prompt:
++
++```bash
++printf '%s/%s\n' "$PI_PROVIDER" "$PI_MODEL"
++printf 'reasoning=%s session=%s\n' "$PI_REASONING_LEVEL" "$PI_SESSION_ID"
++```
++
++The session file can be inspected directly when the session is persistent:
++
++```bash
++if [ -n "$PI_SESSION_FILE" ]; then
++  tail -n 1 "$PI_SESSION_FILE"
++fi
++```
++
++These variables are injected into the LLM-callable bash tool. They are not injected into user-entered `!` or `!!` commands.
++
++### Custom Bash Tools
++
++Bash tools created with `createBashTool()` expose the session environment by default when registered with Pi. Injection happens before `spawnHook`, so a hook receives the variables in `ctx.env`:
++
++```typescript
++const bashTool = createBashTool(cwd, {
++  spawnHook: (ctx) => ({
++    ...ctx,
++    env: { ...ctx.env, CI: "1" },
++  }),
++});
++```
++
++Disable session metadata independently of the spawn hook:
++
++```typescript
++const bashTool = createBashTool(cwd, {
++  exposeSessionEnvironment: false,
++  spawnHook: (ctx) => ctx,
++});
++```
++
++When disabled, Pi removes inherited values for these variables so nested Pi processes do not expose stale parent-session metadata.
++
++## Pi Process Configuration
++
++These variables are read by Pi itself:
++
++| Variable | Description |
++|----------|-------------|
++| `PI_CODING_AGENT_DIR` | Override the config directory; default is `~/.pi/agent` |
++| `PI_CODING_AGENT_SESSION_DIR` | Override session storage; overridden by `--session-dir` |
++| `PI_PACKAGE_DIR` | Override the package directory, useful for Nix/Guix store paths |
++| `PI_OFFLINE` | Disable startup network operations, including update checks, package updates, and install/update telemetry |
++| `PI_SKIP_VERSION_CHECK` | Disable the `pi.dev` latest-version request |
++| `PI_TELEMETRY` | Override install/update telemetry and provider attribution headers: `1`/`true`/`yes` or `0`/`false`/`no` |
++| `PI_CACHE_RETENTION` | Set to `long` for extended provider prompt caching where supported |
++| `PI_SHARE_VIEWER_URL` | Override the base URL used by `/share` |
++| `PI_HARDWARE_CURSOR` | Set to `1` to show the hardware cursor; see [Terminal setup](terminal-setup.md) |
++| `VISUAL`, `EDITOR` | External editor fallback when `externalEditor` is unset |
++| `HTTP_PROXY`, `HTTPS_PROXY` | Proxy outbound HTTP requests |
++
++Provider credentials such as `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and cloud-provider configuration are listed in [Providers](providers.md#environment-variables-or-auth-file).
+diff --git a/packages/coding-agent/docs/extensions.md b/packages/coding-agent/docs/extensions.md
+index 6aec1196..aeb5e866 100644
+--- a/packages/coding-agent/docs/extensions.md
++++ b/packages/coding-agent/docs/extensions.md
+@@ -982,9 +982,9 @@ ctx.sessionManager.buildContextEntries()    // Active branch entries with compac
+ ctx.sessionManager.getLeafId()              // Current leaf entry ID
+ ```
+ 
+-### ctx.modelRegistry / ctx.model
++### ctx.modelRegistry / ctx.model / ctx.thinkingLevel
+ 
+-Access to models, providers, and resolved authentication. `ctx.modelRegistry.getProvider(id)` returns the effective pi-ai provider, while `getProviderAuth(id)` resolves its current API key, headers, base URL, and provider-scoped environment without requiring a loaded model. `ctx.model` is the active model.
++Access to models, providers, and resolved authentication. `ctx.modelRegistry.getProvider(id)` returns the effective pi-ai provider, while `getProviderAuth(id)` resolves its current API key, headers, base URL, and provider-scoped environment without requiring a loaded model. `ctx.model` is the active model, and `ctx.thinkingLevel` is its current effective thinking level.
+ 
+ ### ctx.signal
+ 
+@@ -2096,7 +2096,15 @@ const bashTool = createBashTool(cwd, {
+ });
+ ```
+ 
+-See [examples/extensions/ssh.ts](../examples/extensions/ssh.ts) for a complete SSH example with `--ssh` flag.
++`createBashTool()` exposes the current session to commands through `PI_SESSION_ID`, `PI_SESSION_FILE`, `PI_PROVIDER`, `PI_MODEL`, and `PI_REASONING_LEVEL`. Injection happens before `spawnHook`, so hooks receive these values in `env` and preserve them when they spread the existing environment as above. Set `exposeSessionEnvironment: false` to disable them:
++
++```typescript
++const bashTool = createBashTool(cwd, {
++  exposeSessionEnvironment: false,
++});
++```
++
++See [Bash tool session environment](environment-variables.md#bash-tool-session-environment) for variable semantics. See [examples/extensions/ssh.ts](../examples/extensions/ssh.ts) for a complete SSH example with `--ssh` flag.
+ 
+ ### Output Truncation
+ 
+@@ -2783,7 +2791,7 @@ Register a custom renderer for messages with your `customType`. Use message rend
+ import { Text } from "@earendil-works/pi-tui";
+ 
+ pi.registerMessageRenderer("my-extension", (message, options, theme) => {
+-  const { expanded } = options;
++  const { expanded, outputPad } = options;
+   let text = theme.fg("accent", `[${message.customType}] `);
+   text += message.content;
+ 
+@@ -2791,7 +2799,7 @@ pi.registerMessageRenderer("my-extension", (message, options, theme) => {
+     text += "\n" + theme.fg("dim", JSON.stringify(message.details, null, 2));
+   }
+ 
+-  return new Text(text, 0, 0);
++  return new Text(text, outputPad, 0);
+ });
+ ```
+ 
+diff --git a/packages/coding-agent/docs/index.md b/packages/coding-agent/docs/index.md
+index 6b1e419e..c09cfc9a 100644
+--- a/packages/coding-agent/docs/index.md
++++ b/packages/coding-agent/docs/index.md
+@@ -68,6 +68,7 @@ For the full first-run flow, see [Quickstart](quickstart.md).
+ 
+ ## Reference
+ 
++- [Environment variables](environment-variables.md) - Pi process configuration and session metadata available to bash tools.
+ - [Session format](session-format.md) - JSONL session file format, entry types, and SessionManager API.
+ 
+ ## Platform setup
+diff --git a/packages/coding-agent/docs/models.md b/packages/coding-agent/docs/models.md
+index 50efc369..f2493b2d 100644
+--- a/packages/coding-agent/docs/models.md
++++ b/packages/coding-agent/docs/models.md
+@@ -375,6 +375,8 @@ Some Anthropic models require adaptive thinking (`thinking.type: "adaptive"` plu
+ 
+ Some Anthropic-compatible providers emit thinking blocks with empty signatures and still expect them on replay. Set `allowEmptySignature` to `true` only for those providers; real Anthropic rejects empty thinking signatures.
+ 
++Built-in Anthropic models enable `supportsStrictTools` in their model metadata. Custom Anthropic-compatible models must set it to `true` when their endpoint accepts strict JSON-schema tool definitions.
++
+ ```json
+ {
+   "providers": {
+@@ -408,6 +410,7 @@ Some Anthropic-compatible providers emit thinking blocks with empty signatures a
+ | `supportsCacheControlOnTools` | Whether the provider accepts Anthropic-style `cache_control` markers on tool definitions. Default: `true`. |
+ | `forceAdaptiveThinking` | Whether to send adaptive thinking (`thinking.type: "adaptive"` plus `output_config.effort`) for this model. Built-in adaptive models set this automatically. Default: `false`. |
+ | `allowEmptySignature` | Whether to replay empty thinking signatures as `signature: ""` instead of converting thinking to text. Default: `false`. |
++| `supportsStrictTools` | Whether the provider accepts strict JSON-schema tool definitions. Default: `false`; built-in Anthropic models enable it in generated metadata. |
+ 
+ ## OpenAI Compatibility
+ 
+@@ -445,10 +448,11 @@ For providers with partial OpenAI compatibility, use the `compat` field.
+ | `requiresReasoningContentOnAssistantMessages` | Include empty `reasoning_content` on all replayed assistant messages when reasoning is enabled |
+ | `thinkingFormat` | Use `reasoning_effort`, `openrouter`, `deepseek`, `together`, `zai`, `qwen`, `chat-template`, or `qwen-chat-template` thinking parameters |
+ | `chatTemplateKwargs` | `chat_template_kwargs` values for `thinkingFormat: "chat-template"`; use `{ "$var": "thinking.enabled" }` or `{ "$var": "thinking.effort" }` for pi-controlled thinking values |
+-| `cacheControlFormat` | Use Anthropic-style `cache_control` markers on the system prompt, last tool definition, and last user/assistant text content. Currently only `anthropic` is supported. |
++| `cacheControlFormat` | Use Anthropic-style `cache_control` markers on the system prompt, last tool definition, and last user, assistant, or tool-result text content. Currently only `anthropic` is supported. |
+ | `sendSessionAffinityHeaders` | For `openai-completions`, send session-affinity headers from the session id when caching is enabled. Default: `false`. |
+ | `sessionAffinityFormat` | For `openai-completions` and `openai-responses`, the session-affinity header format: `openai` sends `session_id`/`x-client-request-id` (completions also `x-session-affinity`), `openai-nosession` omits the underscore-containing `session_id` header, `openrouter` sends `x-session-id`. Does not affect the `prompt_cache_key` body param. Default: auto-detected. |
+-| `supportsStrictMode` | Include the `strict` field in tool definitions |
++| `supportsStrictMode` | Whether the provider accepts strict JSON-schema function tool definitions. Defaults depend on the API; built-in OpenAI models carry explicit capability metadata. |
++| `supportsOpenAIGrammarTools` | Whether OpenAI-compatible APIs emit custom Lark/regex grammar tools. When `false`, grammar-constrained tools fall back to normal function tools. Default: `false`; the built-in model catalog enables it for GPT-5+ models on OpenAI, OpenAI Codex, Azure OpenAI, GitHub Copilot, opencode, and Cloudflare AI Gateway. |
+ | `deferredToolsMode` | Use provider-specific deferred tool serialization. Currently only `"kimi"` is supported for Kimi's OpenAI-compatible Chat Completions format. |
+ | `supportsLongCacheRetention` | Whether the provider accepts long cache retention when cache retention is `long`: `prompt_cache_retention: "24h"` for OpenAI prompt caching, or `cache_control.ttl: "1h"` when `cacheControlFormat` is `anthropic`. Default: `true`. |
+ | `openRouterRouting` | OpenRouter provider routing preferences. This object is sent as-is in the `provider` field of the [OpenRouter API request](https://openrouter.ai/docs/guides/routing/provider-selection). |
+diff --git a/packages/coding-agent/docs/providers.md b/packages/coding-agent/docs/providers.md
+index e8758a3d..905bfcc4 100644
+--- a/packages/coding-agent/docs/providers.md
++++ b/packages/coding-agent/docs/providers.md
+@@ -20,9 +20,10 @@ Use `/login` in interactive mode, then select a provider:
+ - Claude Pro/Max
+ - GitHub Copilot
+ - xAI (Grok/X subscription)
++- OpenRouter (OAuth-minted API key billed from OpenRouter credits)
+ - Radius
+ 
+-Use `/logout` to clear credentials. Tokens are stored in `~/.pi/agent/auth.json` and auto-refresh when expired.
++Use `/logout` to clear credentials. Tokens are stored in `~/.pi/agent/auth.json` and auto-refresh when expired. OpenRouter instead mints a user-controlled API key that does not expire automatically.
+ 
+ ### OpenAI Codex
+ 
+@@ -43,6 +44,12 @@ Anthropic subscription auth is active for Claude Pro/Max accounts. Third-party h
+ - Run `/login xai`, then select **Use a subscription**
+ - `XAI_API_KEY` remains available through **Use an API key**
+ 
++### OpenRouter
++
++- Run `/login openrouter`, then select **Sign in with OpenRouter** to open the OpenRouter PKCE authorization flow
++- The authorization creates a user-controlled OpenRouter API key billed from your OpenRouter credits
++- `OPENROUTER_API_KEY` remains available through **Use an API key**
++
+ ### Radius
+ 
+ Radius is a dynamic `pi-messages` gateway. `/login radius` stores OAuth tokens in `auth.json`; the gateway catalog is refreshed independently and cached in `models-store.json`. Custom Radius gateways can be declared in `models.json` with `"oauth": "radius"` and a gateway `baseUrl`.
+diff --git a/packages/coding-agent/docs/rpc.md b/packages/coding-agent/docs/rpc.md
+index 7e86feca..12f5b02a 100644
+--- a/packages/coding-agent/docs/rpc.md
++++ b/packages/coding-agent/docs/rpc.md
+@@ -23,7 +23,7 @@ Common options:
+ - **Responses**: JSON objects with `type: "response"` indicating command success/failure
+ - **Events**: Agent events streamed to stdout as JSON lines
+ 
+-All commands support an optional `id` field for request/response correlation. If provided, the corresponding response will include the same `id`.
++All commands support an optional `id` field for request/response correlation. If provided, the corresponding response will include the same `id`. `bash_execution_update` events also include the `id` of their originating `bash` command.
+ 
+ ### Framing
+ 
+@@ -455,15 +455,18 @@ Response:
+ 
+ #### bash
+ 
+-Execute a shell command and add output to conversation context.
++Execute a shell command and add output to conversation context. Output streams as `bash_execution_update` events while the command runs; the response contains the final result.
+ 
+ ```json
+-{"type": "bash", "command": "ls -la"}
++{"id": "req-1", "type": "bash", "command": "ls -la"}
+ ```
+ 
++Include an `id` to associate streamed `bash_execution_update` events with this command.
++
+ Response:
+ ```json
+ {
++  "id": "req-1",
+   "type": "response",
+   "command": "bash",
+   "success": true,
+@@ -494,7 +497,7 @@ If output was truncated, includes `fullOutputPath`:
+ 
+ **How bash results reach the LLM:**
+ 
+-The `bash` command executes immediately and returns a `BashResult`. Internally, a `BashExecutionMessage` is created and stored in the agent's message state. This message does NOT emit an event.
++The `bash` command executes immediately and returns a `BashResult`. Internally, a `BashExecutionMessage` is created and stored in the agent's message state.
+ 
+ When the next `prompt` command is sent, all messages (including `BashExecutionMessage`) are transformed before being sent to the LLM. The `BashExecutionMessage` is converted to a `UserMessage` with this format:
+ 
+@@ -509,7 +512,6 @@ drwxr-xr-x ...
+ This means:
+ 1. Bash output is included in the LLM context on the **next prompt**, not immediately
+ 2. Multiple bash commands can be executed before a prompt; all outputs will be included
+-3. No event is emitted for the `BashExecutionMessage` itself
+ 
+ #### abort_bash
+ 
+@@ -829,7 +831,7 @@ Each command has:
+ 
+ ## Events
+ 
+-Events are streamed to stdout as JSON lines during agent operation. Events do NOT include an `id` field (only responses do).
++Events are streamed to stdout as JSON lines during agent operation. Events do not generally include an `id` field; `bash_execution_update` includes the `id` of its originating `bash` command when one was provided.
+ 
+ ### Event Types
+ 
+@@ -843,6 +845,7 @@ Events are streamed to stdout as JSON lines during agent operation. Events do NO
+ | `message_start` | Message begins |
+ | `message_update` | Streaming update (text/thinking/toolcall deltas) |
+ | `message_end` | Message completes |
++| `bash_execution_update` | Direct RPC bash command output chunk |
+ | `tool_execution_start` | Tool begins execution |
+ | `tool_execution_update` | Tool execution progress (streaming output) |
+ | `tool_execution_end` | Tool completes |
+@@ -951,6 +954,20 @@ Example streaming a text response:
+ {"type":"message_update","message":{...},"assistantMessageEvent":{"type":"text_end","contentIndex":0,"content":"Hello world","partial":{...}}}
+ ```
+ 
++### bash_execution_update
++
++Emitted once for each output chunk from a direct `bash` command. `id` matches the command's `id`, allowing clients to associate output with the correct command.
++
++Events stream all output while the command runs, even if the final `bash` response's `output` is truncated.
++
++```json
++{
++  "type": "bash_execution_update",
++  "id": "req-1",
++  "delta": "total 48\n"
++}
++```
++
+ ### tool_execution_start / tool_execution_update / tool_execution_end
+ 
+ Emitted when a tool begins, streams progress, and completes execution.
+diff --git a/packages/coding-agent/docs/settings.md b/packages/coding-agent/docs/settings.md
+index 72337631..c8fc3713 100644
+--- a/packages/coding-agent/docs/settings.md
++++ b/packages/coding-agent/docs/settings.md
+@@ -142,7 +142,7 @@ Set `PI_SKIP_VERSION_CHECK=1` to disable the Pi version update check. Use `--off
+ | `retry.provider.maxRetries` | number | `0` | Provider/SDK retry attempts |
+ | `retry.provider.maxRetryDelayMs` | number | `60000` | Max server-requested delay before failing (60s) |
+ 
+-When a provider requests a retry delay longer than `retry.provider.maxRetryDelayMs` (e.g., Google's "quota will reset after 5h"), the request fails immediately with an informative error instead of waiting silently. Set to `0` to disable the cap.
++When a provider requests a retry delay longer than `retry.provider.maxRetryDelayMs`, the request fails immediately with an informative error instead of waiting silently. Set it to `0` to disable the limit.
+ 
+ Keep `retry.provider.maxRetries` at `0` unless provider-level retries are explicitly needed. Setting it above `0` can make SDK/provider retries handle out-of-usage-limit errors before Pi sees them, which may block the agent until the provider quota resets in some circumstances.
+ 
+diff --git a/packages/coding-agent/docs/usage.md b/packages/coding-agent/docs/usage.md
+index c9df34ef..8c0aa565 100644
+--- a/packages/coding-agent/docs/usage.md
++++ b/packages/coding-agent/docs/usage.md
+@@ -289,19 +289,6 @@ pi --tools read,grep,find,ls -p "Review the code"
+ pi --exclude-tools ask_question
+ ```
+ 
+-### Environment Variables
+-
+-| Variable | Description |
+-|----------|-------------|
+-| `PI_CODING_AGENT_DIR` | Override config directory; default is `~/.pi/agent` |
+-| `PI_CODING_AGENT_SESSION_DIR` | Override session storage directory; overridden by `--session-dir` |
+-| `PI_PACKAGE_DIR` | Override package directory, useful for Nix/Guix store paths |
+-| `PI_OFFLINE` | Disable startup network operations, including update checks, package update checks, and install/update telemetry |
+-| `PI_SKIP_VERSION_CHECK` | Skip the Pi version update check at startup. This prevents the `pi.dev` latest-version request |
+-| `PI_TELEMETRY` | Override install/update telemetry and provider attribution headers: `1`/`true`/`yes` or `0`/`false`/`no`. This does not disable update checks |
+-| `PI_CACHE_RETENTION` | Set to `long` for extended prompt cache where supported |
+-| `VISUAL`, `EDITOR` | Fallback external editor for Ctrl+G when `externalEditor` is unset; defaults to Notepad on Windows and `nano` elsewhere |
+-
+ ## Design Principles
+ 
+ Pi keeps the core small and pushes workflow-specific behavior into extensions, skills, prompt templates, and packages.
+diff --git a/packages/coding-agent/examples/extensions/custom-compaction.ts b/packages/coding-agent/examples/extensions/custom-compaction.ts
+index e37ce976..e5ec4085 100644
+--- a/packages/coding-agent/examples/extensions/custom-compaction.ts
++++ b/packages/coding-agent/examples/extensions/custom-compaction.ts
+@@ -13,6 +13,7 @@
+  *   pi --extension examples/extensions/custom-compaction.ts
+  */
+ 
++import { uuidv7 } from "@earendil-works/pi-ai";
+ import { complete } from "@earendil-works/pi-ai/compat";
+ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+ import { convertToLlm, serializeConversation } from "@earendil-works/pi-coding-agent";
+@@ -96,6 +97,8 @@ ${conversationText}
+ 					env: auth.env,
+ 					maxTokens: 8192,
+ 					signal,
++					cacheRetention: "none",
++					sessionId: uuidv7(),
+ 				},
+ 			);
+ 
+diff --git a/packages/coding-agent/examples/extensions/custom-provider-anthropic/package-lock.json b/packages/coding-agent/examples/extensions/custom-provider-anthropic/package-lock.json
+index d9fb23b9..a57da499 100644
+--- a/packages/coding-agent/examples/extensions/custom-provider-anthropic/package-lock.json
++++ b/packages/coding-agent/examples/extensions/custom-provider-anthropic/package-lock.json
+@@ -1,12 +1,12 @@
+ {
+   "name": "pi-extension-custom-provider",
+-  "version": "0.81.1",
++  "version": "0.82.1",
+   "lockfileVersion": 3,
+   "requires": true,
+   "packages": {
+     "": {
+       "name": "pi-extension-custom-provider",
+-      "version": "0.81.1",
++      "version": "0.82.1",
+       "dependencies": {
+         "@anthropic-ai/sdk": "^0.52.0"
+       }
+diff --git a/packages/coding-agent/examples/extensions/custom-provider-anthropic/package.json b/packages/coding-agent/examples/extensions/custom-provider-anthropic/package.json
+index ab6a9148..8fc64cd8 100644
+--- a/packages/coding-agent/examples/extensions/custom-provider-anthropic/package.json
++++ b/packages/coding-agent/examples/extensions/custom-provider-anthropic/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "pi-extension-custom-provider-anthropic",
+   "private": true,
+-  "version": "0.81.1",
++  "version": "0.82.1",
+   "type": "module",
+   "scripts": {
+     "clean": "echo 'nothing to clean'",
+diff --git a/packages/coding-agent/examples/extensions/custom-provider-gitlab-duo/package.json b/packages/coding-agent/examples/extensions/custom-provider-gitlab-duo/package.json
+index eaca23dc..951aa10d 100644
+--- a/packages/coding-agent/examples/extensions/custom-provider-gitlab-duo/package.json
++++ b/packages/coding-agent/examples/extensions/custom-provider-gitlab-duo/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "pi-extension-custom-provider-gitlab-duo",
+   "private": true,
+-  "version": "0.81.1",
++  "version": "0.82.1",
+   "type": "module",
+   "scripts": {
+     "clean": "echo 'nothing to clean'",
+diff --git a/packages/coding-agent/examples/extensions/gondolin/package-lock.json b/packages/coding-agent/examples/extensions/gondolin/package-lock.json
+index 97317c7a..70697cd2 100644
+--- a/packages/coding-agent/examples/extensions/gondolin/package-lock.json
++++ b/packages/coding-agent/examples/extensions/gondolin/package-lock.json
+@@ -1,12 +1,12 @@
+ {
+ 	"name": "pi-extension-gondolin",
+-	"version": "0.81.1",
++	"version": "0.82.1",
+ 	"lockfileVersion": 3,
+ 	"requires": true,
+ 	"packages": {
+ 		"": {
+ 			"name": "pi-extension-gondolin",
+-			"version": "0.81.1",
++			"version": "0.82.1",
+ 			"dependencies": {
+ 				"@earendil-works/gondolin": "0.12.0"
+ 			}
+diff --git a/packages/coding-agent/examples/extensions/gondolin/package.json b/packages/coding-agent/examples/extensions/gondolin/package.json
+index 7259f4d2..7d0bb754 100644
+--- a/packages/coding-agent/examples/extensions/gondolin/package.json
++++ b/packages/coding-agent/examples/extensions/gondolin/package.json
+@@ -1,7 +1,7 @@
+ {
+ 	"name": "pi-extension-gondolin",
+ 	"private": true,
+-	"version": "0.81.1",
++	"version": "0.82.1",
+ 	"type": "module",
+ 	"scripts": {
+ 		"clean": "echo 'nothing to clean'",
+diff --git a/packages/coding-agent/examples/extensions/handoff.ts b/packages/coding-agent/examples/extensions/handoff.ts
+index e61e6d00..f9d89672 100644
+--- a/packages/coding-agent/examples/extensions/handoff.ts
++++ b/packages/coding-agent/examples/extensions/handoff.ts
+@@ -13,6 +13,7 @@
+  */
+ 
+ import type { AgentMessage } from "@earendil-works/pi-agent-core";
++import { uuidv7 } from "@earendil-works/pi-ai";
+ import { complete, type Message } from "@earendil-works/pi-ai/compat";
+ import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
+ import { BorderedLoader, convertToLlm, serializeConversation } from "@earendil-works/pi-coding-agent";
+@@ -136,7 +137,14 @@ export default function (pi: ExtensionAPI) {
+ 					const response = await complete(
+ 						ctx.model!,
+ 						{ systemPrompt: SYSTEM_PROMPT, messages: [userMessage] },
+-						{ apiKey: auth.apiKey, headers: auth.headers, env: auth.env, signal: loader.signal },
++						{
++							apiKey: auth.apiKey,
++							headers: auth.headers,
++							env: auth.env,
++							signal: loader.signal,
++							cacheRetention: "none",
++							sessionId: uuidv7(),
++						},
+ 					);
+ 
+ 					if (response.stopReason === "aborted") {
+diff --git a/packages/coding-agent/examples/extensions/message-renderer.ts b/packages/coding-agent/examples/extensions/message-renderer.ts
+index 9183d1ec..953941ee 100644
+--- a/packages/coding-agent/examples/extensions/message-renderer.ts
++++ b/packages/coding-agent/examples/extensions/message-renderer.ts
+@@ -12,7 +12,7 @@ import { Box, Text } from "@earendil-works/pi-tui";
+ 
+ export default function (pi: ExtensionAPI) {
+ 	// Register custom renderer for "status-update" messages
+-	pi.registerMessageRenderer("status-update", (message, { expanded }, theme) => {
++	pi.registerMessageRenderer("status-update", (message, { expanded, outputPad }, theme) => {
+ 		const details = message.details as { level: string; timestamp: number } | undefined;
+ 		const level = details?.level ?? "info";
+ 
+@@ -29,7 +29,7 @@ export default function (pi: ExtensionAPI) {
+ 		}
+ 
+ 		// Use Box with customMessageBg for consistent styling
+-		const box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
++		const box = new Box(outputPad, 1, (t) => theme.bg("customMessageBg", t));
+ 		box.addChild(new Text(text, 0, 0));
+ 		return box;
+ 	});
+diff --git a/packages/coding-agent/examples/extensions/sandbox/package-lock.json b/packages/coding-agent/examples/extensions/sandbox/package-lock.json
+index 8f1c2a26..e34d4139 100644
+--- a/packages/coding-agent/examples/extensions/sandbox/package-lock.json
++++ b/packages/coding-agent/examples/extensions/sandbox/package-lock.json
+@@ -1,12 +1,12 @@
+ {
+ 	"name": "pi-extension-sandbox",
+-	"version": "1.11.1",
++	"version": "1.12.1",
+ 	"lockfileVersion": 3,
+ 	"requires": true,
+ 	"packages": {
+ 		"": {
+ 			"name": "pi-extension-sandbox",
+-			"version": "1.11.1",
++			"version": "1.12.1",
+ 			"dependencies": {
+ 				"@anthropic-ai/sandbox-runtime": "^0.0.26"
+ 			}
+diff --git a/packages/coding-agent/examples/extensions/sandbox/package.json b/packages/coding-agent/examples/extensions/sandbox/package.json
+index 3e364467..59704fa1 100644
+--- a/packages/coding-agent/examples/extensions/sandbox/package.json
++++ b/packages/coding-agent/examples/extensions/sandbox/package.json
+@@ -1,7 +1,7 @@
+ {
+ 	"name": "pi-extension-sandbox",
+ 	"private": true,
+-	"version": "1.11.1",
++	"version": "1.12.1",
+ 	"type": "module",
+ 	"scripts": {
+ 		"clean": "echo 'nothing to clean'",
+diff --git a/packages/coding-agent/examples/extensions/summarize.ts b/packages/coding-agent/examples/extensions/summarize.ts
+index d44dd98b..282ea0fb 100644
+--- a/packages/coding-agent/examples/extensions/summarize.ts
++++ b/packages/coding-agent/examples/extensions/summarize.ts
+@@ -1,3 +1,4 @@
++import { uuidv7 } from "@earendil-works/pi-ai";
+ import { complete, getModel } from "@earendil-works/pi-ai/compat";
+ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+ import { DynamicBorder, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
+@@ -193,6 +194,8 @@ export default function (pi: ExtensionAPI) {
+ 					headers: auth.headers,
+ 					env: auth.env,
+ 					reasoningEffort: "high",
++					cacheRetention: "none",
++					sessionId: uuidv7(),
+ 				},
+ 			);
+ 
+diff --git a/packages/coding-agent/examples/extensions/with-deps/package-lock.json b/packages/coding-agent/examples/extensions/with-deps/package-lock.json
+index 2f57bcf8..d817c1be 100644
+--- a/packages/coding-agent/examples/extensions/with-deps/package-lock.json
++++ b/packages/coding-agent/examples/extensions/with-deps/package-lock.json
+@@ -1,12 +1,12 @@
+ {
+   "name": "pi-extension-with-deps",
+-  "version": "0.81.1",
++  "version": "0.82.1",
+   "lockfileVersion": 3,
+   "requires": true,
+   "packages": {
+     "": {
+       "name": "pi-extension-with-deps",
+-      "version": "0.81.1",
++      "version": "0.82.1",
+       "dependencies": {
+         "ms": "^2.1.3"
+       },
+diff --git a/packages/coding-agent/examples/extensions/with-deps/package.json b/packages/coding-agent/examples/extensions/with-deps/package.json
+index 9a47b58c..9d72c649 100644
+--- a/packages/coding-agent/examples/extensions/with-deps/package.json
++++ b/packages/coding-agent/examples/extensions/with-deps/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "pi-extension-with-deps",
+   "private": true,
+-  "version": "0.81.1",
++  "version": "0.82.1",
+   "type": "module",
+   "scripts": {
+     "clean": "echo 'nothing to clean'",
+diff --git a/packages/coding-agent/install-lock/package-lock.json b/packages/coding-agent/install-lock/package-lock.json
+index fab657c5..bb806605 100644
+--- a/packages/coding-agent/install-lock/package-lock.json
++++ b/packages/coding-agent/install-lock/package-lock.json
+@@ -1,14 +1,14 @@
+ {
+ 	"name": "@earendil-works/pi-coding-agent-install",
+-	"version": "0.81.1",
++	"version": "0.82.1",
+ 	"lockfileVersion": 3,
+ 	"requires": true,
+ 	"packages": {
+ 		"": {
+ 			"name": "@earendil-works/pi-coding-agent-install",
+-			"version": "0.81.1",
++			"version": "0.82.1",
+ 			"dependencies": {
+-				"@earendil-works/pi-coding-agent": "0.81.1"
++				"@earendil-works/pi-coding-agent": "0.82.1"
+ 			},
+ 			"engines": {
+ 				"node": ">=22.19.0"
+@@ -450,11 +450,12 @@
+ 			}
+ 		},
+ 		"node_modules/@earendil-works/pi-agent-core": {
+-			"version": "0.81.1",
+-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-0.81.1.tgz",
++			"version": "0.82.1",
++			"resolved": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-0.82.1.tgz",
+ 			"license": "MIT",
+ 			"dependencies": {
+-				"@earendil-works/pi-ai": "^0.81.1",
++				"@earendil-works/pi-ai": "^0.82.1",
++				"diff": "8.0.4",
+ 				"ignore": "7.0.5",
+ 				"typebox": "1.1.38",
+ 				"yaml": "2.9.0"
+@@ -464,8 +465,8 @@
+ 			}
+ 		},
+ 		"node_modules/@earendil-works/pi-ai": {
+-			"version": "0.81.1",
+-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-0.81.1.tgz",
++			"version": "0.82.1",
++			"resolved": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-0.82.1.tgz",
+ 			"license": "MIT",
+ 			"dependencies": {
+ 				"@anthropic-ai/sdk": "0.91.1",
+@@ -488,13 +489,13 @@
+ 			}
+ 		},
+ 		"node_modules/@earendil-works/pi-coding-agent": {
+-			"version": "0.81.1",
+-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.81.1.tgz",
++			"version": "0.82.1",
++			"resolved": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.82.1.tgz",
+ 			"license": "MIT",
+ 			"dependencies": {
+-				"@earendil-works/pi-agent-core": "^0.81.1",
+-				"@earendil-works/pi-ai": "^0.81.1",
+-				"@earendil-works/pi-tui": "^0.81.1",
++				"@earendil-works/pi-agent-core": "^0.82.1",
++				"@earendil-works/pi-ai": "^0.82.1",
++				"@earendil-works/pi-tui": "^0.82.1",
+ 				"@silvia-odwyer/photon-node": "0.3.4",
+ 				"chalk": "5.6.2",
+ 				"cross-spawn": "7.0.6",
+@@ -522,8 +523,8 @@
+ 			}
+ 		},
+ 		"node_modules/@earendil-works/pi-tui": {
+-			"version": "0.81.1",
+-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-0.81.1.tgz",
++			"version": "0.82.1",
++			"resolved": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-0.82.1.tgz",
+ 			"license": "MIT",
+ 			"dependencies": {
+ 				"get-east-asian-width": "1.6.0",
+@@ -1602,9 +1603,9 @@
+ 			}
+ 		},
+ 		"node_modules/protobufjs": {
+-			"version": "7.6.4",
+-			"resolved": "https://registry.npmjs.org/protobufjs/-/protobufjs-7.6.4.tgz",
+-			"integrity": "sha512-RJJPTTpvFfHcWLkIa2JFWK4XvtSzS0yEWDmunqHXli1h3JlkbcQZXDZdcWxv+JK3Xsl5/UFDPZ0iGm7DAengYw==",
++			"version": "7.6.5",
++			"resolved": "https://registry.npmjs.org/protobufjs/-/protobufjs-7.6.5.tgz",
++			"integrity": "sha512-/FPD0nUc9jH6rfFjji9IBqOz4pcSE3CsT1m7Ep6Mdb0LxSUMj8hgl6GomOvZzpNpAqqGaXA0P3VSrZLFzIhQrw==",
+ 			"license": "BSD-3-Clause",
+ 			"dependencies": {
+ 				"@protobufjs/aspromise": "^1.1.2",
+diff --git a/packages/coding-agent/install-lock/package.json b/packages/coding-agent/install-lock/package.json
+index d3580806..6063bd8d 100644
+--- a/packages/coding-agent/install-lock/package.json
++++ b/packages/coding-agent/install-lock/package.json
+@@ -1,12 +1,13 @@
+ {
+ 	"name": "@earendil-works/pi-coding-agent-install",
+-	"version": "0.81.1",
++	"version": "0.82.1",
+ 	"private": true,
+ 	"description": "Lockfile root used by the Pi installer and updater.",
+ 	"dependencies": {
+-		"@earendil-works/pi-coding-agent": "0.81.1"
++		"@earendil-works/pi-coding-agent": "0.82.1"
+ 	},
+ 	"overrides": {
++		"protobufjs": "7.6.5",
+ 		"rimraf": "6.1.2",
+ 		"gaxios": {
+ 			"rimraf": "6.1.2"
+diff --git a/packages/coding-agent/npm-shrinkwrap.json b/packages/coding-agent/npm-shrinkwrap.json
+index 881e933e..17b92c98 100644
+--- a/packages/coding-agent/npm-shrinkwrap.json
++++ b/packages/coding-agent/npm-shrinkwrap.json
+@@ -1,17 +1,17 @@
+ {
+ 	"name": "@earendil-works/pi-coding-agent",
+-	"version": "0.81.1",
++	"version": "0.82.1",
+ 	"lockfileVersion": 3,
+ 	"requires": true,
+ 	"packages": {
+ 		"": {
+ 			"name": "@earendil-works/pi-coding-agent",
+-			"version": "0.81.1",
++			"version": "0.82.1",
+ 			"license": "MIT",
+ 			"dependencies": {
+-				"@earendil-works/pi-agent-core": "^0.81.1",
+-				"@earendil-works/pi-ai": "^0.81.1",
+-				"@earendil-works/pi-tui": "^0.81.1",
++				"@earendil-works/pi-agent-core": "^0.82.1",
++				"@earendil-works/pi-ai": "^0.82.1",
++				"@earendil-works/pi-tui": "^0.82.1",
+ 				"@silvia-odwyer/photon-node": "0.3.4",
+ 				"chalk": "5.6.2",
+ 				"cross-spawn": "7.0.6",
+@@ -474,11 +474,12 @@
+ 			}
+ 		},
+ 		"node_modules/@earendil-works/pi-agent-core": {
+-			"version": "0.81.1",
+-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-0.81.1.tgz",
++			"version": "0.82.1",
++			"resolved": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-0.82.1.tgz",
+ 			"license": "MIT",
+ 			"dependencies": {
+-				"@earendil-works/pi-ai": "^0.81.1",
++				"@earendil-works/pi-ai": "^0.82.1",
++				"diff": "8.0.4",
+ 				"ignore": "7.0.5",
+ 				"typebox": "1.1.38",
+ 				"yaml": "2.9.0"
+@@ -488,8 +489,8 @@
+ 			}
+ 		},
+ 		"node_modules/@earendil-works/pi-ai": {
+-			"version": "0.81.1",
+-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-0.81.1.tgz",
++			"version": "0.82.1",
++			"resolved": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-0.82.1.tgz",
+ 			"license": "MIT",
+ 			"dependencies": {
+ 				"@anthropic-ai/sdk": "0.91.1",
+@@ -512,8 +513,8 @@
+ 			}
+ 		},
+ 		"node_modules/@earendil-works/pi-tui": {
+-			"version": "0.81.1",
+-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-0.81.1.tgz",
++			"version": "0.82.1",
++			"resolved": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-0.82.1.tgz",
+ 			"license": "MIT",
+ 			"dependencies": {
+ 				"get-east-asian-width": "1.6.0",
+@@ -1592,9 +1593,9 @@
+ 			}
+ 		},
+ 		"node_modules/protobufjs": {
+-			"version": "7.6.4",
+-			"resolved": "https://registry.npmjs.org/protobufjs/-/protobufjs-7.6.4.tgz",
+-			"integrity": "sha512-RJJPTTpvFfHcWLkIa2JFWK4XvtSzS0yEWDmunqHXli1h3JlkbcQZXDZdcWxv+JK3Xsl5/UFDPZ0iGm7DAengYw==",
++			"version": "7.6.5",
++			"resolved": "https://registry.npmjs.org/protobufjs/-/protobufjs-7.6.5.tgz",
++			"integrity": "sha512-/FPD0nUc9jH6rfFjji9IBqOz4pcSE3CsT1m7Ep6Mdb0LxSUMj8hgl6GomOvZzpNpAqqGaXA0P3VSrZLFzIhQrw==",
+ 			"license": "BSD-3-Clause",
+ 			"dependencies": {
+ 				"@protobufjs/aspromise": "^1.1.2",
+diff --git a/packages/coding-agent/package.json b/packages/coding-agent/package.json
+index e2e5427d..3ba3d1f9 100644
+--- a/packages/coding-agent/package.json
++++ b/packages/coding-agent/package.json
+@@ -1,6 +1,6 @@
+ {
+ 	"name": "@earendil-works/pi-coding-agent",
+-	"version": "0.81.1",
++	"version": "0.82.1",
+ 	"description": "Coding agent CLI with read, bash, edit, write tools and session management",
+ 	"type": "module",
+ 	"piConfig": {
+@@ -39,9 +39,9 @@
+ 		"prepublishOnly": "npm run clean && npm run build && npm run shrinkwrap"
+ 	},
+ 	"dependencies": {
+-		"@earendil-works/pi-agent-core": "^0.81.1",
+-		"@earendil-works/pi-ai": "^0.81.1",
+-		"@earendil-works/pi-tui": "^0.81.1",
++		"@earendil-works/pi-agent-core": "^0.82.1",
++		"@earendil-works/pi-ai": "^0.82.1",
++		"@earendil-works/pi-tui": "^0.82.1",
+ 		"@silvia-odwyer/photon-node": "0.3.4",
+ 		"chalk": "5.6.2",
+ 		"cross-spawn": "7.0.6",
+@@ -59,6 +59,7 @@
+ 		"yaml": "2.9.0"
+ 	},
+ 	"overrides": {
++		"protobufjs": "7.6.5",
+ 		"rimraf": "6.1.2",
+ 		"gaxios": {
+ 			"rimraf": "6.1.2"
+diff --git a/packages/coding-agent/src/cli/args.ts b/packages/coding-agent/src/cli/args.ts
+index c194579c..1e9b36b4 100644
+--- a/packages/coding-agent/src/cli/args.ts
++++ b/packages/coding-agent/src/cli/args.ts
+@@ -333,6 +333,7 @@ ${chalk.bold("Examples:")}
+   ${APP_NAME} --export session.jsonl output.html
+ 
+ ${chalk.bold("Environment Variables:")}
++  ANTHROPIC_AUTH_TOKEN             - Anthropic bearer auth token
+   ANTHROPIC_API_KEY                - Anthropic Claude API key
+   ANTHROPIC_OAUTH_TOKEN            - Anthropic OAuth token (alternative to API key)
+   ANT_LING_API_KEY                 - Ant Ling API key
+diff --git a/packages/coding-agent/src/cli/config-selector.ts b/packages/coding-agent/src/cli/config-selector.ts
+index b21e1231..cba05d86 100644
+--- a/packages/coding-agent/src/cli/config-selector.ts
++++ b/packages/coding-agent/src/cli/config-selector.ts
+@@ -22,7 +22,7 @@ export async function selectConfig(options: ConfigSelectorOptions): Promise<void
+ 	initTheme(options.settingsManager.getTheme(), true);
+ 
+ 	return new Promise((resolve) => {
+-		const ui = new TUI(new ProcessTerminal());
++		const ui = new TUI(new ProcessTerminal(), undefined, options.agentDir);
+ 		let resolved = false;
+ 
+ 		const selector = new ConfigSelectorComponent(
+diff --git a/packages/coding-agent/src/cli/startup-ui.ts b/packages/coding-agent/src/cli/startup-ui.ts
+index 73c0271c..12669e79 100644
+--- a/packages/coding-agent/src/cli/startup-ui.ts
++++ b/packages/coding-agent/src/cli/startup-ui.ts
+@@ -79,7 +79,7 @@ export async function createStartupTui(settingsManager: SettingsManager): Promis
+ 	const terminalTheme = detectTerminalBackgroundFromEnv().theme;
+ 	initTheme(resolveThemeSetting(settingsManager.getThemeSetting(), terminalTheme) ?? terminalTheme);
+ 	setKeybindings(KeybindingsManager.create());
+-	const ui = new TUI(new ProcessTerminal(), settingsManager.getShowHardwareCursor());
++	const ui = new TUI(new ProcessTerminal(), settingsManager.getShowHardwareCursor(), getAgentDir());
+ 	ui.setClearOnShrink(settingsManager.getClearOnShrink());
+ 	return ui;
+ }
+diff --git a/packages/coding-agent/src/core/agent-session.ts b/packages/coding-agent/src/core/agent-session.ts
+index 4fdaaaa6..a688528c 100644
+--- a/packages/coding-agent/src/core/agent-session.ts
++++ b/packages/coding-agent/src/core/agent-session.ts
+@@ -176,7 +176,9 @@ export type AgentSessionEvent =
+ 			source: "compaction";
+ 			reason: "manual" | "threshold" | "overflow";
+ 	  }
+-	| { type: "summarization_retry_finished" };
++	| { type: "summarization_retry_finished" }
++	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
++	| { type: "bash_execution_update"; id?: string; delta: string };
+ 
+ /** Listener function for agent session events */
+ export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
+@@ -403,7 +405,7 @@ export class AgentSession {
+ 	}
+ 
+ 	private async _getRequiredRequestAuth(model: Model<any>): Promise<{
+-		apiKey: string;
++		apiKey?: string;
+ 		headers?: Record<string, string>;
+ 		env?: Record<string, string>;
+ 	}> {
+@@ -417,7 +419,7 @@ export class AgentSession {
+ 			}
+ 			throw error;
+ 		}
+-		if (result?.auth.apiKey) {
++		if (result && (result.auth.apiKey || result.auth.headers)) {
+ 			return {
+ 				apiKey: result.auth.apiKey,
+ 				headers: withoutDeletedHeaders(result.auth.headers),
+@@ -2055,11 +2057,7 @@ export class AgentSession {
+ 			let headers: Record<string, string> | undefined;
+ 			let env: Record<string, string> | undefined;
+ 			if (this.agent.streamFunction === streamSimple) {
+-				const authResult = await this._modelRuntime.getAuth(this.model);
+-				if (!authResult?.auth.apiKey) return false;
+-				apiKey = authResult.auth.apiKey;
+-				headers = withoutDeletedHeaders(authResult.auth.headers);
+-				env = authResult.env;
++				({ apiKey, headers, env } = await this._getRequiredRequestAuth(this.model));
+ 			} else {
+ 				({ apiKey, headers, env } = await this._getSummarizationRequestAuth(this.model));
+ 			}
+@@ -2760,12 +2758,13 @@ export class AgentSession {
+ 	 * @param command The bash command to execute
+ 	 * @param onChunk Optional streaming callback for output
+ 	 * @param options.excludeFromContext If true, command output won't be sent to LLM (!! prefix)
++	 * @param options.id Optional identifier included in bash execution update events
+ 	 * @param options.operations Custom BashOperations for remote execution
+ 	 */
+ 	async executeBash(
+ 		command: string,
+ 		onChunk?: (chunk: string) => void,
+-		options?: { excludeFromContext?: boolean; operations?: BashOperations },
++		options?: { excludeFromContext?: boolean; id?: string; operations?: BashOperations },
+ 	): Promise<BashResult> {
+ 		this._bashAbortController = new AbortController();
+ 
+@@ -2780,7 +2779,10 @@ export class AgentSession {
+ 				this.sessionManager.getCwd(),
+ 				options?.operations ?? createLocalBashOperations({ shellPath }),
+ 				{
+-					onChunk,
++					onChunk: (delta) => {
++						onChunk?.(delta);
++						this._emit({ type: "bash_execution_update", id: options?.id, delta });
++					},
+ 					signal: this._bashAbortController.signal,
+ 				},
+ 			);
+diff --git a/packages/coding-agent/src/core/compaction/compaction.ts b/packages/coding-agent/src/core/compaction/compaction.ts
+index 0ae6deeb..3f9b90ca 100644
+--- a/packages/coding-agent/src/core/compaction/compaction.ts
++++ b/packages/coding-agent/src/core/compaction/compaction.ts
+@@ -6,7 +6,7 @@
+  */
+ 
+ import type { AgentMessage, StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
+-import { contentText, type RetryCallbacks, type RetryPolicy, retryAssistantCall } from "@earendil-works/pi-ai";
++import { contentText, type RetryCallbacks, type RetryPolicy, retryAssistantCall, uuidv7 } from "@earendil-works/pi-ai";
+ import type { AssistantMessage, Context, Model, SimpleStreamOptions, Usage } from "@earendil-works/pi-ai/compat";
+ import { completeSimple } from "@earendil-works/pi-ai/compat";
+ import { convertToLlm } from "../messages.ts";
+@@ -567,9 +567,17 @@ export async function completeSummarization(
+ 	retry?: RetryPolicy,
+ 	callbacks?: RetryCallbacks,
+ ): Promise<AssistantMessage> {
++	// Summaries are standalone requests, so isolate routing and avoid cache writes that cannot be reused.
++	const requestOptions: SimpleStreamOptions = {
++		...options,
++		cacheRetention: "none",
++		sessionId: uuidv7(),
++	};
+ 	const produce = async (): Promise<AssistantMessage> =>
+-		streamFn ? (await streamFn(model, context, options)).result() : completeSimple(model, context, options);
+-	return retryAssistantCall(produce, retry, options.signal, callbacks);
++		streamFn
++			? (await streamFn(model, context, requestOptions)).result()
++			: completeSimple(model, context, requestOptions);
++	return retryAssistantCall(produce, retry, requestOptions.signal, callbacks);
+ }
+ 
+ /**
+diff --git a/packages/coding-agent/src/core/extensions/runner.ts b/packages/coding-agent/src/core/extensions/runner.ts
+index 3c320e14..e0119fed 100644
+--- a/packages/coding-agent/src/core/extensions/runner.ts
++++ b/packages/coding-agent/src/core/extensions/runner.ts
+@@ -694,6 +694,10 @@ export class ExtensionRunner {
+ 				runner.assertActive();
+ 				return getModel();
+ 			},
++			get thinkingLevel() {
++				runner.assertActive();
++				return runner.runtime.getThinkingLevel();
++			},
+ 			isIdle: () => {
+ 				runner.assertActive();
+ 				return runner.isIdleFn();
+diff --git a/packages/coding-agent/src/core/extensions/types.ts b/packages/coding-agent/src/core/extensions/types.ts
+index e8bf2627..c8989a59 100644
+--- a/packages/coding-agent/src/core/extensions/types.ts
++++ b/packages/coding-agent/src/core/extensions/types.ts
+@@ -19,6 +19,7 @@ import type {
+ 	Api,
+ 	AssistantMessageEvent,
+ 	AssistantMessageEventStream,
++	ConstrainedSamplingConfig,
+ 	Context,
+ 	ImageContent,
+ 	Model,
+@@ -317,6 +318,8 @@ export interface ExtensionContext {
+ 	modelRegistry: ModelRegistry;
+ 	/** Current model (may be undefined) */
+ 	model: Model<any> | undefined;
++	/** Current thinking level, when provided by the session runtime. */
++	thinkingLevel?: ThinkingLevel;
+ 	/** Whether the agent is idle (not streaming) */
+ 	isIdle(): boolean;
+ 	/** Whether project-local trust is active for this context. */
+@@ -450,6 +453,8 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
+ 	promptGuidelines?: string[];
+ 	/** Parameter schema (TypeBox) */
+ 	parameters: TParams;
++	/** Optional provider-side constrained sampling request for this tool. Set false to explicitly disable it, equivalent to leaving it undefined. */
++	constrainedSampling?: false | ConstrainedSamplingConfig;
+ 	/** Controls whether ToolExecutionComponent renders the standard colored shell or the tool renders its own framing. */
+ 	renderShell?: "default" | "self";
+ 
+@@ -1124,6 +1129,8 @@ export interface SessionBeforeTreeResult {
+ 
+ export interface MessageRenderOptions {
+ 	expanded: boolean;
++	/** Horizontal padding configured by the outputPad setting. */
++	outputPad: number;
+ }
+ 
+ export interface EntryRenderOptions {
+diff --git a/packages/coding-agent/src/core/model-config.ts b/packages/coding-agent/src/core/model-config.ts
+index d21b9e0b..9ee6f436 100644
+--- a/packages/coding-agent/src/core/model-config.ts
++++ b/packages/coding-agent/src/core/model-config.ts
+@@ -97,6 +97,7 @@ const OpenAICompletionsCompatSchema = Type.Object({
+ 	cacheControlFormat: Type.Optional(Type.Literal("anthropic")),
+ 	openRouterRouting: Type.Optional(OpenRouterRoutingSchema),
+ 	vercelGatewayRouting: Type.Optional(VercelGatewayRoutingSchema),
++	supportsOpenAIGrammarTools: Type.Optional(Type.Boolean()),
+ 	supportsStrictMode: Type.Optional(Type.Boolean()),
+ 	sendSessionAffinityHeaders: Type.Optional(Type.Boolean()),
+ 	deferredToolsMode: Type.Optional(Type.Literal("kimi")),
+@@ -112,6 +113,8 @@ const OpenAIResponsesCompatSchema = Type.Object({
+ 		Type.Union([Type.Literal("openai"), Type.Literal("openai-nosession"), Type.Literal("openrouter")]),
+ 	),
+ 	supportsLongCacheRetention: Type.Optional(Type.Boolean()),
++	supportsStrictMode: Type.Optional(Type.Boolean()),
++	supportsOpenAIGrammarTools: Type.Optional(Type.Boolean()),
+ 	supportsToolSearch: Type.Optional(Type.Boolean()),
+ });
+ 
+@@ -120,7 +123,10 @@ const AnthropicMessagesCompatSchema = Type.Object({
+ 	supportsLongCacheRetention: Type.Optional(Type.Boolean()),
+ 	sendSessionAffinityHeaders: Type.Optional(Type.Boolean()),
+ 	supportsCacheControlOnTools: Type.Optional(Type.Boolean()),
++	supportsTemperature: Type.Optional(Type.Boolean()),
+ 	forceAdaptiveThinking: Type.Optional(Type.Boolean()),
++	allowEmptySignature: Type.Optional(Type.Boolean()),
++	supportsStrictTools: Type.Optional(Type.Boolean()),
+ 	supportsToolReferences: Type.Optional(Type.Boolean()),
+ });
+ 
+diff --git a/packages/coding-agent/src/core/model-registry.ts b/packages/coding-agent/src/core/model-registry.ts
+index fad9c654..4d8d82f5 100644
+--- a/packages/coding-agent/src/core/model-registry.ts
++++ b/packages/coding-agent/src/core/model-registry.ts
+@@ -25,8 +25,8 @@ export class ModelRegistry {
+ 	}
+ 
+ 	/** Reload models.json asynchronously. Await before making synchronous registry reads. */
+-	refresh(): Promise<void> {
+-		return this.runtime.reloadConfig();
++	async refresh(): Promise<void> {
++		await this.runtime.refresh();
+ 	}
+ 
+ 	getError(): string | undefined {
+diff --git a/packages/coding-agent/src/core/model-resolver.ts b/packages/coding-agent/src/core/model-resolver.ts
+index bcf668e5..b5c21aa4 100644
+--- a/packages/coding-agent/src/core/model-resolver.ts
++++ b/packages/coding-agent/src/core/model-resolver.ts
+@@ -260,6 +260,7 @@ export function parseModelPattern(
+  */
+ export interface ModelScopeDiagnostic {
+ 	type: "warning";
++	code: "no-match" | "invalid-thinking-level";
+ 	message: string;
+ 	pattern: string;
+ }
+@@ -293,6 +294,14 @@ export async function resolveModelScopeWithDiagnostics(
+ 				}
+ 			}
+ 
++			const exactMatch = findExactModelReferenceMatch(globPattern, availableModels);
++			if (exactMatch) {
++				if (!scopedModels.find((sm) => modelsAreEqual(sm.model, exactMatch))) {
++					scopedModels.push({ model: exactMatch, thinkingLevel });
++				}
++				continue;
++			}
++
+ 			// Match against "provider/modelId" format OR just model ID
+ 			// This allows "*sonnet*" to match without requiring "anthropic/*sonnet*"
+ 			const matchingModels = availableModels.filter((m) => {
+@@ -301,7 +310,12 @@ export async function resolveModelScopeWithDiagnostics(
+ 			});
+ 
+ 			if (matchingModels.length === 0) {
+-				diagnostics.push({ type: "warning", message: `No models match pattern "${pattern}"`, pattern });
++				diagnostics.push({
++					type: "warning",
++					code: "no-match",
++					message: `No models match pattern "${pattern}"`,
++					pattern,
++				});
+ 				continue;
+ 			}
+ 
+@@ -316,11 +330,16 @@ export async function resolveModelScopeWithDiagnostics(
+ 		const { model, thinkingLevel, warning } = parseModelPattern(pattern, availableModels);
+ 
+ 		if (warning) {
+-			diagnostics.push({ type: "warning", message: warning, pattern });
++			diagnostics.push({ type: "warning", code: "invalid-thinking-level", message: warning, pattern });
+ 		}
+ 
+ 		if (!model) {
+-			diagnostics.push({ type: "warning", message: `No models match pattern "${pattern}"`, pattern });
++			diagnostics.push({
++				type: "warning",
++				code: "no-match",
++				message: `No models match pattern "${pattern}"`,
++				pattern,
++			});
+ 			continue;
+ 		}
+ 
+diff --git a/packages/coding-agent/src/core/model-runtime.ts b/packages/coding-agent/src/core/model-runtime.ts
+index 2cd85b8d..e4575b07 100644
+--- a/packages/coding-agent/src/core/model-runtime.ts
++++ b/packages/coding-agent/src/core/model-runtime.ts
+@@ -140,18 +140,13 @@ export class ModelRuntime implements Models {
+ 			(modelsPath
+ 				? new FileModelsStore(options.modelsStorePath ?? join(dirname(modelsPath), "models-store.json"))
+ 				: new InMemoryCodingAgentModelsStore());
++		const builtinModelDataGeneratedAt = builtinProviderCatalog.getBuiltinModelDataGeneratedAt();
+ 		const providers = builtinProviderCatalog
+ 			.builtinProviders()
+ 			.map((provider) =>
+ 				provider.id === "radius"
+ 					? provider
+-					: withRemoteCatalog(
+-							provider,
+-							options.catalogBaseUrl,
+-							builtinProviderCatalog.getBuiltinModelDataUrl(
+-								provider.id as builtinProviderCatalog.BuiltinProvider,
+-							),
+-						),
++					: withRemoteCatalog(provider, options.catalogBaseUrl, builtinModelDataGeneratedAt),
+ 			);
+ 		const runtime = new ModelRuntime(
+ 			credentials,
+@@ -518,14 +513,10 @@ export class ModelRuntime implements Models {
+ 		await this.refresh({ allowNetwork: this.modelNetworkEnabled });
+ 	}
+ 
+-	async reloadConfig(): Promise<void> {
++	async refresh(options: ModelsRefreshOptions = {}): Promise<ModelsRefreshResult> {
+ 		this.config = await ModelConfig.load(this.modelsPath);
+ 		this.configureRadiusProviders();
+ 		this.rebuildProviders();
+-		await this.refresh({ allowNetwork: this.modelNetworkEnabled });
+-	}
+-
+-	async refresh(options: ModelsRefreshOptions = {}): Promise<ModelsRefreshResult> {
+ 		const refreshOptions = {
+ 			...options,
+ 			allowNetwork: options.allowNetwork ?? this.modelNetworkEnabled,
+diff --git a/packages/coding-agent/src/core/remote-catalog-provider.ts b/packages/coding-agent/src/core/remote-catalog-provider.ts
+index b823cf7d..56147035 100644
+--- a/packages/coding-agent/src/core/remote-catalog-provider.ts
++++ b/packages/coding-agent/src/core/remote-catalog-provider.ts
+@@ -1,4 +1,3 @@
+-import { stat } from "node:fs/promises";
+ import type { Api, Model, ModelsStoreEntry, Provider } from "@earendil-works/pi-ai";
+ import { VERSION } from "../config.ts";
+ import { getPiUserAgent } from "../utils/pi-user-agent.ts";
+@@ -32,13 +31,10 @@ function parseCatalog(providerId: string, value: unknown): Model<Api>[] {
+ 
+ function remoteModels(
+ 	entry: ModelsStoreEntry | undefined,
+-	localLastModified: number | undefined,
++	localGeneratedAt: number | undefined,
+ ): readonly Model<Api>[] {
+ 	if (!entry) return [];
+-	if (
+-		localLastModified !== undefined &&
+-		(entry.lastModified === undefined || entry.lastModified <= localLastModified)
+-	) {
++	if (localGeneratedAt !== undefined && (entry.lastModified === undefined || entry.lastModified <= localGeneratedAt)) {
+ 		return [];
+ 	}
+ 	return entry.models;
+@@ -48,7 +44,7 @@ function remoteModels(
+ export function withRemoteCatalog(
+ 	provider: Provider,
+ 	catalogBaseUrl: string = DEFAULT_CATALOG_BASE_URL,
+-	localCatalogUrl?: URL,
++	localGeneratedAt?: number,
+ ): Provider {
+ 	let dynamicModels: readonly Model<Api>[] = [];
+ 	let inflightRefresh: Promise<void> | undefined;
+@@ -59,16 +55,8 @@ export function withRemoteCatalog(
+ 		refreshModels: (context) => {
+ 			inflightRefresh ??= (async () => {
+ 				try {
+-					const localLastModified = localCatalogUrl
+-						? await stat(localCatalogUrl).then(
+-								(value) => value.mtimeMs,
+-								() => undefined,
+-							)
+-						: undefined;
+ 					const stored = await context.store.read();
+-					dynamicModels = remoteModels(stored, localLastModified).filter(
+-						(model) => model.provider === provider.id,
+-					);
++					dynamicModels = remoteModels(stored, localGeneratedAt).filter((model) => model.provider === provider.id);
+ 					if (!context.allowNetwork || context.signal?.aborted) return;
+ 					if (
+ 						!context.force &&
+@@ -79,21 +67,38 @@ export function withRemoteCatalog(
+ 						return;
+ 					}
+ 
++					// Only revalidate when a cached body backs the validator, so a 304 can never
++					// leave the overlay empty.
++					const validator = stored?.models.length ? stored.etag : undefined;
+ 					const url = new URL(`/api/models/providers/${encodeURIComponent(provider.id)}`, catalogBaseUrl);
+ 					const response = await fetch(url, {
+ 						headers: {
+ 							accept: "application/json",
+ 							"User-Agent": getPiUserAgent(VERSION),
++							...(validator ? { "if-none-match": validator } : {}),
+ 						},
+ 						signal: context.signal,
+ 					});
+ 					if (context.signal?.aborted) return;
+ 					const checkedAt = Date.now();
++					// Unchanged: dynamicModels already holds the stored overlay, so only the
++					// freshness window moves.
++					if (response.status === 304 && stored) {
++						await context.store.write({ ...stored, checkedAt });
++						return;
++					}
+ 					if (response.status === 404 || response.status === 501) {
+-						await context.store.write({ ...(stored ?? { models: [] }), checkedAt, lastModified: 0 });
++						await context.store.write({
++							...(stored ?? { models: [] }),
++							checkedAt,
++							lastModified: 0,
++							etag: undefined,
++						});
+ 						return;
+ 					}
+ 					if (!response.ok) {
++						// Transient failure: the cached body and its validator stay valid, so keep the
++						// etag and let the next refresh revalidate instead of downloading the catalog.
+ 						await context.store.write({ ...(stored ?? { models: [] }), checkedAt });
+ 						throw new Error(`Model catalog request failed for ${provider.id}: ${response.status}`);
+ 					}
+@@ -104,8 +109,9 @@ export function withRemoteCatalog(
+ 						models: refreshed,
+ 						checkedAt,
+ 						lastModified: Number.isNaN(lastModified) ? 0 : lastModified,
++						etag: response.headers.get("etag") ?? undefined,
+ 					};
+-					dynamicModels = remoteModels(entry, localLastModified);
++					dynamicModels = remoteModels(entry, localGeneratedAt);
+ 					await context.store.write(entry);
+ 				} finally {
+ 					inflightRefresh = undefined;
+diff --git a/packages/coding-agent/src/core/resource-loader.ts b/packages/coding-agent/src/core/resource-loader.ts
+index c8b6e2c2..6632315e 100644
+--- a/packages/coding-agent/src/core/resource-loader.ts
++++ b/packages/coding-agent/src/core/resource-loader.ts
+@@ -70,6 +70,9 @@ function loadContextFileFromDir(dir: string): { path: string; content: string }
+ 		const filePath = join(dir, filename);
+ 		if (existsSync(filePath)) {
+ 			try {
++				if (!statSync(filePath).isFile()) {
++					continue;
++				}
+ 				return {
+ 					path: filePath,
+ 					content: readFileSync(filePath, "utf-8"),
+diff --git a/packages/coding-agent/src/core/settings-manager.ts b/packages/coding-agent/src/core/settings-manager.ts
+index e6cae1af..3306d71b 100644
+--- a/packages/coding-agent/src/core/settings-manager.ts
++++ b/packages/coding-agent/src/core/settings-manager.ts
+@@ -851,7 +851,7 @@ export class SettingsManager {
+ 		return this.settings.showCacheMissNotices ?? false;
+ 	}
+ 
+-	getExternalEditorCommand(): string | undefined {
++	getExternalEditorCommand(): string {
+ 		const configuredEditor = this.settings.externalEditor;
+ 		if (typeof configuredEditor === "string" && configuredEditor.trim() !== "") {
+ 			return configuredEditor;
+diff --git a/packages/coding-agent/src/core/system-prompt.ts b/packages/coding-agent/src/core/system-prompt.ts
+index d34ff88d..35f4ca40 100644
+--- a/packages/coding-agent/src/core/system-prompt.ts
++++ b/packages/coding-agent/src/core/system-prompt.ts
+@@ -133,7 +133,7 @@ Pi documentation (read only when the user asks about pi itself, its SDK, extensi
+ - Additional docs: ${docsPath}
+ - Examples: ${examplesPath} (extensions, custom tools, SDK)
+ - When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory
+-- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md)
++- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md), environment variables (docs/environment-variables.md)
+ - When working on pi topics, read the docs and examples, and follow .md cross-references before implementing
+ - Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)`;
+ 
+diff --git a/packages/coding-agent/src/core/tools/bash.ts b/packages/coding-agent/src/core/tools/bash.ts
+index b0bd5022..1c245cbb 100644
+--- a/packages/coding-agent/src/core/tools/bash.ts
++++ b/packages/coding-agent/src/core/tools/bash.ts
+@@ -15,7 +15,7 @@ import {
+ 	trackDetachedChildPid,
+ 	untrackDetachedChildPid,
+ } from "../../utils/shell.ts";
+-import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
++import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+ import { OutputAccumulator } from "./output-accumulator.ts";
+ import { getTextOutput, invalidArgText, str } from "./render-utils.ts";
+ import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
+@@ -155,8 +155,31 @@ export interface BashSpawnContext {
+ 
+ export type BashSpawnHook = (context: BashSpawnContext) => BashSpawnContext;
+ 
+-function resolveSpawnContext(command: string, cwd: string, spawnHook?: BashSpawnHook): BashSpawnContext {
+-	const baseContext: BashSpawnContext = { command, cwd, env: { ...getShellEnv() } };
++function resolveSpawnContext(
++	command: string,
++	cwd: string,
++	spawnHook: BashSpawnHook | undefined,
++	exposeSessionEnvironment: boolean,
++	ctx: ExtensionContext | undefined,
++): BashSpawnContext {
++	const env = { ...getShellEnv() };
++	delete env.PI_SESSION_ID;
++	delete env.PI_SESSION_FILE;
++	delete env.PI_PROVIDER;
++	delete env.PI_MODEL;
++	delete env.PI_REASONING_LEVEL;
++	if (exposeSessionEnvironment && ctx) {
++		const model = ctx.model;
++		env.PI_SESSION_ID = ctx.sessionManager.getSessionId();
++		const sessionFile = ctx.sessionManager.getSessionFile();
++		if (sessionFile) env.PI_SESSION_FILE = sessionFile;
++		if (model) {
++			env.PI_PROVIDER = model.provider;
++			env.PI_MODEL = model.id;
++		}
++		if (ctx.thinkingLevel) env.PI_REASONING_LEVEL = ctx.thinkingLevel;
++	}
++	const baseContext: BashSpawnContext = { command, cwd, env };
+ 	return spawnHook ? spawnHook(baseContext) : baseContext;
+ }
+ 
+@@ -167,6 +190,8 @@ export interface BashToolOptions {
+ 	commandPrefix?: string;
+ 	/** Optional explicit shell path from settings */
+ 	shellPath?: string;
++	/** Expose current Pi session metadata as PI_* environment variables. Default: true */
++	exposeSessionEnvironment?: boolean;
+ 	/** Hook to adjust command, cwd, or env before execution */
+ 	spawnHook?: BashSpawnHook;
+ }
+@@ -294,22 +319,26 @@ export function createBashToolDefinition(
+ ): ToolDefinition<typeof bashSchema, BashToolDetails | undefined, BashRenderState> {
+ 	const ops = options?.operations ?? createLocalBashOperations({ shellPath: options?.shellPath });
+ 	const commandPrefix = options?.commandPrefix;
++	const exposeSessionEnvironment = options?.exposeSessionEnvironment ?? true;
+ 	const spawnHook = options?.spawnHook;
+ 	return {
+ 		name: "bash",
+ 		label: "bash",
+ 		description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.`,
+ 		promptSnippet: "Execute bash commands (ls, grep, find, etc.)",
++		promptGuidelines: exposeSessionEnvironment
++			? ["Inspect PI_* environment variables for current model and session details."]
++			: undefined,
+ 		parameters: bashSchema,
+ 		async execute(
+ 			_toolCallId,
+ 			{ command, timeout }: { command: string; timeout?: number },
+ 			signal?: AbortSignal,
+ 			onUpdate?,
+-			_ctx?,
++			ctx?,
+ 		) {
+ 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
+-			const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook);
++			const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook, exposeSessionEnvironment, ctx);
+ 			const output = new OutputAccumulator({ tempFilePrefix: "pi-bash" });
+ 			let acceptingOutput = true;
+ 			let updateTimer: NodeJS.Timeout | undefined;
+@@ -466,5 +495,11 @@ export function createBashToolDefinition(
+ }
+ 
+ export function createBashTool(cwd: string, options?: BashToolOptions): AgentTool<typeof bashSchema> {
+-	return wrapToolDefinition(createBashToolDefinition(cwd, options));
++	const definition = createBashToolDefinition(cwd, options);
++	const tool = wrapToolDefinition(definition);
++	Object.assign(tool, {
++		promptSnippet: definition.promptSnippet,
++		promptGuidelines: definition.promptGuidelines,
++	});
++	return tool;
+ }
+diff --git a/packages/coding-agent/src/core/tools/tool-definition-wrapper.ts b/packages/coding-agent/src/core/tools/tool-definition-wrapper.ts
+index c9da525a..ab01a065 100644
+--- a/packages/coding-agent/src/core/tools/tool-definition-wrapper.ts
++++ b/packages/coding-agent/src/core/tools/tool-definition-wrapper.ts
+@@ -11,10 +11,11 @@ export function wrapToolDefinition<TDetails = unknown>(
+ 		label: definition.label,
+ 		description: definition.description,
+ 		parameters: definition.parameters,
++		constrainedSampling: definition.constrainedSampling,
+ 		prepareArguments: definition.prepareArguments,
+ 		executionMode: definition.executionMode,
+-		execute: (toolCallId, params, signal, onUpdate) =>
+-			definition.execute(toolCallId, params, signal, onUpdate, ctxFactory?.() as ExtensionContext),
++		execute: (toolCallId, params, signal, onUpdate, ctx?: ExtensionContext) =>
++			definition.execute(toolCallId, params, signal, onUpdate, ctx ?? (ctxFactory?.() as ExtensionContext)),
+ 	};
+ }
+ 
+@@ -38,6 +39,7 @@ export function createToolDefinitionFromAgentTool(tool: AgentTool<any>): ToolDef
+ 		label: tool.label,
+ 		description: tool.description,
+ 		parameters: tool.parameters as any,
++		constrainedSampling: tool.constrainedSampling,
+ 		prepareArguments: tool.prepareArguments,
+ 		executionMode: tool.executionMode,
+ 		execute: async (toolCallId, params, signal, onUpdate) => tool.execute(toolCallId, params, signal, onUpdate),
+diff --git a/packages/coding-agent/src/extensions/llama/provider.ts b/packages/coding-agent/src/extensions/llama/provider.ts
+index 8ab552df..1692a7d4 100644
+--- a/packages/coding-agent/src/extensions/llama/provider.ts
++++ b/packages/coding-agent/src/extensions/llama/provider.ts
+@@ -12,8 +12,6 @@ import { LlamaClient, type LlamaModelInfo, llamaInferenceUrl, normalizeLlamaServ
+ 
+ export const LLAMA_PROVIDER_ID = "llama.cpp";
+ export const DEFAULT_LLAMA_SERVER_URL = "http://127.0.0.1:8080";
+-const DEFAULT_MAX_TOKENS = 16384;
+-
+ function credentialServerUrl(credential: ApiKeyCredential | undefined): string | undefined {
+ 	const value = credential?.env?.LLAMA_BASE_URL;
+ 	return typeof value === "string" && value.trim() ? normalizeLlamaServerUrl(value) : undefined;
+@@ -40,7 +38,7 @@ function toPiModel(model: LlamaModelInfo, serverUrl: string): Model<"openai-comp
+ 		input: model.architecture?.input_modalities?.includes("image") ? ["text", "image"] : ["text"],
+ 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+ 		contextWindow,
+-		maxTokens: Math.min(DEFAULT_MAX_TOKENS, contextWindow),
++		maxTokens: contextWindow,
+ 		compat: {
+ 			supportsStore: false,
+ 			supportsDeveloperRole: false,
+@@ -113,11 +111,20 @@ export function createLlamaProvider(): LlamaProviderController {
+ 		},
+ 		getModels: () => models,
+ 		refreshModels: async (context: RefreshModelsContext): Promise<void> => {
++			const stored = await context.store.read();
++			if (stored) {
++				models = stored.models.filter(
++					(model): model is Model<"openai-completions"> =>
++						model.provider === LLAMA_PROVIDER_ID && model.api === "openai-completions",
++				);
++			}
++
+ 			if (!context.allowNetwork || context.signal?.aborted || context.credential?.type !== "api_key") return;
+ 			const serverUrl = credentialServerUrl(context.credential);
+ 			if (!serverUrl) return;
+ 			const catalog = await new LlamaClient(serverUrl, context.credential.key).list({ signal: context.signal });
+ 			setCatalog(catalog, serverUrl);
++			if (!context.signal?.aborted) await context.store.write({ models, checkedAt: Date.now() });
+ 		},
+ 		stream: (model, context, options) => stream(model, context, options as ProviderStreamOptions | undefined),
+ 		streamSimple: (model, context, options) => streamSimple(model, context, options),
+diff --git a/packages/coding-agent/src/modes/interactive/components/custom-message.ts b/packages/coding-agent/src/modes/interactive/components/custom-message.ts
+index a8fffc6f..b5ee9265 100644
+--- a/packages/coding-agent/src/modes/interactive/components/custom-message.ts
++++ b/packages/coding-agent/src/modes/interactive/components/custom-message.ts
+@@ -16,16 +16,19 @@ export class CustomMessageComponent extends Container {
+ 	private customComponent?: Component;
+ 	private markdownTheme: MarkdownTheme;
+ 	private _expanded = false;
++	private outputPad: number;
+ 
+ 	constructor(
+ 		message: CustomMessage<unknown>,
+ 		customRenderer?: MessageRenderer,
+ 		markdownTheme: MarkdownTheme = getMarkdownTheme(),
++		outputPad = 1,
+ 	) {
+ 		super();
+ 		this.message = message;
+ 		this.customRenderer = customRenderer;
+ 		this.markdownTheme = markdownTheme;
++		this.outputPad = outputPad;
+ 
+ 		this.addChild(new Spacer(1));
+ 
+@@ -42,6 +45,13 @@ export class CustomMessageComponent extends Container {
+ 		}
+ 	}
+ 
++	setOutputPad(outputPad: number): void {
++		if (this.outputPad !== outputPad) {
++			this.outputPad = outputPad;
++			this.rebuild();
++		}
++	}
++
+ 	override invalidate(): void {
+ 		super.invalidate();
+ 		this.rebuild();
+@@ -58,7 +68,11 @@ export class CustomMessageComponent extends Container {
+ 		// Try custom renderer first - it handles its own styling
+ 		if (this.customRenderer) {
+ 			try {
+-				const component = this.customRenderer(this.message, { expanded: this._expanded }, theme);
++				const component = this.customRenderer(
++					this.message,
++					{ expanded: this._expanded, outputPad: this.outputPad },
++					theme,
++				);
+ 				if (component) {
+ 					// Custom renderer provides its own styled component
+ 					this.customComponent = component;
+diff --git a/packages/coding-agent/src/modes/interactive/components/extension-editor.ts b/packages/coding-agent/src/modes/interactive/components/extension-editor.ts
+index a5ed3fba..9af7d8c3 100644
+--- a/packages/coding-agent/src/modes/interactive/components/extension-editor.ts
++++ b/packages/coding-agent/src/modes/interactive/components/extension-editor.ts
+@@ -3,10 +3,6 @@
+  * Supports Ctrl+G for external editor.
+  */
+ 
+-import { spawn } from "node:child_process";
+-import * as fs from "node:fs";
+-import * as os from "node:os";
+-import * as path from "node:path";
+ import {
+ 	Container,
+ 	Editor,
+@@ -18,6 +14,7 @@ import {
+ 	type TUI,
+ } from "@earendil-works/pi-tui";
+ import type { KeybindingsManager } from "../../../core/keybindings.ts";
++import { editInExternalEditor } from "../external-editor.ts";
+ import { getEditorTheme, theme } from "../theme/theme.ts";
+ import { DynamicBorder } from "./dynamic-border.ts";
+ import { keyHint } from "./keybinding-hints.ts";
+@@ -28,7 +25,7 @@ export class ExtensionEditorComponent extends Container implements Focusable {
+ 	private onCancelCallback: () => void;
+ 	private tui: TUI;
+ 	private keybindings: KeybindingsManager;
+-	private externalEditorCommand: string | undefined;
++	private externalEditorCommand: string;
+ 
+ 	private _focused = false;
+ 	get focused(): boolean {
+@@ -53,7 +50,11 @@ export class ExtensionEditorComponent extends Container implements Focusable {
+ 
+ 		this.tui = tui;
+ 		this.keybindings = keybindings;
+-		this.externalEditorCommand = externalEditorCommand;
++		this.externalEditorCommand =
++			externalEditorCommand ||
++			process.env.VISUAL ||
++			process.env.EDITOR ||
++			(process.platform === "win32" ? "notepad" : "nano");
+ 		this.onSubmitCallback = onSubmit;
+ 		this.onCancelCallback = onCancel;
+ 
+@@ -79,14 +80,13 @@ export class ExtensionEditorComponent extends Container implements Focusable {
+ 		this.addChild(new Spacer(1));
+ 
+ 		// Add hint
+-		const hasExternalEditor = !!this.getExternalEditorCommand();
+ 		const hint =
+ 			keyHint("tui.select.confirm", "submit") +
+ 			"  " +
+ 			keyHint("tui.input.newLine", "newline") +
+ 			"  " +
+ 			keyHint("tui.select.cancel", "cancel") +
+-			(hasExternalEditor ? `  ${keyHint("app.editor.external", "external editor")}` : "");
++			`  ${keyHint("app.editor.external", "external editor")}`;
+ 		this.addChild(new Text(hint, 1, 0));
+ 
+ 		this.addChild(new Spacer(1));
+@@ -105,7 +105,7 @@ export class ExtensionEditorComponent extends Container implements Focusable {
+ 
+ 		// External editor (app keybinding)
+ 		if (this.keybindings.matches(keyData, "app.editor.external")) {
+-			this.openExternalEditor();
++			void this.handleOpenExternalEditor();
+ 			return;
+ 		}
+ 
+@@ -113,54 +113,19 @@ export class ExtensionEditorComponent extends Container implements Focusable {
+ 		this.editor.handleInput(keyData);
+ 	}
+ 
+-	private getExternalEditorCommand(): string | undefined {
+-		const editorCmd = this.externalEditorCommand || process.env.VISUAL || process.env.EDITOR;
+-		if (editorCmd) {
+-			return editorCmd;
+-		}
+-		return process.platform === "win32" ? "notepad" : "nano";
+-	}
+-
+-	private async openExternalEditor(): Promise<void> {
+-		const editorCmd = this.getExternalEditorCommand();
+-		if (!editorCmd) {
+-			return;
+-		}
+-
+-		const currentText = this.editor.getText();
+-		const tmpFile = path.join(os.tmpdir(), `pi-extension-editor-${Date.now()}.md`);
+-
++	private async handleOpenExternalEditor(): Promise<void> {
++		const content = this.editor.getText();
++		this.tui.stop();
+ 		try {
+-			fs.writeFileSync(tmpFile, currentText, "utf-8");
+-			this.tui.stop();
+-
+-			const [editor, ...editorArgs] = editorCmd.split(" ");
+-			process.stdout.write(`Launching external editor: ${editorCmd}\nPi will resume when the editor exits.\n`);
+-
+-			// Do not use spawnSync here. On Windows, synchronous child_process calls can keep
+-			// Node/libuv's console input read active after tui.stop() pauses stdin, racing
+-			// vim/nvim for the console input buffer until Ctrl+C cancels the pending read.
+-			const status = await new Promise<number | null>((resolve) => {
+-				const child = spawn(editor, [...editorArgs, tmpFile], {
+-					stdio: "inherit",
+-					shell: process.platform === "win32",
+-				});
+-				child.on("error", () => resolve(null));
+-				child.on("close", (code) => resolve(code));
++			const result = await editInExternalEditor({
++				command: this.externalEditorCommand,
++				content,
+ 			});
+-
+-			if (status === 0) {
+-				const newContent = fs.readFileSync(tmpFile, "utf-8").replace(/\n$/, "");
+-				this.editor.setText(newContent);
++			if (result.status === "complete") {
++				this.editor.setText(result.content);
+ 			}
+ 		} finally {
+-			try {
+-				fs.unlinkSync(tmpFile);
+-			} catch {
+-				// Ignore cleanup errors
+-			}
+ 			this.tui.start();
+-			// Force full re-render since external editor uses alternate screen
+ 			this.tui.requestRender(true);
+ 		}
+ 	}
+diff --git a/packages/coding-agent/src/modes/interactive/components/scoped-models-selector.ts b/packages/coding-agent/src/modes/interactive/components/scoped-models-selector.ts
+index 772e3af0..fc5c6113 100644
+--- a/packages/coding-agent/src/modes/interactive/components/scoped-models-selector.ts
++++ b/packages/coding-agent/src/modes/interactive/components/scoped-models-selector.ts
+@@ -36,7 +36,7 @@ function enableAll(enabledIds: EnabledIds, allIds: string[], targetIds?: string[
+ 	for (const id of targets) {
+ 		if (!result.includes(id)) result.push(id);
+ 	}
+-	return result.length === allIds.length ? null : result;
++	return result.length === allIds.length && result.every((id) => allIds.includes(id)) ? null : result;
+ }
+ 
+ function clearAll(enabledIds: EnabledIds, allIds: string[], targetIds?: string[]): EnabledIds {
+@@ -67,7 +67,7 @@ function getSortedIds(enabledIds: EnabledIds, allIds: string[]): string[] {
+ 
+ interface ModelItem {
+ 	fullId: string;
+-	model: Model<any>;
++	model: Model<any> | undefined;
+ 	enabled: boolean;
+ }
+ 
+@@ -152,20 +152,20 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
+ 	}
+ 
+ 	private buildItems(): ModelItem[] {
+-		// Filter out IDs that no longer have a corresponding model (e.g., after logout)
+-		return getSortedIds(this.enabledIds, this.allIds)
+-			.filter((id) => this.modelsById.has(id))
+-			.map((id) => ({
+-				fullId: id,
+-				model: this.modelsById.get(id)!,
+-				enabled: isEnabled(this.enabledIds, id),
+-			}));
++		return getSortedIds(this.enabledIds, this.allIds).map((id) => ({
++			fullId: id,
++			model: this.modelsById.get(id),
++			enabled: isEnabled(this.enabledIds, id),
++		}));
+ 	}
+ 
+ 	private getFooterText(): string {
+-		const enabledCount = this.enabledIds?.length ?? this.allIds.length;
++		const enabledCount = this.enabledIds?.filter((id) => this.modelsById.has(id)).length ?? this.allIds.length;
++		const unavailableCount = this.enabledIds?.filter((id) => !this.modelsById.has(id)).length ?? 0;
+ 		const allEnabled = this.enabledIds === null;
+-		const countText = allEnabled ? "all enabled" : `${enabledCount}/${this.allIds.length} enabled`;
++		const countText = allEnabled
++			? "all enabled"
++			: `${enabledCount}/${this.allIds.length} enabled${unavailableCount ? ` · ${unavailableCount} unavailable` : ""}`;
+ 		const parts = [
+ 			`${keyText("tui.select.confirm")} toggle`,
+ 			`${keyText("app.models.enableAll")} all`,
+@@ -184,8 +184,10 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
+ 		const query = this.searchInput.getValue();
+ 		const items = this.buildItems();
+ 		this.filteredItems = query
+-			? fuzzyFilter(items, query, (i) =>
+-					getModelSearchText({ id: i.model.id, provider: i.model.provider, name: i.model.name }),
++			? fuzzyFilter(items, query, (item) =>
++					item.model
++						? getModelSearchText({ id: item.model.id, provider: item.model.provider, name: item.model.name })
++						: item.fullId,
+ 				)
+ 			: items;
+ 		this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredItems.length - 1));
+@@ -216,9 +218,16 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
+ 			const item = this.filteredItems[i]!;
+ 			const isSelected = i === this.selectedIndex;
+ 			const prefix = isSelected ? theme.fg("accent", "→ ") : "  ";
+-			const modelText = isSelected ? theme.fg("accent", item.model.id) : item.model.id;
+-			const providerBadge = theme.fg("muted", ` [${item.model.provider}]`);
+-			const status = allEnabled ? "" : item.enabled ? theme.fg("success", " ✓") : theme.fg("dim", " ✗");
++			const id = item.model?.id ?? item.fullId;
++			const modelText = isSelected ? theme.fg("accent", id) : id;
++			const providerBadge = theme.fg("muted", item.model ? ` [${item.model.provider}]` : " [unavailable]");
++			const status = item.model
++				? allEnabled
++					? ""
++					: item.enabled
++						? theme.fg("success", " ✓")
++						: theme.fg("dim", " ✗")
++				: theme.fg("dim", " ✗");
+ 			this.listContainer.addChild(new Text(`${prefix}${modelText}${providerBadge}${status}`, 0, 0));
+ 		}
+ 
+@@ -232,7 +241,13 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
+ 		if (this.filteredItems.length > 0) {
+ 			const selected = this.filteredItems[this.selectedIndex];
+ 			this.listContainer.addChild(new Spacer(1));
+-			this.listContainer.addChild(new Text(theme.fg("muted", `  Model Name: ${selected.model.name}`), 0, 0));
++			this.listContainer.addChild(
++				new Text(
++					theme.fg("muted", `  ${selected.model ? `Model Name: ${selected.model.name}` : "Model unavailable"}`),
++					0,
++					0,
++				),
++			);
+ 		}
+ 	}
+ 
+@@ -310,7 +325,7 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
+ 		// Toggle provider of current item
+ 		if (kb.matches(data, "app.models.toggleProvider")) {
+ 			const item = this.filteredItems[this.selectedIndex];
+-			if (item) {
++			if (item?.model) {
+ 				const provider = item.model.provider;
+ 				const providerIds = this.allIds.filter((id) => this.modelsById.get(id)!.provider === provider);
+ 				const allEnabled = providerIds.every((id) => isEnabled(this.enabledIds, id));
+diff --git a/packages/coding-agent/src/modes/interactive/external-editor.ts b/packages/coding-agent/src/modes/interactive/external-editor.ts
+new file mode 100644
+index 00000000..45fb572f
+--- /dev/null
++++ b/packages/coding-agent/src/modes/interactive/external-editor.ts
+@@ -0,0 +1,45 @@
++import { spawn } from "node:child_process";
++import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++
++export interface ExternalEditorOptions {
++	command: string;
++	content: string;
++}
++
++export type ExternalEditorResult = { status: "complete"; content: string } | { status: "failed" };
++
++export async function editInExternalEditor(options: ExternalEditorOptions): Promise<ExternalEditorResult> {
++	const directory = mkdtempSync(join(tmpdir(), "pi-editor-"));
++	const filePath = join(directory, "prompt.md");
++	try {
++		writeFileSync(filePath, options.content, "utf-8");
++		const [editor, ...editorArgs] = options.command.split(" ");
++		process.stdout.write(`Launching external editor: ${options.command}\nPi will resume when the editor exits.\n`);
++
++		// Do not use spawnSync here. On Windows, synchronous child_process calls can keep
++		// Node/libuv's console input read active after the parent pauses stdin, racing
++		// vim/nvim for the console input buffer until Ctrl+C cancels the pending read.
++		const exitCode = await new Promise<number | null>((resolve) => {
++			const child = spawn(editor, [...editorArgs, filePath], {
++				stdio: "inherit",
++				shell: process.platform === "win32",
++			});
++			child.on("error", () => resolve(null));
++			child.on("close", (code) => resolve(code));
++		});
++
++		if (exitCode !== 0) {
++			return { status: "failed" };
++		}
++
++		return { status: "complete", content: readFileSync(filePath, "utf-8").replace(/\n$/, "") };
++	} finally {
++		try {
++			rmSync(directory, { recursive: true, force: true });
++		} catch {
++			// Cleanup is best effort.
++		}
++	}
++}
+diff --git a/packages/coding-agent/src/modes/interactive/interactive-mode.ts b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
+index 7a31aa84..30cd984f 100644
+--- a/packages/coding-agent/src/modes/interactive/interactive-mode.ts
++++ b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
+@@ -76,7 +76,12 @@ import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/
+ import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
+ import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
+ import { createCompactionSummaryMessage } from "../../core/messages.ts";
+-import { defaultModelPerProvider, findExactModelReferenceMatch, resolveModelScope } from "../../core/model-resolver.ts";
++import {
++	defaultModelPerProvider,
++	findExactModelReferenceMatch,
++	resolveModelScope,
++	resolveModelScopeWithDiagnostics,
++} from "../../core/model-resolver.ts";
+ import { DefaultPackageManager } from "../../core/package-manager.ts";
+ import type { ResourceDiagnostic } from "../../core/resource-loader.ts";
+ import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.ts";
+@@ -137,6 +142,7 @@ import { TreeSelectorComponent } from "./components/tree-selector.ts";
+ import { TrustSelectorComponent } from "./components/trust-selector.ts";
+ import { UserMessageComponent } from "./components/user-message.ts";
+ import { UserMessageSelectorComponent } from "./components/user-message-selector.ts";
++import { editInExternalEditor } from "./external-editor.ts";
+ import { getModelSearchText } from "./model-search.ts";
+ import {
+ 	getAvailableThemes,
+@@ -450,7 +456,7 @@ export class InteractiveMode {
+ 			await this.rebindCurrentSession({ renderBeforeBind: true });
+ 		});
+ 		this.version = VERSION;
+-		this.ui = new TUI(new ProcessTerminal(), this.settingsManager.getShowHardwareCursor());
++		this.ui = new TUI(new ProcessTerminal(), this.settingsManager.getShowHardwareCursor(), getAgentDir());
+ 		this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
+ 		this.headerContainer = new Container();
+ 		this.loadedResourcesContainer = new Container();
+@@ -1076,8 +1082,16 @@ export class InteractiveMode {
+ 	 * Get a short path relative to the package root for display.
+ 	 */
+ 	private getShortPath(fullPath: string, sourceInfo?: SourceInfo): string {
++		const normalizedFullPath = fullPath.replace(/\\/g, "/");
+ 		const baseDir = sourceInfo?.baseDir;
+ 		if (baseDir && this.isPackageSource(sourceInfo)) {
++			const normalizedBaseDir = baseDir.replace(/\\/g, "/");
++			const npmRootMatch = normalizedBaseDir.match(/^(.*\/node_modules)\/(@?[^/]+(?:\/[^/]+)?)$/);
++			// If fullPath is under the same node_modules root as baseDir, preserve that relative topology.
++			if (npmRootMatch?.[1] && normalizedFullPath.startsWith(`${npmRootMatch[1]}/`)) {
++				return path.posix.relative(normalizedBaseDir, normalizedFullPath);
++			}
++
+ 			const relativePath = path.relative(path.resolve(baseDir), path.resolve(fullPath));
+ 			if (
+ 				relativePath &&
+@@ -1091,12 +1105,12 @@ export class InteractiveMode {
+ 		}
+ 
+ 		const source = sourceInfo?.source ?? "";
+-		const npmMatch = fullPath.match(/node_modules\/(@?[^/]+(?:\/[^/]+)?)\/(.*)/);
++		const npmMatch = normalizedFullPath.match(/node_modules\/(@?[^/]+(?:\/[^/]+)?)\/(.*)/);
+ 		if (npmMatch && source.startsWith("npm:")) {
+ 			return npmMatch[2];
+ 		}
+ 
+-		const gitMatch = fullPath.match(/git\/[^/]+\/[^/]+\/(.*)/);
++		const gitMatch = normalizedFullPath.match(/git\/[^/]+\/[^/]+\/(.*)/);
+ 		if (gitMatch && source.startsWith("git:")) {
+ 			return gitMatch[1];
+ 		}
+@@ -1774,6 +1788,7 @@ export class InteractiveMode {
+ 			sessionManager: this.sessionManager,
+ 			modelRegistry: extensionRunner.getModelRegistry(),
+ 			model: this.session.model,
++			thinkingLevel: this.session.thinkingLevel,
+ 			isIdle: () => this.session.isIdle,
+ 			isProjectTrusted: () => this.settingsManager.isProjectTrusted(),
+ 			signal: this.session.agent.signal,
+@@ -2577,7 +2592,7 @@ export class InteractiveMode {
+ 		this.defaultEditor.onAction("app.model.select", () => this.showModelSelector());
+ 		this.defaultEditor.onAction("app.tools.expand", () => this.toggleToolOutputExpansion());
+ 		this.defaultEditor.onAction("app.thinking.toggle", () => this.toggleThinkingBlockVisibility());
+-		this.defaultEditor.onAction("app.editor.external", () => this.openExternalEditor());
++		this.defaultEditor.onAction("app.editor.external", () => void this.handleOpenExternalEditor());
+ 		this.defaultEditor.onAction("app.message.copy", () => void this.handleCopyCommand());
+ 		this.defaultEditor.onAction("app.message.followUp", () => this.handleFollowUp());
+ 		this.defaultEditor.onAction("app.message.dequeue", () => this.handleDequeue());
+@@ -2975,6 +2990,10 @@ export class InteractiveMode {
+ 				this.ui.requestRender();
+ 				break;
+ 
++			case "bash_execution_update":
++				// The bash execution callback handles TUI output rendering.
++				break;
++
+ 			case "tool_execution_start": {
+ 				let component = this.pendingTools.get(event.toolCallId);
+ 				if (!component) {
+@@ -3223,7 +3242,12 @@ export class InteractiveMode {
+ 			case "custom": {
+ 				if (message.display) {
+ 					const renderer = this.session.extensionRunner.getMessageRenderer(message.customType);
+-					const component = new CustomMessageComponent(message, renderer, this.getMarkdownThemeWithSettings());
++					const component = new CustomMessageComponent(
++						message,
++						renderer,
++						this.getMarkdownThemeWithSettings(),
++						this.outputPad,
++					);
+ 					component.setExpanded(this.toolOutputExpanded);
+ 					this.chatContainer.addChild(component);
+ 				}
+@@ -3809,57 +3833,20 @@ export class InteractiveMode {
+ 		this.showStatus(`Thinking blocks: ${this.hideThinkingBlock ? "hidden" : "visible"}`);
+ 	}
+ 
+-	private async openExternalEditor(): Promise<void> {
++	private async handleOpenExternalEditor(): Promise<void> {
+ 		const editorCmd = this.settingsManager.getExternalEditorCommand();
+-		if (!editorCmd) {
+-			this.showWarning("No editor configured. Set externalEditor in settings.json or $VISUAL/$EDITOR.");
+-			return;
+-		}
+-
+-		const currentText = this.editor.getExpandedText?.() ?? this.editor.getText();
+-		const tmpFile = path.join(os.tmpdir(), `pi-editor-${Date.now()}.pi.md`);
+-
++		const content = this.editor.getExpandedText?.() ?? this.editor.getText();
++		this.ui.stop();
+ 		try {
+-			// Write current content to temp file
+-			fs.writeFileSync(tmpFile, currentText, "utf-8");
+-
+-			// Stop TUI to release terminal
+-			this.ui.stop();
+-
+-			// Split by space to support editor arguments (e.g., "code --wait")
+-			const [editor, ...editorArgs] = editorCmd.split(" ");
+-
+-			process.stdout.write(`Launching external editor: ${editorCmd}\nPi will resume when the editor exits.\n`);
+-
+-			// Do not use spawnSync here. On Windows, synchronous child_process calls can keep
+-			// Node/libuv's console input read active after ui.stop() pauses stdin, racing
+-			// vim/nvim for the console input buffer until Ctrl+C cancels the pending read.
+-			const status = await new Promise<number | null>((resolve) => {
+-				const child = spawn(editor, [...editorArgs, tmpFile], {
+-					stdio: "inherit",
+-					shell: process.platform === "win32",
+-				});
+-				child.on("error", () => resolve(null));
+-				child.on("close", (code) => resolve(code));
++			const result = await editInExternalEditor({
++				command: editorCmd,
++				content,
+ 			});
+-
+-			// On successful exit (status 0), replace editor content
+-			if (status === 0) {
+-				const newContent = fs.readFileSync(tmpFile, "utf-8").replace(/\n$/, "");
+-				this.editor.setText(newContent);
++			if (result.status === "complete") {
++				this.editor.setText(result.content);
+ 			}
+-			// On non-zero exit, keep original text (no action needed)
+ 		} finally {
+-			// Clean up temp file
+-			try {
+-				fs.unlinkSync(tmpFile);
+-			} catch {
+-				// Ignore cleanup errors
+-			}
+-
+-			// Restart TUI
+ 			this.ui.start();
+-			// Force full re-render since external editor uses alternate screen
+ 			this.ui.requestRender(true);
+ 		}
+ 	}
+@@ -4275,7 +4262,11 @@ export class InteractiveMode {
+ 						this.outputPad = padding;
+ 						if (this.streamingComponent || this.session.isStreaming) {
+ 							for (const child of this.chatContainer.children) {
+-								if (child instanceof AssistantMessageComponent || child instanceof UserMessageComponent) {
++								if (
++									child instanceof AssistantMessageComponent ||
++									child instanceof CustomMessageComponent ||
++									child instanceof UserMessageComponent
++								) {
+ 									child.setOutputPad(padding);
+ 								}
+ 							}
+@@ -4486,14 +4477,20 @@ export class InteractiveMode {
+ 		// Get all available models
+ 		await this.session.modelRuntime.refresh();
+ 		const allModels = [...(await this.session.modelRuntime.getAvailable())];
++		const allModelIds = new Set(allModels.map((model) => `${model.provider}/${model.id}`));
++		const configuredPatterns = this.settingsManager.getEnabledModels();
++		const sessionScopedModels = this.session.scopedModels;
+ 
+-		if (allModels.length === 0) {
++		if (allModels.length === 0 && !configuredPatterns?.length && sessionScopedModels.length === 0) {
+ 			this.showStatus("No models available");
+ 			return;
+ 		}
+ 
++		const configuredScope = configuredPatterns?.length
++			? await resolveModelScopeWithDiagnostics(configuredPatterns, this.session.modelRuntime)
++			: undefined;
++
+ 		// Check if session has scoped models (from previous session-only changes or CLI --models)
+-		const sessionScopedModels = this.session.scopedModels;
+ 		const hasSessionScope = sessionScopedModels.length > 0;
+ 
+ 		// Build enabled model IDs from session state or settings
+@@ -4502,19 +4499,25 @@ export class InteractiveMode {
+ 		if (hasSessionScope) {
+ 			// Use current session's scoped models
+ 			currentEnabledIds = sessionScopedModels.map((scoped) => `${scoped.model.provider}/${scoped.model.id}`);
+-		} else {
+-			// Fall back to settings
+-			const patterns = this.settingsManager.getEnabledModels();
+-			if (patterns !== undefined && patterns.length > 0) {
+-				const scopedModels = await resolveModelScope(patterns, this.session.modelRuntime);
+-				currentEnabledIds = scopedModels.map((scoped) => `${scoped.model.provider}/${scoped.model.id}`);
+-			}
++		} else if (configuredScope) {
++			currentEnabledIds = configuredScope.scopedModels.map(
++				(scoped) => `${scoped.model.provider}/${scoped.model.id}`,
++			);
++		}
++
++		for (const diagnostic of configuredScope?.diagnostics ?? []) {
++			if (diagnostic.code !== "no-match") continue;
++			currentEnabledIds ??= [];
++			if (!currentEnabledIds.includes(diagnostic.pattern)) currentEnabledIds.push(diagnostic.pattern);
+ 		}
+ 
+ 		// Helper to update session's scoped models (session-only, no persist)
+ 		const updateSessionModels = async (enabledIds: string[] | null) => {
+ 			currentEnabledIds = enabledIds === null ? null : [...enabledIds];
+-			if (enabledIds && enabledIds.length > 0 && enabledIds.length < allModels.length) {
++			const hasEnabledAvailableModel = enabledIds?.some((id) => allModelIds.has(id)) ?? false;
++			const allAvailableModelsEnabled =
++				enabledIds !== null && [...allModelIds].every((id) => enabledIds.includes(id));
++			if (enabledIds && hasEnabledAvailableModel && !allAvailableModelsEnabled) {
+ 				const newScopedModels = await resolveModelScope(enabledIds, this.session.modelRuntime);
+ 				this.session.setScopedModels(
+ 					newScopedModels.map((sm) => ({
+@@ -4542,10 +4545,11 @@ export class InteractiveMode {
+ 					},
+ 					onPersist: (enabledIds) => {
+ 						// Persist to settings
+-						const newPatterns =
+-							enabledIds === null || enabledIds.length === allModels.length
+-								? undefined // All enabled = clear filter
+-								: enabledIds;
++						const allEnabled =
++							enabledIds !== null &&
++							enabledIds.length === allModels.length &&
++							enabledIds.every((id) => allModelIds.has(id));
++						const newPatterns = enabledIds === null || allEnabled ? undefined : enabledIds;
+ 						this.settingsManager.setEnabledModels(newPatterns ? [...newPatterns] : undefined);
+ 						this.showStatus("Model selection saved to settings");
+ 					},
+diff --git a/packages/coding-agent/src/modes/rpc/rpc-mode.ts b/packages/coding-agent/src/modes/rpc/rpc-mode.ts
+index 06eadccb..e3988e81 100644
+--- a/packages/coding-agent/src/modes/rpc/rpc-mode.ts
++++ b/packages/coding-agent/src/modes/rpc/rpc-mode.ts
+@@ -558,6 +558,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
+ 			case "bash": {
+ 				const result = await session.executeBash(command.command, undefined, {
+ 					excludeFromContext: command.excludeFromContext,
++					id,
+ 				});
+ 				return success(id, "bash", result);
+ 			}
+diff --git a/packages/coding-agent/src/utils/clipboard.ts b/packages/coding-agent/src/utils/clipboard.ts
+index 9bb10d5c..b991636a 100644
+--- a/packages/coding-agent/src/utils/clipboard.ts
++++ b/packages/coding-agent/src/utils/clipboard.ts
+@@ -104,15 +104,25 @@ export async function copyToClipboard(text: string): Promise<void> {
+ 						try {
+ 							// Verify wl-copy exists (spawn errors are async and won't be caught)
+ 							execSync("which wl-copy", { stdio: "ignore" });
+-							// wl-copy with execSync hangs due to fork behavior; use spawn instead
+-							const proc = spawn("wl-copy", [], { stdio: ["pipe", "ignore", "ignore"] });
+-							proc.stdin.on("error", () => {
+-								// Ignore EPIPE errors if wl-copy exits early
++							// wl-copy with execSync hangs due to fork behavior; use spawn instead.
++							// Await the exit code and only claim success on a clean exit, so a
++							// failed wl-copy falls through to the xclip/OSC 52 fallbacks.
++							const wlCopyExit = await new Promise<number>((resolve) => {
++								const proc = spawn("wl-copy", [], { stdio: ["pipe", "ignore", "ignore"] });
++								proc.on("error", () => resolve(1));
++								proc.on("close", (code) => resolve(code ?? 1));
++								proc.stdin.on("error", () => {
++									// Ignore EPIPE errors if wl-copy exits early
++								});
++								proc.stdin.write(text);
++								proc.stdin.end();
+ 							});
+-							proc.stdin.write(text);
+-							proc.stdin.end();
+-							proc.unref();
+-							copied = true;
++							if (wlCopyExit === 0) {
++								copied = true;
++							} else if (hasX11Display) {
++								copyToX11Clipboard(options);
++								copied = true;
++							}
+ 						} catch {
+ 							if (hasX11Display) {
+ 								copyToX11Clipboard(options);
+diff --git a/packages/coding-agent/src/utils/version-check.ts b/packages/coding-agent/src/utils/version-check.ts
+index a6a4f469..1a99a869 100644
+--- a/packages/coding-agent/src/utils/version-check.ts
++++ b/packages/coding-agent/src/utils/version-check.ts
+@@ -31,7 +31,7 @@ export async function getLatestPiRelease(
+ 	currentVersion: string,
+ 	options: { timeoutMs?: number } = {},
+ ): Promise<LatestPiRelease | undefined> {
+-	if (process.env.PI_SKIP_VERSION_CHECK || process.env.PI_OFFLINE) return undefined;
++	if (process.env.PI_OFFLINE) return undefined;
+ 
+ 	const response = await fetch(LATEST_VERSION_URL, {
+ 		headers: {
+@@ -68,6 +68,8 @@ export async function getLatestPiVersion(
+ }
+ 
+ export async function checkForNewPiVersion(currentVersion: string): Promise<LatestPiRelease | undefined> {
++	if (process.env.PI_SKIP_VERSION_CHECK) return undefined;
++
+ 	try {
+ 		const latestRelease = await getLatestPiRelease(currentVersion);
+ 		if (latestRelease && isNewerPackageVersion(latestRelease.version, currentVersion)) {
+diff --git a/packages/coding-agent/test/agent-session-dynamic-tools.test.ts b/packages/coding-agent/test/agent-session-dynamic-tools.test.ts
+index 88871ac8..719550fe 100644
+--- a/packages/coding-agent/test/agent-session-dynamic-tools.test.ts
++++ b/packages/coding-agent/test/agent-session-dynamic-tools.test.ts
+@@ -8,6 +8,7 @@ import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
+ import { createAgentSession } from "../src/core/sdk.ts";
+ import { SessionManager } from "../src/core/session-manager.ts";
+ import { SettingsManager } from "../src/core/settings-manager.ts";
++import { createBashTool } from "../src/core/tools/bash.ts";
+ 
+ describe("AgentSession dynamic tool registration", () => {
+ 	let tempDir: string;
+@@ -25,6 +26,76 @@ describe("AgentSession dynamic tool registration", () => {
+ 		}
+ 	});
+ 
++	it("exposes session state before custom bash spawn hooks and supports opting out", async () => {
++		const settingsManager = SettingsManager.create(tempDir, agentDir);
++		const sessionManager = SessionManager.create(tempDir, join(agentDir, "sessions"), { id: "bash-env-test" });
++		let sessionEnv: NodeJS.ProcessEnv | undefined;
++		let optedOutEnv: NodeJS.ProcessEnv | undefined;
++		const resourceLoader = new DefaultResourceLoader({
++			cwd: tempDir,
++			agentDir,
++			settingsManager,
++			extensionFactories: [
++				(pi) => {
++					pi.registerTool(
++						createBashTool(tempDir, {
++							spawnHook: (ctx) => {
++								sessionEnv = ctx.env;
++								return ctx;
++							},
++						}),
++					);
++					pi.registerTool({
++						...createBashTool(tempDir, {
++							exposeSessionEnvironment: false,
++							spawnHook: (ctx) => {
++								optedOutEnv = ctx.env;
++								return ctx;
++							},
++						}),
++						name: "bash_without_session_env",
++						label: "bash without session env",
++					});
++				},
++			],
++		});
++		await resourceLoader.reload();
++
++		const model = getModel("anthropic", "claude-sonnet-4-5")!;
++		const { session } = await createAgentSession({
++			cwd: tempDir,
++			agentDir,
++			model,
++			thinkingLevel: "high",
++			settingsManager,
++			sessionManager,
++			resourceLoader,
++		});
++
++		const bashTool = session.agent.state.tools.find((tool) => tool.name === "bash")!;
++		expect(session.systemPrompt).toContain(
++			"Inspect PI_* environment variables for current model and session details.",
++		);
++		await bashTool.execute("bash-env", { command: "printf ok" });
++		expect(sessionEnv).toMatchObject({
++			PI_SESSION_ID: session.sessionId,
++			PI_SESSION_FILE: session.sessionFile,
++			PI_PROVIDER: model.provider,
++			PI_MODEL: model.id,
++			PI_REASONING_LEVEL: session.thinkingLevel,
++		});
++
++		const optedOutBashTool = session.agent.state.tools.find((tool) => tool.name === "bash_without_session_env")!;
++		await optedOutBashTool.execute("bash-no-env", { command: "printf ok" });
++		expect(optedOutEnv).not.toHaveProperty("PI_SESSION_ID");
++		expect(optedOutEnv).not.toHaveProperty("PI_SESSION_FILE");
++		expect(optedOutEnv).not.toHaveProperty("PI_PROVIDER");
++		expect(optedOutEnv).not.toHaveProperty("PI_MODEL");
++		expect(optedOutEnv).not.toHaveProperty("PI_REASONING_LEVEL");
++
++		session.dispose();
++	});
++
+ 	it("refreshes tool registry when tools are registered after initialization", async () => {
+ 		const settingsManager = SettingsManager.create(tempDir, agentDir);
+ 		const sessionManager = SessionManager.inMemory();
+diff --git a/packages/coding-agent/test/compaction-summary-reasoning.test.ts b/packages/coding-agent/test/compaction-summary-reasoning.test.ts
+index 41766238..e79a5504 100644
+--- a/packages/coding-agent/test/compaction-summary-reasoning.test.ts
++++ b/packages/coding-agent/test/compaction-summary-reasoning.test.ts
+@@ -90,6 +90,18 @@ describe("generateSummary reasoning options", () => {
+ 		);
+ 	});
+ 
++	it("uses fresh routing sessions without prompt caching", async () => {
++		await generateSummary(messages, createModel(false), 2000, "test-key");
++		await generateSummary(messages, createModel(false), 2000, "test-key");
++
++		const requestOptions = completeSimpleMock.mock.calls.map((call) => call[2]);
++		expect(requestOptions).toHaveLength(2);
++		expect(requestOptions.every((options) => options?.cacheRetention === "none")).toBe(true);
++
++		const sessionIds = requestOptions.map((options) => options?.sessionId);
++		expect(sessionIds[0]).not.toBe(sessionIds[1]);
++	});
++
+ 	it("does not set reasoning when thinking is off", async () => {
+ 		await generateSummary(
+ 			messages,
+diff --git a/packages/coding-agent/test/custom-message.test.ts b/packages/coding-agent/test/custom-message.test.ts
+new file mode 100644
+index 00000000..cdc59801
+--- /dev/null
++++ b/packages/coding-agent/test/custom-message.test.ts
+@@ -0,0 +1,44 @@
++import { Text } from "@earendil-works/pi-tui";
++import { describe, expect, test } from "vitest";
++import type { MessageRenderer, MessageRenderOptions } from "../src/core/extensions/types.ts";
++import type { CustomMessage } from "../src/core/messages.ts";
++import { CustomMessageComponent } from "../src/modes/interactive/components/custom-message.ts";
++import { initTheme } from "../src/modes/interactive/theme/theme.ts";
++import { stripAnsi } from "../src/utils/ansi.ts";
++
++describe("CustomMessageComponent", () => {
++	test("provides output padding to custom renderers and updates it", () => {
++		initTheme("dark");
++		const optionsSeen: MessageRenderOptions[] = [];
++		const renderer: MessageRenderer = (_message, options) => {
++			optionsSeen.push(options);
++			return new Text("custom", options.outputPad, 0);
++		};
++		const message: CustomMessage = {
++			role: "custom",
++			customType: "test",
++			content: "custom",
++			display: true,
++			timestamp: Date.now(),
++		};
++		const component = new CustomMessageComponent(message, renderer, undefined, 1);
++
++		expect(optionsSeen).toEqual([{ expanded: false, outputPad: 1 }]);
++		expect(
++			component
++				.render(40)
++				.map(stripAnsi)
++				.some((line) => line.startsWith(" custom")),
++		).toBe(true);
++
++		component.setOutputPad(0);
++
++		expect(optionsSeen.at(-1)).toEqual({ expanded: false, outputPad: 0 });
++		expect(
++			component
++				.render(40)
++				.map(stripAnsi)
++				.some((line) => line.startsWith("custom")),
++		).toBe(true);
++	});
++});
+diff --git a/packages/coding-agent/test/external-editor.test.ts b/packages/coding-agent/test/external-editor.test.ts
+new file mode 100644
+index 00000000..5cbbc93b
+--- /dev/null
++++ b/packages/coding-agent/test/external-editor.test.ts
+@@ -0,0 +1,63 @@
++import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { basename, dirname, join } from "node:path";
++import { fileURLToPath } from "node:url";
++import { describe, expect, it } from "vitest";
++import { type ExternalEditorResult, editInExternalEditor } from "../src/modes/interactive/external-editor.ts";
++
++const editorFixturePath = fileURLToPath(new URL("./fixtures/fake-external-editor.mjs", import.meta.url));
++
++interface EditorCapture {
++	filePath: string;
++	content: string;
++	entries: string[];
++	directoryMode: number;
++}
++
++async function runExternalEditor(fixtureFlag?: "--fail" | "--empty"): Promise<{
++	result: ExternalEditorResult;
++	capture: EditorCapture;
++}> {
++	const testDirectory = mkdtempSync(join(tmpdir(), "pi-external-editor-test-"));
++	const capturePath = join(testDirectory, "capture.json");
++	try {
++		const result = await editInExternalEditor({
++			command: `${process.execPath} ${editorFixturePath} ${capturePath}${fixtureFlag ? ` ${fixtureFlag}` : ""}`,
++			content: "original",
++		});
++		const capture = JSON.parse(readFileSync(capturePath, "utf-8")) as EditorCapture;
++		return { result, capture };
++	} finally {
++		rmSync(testDirectory, { recursive: true, force: true });
++	}
++}
++
++describe("editInExternalEditor", () => {
++	it("edits a prompt inside a private temporary directory", async () => {
++		const { result, capture } = await runExternalEditor();
++		const directory = dirname(capture.filePath);
++
++		expect(result).toEqual({ status: "complete", content: "edited" });
++		expect(dirname(directory)).toBe(tmpdir());
++		expect(basename(directory)).toMatch(/^pi-editor-.+$/);
++		expect(basename(capture.filePath)).toBe("prompt.md");
++		expect(capture.entries).toEqual(["prompt.md"]);
++		expect(capture.content).toBe("original");
++		if (process.platform !== "win32") {
++			expect(capture.directoryMode & 0o077).toBe(0);
++		}
++		expect(existsSync(directory)).toBe(false);
++	});
++
++	it("keeps the original content when the editor exits unsuccessfully", async () => {
++		const { result, capture } = await runExternalEditor("--fail");
++
++		expect(result).toEqual({ status: "failed" });
++		expect(existsSync(dirname(capture.filePath))).toBe(false);
++	});
++	it("returns empty content when the editor clears the prompt", async () => {
++		const { result } = await runExternalEditor("--empty");
++
++		expect(result).toEqual({ status: "complete", content: "" });
++	});
++});
+diff --git a/packages/coding-agent/test/fixtures/fake-external-editor.mjs b/packages/coding-agent/test/fixtures/fake-external-editor.mjs
+new file mode 100644
+index 00000000..043dfcf0
+--- /dev/null
++++ b/packages/coding-agent/test/fixtures/fake-external-editor.mjs
+@@ -0,0 +1,25 @@
++import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
++import { dirname } from "node:path";
++
++const capturePath = process.argv[2];
++const filePath = process.argv.at(-1);
++if (!capturePath || !filePath) {
++	process.exit(1);
++}
++
++const directory = dirname(filePath);
++writeFileSync(
++	capturePath,
++	JSON.stringify({
++		filePath,
++		content: readFileSync(filePath, "utf-8"),
++		entries: readdirSync(directory),
++		directoryMode: statSync(directory).mode & 0o777,
++	}),
++	"utf-8",
++);
++
++if (process.argv.includes("--fail")) {
++	process.exit(1);
++}
++writeFileSync(filePath, process.argv.includes("--empty") ? "" : "edited\n", "utf-8");
+diff --git a/packages/coding-agent/test/interactive-mode-status.test.ts b/packages/coding-agent/test/interactive-mode-status.test.ts
+index 54c615bc..19a7f9e9 100644
+--- a/packages/coding-agent/test/interactive-mode-status.test.ts
++++ b/packages/coding-agent/test/interactive-mode-status.test.ts
+@@ -1019,6 +1019,84 @@ describe("InteractiveMode.showLoadedResources", () => {
+ "[Extensions]
+   pi-markdown-preview"`);
+ 	});
++
++	test("labels npm sibling extensions relative to the declaring package", () => {
++		const extensions: ExtensionFixture[] = [
++			{
++				path: "/tmp/project/.pi/npm/node_modules/primary-package/index.ts",
++				sourceInfo: createSourceInfo("/tmp/project/.pi/npm/node_modules/primary-package/index.ts", {
++					source: "npm:primary-package",
++					scope: "project",
++					origin: "package",
++					baseDir: "/tmp/project/.pi/npm/node_modules/primary-package",
++				}),
++			},
++			{
++				path: "/tmp/project/.pi/npm/node_modules/sibling-package/index.ts",
++				sourceInfo: createSourceInfo("/tmp/project/.pi/npm/node_modules/sibling-package/index.ts", {
++					source: "npm:primary-package",
++					scope: "project",
++					origin: "package",
++					baseDir: "/tmp/project/.pi/npm/node_modules/primary-package",
++				}),
++			},
++		];
++
++		const fakeThis = createShowLoadedResourcesThis({
++			quietStartup: false,
++			extensions,
++			useRealScopeGroups: true,
++		});
++
++		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, {
++			force: false,
++		});
++
++		expect(normalizeRenderedOutput(fakeThis.loadedResourcesContainer)).toMatchInlineSnapshot(`
++"[Extensions]
++  primary-package, primary-package:../sibling-package"`);
++	});
++
++	test("labels Windows npm sibling extensions relative to the declaring package", () => {
++		const primaryPath = "C:\\Users\\me\\.pi\\agent\\npm\\node_modules\\primary-package\\index.ts";
++		const siblingPath = "C:\\Users\\me\\.pi\\agent\\npm\\node_modules\\sibling-package\\index.ts";
++		const baseDir = "C:\\Users\\me\\.pi\\agent\\npm\\node_modules\\primary-package";
++		const extensions: ExtensionFixture[] = [
++			{
++				path: primaryPath,
++				sourceInfo: createSourceInfo(primaryPath, {
++					source: "npm:primary-package",
++					scope: "user",
++					origin: "package",
++					baseDir,
++				}),
++			},
++			{
++				path: siblingPath,
++				sourceInfo: createSourceInfo(siblingPath, {
++					source: "npm:primary-package",
++					scope: "user",
++					origin: "package",
++					baseDir,
++				}),
++			},
++		];
++
++		const fakeThis = createShowLoadedResourcesThis({
++			quietStartup: false,
++			extensions,
++			useRealScopeGroups: true,
++		});
++
++		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, {
++			force: false,
++		});
++
++		expect(normalizeRenderedOutput(fakeThis.loadedResourcesContainer)).toMatchInlineSnapshot(`
++"[Extensions]
++  primary-package, primary-package:../sibling-package"`);
++	});
++
+ 	test("captures mixed extension layouts in expanded output", () => {
+ 		const fakeThis = createShowLoadedResourcesThis({
+ 			quietStartup: false,
+diff --git a/packages/coding-agent/test/llama-extension.test.ts b/packages/coding-agent/test/llama-extension.test.ts
+index 19dbdee7..3af25e56 100644
+--- a/packages/coding-agent/test/llama-extension.test.ts
++++ b/packages/coding-agent/test/llama-extension.test.ts
+@@ -1,7 +1,7 @@
+ import { once } from "node:events";
+ import { createServer, type RequestListener, type Server, type ServerResponse } from "node:http";
+ import type { AddressInfo } from "node:net";
+-import type { AuthContext, AuthPrompt } from "@earendil-works/pi-ai";
++import type { AuthContext, AuthPrompt, ModelsStoreEntry } from "@earendil-works/pi-ai";
+ import { afterEach, describe, expect, it } from "vitest";
+ import { createEventBus } from "../src/core/event-bus.ts";
+ import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
+@@ -67,7 +67,7 @@ describe("llama.cpp extension", () => {
+ 					id: "loaded",
+ 					status: { value: "loaded", args: ["llama-server", "--n-gpu-layers", "999"] },
+ 					architecture: { input_modalities: ["text", "image"] },
+-					meta: { n_ctx: 16384, n_ctx_train: 131072 },
++					meta: { n_ctx: 65536, n_ctx_train: 131072 },
+ 				},
+ 				{ id: "unloaded", status: { value: "unloaded" } },
+ 				{ id: "loading", status: { value: "loading" } },
+@@ -79,13 +79,57 @@ describe("llama.cpp extension", () => {
+ 			expect.objectContaining({
+ 				id: "loaded",
+ 				baseUrl: "http://localhost:8080/v1",
+-				contextWindow: 16384,
+-				maxTokens: 16384,
++				contextWindow: 65536,
++				maxTokens: 65536,
+ 				input: ["text", "image"],
+ 			}),
+ 		]);
+ 	});
+ 
++	it("persists and restores loaded models for cache-only startup refreshes", async () => {
++		let cachedEntry: ModelsStoreEntry | undefined;
++		const store = {
++			read: async () => cachedEntry,
++			write: async (entry: ModelsStoreEntry) => {
++				cachedEntry = structuredClone(entry);
++			},
++			delete: async () => {
++				cachedEntry = undefined;
++			},
++		};
++		const { url } = await listen((request, response) => {
++			if (request.url === "/models") {
++				json(response, {
++					data: [
++						{ id: "loaded", status: { value: "loaded" }, meta: { n_ctx: 32768 } },
++						{ id: "unloaded", status: { value: "unloaded" } },
++					],
++				});
++				return;
++			}
++			response.writeHead(404).end();
++		});
++
++		const first = createLlamaProvider();
++		await first.provider.refreshModels?.({
++			credential: { type: "api_key", key: "local", env: { LLAMA_BASE_URL: url } },
++			store,
++			allowNetwork: true,
++		});
++		expect(first.provider.getModels().map((model) => model.id)).toEqual(["loaded"]);
++		expect(cachedEntry?.models.map((model) => model.id)).toEqual(["loaded"]);
++
++		const second = createLlamaProvider();
++		await second.provider.refreshModels?.({
++			credential: { type: "api_key", key: "local", env: { LLAMA_BASE_URL: url } },
++			store,
++			allowNetwork: false,
++		});
++		expect(second.provider.getModels()).toEqual([
++			expect.objectContaining({ id: "loaded", baseUrl: `${url}/v1`, contextWindow: 32768 }),
++		]);
++	});
++
+ 	it("stays dormant until configured and stores URL plus optional key", async () => {
+ 		const { provider } = createLlamaProvider();
+ 		const auth = provider.auth.apiKey!;
+diff --git a/packages/coding-agent/test/model-resolver.test.ts b/packages/coding-agent/test/model-resolver.test.ts
+index 22dca860..5c54b2d1 100644
+--- a/packages/coding-agent/test/model-resolver.test.ts
++++ b/packages/coding-agent/test/model-resolver.test.ts
+@@ -225,11 +225,13 @@ describe("resolveModelScopeWithDiagnostics", () => {
+ 				{
+ 					type: "warning",
+ 					message: 'Invalid thinking level "invalid" in pattern "gpt-4o:invalid". Using default instead.',
++					code: "invalid-thinking-level",
+ 					pattern: "gpt-4o:invalid",
+ 				},
+ 				{
+ 					type: "warning",
+ 					message: 'No models match pattern "missing"',
++					code: "no-match",
+ 					pattern: "missing",
+ 				},
+ 			]);
+@@ -255,6 +257,53 @@ describe("resolveModelScopeWithDiagnostics", () => {
+ 			warn.mockRestore();
+ 		}
+ 	});
++
++	test("resolves bracketed model ids as exact references before glob matching", async () => {
++		const bracketedModel: Model<"anthropic-messages"> = {
++			id: "bracketed-model[1m]",
++			name: "Bracketed Model",
++			api: "anthropic-messages",
++			provider: "custom",
++			baseUrl: "https://example.invalid",
++			reasoning: true,
++			input: ["text"],
++			cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1 },
++			contextWindow: 128000,
++			maxTokens: 8192,
++		};
++		const registry = {
++			getAvailable: () => [...allModels, bracketedModel],
++		} as unknown as Parameters<typeof resolveModelScopeWithDiagnostics>[1];
++
++		const result = await resolveModelScopeWithDiagnostics(["custom/bracketed-model[1m]"], registry);
++
++		expect(result.scopedModels.map((scoped) => scoped.model.id)).toEqual(["bracketed-model[1m]"]);
++		expect(result.diagnostics).toEqual([]);
++	});
++
++	test("resolves bracketed model ids with thinking levels as exact references before glob matching", async () => {
++		const bracketedModel: Model<"anthropic-messages"> = {
++			id: "bracketed-model[1m]",
++			name: "Bracketed Model",
++			api: "anthropic-messages",
++			provider: "custom",
++			baseUrl: "https://example.invalid",
++			reasoning: true,
++			input: ["text"],
++			cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1 },
++			contextWindow: 128000,
++			maxTokens: 8192,
++		};
++		const registry = {
++			getAvailable: () => [...allModels, bracketedModel],
++		} as unknown as Parameters<typeof resolveModelScopeWithDiagnostics>[1];
++
++		const result = await resolveModelScopeWithDiagnostics(["custom/bracketed-model[1m]:high"], registry);
++
++		expect(result.scopedModels.map((scoped) => scoped.model.id)).toEqual(["bracketed-model[1m]"]);
++		expect(result.scopedModels[0].thinkingLevel).toBe("high");
++		expect(result.diagnostics).toEqual([]);
++	});
+ });
+ 
+ describe("resolveCliModel", () => {
+diff --git a/packages/coding-agent/test/package-command-paths.test.ts b/packages/coding-agent/test/package-command-paths.test.ts
+index 4158f3f0..eb6972bf 100644
+--- a/packages/coding-agent/test/package-command-paths.test.ts
++++ b/packages/coding-agent/test/package-command-paths.test.ts
+@@ -470,6 +470,32 @@ describe("package commands", () => {
+ 		}
+ 	});
+ 
++	it("allows explicit self-update checks when automatic version checks are disabled", async () => {
++		const previousSkipVersionCheck = process.env.PI_SKIP_VERSION_CHECK;
++		process.env.PI_SKIP_VERSION_CHECK = "1";
++		const fetchMock = vi.fn(async () => Response.json({ version: VERSION }));
++		vi.stubGlobal("fetch", fetchMock);
++		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
++		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
++
++		try {
++			await expect(runPackageCommandDirectly(["update", "--self"])).resolves.toBeUndefined();
++
++			expect(fetchMock).toHaveBeenCalledOnce();
++			expect(logSpy.mock.calls.map(([message]) => String(message)).join("\n")).toContain(
++				`pi is already up to date (v${VERSION})`,
++			);
++			expect(errorSpy).not.toHaveBeenCalled();
++			expect(process.exitCode).toBeUndefined();
++		} finally {
++			if (previousSkipVersionCheck === undefined) {
++				delete process.env.PI_SKIP_VERSION_CHECK;
++			} else {
++				process.env.PI_SKIP_VERSION_CHECK = previousSkipVersionCheck;
++			}
++		}
++	});
++
+ 	it("uses the update check version for forced self updates even when current", async () => {
+ 		const globalPrefix = join(tempDir, "global-prefix");
+ 		const projectPrefix = join(tempDir, "project-prefix");
+diff --git a/packages/coding-agent/test/remote-catalog-provider.test.ts b/packages/coding-agent/test/remote-catalog-provider.test.ts
+index 8b43a4f3..f4fecd85 100644
+--- a/packages/coding-agent/test/remote-catalog-provider.test.ts
++++ b/packages/coding-agent/test/remote-catalog-provider.test.ts
+@@ -1,4 +1,3 @@
+-import { statSync } from "node:fs";
+ import {
+ 	createProvider,
+ 	InMemoryModelsStore,
+@@ -25,7 +24,7 @@ function model(id: string): Model<"openai-completions"> {
+ 	};
+ }
+ 
+-function testProvider(localCatalogUrl?: URL) {
++function testProvider(localGeneratedAt?: number) {
+ 	return withRemoteCatalog(
+ 		createProvider({
+ 			id: "test-provider",
+@@ -41,7 +40,7 @@ function testProvider(localCatalogUrl?: URL) {
+ 			},
+ 		}),
+ 		"https://pi.dev",
+-		localCatalogUrl,
++		localGeneratedAt,
+ 	);
+ }
+ 
+@@ -80,19 +79,18 @@ describe("remote catalog provider", () => {
+ 	});
+ 
+ 	it("prefers the newer of the generated and remote catalogs", async () => {
+-		const localCatalogUrl = new URL(import.meta.url);
+-		const localMtime = statSync(localCatalogUrl).mtimeMs;
+-		const newerHeader = new Date(localMtime + 60_000).toUTCString();
++		const localGeneratedAt = Date.parse("2026-07-23T10:00:00.000Z");
++		const newerHeader = new Date(localGeneratedAt + 60_000).toUTCString();
+ 		const responses = [
+ 			new Response(JSON.stringify({ old: model("old") }), {
+-				headers: { "last-modified": new Date(localMtime - 60_000).toUTCString() },
++				headers: { "last-modified": new Date(localGeneratedAt - 60_000).toUTCString() },
+ 			}),
+ 			new Response(JSON.stringify({ newer: model("newer") }), {
+ 				headers: { "last-modified": newerHeader },
+ 			}),
+ 		];
+ 		vi.spyOn(globalThis, "fetch").mockImplementation(async () => responses.shift() as Response);
+-		const provider = testProvider(localCatalogUrl);
++		const provider = testProvider(localGeneratedAt);
+ 		const store = new InMemoryModelsStore();
+ 		const refresh = { credential: { type: "api_key" } as const, store: scopedStore(store), allowNetwork: true };
+ 
+@@ -104,6 +102,76 @@ describe("remote catalog provider", () => {
+ 		expect(await store.read(provider.id)).toMatchObject({ lastModified: Date.parse(newerHeader) });
+ 	});
+ 
++	it("revalidates a stored catalog with its etag and keeps the overlay on 304", async () => {
++		const responses = [
++			new Response(JSON.stringify({ dynamic: model("dynamic") }), {
++				headers: { "content-type": "application/json", etag: '"catalog-1"' },
++			}),
++			new Response(null, { status: 304, headers: { etag: '"catalog-1"' } }),
++		];
++		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => responses.shift() as Response);
++		const provider = testProvider();
++		const store = new InMemoryModelsStore();
++		const refresh = { credential: { type: "api_key" } as const, store: scopedStore(store), allowNetwork: true };
++
++		await provider.refreshModels?.(refresh);
++		expect(fetchSpy.mock.calls[0]?.[1]?.headers).not.toHaveProperty("if-none-match");
++		expect(await store.read(provider.id)).toMatchObject({ etag: '"catalog-1"' });
++
++		const checkedAt = (await store.read(provider.id))?.checkedAt;
++		await provider.refreshModels?.({ ...refresh, force: true });
++
++		expect(fetchSpy.mock.calls[1]?.[1]?.headers).toMatchObject({ "if-none-match": '"catalog-1"' });
++		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static", "dynamic"]);
++		const stored = await store.read(provider.id);
++		expect(stored?.models.map((entry) => entry.id)).toEqual(["dynamic"]);
++		expect(stored?.etag).toBe('"catalog-1"');
++		expect(stored?.checkedAt).toBeGreaterThanOrEqual(checkedAt ?? 0);
++	});
++
++	it("drops a stale etag when the overlay becomes unavailable", async () => {
++		const responses = [
++			new Response(JSON.stringify({ dynamic: model("dynamic") }), {
++				headers: { "content-type": "application/json", etag: '"catalog-1"' },
++			}),
++			new Response("not implemented", { status: 501 }),
++		];
++		vi.spyOn(globalThis, "fetch").mockImplementation(async () => responses.shift() as Response);
++		const provider = testProvider();
++		const store = new InMemoryModelsStore();
++		const refresh = { credential: { type: "api_key" } as const, store: scopedStore(store), allowNetwork: true };
++
++		await provider.refreshModels?.(refresh);
++		await provider.refreshModels?.({ ...refresh, force: true });
++
++		expect((await store.read(provider.id))?.etag).toBeUndefined();
++	});
++
++	it("keeps the etag and overlay after a transient failure", async () => {
++		const responses = [
++			new Response(JSON.stringify({ dynamic: model("dynamic") }), {
++				headers: { "content-type": "application/json", etag: '"catalog-1"' },
++			}),
++			new Response("rate limited", { status: 429 }),
++			new Response(null, { status: 304, headers: { etag: '"catalog-1"' } }),
++		];
++		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => responses.shift() as Response);
++		const provider = testProvider();
++		const store = new InMemoryModelsStore();
++		const refresh = { credential: { type: "api_key" } as const, store: scopedStore(store), allowNetwork: true };
++
++		await provider.refreshModels?.(refresh);
++		await expect(provider.refreshModels?.({ ...refresh, force: true })).rejects.toThrow(/429/);
++
++		const stored = await store.read(provider.id);
++		expect(stored?.etag).toBe('"catalog-1"');
++		expect(stored?.models.map((entry) => entry.id)).toEqual(["dynamic"]);
++
++		await provider.refreshModels?.({ ...refresh, force: true });
++		expect(fetchSpy.mock.calls[2]?.[1]?.headers).toMatchObject({ "if-none-match": '"catalog-1"' });
++		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static", "dynamic"]);
++	});
++
+ 	it("treats unimplemented pi.dev catalog routes as an unavailable overlay", async () => {
+ 		vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("not implemented", { status: 501 }));
+ 		const provider = testProvider();
+diff --git a/packages/coding-agent/test/resource-loader.test.ts b/packages/coding-agent/test/resource-loader.test.ts
+index e458ec7b..9989ab1c 100644
+--- a/packages/coding-agent/test/resource-loader.test.ts
++++ b/packages/coding-agent/test/resource-loader.test.ts
+@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "nod
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import { pathToFileURL } from "node:url";
+-import { afterEach, beforeEach, describe, expect, it } from "vitest";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+ import { AuthStorage } from "../src/core/auth-storage.ts";
+ import { ExtensionRunner } from "../src/core/extensions/runner.ts";
+ import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
+@@ -355,6 +355,22 @@ Content`,
+ 			expect(agentsFiles.some((f) => f.path.includes("AGENTS.md"))).toBe(true);
+ 		});
+ 
++		it("should ignore context file candidates that are directories", async () => {
++			mkdirSync(join(cwd, "AGENTS.md"));
++			writeFileSync(join(cwd, "CLAUDE.md"), "Fallback instructions");
++			const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
++
++			const loader = new DefaultResourceLoader({ cwd, agentDir });
++			await loader.reload();
++
++			expect(loader.getAgentsFiles().agentsFiles).toContainEqual({
++				path: join(cwd, "CLAUDE.md"),
++				content: "Fallback instructions",
++			});
++			expect(consoleError).not.toHaveBeenCalledWith(expect.stringContaining(join(cwd, "AGENTS.md")));
++			consoleError.mockRestore();
++		});
++
+ 		it("should skip AGENTS.md and CLAUDE.md discovery when noContextFiles is true", async () => {
+ 			writeFileSync(join(cwd, "AGENTS.md"), "# Project Guidelines\n\nBe helpful.");
+ 			writeFileSync(join(cwd, "CLAUDE.md"), "# Claude Guidelines\n\nBe helpful.");
+diff --git a/packages/coding-agent/test/sdk-session-manager.test.ts b/packages/coding-agent/test/sdk-session-manager.test.ts
+index 9cdf7774..d60ea9d2 100644
+--- a/packages/coding-agent/test/sdk-session-manager.test.ts
++++ b/packages/coding-agent/test/sdk-session-manager.test.ts
+@@ -92,4 +92,40 @@ describe("createAgentSession session manager defaults", () => {
+ 
+ 		session.dispose();
+ 	});
++
++	it("exposes current session state to the built-in bash tool", async () => {
++		const model = getModel("anthropic", "claude-sonnet-4-5");
++		expect(model).toBeTruthy();
++
++		const { session } = await createAgentSession({
++			cwd,
++			agentDir,
++			model: model!,
++			thinkingLevel: "high",
++		});
++		expect(session.sessionFile).toBeTruthy();
++		expect(session.systemPrompt).toContain(
++			"Inspect PI_* environment variables for current model and session details.",
++		);
++
++		const bashTool = session.agent.state.tools.find((tool) => tool.name === "bash");
++		expect(bashTool).toBeTruthy();
++		const result = await bashTool!.execute("test", {
++			command: `printf '%s\\n' "$PI_SESSION_ID" "$PI_SESSION_FILE" "$PI_PROVIDER" "$PI_MODEL" "$PI_REASONING_LEVEL"`,
++		});
++		const output = result.content
++			.filter((item): item is { type: "text"; text: string } => item.type === "text")
++			.map((item) => item.text)
++			.join("");
++
++		expect(output.trim().split("\n")).toEqual([
++			session.sessionId,
++			session.sessionFile,
++			model!.provider,
++			model!.id,
++			session.thinkingLevel,
++		]);
++
++		session.dispose();
++	});
+ });
+diff --git a/packages/coding-agent/test/sdk-stream-options.test.ts b/packages/coding-agent/test/sdk-stream-options.test.ts
+index f4c2fd94..c01df5f2 100644
+--- a/packages/coding-agent/test/sdk-stream-options.test.ts
++++ b/packages/coding-agent/test/sdk-stream-options.test.ts
+@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
+ import { AuthStorage } from "../src/core/auth-storage.ts";
+ import { createAgentSession } from "../src/core/sdk.ts";
+ import { SessionManager } from "../src/core/session-manager.ts";
+-import { SettingsManager } from "../src/core/settings-manager.ts";
++import { type Settings, SettingsManager } from "../src/core/settings-manager.ts";
+ 
+ import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
+ 
+@@ -76,7 +76,7 @@ describe("createAgentSession stream options", () => {
+ 
+ 	async function captureStreamOptions(
+ 		api: Api,
+-		settings: { httpIdleTimeoutMs?: number; websocketConnectTimeoutMs?: number },
++		settings: Partial<Settings>,
+ 		requestOptions: SimpleStreamOptions = {},
+ 		extensionSource?: string,
+ 	): Promise<SimpleStreamOptions | undefined> {
+@@ -161,6 +161,15 @@ describe("createAgentSession stream options", () => {
+ 		expect(options?.websocketConnectTimeoutMs).toBe(0);
+ 	});
+ 
++	it("forwards provider retry settings", async () => {
++		const options = await captureStreamOptions("openai-completions", {
++			retry: { provider: { maxRetries: 2, maxRetryDelayMs: 3000 } },
++		});
++
++		expect(options?.maxRetries).toBe(2);
++		expect(options?.maxRetryDelayMs).toBe(3000);
++	});
++
+ 	it("runs before_provider_headers on assembled headers without forwarding the transform", async () => {
+ 		const options = await captureStreamOptions(
+ 			"openai-completions",
+diff --git a/packages/coding-agent/test/suite/agent-session-bash-persistence.test.ts b/packages/coding-agent/test/suite/agent-session-bash-persistence.test.ts
+index efd51cfc..e1b8534a 100644
+--- a/packages/coding-agent/test/suite/agent-session-bash-persistence.test.ts
++++ b/packages/coding-agent/test/suite/agent-session-bash-persistence.test.ts
+@@ -239,4 +239,35 @@ describe("AgentSession bash and persistence characterization", () => {
+ 		expect(result.output).toContain("hello from custom ops");
+ 		expect(harness.session.messages[harness.session.messages.length - 1]?.role).toBe("bashExecution");
+ 	});
++
++	it("streams bash output to the callback and session events", async () => {
++		const harness = await createHarness();
++		harnesses.push(harness);
++		const callbackDeltas: string[] = [];
++		const eventUpdates: Array<{ id: string | undefined; delta: string }> = [];
++		const unsubscribe = harness.session.subscribe((event) => {
++			if (event.type === "bash_execution_update") {
++				eventUpdates.push({ id: event.id, delta: event.delta });
++			}
++		});
++		const operations: BashOperations = {
++			exec: async (_command, _cwd, options) => {
++				options.onData(Buffer.from("hello "));
++				options.onData(Buffer.from("world"));
++				return { exitCode: 0 };
++			},
++		};
++
++		await harness.session.executeBash("custom", (delta) => callbackDeltas.push(delta), {
++			id: "bash-1",
++			operations,
++		});
++		unsubscribe();
++
++		expect(callbackDeltas).toEqual(["hello ", "world"]);
++		expect(eventUpdates).toEqual([
++			{ id: "bash-1", delta: "hello " },
++			{ id: "bash-1", delta: "world" },
++		]);
++	});
+ });
+diff --git a/packages/coding-agent/test/suite/agent-session-compaction.test.ts b/packages/coding-agent/test/suite/agent-session-compaction.test.ts
+index 33649135..db1f117d 100644
+--- a/packages/coding-agent/test/suite/agent-session-compaction.test.ts
++++ b/packages/coding-agent/test/suite/agent-session-compaction.test.ts
+@@ -175,6 +175,41 @@ describe("AgentSession compaction characterization", () => {
+ 		expect(getStreamCallCount()).toBe(1);
+ 	});
+ 
++	it("manually compacts with provider-resolved bearer auth", async () => {
++		const harness = await createHarness({ withConfiguredAuth: false });
++		harnesses.push(harness);
++		const model = harness.getModel();
++		harness.session.modelRuntime.registerNativeProvider({
++			id: model.provider,
++			name: "Faux bearer provider",
++			auth: {
++				apiKey: {
++					name: "Faux bearer token",
++					resolve: async () => ({
++						auth: { headers: { Authorization: "Bearer ambient-token" } },
++						source: "ambient bearer token",
++					}),
++				},
++			},
++			getModels: () => harness.models,
++			stream: () => createAssistantMessageEventStream(),
++			streamSimple: () => createAssistantMessageEventStream(),
++		});
++		seedCompactableSession(harness);
++		harness.setResponses([
++			(_context, options) => {
++				expect(options?.apiKey).toBeUndefined();
++				expect(options?.headers).toEqual({ Authorization: "Bearer ambient-token" });
++				return fauxAssistantMessage("summary with bearer auth");
++			},
++		]);
++
++		const result = await harness.session.compact();
++
++		expect(result.summary).toContain("summary with bearer auth");
++		expect(harness.faux.state.callCount).toBe(1);
++	});
++
+ 	it("persists usage from pi-generated manual compaction", async () => {
+ 		const harness = await createHarness({ withConfiguredAuth: false });
+ 		harnesses.push(harness);
+diff --git a/packages/coding-agent/test/suite/harness.ts b/packages/coding-agent/test/suite/harness.ts
+index 5f003241..a1dd2ce2 100644
+--- a/packages/coding-agent/test/suite/harness.ts
++++ b/packages/coding-agent/test/suite/harness.ts
+@@ -1,9 +1,9 @@
+-import { createInMemoryModelRegistry, getModelRuntime } from "../model-runtime-test-utils.ts";
++import { createInMemoryModelRegistry, createModelRegistry, getModelRuntime } from "../model-runtime-test-utils.ts";
+ /**
+  * Local test harness for the new coding-agent test suite.
+  */
+ 
+-import { existsSync, mkdirSync, rmSync } from "node:fs";
++import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
+@@ -71,6 +71,7 @@ export interface HarnessOptions {
+ 	resourceLoader?: ResourceLoader;
+ 	extensionFactories?: Array<InlineExtension | CreateTestExtensionsResultInput>;
+ 	withConfiguredAuth?: boolean;
++	modelsJson?: Record<string, unknown>;
+ }
+ 
+ export interface Harness {
+@@ -115,7 +116,11 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
+ 	if (withConfiguredAuth) {
+ 		await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "faux-key" }));
+ 	}
+-	const modelRegistry = await createInMemoryModelRegistry(authStorage);
++	const modelsPath = options.modelsJson === undefined ? undefined : join(tempDir, "models.json");
++	if (modelsPath) writeFileSync(modelsPath, JSON.stringify(options.modelsJson));
++	const modelRegistry = modelsPath
++		? await createModelRegistry(authStorage, modelsPath)
++		: await createInMemoryModelRegistry(authStorage);
+ 	if (withConfiguredAuth) {
+ 		modelRegistry.registerProvider(model.provider, {
+ 			baseUrl: model.baseUrl,
+diff --git a/packages/coding-agent/test/suite/regressions/6904-dns-transport-retry.test.ts b/packages/coding-agent/test/suite/regressions/6904-dns-transport-retry.test.ts
+new file mode 100644
+index 00000000..9f25cacb
+--- /dev/null
++++ b/packages/coding-agent/test/suite/regressions/6904-dns-transport-retry.test.ts
+@@ -0,0 +1,28 @@
++import { fauxAssistantMessage } from "@earendil-works/pi-ai";
++import { describe, expect, it } from "vitest";
++import { createHarness } from "../harness.ts";
++
++const wrappedDnsLookupError =
++	"The pending stream has been canceled (caused by: getaddrinfo ENOTFOUND bedrock-runtime.us-east-1.amazonaws.com)";
++
++describe("issue #6904 DNS transport failure retry", () => {
++	it("retries a transient DNS lookup failure", async () => {
++		const harness = await createHarness({ settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } } });
++		try {
++			harness.setResponses([
++				fauxAssistantMessage("", { stopReason: "error", errorMessage: wrappedDnsLookupError }),
++				fauxAssistantMessage("recovered after DNS retry"),
++			]);
++
++			await harness.session.prompt("test");
++
++			expect(harness.faux.state.callCount).toBe(2);
++			expect(harness.eventsOfType("auto_retry_start").map((event) => event.errorMessage)).toEqual([
++				wrappedDnsLookupError,
++			]);
++			expect(harness.eventsOfType("auto_retry_end").map((event) => event.success)).toEqual([true]);
++		} finally {
++			harness.cleanup();
++		}
++	});
++});
+diff --git a/packages/coding-agent/test/suite/regressions/6949-unavailable-scoped-model.test.ts b/packages/coding-agent/test/suite/regressions/6949-unavailable-scoped-model.test.ts
+new file mode 100644
+index 00000000..21223540
+--- /dev/null
++++ b/packages/coding-agent/test/suite/regressions/6949-unavailable-scoped-model.test.ts
+@@ -0,0 +1,160 @@
++import type { Api, Model } from "@earendil-works/pi-ai";
++import { setKeybindings } from "@earendil-works/pi-tui";
++import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
++import { KeybindingsManager } from "../../../src/core/keybindings.ts";
++import { ScopedModelsSelectorComponent } from "../../../src/modes/interactive/components/scoped-models-selector.ts";
++import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
++import { initTheme } from "../../../src/modes/interactive/theme/theme.ts";
++import { stripAnsi } from "../../../src/utils/ansi.ts";
++import { createHarness, type Harness } from "../harness.ts";
++
++function createInteractiveContext(options: {
++	allModels: Model<Api>[];
++	enabledModelIds: string[];
++	scopedModels?: Array<{ model: Model<Api> }>;
++}) {
++	let selector: ScopedModelsSelectorComponent | undefined;
++	const setScopedModels = vi.fn();
++	const getAvailable = vi.fn().mockResolvedValue(options.allModels);
++	const context = {
++		session: {
++			modelRuntime: {
++				refresh: vi.fn(),
++				getAvailable,
++			},
++			scopedModels: options.scopedModels ?? [],
++			setScopedModels,
++		},
++		settingsManager: {
++			getEnabledModels: () => options.enabledModelIds,
++			setEnabledModels: vi.fn(),
++		},
++		showStatus: vi.fn(),
++		showSelector: (factory: (done: () => void) => { component: ScopedModelsSelectorComponent }) => {
++			selector = factory(() => {}).component;
++		},
++		updateAvailableProviderCount: vi.fn(),
++		ui: { requestRender: vi.fn() },
++	};
++	return { context, getAvailable, getSelector: () => selector, setScopedModels };
++}
++
++async function showModelsSelector(context: object): Promise<void> {
++	const show = Reflect.get(InteractiveMode.prototype, "showModelsSelector") as (this: object) => Promise<void>;
++	await show.call(context);
++}
++
++describe("issue #6949 unavailable scoped models", () => {
++	const harnesses: Harness[] = [];
++
++	beforeAll(() => {
++		initTheme("dark");
++	});
++
++	beforeEach(() => {
++		setKeybindings(new KeybindingsManager());
++	});
++
++	afterEach(() => {
++		while (harnesses.length > 0) harnesses.pop()?.cleanup();
++	});
++
++	it("shows and removes an enabled model without a catalog entry", async () => {
++		const harness = await createHarness({ models: [{ id: "available", name: "Available" }] });
++		harnesses.push(harness);
++		const availableId = `${harness.models[0].provider}/${harness.models[0].id}`;
++		const unavailableId = `${harness.models[0].provider}/unavailable`;
++		const changes: Array<string[] | null> = [];
++		const persisted: Array<string[] | null> = [];
++		const selector = new ScopedModelsSelectorComponent(
++			{
++				allModels: [...harness.models],
++				enabledModelIds: [unavailableId, availableId],
++			},
++			{
++				onChange: (enabledIds) => {
++					changes.push(enabledIds);
++				},
++				onPersist: (enabledIds) => {
++					persisted.push(enabledIds);
++				},
++				onCancel: () => {},
++			},
++		);
++
++		expect(stripAnsi(selector.render(100).join("\n"))).toContain(`${unavailableId} [unavailable] ✗`);
++		selector.handleInput("\r");
++		expect(changes).toEqual([[availableId]]);
++		selector.handleInput("\x13");
++		expect(persisted).toEqual([[availableId]]);
++	});
++
++	it("passes unmatched settings patterns to the selector with one combined resolution", async () => {
++		const harness = await createHarness({ models: [{ id: "available", name: "Available" }] });
++		harnesses.push(harness);
++		const unavailableIds = ["unavailable-one", "unavailable-two"].map((id) => `${harness.models[0].provider}/${id}`);
++		const { context, getAvailable, getSelector } = createInteractiveContext({
++			allModels: [],
++			enabledModelIds: unavailableIds,
++		});
++
++		await showModelsSelector(context);
++
++		const selector = getSelector();
++		if (!selector) throw new Error("Expected scoped-model selector to open");
++		const rendered = stripAnsi(selector.render(100).join("\n"));
++		for (const unavailableId of unavailableIds) {
++			expect(rendered).toContain(`${unavailableId} [unavailable] ✗`);
++		}
++		expect(getAvailable).toHaveBeenCalledTimes(2);
++	});
++
++	it("opens when only a session-scoped model is unavailable", async () => {
++		const harness = await createHarness({ models: [{ id: "unavailable", name: "Unavailable" }] });
++		harnesses.push(harness);
++		const model = harness.models[0];
++		const fullId = `${model.provider}/${model.id}`;
++		const { context, getSelector } = createInteractiveContext({
++			allModels: [],
++			enabledModelIds: [],
++			scopedModels: [{ model }],
++		});
++
++		await showModelsSelector(context);
++
++		const selector = getSelector();
++		if (!selector) throw new Error("Expected scoped-model selector to open");
++		expect(stripAnsi(selector.render(100).join("\n"))).toContain(`${fullId} [unavailable] ✗`);
++	});
++
++	it("does not clear a partial scope when an enabled model is unavailable", async () => {
++		const harness = await createHarness({
++			models: [
++				{ id: "one", name: "One" },
++				{ id: "two", name: "Two" },
++				{ id: "three", name: "Three" },
++			],
++		});
++		harnesses.push(harness);
++		const [one, two] = harness.models;
++		const enabledIds = [one, two].map((model) => `${model.provider}/${model.id}`);
++		const unavailableId = `${one.provider}/unavailable`;
++		const { context, getSelector, setScopedModels } = createInteractiveContext({
++			allModels: [...harness.models],
++			enabledModelIds: [...enabledIds, unavailableId],
++			scopedModels: [{ model: one }, { model: two }],
++		});
++
++		await showModelsSelector(context);
++		const selector = getSelector();
++		if (!selector) throw new Error("Expected scoped-model selector to open");
++		selector.handleInput("\x1b[1;3B");
++
++		await vi.waitFor(() => {
++			expect(setScopedModels).toHaveBeenLastCalledWith([
++				{ model: two, thinkingLevel: undefined },
++				{ model: one, thinkingLevel: undefined },
++			]);
++		});
++	});
++});
+diff --git a/packages/coding-agent/test/suite/regressions/6999-models-json-hot-reload.test.ts b/packages/coding-agent/test/suite/regressions/6999-models-json-hot-reload.test.ts
+new file mode 100644
+index 00000000..9e3c7c84
+--- /dev/null
++++ b/packages/coding-agent/test/suite/regressions/6999-models-json-hot-reload.test.ts
+@@ -0,0 +1,68 @@
++import { writeFileSync } from "node:fs";
++import { join } from "node:path";
++import { setKeybindings, type TUI } from "@earendil-works/pi-tui";
++import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
++import { KeybindingsManager } from "../../../src/core/keybindings.ts";
++import { ModelSelectorComponent } from "../../../src/modes/interactive/components/model-selector.ts";
++import { initTheme } from "../../../src/modes/interactive/theme/theme.ts";
++import { stripAnsi } from "../../../src/utils/ansi.ts";
++import { createHarness, type Harness } from "../harness.ts";
++
++function createFakeTui(): TUI {
++	return {
++		requestRender: () => {},
++	} as unknown as TUI;
++}
++
++function modelsJson(provider: string, model: string): Record<string, unknown> {
++	return {
++		providers: {
++			[provider]: {
++				baseUrl: "https://example.test/v1",
++				api: "openai-completions",
++				apiKey: "test-key",
++				models: [{ id: model }],
++			},
++		},
++	};
++}
++
++describe("issue #6999 models.json hot reload", () => {
++	let harness: Harness | undefined;
++
++	beforeAll(() => {
++		initTheme("dark");
++	});
++
++	beforeEach(() => {
++		setKeybindings(new KeybindingsManager());
++	});
++
++	afterEach(() => {
++		harness?.cleanup();
++		harness = undefined;
++	});
++
++	it("reloads models.json when opening /model", async () => {
++		harness = await createHarness({ modelsJson: modelsJson("old-provider", "old-model") });
++		expect(harness.session.modelRuntime.getModel("old-provider", "old-model")).toBeDefined();
++
++		writeFileSync(join(harness.tempDir, "models.json"), JSON.stringify(modelsJson("new-provider", "new-model")));
++		const selector = new ModelSelectorComponent(
++			createFakeTui(),
++			harness.getModel(),
++			harness.settingsManager,
++			harness.session.modelRuntime,
++			[],
++			() => {},
++			() => {},
++		);
++
++		await vi.waitFor(() => {
++			const rendered = stripAnsi(selector.render(120).join("\n"));
++			expect(rendered).toContain("new-model [new-provider]");
++			expect(rendered).toContain("Model catalogs refreshed.");
++		});
++		expect(harness.session.modelRuntime.getModel("old-provider", "old-model")).toBeUndefined();
++	});
++});
+diff --git a/packages/coding-agent/test/system-prompt.test.ts b/packages/coding-agent/test/system-prompt.test.ts
+index 82def227..6e38fcb0 100644
+--- a/packages/coding-agent/test/system-prompt.test.ts
++++ b/packages/coding-agent/test/system-prompt.test.ts
+@@ -56,6 +56,7 @@ describe("buildSystemPrompt", () => {
+ 			expect(prompt).toContain(
+ 				"- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory",
+ 			);
++			expect(prompt).toContain("environment variables (docs/environment-variables.md)");
+ 		});
+ 	});
+ 
+diff --git a/packages/coding-agent/test/tool-execution-component.test.ts b/packages/coding-agent/test/tool-execution-component.test.ts
+index c0588c52..09661710 100644
+--- a/packages/coding-agent/test/tool-execution-component.test.ts
++++ b/packages/coding-agent/test/tool-execution-component.test.ts
+@@ -142,7 +142,7 @@ describe("ToolExecutionComponent parity", () => {
+ 				return { exitCode: 0 };
+ 			},
+ 		};
+-		const tool = createBashToolDefinition(process.cwd(), { operations });
++		const tool = createBashToolDefinition(process.cwd(), { operations, exposeSessionEnvironment: false });
+ 		const promise = tool.execute(
+ 			"tool-bash-1",
+ 			{ command: "sleep 10" },
+@@ -163,7 +163,7 @@ describe("ToolExecutionComponent parity", () => {
+ 				return { exitCode: 0 };
+ 			},
+ 		};
+-		const tool = createBashToolDefinition(process.cwd(), { operations });
++		const tool = createBashToolDefinition(process.cwd(), { operations, exposeSessionEnvironment: false });
+ 		const result = await tool.execute(
+ 			"tool-bash-1b",
+ 			{ command: "generate output" },
+diff --git a/packages/coding-agent/test/version-check.test.ts b/packages/coding-agent/test/version-check.test.ts
+index b294c627..6e2f0ac4 100644
+--- a/packages/coding-agent/test/version-check.test.ts
++++ b/packages/coding-agent/test/version-check.test.ts
+@@ -80,12 +80,21 @@ describe("version checks", () => {
+ 		await expect(getLatestPiRelease("1.2.3")).resolves.toEqual({ note: "**Read this**", version: "1.2.4" });
+ 	});
+ 
+-	it("skips api calls when version checks are disabled", async () => {
++	it("skips automatic api calls when version checks are disabled", async () => {
+ 		process.env.PI_SKIP_VERSION_CHECK = "1";
+ 		const fetchMock = vi.fn();
+ 		vi.stubGlobal("fetch", fetchMock);
+ 
+-		await expect(getLatestPiVersion("1.2.3")).resolves.toBeUndefined();
++		await expect(checkForNewPiVersion("1.2.3")).resolves.toBeUndefined();
+ 		expect(fetchMock).not.toHaveBeenCalled();
+ 	});
++
++	it("allows direct api calls when automatic version checks are disabled", async () => {
++		process.env.PI_SKIP_VERSION_CHECK = "1";
++		const fetchMock = vi.fn(async () => Response.json({ version: "1.2.4" }));
++		vi.stubGlobal("fetch", fetchMock);
++
++		await expect(getLatestPiVersion("1.2.3")).resolves.toBe("1.2.4");
++		expect(fetchMock).toHaveBeenCalledOnce();
++	});
+ });
+diff --git a/packages/coding-agent/vitest.config.ts b/packages/coding-agent/vitest.config.ts
+index 2c6b8cf3..dbd8f34a 100644
+--- a/packages/coding-agent/vitest.config.ts
++++ b/packages/coding-agent/vitest.config.ts
+@@ -1,38 +1,28 @@
+-import { fileURLToPath } from "node:url";
+-import { defineConfig } from "vitest/config";
++import { defineConfig, mergeConfig } from "vitest/config";
++import baseConfig, { workspaceSourcePaths } from "../../vitest.base.ts";
+ 
+-const aiSrcIndex = fileURLToPath(new URL("../ai/src/index.ts", import.meta.url));
+-const aiSrcCompat = fileURLToPath(new URL("../ai/src/compat.ts", import.meta.url));
+-const aiSrcOAuth = fileURLToPath(new URL("../ai/src/oauth.ts", import.meta.url));
+-const aiSrcProviders = fileURLToPath(new URL("../ai/src/providers", import.meta.url));
+-const agentSrcIndex = fileURLToPath(new URL("../agent/src/index.ts", import.meta.url));
+-const tuiSrcIndex = fileURLToPath(new URL("../tui/src/index.ts", import.meta.url));
+-
+-export default defineConfig({
+-	test: {
+-		globals: true,
+-		environment: "node",
+-		testTimeout: 30000,
+-		reporters: process.env.GITHUB_ACTIONS ? ["dot", "github-actions"] : ["dot"],
+-		silent: "passed-only",
+-		server: {
+-			deps: {
+-				external: [/@silvia-odwyer\/photon-node/],
++export default mergeConfig(
++	baseConfig,
++	defineConfig({
++		test: {
++			globals: true,
++			environment: "node",
++			testTimeout: 30000,
++			reporters: process.env.GITHUB_ACTIONS ? ["dot", "github-actions"] : ["dot"],
++			silent: "passed-only",
++			server: {
++				deps: {
++					external: [/@silvia-odwyer\/photon-node/],
++				},
+ 			},
+ 		},
+-	},
+-	resolve: {
+-		alias: [
+-			{ find: /^@earendil-works\/pi-ai$/, replacement: aiSrcIndex },
+-			{ find: /^@earendil-works\/pi-ai\/compat$/, replacement: aiSrcCompat },
+-			{ find: /^@earendil-works\/pi-ai\/oauth$/, replacement: aiSrcOAuth },
+-			{ find: /^@earendil-works\/pi-ai\/providers\/(.+)$/, replacement: `${aiSrcProviders}/$1.ts` },
+-			{ find: /^@earendil-works\/pi-agent-core$/, replacement: agentSrcIndex },
+-			{ find: /^@earendil-works\/pi-tui$/, replacement: tuiSrcIndex },
+-			{ find: /^@mariozechner\/pi-ai$/, replacement: aiSrcIndex },
+-			{ find: /^@mariozechner\/pi-ai\/oauth$/, replacement: aiSrcOAuth },
+-			{ find: /^@mariozechner\/pi-agent-core$/, replacement: agentSrcIndex },
+-			{ find: /^@mariozechner\/pi-tui$/, replacement: tuiSrcIndex },
+-		],
+-	},
+-});
++		resolve: {
++			alias: [
++				{ find: /^@mariozechner\/pi-ai$/, replacement: workspaceSourcePaths.aiIndex },
++				{ find: /^@mariozechner\/pi-ai\/oauth$/, replacement: workspaceSourcePaths.aiOAuth },
++				{ find: /^@mariozechner\/pi-agent-core$/, replacement: workspaceSourcePaths.agentIndex },
++				{ find: /^@mariozechner\/pi-tui$/, replacement: workspaceSourcePaths.tuiIndex },
++			],
++		},
++	}),
++);

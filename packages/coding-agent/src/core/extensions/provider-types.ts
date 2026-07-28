@@ -9,6 +9,8 @@ import type {
 } from "@earendil-works/pi-ai/compat";
 import type { RefreshModelsContext } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "./api-types.ts";
+import type { AtomicProviderCompat } from "../model-capabilities.ts";
+export type { AtomicProviderCompat } from "../model-capabilities.ts";
 
 export interface ApiKeyAuthPrompt {
 	type: "text" | "secret";
@@ -63,6 +65,10 @@ export interface ProviderConfig {
 	oauth?: {
 		/** Display name for the provider in login UI. */
 		name: string;
+		/** Optional provider-specific login label. */
+		loginLabel?: string;
+		/** Whether the flow accepts a browser callback/manual redirect. */
+		usesCallbackServer?: boolean;
 		/** Run the login flow, return credentials to persist. */
 		login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials>;
 		/** Refresh expired credentials, return updated credentials to persist. */
@@ -94,14 +100,12 @@ export interface ProviderModelConfig {
 	cost: Model<Api>["cost"];
 	/** Default/effective context window size in tokens. */
 	contextWindow: number;
-	/** Selectable context-window sizes in tokens; omit when the model has only one supported window. */
-	contextWindowOptions?: readonly number[];
 	/** Maximum output tokens. */
 	maxTokens: number;
 	/** Custom headers for this model. */
 	headers?: Record<string, string>;
-	/** OpenAI compatibility settings. */
-	compat?: Model<Api>["compat"];
+	/** Provider capability settings, including Atomic's `supportsGrammarTools` alias. */
+	compat?: AtomicProviderCompat;
 }
 
 /** Extension factory function type. Supports both sync and async initialization. */

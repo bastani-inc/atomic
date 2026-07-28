@@ -44,6 +44,8 @@ export type SendMessagesOptions = Omit<SendMessageOptions, "deliverAs" | "interr
 
 export interface MessageRenderOptions {
 	expanded: boolean;
+	/** Horizontal padding configured by the outputPad setting. */
+	outputPad: number;
 }
 
 export interface EntryRenderOptions {

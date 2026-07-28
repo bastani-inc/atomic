@@ -1,4 +1,3 @@
-import { stat } from "node:fs/promises";
 import type { Api, Model, ModelsStoreEntry, Provider } from "@earendil-works/pi-ai";
 import { VERSION } from "../config.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
@@ -27,9 +26,9 @@ function parseCatalog(providerId: string, value: object): Model<Api>[] {
 		.map((model) => ({ ...model, provider: providerId }));
 }
 
-function remoteModels(entry: ModelsStoreEntry | undefined, localLastModified: number | undefined): readonly Model<Api>[] {
+function remoteModels(entry: ModelsStoreEntry | undefined, localGeneratedAt: number | undefined): readonly Model<Api>[] {
 	if (!entry) return [];
-	if (localLastModified !== undefined && (entry.lastModified === undefined || entry.lastModified <= localLastModified)) {
+	if (localGeneratedAt !== undefined && (entry.lastModified === undefined || entry.lastModified <= localGeneratedAt)) {
 		return [];
 	}
 	return entry.models;
@@ -63,7 +62,7 @@ interface InflightRefresh {
 export function withRemoteCatalog(
 	provider: Provider,
 	catalogBaseUrl: string = DEFAULT_CATALOG_BASE_URL,
-	localCatalogUrl?: URL,
+	localGeneratedAt?: number,
 ): Provider {
 	let dynamicModels: readonly Model<Api>[] = [];
 	let inflightRefresh: InflightRefresh | undefined;
@@ -105,12 +104,9 @@ export function withRemoteCatalog(
 			}
 		};
 		const operation = (async () => {
-			const localLastModified = localCatalogUrl
-				? await stat(localCatalogUrl).then((value) => value.mtimeMs, () => undefined)
-				: undefined;
 			const stored = await context.store.read();
 			if (!isCurrent()) return;
-			dynamicModels = remoteModels(stored, localLastModified).filter((model) => model.provider === provider.id);
+			dynamicModels = remoteModels(stored, localGeneratedAt).filter((model) => model.provider === provider.id);
 			if (!context.allowNetwork) return;
 			if (
 				!context.force &&
@@ -119,15 +115,24 @@ export function withRemoteCatalog(
 				Date.now() - stored.checkedAt < REMOTE_CATALOG_REFRESH_INTERVAL_MS
 			) return;
 
+			const validator = stored?.models.length ? stored.etag : undefined;
 			const url = new URL(`/api/models/providers/${encodeURIComponent(provider.id)}`, catalogBaseUrl);
 			const response = await fetch(url, {
-				headers: { accept: "application/json", "User-Agent": getPiUserAgent(VERSION) },
+				headers: {
+					accept: "application/json",
+					"User-Agent": getPiUserAgent(VERSION),
+					...(validator ? { "if-none-match": validator } : {}),
+				},
 				signal: context.signal,
 			});
 			if (!isCurrent()) return;
 			const checkedAt = Date.now();
+			if (response.status === 304 && stored) {
+				await persist({ ...stored, checkedAt });
+				return;
+			}
 			if (response.status === 404 || response.status === 501) {
-				await persist({ ...(stored ?? { models: [] }), checkedAt, lastModified: 0 });
+				await persist({ ...(stored ?? { models: [] }), checkedAt, lastModified: 0, etag: undefined });
 				return;
 			}
 			if (!response.ok) {
@@ -142,9 +147,10 @@ export function withRemoteCatalog(
 				models: refreshed,
 				checkedAt,
 				lastModified: Number.isNaN(lastModified) ? 0 : lastModified,
+				etag: response.headers.get("etag") ?? undefined,
 			};
 			await persist(entry);
-			if (isCurrent()) dynamicModels = remoteModels(entry, localLastModified);
+			if (isCurrent()) dynamicModels = remoteModels(entry, localGeneratedAt);
 		})();
 		const refresh = settleOnAbort(operation, context.signal, () => !persistenceInProgress);
 		const published = refresh.finally(() => {

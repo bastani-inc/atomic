@@ -99,15 +99,26 @@ export async function copyToClipboard(text: string): Promise<void> {
 						try {
 							// Verify wl-copy exists (spawn errors are async and won't be caught)
 							execSync("which wl-copy", { stdio: "ignore" });
-							// wl-copy with execSync hangs due to fork behavior; use spawn instead
-							const proc = spawn("wl-copy", [], { stdio: ["pipe", "ignore", "ignore"] });
-							proc.stdin.on("error", () => {
-								// Ignore EPIPE errors if wl-copy exits early
+							// wl-copy with execSync hangs due to fork behavior; use spawn instead.
+							// Await its terminal event so failures can fall through to X11 or OSC 52.
+							const exitCode = await new Promise<number>((resolve) => {
+								const proc = spawn("wl-copy", [], { stdio: ["pipe", "ignore", "ignore"] });
+								let settled = false;
+								const finish = (code: number) => {
+									if (settled) return;
+									settled = true;
+									resolve(code);
+								};
+								proc.once("error", () => finish(1));
+								proc.once("close", (code) => finish(code ?? 1));
+								proc.stdin.on("error", () => {});
+								proc.stdin.end(text);
 							});
-							proc.stdin.write(text);
-							proc.stdin.end();
-							proc.unref();
-							copied = true;
+							if (exitCode === 0) copied = true;
+							else if (hasX11Display) {
+								copyToX11Clipboard(options);
+								copied = true;
+							}
 						} catch {
 							if (hasX11Display) {
 								copyToX11Clipboard(options);

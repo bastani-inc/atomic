@@ -126,14 +126,10 @@ export function _refreshCurrentModelFromRegistry(this: AgentSession): void {
 
 	const previousModel = currentModel;
 	const previousThinkingLevel = this.thinkingLevel;
-	const replay = this._getResumeContextWindowReplayForModel(refreshedModel);
-	this.agent.state.model = replay.model;
-	if (currentModel.contextWindow !== replay.contextWindow) {
-		this._emit({ type: "context_window_changed", contextWindow: replay.contextWindow });
-	}
+	this.agent.state.model = refreshedModel;
 	this.setThinkingLevel(previousThinkingLevel);
 	this._refreshBaseSystemPromptFromActiveTools();
-	this._emit({ type: "model_changed", model: replay.model, previousModel, source: "restore" });
+	this._emit({ type: "model_changed", model: refreshedModel, previousModel, source: "restore" });
 }
 
 
@@ -225,6 +221,7 @@ export function _bindExtensionCore(this: AgentSession, runner: ExtensionRunner):
 		},
 		{
 			getModel: () => this.model,
+			getThinkingLevel: () => this.thinkingLevel,
 			isIdle: () => !this.isStreaming,
 			isProjectTrusted: () => this.settingsManager.isProjectTrusted(),
 			getSignal: () => this.agent.signal,

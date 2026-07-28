@@ -91,6 +91,8 @@ For each built-in provider, Atomic maintains a list of tool-capable models, upda
 - Anthropic Claude Pro/Max
 - OpenAI ChatGPT Plus/Pro (Codex)
 - GitHub Copilot
+- OpenRouter (browser PKCE, optional key minting)
+- Kimi Code (device authorization with token refresh)
 
 **API keys:**
 - Anthropic
@@ -122,6 +124,8 @@ For each built-in provider, Atomic maintains a list of tool-capable models, upda
 - Xiaomi MiMo Token Plan (Singapore)
 
 See [docs/providers.md](docs/providers.md) for detailed setup instructions.
+
+Atomic's Pi 0.82.1 model/runtime surface includes Claude Opus 5 on Anthropic and Bedrock, model-capability-aware strict JSON-schema and OpenAI Lark/regex tool sampling, ETag-revalidated cached catalogs, persisted llama.cpp models, and live layered `.pi`/`.atomic` `models.json` reload whenever `/model` opens. A populated `ANTHROPIC_AUTH_TOKEN` makes Anthropic models available/selectable while sending header-only bearer auth—with no synthesized API key or `x-api-key`—across chat and summary/compaction requests. Typed RPC model listings expose constrained-sampling flags through optional `ModelInfo.compat`; capability flags are enforcement claims, so unsupported `require` constraints fail instead of being silently weakened. See [models](docs/models.md), [providers](docs/providers.md), [RPC](docs/rpc.md#get_available_models), and [extensions](docs/extensions.md#constrained-sampling).
 
 **Custom providers & models:** Add providers via `~/.atomic/agent/models.json` (legacy `~/.pi/agent/models.json` also works) if they speak a supported API (OpenAI, Anthropic, Google). For custom APIs or OAuth, use extensions. See [docs/models.md](docs/models.md) and [docs/custom-provider.md](docs/custom-provider.md).
 
@@ -196,6 +200,7 @@ See `/hotkeys` for the full list. Customize via `~/.atomic/agent/keybindings.jso
 | SHIFT+Tab | Cycle thinking level |
 | CTRL+O | Collapse/expand tool output |
 | CTRL+T | Collapse/expand thinking blocks |
+| CTRL+G | Edit chat or extension-editor text through the configured, environment, or platform external editor |
 
 ### Message Queue
 
@@ -635,6 +640,8 @@ atomic --thinking high "Solve this complex problem"
 | `ATOMIC_TELEMETRY` | Override install/update telemetry. Use `1`/`true`/`yes` to enable or `0`/`false`/`no` to disable. This does not disable update checks (`PI_TELEMETRY` is a legacy alias). |
 | `PI_CACHE_RETENTION` | Provider/upstream-specific prompt-cache retention knob; set to `long` where supported. This is not an `ATOMIC_*` alias and has no Atomic-prefixed equivalent. |
 | `VISUAL`, `EDITOR` | External editor for CTRL+G |
+
+Bash commands also receive an execution-time session snapshot through `ATOMIC_SESSION_ID`, `ATOMIC_SESSION_FILE` (omitted for unsaved sessions), `ATOMIC_PROVIDER`, `ATOMIC_MODEL`, and `ATOMIC_REASONING_LEVEL`. The exact `PI_SESSION_ID`, `PI_SESSION_FILE`, `PI_PROVIDER`, `PI_MODEL`, and `PI_REASONING_LEVEL` aliases carry identical values. Unrelated inherited or caller-supplied environment variables are preserved.
 
 ---
 

@@ -11,7 +11,6 @@ export type {
 	CompactionEntry,
 	ContextCompactionEntry,
 	ContextCompactionStats,
-	ContextWindowChangeEntry,
 	CustomEntry,
 	CustomMessageEntry,
 	FileEntry,

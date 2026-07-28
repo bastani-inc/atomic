@@ -1,4 +1,3 @@
-import { getModelDefaultContextWindow, getSupportedContextWindows, parseContextWindowValue } from "@bastani/atomic";
 import type { CreateAgentSessionOptions } from "@bastani/atomic";
 import type {
   WorkflowModelCatalogPort,
@@ -11,133 +10,18 @@ export interface WorkflowResolvedModelCandidate {
   readonly id: string;
   readonly value: WorkflowModelValue;
   readonly reasoningLevel?: WorkflowThinkingLevel;
-  /**
-   * Resolved context-window token budget for this candidate's session, parsed
-   * from a parenthesized authoring token in the model string (e.g.
-   * `github-copilot/claude-opus-4.8 (1m):xhigh` or `...:xhigh (1m)`). Resolved
-   * against the candidate model's advertised windows: a `(long)` marker or a
-   * request above the model's default selects the long tier (exact match wins,
-   * otherwise the smallest window >= the request, rounding UP so `(1m)`/`(1.1m)`
-   * select a long tier even when it sits slightly above the marker size). Left
-   * `undefined` when the model exposes no long tier, so the session keeps the
-   * model's default (short) window.
-   */
-  readonly contextWindow?: number;
 }
 
 function makeCandidate(
   id: string,
   value: WorkflowModelValue,
   level: WorkflowThinkingLevel | undefined,
-  contextWindow?: number,
 ): WorkflowResolvedModelCandidate {
   return {
     id,
     value,
     ...(level !== undefined ? { reasoningLevel: level } : {}),
-    ...(contextWindow !== undefined ? { contextWindow } : {}),
   };
-}
-
-/**
- * Result of extracting a trailing parenthesized context-window authoring token.
- * - `requestedContextWindow`: a numeric size token (e.g. `1m`, `1.1m`, `272k`).
- * - `requestedLongContext`: the generic `(long)` marker, which selects the
- *   model's advertised long tier regardless of its exact size.
- */
-interface ExtractedContextWindowToken {
-  readonly baseModel: string;
-  readonly requestedContextWindow?: number;
-  readonly requestedLongContext?: boolean;
-}
-
-/**
- * Extract a trailing parenthesized context-window authoring token, e.g. the
- * `(1m)` in `github-copilot/claude-opus-4.8 (1m)`. Mirrors GitHub Copilot's
- * model-name convention (`Claude Opus 4.8 (1M context)`) and intentionally
- * lives in the model-name portion — *not* a `:` suffix — so it never collides
- * with the `:off|minimal|low|medium|high|xhigh` reasoning-level suffix.
- *
- * Accepted token forms, all selecting the model's long tier when one exists:
- *   - `(long)` — a generic, size-agnostic long-context marker (case-insensitive);
- *   - a rounded size matching the model's long tier, e.g. `(1m)` for a ~1M tier
- *     (claude-opus-4.8) or `(1.1m)` for a ~1.05M tier (gpt-5.5), resolved by
- *     rounding UP to the long tier (see `resolveRequestedContextWindow`);
- *   - any exact/partial size (e.g. `(272k)` keeps the short tier).
- *
- * Parsed with plain string scanning rather than a regular expression so that
- * adversarial model strings (e.g. `(` followed by long whitespace runs) cannot
- * trigger super-linear backtracking (CodeQL js/polynomial-redos).
- */
-function extractContextWindowToken(model: string): ExtractedContextWindowToken {
-  const trimmedEnd = model.trimEnd();
-  if (!trimmedEnd.endsWith(")")) return { baseModel: model };
-  const open = trimmedEnd.lastIndexOf("(");
-  // Require at least one character before the `(` so a bare `(1m)` is not a model.
-  if (open <= 0) return { baseModel: model };
-  const inner = trimmedEnd.slice(open + 1, -1);
-  // The token must be a single flat `(...)` group with no nested parentheses.
-  if (inner.includes("(") || inner.includes(")")) return { baseModel: model };
-  const token = inner.trim();
-  const baseModel = trimmedEnd.slice(0, open).trim();
-  if (token.length === 0 || baseModel.length === 0) return { baseModel: model };
-  // `(long)` is a generic long-context marker: select the model's advertised
-  // long tier regardless of its exact size, so the same token works across
-  // models with different long tiers (e.g. claude-opus-4.8 1m vs gpt-5.5 1.1m).
-  if (token.toLowerCase() === "long") return { baseModel, requestedLongContext: true };
-  const parsed = parseContextWindowValue(token);
-  // A parenthesized token that does not parse as a context size (e.g. an
-  // accidental `(preview)`) is left attached to the model id so the normal
-  // "not available" lookup surfaces the typo instead of being silently dropped.
-  if (parsed.value === undefined) return { baseModel: model };
-  return { baseModel, requestedContextWindow: parsed.value };
-}
-
-/**
- * Resolve a requested context-window budget against a candidate model's
- * advertised windows. A request at or below the model's default window keeps
- * the default (no upgrade). A request above the default selects the long tier:
- * the exact value when supported, otherwise the smallest advertised window that
- * meets the request, rounding UP so a `(1m)` token lands on a long tier even
- * when it sits slightly above 1m (e.g. gpt-5.5's 1.05m full-context tier). When
- * no advertised window meets the request, the largest window is chosen so the
- * token always selects the long tier when one exists. Returns `undefined` when
- * the resolution lands back on the model's default (no upgrade) or the model
- * value is a plain string (not resolved against the live catalog).
- */
-function resolveRequestedContextWindow(
-  value: WorkflowModelValue,
-  requested: number,
-): number | undefined {
-  if (typeof value === "string") return undefined;
-  const supported = getSupportedContextWindows(value);
-  if (supported.length === 0) return undefined;
-  const defaultContextWindow = getModelDefaultContextWindow(value);
-  // A request at or below the default window keeps the default (no upgrade).
-  if (requested <= defaultContextWindow) return undefined;
-  if (supported.includes(requested)) return requested;
-  // Round UP to the smallest advertised window that meets the request; when no
-  // window meets it, fall back to the largest window (the long tier) so the
-  // token still selects the long tier. `supported` is sorted ascending.
-  const atOrAbove = supported.filter((window) => window >= requested);
-  const longTier = atOrAbove.length > 0 ? Math.min(...atOrAbove) : supported[supported.length - 1]!;
-  return longTier === defaultContextWindow ? undefined : longTier;
-}
-
-/**
- * Resolve the generic `(long)` long-context marker against a candidate model's
- * advertised windows: select the largest advertised window that exceeds the
- * model's default (the long tier). Returns `undefined` for single-window models
- * or plain string values, so the session keeps the model's default window.
- */
-function resolveLongContextWindow(value: WorkflowModelValue): number | undefined {
-  if (typeof value === "string") return undefined;
-  const supported = getSupportedContextWindows(value);
-  if (supported.length <= 1) return undefined;
-  const defaultContextWindow = getModelDefaultContextWindow(value);
-  // `supported` is sorted ascending; the largest window is the long tier.
-  const longTier = supported[supported.length - 1]!;
-  return longTier > defaultContextWindow ? longTier : undefined;
 }
 
 const WORKFLOW_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly WorkflowThinkingLevel[];
@@ -154,7 +38,7 @@ export function splitReasoningSuffix(model: string): { readonly baseModel: strin
 }
 
 function candidateKey(candidate: WorkflowResolvedModelCandidate): string {
-  return `${candidate.id}::${candidate.reasoningLevel ?? ""}::${candidate.contextWindow ?? ""}`;
+  return `${candidate.id}::${candidate.reasoningLevel ?? ""}`;
 }
 
 interface ModelResolutionFailure {
@@ -219,34 +103,10 @@ function resolveStringModel(
 ): WorkflowResolvedModelCandidate | ModelResolutionFailure {
   const input = rawInput.trim();
   if (!input) return { input: rawInput, reason: "empty model id" };
-  // Extract the trailing context-window token, split the reasoning suffix, then
-  // extract the token once more. This handles both `model (1m):level` (token
-  // before the suffix) and `model:level (1m)` (token after the suffix) without
-  // letting the token collide with the `:off|minimal|low|medium|high|xhigh`
-  // reasoning suffix.
-  const tokenFirst = extractContextWindowToken(input);
-  const { baseModel: afterReasoning, level } = splitReasoningSuffix(tokenFirst.baseModel);
-  let baseModel = afterReasoning;
-  let requestedContextWindow = tokenFirst.requestedContextWindow;
-  let requestedLongContext = tokenFirst.requestedLongContext;
-  if (requestedContextWindow === undefined && requestedLongContext === undefined) {
-    const retry = extractContextWindowToken(afterReasoning);
-    baseModel = retry.baseModel;
-    requestedContextWindow = retry.requestedContextWindow;
-    requestedLongContext = retry.requestedLongContext;
-  }
+  const { baseModel, level } = splitReasoningSuffix(input);
 
   const candidate = (id: string, value: WorkflowModelValue): WorkflowResolvedModelCandidate =>
-    makeCandidate(
-      id,
-      value,
-      level,
-      requestedLongContext
-        ? resolveLongContextWindow(value)
-        : requestedContextWindow === undefined
-          ? undefined
-          : resolveRequestedContextWindow(value, requestedContextWindow),
-    );
+    makeCandidate(id, value, level);
 
   if (availableModels === undefined) {
     return candidate(baseModel, baseModel);

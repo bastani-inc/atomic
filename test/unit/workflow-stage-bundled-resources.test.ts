@@ -171,7 +171,7 @@ describe("workflow stage bundled resources", () => {
       assert.deepEqual(debuggerAgent.tools, workerAgent.tools);
       assert.ok(debuggerAgent.tools?.includes("edit"));
       assert.ok(debuggerAgent.tools?.includes("write"));
-      assert.match(debuggerAgent.systemPrompt, /apply the necessary code or content fix/i);
+      assert.match(debuggerAgent.systemPrompt, /apply the smallest in-scope fix with `edit` or `write`/i);
     } finally {
       restoreEnv(snapshot);
     }

@@ -1,0 +1,538 @@
+COMMIT b4f293684bba718d59cc1157679bcf6157b3a7f5 Release v0.82.1
+
+package-lock.json
+packages/agent/CHANGELOG.md
+packages/agent/package.json
+packages/ai/CHANGELOG.md
+packages/ai/package.json
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/examples/extensions/custom-provider-anthropic/package-lock.json
+packages/coding-agent/examples/extensions/custom-provider-anthropic/package.json
+packages/coding-agent/examples/extensions/custom-provider-gitlab-duo/package.json
+packages/coding-agent/examples/extensions/gondolin/package-lock.json
+packages/coding-agent/examples/extensions/gondolin/package.json
+packages/coding-agent/examples/extensions/sandbox/package-lock.json
+packages/coding-agent/examples/extensions/sandbox/package.json
+packages/coding-agent/examples/extensions/with-deps/package-lock.json
+packages/coding-agent/examples/extensions/with-deps/package.json
+packages/coding-agent/install-lock/package-lock.json
+packages/coding-agent/install-lock/package.json
+packages/coding-agent/npm-shrinkwrap.json
+packages/coding-agent/package.json
+packages/evals/package.json
+packages/server/CHANGELOG.md
+packages/server/package.json
+packages/storage/sqlite-node/CHANGELOG.md
+packages/storage/sqlite-node/package.json
+packages/tui/CHANGELOG.md
+packages/tui/package.json
+COMMIT 6173017a7b5a9df4935a1da4c0f0b696afa0f6de fix: drop harness-pi-ai and its legacy registry aliases from evals
+
+package-lock.json
+packages/evals/README.md
+packages/evals/package.json
+packages/evals/src/pi-ai-compat.ts
+packages/evals/src/pi-harness.ts
+packages/evals/vitest.config.ts
+scripts/sync-versions.js
+scripts/sync-versions.test.mjs
+COMMIT 62a7074188b98ea3a7ebfe03aa3a7975c7091fce docs: audit changelogs for commits since v0.82.0
+
+packages/ai/CHANGELOG.md
+packages/coding-agent/CHANGELOG.md
+COMMIT 58c0bc2fba29baf5e3bb6268baac00a49d8df1cf fix(coding-agent): exclude directories from resource loader (#7106)
+
+packages/coding-agent/src/core/resource-loader.ts
+packages/coding-agent/test/resource-loader.test.ts
+COMMIT b711e26616a741a110f092b9dd761e1a7eb30939 fix: stop issue analysis from reporting failed runs as finished
+
+.github/workflows/issue-analysis.yml
+COMMIT 4cf0a729c4eeef6628b2687cd8238cc6874c9a73 fix(ai): keep the underlying cause in ModelsError messages
+
+packages/ai/CHANGELOG.md
+packages/ai/src/auth/resolve.ts
+packages/ai/test/models-runtime.test.ts
+COMMIT b1c444d956b70e5c437d3d2782b01d157fa05ba3 feat(coding-agent): revalidate remote model catalogs with ETag
+
+packages/ai/CHANGELOG.md
+packages/ai/src/models-store.ts
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/remote-catalog-provider.ts
+packages/coding-agent/test/remote-catalog-provider.test.ts
+COMMIT 518855dd502220d0c6480fb8863e2e7f8799893f feat(coding-agent): expose output padding to custom renderers (#7045)
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/docs/extensions.md
+packages/coding-agent/examples/extensions/message-renderer.ts
+packages/coding-agent/src/core/extensions/types.ts
+packages/coding-agent/src/modes/interactive/components/custom-message.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/test/custom-message.test.ts
+COMMIT 2a2b0a39f08923b3563a4f53d4b1cedf130d1391 fix(coding-agent): cache llama.cpp model catalog (#7072)
+
+packages/coding-agent/src/extensions/llama/provider.ts
+packages/coding-agent/test/llama-extension.test.ts
+COMMIT af3b934fa6ba3b6a273dcb1540a3fc391b686410 feat(ai): support Claude Opus 5 on Bedrock (#7081)
+
+packages/ai/CHANGELOG.md
+packages/ai/scripts/generate-models.ts
+packages/ai/src/api/bedrock-converse-stream.ts
+packages/ai/src/utils/error-body.ts
+packages/ai/test/bedrock-models.test.ts
+packages/ai/test/bedrock-thinking-payload.test.ts
+packages/ai/test/error-body.test.ts
+packages/ai/test/provider-error-body-regression.test.ts
+packages/ai/test/supports-xhigh.test.ts
+COMMIT eafe11fb94fe7fcb89487da621a578278a6a67f1 feat(coding-agent): add vitest eval harness (#7085)
+
+package-lock.json
+package.json
+packages/coding-agent/vitest.config.ts
+packages/evals/README.md
+packages/evals/package.json
+packages/evals/scripts/run-evals.mjs
+packages/evals/src/general-knowledge.eval.ts
+packages/evals/src/pi-ai-compat.ts
+packages/evals/src/pi-harness.ts
+packages/evals/tsconfig.json
+packages/evals/vitest.config.ts
+scripts/sync-versions.js
+scripts/sync-versions.test.mjs
+vitest.base.ts
+COMMIT 440689dfc7b02a2cc9e3a80aa4891379486e2b72 chore: approve contributors from issue #7078
+
+.github/APPROVED_CONTRIBUTORS
+COMMIT a3ee1d286e95b501b3d9d7bb26367a0edea46166 fix(coding-agent): expose unavailable scoped models (#7032)
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/model-resolver.ts
+packages/coding-agent/src/modes/interactive/components/scoped-models-selector.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/test/model-resolver.test.ts
+packages/coding-agent/test/suite/regressions/6949-unavailable-scoped-model.test.ts
+COMMIT 8eef62ed3ea62d646a7fad92fa583fc8d71fec17 fix tests
+
+packages/ai/test/anthropic-adaptive-thinking-models.test.ts
+COMMIT 921c3543522ee7f4f7be2032ef28a8f64f2289fb add opus-5 models settings (#7083)
+
+packages/ai/scripts/generate-models.ts
+COMMIT 7304d8f8af892893868b66254d34ffb9382fdec1 fix tests: use updated models
+
+packages/ai/test/openai-responses-reasoning-replay-e2e.test.ts
+packages/ai/test/xhigh.test.ts
+COMMIT a9f5b1c123a4f13457e88522a3be89aeb4823d66 fix(ai): route Radius OAuth through gateway
+
+packages/ai/CHANGELOG.md
+packages/ai/src/auth/oauth/radius.ts
+packages/ai/test/radius-oauth.test.ts
+COMMIT 24e5cc04f413206956cfd21839a7026de673f354 fix(ai): support Anthropic bearer token env (#6148)
+
+packages/ai/CHANGELOG.md
+packages/ai/src/env-api-keys.ts
+packages/ai/src/providers/anthropic.ts
+packages/ai/test/anthropic-auth-token.test.ts
+packages/ai/test/env-api-keys.test.ts
+packages/ai/test/providers.test.ts
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/cli/args.ts
+packages/coding-agent/src/core/agent-session.ts
+packages/coding-agent/test/suite/agent-session-compaction.test.ts
+COMMIT 7df73a00c6cf85c000bf1ce1594c9284067a92f0 Add [Unreleased] section for next cycle
+
+packages/agent/CHANGELOG.md
+packages/ai/CHANGELOG.md
+packages/coding-agent/CHANGELOG.md
+packages/server/CHANGELOG.md
+packages/storage/sqlite-node/CHANGELOG.md
+packages/tui/CHANGELOG.md
+COMMIT 083e61621276bff9f6faefab87ce07fcd98734e2 Release v0.82.0
+
+package-lock.json
+packages/agent/CHANGELOG.md
+packages/agent/package.json
+packages/ai/CHANGELOG.md
+packages/ai/package.json
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/examples/extensions/custom-provider-anthropic/package-lock.json
+packages/coding-agent/examples/extensions/custom-provider-anthropic/package.json
+packages/coding-agent/examples/extensions/custom-provider-gitlab-duo/package.json
+packages/coding-agent/examples/extensions/gondolin/package-lock.json
+packages/coding-agent/examples/extensions/gondolin/package.json
+packages/coding-agent/examples/extensions/sandbox/package-lock.json
+packages/coding-agent/examples/extensions/sandbox/package.json
+packages/coding-agent/examples/extensions/with-deps/package-lock.json
+packages/coding-agent/examples/extensions/with-deps/package.json
+packages/coding-agent/install-lock/package-lock.json
+packages/coding-agent/install-lock/package.json
+packages/coding-agent/npm-shrinkwrap.json
+packages/coding-agent/package.json
+packages/server/CHANGELOG.md
+packages/server/package.json
+packages/storage/sqlite-node/CHANGELOG.md
+packages/storage/sqlite-node/package.json
+packages/tui/CHANGELOG.md
+packages/tui/package.json
+COMMIT e8d97fee1a9cc583c60c77d52ecca0e755b274ec feat(ai): update generated image models
+
+packages/ai/src/image-models.generated.ts
+COMMIT e16172069ff3e1bf3c335157001c6ca0d61c4248 docs(coding-agent): add model reload changelog entry
+
+packages/coding-agent/CHANGELOG.md
+COMMIT f87468131fac4c4e53cf2f9c1ad4a253acbe4e75 fix(coding-agent): reload model config in picker (#7036)
+
+packages/coding-agent/src/core/model-registry.ts
+packages/coding-agent/src/core/model-runtime.ts
+packages/coding-agent/test/suite/harness.ts
+packages/coding-agent/test/suite/regressions/6999-models-json-hot-reload.test.ts
+COMMIT 8472c486f424d716e4d0a9f71c0cbe9590bfc1dd docs(coding-agent): add missing clipboard changelog entry
+
+packages/coding-agent/CHANGELOG.md
+COMMIT fc8048d2370ab4252966aa3bf220373d1358dce2 fix(coding-agent): bundle model data in release source
+
+.github/workflows/build-binaries.yml
+README.md
+packages/coding-agent/CHANGELOG.md
+scripts/build-binaries.sh
+scripts/create-source-archive.sh
+COMMIT ee0dca45b4542c38df5547d3fe113e31a869101a docs: audit unreleased changelog entries
+
+packages/ai/CHANGELOG.md
+packages/coding-agent/CHANGELOG.md
+packages/tui/CHANGELOG.md
+COMMIT edbf941dad7f94edcf028f254db311b0efe44b6f chore: approve contributors from issue #7040
+
+.github/APPROVED_CONTRIBUTORS
+COMMIT 2d3f555429935ffccdf23d9adae09ef7e0b85ca7 fix: await wl-copy exit code and fall through to xclip on failure (#7009)
+
+packages/coding-agent/src/utils/clipboard.ts
+COMMIT 24bace27cf308c89707cf8005b4795d873e23f17 feat(ai): support constrained sampling (#6341)
+
+packages/ai/CHANGELOG.md
+packages/ai/README.md
+packages/ai/scripts/generate-models.ts
+packages/ai/src/api/anthropic-messages.ts
+packages/ai/src/api/azure-openai-responses.ts
+packages/ai/src/api/bedrock-converse-stream.ts
+packages/ai/src/api/constrained-sampling.ts
+packages/ai/src/api/google-generative-ai.ts
+packages/ai/src/api/google-shared.ts
+packages/ai/src/api/google-vertex.ts
+packages/ai/src/api/mistral-conversations.ts
+packages/ai/src/api/openai-codex-responses.ts
+packages/ai/src/api/openai-completions.ts
+packages/ai/src/api/openai-responses-shared.ts
+packages/ai/src/api/openai-responses.ts
+packages/ai/src/types.ts
+packages/ai/test/anthropic-eager-tool-input-compat.test.ts
+packages/ai/test/azure-openai-base-url.test.ts
+packages/ai/test/bedrock-convert-messages.test.ts
+packages/ai/test/constrained-sampling.test.ts
+packages/ai/test/deferred-tools.test.ts
+packages/ai/test/google-shared-convert-tools.test.ts
+packages/ai/test/mistral-tool-schema.test.ts
+packages/ai/test/openai-codex-stream.test.ts
+packages/ai/test/openai-completions-thinking-as-text.test.ts
+packages/ai/test/openai-completions-tool-choice.test.ts
+packages/ai/test/openai-completions-tool-result-images.test.ts
+packages/ai/test/providers.test.ts
+packages/coding-agent/docs/custom-provider.md
+packages/coding-agent/docs/models.md
+packages/coding-agent/src/core/extensions/types.ts
+packages/coding-agent/src/core/model-config.ts
+packages/coding-agent/src/core/tools/tool-definition-wrapper.ts
+COMMIT ec1a87e856502f29a55a5762d129bb845f094bd7 fix(coding-agent): require protobufjs 7.6.5, closes #7005
+
+package-lock.json
+package.json
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/install-lock/package-lock.json
+packages/coding-agent/install-lock/package.json
+packages/coding-agent/npm-shrinkwrap.json
+packages/coding-agent/package.json
+scripts/generate-coding-agent-install-lock.mjs
+scripts/generate-coding-agent-shrinkwrap.mjs
+COMMIT 6abb4b06409912ac4f0c58fde0f37fd5f1d4c76a fix(coding-agent): use llama context for output limit (#7034)
+
+packages/coding-agent/src/extensions/llama/provider.ts
+packages/coding-agent/test/llama-extension.test.ts
+COMMIT 241431c69baf667e09a0eadf8ffc34ee2f643ef0 fix(agent,ai): don't cache write compaction or branch summaries (#6618)
+
+packages/agent/CHANGELOG.md
+packages/agent/src/harness/compaction/compaction.ts
+packages/agent/test/harness/compaction.test.ts
+packages/ai/CHANGELOG.md
+packages/ai/README.md
+packages/ai/scripts/generate-models.ts
+packages/ai/src/api/openai-codex-responses.ts
+packages/ai/src/api/openai-responses.ts
+packages/ai/src/types.ts
+packages/ai/test/cache-retention.test.ts
+packages/ai/test/openai-codex-stream.test.ts
+packages/coding-agent/docs/compaction.md
+packages/coding-agent/examples/extensions/custom-compaction.ts
+packages/coding-agent/examples/extensions/handoff.ts
+packages/coding-agent/examples/extensions/summarize.ts
+COMMIT 249008144c951b5cf63b0a3b24d21b6f65426fe4 fix: target intended users in lgtm approvals (#7023)
+
+.github/workflows/approve-contributor.yml
+.github/workflows/issue-gate.yml
+.github/workflows/pr-gate.yml
+CONTRIBUTING.md
+COMMIT 37bedb7f0b189f2ed0aed4f715c490c791baa01f fix(tui): truncate narrow editor scroll indicators (#7015)
+
+packages/tui/CHANGELOG.md
+packages/tui/src/components/editor.ts
+packages/tui/test/editor.test.ts
+COMMIT 65ff8e7f6db447dcddb1a9c8fd05f081c5cda76a fix lint
+
+packages/ai/src/auth/oauth/load.ts
+COMMIT ab55c15fbdbca4ce2d5628f1613a3bd30d847868 Merge pull request #7016 from earendil-works/fix/bundled-models-generated-time
+COMMIT bc3d36474256b271f277d8ffe9ae870fa96fb896 fix bundled models generation time
+
+packages/ai/scripts/generate-models.ts
+packages/ai/scripts/model-data.ts
+packages/ai/src/providers/all.ts
+packages/ai/test/model-data-validation.test.ts
+packages/coding-agent/src/core/model-runtime.ts
+packages/coding-agent/src/core/remote-catalog-provider.ts
+packages/coding-agent/test/remote-catalog-provider.test.ts
+COMMIT fc85bdd88be93b1e9a6b6bcfa41c684282ec79cc feat(coding-agent): emit bash_execution_update events (#6971)
+
+packages/coding-agent/docs/rpc.md
+packages/coding-agent/src/core/agent-session.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/src/modes/rpc/rpc-mode.ts
+packages/coding-agent/test/suite/agent-session-bash-persistence.test.ts
+COMMIT 7af8533c6f22ab922fff29f252d2d3657b821d99 fix(ai): make provider retries abortable (#6980)
+
+packages/ai/CHANGELOG.md
+packages/ai/src/api/anthropic-messages.ts
+packages/ai/src/api/azure-openai-responses.ts
+packages/ai/src/api/openai-codex-responses.ts
+packages/ai/src/api/openai-completions.ts
+packages/ai/src/api/openai-responses.ts
+packages/ai/src/api/openrouter-images.ts
+packages/ai/src/utils/provider-retry.ts
+packages/ai/test/openai-codex-stream.test.ts
+packages/ai/test/openai-completions-retry.test.ts
+packages/ai/test/provider-retry.test.ts
+packages/coding-agent/docs/settings.md
+packages/coding-agent/test/sdk-stream-options.test.ts
+COMMIT e66e3e588b6385d57db6ecd29c02f14f254aa228 fix: isolate test environment (#6965)
+
+test.sh
+COMMIT 34f3719a942ecbf3e6d23e67098f47ba2867de0a chore: approve contributor christianbasch
+
+.github/APPROVED_CONTRIBUTORS
+COMMIT da8dd87260513101add46a802c3ace94a71e2d70 fix(coding-agent): resolve bracketed scoped model ids as literals
+
+packages/coding-agent/src/core/model-resolver.ts
+packages/coding-agent/test/model-resolver.test.ts
+COMMIT 9b3a2059171bcc74ad9d2cadeea6d186776cf2db fix(coding-agent): isolate summarization requests
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/compaction/compaction.ts
+packages/coding-agent/test/compaction-summary-reasoning.test.ts
+COMMIT ecb9410c5c5c3f8c0f0f444f386043276b9f0d3a fix(coding-agent): let manual updates bypass skip check
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/utils/version-check.ts
+packages/coding-agent/test/package-command-paths.test.ts
+packages/coding-agent/test/version-check.test.ts
+COMMIT bb3d7d399c06e5fe284f34eb66b15b037ab18649 feat(coding-agent): expose session metadata to bash tools (#6967)
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/README.md
+packages/coding-agent/docs/environment-variables.md
+packages/coding-agent/docs/extensions.md
+packages/coding-agent/docs/index.md
+packages/coding-agent/docs/usage.md
+packages/coding-agent/src/core/extensions/runner.ts
+packages/coding-agent/src/core/extensions/types.ts
+packages/coding-agent/src/core/system-prompt.ts
+packages/coding-agent/src/core/tools/bash.ts
+packages/coding-agent/src/core/tools/tool-definition-wrapper.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/test/agent-session-dynamic-tools.test.ts
+packages/coding-agent/test/sdk-session-manager.test.ts
+packages/coding-agent/test/system-prompt.test.ts
+packages/coding-agent/test/tool-execution-component.test.ts
+COMMIT c55ae2faa5d850e0e4650bd573f7f241b10e2e0b fix(coding-agent): display path of sibling dependent extensions (#6964)
+
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/test/interactive-mode-status.test.ts
+COMMIT 75e6123aba58342d5e464c5b8417effa3dc441d2 fix(coding-agent): speed up external editor launch (#6903)
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/settings-manager.ts
+packages/coding-agent/src/modes/interactive/components/extension-editor.ts
+packages/coding-agent/src/modes/interactive/external-editor.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/test/external-editor.test.ts
+packages/coding-agent/test/fixtures/fake-external-editor.mjs
+COMMIT 7b52cef2e62b35caa5dcbf7a45d5c56c7b3bd573 feat(ai): add OpenRouter OAuth support (#6927)
+
+packages/ai/README.md
+packages/ai/src/auth/oauth/load.ts
+packages/ai/src/auth/oauth/openrouter.ts
+packages/ai/src/bun-oauth.ts
+packages/ai/src/providers/openrouter-images.ts
+packages/ai/src/providers/openrouter.ts
+packages/ai/test/oauth-auth.test.ts
+packages/ai/test/openrouter-oauth.test.ts
+packages/coding-agent/docs/providers.md
+COMMIT fe42ba5b386a655b20a95205ff7c162126ac1f45 write tui debug/crash logs into the configured pi agent dir (#6958)
+
+packages/coding-agent/src/cli/config-selector.ts
+packages/coding-agent/src/cli/startup-ui.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/tui/src/tui.ts
+packages/tui/test/tui-render.test.ts
+COMMIT 346c85473d2b8a72b2d9006db684d9c49a9c65cc Merge branch 'agent-harness-tools'
+COMMIT e32c1491b5ca25df64e4642d88c92334ca47de56 feat(agent): align harness execution tools
+
+packages/agent/CHANGELOG.md
+packages/agent/docs/agent-harness.md
+packages/agent/src/harness/agent-harness.ts
+packages/agent/src/harness/env/nodejs.ts
+packages/agent/src/harness/tools/bash.ts
+packages/agent/src/harness/tools/edit.ts
+packages/agent/src/harness/tools/index.ts
+packages/agent/src/harness/tools/read.ts
+packages/agent/src/harness/tools/tool-context.ts
+packages/agent/src/harness/tools/write.ts
+packages/agent/src/harness/types.ts
+packages/agent/src/harness/utils/shell-output.ts
+packages/agent/src/harness/utils/truncate.ts
+packages/agent/test/harness/agent-harness.test.ts
+packages/agent/test/harness/nodejs-env.test.ts
+packages/agent/test/harness/tool-context.types.ts
+packages/agent/test/harness/tools.test.ts
+packages/agent/test/harness/truncate.test.ts
+packages/agent/test/scratch/simple.ts
+COMMIT 5dc40fee330023200e35938fdced2ae0735b5310 feat(ai): derive generated model types from JSON
+
+packages/ai/README.md
+packages/ai/scripts/generate-models.ts
+packages/ai/scripts/model-data.ts
+packages/ai/src/model-catalog.ts
+packages/ai/src/models.generated.ts
+packages/ai/src/providers/amazon-bedrock.models.ts
+packages/ai/src/providers/ant-ling.models.ts
+packages/ai/src/providers/anthropic.models.ts
+packages/ai/src/providers/azure-openai-responses.models.ts
+packages/ai/src/providers/cerebras.models.ts
+packages/ai/src/providers/cloudflare-ai-gateway.models.ts
+packages/ai/src/providers/cloudflare-workers-ai.models.ts
+packages/ai/src/providers/deepseek.models.ts
+packages/ai/src/providers/fireworks.models.ts
+packages/ai/src/providers/github-copilot.models.ts
+packages/ai/src/providers/google-vertex.models.ts
+packages/ai/src/providers/google.models.ts
+packages/ai/src/providers/groq.models.ts
+packages/ai/src/providers/huggingface.models.ts
+packages/ai/src/providers/kimi-coding.models.ts
+packages/ai/src/providers/minimax-cn.models.ts
+packages/ai/src/providers/minimax.models.ts
+packages/ai/src/providers/mistral.models.ts
+packages/ai/src/providers/moonshotai-cn.models.ts
+packages/ai/src/providers/moonshotai.models.ts
+packages/ai/src/providers/nvidia.models.ts
+packages/ai/src/providers/openai-codex.models.ts
+packages/ai/src/providers/openai.models.ts
+packages/ai/src/providers/opencode-go.models.ts
+packages/ai/src/providers/opencode.models.ts
+packages/ai/src/providers/openrouter.models.ts
+packages/ai/src/providers/qwen-token-plan-cn.models.ts
+packages/ai/src/providers/qwen-token-plan.models.ts
+packages/ai/src/providers/together.models.ts
+packages/ai/src/providers/vercel-ai-gateway.models.ts
+packages/ai/src/providers/xai.models.ts
+packages/ai/src/providers/xiaomi-token-plan-ams.models.ts
+packages/ai/src/providers/xiaomi-token-plan-cn.models.ts
+packages/ai/src/providers/xiaomi-token-plan-sgp.models.ts
+packages/ai/src/providers/xiaomi.models.ts
+packages/ai/src/providers/zai-coding-cn.models.ts
+packages/ai/src/providers/zai.models.ts
+packages/ai/test/model-catalog-types.test.ts
+packages/ai/test/model-data-validation.test.ts
+scripts/check-browser-smoke.mjs
+COMMIT 906b40a75329bc3a4c19865f0279903f6be6d476 Merge pull request #6955 from earendil-works/fix/handle-openai-previous-response-not-found-error
+COMMIT c5dcb26000c887deeea6658f43cf33f2d075fb9f handle openai websocket previous_response_not_found error
+
+packages/ai/src/api/openai-codex-responses.ts
+packages/ai/test/openai-codex-stream.test.ts
+COMMIT 2d0b2294cd212e52e3c23decb3d2e19dbcf9b9dd feat(agent): merge main into agent-harness-tools
+COMMIT bc41f612da8c15c4acc5f7ab7a7178a4fe17c942 fix(ai): cache OpenRouter tool results
+
+packages/ai/src/api/openai-completions.ts
+packages/ai/test/openai-completions-cache-control-format.test.ts
+COMMIT 6f95a33888da4e94924b553b586fa9a923957194 fix(ai): enable cache control for OpenRouter aliases
+
+packages/ai/CHANGELOG.md
+packages/ai/scripts/generate-models.ts
+packages/ai/src/providers/opencode.models.ts
+packages/ai/src/providers/openrouter.models.ts
+packages/ai/src/providers/vercel-ai-gateway.models.ts
+packages/ai/src/types.ts
+packages/ai/test/openrouter-cache-control-models.test.ts
+packages/coding-agent/docs/custom-provider.md
+packages/coding-agent/docs/models.md
+COMMIT 33e40c3e155a7f7c1bd67ea7dbdeca258eca7547 fix(ai): retry DNS transport failures (#6946)
+
+packages/ai/src/utils/retry.ts
+packages/ai/test/retry.test.ts
+packages/coding-agent/test/suite/regressions/6904-dns-transport-retry.test.ts
+COMMIT a5afc3f171e422e08a2ccc342827719f9952f38a feat(ai): add Kimi Code subscription OAuth login (#6935)
+
+packages/ai/CHANGELOG.md
+packages/ai/src/auth/oauth/kimi-coding.ts
+packages/ai/src/auth/oauth/load.ts
+packages/ai/src/bun-oauth.ts
+packages/ai/src/providers/kimi-coding.ts
+packages/ai/test/kimi-coding-oauth.test.ts
+COMMIT 1ae064099cee34302984c56ff637e63dad44a8c4 generate-models: use reasoning options from models.dev (#6928)
+
+packages/ai/scripts/generate-models.ts
+packages/ai/scripts/models-dev-reasoning-options.ts
+packages/ai/test/reasoning-options.test.ts
+packages/ai/test/supports-xhigh.test.ts
+packages/ai/test/together-models.test.ts
+scripts/diff-model-catalog.mjs
+scripts/generate-thinking-capabilities.mjs
+COMMIT db647e421fbc3e7cbf75371e36373eda19f13925 chore: approve contributor mteam88
+
+.github/APPROVED_CONTRIBUTORS
+COMMIT dd6bea41efa8caa7a10fe5a6401676dc5699f83f Add [Unreleased] section for next cycle
+
+packages/agent/CHANGELOG.md
+packages/ai/CHANGELOG.md
+packages/coding-agent/CHANGELOG.md
+packages/server/CHANGELOG.md
+packages/storage/sqlite-node/CHANGELOG.md
+packages/tui/CHANGELOG.md
+COMMIT 37eb243d2644976e97f69fd6ec4726b7dbef89b4 feat(agent): add AgentHarness execution tools
+
+package-lock.json
+packages/agent/CHANGELOG.md
+packages/agent/docs/agent-harness.md
+packages/agent/package.json
+packages/agent/src/harness/agent-harness.ts
+packages/agent/src/harness/tools/bash.ts
+packages/agent/src/harness/tools/edit-diff.ts
+packages/agent/src/harness/tools/edit.ts
+packages/agent/src/harness/tools/file-mutation-queue.ts
+packages/agent/src/harness/tools/image.ts
+packages/agent/src/harness/tools/index.ts
+packages/agent/src/harness/tools/path-utils.ts
+packages/agent/src/harness/tools/read.ts
+packages/agent/src/harness/tools/write.ts
+packages/agent/src/harness/types.ts
+packages/agent/src/harness/utils/shell-output.ts
+packages/agent/src/index.ts
+packages/agent/test/harness/agent-harness-stream.test.ts
+packages/agent/test/harness/agent-harness.test.ts
+packages/agent/test/harness/tools.test.ts
+packages/agent/test/scratch/simple.ts
+packages/coding-agent/install-lock/package-lock.json
+packages/coding-agent/npm-shrinkwrap.json

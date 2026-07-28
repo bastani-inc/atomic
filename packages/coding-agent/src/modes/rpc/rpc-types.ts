@@ -6,15 +6,17 @@
  */
 
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { AuthInfoLink, OAuthAuthInfo, OAuthDeviceCodeInfo, OAuthPrompt, OAuthSelectPrompt } from "@earendil-works/pi-ai";
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai/compat";
 import type { AgentSessionEvent, SessionStats } from "../../core/agent-session.ts";
-import type { AuthStatus } from "../../core/auth-storage.ts";
+import type { AuthCredential, AuthStatus } from "../../core/auth-storage.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import type { ModelFallbackReason } from "../../core/model-resolver-types.ts";
+import type { OAuthProviderMetadata } from "../../core/oauth-provider-bridge.ts";
 
 // ============================================================================
 // RPC Commands (stdin)
@@ -24,19 +26,23 @@ export interface RpcModelCatalog {
 	models: Model<Api>[];
 	scopedModels: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
 	customAuthProviders: Array<{ id: string; name: string }>;
+	oauthProviders?: OAuthProviderMetadata[];
 }
 
 export interface RpcModelRefreshResult extends RpcModelCatalog {
 	aborted: boolean;
 	errors: Array<{ provider: string; message: string }>;
 }
-
 export type RpcLoginProviderResult =
 	| (RpcModelCatalog & {
 			provider: string;
 			cancelled: false;
 			credential: import("../../core/auth-storage.ts").ApiKeyCredential;
 	  })
+	| { provider: string; cancelled: true };
+
+export type RpcOAuthLoginProviderResult =
+	| (RpcModelCatalog & { provider: string; cancelled: false })
 	| { provider: string; cancelled: true };
 
 export type RpcCommand =
@@ -54,8 +60,9 @@ export type RpcCommand =
 	| { id?: string; type: "set_model"; provider: string; modelId: string }
 	| { id?: string; type: "cycle_model"; direction?: "forward" | "backward" }
 	| { id?: string; type: "get_available_models" }
-	| { id?: string; type: "login_provider"; provider: string }
-	| { id?: string; type: "cancel_login_provider"; provider: string }
+	| { id?: string; type: "login_provider"; provider: string; authType?: "api_key" | "oauth"; loginId?: string }
+	| { id?: string; type: "save_provider_credential"; provider: string; credential: AuthCredential }
+	| { id?: string; type: "cancel_login_provider"; provider: string; loginId?: string }
 	| { id?: string; type: "logout_provider"; provider: string }
 	| { id?: string; type: "refresh_models"; timeoutMs?: number; force?: boolean; allowNetwork?: boolean }
 
@@ -63,10 +70,6 @@ export type RpcCommand =
 	| { id?: string; type: "set_thinking_level"; level: ThinkingLevel }
 	| { id?: string; type: "cycle_thinking_level" }
 	| { id?: string; type: "get_available_thinking_levels" }
-
-	// Context Window
-	| { id?: string; type: "set_context_window"; contextWindow: number | string }
-	| { id?: string; type: "get_available_context_windows" }
 
 	// Queue modes
 	| { id?: string; type: "set_steering_mode"; mode: "all" | "one-at-a-time" }
@@ -87,7 +90,7 @@ export type RpcCommand =
 	// Bash
 	| { id?: string; type: "bash"; command: string; excludeFromContext?: boolean }
 	| { id?: string; type: "user_bash"; command: string; excludeFromContext?: boolean }
-	| { id?: string; type: "abort_bash" }
+	| { id?: string; type: "abort_bash"; requestId?: string }
 
 	// Session
 	| { id?: string; type: "get_session_stats" }
@@ -163,12 +166,6 @@ export interface RpcSessionState {
 	resourceOverlaps?: ResourceOverlap[];
 }
 
-export interface RpcContextWindowInfo {
-	contextWindows: number[];
-	currentContextWindow?: number;
-	supportsSelection: boolean;
-}
-
 export interface RpcLogoutProviderResult {
 	provider: string;
 	authStatus: AuthStatus;
@@ -226,7 +223,14 @@ export type RpcResponse =
 			type: "response";
 			command: "login_provider";
 			success: true;
-			data: RpcLoginProviderResult;
+			data: RpcLoginProviderResult | RpcOAuthLoginProviderResult;
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "save_provider_credential";
+			success: true;
+			data: RpcModelCatalog;
 	  }
 	| { id?: string; type: "response"; command: "cancel_login_provider"; success: true }
 	| {
@@ -252,16 +256,6 @@ export type RpcResponse =
 			command: "get_available_thinking_levels";
 			success: true;
 			data: { levels: ThinkingLevel[] };
-	  }
-
-	// Context Window
-	| { id?: string; type: "response"; command: "set_context_window"; success: true }
-	| {
-			id?: string;
-			type: "response";
-			command: "get_available_context_windows";
-			success: true;
-			data: RpcContextWindowInfo;
 	  }
 
 	// Queue modes
@@ -359,44 +353,26 @@ export type RpcEvent = AgentSessionEvent;
 // ============================================================================
 // Extension UI Events (stdout)
 // ============================================================================
+type RpcOAuthUIEnvelope = { type: "extension_ui_request"; id: string; provider: string; loginId: string };
 
-/** Emitted when an extension needs user input */
 export type RpcExtensionUIRequest =
 	| { type: "extension_ui_request"; id: string; method: "select"; title: string; options: string[]; timeout?: number }
 	| { type: "extension_ui_request"; id: string; method: "confirm"; title: string; message: string; timeout?: number }
-	| {
-			type: "extension_ui_request";
-			id: string;
-			method: "input";
-			title: string;
-			placeholder?: string;
-			timeout?: number;
-	  }
+	| { type: "extension_ui_request"; id: string; method: "input"; title: string; placeholder?: string; timeout?: number }
 	| { type: "extension_ui_request"; id: string; method: "editor"; title: string; prefill?: string }
-	| {
-			type: "extension_ui_request";
-			id: string;
-			method: "notify";
-			message: string;
-			notifyType?: "info" | "warning" | "error";
-	  }
-	| {
-			type: "extension_ui_request";
-			id: string;
-			method: "setStatus";
-			statusKey: string;
-			statusText: string | undefined;
-	  }
-	| {
-			type: "extension_ui_request";
-			id: string;
-			method: "setWidget";
-			widgetKey: string;
-			widgetLines: string[] | undefined;
-			widgetPlacement?: "aboveEditor" | "belowEditor";
-	  }
+	| { type: "extension_ui_request"; id: string; method: "notify"; message: string; notifyType?: "info" | "warning" | "error" }
+	| { type: "extension_ui_request"; id: string; method: "setStatus"; statusKey: string; statusText: string | undefined }
+	| { type: "extension_ui_request"; id: string; method: "setWidget"; widgetKey: string; widgetLines: string[] | undefined; widgetPlacement?: "aboveEditor" | "belowEditor" }
 	| { type: "extension_ui_request"; id: string; method: "setTitle"; title: string }
-	| { type: "extension_ui_request"; id: string; method: "set_editor_text"; text: string };
+	| { type: "extension_ui_request"; id: string; method: "set_editor_text"; text: string }
+	| (RpcOAuthUIEnvelope & { method: "oauth_auth"; info: OAuthAuthInfo })
+	| (RpcOAuthUIEnvelope & { method: "oauth_device_code"; info: OAuthDeviceCodeInfo })
+	| (RpcOAuthUIEnvelope & { method: "oauth_progress"; message: string })
+	| (RpcOAuthUIEnvelope & { method: "oauth_info"; message: string; links: AuthInfoLink[] })
+	| (RpcOAuthUIEnvelope & { method: "oauth_prompt"; prompt: OAuthPrompt })
+	| (RpcOAuthUIEnvelope & { method: "oauth_select"; prompt: OAuthSelectPrompt })
+	| (RpcOAuthUIEnvelope & { method: "oauth_manual_code" })
+	| (RpcOAuthUIEnvelope & { method: "oauth_manual_code_cancel" });
 
 // ============================================================================
 // Extension UI Commands (stdin)

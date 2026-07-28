@@ -8,6 +8,7 @@
 
 import { Type } from "typebox";
 import { workflow } from "../src/authoring/workflow.js";
+import { withSteeringPropagationContext } from "./steering-context.js";
 import { runGoalWorkflow } from "./goal-runner.js";
 import { DEFAULT_MAX_TURNS } from "./goal-types.js";
 
@@ -65,7 +66,7 @@ export default workflow({
     baseBranch: "base_branch",
   },
   run: async (ctx) => {
-    const workflowCtx = ctx;
+    const workflowCtx = withSteeringPropagationContext(ctx);
     const workflowStartCwd = workflowCtx.cwd ?? process.cwd();
     const createPr = workflowCtx.inputs.create_pr === true;
     return await runGoalWorkflow(workflowCtx, { createPr, workflowStartCwd });

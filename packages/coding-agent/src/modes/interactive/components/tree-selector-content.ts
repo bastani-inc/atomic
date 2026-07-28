@@ -48,9 +48,6 @@ export function getSearchableText(node: SessionTreeNode): string {
 		case "thinking_level_change":
 			parts.push("thinking", entry.thinkingLevel);
 			break;
-		case "context_window_change":
-			parts.push("context window", String(entry.contextWindow));
-			break;
 		case "custom":
 			parts.push("custom", entry.customType);
 			break;
@@ -131,9 +128,6 @@ export function getEntryDisplayText(
 			break;
 		case "thinking_level_change":
 			result = theme.fg("dim", `[thinking: ${entry.thinkingLevel}]`);
-			break;
-		case "context_window_change":
-			result = theme.fg("dim", `[context window: ${entry.contextWindow}]`);
 			break;
 		case "custom":
 			result = theme.fg("dim", `[custom: ${entry.customType}]`);

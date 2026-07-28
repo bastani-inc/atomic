@@ -14,7 +14,6 @@ import {
 	ENV_SHARE_VIEWER_URL,
 	ENV_TELEMETRY,
 } from "../config.ts";
-import { parseContextWindowValue } from "../core/context-window.ts";
 import type { ExtensionFlag } from "../core/extensions/types.ts";
 
 export type Mode = "text" | "json" | "rpc";
@@ -26,7 +25,6 @@ export interface Args {
 	systemPrompt?: string;
 	appendSystemPrompt?: string[];
 	thinking?: ThinkingLevel;
-	contextWindow?: number;
 	continue?: boolean;
 	resume?: boolean;
 	help?: boolean;
@@ -166,18 +164,6 @@ export function parseArgs(args: string[]): Args {
 					message: `Invalid thinking level "${level}". Valid values: ${VALID_THINKING_LEVELS.join(", ")}`,
 				});
 			}
-		} else if (arg === "--context-window") {
-			if (i + 1 >= args.length) {
-				result.diagnostics.push({ type: "error", message: "--context-window requires a value" });
-			} else {
-				const rawValue = args[++i];
-				const parsed = parseContextWindowValue(rawValue);
-				if (parsed.value !== undefined) {
-					result.contextWindow = parsed.value;
-				} else {
-					result.diagnostics.push({ type: "error", message: parsed.error ?? `Invalid context window "${rawValue}"` });
-				}
-			}
 		} else if (arg === "--print" || arg === "-p") {
 			result.print = true;
 			const next = args[i + 1];
@@ -300,7 +286,6 @@ ${chalk.bold("Options:")}
   --exclude-tools, -xt <tools>   Comma-separated denylist of tool names to disable
                                  Applies to built-in, extension, and custom tools
   --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh, max
-  --context-window <tokens>      Select context window when supported (e.g., 400k, 1m, 1000000)
   --extension, -e <path>         Load an extension file (can be used multiple times)
   --no-extensions, -ne           Disable extension discovery (explicit -e paths still work)
   --skill <path>                 Load a skill file or directory (can be used multiple times)
@@ -364,9 +349,6 @@ ${chalk.bold("Examples:")}
   # Start with a specific thinking level
   ${APP_NAME} --thinking high "Solve this complex problem"
 
-  # Opt into a larger supported context window independently from thinking
-  ${APP_NAME} --model custom/long-context-model --context-window 1m "Review this repository"
-
   # Read-only mode (no file modifications possible)
   ${APP_NAME} --tools read,search,find,ls -p "Review the code in src/"
 
@@ -378,6 +360,7 @@ ${chalk.bold("Examples:")}
   ${APP_NAME} --export session.jsonl output.html
 
 ${chalk.bold("Environment Variables:")}
+  ANTHROPIC_AUTH_TOKEN             - Anthropic bearer auth token
   ANTHROPIC_API_KEY                - Anthropic Claude API key
   ANTHROPIC_OAUTH_TOKEN            - Anthropic OAuth token (alternative to API key)
   OPENAI_API_KEY                   - OpenAI GPT API key

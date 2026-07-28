@@ -3,6 +3,7 @@ import type {
 	AgentToolUpdateCallback,
 	ToolExecutionMode,
 } from "@earendil-works/pi-agent-core";
+import type { ConstrainedSamplingConfig } from "@earendil-works/pi-ai/compat";
 import type { Component } from "@earendil-works/pi-tui";
 import type { Static, TSchema } from "typebox";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
@@ -74,6 +75,8 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	promptGuidelines?: string[];
 	/** Parameter schema (TypeBox) */
 	parameters: TParams;
+	/** Optional provider-side constrained sampling request. `false` explicitly disables it. */
+	constrainedSampling?: false | ConstrainedSamplingConfig;
 	/** Optional per-tool character cap for model-visible result persistence. Use Infinity to opt out for self-bounded tools. */
 	maxResultSizeChars?: number;
 	/** Marks a terminating tool created by createStructuredOutputTool() so print mode can emit custom-named final JSON without treating every terminating tool as printable. */
@@ -124,7 +127,10 @@ export function defineTool<TParams extends TSchema, TDetails = unknown, TState =
 	return tool as ToolDefinition<TParams, TDetails, TState> & AnyToolDefinition;
 }
 
-/** Tool info with name, description, parameter schema, and source metadata */
-export type ToolInfo = Pick<ToolDefinition, "name" | "description" | "parameters" | "promptGuidelines"> & {
+/** Public constrained-sampling shape inherited from pi-ai. */
+export type { ConstrainedSamplingConfig } from "@earendil-works/pi-ai/compat";
+
+/** Tool info with name, description, parameter schema, constraint, and source metadata */
+export type ToolInfo = Pick<ToolDefinition, "name" | "description" | "parameters" | "constrainedSampling" | "promptGuidelines"> & {
 	sourceInfo: SourceInfo;
 };

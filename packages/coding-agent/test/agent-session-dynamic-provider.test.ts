@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import { clearActiveCopilotModelCatalog, setActiveCopilotModelCatalog } from "../src/core/copilot-model-catalog.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import type { ExtensionFactory } from "../src/core/sdk.ts";
@@ -26,7 +25,6 @@ describe("AgentSession dynamic provider registration", () => {
 		if (tempDir && existsSync(tempDir)) {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
-		clearActiveCopilotModelCatalog();
 	});
 
 	async function createSession(extensionFactories: ExtensionFactory[]) {
@@ -118,65 +116,4 @@ describe("AgentSession dynamic provider registration", () => {
 		session.dispose();
 	});
 
-	it("preserves selected Copilot long context across unrelated provider registration", async () => {
-		setActiveCopilotModelCatalog(
-			new Map([["claude-opus-4.8", { contextWindow: 200_000, contextWindowOptions: [200_000, 936_000] }]]),
-		);
-		const settingsManager = SettingsManager.create(tempDir, agentDir);
-		const sessionManager = SessionManager.inMemory(tempDir);
-		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
-		authStorage.setRuntimeApiKey("github-copilot", "test-key");
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
-		const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
-		const copilotOpus = modelRegistry.find("github-copilot", "claude-opus-4.8");
-		if (!copilotOpus) {
-			throw new Error("Missing built-in github-copilot/claude-opus-4.8 test model");
-		}
-		const resourceLoader = new DefaultResourceLoader({
-			cwd: tempDir,
-			agentDir,
-			settingsManager,
-			extensionFactories: [
-				(pi) => {
-					pi.registerCommand("register-anthropic-proxy", {
-						description: "Register an unrelated provider override",
-						handler: async () => {
-							pi.registerProvider("anthropic", { baseUrl: "http://localhost:8080/other" });
-						},
-					});
-				},
-			],
-		});
-		await resourceLoader.reload();
-
-		const { session } = await createAgentSession({
-			cwd: tempDir,
-			agentDir,
-			model: copilotOpus,
-			modelRegistry,
-			settingsManager,
-			sessionManager,
-			authStorage,
-			resourceLoader,
-		});
-		session.setContextWindow(936_000, { persistDefault: true });
-		expect(session.model?.contextWindow).toBe(936_000);
-
-		await session.bindExtensions({});
-		await session.prompt("/register-anthropic-proxy");
-
-		expect(session.model?.provider).toBe("github-copilot");
-		expect(session.model?.id).toBe("claude-opus-4.8");
-		expect(session.model?.contextWindow).toBe(936_000);
-		expect(settingsManager.getDefaultContextWindow()).toBeUndefined();
-		expect(settingsManager.getDefaultContextWindowForModel("github-copilot", "claude-opus-4.8")).toBe(936_000);
-		expect(
-			sessionManager
-				.getEntries()
-				.filter((entry) => entry.type === "context_window_change")
-				.map((entry) => entry.contextWindow),
-		).toEqual([936_000]);
-
-		session.dispose();
-	});
 });

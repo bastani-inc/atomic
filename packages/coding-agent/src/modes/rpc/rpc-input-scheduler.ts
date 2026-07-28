@@ -9,6 +9,7 @@ const INTERRUPT_COMMANDS: ReadonlySet<string> = new Set([
 	"abort_bash",
 	"pause_queued_messages",
 ]);
+const CONCURRENT_COMMANDS: ReadonlySet<string> = new Set(["bash", "user_bash"]);
 
 export function isRpcExtensionUIResponse(value: unknown): value is RpcExtensionUIResponse {
 	return typeof value === "object" && value !== null &&
@@ -31,14 +32,15 @@ export function isConcurrentRpcControlLine(line: string): boolean {
 		return false;
 	}
 	if (isRpcExtensionUIResponse(value)) return true;
-	return value !== null && "type" in value && typeof value.type === "string" && INTERRUPT_COMMANDS.has(value.type);
+	return value !== null && "type" in value && typeof value.type === "string" &&
+		(INTERRUPT_COMMANDS.has(value.type) || CONCURRENT_COMMANDS.has(value.type));
 }
 
 /**
  * Runs ordinary RPC input one frame at a time while giving validated control
- * frames an independent lane. The first ordinary frame starts synchronously,
- * so a following interrupt cannot overtake initialization of the operation it
- * is intended to cancel.
+ * frames and independently correlated bash executions a concurrent lane. The
+ * first ordinary frame starts synchronously, so a following interrupt cannot
+ * overtake initialization of the operation it is intended to cancel.
  */
 export function createRpcInputScheduler(handleLine: (line: string) => Promise<void>): (line: string) => void {
 	const ordinaryQueue: string[] = [];

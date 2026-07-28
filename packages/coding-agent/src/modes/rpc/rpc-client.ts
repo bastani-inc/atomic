@@ -1,5 +1,7 @@
 
 import type { ChildProcess } from "node:child_process";
+import type { BashResult } from "../../core/bash-executor.ts";
+import type { BashOutputChannel } from "../../core/tools/bash.ts";
 import type { ImageContent } from "@earendil-works/pi-ai/compat";
 import { QueuedWriter } from "./queued-writer.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
@@ -13,7 +15,7 @@ import { RpcEventBuffer } from "./rpc-event-buffer.ts";
 import { collectRpcEvents, waitForRpcIdle } from "./rpc-client-waits.ts";
 import type { RpcCommand, RpcExtensionUIRequest, RpcExtensionUIResponse, RpcEvent, RpcResponse } from "./rpc-types.ts";
 export type { ModelInfo, RpcCommandBody } from "./rpc-client-api.ts";
-export type { RpcContextWindowInfo, RpcEvent } from "./rpc-types.ts";
+export type { RpcEvent } from "./rpc-types.ts";
 
 
 function restartArgs(args: readonly string[] | undefined, sessionFile: string | undefined): string[] {
@@ -34,7 +36,6 @@ export interface RpcClientOptions {
 	env?: Record<string, string>;
 	provider?: string;
 	model?: string;
-	contextWindow?: number | string;
 	args?: string[];
 	runtimeExecutable?: string;
 	runtimeArgs?: string[];
@@ -124,9 +125,6 @@ export class RpcClient extends RpcClientApi {
 		}
 		if (this.options.model) {
 			args.push("--model", this.options.model);
-		}
-		if (this.options.contextWindow !== undefined) {
-			args.push("--context-window", String(this.options.contextWindow));
 		}
 		if (this.options.args) {
 			args.push(...this.options.args);
@@ -290,6 +288,24 @@ export class RpcClient extends RpcClientApi {
 	async requestInternal<T>(command: RpcCommandBody): Promise<T> {
 		return this.data<T>(await this.request(command));
 	}
+	async userBashWithUpdates(
+		command: string,
+		onUpdate: (delta: string, channel: BashOutputChannel) => void,
+		options?: { excludeFromContext?: boolean; onRequestId?: (id: string) => void },
+	): Promise<BashResult> {
+		let requestId: string | undefined;
+		const unsubscribe = this.onEvent((event) => {
+			if (event.type === "bash_execution_update" && event.id === requestId) onUpdate(event.delta, event.channel);
+		});
+		try {
+			return this.data(await this.request(
+				{ type: "user_bash", command, excludeFromContext: options?.excludeFromContext },
+				(id) => { requestId = id; options?.onRequestId?.(id); },
+			));
+		} finally {
+			unsubscribe();
+		}
+	}
 	getStderr(): string {
 		return this.stderr;
 	}
@@ -381,7 +397,7 @@ export class RpcClient extends RpcClientApi {
 			});
 		});
 	}
-	protected async request(command: RpcCommandBody): Promise<RpcResponse> {
+	protected async request(command: RpcCommandBody, onRequestId?: (id: string) => void): Promise<RpcResponse> {
 		const childProcess = this.process;
 		if (!childProcess) throw new Error("Client not started");
 		if (this.exitError) throw this.exitError;
@@ -391,6 +407,7 @@ export class RpcClient extends RpcClientApi {
 			throw error;
 		}
 		const id = `req_${++this.requestId}`;
+		onRequestId?.(id);
 		const fullCommand = { ...command, id } as RpcCommand;
 		let timeout: ReturnType<typeof setTimeout> | undefined;
 		let rejectResponse!: (error: Error) => void;

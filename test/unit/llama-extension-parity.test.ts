@@ -1,11 +1,13 @@
 import { afterEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { InMemoryModelsStore } from "@earendil-works/pi-ai";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/resource-loader.js";
 import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
+import { FileModelsStore } from "../../packages/coding-agent/src/core/models-store.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { builtInExtensions } from "../../packages/coding-agent/src/extensions/index.js";
 import { LlamaClient, llamaInferenceUrl, normalizeLlamaServerUrl } from "../../packages/coding-agent/src/extensions/llama/client.js";
@@ -36,7 +38,7 @@ describe("llama.cpp router client", () => {
 });
 
 describe("llama.cpp provider", () => {
-	test("maps loaded model metadata to capped, zero-cost OpenAI models", () => {
+	test("maps loaded model metadata to context-sized, zero-cost OpenAI models", () => {
 		const mapped = toLlamaModel({
 			id: "vision.gguf",
 			status: { value: "loaded" },
@@ -48,7 +50,7 @@ describe("llama.cpp provider", () => {
 		assert.equal(mapped.contextWindow, 8192);
 		assert.equal(mapped.maxTokens, 8192);
 		assert.deepEqual(mapped.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
-		assert.equal(toLlamaModel({ id: "large", status: { value: "loaded" }, meta: { n_ctx: 32768 } }, "http://localhost").maxTokens, 16384);
+		assert.equal(toLlamaModel({ id: "large", status: { value: "loaded" }, meta: { n_ctx: 32768 } }, "http://localhost").maxTokens, 32768);
 		assert.equal(toLlamaModel({ id: "fallback", status: { value: "loaded" } }, "http://localhost").contextWindow, 128000);
 	});
 
@@ -90,6 +92,111 @@ describe("llama.cpp provider", () => {
 		assert.deepEqual(models.map((model) => model.id), ["loaded"]);
 		const auth = await registry.getApiKeyAndHeaders(models[0]!);
 		assert.deepEqual(auth, { ok: true, apiKey: "local", headers: undefined, baseUrl: "http://localhost:8080/v1" });
+	});
+
+	test("persists the loaded catalog and restores it before a later network refresh", async () => {
+		globalThis.fetch = mockFetch(async () => jsonResponse({ data: [
+			{ id: "cached", status: { value: "loaded" }, meta: { n_ctx: 65536 } },
+		] }));
+		const backing = new InMemoryModelsStore();
+		const store = {
+			read: () => backing.read("llama.cpp"),
+			write: (entry: Parameters<InMemoryModelsStore["write"]>[1]) => backing.write("llama.cpp", entry),
+			delete: () => backing.delete("llama.cpp"),
+		};
+		const credential = { type: "api_key" as const, key: "local", env: { LLAMA_BASE_URL: "http://localhost:8080" } };
+		const first = createLlamaProvider().config;
+		const refreshed = await first.refreshModels?.({ credential, store, allowNetwork: true });
+		assert.equal(refreshed?.[0]?.id, "cached");
+		assert.equal((await backing.read("llama.cpp"))?.models[0]?.maxTokens, 65536);
+
+		globalThis.fetch = mockFetch(async () => { throw new Error("offline"); });
+		const restarted = createLlamaProvider().config;
+		const restored = await restarted.refreshModels?.({ credential, store, allowNetwork: false });
+		assert.equal(restored?.[0]?.id, "cached");
+		assert.equal(restored?.[0]?.maxTokens, 65536);
+	});
+
+	test("keeps a validated cached catalog visible when the first online refresh after restart fails", async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-llama-restart-"));
+		try {
+			const auth = AuthStorage.inMemory({
+				"llama.cpp": { type: "api_key", key: "local", env: { LLAMA_BASE_URL: "http://localhost:8080" } },
+			});
+			globalThis.fetch = mockFetch(async () => jsonResponse({ data: [
+				{ id: "cached-on-restart", status: { value: "loaded" }, meta: { n_ctx: 65536 } },
+			] }));
+			const first = ModelRegistry.create(auth, [], root);
+			first.registerProvider("llama.cpp", createLlamaProvider().config);
+			assert.equal((await first.refresh({ allowNetwork: true })).errors.size, 0);
+
+			globalThis.fetch = mockFetch(async () => { throw new Error("router offline"); });
+			const restarted = ModelRegistry.create(auth, [], root);
+			restarted.registerProvider("llama.cpp", createLlamaProvider().config);
+			const result = await restarted.refresh({ allowNetwork: true });
+
+			assert.equal(result.errors.get("llama.cpp")?.message, "router offline");
+			assert.deepEqual(
+				restarted.getAll().filter((model) => model.provider === "llama.cpp").map((model) => model.id),
+				["cached-on-restart"],
+			);
+			assert.equal(restarted.find("llama.cpp", "cached-on-restart")?.maxTokens, 65536);
+
+			globalThis.fetch = mockFetch(async () => jsonResponse({ data: [
+				{ id: "fresh-after-restart", status: { value: "loaded" }, meta: { n_ctx: 32768 } },
+			] }));
+			assert.equal((await restarted.refresh({ allowNetwork: true })).errors.size, 0);
+			assert.deepEqual(
+				restarted.getAll().filter((model) => model.provider === "llama.cpp").map((model) => model.id),
+				["fresh-after-restart"],
+			);
+			assert.equal(restarted.find("llama.cpp", "cached-on-restart"), undefined);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("reports an online failure without publishing models when no cache exists", async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-llama-empty-"));
+		try {
+			const auth = AuthStorage.inMemory({
+				"llama.cpp": { type: "api_key", key: "local", env: { LLAMA_BASE_URL: "http://localhost:8080" } },
+			});
+			globalThis.fetch = mockFetch(async () => { throw new Error("router offline"); });
+			const registry = ModelRegistry.create(auth, [], root);
+			registry.registerProvider("llama.cpp", createLlamaProvider().config);
+
+			const result = await registry.refresh({ allowNetwork: true });
+
+			assert.equal(result.errors.get("llama.cpp")?.message, "router offline");
+			assert.equal(registry.getAll().some((model) => model.provider === "llama.cpp"), false);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("rejects cached entries for the wrong provider or API during failed-refresh recovery", async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-llama-invalid-"));
+		try {
+			const valid = toLlamaModel({ id: "invalid", status: { value: "loaded" } }, "http://localhost:8080");
+			await new FileModelsStore(join(root, "models-store.json")).write("llama.cpp", {
+				models: [{ ...valid, provider: "other" }, { ...valid, api: "anthropic-messages" }],
+				checkedAt: 0,
+			});
+			const auth = AuthStorage.inMemory({
+				"llama.cpp": { type: "api_key", key: "local", env: { LLAMA_BASE_URL: "http://localhost:8080" } },
+			});
+			globalThis.fetch = mockFetch(async () => { throw new Error("router offline"); });
+			const registry = ModelRegistry.create(auth, [], root);
+			registry.registerProvider("llama.cpp", createLlamaProvider().config);
+
+			const result = await registry.refresh({ allowNetwork: true });
+
+			assert.equal(result.errors.get("llama.cpp")?.message, "router offline");
+			assert.equal(registry.getAll().some((model) => model.provider === "llama.cpp"), false);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 });
 

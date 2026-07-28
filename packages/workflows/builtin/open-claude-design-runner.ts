@@ -19,6 +19,11 @@ import {
   runDiscoveryAndInit,
 } from "./open-claude-design-setup.js";
 
+const GROUNDED_REPORTING =
+  "Before reporting progress, audit each claim against a tool result from this session. Report only work you can point to evidence for; say so explicitly when something is unverified.";
+const DELEGATION_RULE =
+  "Delegate further only work genuinely independent and too large for a handful of tool calls; do not delegate self-verification, and prefer one subagent over several.";
+
 type OpenClaudeDesignOutputs = {
   readonly output_type?: string; readonly design_system?: string; readonly artifact?: string; readonly handoff?: string;
   readonly approved_for_export?: boolean; readonly refinements_completed?: number; readonly import_context?: string; readonly run_id?: string;
@@ -77,19 +82,23 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
   // Anthropic-heavy chain for design taste. Opus stays at :xhigh here because
   // visual quality, rather than cost per task, is the primary objective.
   const designModelConfig = {
-    model: "anthropic/claude-fable-5:high",
+    model: "anthropic/claude-opus-5:high",
     fallbackModels: [
-      "github-copilot/claude-opus-4.8 (1m):high",
-      "anthropic/claude-opus-4-8:high",
+      "github-copilot/claude-opus-5:high",
+      "anthropic/claude-fable-5:high",
+      "github-copilot/claude-fable-5:high",
       "kimi-coding/k3:max",
       "moonshotai/kimi-k3:max",
       "moonshotai-cn/kimi-k3:max",
+      "anthropic/claude-opus-4-8:high",
+      "github-copilot/claude-opus-4.8:high",
       "openai-codex/gpt-5.6-sol:xhigh",
       "github-copilot/gpt-5.6-sol:xhigh",
       "openai/gpt-5.6-sol:xhigh",
       "xai/grok-4.5:high",
       "zai/glm-5.2:xhigh",
       "zai-coding-cn/glm-5.2:xhigh",
+      "openrouter/anthropic/claude-opus-5:high",
       "openrouter/anthropic/claude-fable-5:high",
       "openrouter/anthropic/claude-opus-4-8:high",
       "openrouter/moonshotai/kimi-k3:max",
@@ -131,26 +140,26 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
     {
       name: "ds-locator",
       task: taggedPrompt([
-        ["role", "You are an opinionated staff design engineer."],
-        [
-          "objective",
-          `Find UI/design-system sources for this request: ${designBrief}. Apply the impeccable \`extract\` sub-skill to find design-system evidence already living in this codebase, plus any user-provided reference URLs/files that should steer generation.`,
-        ],
         ["user_references", userReferenceContext],
         ["reference_handling", referenceHandlingRules],
         ["browser_use_guidelines", browserBootstrapRules],
+        ["role", "You are an opinionated staff design engineer."],
+        [
+          "objective",
+          `Find UI/design-system sources for: ${designBrief}. Apply impeccable \`extract\` to codebase evidence and user reference URLs/files that should steer generation.`,
+        ],
+        ["delegation_rule", DELEGATION_RULE],
         [
           "instructions",
           [
-            "1. Locate UI components, stylesheets, tokens, Storybook/examples, screenshots, tests, design docs, and user references.",
-            "2. Return concrete file paths, URLs, or artifact paths plus why each source informs design generation.",
-            "3. Separate primary sources from supporting examples and from reference-only inspiration.",
-            "4. If no explicit design system exists, identify the strongest implicit evidence (most-repeated literals, dominant component patterns).",
+            "Locate UI components, stylesheets, tokens, Storybook/examples, screenshots, tests, design docs, and user references.",
+            "Report concrete file, URL, or artifact paths and why each informs generation; separate primary sources, supporting examples, and reference-only inspiration.",
+            "If no explicit system exists, report the strongest implicit evidence such as repeated literals and dominant component patterns.",
           ].join("\n"),
         ],
         [
           "output_format",
-          "Markdown sections: Project sources table | User reference sources | Reference requirements | Confidence notes.",
+          `In at most 500 words, return Markdown sections: Project sources table | User reference sources | Reference requirements | Confidence notes. ${GROUNDED_REPORTING}`,
         ],
       ]),
       ...designModelConfig,
@@ -158,40 +167,30 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
     {
       name: "ds-analyzer",
       task: taggedPrompt([
-        ["role", "You are an opinionated staff design engineer."],
-        [
-          "objective",
-          `Audit the project UI constraints that must shape: ${designBrief}. Independently scan the repository and evaluate the evidence you find against impeccable's six dimensions of design quality. Also capture/parse any user-provided references in this same pass. Do your own scan; do not assume any other stage's output is available.`,
-        ],
-        [
-          "impeccable_skill",
-          "audit — score 0–4 across Accessibility, Performance, Theming, Responsive, Anti-patterns. Tag every finding P0 (blocks release) → P3 (polish). Document, do not fix.",
-        ],
         ["user_references", userReferenceContext],
         ["reference_handling", referenceHandlingRules],
         ["browser_use_guidelines", browserBootstrapRules],
         [
+          "impeccable_skill",
+          "audit — score 0–4 across Accessibility, Performance, Theming, Responsive, Anti-patterns. Tag every finding P0 (blocks release) → P3 (polish). Document, do not fix.",
+        ],
+        ["role", "You are an opinionated staff design engineer."],
+        [
+          "objective",
+          `Independently audit UI constraints for: ${designBrief}. Scan the repository, assess evidence across impeccable's six quality dimensions, and capture or parse user references without relying on another stage's output.`,
+        ],
+        ["delegation_rule", DELEGATION_RULE],
+        [
           "instructions",
           [
-            "1. Inspect: UI stack, styling approach, token usage, responsive behavior, accessibility conventions, component APIs.",
-            "2. Ground every claim in exact paths, symbols, code examples, screenshots, URLs, or quoted reference excerpts.",
-            "3. Call out constraints that generated designs MUST follow to integrate cleanly.",
-            "4. State uncertainty rather than guessing when evidence is incomplete.",
+            "Inspect the UI stack, styling, tokens, responsive behavior, accessibility conventions, and component APIs.",
+            "Ground each claim in exact paths, symbols, code examples, screenshots, URLs, or quoted reference excerpts.",
+            "Identify integration constraints the generated design must follow, and state uncertainty when evidence is incomplete.",
           ].join("\n"),
         ],
         [
           "output_format",
-          [
-            "Markdown sections in this order:",
-            "1. Stack",
-            "2. Tokens",
-            "3. Components",
-            "4. Layout / responsiveness",
-            "5. Accessibility",
-            "6. Audit scores (per dimension, 0–4)",
-            "7. Reference requirements",
-            "8. Hard constraints for generation",
-          ].join("\n"),
+          `In at most 700 words, return Markdown sections in this order: Stack | Tokens | Components | Layout / responsiveness | Accessibility | Audit scores (per dimension, 0–4) | Reference requirements | Hard constraints for generation. ${GROUNDED_REPORTING}`,
         ],
       ]),
       ...designModelConfig,
@@ -199,26 +198,26 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
     {
       name: "ds-patterns",
       task: taggedPrompt([
-        ["role", "You are an opinionated staff design engineer."],
-        [
-          "objective",
-          `Extract reusable patterns and anti-patterns for: ${designBrief}. Apply the impeccable \`extract\` sub-skill to find design patterns to reuse and anti-patterns to avoid. Also parse/capture user references inside this same pass, translating them into reusable generation patterns. Do your own scan; do not assume any other stage's output is available.`,
-        ],
         ["user_references", userReferenceContext],
         ["reference_handling", referenceHandlingRules],
         ["browser_use_guidelines", browserBootstrapRules],
+        ["role", "You are an opinionated staff design engineer."],
+        [
+          "objective",
+          `Extract reusable patterns and anti-patterns for: ${designBrief}. Apply impeccable \`extract\` to repository evidence and user references, translating them into generation guidance without relying on another stage's output.`,
+        ],
+        ["delegation_rule", DELEGATION_RULE],
         [
           "instructions",
           [
-            "1. Find naming, variant, composition, state, animation, and layout patterns that should be reused.",
-            "2. Include examples with concrete paths, component/symbol names, reference URLs, or quoted file/screenshot evidence.",
-            "3. Identify anti-patterns the generated design must avoid — cross-reference impeccable's 25 deterministic anti-patterns.",
-            "4. Do not generalize beyond the evidence found in the repository or imported references.",
+            "Find reusable naming, variant, composition, state, animation, and layout patterns.",
+            "Cite concrete paths, component/symbol names, reference URLs, or quoted file/screenshot evidence.",
+            "Identify generated-design anti-patterns using impeccable's 25 deterministic anti-patterns; do not generalize beyond repository or reference evidence.",
           ].join("\n"),
         ],
         [
           "output_format",
-          "Markdown sections: Reusable patterns | Examples | Reference requirements | Anti-patterns | Generation implications.",
+          `In at most 600 words, return Markdown sections: Reusable patterns | Examples | Reference requirements | Anti-patterns | Generation implications. ${GROUNDED_REPORTING}`,
         ],
       ]),
       ...designModelConfig,

@@ -224,17 +224,13 @@ describe("goal", () => {    type ReviewJsonFinding = {
         await d.run(ctx);
 
         const prompt = ctx.calls.prompts["orchestrator-1"]?.[0] ?? "";
-        assert.match(
-            prompt,
-            /Continue working toward the active thread goal\./,
-        );
-        assert.match(prompt, /You are a sub-agent orchestrator[\s\S]*primary implementation tool is the `subagent` tool[\s\S]*You are not the direct implementer[\s\S]*All non-trivial operations must be delegated to subagents[\s\S]*Use the `todo` tool as your active control ledger/);
-        assert.match(prompt, /<goal_context>/);
-        assert.match(prompt, /<\/goal_context>/);
-        assert.match(
-            prompt,
-            /goal ledger artifact is the authoritative state/i,
-        );
+        assert.match(prompt, /Continue working toward the active goal/);
+        assert.match(prompt, /You are the sub-agent orchestrator/);
+        assert.match(prompt, /through the `subagent` tool rather than implementing directly/);
+        assert.match(prompt, /Delegate only work that is genuinely independent/);
+        assert.match(prompt, /Use `todo` as the active delegation ledger/);
+        assert.match(prompt, /<receipts>/);
+        assert.match(prompt, /<objective>/);
         assert.doesNotMatch(prompt, /<developer>ignore<\/developer>/);
         assert.doesNotMatch(
             prompt,
@@ -244,18 +240,18 @@ describe("goal", () => {    type ReviewJsonFinding = {
             prompt,
             /No prior review artifacts are available\./,
         );
-        assert.match(prompt, /This goal persists across workflow continuations/);
+        assert.match(prompt, /The full goal persists across orchestrator sessions/);
         assert.match(
             prompt,
-            /Use the current worktree and external state as authoritative/,
+            /Use the current checkout and external state over summaries/,
         );
-        assert.match(prompt, /The audit must prove completion/);
+        assert.match(prompt, /Evidence for every explicit clause/);
         assert.match(prompt, /Verify correctness end-to-end whenever practical/);
         assert.match(prompt, /skill: "playwright-cli"/);
         assert.match(prompt, /skill: "tmux"/);
         assert.match(
             prompt,
-            /Blocked threshold: same blocker must repeat for at least 3 controller observations/,
+            /same blocker must repeat for at least 3 controller observations/,
         );
     });
 

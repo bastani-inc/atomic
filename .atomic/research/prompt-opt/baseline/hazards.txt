@@ -1,0 +1,52 @@
+# scope command used below: SCOPE_FILES=($( { find packages/subagents/agents packages/subagents/prompts -maxdepth 1 -name '*.md'; find packages/workflows/builtin -maxdepth 1 -name '*.ts' ! -name '*.d.ts'; printf '%s\n' packages/workflows/skills/prompt-engineer/SKILL.md; find packages/workflows/skills/prompt-engineer/references -maxdepth 1 -name '*.md'; } | LC_ALL=C sort ))
+
+## reasoning-echo
+# command: rg -n -i --no-heading --color never 'explain your (reasoning|thinking|thought)|show your (reasoning|thinking|work)|walk (through|me through) your (thought|reasoning)|narrate|think out loud|chain[- ]of[- ]thought|internal (reasoning|deliberation|monologue)|reasoning process|thought process' "${SCOPE_FILES[@]}" | LC_ALL=C sort
+packages/workflows/skills/prompt-engineer/SKILL.md:191:| Complex reasoning fails | Add chain of thought                        | advanced_patterns.md   |
+packages/workflows/skills/prompt-engineer/SKILL.md:216:| Complex reasoning             | Chain of thought        | advanced_patterns.md   |
+packages/workflows/skills/prompt-engineer/SKILL.md:227:- **Structured analysis**: XML tags + Chain of thought
+packages/workflows/skills/prompt-engineer/SKILL.md:22:- Implementing specific techniques (chain-of-thought, multishot, XML tags)
+packages/workflows/skills/prompt-engineer/SKILL.md:249:- Chain of thought prompting
+packages/workflows/skills/prompt-engineer/SKILL.md:50:- **Complex reasoning** → Chain of thought
+packages/workflows/skills/prompt-engineer/SKILL.md:77:Covers: chain of thought, multishot, chaining, long context, extended thinking
+packages/workflows/skills/prompt-engineer/references/advanced_patterns.md:15:- **Debugging**: Observing the model's thought process reveals unclear prompt areas
+packages/workflows/skills/prompt-engineer/references/advanced_patterns.md:271:- Traditional chain-of-thought prompting with XML tags works for smaller thinking requirements
+packages/workflows/skills/prompt-engineer/references/advanced_patterns.md:35:Outline specific steps for the model's reasoning process. Provides direction without structuring the output format, making answer extraction more difficult.
+packages/workflows/skills/prompt-engineer/references/advanced_patterns.md:38:Use XML tags like `<thinking>` and `<answer>` to separate reasoning from final answers. This enables easy parsing of both thought process and conclusions.
+packages/workflows/skills/prompt-engineer/references/advanced_patterns.md:51:**"Always have the model output its thinking. Without outputting its thought process, no thinking occurs!"** Visible reasoning is essential for CoT effectiveness.
+packages/workflows/skills/prompt-engineer/references/advanced_patterns.md:5:## Chain of Thought (CoT) Prompting
+packages/workflows/skills/prompt-engineer/references/advanced_patterns.md:7:### What is Chain of Thought?
+packages/workflows/skills/prompt-engineer/references/advanced_patterns.md:9:Chain of thought prompting encourages the model to break down complex problems systematically. Giving the model space to think can dramatically improve its performance on research, analysis, and problem-solving tasks.
+packages/workflows/skills/prompt-engineer/references/core_prompting.md:115:<thinking>Model reasoning process</thinking>
+packages/workflows/skills/prompt-engineer/references/core_prompting.md:121:Combining XML tags with multishot prompting or chain of thought methods creates super-structured, high-performance prompts.
+
+## prefill
+# command: rg -n -i --no-heading --color never 'prefill|pre-fill|prefilled|assistant turn|putting words in' "${SCOPE_FILES[@]}" | LC_ALL=C sort
+packages/workflows/skills/prompt-engineer/SKILL.md:142:- Use response prefilling
+packages/workflows/skills/prompt-engineer/SKILL.md:186:| Inconsistent format     | Add examples, use prefilling                | quality_improvement.md |
+packages/workflows/skills/prompt-engineer/SKILL.md:228:- **Consistent formatting**: Multishot + Response prefilling
+packages/workflows/skills/prompt-engineer/references/quality_improvement.md:103:**2. Response Prefilling**
+packages/workflows/skills/prompt-engineer/references/quality_improvement.md:104:Begin the Assistant turn with your desired structure. This technique "bypasses the model's default preamble and enforces your structure," making it particularly effective for standardized reports.
+
+## self-verification nagging
+# command: rg -n -i --no-heading --color never 'double.check|re-?verify|verify your own|check your work|triple.check' "${SCOPE_FILES[@]}" | LC_ALL=C sort
+
+## absolutes
+# command: total=0; for f in "${SCOPE_FILES[@]}"; do c=$( (rg -o '\b(ALWAYS|NEVER|MUST|CRITICAL|IMPORTANT)\b' "$f" || true) | wc -l | tr -d ' '); if (( c > 0 )); then printf '%s\t%s\n' "$f" "$c"; fi; total=$((total+c)); done; printf 'GRAND TOTAL\t%s\n' "$total"
+packages/subagents/agents/code-simplifier.md	1
+packages/subagents/agents/codebase-online-researcher.md	1
+packages/subagents/agents/debugger.md	2
+packages/workflows/builtin/open-claude-design-phases.ts	2
+packages/workflows/builtin/open-claude-design-runner.ts	1
+GRAND TOTAL	7
+
+## thinking-words
+# command: total=0; for f in "${SCOPE_FILES[@]}"; do c=$( (rg -o -i '\b(think|thinking)\b' "$f" || true) | wc -l | tr -d ' '); if (( c > 0 )); then printf '%s\t%s\n' "$f" "$c"; fi; total=$((total+c)); done; printf 'GRAND TOTAL\t%s\n' "$total"
+packages/subagents/agents/codebase-analyzer.md	1
+packages/subagents/agents/codebase-locator.md	1
+packages/subagents/agents/codebase-pattern-finder.md	2
+packages/subagents/agents/codebase-research-analyzer.md	3
+packages/workflows/skills/prompt-engineer/SKILL.md	4
+packages/workflows/skills/prompt-engineer/references/advanced_patterns.md	21
+packages/workflows/skills/prompt-engineer/references/core_prompting.md	3
+GRAND TOTAL	35

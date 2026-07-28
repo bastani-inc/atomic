@@ -74,14 +74,16 @@ describe("post-tool compaction preflight", () => {
 		expect(harness.eventsOfType("compaction_end")).toEqual([
 			expect.objectContaining({ reason: "threshold", aborted: false, willRetry: false, midTurn: true }),
 		]);
-		expect(harness.faux.contexts[1]?.messages.map((message) => message.role)).toEqual([
-			"user",
-			"assistant",
-			"toolResult",
-		]);
+		// The kept tail is concatenated into the boundary string instead of being replayed
+		// as separate assistant/toolResult blocks.
+		expect(harness.faux.contexts[1]?.messages.map((message) => message.role)).toEqual(["user"]);
 		expect(harness.faux.contexts[1]?.messages[0]).toMatchObject({
 			role: "user",
 			content: [{ type: "text", text: expect.stringContaining("[User]: retained") }],
+		});
+		expect(harness.faux.contexts[1]?.messages[0]).toMatchObject({
+			role: "user",
+			content: [{ type: "text", text: expect.stringContaining("[Tool result]: ") }],
 		});
 		expect(continueSpy).not.toHaveBeenCalled();
 		expect(harness.session.getLastAssistantText()).toBe("completed after compaction");

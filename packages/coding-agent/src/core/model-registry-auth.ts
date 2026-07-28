@@ -1,7 +1,6 @@
 import type { ModelAuth, ProviderHeaders } from "@earendil-works/pi-ai";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { AuthStatus, AuthStorage } from "./auth-storage.ts";
-import { withGitHubCopilotApiVersionHeader } from "./model-registry-builtins.ts";
 import type { ProviderRequestConfig, ResolvedRequestAuth } from "./model-registry-types.ts";
 import {
 	getConfigValueEnvVarNames,
@@ -91,7 +90,6 @@ export async function getModelRequestAuth(
 			headers = { ...headers, Authorization: `Bearer ${apiKey}` };
 		}
 
-		headers = withGitHubCopilotApiVersionHeader(model, headers);
 
 		return {
 			ok: true,

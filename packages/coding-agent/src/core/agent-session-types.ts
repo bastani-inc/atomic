@@ -44,7 +44,6 @@ export type AgentSessionEvent =
 			source: "set" | "cycle" | "restore" | "fallback";
 	  }
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
-	| { type: "context_window_changed"; contextWindow: number }
 	| {
 			type: "compaction_end";
 			reason: "manual" | "threshold" | "overflow";
@@ -72,21 +71,12 @@ export type AgentSessionEvent =
 			reason: "manual" | "threshold" | "overflow";
 	  }
 	| { type: "summarization_retry_finished" }
+	| { type: "bash_execution_update"; id?: string; channel: "stdout" | "stderr"; delta: string }
 	| { type: "model_fallback_start"; from: string; to: string; reason: string; attempt: number }
 	| { type: "model_fallback_end"; success: boolean; from?: string; to?: string; finalError?: string };
 
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
 
-export type ContextWindowReplaySource = "session" | "model-settings" | "global-settings";
-
-export interface ContextWindowReplayRequest {
-	contextWindow: number;
-	source: ContextWindowReplaySource;
-}
-
-export const COPILOT_CONTEXT_WINDOW_SELECTION_OPTIONS = {
-	allowCopilotLongContextFallback: true,
-} as const;
 
 export interface PendingAgentMessageQueue {
 	hasItems(): boolean;

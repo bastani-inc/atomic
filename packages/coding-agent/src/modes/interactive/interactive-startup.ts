@@ -8,7 +8,7 @@ import { onInteractiveEngineRemoteCommandsChanged, waitForInteractiveEngineBound
 import { restoreTerminalTitleAfterPackageCheck } from "./interactive-terminal-title.ts";
 import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
 
-export const shouldRefreshCopilotCatalogOnStartup = (): boolean => !isOfflineModeEnabled();
+export const shouldRefreshCatalogsOnStartup = (): boolean => !isOfflineModeEnabled();
 
 function prepareStartupNotices(mode: InteractiveModeBase): void {
     if (mode.startupNoticesPrepared) return;
@@ -217,7 +217,7 @@ InteractiveModeBase.prototype.updateTerminalTitle = function(this: InteractiveMo
 InteractiveModeBase.prototype.run = async function(this: InteractiveModeBase): Promise<void> {
     await this.init();
 
-	if (shouldRefreshCopilotCatalogOnStartup()) void refreshCatalogsAfterTuiStartup(this);
+	if (shouldRefreshCatalogsOnStartup()) void refreshCatalogsAfterTuiStartup(this);
 
 	setTimeout(() => {
     const startupNoticesContainer = this.startupNoticesContainer;

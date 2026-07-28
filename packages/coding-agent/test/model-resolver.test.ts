@@ -1,6 +1,5 @@
 import type { Model } from "@earendil-works/pi-ai/compat";
 import { describe, expect, test } from "vitest";
-import { getSupportedContextWindows } from "../src/core/context-window.ts";
 import { parseModelPattern, resolveCliModel } from "../src/core/model-resolver.ts";
 
 // Mock models for testing
@@ -84,8 +83,6 @@ const copilotSelectableBaseModel: Model<"openai-completions"> = {
 	input: ["text"],
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	contextWindow: 400000,
-	defaultContextWindow: 400000,
-	contextWindowOptions: [400000, 1000000],
 	maxTokens: 64000,
 };
 
@@ -414,9 +411,6 @@ describe("resolveCliModel", () => {
 		expect(result.model?.provider).toBe("github-copilot");
 		expect(result.model?.id).toBe("future-copilot-model");
 		expect(result.model?.contextWindow).toBe(400000);
-		expect(result.model?.defaultContextWindow).toBe(400000);
-		expect(result.model?.contextWindowOptions).toBeUndefined();
-		expect(result.model ? getSupportedContextWindows(result.model) : []).toEqual([400000]);
 	});
 	test("returns a clear error when there are no models", () => {
 		const registry = {

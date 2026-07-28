@@ -228,7 +228,6 @@ export function buildGraphOverlayAdapter(
     currentHandle?.hide();
     updateTerminalAutowrap(false);
     finishMounted?.();
-    observedUi?.setStatus?.(WORKFLOW_STATUS_KEY, undefined);
     observedUi?.setStatus?.(MAIN_CHAT_INPUT_STATUS_KEY, undefined);
     currentView?.dispose();
     currentHandle = null;
@@ -351,7 +350,6 @@ export function buildGraphOverlayAdapter(
 
     const custom = ui?.custom;
     if (typeof custom !== "function") return;
-    const uiStatus = ui;
 
     let settled = false;
     const factory = (
@@ -367,7 +365,6 @@ export function buildGraphOverlayAdapter(
         if (settled) return;
         settled = true;
         updateMouseScrollTracking(false);
-        observedUi?.setStatus?.(WORKFLOW_STATUS_KEY, undefined);
         observedUi?.setStatus?.(MAIN_CHAT_INPUT_STATUS_KEY, undefined);
         currentView?.dispose();
         currentView = null;
@@ -390,7 +387,6 @@ export function buildGraphOverlayAdapter(
         stageControlRegistry: registry,
         resolvePostMortemHandle,
         stageUiBroker,
-        uiStatus,
         onClose: finish,
         onHide: hideMounted,
         initialAttachStageId: stageId,

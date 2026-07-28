@@ -1,6 +1,5 @@
 import { EventEmitter } from "node:events";
 import * as undici from "undici";
-import { installCopilotResponseInterceptor } from "./copilot-gemini-reasoning.ts";
 
 export const DEFAULT_HTTP_IDLE_TIMEOUT_MS = 600_000;
 
@@ -117,9 +116,4 @@ export function configureHttpDispatcher(timeoutMs: number = DEFAULT_HTTP_IDLE_TI
 		undici.install?.();
 		installedGlobalFetch = globalThis.fetch;
 	}
-
-	// Install Copilot response stream compatibility shims before provider parsers
-	// consume the body. Idempotent and scoped inside each shim to the relevant
-	// Copilot event-stream endpoint.
-	installCopilotResponseInterceptor();
 }

@@ -1,5 +1,6 @@
 import { Type } from "typebox";
 import { workflow } from "../src/authoring/workflow.js";
+import { withSteeringPropagationContext } from "./steering-context.js";
 import { runLoopUntilDone } from "./loop-until-done-runner.js";
 
 export default workflow({
@@ -15,7 +16,7 @@ export default workflow({
     }),
   },
   outputs: {
-    result: Type.String({ description: "Evidence-backed completion report or deterministic exhaustion report." }),
+    result: Type.String({ description: "Compact reference to the evidence-backed completion report, or the deterministic exhaustion report; read `result_path` for the full report." }),
     status: Type.Union([Type.Literal("complete"), Type.Literal("failed")], {
       description: "Complete when evidence satisfies the stop condition; failed when max_iterations is exhausted.",
     }),
@@ -27,5 +28,5 @@ export default workflow({
     remaining_work: Type.String({ description: "Actionable remaining work; empty only after proven completion." }),
     artifact_dir: Type.String({ description: "Run-specific directory containing loop artifacts." }),
   },
-  run: async (ctx) => await runLoopUntilDone(ctx),
+  run: async (ctx) => await runLoopUntilDone(withSteeringPropagationContext(ctx)),
 });

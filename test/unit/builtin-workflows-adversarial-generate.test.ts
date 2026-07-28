@@ -1,5 +1,6 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -116,8 +117,12 @@ test("generate-and-filter fans out, dedupes, optionally judges, and finalizes ar
     assert.equal(ctx.calls.parallelOptions[0]?.concurrency, 2);
     assert.deepEqual(ctx.calls.task.slice(-3), ["dedupe-and-filter", "judge", "final-shortlist"]);
     assert.equal(result.shortlist.length, 2);
-    assert.match(result.result, /\[mock-task:final-shortlist\]/);
-    assert.doesNotMatch(result.result, /Saved output to/);
+    // `result` carries the compact artifact reference, never the report body:
+    // the full text belongs in `final_path` so it stays out of the caller's
+    // context window.
+    assert.match(result.result, /Saved output to/);
+    assert.doesNotMatch(result.result, /\[mock-task:final-shortlist\]/);
+    assert.match(readFileSync(result.final_path, "utf8"), /\[mock-task:final-shortlist\]/);
     assert.ok(readPaths(ctx.calls.taskOptions["dedupe-and-filter"]?.[0]).some((path) => path.endsWith("manifest.json")));
     assert.ok(readPaths(ctx.calls.taskOptions.judge?.[0]).some((path) => path.endsWith("filter.json")));
     assert.ok(readPaths(ctx.calls.taskOptions["final-shortlist"]?.[0]).some((path) => path.endsWith("judge.json")));

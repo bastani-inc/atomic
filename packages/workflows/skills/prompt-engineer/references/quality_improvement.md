@@ -1,193 +1,119 @@
-# Quality Improvement Techniques
+# Prompt Quality Improvement
 
-This document covers techniques for improving specific aspects of language model output quality: consistency, factual accuracy, and security.
+Optimize against representative behavior, not prompt aesthetics. Preserve user-visible outcomes and contracts while making the smallest measurable change.
 
-## Reducing Hallucinations
+## Delete-First Workflow
 
-### Core Definition
+OpenAI measured leaner system prompts scoring roughly 10–15% higher on internal coding-agent evals while using 41–66% fewer total tokens and costing 33–67% less. Results vary, but the direction is clear: deletion is the default edit.
 
-Language models can generate factually incorrect or contextually inconsistent text, a problem termed "hallucination." This guide provides strategies to minimize such issues.
+### Delete
 
-### Basic Strategies
+- repeated statements of the same rule;
+- generic self-verification nagging and legacy verifier scaffolding;
+- over-triggering absolutes such as “use this tool in every case” when routing depends on context;
+- step-by-step process narration for behavior the model already performs;
+- examples that do not alter measured behavior;
+- tool descriptions for tools the agent cannot call;
+- contradictions, obsolete workarounds, decorative roles, filler, and redundant summaries.
 
-**1. Permission to Admit Uncertainty**
-Allow the model to say "I don't know" by explicitly granting permission to acknowledge uncertainty. This straightforward approach substantially reduces false information generation.
+### Never delete
 
-Example:
+- the user-visible outcome;
+- success criteria and stopping conditions;
+- safety, business, evidence, and permission constraints;
+- context-dependent tool-routing and prerequisite rules;
+- required output shape, fields, enums, length, and validation;
+- explicit user-provided values and downstream parser contracts.
 
-```
-If you don't know the answer or are uncertain, please say so rather than guessing.
-```
+Reserve absolute language for true invariants. Convert judgment calls into conditions: “Use web search when current or externally verifiable information is required” is safer than a universal tool mandate.
 
-**2. Direct Quotation Grounding**
-For very lengthy documents (100K+ tokens) or when working with multiple large documents, request that the model extract verbatim passages before proceeding with analysis. This anchors responses to actual source material rather than inferred content.
+### Optimize vertically
 
-Example:
+1. Record a working baseline on representative inputs.
+2. Remove one group of instructions, examples, or tools.
+3. Rerun the same cases and compare outcomes.
+4. Restore anything whose removal causes a real regression.
+5. Add the smallest targeted instruction for the remaining measured failure.
 
-```
-First, find and quote the relevant passages from the document.
-Then, based only on those quotes, provide your analysis.
-```
+Do not rewrite a working prompt stack and change effort, model, and tools simultaneously; that makes causality impossible to identify.
 
-**3. Citation Verification**
-Make outputs traceable by requiring the model to cite supporting quotes for each claim. The model should then verify claims by locating corroborating evidence; unsupported statements must be removed.
+## Evaluation Contract
 
-Example:
+Choose cases that represent normal traffic, hard edge cases, missing evidence, tool failures, and adversarial inputs. Measure:
 
-```
-For each claim you make, provide a direct quote from the source material.
-After drafting your response, verify that each claim has supporting evidence.
-Remove any claims that cannot be substantiated with quotes.
-```
+- task success and human-visible quality;
+- schema validity, required fields, and parser success;
+- factual support, citation placement, and uncertainty behavior;
+- tool choice, arguments, retries, loop count, and completion rate;
+- latency, input/output/reasoning tokens, cache behavior, and cost per successful task;
+- scope control, permission handling, and stopping behavior.
 
-### Advanced Approaches
+Run multiple trials when sampling variance matters. Compare the current prompt with one surgical variant at a time. A shorter prompt is an improvement only when it continues to pass the behavior contract.
 
-**Step-by-step reasoning**
-Request the model explain its logic before providing final answers, exposing potentially flawed assumptions
+## Grounded Accuracy
 
-**Multiple-run comparison**
-Execute identical prompts several times and analyze outputs for inconsistencies suggesting hallucinations
+Prompting can reduce hallucinations but cannot eliminate them. Select controls based on the task:
 
-**Progressive validation**
-Use prior responses as foundation for follow-up queries asking for verification or expansion of statements
-
-**Information source limitation**
-Explicitly restrict the model to provided materials, excluding general knowledge access
-
-Example:
-
-```
-Use ONLY the information provided in the attached documents.
-Do not use any external knowledge or general information.
-If the documents don't contain the information needed to answer, say so.
+```text
+Use only the supplied documents for factual claims. Cite the source beside each consequential claim. Label inference separately from directly supported fact. If the documents do not contain required evidence, state what is missing rather than guessing.
 ```
 
-### Important Caveat
+For long or noisy sources, ask for relevant quotations before synthesis. For ordinary answers, requiring every sentence to quote a source can harm readability; define which claims need support. Permit “I don't know” or a narrower answer when evidence is absent.
 
-While these techniques significantly reduce hallucinations, they don't eliminate them entirely. Always validate critical information, especially for high-stakes decisions.
+For long agent runs, ground status as well as final claims:
 
----
-
-## Increasing Consistency
-
-### Core Techniques
-
-**1. Format Specification**
-Define desired output structures using JSON, XML, or custom templates. This approach ensures the model understands all formatting requirements before generating responses.
-
-Example JSON:
-
-```json
-{
-    "sentiment": "positive|negative|neutral",
-    "confidence": "high|medium|low",
-    "key_themes": ["theme1", "theme2"],
-    "summary": "Brief summary here"
-}
+```text
+Before reporting progress, audit each claim against a tool result from this session. Report failed, skipped, or unverified work plainly, and call work complete only when the cited validation supports it.
 ```
 
-Example XML:
+This compact evidence rule replaces repeated requests to recheck work. Anthropic reports that grounding progress against tool results nearly eliminated fabricated status reports in its tests.
 
-```xml
-<analysis>
-  <sentiment>positive|negative|neutral</sentiment>
-  <confidence>high|medium|low</confidence>
-  <key_themes>
-    <theme>theme1</theme>
-    <theme>theme2</theme>
-  </key_themes>
-  <summary>Brief summary here</summary>
-</analysis>
-```
+## Consistent Output
 
-**2. Response Prefilling**
-Begin the Assistant turn with your desired structure. This technique "bypasses the model's default preamble and enforces your structure," making it particularly effective for standardized reports.
+Use, in order of preference:
 
-Example:
+1. an explicit output contract with required sections, length, allowed values, and missing-data behavior;
+2. structured outputs or a tool schema for machine-consumed data;
+3. 3–5 relevant and diverse examples when the format or classification remains ambiguous;
+4. parser validation and bounded retries;
+5. focused prompt chaining when stages need separate contracts.
 
-```
-User: Analyze this customer feedback.
-Assistant: {
-```
+Do not prefill the final assistant turn. Claude 4.6 and later reject it with a 400 error. To suppress preambles, instruct the model to begin with the outcome; for JSON or classifications, use structured outputs, enums, or tools.
 
-This forces the model to immediately start with the JSON structure.
+## Security and Prompt Injection
 
-**3. Example-Based Constraints**
-Supply concrete examples of desired output. Examples train the model's understanding better than abstract instructions alone.
+Prompt policy is one layer, not a complete security boundary.
 
-**4. Retrieval-Grounded Responses**
-For knowledge-dependent tasks, use retrieval mechanisms to anchor the model's replies in fixed information sets. This maintains contextual consistency across multiple interactions.
+- Separate untrusted content from instructions with clear tags and describe its data-only role.
+- Define allowed actions, prohibited actions, refusal behavior, and escalation paths in plain language.
+- Validate inputs, tool arguments, permissions, and outputs at system boundaries.
+- Use moderation or a lightweight screening model when the risk profile warrants it.
+- Monitor repeated abuse and anomalous tool behavior; enforce access control and destructive-action approval in application code.
+- Use defense in depth for high-risk systems because no single prompt blocks every jailbreak or injection.
 
-**5. Prompt Chaining**
-Decompose intricate workflows into sequential, focused subtasks. This prevents inconsistency errors by ensuring "each subtask gets the model's full attention."
+Safety invariants may use `NEVER` or `MUST`; stylistic preferences and tool judgment generally should not.
 
-### Practical Applications
+## Troubleshooting
 
-The guide demonstrates these techniques through real-world scenarios:
+| Symptom | Assess first | Surgical response |
+| --- | --- | --- |
+| Misunderstood task | Missing outcome, audience, reason, or conflicting rules | Clarify the destination and delete contradictions |
+| Inconsistent shape | Vague fields, optionality, or length | Add a schema/output contract; add examples only if needed |
+| Unsupported claims | Undefined evidence scope or missing-data behavior | Require cited support, distinguish inference, permit uncertainty |
+| Missing tool call | User asked for suggestions rather than action, or routing is vague | State the authorized action and a conditional route |
+| Excess tool calls | Repeated prerequisites, aggressive triggers, no stop rule | Deduplicate and define evidence-based stopping |
+| Agent stops early | Permission boundary is vague or final plan substitutes for action | Define authorized actions and completion/blocker stop rules |
+| Agent overbuilds | Scope and success criteria are broad | Name the requested scope and exclude unrelated features or refactors |
+| Too much delegation | No size or independence threshold | Add delegation damping and a concurrency cap |
+| Long visible answer | No explicit output length contract | Specify preserved content, omissions, sections, and word limit |
+| High latency/cost | Excess prompt text or effort | Delete first, then compare one lower effort level |
+| Long-context miss | Query precedes large documents | Put documents first and query last; Anthropic measured up to ~30% improvement |
+| Fable 5 refusal/fallback | Prompt solicits internal reasoning text | Request evidence and conclusions; consume API-provided summaries if needed |
 
-- **Customer feedback analysis**: Using JSON structures for consistent categorization
-- **Sales report generation**: Via XML templates for standardized formatting
-- **Competitive intelligence**: With structured formats for comparable analysis
-- **IT support systems**: Leveraging knowledge bases for consistent responses
+## Model and Effort Regression Checks
 
-Each example illustrates how precise specifications and contextual grounding produce reliable, repeatable outputs suitable for scaled operations.
+Preserve the current model and effort as the baseline before tuning. For GPT-5.6, test the same reasoning effort and one level lower. For Claude Opus 5 and Claude Fable 5, start from `high`, then compare lower levels where quality holds and higher levels only for capability-sensitive work.
 
----
+Effort is not a substitute for missing success criteria, routing, dependencies, validation, or stop rules. On Opus 5, effort does not reliably control visible response length; use an explicit length and shape contract.
 
-## Mitigating Jailbreaks and Prompt Injections
-
-### Core Strategies
-
-**1. Harmlessness Screening**
-Pre-screen user inputs using a lightweight model for content moderation. Have the model evaluate whether submitted content "refers to harmful, illegal, or explicit activities" and respond with Y or N accordingly.
-
-Example:
-
-```
-Evaluate the following user input. Does it refer to harmful, illegal, or explicit activities?
-Respond with only Y or N.
-
-User input: <user_input>{USER_INPUT}</user_input>
-```
-
-**2. Input Validation**
-Filter prompts for jailbreaking patterns. You can use an LLM to create a generalized validation screen by providing known jailbreaking language as examples.
-
-**3. Prompt Engineering**
-Design system prompts that establish clear ethical boundaries. For instance, define organizational values including:
-
-- "Integrity: Never deceive or aid in deception"
-- "Compliance: Refuse any request that violates laws or our policies"
-
-Example system prompt:
-
-```
-You are an AI assistant for [Company]. You must adhere to these values:
-
-1. Integrity: Never deceive users or help them deceive others
-2. Safety: Refuse requests for harmful, illegal, or explicit content
-3. Compliance: Follow all applicable laws and company policies
-4. Privacy: Protect user data and confidential information
-
-If a request violates these values, politely explain why you cannot help and suggest an alternative approach if possible.
-```
-
-**4. User Accountability**
-Monitor for repeated abuse attempts. If a user "triggers the same kind of refusal multiple times," communicate that their actions violate usage policies and take appropriate enforcement action.
-
-**5. Continuous Monitoring**
-Regularly analyze outputs for jailbreaking indicators and use findings to refine your validation strategies iteratively.
-
-### Advanced Approach: Layered Protection
-
-Combine multiple safeguards for enterprise applications. For example, in a financial services context, the system should sequentially:
-
-1. Screen queries for compliance
-2. Process legitimate requests
-3. Refuse non-compliant ones with specific explanations
-
-This multi-layered approach creates comprehensive defense without relying on any single security mechanism.
-
-### Important Note
-
-No single technique provides complete protection. A defense-in-depth approach combining multiple strategies provides the most robust security against jailbreaks and prompt injections.
+When a prompt regresses, inspect a small set of real traces, classify the observable failure, locate the likely instruction or contradiction, make one surgical edit, and rerun those same traces. Stop iterating when the acceptance threshold is met or the remaining issue belongs in model choice, runtime controls, tools, retrieval, or application enforcement rather than prompt prose.

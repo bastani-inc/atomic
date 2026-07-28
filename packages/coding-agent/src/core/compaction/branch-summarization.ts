@@ -6,10 +6,9 @@
  */
 
 import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
-import { retryAssistantCall, type ProviderHeaders, type RetryCallbacks, type RetryPolicy } from "@earendil-works/pi-ai";
+import { retryAssistantCall, type ProviderHeaders, type RetryCallbacks, type RetryPolicy, uuidv7 } from "@earendil-works/pi-ai";
 import type { Api, Model, SimpleStreamOptions, Usage } from "@earendil-works/pi-ai/compat";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
-import { formatCopilotProviderError } from "../copilot-errors.ts";
 import { convertToLlm, createBranchSummaryMessage, createCustomMessage } from "../messages.ts";
 import type { ReadonlySessionManager, SessionEntry } from "../session-manager.ts";
 import { estimateTokens } from "./compaction.ts";
@@ -63,8 +62,8 @@ export interface CollectEntriesResult {
 export interface GenerateBranchSummaryOptions {
 	/** Model to use for summarization */
 	model: Model<Api>;
-	/** API key for the model */
-	apiKey: string;
+	/** API key for the model; omitted for header-only bearer authentication. */
+	apiKey?: string;
 	/** Request headers for the model */
 	headers?: ProviderHeaders;
 	/** Credential-specific request endpoint for the model */
@@ -174,7 +173,6 @@ function getMessageFromEntry(entry: SessionEntry): AgentMessage | undefined {
 
 		// These don't contribute to conversation content
 		case "thinking_level_change":
-		case "context_window_change":
 		case "model_change":
 		case "custom":
 		case "label":
@@ -351,7 +349,14 @@ export async function generateBranchSummary(
 	// Call LLM for summarization. Prefer the session stream function so SDK
 	// request behavior stays consistent without mutating agent state.
 	const context = { systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages };
-	const requestOptions: SimpleStreamOptions = { apiKey, headers, signal, maxTokens: 2048 };
+	const requestOptions: SimpleStreamOptions = {
+		apiKey,
+		headers,
+		signal,
+		maxTokens: 2048,
+		cacheRetention: "none",
+		sessionId: uuidv7(),
+	};
 	const requestModel = baseUrl === undefined || baseUrl === model.baseUrl ? model : { ...model, baseUrl };
 	const response = await (async () => {
 		try {
@@ -377,7 +382,7 @@ export async function generateBranchSummary(
 		return { aborted: true };
 	}
 	if (response.stopReason === "error") {
-		return { error: formatCopilotProviderError(model.provider, response.errorMessage || "Summarization failed") };
+		return { error: response.errorMessage || "Summarization failed" };
 	}
 
 	let summary = response.content

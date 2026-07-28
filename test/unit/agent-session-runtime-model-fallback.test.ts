@@ -25,7 +25,7 @@ function lockedRuntime(): AgentSessionRuntime {
 
 test("explicit changed model selection resolves fallback by provider and id", () => {
 	const previous = getModel("anthropic", "claude-sonnet-4-5");
-	const selected = getModel("openai", "gpt-5.1-codex");
+	const selected = getModel("openai", "gpt-5.6-sol");
 	assert.ok(previous);
 	assert.ok(selected);
 	const runtime = lockedRuntime();

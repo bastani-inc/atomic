@@ -2,42 +2,33 @@
 description: Parallel specialist review of the current work
 ---
 
-Launch parallel specialists for an adversarial review of the current work.
+## Goal
 
-Use fresh context, not forked context, unless I explicitly ask for forked context. Specialists should inspect the repository, relevant instructions, and current diff directly from files and commands. Do not rely on the main conversation history.
+Produce an adversarial, evidence-backed review of the current work, separating fixes worth doing now from optional or inapplicable feedback. Apply fixes only when authorized.
 
-There is no generic `reviewer` agent — assemble the review from read-only specialists with distinct angles. Generate the angles dynamically from the user's intent, the plan, the implemented code, and the current diff. If I specify angles, use mine. Otherwise pick three of the following:
+Additional review target or focus from the slash command invocation:
 
-1. Correctness and regressions — `codebase-analyzer`
-   Trace the current diff and the surrounding flow to check whether the change satisfies the request, preserves existing behavior, handles edge cases, and avoids hidden runtime failures. Cite `file:line` for every claim.
+$@
 
-2. Bug and failure-mode hunt — `debugger`
-   Treat the diff as a suspect change. Reproduce the relevant behavior when possible, hypothesize how it could break, and report findings with evidence. The `debugger` agent can write fixes — for this pass, explicitly instruct it to inspect and report only, not edit.
+If this supplies a URL, issue, file, plan, or freeform focus, treat it as primary scope: read or fetch it before assigning angles and pass it into every specialist task.
 
-3. Pattern fit and consistency — `codebase-pattern-finder`
-   Compare the implementation against existing analogous patterns and conventions in the codebase. Flag drift, divergence from established structure, or missed reuse opportunities with `file:line` snippets.
+## Constraints and tools
 
-4. Prior decisions and constraints — `codebase-research-locator` then `codebase-research-analyzer`
-   When prior research or specs likely constrain the change, surface the relevant docs and extract the decisions the new code must honor.
+Use fresh context unless I explicitly request forked context. Specialists inspect repository instructions, relevant files, and the current diff through direct reads and commands, not main-conversation history. There is no generic `reviewer`; choose read-only specialists with distinct angles derived from user intent, the plan, implementation, and diff. Use my angles when supplied; otherwise select three applicable angles:
 
-5. External-spec or API conformance — `codebase-online-researcher`
-   When the change implements an external contract (API, RFC, library behavior), verify the implementation against the authoritative source.
+- **Correctness and regressions — `codebase-analyzer`:** trace the diff and surrounding flow against the request, preserved behavior, edge cases, and hidden runtime failures; cite `file:line` for every claim.
+- **Bug and failure modes — `debugger`:** reproduce relevant behavior where possible, assess how the suspect diff could break, and report evidence.
+- **Pattern fit — `codebase-pattern-finder`:** compare analogous code and conventions, identifying structural drift or missed reuse with `file:line` snippets.
+- **Prior constraints — `codebase-research-locator` then `codebase-research-analyzer`:** surface applicable research or specs and the decisions the change must honor.
+- **External conformance — `codebase-online-researcher`:** compare an external API, RFC, or library contract with its authoritative source.
 
-Cleanup-style angles (simplicity, slop, verbosity) belong in `/parallel-cleanup`; use that instead of overloading this pass.
+Use `/parallel-cleanup` instead for simplicity, slop, or verbosity angles. Every specialist gets a task naming its angle and returns concise review findings with evidence, `file:line`, and suggested fixes—not a context summary. Every specialist is read-only, including agent types that can edit. While they run, perform a narrow inspection if useful.
 
-Give every specialist a specific task prompt naming its angle. Ask them to return concise, evidence-backed findings with file/line references and suggested fixes. The response should be review feedback, not a context summary. Specialists must not edit files in this pass, even when the agent type can — say so explicitly in the prompt.
+Synthesize fixes worth doing now, optional improvements, and ignored or deferred feedback with a short reason; assess findings rather than applying them blindly. Delegate only independent work too large for a handful of tool calls; do not delegate auditing your own work, and prefer one subagent over several. Parallelize independent reads; stay sequential when one result determines the next; synthesize after retrieval. Keep work within the requested scope.
 
-While they run, do your own narrow inspection if useful. After they return, synthesize the feedback into:
+In **autofix** mode, an invocation containing the exact word `autofix` uses it as workflow control, not review scope; remove it before identifying the target. After synthesis, launch one async writer—`debugger` for correctness/regression fixes or `code-simplifier` for cleanup-shaped feedback—with only the explicit fixes-worth-doing-now list as scope. Validate and summarize. Do not apply optional improvements unless explicitly requested; if no fixes are worth doing now, do not edit.
 
-- fixes worth doing now;
-- optional improvements;
-- feedback to ignore or defer, with a short reason.
-
-Do not blindly apply every finding.
-
-Autofix mode: if the invocation contains the exact word `autofix`, treat it as workflow control, not review scope. Remove it before deciding the review target. After synthesis, launch a single async writer (`debugger` for correctness or regression fixes, `code-simplifier` for cleanup-shaped feedback) with the explicit fix list as scope. Validate, and summarize. Do not apply optional improvements unless explicitly requested. If there are no fixes worth doing now, do not edit.
-
-Without autofix mode, ask before applying fixes unless I already told you to address review feedback. When you ask, end with a compact numbered menu so I can respond with a number. Use wording suited to the findings, but include these choices when applicable:
+Without autofix mode, ask before applying fixes unless I already authorized addressing review feedback. End that request with a compact numbered menu, including when applicable:
 
 ```text
 Reply with [1], [2], or further instructions:
@@ -45,8 +36,12 @@ Reply with [1], [2], or further instructions:
 [2] Apply the fixes worth doing now plus optional improvements.
 ```
 
-Additional review target or focus from the slash command invocation:
+## Output
 
-$@
+Return a concise, user-facing review of roughly 400–800 words: outcome, evidence-backed fixes worth doing now, optional improvements, ignored or deferred feedback with reasons, and any authorized edits and validation. Lead with the outcome; keep facts, decisions, caveats, and next steps; drop background and repetition; stay readable rather than compressed into fragments.
 
-If the invocation provides a URL, issue link, file path, plan path, or freeform focus, treat it as the primary review scope. Read or fetch that target before assigning reviewer angles, and pass the target explicitly into each specialist task.
+Before reporting progress, audit each claim against a tool result from this session. Report only work you can point to evidence for; say so explicitly when something is unverified.
+
+## Stop rule
+
+Done means the specialist evidence has been assessed and synthesized, then either authorized fixes were validated, no worthwhile fixes exist, or the numbered approval menu was presented. Stop without editing when authorization is absent.

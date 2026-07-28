@@ -1,0 +1,6 @@
+8c30e23e6 fix(coding-agent): replace constructor parameter properties for erasableSyntaxOnly (#1947)
+31a818e87 feat(coding-agent): restore full pi 0.81.1 feature parity (#1946)
+725617882 feat(coding-agent): restore full pi 0.81.1 feature parity
+650543dc9 fix(coding-agent): port pi 0.81.1 updates (#1941)
+c92739f0e fix(coding-agent): restore automatic startup catalog refresh for non-Copilot users
+bb6c74c88 fix(coding-agent): port pi 0.81.1 updates

@@ -115,6 +115,21 @@ export function getPackageDir(): string {
 }
 
 /**
+ * Resolve the root that contains source-layout assets for non-binary runtimes.
+ * Ordinary source and compiled modules already live in src/ or dist/, so use
+ * their module directory directly. Bundled development builds and explicit
+ * package-directory overrides instead need to select a package-root layout.
+ */
+function getModuleAssetRoot(): string {
+	const hasPackageDirOverride = !!(process.env.ATOMIC_PACKAGE_DIR || process.env.PI_PACKAGE_DIR);
+	if (!isBundledBuild && !hasPackageDirOverride) {
+		return __dirname;
+	}
+	const packageDir = getPackageDir();
+	return join(packageDir, existsSync(join(packageDir, "src")) ? "src" : "dist");
+}
+
+/**
  * Get path to built-in themes directory (shipped with package)
  * - For Bun binary: theme/ next to executable
  * - For Node.js (dist/): dist/modes/interactive/theme/
@@ -124,10 +139,7 @@ export function getThemesDir(): string {
 	if (isBunBinary) {
 		return join(getPackageDir(), "theme");
 	}
-	// Theme is in modes/interactive/theme/ relative to src/ or dist/
-	const packageDir = getPackageDir();
-	const srcOrDist = existsSync(join(packageDir, "src")) ? "src" : "dist";
-	return join(packageDir, srcOrDist, "modes", "interactive", "theme");
+	return join(getModuleAssetRoot(), "modes", "interactive", "theme");
 }
 
 /**
@@ -140,9 +152,7 @@ export function getExportTemplateDir(): string {
 	if (isBunBinary) {
 		return join(getPackageDir(), "export-html");
 	}
-	const packageDir = getPackageDir();
-	const srcOrDist = existsSync(join(packageDir, "src")) ? "src" : "dist";
-	return join(packageDir, srcOrDist, "core", "export-html");
+	return join(getModuleAssetRoot(), "core", "export-html");
 }
 
 /** Get path to package.json */
@@ -180,9 +190,7 @@ export function getInteractiveAssetsDir(): string {
 	if (isBunBinary) {
 		return join(getPackageDir(), "assets");
 	}
-	const packageDir = getPackageDir();
-	const srcOrDist = existsSync(join(packageDir, "src")) ? "src" : "dist";
-	return join(packageDir, srcOrDist, "modes", "interactive", "assets");
+	return join(getModuleAssetRoot(), "modes", "interactive", "assets");
 }
 
 /** Get path to a bundled interactive asset */
@@ -392,6 +400,21 @@ export function getAgentConfigPaths(...segments: string[]): string[] {
 /** Get a path inside every project config directory. */
 export function getProjectConfigPaths(cwd: string, ...segments: string[]): string[] {
 	return getProjectConfigDirs(cwd).map((dir) => join(dir, ...segments));
+}
+
+/** Model config paths from highest to lowest precedence: Atomic project/global, then Pi project/global. */
+export function getModelsConfigPaths(cwd: string, agentDir: string = getAgentDir(), includeProject = true): string[] {
+	const globalPaths = agentDir === getAgentDir()
+		? getAgentConfigPaths("models.json")
+		: [join(agentDir, "models.json")];
+	if (!includeProject) return globalPaths;
+	const projectPaths = getProjectConfigPaths(cwd, "models.json");
+	const paths: string[] = [];
+	for (let index = 0; index < Math.max(projectPaths.length, globalPaths.length); index++) {
+		if (projectPaths[index]) paths.push(projectPaths[index]);
+		if (globalPaths[index]) paths.push(globalPaths[index]);
+	}
+	return [...new Set(paths)];
 }
 
 /** Get path to user's custom themes directory */

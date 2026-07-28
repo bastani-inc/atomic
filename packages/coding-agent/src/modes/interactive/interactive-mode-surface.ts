@@ -201,7 +201,7 @@ declare module "./interactive-mode-base.ts" {
   toggleToolOutputExpansion(): void;
   setToolsExpanded(expanded: boolean): void;
   toggleThinkingBlockVisibility(): void;
-  openExternalEditor(): void;
+  openExternalEditor(): Promise<void>;
   clearEditor(): void;
   showError(errorMessage: string): void;
   showWarning(warningMessage: string, targetContainer?: Container): void;
@@ -226,12 +226,9 @@ declare module "./interactive-mode-base.ts" {
   handleModelCommand(searchTerm?: string): Promise<void>;
   findExactModelMatch(searchTerm: string): Promise<Model<Api> | undefined>;
   getModelCandidates(): Promise<Model<Api>[]>;
-  refreshCopilotModelCatalog(): Promise<void>;
-  loadCopilotModelCatalog(): Promise<void>;
   updateAvailableProviderCount(): Promise<void>;
   maybeWarnAboutAnthropicSubscriptionAuth(model?: Model<Api> | undefined, targetContainer?: Container): Promise<void>;
   showModelSelector(initialSearchInput?: string): void;
-  showContextWindowSelector(model: Model<Api>): void;
   showModelsSelector(): Promise<void>;
   showUserMessageSelector(): Promise<void>;
   handleCloneCommand(): Promise<void>;
@@ -247,7 +244,7 @@ declare module "./interactive-mode-base.ts" {
   showLoginAuthTypeSelector(providerOptions?: AuthSelectorProvider[]): void;
   showLoginProviderSelector(authType?: "oauth" | "api_key", initialSearchInput?: string): void;
   showOAuthSelector(mode: "login" | "logout"): Promise<void>;
-  completeProviderAuthentication(providerId: string, providerName: string, authType: "oauth" | "api_key", previousModel: Model<Api> | undefined): Promise<void>;
+  completeProviderAuthentication(providerId: string, providerName: string, authType: "oauth" | "api_key", previousModel: Model<Api> | undefined, options?: { modelsRefreshed?: boolean }): Promise<void>;
   showBedrockSetupDialog(providerId: string, providerName: string): void;
   showApiKeyLoginDialog(providerId: string, providerName: string): Promise<void>;
   showOAuthLoginSelect(dialog: LoginDialogComponent, prompt: OAuthSelectPrompt): Promise<string | undefined>;

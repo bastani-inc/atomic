@@ -1,6 +1,7 @@
 import type { Terminal } from "@earendil-works/pi-tui";
 import { TUI } from "@earendil-works/pi-tui";
 import type { AgentSession } from "../../core/agent-session.ts";
+import { getAgentDir } from "../../config.ts";
 import { runCallback } from "../../core/callback-activity.ts";
 import type { CustomMessage } from "../../core/messages.ts";
 import { CustomMessageComponent } from "../interactive/components/custom-message.ts";
@@ -113,7 +114,7 @@ export class EngineRenderService {
 			this.disposeRecord(command.componentId);
 			const terminal = this.createTerminal(command.componentId);
 			terminal.columns = Math.max(1, command.width);
-			const tui = new TUI(terminal);
+			const tui = new TUI(terminal, undefined, getAgentDir());
 			const component = new ToolExecutionComponent(
 				command.toolName,
 				command.toolCallId,
@@ -149,9 +150,14 @@ export class EngineRenderService {
 			this.disposeRecord(command.componentId);
 			const terminal = this.createTerminal(command.componentId);
 			terminal.columns = Math.max(1, command.width);
-			const tui = new TUI(terminal);
+			const tui = new TUI(terminal, undefined, getAgentDir());
 			const message = command.message as unknown as CustomMessage<object>;
-			const component = new CustomMessageComponent(message, session.extensionRunner.getMessageRenderer(message.customType));
+			const component = new CustomMessageComponent(
+				message,
+				session.extensionRunner.getMessageRenderer(message.customType),
+				undefined,
+				command.outputPad,
+			);
 			tui.addChild(component);
 			record = { kind: "message", component, terminal, tui };
 			this.records.set(command.componentId, record);
@@ -159,6 +165,7 @@ export class EngineRenderService {
 			record.terminal.columns = Math.max(1, command.width);
 		}
 		record.component.setExpanded(command.expanded);
+		record.component.setOutputPad(command.outputPad);
 		return record.component.render(command.width);
 	}
 

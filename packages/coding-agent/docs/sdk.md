@@ -130,14 +130,11 @@ interface AgentSession {
   sessionFile: string | undefined;
   sessionId: string;
 
-  // Model, thinking, and context-window control
+  // Model and thinking control
   setModel(model: Model): Promise<void>;
   setThinkingLevel(level: ThinkingLevel): void;
-  setContextWindow(contextWindow: number, options?: { persistDefault?: boolean }): void;
   cycleModel(): Promise<ModelCycleResult | undefined>;
   cycleThinkingLevel(): ThinkingLevel | undefined;
-  getAvailableContextWindows(): number[];
-  supportsContextWindowSelection(): boolean;
 
   // State access
   agent: Agent;
@@ -367,12 +364,9 @@ session.subscribe((event) => {
       // event.toolResults: tool results from this turn
       break;
     
-    // Session events (queue, context-window, compaction, retry)
+    // Session events (queue, compaction, retry)
     case "queue_update":
       console.log(event.steering, event.followUp);
-      break;
-    case "context_window_changed":
-      console.log(`Context window: ${event.contextWindow}`);
       break;
     case "compaction_start":
     case "compaction_end":
@@ -448,8 +442,6 @@ const available = await modelRegistry.getAvailable();
 const { session } = await createAgentSession({
   model: opus,
   thinkingLevel: "medium", // off, minimal, low, medium, high, xhigh, max (when supported by the model)
-  contextWindow: 1_000_000, // optional; must be supported by the selected model unless non-strict fallback is acceptable
-  contextWindowStrict: true, // optional; return contextWindowError instead of warning/fallback when unsupported
   
   // Models for cycling (CTRL+P in interactive mode)
   scopedModels: [
@@ -468,12 +460,6 @@ If no model is provided:
 1. Tries to restore from session (if continuing)
 2. Uses default from settings
 3. Falls back to first available model
-
-Context-window selection is independent from `thinkingLevel`. `contextWindow` accepts a raw token count such as `400_000` or `1_000_000`; for most providers the value must be present in the model's supported context windows (`model.contextWindowOptions` plus the scalar default). GitHub Copilot is the only provider with rounded long-context budget handling: when a tiered Copilot model advertises a long tier below the branded request (for example `936_000` for a `1_000_000` request), Atomic selects the largest advertised Copilot long tier at or below the request instead of falling back to the short tier. Settings lookup first checks the selected model's `defaultContextWindows["provider/modelId"]` entry, then the optional global `defaultContextWindow` fallback; unsupported model-specific settings keep the model default and return `contextWindowWarning`, while unsupported global fallback values are ignored silently as not applicable to the active model. When you pass `contextWindowStrict: true`, an unsupported explicit selection is reported as `contextWindowError` so callers can fail before prompting. A successful explicit `contextWindow` startup option is journaled as a `context_window_change` entry even when it equals the scalar model default, so the user's explicit budget choice survives future settings changes and resume.
-
-At runtime, use `session.getAvailableContextWindows()` to inspect supported values, `session.supportsContextWindowSelection()` to check whether more than one value is selectable, and `session.setContextWindow(tokens, { persistDefault })` to change the active model budget. `setContextWindow()` journals a `context_window_change` entry only when the active value changes. Passing `{ persistDefault: true }` also writes the effective selected budget to `defaultContextWindows["provider/modelId"]` in settings instead of the global fallback, so a provider-specific prompt cap such as Copilot's `936k` does not leak into other providers. Tree navigation replays the target branch's `context_window_change` state into the active model without adding another journal entry or changing settings. Larger provider context windows may consume more credits/cost, so opt into larger values deliberately. For catalog-advertised GitHub Copilot long-context models (including `github-copilot/gpt-5.5`, `github-copilot/claude-sonnet-5`, and `github-copilot/gemini-3.1-pro-preview`), selecting `1m` raises Atomic's local budget to the model's advertised `922k`/`936k` tier and sends `X-GitHub-Api-Version: 2026-06-01`; GitHub applies the long-context tier server-side by prompt token count, consumes more Copilot AI credits, and requires long-context/usage-based billing entitlement.
-
-The package root exports the same context-window helpers and types used by the runtime: `parseContextWindowValue()`, `formatContextWindow()`, `validateContextWindowValue()`, `normalizeContextWindowOptions()`, `getModelDefaultContextWindow()`, `getSupportedContextWindows()`, `withContextWindowOptions()`, `selectContextWindow()`, `ContextWindowParseResult`, `ContextWindowSelection`, `ContextWindowSelectionError`, and `ContextWindowSelectionOptions`. Importing from `@bastani/atomic` also includes the `@earendil-works/pi-ai` `Model<Api>` augmentation for `contextWindowOptions` and `defaultContextWindow`, so SDK consumers can use the helper types without importing internal source paths.
 
 > See [examples/sdk/02-custom-model.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/sdk/02-custom-model.ts)
 
@@ -635,6 +621,10 @@ Use `defineTool()` for standalone definitions and arrays like `customTools: [myT
 Custom tools passed via `customTools` are combined with extension-registered tools. Extensions loaded by the ResourceLoader can also register tools via `pi.registerTool()`.
 
 If you pass `tools`, include each custom or extension tool name you want enabled, for example `tools: ["read", "bash", "my_tool"]`. Use `excludedTools` to remove a custom or extension tool by name from the final exposed set.
+
+`ToolDefinition.constrainedSampling` is part of the public SDK and survives `defineTool()`, `customTools`, tool wrappers, session/staged inspection, and isolated execution. Use `{ type: "json_schema", strict: "prefer" | "require" }`, `{ type: "grammar", variants: { openai_lark?: string, openai_regex?: string } }`, or `false`. `prefer` can fall back; `require` fails when the active model cannot enforce strict JSON Schema. Grammar constraints require one required string parameter and capable model metadata. Public inspection preserves optional-property identity exactly: an omitted key stays absent, an explicitly present `undefined` stays present, and `false` or a config object remains unchanged. The exported `ConstrainedSamplingConfig` type and [extension reference](/extensions#constrained-sampling) define the exact shape. Typed RPC clients receive the four model capability flags through optional `ModelInfo.compat`; see [RPC](/rpc#get_available_models).
+
+Factory-created `createBashTool()` instances receive the same execution-time `ATOMIC_SESSION_*`/`PI_SESSION_*` model and session snapshot as the built-in bash tool. Set `exposeSessionEnvironment: false` only when the subprocess must not receive it. `MessageRenderOptions.outputPad` is likewise passed to normal and isolated custom message renderers.
 
 #### Structured output final results
 
@@ -1005,12 +995,6 @@ interface CreateAgentSessionResult {
   
   // Warning if session model couldn't be restored
   modelFallbackMessage?: string;
-
-  // Warning if a saved/default context window could not be applied to the selected model
-  contextWindowWarning?: string;
-
-  // Error if an explicit strict context-window selection is unsupported
-  contextWindowError?: string;
 }
 
 interface LoadExtensionsResult {

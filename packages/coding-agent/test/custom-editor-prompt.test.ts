@@ -53,4 +53,16 @@ describe("CustomEditor prompt prefix", () => {
 		expect(stripAnsi(lines[1] ?? "")).toContain("❯ hello");
 		expect(lines.every((line) => visibleWidth(line) === 24)).toBe(true);
 	});
+
+	it("keeps inherited scroll indicators within a narrow Atomic editor", () => {
+		const editor = createEditor();
+		editor.setText(Array.from({ length: 20 }, (_, index) => `line ${index}`).join("\n"));
+		editor.render(10);
+		for (let index = 0; index < 10; index++) editor.handleInput("\x1b[A");
+
+		const lines = editor.render(10);
+		expect(stripAnsi(lines[0] ?? "")).toContain("↑");
+		expect(stripAnsi(lines.at(-1) ?? "")).toContain("↓");
+		expect(lines.every((line) => visibleWidth(line) === 10)).toBe(true);
+	});
 });

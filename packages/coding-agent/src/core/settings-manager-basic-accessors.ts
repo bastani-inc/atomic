@@ -1,10 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { normalizePath } from "../utils/paths.ts";
-import { parseContextWindowValue, validateContextWindowValue } from "./context-window.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 import { SettingsManager } from "./settings-manager-core.ts";
 import { settingsInternals } from "./settings-manager-internals.ts";
-import type { ContextWindowSetting, TransportSetting } from "./settings-types.ts";
+import type { TransportSetting } from "./settings-types.ts";
 
 interface SettingsManagerBasicAccessors {
 	getLastChangelogVersion(): string | undefined;
@@ -34,10 +33,6 @@ interface SettingsManagerBasicAccessors {
 	getDefaultThinkingLevel(): "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | undefined;
 	setDefaultThinkingLevel(level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"): void;
 	getFallbackModels(): string[];
-	getDefaultContextWindow(): number | undefined;
-	getDefaultContextWindowForModel(provider: string, modelId: string): number | undefined;
-	setDefaultContextWindow(contextWindow: number | undefined): void;
-	setDefaultContextWindowForModel(provider: string, modelId: string, contextWindow: number | undefined): void;
 	getTransport(): TransportSetting;
 	setTransport(transport: TransportSetting): void;
 	getCompactionEnabled(): boolean;
@@ -68,20 +63,6 @@ interface SettingsManagerBasicAccessors {
 
 declare module "./settings-manager-core.ts" {
 	interface SettingsManager extends SettingsManagerBasicAccessors {}
-}
-
-function defaultContextWindowModelKey(provider: string, modelId: string): string {
-	return `${provider}/${modelId}`;
-}
-
-function parseContextWindowSetting(configured: ContextWindowSetting | undefined): number | undefined {
-	if (typeof configured === "number") {
-		return validateContextWindowValue(configured) ? undefined : configured;
-	}
-	if (typeof configured === "string") {
-		return parseContextWindowValue(configured).value;
-	}
-	return undefined;
 }
 
 const basicAccessors: SettingsManagerBasicAccessors = {
@@ -240,44 +221,6 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 			.filter((model): model is string => typeof model === "string")
 			.map((model) => model.trim())
 			.filter((model) => model.length > 0);
-	},
-
-	getDefaultContextWindow() {
-		return parseContextWindowSetting(settingsInternals(this).settings.defaultContextWindow);
-	},
-
-	getDefaultContextWindowForModel(provider, modelId) {
-		const key = defaultContextWindowModelKey(provider, modelId);
-		return parseContextWindowSetting(settingsInternals(this).settings.defaultContextWindows?.[key]);
-	},
-
-	setDefaultContextWindow(contextWindow) {
-		const state = settingsInternals(this);
-		if (contextWindow === undefined) {
-			delete state.globalSettings.defaultContextWindow;
-		} else {
-			state.globalSettings.defaultContextWindow = contextWindow;
-		}
-		state.markModified("defaultContextWindow");
-		state.save();
-	},
-
-	setDefaultContextWindowForModel(provider, modelId, contextWindow) {
-		const state = settingsInternals(this);
-		const key = defaultContextWindowModelKey(provider, modelId);
-		const next = { ...(state.globalSettings.defaultContextWindows ?? {}) };
-		if (contextWindow === undefined) {
-			delete next[key];
-		} else {
-			next[key] = contextWindow;
-		}
-		if (Object.keys(next).length === 0) {
-			delete state.globalSettings.defaultContextWindows;
-		} else {
-			state.globalSettings.defaultContextWindows = next;
-		}
-		state.markModified("defaultContextWindows");
-		state.save();
 	},
 
 	getTransport() {

@@ -80,10 +80,12 @@ describe("Pi 0.80.10 model auth compatibility", () => {
 		expect(refreshToken).toHaveBeenCalledWith(original);
 		expect(await getOAuthApiKey("legacy-probe", {})).toBeNull();
 		await expect(getOAuthApiKey("missing-provider", {})).rejects.toThrow("Unknown OAuth provider");
-		refreshToken.mockRejectedValueOnce(new Error("sensitive upstream detail"));
-		await expect(getOAuthApiKey("legacy-probe", { "legacy-probe": original })).rejects.toThrow(
-			"Failed to refresh OAuth token for legacy-probe",
-		);
+		const upstreamError = new Error("sensitive upstream detail");
+		refreshToken.mockRejectedValueOnce(upstreamError);
+		const failure = await getOAuthApiKey("legacy-probe", { "legacy-probe": original }).catch((error) => error);
+		expect(failure).toMatchObject({
+			message: "Failed to refresh OAuth token for legacy-probe", cause: upstreamError,
+		});
 	});
 
 	test("runtime API-key overrides bypass expired stored OAuth", async () => {
@@ -248,45 +250,6 @@ describe("Pi 0.80.10 model auth compatibility", () => {
 		});
 	});
 
-	test("derives a credential-specific Copilot baseUrl from a runtime token", async () => {
-		const token = "tid=example;proxy-ep=proxy.enterprise.example.com;";
-		const storage = AuthStorage.inMemory();
-		storage.setRuntimeApiKey("github-copilot", token);
-		const registry = ModelRegistry.inMemory(storage);
-		const model = registry.getAll().find((candidate) => candidate.provider === "github-copilot");
-		expect(model).toBeDefined();
-
-		const auth = await registry.getApiKeyAndHeaders(model!);
-
-		expect(auth).toMatchObject({
-			ok: true,
-			apiKey: token,
-			baseUrl: "https://api.enterprise.example.com",
-			headers: { "X-GitHub-Api-Version": "2026-06-01" },
-		});
-	});
-
-	test("keeps the stored Copilot enterprise endpoint when a runtime key overrides only apiKey", async () => {
-		const storage = AuthStorage.inMemory({
-			"github-copilot": {
-				type: "oauth",
-				refresh: "github-token",
-				access: "tid=stored;proxy-ep=proxy.stored.example.com;",
-				expires: Date.now() + 60_000,
-			},
-		});
-		storage.setRuntimeApiKey("github-copilot", "runtime-key");
-		const registry = ModelRegistry.inMemory(storage);
-		const model = registry.getAll().find((candidate) => candidate.provider === "github-copilot")!;
-
-		expect(await registry.getApiKeyAndHeaders(model)).toMatchObject({
-			ok: true,
-			apiKey: "runtime-key",
-			baseUrl: "https://api.stored.example.com",
-			headers: { "X-GitHub-Api-Version": "2026-06-01" },
-		});
-	});
-
 	test("filters Copilot models with the effective runtime credential", () => {
 		const baseline = ModelRegistry.inMemory(AuthStorage.inMemory()).getAll()
 			.filter((model) => model.provider === "github-copilot");
@@ -335,27 +298,6 @@ describe("Pi 0.80.10 model auth compatibility", () => {
 		expect(result.errors.size).toBe(0);
 		expect(refreshToken).toHaveBeenCalledOnce();
 		expect(observedCredential).toMatchObject({ type: "oauth", access: "new-access" });
-	});
-
-	test("prefers a runtime Copilot proxy endpoint over the stored OAuth endpoint", async () => {
-		const storage = AuthStorage.inMemory({
-			"github-copilot": {
-				type: "oauth",
-				refresh: "github-token",
-				access: "tid=stored;proxy-ep=proxy.stored.example.com;",
-				expires: Date.now() + 60_000,
-			},
-		});
-		const runtimeToken = "tid=runtime;proxy-ep=proxy.runtime.example.com;";
-		storage.setRuntimeApiKey("github-copilot", runtimeToken);
-		const registry = ModelRegistry.inMemory(storage);
-		const model = registry.getAll().find((candidate) => candidate.provider === "github-copilot")!;
-
-		expect(await registry.getApiKeyAndHeaders(model)).toMatchObject({
-			ok: true,
-			apiKey: runtimeToken,
-			baseUrl: "https://api.runtime.example.com",
-		});
 	});
 
 	test("preserves provider-owned auth headers and null removals", async () => {

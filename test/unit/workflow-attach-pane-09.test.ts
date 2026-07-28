@@ -8,8 +8,6 @@
  *    without remounting the popup.
  *  - Ctrl+X in chat mode swaps back to graph with the same focused
  *    stage id preserved.
- *  - When a `uiStatus.setStatus` surface is provided, attach/detach
- *    flips the `pi-workflows` tag through `<workflow>/<stage>`.
  *
  * cross-ref: src/tui/workflow-attach-pane.ts
  */
@@ -23,10 +21,7 @@ import {
     type TUI,
 } from "@earendil-works/pi-tui";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import {
-    WorkflowAttachPane,
-    type AttachUiStatusSurface,
-} from "../../packages/workflows/src/tui/workflow-attach-pane.js";
+import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import type { StageControlHandle } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
@@ -351,13 +346,11 @@ describe("WorkflowAttachPane", () => {
         setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
         const registry = createStageControlRegistry();
         registry.register(makeHandle("run-1", "stage-a"));
-        const calls: Array<string | undefined> = [];
         const pane = new WorkflowAttachPane({
             store,
             graphTheme: deriveGraphTheme({}),
             runId: "run-1",
             stageControlRegistry: registry,
-            uiStatus: { setStatus: (_key, value) => calls.push(value) },
             onClose: () => {},
             initialAttachStageId: "stage-a",
         });
@@ -366,10 +359,8 @@ describe("WorkflowAttachPane", () => {
         assert.equal(stage().attached, true);
         pane.setVisible(false);
         assert.equal(stage().attached, undefined);
-        assert.equal(calls.at(-1), undefined);
         pane.setVisible(true);
         assert.equal(stage().attached, true);
-        assert.equal(calls.at(-1), "pi-workflows/test-wf/A");
         pane.dispose();
     });
 });

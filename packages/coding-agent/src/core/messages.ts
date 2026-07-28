@@ -178,20 +178,26 @@ export function isVerbatimCompactionMessage(message: CustomMessage): boolean {
 	return verbatimCompactionMessages.has(message);
 }
 
-/** Create the visible custom-role boundary used to replay a verbatim compaction. */
+/**
+ * Create the visible custom-role boundary used to replay a verbatim compaction.
+ *
+ * `retainedTail` holds the serialized kept tail. Its text merges into the boundary text and
+ * its image blocks stay intact, so preserved content is not reduced to a placeholder.
+ */
 export function createVerbatimCompactionMessage(
 	compactedText: string,
 	tokensBefore: number,
 	timestamp: string,
 	details?: unknown,
+	retainedTail?: readonly (TextContent | ImageContent)[],
 ): CustomMessage {
-	const message = createCustomMessage(
-		"compaction",
-		[{ type: "text", text: VERBATIM_COMPACTION_PREFIX + compactedText }],
-		true,
-		details ?? { tokensBefore },
-		timestamp,
-	);
+	const content: (TextContent | ImageContent)[] = [{ type: "text", text: VERBATIM_COMPACTION_PREFIX + compactedText }];
+	for (const block of retainedTail ?? []) {
+		const last = content[content.length - 1];
+		if (block.type === "text" && last.type === "text") last.text += block.text;
+		else content.push({ ...block });
+	}
+	const message = createCustomMessage("compaction", content, true, details ?? { tokensBefore }, timestamp);
 	verbatimCompactionMessages.add(message);
 	return message;
 }

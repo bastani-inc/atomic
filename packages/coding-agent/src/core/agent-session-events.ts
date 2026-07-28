@@ -3,7 +3,6 @@ import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Message, TextContent } from "@earendil-works/pi-ai/compat";
 import { cleanupSessionResources } from "@earendil-works/pi-ai/compat";
 import { formatCodexProviderError } from "./codex-errors.ts";
-import { formatCopilotProviderError } from "./copilot-errors.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { customMessageExcludesContext, isSingleGenericAbortTextContent, replacementAbortContent, type AgentSessionEvent, type AgentSessionEventListener } from "./agent-session-types.ts";
 import type { MessageEndEvent, MessageStartEvent, MessageUpdateEvent, ToolExecutionEndEvent, ToolExecutionStartEvent, ToolExecutionUpdateEvent, TurnEndEvent, TurnStartEvent } from "./extensions/index.ts";
@@ -156,9 +155,6 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			event.message.role === "assistant" ||
 			event.message.role === "toolResult"
 		) {
-			if (event.message.role === "assistant") {
-				this._normalizePersistedGeminiToolArgs(event.message);
-			}
 			// Regular LLM message - persist as SessionMessageEntry
 			this.sessionManager.appendMessage(event.message);
 		}
@@ -270,10 +266,7 @@ export function _applyProviderErrorGuidance(this: AgentSession, event: AgentEven
 	const assistantMessage = event.message as AssistantMessage;
 	if (assistantMessage.stopReason !== "error" || !assistantMessage.errorMessage) return;
 
-	assistantMessage.errorMessage = formatCodexProviderError(
-		assistantMessage.provider,
-		formatCopilotProviderError(assistantMessage.provider, assistantMessage.errorMessage),
-	);
+	assistantMessage.errorMessage = formatCodexProviderError(assistantMessage.provider, assistantMessage.errorMessage);
 }
 
 /** Resolve the pending retry promise */

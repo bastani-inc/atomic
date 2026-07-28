@@ -44,7 +44,7 @@ function withWholeContextStats(
 export async function runVerbatimCompaction(
 	preparation: VerbatimCompactionPreparation,
 	model: Model<Api>,
-	apiKey: string,
+	apiKey: string | undefined,
 	headers: ProviderHeaders | undefined,
 	signal: AbortSignal | undefined,
 	thinkingLevel: ThinkingLevel | undefined,

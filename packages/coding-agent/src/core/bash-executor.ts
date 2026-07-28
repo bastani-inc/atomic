@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { APP_NAME } from "../config.ts";
 import { stripAnsi } from "../utils/ansi.ts";
 import { sanitizeBinaryOutput } from "../utils/shell.ts";
-import type { BashOperations } from "./tools/bash.ts";
+import type { BashOperations, BashOutputChannel } from "./tools/bash.ts";
 import { DEFAULT_MAX_BYTES, truncateTail } from "./tools/truncate.ts";
 
 // ============================================================================
@@ -21,10 +21,12 @@ import { DEFAULT_MAX_BYTES, truncateTail } from "./tools/truncate.ts";
 // ============================================================================
 
 export interface BashExecutorOptions {
-	/** Callback for streaming output chunks (already sanitized) */
-	onChunk?: (chunk: string) => void;
+	/** Callback for streaming output chunks (already sanitized), preserving the source channel. */
+	onChunk?: (chunk: string, channel: BashOutputChannel) => void;
 	/** AbortSignal for cancellation */
 	signal?: AbortSignal;
+	/** Complete environment for the execution backend. */
+	env?: NodeJS.ProcessEnv;
 	/** Run with PTY handling when supported by the operations backend */
 	pty?: boolean;
 }
@@ -76,13 +78,12 @@ export async function executeBashWithOperations(
 		}
 	};
 
-	const decoder = new TextDecoder();
-
-	const onData = (data: Buffer) => {
+	const decoders: Record<BashOutputChannel, TextDecoder> = { stdout: new TextDecoder(), stderr: new TextDecoder() };
+	const onData = (data: Buffer, channel: BashOutputChannel = "stdout") => {
 		totalBytes += data.length;
 
 		// Sanitize: strip ANSI, replace binary garbage, normalize newlines
-		const text = sanitizeBinaryOutput(stripAnsi(decoder.decode(data, { stream: true }))).replace(/\r/g, "");
+		const text = sanitizeBinaryOutput(stripAnsi(decoders[channel].decode(data, { stream: true }))).replace(/\r/g, "");
 
 		// Start writing to temp file if exceeds threshold
 		if (totalBytes > DEFAULT_MAX_BYTES) {
@@ -103,7 +104,7 @@ export async function executeBashWithOperations(
 
 		// Stream to callback
 		if (options?.onChunk) {
-			options.onChunk(text);
+			options.onChunk(text, channel);
 		}
 	};
 
@@ -111,6 +112,7 @@ export async function executeBashWithOperations(
 		const result = await operations.exec(command, cwd, {
 			onData,
 			signal: options?.signal,
+			env: options?.env,
 			pty: options?.pty,
 		});
 

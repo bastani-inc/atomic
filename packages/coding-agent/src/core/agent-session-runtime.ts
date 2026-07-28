@@ -18,6 +18,7 @@ import type { CreateAgentSessionResult } from "./sdk.ts";
 import { assertSessionCwdExists } from "./session-cwd.ts";
 import { SessionManager } from "./session-manager.ts";
 import type { AuthStatus } from "./auth-storage.ts";
+import { loginRuntimeOAuthProvider, type AtomicOAuthLoginCallbacks } from "./agent-session-runtime-auth.ts";
 import type { ModelFallbackReason } from "./model-resolver-types.ts";
 
 /**
@@ -149,6 +150,11 @@ export class AgentSessionRuntime {
 		selectedModel: Model<Api> | null | undefined,
 	): void {
 		if (selectedModel && !modelsAreEqual(previousModel, selectedModel)) this.resolveModelFallback();
+	}
+
+	async loginOAuthProvider(provider: string, callbacks: AtomicOAuthLoginCallbacks): Promise<{ modelsRefreshed: boolean }> {
+		await loginRuntimeOAuthProvider(this.session, provider, callbacks);
+		return { modelsRefreshed: false };
 	}
 
 	async logoutProvider(provider: string): Promise<LogoutProviderResult> {

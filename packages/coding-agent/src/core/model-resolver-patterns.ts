@@ -114,8 +114,6 @@ export function buildFallbackModel(
     id: modelId,
     name: modelId,
     contextWindow: fallbackContextWindow,
-    defaultContextWindow: fallbackContextWindow,
-    contextWindowOptions: undefined,
   };
 }
 

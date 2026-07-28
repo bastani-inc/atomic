@@ -62,7 +62,7 @@ The effective parameters appear in extension events and successful results:
 | `preserve_recent` | `2` | Exact number of newest context-visible messages protected client-side |
 | `query` | Last visible user message | Relevance focus for deciding which older lines to retain |
 
-`preserve_recent` counts context-visible messages without aligning the boundary to a user turn. An assistant message or tool result may therefore begin the kept tail. A value of `0` protects no messages and makes the entire active transcript compactable. If `query` is absent, Atomic derives it from the last visible user message.
+`preserve_recent` counts context-visible messages without aligning the boundary to a user turn. An assistant message or tool result may therefore begin the kept tail. Because such a tail can start or end mid-turn, the kept messages are not replayed as structured message blocks: they are serialized with the same transcript grammar as the compacted region and appended to the end of the boundary string, so the whole boundary reaches the provider as one message. Serialization of the kept tail is lossless — tool results keep their full text instead of being truncated at 16k characters, and images stay attached as image blocks rather than becoming `[image]` markers — so protected content is preserved, not merely summarized. A value of `0` protects no messages and makes the entire active transcript compactable. If `query` is absent, Atomic derives it from the last visible user message.
 
 Configure defaults in `~/.atomic/agent/settings.json` or `.atomic/settings.json`:
 
@@ -87,6 +87,8 @@ Configure defaults in `~/.atomic/agent/settings.json` or `.atomic/settings.json`
 - **Overflow:** an actual provider context overflow compacts and then retries the interrupted turn.
 
 Exactly the configured recent-message tail is outside the compactable region; Atomic does not force the final logical turn to remain outside it. After successful automatic compaction, input queued before compaction started resumes automatically once the active run becomes idle; pressing Escape is not required to release it. Pressing Escape while compaction is active cancels it like other session operations. In isolated interactive mode, cancellation and host UI response frames use an independent RPC control lane, so they can reach the engine while the ordinary `compact` request is still pending instead of waiting behind it. Atomic writes a backup snapshot immediately before appending a compaction boundary.
+
+Manual compaction is single-flight. A manual request made while another manual compaction is still in flight joins that run and receives its result instead of starting a second model call, so it emits no extra `compaction_start`/`compaction_end` pair and appends no extra boundary; `abortCompaction()` (Escape) still cancels the single owning run for every waiter. A manual request made while an automatic compaction is in flight is rejected immediately with an "automatic compaction is already in progress" error rather than racing it. In the interactive TUI, `/compact` typed while any compaction is active is refused with a warning; it is not queued, because queueing would only defer a duplicate compaction. Ordinary text typed during compaction is still queued as usual.
 
 The post-tool check stays inside the active Pi loop: it runs at most one ordinary verbatim compaction attempt for that completed tool turn, returns the rebuilt context to the loop, and never calls or schedules `agent.continue()`. Normal context reconstruction preserves provider tool-call/result protocol validity. Below-threshold tool turns follow the unchanged request path. Because the same active run resumes without emitting another `agent_start`, the interactive TUI replaces the compaction loader with its working spinner as soon as successful mid-turn compaction ends; streaming feedback therefore resumes immediately without waiting for another user interaction.
 
@@ -155,7 +157,7 @@ A successful run appends the existing pi-style `type:"compaction"` entry shape:
 }
 ```
 
-A `compaction` entry is active only when `details.strategy === "verbatim-lines"`. On rebuild, Atomic emits a visible custom-role boundary message containing the durable `summary`, followed by the original messages beginning at `firstKeptEntryId`. When no pre-boundary context-visible message is retained—such as with `preserve_recent: 0`—`firstKeptEntryId` is `null`. Messages appended after the boundary are always replayed. The boundary is converted to a user-role provider message and shown in the TUI as a collapsible compaction card.
+A `compaction` entry is active only when `details.strategy === "verbatim-lines"`. On rebuild, Atomic emits one visible custom-role boundary message: the durable `summary` with the kept tail—the entries from `firstKeptEntryId` up to the boundary—serialized and concatenated onto its end. The tail is never restored as separate assistant/tool-result blocks, so a tail that starts or ends mid-turn cannot produce out-of-order provider blocks; images inside the tail ride along as image blocks on that same boundary message. When no pre-boundary context-visible message is retained—such as with `preserve_recent: 0`—`firstKeptEntryId` is `null` and the boundary carries the `summary` alone. Messages appended after the boundary are always replayed as real messages. The boundary is converted to a user-role provider message and shown in the TUI as a collapsible compaction card.
 
 Resume does not rerun planning or re-derive deletions: the exact compacted string and nullable tail boundary are already in JSONL. Existing records with a string `firstKeptEntryId` keep their original resume behavior. Legacy `context_compaction` logical-deletion records and old `compaction` summary records without the discriminator are inert archival data. Their historical omissions are not reapplied when an old session resumes.
 
@@ -364,6 +366,10 @@ pi.on("session_before_tree", async (event, ctx) => {
 ```
 
 See `SessionBeforeTreeEvent` and `TreePreparation` in the types file.
+
+## Summary request isolation
+
+Verbatim planning and branch summarization are standalone provider requests. Each receives a fresh routing session ID instead of reusing the chat's provider-affinity ID, and sets cache retention to `none` so it cannot write summary/planner prompts into the main prompt cache. Existing API-key, header-only `ANTHROPIC_AUTH_TOKEN`, custom-header, abort, and bounded retry behavior still applies. These controls affect provider request routing/cache writes only; successful results are persisted through the normal Atomic session lifecycle.
 
 ## Settings
 

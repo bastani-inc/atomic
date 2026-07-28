@@ -8,8 +8,6 @@
  *    without remounting the popup.
  *  - Ctrl+X in chat mode swaps back to graph with the same focused
  *    stage id preserved.
- *  - When a `uiStatus.setStatus` surface is provided, attach/detach
- *    flips the `pi-workflows` tag through `<workflow>/<stage>`.
  *
  * cross-ref: src/tui/workflow-attach-pane.ts
  */
@@ -23,10 +21,7 @@ import {
     type TUI,
 } from "@earendil-works/pi-tui";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import {
-    WorkflowAttachPane,
-    type AttachUiStatusSurface,
-} from "../../packages/workflows/src/tui/workflow-attach-pane.js";
+import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import type { StageControlHandle } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";

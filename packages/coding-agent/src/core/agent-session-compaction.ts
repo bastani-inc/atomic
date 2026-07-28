@@ -153,17 +153,22 @@ export async function _applyVerbatimCompaction(
 	return result;
 }
 
-/** Persist one verbatim line-subset compaction boundary. */
-export async function compact(this: AgentSession, options: Partial<VerbatimCompactionParameters> = {}): Promise<VerbatimCompactionResult> {
-	this._disconnectFromAgent();
+/** Message surfaced when a manual compaction is requested during an automatic one. */
+export const AUTOMATIC_COMPACTION_IN_PROGRESS_MESSAGE =
+	"Automatic compaction is already in progress; wait for it to finish before compacting manually.";
+
+async function runOwnedManualCompaction(
+	this: AgentSession,
+	controller: AbortController,
+	options: Partial<VerbatimCompactionParameters>,
+): Promise<VerbatimCompactionResult> {
 	await this.abort();
-	this._compactionAbortController = new AbortController();
 	this._emit({ type: "compaction_start", reason: "manual" });
 	try {
 		if (!this.model) throw new Error(formatNoModelSelectedMessage());
 		const model = this.model;
 		const result = await this._applyVerbatimCompaction({
-			resolvePlannerAuth: () => this._getRequiredRequestAuth(model), abortController: this._compactionAbortController,
+			resolvePlannerAuth: () => this._getRequiredRequestAuth(model), abortController: controller,
 			backupLabel: "compact", reason: "manual", ...options,
 		});
 		if (!result) throw new Error("Nothing to compact (session too small)");
@@ -174,10 +179,40 @@ export async function compact(this: AgentSession, options: Partial<VerbatimCompa
 		const aborted = message === "Compaction cancelled" || (error instanceof Error && error.name === "AbortError");
 		this._emit({ type: "compaction_end", reason: "manual", result: undefined, aborted, willRetry: false, errorMessage: aborted ? undefined : `Compaction failed: ${message}` });
 		throw error;
-	} finally {
-		this._compactionAbortController = undefined;
-		this._reconnectToAgent();
 	}
+}
+
+/**
+ * Persist one verbatim line-subset compaction boundary.
+ *
+ * Re-entrancy safe: a call made while a manual compaction is still in flight
+ * joins that run instead of starting a second one, and a call made while an
+ * automatic compaction owns `_autoCompactionAbortController` fails fast rather
+ * than racing it. Only the owning call clears `_compactionAbortController` and
+ * reconnects agent events, so `abortCompaction()` always reaches the live run.
+ */
+export function compact(this: AgentSession, options: Partial<VerbatimCompactionParameters> = {}): Promise<VerbatimCompactionResult> {
+	const inFlight = this._manualCompactionPromise;
+	if (inFlight) return inFlight;
+	if (this._autoCompactionAbortController) return Promise.reject(new Error(AUTOMATIC_COMPACTION_IN_PROGRESS_MESSAGE));
+
+	const controller = new AbortController();
+	this._disconnectFromAgent();
+	this._compactionAbortController = controller;
+	let flight!: Promise<VerbatimCompactionResult>;
+	// Start the owned run in a microtask so both single-flight fields are
+	// published before any joiner can observe a partially claimed compaction.
+	flight = Promise.resolve()
+		.then(() => runOwnedManualCompaction.call(this, controller, options))
+		.finally(() => {
+			if (this._compactionAbortController === controller) {
+				this._compactionAbortController = undefined;
+				this._reconnectToAgent();
+			}
+			if (this._manualCompactionPromise === flight) this._manualCompactionPromise = undefined;
+		});
+	this._manualCompactionPromise = flight;
+	return flight;
 }
 
 export function abortCompaction(this: AgentSession): void { this._compactionAbortController?.abort(); this._autoCompactionAbortController?.abort(); }

@@ -1,5 +1,5 @@
 import type { StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { retryAssistantCall, type RetryCallbacks, type RetryPolicy } from "@earendil-works/pi-ai";
+import { retryAssistantCall, type RetryCallbacks, type RetryPolicy, uuidv7 } from "@earendil-works/pi-ai";
 import type { ProviderHeaders } from "@earendil-works/pi-ai";
 import type { Api, AssistantMessage, Model, SimpleStreamOptions } from "@earendil-works/pi-ai/compat";
 import { isContextOverflow } from "@earendil-works/pi-ai/compat";
@@ -155,7 +155,7 @@ export async function planDeletedLineRanges(
 	region: NumberedRegion,
 	parameters: VerbatimCompactionParameters,
 	model: Model<Api>,
-	auth: { apiKey: string; headers?: ProviderHeaders },
+	auth: { apiKey?: string; headers?: ProviderHeaders },
 	signal: AbortSignal | undefined,
 	thinkingLevel: ThinkingLevel | undefined,
 	reserveTokens: number,
@@ -174,6 +174,8 @@ export async function planDeletedLineRanges(
 		headers: auth.headers,
 		signal,
 		maxTokens,
+		cacheRetention: "none",
+		sessionId: uuidv7(),
 		...(model.reasoning && thinkingLevel && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
 	};
 	let response: AssistantMessage;

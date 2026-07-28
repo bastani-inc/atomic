@@ -1,9 +1,15 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
-import { type Api, type Model, type OAuthProviderId, type OAuthSelectPrompt, path, getAuthPath, getDocsPath, defaultModelPerProvider, ExtensionSelectorComponent, LoginDialogComponent, theme } from "./interactive-mode-deps.ts";
+import { type Api, type Model, type OAuthSelectPrompt, path, getAuthPath, getDocsPath, defaultModelPerProvider, ExtensionSelectorComponent, LoginDialogComponent, theme } from "./interactive-mode-deps.ts";
 import { hasDefaultModelProvider, isUnknownModel } from "./interactive-mode-helpers.ts";
+import { isOAuthLoginCancelled } from "../../core/oauth-provider-bridge.ts";
 
-InteractiveModeBase.prototype.completeProviderAuthentication = async function(this: InteractiveModeBase, providerId: string, providerName: string, authType: "oauth" | "api_key", previousModel: Model<Api> | undefined): Promise<void> {
-    await this.session.modelRegistry.refresh();
+InteractiveModeBase.prototype.completeProviderAuthentication = async function(this: InteractiveModeBase, providerId: string, providerName: string, authType: "oauth" | "api_key", previousModel: Model<Api> | undefined, options: { modelsRefreshed?: boolean } = {}): Promise<void> {
+	if (!options.modelsRefreshed) {
+		const result = await this.session.modelRegistry.refresh();
+		const providerError = result.errors.get(providerId);
+		if (providerError) throw providerError;
+		if (result.aborted) throw new Error(`Model refresh aborted after authenticating ${providerName}`);
+	}
 
     const actionLabel =
       authType === "oauth"
@@ -143,12 +149,10 @@ InteractiveModeBase.prototype.showApiKeyLoginDialog = async function(this: Inter
       );
     } catch (error: unknown) {
       restoreEditor();
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      if (errorMsg !== "Login cancelled") {
-        this.showError(
-          `Failed to save API key for ${providerName}: ${errorMsg}`,
-        );
-      }
+		const errorMsg = error instanceof Error ? error.message : String(error);
+		if (!isOAuthLoginCancelled(error)) {
+			this.showError(`Failed to save API key for ${providerName}: ${errorMsg}`);
+		}
     }
   };
 
@@ -223,10 +227,11 @@ InteractiveModeBase.prototype.showLoginDialog = async function(this: Interactive
       this.ui.requestRender();
     };
 
-    try {
-      await this.session.modelRegistry.authStorage.login(
-        providerId as OAuthProviderId,
-        {
+	let loginSucceeded = false;
+	try {
+		const loginResult = await this.runtimeHost.loginOAuthProvider(
+			providerId,
+			{
           onAuth: (info: { url: string; instructions?: string }) => {
             dialog.showAuth(info.url, info.instructions, {
               showCancelHint: !usesCallbackServer,
@@ -288,21 +293,23 @@ InteractiveModeBase.prototype.showLoginDialog = async function(this: Interactive
 
           signal: dialog.signal,
         },
-      );
+		);
+		loginSucceeded = true;
 
       // Success
       restoreEditor();
-      await this.completeProviderAuthentication(
-        providerId,
-        providerName,
-        "oauth",
-        previousModel,
-      );
+		await this.completeProviderAuthentication(
+			providerId,
+			providerName,
+			"oauth",
+			previousModel,
+			loginResult,
+		);
     } catch (error: unknown) {
       restoreEditor();
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      if (errorMsg !== "Login cancelled") {
-        this.showError(`Failed to login to ${providerName}: ${errorMsg}`);
-      }
+		const errorMsg = error instanceof Error ? error.message : String(error);
+		if (loginSucceeded || !isOAuthLoginCancelled(error)) {
+			this.showError(`Failed to login to ${providerName}: ${errorMsg}`);
+		}
     }
   };

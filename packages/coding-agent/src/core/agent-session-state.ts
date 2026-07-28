@@ -17,6 +17,9 @@ export function getAllTools(this: AgentSession): ToolInfo[] {
 		name: definition.name,
 		description: definition.description,
 		parameters: definition.parameters,
+		...(Object.hasOwn(definition, "constrainedSampling")
+			? { constrainedSampling: definition.constrainedSampling }
+			: {}),
 		promptGuidelines: definition.promptGuidelines,
 		sourceInfo,
 	}));

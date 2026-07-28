@@ -4,21 +4,15 @@ import type { InteractiveModeBase } from "../src/modes/interactive/interactive-m
 import { refreshCatalogsAfterTuiStartup } from "../src/modes/interactive/interactive-model-catalog-startup.ts";
 
 interface FakeCalls {
-	copilot: number;
 	refreshOptions: Array<{ allowNetwork?: boolean }>;
 	providerCounts: number[];
 }
 
 function fakeMode(overrides?: {
-	copilotRejects?: boolean;
 	refreshRejects?: boolean;
 }): { mode: InteractiveModeBase; calls: FakeCalls } {
-	const calls: FakeCalls = { copilot: 0, refreshOptions: [], providerCounts: [] };
+	const calls: FakeCalls = { refreshOptions: [], providerCounts: [] };
 	const mode = {
-		refreshCopilotModelCatalog: async () => {
-			calls.copilot++;
-			if (overrides?.copilotRejects) throw new Error("copilot fetch failed");
-		},
 		session: {
 			scopedModels: [],
 			modelRegistry: {
@@ -43,16 +37,8 @@ function fakeMode(overrides?: {
 	return { mode, calls };
 }
 
-test("post-TUI startup refresh performs a network registry refresh for non-Copilot users", async () => {
+test("post-TUI startup refresh performs a network registry refresh", async () => {
 	const { mode, calls } = fakeMode();
-	await refreshCatalogsAfterTuiStartup(mode);
-	assert.equal(calls.copilot, 1);
-	assert.deepEqual(calls.refreshOptions, [{ allowNetwork: true }]);
-	assert.deepEqual(calls.providerCounts, [2]);
-});
-
-test("registry refresh still runs when the Copilot catalog pass fails", async () => {
-	const { mode, calls } = fakeMode({ copilotRejects: true });
 	await refreshCatalogsAfterTuiStartup(mode);
 	assert.deepEqual(calls.refreshOptions, [{ allowNetwork: true }]);
 	assert.deepEqual(calls.providerCounts, [2]);

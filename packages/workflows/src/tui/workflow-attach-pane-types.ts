@@ -6,10 +6,6 @@ import type { GraphTheme } from "./graph-theme.js";
 import type { StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import type { EnsurePostMortemStageHandleResult } from "../runs/foreground/postmortem-stage-chat.js";
 
-export interface AttachUiStatusSurface {
-  setStatus?: (key: string, value: string | undefined) => void;
-}
-
 export type PostMortemHandleResolution = EnsurePostMortemStageHandleResult | undefined;
 
 export interface WorkflowAttachPaneOpts {
@@ -32,11 +28,6 @@ export interface WorkflowAttachPaneOpts {
   resolvePostMortemHandle?: (runId: string, stageId: string) => PostMortemHandleResolution;
   /** Broker used to route stage-local custom UI such as ask_user_question into attached chats. */
   stageUiBroker?: StageUiBroker;
-  /**
-   * Optional UI status surface. When present, attaching/detaching
-   * updates the `pi-workflows` status tag with `<workflow>/<stage>`.
-   */
-  uiStatus?: AttachUiStatusSurface;
   /** Called when the user closes (Escape in graph mode). */
   onClose: () => void;
   /** Called when the user requests the host to hide the popup. */

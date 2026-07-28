@@ -8,7 +8,9 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function(
   userInput: string,
 ): Promise<void> {
   // Show the working spinner immediately on submit so there is no visible gap
-  // while prompt preflight runs before the agent emits `agent_start`.
+  // while prompt preflight runs before the agent emits `agent_start`. The
+  // ownership flag keeps deferred startup from tearing it down mid-way.
+  this.promptTurnWorkingLoaderActive = true;
   this.showWorkingLoaderNow();
   const deferredStartupNeedsPromptGate =
     this.deferredStartupPending || this.deferredStartupPromise !== undefined;
@@ -56,6 +58,7 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function(
       error instanceof Error ? error.message : "Unknown error occurred";
     this.showError(errorMessage);
   } finally {
+    this.promptTurnWorkingLoaderActive = false;
     // A submission that resolves without starting an agent turn (e.g. a
     // handled slash command) never emits `agent_end`, so clear the pre-shown
     // spinner here when idle to avoid a lingering indicator.

@@ -20,7 +20,6 @@ type AgentSessionEvent =
   | { type: "session_info_changed"; name: string | undefined }
   | { type: "model_changed"; model: Model<Api>; previousModel: Model<Api> | undefined; source: "set" | "cycle" | "restore" }
   | { type: "thinking_level_changed"; level: ThinkingLevel }
-  | { type: "context_window_changed"; contextWindow: number }
   | { type: "compaction_end"; reason: "manual" | "threshold" | "overflow"; result: VerbatimCompactionResult | undefined; aborted: boolean; willRetry: boolean; unresolvedOverflow?: boolean; errorMessage?: string }
   | { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
   | { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
@@ -30,7 +29,7 @@ type AgentSessionEvent =
   | { type: "summarization_retry_finished" };
 ```
 
-`queue_update` emits the full pending steering and follow-up queues whenever they change. `session_info_changed`, `model_changed`, `thinking_level_changed`, and `context_window_changed` report interactive session metadata changes. `context_window_changed` carries the active token budget after `AgentSession.setContextWindow()` or branch navigation replay applies a branch-scoped `context_window_change`; branch replay does not add another session journal entry or write settings. `compaction_start` and `compaction_end` cover manual and automatic verbatim line compaction: the model emits deleted ranges and Atomic mechanically reconstructs retained text.
+`queue_update` emits the full pending steering and follow-up queues whenever they change. `session_info_changed`, `model_changed`, and `thinking_level_changed` report interactive session metadata changes. `compaction_start` and `compaction_end` cover manual and automatic verbatim line compaction: the model emits deleted ranges and Atomic mechanically reconstructs retained text.
 
 For automatic compaction, `compaction_end.willRetry === true` means the agent is retrying the interrupted turn after compaction; `AgentSession.prompt()` waits for that continuation before resolving. This includes overflow recovery and live threshold compaction for retry-worthy interrupted work such as output-token truncation or OpenAI Responses output-budget underflow errors. Generic provider `invalid_request_body` failures still compact with `willRetry: false` when threshold compaction is warranted. If the same-model compact-and-retry overflow path is exhausted, `compaction_end` includes `unresolvedOverflow: true` plus an `errorMessage` so orchestration layers can fall back to another model instead of treating the prompt as successful.
 
@@ -79,7 +78,6 @@ Each line is a JSON object. The first line is the session header:
 Followed by events as they occur:
 
 ```json
-{"type":"context_window_changed","contextWindow":1000000}
 {"type":"agent_start"}
 {"type":"turn_start"}
 {"type":"message_start","message":{"role":"assistant","content":[],...}}

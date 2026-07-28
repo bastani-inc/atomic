@@ -2,9 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Adopted Claude Opus 5 across every builtin subagent `fallbackModels` policy and normalized provider ordering. Each Anthropic family now lists its direct `anthropic/...` candidate ahead of the `github-copilot/...` mirror, Opus 5 leads the Anthropic group (`:high` for the debugger, `:low` elsewhere), `claude-fable-5` gains its missing Copilot mirror, and the OpenRouter tail lists `openrouter/anthropic/claude-opus-5` before the older Anthropic mirrors.
+- Reworked all nine bundled agent system prompts and all seven chain task templates for GPT-5.6, Claude Opus 5, and Claude Fable 5. Agent bodies are now outcome-first with explicit success, evidence, output, escalation, and stop contracts while shrinking from 1,418 to 561 lines; chain templates now carry grounded-reporting, selective-delegation, downstream-output, and completion contracts. Removed repeated self-verification and requests to reproduce internal reasoning, avoiding Claude Fable 5 `reasoning_extraction` refusals that could otherwise force model fallback, without changing agent frontmatter or exported behavior.
+
 ### Removed
 
 - Removed Cursor MCP compatibility imports from delegated direct-tool resolution and removed Cursor model candidates from every builtin subagent fallback policy ([#1994](https://github.com/bastani-inc/atomic/issues/1994)).
+- Removed the `(1m)` context-window token from every builtin subagent `fallbackModels` policy. Atomic no longer parses a parenthesized context-window token in model strings, so `github-copilot/claude-opus-4.8 (1m):medium` is now `github-copilot/claude-opus-4.8:medium` and the candidate uses the model's catalog context window.
 
 ## [0.9.11-alpha.5] - 2026-07-23
 
