@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.11-alpha.6] - 2026-07-28
+
 ### Added
 
 - Added execution-time session metadata to built-in, SDK/factory, direct, workflow-stage, and isolated bash execution through `ATOMIC_SESSION_ID`, `ATOMIC_SESSION_FILE`, `ATOMIC_PROVIDER`, `ATOMIC_MODEL`, and `ATOMIC_REASONING_LEVEL`, with exact `PI_*` compatibility aliases and safe omission of unsaved session files. Direct RPC bash now emits request-correlated, ordered `bash_execution_update` events that distinguish stdout from stderr, supports concurrent requests and per-request cancellation, and keeps streaming, cancellation, one terminal response, and exactly-once starting-session persistence intact across new/switch/import/fork/clone session replacement and RPC shutdown ([#1995](https://github.com/bastani-inc/atomic/issues/1995)).

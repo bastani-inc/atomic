@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.11-alpha.6] - 2026-07-28
+
 ### Changed
 
 - Adopted Claude Opus 5 across every builtin subagent `fallbackModels` policy and normalized provider ordering. Each Anthropic family now lists its direct `anthropic/...` candidate ahead of the `github-copilot/...` mirror, Opus 5 leads the Anthropic group (`:high` for the debugger, `:low` elsewhere), `claude-fable-5` gains its missing Copilot mirror, and the OpenRouter tail lists `openrouter/anthropic/claude-opus-5` before the older Anthropic mirrors.

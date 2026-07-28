@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.11-alpha.6] - 2026-07-28
+
 ### Added
 
 - Added opt-in `ctx.tool(..., { failureMode: "return" })` outcomes for checks that may fail during repair flows. Exhausted callback failures now preserve bounded, best-effort redacted `exitCode`, `stdout`, and `stderr` as typed durable data; replay returns the same outcome without rerunning the callback; failed tool nodes remain truthful while explicit downstream repair and bounded reruns continue; and default failures, cancellation, admission errors, and storage faults still throw ([#1993](https://github.com/bastani-inc/atomic/issues/1993)).
