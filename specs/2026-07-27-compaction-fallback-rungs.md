@@ -332,7 +332,6 @@ borrowFallbackPlanner(
 
 startNewContextWindow(
   preparation: VerbatimCompactionPreparation,
-  hardInputLimit: number,
 ): CompactedTranscript
 // Guarantee: discards every compactable line and starts a fresh context window.
 // TOTAL. No provider, no credentials, no network, no signal, no failure mode,
@@ -343,8 +342,14 @@ startNewContextWindow(
 // Atomic analogue: system prompt, context files, and skills are rebuilt per request
 // and were never in the transcript, so they survive automatically — they ARE Atomic's
 // `build_initial_context_with_world_state`. This door discards the compactable region
-// and any prior durable summary, and — only when the protected tail alone would still
-// exceed `hardInputLimit` — the protected tail as well (§9.1 Q12).
+// and any prior durable summary.
+//
+// It takes NO hard-input-limit argument. An earlier draft gave it one, but the limit
+// decides only whether the protected tail survives (§9.1 Q12), and that decision is a
+// persistence concern carried on `CompactionRungResult.keptTail` — it is not observable
+// in the returned `CompactedTranscript`. A parameter that cannot affect this door's
+// result would be a boundary lie (principle 2). The runner applies the limit internally
+// when it builds the rung result.
 
 
 // ─── Door 4: the rung chokepoint ──────────────────────────────────────────────
@@ -419,7 +424,7 @@ loop:
                                  next := borrowFallbackPlanner(attempted, resolveAuth)
                                  if next: planner := next; continue
                                  if urgency == "load_bearing":
-                                     startNewContextWindow(prep, hardInputLimit)
+                                     startNewContextWindow(prep); tail per hardInputLimit
                                      rung="fresh"; notice. DONE.
                                  throw RangePlanError                 // recoverable
 ```

@@ -28,7 +28,7 @@ test("startNewContextWindow is total across empty, single-line, and all-protecte
 		region(9, [2, 5, 8]),
 	];
 	for (const built of cases) {
-		const fresh = startNewContextWindow(preparation({ region: built }), 1_000_000);
+		const fresh = startNewContextWindow(preparation({ region: built }));
 		// Every retained non-marker line is byte-identical to an input line, in order.
 		const retained = retainedLines(fresh.text).filter((line) => line.length > 0);
 		const inputOrder = built.lines.filter((line) => retained.includes(line));
@@ -39,7 +39,7 @@ test("startNewContextWindow is total across empty, single-line, and all-protecte
 
 test("startNewContextWindow keeps explicit protected spans and discards everything else", () => {
 	const built = region(20, [3, 4, 15]);
-	const fresh = startNewContextWindow(preparation({ region: built }), 1_000_000);
+	const fresh = startNewContextWindow(preparation({ region: built }));
 	const retained = retainedLines(fresh.text);
 	assert.deepEqual(retained, ["line 3", "line 4", "line 15"]);
 });
@@ -52,14 +52,14 @@ test("property: retained lines are byte-identical and in input order for arbitra
 			if ((line * seed) % 3 === 0) protectedLines.push(line);
 		}
 		const built = region(size, protectedLines);
-		const fresh = startNewContextWindow(preparation({ region: built }), 1_000_000);
+		const fresh = startNewContextWindow(preparation({ region: built }));
 		const retained = retainedLines(fresh.text).filter((line) => line.length > 0);
 		assert.deepEqual(retained, protectedLines.map((line) => built.lines[line - 1]));
 	}
 });
 
 test("the public door returns exactly a CompactedTranscript", () => {
-	const fresh = startNewContextWindow(preparation({ region: region(40) }), 1_000_000);
+	const fresh = startNewContextWindow(preparation({ region: region(40) }));
 	// The RFC §5.1 return type: assignable to `CompactedTranscript`, with no
 	// extra field observable at runtime. `keptTail` is runner bookkeeping and
 	// travels on `CompactionRungResult`, not on this door.

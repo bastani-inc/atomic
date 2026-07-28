@@ -65,11 +65,15 @@ interface FreshWindowBuild {
 }
 
 /**
- * Calculate the single global line threshold directly from the prepared setting.
+ * Calculate the single global line threshold from the prepared setting.
  *
- * It is a whole-preparation target: overflow trimming reuses this same number for
- * every trimmed view, so withholding a head never silently tightens
- * `compression_ratio` beyond what the user configured.
+ * This is the untrimmed target. Overflow trimming does NOT reuse it:
+ * `planWithTrimming` recomputes the threshold against each trimmed view, so the
+ * planner is always asked to keep a proportion of the lines it actually
+ * received rather than a proportion of a region it never saw.
+ *
+ * Retained as an exported helper for tests and consumers that need the
+ * pre-trim target; production planning goes through `planWithTrimming`.
  */
 export function targetKeepLines(preparation: VerbatimCompactionPreparation): number {
 	const region = preparation.region;
@@ -106,20 +110,23 @@ function withWholeContextStats(
  * is deliberately absent from the public door's return value, which is exactly a
  * `CompactedTranscript`.
  */
+function buildFreshTranscript(preparation: VerbatimCompactionPreparation): CompactedTranscript {
+	const region = preparation.region;
+	const whole: RawLineRange[] = region.lines.length > 0 ? [{ start: 1, end: region.lines.length }] : [];
+	return reconstructCompactedTranscript(region, validateDeletedRanges(whole, region));
+}
+
 function buildFreshContextWindow(
 	preparation: VerbatimCompactionPreparation,
 	hardInputLimit: number,
 ): FreshWindowBuild {
-	const region = preparation.region;
-	const whole: RawLineRange[] = region.lines.length > 0 ? [{ start: 1, end: region.lines.length }] : [];
-	const transcript = reconstructCompactedTranscript(region, validateDeletedRanges(whole, region));
 	const limit = Number.isFinite(hardInputLimit) && hardInputLimit > 0 ? hardInputLimit : Number.POSITIVE_INFINITY;
 	// The rule is "tail under the limit ⇒ tail kept", so the comparison is the
 	// tail alone. Explicit protected lines are a hard floor that survives either
 	// way, and counting the reconstructed protected/marker text here would drop a
 	// tail that fits. A rebuilt context that still cannot be sent is the post-tool
 	// gate's problem, not a reason for this rung to discard more.
-	return { transcript, keptTail: getKeptTailTokenEstimate(preparation) <= limit };
+	return { transcript: buildFreshTranscript(preparation), keptTail: getKeptTailTokenEstimate(preparation) <= limit };
 }
 
 /**
@@ -141,9 +148,8 @@ function buildFreshContextWindow(
  */
 export function startNewContextWindow(
 	preparation: VerbatimCompactionPreparation,
-	hardInputLimit: number,
 ): CompactedTranscript {
-	return buildFreshContextWindow(preparation, hardInputLimit).transcript;
+	return buildFreshTranscript(preparation);
 }
 
 function plannedResult(
