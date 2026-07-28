@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the main and workflow-stage chats losing the automatic-compaction activity indicator after a tool result. When a tool call (for example a subagent) expanded the context enough to trigger post-tool compaction, the follow-up turn that Pi opens before compaction finishes replaced the factual `Auto-compacting...` status with a generic Working spinner, and the compaction's own cleanup then removed that spinner too — leaving the main chat with no activity at all for the rest of the continuing stream until the next user message. Compaction now keeps the status surface until its own completion event, ordinary Working resumes automatically when the same stream continues (including a successful compaction that had nothing to compact), and the attached workflow-stage chat paints its compaction status from the start event instead of waiting for an animation frame. Cancelled and failed compactions still stop all activity; the main chat keeps its existing cancellation receipt, while failures retain event-provided error text.
+
 ## [0.9.11-alpha.6] - 2026-07-28
 
 ### Added

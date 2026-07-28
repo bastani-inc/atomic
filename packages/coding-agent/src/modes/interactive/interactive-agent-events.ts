@@ -75,7 +75,12 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
         if (this.loadingAnimation) {
           if ("resetForTurn" in this.loadingAnimation) this.loadingAnimation.resetForTurn(this.workingMessage);
           else this.loadingAnimation.setMessage(this.workingMessage);
-        } else {
+        } else if (!this.autoCompactionLoader) {
+          // Post-tool compaction interposes this turn_start between
+          // compaction_start and compaction_end. Mounting generic Working here
+          // would evict the factual compaction status from the shared status
+          // container and leave a stale `loadingAnimation` that then blocks the
+          // restore at compaction_end, hiding all activity until the next run.
           this.showWorkingLoaderNow();
         }
         break;
@@ -360,8 +365,9 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
           }
         }
         // Post-tool compaction resumes the same active run, so no new
-        // agent_start event will recreate the working loader.
-        if (event.midTurn && event.result && !event.aborted && !event.errorMessage) {
+        // agent_start event will recreate the working loader. A successful
+        // no-op carries no `result` and still continues that stream.
+        if (event.midTurn && !event.aborted && !event.errorMessage) {
           this.showWorkingLoaderNow();
         }
         if (!event.midTurn) void this.flushCompactionQueue({ willRetry: event.willRetry });
