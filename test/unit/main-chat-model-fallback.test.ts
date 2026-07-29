@@ -69,10 +69,10 @@ test("main-chat fallback switches models after same-model retry exhaustion", asy
       getDefaultThinkingLevel: () => "high" as ThinkingLevel,
       getDefaultProvider: () => "openai-codex",
     },
-    _modelRegistry: {
-      getAvailable: () => [primary, fallback],
-      find: (provider: string, id: string) => provider === fallback.provider && id === fallback.id ? fallback : undefined,
-      hasConfiguredAuth: (candidate: Model<Api>) => candidate.provider === fallback.provider || candidate.provider === primary.provider,
+    _modelRuntime: {
+      getAvailableSnapshot: () => [primary, fallback],
+      getModel: (provider: string, id: string) => provider === fallback.provider && id === fallback.id ? fallback : undefined,
+      hasConfiguredAuth: (provider: string) => provider === fallback.provider || provider === primary.provider,
     },
     agent: {
       state: {
@@ -126,9 +126,9 @@ test("main-chat fallback can change reasoning on the same provider/model", async
       getDefaultThinkingLevel: () => "high" as ThinkingLevel,
       getDefaultProvider: () => "openai",
     },
-    _modelRegistry: {
-      getAvailable: () => [primary],
-      find: (provider: string, id: string) => provider === primary.provider && id === primary.id ? primary : undefined,
+    _modelRuntime: {
+      getAvailableSnapshot: () => [primary],
+      getModel: (provider: string, id: string) => provider === primary.provider && id === primary.id ? primary : undefined,
       hasConfiguredAuth: () => true,
     },
     agent: {
@@ -178,10 +178,10 @@ test("main-chat retry-disabled fallback keeps prompt waiting for fallback comple
       getDefaultThinkingLevel: () => "high" as ThinkingLevel,
       getDefaultProvider: () => "openai-codex",
     },
-    _modelRegistry: {
-      getAvailable: () => [primary, fallback],
-      find: (provider: string, id: string) => provider === fallback.provider && id === fallback.id ? fallback : undefined,
-      hasConfiguredAuth: (candidate: Model<Api>) => candidate.provider === fallback.provider || candidate.provider === primary.provider,
+    _modelRuntime: {
+      getAvailableSnapshot: () => [primary, fallback],
+      getModel: (provider: string, id: string) => provider === fallback.provider && id === fallback.id ? fallback : undefined,
+      hasConfiguredAuth: (provider: string) => provider === fallback.provider || provider === primary.provider,
     },
     agent: {
       state: { model: primary, thinkingLevel: "high" as ThinkingLevel, messages: [message] },
@@ -246,10 +246,10 @@ test("main-chat fallback rejection settles the retry wait", async () => {
       getDefaultThinkingLevel: () => "high" as ThinkingLevel,
       getDefaultProvider: () => "openai-codex",
     },
-    _modelRegistry: {
-      getAvailable: () => [primary, fallback],
-      find: (provider: string, id: string) => provider === fallback.provider && id === fallback.id ? fallback : undefined,
-      hasConfiguredAuth: (candidate: Model<Api>) => candidate.provider === fallback.provider || candidate.provider === primary.provider,
+    _modelRuntime: {
+      getAvailableSnapshot: () => [primary, fallback],
+      getModel: (provider: string, id: string) => provider === fallback.provider && id === fallback.id ? fallback : undefined,
+      hasConfiguredAuth: (provider: string) => provider === fallback.provider || provider === primary.provider,
     },
     agent: {
       state: { model: primary, thinkingLevel: "high" as ThinkingLevel, messages: [retryableMessage()] },
@@ -299,10 +299,10 @@ test("main-chat fallback continuation resolution does not mark assistant errors 
       getDefaultThinkingLevel: () => "high" as ThinkingLevel,
       getDefaultProvider: () => "openai-codex",
     },
-    _modelRegistry: {
-      getAvailable: () => [primary, fallback],
-      find: (provider: string, id: string) => provider === fallback.provider && id === fallback.id ? fallback : undefined,
-      hasConfiguredAuth: (candidate: Model<Api>) => candidate.provider === fallback.provider || candidate.provider === primary.provider,
+    _modelRuntime: {
+      getAvailableSnapshot: () => [primary, fallback],
+      getModel: (provider: string, id: string) => provider === fallback.provider && id === fallback.id ? fallback : undefined,
+      hasConfiguredAuth: (provider: string) => provider === fallback.provider || provider === primary.provider,
     },
     agent: {
       state: { model: primary, thinkingLevel: "high" as ThinkingLevel, messages: [retryableMessage()] },

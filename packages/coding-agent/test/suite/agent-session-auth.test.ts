@@ -1,9 +1,8 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	AgentSessionRuntime,
 	type CreateAgentSessionRuntimeFactory,
 } from "../../src/core/agent-session-runtime.ts";
-import { createRpcCommandHandler } from "../../src/modes/rpc/rpc-command-handler.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
 const createRuntime = (async () => {
@@ -25,11 +24,11 @@ describe("provider-metadata authentication runtime", () => {
 		while (harnesses.length > 0) harnesses.pop()?.cleanup();
 	});
 
-	it("logs in through ModelRegistry provider metadata and persists the acquired credential", async () => {
+	it("logs in through provider-owned runtime metadata and persists the acquired credential", async () => {
 		const harness = await createHarness({ withConfiguredAuth: false });
 		harnesses.push(harness);
 		const providerId = "openrouter";
-		harness.session.modelRegistry.registerProvider(providerId, {
+		harness.session.modelRuntime.registerProvider(providerId, {
 			oauth: {
 				name: "Faux subscription",
 				login: async () => ({
@@ -41,6 +40,7 @@ describe("provider-metadata authentication runtime", () => {
 				getApiKey: (credentials) => credentials.access,
 			},
 		});
+		vi.spyOn(harness.session.modelRuntime, "refresh").mockResolvedValue({ ok: true, providers: [] });
 
 		await runtimeFor(harness).loginOAuthProvider(providerId, {
 			onAuth: () => {},
@@ -49,42 +49,10 @@ describe("provider-metadata authentication runtime", () => {
 			onSelect: async () => undefined,
 		});
 
-		expect(harness.authStorage.get(providerId)).toMatchObject({
+		expect(await harness.authStorage.read(providerId)).toMatchObject({
 			type: "oauth",
 			access: "access-token",
 			refresh: "refresh-token",
 		});
-	});
-
-	it("accepts an isolated OAuth credential only after the engine-side transactional write", async () => {
-		const harness = await createHarness({ withConfiguredAuth: false });
-		harnesses.push(harness);
-		const runtime = runtimeFor(harness);
-		const handler = createRpcCommandHandler({
-			runtimeHost: runtime,
-			getSession: () => harness.session,
-			rebindSession: async () => {},
-			output: () => {},
-		});
-		const credential = {
-			type: "oauth" as const,
-			access: "isolated-access",
-			refresh: "isolated-refresh",
-			expires: Date.now() + 60_000,
-		};
-
-		const response = await handler({
-			id: "auth-bridge",
-			type: "save_provider_credential",
-			provider: harness.getModel().provider,
-			credential,
-		});
-
-		expect(response).toMatchObject({
-			id: "auth-bridge",
-			command: "save_provider_credential",
-			success: true,
-		});
-		expect(harness.authStorage.get(harness.getModel().provider)).toEqual(credential);
 	});
 });

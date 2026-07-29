@@ -148,15 +148,15 @@ describe("InteractiveMode /fast autocomplete", () => {
 		models: Model<Api>[],
 		scopedModels: Model<Api>[] = [],
 		options: {
-			hasConfiguredAuth?: (model: Model<Api>) => boolean;
+			hasConfiguredAuth?: (provider: string) => boolean;
 			extensionCommands?: ExtensionCommandFixture[];
 		} = {},
 	): AutocompleteProvider {
 		const fakeThis: any = {
 			session: {
 				scopedModels: scopedModels.map((model) => ({ model })),
-				modelRegistry: {
-					getAvailable: vi.fn(() => models),
+				modelRuntime: {
+					getAvailableSnapshot: vi.fn(() => models),
 					hasConfiguredAuth: vi.fn(options.hasConfiguredAuth ?? (() => true)),
 				},
 				promptTemplates: [],
@@ -219,7 +219,7 @@ describe("InteractiveMode /fast autocomplete", () => {
 			const scopedModel = createModel(scopedProvider, `${scopedProvider}-unauthenticated`);
 			const labels = await slashLabels(
 				createProvider([createModel("openai", "available-openai")], [scopedModel], {
-					hasConfiguredAuth: (model) => model !== scopedModel,
+					hasConfiguredAuth: (provider) => provider !== scopedProvider,
 				}),
 			);
 
@@ -271,7 +271,7 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 		type AutocompleteHost = {
 			session: {
 				scopedModels: [];
-				modelRegistry: { getAvailable: () => [] };
+				modelRuntime: { getAvailableSnapshot: () => [] };
 				promptTemplates: [];
 				extensionRunner: { getRegisteredCommands: () => [] };
 				resourceLoader: { getSkills: () => { skills: [] } };
@@ -289,7 +289,7 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 		const fakeThis: AutocompleteHost = {
 			session: {
 				scopedModels: [],
-				modelRegistry: { getAvailable: () => [] },
+				modelRuntime: { getAvailableSnapshot: () => [] },
 				promptTemplates: [],
 				extensionRunner: { getRegisteredCommands: () => [] },
 				resourceLoader: { getSkills: () => ({ skills: [] }) },
@@ -338,7 +338,7 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 		type FakeInteractiveMode = {
 			session: {
 				scopedModels: Array<{ model: TestModel }>;
-				modelRegistry: { getAvailable: () => TestModel[] };
+				modelRuntime: { getAvailableSnapshot: () => TestModel[] };
 				promptTemplates: [];
 				extensionRunner: { getRegisteredCommands: () => [] };
 				resourceLoader: { getSkills: () => { skills: [] } };
@@ -361,7 +361,7 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 		const fakeThis: FakeInteractiveMode = {
 			session: {
 				scopedModels: [],
-				modelRegistry: { getAvailable: () => models },
+				modelRuntime: { getAvailableSnapshot: () => models },
 				promptTemplates: [],
 				extensionRunner: { getRegisteredCommands: () => [] },
 				resourceLoader: { getSkills: () => ({ skills: [] }) },
@@ -393,7 +393,7 @@ describe("InteractiveMode deferred workflow autocomplete", () => {
 			deferredStartupPending: true,
 			session: {
 				scopedModels: [],
-				modelRegistry: { getAvailable: () => [] },
+				modelRuntime: { getAvailableSnapshot: () => [] },
 				promptTemplates: [],
 				extensionRunner: { getRegisteredCommands: () => [] },
 				resourceLoader: { getSkills: () => ({ skills: [] }) },

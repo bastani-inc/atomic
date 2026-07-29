@@ -21,14 +21,9 @@ describe("interactive API-key login persistence failures", () => {
 		const showStatus = vi.fn();
 		const completeProviderAuthentication = vi.fn();
 		const editor = {};
+		const login = vi.fn(async () => { throw saveError; });
 		const harness = {
-			session: {
-				model: undefined,
-				modelRegistry: {
-					authStorage: { set: vi.fn(() => { throw saveError; }) },
-					getCustomApiKeyAuth: () => undefined,
-				},
-			},
+			session: { model: undefined, modelRuntime: { login } },
 			ui: { setFocus: vi.fn(), requestRender: vi.fn() },
 			editorContainer: { clear: vi.fn(), addChild: vi.fn() },
 			editor,
@@ -44,10 +39,10 @@ describe("interactive API-key login persistence failures", () => {
 		) => Promise<void>;
 		await showApiKeyLoginDialog.call(harness, "example", "Example Provider");
 
-		expect(harness.session.modelRegistry.authStorage.set).toHaveBeenCalledWith("example", {
-			type: "api_key",
-			key: "secret-key",
-		});
+		expect(login).toHaveBeenCalledWith("example", "api_key", expect.objectContaining({
+			prompt: expect.any(Function),
+			notify: expect.any(Function),
+		}));
 		expect(completeProviderAuthentication).not.toHaveBeenCalled();
 		expect(showStatus).not.toHaveBeenCalled();
 		expect(showError).toHaveBeenCalledWith(
@@ -64,10 +59,7 @@ describe("interactive OAuth cancellation", () => {
 		const completeProviderAuthentication = vi.fn();
 		const editor = {};
 		const harness = {
-			session: {
-				model: undefined,
-				modelRegistry: { authStorage: { getOAuthProviders: () => [{ id: "kimi-coding", usesCallbackServer: false }] } },
-			},
+			session: { model: undefined },
 			runtimeHost: { loginOAuthProvider: async () => { throw new DOMException("The operation was aborted.", "AbortError"); } },
 			ui: { setFocus: vi.fn(), requestRender: vi.fn() },
 			editorContainer: { clear: vi.fn(), addChild: vi.fn() },
@@ -91,10 +83,7 @@ describe("interactive OAuth cancellation", () => {
 		const completeProviderAuthentication = vi.fn(async () => {});
 		const editor = {};
 		const harness = {
-			session: {
-				model: undefined,
-				modelRegistry: { authStorage: { getOAuthProviders: () => [{ id: "corp-oauth", usesCallbackServer: false }] } },
-			},
+			session: { model: undefined },
 			runtimeHost: { loginOAuthProvider: async () => ({ modelsRefreshed: true }) },
 			ui: { setFocus: vi.fn(), requestRender: vi.fn() },
 			editorContainer: { clear: vi.fn(), addChild: vi.fn() },
@@ -119,10 +108,7 @@ describe("interactive OAuth cancellation", () => {
 		const showError = vi.fn();
 		const editor = {};
 		const harness = {
-			session: {
-				model: undefined,
-				modelRegistry: { authStorage: { getOAuthProviders: () => [{ id: "corp-oauth", usesCallbackServer: false }] } },
-			},
+			session: { model: undefined },
 			runtimeHost: { loginOAuthProvider: async () => ({ modelsRefreshed: false }) },
 			ui: { setFocus: vi.fn(), requestRender: vi.fn() },
 			editorContainer: { clear: vi.fn(), addChild: vi.fn() },
@@ -144,10 +130,7 @@ describe("interactive OAuth cancellation", () => {
 		const showError = vi.fn();
 		const editor = {};
 		const harness = {
-			session: {
-				model: undefined,
-				modelRegistry: { authStorage: { getOAuthProviders: () => [{ id: "kimi-coding", usesCallbackServer: false }] } },
-			},
+			session: { model: undefined },
 			runtimeHost: { loginOAuthProvider: async () => { throw new Error("Kimi Code login was denied."); } },
 			ui: { setFocus: vi.fn(), requestRender: vi.fn() },
 			editorContainer: { clear: vi.fn(), addChild: vi.fn() },
@@ -180,7 +163,7 @@ describe("post-login model refresh", () => {
 			const setupAutocompleteProvider = vi.fn();
 			const showStatus = vi.fn();
 			const harness = {
-				session: { modelRegistry: { refresh, getAvailable }, setModel },
+				session: { modelRuntime: { refresh, getAvailableSnapshot: getAvailable }, setModel },
 				updateAvailableProviderCount,
 				setupAutocompleteProvider,
 				footer: { invalidate: vi.fn() },
@@ -202,6 +185,7 @@ describe("post-login model refresh", () => {
 			await complete.call(harness, scenario.provider, scenario.name, scenario.authType, loggedOutModel);
 
 			expect(refresh).toHaveBeenCalledOnce();
+			expect(refresh).toHaveBeenCalledWith();
 			expect(setModel).toHaveBeenCalledWith(model);
 			expect(refresh.mock.invocationCallOrder[0]).toBeLessThan(getAvailable.mock.invocationCallOrder[0]!);
 			expect(setModel.mock.invocationCallOrder[0]).toBeLessThan(updateAvailableProviderCount.mock.invocationCallOrder[0]!);
@@ -215,12 +199,10 @@ describe("post-login model refresh", () => {
 	]) {
 		it(`completes login when the post-login model refresh ${outcome.label}`, async () => {
 			const showStatus = vi.fn();
+			const refresh = vi.fn(async () => outcome.result);
 			const harness = {
 				session: {
-					modelRegistry: {
-						refresh: async () => outcome.result,
-						getAvailable: () => [],
-					},
+					modelRuntime: { refresh, getAvailableSnapshot: () => [] },
 				},
 				updateAvailableProviderCount: vi.fn(),
 				setupAutocompleteProvider: vi.fn(),

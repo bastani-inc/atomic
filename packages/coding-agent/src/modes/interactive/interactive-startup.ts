@@ -253,7 +253,7 @@ InteractiveModeBase.prototype.run = async function(this: InteractiveModeBase): P
       );
     }
 
-    const modelsJsonError = this.session.modelRegistry.getError();
+    const modelsJsonError = this.session.modelRuntime.getError();
     if (modelsJsonError) {
       this.showError(`models.json error: ${modelsJsonError}`);
     }

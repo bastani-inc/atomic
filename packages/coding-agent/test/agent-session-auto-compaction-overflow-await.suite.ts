@@ -6,7 +6,7 @@ import { type AssistantMessage, getModel } from "@earendil-works/pi-ai/compat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import { ModelRegistry } from "../src/core/model-registry.ts";
+import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createTestResourceLoader } from "./utilities.ts";
@@ -39,7 +39,7 @@ describe("AgentSession overflow auto-compaction continuation", () => {
 	let session: AgentSession;
 	let tempDir: string;
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		tempDir = join(tmpdir(), `pi-overflow-continuation-${Date.now()}`);
 		mkdirSync(tempDir, { recursive: true });
 		vi.useFakeTimers();
@@ -47,13 +47,13 @@ describe("AgentSession overflow auto-compaction continuation", () => {
 		const model = getModel("anthropic", "claude-sonnet-4-5")!;
 		const agent = new Agent({ initialState: { model, systemPrompt: "Test", tools: [] } });
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
 		session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
 			settingsManager: SettingsManager.create(tempDir, tempDir),
 			cwd: tempDir,
-			modelRegistry: ModelRegistry.create(authStorage, tempDir),
+			modelRuntime: await ModelRuntime.create({ credentials: authStorage, modelsPath: null, allowModelNetwork: false }),
 			resourceLoader: createTestResourceLoader(),
 		});
 	});

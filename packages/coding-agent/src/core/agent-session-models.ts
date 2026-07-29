@@ -10,26 +10,26 @@ import { THINKING_LEVELS, type ModelCycleResult } from "./agent-session-types.ts
 export async function _getRequiredRequestAuth(this: AgentSession, model: Model<Api>): Promise<{
 	apiKey?: string;
 	headers?: ProviderHeaders;
-	baseUrl?: string;
+	env?: Record<string, string>;
 }> {
-	const result = await this._modelRegistry.getApiKeyAndHeaders(model);
-	if (!result.ok) {
-		if (result.error.startsWith("No API key found")) {
+	let result;
+	try {
+		result = await this._modelRuntime.getAuth(model);
+	} catch (error) {
+		const cause = error instanceof Error ? error.cause : undefined;
+		if (cause instanceof Error && cause.message === "authHeader requires a resolved API key") {
 			throw new Error(formatNoApiKeyFoundMessage(model.provider));
 		}
-		throw new Error(result.error);
+		throw error;
 	}
-	if (result.apiKey || result.headers) {
-		return { apiKey: result.apiKey, headers: result.headers, baseUrl: result.baseUrl };
+	if (result && (result.auth.apiKey || result.auth.headers)) {
+		const headers = result.auth.headers
+			? Object.fromEntries(Object.entries(result.auth.headers).filter((entry): entry is [string, string] => entry[1] !== null))
+			: undefined;
+		return { apiKey: result.auth.apiKey, headers, env: result.env };
 	}
-
-	const isOAuth = this._modelRegistry.isUsingOAuth(model);
-	if (isOAuth) {
-		throw new Error(
-			`Authentication failed for "${model.provider}". ` +
-				`Credentials may have expired or network is unavailable. ` +
-				`Run '/login ${model.provider}' to re-authenticate.`,
-		);
+	if (this._modelRuntime.isUsingOAuth(model.provider)) {
+		throw new Error(`Authentication failed for "${model.provider}". Credentials may have expired or network is unavailable. Run '/login ${model.provider}' to re-authenticate.`);
 	}
 	throw new Error(formatNoApiKeyFoundMessage(model.provider));
 }
@@ -79,7 +79,7 @@ export async function _emitModelSelect(this: AgentSession,
  */
 
 export async function setModel(this: AgentSession, model: Model<Api>): Promise<void> {
-	if (!this._modelRegistry.hasConfiguredAuth(model)) {
+	if (!this._modelRuntime.hasConfiguredAuth(model.provider)) {
 		throw new Error(`No API key for ${model.provider}/${model.id}`);
 	}
 
@@ -114,7 +114,7 @@ export async function cycleModel(this: AgentSession, direction: "forward" | "bac
 
 
 export async function _cycleScopedModel(this: AgentSession, direction: "forward" | "backward"): Promise<ModelCycleResult | undefined> {
-	const scopedModels = this._scopedModels.filter((scoped) => this._modelRegistry.hasConfiguredAuth(scoped.model));
+	const scopedModels = this._scopedModels.filter((scoped) => this._modelRuntime.hasConfiguredAuth(scoped.model.provider));
 	if (scopedModels.length <= 1) return undefined;
 
 	const currentModel = this.model;
@@ -147,7 +147,7 @@ export async function _cycleScopedModel(this: AgentSession, direction: "forward"
 
 
 export async function _cycleAvailableModel(this: AgentSession, direction: "forward" | "backward"): Promise<ModelCycleResult | undefined> {
-	const availableModels = await this._modelRegistry.getAvailable();
+	const availableModels = await this._modelRuntime.getAvailableSnapshot();
 	if (availableModels.length <= 1) return undefined;
 
 	const currentModel = this.model;

@@ -18,7 +18,7 @@ import { Type } from "typebox";
 import { AgentSession, type AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { convertToLlm } from "../../packages/coding-agent/src/core/messages.js";
-import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
+import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { RANGE_PLANNER_SYSTEM_PROMPT } from "../../packages/coding-agent/src/core/compaction/range-planner.js";
@@ -102,8 +102,10 @@ test("post-tool preflight: every model fails, the turn still completes on the fr
 		return realContinue(...args);
 	}) as typeof agent.continue;
 
-	const authStorage = AuthStorage.inMemory();
-	for (const provider of ["anthropic", "openai", "google"]) authStorage.setRuntimeApiKey(provider, `${provider}-key`);
+	const authStorage = AuthStorage.inMemory(Object.fromEntries(
+		["anthropic", "openai", "google"].map((provider) => [provider, { type: "api_key" as const, key: `${provider}-key` }]),
+	));
+	const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null });
 	const settingsManager = SettingsManager.inMemory();
 	settingsManager.applyOverrides({
 		retry: { enabled: false, maxRetries: 0, baseDelayMs: 0 },
@@ -114,7 +116,7 @@ test("post-tool preflight: every model fails, the turn still completes on the fr
 		sessionManager: manager,
 		settingsManager,
 		cwd: process.cwd(),
-		modelRegistry: ModelRegistry.create(authStorage),
+		modelRuntime,
 		resourceLoader: createTestResourceLoader(),
 		fallbackModels: ["openai/gpt-5.1", "google/gemini-2.5-pro"],
 		baseToolsOverride: { large_result: largeResultTool },

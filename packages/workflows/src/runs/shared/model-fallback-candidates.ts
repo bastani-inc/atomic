@@ -122,7 +122,7 @@ function resolveStringModel(
     // Trust an explicit provider/model id even when the live catalog does not
     // list it, mirroring the subagent resolver (resolveModelCandidate's
     // `if (model.includes("/")) return model;`). The workflow catalog
-    // (ctx.modelRegistry.getAvailable()) can legitimately be a partial view
+    // (ctx.modelRuntime.getAvailable()) can legitimately be a partial view
     // (auth/provider gating, freshly added models), so treating an absent
     // fully-qualified id as a hard failure made buildModelCandidates throw and
     // collapse the whole ordered candidate list down to just the user's

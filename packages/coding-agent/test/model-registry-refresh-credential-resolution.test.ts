@@ -1,7 +1,7 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { ModelRegistry } from "../src/core/model-registry.ts";
+import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
 
 describeModelRegistry((context) => {
@@ -11,7 +11,7 @@ describeModelRegistry((context) => {
 			const original = process.env[envVarName];
 			process.env[envVarName] = "environment-catalog-key";
 			try {
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 				let observedKey: string | undefined;
 				registry.registerProvider("environment-catalog", {
 					apiKey: `$${envVarName}`,
@@ -32,7 +32,7 @@ describeModelRegistry((context) => {
 		test("resolves configured command-backed API keys", async () => {
 			const tokenFile = join(context.tempDir, "catalog-token");
 			writeFileSync(tokenFile, "command-catalog-key");
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 			let observedKey: string | undefined;
 			registry.registerProvider("command-catalog", {
 				apiKey: `!sh -c 'cat "${context.toShPath(tokenFile)}"'`,
@@ -53,12 +53,15 @@ describeModelRegistry((context) => {
 			const tokenFile = join(context.tempDir, "stored-catalog-token");
 			writeFileSync(tokenFile, "stored-command-key");
 			try {
-				context.authStorage.set("stored-environment", { type: "api_key", key: `$${envVarName}` });
-				context.authStorage.set("stored-command", {
+				await context.authStorage.modify("stored-environment", async () => ({
+					type: "api_key",
+					key: `$${envVarName}`,
+				}));
+				await context.authStorage.modify("stored-command", async () => ({
 					type: "api_key",
 					key: `!sh -c 'cat "${context.toShPath(tokenFile)}"'`,
-				});
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				}));
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 				const observed = new Map<string, string | undefined>();
 				for (const providerId of ["stored-environment", "stored-command"]) {
 					registry.registerProvider(providerId, {
@@ -81,9 +84,12 @@ describeModelRegistry((context) => {
 		});
 
 		test("keeps runtime over stored over configured key precedence", async () => {
-			context.authStorage.set("credential-precedence", { type: "api_key", key: "stored-key" });
-			context.authStorage.setRuntimeApiKey("credential-precedence", "runtime-key");
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			await context.authStorage.modify("credential-precedence", async () => ({
+				type: "api_key",
+				key: "stored-key",
+			}));
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
+			await getModelRuntime(registry).setRuntimeApiKey("credential-precedence", "runtime-key");
 			let observedKey: string | undefined;
 			registry.registerProvider("credential-precedence", {
 				apiKey: "configured-key",
@@ -95,13 +101,16 @@ describeModelRegistry((context) => {
 
 			await registry.refresh();
 			expect(observedKey).toBe("runtime-key");
-			expect(context.authStorage.get("credential-precedence")).toEqual({ type: "api_key", key: "stored-key" });
+			expect(await context.authStorage.read("credential-precedence")).toEqual({ type: "api_key", key: "stored-key" });
 		});
 
 		test("does not pass unresolved stored API-key expressions literally", async () => {
-			context.authStorage.set("missing-expression", { type: "api_key", key: "$ATOMIC_MISSING_CATALOG_KEY" });
+			await context.authStorage.modify("missing-expression", async () => ({
+				type: "api_key",
+				key: "$ATOMIC_MISSING_CATALOG_KEY",
+			}));
 			delete process.env.ATOMIC_MISSING_CATALOG_KEY;
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 			let observedKey: string | undefined;
 			registry.registerProvider("missing-expression", {
 				refreshModels: async ({ credential }) => {

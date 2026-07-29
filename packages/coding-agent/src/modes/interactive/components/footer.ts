@@ -114,7 +114,7 @@ function getUsageLine(
 
   // Kimi Coding is subscription-backed despite using API-key authentication.
   const usingSubscription = state.model
-    ? state.model.provider === "kimi-coding" || session.modelRegistry.isUsingOAuth(state.model)
+    ? state.model.provider === "kimi-coding" || session.modelRuntime.isUsingOAuth(state.model.provider)
     : false;
   if (totals.cost || usingSubscription) {
     usageParts.push(

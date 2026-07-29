@@ -43,7 +43,7 @@ function configureDeferredGateMode(mode: InteractiveMode): void {
 				reload: async () => {},
 				resourceLoader: { getThemes: () => ({ themes: [] }) },
 				extensionRunner: {},
-				modelRegistry: { getError: () => undefined },
+				modelRuntime: { getError: () => undefined },
 			},
 		},
 		options: { configurable: true, value: {} },

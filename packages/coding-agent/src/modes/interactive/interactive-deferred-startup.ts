@@ -65,7 +65,7 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function(this: Int
       // Keep the subscription warning after the RESOURCES disclosure.
       void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
       this.showStartupNoticesIfNeeded(this.startupNoticesContainer);
-      const modelsJsonError = this.session.modelRegistry.getError();
+      const modelsJsonError = this.session.modelRuntime.getError();
       if (modelsJsonError) {
         this.showError(`models.json error: ${modelsJsonError}`);
       }
@@ -97,7 +97,7 @@ export async function applyDeferredModelScope(mode: InteractiveModeBase): Promis
       return;
     }
 
-    const { scopedModels, diagnostics } = await resolveModelScopeWithDiagnostics(patterns, mode.session.modelRegistry);
+    const { scopedModels, diagnostics } = await resolveModelScopeWithDiagnostics(patterns, mode.session.modelRuntime);
     for (const diagnostic of diagnostics) {
       mode.showWarning(diagnostic.message);
     }
@@ -114,10 +114,10 @@ export async function applyDeferredModelScope(mode: InteractiveModeBase): Promis
 
     const savedProvider = mode.settingsManager.getDefaultProvider();
     const savedModelId = mode.settingsManager.getDefaultModel();
-    const savedModel = savedProvider && savedModelId ? mode.session.modelRegistry.find(savedProvider, savedModelId) : undefined;
+    const savedModel = savedProvider && savedModelId ? mode.session.modelRuntime.getModel(savedProvider, savedModelId) : undefined;
     const preferred = savedModel ? scopedModels.find((scoped) => modelsAreEqual(scoped.model, savedModel)) : undefined;
     const nextScopedModel = preferred ?? scopedModels[0];
-    if (mode.session.modelRegistry.hasConfiguredAuth(nextScopedModel.model)) {
+    if (mode.session.modelRuntime.hasConfiguredAuth(nextScopedModel.model.provider)) {
       await mode.session.setModel(nextScopedModel.model);
       if (nextScopedModel.thinkingLevel && !mode.options.deferredModelScopePreserveThinking) {
         mode.session.setThinkingLevel(nextScopedModel.thinkingLevel);
@@ -135,16 +135,16 @@ InteractiveModeBase.prototype.retryDeferredModelRestore = async function(this: I
     if (!preliminaryFallbackMessage) return;
 
     const savedModel = this.sessionManager.buildSessionContext().model;
-    if (!savedModel && this.session.model && this.session.modelRegistry.hasConfiguredAuth(this.session.model)) {
+    if (!savedModel && this.session.model && this.session.modelRuntime.hasConfiguredAuth(this.session.model.provider)) {
       return;
     }
     if (savedModel) {
       const restoredModel = await resolveRestoredModelReference(
         savedModel.provider,
         savedModel.modelId,
-        this.session.modelRegistry,
+        this.session.modelRuntime,
       );
-      if (restoredModel && this.session.modelRegistry.hasConfiguredAuth(restoredModel)) {
+      if (restoredModel && this.session.modelRuntime.hasConfiguredAuth(restoredModel.provider)) {
         await this.session.setModel(restoredModel);
         return;
       }
@@ -161,7 +161,7 @@ InteractiveModeBase.prototype.retryDeferredModelRestore = async function(this: I
         defaultProvider,
         defaultModelId,
         defaultThinkingLevel: this.settingsManager.getDefaultThinkingLevel(),
-        modelRegistry: this.session.modelRegistry,
+        modelRuntime: this.session.modelRuntime,
       });
       if (result.model) {
         await this.session.setModel(result.model);

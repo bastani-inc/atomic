@@ -13,6 +13,7 @@ import {
 } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.ts";
 import type { AgentSessionReloadOptions } from "../../packages/coding-agent/src/core/agent-session-types.ts";
+import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.ts";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
 import type { ExtensionFactory } from "../../packages/coding-agent/src/core/extensions/types.ts";
 import { keyText } from "../../packages/coding-agent/src/modes/interactive/components/keybinding-hints.ts";
@@ -55,13 +56,13 @@ function writeExpandBinding(agentDir: string, binding: string): void {
 async function createMode(agentDir: string, extensionFactory?: ExtensionFactory): Promise<InteractiveMode> {
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-local-mode-cwd-"));
 	const faux = registerFauxProvider();
-	const authStorage = AuthStorage.inMemory();
-	authStorage.setRuntimeApiKey(faux.getModel().provider, "faux-key");
+	const authStorage = AuthStorage.inMemory({ [faux.getModel().provider]: { type: "api_key", key: "faux-key" } });
+	const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null });
 	const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd: runtimeCwd, agentDir: runtimeAgentDir, sessionManager, sessionStartEvent }) => {
 		const services = await createAgentSessionServices({
 			cwd: runtimeCwd,
 			agentDir: runtimeAgentDir,
-			authStorage,
+			modelRuntime,
 			resourceLoaderOptions: {
 				extensionFactories: extensionFactory ? [extensionFactory] : [],
 				noSkills: true,

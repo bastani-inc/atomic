@@ -35,7 +35,7 @@ export class StageSessionController {
   private candidatesPromise: Promise<WorkflowResolvedModelCandidate[]> | undefined;
   private activeCandidateIndex: number | undefined;
   private selectedModel: string | undefined;
-  private sharedModelRegistry: CreateAgentSessionOptions["modelRegistry"];
+  private sharedModelRuntime: CreateAgentSessionOptions["modelRuntime"];
   private sharedOrchestrationContext: CreateAgentSessionOptions["orchestrationContext"];
   private resumeCurrentSession = false;
   private readonly modelAttempts: WorkflowModelAttempt[] = [];
@@ -299,7 +299,7 @@ export class StageSessionController {
       candidate,
       restoreSavedModel: resumeOptions?.restoreSavedModel,
       reattachSessionFile: this.reattachSessionFile,
-      sharedModelRegistry: this.sharedModelRegistry,
+      sharedModelRuntime: this.sharedModelRuntime,
     });
     const created = this.opts.adapters.agentSession
       ? await this.opts.adapters.agentSession.create(
@@ -325,9 +325,9 @@ export class StageSessionController {
     if (this.generationSealed) result.session.sealWorkflowStageGeneration?.();
     this.replacement.adopt(result.session);
     this.session = result.session;
-    if (this.sharedModelRegistry === undefined) {
-      const withRegistry = result.session as Partial<Pick<AgentSession, "modelRegistry">>;
-      if (withRegistry.modelRegistry !== undefined) this.sharedModelRegistry = withRegistry.modelRegistry;
+    if (this.sharedModelRuntime === undefined) {
+      const withRegistry = result.session as Partial<Pick<AgentSession, "modelRuntime">>;
+      if (withRegistry.modelRuntime !== undefined) this.sharedModelRuntime = withRegistry.modelRuntime;
     }
     this.sessionSettingsManager = result.settingsManager ?? result.session.settingsManager;
     if (this.pendingThinkingLevel !== undefined) result.session.setThinkingLevel(this.pendingThinkingLevel);

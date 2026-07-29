@@ -1,246 +1,217 @@
-import { afterEach, describe, expect, test } from "vitest";
-import { AuthStorage, type AuthStorageBackend } from "../src/core/auth-storage.ts";
-import { registerLegacyOAuthProvider, resetLegacyOAuthProviders } from "../src/core/oauth-provider-bridge.ts";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createModels, type Provider } from "@earendil-works/pi-ai";
+import lockfile from "proper-lockfile";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { AuthStorage } from "../src/core/auth-storage.ts";
 
-class ControllableAuthBackend implements AuthStorageBackend {
-	value: string | undefined;
-	writeError: Error | undefined;
+describe("AuthStorage", () => {
+	let tempDir: string;
+	let authJsonPath: string;
 
-	constructor(value?: string) {
-		this.value = value;
+	beforeEach(() => {
+		tempDir = join(tmpdir(), `pi-test-auth-storage-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		mkdirSync(tempDir, { recursive: true });
+		authJsonPath = join(tempDir, "auth.json");
+	});
+
+	afterEach(() => {
+		if (existsSync(tempDir)) rmSync(tempDir, { recursive: true });
+		vi.restoreAllMocks();
+	});
+
+	function writeAuthJson(data: Record<string, unknown>): void {
+		writeFileSync(authJsonPath, JSON.stringify(data));
 	}
 
-	read(): string | undefined {
-		return this.value;
-	}
-
-	withLock<T>(fn: Parameters<AuthStorageBackend["withLock"]>[0]): T {
-		const { result, next } = fn(this.value);
-		if (next !== undefined) {
-			if (this.writeError) throw this.writeError;
-			this.value = next;
+	test("reads and resolves stored API-key credentials", async () => {
+		const original = process.env.TEST_AUTH_STORAGE_KEY;
+		process.env.TEST_AUTH_STORAGE_KEY = "environment-key";
+		try {
+			writeAuthJson({ anthropic: { type: "api_key", key: "$TEST_AUTH_STORAGE_KEY" } });
+			const storage = AuthStorage.create(authJsonPath);
+			expect(await storage.read("anthropic")).toEqual({ type: "api_key", key: "environment-key" });
+		} finally {
+			if (original === undefined) delete process.env.TEST_AUTH_STORAGE_KEY;
+			else process.env.TEST_AUTH_STORAGE_KEY = original;
 		}
-		return result as T;
-	}
-
-	async withLockAsync<T>(fn: Parameters<AuthStorageBackend["withLockAsync"]>[0]): Promise<T> {
-		const { result, next } = await fn(this.value);
-		if (next !== undefined) {
-			if (this.writeError) throw this.writeError;
-			this.value = next;
-		}
-		return result as T;
-	}
-}
-
-afterEach(() => resetLegacyOAuthProviders());
-
-describe("AuthStorage persistence failures", () => {
-	test("surfaces malformed storage and preserves in-memory credentials", () => {
-		const backend = new ControllableAuthBackend(
-			JSON.stringify({ anthropic: { type: "api_key", key: "existing" } }),
-		);
-		const storage = AuthStorage.fromStorage(backend);
-		backend.value = "{invalid-json";
-		storage.reload();
-
-		expect(() => storage.set("openai", { type: "api_key", key: "new" })).toThrow();
-		expect(storage.get("anthropic")).toEqual({ type: "api_key", key: "existing" });
-		expect(storage.get("openai")).toBeUndefined();
-		expect(backend.value).toBe("{invalid-json");
 	});
 
-	test("surfaces write failures without mutating in-memory credentials", () => {
-		const backend = new ControllableAuthBackend(
-			JSON.stringify({ anthropic: { type: "api_key", key: "existing" } }),
-		);
-		const storage = AuthStorage.fromStorage(backend);
-		backend.writeError = new Error("disk full");
-
-		expect(() => storage.set("anthropic", { type: "api_key", key: "replacement" })).toThrow("disk full");
-		expect(storage.get("anthropic")).toEqual({ type: "api_key", key: "existing" });
-		expect(() => storage.remove("anthropic")).toThrow("disk full");
-		expect(storage.get("anthropic")).toEqual({ type: "api_key", key: "existing" });
-		expect(JSON.parse(backend.value ?? "{}")).toEqual({ anthropic: { type: "api_key", key: "existing" } });
-		expect(() => storage.logout("anthropic")).toThrow("disk full");
-		expect(storage.get("anthropic")).toEqual({ type: "api_key", key: "existing" });
+	test("resolves command-backed API-key credentials", async () => {
+		writeAuthJson({ anthropic: { type: "api_key", key: "!printf 'command-key'" } });
+		const storage = AuthStorage.create(authJsonPath);
+		expect(await storage.read("anthropic")).toEqual({ type: "api_key", key: "command-key" });
 	});
 
-	test("credential adapter keeps failed writes transactional", async () => {
-		const backend = new ControllableAuthBackend(
-			JSON.stringify({ anthropic: { type: "api_key", key: "existing" } }),
-		);
-		const storage = AuthStorage.fromStorage(backend);
-		backend.writeError = new Error("disk full");
-
-		await expect(
-			storage.asCredentialStore().modify("anthropic", async () => ({ type: "api_key", key: "replacement" })),
-		).rejects.toThrow("disk full");
-		expect(storage.get("anthropic")).toEqual({ type: "api_key", key: "existing" });
+	test("returns OAuth credentials unchanged", async () => {
+		const credential = {
+			type: "oauth" as const,
+			access: "access-token",
+			refresh: "refresh-token",
+			expires: Date.now() + 60_000,
+		};
+		const storage = AuthStorage.inMemory({ anthropic: credential });
+		expect(await storage.read("anthropic")).toEqual(credential);
 	});
 
-	test("OAuth login persistence failure preserves the previously committed credential", async () => {
-		const backend = new ControllableAuthBackend(JSON.stringify({
-			openrouter: { type: "api_key", key: "previous-key" },
-		}));
-		const storage = AuthStorage.fromStorage(backend);
-		registerLegacyOAuthProvider("openrouter", {
-			name: "OpenRouter test",
-			login: async () => ({ refresh: "", access: "minted-key", expires: Number.MAX_SAFE_INTEGER }),
-			refreshToken: async (credentials) => credentials,
-			getApiKey: (credentials) => credentials.access,
-		});
-		backend.writeError = new Error("auth.json is read-only");
-
-		await expect(storage.login("openrouter", {
-			onAuth: () => {},
-			onDeviceCode: () => {},
-			onPrompt: async () => "",
-			onSelect: async () => undefined,
-		})).rejects.toThrow("auth.json is read-only");
-		expect(storage.get("openrouter")).toEqual({ type: "api_key", key: "previous-key" });
-	});
-
-	test("cancelled OAuth login preserves the previously committed credential", async () => {
-		const storage = AuthStorage.inMemory({
-			"kimi-coding": { type: "api_key", key: "previous-key" },
-		});
-		registerLegacyOAuthProvider("kimi-coding", {
-			name: "Kimi Code test",
-			login: async () => { throw new Error("Login cancelled"); },
-			refreshToken: async (credentials) => credentials,
-			getApiKey: (credentials) => credentials.access,
-		});
-
-		await expect(storage.login("kimi-coding", {
-			onAuth: () => {},
-			onDeviceCode: () => {},
-			onPrompt: async () => "",
-			onSelect: async () => undefined,
-		})).rejects.toThrow("Login cancelled");
-		expect(storage.get("kimi-coding")).toEqual({ type: "api_key", key: "previous-key" });
-	});
-
-	test("failed async logout keeps the persisted credential in memory", async () => {
-		const backend = new ControllableAuthBackend(
-			JSON.stringify({ anthropic: { type: "api_key", key: "existing" } }),
-		);
-		const storage = AuthStorage.fromStorage(backend);
-		backend.writeError = new Error("disk full");
-
-		await expect(storage.logoutAsync("anthropic")).rejects.toThrow("disk full");
-		expect(storage.get("anthropic")).toEqual({ type: "api_key", key: "existing" });
-	});
-
-	test("credential adapter serializes delete behind an in-flight modify", async () => {
-		const storage = AuthStorage.inMemory({ anthropic: { type: "api_key", key: "existing" } });
-		const credentials = storage.asCredentialStore();
-		let release!: () => void;
-		const gate = new Promise<void>((resolve) => { release = resolve; });
-		const modify = credentials.modify("anthropic", async () => {
-			await gate;
-			return { type: "api_key", key: "replacement" };
-		});
-		const deletion = credentials.delete("anthropic");
-
-		expect(storage.get("anthropic")).toEqual({ type: "api_key", key: "existing" });
-		release();
-		await Promise.all([modify, deletion]);
-		expect(storage.get("anthropic")).toBeUndefined();
-	});
-
-	test("serialized logout wins over an in-flight legacy OAuth refresh", async () => {
-		let release!: () => void;
-		const gate = new Promise<void>((resolve) => { release = resolve; });
-		registerLegacyOAuthProvider("legacy", {
-			name: "Legacy",
-			login: async () => ({ refresh: "r", access: "a", expires: 1 }),
-			refreshToken: async () => {
-				await gate;
-				return { refresh: "r2", access: "a2", expires: Date.now() + 60_000 };
+	test("credential-scoped env takes precedence and remains inspectable", async () => {
+		writeAuthJson({
+			anthropic: {
+				type: "api_key",
+				key: "$SCOPED_KEY",
+				env: { SCOPED_KEY: "scoped-value", REGION: "test-region" },
 			},
-			getApiKey: (credentials) => credentials.access,
 		});
-		const storage = AuthStorage.inMemory({
-			legacy: { type: "oauth", refresh: "r", access: "a", expires: 0 },
+		const storage = AuthStorage.create(authJsonPath);
+		expect(await storage.read("anthropic")).toMatchObject({
+			key: "scoped-value",
+			env: { SCOPED_KEY: "scoped-value", REGION: "test-region" },
 		});
-		const refresh = storage.getModelAuth("legacy");
-		const logout = storage.logoutAsync("legacy");
-
-		release();
-		await Promise.all([refresh, logout]);
-
-		expect(storage.get("legacy")).toBeUndefined();
 	});
 
-	test("login is serialized after an in-flight legacy OAuth refresh", async () => {
-		let release!: () => void;
-		const gate = new Promise<void>((resolve) => { release = resolve; });
-		registerLegacyOAuthProvider("login-race", {
-			name: "Login Race",
-			login: async () => ({ refresh: "login-r", access: "login-a", expires: Date.now() + 60_000 }),
-			refreshToken: async () => {
-				await gate;
-				return { refresh: "refresh-r", access: "refresh-a", expires: Date.now() + 60_000 };
+	test("modify persists a credential while preserving unrelated external edits", async () => {
+		writeAuthJson({ anthropic: { type: "api_key", key: "old" } });
+		const storage = AuthStorage.create(authJsonPath);
+		writeAuthJson({
+			anthropic: { type: "api_key", key: "old" },
+			openai: { type: "api_key", key: "external" },
+		});
+
+		await storage.modify("anthropic", async () => ({ type: "api_key", key: "new" }));
+
+		expect(JSON.parse(readFileSync(authJsonPath, "utf8"))).toEqual({
+			anthropic: { type: "api_key", key: "new" },
+			openai: { type: "api_key", key: "external" },
+		});
+	});
+
+	test("modify with undefined leaves the current credential unchanged", async () => {
+		writeAuthJson({ anthropic: { type: "api_key", key: "stored" } });
+		const storage = AuthStorage.create(authJsonPath);
+		expect(await storage.modify("anthropic", async () => undefined)).toEqual({ type: "api_key", key: "stored" });
+		expect(await storage.read("anthropic")).toEqual({ type: "api_key", key: "stored" });
+	});
+
+	test("serializes concurrent modifications", async () => {
+		writeAuthJson({});
+		const first = AuthStorage.create(authJsonPath);
+		const second = AuthStorage.create(authJsonPath);
+		await Promise.all([
+			first.modify("anthropic", async () => ({ type: "api_key", key: "anthropic-key" })),
+			second.modify("openai", async () => ({ type: "api_key", key: "openai-key" })),
+		]);
+		expect(JSON.parse(readFileSync(authJsonPath, "utf8"))).toEqual({
+			anthropic: { type: "api_key", key: "anthropic-key" },
+			openai: { type: "api_key", key: "openai-key" },
+		});
+	});
+
+	test("delete removes one credential while preserving others", async () => {
+		writeAuthJson({
+			anthropic: { type: "api_key", key: "anthropic-key" },
+			openai: { type: "api_key", key: "openai-key" },
+		});
+		const storage = AuthStorage.create(authJsonPath);
+		writeAuthJson({
+			anthropic: { type: "api_key", key: "anthropic-key" },
+			openai: { type: "api_key", key: "openai-key" },
+			google: { type: "api_key", key: "external-key" },
+		});
+		await storage.delete("anthropic");
+		await expect(storage.list()).resolves.toEqual([
+			{ providerId: "openai", type: "api_key" },
+			{ providerId: "google", type: "api_key" },
+		]);
+		expect(await storage.read("anthropic")).toBeUndefined();
+		expect(await storage.read("openai")).toEqual({ type: "api_key", key: "openai-key" });
+		expect(await storage.read("google")).toEqual({ type: "api_key", key: "external-key" });
+	});
+
+	test("in-memory storage implements the same credential-store behavior", async () => {
+		const storage = AuthStorage.inMemory({ anthropic: { type: "api_key", key: "initial" } });
+		expect(await storage.read("anthropic")).toEqual({ type: "api_key", key: "initial" });
+		await storage.modify("anthropic", async () => ({ type: "api_key", key: "updated" }));
+		expect(await storage.read("anthropic")).toEqual({ type: "api_key", key: "updated" });
+		await storage.delete("anthropic");
+		await expect(storage.list()).resolves.toEqual([]);
+	});
+
+	test("does not write after lock acquisition failure and recovers on retry", async () => {
+		writeAuthJson({ anthropic: { type: "api_key", key: "stored" } });
+		const storage = AuthStorage.create(authJsonPath);
+		const lockSpy = vi.spyOn(lockfile, "lock").mockRejectedValueOnce(new Error("lock unavailable"));
+
+		await expect(storage.modify("openai", async () => ({ type: "api_key", key: "new" }))).rejects.toThrow(
+			"lock unavailable",
+		);
+		expect(JSON.parse(readFileSync(authJsonPath, "utf8"))).toEqual({
+			anthropic: { type: "api_key", key: "stored" },
+		});
+
+		lockSpy.mockRestore();
+		await storage.modify("openai", async () => ({ type: "api_key", key: "new" }));
+		expect(JSON.parse(readFileSync(authJsonPath, "utf8"))).toEqual({
+			anthropic: { type: "api_key", key: "stored" },
+			openai: { type: "api_key", key: "new" },
+		});
+	});
+
+	test("surfaces a compromised OAuth refresh lock and allows a later retry", async () => {
+		const providerId = "oauth-provider";
+		writeAuthJson({
+			[providerId]: {
+				type: "oauth",
+				access: "expired-access",
+				refresh: "refresh-token",
+				expires: 0,
 			},
-			getApiKey: (credentials) => credentials.access,
 		});
-		const storage = AuthStorage.inMemory({
-			"login-race": { type: "oauth", refresh: "old-r", access: "old-a", expires: 0 },
-		});
-		const refresh = storage.getModelAuth("login-race");
-		const login = storage.login("login-race", {
-			onAuth: () => {},
-			onDeviceCode: () => {},
-			onPrompt: async () => "",
-			onSelect: async () => undefined,
-		});
-
-		release();
-		await Promise.all([refresh, login]);
-
-		expect(storage.get("login-race")).toMatchObject({ access: "login-a", refresh: "login-r" });
-	});
-
-	test("legacy synchronous logout is serialized behind an in-flight OAuth refresh", async () => {
-		let release!: () => void;
-		const gate = new Promise<void>((resolve) => { release = resolve; });
-		let markEntered!: () => void;
-		const entered = new Promise<void>((resolve) => { markEntered = resolve; });
-		registerLegacyOAuthProvider("legacy-sync", {
-			name: "Legacy Sync",
-			login: async () => ({ refresh: "r", access: "a", expires: 1 }),
-			refreshToken: async () => {
-				markEntered();
-				await gate;
-				return { refresh: "r2", access: "a2", expires: Date.now() + 60_000 };
+		const storage = AuthStorage.create(authJsonPath);
+		const provider: Provider = {
+			id: providerId,
+			name: "OAuth Provider",
+			auth: {
+				oauth: {
+					name: "OAuth",
+					login: async () => {
+						throw new Error("not used");
+					},
+					refresh: async (credential) => ({
+						...credential,
+						access: "refreshed-access",
+						expires: Date.now() + 60_000,
+					}),
+					toAuth: async (credential) => ({ apiKey: credential.access }),
+				},
 			},
-			getApiKey: (credentials) => credentials.access,
-		});
-		const storage = AuthStorage.inMemory({
-			"legacy-sync": { type: "oauth", refresh: "r", access: "a", expires: 0 },
-		});
-		const refresh = storage.getModelAuth("legacy-sync");
-		await entered;
+			getModels: () => [],
+			stream: () => {
+				throw new Error("not used");
+			},
+			streamSimple: () => {
+				throw new Error("not used");
+			},
+		};
+		const models = createModels({ credentials: storage });
+		models.setProvider(provider);
 
-		storage.logout("legacy-sync");
-		expect(storage.get("legacy-sync")).toBeUndefined();
-		release();
-		await refresh;
+		const realLock = lockfile.lock.bind(lockfile);
+		const lockSpy = vi.spyOn(lockfile, "lock").mockImplementationOnce(async (file, options) => {
+			options?.onCompromised?.(new Error("lock compromised"));
+			return realLock(file, options);
+		});
+		await expect(models.getAuth(providerId)).rejects.toMatchObject({ code: "auth" });
 
-		expect(storage.get("legacy-sync")).toBeUndefined();
+		lockSpy.mockRestore();
+		await expect(models.getAuth(providerId)).resolves.toMatchObject({ auth: { apiKey: "refreshed-access" } });
 	});
 
-	test("recovers after the credential snapshot is repaired", () => {
-		const backend = new ControllableAuthBackend("{invalid-json");
-		const storage = AuthStorage.fromStorage(backend);
-		expect(storage.getLoadError()).toBeInstanceOf(Error);
-
-		backend.value = JSON.stringify({ anthropic: { type: "api_key", key: "existing" } });
-		storage.set("openai", { type: "api_key", key: "new" });
-
-		expect(storage.getLoadError()).toBeNull();
-		expect(storage.get("anthropic")).toEqual({ type: "api_key", key: "existing" });
-		expect(storage.get("openai")).toEqual({ type: "api_key", key: "new" });
+	test("does not overwrite malformed auth files", async () => {
+		writeAuthJson({ anthropic: { type: "api_key", key: "stored" } });
+		const storage = AuthStorage.create(authJsonPath);
+		writeFileSync(authJsonPath, "{invalid-json", "utf8");
+		await expect(storage.modify("openai", async () => ({ type: "api_key", key: "new" }))).rejects.toThrow();
+		expect(readFileSync(authJsonPath, "utf8")).toBe("{invalid-json");
 	});
 });

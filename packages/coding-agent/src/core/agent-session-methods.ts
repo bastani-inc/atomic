@@ -19,7 +19,7 @@ import type {
 } from "./extensions/index.ts";
 import type { PathMetadata } from "./package-manager.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
-import type { ModelRegistry } from "./model-registry.ts";
+import type { ModelRuntime } from "./model-runtime.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import type { BranchSummaryEntry, SessionManager } from "./session-manager.js";
@@ -89,7 +89,7 @@ export interface AgentSessionQueuePauseControl {
 
 export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl {
 	readonly orchestrationContext: import("./extensions/index.ts").OrchestrationContext | undefined;
-	readonly modelRegistry: ModelRegistry;
+	readonly modelRuntime: ModelRuntime;
 	readonly state: AgentState;
 	readonly model: Model<Api> | undefined;
 	readonly thinkingLevel: ThinkingLevel;
@@ -260,7 +260,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 
 export interface AgentSessionPublicSurface extends Pick<AgentSessionMethodSurface,
 	| "orchestrationContext"
-	| "modelRegistry"
+	| "modelRuntime"
 	| "state"
 	| "model"
 	| "thinkingLevel"
@@ -399,7 +399,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_extensionShutdownHandler?: () => void;
 	_extensionErrorListener?: ExtensionErrorListener;
 	_extensionErrorUnsubscriber?: () => void;
-	_modelRegistry: ModelRegistry;
+	_modelRuntime: ModelRuntime;
 	_toolRegistry: Map<string, AgentTool>;
 	_toolDefinitions: Map<string, ToolDefinitionEntry>;
 	_toolPromptSnippets: Map<string, string>;

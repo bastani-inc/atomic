@@ -15,13 +15,13 @@ function fakeMode(overrides?: {
 	const mode = {
 		session: {
 			scopedModels: [],
-			modelRegistry: {
+			modelRuntime: {
 				refresh: async (options: { allowNetwork?: boolean } = {}) => {
 					calls.refreshOptions.push(options);
 					if (overrides?.refreshRejects) throw new Error("network refresh failed");
 					return { aborted: false, errors: new Map() };
 				},
-				getAvailable: () => [
+				getAvailableSnapshot: () => [
 					{ provider: "anthropic" },
 					{ provider: "openai" },
 					{ provider: "openai" },

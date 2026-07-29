@@ -1,3 +1,4 @@
+import { ModelRegistry } from "../../core/model-registry.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { type KeyId, type Component, type LoaderIndicatorOptions, type ExtensionContext, type ExtensionRunner, type ExtensionWidgetOptions, Container, matchesKey, Text, TUI, AssistantMessageComponent, keyText, Theme, theme } from "./interactive-mode-deps.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
@@ -16,7 +17,7 @@ InteractiveModeBase.prototype.setupExtensionShortcuts = function(this: Interacti
       hasUI: true,
       cwd: this.sessionManager.getCwd(),
       sessionManager: this.sessionManager,
-      modelRegistry: this.session.modelRegistry,
+      modelRegistry: new ModelRegistry(this.session.modelRuntime),
       model: this.session.model,
       isIdle: () => !this.session.isStreaming,
       isProjectTrusted: () => this.session.settingsManager.isProjectTrusted(),

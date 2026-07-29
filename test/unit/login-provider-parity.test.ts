@@ -4,9 +4,9 @@ import type { TUI } from "@earendil-works/pi-tui";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { defaultModelPerProvider } from "../../packages/coding-agent/src/core/model-resolver-defaults.ts";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.ts";
-import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.ts";
+import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.ts";
 import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "../../packages/coding-agent/src/core/provider-display-names.ts";
-import { createAuthInteraction } from "../../packages/coding-agent/src/core/oauth-provider-bridge.ts";
+import { createAuthInteraction } from "../../packages/coding-agent/src/core/oauth-login.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../../packages/coding-agent/src/core/slash-commands.ts";
 import { LoginDialogComponent } from "../../packages/coding-agent/src/modes/interactive/components/login-dialog.ts";
 import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
@@ -89,24 +89,25 @@ test("every installed builtin provider has a preferred default", () => {
   assert.equal(Object.hasOwn(defaultModelPerProvider, "cursor"), false);
 });
 
-test("stale Cursor authentication cannot restore the removed provider", () => {
+test("stale Cursor authentication cannot restore the removed provider", async () => {
   const authStorage = AuthStorage.inMemory({
     cursor: { type: "api_key", key: "stale-token" },
   });
-  const registry = ModelRegistry.inMemory(authStorage);
+  const runtime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null });
 
-  assert.equal(authStorage.has("cursor"), true);
-  assert.equal(registry.getAll().some((model) => model.provider === "cursor"), false);
+  assert.notEqual(await authStorage.read("cursor"), undefined);
+  assert.equal(runtime.getModels().some((model) => model.provider === "cursor"), false);
   assert.equal(BUILT_IN_PROVIDER_DISPLAY_NAMES.cursor, undefined);
 });
 
-test("logout options ignore credentials for removed providers", () => {
+test("logout options ignore credentials for removed providers", async () => {
   const authStorage = AuthStorage.inMemory({
     anthropic: { type: "api_key", key: "active-token" },
     cursor: { type: "api_key", key: "stale-token" },
   });
+  const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null });
   const context = {
-    session: { modelRegistry: { authStorage, getProviderDisplayName: (id: string) => id } },
+    session: { modelRuntime },
     getLoginProviderOptions: () => [
       { id: "anthropic", name: "Anthropic", authType: "api_key" as const },
     ],

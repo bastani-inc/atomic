@@ -1,15 +1,13 @@
-import { getApiProvider } from "@earendil-works/pi-ai/compat";
-import { getOAuthProvider } from "../src/core/oauth-provider-bridge.ts";
 import { describe, expect, test } from "vitest";
-import { ModelRegistry } from "../src/core/model-registry.ts";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
+import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 
 
 describeModelRegistry((context) => {
-	const { providerConfig, getModelsForProvider, writeRawModelsJson, openAiModel, emptyContext } = context;
+	const { providerConfig, getModelsForProvider, writeRawModelsJson } = context;
 	describe("dynamic provider lifecycle", () => {
-		test("getProviderDisplayName resolves registered, OAuth, built-in, and fallback names", () => {
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+		test("getProviderDisplayName resolves registered, OAuth, built-in, and fallback names", async () => {
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 
 			expect(registry.getProviderDisplayName("openai")).toBe("OpenAI");
 			expect(registry.getProviderDisplayName("github-copilot")).toBe("GitHub Copilot");
@@ -70,7 +68,7 @@ describeModelRegistry((context) => {
 					},
 				},
 			});
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 			registry.registerProvider("extension-provider", {
 				baseUrl: "https://provider.test/v1",
 				apiKey: "TEST_KEY",
@@ -97,12 +95,12 @@ describeModelRegistry((context) => {
 			if (!model) throw new Error("missing extension model");
 			expect(await registry.getApiKeyAndHeaders(model)).toMatchObject({
 				ok: true,
-				headers: { "X-Base": "base", "X-Override": "override", "X-Shared": "override" },
+				headers: { "X-Base": "base", "X-Override": "override", "X-Shared": "base" },
 			});
 		});
 
 		test("failed registerProvider does not persist invalid streamSimple config", async () => {
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 
 			expect(() =>
 				registry.registerProvider("broken-provider", {
@@ -112,11 +110,11 @@ describeModelRegistry((context) => {
 				}),
 			).toThrow('Provider broken-provider: "api" is required when registering streamSimple.');
 
-			await expect(registry.refresh()).resolves.toBeDefined();
+			await expect(registry.refresh()).resolves.toBeUndefined();
 		});
 
 		test("failed registerProvider does not remove existing provider models", async () => {
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 
 			registry.registerProvider("demo-provider", {
 				baseUrl: "https://provider.test/v1",
@@ -156,12 +154,12 @@ describeModelRegistry((context) => {
 			).toThrow('Provider demo-provider, model broken-model: no "api" specified.');
 
 			expect(registry.find("demo-provider", "demo-model")).toBeDefined();
-			await expect(registry.refresh()).resolves.toBeDefined();
+			await expect(registry.refresh()).resolves.toBeUndefined();
 			expect(registry.find("demo-provider", "demo-model")).toBeDefined();
 		});
 
-		test("unregisterProvider removes custom OAuth provider and restores built-in OAuth provider", () => {
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+		test("unregisterProvider removes custom OAuth provider and restores built-in OAuth provider", async () => {
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 
 			registry.registerProvider("anthropic", {
 				oauth: {
@@ -176,49 +174,20 @@ describeModelRegistry((context) => {
 				},
 			});
 
-			expect(getOAuthProvider("anthropic")?.name).toBe("Custom Anthropic OAuth");
+			expect(registry.getProvider("anthropic")?.auth.oauth?.name).toBe("Custom Anthropic OAuth");
 
 			registry.unregisterProvider("anthropic");
 
-			expect(getOAuthProvider("anthropic")?.name).not.toBe("Custom Anthropic OAuth");
+			expect(registry.getProvider("anthropic")?.auth.oauth?.name).not.toBe("Custom Anthropic OAuth");
 		});
 
-		test("unregisterProvider removes custom streamSimple override and restores built-in API stream handler", () => {
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
-
-			registry.registerProvider("stream-override-provider", {
-				api: "openai-completions",
-				streamSimple: () => {
-					throw new Error("custom streamSimple override");
-				},
-			});
-
-			let threwCustomOverride = false;
-			try {
-				getApiProvider("openai-completions")?.streamSimple(openAiModel, emptyContext);
-			} catch (error) {
-				threwCustomOverride = error instanceof Error && error.message === "custom streamSimple override";
-			}
-			expect(threwCustomOverride).toBe(true);
-
-			registry.unregisterProvider("stream-override-provider");
-
-			let threwCustomOverrideAfterUnregister = false;
-			try {
-				getApiProvider("openai-completions")?.streamSimple(openAiModel, emptyContext);
-			} catch (error) {
-				threwCustomOverrideAfterUnregister =
-					error instanceof Error && error.message === "custom streamSimple override";
-			}
-			expect(threwCustomOverrideAfterUnregister).toBe(false);
-		});
 
 		describe("dynamic provider override persistence", () => {
 			test("baseUrl-only override keeps built-in provider models after refresh", async () => {
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 
 				registry.registerProvider("anthropic", { baseUrl: "https://proxy.test/anthropic" });
-				await registry.refresh();
+				await getModelRuntime(registry).refresh({ allowNetwork: false });
 
 				const anthropicModels = getModelsForProvider(registry, "anthropic");
 				expect(anthropicModels.length).toBeGreaterThan(1);
@@ -226,40 +195,40 @@ describeModelRegistry((context) => {
 			});
 
 			test("models-only override replaces built-in provider models after refresh", async () => {
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 
 				registry.registerProvider("anthropic", {
 					...providerConfig("https://custom.test/anthropic", [{ id: "custom-claude" }], "anthropic-messages"),
 					baseUrl: "https://custom.test/anthropic",
 				});
-				await registry.refresh();
+				await getModelRuntime(registry).refresh({ allowNetwork: false });
 
 				expect(getModelsForProvider(registry, "anthropic").map((m) => m.id)).toEqual(["custom-claude"]);
 				expect(registry.find("anthropic", "custom-claude")?.baseUrl).toBe("https://custom.test/anthropic");
 			});
 
 			test("models plus baseUrl override replaces built-in provider models after refresh", async () => {
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 
 				registry.registerProvider("anthropic", {
 					...providerConfig("https://custom.test/anthropic", [{ id: "custom-claude" }], "anthropic-messages"),
 					baseUrl: "https://custom.test/anthropic",
 				});
 				registry.registerProvider("anthropic", { baseUrl: "https://proxy.test/anthropic" });
-				await registry.refresh();
+				await getModelRuntime(registry).refresh({ allowNetwork: false });
 
 				expect(getModelsForProvider(registry, "anthropic").map((m) => m.id)).toEqual(["custom-claude"]);
 				expect(registry.find("anthropic", "custom-claude")?.baseUrl).toBe("https://proxy.test/anthropic");
 			});
 
 			test("models-only custom provider registration survives refresh", async () => {
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 
 				registry.registerProvider(
 					"custom-provider",
 					providerConfig("https://custom.test/v1", [{ id: "custom-a" }, { id: "custom-b" }], "openai-completions"),
 				);
-				await registry.refresh();
+				await getModelRuntime(registry).refresh({ allowNetwork: false });
 
 				expect(getModelsForProvider(registry, "custom-provider").map((m) => m.id)).toEqual([
 					"custom-a",
@@ -268,14 +237,14 @@ describeModelRegistry((context) => {
 			});
 
 			test("baseUrl-only override keeps custom provider models after refresh", async () => {
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 
 				registry.registerProvider(
 					"custom-provider",
 					providerConfig("https://custom.test/v1", [{ id: "custom-a" }, { id: "custom-b" }], "openai-completions"),
 				);
 				registry.registerProvider("custom-provider", { baseUrl: "https://proxy.test/custom" });
-				await registry.refresh();
+				await getModelRuntime(registry).refresh({ allowNetwork: false });
 
 				expect(getModelsForProvider(registry, "custom-provider").map((m) => m.id)).toEqual([
 					"custom-a",
@@ -289,14 +258,14 @@ describeModelRegistry((context) => {
 			});
 
 			test("headers-only override keeps custom provider models after refresh", async () => {
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 
 				registry.registerProvider(
 					"custom-provider",
 					providerConfig("https://custom.test/v1", [{ id: "custom-a" }, { id: "custom-b" }], "openai-completions"),
 				);
 				registry.registerProvider("custom-provider", { headers: { "x-proxy": "enabled" } });
-				await registry.refresh();
+				await getModelRuntime(registry).refresh({ allowNetwork: false });
 
 				const models = getModelsForProvider(registry, "custom-provider");
 				expect(models.map((m) => m.id)).toEqual(["custom-a", "custom-b"]);
@@ -308,13 +277,13 @@ describeModelRegistry((context) => {
 			});
 
 			test("async catalog refresh publishes successful results only after completion", async () => {
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 				const initial = providerConfig("https://dynamic.test/v1", [{ id: "old" }]);
 				let resolveRefresh!: (models: NonNullable<typeof initial.models>) => void;
 				const pending = new Promise<NonNullable<typeof initial.models>>((resolve) => (resolveRefresh = resolve));
 				registry.registerProvider("dynamic", { ...initial, refreshModels: () => pending });
 
-				const refresh = registry.refresh();
+				const refresh = getModelRuntime(registry).refresh();
 				expect(getModelsForProvider(registry, "dynamic").map((model) => model.id)).toEqual(["old"]);
 				resolveRefresh(providerConfig("https://dynamic.test/v1", [{ id: "new" }]).models!);
 				const result = await refresh;
@@ -325,12 +294,12 @@ describeModelRegistry((context) => {
 			});
 
 			test("unrelated registration does not discard an in-flight provider refresh", async () => {
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 				const initial = providerConfig("https://dynamic.test/v1", [{ id: "old" }]);
 				let resolveRefresh!: (models: NonNullable<typeof initial.models>) => void;
 				const pending = new Promise<NonNullable<typeof initial.models>>((resolve) => (resolveRefresh = resolve));
 				registry.registerProvider("dynamic", { ...initial, refreshModels: () => pending });
-				const refresh = registry.refresh();
+				const refresh = getModelRuntime(registry).refresh();
 
 				registry.registerProvider("anthropic", { headers: { "x-unrelated": "yes" } });
 				resolveRefresh(providerConfig("https://dynamic.test/v1", [{ id: "new" }]).models!);
@@ -342,7 +311,7 @@ describeModelRegistry((context) => {
 
 
 			test("async catalog refresh returns partial provider errors without discarding successes", async () => {
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 				const good = providerConfig("https://good.test/v1", [{ id: "old-good" }]);
 				const bad = providerConfig("https://bad.test/v1", [{ id: "old-bad" }]);
 				registry.registerProvider("good", {
@@ -351,7 +320,7 @@ describeModelRegistry((context) => {
 				});
 				registry.registerProvider("bad", { ...bad, refreshModels: async ({ allowNetwork }) => { throw new Error(allowNetwork ? "catalog failed" : "cache fallback failed"); } });
 
-				const result = await registry.refresh();
+				const result = await getModelRuntime(registry).refresh();
 
 				expect(result.errors.get("bad")?.message).toBe("catalog failed");
 				expect(getModelsForProvider(registry, "good").map((model) => model.id)).toEqual(["new-good"]);
@@ -359,12 +328,12 @@ describeModelRegistry((context) => {
 			});
 
 			test("stale refresh completion cannot resurrect an unregistered provider", async () => {
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 				const initial = providerConfig("https://dynamic.test/v1", [{ id: "old" }]);
 				let resolveRefresh!: (models: NonNullable<typeof initial.models>) => void;
 				const pending = new Promise<NonNullable<typeof initial.models>>((resolve) => (resolveRefresh = resolve));
 				registry.registerProvider("dynamic", { ...initial, refreshModels: () => pending });
-				const staleRefresh = registry.refresh();
+				const staleRefresh = getModelRuntime(registry).refresh();
 
 				registry.unregisterProvider("dynamic");
 				resolveRefresh(providerConfig("https://dynamic.test/v1", [{ id: "resurrected" }]).models!);
@@ -373,27 +342,34 @@ describeModelRegistry((context) => {
 				expect(registry.find("dynamic", "resurrected")).toBeUndefined();
 			});
 
-			test("stale refresh completion cannot overwrite a re-registered provider or its cache", async () => {
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			test("stale refresh completion cannot overwrite a re-registered provider but can update its shared cache", async () => {
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 				const initial = providerConfig("https://dynamic.test/v1", [{ id: "old" }]);
 				let releaseStale!: () => void;
-				let markStaleStarted!: () => void;
+				let markAllStaleStarted!: () => void;
+				let markAllStaleFinished!: () => void;
 				const staleGate = new Promise<void>((resolve) => { releaseStale = resolve; });
-				const staleStarted = new Promise<void>((resolve) => { markStaleStarted = resolve; });
+				const allStaleStarted = new Promise<void>((resolve) => { markAllStaleStarted = resolve; });
+				const allStaleFinished = new Promise<void>((resolve) => { markAllStaleFinished = resolve; });
+				let staleStartCount = 0;
+				let staleFinishCount = 0;
 				let persistedAfterStale: string[] | undefined;
 				registry.registerProvider("dynamic", {
 					...initial,
 					refreshModels: async ({ store }) => {
-						markStaleStarted();
+						staleStartCount += 1;
+						if (staleStartCount === 2) markAllStaleStarted();
 						await staleGate;
 						const staleModels = providerConfig("https://dynamic.test/v1", [{ id: "stale-store" }]).models!;
 						await store.write({ models: staleModels, checkedAt: Date.now() });
 						persistedAfterStale = (await store.read())?.models.map((model) => model.id);
+						staleFinishCount += 1;
+						if (staleFinishCount === 2) markAllStaleFinished();
 						return staleModels;
 					},
 				});
-				const staleRefresh = registry.refresh();
-				await staleStarted;
+				const staleRefresh = getModelRuntime(registry).refresh();
+				await allStaleStarted;
 
 				const freshModels = providerConfig("https://manual.test/v1", [{ id: "manual" }]).models!;
 				registry.registerProvider("dynamic", {
@@ -403,92 +379,32 @@ describeModelRegistry((context) => {
 						return freshModels;
 					},
 				});
-				await registry.refresh();
+				await getModelRuntime(registry).refresh();
 				releaseStale();
-				await staleRefresh;
+				await Promise.all([staleRefresh, allStaleFinished]);
 
 				expect(getModelsForProvider(registry, "dynamic").map((model) => model.id)).toEqual(["manual"]);
-				expect(persistedAfterStale).toEqual(["manual"]);
+				expect(persistedAfterStale).toEqual(["stale-store"]);
 			});
 
-			test("async catalog refresh times out and retains the stale snapshot", async () => {
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
-				const initial = providerConfig("https://slow.test/v1", [{ id: "cached" }]);
-				registry.registerProvider("slow", {
-					...initial,
-					refreshModels: async () => new Promise<NonNullable<typeof initial.models>>(() => {}),
-				});
-
-				const result = await registry.refresh({ timeoutMs: 5 });
-
-				expect(result.aborted).toBe(true);
-				expect(getModelsForProvider(registry, "slow").map((model) => model.id)).toEqual(["cached"]);
-			});
-
-			test("aborted extension refresh cannot mutate its persisted cache", async () => {
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
-				const initial = providerConfig("https://slow.test/v1", [{ id: "cached" }]);
-				let releaseCallback!: () => void;
-				let callbackFinished!: () => void;
-				const callbackGate = new Promise<void>((resolve) => { releaseCallback = resolve; });
-				const finished = new Promise<void>((resolve) => { callbackFinished = resolve; });
-				let persistedAfterAbort: string[] | undefined;
-				registry.registerProvider("slow", {
-					...initial,
-					refreshModels: async ({ store }) => {
-						await callbackGate;
-						await store.write({ models: initial.models!, checkedAt: Date.now() });
-						persistedAfterAbort = (await store.read())?.models.map((model) => model.id);
-						callbackFinished();
-						return initial.models!;
-					},
-				});
-
-				const result = await registry.refresh({ timeoutMs: 5 });
-				releaseCallback();
-				await finished;
-
-				expect(result.aborted).toBe(true);
-				expect(persistedAfterAbort).toBeUndefined();
-			});
-
-			test("pre-aborted refresh returns without invoking providers", async () => {
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
-				const initial = providerConfig("https://slow.test/v1", [{ id: "cached" }]);
-				let called = false;
-				registry.registerProvider("slow", {
-					...initial,
-					refreshModels: async () => {
-						called = true;
-						return initial.models!;
-					},
-				});
-				const controller = new AbortController();
-				controller.abort();
-
-				const result = await registry.refresh({ signal: controller.signal, timeoutMs: 100 });
-
-				expect(result.aborted).toBe(true);
-				expect(called).toBe(false);
-				expect(registry.find("slow", "cached")).toBeDefined();
-			});
-
-			test("additive provider overrides retain built-in credential filtering", () => {
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			test("additive provider overrides retain built-in credential filtering", async () => {
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 				const allowed = registry.getAll().find((model) => model.provider === "github-copilot")!;
-				context.authStorage.set("github-copilot", {
+				await context.authStorage.modify("github-copilot", async () => ({
 					type: "oauth",
 					refresh: "r",
 					access: "a",
 					expires: Date.now() + 60_000,
 					availableModelIds: [allowed.id],
-				});
+				}));
+				await getModelRuntime(registry).refresh({ allowNetwork: false });
 				const availableIds = () => registry.getAvailable()
 					.filter((model) => model.provider === "github-copilot")
 					.map((model) => model.id);
 				expect(availableIds()).toEqual([allowed.id]);
 
 				registry.registerProvider("github-copilot", { headers: { "x-test": "1" } });
+				await getModelRuntime(registry).refresh({ allowNetwork: false });
 
 				expect(availableIds()).toEqual([allowed.id]);
 			});

@@ -23,9 +23,9 @@ test("offline model candidate startup restores caches without catalog network re
 	const mode = {
 		session: {
 			scopedModels: [],
-			modelRegistry: {
+			modelRuntime: {
 				refresh,
-				getAvailable: () => [],
+				getAvailableSnapshot: () => [],
 			},
 		},
 	};
@@ -42,7 +42,7 @@ test("footer provider count uses the current snapshot without refreshing catalog
 	const mode = {
 		session: {
 			scopedModels: [],
-			modelRegistry: { refresh, getAvailable: () => [{ provider: "one" }, { provider: "one" }, { provider: "two" }] },
+			modelRuntime: { refresh, getAvailableSnapshot: () => [{ provider: "one" }, { provider: "one" }, { provider: "two" }] },
 		},
 		footerDataProvider: { setAvailableProviderCount },
 	};
@@ -57,7 +57,7 @@ test("offline scoped-model selector refresh stays cache-only", async () => {
 	const refresh = vi.fn(async () => ({ aborted: false, errors: new Map() }));
 	const showStatus = vi.fn();
 	const mode = {
-		session: { scopedModels: [], modelRegistry: { refresh, getAvailable: () => [] } },
+		session: { scopedModels: [], modelRuntime: { refresh, getAvailableSnapshot: () => [] } },
 		settingsManager: { getEnabledModels: () => undefined },
 		showStatus,
 	};

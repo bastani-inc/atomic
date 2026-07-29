@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { OpenAICompletionsCompat } from "@earendil-works/pi-ai/compat";
 import { parseConfigCommand } from "../../packages/coding-agent/src/config-command-parser.ts";
 import { applyHttpProxySettings, parseHttpIdleTimeoutMs } from "../../packages/coding-agent/src/core/http-dispatcher.ts";
-import { loadCustomModelsFromPaths } from "../../packages/coding-agent/src/core/model-registry-custom-loader.ts";
+import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.ts";
 import { DefaultPackageManager } from "../../packages/coding-agent/src/core/package-manager.ts";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.ts";
 import { buildSelfUpdatePlan } from "../../packages/coding-agent/src/self-update-plan.ts";
@@ -60,14 +60,13 @@ test("models.json preserves deferredToolsMode and constructs configured Radius p
 		},
 		corporate: { name: "Corporate Radius", baseUrl: "https://radius.example/v1", oauth: "radius" },
 	} }));
-	const loaded = loadCustomModelsFromPaths([path]);
-	assert.equal(loaded.error, undefined);
-	const compat = loaded.models.find((model) => model.provider === "kimi")?.compat as OpenAICompletionsCompat | undefined;
+	const runtime = await ModelRuntime.create({ modelsPath: path });
+	const compat = runtime.getModels("kimi")[0]?.compat as OpenAICompletionsCompat | undefined;
 	assert.equal(compat?.deferredToolsMode, "kimi");
-	const radius = loaded.configuredProviders.get("corporate");
+	const radius = runtime.getProvider("corporate");
 	assert.equal(radius?.id, "corporate");
 	assert.equal(radius?.name, "Corporate Radius");
-	assert.equal(loaded.overrides.get("corporate")?.baseUrl, undefined);
+	assert.equal(radius?.baseUrl, "https://radius.example/v1");
 });
 
 test("project autoload:false is a delta over a global package including workflows", async () => {

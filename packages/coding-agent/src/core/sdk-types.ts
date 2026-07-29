@@ -1,7 +1,5 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
-import type { AuthStorage } from "./auth-storage.ts";
-import type { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import type { SessionManager } from "./session-manager.ts";
@@ -16,12 +14,8 @@ export interface CreateAgentSessionOptions {
   /** Global config directory. Default: ~/.atomic/agent */
   agentDir?: string;
 
-  /** Auth storage for credentials. Default: AuthStorage.create(agentDir/auth.json) */
-  authStorage?: AuthStorage;
-  /** Model registry. Default: ModelRegistry.create(authStorage, agentDir/models.json) */
-  modelRegistry?: ModelRegistry;
-  /** Canonical model/auth facade. Takes precedence over modelRegistry and authStorage. */
-  modelRuntime?: ModelRuntime;
+	/** Canonical model/auth runtime. Defaults to agentDir/auth.json and models.json. */
+	modelRuntime?: ModelRuntime;
 
   /** Model to use. Default: from settings, else first available */
   model?: Model<Api>;

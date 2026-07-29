@@ -319,7 +319,7 @@ InteractiveModeBase.prototype.renderSessionEntries = function(
   }
   flushMessages();
   if (this.settingsManager.getShowCacheMissNotices()) {
-    for (const miss of collectCacheMisses(sessionEntries, { getModel: (provider, model) => this.session.modelRegistry.find(provider, model) }).values()) {
+    for (const miss of collectCacheMisses(sessionEntries, { getModel: (provider, model) => this.session.modelRuntime.getModel(provider, model) }).values()) {
       const cause = miss.modelChanged ? " after model switch" : miss.idleMs >= CACHE_TTL_MS ? " after cache TTL expiry" : "";
       this.chatContainer.addChild(new Text(theme.fg("warning", `Prompt cache miss${cause}: ${miss.missedTokens.toLocaleString()} tokens re-billed ($${miss.missedCost.toFixed(3)})`), 1, 0));
     }

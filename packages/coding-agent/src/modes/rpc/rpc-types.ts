@@ -9,14 +9,15 @@ import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core"
 import type { AuthInfoLink, OAuthAuthInfo, OAuthDeviceCodeInfo, OAuthPrompt, OAuthSelectPrompt } from "@earendil-works/pi-ai";
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai/compat";
 import type { AgentSessionEvent, SessionStats } from "../../core/agent-session.ts";
-import type { AuthCredential, AuthStatus } from "../../core/auth-storage.ts";
+import type { AuthStatus } from "../../core/provider-composer.ts";
+import type { Credential } from "@earendil-works/pi-ai";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import type { ModelFallbackReason } from "../../core/model-resolver-types.ts";
-import type { OAuthProviderMetadata } from "../../core/oauth-provider-bridge.ts";
+import type { OAuthProviderMetadata } from "../../core/oauth-login.ts";
 
 // ============================================================================
 // RPC Commands (stdin)
@@ -37,7 +38,7 @@ export type RpcLoginProviderResult =
 	| (RpcModelCatalog & {
 			provider: string;
 			cancelled: false;
-			credential: import("../../core/auth-storage.ts").ApiKeyCredential;
+			credential: Extract<Credential, { type: "api_key" }>;
 	  })
 	| { provider: string; cancelled: true };
 
@@ -61,7 +62,7 @@ export type RpcCommand =
 	| { id?: string; type: "cycle_model"; direction?: "forward" | "backward" }
 	| { id?: string; type: "get_available_models" }
 	| { id?: string; type: "login_provider"; provider: string; authType?: "api_key" | "oauth"; loginId?: string }
-	| { id?: string; type: "save_provider_credential"; provider: string; credential: AuthCredential }
+	| { id?: string; type: "save_provider_credential"; provider: string; credential: Credential }
 	| { id?: string; type: "cancel_login_provider"; provider: string; loginId?: string }
 	| { id?: string; type: "logout_provider"; provider: string }
 	| { id?: string; type: "refresh_models"; timeoutMs?: number; force?: boolean; allowNetwork?: boolean }

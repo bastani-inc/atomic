@@ -8,7 +8,7 @@ import { AgentSession } from "../src/core/agent-session.ts";
 import { AsyncJobManager } from "../src/core/async/job-manager.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { convertToLlm } from "../src/core/messages.ts";
-import { ModelRegistry } from "../src/core/model-registry.ts";
+import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createTestResourceLoader } from "./utilities.ts";
@@ -55,7 +55,7 @@ function messageText(message: AgentMessage): string {
 		.join("\n");
 }
 
-function createSession(tempDir: string, onTurn: (userTexts: string[], stream: MockAssistantStream) => void): AgentSession {
+async function createSession(tempDir: string, onTurn: (userTexts: string[], stream: MockAssistantStream) => void): AgentSession {
 	const model = getModel("anthropic", "claude-sonnet-4-5")!;
 	const agent = new Agent({
 		convertToLlm,
@@ -68,13 +68,13 @@ function createSession(tempDir: string, onTurn: (userTexts: string[], stream: Mo
 		},
 	});
 	const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
-	authStorage.setRuntimeApiKey("anthropic", "test-key");
+	await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
 	return new AgentSession({
 		agent,
 		sessionManager: SessionManager.inMemory(),
 		settingsManager: SettingsManager.create(tempDir, tempDir),
 		cwd: tempDir,
-		modelRegistry: ModelRegistry.create(authStorage, tempDir),
+		modelRuntime: await ModelRuntime.create({ credentials: authStorage, modelsPath: null, allowModelNetwork: false }),
 		resourceLoader: createTestResourceLoader(),
 	});
 }
@@ -97,7 +97,7 @@ describe("AgentSession async bash auto-delivery", () => {
 
 	it("starts an idle follow-up turn from actual async bash completion", async () => {
 		const turns: string[][] = [];
-		session = createSession(tempDir, (userTexts, stream) => {
+		session = await createSession(tempDir, (userTexts, stream) => {
 			turns.push(userTexts);
 			stream.push({ type: "start", partial: createAssistantMessage("") });
 			stream.push({ type: "done", reason: "stop", message: createAssistantMessage("done") });
@@ -111,7 +111,7 @@ describe("AgentSession async bash auto-delivery", () => {
 	it("queues actual async bash completion as a follow-up while streaming and drains it after the turn", async () => {
 		let finishFirstTurn: (() => void) | undefined;
 		const turns: string[][] = [];
-		session = createSession(tempDir, (userTexts, stream) => {
+		session = await createSession(tempDir, (userTexts, stream) => {
 			turns.push(userTexts);
 			stream.push({ type: "start", partial: createAssistantMessage("") });
 			if (userTexts.some((text) => text.includes("streaming-async"))) {
@@ -135,7 +135,7 @@ describe("AgentSession async bash auto-delivery", () => {
 	it("keeps a streaming async result admitted when later polling acknowledges the job", async () => {
 		let finishFirstTurn: (() => void) | undefined;
 		const turns: string[][] = [];
-		session = createSession(tempDir, (userTexts, stream) => {
+		session = await createSession(tempDir, (userTexts, stream) => {
 			turns.push(userTexts);
 			stream.push({ type: "start", partial: createAssistantMessage("") });
 			if (userTexts.some((text) => text.includes("stale-async"))) {

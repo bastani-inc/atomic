@@ -38,9 +38,9 @@ InteractiveModeBase.prototype.getModelCandidates = async function(this: Interact
     }
 
     const allowNetwork = !isOfflineModeEnabled();
-    await this.session.modelRegistry.refresh({ allowNetwork });
+    await this.session.modelRuntime.refresh({ allowNetwork });
     try {
-      return await this.session.modelRegistry.getAvailable();
+      return [...this.session.modelRuntime.getAvailableSnapshot()];
     } catch {
       return [];
     }
@@ -49,7 +49,7 @@ InteractiveModeBase.prototype.getModelCandidates = async function(this: Interact
 InteractiveModeBase.prototype.updateAvailableProviderCount = async function(this: InteractiveModeBase): Promise<void> {
 	const models = this.session.scopedModels.length > 0
 		? this.session.scopedModels.map((scoped) => scoped.model)
-		: this.session.modelRegistry.getAvailable();
+		: this.session.modelRuntime.getAvailableSnapshot();
 	this.footerDataProvider.setAvailableProviderCount(new Set(models.map((model) => model.provider)).size);
 };
 
@@ -64,18 +64,15 @@ InteractiveModeBase.prototype.maybeWarnAboutAnthropicSubscriptionAuth = async fu
       return;
     }
 
-    const storedCredential =
-      this.session.modelRegistry.authStorage.get("anthropic");
-    if (storedCredential?.type === "oauth") {
+    const storedCredential = await this.session.modelRuntime.getAuth("anthropic");
+    if (this.session.modelRuntime.isUsingOAuth("anthropic") && storedCredential !== undefined) {
       this.anthropicSubscriptionWarningShown = true;
       this.showWarning(ANTHROPIC_SUBSCRIPTION_AUTH_WARNING, targetContainer);
       return;
     }
 
     try {
-      const apiKey = await this.session.modelRegistry.getApiKeyForProvider(
-        model.provider,
-      );
+      const apiKey = (await this.session.modelRuntime.getAuth(model.provider))?.auth.apiKey;
       if (!isAnthropicSubscriptionAuthKey(apiKey)) {
         return;
       }
@@ -92,7 +89,7 @@ InteractiveModeBase.prototype.showModelSelector = function(this: InteractiveMode
         this.ui,
         this.session.model,
         this.settingsManager,
-        this.session.modelRegistry,
+        this.session.modelRuntime,
         this.session.scopedModels,
         async (model) => {
           try {
@@ -121,8 +118,8 @@ InteractiveModeBase.prototype.showModelSelector = function(this: InteractiveMode
   };
 
 InteractiveModeBase.prototype.showModelsSelector = async function(this: InteractiveModeBase): Promise<void> {
-	await this.session.modelRegistry.refresh({ allowNetwork: !isOfflineModeEnabled() });
-	const allModels = this.session.modelRegistry.getAvailable();
+	await this.session.modelRuntime.refresh({ allowNetwork: !isOfflineModeEnabled() });
+	const allModels = [...this.session.modelRuntime.getAvailableSnapshot()];
 	const allModelIds = new Set(allModels.map((model) => `${model.provider}/${model.id}`));
 	const configuredPatterns = this.settingsManager.getEnabledModels();
 	const sessionScopedModels = this.session.scopedModels;
@@ -133,7 +130,7 @@ InteractiveModeBase.prototype.showModelsSelector = async function(this: Interact
 	}
 
 	const configuredScope = configuredPatterns?.length
-		? await resolveModelScopeWithDiagnostics(configuredPatterns, this.session.modelRegistry)
+		? await resolveModelScopeWithDiagnostics(configuredPatterns, this.session.modelRuntime)
 		: undefined;
 	const hasSessionScope = sessionScopedModels.length > 0;
 	let currentEnabledIds: string[] | null = null;
@@ -153,7 +150,7 @@ InteractiveModeBase.prototype.showModelsSelector = async function(this: Interact
 		const hasEnabledAvailableModel = enabledIds?.some((id) => allModelIds.has(id)) ?? false;
 		const allAvailableModelsEnabled = enabledIds !== null && [...allModelIds].every((id) => enabledIds.includes(id));
 		if (enabledIds && hasEnabledAvailableModel && !allAvailableModelsEnabled) {
-			const newScopedModels = await resolveModelScope(enabledIds, this.session.modelRegistry);
+			const newScopedModels = await resolveModelScope(enabledIds, this.session.modelRuntime);
 			this.session.setScopedModels(newScopedModels.map((sm) => ({ model: sm.model, thinkingLevel: sm.thinkingLevel })));
 		} else {
 			this.session.setScopedModels([]);

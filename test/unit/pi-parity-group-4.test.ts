@@ -26,7 +26,7 @@ import { ExtensionRunner } from "../../packages/coding-agent/src/core/extensions
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
 import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/resource-loader.ts";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.ts";
-import { createAuthInteraction } from "../../packages/coding-agent/src/core/oauth-provider-bridge.ts";
+import { createAuthInteraction } from "../../packages/coding-agent/src/core/oauth-login.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../../packages/coding-agent/src/utils/ansi.ts";
 
@@ -39,8 +39,8 @@ test("before_provider_headers handlers mutate headers sequentially and report er
     api.on("before_provider_headers", (event) => { event.headers["x-second"] = `${event.headers["x-first"]}-two`; });
     api.on("before_provider_headers", () => { throw new Error("header failure"); });
   }, process.cwd(), createEventBus(), runtime);
-  const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
-  const runner = new ExtensionRunner([extension], runtime, process.cwd(), SessionManager.inMemory(), registry);
+  const modelRuntime = await ModelRuntime.create({ modelsPath: null });
+  const runner = new ExtensionRunner([extension], runtime, process.cwd(), SessionManager.inMemory(), new ModelRegistry(modelRuntime));
   const errors: string[] = [];
   runner.onError((error) => errors.push(error.error));
 
@@ -53,7 +53,8 @@ test("entry renderer registration is discoverable", async () => {
   const runtime = createExtensionRuntime();
   const renderer: EntryRenderer = () => new Text("entry", 0, 0);
   const extension = await loadExtensionFromFactory((api) => api.registerEntryRenderer("state", renderer), process.cwd(), createEventBus(), runtime);
-  const runner = new ExtensionRunner([extension], runtime, process.cwd(), SessionManager.inMemory(), ModelRegistry.inMemory(AuthStorage.inMemory()));
+  const modelRuntime = await ModelRuntime.create({ modelsPath: null });
+  const runner = new ExtensionRunner([extension], runtime, process.cwd(), SessionManager.inMemory(), new ModelRegistry(modelRuntime));
   assert.equal(runner.getEntryRenderer("state"), renderer);
   assert.equal(runner.getEntryRenderer("missing"), undefined);
 });
@@ -80,15 +81,14 @@ test("CustomEntryComponent renders, suppresses empty output, propagates expansio
 });
 
 test("native provider registration round-trips through ModelRegistry and ModelRuntime", async () => {
-  const auth = AuthStorage.inMemory();
-  const registry = ModelRegistry.inMemory(auth);
+  const runtime = await ModelRuntime.create({ modelsPath: null });
+  const registry = new ModelRegistry(runtime);
   const builtin = registry.getProvider("anthropic");
   assert.ok(builtin);
   const provider = { ...builtin, id: "native-test", name: "Native Test" };
   registry.registerProvider(provider);
   assert.equal(registry.getProvider("native-test"), provider);
 
-  const runtime = new ModelRuntime(registry, auth);
   assert.equal(runtime.getProvider("native-test"), provider);
   assert.ok(runtime.getProviders().some((candidate) => candidate.id === "native-test"));
   assert.equal(await runtime.checkAuth("native-test"), undefined);
@@ -99,8 +99,7 @@ test("native provider registration round-trips through ModelRegistry and ModelRu
 
 test("ModelRuntime delegates enumeration, runtime auth, snapshots, and refresh", async () => {
   const auth = AuthStorage.inMemory();
-  const registry = ModelRegistry.inMemory(auth);
-  const runtime = new ModelRuntime(registry, auth);
+  const runtime = await ModelRuntime.create({ credentials: auth, modelsPath: null });
   const model = runtime.getModels("anthropic")[0];
   assert.ok(model);
   await runtime.setRuntimeApiKey("anthropic", "runtime-secret", { allowNetwork: false });
@@ -113,16 +112,19 @@ test("ModelRuntime delegates enumeration, runtime auth, snapshots, and refresh",
 
 test("ModelRuntime delegates provider login and logout", async () => {
   const auth = AuthStorage.inMemory();
-  const runtime = new ModelRuntime(ModelRegistry.inMemory(auth), auth);
+  const previousOffline = process.env.ATOMIC_OFFLINE;
+  process.env.ATOMIC_OFFLINE = "1";
+  const runtime = await ModelRuntime.create({ credentials: auth, modelsPath: null });
+  if (previousOffline === undefined) delete process.env.ATOMIC_OFFLINE; else process.env.ATOMIC_OFFLINE = previousOffline;
   const interaction = createAuthInteraction({
     onAuth() {}, onDeviceCode() {}, onProgress() {},
     async onPrompt() { return "sk-test"; },
     async onSelect() { return ""; },
   });
   assert.deepEqual(await runtime.login("anthropic", "api_key", interaction), { type: "api_key", key: "sk-test" });
-  assert.deepEqual(auth.get("anthropic"), { type: "api_key", key: "sk-test" });
+  assert.deepEqual(await auth.read("anthropic"), { type: "api_key", key: "sk-test" });
   await runtime.logout("anthropic");
-  assert.equal(auth.get("anthropic"), undefined);
+  assert.equal(await auth.read("anthropic"), undefined);
 });
 
 test("session context helpers preserve custom-message and compaction semantics", () => {
@@ -135,12 +137,12 @@ test("session context helpers preserve custom-message and compaction semantics",
   assert.equal(sessionEntryToContextMessages(entries[1]).length, 0);
 });
 
-test("readStoredCredential reads a single credential from an explicit Atomic auth path", () => {
+test("readStoredCredential reads a single credential from an explicit Atomic auth path", async () => {
   const dir = mkdtempSync(join(tmpdir(), "atomic-auth-"));
   const path = join(dir, "auth.json");
   try {
     const storage = AuthStorage.create(path);
-    storage.set("example", { type: "api_key", key: "secret" });
+    await storage.modify("example", async () => ({ type: "api_key", key: "secret" }));
     assert.deepEqual(readStoredCredential("example", path), { type: "api_key", key: "secret" });
     assert.equal(readStoredCredential("missing", path), undefined);
   } finally {
@@ -180,8 +182,8 @@ test("entry_appended is emitted and agent_settled follows agent_end", async () =
     const loader = new DefaultResourceLoader({ cwd: dir, agentDir: dir, settingsManager: settings, extensionFactories: [inline], builtinPackagePaths: [], noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true });
     await loader.reload();
     const auth = AuthStorage.inMemory();
-    const registry = ModelRegistry.inMemory(auth);
-    const { session } = await createAgentSession({ cwd: dir, agentDir: dir, settingsManager: settings, resourceLoader: loader, authStorage: auth, modelRegistry: registry, sessionManager: SessionManager.inMemory(dir), model, noTools: "all" });
+    const modelRuntime = await ModelRuntime.create({ credentials: auth, modelsPath: null });
+    const { session } = await createAgentSession({ cwd: dir, agentDir: dir, settingsManager: settings, resourceLoader: loader, modelRuntime, sessionManager: SessionManager.inMemory(dir), model, noTools: "all" });
     session.subscribe((event) => observed.push(event.type));
     assert.ok(extensionApi);
     extensionApi.appendEntry("state", { ready: true });

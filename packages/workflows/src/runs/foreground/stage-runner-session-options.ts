@@ -10,7 +10,7 @@ interface StageSessionOptionsInput {
   readonly candidate: WorkflowResolvedModelCandidate | undefined;
   readonly restoreSavedModel?: boolean;
   readonly reattachSessionFile: string | undefined;
-  readonly sharedModelRegistry: CreateAgentSessionOptions["modelRegistry"];
+  readonly sharedModelRuntime: CreateAgentSessionOptions["modelRuntime"];
 }
 
 export function buildStageSessionOptions(input: StageSessionOptionsInput): StageOptions | undefined {
@@ -31,8 +31,8 @@ export function buildStageSessionOptions(input: StageSessionOptionsInput): Stage
     options.context = undefined;
     options.forkFromSessionFile = undefined;
   }
-  if (input.sharedModelRegistry !== undefined && options.modelRegistry === undefined) {
-    options.modelRegistry = input.sharedModelRegistry;
+  if (input.sharedModelRuntime !== undefined && options.modelRuntime === undefined) {
+    options.modelRuntime = input.sharedModelRuntime;
   }
   return Object.keys(options).length === 0 ? undefined : options;
 }

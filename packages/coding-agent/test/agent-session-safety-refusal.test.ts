@@ -6,7 +6,7 @@ import { type AssistantMessage, type AssistantMessageEvent, EventStream, getMode
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import { ModelRegistry } from "../src/core/model-registry.ts";
+import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createTestResourceLoader } from "./utilities.ts";
@@ -63,7 +63,7 @@ describe("AgentSession safety-refusal retry", () => {
 		}
 	});
 
-	function createSession(streamFn: () => MockAssistantStream) {
+	async function createSession(streamFn: () => MockAssistantStream) {
 		const model = getModel("anthropic", "claude-sonnet-4-5")!;
 		const agent = new Agent({
 			getApiKey: () => "test-key",
@@ -73,8 +73,8 @@ describe("AgentSession safety-refusal retry", () => {
 		const sessionManager = SessionManager.inMemory();
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
-		const modelRegistry = ModelRegistry.create(authStorage, tempDir);
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
+		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null, allowModelNetwork: false });
 		settingsManager.applyOverrides({ retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } });
 
 		session = new AgentSession({
@@ -82,7 +82,7 @@ describe("AgentSession safety-refusal retry", () => {
 			sessionManager,
 			settingsManager,
 			cwd: tempDir,
-			modelRegistry,
+			modelRuntime,
 			resourceLoader: createTestResourceLoader(),
 		});
 		return session;
@@ -95,7 +95,7 @@ describe("AgentSession safety-refusal retry", () => {
 		// re-requested (not accepted as a final answer), and it must NOT reset the
 		// retry counter, so repeated refusals still honor maxRetries (issue #1608).
 		let callCount = 0;
-		createSession(() => {
+		await createSession(() => {
 			callCount++;
 			const stream = new MockAssistantStream();
 			queueMicrotask(() => {
@@ -139,8 +139,8 @@ describe("AgentSession safety-refusal retry", () => {
 		expect(assistantTexts).toEqual(["Recovered after canned refusals"]);
 	});
 
-	it("only detects tightly-guarded canned safety refusals", () => {
-		createSession(() => new MockAssistantStream());
+	it("only detects tightly-guarded canned safety refusals", async () => {
+		await createSession(() => new MockAssistantStream());
 		const probe = session as unknown as {
 			_isSafetyRefusal(message: AssistantMessage): boolean;
 		};

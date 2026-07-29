@@ -66,7 +66,7 @@ export class RpcSessionBinding {
 		// sessions instead of defaulting to 0.
 		const models = session.scopedModels.length > 0
 			? session.scopedModels.map((scoped) => scoped.model)
-			: session.modelRegistry.getAvailable();
+			: session.modelRuntime.getAvailableSnapshot();
 		this.footerDataProvider.setAvailableProviderCount(new Set(models.map((model) => model.provider)).size);
 
 		try {

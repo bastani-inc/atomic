@@ -2,34 +2,13 @@ import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { describe, expect, test } from "vitest";
 import type { AtomicProviderCompat } from "../src/index.ts";
 import { normalizeGrammarToolCapability } from "../src/core/model-capabilities.ts";
-import { loadBuiltInModels, mergeCompat } from "../src/core/model-registry-builtins.ts";
-import { validateModelsConfig } from "../src/core/model-registry-schemas.ts";
+import { ModelRuntime } from "../src/core/model-runtime.ts";
 
 function compatOf(model: Model<Api>): AtomicProviderCompat | undefined {
 	return model.compat as AtomicProviderCompat | undefined;
 }
 
 describe("constrained-sampling model capabilities", () => {
-	test("accepts strict and grammar capability metadata in layered model configuration", () => {
-		const config = {
-			providers: {
-				responses: {
-					baseUrl: "https://example.test/v1",
-					compat: {
-						supportsStrictMode: true,
-						supportsOpenAIGrammarTools: true,
-						supportsGrammarTools: true,
-					},
-				},
-				anthropic: {
-					baseUrl: "https://example.test",
-					compat: { supportsStrictTools: true, supportsTemperature: false, allowEmptySignature: true },
-				},
-			},
-		};
-		expect(validateModelsConfig.Check(config)).toBe(true);
-	});
-
 	test("maps the Atomic alias to pi-ai without changing unsupported or unknown metadata", () => {
 		const unknown = { supportsStrictMode: false } satisfies AtomicProviderCompat;
 		expect(normalizeGrammarToolCapability(undefined)).toBeUndefined();
@@ -53,28 +32,27 @@ describe("constrained-sampling model capabilities", () => {
 		).toEqual({ supportsOpenAIGrammarTools: false, supportsGrammarTools: false });
 	});
 
-	test("preserves strict capability fields while merging model overrides", () => {
-		const merged = mergeCompat(
-			{ supportsStrictMode: true, supportsOpenAIGrammarTools: true },
-			{ supportsStrictMode: false, supportsGrammarTools: true },
-		) as AtomicProviderCompat;
-		expect(merged).toEqual({
+	test("preserves unrelated strict capability fields while normalizing the grammar alias", () => {
+		expect(
+			normalizeGrammarToolCapability({ supportsStrictMode: false, supportsGrammarTools: true }),
+		).toEqual({
 			supportsStrictMode: false,
-			supportsOpenAIGrammarTools: true,
 			supportsGrammarTools: true,
+			supportsOpenAIGrammarTools: true,
 		});
 	});
 
-	test("mirrors verified generated grammar capability without enabling unknown models", () => {
-		const models = loadBuiltInModels(new Map(), new Map());
+	test("preserves pinned generated grammar capabilities without inventing the Atomic alias", async () => {
+		const runtime = await ModelRuntime.create({ modelsPath: null, allowModelNetwork: false });
+		const models = runtime.getModels();
 		const capable = models.find((model) => compatOf(model)?.supportsOpenAIGrammarTools === true);
 		expect(capable).toBeDefined();
-		expect(compatOf(capable!)?.supportsGrammarTools).toBe(true);
-
+		expect(compatOf(capable!)?.supportsGrammarTools).toBeUndefined();
 		const unknown = models.find((model) => compatOf(model)?.supportsOpenAIGrammarTools === undefined);
 		expect(unknown).toBeDefined();
 		expect(compatOf(unknown!)?.supportsGrammarTools).toBeUndefined();
 	});
+
 	test("public Atomic model compatibility type exposes the alias", () => {
 		const model = {
 			compat: normalizeGrammarToolCapability({ supportsGrammarTools: true }),

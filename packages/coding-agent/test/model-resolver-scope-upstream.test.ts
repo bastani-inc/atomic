@@ -1,7 +1,7 @@
 import type { Model } from "@earendil-works/pi-ai/compat";
 import { describe, expect, test } from "vitest";
 import { resolveModelScopeWithDiagnostics } from "../src/core/model-resolver.ts";
-import type { ModelRegistry } from "../src/core/model-registry.ts";
+import type { ModelRuntime } from "../src/core/model-runtime.ts";
 
 function model(id: string, provider = "openrouter"): Model<"openai-completions"> {
 	return {
@@ -18,12 +18,12 @@ function model(id: string, provider = "openrouter"): Model<"openai-completions">
 	};
 }
 
-function registry(models: Model<"openai-completions">[]): ModelRegistry {
-	return { getAvailable: () => models } as Pick<ModelRegistry, "getAvailable"> as ModelRegistry;
+function runtime(models: Model<"openai-completions">[]): ModelRuntime {
+	return { getAvailableSnapshot: () => models } as Pick<ModelRuntime, "getAvailableSnapshot"> as ModelRuntime;
 }
 
 async function resolve(patterns: string[], models: Model<"openai-completions">[]) {
-	return resolveModelScopeWithDiagnostics(patterns, registry(models));
+	return resolveModelScopeWithDiagnostics(patterns, runtime(models));
 }
 
 describe("upstream model scope resolution", () => {

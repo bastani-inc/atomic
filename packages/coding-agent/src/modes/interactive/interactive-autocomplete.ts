@@ -164,10 +164,10 @@ InteractiveModeBase.prototype.getCodexFastModeCandidateModels = function(this: I
     if (this.session.scopedModels.length > 0) {
       return this.session.scopedModels
         .map((scoped) => scoped.model)
-        .filter((model) => this.session.modelRegistry.hasConfiguredAuth(model));
+        .filter((model) => this.session.modelRuntime.hasConfiguredAuth(model.provider));
     }
 
-    return this.session.modelRegistry.getAvailable();
+    return [...this.session.modelRuntime.getAvailableSnapshot()];
   };
 
 InteractiveModeBase.prototype.hasCodexFastModeSupportedModels = function(this: InteractiveModeBase): boolean {
@@ -240,7 +240,7 @@ InteractiveModeBase.prototype.createBaseAutocompleteProvider = function(this: In
         const models =
           this.session.scopedModels.length > 0
             ? this.session.scopedModels.map((s) => s.model)
-            : this.session.modelRegistry.getAvailable();
+            : this.session.modelRuntime.getAvailableSnapshot();
 
         if (models.length === 0) return null;
 

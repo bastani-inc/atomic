@@ -22,7 +22,7 @@ import type { InlineExtension } from "./core/extensions/types.ts";
 import { DefaultPackageManager } from "./core/package-manager.ts";
 import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
 import { DefaultResourceLoader } from "./core/resource-loader.ts";
-import { ModelRegistry } from "./core/model-registry.ts";
+import { ModelRuntime } from "./core/model-runtime.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { hasProjectTrustInputs, ProjectTrustStore } from "./core/trust-manager.ts";
 import { spawnProcess } from "./utils/child-process.ts";
@@ -76,19 +76,17 @@ export async function refreshModelCatalogs(
 		if (!loaded) throw new Error("Model catalog refresh timed out.");
 		const authPaths = [join(agentDir, "auth.json"), ...getAgentConfigPaths("auth.json")]
 			.filter((path, index, paths) => paths.indexOf(path) === index);
-		const modelPaths = [join(agentDir, "models.json"), ...getAgentConfigPaths("models.json")]
-			.filter((path, index, paths) => paths.indexOf(path) === index);
-		const modelRegistry = ModelRegistry.create(AuthStorage.create(authPaths), modelPaths);
+		const modelRuntime = await ModelRuntime.create({ credentials: AuthStorage.create(authPaths), modelsPath: join(agentDir, "models.json") });
 		const extensionsResult = resourceLoader.getExtensions();
 		if (extensionsResult.errors.length > 0) {
 			const details = extensionsResult.errors.map(({ path, error }) => `${path}: ${error}`).join("; ");
 			throw new Error(`Could not load extensions for model catalog refresh: ${details}`);
 		}
 		for (const registration of extensionsResult.runtime.pendingProviderRegistrations) {
-			if ("provider" in registration) modelRegistry.registerProvider(registration.provider);
-			else modelRegistry.registerProvider(registration.name, registration.config);
+			if ("provider" in registration) modelRuntime.registerNativeProvider(registration.provider);
+			else modelRuntime.registerProvider(registration.name, registration.config);
 		}
-		const refresh = modelRegistry.refresh({ allowNetwork: true, force: true, signal: controller.signal });
+		const refresh = modelRuntime.refresh({ allowNetwork: true, force: true, signal: controller.signal });
 		const result = await Promise.race([refresh, aborted]);
 		if (!result || result.aborted) throw new Error("Model catalog refresh timed out.");
 		if (result.errors.size > 0) {

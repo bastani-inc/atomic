@@ -15,7 +15,7 @@ import { getModel } from "@earendil-works/pi-ai/compat";
 import { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
 import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
-import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
+import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { runVerbatimCompaction } from "../../packages/coding-agent/src/core/compaction/compaction-runner.js";
@@ -123,9 +123,11 @@ test("a fallback-rescued compaction leaves session model, thinking level, histor
 		return realContinue(...args);
 	}) as typeof agent.continue;
 
-	const authStorage = AuthStorage.inMemory();
-	authStorage.setRuntimeApiKey("anthropic", "anthropic-key");
-	authStorage.setRuntimeApiKey("openai", "openai-key");
+	const authStorage = AuthStorage.inMemory({
+		anthropic: { type: "api_key", key: "anthropic-key" },
+		openai: { type: "api_key", key: "openai-key" },
+	});
+	const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null });
 	const settingsManager = SettingsManager.inMemory();
 	// One transport attempt per candidate, so the ladder alone explains the calls.
 	settingsManager.applyOverrides({ retry: { enabled: false, maxRetries: 0, baseDelayMs: 0 } });
@@ -134,7 +136,7 @@ test("a fallback-rescued compaction leaves session model, thinking level, histor
 		sessionManager: manager,
 		settingsManager,
 		cwd: process.cwd(),
-		modelRegistry: ModelRegistry.create(authStorage),
+		modelRuntime,
 		resourceLoader: createTestResourceLoader(),
 		fallbackModels: ["openai/gpt-5.1"],
 	});

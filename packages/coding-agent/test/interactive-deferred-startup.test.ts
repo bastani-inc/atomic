@@ -4,6 +4,7 @@ import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+import { createInMemoryModelRegistry, createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 
 const claudeModel = {
 	provider: "anthropic",
@@ -38,9 +39,9 @@ describe("applyDeferredModelScope", () => {
 		const mode = {
 			options: { deferredModelScopePatterns: ["claude-*", "extension-only-*"] },
 			session: {
-				modelRegistry: {
-					getAvailable: vi.fn(async () => [claudeModel]),
-					find: vi.fn(),
+				modelRuntime: {
+					getAvailableSnapshot: vi.fn(() => [claudeModel]),
+					getModel: vi.fn(),
 					hasConfiguredAuth: vi.fn(() => true),
 				},
 				setScopedModels,
@@ -61,9 +62,9 @@ describe("applyDeferredModelScope", () => {
 		const mode = {
 			options: { deferredModelScopePatterns: ["claude-*:high"], deferredModelScopePreserveThinking: true },
 			session: {
-				modelRegistry: {
-					getAvailable: vi.fn(async () => [claudeModel]),
-					find: vi.fn(),
+				modelRuntime: {
+					getAvailableSnapshot: vi.fn(() => [claudeModel]),
+					getModel: vi.fn(),
 					hasConfiguredAuth: vi.fn(() => true),
 				},
 				setScopedModels: vi.fn(),
@@ -89,7 +90,7 @@ describe("retryDeferredModelRestore", () => {
 			sessionManager: { buildSessionContext: () => ({ model: undefined }) },
 			session: {
 				model: claudeModel,
-				modelRegistry: { hasConfiguredAuth: vi.fn(() => true) },
+				modelRuntime: { hasConfiguredAuth: vi.fn(() => true) },
 				setModel: vi.fn(),
 			},
 			showWarning: vi.fn(),
@@ -97,12 +98,12 @@ describe("retryDeferredModelRestore", () => {
 
 		await InteractiveMode.prototype.retryDeferredModelRestore.call(mode as never);
 
-		expect(mode.session.modelRegistry.hasConfiguredAuth).toHaveBeenCalledWith(claudeModel);
+		expect(mode.session.modelRuntime.hasConfiguredAuth).toHaveBeenCalledWith(claudeModel.provider);
 		expect(mode.showWarning).not.toHaveBeenCalled();
 	});
 
 	it("selects an exact settings default registered during deferred extension loading", async () => {
-		const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+		const registry = await createInMemoryModelRegistry(AuthStorage.inMemory());
 		registerExtensionModel(registry, "deferred-extension", "deferred-model");
 		const settingsManager = SettingsManager.inMemory({
 			defaultProvider: "deferred-extension",
@@ -116,7 +117,7 @@ describe("retryDeferredModelRestore", () => {
 			options: { modelFallbackMessage: genericUnsupportedWarning },
 			settingsManager,
 			sessionManager: { buildSessionContext: () => ({ model: undefined }) },
-			session: { model: undefined, modelRegistry: registry, setModel, setThinkingLevel },
+			session: { model: undefined, modelRuntime: getModelRuntime(registry), setModel, setThinkingLevel },
 			showWarning,
 		};
 
@@ -129,8 +130,8 @@ describe("retryDeferredModelRestore", () => {
 
 	it("uses normal fallback after a model-less extension provider registers", async () => {
 		const authStorage = AuthStorage.inMemory();
-		authStorage.setRuntimeApiKey("openai", "test-key");
-		const registry = ModelRegistry.inMemory(authStorage);
+		await authStorage.modify("openai", async () => ({ type: "api_key", key: "test-key" }));
+		const registry = await createInMemoryModelRegistry(authStorage);
 		registry.registerProvider("deferred-extension", {
 			api: "openai-completions",
 			streamSimple: () => {
@@ -147,7 +148,7 @@ describe("retryDeferredModelRestore", () => {
 			options: { modelFallbackMessage: genericUnsupportedWarning },
 			settingsManager,
 			sessionManager: { buildSessionContext: () => ({ model: undefined }) },
-			session: { model: undefined, modelRegistry: registry, setModel, setThinkingLevel: vi.fn() },
+			session: { model: undefined, modelRuntime: getModelRuntime(registry), setModel, setThinkingLevel: vi.fn() },
 			showWarning,
 		};
 
@@ -160,8 +161,8 @@ describe("retryDeferredModelRestore", () => {
 
 	it("publishes the final generic warning when the settings provider remains unsupported", async () => {
 		const authStorage = AuthStorage.inMemory();
-		authStorage.setRuntimeApiKey("openai", "test-key");
-		const registry = ModelRegistry.inMemory(authStorage);
+		await authStorage.modify("openai", async () => ({ type: "api_key", key: "test-key" }));
+		const registry = await createInMemoryModelRegistry(authStorage);
 		const settingsManager = SettingsManager.inMemory({
 			defaultProvider: "absent-extension",
 			defaultModel: "missing-model",
@@ -172,7 +173,7 @@ describe("retryDeferredModelRestore", () => {
 			options: { modelFallbackMessage: genericUnsupportedWarning },
 			settingsManager,
 			sessionManager: { buildSessionContext: () => ({ model: undefined }) },
-			session: { model: undefined, modelRegistry: registry, setModel, setThinkingLevel: vi.fn() },
+			session: { model: undefined, modelRuntime: getModelRuntime(registry), setModel, setThinkingLevel: vi.fn() },
 			showWarning,
 		};
 
@@ -183,7 +184,7 @@ describe("retryDeferredModelRestore", () => {
 	});
 
 	it("uses ordinary no-model guidance for a supported provider when nothing is available", async () => {
-		const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+		const registry = await createInMemoryModelRegistry(AuthStorage.inMemory());
 		registry.registerProvider("deferred-extension", {
 			api: "openai-completions",
 			streamSimple: () => {
@@ -199,7 +200,7 @@ describe("retryDeferredModelRestore", () => {
 			options: { modelFallbackMessage: genericUnsupportedWarning },
 			settingsManager,
 			sessionManager: { buildSessionContext: () => ({ model: undefined }) },
-			session: { model: undefined, modelRegistry: registry, setModel: vi.fn(), setThinkingLevel: vi.fn() },
+			session: { model: undefined, modelRuntime: getModelRuntime(registry), setModel: vi.fn(), setThinkingLevel: vi.fn() },
 			showWarning,
 		};
 
@@ -227,10 +228,10 @@ describe("retryDeferredModelRestore", () => {
 			},
 			session: {
 				model: sameProviderTemplate,
-				modelRegistry: {
-					find: vi.fn(() => exactModel),
-					getAvailable: vi.fn(async () => [sameProviderTemplate]),
-					hasConfiguredAuth: vi.fn((model) => model !== exactModel),
+				modelRuntime: {
+					getModel: vi.fn(() => exactModel),
+					getAvailableSnapshot: vi.fn(() => [sameProviderTemplate]),
+					hasConfiguredAuth: vi.fn(() => false),
 				},
 				setModel,
 			},
@@ -239,7 +240,7 @@ describe("retryDeferredModelRestore", () => {
 
 		await InteractiveMode.prototype.retryDeferredModelRestore.call(mode as never);
 
-		expect(mode.session.modelRegistry.getAvailable).not.toHaveBeenCalled();
+		expect(mode.session.modelRuntime.getAvailableSnapshot).not.toHaveBeenCalled();
 		expect(setModel).not.toHaveBeenCalled();
 		expect(showWarning).toHaveBeenCalledWith("Could not restore saved model", undefined);
 	});

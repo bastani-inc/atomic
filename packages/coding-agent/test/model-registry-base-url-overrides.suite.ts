@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { ModelRegistry } from "../src/core/model-registry.ts";
+import { createModelRegistry } from "./model-runtime-test-utils.ts";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
 
 
@@ -15,12 +15,12 @@ describeModelRegistry((context) => {
 		emptyContext,
 	} = context;
 	describe("baseUrl override (no custom models)", () => {
-		test("overriding baseUrl keeps all built-in models", () => {
+		test("overriding baseUrl keeps all built-in models", async () => {
 			writeRawModelsJson({
 				anthropic: overrideConfig("https://my-proxy.example.com/v1"),
 			});
 
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 			const anthropicModels = getModelsForProvider(registry, "anthropic");
 
 			// Should have multiple built-in models, not just one
@@ -28,12 +28,12 @@ describeModelRegistry((context) => {
 			expect(anthropicModels.some((m) => m.id.includes("claude"))).toBe(true);
 		});
 
-		test("overriding baseUrl changes URL on all built-in models", () => {
+		test("overriding baseUrl changes URL on all built-in models", async () => {
 			writeRawModelsJson({
 				anthropic: overrideConfig("https://my-proxy.example.com/v1"),
 			});
 
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 			const anthropicModels = getModelsForProvider(registry, "anthropic");
 
 			// All models should have the new baseUrl
@@ -49,7 +49,7 @@ describeModelRegistry((context) => {
 				}),
 			});
 
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 			const anthropicModels = getModelsForProvider(registry, "anthropic");
 
 			for (const model of anthropicModels) {
@@ -70,7 +70,7 @@ describeModelRegistry((context) => {
 				},
 			});
 
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 			expect(registry.getError()).toBeUndefined();
 			const anthropicModels = getModelsForProvider(registry, "anthropic");
 
@@ -83,14 +83,14 @@ describeModelRegistry((context) => {
 			}
 		});
 
-		test("models.json baseUrl override wins over GitHub Copilot env routing", () => {
+		test("models.json baseUrl override wins over GitHub Copilot env routing", async () => {
 			const previous = process.env.COPILOT_GITHUB_TOKEN;
 			process.env.COPILOT_GITHUB_TOKEN = "github_pat_enterprise";
 			try {
 				writeRawModelsJson({
 					"github-copilot": overrideConfig("https://copilot-proxy.example.com"),
 				});
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 				const model = registry.find("github-copilot", "gpt-5.5");
 
 				expect(model?.baseUrl).toBe("https://copilot-proxy.example.com");
@@ -109,7 +109,7 @@ describeModelRegistry((context) => {
 				},
 			});
 
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 			const model = registry.find("github-copilot", "gpt-5.5");
 			expect(model).toBeDefined();
 
@@ -134,7 +134,7 @@ describeModelRegistry((context) => {
 				},
 			});
 
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 			const model = registry.find("github-copilot", "gpt-5.5");
 			expect(model).toBeDefined();
 
@@ -145,12 +145,12 @@ describeModelRegistry((context) => {
 			}
 		});
 
-		test("baseUrl-only override does not affect other providers", () => {
+		test("baseUrl-only override does not affect other providers", async () => {
 			writeRawModelsJson({
 				anthropic: overrideConfig("https://my-proxy.example.com/v1"),
 			});
 
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 			const googleModels = getModelsForProvider(registry, "google");
 
 			// Google models should still have their original baseUrl
@@ -158,7 +158,7 @@ describeModelRegistry((context) => {
 			expect(googleModels[0].baseUrl).not.toBe("https://my-proxy.example.com/v1");
 		});
 
-		test("can mix baseUrl override and models merge", () => {
+		test("can mix baseUrl override and models merge", async () => {
 			writeRawModelsJson({
 				// baseUrl-only for anthropic
 				anthropic: overrideConfig("https://anthropic-proxy.example.com/v1"),
@@ -170,7 +170,7 @@ describeModelRegistry((context) => {
 				),
 			});
 
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 
 			// Anthropic: multiple built-in models with new baseUrl
 			const anthropicModels = getModelsForProvider(registry, "anthropic");
@@ -187,7 +187,7 @@ describeModelRegistry((context) => {
 			writeRawModelsJson({
 				anthropic: overrideConfig("https://first-proxy.example.com/v1"),
 			});
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 
 			expect(getModelsForProvider(registry, "anthropic")[0].baseUrl).toBe("https://first-proxy.example.com/v1");
 

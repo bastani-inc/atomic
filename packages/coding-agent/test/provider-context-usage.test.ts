@@ -12,6 +12,7 @@ import { getLatestCompactionBoundaryEntry, SessionManager } from "../src/core/se
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createTestResourceLoader } from "./utilities.ts";
 import { appendTestCompaction } from "./verbatim-compaction-test-helpers.ts";
+import { createInMemoryModelRegistry, createModelRegistry } from "./model-runtime-test-utils.ts";
 
 const model = getModel("anthropic", "claude-sonnet-4-5")!;
 
@@ -84,12 +85,12 @@ describe("provider-bound context usage", () => {
 		sessionManager.appendMessage(createUserMessage("continue", Date.now() + 1));
 
 		const authStorage = AuthStorage.inMemory();
-		authStorage.setRuntimeApiKey(model.provider, "test-key");
+		await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "test-key" }));
 		const { session } = await createAgentSession({
 			cwd,
 			model,
 			authStorage,
-			modelRegistry: ModelRegistry.inMemory(authStorage),
+			modelRegistry: await createInMemoryModelRegistry(authStorage),
 			settingsManager: SettingsManager.inMemory(),
 			sessionManager,
 			resourceLoader: createTestResourceLoader(),

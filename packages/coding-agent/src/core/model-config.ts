@@ -1,6 +1,11 @@
+/** Immutable, credential-blind models.json snapshot. */
+
+import { readFile } from "node:fs/promises";
 import { type Static, Type } from "typebox";
 import { Compile } from "typebox/compile";
 import type { TLocalizedValidationError } from "typebox/error";
+import { stripJsonComments } from "../utils/json.ts";
+import { normalizePath } from "../utils/paths.ts";
 
 const PercentileCutoffsSchema = Type.Object({
 	p50: Type.Optional(Type.Number()),
@@ -56,34 +61,13 @@ const ThinkingLevelMapSchema = Type.Object({
 	xhigh: Type.Optional(ThinkingLevelMapValueSchema),
 	max: Type.Optional(ThinkingLevelMapValueSchema),
 });
+
 const ChatTemplateKwargScalarSchema = Type.Union([Type.String(), Type.Number(), Type.Boolean(), Type.Null()]);
 const ChatTemplateKwargVariableSchema = Type.Object({
 	$var: Type.Union([Type.Literal("thinking.enabled"), Type.Literal("thinking.effort")]),
 	omitWhenOff: Type.Optional(Type.Boolean()),
 });
 const ChatTemplateKwargSchema = Type.Union([ChatTemplateKwargScalarSchema, ChatTemplateKwargVariableSchema]);
-
-const ModelCostRatesSchema = Type.Object({
-	input: Type.Number(),
-	output: Type.Number(),
-	cacheRead: Type.Number(),
-	cacheWrite: Type.Number(),
-});
-const ModelCostTierSchema = Type.Intersect([
-	ModelCostRatesSchema,
-	Type.Object({ inputTokensAbove: Type.Number() }),
-]);
-const ModelCostSchema = Type.Intersect([
-	ModelCostRatesSchema,
-	Type.Object({ tiers: Type.Optional(Type.Array(ModelCostTierSchema)) }),
-]);
-const ModelCostOverrideSchema = Type.Object({
-	input: Type.Optional(Type.Number()),
-	output: Type.Optional(Type.Number()),
-	cacheRead: Type.Optional(Type.Number()),
-	cacheWrite: Type.Optional(Type.Number()),
-	tiers: Type.Optional(Type.Array(ModelCostTierSchema)),
-});
 
 const OpenAICompletionsCompatSchema = Type.Object({
 	supportsStore: Type.Optional(Type.Boolean()),
@@ -113,10 +97,8 @@ const OpenAICompletionsCompatSchema = Type.Object({
 	cacheControlFormat: Type.Optional(Type.Literal("anthropic")),
 	openRouterRouting: Type.Optional(OpenRouterRoutingSchema),
 	vercelGatewayRouting: Type.Optional(VercelGatewayRoutingSchema),
-	supportsStrictMode: Type.Optional(Type.Boolean()),
 	supportsOpenAIGrammarTools: Type.Optional(Type.Boolean()),
-	/** Atomic compatibility alias for supportsOpenAIGrammarTools. */
-	supportsGrammarTools: Type.Optional(Type.Boolean()),
+	supportsStrictMode: Type.Optional(Type.Boolean()),
 	sendSessionAffinityHeaders: Type.Optional(Type.Boolean()),
 	deferredToolsMode: Type.Optional(Type.Literal("kimi")),
 	sessionAffinityFormat: Type.Optional(
@@ -133,8 +115,6 @@ const OpenAIResponsesCompatSchema = Type.Object({
 	supportsLongCacheRetention: Type.Optional(Type.Boolean()),
 	supportsStrictMode: Type.Optional(Type.Boolean()),
 	supportsOpenAIGrammarTools: Type.Optional(Type.Boolean()),
-	/** Atomic compatibility alias for supportsOpenAIGrammarTools. */
-	supportsGrammarTools: Type.Optional(Type.Boolean()),
 	supportsToolSearch: Type.Optional(Type.Boolean()),
 });
 
@@ -156,6 +136,21 @@ const ProviderCompatSchema = Type.Union([
 	AnthropicMessagesCompatSchema,
 ]);
 
+const ModelCostRatesSchema = {
+	input: Type.Number(),
+	output: Type.Number(),
+	cacheRead: Type.Number(),
+	cacheWrite: Type.Number(),
+};
+const ModelCostTierSchema = Type.Object({
+	inputTokensAbove: Type.Number(),
+	...ModelCostRatesSchema,
+});
+const ModelCostSchema = Type.Object({
+	...ModelCostRatesSchema,
+	tiers: Type.Optional(Type.Array(ModelCostTierSchema)),
+});
+
 const ModelDefinitionSchema = Type.Object({
 	id: Type.String({ minLength: 1 }),
 	name: Type.Optional(Type.String({ minLength: 1 })),
@@ -176,14 +171,20 @@ const ModelOverrideSchema = Type.Object({
 	reasoning: Type.Optional(Type.Boolean()),
 	thinkingLevelMap: Type.Optional(ThinkingLevelMapSchema),
 	input: Type.Optional(Type.Array(Type.Union([Type.Literal("text"), Type.Literal("image")]))),
-	cost: Type.Optional(ModelCostOverrideSchema),
+	cost: Type.Optional(
+		Type.Object({
+			input: Type.Optional(Type.Number()),
+			output: Type.Optional(Type.Number()),
+			cacheRead: Type.Optional(Type.Number()),
+			cacheWrite: Type.Optional(Type.Number()),
+			tiers: Type.Optional(Type.Array(ModelCostTierSchema)),
+		}),
+	),
 	contextWindow: Type.Optional(Type.Number()),
 	maxTokens: Type.Optional(Type.Number()),
 	headers: Type.Optional(Type.Record(Type.String(), Type.String())),
 	compat: Type.Optional(ProviderCompatSchema),
 });
-
-export type ModelOverride = Static<typeof ModelOverrideSchema>;
 
 const ProviderConfigSchema = Type.Object({
 	name: Type.Optional(Type.String({ minLength: 1 })),
@@ -201,12 +202,14 @@ const ProviderConfigSchema = Type.Object({
 const ModelsConfigSchema = Type.Object({
 	providers: Type.Record(Type.String(), ProviderConfigSchema),
 });
+const validateModelsConfig = Compile(ModelsConfigSchema);
 
-export const validateModelsConfig = Compile(ModelsConfigSchema);
+export type ModelsJsonModel = Static<typeof ModelDefinitionSchema>;
+export type ModelsJsonModelOverride = Static<typeof ModelOverrideSchema>;
+export type ModelsJsonProvider = Static<typeof ProviderConfigSchema>;
+type ModelsJson = Static<typeof ModelsConfigSchema>;
 
-export type ModelsConfig = Static<typeof ModelsConfigSchema>;
-
-export function formatValidationPath(error: TLocalizedValidationError): string {
+function formatValidationPath(error: TLocalizedValidationError): string {
 	if (error.keyword === "required") {
 		const requiredProperties = (error.params as { requiredProperties?: string[] }).requiredProperties;
 		const requiredProperty = requiredProperties?.[0];
@@ -219,8 +222,72 @@ export function formatValidationPath(error: TLocalizedValidationError): string {
 	return path || "root";
 }
 
-export function stripJsonComments(input: string): string {
-	return input
-		.replace(/"(?:\\.|[^"\\])*"|\/\/[^\n]*/g, (m) => (m[0] === '"' ? m : ""))
-		.replace(/"(?:\\.|[^"\\])*"|,(\s*[}\]])/g, (m, tail) => tail ?? (m[0] === '"' ? m : ""));
+function deepFreeze<T>(value: T): T {
+	if (typeof value !== "object" || value === null || Object.isFrozen(value)) return value;
+	for (const child of Object.values(value)) deepFreeze(child);
+	return Object.freeze(value);
+}
+
+/** One immutable load of models.json. */
+export class ModelConfig {
+	private readonly providers: ReadonlyMap<string, ModelsJsonProvider>;
+	private readonly error: string | undefined;
+
+	private constructor(providers: ReadonlyMap<string, ModelsJsonProvider>, error?: string) {
+		this.providers = providers;
+		this.error = error;
+	}
+
+	static async load(modelsJsonPath: string | undefined): Promise<ModelConfig> {
+		if (!modelsJsonPath) return new ModelConfig(new Map());
+		const path = normalizePath(modelsJsonPath);
+		let content: string;
+		try {
+			content = await readFile(path, "utf-8");
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return new ModelConfig(new Map());
+			return new ModelConfig(
+				new Map(),
+				`Failed to load models.json: ${error instanceof Error ? error.message : error}\n\nFile: ${path}`,
+			);
+		}
+
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(stripJsonComments(content));
+		} catch (error) {
+			return new ModelConfig(
+				new Map(),
+				`Failed to parse models.json: ${error instanceof Error ? error.message : error}\n\nFile: ${path}`,
+			);
+		}
+
+		if (!validateModelsConfig.Check(parsed)) {
+			const errors =
+				validateModelsConfig
+					.Errors(parsed)
+					.map((error) => `  - ${formatValidationPath(error)}: ${error.message}`)
+					.join("\n") || "Unknown schema error";
+			return new ModelConfig(new Map(), `Invalid models.json schema:\n${errors}\n\nFile: ${path}`);
+		}
+
+		const config = parsed as ModelsJson;
+		const providers = new Map<string, ModelsJsonProvider>();
+		for (const [providerId, provider] of Object.entries(config.providers)) {
+			providers.set(providerId, deepFreeze(structuredClone(provider)));
+		}
+		return new ModelConfig(providers);
+	}
+
+	getProvider(providerId: string): ModelsJsonProvider | undefined {
+		return this.providers.get(providerId);
+	}
+
+	getProviderIds(): readonly string[] {
+		return [...this.providers.keys()];
+	}
+
+	getError(): string | undefined {
+		return this.error;
+	}
 }

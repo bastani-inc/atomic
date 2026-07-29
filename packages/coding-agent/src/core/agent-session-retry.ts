@@ -16,7 +16,7 @@ function modelLabel(model: Model<Api> | undefined): string {
 function resolveFallbackModel(this: AgentSession, value: string): { model: Model<Api>; thinkingLevel?: ThinkingLevel } | undefined {
 	return resolveConfiguredFallbackModel(
 		value,
-		this._modelRegistry,
+		this._modelRuntime,
 		this.model?.provider ?? this.settingsManager.getDefaultProvider(),
 	);
 }

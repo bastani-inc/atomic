@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Replaced Atomic's legacy extension OAuth registration bridge with provider-owned authentication from `@earendil-works/pi-ai`. Extensions must declare OAuth or API-key authentication on their provider registration; the removed global `registerOAuthProvider`, `registerLegacyOAuthProvider`, `getLegacyOAuthProvider`, and `refreshLegacyOAuth` hooks, plus custom API-key login hooks beyond pi's provider contract, are no longer available.
+- Model configuration now follows pi's single-file `ModelConfig` contract. Atomic no longer layers or merges `.pi` and `.atomic` `models.json` files; the active Atomic agent directory supplies one `models.json` file, while the existing agent-directory fallback still supports legacy installations.
+- Interactive `/model` reloads and post-login catalog refreshes are now unbounded, matching pi. `modelRefreshTimeoutMs` applies only to the initial runtime creation refresh, so callers that require cancellation after startup must provide their own abort signal.
+
+### Changed
+
+- Adopted pi's provider-owned `ModelRuntime` architecture for model composition, credentials, streaming, and catalog refresh. `ModelRegistry` is now the thin synchronous extension-compatibility facade used by pi, while coding-agent, SDK, RPC, isolated-engine, workflow, and MCP internals consume `ModelRuntime` directly.
+
 ### Fixed
 
 - Fixed OAuth logins being destroyed by an unrelated model-catalog refresh, matching upstream pi's behavior. After a successful `/login`, a timed-out (aborted) or partially failed catalog refresh threw `Model refresh aborted after OAuth login` and rolled the freshly acquired tokens back to the previous credential. Because providers rotate refresh tokens, that rollback could permanently strand a server-side-invalidated credential — every send then failed with `invalid_grant` ("Refresh token not found or invalid") and every re-login was rolled back again, typically on machines with slow routes to catalog endpoints. Freshly persisted OAuth credentials now always survive the post-login refresh: per-provider refresh errors and refresh timeouts no longer fail the login in either the direct interactive or isolated-engine path, and models fall back to the cached snapshot.

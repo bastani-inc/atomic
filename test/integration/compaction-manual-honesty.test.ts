@@ -27,7 +27,7 @@ function diagnostics(directory: string): string[] {
 test("manual compaction with every model rate limited reports a real diagnostic path", async () => {
 	const directory = mkdtempSync(join(tmpdir(), "compaction-manual-honesty-"));
 	const { streamFn, calls } = plannerScript({ anthropic: [THROTTLED], openai: [THROTTLED] });
-	const built = createRungSession({
+	const built = await createRungSession({
 		streamFn,
 		fallbackModels: ["openai/gpt-5.1"],
 		sessionDir: directory,
@@ -79,7 +79,7 @@ test("an over-limit post-tool context with a tiny region persists a fresh bounda
 	// Two seeded turns leave fewer than the planner minimum of compactable lines,
 	// while the reported usage puts the whole context past the hard input limit.
 	const { streamFn, calls } = plannerScript({ default: [{ text: "1,2\n" }] });
-	const built = createRungSession({
+	const built = await createRungSession({
 		streamFn,
 		turns: 2,
 		contextWindow: 4_000,
@@ -122,7 +122,7 @@ test("a fitting post-tool threshold crossing with a tiny region is a safe no-op"
 	// Clearing a sub-minimum region here would destroy conversation for nothing;
 	// the follow-up provider request can be sent unchanged.
 	const { streamFn, calls } = plannerScript({ default: [{ text: "1,2\n" }] });
-	const built = createRungSession({
+	const built = await createRungSession({
 		streamFn,
 		turns: 2,
 		contextWindow: 1_000_000,
@@ -161,7 +161,7 @@ test("a fitting post-tool threshold crossing with a tiny region is a safe no-op"
 
 test("an over-hard-limit post-tool crossing with a tiny region reaches fresh", async () => {
 	const { streamFn, calls } = plannerScript({ default: [{ text: "1,2\n" }] });
-	const built = createRungSession({
+	const built = await createRungSession({
 		streamFn,
 		turns: 2,
 		contextWindow: 4_000,
@@ -190,7 +190,7 @@ test("an over-hard-limit post-tool crossing with a tiny region reaches fresh", a
 
 test("real overflow recovery keeps fresh reachable for a tiny region", async () => {
 	const { streamFn, calls } = plannerScript({ default: [{ text: "1,2\n" }] });
-	const built = createRungSession({ streamFn, turns: 2, contextWindow: 1_000_000 });
+	const built = await createRungSession({ streamFn, turns: 2, contextWindow: 1_000_000 });
 	try {
 		const runAutoCompaction = (
 			built.session as unknown as {
@@ -210,7 +210,7 @@ test("real overflow recovery keeps fresh reachable for a tiny region", async () 
 
 test("a small recoverable region is still refused, never cleared", async () => {
 	const { streamFn, calls } = plannerScript({ default: [{ text: "1,2\n" }] });
-	const built = createRungSession({ streamFn, turns: 2 });
+	const built = await createRungSession({ streamFn, turns: 2 });
 	try {
 		const apply = (
 			built.session as unknown as {
@@ -238,7 +238,7 @@ test("a caller cannot inject load_bearing urgency through the public compact doo
 	// `session.compact()` projects only compaction parameters, so a widened or
 	// cast object cannot smuggle urgency in and reach the destructive rung.
 	const { streamFn, calls } = plannerScript({ anthropic: [THROTTLED] });
-	const built = createRungSession({ streamFn });
+	const built = await createRungSession({ streamFn });
 	try {
 		const injected = { preserve_recent: 2, urgency: "load_bearing" } as unknown as { preserve_recent: number };
 		await assert.rejects(() => built.session.compact(injected), /429 Too Many Requests/);

@@ -119,7 +119,7 @@ export function _refreshCurrentModelFromRegistry(this: AgentSession): void {
 		return;
 	}
 
-	const refreshedModel = this._modelRegistry.find(currentModel.provider, currentModel.id);
+	const refreshedModel = this._modelRuntime.getModel(currentModel.provider, currentModel.id);
 	if (!refreshedModel || refreshedModel === currentModel) {
 		return;
 	}
@@ -212,7 +212,7 @@ export function _bindExtensionCore(this: AgentSession, runner: ExtensionRunner):
 			refreshTools: () => this._refreshToolRegistry(),
 			getCommands,
 			setModel: async (model) => {
-				if (!this.modelRegistry.hasConfiguredAuth(model)) return false;
+				if (!this.modelRuntime.hasConfiguredAuth(model.provider)) return false;
 				await this.setModel(model);
 				return true;
 			},
@@ -251,12 +251,12 @@ export function _bindExtensionCore(this: AgentSession, runner: ExtensionRunner):
 		},
 		{
 			registerProvider: (providerOrName, config) => {
-				if (typeof providerOrName === "string") this._modelRegistry.registerProvider(providerOrName, config!);
-				else this._modelRegistry.registerProvider(providerOrName);
+				if (typeof providerOrName === "string") this._modelRuntime.registerProvider(providerOrName, config!);
+				else this._modelRuntime.registerNativeProvider(providerOrName);
 				this.refreshCurrentModelFromRegistry();
 			},
 			unregisterProvider: (name) => {
-				this._modelRegistry.unregisterProvider(name);
+				this._modelRuntime.unregisterProvider(name);
 				this.refreshCurrentModelFromRegistry();
 			},
 		},

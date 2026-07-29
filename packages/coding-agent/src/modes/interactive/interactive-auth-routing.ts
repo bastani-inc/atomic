@@ -1,5 +1,5 @@
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
-import type { AuthStatus } from "../../core/auth-storage.ts";
+import type { AuthStatus } from "../../core/provider-composer.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
   type AuthSelectorProvider,
@@ -38,66 +38,26 @@ InteractiveModeBase.prototype.getLoginProviderOptions = function(
   this: InteractiveModeBase,
   authType?: "oauth" | "api_key",
 ): AuthSelectorProvider[] {
-  const authStorage = this.session.modelRegistry.authStorage;
-  const oauthProviders = authStorage.getOAuthProviders();
-  const options: AuthSelectorProvider[] = oauthProviders.map((provider) => ({
-    id: provider.id,
-    name: this.session.modelRegistry.getProviderDisplayName(provider.id),
-    authType: "oauth",
-  }));
-
-  const builtins = builtinProviders();
-  const builtinIds = new Set(builtins.map((provider) => provider.id));
-  options.push(...getBuiltinApiKeyLoginOptions(
-    (providerId) => this.session.modelRegistry.getProviderDisplayName(providerId),
-  ));
-  const customApiKeyProviders = this.session.modelRegistry.getCustomApiKeyAuthProviders();
-  const customApiKeyProviderIds = new Set(customApiKeyProviders.map((provider) => provider.id));
-  options.push(...customApiKeyProviders.map((provider) => ({
-    ...provider,
-    authType: "api_key" as const,
-  })));
-
-  // Legacy extension/config providers do not expose pi-ai auth metadata. Keep
-  // Atomic's existing API-key behavior for model-backed, non-OAuth providers.
-  const oauthProviderIds = new Set(oauthProviders.map((provider) => provider.id));
-  const modelProviderIds = new Set(
-    this.session.modelRegistry.getAll().map((model) => model.provider),
-  );
-  for (const providerId of modelProviderIds) {
-    if (builtinIds.has(providerId) || oauthProviderIds.has(providerId) || customApiKeyProviderIds.has(providerId)) continue;
-    options.push({
-      id: providerId,
-      name: this.session.modelRegistry.getProviderDisplayName(providerId),
-      authType: "api_key",
-    });
+  const options: AuthSelectorProvider[] = [];
+  for (const provider of this.session.modelRuntime.getProviders()) {
+    if (provider.auth.oauth) options.push({ id: provider.id, name: provider.name ?? provider.id, authType: "oauth" });
+    if (provider.auth.apiKey) options.push({ id: provider.id, name: provider.name ?? provider.id, authType: "api_key" });
   }
-
-  const filtered = authType
-    ? options.filter((option) => option.authType === authType)
-    : options;
-  return filtered.sort((a, b) => a.name.localeCompare(b.name));
+  return (authType ? options.filter((option) => option.authType === authType) : options)
+    .sort((a, b) => a.name.localeCompare(b.name));
 };
 
 InteractiveModeBase.prototype.getLogoutProviderOptions = function(
   this: InteractiveModeBase,
 ): AuthSelectorProvider[] {
-  const authStorage = this.session.modelRegistry.authStorage;
-  const supportedProviderIds = new Set(
-    this.getLoginProviderOptions().map((provider) => provider.id),
-  );
-  const options: AuthSelectorProvider[] = [];
-  for (const providerId of authStorage.list()) {
-    if (!supportedProviderIds.has(providerId)) continue;
-    const credential = authStorage.get(providerId);
-    if (!credential) continue;
-    options.push({
-      id: providerId,
-      name: this.session.modelRegistry.getProviderDisplayName(providerId),
-      authType: credential.type,
-    });
-  }
-  return options.sort((a, b) => a.name.localeCompare(b.name));
+  return this.session.modelRuntime.getProviders()
+    .filter((provider) => this.session.modelRuntime.getProviderAuthStatus(provider.id).source === "stored")
+    .map((provider) => ({
+      id: provider.id,
+      name: provider.name ?? provider.id,
+      authType: this.session.modelRuntime.isUsingOAuth(provider.id) ? "oauth" as const : "api_key" as const,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 };
 
 InteractiveModeBase.prototype.startProviderLogin = async function(
@@ -186,7 +146,7 @@ InteractiveModeBase.prototype.showLoginProviderSelector = function(
   this.showSelector((done) => {
     const selector = new OAuthSelectorComponent(
       "login",
-      this.session.modelRegistry.authStorage,
+      this.session.modelRuntime,
       providerOptions,
       async (providerId, selectedAuthType) => {
         done();
@@ -201,7 +161,7 @@ InteractiveModeBase.prototype.showLoginProviderSelector = function(
         if (authType) this.showLoginAuthTypeSelector();
         else this.ui.requestRender();
       },
-      (providerId) => this.session.modelRegistry.getProviderAuthStatus(providerId),
+      (providerId) => this.session.modelRuntime.getProviderAuthStatus(providerId),
       initialSearchInput,
     );
     return { component: selector, focus: selector };
@@ -226,7 +186,7 @@ InteractiveModeBase.prototype.showOAuthSelector = async function(
   this.showSelector((done) => {
     const selector = new OAuthSelectorComponent(
       mode,
-      this.session.modelRegistry.authStorage,
+      this.session.modelRuntime,
       providerOptions,
       async (providerId, selectedAuthType) => {
         done();

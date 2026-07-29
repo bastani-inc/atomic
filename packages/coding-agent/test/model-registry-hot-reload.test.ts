@@ -1,9 +1,11 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { TUI } from "@earendil-works/pi-tui";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import { ModelRegistry } from "../src/core/model-registry.ts";
+import { ModelRuntime } from "../src/core/model-runtime.ts";
+import type { SettingsManager } from "../src/core/settings-manager.ts";
 import { ModelSelectorComponent } from "../src/modes/interactive/components/model-selector.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
@@ -15,7 +17,7 @@ afterEach(() => {
 function writeModels(path: string, ids: string[]): void {
 	writeFileSync(path, JSON.stringify({
 		providers: {
-			layered: {
+			configured: {
 				api: "openai-completions",
 				baseUrl: "https://example.test/v1",
 				apiKey: "local",
@@ -25,38 +27,39 @@ function writeModels(path: string, ids: string[]): void {
 	}));
 }
 
-describe("model registry layered hot reload", () => {
-	test("reloads legacy and primary models.json layers on every refresh", async () => {
+describe("model config hot reload", () => {
+	test("reloads the configured models.json file on every refresh", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "atomic-model-reload-"));
 		tempDirs.push(directory);
-		const legacy = join(directory, "legacy-models.json");
-		const primary = join(directory, "primary-models.json");
-		writeModels(legacy, ["legacy"]);
-		writeModels(primary, ["primary-before"]);
-		const registry = ModelRegistry.create(AuthStorage.inMemory(), [legacy, primary]);
-		expect(registry.find("layered", "legacy")).toBeDefined();
-		expect(registry.find("layered", "primary-before")).toBeDefined();
+		const modelsPath = join(directory, "models.json");
+		writeModels(modelsPath, ["before"]);
+		const runtime = await ModelRuntime.create({
+			credentials: AuthStorage.inMemory(),
+			modelsPath,
+			allowModelNetwork: false,
+		});
+		expect(runtime.getModel("configured", "before")).toBeDefined();
 
-		writeModels(primary, ["primary-after"]);
-		await registry.refresh({ allowNetwork: false });
+		writeModels(modelsPath, ["after"]);
+		await runtime.refresh({ allowNetwork: false });
 
-		expect(registry.find("layered", "legacy")).toBeDefined();
-		expect(registry.find("layered", "primary-before")).toBeUndefined();
-		expect(registry.find("layered", "primary-after")).toBeDefined();
+		expect(runtime.getModel("configured", "before")).toBeUndefined();
+		expect(runtime.getModel("configured", "after")).toBeDefined();
 	});
 
-	test("reloads model layers from every newly opened /model picker", async () => {
+	test("refreshes the model config from every newly opened /model picker", async () => {
 		initTheme("dark");
 		const refresh = vi.fn(async () => ({ aborted: false, errors: new Map() }));
-		const registry = {
+		const runtime = {
 			getError: () => undefined,
-			getAvailable: () => [],
-			find: () => undefined,
+			getAvailableSnapshot: () => [],
+			getModel: () => undefined,
 			refresh,
-		};
-		const tui = { requestRender: vi.fn() };
+		} as unknown as ModelRuntime;
+		const tui = { requestRender: vi.fn() } as unknown as TUI;
+		const settings = { setDefaultModelAndProvider: vi.fn() } as unknown as SettingsManager;
 		const openPicker = () => new ModelSelectorComponent(
-			tui as never, undefined, {} as never, registry as never, [], () => {}, () => {},
+			tui, undefined, settings, runtime, [], () => {}, () => {},
 		);
 
 		openPicker();

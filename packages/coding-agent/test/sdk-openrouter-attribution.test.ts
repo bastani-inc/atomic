@@ -6,46 +6,47 @@ import {
 	type AssistantMessage,
 	createAssistantMessageEventStream,
 	type Model,
+	type ProviderHeaders,
 	type SimpleStreamOptions,
-} from "@earendil-works/pi-ai/compat";
+} from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { APP_NAME } from "../src/config.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import { ModelRegistry } from "../src/core/model-registry.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
-describe("createAgentSession OpenRouter attribution headers", () => {
+import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
+
+describe("createAgentSession provider attribution headers", () => {
 	let tempDir: string;
 	let cwd: string;
 	let agentDir: string;
 	let originalTelemetryEnv: string | undefined;
 
 	beforeEach(() => {
-		tempDir = join(tmpdir(), `atomic-sdk-openrouter-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		tempDir = join(tmpdir(), `pi-sdk-attribution-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		cwd = join(tempDir, "project");
 		agentDir = join(tempDir, "agent");
 		mkdirSync(cwd, { recursive: true });
 		mkdirSync(agentDir, { recursive: true });
-		originalTelemetryEnv = process.env.ATOMIC_TELEMETRY;
-		delete process.env.ATOMIC_TELEMETRY;
+		originalTelemetryEnv = process.env.PI_TELEMETRY;
+		delete process.env.PI_TELEMETRY;
 	});
 
 	afterEach(() => {
 		if (originalTelemetryEnv === undefined) {
-			delete process.env.ATOMIC_TELEMETRY;
+			delete process.env.PI_TELEMETRY;
 		} else {
-			process.env.ATOMIC_TELEMETRY = originalTelemetryEnv;
+			process.env.PI_TELEMETRY = originalTelemetryEnv;
 		}
 		if (tempDir && existsSync(tempDir)) {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
 	});
 
-	function createModel(provider: string, baseUrl: string): Model<Api> {
+	function createModel(provider: string, baseUrl: string, id = `${provider}-test-model`): Model<Api> {
 		return {
-			id: `${provider}-test-model`,
+			id,
 			name: `${provider} Test Model`,
 			api: "openai-completions",
 			provider,
@@ -89,31 +90,27 @@ describe("createAgentSession OpenRouter attribution headers", () => {
 			requestHeaders?: Record<string, string>;
 			sessionId?: string;
 		} = {},
-	): Promise<Record<string, string> | undefined> {
+	): Promise<ProviderHeaders | undefined> {
 		const settingsManager = SettingsManager.create(cwd, agentDir);
 		if (options.telemetryEnabled === false) {
 			settingsManager.setEnableInstallTelemetry(false);
 		}
 
 		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
-		authStorage.setRuntimeApiKey(model.provider, "test-api-key");
-		const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
-		const registeredProviders = ["capture-provider"];
+		await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "test-api-key" }));
+		const modelRegistry = await createModelRegistry(authStorage, join(agentDir, "models.json"));
 		let capturedOptions: SimpleStreamOptions | undefined;
 
-		modelRegistry.registerProvider("capture-provider", {
-			api: "openai-completions",
+		modelRegistry.registerProvider(model.provider, {
+			api: model.api,
+			headers: options.providerHeaders,
 			streamSimple: (_model, _context, providerOptions) => {
 				capturedOptions = providerOptions;
 				return createDoneStream();
 			},
 		});
 
-		if (options.providerHeaders) {
-			modelRegistry.registerProvider(model.provider, { headers: options.providerHeaders });
-			registeredProviders.push(model.provider);
-		}
-
+		const modelRuntime = getModelRuntime(modelRegistry);
 		const sessionManager = SessionManager.inMemory(cwd);
 		if (options.sessionId) {
 			sessionManager.newSession({ id: options.sessionId });
@@ -123,14 +120,13 @@ describe("createAgentSession OpenRouter attribution headers", () => {
 			cwd,
 			agentDir,
 			model,
-			authStorage,
-			modelRegistry,
+			modelRuntime,
 			settingsManager,
 			sessionManager,
 		});
 
 		try {
-			await session.agent.streamFunction(
+			const stream = await session.agent.streamFunction(
 				model,
 				{ messages: [] },
 				{
@@ -138,12 +134,11 @@ describe("createAgentSession OpenRouter attribution headers", () => {
 					...(options.requestHeaders ? { headers: options.requestHeaders } : {}),
 				},
 			);
+			await stream.result();
 			return capturedOptions?.headers;
 		} finally {
 			session.dispose();
-			for (const provider of registeredProviders.reverse()) {
-				modelRegistry.unregisterProvider(provider);
-			}
+			modelRegistry.unregisterProvider(model.provider);
 		}
 	}
 
@@ -151,7 +146,7 @@ describe("createAgentSession OpenRouter attribution headers", () => {
 		const headers = await captureHeaders(createModel("openrouter", "https://openrouter.ai/api/v1"));
 
 		expect(headers?.["HTTP-Referer"]).toBe("https://atomic.sh");
-		expect(headers?.["X-OpenRouter-Title"]).toBe(APP_NAME);
+		expect(headers?.["X-OpenRouter-Title"]).toBe("atomic");
 		expect(headers?.["X-OpenRouter-Categories"]).toBe("cli-agent");
 	});
 
@@ -169,22 +164,16 @@ describe("createAgentSession OpenRouter attribution headers", () => {
 		const headers = await captureHeaders(createModel("custom-openrouter", "https://openrouter.ai/api/v1"));
 
 		expect(headers?.["HTTP-Referer"]).toBe("https://atomic.sh");
-		expect(headers?.["X-OpenRouter-Title"]).toBe(APP_NAME);
+		expect(headers?.["X-OpenRouter-Title"]).toBe("atomic");
 		expect(headers?.["X-OpenRouter-Categories"]).toBe("cli-agent");
 	});
 
-	it("does not add OpenRouter attribution headers for substring-matched custom hosts", async () => {
-		const headers = await captureHeaders(createModel("custom-openrouter-like", "https://openrouter.ai.evil.test/v1"));
+	it("does not attribute a different OpenRouter subdomain as the OpenRouter API", async () => {
+		const headers = await captureHeaders(createModel("custom-openrouter", "https://proxy.openrouter.ai/v1"));
 
 		expect(headers?.["HTTP-Referer"]).toBeUndefined();
 		expect(headers?.["X-OpenRouter-Title"]).toBeUndefined();
 		expect(headers?.["X-OpenRouter-Categories"]).toBeUndefined();
-	});
-
-	it("adds Atomic attribution headers for NVIDIA NIM models", async () => {
-		const headers = await captureHeaders(createModel("nvidia", "https://integrate.api.nvidia.com/v1"));
-
-		expect(headers?.["X-BILLING-INVOKE-ORIGIN"]).toBe("Atomic");
 	});
 
 	it("lets provider and request headers override the defaults", async () => {
@@ -203,13 +192,63 @@ describe("createAgentSession OpenRouter attribution headers", () => {
 		expect(headers?.["X-OpenRouter-Categories"]).toBe("provider-category");
 	});
 
+	it("adds default attribution headers for direct NVIDIA NIM endpoints", async () => {
+		const headers = await captureHeaders(createModel("custom-nim", "https://integrate.api.nvidia.com/v1"));
+
+		expect(headers?.["X-BILLING-INVOKE-ORIGIN"]).toBe("Atomic");
+	});
+
+	it("adds default attribution headers for the NVIDIA provider", async () => {
+		const headers = await captureHeaders(createModel("nvidia", "https://example.test/v1"));
+
+		expect(headers?.["X-BILLING-INVOKE-ORIGIN"]).toBe("Atomic");
+	});
+
+	it("does not add NVIDIA NIM attribution headers when telemetry is disabled", async () => {
+		const headers = await captureHeaders(createModel("nvidia", "https://integrate.api.nvidia.com/v1"), {
+			telemetryEnabled: false,
+		});
+
+		expect(headers?.["X-BILLING-INVOKE-ORIGIN"]).toBeUndefined();
+	});
+
+	it("lets provider and request headers override NVIDIA NIM defaults", async () => {
+		const headers = await captureHeaders(createModel("nvidia", "https://integrate.api.nvidia.com/v1"), {
+			providerHeaders: {
+				"X-BILLING-INVOKE-ORIGIN": "Provider",
+			},
+			requestHeaders: {
+				"X-BILLING-INVOKE-ORIGIN": "Request",
+			},
+		});
+
+		expect(headers?.["X-BILLING-INVOKE-ORIGIN"]).toBe("Request");
+	});
+
+	it("does not add NVIDIA NIM attribution headers for NVIDIA models routed through OpenRouter", async () => {
+		const headers = await captureHeaders(
+			createModel("openrouter", "https://openrouter.ai/api/v1", "nvidia/nemotron-3-super-120b-a12b"),
+		);
+
+		expect(headers?.["HTTP-Referer"]).toBe("https://atomic.sh");
+		expect(headers?.["X-BILLING-INVOKE-ORIGIN"]).toBeUndefined();
+	});
+
+	it("does not add NVIDIA NIM attribution headers for NVIDIA models routed through Vercel AI Gateway", async () => {
+		const headers = await captureHeaders(
+			createModel("vercel-ai-gateway", "https://ai-gateway.vercel.sh/v1", "nvidia/nemotron-3-super-120b-a12b"),
+		);
+
+		expect(headers?.["X-BILLING-INVOKE-ORIGIN"]).toBeUndefined();
+	});
+
 	it("adds OpenCode session headers", async () => {
 		const headers = await captureHeaders(createModel("opencode", "https://opencode.ai/zen/v1"), {
 			sessionId: "opencode-session",
 		});
 
 		expect(headers?.["x-opencode-session"]).toBe("opencode-session");
-		expect(headers?.["x-opencode-client"]).toBe(APP_NAME);
+		expect(headers?.["x-opencode-client"]).toBe("atomic");
 	});
 
 	it("lets configured OpenCode headers override the defaults", async () => {

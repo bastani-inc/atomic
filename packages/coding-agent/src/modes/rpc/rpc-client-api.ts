@@ -3,7 +3,7 @@ import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core"
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai/compat";
 import type { AtomicProviderCompat } from "../../core/model-capabilities.ts";
 import type { SessionStats } from "../../core/agent-session.ts";
-import type { AuthCredential } from "../../core/auth-storage.ts";
+import type { Credential } from "@earendil-works/pi-ai";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
@@ -67,7 +67,7 @@ export abstract class RpcClientApi {
 			signal?.removeEventListener("abort", cancel);
 		}
 	}
-	async saveProviderCredential(provider: string, credential: AuthCredential): Promise<RpcModelCatalog> {
+	async saveProviderCredential(provider: string, credential: Credential): Promise<RpcModelCatalog> {
 		return this.data(await this.request({ type: "save_provider_credential", provider, credential }));
 	}
 	async cancelLoginProvider(provider: string, loginId?: string): Promise<void> {

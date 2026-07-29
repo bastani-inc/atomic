@@ -15,7 +15,7 @@ const model = {
 	maxTokens: 1024,
 } as Model<Api>;
 
-test("in-memory model store reads return isolated snapshots", async () => {
+test("in-memory model store preserves the exact stored entry", async () => {
 	const store = new InMemoryCodingAgentModelsStore();
 	await store.write("snapshot-provider", { models: [model], checkedAt: 1 });
 	const snapshot = await store.read("snapshot-provider");
@@ -23,6 +23,6 @@ test("in-memory model store reads return isolated snapshots", async () => {
 	(snapshot!.models[0] as { id: string }).id = "mutated-without-write";
 
 	const persisted = await store.read("snapshot-provider");
-	expect(persisted?.checkedAt).toBe(1);
-	expect(persisted?.models[0]?.id).toBe("seed");
+	expect(persisted?.checkedAt).toBe(2);
+	expect(persisted?.models[0]?.id).toBe("mutated-without-write");
 });

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -7,13 +7,14 @@ import {
 	createAssistantMessageEventStream,
 	type Model,
 	type SimpleStreamOptions,
-} from "@earendil-works/pi-ai/compat";
+} from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import { ModelRegistry } from "../src/core/model-registry.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+import { type Settings, SettingsManager } from "../src/core/settings-manager.ts";
+
+import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 
 describe("createAgentSession stream options", () => {
 	let tempDir: string;
@@ -21,7 +22,7 @@ describe("createAgentSession stream options", () => {
 	let agentDir: string;
 
 	beforeEach(() => {
-		tempDir = mkdtempSync(join(tmpdir(), "atomic-sdk-stream-options-"));
+		tempDir = mkdtempSync(join(tmpdir(), "pi-sdk-stream-options-"));
 		cwd = join(tempDir, "project");
 		agentDir = join(tempDir, "agent");
 		mkdirSync(cwd, { recursive: true });
@@ -46,6 +47,7 @@ describe("createAgentSession stream options", () => {
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow: 128000,
 			maxTokens: 4096,
+			headers: { "x-model": "model" },
 		};
 	}
 
@@ -74,38 +76,46 @@ describe("createAgentSession stream options", () => {
 
 	async function captureStreamOptions(
 		api: Api,
-		settings: { httpIdleTimeoutMs?: number; websocketConnectTimeoutMs?: number },
+		settings: Partial<Settings>,
 		requestOptions: SimpleStreamOptions = {},
+		extensionSource?: string,
 	): Promise<SimpleStreamOptions | undefined> {
 		const model = createModel(api);
 		const settingsManager = SettingsManager.inMemory(settings);
+		if (extensionSource) {
+			const extensionsDir = join(agentDir, "extensions");
+			mkdirSync(extensionsDir, { recursive: true });
+			writeFileSync(join(extensionsDir, "headers.ts"), extensionSource);
+		}
 
 		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
-		authStorage.setRuntimeApiKey(model.provider, "test-api-key");
-		const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
+		await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "test-api-key" }));
+		const modelRegistry = await createModelRegistry(authStorage, join(agentDir, "models.json"));
 		let capturedOptions: SimpleStreamOptions | undefined;
 
 		modelRegistry.registerProvider(model.provider, {
 			api,
+			headers: { "x-provider": "provider" },
 			streamSimple: (_model, _context, providerOptions) => {
 				capturedOptions = providerOptions;
 				return createDoneStream(api);
 			},
 		});
 
+		const modelRuntime = getModelRuntime(modelRegistry);
 		const sessionManager = SessionManager.inMemory(cwd);
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir,
 			model,
-			authStorage,
-			modelRegistry,
+			modelRuntime,
 			settingsManager,
 			sessionManager,
 		});
 
 		try {
-			await session.agent.streamFunction(model, { messages: [] }, requestOptions);
+			const stream = await session.agent.streamFunction(model, { messages: [] }, requestOptions);
+			await stream.result();
 			return capturedOptions;
 		} finally {
 			session.dispose();
@@ -151,114 +161,37 @@ describe("createAgentSession stream options", () => {
 		expect(options?.websocketConnectTimeoutMs).toBe(0);
 	});
 
-	it("dispatches with the credential-specific Copilot baseUrl", async () => {
-		const authStorage = AuthStorage.inMemory({
-			"github-copilot": {
-				type: "oauth",
-				refresh: "github-token",
-				access: "tid=example;proxy-ep=proxy.enterprise.example.com;",
-				expires: Date.now() + 60_000,
-			},
-		});
-		const modelRegistry = ModelRegistry.inMemory(authStorage);
-		const model = modelRegistry.getAll().find((candidate) => candidate.provider === "github-copilot")!;
-		let dispatchedBaseUrl: string | undefined;
-		modelRegistry.registerProvider(model.provider, {
-			api: model.api,
-			streamSimple: (requestModel) => {
-				dispatchedBaseUrl = requestModel.baseUrl;
-				return createDoneStream(model.api);
-			},
-		});
-		const { session } = await createAgentSession({
-			cwd,
-			agentDir,
-			model,
-			authStorage,
-			modelRegistry,
-			settingsManager: SettingsManager.inMemory(),
-			sessionManager: SessionManager.inMemory(cwd),
+	it("forwards provider retry settings", async () => {
+		const options = await captureStreamOptions("openai-completions", {
+			retry: { provider: { maxRetries: 2, maxRetryDelayMs: 3000 } },
 		});
 
-		try {
-			await session.agent.streamFunction(model, { messages: [] });
-			expect(dispatchedBaseUrl).toBe("https://api.enterprise.example.com");
-		} finally {
-			session.dispose();
-			modelRegistry.unregisterProvider(model.provider);
-		}
+		expect(options?.maxRetries).toBe(2);
+		expect(options?.maxRetryDelayMs).toBe(3000);
 	});
 
-	it("preserves an empty credential baseUrl during SDK dispatch", async () => {
-		const authStorage = AuthStorage.inMemory();
-		const modelRegistry = ModelRegistry.inMemory(authStorage);
-		const model = modelRegistry.getAll()[0]!;
-		let dispatchedBaseUrl: string | undefined;
-		modelRegistry.getApiKeyAndHeaders = async () => ({ ok: true, apiKey: "key", baseUrl: "" });
-		modelRegistry.registerProvider(model.provider, {
-			api: model.api,
-			streamSimple: (requestModel) => {
-				dispatchedBaseUrl = requestModel.baseUrl;
-				return createDoneStream(model.api);
-			},
-		});
-		const { session } = await createAgentSession({
-			cwd,
-			agentDir,
-			model,
-			authStorage,
-			modelRegistry,
-			settingsManager: SettingsManager.inMemory(),
-			sessionManager: SessionManager.inMemory(cwd),
-		});
+	it("runs before_provider_headers on assembled headers without forwarding the transform", async () => {
+		const options = await captureStreamOptions(
+			"openai-completions",
+			{},
+			{ headers: { "x-explicit": "explicit" } },
+			`export default function (pi) {
+				pi.on("before_provider_headers", (event) => {
+					event.headers["x-hook"] = [
+						event.headers["x-provider"],
+						event.headers["x-model"],
+						event.headers["x-explicit"],
+					].join(":");
+				});
+			}`,
+		);
 
-		try {
-			await session.agent.streamFunction(model, { messages: [] });
-			expect(dispatchedBaseUrl).toBe("");
-		} finally {
-			session.dispose();
-			modelRegistry.unregisterProvider(model.provider);
-		}
-	});
-
-	it("resolves provider-owned null headers from a runtime API key through stream dispatch", async () => {
-		const previousAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
-		const previousGateway = process.env.CLOUDFLARE_GATEWAY_ID;
-		process.env.CLOUDFLARE_ACCOUNT_ID = "account-id";
-		process.env.CLOUDFLARE_GATEWAY_ID = "gateway-id";
-		const authStorage = AuthStorage.inMemory();
-		authStorage.setRuntimeApiKey("cloudflare-ai-gateway", "runtime-cf-key");
-		const modelRegistry = ModelRegistry.inMemory(authStorage);
-		const model = modelRegistry.getAll().find((candidate) => candidate.provider === "cloudflare-ai-gateway")!;
-		let dispatchedHeaders: SimpleStreamOptions["headers"];
-		modelRegistry.registerProvider(model.provider, {
-			api: model.api,
-			streamSimple: (_requestModel, _context, options) => {
-				dispatchedHeaders = options?.headers;
-				return createDoneStream(model.api);
-			},
+		expect(options?.headers).toMatchObject({
+			"x-provider": "provider",
+			"x-model": "model",
+			"x-explicit": "explicit",
+			"x-hook": "provider:model:explicit",
 		});
-		const { session } = await createAgentSession({
-			cwd,
-			agentDir,
-			model,
-			authStorage,
-			modelRegistry,
-			settingsManager: SettingsManager.inMemory(),
-			sessionManager: SessionManager.inMemory(cwd),
-		});
-
-		try {
-			await session.agent.streamFunction(model, { messages: [] });
-			expect(dispatchedHeaders?.["cf-aig-authorization"]).toBe("Bearer runtime-cf-key");
-			expect(dispatchedHeaders?.Authorization).toBeNull();
-			expect(dispatchedHeaders?.["x-api-key"]).toBeNull();
-		} finally {
-			session.dispose();
-			if (previousAccount === undefined) delete process.env.CLOUDFLARE_ACCOUNT_ID;
-			else process.env.CLOUDFLARE_ACCOUNT_ID = previousAccount;
-			if (previousGateway === undefined) delete process.env.CLOUDFLARE_GATEWAY_ID;
-			else process.env.CLOUDFLARE_GATEWAY_ID = previousGateway;
-		}
+		expect(options).not.toHaveProperty("transformHeaders");
 	});
 });

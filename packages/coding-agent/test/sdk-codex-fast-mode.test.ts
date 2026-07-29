@@ -13,7 +13,7 @@ import { ENV_CODEX_FAST_MODE } from "../src/config.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { CODEX_FAST_MODE_SERVICE_TIER } from "../src/core/codex-fast-mode.ts";
 import type { OrchestrationContext } from "../src/core/extensions/index.ts";
-import { ModelRegistry } from "../src/core/model-registry.ts";
+import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
@@ -85,7 +85,7 @@ describe("createAgentSession codex fast mode", () => {
 	let tempDir: string;
 	let cwd: string;
 	let agentDir: string;
-	let registeredProviders: Array<{ registry: ModelRegistry; provider: string }>;
+	let registeredProviders: Array<{ registry: ModelRuntime; provider: string }>;
 	let previousCodexFastModeEnv: string | undefined;
 
 	beforeEach(() => {
@@ -120,43 +120,44 @@ describe("createAgentSession codex fast mode", () => {
 		orchestrationContext?: OrchestrationContext;
 		payload?: Record<string, unknown>;
 	}): Promise<CapturedFastModeRequest> {
-		const api = `codex-fast-capture-${options.provider}-${Math.random().toString(36).slice(2)}` as Api;
+		const api = "openai-responses" as Api;
 		const model = createModel(options.provider, api);
 		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
-		authStorage.setRuntimeApiKey(options.provider, "test-api-key");
-		const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
+		await authStorage.modify(options.provider, async () => ({ type: "api_key", key: "test-api-key" }));
+		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: join(agentDir, "models.json"), allowModelNetwork: false });
 		const settingsManager = SettingsManager.inMemory({ codexFastMode: options.settings });
 		const sessionManager = SessionManager.inMemory(cwd);
 		let capturedOptions: SimpleStreamOptions | undefined;
 
-		modelRegistry.registerProvider(options.provider, {
+		modelRuntime.registerProvider(options.provider, {
 			api,
 			streamSimple: (_model, _context, streamOptions) => {
 				capturedOptions = streamOptions;
 				return createDoneStream(model);
 			},
 		});
-		registeredProviders.push({ registry: modelRegistry, provider: options.provider });
+		registeredProviders.push({ registry: modelRuntime, provider: options.provider });
 
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir,
 			model,
 			authStorage,
-			modelRegistry,
+			modelRuntime,
 			settingsManager,
 			sessionManager,
 			orchestrationContext: options.orchestrationContext,
 		});
 
 		try {
-			await session.agent.streamFunction(model, { messages: [] }, { sessionId: session.sessionId });
+			const stream = await session.agent.streamFunction(model, { messages: [] }, { sessionId: session.sessionId });
+			await stream.result();
 			const payload = await session.agent.onPayload?.(options.payload ?? { model: model.id }, model);
 			return { options: capturedOptions, payload };
 		} finally {
 			session.dispose();
-			modelRegistry.unregisterProvider(options.provider);
-			registeredProviders = registeredProviders.filter((entry) => entry.registry !== modelRegistry || entry.provider !== options.provider);
+			modelRuntime.unregisterProvider(options.provider);
+			registeredProviders = registeredProviders.filter((entry) => entry.registry !== modelRuntime || entry.provider !== options.provider);
 		}
 	}
 
@@ -175,8 +176,8 @@ describe("createAgentSession codex fast mode", () => {
 	it("preserves custom provider streaming for native OpenAI APIs when fast mode is enabled", async () => {
 		const model = createModel("openai", "openai-responses");
 		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
-		authStorage.setRuntimeApiKey("openai", "test-api-key");
-		const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
+		await authStorage.modify("openai", async () => ({ type: "api_key", key: "test-api-key" }));
+		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: join(agentDir, "models.json"), allowModelNetwork: false });
 		const settingsManager = SettingsManager.inMemory({ codexFastMode: { chat: true, workflow: false } });
 		const sessionManager = SessionManager.inMemory(cwd);
 		let capturedOptions: SimpleStreamOptions | undefined;
@@ -185,21 +186,21 @@ describe("createAgentSession codex fast mode", () => {
 		});
 		vi.stubGlobal("fetch", nativeFetch);
 
-		modelRegistry.registerProvider("openai", {
+		modelRuntime.registerProvider("openai", {
 			api: "openai-responses",
 			streamSimple: (_model, _context, streamOptions) => {
 				capturedOptions = streamOptions;
 				return createDoneStream(model);
 			},
 		});
-		registeredProviders.push({ registry: modelRegistry, provider: "openai" });
+		registeredProviders.push({ registry: modelRuntime, provider: "openai" });
 
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir,
 			model,
 			authStorage,
-			modelRegistry,
+			modelRuntime,
 			settingsManager,
 			sessionManager,
 		});
@@ -215,9 +216,9 @@ describe("createAgentSession codex fast mode", () => {
 			);
 		} finally {
 			session.dispose();
-			modelRegistry.unregisterProvider("openai");
+			modelRuntime.unregisterProvider("openai");
 			registeredProviders = registeredProviders.filter(
-				(entry) => entry.registry !== modelRegistry || entry.provider !== "openai",
+				(entry) => entry.registry !== modelRuntime || entry.provider !== "openai",
 			);
 		}
 	});
@@ -246,7 +247,7 @@ describe("createAgentSession codex fast mode", () => {
 
 	it("uses the workflow setting for workflow-stage requests", async () => {
 		const disabled = await captureFastModeRequest({
-			provider: "openai-codex",
+			provider: "openai",
 			settings: { chat: true, workflow: false },
 			orchestrationContext: workflowContext,
 		});
@@ -254,7 +255,7 @@ describe("createAgentSession codex fast mode", () => {
 		expect(disabled.payload).not.toMatchObject({ service_tier: CODEX_FAST_MODE_SERVICE_TIER });
 
 		const enabled = await captureFastModeRequest({
-			provider: "openai-codex",
+			provider: "openai",
 			settings: { chat: false, workflow: true },
 			orchestrationContext: workflowContext,
 		});
@@ -277,8 +278,8 @@ describe("createAgentSession codex fast mode", () => {
 	it("sends priority service tier in native OpenAI Responses request bodies", async () => {
 		const model = createModel("openai", "openai-responses");
 		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
-		authStorage.setRuntimeApiKey("openai", "test-api-key");
-		const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
+		await authStorage.modify("openai", async () => ({ type: "api_key", key: "test-api-key" }));
+		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: join(agentDir, "models.json"), allowModelNetwork: false });
 		const settingsManager = SettingsManager.inMemory({ codexFastMode: { chat: true, workflow: false } });
 		const sessionManager = SessionManager.inMemory(cwd);
 		let capturedPayload: Record<string, unknown> | undefined;
@@ -312,7 +313,7 @@ describe("createAgentSession codex fast mode", () => {
 			agentDir,
 			model,
 			authStorage,
-			modelRegistry,
+			modelRuntime,
 			settingsManager,
 			sessionManager,
 		});

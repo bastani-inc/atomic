@@ -227,11 +227,11 @@ describe("parseModelPattern", () => {
 describe("resolveCliModel", () => {
 	test("separates thinking from an unknown provider-prefixed custom model id", () => {
 		const registry = {
-			getAll: () => [...allModels, openaiCodexBaseModel],
-		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+			getModels: () => [...allModels, openaiCodexBaseModel],
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRuntime"];
 		const result = resolveCliModel({
 			cliModel: "openai-codex/gpt-5.6-sol:xhigh",
-			modelRegistry: registry,
+			modelRuntime: registry,
 		});
 		expect(result.error).toBeUndefined();
 		expect(result.model?.provider).toBe("openai-codex");
@@ -241,12 +241,12 @@ describe("resolveCliModel", () => {
 	});
 	test("separates thinking from an explicit provider custom model id", () => {
 		const registry = {
-			getAll: () => [...allModels, openaiCodexBaseModel],
-		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+			getModels: () => [...allModels, openaiCodexBaseModel],
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRuntime"];
 		const result = resolveCliModel({
 			cliProvider: "openai-codex",
 			cliModel: "gpt-5.6-sol:high",
-			modelRegistry: registry,
+			modelRuntime: registry,
 		});
 		expect(result.error).toBeUndefined();
 		expect(result.model?.id).toBe("gpt-5.6-sol");
@@ -255,11 +255,11 @@ describe("resolveCliModel", () => {
 	});
 	test("separates off thinking from a custom model id", () => {
 		const registry = {
-			getAll: () => [...allModels, openaiCodexBaseModel],
-		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+			getModels: () => [...allModels, openaiCodexBaseModel],
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRuntime"];
 		const result = resolveCliModel({
 			cliModel: "openai-codex/gpt-5.6-sol:off",
-			modelRegistry: registry,
+			modelRuntime: registry,
 		});
 		expect(result.error).toBeUndefined();
 		expect(result.model?.id).toBe("gpt-5.6-sol");
@@ -268,12 +268,12 @@ describe("resolveCliModel", () => {
 	});
 	test("preserves an unrecognized colon suffix on a custom model id", () => {
 		const registry = {
-			getAll: () => [...allModels, openaiCodexBaseModel],
-		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+			getModels: () => [...allModels, openaiCodexBaseModel],
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRuntime"];
 		const result = resolveCliModel({
 			cliProvider: "openai-codex",
 			cliModel: "gpt-5.6-sol:preview",
-			modelRegistry: registry,
+			modelRuntime: registry,
 		});
 		expect(result.error).toBeUndefined();
 		expect(result.model?.id).toBe("gpt-5.6-sol:preview");
@@ -287,11 +287,11 @@ describe("resolveCliModel", () => {
 			name: "GPT-5.6 Sol XHigh",
 		};
 		const registry = {
-			getAll: () => [...allModels, openaiCodexBaseModel, registeredModel],
-		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+			getModels: () => [...allModels, openaiCodexBaseModel, registeredModel],
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRuntime"];
 		const result = resolveCliModel({
 			cliModel: "openai-codex/gpt-5.6-sol:xhigh",
-			modelRegistry: registry,
+			modelRuntime: registry,
 		});
 		expect(result.error).toBeUndefined();
 		expect(result.model).toBe(registeredModel);
@@ -310,12 +310,12 @@ describe("resolveCliModel", () => {
 			name: "OpenAI Foo High",
 		};
 		const registry = {
-			getAll: () => [...allModels, inferredProviderModel, registeredGatewayModel],
-		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+			getModels: () => [...allModels, inferredProviderModel, registeredGatewayModel],
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRuntime"];
 
 		const result = resolveCliModel({
 			cliModel: "openai/foo:high",
-			modelRegistry: registry,
+			modelRuntime: registry,
 		});
 
 		expect(result.error).toBeUndefined();
@@ -325,11 +325,11 @@ describe("resolveCliModel", () => {
 	});
 	test("resolves --model provider/id without --provider", () => {
 		const registry = {
-			getAll: () => allModels,
-		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+			getModels: () => allModels,
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRuntime"];
 		const result = resolveCliModel({
 			cliModel: "openai/gpt-4o",
-			modelRegistry: registry,
+			modelRuntime: registry,
 		});
 		expect(result.error).toBeUndefined();
 		expect(result.model?.provider).toBe("openai");
@@ -337,12 +337,12 @@ describe("resolveCliModel", () => {
 	});
 	test("resolves fuzzy patterns within an explicit provider", () => {
 		const registry = {
-			getAll: () => allModels,
-		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+			getModels: () => allModels,
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRuntime"];
 		const result = resolveCliModel({
 			cliProvider: "openai",
 			cliModel: "4o",
-			modelRegistry: registry,
+			modelRuntime: registry,
 		});
 		expect(result.error).toBeUndefined();
 		expect(result.model?.provider).toBe("openai");
@@ -350,11 +350,11 @@ describe("resolveCliModel", () => {
 	});
 	test("supports --model <pattern>:<thinking> (without explicit --thinking)", () => {
 		const registry = {
-			getAll: () => allModels,
-		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+			getModels: () => allModels,
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRuntime"];
 		const result = resolveCliModel({
 			cliModel: "sonnet:high",
-			modelRegistry: registry,
+			modelRuntime: registry,
 		});
 		expect(result.error).toBeUndefined();
 		expect(result.model?.id).toBe("claude-sonnet-4-5");
@@ -362,11 +362,11 @@ describe("resolveCliModel", () => {
 	});
 	test("prefers exact model id match over provider inference (OpenRouter-style ids)", () => {
 		const registry = {
-			getAll: () => allModels,
-		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+			getModels: () => allModels,
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRuntime"];
 		const result = resolveCliModel({
 			cliModel: "openai/gpt-4o:extended",
-			modelRegistry: registry,
+			modelRuntime: registry,
 		});
 		expect(result.error).toBeUndefined();
 		expect(result.model?.provider).toBe("openrouter");
@@ -374,12 +374,12 @@ describe("resolveCliModel", () => {
 	});
 	test("does not strip invalid :suffix as thinking level in --model (treat as raw id)", () => {
 		const registry = {
-			getAll: () => allModels,
-		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+			getModels: () => allModels,
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRuntime"];
 		const result = resolveCliModel({
 			cliProvider: "openai",
 			cliModel: "gpt-4o:extended",
-			modelRegistry: registry,
+			modelRuntime: registry,
 		});
 		expect(result.error).toBeUndefined();
 		expect(result.model?.provider).toBe("openai");
@@ -387,12 +387,12 @@ describe("resolveCliModel", () => {
 	});
 	test("allows custom model ids for explicit providers without double prefixing", () => {
 		const registry = {
-			getAll: () => allModels,
-		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+			getModels: () => allModels,
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRuntime"];
 		const result = resolveCliModel({
 			cliProvider: "openrouter",
 			cliModel: "openrouter/openai/ghost-model",
-			modelRegistry: registry,
+			modelRuntime: registry,
 		});
 		expect(result.error).toBeUndefined();
 		expect(result.model?.provider).toBe("openrouter");
@@ -400,12 +400,12 @@ describe("resolveCliModel", () => {
 	});
 	test("scrubs inherited context-window options from explicit provider fallback models", () => {
 		const registry = {
-			getAll: () => [copilotSelectableBaseModel],
-		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+			getModels: () => [copilotSelectableBaseModel],
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRuntime"];
 		const result = resolveCliModel({
 			cliProvider: "github-copilot",
 			cliModel: "future-copilot-model",
-			modelRegistry: registry,
+			modelRuntime: registry,
 		});
 		expect(result.error).toBeUndefined();
 		expect(result.model?.provider).toBe("github-copilot");
@@ -414,12 +414,12 @@ describe("resolveCliModel", () => {
 	});
 	test("returns a clear error when there are no models", () => {
 		const registry = {
-			getAll: () => [],
-		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+			getModels: () => [],
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRuntime"];
 		const result = resolveCliModel({
 			cliProvider: "openai",
 			cliModel: "gpt-4o",
-			modelRegistry: registry,
+			modelRuntime: registry,
 		});
 		expect(result.model).toBeUndefined();
 		expect(result.error).toContain("No models available");
@@ -452,11 +452,11 @@ describe("resolveCliModel", () => {
 			maxTokens: 8192,
 		};
 		const registry = {
-			getAll: () => [...allModels, zaiModel, gatewayModel],
-		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+			getModels: () => [...allModels, zaiModel, gatewayModel],
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRuntime"];
 		const result = resolveCliModel({
 			cliModel: "zai/glm-5",
-			modelRegistry: registry,
+			modelRuntime: registry,
 		});
 		expect(result.error).toBeUndefined();
 		expect(result.model?.provider).toBe("zai");
@@ -464,11 +464,11 @@ describe("resolveCliModel", () => {
 	});
 	test("resolves provider-prefixed fuzzy patterns (openrouter/qwen -> openrouter model)", () => {
 		const registry = {
-			getAll: () => allModels,
-		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+			getModels: () => allModels,
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRuntime"];
 		const result = resolveCliModel({
 			cliModel: "openrouter/qwen",
-			modelRegistry: registry,
+			modelRuntime: registry,
 		});
 		expect(result.error).toBeUndefined();
 		expect(result.model?.provider).toBe("openrouter");

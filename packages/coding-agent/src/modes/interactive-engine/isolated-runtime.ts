@@ -95,7 +95,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	override async logoutProvider(provider: string) {
 		const result = await this.client.logoutProvider(provider);
 		this.remoteModelCatalog.applyModels({ models: result.models, scopedModels: result.scopedModels ?? [] });
-		super.session.modelRegistry.authStorage.reload();
+		super.session.refreshCurrentModelFromRegistry();
 		return result;
 	}
 
@@ -310,7 +310,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				configurable: true,
 				value: async (model: Model<Api>) => {
 					const selected = await this.client.setModel(model.provider, model.id);
-					session.agent.state.model = session.modelRegistry.find(selected.provider, selected.id) ?? model;
+					session.agent.state.model = session.modelRuntime.getModel(selected.provider, selected.id) ?? model;
 					this.resolveModelFallback();
 				},
 			},
@@ -327,7 +327,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 					const previousModel = session.model;
 					const result = await this.client.cycleModel(direction);
 					if (!result) return undefined;
-					const model = session.modelRegistry.find(result.model.provider, result.model.id) ?? result.model;
+					const model = session.modelRuntime.getModel(result.model.provider, result.model.id) ?? result.model;
 					session.agent.state.model = model;
 					session.agent.state.thinkingLevel = result.thinkingLevel;
 					this.resolveModelFallbackAfterExplicitModelSelection(previousModel, model);

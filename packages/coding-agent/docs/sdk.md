@@ -16,16 +16,13 @@ See [examples/sdk/](https://github.com/bastani-inc/atomic/tree/main/packages/cod
 ## Quick Start
 
 ```typescript
-import { AuthStorage, createAgentSession, ModelRegistry, SessionManager } from "@bastani/atomic";
+import { createAgentSession, ModelRuntime, SessionManager } from "@bastani/atomic";
 
-// Set up credential storage and model registry
-const authStorage = AuthStorage.create();
-const modelRegistry = ModelRegistry.create(authStorage);
+const modelRuntime = await ModelRuntime.create();
 
 const { session } = await createAgentSession({
   sessionManager: SessionManager.inMemory(),
-  authStorage,
-  modelRegistry,
+  modelRuntime,
 });
 
 session.subscribe((event) => {
@@ -423,21 +420,19 @@ When you pass a custom `ResourceLoader`, `cwd` and `agentDir` no longer control 
 
 ```typescript
 import { getModel } from "@earendil-works/pi-ai/compat";
-import { AuthStorage, ModelRegistry } from "@bastani/atomic";
+import { ModelRuntime } from "@bastani/atomic";
 
-const authStorage = AuthStorage.create();
-const modelRegistry = ModelRegistry.create(authStorage);
+const modelRuntime = await ModelRuntime.create();
 
-// Find specific built-in model (doesn't check if API key exists)
+// Find specific built-in model (doesn't check if credentials exist)
 const opus = getModel("anthropic", "claude-opus-4-5");
 if (!opus) throw new Error("Model not found");
 
 // Find any model by provider/id, including custom models from models.json
-// (doesn't check if API key exists)
-const customModel = modelRegistry.find("my-provider", "my-model");
+const customModel = modelRuntime.getModel("my-provider", "my-model");
 
-// Get only models that have valid API keys configured
-const available = await modelRegistry.getAvailable();
+// Get only models whose providers have configured authentication
+const available = await modelRuntime.getAvailable();
 
 const { session } = await createAgentSession({
   model: opus,
@@ -465,45 +460,37 @@ If no model is provided:
 
 ### API Keys and OAuth
 
-`AuthStorage` and `ModelRegistry` remain synchronous public SDK entry points. Token refresh is serialized under Atomic's credential-store lock, and the `authStorage` and `modelRegistry` session options remain available.
+`ModelRuntime` is the asynchronous SDK engine for provider composition, credentials, model catalogs, and requests. `ModelRegistry` remains a thin synchronous compatibility facade for extensions; new SDK integrations should pass `modelRuntime` to `createAgentSession`.
 
-API key resolution priority (handled by AuthStorage):
-1. Runtime overrides (via `setRuntimeApiKey`, not persisted)
-2. Stored credentials in `auth.json` (API keys or OAuth tokens)
-3. Environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.)
-4. Fallback resolver (for custom provider keys from `models.json`)
-
-OAuth credentials may provide an API key, request headers, and a credential-specific `baseUrl`. Atomic applies all three to the request. In particular, GitHub Copilot enterprise and token-specific endpoints replace the static model URL without dropping retries, attribution headers, fast mode, or extension request hooks.
+Credential resolution combines runtime API-key overrides, stored `auth.json` credentials, environment variables, and the active `models.json` provider configuration. OAuth acquisition is provider-owned and runs through `ModelRuntime.login()`.
 
 ```typescript
-import { AuthStorage, ModelRegistry } from "@bastani/atomic";
+import { AuthStorage, ModelRuntime } from "@bastani/atomic";
 
-// Default: uses ~/.atomic/agent/auth.json and ~/.atomic/agent/models.json,
-// with legacy ~/.pi/agent/* compatibility reads when available.
 const authStorage = AuthStorage.create();
-const modelRegistry = ModelRegistry.create(authStorage);
+const modelRuntime = await ModelRuntime.create({ credentials: authStorage });
 
 const { session } = await createAgentSession({
   sessionManager: SessionManager.inMemory(),
-  authStorage,
-  modelRegistry,
+  modelRuntime,
 });
 
 // Runtime API key override (not persisted to disk)
-authStorage.setRuntimeApiKey("anthropic", "sk-my-temp-key");
+await modelRuntime.setRuntimeApiKey("anthropic", "sk-my-temp-key");
 
-// Custom auth storage location
-const customAuth = AuthStorage.create("/my/app/auth.json");
-const customRegistry = ModelRegistry.create(customAuth, "/my/app/models.json");
-
-const { session } = await createAgentSession({
-  sessionManager: SessionManager.inMemory(),
-  authStorage: customAuth,
-  modelRegistry: customRegistry,
+// Custom credential and model configuration locations
+const customRuntime = await ModelRuntime.create({
+  authPath: "/my/app/auth.json",
+  modelsPath: "/my/app/models.json",
 });
 
-// No custom models.json (built-in models only)
-const simpleRegistry = ModelRegistry.inMemory(authStorage);
+const customSession = await createAgentSession({
+  sessionManager: SessionManager.inMemory(),
+  modelRuntime: customRuntime,
+});
+
+// Disable models.json while retaining built-in providers
+const builtinsOnly = await ModelRuntime.create({ modelsPath: null });
 ```
 
 > See [examples/sdk/09-api-keys-and-oauth.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/sdk/09-api-keys-and-oauth.ts)
@@ -1014,21 +1001,19 @@ import {
   createAgentSession,
   DefaultResourceLoader,
   defineTool,
-  ModelRegistry,
+  ModelRuntime,
   SessionManager,
   SettingsManager,
 } from "@bastani/atomic";
 
-// Set up auth storage (custom location)
+// Create a runtime with custom credential storage and no models.json.
 const authStorage = AuthStorage.create("/custom/agent/auth.json");
+const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null });
 
 // Runtime API key override (not persisted)
 if (process.env.MY_KEY) {
-  authStorage.setRuntimeApiKey("anthropic", process.env.MY_KEY);
+  await modelRuntime.setRuntimeApiKey("anthropic", process.env.MY_KEY);
 }
-
-// Model registry (no custom models.json)
-const modelRegistry = ModelRegistry.create(authStorage);
 
 // Inline tool
 const statusTool = defineTool({
@@ -1065,8 +1050,7 @@ const { session } = await createAgentSession({
 
   model,
   thinkingLevel: "off",
-  authStorage,
-  modelRegistry,
+  modelRuntime,
 
   tools: ["read", "bash", "status"],
   customTools: [statusTool],

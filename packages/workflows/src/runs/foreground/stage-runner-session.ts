@@ -35,11 +35,11 @@ export async function disposeStageSession(current: StageSessionRuntime | undefin
 
 export function asAgentSession(activeSession: StageSessionRuntime | undefined): AgentSession | undefined {
   if (!activeSession) return undefined;
-  const candidate = activeSession as StageSessionRuntime & Partial<Pick<AgentSession, "state" | "sessionManager" | "modelRegistry" | "getContextUsage">>;
+  const candidate = activeSession as StageSessionRuntime & Partial<Pick<AgentSession, "state" | "sessionManager" | "modelRuntime" | "getContextUsage">>;
   if (
     candidate.state !== undefined &&
     candidate.sessionManager !== undefined &&
-    candidate.modelRegistry !== undefined &&
+    candidate.modelRuntime !== undefined &&
     typeof candidate.getContextUsage === "function"
   ) {
     return candidate as AgentSession;

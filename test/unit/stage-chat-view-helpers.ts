@@ -239,7 +239,7 @@ export function fakeFooterAgentSession(isStreaming = false): AgentSession {
                 },
             ],
         },
-        modelRegistry: {
+        modelRuntime: {
             isUsingOAuth: () => false,
         },
         settingsManager: {

@@ -366,11 +366,8 @@ export async function _runAutoCompaction(this: AgentSession, reason: "overflow" 
 		// before persistence or continuation, matching other provider-call failures.
 		const result = await this._applyVerbatimCompaction({
 			resolvePlannerAuth: async (candidate) => {
-				const authResult = await this._modelRegistry.getApiKeyAndHeaders(candidate);
-				if (!authResult.ok || (!authResult.apiKey && !authResult.headers)) {
-					return undefined;
-				}
-				return { apiKey: authResult.apiKey, headers: authResult.headers, baseUrl: authResult.baseUrl };
+				const authResult = await this._getRequiredRequestAuth(candidate);
+				return authResult.apiKey || authResult.headers ? authResult : undefined;
 			},
 			abortController: this._autoCompactionAbortController,
 			backupLabel: reason === "overflow" ? "overflow-auto-compact" : "auto-compact",

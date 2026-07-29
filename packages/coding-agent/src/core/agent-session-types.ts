@@ -19,7 +19,7 @@ import type {
 	ToolDefinition,
 } from "./extensions/index.ts";
 import type { CustomMessage } from "./messages.ts";
-import type { ModelRegistry } from "./model-registry.ts";
+import type { ModelRuntime } from "./model-runtime.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import type { SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
@@ -148,7 +148,7 @@ export interface AgentSessionConfig {
 	fallbackModels?: string[];
 	resourceLoader: ResourceLoader;
 	customTools?: ToolDefinition[];
-	modelRegistry: ModelRegistry;
+	modelRuntime: ModelRuntime;
 	initialActiveToolNames?: string[];
 	allowedToolNames?: string[];
 	excludedToolNames?: string[];

@@ -1,13 +1,13 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { type Api, type Model, type OAuthSelectPrompt, path, getAuthPath, getDocsPath, defaultModelPerProvider, ExtensionSelectorComponent, LoginDialogComponent, theme } from "./interactive-mode-deps.ts";
 import { hasDefaultModelProvider, isUnknownModel } from "./interactive-mode-helpers.ts";
-import { isOAuthLoginCancelled } from "../../core/oauth-provider-bridge.ts";
+import { isOAuthLoginCancelled } from "../../core/oauth-login.ts";
 
 InteractiveModeBase.prototype.completeProviderAuthentication = async function(this: InteractiveModeBase, providerId: string, providerName: string, authType: "oauth" | "api_key", previousModel: Model<Api> | undefined, options: { modelsRefreshed?: boolean } = {}): Promise<void> {
 	if (!options.modelsRefreshed) {
 		// Upstream pi parity: a failed or timeout-aborted catalog refresh after a
 		// completed login is non-fatal; models fall back to the cached snapshot.
-		await this.session.modelRegistry.refresh();
+		await this.session.modelRuntime.refresh().catch(() => undefined);
 	}
 
     const actionLabel =
@@ -18,7 +18,7 @@ InteractiveModeBase.prototype.completeProviderAuthentication = async function(th
     let selectedModel: Model<Api> | undefined;
     let selectionError: string | undefined;
     if (isUnknownModel(previousModel)) {
-      const availableModels = this.session.modelRegistry.getAvailable();
+      const availableModels = this.session.modelRuntime.getAvailableSnapshot();
       const providerModels = availableModels.filter(
         (model) => model.provider === providerId,
       );
@@ -126,26 +126,16 @@ InteractiveModeBase.prototype.showApiKeyLoginDialog = async function(this: Inter
     };
 
     try {
-      const customAuth = this.session.modelRegistry.getCustomApiKeyAuth(providerId);
-      if (customAuth) {
-        const credential = await customAuth.login({
-          signal: dialog.signal,
-          prompt: (prompt) => dialog.showPrompt(prompt.message, prompt.placeholder),
-        });
-        this.session.modelRegistry.authStorage.set(providerId, credential);
-      } else {
-        const apiKey = (await dialog.showPrompt("Enter API key:")).trim();
-        if (!apiKey) throw new Error("API key cannot be empty.");
-        this.session.modelRegistry.authStorage.set(providerId, { type: "api_key", key: apiKey });
-      }
-
+      await this.session.modelRuntime.login(providerId, "api_key", {
+        signal: dialog.signal,
+        prompt: (prompt) => dialog.showPrompt(prompt.message, "placeholder" in prompt ? prompt.placeholder : undefined),
+        notify: (event) => {
+          if (event.type === "info") dialog.showInfo(event.message, event.links);
+          else if (event.type === "progress") dialog.showProgress(event.message);
+        },
+      });
       restoreEditor();
-      await this.completeProviderAuthentication(
-        providerId,
-        providerName,
-        "api_key",
-        previousModel,
-      );
+      await this.completeProviderAuthentication(providerId, providerName, "api_key", previousModel, { modelsRefreshed: true });
     } catch (error: unknown) {
       restoreEditor();
 		const errorMsg = error instanceof Error ? error.message : String(error);
@@ -186,13 +176,10 @@ InteractiveModeBase.prototype.showOAuthLoginSelect = function(this: InteractiveM
   };
 
 InteractiveModeBase.prototype.showLoginDialog = async function(this: InteractiveModeBase, providerId: string, providerName: string): Promise<void> {
-    const providerInfo = this.session.modelRegistry.authStorage
-      .getOAuthProviders()
-      .find((provider) => provider.id === providerId);
     const previousModel = this.session.model;
 
     // Providers that use callback servers (can paste redirect URL)
-    const usesCallbackServer = providerInfo?.usesCallbackServer ?? false;
+    const usesCallbackServer = false;
 
     // Create login dialog component
     const dialog = new LoginDialogComponent(
@@ -267,7 +254,7 @@ InteractiveModeBase.prototype.showLoginDialog = async function(this: Interactive
             message: string;
             placeholder?: string;
           }) => {
-            return dialog.showPrompt(prompt.message, prompt.placeholder);
+            return dialog.showPrompt(prompt.message, "placeholder" in prompt ? prompt.placeholder : undefined);
           },
 
           onProgress: (message: string) => {

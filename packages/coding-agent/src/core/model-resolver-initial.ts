@@ -2,7 +2,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import chalk from "chalk";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
-import type { ModelRegistry } from "./model-registry.ts";
+import type { ModelRuntime } from "./model-runtime.ts";
 import { findPreferredAvailableModel } from "./model-resolver-defaults.ts";
 import { buildFallbackModel } from "./model-resolver-patterns.ts";
 import { resolveCliModel } from "./model-resolver-cli.ts";
@@ -14,9 +14,9 @@ const CONFIGURED_DEFAULT_MODEL_UNAVAILABLE_MESSAGE =
 async function buildConfiguredProviderFallbackModel(
   provider: string,
   modelId: string,
-  modelRegistry: ModelRegistry,
+  modelRuntime: ModelRuntime,
 ): Promise<Model<Api> | undefined> {
-  return buildFallbackModel(provider, modelId, await modelRegistry.getAvailable());
+  return buildFallbackModel(provider, modelId, await [...modelRuntime.getAvailableSnapshot()]);
 }
 
 /**
@@ -27,12 +27,12 @@ async function buildConfiguredProviderFallbackModel(
 export async function resolveRestoredModelReference(
   provider: string,
   modelId: string,
-  modelRegistry: ModelRegistry,
+  modelRuntime: ModelRuntime,
 ): Promise<Model<Api> | undefined> {
-  const found = modelRegistry.find(provider, modelId);
-  if (found) return modelRegistry.hasConfiguredAuth(found) ? found : undefined;
-  if (!modelRegistry.canRestoreUnknownModel(provider)) return undefined;
-  return buildConfiguredProviderFallbackModel(provider, modelId, modelRegistry);
+  const found = modelRuntime.getModel(provider, modelId);
+  if (found) return modelRuntime.hasConfiguredAuth(found.provider) ? found : undefined;
+  if (!modelRuntime.getProvider(provider) !== undefined) return undefined;
+  return buildConfiguredProviderFallbackModel(provider, modelId, modelRuntime);
 }
 
 /**
@@ -51,7 +51,7 @@ export async function findInitialModel(options: {
   defaultProvider?: string;
   defaultModelId?: string;
   defaultThinkingLevel?: ThinkingLevel;
-  modelRegistry: ModelRegistry;
+  modelRuntime: ModelRuntime;
 }): Promise<InitialModelResult> {
   const {
     cliProvider,
@@ -61,7 +61,7 @@ export async function findInitialModel(options: {
     defaultProvider,
     defaultModelId,
     defaultThinkingLevel,
-    modelRegistry,
+    modelRuntime,
   } = options;
 
   let model: Model<Api> | undefined;
@@ -71,7 +71,7 @@ export async function findInitialModel(options: {
     const resolved = resolveCliModel({
       cliProvider,
       cliModel,
-      modelRegistry,
+      modelRuntime,
     });
     if (resolved.error) {
       console.error(chalk.red(resolved.error));
@@ -95,15 +95,15 @@ export async function findInitialModel(options: {
   }
 
   if (defaultProvider && defaultModelId) {
-    const found = modelRegistry.find(defaultProvider, defaultModelId);
-    if (found && modelRegistry.hasConfiguredAuth(found)) {
+    const found = modelRuntime.getModel(defaultProvider, defaultModelId);
+    if (found && modelRuntime.hasConfiguredAuth(found.provider)) {
       model = found;
       if (defaultThinkingLevel) {
         thinkingLevel = defaultThinkingLevel;
       }
       return { model, thinkingLevel, fallbackMessage: undefined };
     }
-    if (!modelRegistry.hasProvider(defaultProvider)) {
+    if (!modelRuntime.getProvider(defaultProvider)) {
       return {
         model: undefined,
         thinkingLevel: DEFAULT_THINKING_LEVEL,
@@ -113,7 +113,7 @@ export async function findInitialModel(options: {
     }
   }
 
-  const availableModels = await modelRegistry.getAvailable();
+  const availableModels = await [...modelRuntime.getAvailableSnapshot()];
   if (availableModels.length > 0) {
     return {
       model: findPreferredAvailableModel(availableModels),
@@ -137,13 +137,13 @@ export async function restoreModelFromSession(
   savedModelId: string,
   currentModel: Model<Api> | undefined,
   shouldPrintMessages: boolean,
-  modelRegistry: ModelRegistry,
+  modelRuntime: ModelRuntime,
 ): Promise<{
   model: Model<Api> | undefined;
   fallbackMessage: string | undefined;
 }> {
-  const exactRestoredModel = modelRegistry.find(savedProvider, savedModelId);
-  const restoredModel = await resolveRestoredModelReference(savedProvider, savedModelId, modelRegistry);
+  const exactRestoredModel = modelRuntime.getModel(savedProvider, savedModelId);
+  const restoredModel = await resolveRestoredModelReference(savedProvider, savedModelId, modelRuntime);
 
   if (restoredModel) {
     if (shouldPrintMessages) {
@@ -168,7 +168,7 @@ export async function restoreModelFromSession(
     };
   }
 
-  const availableModels = await modelRegistry.getAvailable();
+  const availableModels = await [...modelRuntime.getAvailableSnapshot()];
   const fallbackModel = findPreferredAvailableModel(availableModels);
   if (fallbackModel) {
     if (shouldPrintMessages) {

@@ -13,11 +13,11 @@ import type { Api, Model } from "@earendil-works/pi-ai/compat";
 const THINKING_SUFFIXES = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ThinkingLevel[];
 const THINKING_SUFFIX_SET: ReadonlySet<string> = new Set(THINKING_SUFFIXES);
 
-/** Minimal registry surface needed to resolve a configured fallback entry. */
+/** Minimal runtime surface needed to resolve a configured fallback entry. */
 export interface FallbackModelLookup {
-	getAvailable(): Model<Api>[];
-	find(provider: string, modelId: string): Model<Api> | undefined;
-	hasConfiguredAuth(model: Model<Api>): boolean;
+	getAvailableSnapshot(): readonly Model<Api>[];
+	getModel(provider: string, modelId: string): Model<Api> | undefined;
+	hasConfiguredAuth(provider: string): boolean;
 }
 
 /** A configured fallback entry resolved to a concrete model. */
@@ -50,15 +50,15 @@ export function resolveFallbackModel(
 ): FallbackModelCandidate | undefined {
 	const parsed = splitFallbackModel(value);
 	if (!parsed.modelId.includes("/")) {
-		const available = lookup.getAvailable().filter((model) => model.id === parsed.modelId);
+		const available = lookup.getAvailableSnapshot().filter((model) => model.id === parsed.modelId);
 		const model = available.find((candidate) => candidate.provider === preferredProvider) ?? (available.length === 1 ? available[0] : undefined);
 		return model ? { model, thinkingLevel: parsed.thinkingLevel } : undefined;
 	}
 	const slash = parsed.modelId.indexOf("/");
 	const provider = parsed.modelId.slice(0, slash);
 	const modelId = parsed.modelId.slice(slash + 1);
-	const model = lookup.find(provider, modelId);
-	if (!model || !lookup.hasConfiguredAuth(model)) return undefined;
+	const model = lookup.getModel(provider, modelId);
+	if (!model || !lookup.hasConfiguredAuth(model.provider)) return undefined;
 	return { model, thinkingLevel: parsed.thinkingLevel };
 }
 

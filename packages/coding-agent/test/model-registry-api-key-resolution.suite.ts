@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { ModelRegistry } from "../src/core/model-registry.ts";
+import { createModelRegistry } from "./model-runtime-test-utils.ts";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
 
 
@@ -42,7 +42,7 @@ describeModelRegistry((context) => {
 				"custom-provider": providerWithApiKey("!echo test-api-key-from-command"),
 			});
 
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 			const apiKey = await registry.getApiKeyForProvider("custom-provider");
 
 			expect(apiKey).toBe("test-api-key-from-command");
@@ -53,7 +53,7 @@ describeModelRegistry((context) => {
 				"custom-provider": providerWithApiKey("!echo '  spaced-key  '"),
 			});
 
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 			const apiKey = await registry.getApiKeyForProvider("custom-provider");
 
 			expect(apiKey).toBe("spaced-key");
@@ -64,7 +64,7 @@ describeModelRegistry((context) => {
 				"custom-provider": providerWithApiKey("!printf 'line1\\nline2'"),
 			});
 
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 			const apiKey = await registry.getApiKeyForProvider("custom-provider");
 
 			expect(apiKey).toBe("line1\nline2");
@@ -75,7 +75,7 @@ describeModelRegistry((context) => {
 				"custom-provider": providerWithApiKey("!exit 1"),
 			});
 
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 			const apiKey = await registry.getApiKeyForProvider("custom-provider");
 
 			expect(apiKey).toBeUndefined();
@@ -86,7 +86,7 @@ describeModelRegistry((context) => {
 				"custom-provider": providerWithApiKey("!nonexistent-command-12345"),
 			});
 
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 			const apiKey = await registry.getApiKeyForProvider("custom-provider");
 
 			expect(apiKey).toBeUndefined();
@@ -97,7 +97,7 @@ describeModelRegistry((context) => {
 				"custom-provider": providerWithApiKey("!printf ''"),
 			});
 
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 			const apiKey = await registry.getApiKeyForProvider("custom-provider");
 
 			expect(apiKey).toBeUndefined();
@@ -112,7 +112,7 @@ describeModelRegistry((context) => {
 					"custom-provider": providerWithApiKey("$TEST_API_KEY_12345"),
 				});
 
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 				const apiKey = await registry.getApiKeyForProvider("custom-provider");
 
 				expect(apiKey).toBe("env-api-key-value");
@@ -133,7 +133,7 @@ describeModelRegistry((context) => {
 				"custom-provider": providerWithApiKey("literal_api_key_value"),
 			});
 
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 			const apiKey = await registry.getApiKeyForProvider("custom-provider");
 
 			expect(apiKey).toBe("literal_api_key_value");
@@ -144,7 +144,7 @@ describeModelRegistry((context) => {
 				"custom-provider": providerWithApiKey("!echo 'hello world' | tr ' ' '-'"),
 			});
 
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 			const apiKey = await registry.getApiKeyForProvider("custom-provider");
 
 			expect(apiKey).toBe("hello-world");
@@ -161,7 +161,7 @@ describeModelRegistry((context) => {
 					"custom-provider": providerWithApiKey(command),
 				});
 
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 				await registry.getApiKeyForProvider("custom-provider");
 				await registry.getApiKeyForProvider("custom-provider");
 				await registry.getApiKeyForProvider("custom-provider");
@@ -180,10 +180,10 @@ describeModelRegistry((context) => {
 					"custom-provider": providerWithApiKey(command),
 				});
 
-				const registry1 = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const registry1 = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 				await registry1.getApiKeyForProvider("custom-provider");
 
-				const registry2 = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const registry2 = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 				await registry2.getApiKeyForProvider("custom-provider");
 
 				const count = parseInt(readFileSync(counterFile, "utf-8").trim(), 10);
@@ -196,7 +196,7 @@ describeModelRegistry((context) => {
 					"provider-b": providerWithApiKey("!echo key-b"),
 				});
 
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 
 				const keyA = await registry.getApiKeyForProvider("provider-a");
 				const keyB = await registry.getApiKeyForProvider("provider-b");
@@ -215,7 +215,7 @@ describeModelRegistry((context) => {
 					"custom-provider": providerWithApiKey(command),
 				});
 
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 				const key1 = await registry.getApiKeyForProvider("custom-provider");
 				const key2 = await registry.getApiKeyForProvider("custom-provider");
 
@@ -226,7 +226,7 @@ describeModelRegistry((context) => {
 				expect(count).toBe(2);
 			});
 
-			test("provider auth status reports apiKey environment variables from models.json", () => {
+			test("provider auth status reports apiKey environment variables from models.json", async () => {
 				const envVarName = "TEST_API_KEY_STATUS_TEST_98765";
 				const originalEnv = process.env[envVarName];
 
@@ -237,7 +237,7 @@ describeModelRegistry((context) => {
 						"custom-provider": providerWithApiKey(`$${envVarName}`),
 					});
 
-					const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+					const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 
 					expect(registry.getProviderAuthStatus("custom-provider")).toEqual({
 						configured: true,
@@ -253,7 +253,7 @@ describeModelRegistry((context) => {
 				}
 			});
 
-			test("provider auth status reports missing explicit env refs as unconfigured", () => {
+			test("provider auth status reports missing explicit env refs as unconfigured", async () => {
 				const envVarName = "TEST_API_KEY_STATUS_MISSING_98765";
 				const originalEnv = process.env[envVarName];
 				delete process.env[envVarName];
@@ -263,7 +263,7 @@ describeModelRegistry((context) => {
 						"custom-provider": providerWithApiKey(`$${envVarName}`),
 					});
 
-					const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+					const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 
 					expect(registry.getProviderAuthStatus("custom-provider")).toEqual({
 						configured: false,
@@ -277,7 +277,7 @@ describeModelRegistry((context) => {
 				}
 			});
 
-			test("missing explicit env apiKey keeps provider unavailable", () => {
+			test("missing explicit env apiKey keeps provider unavailable", async () => {
 				const envVarName = "TEST_API_KEY_MISSING_AVAILABILITY_98765";
 				const originalEnv = process.env[envVarName];
 				delete process.env[envVarName];
@@ -287,7 +287,7 @@ describeModelRegistry((context) => {
 						"custom-provider": providerWithApiKey(`$${envVarName}`),
 					});
 
-					const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+					const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 
 					expect(registry.getProviderAuthStatus("custom-provider")).toEqual({
 						configured: false,
@@ -302,12 +302,12 @@ describeModelRegistry((context) => {
 				}
 			});
 
-			test("provider auth status reports non-env apiKey values from models.json as a config key", () => {
+			test("provider auth status reports non-env apiKey values from models.json as a config key", async () => {
 				writeRawModelsJson({
 					"custom-provider": providerWithApiKey("literal_api_key_value"),
 				});
 
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 
 				expect(registry.getProviderAuthStatus("custom-provider")).toEqual({
 					configured: true,
@@ -315,7 +315,7 @@ describeModelRegistry((context) => {
 				});
 			});
 
-			test("provider auth status reports command apiKey values from models.json without executing them", () => {
+			test("provider auth status reports command apiKey values from models.json without executing them", async () => {
 				const counterFile = join(context.tempDir, "status-counter");
 				writeFileSync(counterFile, "0");
 				const counterPath = toShPath(counterFile);
@@ -324,7 +324,7 @@ describeModelRegistry((context) => {
 					"custom-provider": providerWithApiKey(command),
 				});
 
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 
 				expect(registry.getProviderAuthStatus("custom-provider")).toEqual({
 					configured: true,
@@ -344,7 +344,7 @@ describeModelRegistry((context) => {
 						"custom-provider": providerWithApiKey(`$${envVarName}`),
 					});
 
-					const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+					const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 
 					const key1 = await registry.getApiKeyForProvider("custom-provider");
 					expect(key1).toBe("first-value");
@@ -372,7 +372,7 @@ describeModelRegistry((context) => {
 					"custom-provider": providerWithApiKey(command),
 				});
 
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 				const available = registry.getAvailable();
 
 				expect(available.some((m) => m.provider === "custom-provider")).toBe(true);
@@ -392,7 +392,7 @@ describeModelRegistry((context) => {
 					},
 				});
 
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 				const model = registry.find("custom-provider", "test-model");
 				expect(model).toBeDefined();
 
@@ -421,7 +421,7 @@ describeModelRegistry((context) => {
 					},
 				});
 
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 				const model = registry.find("custom-provider", "test-model");
 				expect(model).toBeDefined();
 

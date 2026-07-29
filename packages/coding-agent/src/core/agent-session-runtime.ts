@@ -17,7 +17,7 @@ import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { CreateAgentSessionResult } from "./sdk.ts";
 import { assertSessionCwdExists } from "./session-cwd.ts";
 import { SessionManager } from "./session-manager.ts";
-import type { AuthStatus } from "./auth-storage.ts";
+import type { AuthStatus } from "./provider-composer.ts";
 import { loginRuntimeOAuthProvider, type AtomicOAuthLoginCallbacks } from "./agent-session-runtime-auth.ts";
 import type { ModelFallbackReason } from "./model-resolver-types.ts";
 
@@ -158,14 +158,14 @@ export class AgentSessionRuntime {
 	}
 
 	async logoutProvider(provider: string): Promise<LogoutProviderResult> {
-		const registry = this.session.modelRegistry;
-		await registry.authStorage.logoutAsync(provider);
+		const registry = this.session.modelRuntime;
+		await registry.logout(provider);
 		await registry.refresh({ allowNetwork: false });
 		this.session.refreshCurrentModelFromRegistry();
 		return {
 			provider,
 			authStatus: registry.getProviderAuthStatus(provider),
-			models: registry.getAvailable(),
+			models: [...registry.getAvailableSnapshot()],
 			scopedModels: [...this.session.scopedModels],
 		};
 	}

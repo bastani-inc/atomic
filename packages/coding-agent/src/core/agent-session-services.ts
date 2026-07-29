@@ -1,12 +1,10 @@
 import { join } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
-import { getAgentDir, getModelsConfigPaths } from "../config.ts";
+import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
-import { AuthStorage } from "./auth-storage.ts";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
-import { ModelRegistry } from "./model-registry.ts";
-import type { ModelRuntime } from "./model-runtime.ts";
+import { ModelRuntime } from "./model-runtime.ts";
 import {
 	DefaultResourceLoader,
 	type DefaultResourceLoaderOptions,
@@ -16,7 +14,6 @@ import {
 import { type CreateAgentSessionOptions, type CreateAgentSessionResult, createAgentSession } from "./sdk.ts";
 import type { SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
-import { endTimingSpan, startTimingSpan } from "./timings.ts";
 
 /**
  * Non-fatal issues collected while creating services or sessions.
@@ -40,9 +37,7 @@ export interface AgentSessionRuntimeDiagnostic {
 export interface CreateAgentSessionServicesOptions {
 	cwd: string;
 	agentDir?: string;
-	authStorage?: AuthStorage;
 	settingsManager?: SettingsManager;
-	modelRegistry?: ModelRegistry;
 	modelRuntime?: ModelRuntime;
 	extensionFlagValues?: Map<string, boolean | string>;
 	resourceLoaderOptions?: Omit<DefaultResourceLoaderOptions, "cwd" | "agentDir" | "settingsManager">;
@@ -63,7 +58,7 @@ export interface CreateAgentSessionFromServicesOptions {
 	thinkingLevel?: ThinkingLevel;
 	fallbackModels?: CreateAgentSessionOptions["fallbackModels"];
 	scopedModels?: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
-	tools?: CreateAgentSessionOptions["tools"];
+	tools?: string[];
 	excludedTools?: CreateAgentSessionOptions["excludedTools"];
 	noTools?: CreateAgentSessionOptions["noTools"];
 	customTools?: ToolDefinition[];
@@ -78,9 +73,8 @@ export interface CreateAgentSessionFromServicesOptions {
 export interface AgentSessionServices {
 	cwd: string;
 	agentDir: string;
-	authStorage: AuthStorage;
+	modelRuntime: ModelRuntime;
 	settingsManager: SettingsManager;
-	modelRegistry: ModelRegistry;
 	resourceLoader: ResourceLoader;
 	diagnostics: AgentSessionRuntimeDiagnostic[];
 }
@@ -145,59 +139,41 @@ export async function createAgentSessionServices(
 ): Promise<AgentSessionServices> {
 	const cwd = resolvePath(options.cwd);
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getAgentDir();
-	const authStorageSpan = startTimingSpan("createAgentSessionServices.authStorage");
-	const authStorage = options.modelRuntime?.authStorage ?? options.authStorage ?? AuthStorage.create(join(agentDir, "auth.json"));
-	endTimingSpan(authStorageSpan);
-	const settingsSpan = startTimingSpan("createAgentSessionServices.settingsManager");
+	const modelRuntime =
+		options.modelRuntime ??
+		(await ModelRuntime.create({
+			authPath: join(agentDir, "auth.json"),
+			modelsPath: join(agentDir, "models.json"),
+		}));
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
-	endTimingSpan(settingsSpan);
 	const resourceLoader = new DefaultResourceLoader({
 		...(options.resourceLoaderOptions ?? {}),
 		cwd,
 		agentDir,
 		settingsManager,
 	});
-	const reloadSpan = startTimingSpan("createAgentSessionServices.resourceLoader.reload");
 	await resourceLoader.reload(options.resourceLoaderReloadOptions);
-	endTimingSpan(reloadSpan);
-	const modelRegistrySpan = startTimingSpan("createAgentSessionServices.modelRegistry");
-	const modelRegistry = options.modelRuntime?.modelRegistry ?? options.modelRegistry ?? ModelRegistry.create(
-		authStorage,
-		getModelsConfigPaths(cwd, agentDir, settingsManager.isProjectTrusted()),
-		agentDir,
-	);
-	endTimingSpan(modelRegistrySpan);
 
 	const diagnostics: AgentSessionRuntimeDiagnostic[] = [];
-	const providerSpan = startTimingSpan("createAgentSessionServices.providerRegistrations");
 	const extensionsResult = resourceLoader.getExtensions();
 	for (const registration of extensionsResult.runtime.pendingProviderRegistrations) {
 		try {
-			if ("provider" in registration) modelRegistry.registerProvider(registration.provider);
-			else modelRegistry.registerProvider(registration.name, registration.config);
+			if ("provider" in registration) modelRuntime.registerNativeProvider(registration.provider);
+			else modelRuntime.registerProvider(registration.name, registration.config);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			diagnostics.push({
-				type: "error",
-				message: `Extension "${registration.extensionPath}" error: ${message}`,
-			});
+			diagnostics.push({ type: "error", message: `Extension "${registration.extensionPath}" error: ${message}` });
 		}
 	}
 	extensionsResult.runtime.pendingProviderRegistrations = [];
-	endTimingSpan(providerSpan);
-	const catalogRestoreSpan = startTimingSpan("createAgentSessionServices.restoreModelCatalogs");
-	await modelRegistry.refresh({ allowNetwork: false });
-	endTimingSpan(catalogRestoreSpan);
-	const flagSpan = startTimingSpan("createAgentSessionServices.extensionFlagValidation");
+	await modelRuntime.refresh({ allowNetwork: false });
 	diagnostics.push(...applyExtensionFlagValues(resourceLoader, options.extensionFlagValues));
-	endTimingSpan(flagSpan);
 
 	return {
 		cwd,
 		agentDir,
-		authStorage,
+		modelRuntime,
 		settingsManager,
-		modelRegistry,
 		resourceLoader,
 		diagnostics,
 	};
@@ -216,16 +192,15 @@ export async function createAgentSessionFromServices(
 	return createAgentSession({
 		cwd: options.services.cwd,
 		agentDir: options.services.agentDir,
-		authStorage: options.services.authStorage,
+		modelRuntime: options.services.modelRuntime,
 		settingsManager: options.services.settingsManager,
-		modelRegistry: options.services.modelRegistry,
 		resourceLoader: options.services.resourceLoader,
 		sessionManager: options.sessionManager,
 		model: options.model,
 		thinkingLevel: options.thinkingLevel,
-		fallbackModels: options.fallbackModels,
 		scopedModels: options.scopedModels,
 		tools: options.tools,
+		fallbackModels: options.fallbackModels,
 		excludedTools: options.excludedTools,
 		noTools: options.noTools,
 		customTools: options.customTools,

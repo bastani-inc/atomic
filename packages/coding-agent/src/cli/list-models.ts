@@ -6,7 +6,7 @@ import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { fuzzyFilter } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import { formatNoModelsAvailableMessage } from "../core/auth-guidance.ts";
-import type { ModelRegistry } from "../core/model-registry.ts";
+import type { ModelRuntime } from "../core/model-runtime.ts";
 
 /**
  * Format a number as human-readable (e.g., 200000 -> "200K", 1000000 -> "1M")
@@ -26,13 +26,13 @@ function formatTokenCount(count: number): string {
 /**
  * List available models, optionally filtered by search pattern
  */
-export async function listModels(modelRegistry: ModelRegistry, searchPattern?: string): Promise<void> {
-	const loadError = modelRegistry.getError();
+export async function listModels(modelRuntime: ModelRuntime, searchPattern?: string): Promise<void> {
+	const loadError = modelRuntime.getError();
 	if (loadError) {
 		console.error(chalk.yellow(`Warning: errors loading models.json:\n${loadError}`));
 	}
 
-	const models = modelRegistry.getAvailable();
+	const models = modelRuntime.getAvailableSnapshot();
 
 	if (models.length === 0) {
 		console.log(formatNoModelsAvailableMessage());
@@ -40,9 +40,9 @@ export async function listModels(modelRegistry: ModelRegistry, searchPattern?: s
 	}
 
 	// Apply fuzzy filter if search pattern provided
-	let filteredModels: Model<Api>[] = models;
+	let filteredModels: Model<Api>[] = [...models];
 	if (searchPattern) {
-		filteredModels = fuzzyFilter(models, searchPattern, (m) => `${m.provider} ${m.id}`);
+		filteredModels = fuzzyFilter([...models], searchPattern, (m) => `${m.provider} ${m.id}`);
 	}
 
 	if (filteredModels.length === 0) {

@@ -3,7 +3,7 @@ import type { AgentSessionInternalSurface as AgentSession } from "./agent-sessio
 export function installAgentSessionAccessors(prototype: AgentSession): void {
 	Object.defineProperties(prototype, {
 		orchestrationContext: { get() { return this._orchestrationContext; } },
-		modelRegistry: { get() { return this._modelRegistry; } },
+		modelRuntime: { get() { return this._modelRuntime; } },
 		state: { get() { return this.agent.state; } },
 		model: { get() { return this.agent.state.model; } },
 		thinkingLevel: { get() { return this.agent.state.thinkingLevel; } },

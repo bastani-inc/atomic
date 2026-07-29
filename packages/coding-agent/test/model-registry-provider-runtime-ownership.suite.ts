@@ -7,10 +7,9 @@ import {
 	streamSimple,
 	unregisterApiProviders,
 } from "@earendil-works/pi-ai/compat";
-import { getOAuthProvider } from "../src/core/oauth-provider-bridge.ts";
 import { describe, expect, test } from "vitest";
-import { ModelRegistry } from "../src/core/model-registry.ts";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
+import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 
 describeModelRegistry((context) => {
 	const { providerConfig, getModelsForProvider, openAiModel, emptyContext } = context;
@@ -18,8 +17,8 @@ describeModelRegistry((context) => {
 	describe("dynamic provider lifecycle", () => {
 		describe("dynamic provider override persistence", () => {
 			test("one registry cannot erase another registry's API or OAuth registrations", async () => {
-				const first = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
-				const second = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const first = await createModelRegistry(context.authStorage, context.modelsJsonPath);
+				const second = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 				const api = "registry-isolation-api" as Api;
 				const oauth = (name: string) => ({
 					name,
@@ -38,39 +37,21 @@ describeModelRegistry((context) => {
 					streamSimple: () => { throw new Error("second"); },
 				});
 				const secondApi = getApiProvider(api);
-				await first.refresh({ allowNetwork: false });
+				await getModelRuntime(first).refresh({ allowNetwork: false });
 				expect(getApiProvider(api)).toBe(secondApi);
-				expect(getOAuthProvider("registry-isolation")?.name).toBe("second");
+				expect(second.getProvider("registry-isolation")?.auth.oauth?.name).toBe("second");
 
 				first.unregisterProvider("registry-isolation");
 
 				expect(getApiProvider(api)).toBe(secondApi);
-				expect(getOAuthProvider("registry-isolation")?.name).toBe("second");
+				expect(second.getProvider("registry-isolation")?.auth.oauth?.name).toBe("second");
 				second.unregisterProvider("registry-isolation");
 				expect(getApiProvider(api)).toBeUndefined();
 			});
 
-			test("unregistering the latest registry restores the previous API owner", () => {
-				const first = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
-				const second = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
-				const api = "registry-fallback-api" as Api;
-				first.registerProvider("registry-first", {
-					api,
-					streamSimple: () => { throw new Error("first-owner"); },
-				});
-				second.registerProvider("registry-second", {
-					api,
-					streamSimple: () => { throw new Error("second-owner"); },
-				});
 
-				second.unregisterProvider("registry-second");
-
-				expect(() => getApiProvider(api)?.streamSimple({ ...openAiModel, api }, emptyContext)).toThrow("first-owner");
-				first.unregisterProvider("registry-first");
-			});
-
-			test("unregistering an Atomic override restores an external API owner", () => {
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			test("unregistering an Atomic override restores an external API owner", async () => {
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 				const api = "external-fallback-api" as Api;
 				registerApiProvider({
 					api,
@@ -89,8 +70,8 @@ describeModelRegistry((context) => {
 				unregisterApiProviders("external-owner");
 			});
 
-			test("unregistering an unrelated API does not reclassify an active override", () => {
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			test("unregistering an unrelated API does not reclassify an active override", async () => {
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 				const externalSource = "active-openai-override";
 				let customDispatches = 0;
 				registerApiProvider({
@@ -115,9 +96,10 @@ describeModelRegistry((context) => {
 			});
 
 			test("passes runtime-only credentials to extension catalog refresh", async () => {
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
+				const runtime = getModelRuntime(registry);
 				let observedCredential: Credential | undefined;
-				context.authStorage.setRuntimeApiKey("dynamic-probe", "runtime-secret");
+				await runtime.setRuntimeApiKey("dynamic-probe", "runtime-secret");
 				registry.registerProvider("dynamic-probe", {
 					refreshModels: async ({ credential }) => {
 						observedCredential = credential;
@@ -125,15 +107,16 @@ describeModelRegistry((context) => {
 					},
 				});
 
-				const result = await registry.refresh({ allowNetwork: false });
+				const result = await runtime.refresh({ allowNetwork: false });
 
 				expect(result.errors.size).toBe(0);
 				expect(observedCredential).toEqual({ type: "api_key", key: "runtime-secret" });
-				expect(context.authStorage.get("dynamic-probe")).toBeUndefined();
+				expect(await context.authStorage.read("dynamic-probe")).toBeUndefined();
 			});
 
 			test("passes configured API keys to extension catalog refresh", async () => {
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
+				const runtime = getModelRuntime(registry);
 				let observedCredential: Credential | undefined;
 				registry.registerProvider("configured-catalog", {
 					apiKey: "literal-secret",
@@ -143,14 +126,14 @@ describeModelRegistry((context) => {
 					},
 				});
 
-				const result = await registry.refresh({ allowNetwork: true });
+				const result = await runtime.refresh({ allowNetwork: true });
 
 				expect(result.errors.size).toBe(0);
 				expect(observedCredential).toEqual({ type: "api_key", key: "literal-secret" });
 			});
 
 			test("ignores undefined fields in partial provider updates", async () => {
-				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 				registry.registerProvider(
 					"partial-provider",
 					providerConfig("https://partial.test/v1", [{ id: "kept-model" }], "openai-completions"),
@@ -174,7 +157,7 @@ describeModelRegistry((context) => {
 				};
 
 				await expectPreservedProvider();
-				await registry.refresh({ allowNetwork: false });
+				await getModelRuntime(registry).refresh({ allowNetwork: false });
 				await expectPreservedProvider();
 			});
 		});

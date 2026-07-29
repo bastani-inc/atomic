@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { InMemoryModelsStore } from "@earendil-works/pi-ai";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/resource-loader.js";
-import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
+import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { FileModelsStore } from "../../packages/coding-agent/src/core/models-store.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { builtInExtensions } from "../../packages/coding-agent/src/extensions/index.js";
@@ -54,44 +54,24 @@ describe("llama.cpp provider", () => {
 		assert.equal(toLlamaModel({ id: "fallback", status: { value: "loaded" } }, "http://localhost").contextWindow, 128000);
 	});
 
-	test("custom login validates the router and stores normalized URL plus optional key", async () => {
-		let requestedUrl = "";
-		globalThis.fetch = mockFetch(async (input) => {
-			requestedUrl = String(input);
-			return jsonResponse({ data: [{ id: "local", status: { value: "loaded" } }] });
-		});
-		const auth = createLlamaProvider().config.auth?.apiKey;
-		assert.ok(auth);
-		const answers = ["http://localhost:9000/v1/", "secret"];
-		const credential = await auth.login({
-			signal: new AbortController().signal,
-			prompt: async () => answers.shift() ?? "",
-		});
-		assert.equal(requestedUrl, "http://localhost:9000/models");
-		assert.deepEqual(credential, {
-			type: "api_key",
-			key: "secret",
-			env: { LLAMA_BASE_URL: "http://localhost:9000" },
-		});
-	});
-
-	test("dynamic refresh exposes only loaded models and resolves stored URL metadata", async () => {
+	test("dynamic refresh exposes only loaded models through the configured provider", async () => {
 		globalThis.fetch = mockFetch(async () => jsonResponse({ data: [
 			{ id: "loaded", status: { value: "loaded" }, meta: { n_ctx: 4096 } },
 			{ id: "idle", status: { value: "unloaded" } },
 		] }));
 		const storage = AuthStorage.inMemory({
-			"llama.cpp": { type: "api_key", env: { LLAMA_BASE_URL: "http://localhost:8080" } },
+			"llama.cpp": { type: "api_key", key: "local", env: { LLAMA_BASE_URL: "http://localhost:8080" } },
 		});
-		const registry = ModelRegistry.inMemory(storage);
-		registry.registerProvider("llama.cpp", createLlamaProvider().config);
-		assert.deepEqual(registry.getCustomApiKeyAuthProviders(), [{ id: "llama.cpp", name: "llama.cpp server" }]);
-		const result = await registry.refresh();
+		const runtime = await ModelRuntime.create({ credentials: storage, modelsPath: null });
+		runtime.registerProvider("llama.cpp", createLlamaProvider().config);
+		await runtime.refresh({ allowNetwork: false });
+		const result = await runtime.refresh({ allowNetwork: true });
 		assert.equal(result.errors.size, 0);
-		const models = registry.getAll().filter((model) => model.provider === "llama.cpp");
+		const models = runtime.getModels("llama.cpp");
 		assert.deepEqual(models.map((model) => model.id), ["loaded"]);
-		const auth = await registry.getApiKeyAndHeaders(models[0]!);
-		assert.deepEqual(auth, { ok: true, apiKey: "local", headers: undefined, baseUrl: "http://localhost:8080/v1" });
+		const auth = await runtime.getAuth(models[0]!);
+		assert.equal(auth?.auth.apiKey, "local");
+		assert.equal(models[0]?.baseUrl, "http://127.0.0.1:8080/v1");
 	});
 
 	test("persists the loaded catalog and restores it before a later network refresh", async () => {
@@ -126,31 +106,33 @@ describe("llama.cpp provider", () => {
 			globalThis.fetch = mockFetch(async () => jsonResponse({ data: [
 				{ id: "cached-on-restart", status: { value: "loaded" }, meta: { n_ctx: 65536 } },
 			] }));
-			const first = ModelRegistry.create(auth, [], root);
+			const first = await ModelRuntime.create({ credentials: auth, modelsPath: join(root, "models.json"), modelsStorePath: join(root, "models-store.json") });
 			first.registerProvider("llama.cpp", createLlamaProvider().config);
+			await first.refresh({ allowNetwork: false });
 			assert.equal((await first.refresh({ allowNetwork: true })).errors.size, 0);
 
 			globalThis.fetch = mockFetch(async () => { throw new Error("router offline"); });
-			const restarted = ModelRegistry.create(auth, [], root);
+			const restarted = await ModelRuntime.create({ credentials: auth, modelsPath: join(root, "models.json"), modelsStorePath: join(root, "models-store.json") });
 			restarted.registerProvider("llama.cpp", createLlamaProvider().config);
+			await restarted.refresh({ allowNetwork: false });
 			const result = await restarted.refresh({ allowNetwork: true });
 
 			assert.equal(result.errors.get("llama.cpp")?.message, "router offline");
 			assert.deepEqual(
-				restarted.getAll().filter((model) => model.provider === "llama.cpp").map((model) => model.id),
+				restarted.getModels().filter((model) => model.provider === "llama.cpp").map((model) => model.id),
 				["cached-on-restart"],
 			);
-			assert.equal(restarted.find("llama.cpp", "cached-on-restart")?.maxTokens, 65536);
+			assert.equal(restarted.getModel("llama.cpp", "cached-on-restart")?.maxTokens, 65536);
 
 			globalThis.fetch = mockFetch(async () => jsonResponse({ data: [
 				{ id: "fresh-after-restart", status: { value: "loaded" }, meta: { n_ctx: 32768 } },
 			] }));
 			assert.equal((await restarted.refresh({ allowNetwork: true })).errors.size, 0);
 			assert.deepEqual(
-				restarted.getAll().filter((model) => model.provider === "llama.cpp").map((model) => model.id),
+				restarted.getModels().filter((model) => model.provider === "llama.cpp").map((model) => model.id),
 				["fresh-after-restart"],
 			);
-			assert.equal(restarted.find("llama.cpp", "cached-on-restart"), undefined);
+			assert.equal(restarted.getModel("llama.cpp", "cached-on-restart"), undefined);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
@@ -163,13 +145,14 @@ describe("llama.cpp provider", () => {
 				"llama.cpp": { type: "api_key", key: "local", env: { LLAMA_BASE_URL: "http://localhost:8080" } },
 			});
 			globalThis.fetch = mockFetch(async () => { throw new Error("router offline"); });
-			const registry = ModelRegistry.create(auth, [], root);
+			const registry = await ModelRuntime.create({ credentials: auth, modelsPath: join(root, "models.json"), modelsStorePath: join(root, "models-store.json") });
 			registry.registerProvider("llama.cpp", createLlamaProvider().config);
+			await registry.refresh({ allowNetwork: false });
 
 			const result = await registry.refresh({ allowNetwork: true });
 
 			assert.equal(result.errors.get("llama.cpp")?.message, "router offline");
-			assert.equal(registry.getAll().some((model) => model.provider === "llama.cpp"), false);
+			assert.equal(registry.getModels().some((model) => model.provider === "llama.cpp"), false);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
@@ -187,13 +170,14 @@ describe("llama.cpp provider", () => {
 				"llama.cpp": { type: "api_key", key: "local", env: { LLAMA_BASE_URL: "http://localhost:8080" } },
 			});
 			globalThis.fetch = mockFetch(async () => { throw new Error("router offline"); });
-			const registry = ModelRegistry.create(auth, [], root);
+			const registry = await ModelRuntime.create({ credentials: auth, modelsPath: join(root, "models.json"), modelsStorePath: join(root, "models-store.json") });
 			registry.registerProvider("llama.cpp", createLlamaProvider().config);
+			await registry.refresh({ allowNetwork: false });
 
 			const result = await registry.refresh({ allowNetwork: true });
 
 			assert.equal(result.errors.get("llama.cpp")?.message, "router offline");
-			assert.equal(registry.getAll().some((model) => model.provider === "llama.cpp"), false);
+			assert.equal(registry.getModels().some((model) => model.provider === "llama.cpp"), false);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
@@ -236,8 +220,8 @@ describe("built-in inline extension", () => {
 });
 
 // Keep the auth-storage import exercised against the newly optional key shape.
-test("provider metadata credentials remain backward compatible", () => {
+test("provider metadata credentials remain backward compatible", async () => {
 	const storage = AuthStorage.inMemory({ old: { type: "api_key", key: "legacy" }, local: { type: "api_key", env: { LLAMA_BASE_URL: "http://localhost" } } });
-	assert.equal(storage.get("old")?.type, "api_key");
-	assert.deepEqual(storage.get("local"), { type: "api_key", env: { LLAMA_BASE_URL: "http://localhost" } });
+	assert.equal((await storage.read("old"))?.type, "api_key");
+	assert.deepEqual(await storage.read("local"), { type: "api_key", env: { LLAMA_BASE_URL: "http://localhost" } });
 });

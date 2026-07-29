@@ -28,7 +28,7 @@ import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai/compat"
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { AgentSession, type AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
-import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
+import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
@@ -85,7 +85,7 @@ interface PersistedHarness {
 	dispose: () => void;
 }
 
-function createPersistedSession(directory: string): PersistedHarness {
+async function createPersistedSession(directory: string): Promise<PersistedHarness> {
 	const { streamFn, models } = rescueStream();
 	const manager = SessionManager.create(directory, directory);
 	const agent = new Agent({
@@ -100,9 +100,11 @@ function createPersistedSession(directory: string): PersistedHarness {
 		return realContinue(...args);
 	}) as typeof agent.continue;
 
-	const authStorage = AuthStorage.inMemory();
-	authStorage.setRuntimeApiKey("anthropic", PRIMARY_KEY);
-	authStorage.setRuntimeApiKey("openai", FALLBACK_KEY);
+	const authStorage = AuthStorage.inMemory({
+		anthropic: { type: "api_key", key: PRIMARY_KEY },
+		openai: { type: "api_key", key: FALLBACK_KEY },
+	});
+	const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null });
 	const settingsManager = SettingsManager.inMemory();
 	// One transport attempt per candidate, so the ladder alone explains the calls.
 	settingsManager.applyOverrides({ retry: { enabled: false, maxRetries: 0, baseDelayMs: 0 } });
@@ -111,7 +113,7 @@ function createPersistedSession(directory: string): PersistedHarness {
 		sessionManager: manager,
 		settingsManager,
 		cwd: directory,
-		modelRegistry: ModelRegistry.create(authStorage),
+		modelRuntime,
 		resourceLoader: createTestResourceLoader(),
 		fallbackModels: ["openai/gpt-5.1"],
 	});
@@ -169,7 +171,7 @@ function recordsOf(raw: string): string[] {
 
 test("a rescued compaction appends exactly one durable boundary and nothing else", async () => {
 	const directory = mkdtempSync(join(tmpdir(), "compaction-purity-persisted-"));
-	const harness = createPersistedSession(directory);
+	const harness = await createPersistedSession(directory);
 	try {
 		const before = {
 			model: harness.session.model,
@@ -241,7 +243,7 @@ test("a rescued compaction appends exactly one durable boundary and nothing else
 
 test("no borrowed or session credential reaches the durable session artifacts", async () => {
 	const directory = mkdtempSync(join(tmpdir(), "compaction-purity-secrets-"));
-	const harness = createPersistedSession(directory);
+	const harness = await createPersistedSession(directory);
 	try {
 		const result = await harness.session.compact({ preserve_recent: 2 });
 		assert.equal(result.plannerModel?.id, "gpt-5.1");

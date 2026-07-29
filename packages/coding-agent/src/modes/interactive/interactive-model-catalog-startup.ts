@@ -4,7 +4,7 @@ import type { InteractiveModeBase } from "./interactive-mode-base.ts";
 export function updateProviderCountFromSnapshot(mode: InteractiveModeBase): void {
 	const models = mode.session.scopedModels.length > 0
 		? mode.session.scopedModels.map((scoped) => scoped.model)
-		: mode.session.modelRegistry.getAvailable();
+		: mode.session.modelRuntime.getAvailableSnapshot();
 	mode.footerDataProvider.setAvailableProviderCount(new Set(models.map((model) => model.provider)).size);
 }
 
@@ -16,7 +16,7 @@ export function updateProviderCountFromSnapshot(mode: InteractiveModeBase): void
  * (the caller already gates on offline mode).
  */
 export function refreshCatalogsAfterTuiStartup(mode: InteractiveModeBase): Promise<void> {
-	return mode.session.modelRegistry.refresh({ allowNetwork: true })
+	return mode.session.modelRuntime.refresh({ allowNetwork: true })
 		.catch(() => {})
 		.then(() => updateProviderCountFromSnapshot(mode))
 		.catch(() => {});

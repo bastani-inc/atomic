@@ -3,33 +3,22 @@ import assert from "node:assert/strict";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.ts";
-import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.ts";
+import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.ts";
 import { createRpcCommandHandler } from "../../packages/coding-agent/src/modes/rpc/rpc-command-handler.ts";
 
-function createSessionRegistry(login: (prompt: (message: string) => Promise<string>) => Promise<string>) {
+async function createSessionRuntime() {
 	const authStorage = AuthStorage.inMemory();
-	const registry = ModelRegistry.inMemory(authStorage);
-	const template = ModelRegistry.inMemory(AuthStorage.inMemory({
-		"kimi-coding": { type: "api_key", key: "template" },
-	})).getAvailable().find((model) => model.provider === "kimi-coding");
+	const runtime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null });
+	const template = runtime.getModels("kimi-coding")[0];
 	assert.ok(template);
 	let refreshCount = 0;
-	registry.registerProvider("extension-login", {
-		auth: {
-			apiKey: {
-				name: "Extension Login",
-				login: async ({ prompt }) => ({
-					type: "api_key",
-					key: await login((message) => prompt({ type: "secret", message, placeholder: "token" })),
-				}),
-			},
-		},
+	runtime.registerProvider("extension-login", {
 		refreshModels: async ({ credential }) => {
 			refreshCount += 1;
-			return credential ? [{ ...template, id: "extension-model" }] : [];
+			return credential ? [{ ...template, provider: "extension-login", id: "extension-model" }] : [];
 		},
 	});
-	return { authStorage, registry, refreshCount: () => refreshCount };
+	return { authStorage, runtime, refreshCount: () => refreshCount };
 }
 
 function runtimeHost(): AgentSessionRuntime {
@@ -37,8 +26,8 @@ function runtimeHost(): AgentSessionRuntime {
 }
 
 test("login_provider prompts in the host, persists the credential, refreshes, and returns provider metadata", async () => {
-	const state = createSessionRegistry(async (prompt) => prompt("Enter extension token"));
-	const session = { modelRegistry: state.registry, scopedModels: [] } as unknown as AgentSession;
+	const state = await createSessionRuntime();
+	const session = { modelRuntime: state.runtime, scopedModels: [] } as unknown as AgentSession;
 	const handle = createRpcCommandHandler({
 		runtimeHost: runtimeHost(),
 		getSession: () => session,
@@ -46,8 +35,8 @@ test("login_provider prompts in the host, persists the credential, refreshes, an
 		output: () => {},
 		inputForm: {
 			open: async (request) => {
-				assert.equal(request.title, "Enter extension token");
-				assert.equal(request.fields[0]?.placeholder, "token");
+				assert.equal(request.title, "Enter API key");
+				assert.equal(request.fields[0]?.placeholder, undefined);
 				return { value: "child-secret" };
 			},
 		},
@@ -58,17 +47,17 @@ test("login_provider prompts in the host, persists the credential, refreshes, an
 	assert.ok(response?.success && "data" in response);
 	assert.equal(response.command, "login_provider");
 	assert.equal(response.data.cancelled, false);
-	assert.deepEqual(state.authStorage.get("extension-login"), { type: "api_key", key: "child-secret" });
+	assert.deepEqual(await state.authStorage.read("extension-login"), { type: "api_key", key: "child-secret" });
 	assert.ok(state.refreshCount() > 0);
 	if (!response.data.cancelled) {
-		assert.deepEqual(response.data.customAuthProviders, [{ id: "extension-login", name: "Extension Login" }]);
+		assert.deepEqual(response.data.customAuthProviders, []);
 		assert.equal(response.data.models.some((model) => model.provider === "extension-login"), true);
 	}
 });
 
 test("cancel_login_provider aborts an active child login without storing credentials", async () => {
-	const state = createSessionRegistry(async (prompt) => prompt("Enter extension token"));
-	const session = { modelRegistry: state.registry, scopedModels: [] } as unknown as AgentSession;
+	const state = await createSessionRuntime();
+	const session = { modelRuntime: state.runtime, scopedModels: [] } as unknown as AgentSession;
 	const handle = createRpcCommandHandler({
 		runtimeHost: runtimeHost(),
 		getSession: () => session,
@@ -89,20 +78,18 @@ test("cancel_login_provider aborts an active child login without storing credent
 	assert.ok(cancelled?.success);
 	assert.ok(response?.success && "data" in response);
 	assert.deepEqual(response.data, { provider: "extension-login", cancelled: true });
-	assert.equal(state.authStorage.get("extension-login"), undefined);
+	assert.equal(await state.authStorage.read("extension-login"), undefined);
 });
 
-test("non-isolated registries retain the local custom authentication contract", async () => {
-	const state = createSessionRegistry(async (prompt) => prompt("Local prompt"));
-	const auth = state.registry.getCustomApiKeyAuth("extension-login");
-	assert.ok(auth);
-	assert.equal(auth.name, "Extension Login");
-	const credential = await auth.login({
+test("non-isolated runtimes retain provider-owned API-key authentication", async () => {
+	const state = await createSessionRuntime();
+	const credential = await state.runtime.login("extension-login", "api_key", {
 		signal: new AbortController().signal,
 		prompt: async ({ message }) => {
-			assert.equal(message, "Local prompt");
+			assert.equal(message, "Enter API key");
 			return "local-secret";
 		},
+		notify: () => {},
 	});
 	assert.deepEqual(credential, { type: "api_key", key: "local-secret" });
 });

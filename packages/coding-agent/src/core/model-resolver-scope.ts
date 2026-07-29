@@ -3,7 +3,7 @@ import { modelsAreEqual } from "@earendil-works/pi-ai/compat";
 import chalk from "chalk";
 import { minimatch } from "minimatch";
 import { isValidThinkingLevel } from "../cli/args.ts";
-import type { ModelRegistry } from "./model-registry.ts";
+import type { ModelRuntime } from "./model-runtime.ts";
 import { findExactModelReferenceMatch, parseModelPattern } from "./model-resolver-patterns.ts";
 import type { ScopedModel } from "./model-resolver-types.ts";
 
@@ -50,9 +50,9 @@ function parseGlobThinkingLevel(pattern: string): { globPattern: string; thinkin
  */
 export async function resolveModelScopeWithDiagnostics(
   patterns: string[],
-  modelRegistry: ModelRegistry,
+  modelRuntime: ModelRuntime,
 ): Promise<ResolveModelScopeResult> {
-  const availableModels = await modelRegistry.getAvailable();
+  const availableModels = await [...modelRuntime.getAvailableSnapshot()];
   const scopedModels: ScopedModel[] = [];
   const diagnostics: ModelScopeDiagnostic[] = [];
   for (const pattern of patterns) {
@@ -110,8 +110,8 @@ export async function resolveModelScopeWithDiagnostics(
   return { scopedModels, diagnostics };
 }
 
-export async function resolveModelScope(patterns: string[], modelRegistry: ModelRegistry): Promise<ScopedModel[]> {
-  const { scopedModels, diagnostics } = await resolveModelScopeWithDiagnostics(patterns, modelRegistry);
+export async function resolveModelScope(patterns: string[], modelRuntime: ModelRuntime): Promise<ScopedModel[]> {
+  const { scopedModels, diagnostics } = await resolveModelScopeWithDiagnostics(patterns, modelRuntime);
   for (const diagnostic of diagnostics) {
     console.warn(chalk.yellow(`Warning: ${diagnostic.message}`));
   }

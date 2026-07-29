@@ -2,7 +2,7 @@ import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { isValidThinkingLevel } from "../cli/args.ts";
 import { buildFallbackModel, parseModelPattern } from "./model-resolver-patterns.ts";
 import type { ResolveCliModelResult } from "./model-resolver-types.ts";
-import type { ModelRegistry } from "./model-registry.ts";
+import type { ModelRuntime } from "./model-runtime.ts";
 
 function buildProviderMap(availableModels: Model<Api>[]): Map<string, string> {
   const providerMap = new Map<string, string>();
@@ -49,15 +49,15 @@ function splitCustomModelThinkingSuffix(pattern: string): {
 export function resolveCliModel(options: {
   cliProvider?: string;
   cliModel?: string;
-  modelRegistry: ModelRegistry;
+  modelRuntime: ModelRuntime;
 }): ResolveCliModelResult {
-  const { cliProvider, cliModel, modelRegistry } = options;
+  const { cliProvider, cliModel, modelRuntime } = options;
 
   if (!cliModel) {
     return { model: undefined, warning: undefined, error: undefined };
   }
 
-  const availableModels = modelRegistry.getAll();
+  const availableModels = [...modelRuntime.getModels()];
   if (availableModels.length === 0) {
     return {
       model: undefined,

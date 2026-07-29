@@ -10,7 +10,7 @@ import {
 	MAX_OUTPUT_BUDGET_ERROR_CONTINUATION_ATTEMPTS,
 } from "../src/core/agent-session-auto-compaction.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import { ModelRegistry } from "../src/core/model-registry.ts";
+import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createTestResourceLoader } from "./utilities.ts";
@@ -51,7 +51,7 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 	let sessionManager: SessionManager;
 	let tempDir: string;
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		compactionMocks.runVerbatimCompaction.mockClear();
 		compactionMocks.estimateContextTokens.mockReset();
 		compactionMocks.estimateContextTokens.mockReturnValue({ tokens: 0, usageTokens: 0, trailingTokens: 0, lastUsageIndex: null });
@@ -65,15 +65,15 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 		sessionManager.appendMessage({ role: "user", content: [{ type: "text", text: "existing compactable context" }], timestamp: Date.now() });
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
-		const modelRegistry = ModelRegistry.create(authStorage, tempDir);
+		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
+		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null, allowModelNetwork: false });
 
 		session = new AgentSession({
 			agent,
 			sessionManager,
 			settingsManager,
 			cwd: tempDir,
-			modelRegistry,
+			modelRuntime,
 			resourceLoader: createTestResourceLoader(),
 		});
 	});

@@ -1,6 +1,6 @@
 import { calculateCost, type Usage } from "@earendil-works/pi-ai";
 import { describe, expect, test } from "vitest";
-import { ModelRegistry } from "../src/core/model-registry.ts";
+import { createInMemoryModelRegistry, createModelRegistry } from "./model-runtime-test-utils.ts";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
 
 const replacementTier = {
@@ -24,7 +24,7 @@ function usage(input: number, output: number, cacheRead = 0, cacheWrite = 0): Us
 
 describeModelRegistry((context) => {
 	describe("request-wide model cost tiers", () => {
-		test("custom models retain complete tiers and price only strictly above aggregate input threshold", () => {
+		test("custom models retain complete tiers and price only strictly above aggregate input threshold", async () => {
 			context.writeRawModelsJson({
 				demo: {
 					baseUrl: "https://example.com/v1",
@@ -49,7 +49,7 @@ describeModelRegistry((context) => {
 				},
 			});
 
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 			const model = registry.find("demo", "tiered-model");
 			expect(registry.getError()).toBeUndefined();
 			expect(model?.cost.tiers).toEqual([replacementTier]);
@@ -66,7 +66,7 @@ describeModelRegistry((context) => {
 			expect(aboveThreshold.cacheRead).toBeCloseTo(0.4);
 		});
 
-		test("custom models reject incomplete cost tiers", () => {
+		test("custom models reject incomplete cost tiers", async () => {
 			context.writeRawModelsJson({
 				demo: {
 					baseUrl: "https://example.com/v1",
@@ -87,12 +87,12 @@ describeModelRegistry((context) => {
 				},
 			});
 
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 			expect(registry.find("demo", "invalid-tier")).toBeUndefined();
 			expect(registry.getError()).toContain("cacheWrite");
 		});
 
-		test("model overrides reject incomplete cost tiers", () => {
+		test("model overrides reject incomplete cost tiers", async () => {
 			context.writeRawModelsJson({
 				openai: {
 					modelOverrides: {
@@ -103,45 +103,45 @@ describeModelRegistry((context) => {
 				},
 			});
 
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 			expect(registry.getError()).toContain("cacheWrite");
 		});
 
-		test("scalar built-in override preserves inherited GPT-5.6 tiers", () => {
+		test("scalar built-in override preserves inherited GPT-5.6 tiers", async () => {
 			context.writeRawModelsJson({
 				openai: { modelOverrides: { "gpt-5.6-sol": { cost: { input: 99 } } } },
 			});
 
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 			const model = registry.find("openai", "gpt-5.6-sol");
 			expect(model?.cost.input).toBe(99);
 			expect(model?.cost.output).toBeGreaterThan(0);
 			expect(model?.cost.tiers?.length).toBeGreaterThan(0);
 		});
 
-		test("explicit tier override replaces inherited tiers and preserves unspecified scalar rates", () => {
-			const baseline = ModelRegistry.create(context.authStorage).find("openai", "gpt-5.6-sol");
+		test("explicit tier override replaces inherited tiers and preserves unspecified scalar rates", async () => {
+			const baseline = (await createInMemoryModelRegistry(context.authStorage)).find("openai", "gpt-5.6-sol");
 			context.writeRawModelsJson({
 				openai: { modelOverrides: { "gpt-5.6-sol": { cost: { tiers: [replacementTier] } } } },
 			});
 
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 			const model = registry.find("openai", "gpt-5.6-sol");
 			expect(model?.cost.input).toBe(baseline?.cost.input);
 			expect(model?.cost.output).toBe(baseline?.cost.output);
 			expect(model?.cost.tiers).toEqual([replacementTier]);
 		});
 
-		test("empty tier override clears inherited tiers", () => {
+		test("empty tier override clears inherited tiers", async () => {
 			context.writeRawModelsJson({
 				openai: { modelOverrides: { "gpt-5.6-sol": { cost: { tiers: [] } } } },
 			});
 
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 			expect(registry.find("openai", "gpt-5.6-sol")?.cost.tiers).toEqual([]);
 		});
 
-		test("dynamic provider model override replaces tiers while preserving unspecified scalar rates", () => {
+		test("dynamic provider model override replaces tiers while preserving unspecified scalar rates", async () => {
 			context.writeRawModelsJson({
 				"extension-provider": {
 					modelOverrides: {
@@ -149,7 +149,7 @@ describeModelRegistry((context) => {
 					},
 				},
 			});
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 			registry.registerProvider("extension-provider", {
 				baseUrl: "https://provider.test/v1",
 				apiKey: "TEST_KEY",

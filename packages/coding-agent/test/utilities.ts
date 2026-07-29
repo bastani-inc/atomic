@@ -8,11 +8,11 @@ import { join } from "node:path";
 import { Agent } from "@earendil-works/pi-agent-core";
 import { getModel, streamSimple } from "@earendil-works/pi-ai/compat";
 import { AgentSession } from "../src/core/agent-session.ts";
-import { AuthStorage } from "../src/core/auth-storage.ts";
+import { readStoredCredential, AuthStorage } from "../src/core/auth-storage.ts";
 import { createEventBus } from "../src/core/event-bus.ts";
 import type { Extension, ExtensionFactory, LoadExtensionsResult } from "../src/core/extensions/index.ts";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
-import { ModelRegistry } from "../src/core/model-registry.ts";
+import { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
@@ -39,14 +39,15 @@ const AUTH_PATH = join(homedir(), ".pi", "agent", "auth.json");
  *
  */
 export async function resolveApiKey(provider: string): Promise<string | undefined> {
-	return AuthStorage.create(AUTH_PATH).getApiKey(provider);
+	const credential = await AuthStorage.create(AUTH_PATH).read(provider);
+	return credential?.type === "api_key" ? credential.key : credential?.access;
 }
 
 /**
  * Check if a provider has credentials in ~/.pi/agent/auth.json
  */
 export function hasAuthForProvider(provider: string): boolean {
-	return AuthStorage.create(AUTH_PATH).has(provider);
+	return readStoredCredential(provider, AUTH_PATH) !== undefined;
 }
 
 /** Path to the real pi agent config directory */
@@ -167,7 +168,7 @@ export function createTestResourceLoader(options: CreateTestResourceLoaderOption
  * Create an AgentSession for testing with proper setup and cleanup.
  * Use this for e2e tests that need real LLM calls.
  */
-export function createTestSession(options: TestSessionOptions = {}): TestSessionContext {
+export async function createTestSession(options: TestSessionOptions = {}): Promise<TestSessionContext> {
 	const tempDir = join(tmpdir(), `pi-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	mkdirSync(tempDir, { recursive: true });
 
@@ -190,14 +191,14 @@ export function createTestSession(options: TestSessionOptions = {}): TestSession
 	}
 
 	const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
-	const modelRegistry = ModelRegistry.create(authStorage, tempDir);
+	const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null });
 
 	const session = new AgentSession({
 		agent,
 		sessionManager,
 		settingsManager,
 		cwd: tempDir,
-		modelRegistry,
+		modelRuntime,
 		resourceLoader: createTestResourceLoader(),
 	});
 

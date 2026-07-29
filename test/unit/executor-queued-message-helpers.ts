@@ -71,7 +71,7 @@ export function streamingTurnSession(recorder: QueuedMessageRecorder): Streaming
     // Makes the fake visible through handle.agentSession, matching the SDK path.
     state: {} as never,
     sessionManager: {} as never,
-    modelRegistry: {} as never,
+    modelRuntime: {} as never,
     getContextUsage: (() => undefined) as never,
     get isStreaming() { return streaming; },
     get pendingMessageCount() { return steering.length + followUp.length; },

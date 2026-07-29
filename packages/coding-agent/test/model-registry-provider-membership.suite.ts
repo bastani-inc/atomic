@@ -1,10 +1,10 @@
 import { describe, expect, test } from "vitest";
-import { ModelRegistry } from "../src/core/model-registry.ts";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
+import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 
 describeModelRegistry((context) => {
 	describe("provider membership", () => {
-		test("tracks exact provider membership independently from authentication and model materialization", () => {
+		test("tracks exact provider membership independently from authentication and model materialization", async () => {
 			context.writeRawModelsJson({
 				"configured-provider": context.providerConfig(
 					"https://configured.test/v1",
@@ -12,13 +12,14 @@ describeModelRegistry((context) => {
 					"openai-completions",
 				),
 			});
-			context.authStorage.setRuntimeApiKey("stale-auth-only", "stale-token");
-			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			await context.authStorage.modify("stale-auth-only", async () => ({ type: "api_key", key: "stale-token" }));
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
+			const runtime = getModelRuntime(registry);
 
-			expect(registry.hasProvider("openai")).toBe(true);
-			expect(registry.hasProvider("OpenAI")).toBe(false);
-			expect(registry.hasProvider("configured-provider")).toBe(true);
-			expect(registry.hasProvider("stale-auth-only")).toBe(false);
+			expect(runtime.getProvider("openai") !== undefined).toBe(true);
+			expect(runtime.getProvider("OpenAI") !== undefined).toBe(false);
+			expect(runtime.getProvider("configured-provider") !== undefined).toBe(true);
+			expect(runtime.getProvider("stale-auth-only") !== undefined).toBe(false);
 
 			registry.registerProvider("extension-without-models", {
 				api: "openai-completions",
@@ -26,17 +27,17 @@ describeModelRegistry((context) => {
 					throw new Error("not called");
 				},
 			});
-			expect(registry.hasProvider("extension-without-models")).toBe(true);
+			expect(runtime.getProvider("extension-without-models") !== undefined).toBe(true);
 			registry.unregisterProvider("extension-without-models");
-			expect(registry.hasProvider("extension-without-models")).toBe(false);
+			expect(runtime.getProvider("extension-without-models") !== undefined).toBe(false);
 
 			const anthropic = registry.getProvider("anthropic");
 			if (!anthropic) throw new Error("missing built-in provider fixture");
 			registry.registerProvider({ ...anthropic, id: "native-member" });
-			expect(registry.hasProvider("native-member")).toBe(true);
+			expect(runtime.getProvider("native-member") !== undefined).toBe(true);
 			registry.unregisterProvider("native-member");
-			expect(registry.hasProvider("native-member")).toBe(false);
-			expect(registry.hasProvider("anthropic")).toBe(true);
+			expect(runtime.getProvider("native-member") !== undefined).toBe(false);
+			expect(runtime.getProvider("anthropic") !== undefined).toBe(true);
 		});
 	});
 });

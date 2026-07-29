@@ -18,7 +18,7 @@ function boundary(manager: { getBranch(): Array<{ type: string }> }): Compaction
 
 test("rate-limit rescue: a healthy fallback keeps the boundary at rung planned and the UI quiet", async () => {
 	const { streamFn, calls } = plannerScript({ anthropic: [THROTTLED], openai: [{ text: "3,9\n" }] });
-	const built = createRungSession({ streamFn, fallbackModels: ["openai/gpt-5.1"] });
+	const built = await createRungSession({ streamFn, fallbackModels: ["openai/gpt-5.1"] });
 	try {
 		const sessionModelBefore = built.session.model;
 		const result = await built.session.compact({ preserve_recent: 2 });
@@ -51,7 +51,7 @@ test("starvation rescue: exactly two planner requests, both at the inherited rea
 		anthropic: [{ text: "", stopReason: "length", reasoningTokens: 4096 }],
 		openai: [{ text: "3,9\n" }],
 	});
-	const built = createRungSession({ streamFn, fallbackModels: ["openai/gpt-5.1"], thinkingLevel: "high" });
+	const built = await createRungSession({ streamFn, fallbackModels: ["openai/gpt-5.1"], thinkingLevel: "high" });
 	try {
 		const result = await built.session.compact({ preserve_recent: 2 });
 		assert.equal(result.rung, "planned");
@@ -68,7 +68,7 @@ test("overflow trimming retries the same model on a smaller region before advanc
 	const { streamFn, calls } = plannerScript({
 		anthropic: [{ errorMessage: "prompt is too long: context_length_exceeded" }, { text: "1,4\n" }],
 	});
-	const built = createRungSession({ streamFn });
+	const built = await createRungSession({ streamFn });
 	try {
 		const result = await built.session.compact({ preserve_recent: 2 });
 		assert.equal(result.rung, "planned");
@@ -90,7 +90,7 @@ test("overflow trimming continues until no smaller region exists, then advances"
 		anthropic: [OVERFLOW],
 		openai: [{ text: "3,9\n" }],
 	});
-	const built = createRungSession({ streamFn, fallbackModels: ["openai/gpt-5.1"] });
+	const built = await createRungSession({ streamFn, fallbackModels: ["openai/gpt-5.1"] });
 	try {
 		const result = await built.session.compact({ preserve_recent: 2 });
 		assert.equal(result.rung, "planned");
@@ -121,7 +121,7 @@ test("a trimmed region that succeeds past the old three-trim cap is still accept
 		anthropic: [OVERFLOW, OVERFLOW, OVERFLOW, OVERFLOW, { text: "1,2\n" }],
 		openai: [{ text: "3,9\n" }],
 	});
-	const built = createRungSession({ streamFn, fallbackModels: ["openai/gpt-5.1"] });
+	const built = await createRungSession({ streamFn, fallbackModels: ["openai/gpt-5.1"] });
 	try {
 		const result = await built.session.compact({ preserve_recent: 2 });
 		assert.equal(result.rung, "planned");
@@ -136,7 +136,7 @@ test("a trimmed region that succeeds past the old three-trim cap is still accept
 
 test("each trimmed view derives its own keep target from compression_ratio", async () => {
 	const { streamFn, calls } = plannerScript({ anthropic: [OVERFLOW, OVERFLOW, { text: "1,2\n" }] });
-	const built = createRungSession({ streamFn });
+	const built = await createRungSession({ streamFn });
 	try {
 		await built.session.compact({ preserve_recent: 2 });
 		assert.equal(calls.length, 3);
@@ -167,7 +167,7 @@ test("a 20-line region halved to 10 still asks for deletions", async () => {
 	// The exact shape from the finding: ratio 0.5 over 20 lines asks to keep 10;
 	// carrying that target into the 10-line view would request zero deletions.
 	const { streamFn, calls } = plannerScript({ anthropic: [OVERFLOW, { text: "1,2\n" }] });
-	const built = createRungSession({ streamFn, turns: 4 });
+	const built = await createRungSession({ streamFn, turns: 4 });
 	try {
 		await built.session.compact({ preserve_recent: 2 });
 		assert.ok(calls.length >= 2);
@@ -183,7 +183,7 @@ test("a 20-line region halved to 10 still asks for deletions", async () => {
 
 test("manual honesty: every model rate limited writes no boundary and leaves the session usable", async () => {
 	const { streamFn, calls } = plannerScript({ anthropic: [THROTTLED], openai: [THROTTLED] });
-	const built = createRungSession({ streamFn, fallbackModels: ["openai/gpt-5.1"] });
+	const built = await createRungSession({ streamFn, fallbackModels: ["openai/gpt-5.1"] });
 	try {
 		await assert.rejects(() => built.session.compact({ preserve_recent: 2 }), /429 Too Many Requests/);
 		assert.deepEqual(calls.map((call) => call.provider), ["anthropic", "openai"]);
@@ -211,7 +211,7 @@ test("manual honesty: every model rate limited writes no boundary and leaves the
 
 test("threshold auto-compaction is recoverable and cannot clear context", async () => {
 	const { streamFn } = plannerScript({ anthropic: [THROTTLED] });
-	const built = createRungSession({ streamFn });
+	const built = await createRungSession({ streamFn });
 	try {
 		const runAutoCompaction = (
 			built.session as unknown as {
@@ -230,7 +230,7 @@ test("threshold auto-compaction is recoverable and cannot clear context", async 
 
 test("overflow recovery is load-bearing and completes on the fresh rung when every model fails", async () => {
 	const { streamFn } = plannerScript({ anthropic: [THROTTLED], openai: [THROTTLED] });
-	const built = createRungSession({ streamFn, fallbackModels: ["openai/gpt-5.1"] });
+	const built = await createRungSession({ streamFn, fallbackModels: ["openai/gpt-5.1"] });
 	try {
 		const runAutoCompaction = (
 			built.session as unknown as {
@@ -258,7 +258,7 @@ test("overflow recovery is load-bearing and completes on the fresh rung when eve
 
 test("post-tool preflight is load-bearing: it completes without scheduling a continuation", async () => {
 	const { streamFn } = plannerScript({ anthropic: [THROTTLED] });
-	const built = createRungSession({ streamFn, contextWindow: 4_000, reserveTokens: 3_999, turns: 12 });
+	const built = await createRungSession({ streamFn, contextWindow: 4_000, reserveTokens: 3_999, turns: 12 });
 	try {
 		const preflight = (
 			built.session as unknown as {

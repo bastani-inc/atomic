@@ -17,6 +17,7 @@ import type {
 } from "../../src/core/extensions/types.ts";
 import { KeybindingsManager, type KeyId } from "../../src/core/keybindings.ts";
 import { ModelRegistry } from "../../src/core/model-registry.ts";
+import { ModelRuntime } from "../../src/core/model-runtime.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 
 describe("ExtensionRunner", () => {
@@ -24,15 +25,17 @@ describe("ExtensionRunner", () => {
 	let extensionsDir: string;
 	let sessionManager: SessionManager;
 	let modelRegistry: ModelRegistry;
+	let modelRuntime: ModelRuntime;
 	const defaultKeybindings = new KeybindingsManager().getEffectiveConfig();
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-runner-test-"));
 		extensionsDir = path.join(tempDir, "extensions");
 		fs.mkdirSync(extensionsDir);
 		sessionManager = SessionManager.inMemory();
 		const authStorage = AuthStorage.create(path.join(tempDir, "auth.json"));
-		modelRegistry = ModelRegistry.create(authStorage);
+		modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null });
+		modelRegistry = new ModelRegistry(modelRuntime);
 	});
 
 	afterEach(() => {
@@ -115,7 +118,7 @@ describe("ExtensionRunner", () => {
 			expect(errors).toEqual([
 				'/tmp/broken-extension.ts: Provider broken-provider: "api" is required when registering streamSimple.',
 			]);
-			await expect(modelRegistry.refresh()).resolves.toMatchObject({ aborted: false });
+			await expect(modelRuntime.refresh()).resolves.toMatchObject({ aborted: false, errors: new Map() });
 		});
 
 		it("pre-bind unregister removes all queued registrations for a provider", () => {

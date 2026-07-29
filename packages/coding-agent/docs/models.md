@@ -1,8 +1,6 @@
 # Custom Models
 
-Add custom providers and models (Ollama, vLLM, LM Studio, proxies) via `~/.atomic/agent/models.json` (legacy `~/.pi/agent/models.json` is also read).
-
-When both files exist, Atomic reads the legacy `.pi` file first and the primary `.atomic` file second. For `modelOverrides`, entries are layered by provider and model ID: disjoint legacy entries remain available, while an exact primary provider/model entry replaces the complete legacy override entry. Atomic does not field-merge one override entry across files; use `{}` in the primary file to restore the built-in model values for that exact entry.
+Add custom providers and models (Ollama, vLLM, LM Studio, proxies) via the single `models.json` in the active Atomic agent directory, normally `~/.atomic/agent/models.json`. If Atomic selected the legacy `.pi` agent directory because no Atomic directory exists, that directory's `models.json` is used instead. Atomic does not merge `.pi` and `.atomic` model configuration files.
 
 A complete `defaultProvider`/`defaultModel` pair in `settings.json` is resolved after built-in, configured, and extension providers register. If the provider remains unsupported, interactive mode reports a generic saved-configuration warning and leaves model selection open instead of routing the session to a different provider. Print and JSON modes write that diagnostic to stderr and exit nonzero before prompting, keeping JSON stdout JSONL-clean. RPC rejects `prompt` with the same correlated diagnostic until an explicit successful `set_model` selects an available model or an explicit model cycle returns a different available model. A null or unchanged cycle result does not clear the condition. If the provider is supported but the model is unknown or lacks authentication, normal automatic selection of an available authenticated model continues. Valid custom- and extension-provider defaults resolve once their provider registration is available. See [Settings](/settings#model--thinking).
 
@@ -95,7 +93,7 @@ Override defaults when you need specific values:
 }
 ```
 
-Atomic reloads every configured `models.json` layer each time you open `/model`: legacy global/project `.pi` sources first, then primary global/project `.atomic` sources. Provider definitions, complete per-model overrides, dynamic catalogs, and isolated-engine model state are rebuilt from that fresh layered view, so edits take effect without restarting. Invalid edits report an error and do not silently reuse a different layer.
+Atomic reloads the active agent directory's single `models.json` each time you open `/model`. Provider definitions, per-model overrides, dynamic catalogs, and isolated-engine model state are rebuilt from that fresh configuration, so edits take effect without restarting. Invalid edits report an error.
 
 ## Google AI Studio Example
 
@@ -418,13 +416,13 @@ Use `modelOverrides` to customize specific models without replacing the provider
 
 `modelOverrides` supports these fields per model: `name`, `reasoning`, `thinkingLevelMap`, `input`, `cost` (partial scalar rates plus optional full tier-array replacement), `contextWindow`, `maxTokens`, `headers`, `compat`.
 
-When both `~/.pi/agent/models.json` and `~/.atomic/agent/models.json` define `modelOverrides`, Atomic merges their nested provider/model maps in that order. Different model IDs survive from both files. For the same provider and model ID, the primary `.atomic` entry replaces the entire legacy `.pi` override entry rather than deep-merging individual fields. This complete-entry rule includes `headers`: a primary exact override without headers removes headers that came from the legacy override, but does not erase a surviving custom model definition's own headers. An empty primary override (`{}`) therefore restores the model's built-in values for that entry.
+Atomic reads one `models.json` from the active agent directory. It does not layer model overrides from `.pi` and `.atomic` files.
 
 Within a single file, custom model definitions replace matching built-in entries after built-in overrides are applied. `modelOverrides` composes only with built-in and extension-registered models; it does not modify a same-ID custom model definition.
 
 Behavior notes:
 - Atomic retains the parsed override map even when an extension registers the matching provider/model after `models.json` is loaded.
-- Layered primary/legacy compatibility merges override maps by provider and model ID; disjoint entries survive, while a primary exact entry replaces the complete legacy entry without cross-file field-level merging.
+- Model overrides come from the active agent directory's single `models.json`; no cross-file layering or merging is performed.
 - For matching built-in and extension-registered models, the model definition is the base and `modelOverrides` wins configured fields. Extension-registered model headers are shallow-merged with override headers, with override headers winning duplicate names. A same-ID custom model replaces the built-in override result, including its complete header record.
 - A scalar-only `cost` override preserves inherited tiers. Supplying `cost.tiers` replaces the complete tier array, including `[]` to clear it; omitted scalar cost fields remain inherited.
 - Provider-level request headers remain a separate provider layer and are combined at request time.

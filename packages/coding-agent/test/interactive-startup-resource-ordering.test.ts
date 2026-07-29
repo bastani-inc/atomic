@@ -62,7 +62,7 @@ async function renderStartupWithEarlyNotify(
 					reload: async () => {},
 					resourceLoader: { getThemes: () => ({ themes: [] }) },
 					extensionRunner: {},
-					modelRegistry: { getError: () => undefined },
+					modelRuntime: { getError: () => undefined },
 				},
 			},
 			options: { value: {} },
@@ -119,7 +119,7 @@ function configureDeferredMode(mode: InteractiveMode): void {
 				reload: async () => {},
 				resourceLoader: { getThemes: () => ({ themes: [] }) },
 				extensionRunner: {},
-				modelRegistry: { getError: () => undefined },
+				modelRuntime: { getError: () => undefined },
 			},
 		},
 		options: { configurable: true, value: {} },
@@ -228,8 +228,12 @@ const anthropicSubscriptionNotice: StartupNotice = {
 			configurable: true,
 			value: {
 				model: { provider: "anthropic" },
-				modelRegistry: {
-					authStorage: { get: () => ({ type: "oauth" }) },
+				modelRuntime: {
+					getAuth: async () => ({
+						auth: { apiKey: "sk-ant-oat01-test" },
+						credential: { type: "oauth", access: "test", expires: Date.now() + 60_000 },
+					}),
+					isUsingOAuth: () => true,
 					getError: () => undefined,
 				},
 				reload: async () => {},

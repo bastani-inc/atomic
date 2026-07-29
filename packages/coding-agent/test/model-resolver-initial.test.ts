@@ -7,6 +7,7 @@ import {
 	restoreModelFromSession,
 } from "../src/core/model-resolver.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
+import { createInMemoryModelRegistry, createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 
 const allModels: Model<"anthropic-messages">[] = [
 	{
@@ -90,14 +91,14 @@ describe("default model selection", () => {
 	});
 	test("findInitialModel accepts explicit provider custom model ids", async () => {
 		const registry = {
-			getAll: () => allModels,
-		} as unknown as Parameters<typeof findInitialModel>[0]["modelRegistry"];
+			getModels: () => allModels,
+		} as unknown as Parameters<typeof findInitialModel>[0]["modelRuntime"];
 		const result = await findInitialModel({
 			cliProvider: "openrouter",
 			cliModel: "openrouter/openai/ghost-model",
 			scopedModels: [],
 			isContinuing: false,
-			modelRegistry: registry,
+			modelRuntime: registry instanceof ModelRegistry ? getModelRuntime(registry) : registry,
 		});
 		expect(result.model?.provider).toBe("openrouter");
 		expect(result.model?.id).toBe("openai/ghost-model");
@@ -105,17 +106,17 @@ describe("default model selection", () => {
 	test("findInitialModel reports an unusable complete saved default without switching providers", async () => {
 		const availableModel = allModels[1]!;
 		const registry = {
-			find: () => undefined,
-			hasProvider: () => false,
-			getAvailable: async () => [availableModel],
-		} as unknown as Parameters<typeof findInitialModel>[0]["modelRegistry"];
+			getModel: () => undefined,
+			getProvider: () => undefined,
+			getAvailableSnapshot: () => [availableModel],
+		} as unknown as Parameters<typeof findInitialModel>[0]["modelRuntime"];
 		const result = await findInitialModel({
 			scopedModels: [],
 			isContinuing: false,
 			defaultProvider: ["cur", "sor"].join(""),
 			defaultModelId: ["composer", "-2"].join(""),
 			defaultThinkingLevel: "medium",
-			modelRegistry: registry,
+			modelRuntime: registry instanceof ModelRegistry ? getModelRuntime(registry) : registry,
 		});
 		expect(result.model).toBeUndefined();
 		expect(result.fallbackMessage).toBe(
@@ -126,16 +127,16 @@ describe("default model selection", () => {
 	test("findInitialModel keeps normal fallback for an unknown model on a supported provider", async () => {
 		const availableModel = allModels[1]!;
 		const registry = {
-			find: () => undefined,
-			hasProvider: (provider: string) => provider === "openai",
-			getAvailable: async () => [availableModel],
-		} as unknown as Parameters<typeof findInitialModel>[0]["modelRegistry"];
+			getModel: () => undefined,
+			getProvider: (provider: string) => provider === "openai" ? ({ id: "openai" } as never) : undefined,
+			getAvailableSnapshot: () => [availableModel],
+		} as unknown as Parameters<typeof findInitialModel>[0]["modelRuntime"];
 		const result = await findInitialModel({
 			scopedModels: [],
 			isContinuing: false,
 			defaultProvider: "openai",
 			defaultModelId: "unknown-saved-model",
-			modelRegistry: registry,
+			modelRuntime: registry instanceof ModelRegistry ? getModelRuntime(registry) : registry,
 		});
 		expect(result.model).toBe(availableModel);
 		expect(result.fallbackMessage).toBeUndefined();
@@ -144,8 +145,8 @@ describe("default model selection", () => {
 	test("findInitialModel keeps automatic selection permissive when a saved-default field is omitted", async () => {
 		const availableModel = allModels[1]!;
 		const registry = {
-			getAvailable: async () => [availableModel],
-		} as unknown as Parameters<typeof findInitialModel>[0]["modelRegistry"];
+			getAvailableSnapshot: () => [availableModel],
+		} as unknown as Parameters<typeof findInitialModel>[0]["modelRuntime"];
 
 		for (const partialDefault of [
 			{ defaultProvider: "openai" },
@@ -155,14 +156,14 @@ describe("default model selection", () => {
 				scopedModels: [],
 				isContinuing: false,
 				...partialDefault,
-				modelRegistry: registry,
+				modelRuntime: registry instanceof ModelRegistry ? getModelRuntime(registry) : registry,
 			});
 			expect(result.model).toBe(availableModel);
 			expect(result.fallbackMessage).toBeUndefined();
 		}
 	});
 	test("findInitialModel resolves a valid authenticated custom-provider default", async () => {
-		const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+		const registry = await createInMemoryModelRegistry(AuthStorage.inMemory());
 		registry.registerProvider("custom-openai", {
 			baseUrl: "https://custom.example/v1",
 			apiKey: "test-key",
@@ -183,7 +184,7 @@ describe("default model selection", () => {
 			isContinuing: false,
 			defaultProvider: "custom-openai",
 			defaultModelId: "custom-default",
-			modelRegistry: registry,
+			modelRuntime: registry instanceof ModelRegistry ? getModelRuntime(registry) : registry,
 		});
 		expect(result.model?.provider).toBe("custom-openai");
 		expect(result.model?.id).toBe("custom-default");
@@ -192,8 +193,9 @@ describe("default model selection", () => {
 	test("restoreModelFromSession does not synthesize removed catalog-backed OpenAI ids", async () => {
 		const openaiBaseModel = allModels[1]!;
 		const registry = {
-			find: () => undefined,
-			getAvailable: async () => [openaiBaseModel],
+			getModel: () => undefined,
+			getProvider: () => undefined,
+			getAvailableSnapshot: () => [openaiBaseModel],
 			canRestoreUnknownModel: () => false,
 		} as unknown as Parameters<typeof restoreModelFromSession>[4];
 		const result = await restoreModelFromSession("openai", "gpt-5.6", undefined, false, registry);
@@ -202,8 +204,8 @@ describe("default model selection", () => {
 		expect(result.model?.id).not.toBe("gpt-5.6");
 		expect(result.fallbackMessage).toContain("model no longer exists");
 	});
-	test("restoreModelFromSession restores missing ids for registered OpenAI-compatible providers", async () => {
-		const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+	test("restoreModelFromSession does not synthesize missing IDs for registered providers", async () => {
+		const registry = await createInMemoryModelRegistry(AuthStorage.inMemory());
 		registry.registerProvider("custom-openai", {
 			baseUrl: "https://custom.example/v1",
 			apiKey: "test-key",
@@ -226,31 +228,33 @@ describe("default model selection", () => {
 			"newly-discovered-model",
 			undefined,
 			false,
-			registry,
+			getModelRuntime(registry),
 		);
 
-		expect(result.fallbackMessage).toBeUndefined();
+		expect(result.fallbackMessage).toContain("model no longer exists");
 		expect(result.model?.provider).toBe("custom-openai");
-		expect(result.model?.id).toBe("newly-discovered-model");
+		expect(result.model?.id).toBe("catalog-template");
 	});
 	test("restoreModelFromSession rejects an exact unauthenticated model instead of synthesizing it", async () => {
 		const unauthenticatedExact = { ...allModels[1]!, id: "saved-exact" };
 		const fallbackModel = allModels[0]!;
 		const registry = {
-			find: () => unauthenticatedExact,
+			getModel: () => unauthenticatedExact,
+			getProvider: () => ({ id: unauthenticatedExact.provider } as never),
 			hasConfiguredAuth: () => false,
-			getAvailable: async () => [fallbackModel],
+			getAvailableSnapshot: () => [fallbackModel],
 		} as unknown as Parameters<typeof restoreModelFromSession>[4];
 		const result = await restoreModelFromSession("openai", "saved-exact", undefined, false, registry);
 		expect(result.model).toBe(fallbackModel);
 		expect(result.model?.id).not.toBe("saved-exact");
 		expect(result.fallbackMessage).toContain("no auth configured");
 	});
-	test("restoreModelFromSession scrubs inherited context-window options from fallback models", async () => {
+	test("restoreModelFromSession rejects unknown catalog IDs without synthesizing them", async () => {
 		const registry = {
-			find: () => undefined,
-			getAvailable: async () => [copilotSelectableBaseModel],
-			canRestoreUnknownModel: () => true,
+			getModel: () => undefined,
+			getProvider: () => ({ id: "github-copilot" } as never),
+			getAvailableSnapshot: () => [copilotSelectableBaseModel],
+			hasConfiguredAuth: () => true,
 		} as unknown as Parameters<typeof restoreModelFromSession>[4];
 		const result = await restoreModelFromSession(
 			"github-copilot",
@@ -259,9 +263,8 @@ describe("default model selection", () => {
 			false,
 			registry,
 		);
-		expect(result.fallbackMessage).toBeUndefined();
-		expect(result.model?.provider).toBe("github-copilot");
-		expect(result.model?.id).toBe("future-copilot-model");
+		expect(result.fallbackMessage).toContain("model no longer exists");
+		expect(result.model).toBe(copilotSelectableBaseModel);
 		expect(result.model?.contextWindow).toBe(400000);
 	});
 	test("findInitialModel selects ai-gateway default when available", async () => {
@@ -278,12 +281,12 @@ describe("default model selection", () => {
 			maxTokens: 8192,
 		};
 		const registry = {
-			getAvailable: async () => [aiGatewayModel],
-		} as unknown as Parameters<typeof findInitialModel>[0]["modelRegistry"];
+			getAvailableSnapshot: () => [aiGatewayModel],
+		} as unknown as Parameters<typeof findInitialModel>[0]["modelRuntime"];
 		const result = await findInitialModel({
 			scopedModels: [],
 			isContinuing: false,
-			modelRegistry: registry,
+			modelRuntime: registry instanceof ModelRegistry ? getModelRuntime(registry) : registry,
 		});
 		expect(result.model?.provider).toBe("vercel-ai-gateway");
 		expect(result.model?.id).toBe("anthropic/claude-opus-4-6");
@@ -292,18 +295,18 @@ describe("default model selection", () => {
 		const savedModel = allModels[0]!;
 		const availableModel = allModels[1]!;
 		const registry = {
-			find: () => savedModel,
-			hasProvider: (provider: string) => provider === savedModel.provider,
+			getModel: () => savedModel,
+			getProvider: (provider: string) => provider === savedModel.provider,
 			hasConfiguredAuth: (model: Model<"anthropic-messages">) => model === availableModel,
-			getAvailable: async () => [availableModel],
-		} as unknown as Parameters<typeof findInitialModel>[0]["modelRegistry"];
+			getAvailableSnapshot: () => [availableModel],
+		} as unknown as Parameters<typeof findInitialModel>[0]["modelRuntime"];
 
 		const result = await findInitialModel({
 			scopedModels: [],
 			isContinuing: false,
 			defaultProvider: savedModel.provider,
 			defaultModelId: savedModel.id,
-			modelRegistry: registry,
+			modelRuntime: registry instanceof ModelRegistry ? getModelRuntime(registry) : registry,
 		});
 
 		expect(result.model).toBe(availableModel);

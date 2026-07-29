@@ -14,7 +14,7 @@ import type {
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai/compat";
 import type { VerbatimCompactionResult } from "./compaction/index.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
-import type { ModelRegistry } from "./model-registry.ts";
+import type { ModelRuntime } from "./model-runtime.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import type { SessionManager } from "./session-manager.js";
 import type { SettingsManager } from "./settings-manager.ts";
@@ -133,7 +133,7 @@ export class AgentSession {
 	protected _extensionShutdownHandler?: () => void;
 	protected _extensionErrorListener?: ExtensionErrorListener;
 	protected _extensionErrorUnsubscriber?: () => void;
-	protected _modelRegistry: ModelRegistry;
+	protected _modelRuntime: ModelRuntime;
 	protected _toolRegistry: Map<string, AgentTool> = new Map();
 	protected _toolDefinitions: Map<string, ToolDefinitionEntry> = new Map();
 	protected _toolPromptSnippets: Map<string, string> = new Map();
@@ -154,7 +154,7 @@ export class AgentSession {
 		this._resourceLoader = config.resourceLoader;
 		this._customTools = config.customTools ?? [];
 		this._cwd = config.cwd;
-		this._modelRegistry = config.modelRegistry;
+		this._modelRuntime = config.modelRuntime;
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;

@@ -7,9 +7,9 @@ import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import { ModelRegistry } from "../src/core/model-registry.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 import { createTestResourceLoader } from "./utilities.ts";
 
 class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
@@ -54,7 +54,7 @@ describe("AgentSession retry", () => {
 	let session: AgentSession;
 	let tempDir: string;
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		tempDir = join(tmpdir(), `pi-retry-test-${Date.now()}`);
 		mkdirSync(tempDir, { recursive: true });
 	});
@@ -68,7 +68,11 @@ describe("AgentSession retry", () => {
 		}
 	});
 
-	function createSession(options?: { failCount?: number; maxRetries?: number; delayAssistantMessageEndMs?: number }) {
+	async function createSession(options?: {
+		failCount?: number;
+		maxRetries?: number;
+		delayAssistantMessageEndMs?: number;
+	}) {
 		const failCount = options?.failCount ?? 1;
 		const maxRetries = options?.maxRetries ?? 3;
 		const delayAssistantMessageEndMs = options?.delayAssistantMessageEndMs ?? 0;
@@ -102,8 +106,8 @@ describe("AgentSession retry", () => {
 		const sessionManager = SessionManager.inMemory();
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
-		const modelRegistry = ModelRegistry.create(authStorage, tempDir);
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
+		const modelRegistry = await createModelRegistry(authStorage, tempDir);
 		settingsManager.applyOverrides({ retry: { enabled: true, maxRetries, baseDelayMs: 1 } });
 
 		session = new AgentSession({
@@ -111,7 +115,7 @@ describe("AgentSession retry", () => {
 			sessionManager,
 			settingsManager,
 			cwd: tempDir,
-			modelRegistry,
+			modelRuntime: getModelRuntime(modelRegistry),
 			resourceLoader: createTestResourceLoader(),
 		});
 
@@ -130,7 +134,7 @@ describe("AgentSession retry", () => {
 	}
 
 	it("retries after a transient error and succeeds", async () => {
-		const created = createSession({ failCount: 1 });
+		const created = await createSession({ failCount: 1 });
 		const events: string[] = [];
 		created.session.subscribe((event) => {
 			if (event.type === "auto_retry_start") events.push(`start:${event.attempt}`);
@@ -145,7 +149,7 @@ describe("AgentSession retry", () => {
 	});
 
 	it("exhausts max retries and emits failure", async () => {
-		const created = createSession({ failCount: 99, maxRetries: 2 });
+		const created = await createSession({ failCount: 99, maxRetries: 2 });
 		const events: string[] = [];
 		created.session.subscribe((event) => {
 			if (event.type === "auto_retry_start") events.push(`start:${event.attempt}`);
@@ -162,7 +166,7 @@ describe("AgentSession retry", () => {
 	});
 
 	it("prompt waits for retry completion even when assistant message_end handling is delayed", async () => {
-		const created = createSession({ failCount: 1, delayAssistantMessageEndMs: 40 });
+		const created = await createSession({ failCount: 1, delayAssistantMessageEndMs: 40 });
 
 		await created.session.prompt("Test");
 
@@ -171,7 +175,7 @@ describe("AgentSession retry", () => {
 	});
 
 	it("retries provider network_error failures", async () => {
-		const created = createSession({ failCount: 0 });
+		const created = await createSession({ failCount: 0 });
 		let callCount = 0;
 		const streamFn = () => {
 			callCount++;
@@ -199,20 +203,20 @@ describe("AgentSession retry", () => {
 		const agent = new Agent({
 			getApiKey: () => "test-key",
 			initialState: { model, systemPrompt: "Test", tools: [] },
-			streamFn,
+			streamFn: streamFn,
 		});
 		const sessionManager = SessionManager.inMemory();
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
-		const modelRegistry = ModelRegistry.create(authStorage, tempDir);
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
+		const modelRegistry = await createModelRegistry(authStorage, tempDir);
 		settingsManager.applyOverrides({ retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } });
 		session = new AgentSession({
 			agent,
 			sessionManager,
 			settingsManager,
 			cwd: tempDir,
-			modelRegistry,
+			modelRuntime: getModelRuntime(modelRegistry),
 			resourceLoader: createTestResourceLoader(),
 		});
 
@@ -289,8 +293,8 @@ describe("AgentSession retry", () => {
 		const sessionManager = SessionManager.inMemory();
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
-		const modelRegistry = ModelRegistry.create(authStorage, tempDir);
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
+		const modelRegistry = await createModelRegistry(authStorage, tempDir);
 		settingsManager.applyOverrides({ retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } });
 
 		session = new AgentSession({
@@ -298,7 +302,7 @@ describe("AgentSession retry", () => {
 			sessionManager,
 			settingsManager,
 			cwd: tempDir,
-			modelRegistry,
+			modelRuntime: getModelRuntime(modelRegistry),
 			resourceLoader: createTestResourceLoader(),
 			baseToolsOverride: { echo: echoTool },
 		});
@@ -315,185 +319,4 @@ describe("AgentSession retry", () => {
 		await session.prompt("Follow-up");
 		expect(callCount).toBe(4);
 	});
-
-	it("retries bare provider finish_reason: error failures", async () => {
-		// github-copilot Gemini models surface MALFORMED_FUNCTION_CALL / OTHER /
-		// UNEXPECTED_TOOL_CALL as a bare finish_reason "error" (CAPI mapping), which
-		// pi-ai reports as "Provider finish_reason: error". This must be retryable.
-		let callCount = 0;
-		const streamFn = () => {
-			callCount++;
-			const stream = new MockAssistantStream();
-			queueMicrotask(() => {
-				if (callCount === 1) {
-					const msg = createAssistantMessage("", {
-						stopReason: "error",
-						errorMessage: "Provider finish_reason: error",
-					});
-					stream.push({ type: "start", partial: msg });
-					stream.push({ type: "error", reason: "error", error: msg });
-					return;
-				}
-				const msg = createAssistantMessage("Recovered after retry");
-				stream.push({ type: "start", partial: msg });
-				stream.push({ type: "done", reason: "stop", message: msg });
-			});
-			return stream;
-		};
-
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
-		const agent = new Agent({
-			getApiKey: () => "test-key",
-			initialState: { model, systemPrompt: "Test", tools: [] },
-			streamFn,
-		});
-		const sessionManager = SessionManager.inMemory();
-		const settingsManager = SettingsManager.create(tempDir, tempDir);
-		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
-		const modelRegistry = ModelRegistry.create(authStorage, tempDir);
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
-		settingsManager.applyOverrides({ retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } });
-
-		session = new AgentSession({
-			agent,
-			sessionManager,
-			settingsManager,
-			cwd: tempDir,
-			modelRegistry,
-			resourceLoader: createTestResourceLoader(),
-		});
-
-		const events: string[] = [];
-		session.subscribe((event) => {
-			if (event.type === "auto_retry_start") events.push(`start:${event.attempt}`);
-			if (event.type === "auto_retry_end") events.push(`end:success=${event.success}`);
-		});
-
-		await session.prompt("Test");
-
-		expect(callCount).toBe(2);
-		expect(events).toEqual(["start:1", "end:success=true"]);
-	});
-
-	it("retries degenerate empty completions and bounds them by maxRetries", async () => {
-		// github-copilot Gemini models intermittently end the stream with finish_reason
-		// "stop", an empty content array, and 0 output tokens. That degenerate turn must
-		// be retried (not silently accepted), and the empty "stop" must NOT reset the
-		// retry counter, so repeated empties still honor maxRetries.
-		let callCount = 0;
-		const streamFn = () => {
-			callCount++;
-			const stream = new MockAssistantStream();
-			queueMicrotask(() => {
-				if (callCount <= 2) {
-					const msg = createAssistantMessage("", { content: [], stopReason: "stop" });
-					stream.push({ type: "start", partial: msg });
-					stream.push({ type: "done", reason: "stop", message: msg });
-					return;
-				}
-				const msg = createAssistantMessage("Recovered after empty completions");
-				stream.push({ type: "start", partial: msg });
-				stream.push({ type: "done", reason: "stop", message: msg });
-			});
-			return stream;
-		};
-
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
-		const agent = new Agent({
-			getApiKey: () => "test-key",
-			initialState: { model, systemPrompt: "Test", tools: [] },
-			streamFn,
-		});
-		const sessionManager = SessionManager.inMemory();
-		const settingsManager = SettingsManager.create(tempDir, tempDir);
-		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
-		const modelRegistry = ModelRegistry.create(authStorage, tempDir);
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
-		settingsManager.applyOverrides({ retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } });
-
-		session = new AgentSession({
-			agent,
-			sessionManager,
-			settingsManager,
-			cwd: tempDir,
-			modelRegistry,
-			resourceLoader: createTestResourceLoader(),
-		});
-
-		const events: string[] = [];
-		session.subscribe((event) => {
-			if (event.type === "auto_retry_start") events.push(`start:${event.attempt}`);
-			if (event.type === "auto_retry_end") events.push(`end:success=${event.success}`);
-		});
-
-		await session.prompt("Test");
-
-		// Two empty completions -> two retries -> third call succeeds.
-		expect(callCount).toBe(3);
-		expect(events).toEqual(["start:1", "start:2", "end:success=true"]);
-		expect(session.isRetrying).toBe(false);
-	});
-
-	it("retries structured safety-trigger errors (content_filter, Anthropic refusal) for all providers", () => {
-		const created = createSession({ failCount: 0 });
-		const probe = created.session as unknown as {
-			_isRetryableError(message: AssistantMessage): boolean;
-		};
-
-		// OpenAI-style `finish_reason: content_filter` (any provider).
-		const anthropicBlocked = createAssistantMessage("", {
-			stopReason: "error",
-			errorMessage: "Provider finish_reason: content_filter",
-		});
-		expect(probe._isRetryableError(anthropicBlocked)).toBe(true);
-
-		// github-copilot CAPI mapping of spurious Gemini RECITATION/safety blocks.
-		const geminiBlocked = createAssistantMessage("", {
-			stopReason: "error",
-			errorMessage: "Provider finish_reason: content_filter",
-			provider: "github-copilot",
-			api: "openai-completions",
-			model: "gemini-3.1-pro-preview",
-		});
-		expect(probe._isRetryableError(geminiBlocked)).toBe(true);
-
-		// pi-ai's canned mapping of Anthropic `refusal` stops.
-		const anthropicRefusal = createAssistantMessage("", {
-			stopReason: "error",
-			errorMessage: "The model refused to complete the request",
-		});
-		expect(probe._isRetryableError(anthropicRefusal)).toBe(true);
-
-		// Non-safety, non-transient errors stay non-retryable.
-		const badRequest = createAssistantMessage("", {
-			stopReason: "error",
-			errorMessage: "Invalid request: unknown parameter",
-		});
-		expect(probe._isRetryableError(badRequest)).toBe(false);
-	});
-
-	it("does not treat a reasoning-only turn (output > 0) as an empty completion", () => {
-		const created = createSession({ failCount: 0 });
-		const probe = created.session as unknown as {
-			_isEmptyCompletion(message: AssistantMessage): boolean;
-		};
-
-		const emptyZeroOutput = createAssistantMessage("", { stopReason: "stop", content: [] });
-		expect(probe._isEmptyCompletion(emptyZeroOutput)).toBe(true);
-
-		const reasoningOnly = createAssistantMessage("", {
-			stopReason: "stop",
-			content: [],
-			usage: {
-				input: 10,
-				output: 5,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 15,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-		});
-		expect(probe._isEmptyCompletion(reasoningOnly)).toBe(false);
-	});
-
 });

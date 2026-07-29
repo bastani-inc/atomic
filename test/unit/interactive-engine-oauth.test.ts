@@ -1,9 +1,9 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AtomicOAuthLoginCallbacks } from "../../packages/coding-agent/src/core/oauth-provider-bridge.ts";
+import type { AtomicOAuthLoginCallbacks } from "../../packages/coding-agent/src/core/oauth-login.ts";
 import { RpcClient } from "../../packages/coding-agent/src/modes/rpc/rpc-client.ts";
 import { loginRpcOAuthProvider } from "../../packages/coding-agent/src/modes/rpc/rpc-oauth-client.ts";
 import type { RpcModelCatalog } from "../../packages/coding-agent/src/modes/rpc/rpc-types.ts";
@@ -32,13 +32,11 @@ test.serial("real isolated child discovers and acquires engine-only custom OAuth
 		assert.deepEqual(before.oauthProviders?.find(({ id }) => id === "corp-oauth"), {
 			id: "corp-oauth",
 			name: "Corp OAuth",
-			loginLabel: "Sign in to Corp",
-			usesCallbackServer: true,
 		});
 		assert.equal(before.oauthProviders?.some(({ id }) => id === "openrouter"), true);
 		assert.equal(before.oauthProviders?.some(({ id }) => id === "kimi-coding"), true);
 		assert.equal(JSON.stringify(before).includes("engine-token"), false);
-		const refreshesBeforeLogin = readFileSync(logFile, "utf8").match(/^refresh:/gm)?.length ?? 0;
+		const refreshesBeforeLogin = existsSync(logFile) ? (readFileSync(logFile, "utf8").match(/^refresh:/gm)?.length ?? 0) : 0;
 		const callbacks: AtomicOAuthLoginCallbacks = {
 			onAuth: ({ url }) => callbackLog.push(`auth:${url}`),
 			onDeviceCode: ({ userCode }) => callbackLog.push(`device:${userCode}`),

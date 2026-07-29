@@ -206,8 +206,8 @@ test("an entry that could not resolve to a model is never revisited", async () =
 	// later configured candidate.
 	const known = [primary, tertiary];
 	const registry = {
-		getAvailable: () => known.filter((model) => model.id !== "planner-b"),
-		find: (provider: string, id: string) => known.find((m) => m.provider === provider && m.id === id),
+		getAvailableSnapshot: () => known.filter((model) => model.id !== "planner-b"),
+		getModel: (provider: string, id: string) => known.find((m) => m.provider === provider && m.id === id),
 		hasConfiguredAuth: () => true,
 	};
 	const borrow = borrower({ fallbackModels: ["backup/planner-b", "spare/planner-c"], registry });

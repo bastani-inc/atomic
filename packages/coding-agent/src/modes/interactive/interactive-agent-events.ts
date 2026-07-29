@@ -222,7 +222,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
           this.footer.invalidate();
         }
         if (event.message.role === "assistant" && this.settingsManager.getShowCacheMissNotices()) {
-          const miss = detectCacheMiss(this.sessionManager.getEntries(), event.message, { getModel: (provider, model) => this.session.modelRegistry.find(provider, model) });
+          const miss = detectCacheMiss(this.sessionManager.getEntries(), event.message, { getModel: (provider, model) => this.session.modelRuntime.getModel(provider, model) });
           if (miss) {
             const cause = miss.modelChanged ? " after model switch" : miss.idleMs >= CACHE_TTL_MS ? " after cache TTL expiry" : "";
             this.chatContainer.addChild(new Text(theme.fg("warning", `Prompt cache miss${cause}: ${miss.missedTokens.toLocaleString()} tokens re-billed ($${miss.missedCost.toFixed(3)})`), 1, 0));

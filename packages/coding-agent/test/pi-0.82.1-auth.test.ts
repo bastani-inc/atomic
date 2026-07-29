@@ -9,7 +9,7 @@ import { SettingsManager } from "../src/core/settings-manager.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { getBuiltinApiKeyLoginOptions } from "../src/modes/interactive/interactive-auth-routing.ts";
 import { resolveLoginProviderReference } from "../src/modes/interactive/login-provider-options.ts";
-import { ModelRegistry } from "../src/core/model-registry.ts";
+import { createInMemoryModelRegistry, createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 
 function jsonResponse(body: object, status = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -33,25 +33,23 @@ afterEach(() => {
 });
 
 describe("Pi 0.82.1 authentication integration", () => {
-	it("exposes OpenRouter and Kimi Code through provider-owned OAuth metadata", () => {
-		const providers = AuthStorage.inMemory().getOAuthProviders();
-		expect(providers.find(({ id }) => id === "openrouter")).toMatchObject({
+	it("exposes OpenRouter and Kimi Code through provider-owned OAuth metadata", async () => {
+		const registry = await createInMemoryModelRegistry(AuthStorage.inMemory());
+		const runtime = getModelRuntime(registry);
+		expect(runtime.getProvider("openrouter")?.auth.oauth).toMatchObject({
 			name: "OpenRouter OAuth",
-			loginLabel: "Sign in with OpenRouter",
 		});
-		expect(providers.find(({ id }) => id === "kimi-coding")).toMatchObject({
+		expect(runtime.getProvider("kimi-coding")?.auth.oauth).toMatchObject({
 			name: "Kimi Code (subscription)",
-			loginLabel: "Sign in with Kimi Code",
 		});
 	});
 
-	it("routes direct /login references for both subscription providers", () => {
-		const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
-		const oauthOptions = registry.authStorage.getOAuthProviders().map(({ id }) => ({
-			id,
-			name: registry.getProviderDisplayName(id),
-			authType: "oauth" as const,
-		}));
+	it("routes direct /login references for both subscription providers", async () => {
+		const registry = await createInMemoryModelRegistry(AuthStorage.inMemory());
+		const runtime = getModelRuntime(registry);
+		const oauthOptions = runtime.getProviders()
+			.filter((provider) => provider.auth.oauth)
+			.map((provider) => ({ id: provider.id, name: provider.name ?? provider.id, authType: "oauth" as const }));
 		const options = [
 			...oauthOptions,
 			...getBuiltinApiKeyLoginOptions((id) => registry.getProviderDisplayName(id)),
@@ -75,7 +73,7 @@ describe("Pi 0.82.1 authentication integration", () => {
 		process.env.ANTHROPIC_AUTH_TOKEN = "gateway-token";
 		delete process.env.ANTHROPIC_API_KEY;
 		delete process.env.ANTHROPIC_OAUTH_TOKEN;
-		const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+		const registry = await createInMemoryModelRegistry(AuthStorage.inMemory());
 		const model = registry.getAll().find(({ provider }) => provider === "anthropic");
 		expect(model).toBeDefined();
 
@@ -95,31 +93,33 @@ describe("Pi 0.82.1 authentication integration", () => {
 		delete process.env.ANTHROPIC_API_KEY;
 		delete process.env.ANTHROPIC_OAUTH_TOKEN;
 		const storage = AuthStorage.inMemory();
-		const registry = ModelRegistry.inMemory(storage);
+		const registry = await createInMemoryModelRegistry(storage);
+		const runtime = getModelRuntime(registry);
 
-		expect(storage.hasAuth("anthropic")).toBe(true);
-		expect(storage.getAuthStatus("anthropic")).toEqual({
+		expect(runtime.hasConfiguredAuth("anthropic")).toBe(true);
+		expect(runtime.getProviderAuthStatus("anthropic")).toEqual({
 			configured: true,
 			source: "environment",
 			label: "ANTHROPIC_AUTH_TOKEN",
 		});
-		expect(registry.getAvailable().some(({ provider }) => provider === "anthropic")).toBe(true);
-		await expect(registry.checkAuth("anthropic")).resolves.toEqual({
+		expect(runtime.getAvailableSnapshot().some(({ provider }) => provider === "anthropic")).toBe(true);
+		await expect(runtime.checkAuth("anthropic")).resolves.toEqual({
 			source: "ANTHROPIC_AUTH_TOKEN",
 			type: "api_key",
 		});
 	});
 
-	it("does not treat known but empty Anthropic environment variables as configured", () => {
+	it("does not treat known but empty Anthropic environment variables as configured", async () => {
 		process.env.ANTHROPIC_AUTH_TOKEN = "";
 		process.env.ANTHROPIC_OAUTH_TOKEN = "";
 		process.env.ANTHROPIC_API_KEY = "";
 		const storage = AuthStorage.inMemory();
-		const registry = ModelRegistry.inMemory(storage);
+		const registry = await createInMemoryModelRegistry(storage);
+		const runtime = getModelRuntime(registry);
 
-		expect(storage.hasAuth("anthropic")).toBe(false);
-		expect(storage.getAuthStatus("anthropic")).toEqual({ configured: false });
-		expect(registry.getAvailable().some(({ provider }) => provider === "anthropic")).toBe(false);
+		expect(runtime.hasConfiguredAuth("anthropic")).toBe(false);
+		expect(runtime.getProviderAuthStatus("anthropic")).toEqual({ configured: false });
+		expect(runtime.getAvailableSnapshot().some(({ provider }) => provider === "anthropic")).toBe(false);
 	});
 
 	it("selects, restores, and cycles Anthropic models with bearer-only auth", async () => {
@@ -128,7 +128,8 @@ describe("Pi 0.82.1 authentication integration", () => {
 		delete process.env.ANTHROPIC_OAUTH_TOKEN;
 		const directory = mkdtempSync(join(tmpdir(), "atomic-anthropic-bearer-models-"));
 		const storage = AuthStorage.inMemory();
-		const registry = ModelRegistry.inMemory(storage);
+		const registry = await createInMemoryModelRegistry(storage);
+		const runtime = getModelRuntime(registry);
 		const models = registry.getAll().filter(({ provider }) => provider === "anthropic").slice(0, 2);
 		expect(models).toHaveLength(2);
 		const [first, second] = models;
@@ -139,7 +140,7 @@ describe("Pi 0.82.1 authentication integration", () => {
 				cliModel: first!.id,
 				scopedModels: [],
 				isContinuing: false,
-				modelRegistry: registry,
+				modelRuntime: runtime,
 			});
 			expect(direct.model).toBe(first);
 
@@ -148,10 +149,10 @@ describe("Pi 0.82.1 authentication integration", () => {
 				isContinuing: false,
 				defaultProvider: first!.provider,
 				defaultModelId: first!.id,
-				modelRegistry: registry,
+				modelRuntime: runtime,
 			});
 			expect(configuredDefault.model).toBe(first);
-			await expect(restoreModelFromSession(first!.provider, first!.id, undefined, false, registry)).resolves.toEqual({
+			await expect(restoreModelFromSession(first!.provider, first!.id, undefined, false, runtime)).resolves.toEqual({
 				model: first,
 				fallbackMessage: undefined,
 			});
@@ -160,7 +161,7 @@ describe("Pi 0.82.1 authentication integration", () => {
 				cwd: directory,
 				agentDir: directory,
 				authStorage: storage,
-				modelRegistry: registry,
+				modelRuntime: runtime,
 				model: first,
 				scopedModels: models.map((model) => ({ model })),
 				settingsManager: SettingsManager.inMemory(),
@@ -181,17 +182,18 @@ describe("Pi 0.82.1 authentication integration", () => {
 		const storage = AuthStorage.inMemory({
 			"kimi-coding": { type: "oauth", access: "old", refresh: "refresh-old", expires: 0 },
 		});
-		const registry = ModelRegistry.inMemory(storage);
+		const registry = await createInMemoryModelRegistry(storage);
+		const runtime = getModelRuntime(registry);
 		vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({
 			access_token: "access-new",
 			refresh_token: "refresh-new",
 			expires_in: 3600,
 		}));
 
-		await expect(registry.getAuth("kimi-coding")).resolves.toMatchObject({
+		await expect(runtime.getAuth("kimi-coding")).resolves.toMatchObject({
 			auth: { headers: { Authorization: "Bearer access-new" } },
 		});
-		expect(storage.get("kimi-coding")).toMatchObject({
+		expect(await storage.read("kimi-coding")).toMatchObject({
 			type: "oauth",
 			access: "access-new",
 			refresh: "refresh-new",
@@ -202,7 +204,7 @@ describe("Pi 0.82.1 authentication integration", () => {
 		const storage = AuthStorage.inMemory({
 			"kimi-coding": { type: "oauth", access: "old", refresh: "revoked", expires: 0 },
 		});
-		const registry = ModelRegistry.inMemory(storage);
+		const registry = await createInMemoryModelRegistry(storage);
 		vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({
 			error: "invalid_grant",
 			error_description: "credential revoked by gateway",
@@ -231,14 +233,15 @@ describe("Pi 0.82.1 authentication integration", () => {
 			const storage = AuthStorage.inMemory({
 				"corp-radius": { type: "oauth", access: "old", refresh: "refresh", expires: 0 },
 			});
-			const registry = ModelRegistry.create(storage, join(directory, "models.json"));
+			const registry = await createModelRegistry(storage, join(directory, "models.json"));
+			const runtime = getModelRuntime(registry);
 			const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({
 				access_token: "new-access",
 				refresh_token: "new-refresh",
 				expires_in: 3600,
 			}));
 
-			await expect(registry.getAuth("corp-radius")).resolves.toMatchObject({
+			await expect(runtime.getAuth("corp-radius")).resolves.toMatchObject({
 				auth: { apiKey: "new-access" },
 			});
 			expect(fetchSpy).toHaveBeenCalledWith(

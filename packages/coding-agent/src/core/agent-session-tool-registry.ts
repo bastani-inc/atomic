@@ -3,6 +3,7 @@ import { ExtensionRunner, wrapRegisteredTools, type ToolDefinition } from "./ext
 import { createSyntheticSourceInfo } from "./source-info.ts";
 import { createAllToolDefinitions, defaultToolNames } from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
+import { ModelRegistry } from "./model-registry.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { ToolDefinitionEntry } from "./agent-session-types.ts";
 import { createSessionAsyncDeliveryHandler } from "./async/session-manager.js";
@@ -172,7 +173,7 @@ export function _buildRuntime(this: AgentSession, options: {
 		extensionsResult.runtime,
 		this._cwd,
 		this.sessionManager,
-		this._modelRegistry,
+		new ModelRegistry(this._modelRuntime),
 		this._orchestrationContext,
 	);
 	if (this._extensionRunnerRef) {

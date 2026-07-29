@@ -86,7 +86,7 @@ InteractiveModeBase.prototype.handleReloadCommand = async function(this: Interac
       if (savedImplicitProjectTrust) {
         this.showStatus("Saved project trust for future sessions");
       }
-      const modelsJsonError = this.session.modelRegistry.getError();
+      const modelsJsonError = this.session.modelRuntime.getError();
       if (modelsJsonError) {
         this.showError(`models.json error: ${modelsJsonError}`);
       }
@@ -388,7 +388,7 @@ InteractiveModeBase.prototype.handleSessionCommand = function(this: InteractiveM
     const promptTokens = assistantEntries.reduce((sum, entry) => sum + (entry.type === "message" && entry.message.role === "assistant" ? entry.message.usage.input + entry.message.usage.cacheRead + entry.message.usage.cacheWrite : 0), 0);
     const cacheRead = assistantEntries.reduce((sum, entry) => sum + (entry.type === "message" && entry.message.role === "assistant" ? entry.message.usage.cacheRead : 0), 0);
     if (promptTokens > 0) info += `${theme.fg("dim", "Cache Hit Rate:")} ${((cacheRead / promptTokens) * 100).toFixed(1)}%\n`;
-    const waste = computeCacheWaste(entries, { getModel: (provider, model) => this.session.modelRegistry.find(provider, model) });
+    const waste = computeCacheWaste(entries, { getModel: (provider, model) => this.session.modelRuntime.getModel(provider, model) });
     if (waste.missCount > 0) info += `${theme.fg("dim", "Wasted Cache Cost:")} $${waste.missedCost.toFixed(4)} (${waste.missCount} misses)\n`;
 
     if (stats.cost > 0) {

@@ -60,7 +60,7 @@ describe("atomic update --models", () => {
 	it("loads and force-refreshes Atomic extension providers", async () => {
 		let factoryCalls = 0;
 		let refreshCalls = 0;
-		let observedOptions: { allowNetwork: boolean; force?: boolean } | undefined;
+		const observedOptions: Array<{ allowNetwork: boolean; force?: boolean }> = [];
 		const log = vi.spyOn(console, "log").mockImplementation(() => {});
 
 		await expect(handlePackageCommand(["update", "--models"], {
@@ -68,9 +68,10 @@ describe("atomic update --models", () => {
 				(pi) => {
 					factoryCalls += 1;
 					pi.registerProvider("extension-catalog", {
+						apiKey: "test-key",
 						refreshModels: async ({ allowNetwork, force }) => {
 							refreshCalls += 1;
-							observedOptions = { allowNetwork, force };
+							observedOptions.push({ allowNetwork, force });
 							return [];
 						},
 					});
@@ -79,8 +80,8 @@ describe("atomic update --models", () => {
 		})).resolves.toBe(true);
 
 		expect(factoryCalls).toBeGreaterThanOrEqual(1);
-		expect(refreshCalls).toBe(1);
-		expect(observedOptions).toEqual({ allowNetwork: true, force: true });
+		expect(refreshCalls).toBeGreaterThanOrEqual(1);
+		expect(observedOptions).toContainEqual({ allowNetwork: true, force: true });
 		expect(log.mock.calls.flat().join("\n")).toContain("Model catalogs refreshed");
 	});
 

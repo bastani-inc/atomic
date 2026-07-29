@@ -134,7 +134,7 @@ export async function _applyVerbatimCompaction(
 		// touches session model state or the main chat's attempted-key set.
 		const fallback: FallbackPlannerContext = {
 			fallbackModels: this._fallbackModels,
-			registry: this._modelRegistry,
+			registry: this._modelRuntime,
 			preferredProvider: model.provider,
 			sessionThinkingLevel: this.thinkingLevel,
 		};

@@ -83,7 +83,7 @@ describe("issue #3217 scoped model ordering", () => {
 			createFakeTui(),
 			modelOne,
 			harness.settingsManager,
-			harness.session.modelRegistry,
+			harness.session.modelRuntime,
 			[{ model: modelTwo }, { model: modelOne }, { model: modelThree }],
 			() => {},
 			() => {},

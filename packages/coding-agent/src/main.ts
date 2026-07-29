@@ -7,7 +7,6 @@ import { ENV_OFFLINE, ENV_SESSION_DIR, ENV_SKIP_VERSION_CHECK, ENV_STARTUP_BENCH
 import type { CreateAgentSessionRuntimeFactory } from "./core/agent-session-runtime.ts";
 import { type AgentSessionRuntimeDiagnostic, createAgentSessionFromServices, createAgentSessionServices } from "./core/agent-session-services.ts";
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
-import { AuthStorage } from "./core/auth-storage.ts";
 import { getBuiltinPackagePaths } from "./core/builtin-packages.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { resolveModelScope, resolveModelScopeWithDiagnostics } from "./core/model-resolver.ts";
@@ -169,7 +168,6 @@ export async function main(args: string[], options?: MainOptions) {
 		parsed.projectTrustOverride === undefined && !hasProjectTrustInputs(sessionCwd) ? sessionCwd : undefined;
 
 	const builtinPackagePaths = options?.builtinPackagePaths ?? getBuiltinPackagePaths();
-	const authStorage = AuthStorage.create();
 	const trustPromptMode: AppMode = parsed.help || parsed.listModels !== undefined ? "print" : appMode;
 	const projectTrustByCwd = new Map<string, boolean>();
 	const borrowedExtensionSourceTrustByPath = new Map<string, boolean>();
@@ -218,7 +216,6 @@ export async function main(args: string[], options?: MainOptions) {
 		const services = await createAgentSessionServices({
 			cwd,
 			agentDir,
-			authStorage,
 			settingsManager: runtimeSettingsManager,
 			extensionFlagValues: parsed.unknownFlags,
 			resourceLoaderReloadOptions:
@@ -279,7 +276,7 @@ export async function main(args: string[], options?: MainOptions) {
 				extensionFactories: isolateInteractiveHost ? undefined : extensionFactories,
 			},
 		});
-		const { settingsManager, modelRegistry, resourceLoader } = services;
+		const { settingsManager, modelRuntime, resourceLoader } = services;
 		const diagnostics: AgentSessionRuntimeDiagnostic[] = [
 			...services.diagnostics,
 			...collectSettingsDiagnostics(settingsManager, "runtime creation"),
@@ -292,8 +289,8 @@ export async function main(args: string[], options?: MainOptions) {
 		const scopedModels =
 			modelPatterns && modelPatterns.length > 0
 				? deferredExtensionLoad
-					? (await resolveModelScopeWithDiagnostics(modelPatterns, modelRegistry)).scopedModels
-					: await resolveModelScope(modelPatterns, modelRegistry)
+					? (await resolveModelScopeWithDiagnostics(modelPatterns, modelRuntime)).scopedModels
+					: await resolveModelScope(modelPatterns, modelRuntime)
 				: [];
 		const sessionArgs = isolateInteractiveHost
 			? { ...parsed, provider: undefined, model: undefined, apiKey: undefined, models: undefined } : parsed;
@@ -305,7 +302,7 @@ export async function main(args: string[], options?: MainOptions) {
 			sessionArgs,
 			scopedModels,
 			sessionManager.buildSessionContext().messages.length > 0,
-			modelRegistry,
+			modelRuntime,
 			settingsManager,
 		);
 		diagnostics.push(...sessionOptionDiagnostics);
@@ -317,7 +314,7 @@ export async function main(args: string[], options?: MainOptions) {
 					message: "--api-key requires a model to be specified via --model, --provider/--model, or --models",
 				});
 			} else {
-				authStorage.setRuntimeApiKey(sessionOptions.model.provider, parsed.apiKey);
+				await modelRuntime.setRuntimeApiKey(sessionOptions.model.provider, parsed.apiKey);
 			}
 		}
 
@@ -350,7 +347,7 @@ export async function main(args: string[], options?: MainOptions) {
 	});
 	endTimingSpan(runtimeCreationSpan);
 	const { services, session, modelFallbackMessage } = runtime;
-	const { settingsManager, modelRegistry, resourceLoader } = services;
+	const { settingsManager, modelRuntime, resourceLoader } = services;
 	applyHttpProxySettings(settingsManager.getGlobalSettings().httpProxy);
 	configureHttpDispatcher(settingsManager.getHttpIdleTimeoutMs());
 	if (parsed.help) {
@@ -369,7 +366,7 @@ export async function main(args: string[], options?: MainOptions) {
 		if (shouldRestoreStdoutForMetadata) {
 			restoreStdout();
 		}
-		await listModels(modelRegistry, searchPattern);
+		await listModels(modelRuntime, searchPattern);
 		process.exit(0);
 	}
 
@@ -421,7 +418,7 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	if (appMode === "rpc") {
-		if (!offlineMode) void modelRegistry.refresh().catch(() => {});
+		if (!offlineMode) void modelRuntime.refresh().catch(() => {});
 		printTimings();
 		await runRpcMode(runtime);
 	} else if (appMode === "interactive") {

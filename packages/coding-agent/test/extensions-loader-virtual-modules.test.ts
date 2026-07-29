@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
-import { extensionLoaderTestHooks, loadExtensionModule } from "../src/core/extensions/loader-virtual-modules.ts";
+import { extensionLoaderTestHooks } from "../src/core/extensions/loader-virtual-modules.ts";
 
 type PiAiExports = {
 	complete?: object;
@@ -10,13 +10,8 @@ type PiAiExports = {
 	StringEnum?: object;
 };
 
-type OAuthCompatExports = {
-	getOAuthApiKey?: object;
-	getOAuthProvider?: object;
-	getOAuthProviders?: object;
-	registerOAuthProvider?: object;
-	resetOAuthProviders?: object;
-};
+// Provider-owned OAuth is exposed through provider metadata; the removed global
+// OAuth registration bridge is intentionally not part of extension aliases.
 
 describe("extension loader pi-ai compat aliases", () => {
 	it("keys root and compat specifiers to the same virtual module object", async () => {
@@ -32,22 +27,6 @@ describe("extension loader pi-ai compat aliases", () => {
 		expect(typeof compat.StringEnum).toBe("function");
 	});
 
-	it("provides legacy OAuth runtime helpers through both extension aliases", async () => {
-		const modules = await extensionLoaderTestHooks.loadVirtualModules();
-		const earendil = modules["@earendil-works/pi-ai/oauth"] as OAuthCompatExports;
-		const mario = modules["@mariozechner/pi-ai/oauth"] as OAuthCompatExports;
-
-		expect(mario).toBe(earendil);
-		for (const name of [
-			"getOAuthApiKey",
-			"getOAuthProvider",
-			"getOAuthProviders",
-			"registerOAuthProvider",
-			"resetOAuthProviders",
-		] as const) {
-			expect(typeof earendil[name]).toBe("function");
-		}
-	});
 
 	it("maps root and compat specifiers to the same jiti alias path", () => {
 		const aliases = extensionLoaderTestHooks.getAliases();
@@ -57,26 +36,6 @@ describe("extension loader pi-ai compat aliases", () => {
 		expect(aliases["@mariozechner/pi-ai"]).toBe(aliases["@earendil-works/pi-ai/compat"]);
 	});
 
-	it("maps both OAuth specifiers to Atomic's populated compatibility entry", () => {
-		const aliases = extensionLoaderTestHooks.getAliases();
-		expect(aliases["@mariozechner/pi-ai/oauth"]).toBe(aliases["@earendil-works/pi-ai/oauth"]);
-		expect(aliases["@earendil-works/pi-ai/oauth"]).toMatch(/oauth-compat\.js$/);
-	});
-
-	it("loads the populated OAuth bridge through the real Jiti extension path", async () => {
-		const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-oauth-extension-"));
-		const extensionPath = path.join(tmp, "extension.ts");
-		fs.writeFileSync(
-			extensionPath,
-			`import { getOAuthProviders } from "@earendil-works/pi-ai/oauth";\nexport default () => typeof getOAuthProviders;\n`,
-		);
-		try {
-			const factory = await loadExtensionModule(extensionPath);
-			expect((factory as (() => string) | undefined)?.()).toBe("function");
-		} finally {
-			fs.rmSync(tmp, { recursive: true, force: true });
-		}
-	});
 
 	it("confirms compat is the legacy API surface while root stays core-only", async () => {
 		const root = (await import("@earendil-works/pi-ai")) as PiAiExports;

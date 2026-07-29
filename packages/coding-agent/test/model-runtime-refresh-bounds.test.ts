@@ -1,0 +1,29 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { AuthStorage } from "../src/core/auth-storage.ts";
+import { ModelRuntime } from "../src/core/model-runtime.ts";
+
+afterEach(() => vi.restoreAllMocks());
+
+describe("model refresh timeout boundaries", () => {
+	it("applies modelRefreshTimeoutMs only to the create-time refresh", async () => {
+		let createSignal: AbortSignal | undefined;
+		const refresh = vi.spyOn(ModelRuntime.prototype, "refresh").mockImplementation(async (options = {}) => {
+			createSignal = options.signal;
+			if (options.signal) {
+				await new Promise<void>((resolve) => options.signal?.addEventListener("abort", () => resolve(), { once: true }));
+			}
+			return { aborted: options.signal?.aborted ?? false, errors: new Map() };
+		});
+
+		await ModelRuntime.create({
+			credentials: AuthStorage.inMemory(),
+			modelsPath: null,
+			allowModelNetwork: true,
+			modelRefreshTimeoutMs: 5,
+		});
+
+		expect(createSignal).toBeInstanceOf(AbortSignal);
+		expect(createSignal?.aborted).toBe(true);
+		expect(refresh).toHaveBeenCalledWith(expect.objectContaining({ signal: createSignal }));
+	});
+});

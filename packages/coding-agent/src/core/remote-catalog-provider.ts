@@ -15,18 +15,24 @@ function mergeModels(baseline: readonly Model<Api>[], dynamic: readonly Model<Ap
 	return merged;
 }
 
-function parseCatalog(providerId: string, value: object): Model<Api>[] {
+function parseCatalog(providerId: string, value: unknown): Model<Api>[] {
 	const entries = Array.isArray(value)
 		? value
-		: "models" in value && Array.isArray(value.models)
+		: typeof value === "object" && value !== null && "models" in value && Array.isArray(value.models)
 			? value.models
-			: Object.values(value);
+			: typeof value === "object" && value !== null
+				? Object.values(value)
+				: undefined;
+	if (!entries) throw new Error(`Invalid model catalog for provider "${providerId}"`);
 	return entries
 		.filter((entry): entry is Model<Api> => typeof entry === "object" && entry !== null && "id" in entry)
 		.map((model) => ({ ...model, provider: providerId }));
 }
 
-function remoteModels(entry: ModelsStoreEntry | undefined, localGeneratedAt: number | undefined): readonly Model<Api>[] {
+function remoteModels(
+	entry: ModelsStoreEntry | undefined,
+	localGeneratedAt: number | undefined,
+): readonly Model<Api>[] {
 	if (!entry) return [];
 	if (localGeneratedAt !== undefined && (entry.lastModified === undefined || entry.lastModified <= localGeneratedAt)) {
 		return [];
@@ -34,30 +40,6 @@ function remoteModels(entry: ModelsStoreEntry | undefined, localGeneratedAt: num
 	return entry.models;
 }
 
-function settleOnAbort(
-	operation: Promise<void>,
-	signal: AbortSignal | undefined,
-	canSettle: () => boolean,
-): Promise<void> {
-	if (!signal) return operation;
-	if (signal.aborted && canSettle()) return Promise.resolve();
-	return new Promise<void>((resolve, reject) => {
-		const abort = () => {
-			if (canSettle()) resolve();
-		};
-		signal.addEventListener("abort", abort, { once: true });
-		operation.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
-	});
-}
-
-type RefreshContext = Parameters<NonNullable<Provider["refreshModels"]>>[0];
-
-interface InflightRefresh {
-	promise: Promise<void>;
-	allowNetwork: boolean;
-	force: boolean;
-	signal?: AbortSignal;
-}
 /** Add a persisted pi.dev catalog overlay to a static built-in provider. */
 export function withRemoteCatalog(
 	provider: Provider,
@@ -65,109 +47,77 @@ export function withRemoteCatalog(
 	localGeneratedAt?: number,
 ): Provider {
 	let dynamicModels: readonly Model<Api>[] = [];
-	let inflightRefresh: InflightRefresh | undefined;
-	let refreshEpoch = 0;
-	let persistenceInProgress = false;
-
-	const refreshModels = (context: RefreshContext): Promise<void> => {
-		if (inflightRefresh) {
-			const requiresEscalation = (context.allowNetwork && !inflightRefresh.allowNetwork)
-				|| (context.force === true && !inflightRefresh.force)
-				|| (inflightRefresh.signal?.aborted === true && context.signal?.aborted !== true);
-			if (requiresEscalation) {
-				const startEscalation = () => {
-					if (context.signal?.aborted) return;
-					return refreshModels(context);
-				};
-				const escalation = inflightRefresh.promise.then(startEscalation, startEscalation);
-				return settleOnAbort(escalation, context.signal, () => !persistenceInProgress);
-			}
-			const owner = inflightRefresh;
-			const retryAfterAbortedOwner = () => {
-				if (owner.signal?.aborted && !context.signal?.aborted) return refreshModels(context);
-			};
-			const joined = owner.promise.then(retryAfterAbortedOwner, (error) => {
-				const retry = retryAfterAbortedOwner();
-				if (retry) return retry;
-				throw error;
-			});
-			return settleOnAbort(joined, context.signal, () => !persistenceInProgress);
-		}
-		const epoch = ++refreshEpoch;
-		const isCurrent = () => epoch === refreshEpoch && !context.signal?.aborted;
-		const persist = async (entry: Parameters<typeof context.store.write>[0]) => {
-			persistenceInProgress = true;
-			try {
-				await context.store.write(entry);
-			} finally {
-				persistenceInProgress = false;
-			}
-		};
-		const operation = (async () => {
-			const stored = await context.store.read();
-			if (!isCurrent()) return;
-			dynamicModels = remoteModels(stored, localGeneratedAt).filter((model) => model.provider === provider.id);
-			if (!context.allowNetwork) return;
-			if (
-				!context.force &&
-				stored?.checkedAt !== undefined &&
-				stored.lastModified !== undefined &&
-				Date.now() - stored.checkedAt < REMOTE_CATALOG_REFRESH_INTERVAL_MS
-			) return;
-
-			const validator = stored?.models.length ? stored.etag : undefined;
-			const url = new URL(`/api/models/providers/${encodeURIComponent(provider.id)}`, catalogBaseUrl);
-			const response = await fetch(url, {
-				headers: {
-					accept: "application/json",
-					"User-Agent": getPiUserAgent(VERSION),
-					...(validator ? { "if-none-match": validator } : {}),
-				},
-				signal: context.signal,
-			});
-			if (!isCurrent()) return;
-			const checkedAt = Date.now();
-			if (response.status === 304 && stored) {
-				await persist({ ...stored, checkedAt });
-				return;
-			}
-			if (response.status === 404 || response.status === 501) {
-				await persist({ ...(stored ?? { models: [] }), checkedAt, lastModified: 0, etag: undefined });
-				return;
-			}
-			if (!response.ok) {
-				await persist({ ...(stored ?? { models: [] }), checkedAt });
-				throw new Error(`Model catalog request failed for ${provider.id}: ${response.status}`);
-			}
-			const body: object = await response.json();
-			if (!isCurrent()) return;
-			const refreshed = parseCatalog(provider.id, body);
-			const lastModified = Date.parse(response.headers.get("last-modified") ?? "");
-			const entry = {
-				models: refreshed,
-				checkedAt,
-				lastModified: Number.isNaN(lastModified) ? 0 : lastModified,
-				etag: response.headers.get("etag") ?? undefined,
-			};
-			await persist(entry);
-			if (isCurrent()) dynamicModels = remoteModels(entry, localGeneratedAt);
-		})();
-		const refresh = settleOnAbort(operation, context.signal, () => !persistenceInProgress);
-		const published = refresh.finally(() => {
-			if (inflightRefresh?.promise === published) inflightRefresh = undefined;
-		});
-		inflightRefresh = {
-			promise: published,
-			allowNetwork: context.allowNetwork,
-			force: context.force === true,
-			signal: context.signal,
-		};
-		return published;
-	};
+	let inflightRefresh: Promise<void> | undefined;
 
 	return {
 		...provider,
 		getModels: () => mergeModels(provider.getModels(), dynamicModels),
-		refreshModels,
+		refreshModels: (context) => {
+			inflightRefresh ??= (async () => {
+				try {
+					const stored = await context.store.read();
+					dynamicModels = remoteModels(stored, localGeneratedAt).filter((model) => model.provider === provider.id);
+					if (!context.allowNetwork || context.signal?.aborted) return;
+					if (
+						!context.force &&
+						stored?.checkedAt !== undefined &&
+						stored.lastModified !== undefined &&
+						Date.now() - stored.checkedAt < REMOTE_CATALOG_REFRESH_INTERVAL_MS
+					) {
+						return;
+					}
+
+					// Only revalidate when a cached body backs the validator, so a 304 can never
+					// leave the overlay empty.
+					const validator = stored?.models.length ? stored.etag : undefined;
+					const url = new URL(`/api/models/providers/${encodeURIComponent(provider.id)}`, catalogBaseUrl);
+					const response = await fetch(url, {
+						headers: {
+							accept: "application/json",
+							"User-Agent": getPiUserAgent(VERSION),
+							...(validator ? { "if-none-match": validator } : {}),
+						},
+						signal: context.signal,
+					});
+					if (context.signal?.aborted) return;
+					const checkedAt = Date.now();
+					// Unchanged: dynamicModels already holds the stored overlay, so only the
+					// freshness window moves.
+					if (response.status === 304 && stored) {
+						await context.store.write({ ...stored, checkedAt });
+						return;
+					}
+					if (response.status === 404 || response.status === 501) {
+						await context.store.write({
+							...(stored ?? { models: [] }),
+							checkedAt,
+							lastModified: 0,
+							etag: undefined,
+						});
+						return;
+					}
+					if (!response.ok) {
+						// Transient failure: the cached body and its validator stay valid, so keep the
+						// etag and let the next refresh revalidate instead of downloading the catalog.
+						await context.store.write({ ...(stored ?? { models: [] }), checkedAt });
+						throw new Error(`Model catalog request failed for ${provider.id}: ${response.status}`);
+					}
+					const refreshed = parseCatalog(provider.id, await response.json());
+					const lastModified = Date.parse(response.headers.get("last-modified") ?? "");
+					if (context.signal?.aborted) return;
+					const entry = {
+						models: refreshed,
+						checkedAt,
+						lastModified: Number.isNaN(lastModified) ? 0 : lastModified,
+						etag: response.headers.get("etag") ?? undefined,
+					};
+					dynamicModels = remoteModels(entry, localGeneratedAt);
+					await context.store.write(entry);
+				} finally {
+					inflightRefresh = undefined;
+				}
+			})();
+			return inflightRefresh;
+		},
 	};
 }

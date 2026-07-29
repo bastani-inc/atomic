@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { AtomicOAuthLoginCallbacks } from "../../core/oauth-provider-bridge.ts";
-import { normalizeOAuthLoginError } from "../../core/oauth-provider-bridge.ts";
+import type { AtomicOAuthLoginCallbacks } from "../../core/oauth-login.ts";
+import { normalizeOAuthLoginError } from "../../core/oauth-login.ts";
 import type { RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
 import type { RpcOutput } from "./rpc-responses.ts";
 import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "./rpc-types.ts";

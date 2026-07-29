@@ -58,7 +58,7 @@ test("production prompt wiring holds idle admission until the first agent turn s
     },
     _flushPendingBashMessages() {},
     model: { provider: "test", id: "test" },
-    _modelRegistry: { hasConfiguredAuth: () => true },
+    _modelRuntime: { hasConfiguredAuth: () => true },
     _findLastAssistantMessage: () => undefined,
     _pendingNextTurnMessages: [] as AgentMessage[],
     _baseSystemPrompt: "base",

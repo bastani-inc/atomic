@@ -12,33 +12,6 @@ import type { ExtensionAPI } from "./api-types.ts";
 import type { AtomicProviderCompat } from "../model-capabilities.ts";
 export type { AtomicProviderCompat } from "../model-capabilities.ts";
 
-export interface ApiKeyAuthPrompt {
-	type: "text" | "secret";
-	message: string;
-	placeholder?: string;
-}
-
-export interface ApiKeyAuthInteraction {
-	prompt(prompt: ApiKeyAuthPrompt): Promise<string>;
-	signal: AbortSignal;
-}
-
-export interface ProviderApiKeyAuthContext {
-	env(name: string): Promise<string | undefined>;
-}
-
-export interface ProviderApiKeyAuthResult {
-	auth: { apiKey?: string; baseUrl?: string; headers?: Record<string, string> };
-	env?: Record<string, string>;
-	source?: string;
-}
-
-export interface ProviderApiKeyAuth {
-	name: string;
-	login(interaction: ApiKeyAuthInteraction): Promise<import("../auth-storage.ts").ApiKeyCredential>;
-	check?(input: { ctx: ProviderApiKeyAuthContext; credential?: import("../auth-storage.ts").ApiKeyCredential }): Promise<{ type: "api_key"; source?: string } | undefined>;
-	resolve?(input: { ctx: ProviderApiKeyAuthContext; credential?: import("../auth-storage.ts").ApiKeyCredential }): Promise<ProviderApiKeyAuthResult | undefined>;
-}
 /** Configuration for registering a provider via pi.registerProvider(). */
 export interface ProviderConfig {
 	/** Display name for the provider in UI. */
@@ -59,8 +32,6 @@ export interface ProviderConfig {
 	models?: ProviderModelConfig[];
 	/** Refresh this provider's catalog. Successful results replace its extension-provided models. */
 	refreshModels?(context: RefreshModelsContext): Promise<ProviderModelConfig[]>;
-	/** Optional provider-directed API-key authentication flow. */
-	auth?: { apiKey?: ProviderApiKeyAuth };
 	/** OAuth provider for /login support. The `id` is set automatically from the provider name. */
 	oauth?: {
 		/** Display name for the provider in login UI. */

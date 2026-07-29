@@ -3,7 +3,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai/compat";
 import { runCallback } from "./callback-activity.ts";
 import { ATOMIC_GUIDE_COMMAND_NAME, ATOMIC_GUIDE_HELP_CHOICES, atomicGuideModeForChoice, getAtomicGuideMessage, isAtomicGuideHelpChoice, normalizeAtomicGuideMode } from "./atomic-guide-command.ts";
-import { formatAuthStorageLoadFailedMessage, formatNoApiKeyFoundMessage, formatNoModelSelectedMessage, formatUnresolvedModelMessage } from "./auth-guidance.ts";
+import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage, formatUnresolvedModelMessage } from "./auth-guidance.ts";
 import { expandPromptTemplate } from "./prompt-templates.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
@@ -126,21 +126,14 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 			throw new Error(formatUnresolvedModelMessage(this.model));
 		}
 
-		if (!this._modelRegistry.hasConfiguredAuth(this.model)) {
+		if (!this._modelRuntime.hasConfiguredAuth(this.model.provider)) {
 			// A failed credential-store load (for example auth.json briefly locked
 			// by a concurrent process, or invalid JSON) leaves an empty in-memory
 			// credential set. That would otherwise be misreported here as
 			// "No API key found" even though the credentials exist on disk. Surface
 			// the real load failure instead so configured providers are not falsely
 			// reported as unauthenticated (issue #1431).
-			const authLoadError = this._modelRegistry.authStorage.getLoadError();
-			if (authLoadError) {
-				throw new Error(
-					formatAuthStorageLoadFailedMessage(this.model.provider, authLoadError),
-					{ cause: authLoadError },
-				);
-			}
-			const isOAuth = this._modelRegistry.isUsingOAuth(this.model);
+			const isOAuth = this._modelRuntime.isUsingOAuth(this.model.provider);
 			if (isOAuth) {
 				throw new Error(
 					`Authentication failed for "${this.model.provider}". ` +

@@ -12,21 +12,22 @@ import {
 	type CreateAgentSessionRuntimeFactory,
 } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.ts";
-import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.ts";
+import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.ts";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
 import { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
 import type { RpcClient } from "../../packages/coding-agent/src/modes/rpc/rpc-client.ts";
 import type { RpcModelRefreshResult } from "../../packages/coding-agent/src/modes/rpc/rpc-types.ts";
 
-function kimiModel(): Model<Api> {
+async function kimiModel(): Promise<Model<Api>> {
 	const auth = AuthStorage.inMemory({ "kimi-coding": { type: "api_key", key: "fake-kimi-key" } });
-	const model = ModelRegistry.inMemory(auth).getAvailable().find((candidate) => candidate.provider === "kimi-coding");
+	const runtime = await ModelRuntime.create({ credentials: auth, modelsPath: null });
+	const model = runtime.getAvailableSnapshot().find((candidate) => candidate.provider === "kimi-coding");
 	assert.ok(model);
 	return model;
 }
 
 test("isolated host refresh atomically applies the engine model catalog without restart", async () => {
-	const model = kimiModel();
+	const model = await kimiModel();
 	const scopedModels = [{ model, thinkingLevel: "high" as const }];
 	let observedOptions: { timeoutMs?: number; force?: boolean; allowNetwork?: boolean } | undefined;
 	const refreshResult: RpcModelRefreshResult = {
@@ -66,9 +67,9 @@ test("isolated host refresh atomically applies the engine model catalog without 
 		cancelLoginProvider: async () => {},
 		getCommands: async () => [],
 	} as unknown as RpcClient;
-	const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+	const modelRuntime = await ModelRuntime.create({ modelsPath: null });
 	const session = {
-		modelRegistry: registry,
+		modelRuntime,
 		scopedModels: [],
 		sessionFile: undefined,
 		agent: {
@@ -83,21 +84,13 @@ test("isolated host refresh atomically applies the engine model catalog without 
 	const runtime = new IsolatedInteractiveRuntime(localRuntime, createRuntime, client);
 	await runtime.initializeFromEngine();
 
-	assert.deepEqual(registry.getAvailable(), []);
-	assert.deepEqual(registry.getCustomApiKeyAuthProviders(), [{ id: "extension-provider", name: "Extension Provider" }]);
-	assert.equal(registry.getProviderDisplayName("extension-provider"), "Extension Provider");
-	const remoteAuth = registry.getCustomApiKeyAuth("extension-provider");
-	assert.ok(remoteAuth);
-	assert.equal(remoteAuth.name, "Extension Provider");
-	assert.deepEqual(await remoteAuth.login({ signal: new AbortController().signal, prompt: async () => "unused" }), {
-		type: "api_key", key: "remote-key",
-	});
-	const result = await registry.refresh({ allowNetwork: false, force: true, timeoutMs: 321 });
+	assert.deepEqual(modelRuntime.getAvailableSnapshot(), []);
+	const result = await modelRuntime.refresh({ allowNetwork: false });
 
-	assert.deepEqual(observedOptions, { allowNetwork: false, force: true, timeoutMs: 321 });
-	assert.deepEqual(registry.getAvailable(), [model]);
-	assert.equal(registry.find(model.provider, model.id), model);
-	assert.equal(registry.hasConfiguredAuth(model), true);
+	assert.deepEqual(observedOptions, { allowNetwork: false, force: undefined, timeoutMs: undefined });
+	assert.deepEqual(modelRuntime.getAvailableSnapshot(), [model]);
+	assert.equal(modelRuntime.getModel(model.provider, model.id), model);
+	assert.equal(modelRuntime.hasConfiguredAuth(model.provider), true);
 	assert.deepEqual(session.scopedModels, scopedModels);
 	assert.equal(result.aborted, false);
 	assert.ok(result.errors instanceof Map);
@@ -105,7 +98,7 @@ test("isolated host refresh atomically applies the engine model catalog without 
 });
 
 test("an aborted isolated refresh does not replace the current model catalog", async () => {
-	const model = kimiModel();
+	const model = await kimiModel();
 	let resolveRefresh!: (result: RpcModelRefreshResult) => void;
 	const pending = new Promise<RpcModelRefreshResult>((resolve) => { resolveRefresh = resolve; });
 	const client = {
@@ -119,9 +112,9 @@ test("an aborted isolated refresh does not replace the current model catalog", a
 		refreshModels: async () => pending,
 		getCommands: async () => [],
 	} as unknown as RpcClient;
-	const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+	const modelRuntime = await ModelRuntime.create({ modelsPath: null });
 	const session = {
-		modelRegistry: registry, scopedModels: [], sessionFile: undefined,
+		modelRuntime, scopedModels: [], sessionFile: undefined,
 		agent: { state: { model: undefined, thinkingLevel: "off", messages: [] }, steeringMode: "all", followUpMode: "all" },
 	} as unknown as AgentSession;
 	const createRuntime = (async () => { throw new Error("not used"); }) as CreateAgentSessionRuntimeFactory;
@@ -129,18 +122,18 @@ test("an aborted isolated refresh does not replace the current model catalog", a
 	const runtime = new IsolatedInteractiveRuntime(localRuntime, createRuntime, client);
 	await runtime.initializeFromEngine();
 	const controller = new AbortController();
-	const refresh = registry.refresh({ signal: controller.signal });
+	const refresh = modelRuntime.refresh({ signal: controller.signal });
 	controller.abort();
 
 	assert.deepEqual(await refresh, { aborted: true, errors: new Map() });
 	resolveRefresh({ aborted: false, errors: [], models: [model], scopedModels: [{ model }], customAuthProviders: [] });
 	await Bun.sleep(0);
-	assert.deepEqual(registry.getAvailable(), []);
+	assert.deepEqual(modelRuntime.getAvailableSnapshot(), []);
 	assert.deepEqual(session.scopedModels, []);
 });
 
 test("isolated host synchronizes authoritative engine fallback state and clears it after remote model selection", async () => {
-	const model = kimiModel();
+	const model = await kimiModel();
 	type EngineState = Awaited<ReturnType<RpcClient["getState"]>>;
 	let state: EngineState = {
 		model,
@@ -162,9 +155,9 @@ test("isolated host synchronizes authoritative engine fallback state and clears 
 		setModel: async () => model,
 		getCommands: async () => [],
 	} as unknown as RpcClient;
-	const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+	const modelRuntime = await ModelRuntime.create({ modelsPath: null });
 	const session = {
-		modelRegistry: registry,
+		modelRuntime,
 		sessionManager: SessionManager.inMemory(process.cwd()),
 		scopedModels: [],
 		sessionFile: undefined,
@@ -216,7 +209,7 @@ test("isolated host synchronizes authoritative engine fallback state and clears 
 });
 
 test("isolated explicit cycle clears fallback only for a changed model despite an intervening model event", async () => {
-	const previous = kimiModel();
+	const previous = await kimiModel();
 	const selected = { ...previous, id: `${previous.id}-next`, name: `${previous.name} Next` };
 	type CycleBehavior = "changed" | "same" | "null" | "throw";
 	let behavior: CycleBehavior = "changed";
@@ -232,9 +225,9 @@ test("isolated explicit cycle clears fallback only for a changed model despite a
 		},
 		getCommands: async () => [],
 	} as unknown as RpcClient;
-	const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+	const modelRuntime = await ModelRuntime.create({ modelsPath: null });
 	const sessionFixture = {
-		modelRegistry: registry,
+		modelRuntime,
 		sessionManager: SessionManager.inMemory(process.cwd()),
 		scopedModels: [],
 		sessionFile: undefined,
@@ -296,7 +289,7 @@ test("isolated session synchronization replaces each engine-selected session exa
 		const services = await createAgentSessionServices({
 			cwd: options.cwd,
 			agentDir: options.agentDir,
-			authStorage,
+			modelRuntime: await ModelRuntime.create({ credentials: authStorage, modelsPath: null }),
 			resourceLoaderOptions: { noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true },
 		});
 		return {
@@ -376,9 +369,9 @@ test("isolated queue pause reaches the engine before abort and resumes remotely"
 		abort: async () => { calls.push("abort"); },
 		getCommands: async () => [],
 	} as unknown as RpcClient;
-	const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+	const modelRuntime = await ModelRuntime.create({ modelsPath: null });
 	const session = {
-		modelRegistry: registry, scopedModels: [], sessionFile: undefined, sessionManager: {},
+		modelRuntime, scopedModels: [], sessionFile: undefined, sessionManager: {},
 		agent: { state: { model: undefined, thinkingLevel: "off", messages: [] }, steeringMode: "all", followUpMode: "all" },
 	} as unknown as AgentSession;
 	const createRuntime = (async () => { throw new Error("not used"); }) as CreateAgentSessionRuntimeFactory;

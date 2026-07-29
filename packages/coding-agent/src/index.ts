@@ -55,28 +55,9 @@ export {
 	parseSkillBlock,
 	type SessionStats,
 } from "./core/agent-session.ts";
-// Auth and model registry
-export {
-	type ApiKeyCredential,
-	type AuthCredential,
-	type AuthStatus,
-	AuthStorage,
-	type AuthStorageBackend,
-	FileAuthStorageBackend,
-	InMemoryAuthStorageBackend,
-	type OAuthCredential,
-	readStoredCredential,
-} from "./core/auth-storage.ts";
-import "./core/oauth-compat.js";
-export {
-	getOAuthApiKey,
-	getOAuthProvider,
-	getOAuthProviders,
-	type LegacyOAuthProvider,
-	type OAuthProviderDescriptor,
-	registerOAuthProvider,
-	resetOAuthProviders,
-} from "./core/oauth-provider-bridge.ts";
+// Auth and model runtime
+export { AuthStorage, readStoredCredential } from "./core/auth-storage.ts";
+export { type AuthStorageBackend, FileAuthStorageBackend, InMemoryAuthStorageBackend } from "./core/auth-storage-backends.ts";
 // Compaction
 export {
 	type BranchPreparation,

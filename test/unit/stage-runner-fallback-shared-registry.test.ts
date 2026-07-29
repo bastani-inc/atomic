@@ -1,5 +1,5 @@
 /**
- * Regression: within a single stage, model fallback must REUSE one ModelRegistry
+ * Regression: within a single stage, model fallback must REUSE one ModelRuntime
  * (and its already-loaded AuthStorage) across every candidate instead of letting
  * each fallback candidate build a fresh one.
  *
@@ -8,7 +8,7 @@
  * model 404'd: each fresh AuthStorage re-read auth.json under lock contention and
  * could silently fall back to an empty credential set (issue #1431).
  *
- * This pins the stage-runner behavior: the registry captured from the first
+ * This pins the stage-runner behavior: the runtime captured from the first
  * session is threaded into the options of every subsequent fallback candidate.
  *
  * cross-ref: packages/workflows/src/runs/foreground/stage-runner.ts
@@ -23,8 +23,8 @@ import type {
 } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 
 interface FakeSessionConfig {
-  /** Marker object used to identify which ModelRegistry the session carries. */
-  modelRegistry: unknown;
+  /** Marker object used to identify which ModelRuntime the session carries. */
+  modelRuntime: unknown;
   /** When set, prompt() throws this error (to drive fallback). */
   promptError?: Error;
   onTransfer?: (target: object) => void;
@@ -87,10 +87,10 @@ function makeFakeStageSession(config: FakeSessionConfig): StageSessionRuntime {
       return undefined;
     },
   };
-  // The real SDK AgentSession exposes `.modelRegistry`; the stage runner reads it
-  // (via a structural cast) to capture/reuse the registry across candidates.
+  // The real SDK AgentSession exposes `.modelRuntime`; the stage runner reads it
+  // (via a structural cast) to capture/reuse the runtime across candidates.
   return Object.assign(base, {
-    modelRegistry: config.modelRegistry,
+    modelRuntime: config.modelRuntime,
     state: { messages: [] },
     sessionManager: {},
     getContextUsage: () => undefined,
@@ -98,12 +98,12 @@ function makeFakeStageSession(config: FakeSessionConfig): StageSessionRuntime {
   });
 }
 
-describe("stage model fallback reuses one ModelRegistry across candidates (#1431)", () => {
-  test("threads the first session's registry into every later fallback candidate", async () => {
-    const registryA = { id: "registry-A" };
-    const registryB = { id: "registry-B" };
+describe("stage model fallback reuses one ModelRuntime across candidates (#1431)", () => {
+  test("threads the first session's runtime into every later fallback candidate", async () => {
+    const runtimeA = { id: "runtime-A" };
+    const runtimeB = { id: "runtime-B" };
 
-    const createdWith: Array<{ model: unknown; modelRegistry: unknown }> = [];
+    const createdWith: Array<{ model: unknown; modelRuntime: unknown }> = [];
     let createCount = 0;
     let fallbackDeliveryTarget: object | undefined;
     let sharedOrchestrationContext: StageSessionCreateOptions["orchestrationContext"];
@@ -120,7 +120,7 @@ describe("stage model fallback reuses one ModelRegistry across candidates (#1431
         agentSession: {
           async create(options: StageSessionCreateOptions, meta) {
             createCount += 1;
-            createdWith.push({ model: options?.model, modelRegistry: options?.modelRegistry });
+            createdWith.push({ model: options?.model, modelRuntime: options?.modelRuntime });
             if (createCount === 1) {
               sharedOrchestrationContext = {
                 kind: "workflow-stage",
@@ -130,7 +130,7 @@ describe("stage model fallback reuses one ModelRegistry across candidates (#1431
                 constraints: { disableWorkflowTool: true, maxSubagentDepth: 5 },
               };
               return makeFakeStageSession({
-                modelRegistry: registryA,
+                modelRuntime: runtimeA,
                 orchestrationContext: sharedOrchestrationContext,
                 promptError: new Error("rate limit exceeded"),
                 onTransfer: (target) => { fallbackDeliveryTarget = target; },
@@ -138,7 +138,7 @@ describe("stage model fallback reuses one ModelRegistry across candidates (#1431
             }
             assert.equal(meta?.orchestrationContext, sharedOrchestrationContext);
             return makeFakeStageSession({
-              modelRegistry: registryB,
+              modelRuntime: runtimeB,
               orchestrationContext: sharedOrchestrationContext,
             });
           }
@@ -155,13 +155,13 @@ describe("stage model fallback reuses one ModelRegistry across candidates (#1431
     assert.ok(fallbackDeliveryTarget, "failed candidate must transfer detached deliveries to its replacement");
     await (fallbackDeliveryTarget as StageSessionRuntime).followUp("completion received while stage remains open");
 
-    // The primary candidate builds its own registry (none injected).
+    // The primary candidate builds its own runtime (none injected).
     assert.equal(createdWith[0]?.model, "anthropic/model-a");
-    assert.equal(createdWith[0]?.modelRegistry, undefined);
+    assert.equal(createdWith[0]?.modelRuntime, undefined);
 
-    // The fallback candidate is created WITH the registry captured from the
+    // The fallback candidate is created WITH the runtime captured from the
     // first session — not a fresh one.
     assert.equal(createdWith[1]?.model, "anthropic/model-b");
-    assert.equal(createdWith[1]?.modelRegistry, registryA);
+    assert.equal(createdWith[1]?.modelRuntime, runtimeA);
   });
 });

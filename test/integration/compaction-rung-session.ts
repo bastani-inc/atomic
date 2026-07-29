@@ -11,7 +11,7 @@ import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai/compat"
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { AgentSession, type AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
-import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
+import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
@@ -122,7 +122,7 @@ function assistantTurn(text: string, timestamp: number, totalTokens: number): As
 	} as AssistantMessage;
 }
 
-export function createRungSession(options: RungSessionOptions): RungSession {
+export async function createRungSession(options: RungSessionOptions): Promise<RungSession> {
 	const model = options.contextWindow === undefined
 		? SESSION_MODEL
 		: ({ ...SESSION_MODEL, contextWindow: options.contextWindow } as Model<Api>);
@@ -146,9 +146,11 @@ export function createRungSession(options: RungSessionOptions): RungSession {
 		return realContinue(...args);
 	}) as typeof agent.continue;
 
-	const authStorage = AuthStorage.inMemory();
-	authStorage.setRuntimeApiKey("anthropic", "anthropic-key");
-	if (options.authenticateFallback !== false) authStorage.setRuntimeApiKey("openai", "openai-key");
+	const authStorage = AuthStorage.inMemory({
+		anthropic: { type: "api_key", key: "anthropic-key" },
+		...(options.authenticateFallback === false ? {} : { openai: { type: "api_key" as const, key: "openai-key" } }),
+	});
+	const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null });
 	const settingsManager = SettingsManager.inMemory();
 	settingsManager.applyOverrides({
 		retry: { enabled: false, maxRetries: 0, baseDelayMs: 0 },
@@ -164,7 +166,7 @@ export function createRungSession(options: RungSessionOptions): RungSession {
 		sessionManager: manager,
 		settingsManager,
 		cwd: process.cwd(),
-		modelRegistry: ModelRegistry.create(authStorage),
+		modelRuntime,
 		resourceLoader: createTestResourceLoader(),
 		fallbackModels: options.fallbackModels ?? [],
 	});
