@@ -4,6 +4,14 @@ import { LoginDialogComponent } from "../src/modes/interactive/components/login-
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import "../src/modes/interactive/interactive-auth-login.ts";
+import { openBrowser } from "../src/utils/open-browser.ts";
+
+// Driving the real LoginDialogComponent through onAuth opens the platform browser.
+// On Windows that spawns a detached `rundll32 url.dll,FileProtocolHandler`, which
+// inherits this process's stdout/stderr write handles; on a runner with no browser
+// it never exits, the suite's pipes never reach EOF, and the CI step hangs until the
+// job budget expires. Mock the launcher, as pi's login-dialog suites do.
+vi.mock("../src/utils/open-browser.ts", () => ({ openBrowser: vi.fn() }));
 
 beforeAll(() => {
 	initTheme("dark");
@@ -153,6 +161,7 @@ describe("interactive OAuth cancellation", () => {
 		const dialog = addedChildren[0] as LoginDialogComponent;
 		expect(dialog.render(100).join("\n")).toContain("Sign in to Corp");
 		expect(completeProviderAuthentication).toHaveBeenCalledOnce();
+		expect(vi.mocked(openBrowser)).toHaveBeenCalledWith("https://corp.invalid/login");
 	}, 1_000);
 
 	it("keeps a post-login refresh AbortError visible", async () => {

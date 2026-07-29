@@ -52,29 +52,6 @@ async function pump(stream: ReadableStream<Uint8Array> | undefined, sink: NodeJS
 }
 
 /**
- * TEMPORARY Windows diagnostic. A `run:` step ends only once the child exits and
- * every inherited stdout/stderr handle closes, so anything still holding those
- * handles keeps the step open. Name every process started since this wrapper
- * began — filtering by executable name once hid `vitest.exe`, the Bun-generated
- * Windows bin shim that sits between `bun run` and the vitest runtime.
- */
-function dumpSurvivors(reason: string): void {
-  if (process.platform !== "win32") return;
-  const query = [
-    "$since=(Get-Date).AddMinutes(-30);",
-    "Get-CimInstance Win32_Process |",
-    "Where-Object { $_.CreationDate -ge $since } |",
-    "Sort-Object CreationDate |",
-    "Select-Object ProcessId,ParentProcessId,Name,@{Name='Started';Expression={$_.CreationDate.ToString('HH:mm:ss')}},CommandLine |",
-    "Format-Table -AutoSize | Out-String -Width 300",
-  ].join(" ");
-  const result = Bun.spawnSync(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", query]);
-  console.error(
-    `[suite-probe ${reason}] ${new Date().toISOString()} wrapper pid=${process.pid}\n${result.stdout.toString()}${result.stderr.toString()}`,
-  );
-}
-
-/**
  * Stream child output as it arrives instead of buffering it until the child exits.
  * A suite that overruns the job's `timeout-minutes` budget is killed mid-run, and a
  * buffered attempt discards every line it had already collected, leaving the cancelled
@@ -83,22 +60,11 @@ function dumpSurvivors(reason: string): void {
  */
 async function runAttempt(command: string[], logPath: string, persist: boolean): Promise<{ code: number; output: string }> {
   const child = Bun.spawn(command, { stdout: "pipe", stderr: "pipe", env: process.env });
-  console.error(`[suite-probe spawn] wrapper pid=${process.pid} spawned child pid=${child.pid}: ${command.join(" ")}`);
-  let openStreams = 2;
-  const stdoutPump = pump(child.stdout, process.stdout).then((text) => { openStreams--; return text; });
-  const stderrPump = pump(child.stderr, process.stderr).then((text) => { openStreams--; return text; });
-  const code = await child.exited;
-  let probe: ReturnType<typeof setInterval> | undefined;
-  if (openStreams > 0) {
-    const exitedAt = Date.now();
-    dumpSurvivors(`child exited code=${code}; ${openStreams} inherited stream(s) still open`);
-    probe = setInterval(() => {
-      const seconds = Math.round((Date.now() - exitedAt) / 1000);
-      dumpSurvivors(`${seconds}s after child exit; ${openStreams} inherited stream(s) still open`);
-    }, 30_000);
-  }
-  const [stdout, stderr] = await Promise.all([stdoutPump, stderrPump]);
-  if (probe) clearInterval(probe);
+  const [stdout, stderr, code] = await Promise.all([
+    pump(child.stdout, process.stdout),
+    pump(child.stderr, process.stderr),
+    child.exited,
+  ]);
   const output = `${stdout}${stderr}`;
   if (persist) writeFileSync(logPath, output);
   return { code, output };
