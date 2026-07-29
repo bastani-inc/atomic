@@ -2,19 +2,66 @@ import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel } from "@earendil-works/pi-ai/compat";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
+const missingApiKeyEnv = "ATOMIC_SDK_SESSION_MANAGER_MISSING_KEY";
+const testModel = (id: string) => ({
+	id,
+	name: id,
+	reasoning: false,
+	input: ["text" as const],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 8192,
+	maxTokens: 1024,
+});
+
+async function createSelectionRuntime(): Promise<ModelRuntime> {
+	const runtime = await ModelRuntime.create({
+		credentials: AuthStorage.inMemory(),
+		modelsPath: null,
+		allowModelNetwork: false,
+	});
+	runtime.registerProvider("test-ready", {
+		api: "openai-completions",
+		baseUrl: "https://ready.invalid/v1",
+		apiKey: "test-key",
+		models: [testModel("ready-model")],
+	});
+	runtime.registerProvider("test-locked", {
+		api: "openai-completions",
+		baseUrl: "https://locked.invalid/v1",
+		apiKey: `$${missingApiKeyEnv}`,
+		models: [testModel("locked-model")],
+	});
+	await runtime.refresh({ allowNetwork: false });
+	return runtime;
+}
+
+function persistedSession(cwd: string, provider: string, modelId: string): SessionManager {
+	const manager = SessionManager.inMemory(cwd);
+	manager.appendModelChange(provider, modelId);
+	manager.appendMessage({
+		role: "user",
+		content: [{ type: "text", text: "restore" }],
+		timestamp: Date.now(),
+	});
+	return manager;
+}
+
 describe("createAgentSession session manager defaults", () => {
 	let tempDir: string;
 	let cwd: string;
 	let agentDir: string;
+	let previousMissingApiKey: string | undefined;
 
 	beforeEach(() => {
+		previousMissingApiKey = process.env[missingApiKeyEnv];
+		delete process.env[missingApiKeyEnv];
 		tempDir = join(tmpdir(), `pi-sdk-session-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		cwd = join(tempDir, "project");
 		agentDir = join(tempDir, "agent");
@@ -23,9 +70,10 @@ describe("createAgentSession session manager defaults", () => {
 	});
 
 	afterEach(() => {
-		if (tempDir && existsSync(tempDir)) {
-			rmSync(tempDir, { recursive: true, force: true });
-		}
+		if (previousMissingApiKey === undefined) delete process.env[missingApiKeyEnv];
+		else process.env[missingApiKeyEnv] = previousMissingApiKey;
+		vi.restoreAllMocks();
+		if (tempDir && existsSync(tempDir)) rmSync(tempDir, { recursive: true, force: true });
 	});
 
 	it("uses agentDir for the default persisted session path", async () => {
@@ -129,6 +177,160 @@ describe("createAgentSession session manager defaults", () => {
 			session.thinkingLevel,
 		]);
 
+		session.dispose();
+	});
+
+	it("enables ask_user_question and todo by default", async () => {
+		const model = getModel("anthropic", "claude-sonnet-4-5");
+		expect(model).toBeTruthy();
+		const { session } = await createAgentSession({ cwd, agentDir, model: model! });
+
+		expect(session.getActiveToolNames()).toEqual(
+			expect.arrayContaining(["read", "bash", "edit", "write", "ask_user_question", "todo"]),
+		);
+		session.dispose();
+	});
+
+	it("does not synthesize an exact unauthenticated model during SDK session restoration", async () => {
+		const modelRuntime = await createSelectionRuntime();
+		const locked = modelRuntime.getModel("test-locked", "locked-model");
+		expect(locked).toBeDefined();
+		expect(modelRuntime.hasConfiguredAuth("test-locked")).toBe(false);
+
+		const { session, modelFallbackMessage, modelFallbackReason } = await createAgentSession({
+			cwd,
+			agentDir,
+			modelRuntime,
+			settingsManager: SettingsManager.inMemory(),
+			sessionManager: persistedSession(cwd, "test-locked", "locked-model"),
+		});
+
+		expect(session.model).not.toEqual(locked);
+		expect(modelFallbackMessage).toContain("test-locked/locked-model");
+		expect(modelFallbackReason).toBe("session-restore");
+		session.dispose();
+	});
+
+	it("propagates a generic warning for an unusable complete saved default without switching providers", async () => {
+		const modelRuntime = await createSelectionRuntime();
+		const settingsManager = SettingsManager.inMemory({
+			defaultProvider: "unsupported-provider",
+			defaultModel: "unsupported-model",
+		});
+		const { session, modelFallbackMessage, modelFallbackReason } = await createAgentSession({
+			cwd,
+			agentDir,
+			modelRuntime,
+			settingsManager,
+			sessionManager: SessionManager.inMemory(cwd),
+		});
+
+		expect(session.model?.provider).not.toBe("test-ready");
+		expect(modelFallbackMessage).toBe(
+			"Configured default model is unavailable or unsupported. Update defaultProvider/defaultModel or use /model.",
+		);
+		expect(modelFallbackReason).toBe("configured-provider-unsupported");
+		expect(settingsManager.getDefaultProvider()).toBe("unsupported-provider");
+		expect(settingsManager.getDefaultModel()).toBe("unsupported-model");
+		session.dispose();
+	});
+
+	it("keeps normal automatic selection for an unknown model on a supported provider", async () => {
+		const modelRuntime = await createSelectionRuntime();
+		const { session, modelFallbackMessage, modelFallbackReason } = await createAgentSession({
+			cwd,
+			agentDir,
+			modelRuntime,
+			settingsManager: SettingsManager.inMemory({
+				defaultProvider: "test-ready",
+				defaultModel: "unknown-saved-model",
+			}),
+			sessionManager: SessionManager.inMemory(cwd),
+		});
+
+		expect(session.model?.id).not.toBe("unknown-saved-model");
+		expect(modelFallbackMessage).toBeUndefined();
+		expect(modelFallbackReason).toBeUndefined();
+		session.dispose();
+	});
+
+	it("keeps normal automatic selection when a supported exact default lacks auth", async () => {
+		const modelRuntime = await createSelectionRuntime();
+		const { session, modelFallbackMessage, modelFallbackReason } = await createAgentSession({
+			cwd,
+			agentDir,
+			modelRuntime,
+			settingsManager: SettingsManager.inMemory({
+				defaultProvider: "test-locked",
+				defaultModel: "locked-model",
+			}),
+			sessionManager: SessionManager.inMemory(cwd),
+		});
+
+		expect(session.model?.provider).not.toBe("test-locked");
+		expect(modelFallbackMessage).toBeUndefined();
+		expect(modelFallbackReason).toBeUndefined();
+		session.dispose();
+	});
+
+	it("gives an unsupported saved provider precedence over failed persisted-session restoration", async () => {
+		const modelRuntime = await createSelectionRuntime();
+		const { session, modelFallbackMessage, modelFallbackReason } = await createAgentSession({
+			cwd,
+			agentDir,
+			modelRuntime,
+			settingsManager: SettingsManager.inMemory({
+				defaultProvider: "unsupported-provider",
+				defaultModel: "unsupported-model",
+			}),
+			sessionManager: persistedSession(cwd, "absent-session-provider", "absent-session-model"),
+		});
+
+		expect(session.model?.provider).toBe("unknown");
+		expect(session.model?.provider).not.toBe("test-ready");
+		expect(modelFallbackMessage).toBe(
+			"Configured default model is unavailable or unsupported. Update defaultProvider/defaultModel or use /model.",
+		);
+		expect(modelFallbackReason).toBe("configured-provider-unsupported");
+		session.dispose();
+	});
+
+	it("preserves restoration guidance with supported unknown and unauthenticated saved defaults", async () => {
+		for (const savedDefault of [
+			{ defaultProvider: "test-ready", defaultModel: "unknown-saved-model" },
+			{ defaultProvider: "test-locked", defaultModel: "locked-model" },
+		]) {
+			const modelRuntime = await createSelectionRuntime();
+			const { session, modelFallbackMessage, modelFallbackReason } = await createAgentSession({
+				cwd,
+				agentDir,
+				modelRuntime,
+				settingsManager: SettingsManager.inMemory(savedDefault),
+				sessionManager: persistedSession(cwd, "absent-session-provider", "absent-session-model"),
+			});
+
+			expect(modelFallbackMessage).toContain(
+				"Could not restore model absent-session-provider/absent-session-model",
+			);
+			expect(modelFallbackMessage).toContain(`Using ${session.model?.provider}/${session.model?.id}`);
+			expect(modelFallbackReason).toBe("session-restore");
+			session.dispose();
+		}
+	});
+
+	it("classifies ordinary empty catalogs separately from unsupported providers", async () => {
+		const modelRuntime = await createSelectionRuntime();
+		vi.spyOn(modelRuntime, "getAvailableSnapshot").mockReturnValue([]);
+		const { session, modelFallbackMessage, modelFallbackReason } = await createAgentSession({
+			cwd,
+			agentDir,
+			modelRuntime,
+			settingsManager: SettingsManager.inMemory(),
+			sessionManager: SessionManager.inMemory(cwd),
+		});
+
+		expect(modelFallbackMessage).toContain("No models available");
+		expect(modelFallbackReason).toBe("no-models-available");
 		session.dispose();
 	});
 
