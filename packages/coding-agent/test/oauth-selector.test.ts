@@ -75,6 +75,7 @@ describe("OAuthSelectorComponent", () => {
 					getProviders: () => [{ id: "oauth-only", name: "OAuth Only", auth: { oauth: {} } }],
 					getOAuthProviderMetadata: () => [{ id: "oauth-only", name: "OAuth Only" }],
 					getProviderAuthStatus: () => ({ configured: true, source: "stored" }),
+					getStoredCredentialType: () => "api_key",
 					isUsingOAuth: () => false,
 				},
 			},
@@ -82,6 +83,29 @@ describe("OAuthSelectorComponent", () => {
 
 		expect(getLogoutProviderOptions.call(fakeThis)).toEqual([
 			{ id: "oauth-only", name: "OAuth Only", authType: "api_key" },
+		]);
+	});
+
+	it("labels an engine-published provider by its stored API-key credential", () => {
+		const getLogoutProviderOptions = (
+			InteractiveMode as unknown as {
+				prototype: { getLogoutProviderOptions(this: object): Array<{ id: string; name: string; authType: string }> };
+			}
+		).prototype.getLogoutProviderOptions;
+		const fakeThis = {
+			session: {
+				modelRuntime: {
+					getProviders: () => [],
+					getOAuthProviderMetadata: () => [{ id: "engine-oauth", name: "Engine OAuth" }],
+					getProviderAuthStatus: () => ({ configured: true, source: "stored" }),
+					getStoredCredentialType: () => "api_key",
+					isUsingOAuth: () => false,
+				},
+			},
+		};
+
+		expect(getLogoutProviderOptions.call(fakeThis)).toEqual([
+			{ id: "engine-oauth", name: "Engine OAuth", authType: "api_key" },
 		]);
 	});
 

@@ -86,9 +86,11 @@ test("isolated host treats an engine-published extension model as configured aft
 
 	assert.deepEqual(modelRuntime.getAvailableSnapshot(), []);
 	assert.equal(modelRuntime.hasConfiguredAuth(model.provider), false);
-	const result = await modelRuntime.refresh({ allowNetwork: false });
+	const result = await (modelRuntime as unknown as {
+		refresh(options: { allowNetwork?: boolean; force?: boolean; timeoutMs?: number }): ReturnType<ModelRuntime["refresh"]>;
+	}).refresh({ allowNetwork: false, force: true, timeoutMs: 321 });
 
-	assert.deepEqual(observedOptions, { allowNetwork: false, force: undefined, timeoutMs: undefined });
+	assert.deepEqual(observedOptions, { allowNetwork: false, force: true, timeoutMs: 321 });
 	assert.deepEqual(modelRuntime.getAvailableSnapshot(), [model]);
 	assert.equal(modelRuntime.getModel(model.provider, model.id), model);
 	assert.equal(modelRuntime.hasConfiguredAuth(model.provider), true);

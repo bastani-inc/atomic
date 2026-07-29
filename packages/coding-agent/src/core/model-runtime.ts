@@ -38,12 +38,14 @@ import {
 } from "./provider-composer.ts";
 import { withRemoteCatalog } from "./remote-catalog-provider.ts";
 import { RuntimeCredentials } from "./runtime-credentials.ts";
+import { isOfflineModeEnabled } from "./package-manager-env.ts";
 import { collectOAuthProviderMetadata } from "./oauth-provider-metadata.ts";
 interface ModelRuntimeSnapshot {
 	all: readonly Model<Api>[];
 	available: readonly Model<Api>[];
 	configuredProviders: ReadonlySet<string>;
 	storedProviders: ReadonlySet<string>;
+	storedCredentialTypes: ReadonlyMap<string, CredentialInfo["type"]>;
 	auth: ReadonlyMap<string, AuthCheck | undefined>;
 }
 export type { CreateModelRuntimeOptions, ModelRuntimeAuthOverrides } from "./model-runtime-types.ts";
@@ -67,6 +69,7 @@ export class ModelRuntime implements Models {
 		available: [],
 		configuredProviders: new Set(),
 		storedProviders: new Set(),
+		storedCredentialTypes: new Map(),
 		auth: new Map(),
 	};
 	private availabilityRefresh: Promise<void> | undefined;
@@ -113,7 +116,7 @@ export class ModelRuntime implements Models {
 			modelsPath,
 			modelsStore,
 			providers,
-			process.env.ATOMIC_OFFLINE === undefined && process.env.PI_OFFLINE === undefined,
+			!isOfflineModeEnabled(),
 		);
 		runtime.configureRadiusProviders();
 		runtime.rebuildProviders();
@@ -215,6 +218,7 @@ export class ModelRuntime implements Models {
 			available: [...available],
 			configuredProviders,
 			storedProviders: new Set(credentials.map((entry) => entry.providerId)),
+			storedCredentialTypes: new Map(credentials.map((entry) => [entry.providerId, entry.type])),
 			auth,
 		};
 		this.availabilityError = undefined;
@@ -338,10 +342,7 @@ export class ModelRuntime implements Models {
 	}
 	/** Reload credentials changed by the authoritative isolated engine and update auth status snapshots. */
 	async reloadCredentials(): Promise<void> { await this.credentials.reload(); await this.forceRefreshAvailability(); }
-	async saveCredential(providerId: string, credential: Credential): Promise<void> {
-		await this.credentials.modify(providerId, async () => credential);
-		await this.refresh();
-	}
+	async saveCredential(providerId: string, credential: Credential): Promise<void> { await this.credentials.modify(providerId, async () => credential); await this.refresh(); }
 	async setRuntimeApiKey(
 		providerId: string,
 		apiKey: string,
@@ -362,13 +363,11 @@ export class ModelRuntime implements Models {
 	}
 
 	async removeRuntimeApiKey(providerId: string): Promise<void> {
-		this.credentials.removeRuntimeApiKey(providerId);
-		await this.refresh({ allowNetwork: this.modelNetworkEnabled });
+		this.credentials.removeRuntimeApiKey(providerId); await this.refresh({ allowNetwork: this.modelNetworkEnabled });
 	}
 
-	listCredentials(): Promise<readonly CredentialInfo[]> {
-		return this.credentials.list();
-	}
+	listCredentials(): Promise<readonly CredentialInfo[]> { return this.credentials.list(); }
+	getStoredCredentialType(providerId: string): CredentialInfo["type"] | undefined { return this.snapshot.storedCredentialTypes.get(providerId); }
 
 	getProviderAuthStatus(providerId: string): AuthStatus {
 		if (this.credentials.hasRuntimeApiKey(providerId)) return { configured: true, source: "runtime" };

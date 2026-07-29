@@ -52,16 +52,13 @@ InteractiveModeBase.prototype.getLogoutProviderOptions = function(
 ): AuthSelectorProvider[] {
   const runtime = this.session.modelRuntime;
   const providers = runtime.getProviders();
-  const localProviderIds = new Set(providers.map((provider) => provider.id));
-  const options: AuthSelectorProvider[] = runtime.getOAuthProviderMetadata()
-    .filter((provider) =>
-      runtime.getProviderAuthStatus(provider.id).source === "stored"
-      && (!localProviderIds.has(provider.id) || runtime.isUsingOAuth(provider.id)))
-    .map((provider) => ({ id: provider.id, name: provider.name, authType: "oauth" as const }));
-  for (const provider of providers) {
-    if (runtime.isUsingOAuth(provider.id)
-      || runtime.getProviderAuthStatus(provider.id).source !== "stored") continue;
-    options.push({ id: provider.id, name: provider.name ?? provider.id, authType: "api_key" });
+  const providerNames = new Map(providers.map((provider) => [provider.id, provider.name ?? provider.id]));
+  for (const provider of runtime.getOAuthProviderMetadata()) providerNames.set(provider.id, provider.name);
+  const options: AuthSelectorProvider[] = [];
+  for (const [providerId, name] of providerNames) {
+    if (runtime.getProviderAuthStatus(providerId).source !== "stored") continue;
+    const authType = runtime.getStoredCredentialType(providerId);
+    if (authType) options.push({ id: providerId, name, authType });
   }
   return options.sort((a, b) => a.name.localeCompare(b.name));
 };
