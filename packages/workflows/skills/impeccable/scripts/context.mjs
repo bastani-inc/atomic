@@ -30,6 +30,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stripHtmlBlocks } from './detector/shared/page.mjs';
 import { parseTargetOptions } from './lib/target-args.mjs';
 import { IMPECCABLE_COMMAND, IMPECCABLE_PROVIDER_ID } from './lib/provider.mjs';
 import { resolveSurfaceBrief } from './lib/surface-briefs.mjs';
@@ -848,9 +849,10 @@ export function hasVisualImplementation(projectRoot) {
       return false;
     }
 
-    const evidence = body
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/<!--[\s\S]*?-->/g, '')
+    // HTML comments are removed by the shared scanner rather than a single regex
+    // pass: one `<!--[\s\S]*?-->` replacement can splice a fresh `<!--` out of
+    // nested openers and leave commented-out markup looking like real evidence.
+    const evidence = stripHtmlBlocks(body.replace(/\/\*[\s\S]*?\*\//g, ''))
       .replace(/^\s*\/\/.*$/gm, '');
     if (STYLE_EXTENSIONS.has(ext)) {
       const customProperties = evidence.match(/--[a-z0-9_-]+\s*:/gi)?.length ?? 0;

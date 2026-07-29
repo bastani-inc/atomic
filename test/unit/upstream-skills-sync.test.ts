@@ -272,6 +272,29 @@ describe("synced upstream skill trees", () => {
     // Upstream's regex comment strip misses the permissive `--!>` ending and reports this as a full page.
     assert.equal(pageModule.isFullPage("<!--<html>--!>"), false);
   });
+  test("keeps Impeccable visual-evidence detection blind to commented-out markup", async () => {
+    const contextModule = await import(join(workflowSkills, "impeccable/scripts/context.mjs")) as {
+      hasVisualImplementation(projectRoot: string): boolean;
+    };
+    const filler = "<p>Plain authored copy with no styling evidence at all.</p>\n".repeat(16);
+    const hiddenStyle = "<style>.a{color:red}</style>";
+    const fixtures: ReadonlyArray<readonly [name: string, markup: string, expected: boolean]> = [
+      ["nested-opener", `${filler}<!<!-- inner -->-- ${hiddenStyle} -->`, false],
+      ["permissive-closer", `${filler}<!-- ${hiddenStyle} --!>`, false],
+      ["visible-style", `${filler}${hiddenStyle}`, true],
+    ];
+    for (const [name, markup, expected] of fixtures) {
+      const projectRoot = mkdtempSync(join(tmpdir(), `atomic-impeccable-visual-${name}-`));
+      try {
+        assert.ok(markup.length > 600, `fixture ${name} is under the HTML evidence threshold`);
+        writeFileSync(join(projectRoot, "index.html"), markup);
+        assert.equal(contextModule.hasVisualImplementation(projectRoot), expected, `visual evidence: ${name}`);
+      } finally {
+        rmSync(projectRoot, { recursive: true, force: true });
+      }
+    }
+  });
+
 
   test("keeps synced live-preview selector and CSS-property hardening", () => {
     const browser = readFileSync(join(workflowSkills, "impeccable/scripts/live-browser.js"), "utf8");
