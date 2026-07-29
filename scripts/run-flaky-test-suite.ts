@@ -53,20 +53,25 @@ async function pump(stream: ReadableStream<Uint8Array> | undefined, sink: NodeJS
 
 /**
  * TEMPORARY Windows diagnostic. A `run:` step ends only once the child exits and
- * every inherited stdout/stderr handle closes, so a leaked grandchild keeps the
- * pipes open long after the suite finishes. Name whoever is still alive instead
- * of guessing from a bare process count.
+ * every inherited stdout/stderr handle closes, so anything still holding those
+ * handles keeps the step open. Name every process started since this wrapper
+ * began — filtering by executable name once hid `vitest.exe`, the Bun-generated
+ * Windows bin shim that sits between `bun run` and the vitest runtime.
  */
 function dumpSurvivors(reason: string): void {
   if (process.platform !== "win32") return;
   const query = [
+    "$since=(Get-Date).AddMinutes(-30);",
     "Get-CimInstance Win32_Process |",
-    "Where-Object { $_.Name -match '^(bun|node|deno|sh|bash|cmd|powershell|pwsh|conhost|git)' } |",
-    "Select-Object ProcessId,ParentProcessId,Name,CommandLine |",
-    "Format-Table -AutoSize | Out-String -Width 400",
+    "Where-Object { $_.CreationDate -ge $since } |",
+    "Sort-Object CreationDate |",
+    "Select-Object ProcessId,ParentProcessId,Name,@{Name='Started';Expression={$_.CreationDate.ToString('HH:mm:ss')}},CommandLine |",
+    "Format-Table -AutoSize | Out-String -Width 300",
   ].join(" ");
   const result = Bun.spawnSync(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", query]);
-  console.error(`[suite-probe ${reason}] ${new Date().toISOString()}\n${result.stdout.toString()}${result.stderr.toString()}`);
+  console.error(
+    `[suite-probe ${reason}] ${new Date().toISOString()} wrapper pid=${process.pid}\n${result.stdout.toString()}${result.stderr.toString()}`,
+  );
 }
 
 /**
@@ -78,6 +83,7 @@ function dumpSurvivors(reason: string): void {
  */
 async function runAttempt(command: string[], logPath: string, persist: boolean): Promise<{ code: number; output: string }> {
   const child = Bun.spawn(command, { stdout: "pipe", stderr: "pipe", env: process.env });
+  console.error(`[suite-probe spawn] wrapper pid=${process.pid} spawned child pid=${child.pid}: ${command.join(" ")}`);
   let openStreams = 2;
   const stdoutPump = pump(child.stdout, process.stdout).then((text) => { openStreams--; return text; });
   const stderrPump = pump(child.stderr, process.stderr).then((text) => { openStreams--; return text; });

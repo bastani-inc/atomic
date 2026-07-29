@@ -36,8 +36,9 @@ const POWERSHELL_QUERY = [
 	"ConvertTo-Json -Compress -Depth 2",
 ].join(" ");
 
-/** Names worth naming: the runtimes and shells this suite can leak. */
-const INTERESTING = /^(bun|node|deno|sh|bash|dash|git|cmd|powershell|pwsh|conhost|taskkill|npm|rg|python)/i;
+/** Names worth naming: the runtimes, shims, and shells this suite can leak. */
+const INTERESTING =
+	/^(bun|node|deno|vitest|esbuild|atomic|sh|bash|dash|git|cmd|powershell|pwsh|conhost|taskkill|npm|rg|python)/i;
 
 function queryWindowsProcesses(): WindowsProcess[] {
 	const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", POWERSHELL_QUERY], {
