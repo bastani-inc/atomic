@@ -63,6 +63,28 @@ describe("OAuthSelectorComponent", () => {
 		]);
 	});
 
+	it("offers a stored API key for logout even when the provider advertises OAuth only", () => {
+		const getLogoutProviderOptions = (
+			InteractiveMode as unknown as {
+				prototype: { getLogoutProviderOptions(this: object): Array<{ id: string; name: string; authType: string }> };
+			}
+		).prototype.getLogoutProviderOptions;
+		const fakeThis = {
+			session: {
+				modelRuntime: {
+					getProviders: () => [{ id: "oauth-only", name: "OAuth Only", auth: { oauth: {} } }],
+					getOAuthProviderMetadata: () => [{ id: "oauth-only", name: "OAuth Only" }],
+					getProviderAuthStatus: () => ({ configured: true, source: "stored" }),
+					isUsingOAuth: () => false,
+				},
+			},
+		};
+
+		expect(getLogoutProviderOptions.call(fakeThis)).toEqual([
+			{ id: "oauth-only", name: "OAuth Only", authType: "api_key" },
+		]);
+	});
+
 	it("renders an option without compiled auth status as unconfigured", () => {
 		const selector = new OAuthSelectorComponent(
 			"login",

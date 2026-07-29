@@ -39,7 +39,11 @@ export class RemoteModelCatalog {
 			getAvailableSnapshot: { configurable: true, value: () => [...this.models] },
 			getModels: { configurable: true, value: (provider?: string) => provider ? this.models.filter((model) => model.provider === provider) : [...this.models] },
 			getModel: { configurable: true, value: (provider: string, modelId: string) => this.models.find((model) => model.provider === provider && model.id === modelId) },
-			hasConfiguredAuth: { configurable: true, value: (provider: string) => runtime.getProviderAuthStatus(provider).configured },
+			hasConfiguredAuth: {
+				configurable: true,
+				value: (provider: string) => runtime.getProviderAuthStatus(provider).configured
+					|| this.models.some((model) => model.provider === provider),
+			},
 			getOAuthProviderMetadata: { configurable: true, value: () => [...this.oauthProviders] },
 		});
 		Object.defineProperty(session, "scopedModels", { configurable: true, get: () => this.scopedModels });

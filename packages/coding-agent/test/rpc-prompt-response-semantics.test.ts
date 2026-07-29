@@ -18,6 +18,7 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { runRpcMode } from "../src/modes/rpc/rpc-mode.ts";
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
+import { withNormalRpcEnvironment } from "./normal-rpc-environment.ts";
 import { createTestResourceLoader } from "./utilities.ts";
 
 const rpcIo = vi.hoisted(() => ({
@@ -212,7 +213,7 @@ async function startRpcMode(options: {
 	rpcIo.lineHandler = undefined;
 
 	const { runtimeHost, cleanup } = await createRuntimeHost(options);
-	void runRpcMode(runtimeHost);
+	withNormalRpcEnvironment(() => { void runRpcMode(runtimeHost); });
 	await vi.waitFor(() => expect(rpcIo.lineHandler).toBeDefined());
 
 	return { lineHandler: rpcIo.lineHandler!, cleanup, runtimeHost };
@@ -282,6 +283,7 @@ describe("RPC prompt response semantics", () => {
 				]);
 			});
 			expect(parseOutputLines(rpcIo.outputLines).filter((record) => record.type !== "response")).toEqual([]);
+			expect(rpcIo.outputLines.join("\n")).not.toContain("API key");
 
 			lineHandler(JSON.stringify({ id: "catalog", type: "get_available_models" }));
 			lineHandler(JSON.stringify({ id: "recover", type: "set_model", provider: model.provider, modelId: model.id }));
@@ -344,6 +346,10 @@ describe("RPC prompt response semantics", () => {
 				(record) => record.id === "changed-cycle" && record.success === true,
 			)).toBe(true));
 			expect(runtimeHost.modelFallbackReason).toBeUndefined();
+			lineHandler(JSON.stringify({ id: "after-cycle", type: "prompt", message: "run after cycle" }));
+			await vi.waitFor(() => expect(getPromptResponses(rpcIo.outputLines, "after-cycle")).toEqual([
+				expect.objectContaining({ success: true }),
+			]));
 
 			for (const [id, implementation] of [
 				["null-cycle", async () => undefined],

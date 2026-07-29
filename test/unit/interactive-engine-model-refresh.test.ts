@@ -26,8 +26,8 @@ async function kimiModel(): Promise<Model<Api>> {
 	return model;
 }
 
-test("isolated host refresh atomically applies the engine model catalog without restart", async () => {
-	const model = await kimiModel();
+test("isolated host treats an engine-published extension model as configured after refresh", async () => {
+	const model = { ...(await kimiModel()), provider: "auth-free-extension", id: "published-model" };
 	const scopedModels = [{ model, thinkingLevel: "high" as const }];
 	let observedOptions: { timeoutMs?: number; force?: boolean; allowNetwork?: boolean } | undefined;
 	const refreshResult: RpcModelRefreshResult = {
@@ -85,6 +85,7 @@ test("isolated host refresh atomically applies the engine model catalog without 
 	await runtime.initializeFromEngine();
 
 	assert.deepEqual(modelRuntime.getAvailableSnapshot(), []);
+	assert.equal(modelRuntime.hasConfiguredAuth(model.provider), false);
 	const result = await modelRuntime.refresh({ allowNetwork: false });
 
 	assert.deepEqual(observedOptions, { allowNetwork: false, force: undefined, timeoutMs: undefined });

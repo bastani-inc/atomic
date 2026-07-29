@@ -59,7 +59,7 @@ InteractiveModeBase.prototype.getLogoutProviderOptions = function(
       && (!localProviderIds.has(provider.id) || runtime.isUsingOAuth(provider.id)))
     .map((provider) => ({ id: provider.id, name: provider.name, authType: "oauth" as const }));
   for (const provider of providers) {
-    if (!provider.auth.apiKey || runtime.isUsingOAuth(provider.id)
+    if (runtime.isUsingOAuth(provider.id)
       || runtime.getProviderAuthStatus(provider.id).source !== "stored") continue;
     options.push({ id: provider.id, name: provider.name ?? provider.id, authType: "api_key" });
   }
