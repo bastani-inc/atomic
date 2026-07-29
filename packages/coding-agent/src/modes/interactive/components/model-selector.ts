@@ -10,7 +10,6 @@ import {
 	type TUI,
 } from "@earendil-works/pi-tui";
 import type { ModelRuntime } from "../../../core/model-runtime.ts";
-import { isOfflineModeEnabled } from "../../../core/package-manager-env.ts";
 import type { SettingsManager } from "../../../core/settings-manager.ts";
 import { getModelSelectorSearchText } from "../model-search.ts";
 import { theme } from "../theme/theme.ts";
@@ -65,6 +64,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	private scopeText?: Text;
 	private scopeHintText?: Text;
 	private readonly refreshAbortController = new AbortController();
+	private refreshTimeout?: ReturnType<typeof setTimeout>;
 	private closed = false;
 
 	constructor(
@@ -128,49 +128,20 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		// Add bottom border
 		this.addChild(new DynamicBorder());
 
-		// Show the current snapshot first, then refresh configured provider catalogs in the background.
-		void this.loadModelsFromSnapshot()
-			.then(() => {
-				if (initialSearchInput) this.filterModels(initialSearchInput);
-				else this.updateList();
-				this.tui.requestRender();
-				return this.refreshModels();
-			})
-			.catch((error) => {
-				if (this.closed) return;
-				this.refreshStatusSuccess = false;
-				this.refreshStatusMessage = `Could not refresh model catalogs: ${error instanceof Error ? error.message : String(error)}`;
-				this.tui.requestRender();
-			});
+		// Render the current snapshot immediately, then refresh in the background.
+		this.loadModelsFromSnapshot();
+		if (initialSearchInput) this.filterModels(initialSearchInput);
+		else this.updateList();
+		this.tui.requestRender();
+		void this.refreshModels();
 	}
 
-	private async loadModelsFromSnapshot(): Promise<void> {
-		this.errorMessage = undefined;
-		let models: ModelItem[];
-
-		// Check for models.json errors
-		const loadError = this.modelRuntime.getError();
-		if (loadError) {
-			this.errorMessage = loadError;
-		}
-
-		// Load available models (built-in models still work even if models.json failed)
-		try {
-			const availableModels = await this.modelRuntime.getAvailableSnapshot();
-			models = availableModels.map((model: Model<Api>) => ({
-				provider: model.provider,
-				id: model.id,
-				model,
-			}));
-		} catch (error) {
-			this.allModels = [];
-			this.scopedModelItems = [];
-			this.activeModels = [];
-			this.filteredModels = [];
-			this.errorMessage = error instanceof Error ? error.message : String(error);
-			return;
-		}
-
+	private loadModelsFromSnapshot(): void {
+		const models = this.modelRuntime.getAvailableSnapshot().map((model: Model<Api>) => ({
+			provider: model.provider,
+			id: model.id,
+			model,
+		}));
 		this.allModels = this.sortModels(models);
 		this.scopedModels = this.scopedModels.map((scoped) => {
 			const refreshed = this.modelRuntime.getModel(scoped.model.provider, scoped.model.id);
@@ -189,27 +160,40 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	}
 
 	private async refreshModels(): Promise<void> {
-		const result = await this.modelRuntime.refresh({
-			allowNetwork: !isOfflineModeEnabled(),
-			signal: this.refreshAbortController.signal,
-		});
-		if (this.closed) return;
-		this.refreshStatusSuccess = false;
-		if (result.errors.size === 1) {
-			this.refreshStatusMessage = `Could not refresh ${result.errors.keys().next().value}; showing available models.`;
-		} else if (result.errors.size > 1) {
-			this.refreshStatusMessage = `Could not refresh ${result.errors.size} model catalogs; showing available models.`;
-		} else {
-			this.refreshStatusMessage = "Model catalogs refreshed.";
-			this.refreshStatusSuccess = true;
+		const timeoutMs = 15_000;
+		let timedOut = false;
+		this.refreshTimeout = setTimeout(() => {
+			timedOut = true;
+			this.refreshAbortController.abort();
+		}, timeoutMs);
+		try {
+			const result = await this.modelRuntime.refresh({ signal: this.refreshAbortController.signal });
+			if (this.closed) return;
+			this.refreshStatusMessage = "";
+			if (result.aborted && timedOut) {
+				this.errorMessage = "Model refresh timed out; showing cached models.";
+			} else if (result.errors.size === 1) {
+				this.errorMessage = `Could not refresh ${result.errors.keys().next().value}; showing cached models.`;
+			} else if (result.errors.size > 1) {
+				this.errorMessage = `Could not refresh ${result.errors.size} model catalogs; showing cached models.`;
+			} else {
+				this.errorMessage = this.modelRuntime.getError();
+				if (!this.errorMessage) {
+					this.refreshStatusMessage = "Model catalogs refreshed.";
+					this.refreshStatusSuccess = true;
+				}
+			}
+			this.loadModelsFromSnapshot();
+			this.filterModels(this.searchInput.getValue());
+			this.tui.requestRender();
+		} finally {
+			if (this.refreshTimeout) clearTimeout(this.refreshTimeout);
 		}
-		await this.loadModelsFromSnapshot();
-		this.filterModels(this.searchInput.getValue());
-		this.tui.requestRender();
 	}
 
 	private close(): void {
 		this.closed = true;
+		if (this.refreshTimeout) clearTimeout(this.refreshTimeout);
 		this.refreshAbortController.abort();
 	}
 
@@ -299,12 +283,6 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			this.listContainer.addChild(new Text(scrollInfo, 0, 0));
 		}
 
-		if (this.refreshStatusMessage) {
-			this.listContainer.addChild(new Spacer(1));
-			const color = this.refreshStatusSuccess ? "success" : "warning";
-			this.listContainer.addChild(new Text(theme.fg(color, `  ${this.refreshStatusMessage}`), 0, 0));
-		}
-
 		// Show error message or "no results" if empty
 		if (this.errorMessage) {
 			// Show error in red
@@ -318,6 +296,12 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			const selected = this.filteredModels[this.selectedIndex];
 			this.listContainer.addChild(new Spacer(1));
 			this.listContainer.addChild(new Text(theme.fg("muted", `  Model Name: ${selected.model.name}`), 0, 0));
+		}
+		if (this.refreshStatusMessage) {
+			this.listContainer.addChild(new Spacer(1));
+			this.listContainer.addChild(
+				new Text(theme.fg(this.refreshStatusSuccess ? "success" : "muted", `  ${this.refreshStatusMessage}`), 0, 0),
+			);
 		}
 	}
 
