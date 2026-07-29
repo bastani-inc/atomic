@@ -30,6 +30,9 @@ export default defineConfig({
 		globals: true,
 		environment: "node",
 		testTimeout: defaultTestTimeoutMs,
+		// TEMPORARY: name whatever handle is keeping the Windows run alive after the
+		// summary prints. Only emits when the process fails to exit on its own.
+		reporters: ["default", "hanging-process"],
 		include: ["test/**/*.test.ts", "test/**/*.spec.ts", "test/**/*.suite.ts"],
 		exclude: [
 			"**/node_modules/**",
