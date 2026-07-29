@@ -22,10 +22,7 @@ jobs:
                       timeout_minutes: 10
                     - os: blacksmith-4vcpu-windows-2025
                       binary_platform: windows-x64
-                      # TEMPORARY diagnostic headroom: the Windows suite currently
-                      # overruns 15m and is killed before it can report. Restored
-                      # once the underlying stall is identified and fixed.
-                      timeout_minutes: 30
+                      timeout_minutes: 15
             fail-fast: false
         runs-on: ${{ matrix.os }}
         # Strict per-platform wall-clock budgets prevent a hung process from
