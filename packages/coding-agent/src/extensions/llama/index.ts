@@ -41,7 +41,7 @@ async function configuredClient(ctx: ExtensionCommandContext): Promise<LlamaClie
 
 export default function llamaExtension(pi: ExtensionAPI): void {
 	const provider = createLlamaProvider();
-	pi.registerProvider(LLAMA_PROVIDER_ID, provider.config);
+	pi.registerProvider(provider.provider);
 
 	const syncCatalog = async (
 		ctx: ExtensionCommandContext,

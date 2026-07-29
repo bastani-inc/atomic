@@ -11,7 +11,7 @@ import { FileModelsStore } from "../../packages/coding-agent/src/core/models-sto
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { builtInExtensions } from "../../packages/coding-agent/src/extensions/index.js";
 import { LlamaClient, llamaInferenceUrl, normalizeLlamaServerUrl } from "../../packages/coding-agent/src/extensions/llama/client.js";
-import { createLlamaProvider, toLlamaModel } from "../../packages/coding-agent/src/extensions/llama/provider.js";
+import { createLlamaProvider } from "../../packages/coding-agent/src/extensions/llama/provider.js";
 
 const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; });
@@ -39,19 +39,42 @@ describe("llama.cpp router client", () => {
 
 describe("llama.cpp provider", () => {
 	test("maps loaded model metadata to context-sized, zero-cost OpenAI models", () => {
-		const mapped = toLlamaModel({
-			id: "vision.gguf",
-			status: { value: "loaded" },
-			architecture: { input_modalities: ["text", "image"] },
-			meta: { n_ctx: 8192 },
-		}, "http://localhost:8080");
+		const controller = createLlamaProvider();
+		controller.setCatalog(
+			[
+				{
+					id: "vision.gguf",
+					status: { value: "loaded" },
+					architecture: { input_modalities: ["text", "image"] },
+					meta: { n_ctx: 8192 },
+				},
+				{ id: "large", status: { value: "loaded" }, meta: { n_ctx: 32768 } },
+				{ id: "fallback", status: { value: "loaded" } },
+				{ id: "idle", status: { value: "unloaded" } },
+			],
+			"http://localhost:8080",
+		);
+		const models = controller.provider.getModels();
+		assert.deepEqual(models.map((model) => model.id), ["vision.gguf", "large", "fallback"]);
+		const mapped = models[0]!;
 		assert.equal(mapped.baseUrl, "http://localhost:8080/v1");
 		assert.deepEqual(mapped.input, ["text", "image"]);
 		assert.equal(mapped.contextWindow, 8192);
 		assert.equal(mapped.maxTokens, 8192);
 		assert.deepEqual(mapped.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
-		assert.equal(toLlamaModel({ id: "large", status: { value: "loaded" }, meta: { n_ctx: 32768 } }, "http://localhost").maxTokens, 32768);
-		assert.equal(toLlamaModel({ id: "fallback", status: { value: "loaded" } }, "http://localhost").contextWindow, 128000);
+		assert.equal(models[1]?.maxTokens, 32768);
+		assert.equal(models[2]?.contextWindow, 128000);
+	});
+
+	test("stays dormant in refresh without a configured server URL", async () => {
+		let fetched = false;
+		globalThis.fetch = mockFetch(async () => { fetched = true; return jsonResponse({ data: [] }); });
+		const runtime = await ModelRuntime.create({ credentials: AuthStorage.inMemory({}), modelsPath: null });
+		runtime.registerNativeProvider(createLlamaProvider().provider);
+		const result = await runtime.refresh({ allowNetwork: true });
+		assert.equal(result.errors.has("llama.cpp"), false);
+		assert.equal(fetched, false);
+		assert.equal(runtime.getModels("llama.cpp").length, 0);
 	});
 
 	test("dynamic refresh exposes only loaded models through the configured provider", async () => {
@@ -63,7 +86,7 @@ describe("llama.cpp provider", () => {
 			"llama.cpp": { type: "api_key", key: "local", env: { LLAMA_BASE_URL: "http://localhost:8080" } },
 		});
 		const runtime = await ModelRuntime.create({ credentials: storage, modelsPath: null });
-		runtime.registerProvider("llama.cpp", createLlamaProvider().config);
+		runtime.registerNativeProvider(createLlamaProvider().provider);
 		await runtime.refresh({ allowNetwork: false });
 		const result = await runtime.refresh({ allowNetwork: true });
 		assert.equal(result.errors.size, 0);
@@ -71,7 +94,7 @@ describe("llama.cpp provider", () => {
 		assert.deepEqual(models.map((model) => model.id), ["loaded"]);
 		const auth = await runtime.getAuth(models[0]!);
 		assert.equal(auth?.auth.apiKey, "local");
-		assert.equal(models[0]?.baseUrl, "http://127.0.0.1:8080/v1");
+		assert.equal(models[0]?.baseUrl, "http://localhost:8080/v1");
 	});
 
 	test("persists the loaded catalog and restores it before a later network refresh", async () => {
@@ -85,16 +108,16 @@ describe("llama.cpp provider", () => {
 			delete: () => backing.delete("llama.cpp"),
 		};
 		const credential = { type: "api_key" as const, key: "local", env: { LLAMA_BASE_URL: "http://localhost:8080" } };
-		const first = createLlamaProvider().config;
-		const refreshed = await first.refreshModels?.({ credential, store, allowNetwork: true });
-		assert.equal(refreshed?.[0]?.id, "cached");
+		const first = createLlamaProvider();
+		await first.provider.refreshModels?.({ credential, store, allowNetwork: true });
+		assert.equal(first.provider.getModels()[0]?.id, "cached");
 		assert.equal((await backing.read("llama.cpp"))?.models[0]?.maxTokens, 65536);
 
 		globalThis.fetch = mockFetch(async () => { throw new Error("offline"); });
-		const restarted = createLlamaProvider().config;
-		const restored = await restarted.refreshModels?.({ credential, store, allowNetwork: false });
-		assert.equal(restored?.[0]?.id, "cached");
-		assert.equal(restored?.[0]?.maxTokens, 65536);
+		const restarted = createLlamaProvider();
+		await restarted.provider.refreshModels?.({ credential, store, allowNetwork: false });
+		assert.equal(restarted.provider.getModels()[0]?.id, "cached");
+		assert.equal(restarted.provider.getModels()[0]?.maxTokens, 65536);
 	});
 
 	test("keeps a validated cached catalog visible when the first online refresh after restart fails", async () => {
@@ -107,13 +130,13 @@ describe("llama.cpp provider", () => {
 				{ id: "cached-on-restart", status: { value: "loaded" }, meta: { n_ctx: 65536 } },
 			] }));
 			const first = await ModelRuntime.create({ credentials: auth, modelsPath: join(root, "models.json"), modelsStorePath: join(root, "models-store.json") });
-			first.registerProvider("llama.cpp", createLlamaProvider().config);
+			first.registerNativeProvider(createLlamaProvider().provider);
 			await first.refresh({ allowNetwork: false });
 			assert.equal((await first.refresh({ allowNetwork: true })).errors.size, 0);
 
 			globalThis.fetch = mockFetch(async () => { throw new Error("router offline"); });
 			const restarted = await ModelRuntime.create({ credentials: auth, modelsPath: join(root, "models.json"), modelsStorePath: join(root, "models-store.json") });
-			restarted.registerProvider("llama.cpp", createLlamaProvider().config);
+			restarted.registerNativeProvider(createLlamaProvider().provider);
 			await restarted.refresh({ allowNetwork: false });
 			const result = await restarted.refresh({ allowNetwork: true });
 
@@ -146,7 +169,7 @@ describe("llama.cpp provider", () => {
 			});
 			globalThis.fetch = mockFetch(async () => { throw new Error("router offline"); });
 			const registry = await ModelRuntime.create({ credentials: auth, modelsPath: join(root, "models.json"), modelsStorePath: join(root, "models-store.json") });
-			registry.registerProvider("llama.cpp", createLlamaProvider().config);
+			registry.registerNativeProvider(createLlamaProvider().provider);
 			await registry.refresh({ allowNetwork: false });
 
 			const result = await registry.refresh({ allowNetwork: true });
@@ -161,7 +184,9 @@ describe("llama.cpp provider", () => {
 	test("rejects cached entries for the wrong provider or API during failed-refresh recovery", async () => {
 		const root = mkdtempSync(join(tmpdir(), "atomic-llama-invalid-"));
 		try {
-			const valid = toLlamaModel({ id: "invalid", status: { value: "loaded" } }, "http://localhost:8080");
+			const mapper = createLlamaProvider();
+			mapper.setCatalog([{ id: "invalid", status: { value: "loaded" } }], "http://localhost:8080");
+			const valid = mapper.provider.getModels()[0]!;
 			await new FileModelsStore(join(root, "models-store.json")).write("llama.cpp", {
 				models: [{ ...valid, provider: "other" }, { ...valid, api: "anthropic-messages" }],
 				checkedAt: 0,
@@ -171,7 +196,7 @@ describe("llama.cpp provider", () => {
 			});
 			globalThis.fetch = mockFetch(async () => { throw new Error("router offline"); });
 			const registry = await ModelRuntime.create({ credentials: auth, modelsPath: join(root, "models.json"), modelsStorePath: join(root, "models-store.json") });
-			registry.registerProvider("llama.cpp", createLlamaProvider().config);
+			registry.registerNativeProvider(createLlamaProvider().provider);
 			await registry.refresh({ allowNetwork: false });
 
 			const result = await registry.refresh({ allowNetwork: true });
