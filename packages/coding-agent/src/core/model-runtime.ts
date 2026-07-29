@@ -33,7 +33,6 @@ import {
 	type CompatibilityRequestConfig,
 	type ProviderConfigInput,
 	resolveCompatibilityRequestConfig,
-	resolveConfiguredModelHeaders,
 	validateExtensionProvider,
 } from "./provider-composer.ts";
 import { withRemoteCatalog } from "./remote-catalog-provider.ts";
@@ -50,7 +49,10 @@ import {
 } from "./model-runtime-snapshot.ts";
 export type { CreateModelRuntimeOptions, ModelRuntimeAuthOverrides } from "./model-runtime-types.ts";
 import type { CreateModelRuntimeOptions, ModelRuntimeAuthOverrides } from "./model-runtime-types.ts";
-import { ModelRuntimeStreaming, mergeHeaders } from "./model-runtime-streaming.ts";
+import { ModelRuntimeStreaming } from "./model-runtime-streaming.ts";
+import { canRestoreUnknownModel as canRestoreUnknownModelProvider } from "./model-runtime-restoration.ts";
+import { mergeConfiguredAuthHeaders } from "./model-runtime-auth.ts";
+import { configureBuiltinProviders } from "./model-runtime-providers.ts";
 /** Configured pi-ai Models collection used by coding-agent and SDK consumers. */
 export class ModelRuntime implements Models {
 	private readonly models: MutableModels;
@@ -126,20 +128,7 @@ export class ModelRuntime implements Models {
 		return runtime;
 	}
 	private configureRadiusProviders(): void {
-		this.builtins.clear();
-		for (const [providerId, provider] of this.defaultBuiltins) this.builtins.set(providerId, provider);
-		for (const providerId of this.config.getProviderIds()) {
-			const config = this.config.getProvider(providerId);
-			if (config?.oauth !== "radius" || !config.baseUrl) continue;
-			this.builtins.set(
-				providerId,
-				builtinProviderCatalog.radiusProvider({
-					id: providerId,
-					name: config.name ?? providerId,
-					gateway: config.baseUrl.replace(/\/v1\/?$/u, ""),
-				}),
-			);
-		}
+		configureBuiltinProviders(this.builtins, this.defaultBuiltins, this.config);
 	}
 	private providerIds(): Set<string> {
 		return new Set([
@@ -229,6 +218,16 @@ export class ModelRuntime implements Models {
 	getProvider(providerId: string): Provider | undefined {
 		return this.models.getProvider(providerId);
 	}
+	/** Whether an authenticated provider may reconstruct an absent saved model ID. */
+	canRestoreUnknownModel(providerId: string): boolean {
+		return canRestoreUnknownModelProvider(
+			providerId,
+			this.defaultBuiltins.get(providerId),
+			this.config.getProvider(providerId),
+			this.extensionProviders.get(providerId),
+			this.nativeExtensionProviders.get(providerId),
+		);
+	}
 	getModels(providerId?: string): readonly Model<Api>[] {
 		return this.models.getModels(providerId);
 	}
@@ -306,19 +305,13 @@ export class ModelRuntime implements Models {
 		if (typeof providerOrModel === "string") return this.models.getAuth(providerOrModel, overrides);
 		const resolution = await this.models.getAuth(providerOrModel, overrides);
 		if (!resolution) return undefined;
-		const configuredHeaders = resolveConfiguredModelHeaders(
+		return mergeConfiguredAuthHeaders(
+			resolution,
 			providerOrModel,
-			this.config.getProvider(providerOrModel.provider),
+			this.config,
 			this.extensionProviders.get(providerOrModel.provider),
-			{ ...(resolution.env ?? {}), ...(overrides.env ?? {}) },
+			overrides,
 		);
-		return {
-			...resolution,
-			auth: {
-				...resolution.auth,
-				headers: mergeHeaders(resolution.auth.headers, configuredHeaders),
-			},
-		};
 	}
 	/** Reload credentials changed by the authoritative isolated engine and update auth status snapshots. */
 	async reloadCredentials(): Promise<void> {

@@ -61,13 +61,13 @@ export interface PiCommandOptions {
 
 export type PiRuntimeModel = Model<Api>;
 
-export interface PiRuntimeModelRuntime {
+export interface PiRuntimeModelRegistry {
   getAvailable(): PiRuntimeModel[];
 }
 
 export interface PiModelContext {
   readonly model?: PiRuntimeModel;
-  readonly modelRuntime?: PiRuntimeModelRuntime;
+  readonly modelRegistry?: PiRuntimeModelRegistry;
 }
 
 export interface PiCommandContext extends PiModelContext {

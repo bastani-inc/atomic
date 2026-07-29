@@ -1,12 +1,9 @@
-import type { CreateAgentSessionOptions } from "@bastani/atomic";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import type { SessionManager } from "../shared/persistence-restore.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type {
   WorkflowExecutionPolicy,
   WorkflowMcpPort,
-  WorkflowModelCatalogPort,
-  WorkflowModelInfo,
   WorkflowPersistencePort,
   WorkflowRuntimeConfig,
 } from "../shared/types.js";
@@ -43,6 +40,7 @@ import {
   workflowReloadDiagnostics,
   type WorkflowReloadReport,
 } from "./workflow-reload-report.js";
+import { workflowModelCatalogFromContext } from "./workflow-model-catalog.js";
 
 export interface WorkflowExtensionRuntimeState {
   persistenceRef: { current: WorkflowPersistencePort | undefined };
@@ -170,27 +168,6 @@ export function createWorkflowExtensionRuntimeState(
       return open(workflowIdOrPrefix, catalog);
     },
   };
-
-  function workflowModelCatalogFromContext(ctx?: PiModelContext): WorkflowModelCatalogPort | undefined {
-    if (ctx?.modelRuntime === undefined && ctx?.model === undefined) return undefined;
-    return {
-      listModels: async (): Promise<readonly WorkflowModelInfo[]> => {
-        const available = ctx.modelRuntime?.getAvailable() ?? (ctx.model === undefined ? [] : [ctx.model]);
-        return available.map((model) => ({
-          provider: String(model.provider),
-          id: model.id,
-          fullId: `${String(model.provider)}/${model.id}`,
-          model: model as NonNullable<CreateAgentSessionOptions["model"]>,
-        }));
-      },
-      ...(ctx.model !== undefined
-        ? {
-            currentModel: ctx.model as NonNullable<CreateAgentSessionOptions["model"]>,
-            preferredProvider: String(ctx.model.provider),
-          }
-        : {}),
-    };
-  }
 
   function runtimeForContext(ctx?: PiModelContext): ExtensionRuntime {
     const models = workflowModelCatalogFromContext(ctx);

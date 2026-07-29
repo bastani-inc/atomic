@@ -65,7 +65,7 @@ export function makeExecuteWorkflowTool(
         await ensureWorkflowResourcesVisible();
         return workflowGetResult(getRuntime(), args);
       case "models": {
-        const available = ctx.modelRuntime?.getAvailable() ?? [];
+        const available = ctx.modelRegistry?.getAvailable() ?? [];
         const current = ctx.model;
         const models = available.map((m) => ({
           provider: m.provider,

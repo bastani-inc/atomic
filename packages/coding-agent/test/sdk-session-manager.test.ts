@@ -191,6 +191,25 @@ describe("createAgentSession session manager defaults", () => {
 		session.dispose();
 	});
 
+	it("restores an absent model id for a registered OpenAI-compatible provider", async () => {
+		const modelRuntime = await createSelectionRuntime();
+		const restoredModelId = "future/custom-restored-model";
+
+		const { session, modelFallbackMessage, modelFallbackReason } = await createAgentSession({
+			cwd,
+			agentDir,
+			modelRuntime,
+			settingsManager: SettingsManager.inMemory(),
+			sessionManager: persistedSession(cwd, "test-ready", restoredModelId),
+		});
+
+		expect(session.model?.provider).toBe("test-ready");
+		expect(session.model?.id).toBe(restoredModelId);
+		expect(modelFallbackMessage).toBeUndefined();
+		expect(modelFallbackReason).toBeUndefined();
+		session.dispose();
+	});
+
 	it("does not synthesize an exact unauthenticated model during SDK session restoration", async () => {
 		const modelRuntime = await createSelectionRuntime();
 		const locked = modelRuntime.getModel("test-locked", "locked-model");

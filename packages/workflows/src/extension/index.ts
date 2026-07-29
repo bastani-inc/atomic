@@ -33,7 +33,7 @@ export type {
   PiRenderContext,
   PiRenderResultOpts,
   PiRuntimeModel,
-  PiRuntimeModelRuntime,
+  PiRuntimeModelRegistry,
   PiTheme,
   PiToolOpts,
   WorkflowExecuteToolResult,

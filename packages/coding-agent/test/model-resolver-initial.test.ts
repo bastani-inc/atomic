@@ -194,7 +194,7 @@ describe("default model selection", () => {
 		const openaiBaseModel = allModels[1]!;
 		const registry = {
 			getModel: () => undefined,
-			getProvider: () => undefined,
+			getProvider: () => ({ id: "openai" } as never),
 			getAvailableSnapshot: () => [openaiBaseModel],
 			canRestoreUnknownModel: () => false,
 		} as unknown as Parameters<typeof restoreModelFromSession>[4];
@@ -253,6 +253,7 @@ describe("default model selection", () => {
 		const registry = {
 			getModel: () => undefined,
 			getProvider: () => ({ id: "github-copilot" } as never),
+			canRestoreUnknownModel: () => true,
 			getAvailableSnapshot: () => [copilotSelectableBaseModel],
 			hasConfiguredAuth: () => true,
 		} as unknown as Parameters<typeof restoreModelFromSession>[4];

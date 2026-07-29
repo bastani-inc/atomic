@@ -16,7 +16,7 @@ import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ExtensionRunner } from "./extensions/index.ts";
 import { convertToLlm } from "./messages.ts";
 import { ModelRuntime } from "./model-runtime.ts";
-import { findInitialModel } from "./model-resolver.ts";
+import { findInitialModel, resolveRestoredModelReference } from "./model-resolver.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
@@ -131,10 +131,11 @@ export async function createAgentSession(
 
   // If session has data, try to restore model from it
   if (!model && hasExistingSession && existingSession.model) {
-    const restoredModel = await Promise.resolve(modelRuntime.getModel(existingSession.model.provider, existingSession.model.modelId));
-    if (restoredModel && modelRuntime.hasConfiguredAuth(restoredModel.provider)) {
-      model = restoredModel;
-    }
+    model = await resolveRestoredModelReference(
+      existingSession.model.provider,
+      existingSession.model.modelId,
+      modelRuntime,
+    );
     if (!model) {
       modelFallbackMessage = `Could not restore model ${existingSession.model.provider}/${existingSession.model.modelId}`;
       modelFallbackReason = "session-restore";
