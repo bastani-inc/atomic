@@ -33,16 +33,39 @@ function safeName(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "tests";
 }
 
+/** Tee one child stream to the live step log while capturing it for diagnostics. */
+async function pump(stream: ReadableStream<Uint8Array> | undefined, sink: NodeJS.WriteStream): Promise<string> {
+  if (!stream) return "";
+  const decoder = new TextDecoder();
+  let text = "";
+  for await (const chunk of stream) {
+    const piece = decoder.decode(chunk, { stream: true });
+    text += piece;
+    sink.write(piece);
+  }
+  const tail = decoder.decode();
+  if (tail) {
+    text += tail;
+    sink.write(tail);
+  }
+  return text;
+}
+
+/**
+ * Stream child output as it arrives instead of buffering it until the child exits.
+ * A suite that overruns the job's `timeout-minutes` budget is killed mid-run, and a
+ * buffered attempt discards every line it had already collected, leaving the cancelled
+ * step with no record of which test stalled. Teeing preserves the retry and diagnostics
+ * contract while making a timed-out attempt self-describing in the step log.
+ */
 async function runAttempt(command: string[], logPath: string, persist: boolean): Promise<{ code: number; output: string }> {
   const child = Bun.spawn(command, { stdout: "pipe", stderr: "pipe", env: process.env });
   const [stdout, stderr, code] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
+    pump(child.stdout, process.stdout),
+    pump(child.stderr, process.stderr),
     child.exited,
   ]);
   const output = `${stdout}${stderr}`;
-  process.stdout.write(stdout);
-  process.stderr.write(stderr);
   if (persist) writeFileSync(logPath, output);
   return { code, output };
 }
