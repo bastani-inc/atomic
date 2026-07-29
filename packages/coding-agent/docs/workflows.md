@@ -2333,8 +2333,7 @@ Select the stage working directory and agent configuration directory. Worktree-e
 ```typescript
 // Runtime StageOptions forwards non-workflow CreateAgentSessionOptions,
 // including these advanced host integration fields:
-readonly authStorage?: CreateAgentSessionOptions["authStorage"];
-readonly modelRegistry?: CreateAgentSessionOptions["modelRegistry"];
+readonly modelRuntime?: CreateAgentSessionOptions["modelRuntime"];
 readonly resourceLoader?: CreateAgentSessionOptions["resourceLoader"];
 readonly sessionManager?: SessionManager;
 readonly settingsManager?: SettingsManager;

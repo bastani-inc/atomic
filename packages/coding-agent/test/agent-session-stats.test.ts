@@ -34,17 +34,21 @@ function createUsage(totalTokens: number): Usage {
 	};
 }
 
-function createAssistantMessage(text: string, totalTokens: number, timestamp: number): AssistantMessage {
+function createAssistantMessageWithUsage(text: string, usage: Usage, timestamp: number): AssistantMessage {
 	return {
 		role: "assistant",
 		content: [{ type: "text", text }],
 		api: model.api,
 		provider: model.provider,
 		model: model.id,
-		usage: createUsage(totalTokens),
+		usage,
 		stopReason: "stop",
 		timestamp,
 	};
+}
+
+function createAssistantMessage(text: string, totalTokens: number, timestamp: number): AssistantMessage {
+	return createAssistantMessageWithUsage(text, createUsage(totalTokens), timestamp);
 }
 
 function createUserMessage(text: string, timestamp: number) {
@@ -210,4 +214,71 @@ describe("AgentSession.getSessionStats", () => {
 		}
 	});
 
+
+	it("does not double-count mirrored cache buckets in post-compaction context usage", async () => {
+		const { session, sessionManager } = await createSession();
+		try {
+			sessionManager.appendMessage(createUserMessage("first", 1));
+			sessionManager.appendMessage(createAssistantMessage("response1", 195_000, 2));
+			appendTestCompaction(sessionManager, 216_006, 81_414);
+			const postCompaction = Date.now() + 1;
+			sessionManager.appendMessage(createUserMessage("second", postCompaction));
+			sessionManager.appendMessage(
+				createAssistantMessageWithUsage(
+					"response2",
+					{
+						input: 116_000,
+						output: 500,
+						cacheRead: 116_000,
+						cacheWrite: 0,
+						totalTokens: 232_500,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					postCompaction + 1,
+				),
+			);
+			syncAgentMessages(session, sessionManager);
+
+			const stats = session.getSessionStats();
+			expect(stats.contextUsage?.tokens).toBe(116_500);
+			expect(stats.contextUsage?.percent).toBe((116_500 / model.contextWindow) * 100);
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("counts normalized Codex cache partitions in post-compaction context usage", async () => {
+		const { session, sessionManager } = await createSession();
+		try {
+			sessionManager.appendMessage(createUserMessage("first", 1));
+			sessionManager.appendMessage(createAssistantMessage("response1", 195_000, 2));
+			appendTestCompaction(sessionManager, 195_000, 50_000);
+			const postCompaction = Date.now() + 1;
+			sessionManager.appendMessage(createUserMessage("second", postCompaction));
+			sessionManager.appendMessage({
+				...createAssistantMessageWithUsage(
+					"response2",
+					{
+						input: 7_907,
+						output: 7,
+						cacheRead: 7_936,
+						cacheWrite: 0,
+						totalTokens: 15_850,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					postCompaction + 1,
+				),
+				api: "openai-codex-responses",
+				provider: "openai-codex",
+				model: "gpt-5.5",
+			});
+			syncAgentMessages(session, sessionManager);
+
+			const stats = session.getSessionStats();
+			expect(stats.contextUsage?.tokens).toBe(15_850);
+			expect(stats.contextUsage?.percent).toBe((15_850 / model.contextWindow) * 100);
+		} finally {
+			session.dispose();
+		}
+	});
 });

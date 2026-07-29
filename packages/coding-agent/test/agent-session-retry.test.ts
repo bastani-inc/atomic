@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Agent, type AgentEvent, type AgentTool } from "@earendil-works/pi-agent-core";
+import { Agent, type AgentEvent, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
 import { type AssistantMessage, type AssistantMessageEvent, EventStream, getModel } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -133,6 +133,30 @@ describe("AgentSession retry", () => {
 		return { session, getCallCount: () => callCount };
 	}
 
+
+	async function createSessionWithStream(streamFn: StreamFn): Promise<AgentSession> {
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: "Test", tools: [] },
+			streamFn,
+		});
+		const sessionManager = SessionManager.inMemory();
+		const settingsManager = SettingsManager.create(tempDir, tempDir);
+		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
+		const modelRegistry = await createModelRegistry(authStorage, tempDir);
+		settingsManager.applyOverrides({ retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } });
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settingsManager,
+			cwd: tempDir,
+			modelRuntime: getModelRuntime(modelRegistry),
+			resourceLoader: createTestResourceLoader(),
+		});
+		return session;
+	}
 	it("retries after a transient error and succeeds", async () => {
 		const created = await createSession({ failCount: 1 });
 		const events: string[] = [];
@@ -318,5 +342,102 @@ describe("AgentSession retry", () => {
 		// A follow-up prompt must work (no "Agent is already processing" error)
 		await session.prompt("Follow-up");
 		expect(callCount).toBe(4);
+	});
+
+	it("retries bare provider finish_reason: error failures", async () => {
+		let callCount = 0;
+		await createSessionWithStream(() => {
+			callCount++;
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				if (callCount === 1) {
+					const error = createAssistantMessage("", {
+						stopReason: "error",
+						errorMessage: "Provider finish_reason: error",
+					});
+					stream.push({ type: "start", partial: error });
+					stream.push({ type: "error", reason: "error", error });
+					return;
+				}
+				const recovered = createAssistantMessage("Recovered after retry");
+				stream.push({ type: "start", partial: recovered });
+				stream.push({ type: "done", reason: "stop", message: recovered });
+			});
+			return stream;
+		});
+
+		await session.prompt("Test");
+		expect(callCount).toBe(2);
+	});
+
+	it("retries degenerate empty completions and bounds them by maxRetries", async () => {
+		let callCount = 0;
+		await createSessionWithStream(() => {
+			callCount++;
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				if (callCount <= 2) {
+					const empty = createAssistantMessage("", { content: [], stopReason: "stop" });
+					stream.push({ type: "start", partial: empty });
+					stream.push({ type: "done", reason: "stop", message: empty });
+					return;
+				}
+				const recovered = createAssistantMessage("Recovered after empty completions");
+				stream.push({ type: "start", partial: recovered });
+				stream.push({ type: "done", reason: "stop", message: recovered });
+			});
+			return stream;
+		});
+		const events: string[] = [];
+		session.subscribe((event) => {
+			if (event.type === "auto_retry_start") events.push(`start:${event.attempt}`);
+			if (event.type === "auto_retry_end") events.push(`end:success=${event.success}`);
+		});
+
+		await session.prompt("Test");
+		expect(callCount).toBe(3);
+		expect(events).toEqual(["start:1", "start:2", "end:success=true"]);
+	});
+
+	it("retries structured safety-trigger errors for all providers", async () => {
+		const created = await createSession({ failCount: 0 });
+		const probe = created.session as unknown as { _isRetryableError(message: AssistantMessage): boolean };
+		expect(probe._isRetryableError(createAssistantMessage("", {
+			stopReason: "error",
+			errorMessage: "Provider finish_reason: content_filter",
+		}))).toBe(true);
+		expect(probe._isRetryableError(createAssistantMessage("", {
+			stopReason: "error",
+			errorMessage: "Provider finish_reason: content_filter",
+			provider: "github-copilot",
+			api: "openai-completions",
+			model: "gemini-3.1-pro-preview",
+		}))).toBe(true);
+		expect(probe._isRetryableError(createAssistantMessage("", {
+			stopReason: "error",
+			errorMessage: "The model refused to complete the request",
+		}))).toBe(true);
+		expect(probe._isRetryableError(createAssistantMessage("", {
+			stopReason: "error",
+			errorMessage: "Invalid request: unknown parameter",
+		}))).toBe(false);
+	});
+
+	it("does not classify a reasoning-only turn with output tokens as empty", async () => {
+		const created = await createSession({ failCount: 0 });
+		const probe = created.session as unknown as { _isEmptyCompletion(message: AssistantMessage): boolean };
+		expect(probe._isEmptyCompletion(createAssistantMessage("", { content: [], stopReason: "stop" }))).toBe(true);
+		expect(probe._isEmptyCompletion(createAssistantMessage("", {
+			content: [],
+			stopReason: "stop",
+			usage: {
+				input: 10,
+				output: 5,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 15,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+		}))).toBe(false);
 	});
 });

@@ -3,7 +3,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import type { ReadonlyFooterDataProvider } from "../src/core/footer-data-provider.ts";
 import { FooterComponent, formatCwdForFooter, UsageMeterComponent } from "../src/modes/interactive/components/footer.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
 type AssistantUsage = {
@@ -24,6 +24,8 @@ function createSession(options: {
 	branchUsage?: AssistantUsage;
 	compactionUsage?: AssistantUsage;
 	toolUsage?: AssistantUsage;
+	contextPercent?: number;
+	contextWindow?: number;
 }): AgentSession {
 	const usage = options.usage;
 	const entries: Array<Record<string, unknown>> = [];
@@ -67,7 +69,7 @@ function createSession(options: {
 			model: {
 				id: options.modelId ?? "test-model",
 				provider: options.provider ?? "test",
-				contextWindow: 200_000,
+				contextWindow: options.contextWindow ?? 200_000,
 				reasoning: options.reasoning ?? false,
 			},
 			thinkingLevel: options.thinkingLevel ?? "off",
@@ -77,7 +79,10 @@ function createSession(options: {
 			getSessionName: () => options.sessionName,
 			getCwd: () => "/tmp/project",
 		},
-		getContextUsage: () => ({ contextWindow: 200_000, percent: 12.3 }),
+		getContextUsage: () => ({
+			contextWindow: options.contextWindow ?? 200_000,
+			percent: options.contextPercent ?? 12.3,
+		}),
 		modelRuntime: {
 			isUsingOAuth: () => false,
 		},
@@ -114,6 +119,43 @@ describe("formatCwdForFooter", () => {
 	});
 });
 
+
+describe("UsageMeterComponent context color", () => {
+	beforeAll(() => {
+		initTheme(undefined, false);
+	});
+
+	it("renders over-limit auto-compacted context usage as a warning", () => {
+		const usageMeter = new UsageMeterComponent(
+			createSession({ sessionName: "", contextPercent: 101.2, contextWindow: 200_000 }),
+		);
+
+		const [line] = usageMeter.render(120);
+		expect(line).toContain(theme.fg("warning", "101.2%/200k (auto)"));
+		expect(line).not.toContain(theme.fg("error", "101.2%/200k (auto)"));
+	});
+
+	it("renders near-limit auto-compacted context usage as a warning", () => {
+		const usageMeter = new UsageMeterComponent(
+			createSession({ sessionName: "", contextPercent: 95.4, contextWindow: 200_000 }),
+		);
+
+		const [line] = usageMeter.render(120);
+		expect(line).toContain(theme.fg("warning", "95.4%/200k (auto)"));
+		expect(line).not.toContain(theme.fg("error", "95.4%/200k (auto)"));
+	});
+
+	it("keeps over-limit context usage red when auto-compaction is disabled", () => {
+		const usageMeter = new UsageMeterComponent(
+			createSession({ sessionName: "", contextPercent: 101.2, contextWindow: 200_000 }),
+		);
+		usageMeter.setAutoCompactEnabled(false);
+
+		const [line] = usageMeter.render(120);
+		expect(line).toContain(theme.fg("error", "101.2%/200k"));
+		expect(line).not.toContain(theme.fg("warning", "101.2%/200k"));
+	});
+});
 describe("FooterComponent width handling", () => {
 	beforeAll(() => {
 		initTheme(undefined, false);

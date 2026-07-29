@@ -38,8 +38,19 @@ describe("config value env var syntax migration", () => {
 		}
 	}
 
-	it("leaves uppercase auth.json API key values unchanged", () => {
-		const agentDir = createAgentDir();
+	function withEnv(name: string, value: string | undefined, fn: () => void): void {
+		const previous = process.env[name];
+		if (value === undefined) delete process.env[name];
+		else process.env[name] = value;
+		try {
+			fn();
+		} finally {
+			if (previous === undefined) delete process.env[name];
+			else process.env[name] = previous;
+		}
+	}
+
+	function writeAuthFixture(agentDir: string): void {
 		fs.writeFileSync(
 			path.join(agentDir, "auth.json"),
 			`${JSON.stringify(
@@ -54,19 +65,112 @@ describe("config value env var syntax migration", () => {
 			)}\n`,
 			"utf-8",
 		);
+	}
+
+	it("rewrites an implicit auth.json environment reference when that variable exists", () => {
+		const agentDir = createAgentDir();
+		writeAuthFixture(agentDir);
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
-		withAgentDir(agentDir, () => runMigrations(agentDir));
+		withEnv("ANTHROPIC_API_KEY", "secret", () => withAgentDir(agentDir, () => runMigrations(agentDir)));
+
+		const migrated = JSON.parse(fs.readFileSync(path.join(agentDir, "auth.json"), "utf-8")) as Record<
+			string,
+			Record<string, unknown>
+		>;
+		expect(migrated.anthropic.key).toBe("$ANTHROPIC_API_KEY");
+		expect(migrated.openai.key).toBe("$OPENAI_API_KEY");
+		expect(migrated.opencode.key).toBe("public");
+		expect(migrated.github.access).toBe("ACCESS_TOKEN");
+		expect(String(logSpy.mock.calls[0]?.[0] ?? "")).toContain(
+			'auth.json["anthropic"].key: ANTHROPIC_API_KEY -> $ANTHROPIC_API_KEY',
+		);
+	});
+
+	it("preserves an uppercase auth.json literal when no matching variable exists", () => {
+		const agentDir = createAgentDir();
+		writeAuthFixture(agentDir);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		withEnv("ANTHROPIC_API_KEY", undefined, () => withAgentDir(agentDir, () => runMigrations(agentDir)));
 
 		const migrated = JSON.parse(fs.readFileSync(path.join(agentDir, "auth.json"), "utf-8")) as Record<
 			string,
 			Record<string, unknown>
 		>;
 		expect(migrated.anthropic.key).toBe("ANTHROPIC_API_KEY");
-		expect(migrated.openai.key).toBe("$OPENAI_API_KEY");
-		expect(migrated.opencode.key).toBe("public");
-		expect(migrated.github.access).toBe("ACCESS_TOKEN");
 		expect(logSpy).not.toHaveBeenCalled();
+	});
+
+	it("migrates implicit auth references in the legacy .pi agent directory", () => {
+		const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-legacy-pi-config-migration-test-"));
+		tempDirs.push(homeDir);
+		const legacyAgentDir = path.join(homeDir, ".pi", "agent");
+		fs.mkdirSync(legacyAgentDir, { recursive: true });
+		fs.writeFileSync(
+			path.join(legacyAgentDir, "auth.json"),
+			`${JSON.stringify({ anthropic: { type: "api_key", key: "ANTHROPIC_API_KEY" } }, null, 2)}\n`,
+			"utf-8",
+		);
+		const previousHome = process.env.HOME;
+		const previousUserProfile = process.env.USERPROFILE;
+		const previousAgentDir = process.env[ENV_AGENT_DIR];
+		delete process.env[ENV_AGENT_DIR];
+		process.env.HOME = homeDir;
+		process.env.USERPROFILE = homeDir;
+		try {
+			withEnv("ANTHROPIC_API_KEY", "secret", () => runMigrations(homeDir));
+			const migrated = JSON.parse(fs.readFileSync(path.join(legacyAgentDir, "auth.json"), "utf-8")) as Record<
+				string,
+				Record<string, unknown>
+			>;
+			expect(migrated.anthropic.key).toBe("$ANTHROPIC_API_KEY");
+		} finally {
+			if (previousHome === undefined) delete process.env.HOME;
+			else process.env.HOME = previousHome;
+			if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+			else process.env.USERPROFILE = previousUserProfile;
+			if (previousAgentDir === undefined) delete process.env[ENV_AGENT_DIR];
+			else process.env[ENV_AGENT_DIR] = previousAgentDir;
+		}
+	});
+
+	it("preserves models.json comments and formatting while migrating environment references", () => {
+		const agentDir = createAgentDir();
+		const modelsPath = path.join(agentDir, "models.json");
+		fs.writeFileSync(
+			modelsPath,
+			`{
+  // keep provider notes
+  "providers": {
+    "CUSTOM_API_KEY": {
+      "metadata": {
+        "apiKey": "CUSTOM_API_KEY",
+        "headers": { "x-api-key": "HEADER_API_KEY" },
+      },
+      "baseUrl": "https://example.com/v1",
+      "apiKey": "CUSTOM_API_KEY", // migrate this value, not the key
+      "api": "openai-completions",
+      "headers": { "x-api-key": "HEADER_API_KEY" },
+      "models": [{ "id": "CUSTOM_API_KEY", "name": "CUSTOM_API_KEY" }],
+    },
+  },
+}\n`,
+			"utf-8",
+		);
+
+		withEnv("CUSTOM_API_KEY", "secret", () =>
+			withEnv("HEADER_API_KEY", "secret", () => withAgentDir(agentDir, () => runMigrations(agentDir))),
+		);
+
+		const migrated = fs.readFileSync(modelsPath, "utf-8");
+		expect(migrated).toContain("// keep provider notes");
+		expect(migrated).toContain('"CUSTOM_API_KEY": {');
+		expect(migrated).toContain('"metadata": {\n        "apiKey": "CUSTOM_API_KEY"');
+		expect(migrated).toContain('"apiKey": "$CUSTOM_API_KEY", // migrate this value, not the key');
+		expect(migrated).toContain('"x-api-key": "$HEADER_API_KEY"');
+		expect(migrated).toContain('"id": "CUSTOM_API_KEY"');
+		expect(migrated).toContain('"name": "CUSTOM_API_KEY"');
 	});
 
 	it.each([

@@ -86,12 +86,6 @@ describe("model selector catalog refresh status", () => {
 		expect(rendered).toContain("Could not refresh 2 model catalogs; showing available models.");
 	});
 
-	it("reports an aborted refresh while retaining cached models", async () => {
-		const selector = createSelector(async () => ({ aborted: true, errors: new Map() }));
-		const rendered = await renderedAfterWork(selector);
-		expect(rendered).toContain("cached-model");
-		expect(rendered).toContain("Model refresh timed out; showing cached models.");
-	});
 
 	it("keeps selector refreshes cache-only in offline mode", async () => {
 		const previous = process.env[ENV_OFFLINE];

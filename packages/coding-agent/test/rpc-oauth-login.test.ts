@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../src/core/agent-session-runtime.ts";
 import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.ts";
+import type { RpcPendingExtensionRequests } from "../src/modes/rpc/rpc-extension-ui.ts";
 import { createHarness, type Harness } from "./suite/harness.ts";
 
 const createRuntime = (async () => {
@@ -83,6 +84,70 @@ describe("RPC OAuth descriptors", () => {
 	});
 });
 
+
+describe("RPC OAuth cancellation isolation", () => {
+	it("cancels one loginId without cancelling a concurrent login for another provider", async () => {
+		const harness = await createHarness({ withConfiguredAuth: false });
+		harnesses.push(harness);
+		for (const provider of ["corp-a", "corp-b"]) {
+			harness.session.modelRuntime.registerProvider(provider, {
+				baseUrl: `https://${provider}.test/v1`,
+				api: "openai-completions",
+				oauth: {
+					name: provider,
+					login: async (callbacks) => ({
+						access: `${provider}-${await callbacks.onPrompt({ message: provider })}`,
+						refresh: "refresh",
+						expires: Date.now() + 60_000,
+					}),
+					refreshToken: async (credential) => credential,
+					getApiKey: (credential) => credential.access,
+				},
+				models: [{
+					id: `${provider}-model`,
+					name: `${provider} model`,
+					reasoning: false,
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					contextWindow: 128_000,
+					maxTokens: 4_096,
+				}],
+			});
+		}
+		const runtime = new AgentSessionRuntime(
+			harness.session,
+			{ cwd: harness.tempDir, agentDir: harness.tempDir } as never,
+			createRuntime,
+		);
+		const pending: RpcPendingExtensionRequests = new Map();
+		const promptIds = new Map<string, string>();
+		const handler = createRpcCommandHandler({
+			runtimeHost: runtime,
+			getSession: () => harness.session,
+			rebindSession: async () => {},
+			pendingExtensionRequests: pending,
+			output: (frame) => {
+				if ("method" in frame && frame.method === "oauth_prompt") promptIds.set(frame.loginId, frame.id);
+			},
+		});
+
+		const loginA = handler({ id: "a", type: "login_provider", provider: "corp-a", authType: "oauth", loginId: "login-a" });
+		let bResolved = false;
+		const loginB = handler({ id: "b", type: "login_provider", provider: "corp-b", authType: "oauth", loginId: "login-b" })
+			.then((result) => { bResolved = true; return result; });
+		await vi.waitFor(() => expect(promptIds.size).toBe(2));
+
+		await handler({ id: "cancel-a", type: "cancel_login_provider", provider: "corp-a", loginId: "login-a" });
+		expect(await loginA).toMatchObject({ data: { provider: "corp-a", cancelled: true } });
+		await Promise.resolve();
+		expect(bResolved).toBe(false);
+		const promptIdB = promptIds.get("login-b")!;
+		pending.get(promptIdB)?.resolve({ type: "extension_ui_response", id: promptIdB, value: "ok" });
+		expect(await loginB).toMatchObject({ data: { provider: "corp-b", cancelled: false } });
+		expect(await harness.authStorage.read("corp-a")).toBeUndefined();
+		expect(await harness.authStorage.read("corp-b")).toMatchObject({ type: "oauth", access: "corp-b-ok" });
+	});
+});
 describe("RPC OAuth credential survival", () => {
 	it("keeps the acquired credential when post-login model refresh reports provider errors", async () => {
 		await expectSuccessfulLoginAndRetainedCredential(async () => ({

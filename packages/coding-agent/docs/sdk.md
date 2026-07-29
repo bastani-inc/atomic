@@ -444,12 +444,11 @@ const { session } = await createAgentSession({
     { model: haiku, thinkingLevel: "off" },
   ],
   
-  authStorage,
-  modelRegistry,
+  modelRuntime,
 });
 ```
 
-`ModelRegistry` keeps synchronous reads for SDK and extension compatibility, while catalog refresh is asynchronous. Await `modelRegistry.refresh()` before reading `getAll()`, `find()`, or `getAvailable()` when a provider may update its catalog. The refresh result reports `aborted` and per-provider `errors`; successful providers publish their new catalogs even if another provider fails, and failed or timed-out providers retain their last-known models.
+`ModelRegistry` keeps synchronous reads for extension compatibility, while catalog refresh is asynchronous. Extensions should await `modelRegistry.refresh()` before synchronous `getAll()`, `find()`, or `getAvailable()` reads when a provider may update its catalog. New SDK integrations use `ModelRuntime`; `await modelRuntime.refresh()` reports `aborted` and per-provider `errors`, and failed providers retain their last-known models.
 
 If no model is provided:
 1. Tries to restore from session (if continuing)

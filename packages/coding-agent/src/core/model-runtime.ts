@@ -337,7 +337,10 @@ export class ModelRuntime implements Models {
 			},
 		};
 	}
-
+	async saveCredential(providerId: string, credential: Credential): Promise<void> {
+		await this.credentials.modify(providerId, async () => credential);
+		await this.refresh();
+	}
 	async setRuntimeApiKey(
 		providerId: string,
 		apiKey: string,

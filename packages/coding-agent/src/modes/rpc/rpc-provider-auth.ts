@@ -57,8 +57,7 @@ export class RpcProviderAuth {
 	}
 
 	async save(session: AgentSession, provider: string, credential: Credential): Promise<RpcModelCatalog> {
-		if (credential.type !== "api_key") throw new Error("Only API-key credentials may be saved directly");
-		await session.modelRuntime.setRuntimeApiKey(provider, credential.key ?? "");
+		await session.modelRuntime.saveCredential(provider, credential);
 		session.refreshCurrentModelFromRegistry();
 		return this.catalog(session);
 	}

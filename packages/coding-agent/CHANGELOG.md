@@ -15,6 +15,7 @@
 ### Fixed
 
 - Fixed OAuth logins being destroyed by an unrelated model-catalog refresh, matching upstream pi's behavior. After a successful `/login`, a timed-out (aborted) or partially failed catalog refresh threw `Model refresh aborted after OAuth login` and rolled the freshly acquired tokens back to the previous credential. Because providers rotate refresh tokens, that rollback could permanently strand a server-side-invalidated credential — every send then failed with `invalid_grant` ("Refresh token not found or invalid") and every re-login was rolled back again, typically on machines with slow routes to catalog endpoints. Freshly persisted OAuth credentials now always survive the post-login refresh: per-provider refresh errors and refresh timeouts no longer fail the login in either the direct interactive or isolated-engine path, and models fall back to the cached snapshot.
+- Fixed RPC `save_provider_credential` writes disappearing after process restart. Saved API-key and OAuth credentials now persist to `auth.json` through `ModelRuntime.saveCredential()` instead of being stored as non-persistent runtime API-key overrides; the RPC command again accepts the full credential union, awaits a model-catalog refresh, and returns the refreshed catalog.
 
 ## [0.9.11-alpha.7] - 2026-07-28
 
