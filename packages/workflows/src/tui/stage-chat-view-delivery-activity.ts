@@ -44,7 +44,15 @@ export function applyStageChatDeliveryActivityEvent(
   if (!ctx.deliveryLifecycles.has(event.deliveryId)) return;
   const generation = ctx.deliveryLifecycles.get(event.deliveryId);
   ctx.deliveryLifecycles.delete(event.deliveryId);
-  ctx.chatHost.settleExternalPromptLifecycle(generation);
+  // A pre-turn compaction reasserts one lifecycle and hands the same token to
+  // every lease still open, so several deliveries can alias one generation.
+  // Only the last owner may settle it; otherwise the first lease to finish
+  // would stop Working while another accepted delivery is still running.
+  // Distinct generations — including stale ones — keep reaching the host's own
+  // generation fence exactly as before.
+  if (!ownsStageChatLifecycleGeneration(ctx, generation)) {
+    ctx.chatHost.settleExternalPromptLifecycle(generation);
+  }
   // The map is the reference count: overlapping leases keep authorization open,
   // and the last one to settle on a finished stage restores stale-start
   // suppression. Otherwise the fence stayed open forever after the first
@@ -52,6 +60,17 @@ export function applyStageChatDeliveryActivityEvent(
   if (!hasActiveStageChatDelivery(ctx) && isStageChatContextTerminal(ctx)) {
     ctx.terminalLifecycleFenced = true;
   }
+}
+
+/** True while another still-active delivery references this exact lifecycle token. */
+function ownsStageChatLifecycleGeneration(
+  ctx: StageChatViewContext,
+  generation: number | undefined,
+): boolean {
+  for (const active of ctx.deliveryLifecycles.values()) {
+    if (active === generation) return true;
+  }
+  return false;
 }
 
 /** True while at least one admitted delivery still owns this chat's Working period. */
