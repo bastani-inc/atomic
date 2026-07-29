@@ -64,24 +64,22 @@ InteractiveModeBase.prototype.maybeWarnAboutAnthropicSubscriptionAuth = async fu
       return;
     }
 
+    if (this.session.modelRuntime.isUsingOAuth("anthropic")) {
+      this.anthropicSubscriptionWarningShown = true;
+      this.showWarning(ANTHROPIC_SUBSCRIPTION_AUTH_WARNING, targetContainer);
+      return;
+    }
+
     try {
       const storedCredential = await this.session.modelRuntime.getAuth("anthropic");
-      if (this.session.modelRuntime.isUsingOAuth("anthropic") && storedCredential !== undefined) {
-        this.anthropicSubscriptionWarningShown = true;
-        this.showWarning(ANTHROPIC_SUBSCRIPTION_AUTH_WARNING, targetContainer);
-        return;
-      }
-
       const apiKey = storedCredential?.auth.apiKey;
       if (!isAnthropicSubscriptionAuthKey(apiKey)) {
         return;
       }
       this.anthropicSubscriptionWarningShown = true;
       this.showWarning(ANTHROPIC_SUBSCRIPTION_AUTH_WARNING, targetContainer);
-    } catch (error) {
-      // Credential refresh failures must not reject this advisory, fire-and-forget path.
-      const message = error instanceof Error ? error.message : String(error);
-      this.showError(`Could not check Anthropic subscription authentication: ${message}`);
+    } catch {
+      // Ignore auth lookup failures for warning-only checks.
     }
   };
 

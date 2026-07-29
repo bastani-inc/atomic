@@ -123,10 +123,10 @@ describe("OAuthSelectorComponent", () => {
 		expect(output).not.toContain("✓ configured");
 	});
 
-	it("shows OAuth auth distinctly in the API key selector", () => {
+	it("shows stored OAuth auth distinctly in the API key selector", () => {
 		const selector = new OAuthSelectorComponent(
 			"login",
-			fakeModelRuntime(),
+			fakeModelRuntime({ getStoredCredentialType: () => "oauth" }),
 			[{ id: "anthropic", name: "Anthropic", authType: "api_key" }],
 			() => {},
 			() => {},
@@ -134,7 +134,23 @@ describe("OAuthSelectorComponent", () => {
 		);
 
 		const output = stripAnsi(selector.render(120).join("\n"));
+		expect(output).toContain("subscription configured");
+		expect(output).not.toContain("API key configured");
+	});
+
+	it("shows a stored API key distinctly in the subscription selector", () => {
+		const selector = new OAuthSelectorComponent(
+			"login",
+			fakeModelRuntime({ getStoredCredentialType: () => "api_key" }),
+			[{ id: "anthropic", name: "Anthropic", authType: "oauth" }],
+			() => {},
+			() => {},
+			() => ({ configured: true, source: "stored", label: "API key" }),
+		);
+
+		const output = stripAnsi(selector.render(120).join("\n"));
 		expect(output).toContain("API key configured");
+		expect(output).not.toContain("subscription configured");
 	});
 
 	it("shows environment API key auth as configured", () => {

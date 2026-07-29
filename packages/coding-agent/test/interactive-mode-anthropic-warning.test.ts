@@ -10,7 +10,7 @@ function createSettingsManager(warnings: { anthropicExtraUsage?: boolean } = {})
 function createModelRuntime(credential: { type: "oauth" } | undefined, apiKey?: string) {
 	return {
 		checkAuth: vi.fn().mockResolvedValue(credential),
-		isUsingOAuth: vi.fn().mockReturnValue(credential?.type === "oauth" || apiKey?.startsWith("sk-ant-oat") === true),
+		isUsingOAuth: vi.fn().mockReturnValue(credential?.type === "oauth"),
 		getAuth: vi.fn().mockResolvedValue(apiKey ? { auth: { apiKey } } : credential ? { auth: credential } : undefined),
 	};
 }
@@ -38,19 +38,25 @@ describe("InteractiveMode.maybeWarnAboutAnthropicSubscriptionAuth", () => {
 
 	test("warns when Anthropic OAuth is stored even if token refresh lookup would fail", async () => {
 		const modelRuntime = createModelRuntime({ type: "oauth" });
+		modelRuntime.getAuth.mockRejectedValue(new Error("stale Anthropic OAuth credential"));
 		const fakeThis: any = {
 			anthropicSubscriptionWarningShown: false,
 			settingsManager: createSettingsManager(),
 			session: { modelRuntime },
+			showError: vi.fn(),
 			showWarning: vi.fn(),
 		};
 
 		await (InteractiveMode as any).prototype.maybeWarnAboutAnthropicSubscriptionAuth.call(fakeThis, {
 			provider: "anthropic",
 		});
+		await (InteractiveMode as any).prototype.maybeWarnAboutAnthropicSubscriptionAuth.call(fakeThis, {
+			provider: "anthropic",
+		});
 
 		expect(fakeThis.showWarning).toHaveBeenCalledTimes(1);
-		expect(modelRuntime.getAuth).toHaveBeenCalledTimes(1);
+		expect(fakeThis.showError).not.toHaveBeenCalled();
+		expect(modelRuntime.getAuth).not.toHaveBeenCalled();
 	});
 
 	test("does not warn for non-Anthropic models", async () => {

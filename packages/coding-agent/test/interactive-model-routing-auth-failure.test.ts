@@ -2,15 +2,15 @@ import { describe, expect, it, vi } from "vitest";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 
 describe("Anthropic subscription warning auth failures", () => {
-	it("reports a stale OAuth lookup without rejecting the advisory warning path", async () => {
-		const authFailure = new Error("stale Anthropic OAuth credential");
+	it("ignores a stale non-OAuth lookup without rejecting the advisory warning path", async () => {
+		const authFailure = new Error("stale Anthropic credential");
 		const fakeThis = {
 			anthropicSubscriptionWarningShown: false,
 			settingsManager: { getWarnings: () => ({}) },
 			session: {
 				modelRuntime: {
 					getAuth: vi.fn().mockRejectedValue(authFailure),
-					isUsingOAuth: vi.fn().mockReturnValue(true),
+					isUsingOAuth: vi.fn().mockReturnValue(false),
 				},
 			},
 			showError: vi.fn(),
@@ -27,14 +27,9 @@ describe("Anthropic subscription warning auth failures", () => {
 		}).prototype.maybeWarnAboutAnthropicSubscriptionAuth;
 		await expect(maybeWarn.call(fakeThis, { provider: "anthropic" })).resolves.toBeUndefined();
 
-		expect(fakeThis.showError).toHaveBeenCalledWith(
-			"Could not check Anthropic subscription authentication: stale Anthropic OAuth credential",
-		);
+		expect(fakeThis.session.modelRuntime.getAuth).toHaveBeenCalledTimes(1);
+		expect(fakeThis.showError).not.toHaveBeenCalled();
 		expect(fakeThis.showWarning).not.toHaveBeenCalled();
-		// The warning remains eligible and the same session can retry after credentials are repaired.
 		expect(fakeThis.anthropicSubscriptionWarningShown).toBe(false);
-		fakeThis.session.modelRuntime.getAuth.mockResolvedValue({ auth: { type: "oauth" } });
-		await expect(maybeWarn.call(fakeThis, { provider: "anthropic" })).resolves.toBeUndefined();
-		expect(fakeThis.showWarning).toHaveBeenCalledTimes(1);
 	});
 });
