@@ -5,10 +5,9 @@ import { isOAuthLoginCancelled } from "../../core/oauth-provider-bridge.ts";
 
 InteractiveModeBase.prototype.completeProviderAuthentication = async function(this: InteractiveModeBase, providerId: string, providerName: string, authType: "oauth" | "api_key", previousModel: Model<Api> | undefined, options: { modelsRefreshed?: boolean } = {}): Promise<void> {
 	if (!options.modelsRefreshed) {
-		const result = await this.session.modelRegistry.refresh();
-		const providerError = result.errors.get(providerId);
-		if (providerError) throw providerError;
-		if (result.aborted) throw new Error(`Model refresh aborted after authenticating ${providerName}`);
+		// Upstream pi parity: a failed or timeout-aborted catalog refresh after a
+		// completed login is non-fatal; models fall back to the cached snapshot.
+		await this.session.modelRegistry.refresh();
 	}
 
     const actionLabel =

@@ -209,34 +209,38 @@ describe("post-login model refresh", () => {
 		});
 	}
 
-	it("keeps a provider-specific model refresh failure visible after credential commit", async () => {
-		const refreshFailure = new Error("catalog unavailable");
-		const showStatus = vi.fn();
-		const harness = {
-			session: {
-				modelRegistry: {
-					refresh: async () => ({ aborted: false, errors: new Map([["corp-oauth", refreshFailure]]) }),
-					getAvailable: () => [],
+	for (const outcome of [
+		{ label: "reports provider errors", result: { aborted: false, errors: new Map([["corp-oauth", new Error("catalog unavailable")]]) } },
+		{ label: "aborts on timeout", result: { aborted: true, errors: new Map() } },
+	]) {
+		it(`completes login when the post-login model refresh ${outcome.label}`, async () => {
+			const showStatus = vi.fn();
+			const harness = {
+				session: {
+					modelRegistry: {
+						refresh: async () => outcome.result,
+						getAvailable: () => [],
+					},
 				},
-			},
-			updateAvailableProviderCount: vi.fn(),
-			setupAutocompleteProvider: vi.fn(),
-			footer: { invalidate: vi.fn() },
-			updateEditorBorderColor: vi.fn(),
-			showStatus,
-			showError: vi.fn(),
-			maybeWarnAboutAnthropicSubscriptionAuth: vi.fn(),
-			checkDaxnutsEasterEgg: vi.fn(),
-		};
-		const complete = InteractiveModeBase.prototype.completeProviderAuthentication as (
-			this: typeof harness,
-			providerId: string,
-			providerName: string,
-			authType: "oauth" | "api_key",
-			previousModel: Model<Api> | undefined,
-		) => Promise<void>;
+				updateAvailableProviderCount: vi.fn(),
+				setupAutocompleteProvider: vi.fn(),
+				footer: { invalidate: vi.fn() },
+				updateEditorBorderColor: vi.fn(),
+				showStatus,
+				showError: vi.fn(),
+				maybeWarnAboutAnthropicSubscriptionAuth: vi.fn(),
+				checkDaxnutsEasterEgg: vi.fn(),
+			};
+			const complete = InteractiveModeBase.prototype.completeProviderAuthentication as (
+				this: typeof harness,
+				providerId: string,
+				providerName: string,
+				authType: "oauth" | "api_key",
+				previousModel: Model<Api> | undefined,
+			) => Promise<void>;
 
-		await expect(complete.call(harness, "corp-oauth", "Corp OAuth", "oauth", undefined)).rejects.toBe(refreshFailure);
-		expect(showStatus).not.toHaveBeenCalled();
-	});
+			await complete.call(harness, "corp-oauth", "Corp OAuth", "oauth", undefined);
+			expect(showStatus).toHaveBeenCalledWith(expect.stringContaining("Logged in to Corp OAuth"));
+		});
+	}
 });

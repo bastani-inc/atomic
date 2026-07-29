@@ -125,26 +125,16 @@ export class RpcProviderAuth {
 		credential: AuthCredential,
 		signal: AbortSignal,
 	): Promise<void> {
-		const storage = session.modelRegistry.authStorage;
-		const previous = storage.get(provider);
-		const credentialStore = storage.asCredentialStore();
+		const credentialStore = session.modelRegistry.authStorage.asCredentialStore();
 		if (signal.aborted) throw normalizeOAuthLoginError(signal.reason, signal);
 		await credentialStore.modify(provider, async () => credential);
-		try {
-			if (signal.aborted) throw normalizeOAuthLoginError(signal.reason, signal);
-			const result = await session.modelRegistry.refresh();
-			const failures = [...result.errors.entries()];
-			if (failures.length > 0) {
-				throw new Error(failures.map(([id, error]) => `${id}: ${error.message}`).join("; "));
-			}
-			if (signal.aborted) throw normalizeOAuthLoginError(signal.reason, signal);
-			if (result.aborted) throw new Error("Model refresh aborted after OAuth login");
-			session.refreshCurrentModelFromRegistry();
-		} catch (error) {
-			if (previous === undefined) await credentialStore.delete(provider);
-			else await credentialStore.modify(provider, async () => previous);
-			throw error;
-		}
+		// Upstream pi parity: once fresh OAuth tokens are persisted, the catalog
+		// refresh outcome (per-provider errors or a timeout-aborted result) must
+		// not fail the login or touch the stored credential. Refresh tokens are
+		// rotated by providers, so rolling back here would re-install a
+		// server-side-invalidated credential (permanent invalid_grant).
+		await session.modelRegistry.refresh();
+		session.refreshCurrentModelFromRegistry();
 	}
 
 	private catalog(session: AgentSession): RpcModelCatalog {

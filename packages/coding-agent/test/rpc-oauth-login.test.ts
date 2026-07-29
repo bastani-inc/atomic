@@ -357,7 +357,7 @@ describe("isolated engine OAuth", () => {
 		expect(caught).toMatchObject({ message: "Login cancelled", cause: abort });
 		expect({ applied, reloaded }).toEqual({ applied: 0, reloaded: 0 });
 	});
-	it("rolls back the acquired credential when post-login model refresh fails", async () => {
+	it("keeps the acquired credential when post-login model refresh reports provider errors", async () => {
 		const { harness, runtime } = await createRuntimeHarness();
 		harness.authStorage.set("corp-oauth", { type: "api_key", key: "previous" });
 		harness.session.modelRegistry.registerProvider("corp-oauth", {
@@ -368,10 +368,9 @@ describe("isolated engine OAuth", () => {
 				getApiKey: (credential) => credential.access,
 			},
 		});
-		const refreshFailure = new Error("catalog unavailable");
 		harness.session.modelRegistry.refresh = async () => ({
 			aborted: false,
-			errors: new Map([["corp-oauth", refreshFailure]]),
+			errors: new Map([["corp-oauth", new Error("catalog unavailable")]]),
 		});
 		const handler = createRpcCommandHandler({
 			runtimeHost: runtime,
@@ -381,13 +380,14 @@ describe("isolated engine OAuth", () => {
 			output: () => {},
 		});
 
-		await expect(handler({
+		const response = await handler({
 			id: "login", type: "login_provider", provider: "corp-oauth", authType: "oauth",
-		})).rejects.toThrow("catalog unavailable");
-		expect(harness.authStorage.get("corp-oauth")).toEqual({ type: "api_key", key: "previous" });
+		});
+		expect(response).toMatchObject({ success: true, data: { provider: "corp-oauth", cancelled: false } });
+		expect(harness.authStorage.get("corp-oauth")).toMatchObject({ type: "oauth", access: "new-secret" });
 	});
 
-	it("keeps a post-acquisition AbortError from model refresh visible", async () => {
+	it("keeps a thrown post-login model refresh failure visible without rolling back", async () => {
 		const { harness, runtime } = await createRuntimeHarness();
 		harness.authStorage.set("corp-oauth", { type: "api_key", key: "previous" });
 		harness.session.modelRegistry.registerProvider("corp-oauth", {
@@ -411,10 +411,10 @@ describe("isolated engine OAuth", () => {
 		await expect(handler({
 			id: "login", type: "login_provider", provider: "corp-oauth", authType: "oauth",
 		})).rejects.toThrow("refresh transport aborted");
-		expect(harness.authStorage.get("corp-oauth")).toEqual({ type: "api_key", key: "previous" });
+		expect(harness.authStorage.get("corp-oauth")).toMatchObject({ type: "oauth", access: "new-secret" });
 	});
 
-	it("rolls back when model refresh reports an aborted result", async () => {
+	it("completes login and keeps the credential when model refresh reports an aborted result", async () => {
 		const { harness, runtime } = await createRuntimeHarness();
 		harness.authStorage.set("corp-oauth", { type: "api_key", key: "previous" });
 		harness.session.modelRegistry.registerProvider("corp-oauth", {
@@ -434,9 +434,10 @@ describe("isolated engine OAuth", () => {
 			output: () => {},
 		});
 
-		await expect(handler({
+		const response = await handler({
 			id: "login", type: "login_provider", provider: "corp-oauth", authType: "oauth",
-		})).rejects.toThrow("Model refresh aborted after OAuth login");
-		expect(harness.authStorage.get("corp-oauth")).toEqual({ type: "api_key", key: "previous" });
+		});
+		expect(response).toMatchObject({ success: true, data: { provider: "corp-oauth", cancelled: false } });
+		expect(harness.authStorage.get("corp-oauth")).toMatchObject({ type: "oauth", access: "new-secret" });
 	});
 });
