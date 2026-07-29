@@ -36,6 +36,8 @@ describe("removed provider active surfaces", () => {
       "packages/workflows/skills/impeccable/scripts/hook-admin.mjs",
       "packages/workflows/skills/impeccable/scripts/hook-lib.mjs",
       "packages/workflows/skills/impeccable/scripts/hook.mjs",
+      "packages/workflows/skills/impeccable/scripts/context.mjs",
+      "packages/workflows/skills/impeccable/scripts/lib/staleness-deep.mjs",
       "packages/workflows/skills/impeccable/scripts/live-poll.mjs",
       "packages/workflows/skills/impeccable/scripts/pin.mjs",
       "packages/workflows/skills/impeccable/scripts/live-browser.js",
@@ -44,10 +46,11 @@ describe("removed provider active surfaces", () => {
     ]) {
       const content = read(path);
       assert.doesNotMatch(content, /\bCursor\b|\.cursor(?:\/|\\)|CURSOR_PROJECT_DIR|\bcursor(?:Event|Denials)\b/u, path);
+      assert.equal(content.includes("hook-before-edit"), false, path);
     }
     assert.match(
-      read("packages/workflows/skills/impeccable/reference/delight.md"),
-      /Cursor changes \(custom cursors for branded experiences\)/u,
+      read("packages/workflows/skills/impeccable/reference/overdrive.md"),
+      /responds to the cursor/u,
       "ordinary pointer-cursor design guidance must remain intact",
     );
   });

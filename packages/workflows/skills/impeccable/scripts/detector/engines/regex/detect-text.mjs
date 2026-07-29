@@ -1,11 +1,11 @@
-import { GENERIC_FONTS, OVERUSED_FONTS } from '../../shared/constants.mjs';
+import { GENERIC_FONTS, OVERUSED_FONTS, EM_DASH_FLOOR, EM_DASH_CHARS_PER_DASH } from '../../shared/constants.mjs';
 import { isNeutralColor } from '../../shared/color.mjs';
 import { extractGoogleFontFamilies } from '../../shared/fonts.mjs';
 import { checkSourceDesignSystem } from '../../design-system.mjs';
+import { scanCssTextForGlow, scanCssTextForGridBackground, scanCssTextForMarquee, scanCssTextForPseudoStripe, scanCssTextForRadialHalo } from '../../rules/checks.mjs';
 import { isFullPage, stripHtmlBlocks } from '../../shared/page.mjs';
 import { applyInlineIgnores } from '../../shared/inline-ignores.mjs';
 import { finding } from '../../findings.mjs';
-import { filterByProviders } from '../../registry/antipatterns.mjs';
 import { profileFindings, profileStep } from '../../profile/profiler.mjs';
 
 // ---------------------------------------------------------------------------
@@ -15,6 +15,7 @@ import { profileFindings, profileStep } from '../../profile/profiler.mjs';
 const hasRounded = (line) => /\brounded(?:-\w+)?\b/.test(line);
 const hasBorderRadius = (line) => /border-radius/i.test(line);
 const isSafeElement = (line) => /<(?:blockquote|nav[\s>]|pre[\s>]|code[\s>]|a\s|input[\s>]|span[\s>])/i.test(line);
+
 
 /** Strip HTML to plain text — drops script/style/comments/tags so
  *  content-text analyzers don't false-positive on code or CSS. */
@@ -40,23 +41,94 @@ function firstOverusedGoogleFont(text) {
   return extractGoogleFontFamilies(text).find(f => OVERUSED_FONTS.has(f)) || '';
 }
 
+// CSS named colors whose channels are equal (achromatic). Anything outside
+// this set falls through to the format parsers, and an unrecognized spelling
+// stays non-neutral so a real accent is never skipped.
+const NEUTRAL_COLOR_KEYWORDS = new Set([
+  'transparent', 'currentcolor',
+  'black', 'white', 'gray', 'grey', 'silver',
+  'dimgray', 'dimgrey', 'darkgray', 'darkgrey', 'lightgray', 'lightgrey',
+  'gainsboro', 'whitesmoke',
+]);
+
+function hexChannels(color) {
+  const long = color.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})(?:[0-9a-f]{2})?$/i);
+  if (long) return [parseInt(long[1], 16), parseInt(long[2], 16), parseInt(long[3], 16)];
+  const short = color.match(/^#([0-9a-f])([0-9a-f])([0-9a-f])(?:[0-9a-f])?$/i);
+  if (short) return [1, 2, 3].map((i) => parseInt(short[i] + short[i], 16));
+  return null;
+}
+
+/**
+ * Split one box-shadow layer into top-level tokens.
+ *
+ * Whitespace inside parens does not separate tokens: `rgb(0 0 0)` and
+ * `var(--x, 4px)` are each a single value, and splitting them on spaces would
+ * read their innards as separate lengths.
+ */
+function tokenizeShadowLayer(layer) {
+  const tokens = [];
+  let depth = 0;
+  let current = '';
+  for (const char of String(layer || '')) {
+    if (char === '(') depth++;
+    else if (char === ')') depth--;
+    else if (depth === 0 && /\s/.test(char)) {
+      if (current) tokens.push(current);
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+  if (current) tokens.push(current);
+  return tokens;
+}
+
+function lastMatch(text, re) {
+  const all = [...String(text || '').matchAll(re)];
+  return all.length ? all[all.length - 1] : null;
+}
+
+function isShadowLength(token) {
+  return /^-?\d*\.?\d+(?:px)?$/i.test(String(token || ''));
+}
+
+/**
+ * Neutrality test for colors as written in source CSS.
+ *
+ * shared/color.mjs's isNeutralColor only parses the computed function forms a
+ * browser or jsdom emits (rgb/oklch/lab/...) and deliberately reports every
+ * other spelling as chromatic so an unknown format is never silently skipped.
+ * That default is wrong for authored CSS, where `#000` and `black` are the
+ * normal spellings: calling it directly reports a plain black hairline as a
+ * colored stripe. Handle hex and named neutrals here, then defer.
+ */
+function isNeutralAuthoredColor(rawColor) {
+  const c = String(rawColor || '').trim().toLowerCase();
+  if (!c) return false;
+  if (NEUTRAL_COLOR_KEYWORDS.has(c)) return true;
+  // Modern rgb() takes space-separated channels (`rgb(0 0 0)`). shared/color.mjs
+  // parses only the comma form a browser's getComputedStyle emits, so authored
+  // space-separated neutrals fell through it and reported as chromatic — the
+  // exemption this function exists for, missed. Normalize before delegating.
+  if (/^rgba?\(/i.test(c)) {
+    const channels = c.match(/^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/i);
+    if (channels) {
+      const values = [1, 2, 3].map((i) => Number(channels[i]));
+      return (Math.max(...values) - Math.min(...values)) < 30;
+    }
+    return isNeutralColor(c);
+  }
+  if (/^(?:hsla?|oklch|oklab|lab|lch|hwb)\(/i.test(c)) return isNeutralColor(c);
+  const channels = hexChannels(c);
+  if (channels) return (Math.max(...channels) - Math.min(...channels)) < 30;
+  return false;
+}
+
 function isNeutralBorderColor(str) {
   const m = str.match(/solid\s+((?:rgba?|hsla?|oklch|oklab|lab|lch|hwb|color)\([^)]*\)|#[0-9a-f]{3,8}\b|[a-z]+)/i);
   if (!m) return false;
-  const c = m[1].toLowerCase();
-  if (['gray', 'grey', 'silver', 'white', 'black', 'transparent', 'currentcolor'].includes(c)) return true;
-  if (/^(?:rgba?|hsla?|oklch|oklab|lab|lch|hwb)\(/i.test(c)) return isNeutralColor(c);
-  const hex = c.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/);
-  if (hex) {
-    const [r, g, b] = [parseInt(hex[1], 16), parseInt(hex[2], 16), parseInt(hex[3], 16)];
-    return (Math.max(r, g, b) - Math.min(r, g, b)) < 30;
-  }
-  const shex = c.match(/^#([0-9a-f])([0-9a-f])([0-9a-f])$/);
-  if (shex) {
-    const [r, g, b] = [parseInt(shex[1] + shex[1], 16), parseInt(shex[2] + shex[2], 16), parseInt(shex[3] + shex[3], 16)];
-    return (Math.max(r, g, b) - Math.min(r, g, b)) < 30;
-  }
-  return false;
+  return isNeutralAuthoredColor(m[1]);
 }
 
 const REGEX_MATCHERS = [
@@ -232,15 +304,34 @@ const REGEX_ANALYZERS = [
     const dominant = Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0];
     return [finding('monotonous-spacing', filePath, `~${dominant}px used ${maxCount}/${rounded.length} times (${Math.round(pct * 100)}%)`)];
   },
-  // Em-dash overuse: 5+ em-dashes or "--" in body text content
-  // (occasional em-dash use in prose is fine; the pattern fires only
-  // when count crosses into AI-cadence territory).
+  // Em-dash overuse (ADVISORY): the AI cadence tell is em-dash *saturation*,
+  // not the occasional dash. Humans use em-dashes legitimately, so this rule is
+  // advisory (surfaced separately, never a failure, hook-skipped by default) and
+  // its threshold is deliberately conservative. Two gates must both hold:
+  //   1. Absolute floor of EM_DASH_FLOOR (8) dashes — a page with a handful
+  //      never fires, no matter how short.
+  //   2. Density: at least one dash per EM_DASH_CHARS_PER_DASH (500) characters
+  //      of body text, so a long article that uses eight across several thousand
+  //      words is left alone while a short, dash-per-clause landing page is not.
+  // Raised from the old flat 5-dash floor, which fired on ordinary long prose.
+  //
+  // stripHtmlToText drops tags but leaves character-entity escapes intact, so
+  // a model that writes `&mdash;`, `&#8212;`, or `&#x2014;` renders an em-dash
+  // the counter never saw. Decode the em-dash entities (named, zero-padded
+  // decimal, upper/lower hex) to the literal glyph first. En-dash entities are
+  // deliberately left alone: the rule counts em-dashes, and the literal `–`
+  // was never counted either.
   (content, filePath) => {
-    const text = stripHtmlToText(content);
+    const text = stripHtmlToText(content)
+      .replace(/&mdash;|&#0*8212;|&#x0*2014;/gi, '—');
     let count = 0;
     const re = /[—]|--(?=\S)/g;
     while (re.exec(text) !== null) count++;
-    if (count < 5) return [];
+    if (count < EM_DASH_FLOOR) return [];
+    // Saturation gate: dashes must be dense in the prose, not sprinkled through
+    // a long document. textLength <= count * chars-per-dash means the density is
+    // at or above the threshold.
+    if (text.length > count * EM_DASH_CHARS_PER_DASH) return [];
     return [finding('em-dash-overuse', filePath, `${count} em-dashes in body text`)];
   },
   // Marketing buzzwords: SaaS phrase list
@@ -276,22 +367,6 @@ const REGEX_ANALYZERS = [
     if (count === 0) return [];
     return [finding('marketing-buzzword', filePath, `${count} buzzword phrase${count === 1 ? '' : 's'}: "${firstSample}"`)];
   },
-  // Numbered section markers (01 / 02 / 03 ...)
-  (content, filePath) => {
-    const text = stripHtmlToText(content);
-    const re = /\b(0[1-9]|1[0-2])\b/g;
-    const seen = new Set();
-    let m;
-    while ((m = re.exec(text)) !== null) seen.add(m[1]);
-    if (seen.size < 3) return [];
-    const sorted = [...seen].sort();
-    let sequential = 0;
-    for (let i = 1; i < sorted.length; i++) {
-      if (parseInt(sorted[i], 10) === parseInt(sorted[i - 1], 10) + 1) sequential++;
-    }
-    if (sequential < 2) return [];
-    return [finding('numbered-section-markers', filePath, `Sequence: ${sorted.slice(0, 6).join(', ')}`)];
-  },
   // Aphoristic cadence: manufactured-contrast + short-rebuttal
   (content, filePath) => {
     const text = stripHtmlToText(content);
@@ -313,41 +388,143 @@ const REGEX_ANALYZERS = [
     if (count < 3) return [];
     return [finding('aphoristic-cadence', filePath, `${count} aphoristic constructions: "${firstSample}"`)];
   },
-  // Dark glow (page-level: dark bg + colored box-shadow with blur)
+  // Dark glow / chromatic halo shadows (page-level). Shared scanner handles
+  // any color format, single-level var() resolution, zero-offset halos on
+  // any background, and text-shadow glows.
   (content, filePath) => {
-    // Check if page has a dark background
-    const darkBgRe = /background(?:-color)?\s*:\s*(?:#(?:0[0-9a-f]|1[0-9a-f]|2[0-3])[0-9a-f]{4}\b|#(?:0|1)[0-9a-f]{2}\b|rgb\(\s*(\d{1,2})\s*,\s*(\d{1,2})\s*,\s*(\d{1,2})\s*\))/gi;
-    const twDarkBg = /\bbg-(?:gray|slate|zinc|neutral|stone)-(?:9\d{2}|800)\b/;
-    const hasDarkBg = darkBgRe.test(content) || twDarkBg.test(content);
-    if (!hasDarkBg) return [];
-
-    // Check for colored box-shadow with blur > 4px
-    const shadowRe = /box-shadow\s*:\s*([^;{}]+)/gi;
-    let m;
-    while ((m = shadowRe.exec(content)) !== null) {
-      const val = m[1];
-      const colorMatch = val.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-      if (!colorMatch) continue;
-      const [r, g, b] = [+colorMatch[1], +colorMatch[2], +colorMatch[3]];
-      if ((Math.max(r, g, b) - Math.min(r, g, b)) < 30) continue; // skip gray
-      // Check blur: look for pattern like "0 0 20px" (third number > 4)
-      const pxVals = [...val.matchAll(/(\d+)px|(?<![.\d])\b(0)\b(?![.\d])/g)].map(p => +(p[1] || p[2]));
-      if (pxVals.length >= 3 && pxVals[2] > 4) {
-        const lines = content.substring(0, m.index).split('\n');
-        return [finding('dark-glow', filePath, `Colored glow (rgb(${r},${g},${b})) on dark page`, lines.length)];
-      }
-    }
-    return [];
+    const hits = scanCssTextForGlow(content);
+    if (hits.length === 0) return [];
+    const lines = content.substring(0, hits[0].index).split('\n');
+    return [finding('dark-glow', filePath, hits[0].snippet, lines.length)];
   },
+  // Radial-gradient background halo on a dark page (the gradient sibling
+  // of the dark-glow shadow tell).
+  (content, filePath) => {
+    const hits = scanCssTextForRadialHalo(content);
+    if (hits.length === 0) return [];
+    const lines = content.substring(0, hits[0].index).split('\n');
+    return [finding('radial-halo', filePath, hits[0].snippet, lines.length)];
+  },
+  // Auto-scrolling marquees (<marquee> or infinite horizontal loop
+  // animations).
+  (content, filePath) => scanCssTextForMarquee(content).map(hit => finding('marquee', filePath, hit.snippet)),
 ];
 
 // ---------------------------------------------------------------------------
-// Style block extraction (Vue/Svelte <style> blocks)
+// Structural CSS checks used by source files whose styles are not parsed by
+// the static HTML engine.
+// ---------------------------------------------------------------------------
+
+const CHROMATIC_SHADOW_TOKEN_RE = /(?:^|-)(?:accent|kinpaku|patina|gold|red|orange|amber|yellow|lime|green|emerald|teal|cyan|blue|indigo|violet|purple|magenta|pink|rose|coral|aqua|mint|burgundy|crimson|scarlet)(?:-|$)/i;
+
+function insetStripeColorIsChromatic(rawColor) {
+  const color = String(rawColor || '').trim().replace(/\s*!important\s*$/i, '');
+  if (/^(?:currentcolor|transparent|inherit|unset)$/i.test(color)) return false;
+  const variable = color.match(/^var\(\s*(--[\w-]+)/i);
+  if (variable) return CHROMATIC_SHADOW_TOKEN_RE.test(variable[1]);
+  if (!/^(?:#|rgba?\(|hsla?\(|hwb\(|oklch\(|oklab\(|lch\(|lab\(|color\(|[a-z]+$)/i.test(color)) return false;
+  return !isNeutralAuthoredColor(color);
+}
+
+/**
+ * Blank out comment bodies while preserving every byte offset (and therefore
+ * every line number) so commented-out CSS is not scanned as live rules.
+ */
+function blankCssComments(css) {
+  return css.replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, ' '));
+}
+
+function scanInsetStripeCss(rawContent, filePath, lineOffset = 0) {
+  const content = blankCssComments(rawContent);
+  const findings = [];
+  const ruleRe = /([^{};]+)\{([^{}]*)\}/g;
+  let match;
+  // Deriving each line with content.slice(0, offset).split('\n') re-scans the
+  // whole prefix per rule, which is O(n^2) on a large stylesheet. Rule matches
+  // arrive in source order, so carry a monotonic cursor instead: one pass total.
+  let scanOffset = 0;
+  let scanLine = 1;
+  const lineAtOffset = (offset) => {
+    while (scanOffset < offset) {
+      if (content[scanOffset] === '\n') scanLine++;
+      scanOffset++;
+    }
+    return scanLine;
+  };
+  while ((match = ruleRe.exec(content)) !== null) {
+    // The selector group is `[^{};]+`, which greedily absorbs the whitespace and
+    // newlines trailing the previous rule. Advance past that run before deriving
+    // the line, or every rule after the first reports the preceding line.
+    const selectorStart = match.index + (match[1].length - match[1].trimStart().length);
+    const selector = match[1].trim().replace(/\s+/g, ' ');
+    if (!selector) continue;
+    if (/:(?:hover|focus|focus-visible|focus-within|active|checked|target)\b/i.test(selector)) continue;
+    if (/\[aria-selected\s*[*^$|~]?=\s*["']?true/i.test(selector)) continue;
+    if (/\[aria-current(?!\s*[*^$|~]?=\s*["']?false)/i.test(selector)) continue;
+    if (/(?:^|[\s._[-])(?:active|current|selected)(?![\w])/i.test(selector)) continue;
+    if (/(?:^|[\s>+~,(])(?:button|hr|tr|td|th|table|blockquote|pre|code)(?![\w-])/i.test(selector)) continue;
+
+    // Read the last of a repeated declaration, not the first: that is what the
+    // cascade paints. Taking the first both flagged stripes that a later
+    // `box-shadow: none` had cancelled and missed stripes that overrode an
+    // earlier value, and mis-skipped rules whose narrow width was overridden.
+    const width = lastMatch(match[2], /(?:^|;)\s*(?:width|inline-size)\s*:\s*(\d+(?:\.\d+)?)px/gi);
+    if (width && Number(width[1]) <= 40) continue;
+    const declaration = lastMatch(match[2], /(?:^|;)\s*box-shadow\s*:\s*([^;]+)/gi);
+    if (!declaration || !/\binset\b/i.test(declaration[1])) continue;
+    // `!important` qualifies the declaration, not the shadow value, so strip it
+    // before the layers are read. Tokenizing split it into its own token, which
+    // made the color count wrong and silently stopped flagging stripes declared
+    // with it — a shape the previous regex handled.
+    const shadowValue = declaration[1].replace(/\s*!\s*important\s*$/i, '').trim();
+
+    for (const rawLayer of shadowValue.split(/,(?![^(]*\))/)) {
+      const layer = rawLayer.trim();
+      // Parse the layer by its grammar rather than by one spelling of it.
+      // A box-shadow layer is `inset? && <length>{2,4} && <color>?` in any
+      // order, so `inset 4px 0 red`, `4px 0 0 red inset`, and `red 4px 0 inset`
+      // all paint the same stripe. Matching a fixed token order missed three
+      // valid spellings in a row; enumerate the tokens instead. Tokenizing must
+      // respect parens: `rgb(0 0 0)` is one color token, and splitting it on
+      // whitespace would read its channels as lengths.
+      const tokens = tokenizeShadowLayer(layer);
+      if (!tokens.some((token) => /^inset$/i.test(token))) continue;
+      const rest = tokens.filter((token) => !/^inset$/i.test(token));
+      const lengths = rest.filter(isShadowLength);
+      const colors = rest.filter((token) => !isShadowLength(token));
+      // Only the two offsets are required; omitted blur/spread default to 0,
+      // which is exactly the stripe shape. More than one non-length token is a
+      // layer shape we do not claim to understand, so leave it alone.
+      if (lengths.length < 2 || lengths.length > 4 || colors.length !== 1) continue;
+      const values = lengths.map((token) => ({
+        n: Number(token.replace(/px$/i, '')),
+        hasPx: /px$/i.test(token),
+      }));
+      const x = values[0];
+      const y = values[1];
+      const blur = values[2] ? values[2].n : 0;
+      const spread = values[3] ? values[3].n : 0;
+      if ((x.n !== 0 && !x.hasPx) || (y.n !== 0 && !y.hasPx) || blur !== 0 || spread !== 0) continue;
+      const ax = Math.abs(x.n);
+      const ay = Math.abs(y.n);
+      if (!((ax >= 3 && ax <= 12 && ay === 0) || (ay >= 3 && ay <= 12 && ax === 0))) continue;
+      if (!insetStripeColorIsChromatic(colors[0])) continue;
+      const edge = ay === 0 ? (x.n > 0 ? 'left' : 'right') : (y.n > 0 ? 'top' : 'bottom');
+      const line = lineOffset + lineAtOffset(selectorStart);
+      findings.push(finding('side-tab', filePath, `${selector} — inset box-shadow ${ay === 0 ? ax : ay}px stripe (${edge})`, line));
+      break;
+    }
+  }
+  return findings;
+}
+
+// ---------------------------------------------------------------------------
+// Style block extraction (Astro/Vue/Svelte <style> blocks)
 // ---------------------------------------------------------------------------
 
 function extractStyleBlocks(content, ext) {
   ext = ext.toLowerCase();
-  if (ext !== '.vue' && ext !== '.svelte') return [];
+  if (ext !== '.astro' && ext !== '.vue' && ext !== '.svelte') return [];
   const blocks = [];
   const re = /<style[^>]*>([\s\S]*?)<\/style>/gi;
   let m;
@@ -432,21 +609,20 @@ function runRegexMatchers(lines, filePath, lineOffset = 0, blockContext = null, 
 }
 
 /** Page-level analyzers that scan rendered text content (em-dash use,
- *  buzzword phrases, numbered section markers, aphoristic cadence).
+ *  buzzword phrases, aphoristic cadence).
  *  These are detector-agnostic — they work on any HTML/text source
  *  and don't need a parsed DOM. Exported so detectHtml can call them
  *  for `.html` files (which otherwise skip the regex engine). */
 const TEXT_CONTENT_ANALYZER_IDS = [
   'em-dash-overuse',
   'marketing-buzzword',
-  'numbered-section-markers',
   'aphoristic-cadence',
 ];
 
 function runTextContentAnalyzers(content, filePath, options = {}) {
   const profile = options?.profile;
   if (!shouldRunPageAnalyzers(content, filePath)) return [];
-  // The 4 text-content analyzers are at indices 3-6 in REGEX_ANALYZERS.
+  // The 3 text-content analyzers are at indices 3-5 in REGEX_ANALYZERS.
   const findings = [];
   for (let i = 0; i < TEXT_CONTENT_ANALYZER_IDS.length; i++) {
     const analyzer = REGEX_ANALYZERS[3 + i];
@@ -474,8 +650,36 @@ function detectText(content, filePath, options = {}) {
     profile,
     phase: 'source',
   }));
+  // Pseudo-element stripes (::before/::after absolute bars) carry the same
+  // side-tab silhouette without any border token, so the line matchers can't
+  // see them (issue #394). The shared scanner already runs on full HTML pages
+  // via checkHtmlPatterns; give standalone stylesheets, component style
+  // blocks, and CSS-in-JS templates the same coverage. Each hit carries the
+  // rule's source offset, so the finding gets a real line and line-scoped
+  // inline ignores keep working.
+  const pseudoStripeFindings = (text, lineOffset) =>
+    scanCssTextForPseudoStripe(text).map(hit =>
+      finding(hit.id, filePath, hit.snippet, lineOffset + text.slice(0, hit.index).split('\n').length));
 
-  // Extract and scan <style> blocks from Vue/Svelte SFCs
+  if (cssLike.has(ext)) {
+    findings.push(...scanInsetStripeCss(content, filePath));
+    findings.push(...pseudoStripeFindings(content, 0));
+  }
+
+  // Block-level CSS checks that need multiple declarations must run over the
+  // complete source, not line-by-line. This covers standalone stylesheets,
+  // component style blocks, inline styles, and CSS-in-JS templates.
+  findings.push(...profileFindings(profile, {
+    engine: 'regex',
+    phase: 'source',
+    ruleId: 'codex-grid-background',
+    target: filePath,
+  }, () => scanCssTextForGridBackground(content).map(hit => {
+    const line = content.substring(0, hit.index).split('\n').length;
+    return finding('codex-grid-background', filePath, hit.snippet, line);
+  })));
+
+  // Extract and scan <style> blocks from Astro/Vue/Svelte components.
   const styleBlocks = profile
     ? profileStep(profile, {
       engine: 'regex',
@@ -490,6 +694,14 @@ function detectText(content, filePath, options = {}) {
       profile,
       phase: 'style-block',
     }));
+    // block.startLine is the first line *after* the <style> tag, but block.content
+    // begins at the character right after that tag — so its own line 1 sits on the
+    // tag's line, whether or not a newline follows immediately. lineAtOffset is
+    // 1-based, so the offset is startLine - 2; startLine - 1 double-counted and
+    // reported every selector one line low. runRegexMatchers keeps startLine - 1
+    // because it indexes its split lines from zero.
+    findings.push(...scanInsetStripeCss(block.content, filePath, block.startLine - 2));
+    findings.push(...pseudoStripeFindings(block.content, block.startLine - 2));
   }
 
   // Extract and scan CSS-in-JS template literals
@@ -507,6 +719,8 @@ function detectText(content, filePath, options = {}) {
       profile,
       phase: 'css-in-js',
     }));
+    findings.push(...scanInsetStripeCss(block.content, filePath, block.startLine - 1));
+    findings.push(...pseudoStripeFindings(block.content, block.startLine - 1));
   }
 
   if (options?.designSystem) {
@@ -537,7 +751,6 @@ function detectText(content, filePath, options = {}) {
       'monotonous-spacing',
       'em-dash-overuse',
       'marketing-buzzword',
-      'numbered-section-markers',
       'aphoristic-cadence',
       'dark-glow',
     ];
@@ -552,10 +765,9 @@ function detectText(content, filePath, options = {}) {
     }
   }
 
-  const byProvider = filterByProviders(deduped, options?.providers);
   // Inline `impeccable-disable*` waivers travel with the file; honor them unless
   // explicitly bypassed (`--no-config` / `--no-inline-ignores`).
-  return options?.inlineIgnores === false ? byProvider : applyInlineIgnores(byProvider, content);
+  return options?.inlineIgnores === false ? deduped : applyInlineIgnores(deduped, content);
 }
 
 export {
