@@ -10,6 +10,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import ClassVar, cast, override
+from urllib.parse import urlparse
 
 from pier.agents.installed.base import (
     BaseInstalledAgent,
@@ -275,6 +276,9 @@ class Atomic(BaseInstalledAgent):
         urls = [self._get_env(key) for key in self._BASE_URL_ENV_KEYS]
         if provider == "github-copilot":
             urls.append(self._copilot_api_base_url())
+            # Atomic resolves a GHE tenant host from GITHUB_SERVER_URL on its
+            # own, and copilot-api.<tenant>.ghe.com is outside _PROVIDER_DOMAINS.
+            urls.append(self._copilot_ghe_tenant_url())
         return allowlist_from_urls(urls, default_domains=sorted(defaults))
 
     def _build_register_skills_command(self) -> str | None:
@@ -538,15 +542,19 @@ class Atomic(BaseInstalledAgent):
         self.populate_context_post_run(context)
 
     def _copilot_api_base_url(self) -> str | None:
-        """Explicit Copilot endpoint override, or None to use Atomic's default.
+        """Explicit Copilot endpoint pin, or None to use Atomic's own routing.
 
-        Atomic no longer derives a Copilot base URL: `github-copilot` is a plain
-        upstream pi provider pinned to `https://api.individual.githubcopilot.com`,
-        and `COPILOT_API_TARGET` / `GITHUB_COPILOT_BASE_URL` / `GITHUB_SERVER_URL`
-        are not read by the agent. This adapter keeps the two *explicit* override
-        variables as a harness-level escape hatch for enterprise/GHE runs, written
-        into models.json as a provider baseUrl override. When neither is set we
-        emit no override so the container matches what a normal user gets.
+        Atomic resolves the Copilot host for `COPILOT_GITHUB_TOKEN` env auth:
+        `COPILOT_API_TARGET` / `GITHUB_COPILOT_BASE_URL`, then the token's
+        `proxy-ep` segment, then `GITHUB_SERVER_URL`, then the public routing
+        hub `https://api.githubcopilot.com`. The individual host is only used
+        for OAuth logins, which the sandbox never performs.
+
+        Those variables are not forwarded into the container (only provider
+        credential keys are), so this adapter keeps the two explicit overrides
+        as a harness-level pin written into models.json, which still outranks
+        the agent's own resolution. When neither is set we emit no override and
+        let Atomic route the token exactly as it would for a normal user.
         """
         api_target = self._get_env("COPILOT_API_TARGET")
         if api_target:
@@ -557,6 +565,17 @@ class Atomic(BaseInstalledAgent):
             return self._copilot_url_from_host_or_url(override)
 
         return None
+
+    def _copilot_ghe_tenant_url(self) -> str | None:
+        """Tenant Copilot host Atomic derives from a GHE.com GITHUB_SERVER_URL."""
+        server_url = self._get_env("GITHUB_SERVER_URL")
+        if not server_url:
+            return None
+        host = urlparse(self._copilot_url_from_host_or_url(server_url)).hostname
+        if not host or not host.endswith(".ghe.com"):
+            return None
+        tenant = host.removesuffix(".ghe.com").split(".")[-1]
+        return f"https://copilot-api.{tenant}.ghe.com" if tenant else None
 
     @staticmethod
     def _copilot_url_from_host_or_url(value: str) -> str:

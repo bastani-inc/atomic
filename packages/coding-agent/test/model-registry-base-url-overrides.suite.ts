@@ -100,6 +100,52 @@ describeModelRegistry((context) => {
 			}
 		});
 
+		test("COPILOT_GITHUB_TOKEN routes off the individual host without models.json", async () => {
+			const previousToken = process.env.COPILOT_GITHUB_TOKEN;
+			const previousServer = process.env.GITHUB_SERVER_URL;
+			process.env.COPILOT_GITHUB_TOKEN = "github_pat_enterprise";
+			delete process.env.GITHUB_SERVER_URL;
+			try {
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
+				const model = registry.find("github-copilot", "gpt-5.5");
+
+				// Regression: pi pins the individual CAPI host, which answers 421
+				// Misdirected Request for business/enterprise PATs.
+				expect(model?.baseUrl).toBe("https://api.githubcopilot.com");
+			} finally {
+				if (previousToken === undefined) delete process.env.COPILOT_GITHUB_TOKEN;
+				else process.env.COPILOT_GITHUB_TOKEN = previousToken;
+				if (previousServer !== undefined) process.env.GITHUB_SERVER_URL = previousServer;
+			}
+		});
+
+		test("COPILOT_GITHUB_TOKEN with a proxy-ep segment routes to the token's own host", async () => {
+			const previous = process.env.COPILOT_GITHUB_TOKEN;
+			process.env.COPILOT_GITHUB_TOKEN = "tid=abc;exp=1;proxy-ep=proxy.business.githubcopilot.com;st=dotcom";
+			try {
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
+				const model = registry.find("github-copilot", "gpt-5.5");
+
+				expect(model?.baseUrl).toBe("https://api.business.githubcopilot.com");
+			} finally {
+				if (previous === undefined) delete process.env.COPILOT_GITHUB_TOKEN;
+				else process.env.COPILOT_GITHUB_TOKEN = previous;
+			}
+		});
+
+		test("without COPILOT_GITHUB_TOKEN the Copilot provider keeps pi's default host", async () => {
+			const previous = process.env.COPILOT_GITHUB_TOKEN;
+			delete process.env.COPILOT_GITHUB_TOKEN;
+			try {
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
+				const model = registry.find("github-copilot", "gpt-5.5");
+
+				expect(model?.baseUrl).toBe("https://api.individual.githubcopilot.com");
+			} finally {
+				if (previous !== undefined) process.env.COPILOT_GITHUB_TOKEN = previous;
+			}
+		});
+
 		test("preserves explicit GitHub Copilot API version provider header override", async () => {
 			writeRawModelsJson({
 				"github-copilot": {

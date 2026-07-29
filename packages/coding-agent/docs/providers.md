@@ -58,6 +58,19 @@ Claude Opus 5 is available from the bundled/dynamic Anthropic and Amazon Bedrock
 - Models come from the bundled `pi-ai` GitHub Copilot catalog; an OAuth credential narrows the list to the ids your account can actually use
 - If you get "model not supported", enable it in VS Code: Copilot Chat → model selector → select model → "Enable"
 
+#### Endpoint routing for `COPILOT_GITHUB_TOKEN`
+
+OAuth logins get their Copilot host from the token GitHub issues during login. Environment-token auth has no such exchange, so Atomic resolves the host itself, highest precedence first:
+
+1. `COPILOT_API_TARGET`, then `GITHUB_COPILOT_BASE_URL` — an explicit host or full URL
+2. the `proxy-ep=` segment embedded in `COPILOT_GITHUB_TOKEN`
+3. `GITHUB_SERVER_URL` — `<tenant>.ghe.com` routes to `copilot-api.<tenant>.ghe.com`; any other non-`github.com` host routes to `https://api.enterprise.githubcopilot.com`
+4. `https://api.githubcopilot.com`, the public routing hub, which resolves your plan's host server-side
+
+A `models.json` provider `baseUrl` for `github-copilot` overrides all of the above. Without `COPILOT_GITHUB_TOKEN` the provider is left exactly as upstream `pi-ai` defines it.
+
+Business and enterprise tokens sent to the individual host return `421 Misdirected Request`; if you see that, set `COPILOT_API_TARGET` to the host your organization issues.
+
 ### xAI (Grok/X subscription)
 
 Run `/login xai`, then select **Use a subscription**. `XAI_API_KEY` remains available through **Use an API key**.
