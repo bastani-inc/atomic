@@ -45,7 +45,17 @@ async function createSession(options: { persisted?: boolean; stage?: string } = 
 }
 
 afterEach(() => {
-	for (const root of roots.splice(0)) if (existsSync(root)) rmSync(root, { recursive: true, force: true });
+	// Windows locks a directory while a spawned shell still has it as its cwd, so a
+	// detached async job can outlive its test and make cleanup fail with EBUSY.
+	// Retry, then give up: reclaiming an OS temp dir is never the assertion.
+	for (const root of roots.splice(0)) {
+		if (!existsSync(root)) continue;
+		try {
+			rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+		} catch {
+			// Left for the OS to reclaim.
+		}
+	}
 });
 
 describe("session-aware bash environment", () => {

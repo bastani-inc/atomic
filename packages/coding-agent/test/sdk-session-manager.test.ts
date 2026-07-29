@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { getModel } from "@earendil-works/pi-ai/compat";
@@ -134,13 +134,17 @@ describe("createAgentSession session manager defaults", () => {
 
 		const bashTool = session.agent.state.tools.find((tool) => tool.name === "bash");
 		expect(bashTool).toBeTruthy();
-		const result = await bashTool!.execute("test", { command: "pwd" });
+		// Prove the tool's working directory by reading a marker only resolvable from
+		// sessionCwd. Comparing `pwd` text is not portable: on Windows the bash tool runs
+		// under Git Bash, which reports MSYS paths (/tmp/...) that Node cannot resolve.
+		writeFileSync(join(sessionCwd, "cwd-marker.txt"), "session-cwd-marker");
+		const result = await bashTool!.execute("test", { command: "cat cwd-marker.txt" });
 		const output = result.content
 			.filter((item): item is { type: "text"; text: string } => item.type === "text")
 			.map((item) => item.text)
 			.join("");
 
-		expect(realpathSync(output.trim())).toBe(realpathSync(sessionCwd));
+		expect(output.trim()).toBe("session-cwd-marker");
 
 		session.dispose();
 	});
