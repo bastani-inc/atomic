@@ -12,19 +12,22 @@ Execute in order. No step skipped, no step reordered.
 
 1. `live.mjs`: boot. If the request names or implies a file, route, or app inside a monorepo, infer the concrete path and run `node .agents/skills/impeccable/scripts/live.mjs --target <path>` instead; then run the rest of this live session from the returned `projectRoot`.
 2. Open the app URL that serves `pageFile` (infer from `package.json`, docs, terminal output, or an open tab). Never use `serverPort`; it's the helper, not the app. Use the available browser tool; if the URL is uncertain, ask the user once.
-3. Poll loop with the default long timeout (600000 ms). After every event or `--reply`, run `live-poll.mjs` again immediately. Never pass a short `--timeout=`.
+3. Poll loop with the default long timeout (600000 ms). Run `live-poll.mjs` again immediately after every event or `--reply`; Codex runs this one-shot poll in the foreground. Never pass a short `--timeout=`.
 
 The global bar **Impeccable mark** dims and shows a pulsing amber dot when no agent is long-polling `/poll`. Hover the mark for the hint; restart `live-poll.mjs` to reconnect.
-4. On `generate`: read screenshot if present; load the action's reference; plan three distinct directions; write all variants in one edit; `--reply done`; poll again.
+4. On `generate`: reuse `event.scaffold` when present; read the screenshot if present; load the action's reference; deliver variants using the delivery policy below; `--reply done`; poll again. Generate in this thread. You already hold the project's tokens, conventions, and file layout; that context is the job, not overhead. During a live cycle the overlay's preview IS the verification channel: the user sees every variant rendered in their real page and picks. Do not screenshot, re-render, or QA variants between generate and accept; apply craft-floor's contrast, spacing, and type floors by construction as you write, not as a post-write inspection pass. Full verification, computed contrast, breakpoints, real-copy overflow, runs once at accept on the chosen variant during carbonize cleanup.
 5. On `steer`: read the message and `pageUrl`; do the work (page edits, navigation help, or a short reply in the `--reply` message); `--reply steer_done`; poll again. No pickup ack. The Steer bar unlocks when `steer_done` arrives over SSE.
-6. On `accept` / `discard`: the poll script runs `live-accept.mjs`, acknowledges the delivered event, and prints `_completionAck`. Plain accepts/discards are terminal immediately; carbonize accepts remain recoverable until you finish cleanup, run `live-complete.mjs --id EVENT_ID`, and only then poll again.
-7. If interrupted, run `live-status.mjs` or `live-resume.mjs` before guessing. The durable journal replays unacknowledged work after helper restart.
+6. On `accept` / `discard`: the poll script runs `live-accept.mjs`, acknowledges the delivered event, and prints `_completionAck`. Plain accepts/discards are terminal immediately. Carbonize accepts remain recoverable until the foreground task runs `live-complete.mjs --id EVENT_ID`; finish that cleanup before polling again.
+7. If interrupted, run `live-status.mjs` or `live-resume.mjs` before guessing. The durable journal replays unacknowledged work after helper restart. A dropped SSE connection or a closed tab does not end the session: the journal under `.impeccable/live/sessions/` is canonical, the injected `live.js` re-attaches when the page reopens, and `live-resume.mjs` replays the active snapshot. Tell the user to reopen the app URL (or restart `live-poll.mjs`) and continue; fall back to the direct-edit loop only when `live-resume.mjs` reports no active session, never because disconnects felt frequent.
 8. On `exit`: run the cleanup at the bottom.
 
 Harness policy:
-- **Claude Code**: run the poll as a **background task** (no short timeout). The harness notifies you when it completes, so the main conversation stays free. Do not block the shell.
-- **Codex**: run the poll in the **foreground** (blocking shell; not a background task, not a subagent). Codex background exec sessions do not reliably surface poll stdout back into the conversation at the moment events arrive, so a "fire-and-forget" background poll will stall live mode.
+- **Claude Code**: run the poll as a **background task** (no short timeout). The harness notifies you when it completes, so the main conversation stays free while you generate and publish in it. Do not block the shell.
+- **Codex**: run the default one-shot poll in a **yielded foreground exec session**. Do not suffix it with `&`, use `--stream`, or leave Live without an active foreground poll. Handle every event in the main task; after each handler/reply, restart the foreground poll.
 - **Other harnesses**: one-shot foreground unless you know stdout reliably returns to this session when a shell exits.
+
+Generation delivery policy:
+- **Default (other harnesses):** keep the established atomic single-edit delivery. Do not switch a harness to progressive until its poll loop is known not to block on the extra publish calls. This avoids trading model latency for extra tool-call latency on harnesses with different streaming behavior.
 
 Chat is overhead. No recap, no tutorial output, no pasting PRODUCT / DESIGN bodies. Spend tokens on tools and edits; on failure, one or two short sentences.
 
@@ -34,7 +37,7 @@ Chat is overhead. No recap, no tutorial output, no pasting PRODUCT / DESIGN bodi
 node .agents/skills/impeccable/scripts/live.mjs
 ```
 
-Output JSON: `{ ok, serverPort, serverToken, pageFiles, hasProduct, product, productPath, hasDesign, design, designPath }`. `pageFiles` is the list of HTML entries the live script was injected into. Keep PRODUCT.md and DESIGN.md in mind for variant generation; **DESIGN.md wins on visual decisions; PRODUCT.md wins on strategic/voice decisions.** When DESIGN.md is missing, identity is **not** absent; extract it from CSS variables, computed styles, and sibling components on the page (see Step 4 Phase A). Identity preservation is the default; departure from existing identity requires an explicit trigger from PRODUCT.md anti-references or the user's freeform prompt.
+Output JSON: `{ ok, serverPort, serverToken, pageFiles, hasProduct, product, productPath, hasDesign, design, designPath }`. `pageFiles` is the list of HTML entries the live script was injected into. Keep PRODUCT.md, DESIGN.md, and any surface brief already loaded by Setup in mind for variant generation: **DESIGN.md wins on visual decisions; PRODUCT.md wins on durable product and voice decisions; the surface brief wins on this surface's strategy.** When DESIGN.md is missing, identity is **not** absent; extract it from CSS variables, computed styles, and sibling components on the page (see Step 4 Phase A). Identity preservation is the default; departure requires the user's explicit redesign/replacement intent.
 
 `serverPort` and `serverToken` belong to the small **Impeccable live helper** HTTP server (serves `/live.js`, SSE, and `/poll`). That port is **not** your dev server and is usually not the URL you open to view the app. The browser page is whatever origin serves one of the `pageFiles` entries (Vite / Next / Bun / tunnel / LAN hostname).
 
@@ -93,14 +96,14 @@ Server restart rule: start `live-server.mjs` again, then poll. Startup requeues 
 
 **Insert mode** (`event.mode === "insert"`): `{id, mode: "insert", count, pageUrl, insert: { position, anchor }, placeholder: { width, height }, freeformPrompt?, screenshotPath?, comments?, strokes?}`. No `action`. Requires a non-empty `freeformPrompt` **or** annotations. Screenshot is sent only when annotations exist (same rule as replace). Use `placeholder` dimensions as a soft size hint for net-new content.
 
-Speed matters; the user is watching a spinner. Minimize tool calls by using the wrap/insert helper and writing all variants in a single edit.
+Speed matters; the user is watching the selected element. Reuse server preflight metadata when available, minimize discovery calls, and follow the harness-specific delivery policy above.
 
 ### Insert mode branch
 
 When `event.mode === "insert"`:
 
 1. Read the screenshot if `event.screenshotPath` is present (annotations only).
-2. Run the insert helper instead of wrap:
+2. If `event.scaffold` is present, use it as the insert-helper result and do **not** run the helper again. Otherwise run the insert helper instead of wrap:
 
 ```bash
 node .agents/skills/impeccable/scripts/live-insert.mjs --id EVENT_ID --count EVENT_COUNT --position after \
@@ -110,7 +113,7 @@ node .agents/skills/impeccable/scripts/live-insert.mjs --id EVENT_ID --count EVE
 - `--position` ← `event.insert.position` (`before` | `after`)
 - Anchor flags ← `event.insert.anchor` (same mapping as wrap: id, classes, tag, text)
 
-The scaffold has **no** `data-impeccable-variant="original"`. Variants are net-new HTML+CSS inserted at `insertLine`. Load `brand.md` or `product.md` (freeform only, no action sub-command). Write all variants in one edit, then `--reply done`.
+The scaffold has **no** `data-impeccable-variant="original"`. Variants are net-new HTML+CSS inserted at `insertLine`. On source-preview targets the scaffold carries `sourceWritten: false` with `wrapperBlock`, `replaceStartLine`, and `replaceEndLine` (here `replaceEndLine < replaceStartLine`, an insertion): splice your variants into `wrapperBlock` at the marker and insert the result at `replaceStartLine` in one edit, exactly as the wrap section describes, so the framework reloads once. Decide the visitor mode from the surface and load [craft-floor.md](craft-floor.md) before writing net-new markup (freeform only, no action sub-command). Deliver using the harness policy, then `--reply done`.
 
 For Svelte/SvelteKit targets, `live-insert.mjs` returns `previewMode: "svelte-component"` with `mode: "insert"`, `file` pointing at a temporary `node_modules/.impeccable-live/<id>/manifest.json`, `componentDir` pointing at the variant component files, and `sourceFile` pointing at the real `.svelte` route. Write each inserted variant as a real Svelte component (`v1.svelte`, `v2.svelte`, …) under `componentDir`. Insert variants must be non-empty net-new content with a single top-level root, no `data-impeccable-*` attributes, and CSS in each component's `<style>` block. Do **not** edit the route source during generation; the browser mounts the temporary component before/after the live anchor while the user cycles variants. On Accept, `live-accept.mjs` inserts the selected component markup into `sourceFile` immediately and deletes the temp session after the source write succeeds.
 
@@ -135,6 +138,10 @@ Reading annotations precisely:
 
 ### 2. Wrap the element
 
+When `event.scaffold` is present, the local helper already found the source and computed the wrapper before the poll returned. Treat `event.scaffold` as the successful helper output and skip this command entirely. `event.scaffoldAttempted` with `scaffoldError` means local preflight could not finish; use the command/fallback path below. This optimization removes a deterministic tool round trip without changing the generated design.
+
+**On source-preview targets `event.scaffold` carries `sourceWritten: false`.** The helper did NOT write the wrapper into source; it hands you the wrapper as `scaffold.wrapperBlock` plus the picked element's source range (`scaffold.replaceStartLine`, `scaffold.replaceEndLine`, 1-indexed). Write the wrapper **and** all variants in ONE edit: splice your variants into `wrapperBlock` at the "Variants: insert below this line" marker, then replace source lines `[replaceStartLine, replaceEndLine]` with the result. A separate scaffold write reloads the framework before your variant write lands, and a browser caught mid-reload misses the `done` and sits at 0/N; the single edit avoids it. (`replaceEndLine < replaceStartLine` means insert mode: insert `wrapperBlock`, remove nothing.) The `svelte-component` path never sets `sourceWritten`; it follows the component-preview flow below unchanged.
+
 ```bash
 node .agents/skills/impeccable/scripts/live-wrap.mjs --id EVENT_ID --count EVENT_COUNT --element-id "ELEMENT_ID" --classes "class1,class2" --tag "div" --text "TEXT_SNIPPET"
 ```
@@ -150,11 +157,11 @@ The helper searches ID first, then classes, then tag + class combo. If `event.pa
 
 If `--text` matches multiple candidates equally well, wrap exits with `{ error: "element_ambiguous", candidates: [...] }` and `fallback: "agent-driven"`: read the candidate line ranges, decide which one matches the picked element from page context, and write the wrapper manually per the fallback flow.
 
-Output on success: `{ file, insertLine, commentSyntax, styleMode, styleTag, cssSelectorPrefixExamples, cssAuthoring }`.
+Output on success: `{ file, insertLine, commentSyntax, styleMode, styleTag, cssSelectorPrefixExamples, cssAuthoring }`. On source-preview targets it also returns `sourceWritten: false`, `wrapperBlock`, `replaceStartLine`, and `replaceEndLine` (write it yourself per the `event.scaffold` note above). When you run this command directly (no preflight scaffold), it writes the wrapper into source itself, so there is no `wrapperBlock` and you splice variants at `insertLine`.
 
 For Svelte/SvelteKit targets, `live-wrap.mjs` returns `previewMode: "svelte-component"` with `file` pointing at a temporary `node_modules/.impeccable-live/<id>/manifest.json`, `componentDir` pointing at the variant component files, and `sourceFile` pointing at the real `.svelte` route. Write each variant as a real Svelte component (`v1.svelte`, `v2.svelte`, …) under `componentDir`; use the `propContract` prop names for dynamic text (`{propName}`), not literal snapshot strings. Put variant CSS in each component's `<style>` block with semantic class selectors (no `@scope`, no `data-impeccable-*`). Reply with `--file` set to the manifest path; the browser dynamically imports and mounts the compiled components so Svelte HMR does not reset page state while the user cycles variants. On Accept, `live-accept.mjs` inlines the accepted component back into `sourceFile` immediately after source promotion succeeds.
 
-**Params on the Svelte component path go in a sidecar, never as an attribute.** Svelte parses `{` inside an attribute value as the start of an expression, so a `data-impeccable-params='[{…}]'` attribute on a component element fails to compile (`Expected token }`). Declare params for this path in `componentDir/params.json`, keyed by variant number, using the exact param schema from section 7:
+**Params on component-preview paths go in a sidecar, never as an attribute.** Svelte parses `{` inside an attribute value as the start of an expression, and both Svelte/Vue previews mount without an HTML variant wrapper. Declare params in `componentDir/params.json`, keyed by variant number, using the exact param schema from section 7:
 
 ```json
 {
@@ -188,7 +195,7 @@ All three carry `fallback: "agent-driven"`. Follow **Handle fallback** below.
 
 ### 3. Load the action's reference
 
-If `event.action` is `impeccable` (the default freeform action), use SKILL.md's shared laws plus the loaded register reference (`brand.md` or `product.md`). Do not load a sub-command reference. **Freeform is not a pass to skip parameters:** you still follow the composition budget and the freeform bias in **§7 Parameters** below. Sub-command files list MUST-have signature knobs; freeform has no such file, so sizing knobs from surface weight and primary axes is entirely on you.
+If `event.action` is `impeccable` (the default freeform action), work from SKILL.md's design rules plus [craft-floor.md](craft-floor.md), and decide the visitor mode from the selected surface. Do not load a sub-command reference. **Freeform is not a pass to skip parameters:** you still follow the composition budget and the freeform bias in **§7 Parameters** below. Sub-command files list MUST-have signature knobs; freeform has no such file, so sizing knobs from surface weight and primary axes is entirely on you.
 
 Any other `event.action` (`bolder`, `quieter`, `distill`, `polish`, `typeset`, `colorize`, `layout`, `adapt`, `animate`, `delight`, `overdrive`): Read `reference/<action>.md` before planning. Each sub-command encodes a specific discipline; skipping its reference produces generic output. Those files may require specific params; layer them on top of the §7 budget, not instead of it.
 
@@ -217,7 +224,7 @@ Write down what you see in **one sentence**. The sentence describes the surface 
 
 Be specific. "Modern" is not a color, "elegant" is not a type pairing, "clean" is not a layout. If you can't extract a real value for an axis, skip it rather than fabricate. The point is to record what is, not to describe what you wish it were.
 
-Do not include adjectives that name an aesthetic family ("editorial-leaning", "terminal-flavored", "brutalist"); those are conclusions, not data. They belong to Phase C lane selection in departure mode, not to identity description. Letting them sneak into Phase A is how the identity-lock collapses into a self-fulfilling prophecy.
+Do not name an aesthetic family in this sentence; that is a conclusion, not observed identity data. Letting conclusions into Phase A collapses the identity lock into a self-fulfilling prophecy.
 
 This sentence is the **identity lock**. Every variant must be readable as the same brand if rendered side by side. Skipping this phase is the primary cause of off-brand variants. Absence of DESIGN.md is never an excuse; extract from CSS and computed styles instead.
 
@@ -225,10 +232,7 @@ This sentence is the **identity lock**. Every variant must be readable as the sa
 
 **Default mode**: the existing identity is preserved. Variants vary expression axes within it. *This is the right mode for ~90% of live sessions.* The user picked an element on a real product they're shipping; they expect variants of *their* hero, not three different brands' heroes.
 
-**Departure mode**: the existing identity is rejected. Variants propose alternatives consistent with PRODUCT.md voice. Trigger only when at least one is true:
-
-- PRODUCT.md anti-references explicitly call out the current surface ("the current `index.html` is itself an example"; "diffuse away from this"; "the page on screen is the failure"). Generic anti-references that describe what to avoid in general do **not** trigger departure mode; only ones that point at *this* surface specifically.
-- The user's freeform prompt explicitly asks for departure ("rebuild this from scratch", "what if it weren't editorial at all", "show me something completely different").
+**Departure mode**: the existing identity is rejected. Variants propose alternatives consistent with durable product and brand truth. Trigger only when the user explicitly asks for departure in the current request or freeform prompt ("redesign this", "rebuild this from scratch", "what if it weren't editorial at all", "show me something completely different"). A stale page critique or an old task note is not replacement authorization.
 
 If you're unsure, you're in default mode. The cost of being wrong about default is "three on-brand variants with similar feel": recoverable, the user picks none. The cost of being wrong about departure is "three off-brand variants": unrecoverable, the user is annoyed.
 
@@ -247,13 +251,13 @@ Three variants → three DIFFERENT axes. The trio reads as *the same brand at th
 
 **While planning each variant, also name its 2–3 parameter knobs** (per the §7 budget table). Parameters are part of the design, not a decoration added afterward. If the variant explores density, expose a density knob. If it explores color commitment, expose a color-amount range. Deciding "what's tunable" during planning produces better knobs than retrofitting them onto finished HTML.
 
-**Departure mode.** Each variant anchors to a different **aesthetic direction**, derived from the brand's stated voice and register in PRODUCT.md. Do NOT pick from a fixed catalog of lane categories. The right three directions for this brand are not the same as the right three for another brand, and picking from a list is itself the training-data reflex (the model selects "Swiss-grid, Terminal, Industrial-signage" every time because those are the furthest-from-editorial items in any enumerated list).
+**Departure mode.** Each variant anchors to a different **aesthetic direction**, derived from PRODUCT.md's audience world and voice plus the current DESIGN.md. Do not pick from a fixed catalog; derive directions from this product.
 
 Instead, work from the brand:
 
-1. Read PRODUCT.md's Brand Personality words. What physical, spatial, or material experiences would embody those words if design were not involved? (A personality described as "specific, earned, unmistakable" evokes a hand-stamped letter, a numbered print, a watchmaker's loupe. A personality described as "restless, loud, unfiltered" evokes a concert poster, a spray-painted wall, a megaphone.)
+1. Read PRODUCT.md's Brand Personality words. Derive physical, spatial, or material experiences that embody them without starting from a design style.
 2. From those physical experiences, derive three visual directions that are genuinely different from each other AND from the current surface you're departing.
-3. Avoid the **reflex-reject lanes** in [brand.md](brand.md). Don't trade one monoculture for another. If you find yourself reaching for "Swiss-grid" or "Terminal" or "Industrial-signage" by reflex, you are pattern-matching a catalog in your training data, not reading the brand. Start over from the personality words.
+3. Reject any direction chosen by reflex rather than derived from the brand. Start over from the personality words when the rationale could fit a neighboring product.
 4. Each direction must be expressible in one concrete sentence that names a real-world referent ("a museum exhibition label system for a contemporary art gallery" not "clean and minimal"). If your sentence contains only adjectives, it's not concrete enough.
 5. **While planning each direction, also name its 2–3 parameter knobs** (per the §7 budget table). The same principle as default mode: decide "what's tunable" during planning, not after writing the HTML. A departure-mode hero with 0 parameters is not "bold creative vision," it's a missed opportunity for the user to fine-tune the direction they pick.
 
@@ -263,7 +267,7 @@ Instead, work from the brand:
 
 **Departure mode squint.** Two passes, family before sentence:
 
-1. **Family pass.** Label each variant with one design-family word of your own choosing (any concrete noun: *exhibition, storefront, cockpit, recipe-card, playbill, field-manual*). If any two variants share a label, or if the label could apply to the other variants equally well, rework. Do not use a fixed vocabulary list for the labels. *This pass is non-negotiable in departure mode and catches the monoculture failure that the sentence pass misses.*
+1. **Family pass.** Give each variant a concrete family label of your own choosing. If two variants share a label, or a label fits another variant equally well, rework. Do not use a fixed vocabulary. *This pass is non-negotiable in departure mode and catches monoculture the sentence pass misses.*
 2. **Sentence pass.** Write three one-sentence descriptions side by side. If two of them rhyme ("both feature big type" / "both are stacks of sections" / "both center the CTA"), rework the offender.
 
 **When the primary axis is color or theme, forbid the trio from sharing theme + dominant hue.** Two dark-plus-one-dark is not distinct. Aim for three color worlds, not three shades of the same.
@@ -290,13 +294,15 @@ In **default mode**, the prompt narrows the axes you choose, not the identity. *
 
 In **departure mode**, the prompt narrows the lanes you draw from, not the families. *"Make it feel like a newspaper front page"* would itself be a departure-mode prompt; honor it but pick three meaningfully different newspaper-adjacent lanes (broadsheet vs. tabloid vs. trade journal), and run the family pass to confirm they don't collapse into one.
 
-When the prompt and PRODUCT.md anti-references conflict (the prompt asks for X, the anti-references ban X), the anti-references win; they describe the brand's standing position, the prompt is one moment.
+When the prompt conflicts with a confirmed binding brand commitment or DESIGN.md invariant, preserve the invariant unless the user explicitly revokes or replaces it. Task-local strategy from the matching surface brief may change when the user changes that surface's goal.
 
-### 6. Write all variants in a single edit
+### 6. Deliver variants
 
 Complete HTML replacement of the original element for each variant, not a CSS-only patch. Consider the element's context (computed styles, parent structure, CSS variables from `event.element`).
 
-Write CSS + all variants in ONE edit at the `insertLine` reported by `wrap`. Colocate CSS as a `<style>` tag inside the variant wrapper; `<style>` works anywhere in modern browsers and this ensures CSS and HTML arrive atomically (no FOUC).
+Colocate preview CSS as a `<style>` tag inside the variant wrapper; `<style>` works anywhere in modern browsers and keeps each delivered state internally complete (no FOUC).
+
+**Atomic default:** write CSS + all variants + parameter manifests in one edit at `insertLine`, preserving the established behavior.
 
 Use the `cssAuthoring` object returned by `live-wrap.mjs` to author the temporary preview CSS. The style opening tag shown below is the common case; replace it with `cssAuthoring.styleTag` when the tool returns a different one. The variant markup shape is otherwise stable:
 
@@ -320,7 +326,7 @@ Use the `cssAuthoring` object returned by `live-wrap.mjs` to author the temporar
 
 The first variant has no `display: none` (visible by default). All others do. If variants use only inline styles and no preview CSS, omit the `<style>` tag entirely.
 
-One edit, all variants; the browser's MutationObserver picks everything up in one pass.
+The browser's MutationObserver accepts either delivery shape. On the transactional progressive path it shows arrived variants and pending dots immediately; Accept and Discard are available as soon as one variant exists. Accepting an arrived variant fences the worker before the browser releases the picker, so later publications are rejected.
 
 For `styleMode: "scoped"`, author every `:scope` rule with a descendant combinator. The `@scope` boundary is the **variant wrapper `<div data-impeccable-variant="N">`**, not the element you're designing. A bare `:scope { background: cream; }` styles the wrapper, not the inner replacement, so the cream lands on a `display: contents` shell while the actual element keeps page defaults. Always step in: `:scope > .card`, `:scope > section`, `:scope .hero-title`, etc. The fake test agent's CSS in `tests/live-e2e/agent.mjs` is a faithful template; every scoped rule starts `:scope > ...`.
 
@@ -362,7 +368,7 @@ Each variant can expose **coarse** knobs alongside the full HTML/CSS replacement
 
 **Hard cap per variant**: at most **four** parameters so the panel stays legible; rare fifth only if the reference explicitly allows it.
 
-**How to declare.** Put a JSON manifest on the variant wrapper (HTML/JSX path). **On the Svelte `svelte-component` path, do not use this attribute** (Svelte can't compile `{` inside an attribute value). Declare params in `componentDir/params.json` keyed by variant number instead (see the Svelte component paragraph in the wrap section). The param schema below is identical for both paths.
+**How to declare.** Put a JSON manifest on the variant wrapper (HTML/JSX path). **On the `svelte-component` path, do not use this attribute.** Declare params in `componentDir/params.json` keyed by variant number instead (see the component-preview paragraphs in the wrap section). The param schema below is identical for every path.
 
 ```html
 <div data-impeccable-variant="1" data-impeccable-params='[
@@ -463,15 +469,19 @@ Event: `{id, variantId, _acceptResult, _completionAck}`. The poll script already
 - The accept event includes `pageUrl`; the poll script must forward it to `live-accept.mjs --page-url PAGE_URL` so accept-time cleanup only scrubs staged copy edits for the current page.
 - `_completionAck.ok !== true`: do not poll yet. Run `live-status.mjs` / `live-resume.mjs`, complete the cleanup manually if needed, then run `live-complete.mjs --id EVENT_ID`.
 - `_acceptResult.handled: true` and `carbonize: false`: nothing to do. Poll again.
-- `_acceptResult.handled: true` and `carbonize: true`: **post-accept cleanup is required before the next poll.** See the "Required after accept (carbonize)" section below. The `event._acceptResult.todo` field, `_completionAck.requiresComplete`, and a stderr banner all point at this required follow-up; none are decorative. After cleanup, run `live-complete.mjs --id EVENT_ID`, then poll again.
+- `_acceptResult.handled: true` and `carbonize: true`: post-accept cleanup is required, but it must not stall Codex's control lane. See "Required after accept (carbonize)" below. The `event._acceptResult.todo` field, `_completionAck.requiresComplete`, and stderr banner all point at this required follow-up; none are decorative.
 - `_acceptResult.handled: false, mode: "fallback"`: the session lived in a generated file and the script refused to persist there. You've already written the accepted variant into true source during Handle fallback Step 3; just clean up the temporary wrapper in the served file if any, and poll again.
+- `_acceptResult.handled: false, mode: "error"`: the operation genuinely failed. **Do not hand-edit the file**; the source was not touched and editing it yourself would either double-apply or race whoever holds it.
+  - `error: "source_locked"`: a generation publish holds the file. Run the same `live-accept.mjs` command again; it is idempotent and will succeed once the publisher releases. Do not poll past it.
+  - `error: "accept_receipt_conflict"`: this session already resolved as `priorOperation` (on `priorVariantId` for an accept), so the request contradicts durable truth. Do not edit. Run `live-status.mjs` and tell the user what the session actually resolved to.
+  - anything else: report the error briefly and run `live-status.mjs` before continuing.
 - `_acceptResult.handled: false` without `mode`: manual cleanup: read file, find markers, edit.
 
 ### Required after accept (carbonize)
 
 When `_acceptResult.carbonize === true`, the accepted variant was stitched into source with helper markers and inline CSS so the browser can render it immediately with no visual gap. That stitch-in is **temporary**. The agent must rewrite it into permanent form before doing anything else. Skipping this leaves dead `@scope` rules for unaccepted variants, a pointless `data-impeccable-variant` wrapper, and `impeccable-carbonize-start/end` comment noise in the source file; all of which accumulate across sessions.
 
-Do these five steps in the current thread, synchronously, before the next poll. Do not poll again until the file is clean.
+Do these five steps synchronously before the next poll. The source lock, generation epoch, and expected-source hash remain the final safety gates against a generator finishing concurrently with Accept.
 
 1. **Locate the carbonize block** in the source file (`_acceptResult.file`). It's bracketed by `<!-- impeccable-carbonize-start SESSION_ID -->` and `<!-- impeccable-carbonize-end SESSION_ID -->` and contains a `<style data-impeccable-css="SESSION_ID">` element. If the variant declared parameters, an `<!-- impeccable-param-values SESSION_ID: {...} -->` comment sits alongside the style tag with the user's chosen values; read it first; it drives steps 3 and 4 below.
 2. **Move the CSS rules** into the project's real stylesheet. Which stylesheet depends on the project (e.g. `site/styles/workflow.css` for an Astro project, or the component's co-located CSS file for a Vite/Next project; pick whichever already owns styling for the surrounding element).
@@ -479,9 +489,7 @@ Do these five steps in the current thread, synchronously, before the next poll. 
 4. **Unwrap the accepted content.** Delete the inner `<div data-impeccable-variant="N" style="display: contents">` that wraps it. On JSX/TSX, also delete the outer `<div data-impeccable-carbonize="SESSION_ID" style={{ display: 'contents' }}>` wrapper if present (accept adds it so ternary/`return` slots keep a single root). Drop `data-impeccable-params` and any `data-p-*` attributes; those are live-mode plumbing, not source.
 5. **Delete the inline `<style>` block, the `<!-- impeccable-param-values -->` comment if present, and both `<!-- impeccable-carbonize-start/end -->` markers.** Also drop any `@scope` rules for variants other than the accepted one; those are dead code now.
 
-After the file is clean, run `live-complete.mjs --id SESSION_ID`, verify it reports `phase: "completed"`, then poll again.
-
-A background agent may be used for the rewrite, but the current thread is responsible for verifying the five steps are complete before issuing the next poll. In practice, inline is usually faster and less error-prone.
+After the file is clean, the cleanup owner runs `live-complete.mjs --id SESSION_ID` and verifies `phase: "completed"`. Poll again only after that verification.
 
 ## Handle `discard`
 
@@ -588,10 +596,14 @@ Schema:
 | Next.js (Pages) | `["pages/_document.tsx"]` | `</body>` | `jsx` |
 | Nuxt | `["app.vue"]` | `</body>` | `html` |
 | Svelte / SvelteKit | `["src/app.html"]` | `</body>` | `html` |
+| TanStack Router (SPA, Vite) | `["index.html"]` | `</body>` | `html` |
+| TanStack Start (SSR) | `["src/routes/__root.tsx"]` | `<Scripts` | `jsx` |
 | Astro | `[" <root layout .astro>"]` | `</body>` | `html` |
 | Multi-page (separate HTML per route) | `["public/**/*.html"]`: a glob covering the served directory | `</body>` | `html` |
 
 Pick an anchor that exists in every file (`</body>` almost always works). Use `insertAfter` if the anchor should match **after** a specific line.
+
+**Framework adapters (auto-detected at inject time).** SvelteKit, Nuxt, and TanStack Start server-render their document shell, so a raw `<script>` in the entry template will not execute reliably. `live-inject.mjs` detects these from the project and routes to a dedicated adapter instead of the literal `files` patch: SvelteKit mounts a dev-only root component from `+layout.svelte`; Nuxt writes a dev-only `.client.ts` plugin; TanStack Start (detected by `@tanstack/react-start` plus `src/routes/__root.tsx`) patches the `__root` document to render a generated dev-only `src/impeccable/ImpeccableLiveRoot` component that appends the bundle on mount. The `files` value stays a valid detection/CSP hint but is not the literal insertion site. A plain TanStack Router SPA (no `@tanstack/react-start`) has a static `index.html` and takes the baseline Vite path with no adapter.
 
 For multi-page sites, **prefer a glob over a literal file list**. New pages added later are picked up automatically on the next `live-inject.mjs` run; no config maintenance needed.
 

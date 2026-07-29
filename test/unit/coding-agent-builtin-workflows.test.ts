@@ -266,5 +266,10 @@ describe("coding-agent builtin resources", () => {
     ]) {
       assert.ok(skillNames.has(skillName), `expected bundled package skill ${skillName}`);
     }
+    assert.equal(
+      skillNames.has("effective-liteparse"),
+      false,
+      "expected the renamed liteparse skill not to reappear under its obsolete name",
+    );
   }, fullBuiltinPackageLoadTimeoutMs);
 });

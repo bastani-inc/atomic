@@ -2,7 +2,7 @@
 
 For native Android apps: Jetpack Compose, Android Views, React Native, Expo, Flutter shipping to Android hardware.
 
-On native, register narrows. Material Design 3 governs structure, navigation, and interaction whatever the register; brand expresses through Material's theming (color roles, type scale, shape, motion). A Material-everywhere cross-platform app that also ships to iPhone still owes iOS its OS guarantees on that hardware: safe-area insets, Reduce Motion, edge-swipe back.
+On native, the visitor mode narrows what expression may override. Material Design 3 governs structure, navigation, and interaction in every mode; brand expresses through Material's theming (color roles, type scale, shape, motion). A Material-everywhere cross-platform app that also ships to iPhone still owes iOS its OS guarantees on that hardware: safe-area insets, Reduce Motion, edge-swipe back.
 
 ## The Android slop test
 
