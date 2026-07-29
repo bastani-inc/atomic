@@ -269,11 +269,9 @@ export class ModelRuntime implements Models {
 		await this.refreshAvailability();
 		return this.snapshot.available;
 	}
-
 	getAvailableSnapshot(): readonly Model<Api>[] {
 		return this.snapshot.available;
 	}
-
 	getError(): string | undefined {
 		const errors: string[] = [];
 		const configError = this.config.getError();
@@ -337,6 +335,9 @@ export class ModelRuntime implements Models {
 			},
 		};
 	}
+	/** Reload credentials changed by the host before an isolated RPC refresh. */
+	async reloadCredentials(): Promise<void> { await this.credentials.reload(); }
+
 	async saveCredential(providerId: string, credential: Credential): Promise<void> {
 		await this.credentials.modify(providerId, async () => credential);
 		await this.refresh();

@@ -174,17 +174,26 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "logout_provider", result);
 			}
 			case "refresh_models": {
-				const result = await session.modelRuntime.refresh({
-					allowNetwork: command.allowNetwork,
-				});
-				return createRpcSuccessResponse(id, "refresh_models", {
-					aborted: result.aborted,
-					errors: [...result.errors].map(([provider, error]) => ({ provider, message: error.message })),
-					models: session.modelRuntime.getAvailableSnapshot(),
-					scopedModels: session.scopedModels,
-					customAuthProviders: [],
-					oauthProviders: session.modelRuntime.getProviders().filter((provider) => provider.auth.oauth).map((provider) => ({ id: provider.id, name: provider.name ?? provider.id })),
-				});
+				await session.modelRuntime.reloadCredentials();
+				const controller = command.timeoutMs === undefined ? undefined : new AbortController();
+				const timeout = controller ? setTimeout(() => controller.abort(), command.timeoutMs) : undefined;
+				try {
+					const result = await session.modelRuntime.refresh({
+						allowNetwork: command.allowNetwork,
+						force: command.force,
+						signal: controller?.signal,
+					});
+					return createRpcSuccessResponse(id, "refresh_models", {
+						aborted: result.aborted,
+						errors: [...result.errors].map(([provider, error]) => ({ provider, message: error.message })),
+						models: session.modelRuntime.getAvailableSnapshot(),
+						scopedModels: session.scopedModels,
+						customAuthProviders: [],
+						oauthProviders: session.modelRuntime.getProviders().filter((provider) => provider.auth.oauth).map((provider) => ({ id: provider.id, name: provider.name ?? provider.id })),
+					});
+				} finally {
+					if (timeout) clearTimeout(timeout);
+				}
 			}
 
 			case "set_thinking_level": {

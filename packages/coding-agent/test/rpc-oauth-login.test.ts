@@ -148,6 +148,33 @@ describe("RPC OAuth cancellation isolation", () => {
 		expect(await harness.authStorage.read("corp-b")).toMatchObject({ type: "oauth", access: "corp-b-ok" });
 	});
 });
+
+describe("RPC OAuth failed transaction isolation", () => {
+	it("does not refresh or overwrite prior credentials after a failed engine-owned login", async () => {
+		const { harness, handler } = await createRuntimeHarness();
+		harness.session.modelRuntime.registerProvider("corp-oauth", {
+			baseUrl: "https://provider.test/v1",
+			api: "openai-completions",
+			oauth: {
+				name: "Corp OAuth",
+				login: async () => { throw new Error("provider denied login"); },
+				refreshToken: async (credential) => credential,
+				getApiKey: (credential) => credential.access,
+			},
+			models: [],
+		});
+		const refresh = vi.spyOn(harness.session.modelRuntime, "refresh");
+
+		await expect(handler({
+			id: "failed-login",
+			type: "login_provider",
+			provider: "corp-oauth",
+			authType: "oauth",
+		})).rejects.toThrow("provider denied login");
+		expect(await harness.authStorage.read("corp-oauth")).toEqual({ type: "api_key", key: "previous" });
+		expect(refresh).not.toHaveBeenCalled();
+	});
+});
 describe("RPC OAuth credential survival", () => {
 	it("keeps the acquired credential when post-login model refresh reports provider errors", async () => {
 		await expectSuccessfulLoginAndRetainedCredential(async () => ({

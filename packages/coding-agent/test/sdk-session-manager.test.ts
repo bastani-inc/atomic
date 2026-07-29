@@ -3,8 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { AuthStorage } from "../src/core/auth-storage.ts";
+import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { SettingsManager } from "../src/core/settings-manager.ts";
 
 describe("createAgentSession session manager defaults", () => {
 	let tempDir: string;
@@ -126,6 +129,69 @@ describe("createAgentSession session manager defaults", () => {
 			session.thinkingLevel,
 		]);
 
+		session.dispose();
+	});
+
+	it("marks workflow-stage sessions internal with their orchestration identity", async () => {
+		const model = getModel("anthropic", "claude-sonnet-4-5");
+		expect(model).toBeTruthy();
+		const sessionManager = SessionManager.inMemory(cwd);
+
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			model: model!,
+			sessionManager,
+			orchestrationContext: {
+				kind: "workflow-stage",
+				workflowRunId: "run-42",
+				workflowStageId: "stage-7",
+				workflowStageName: "build",
+				constraints: { disableWorkflowTool: true, maxSubagentDepth: 5 },
+			},
+		});
+
+		expect(sessionManager.getHeader()?.internal).toBe(true);
+		expect(sessionManager.getHeader()?.workflow).toEqual({
+			runId: "run-42",
+			stageId: "stage-7",
+			stageName: "build",
+		});
+		session.dispose();
+	});
+
+	it("reports session-restore fallback reason and selected replacement model", async () => {
+		const modelRuntime = await ModelRuntime.create({
+			credentials: AuthStorage.inMemory({ openai: { type: "api_key", key: "test-key" } }),
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
+		const replacement = modelRuntime.getAvailableSnapshot().find((model) => model.provider === "openai");
+		expect(replacement).toBeDefined();
+		const sessionManager = SessionManager.inMemory(cwd);
+		sessionManager.appendModelChange("absent-session-provider", "absent-session-model");
+		sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "restore" }],
+			timestamp: Date.now(),
+		});
+
+		const { session, modelFallbackMessage, modelFallbackReason } = await createAgentSession({
+			cwd,
+			agentDir,
+			modelRuntime,
+			sessionManager,
+			settingsManager: SettingsManager.inMemory({
+				defaultProvider: replacement!.provider,
+				defaultModel: replacement!.id,
+			}),
+		});
+
+		expect(session.model).toEqual(replacement);
+		expect(modelFallbackReason).toBe("session-restore");
+		expect(modelFallbackMessage).toBe(
+			`Could not restore model absent-session-provider/absent-session-model. Using ${replacement!.provider}/${replacement!.id}`,
+		);
 		session.dispose();
 	});
 });

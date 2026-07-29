@@ -4,9 +4,11 @@
 
 ### Breaking Changes
 
-- Replaced Atomic's legacy extension OAuth registration bridge with provider-owned authentication from `@earendil-works/pi-ai`. Extensions must declare OAuth or API-key authentication on their provider registration; the removed global `registerOAuthProvider`, `registerLegacyOAuthProvider`, `getLegacyOAuthProvider`, and `refreshLegacyOAuth` hooks, plus custom API-key login hooks beyond pi's provider contract, are no longer available.
+- Replaced Atomic's legacy extension OAuth registration bridge with provider-owned authentication from `@earendil-works/pi-ai`. Extensions must declare OAuth or API-key authentication on their provider registration. The package root no longer exports the bridge functions `registerOAuthProvider`, `resetOAuthProviders`, `getOAuthApiKey`, `getOAuthProvider`, or `getOAuthProviders`, nor the bridge and credential/status types `LegacyOAuthProvider`, `OAuthProviderDescriptor`, `ApiKeyCredential`, `AuthCredential`, `AuthStatus`, or `OAuthCredential`; import current credential types from `@earendil-works/pi-ai` and use provider-owned authentication instead. The internal legacy registration/refresh machinery and custom API-key login hooks beyond pi's provider contract were also removed.
 - Model configuration now follows pi's single-file `ModelConfig` contract. Atomic no longer layers or merges `.pi` and `.atomic` `models.json` files; the active Atomic agent directory supplies one `models.json` file, while the existing agent-directory fallback still supports legacy installations.
 - Interactive `/model` reloads and post-login catalog refreshes are now unbounded, matching pi. `modelRefreshTimeoutMs` applies only to the initial runtime creation refresh, so callers that require cancellation after startup must provide their own abort signal.
+- Extension `streamSimple` implementations are now scoped to their registered provider and `ModelRuntime`, matching pi's provider composer. Unregistering a newer provider no longer restores an older global API-owner registration; extensions that replace a provider stream must keep that provider registered for as long as the stream should remain active.
+- Remote model catalogs now publish refreshed models in memory before persisting the catalog, matching pi's ordering. If the catalog-store write fails, refresh reports the storage error but the newly refreshed in-memory catalog remains active for the current process.
 
 ### Changed
 

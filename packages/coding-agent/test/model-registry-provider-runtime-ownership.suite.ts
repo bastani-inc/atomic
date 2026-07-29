@@ -50,6 +50,25 @@ describeModelRegistry((context) => {
 			});
 
 
+			test("pi scopes extension streams to each runtime instead of stacking global API owners", async () => {
+				const first = await createModelRegistry(context.authStorage, context.modelsJsonPath);
+				const second = await createModelRegistry(context.authStorage, context.modelsJsonPath);
+				const api = "registry-fallback-api" as Api;
+				first.registerProvider("registry-first", {
+					api,
+					streamSimple: () => { throw new Error("first-owner"); },
+				});
+				second.registerProvider("registry-second", {
+					api,
+					streamSimple: () => { throw new Error("second-owner"); },
+				});
+
+				second.unregisterProvider("registry-second");
+
+				expect(getApiProvider(api)).toBeUndefined();
+				expect(first.getProvider("registry-first")).toBeDefined();
+				first.unregisterProvider("registry-first");
+			});
 			test("unregistering an Atomic override restores an external API owner", async () => {
 				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 				const api = "external-fallback-api" as Api;

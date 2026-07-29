@@ -262,8 +262,18 @@ export async function createAgentSession(
     convertToLlm: convertToLlmWithBlockImages,
     streamFn: async (model, context, streamOptions) => {
       const authResult = await modelRuntime.getAuth(model);
-      const auth = { ok: true as const, apiKey: authResult?.auth.apiKey, headers: authResult?.auth.headers, env: authResult?.env };
-      const requestModel = model;
+      const compatibility = authResult ? undefined : modelRuntime.getCompatibilityRequestConfig(model);
+      if (!authResult && compatibility?.authHeader) {
+        throw new Error(`No API key found for "${model.provider}"`);
+      }
+      const auth = {
+        apiKey: authResult?.auth.apiKey,
+        headers: authResult?.auth.headers ?? compatibility?.headers,
+        baseUrl: authResult?.auth.baseUrl,
+      };
+      const requestModel = auth.baseUrl !== undefined && auth.baseUrl !== model.baseUrl
+        ? { ...model, baseUrl: auth.baseUrl }
+        : model;
       const providerRetrySettings = settingsManager.getProviderRetrySettings();
       const httpIdleTimeoutMs = settingsManager.getHttpIdleTimeoutMs();
       // SDKs treat timeout=0 as 0ms (immediate timeout), not "no timeout".
@@ -279,6 +289,12 @@ export async function createAgentSession(
       const attributionHeaders = headerRunner?.hasHandlers("before_provider_headers")
         ? await headerRunner.emitBeforeProviderHeaders(mergedHeaders ?? {}) : mergedHeaders;
       const fastModeEnabled = isCodexFastModeEnabled(model);
+      const extensionProvider = modelRuntime.getRegisteredProviderConfig(requestModel.provider);
+      const usesExtensionStream = extensionProvider?.streamSimple !== undefined
+        && requestModel.api === extensionProvider.api;
+      if (fastModeEnabled && !usesExtensionStream && !authResult) {
+        throw new Error(`No API key found for "${model.provider}"`);
+      }
       const codexFastModeStreamOptions = withCodexFastModeStreamOptions(
         {
           ...streamOptions,
@@ -292,8 +308,7 @@ export async function createAgentSession(
         },
         fastModeEnabled,
       );
-      const extensionProvider = modelRuntime.getRegisteredProviderConfig(requestModel.provider);
-      if (extensionProvider?.streamSimple && requestModel.api === extensionProvider.api) {
+      if (usesExtensionStream) {
         return modelRuntime.streamSimple(requestModel, context, codexFastModeStreamOptions);
       }
       return fastModeEnabled

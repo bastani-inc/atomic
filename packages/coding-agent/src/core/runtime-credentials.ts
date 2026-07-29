@@ -1,5 +1,14 @@
 import type { Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai";
 
+interface ReloadableCredentialStore {
+	reload(): void | Promise<void>;
+}
+
+function getReloadableStore(store: CredentialStore): ReloadableCredentialStore | undefined {
+	const reloadable = store as CredentialStore & Partial<ReloadableCredentialStore>;
+	return typeof reloadable.reload === "function" ? (reloadable as ReloadableCredentialStore) : undefined;
+}
+
 /** Async credential store overlay for non-persistent runtime API keys. */
 export class RuntimeCredentials implements CredentialStore {
 	private readonly store: CredentialStore;
@@ -19,6 +28,10 @@ export class RuntimeCredentials implements CredentialStore {
 
 	hasRuntimeApiKey(providerId: string): boolean {
 		return this.overrides.has(providerId);
+	}
+
+	async reload(): Promise<void> {
+		await getReloadableStore(this.store)?.reload();
 	}
 
 	async read(providerId: string): Promise<Credential | undefined> {

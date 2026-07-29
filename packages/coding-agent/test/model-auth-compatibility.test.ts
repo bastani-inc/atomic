@@ -253,4 +253,53 @@ describe("ModelRuntime auth options", () => {
 			method: { name: "Extension subscription" },
 		});
 	});
+
+	it("runtime API-key overrides bypass expired stored OAuth", async () => {
+		const runtime = await ModelRuntime.create({
+			credentials: AuthStorage.inMemory({
+				anthropic: { type: "oauth", access: "expired", refresh: "refresh", expires: 1 },
+			}),
+			modelsPath: null,
+		});
+		runtime.setRuntimeApiKey("anthropic", "runtime-key");
+
+		expect((await runtime.getAuth("anthropic"))?.auth.apiKey).toBe("runtime-key");
+		expect(await runtime.checkAuth("anthropic")).toMatchObject({ type: "api_key" });
+	});
+
+	it("runtime API-key overrides stored API-key request auth without persistence", async () => {
+		const credentials = AuthStorage.inMemory({ anthropic: { type: "api_key", key: "stored-key" } });
+		const runtime = await ModelRuntime.create({ credentials, modelsPath: null });
+		runtime.setRuntimeApiKey("anthropic", "runtime-key");
+
+		expect((await runtime.getAuth("anthropic"))?.auth.apiKey).toBe("runtime-key");
+		expect(await credentials.read("anthropic")).toEqual({ type: "api_key", key: "stored-key" });
+	});
+
+	it("refreshes provider-owned OAuth extensions with an initially empty catalog", async () => {
+		const credentials = AuthStorage.inMemory({
+			"oauth-catalog": { type: "oauth", access: "access", refresh: "refresh", expires: Date.now() + 60_000 },
+		});
+		const runtime = await ModelRuntime.create({ credentials, modelsPath: null });
+		let observedCredentialType: string | undefined;
+		runtime.registerProvider("oauth-catalog", {
+			baseUrl: "https://example.test/v1",
+			api: "openai-completions",
+			oauth: {
+				name: "OAuth Catalog",
+				login: async () => ({ access: "access", refresh: "refresh", expires: Date.now() + 60_000 }),
+				refreshToken: async (credential) => credential,
+				getApiKey: (credential) => credential.access,
+			},
+			refreshModels: async ({ credential }) => {
+				observedCredentialType = credential?.type;
+				return [testModel("discovered")];
+			},
+		});
+
+		await runtime.refresh({ allowNetwork: true });
+
+		expect(observedCredentialType).toBe("oauth");
+		expect(runtime.getModel("oauth-catalog", "discovered")).toBeDefined();
+	});
 });

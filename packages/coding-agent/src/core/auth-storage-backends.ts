@@ -251,6 +251,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 
 export class InMemoryAuthStorageBackend implements AuthStorageBackend {
 	private value: string | undefined;
+	private pendingWrite: Promise<void> = Promise.resolve();
 
 	read(): string | undefined {
 		return this.value;
@@ -265,11 +266,21 @@ export class InMemoryAuthStorageBackend implements AuthStorageBackend {
 	}
 
 	async withLockAsync<T>(fn: (current: string | undefined) => Promise<LockResult<T>>): Promise<T> {
-		const { result, next } = await fn(this.value);
-		if (next !== undefined) {
-			this.value = next;
+		const previous = this.pendingWrite;
+		let release!: () => void;
+		this.pendingWrite = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		await previous;
+		try {
+			const { result, next } = await fn(this.value);
+			if (next !== undefined) {
+				this.value = next;
+			}
+			return result;
+		} finally {
+			release();
 		}
-		return result;
 	}
 }
 

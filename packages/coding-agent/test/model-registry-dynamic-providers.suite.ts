@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 
@@ -385,6 +385,29 @@ describeModelRegistry((context) => {
 
 				expect(getModelsForProvider(registry, "dynamic").map((model) => model.id)).toEqual(["manual"]);
 				expect(persistedAfterStale).toEqual(["stale-store"]);
+			});
+
+			test("pre-aborted refresh returns without invoking providers", async () => {
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
+				const initial = providerConfig("https://slow.test/v1", [{ id: "cached" }]);
+				let calls = 0;
+				registry.registerProvider("slow", {
+					...initial,
+					refreshModels: async () => {
+						calls += 1;
+						return initial.models!;
+					},
+				});
+				await vi.waitFor(() => expect(calls).toBeGreaterThan(0));
+				calls = 0;
+				const controller = new AbortController();
+				controller.abort();
+
+				const result = await getModelRuntime(registry).refresh({ signal: controller.signal });
+
+				expect(result.aborted).toBe(true);
+				expect(calls).toBe(0);
+				expect(registry.find("slow", "cached")).toBeDefined();
 			});
 
 			test("additive provider overrides retain built-in credential filtering", async () => {

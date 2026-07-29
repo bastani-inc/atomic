@@ -4,6 +4,7 @@ import {
 	type CreateAgentSessionRuntimeFactory,
 } from "../../src/core/agent-session-runtime.ts";
 import { createHarness, type Harness } from "./harness.ts";
+import { createRpcCommandHandler } from "../../src/modes/rpc/rpc-command-handler.ts";
 
 const createRuntime = (async () => {
 	throw new Error("not used");
@@ -54,5 +55,37 @@ describe("provider-metadata authentication runtime", () => {
 			access: "access-token",
 			refresh: "refresh-token",
 		});
+	});
+
+	it("accepts an isolated OAuth credential only after the engine-side transactional write", async () => {
+		const harness = await createHarness({ withConfiguredAuth: false });
+		harnesses.push(harness);
+		const runtime = runtimeFor(harness);
+		const handler = createRpcCommandHandler({
+			runtimeHost: runtime,
+			getSession: () => harness.session,
+			rebindSession: async () => {},
+			output: () => {},
+		});
+		const credential = {
+			type: "oauth" as const,
+			access: "isolated-access",
+			refresh: "isolated-refresh",
+			expires: Date.now() + 60_000,
+		};
+
+		const response = await handler({
+			id: "auth-bridge",
+			type: "save_provider_credential",
+			provider: harness.getModel().provider,
+			credential,
+		});
+
+		expect(response).toMatchObject({
+			id: "auth-bridge",
+			command: "save_provider_credential",
+			success: true,
+		});
+		expect(await harness.authStorage.read(harness.getModel().provider)).toEqual(credential);
 	});
 });

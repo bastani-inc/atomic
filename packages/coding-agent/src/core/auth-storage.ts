@@ -51,12 +51,16 @@ export class AuthStorage implements CredentialStore {
 	 * Reload credentials from storage.
 	 */
 	reload(): void {
-		let content: string | undefined;
 		try {
-			this.storage.withLock((current) => {
-				content = current;
-				return { result: undefined };
-			});
+			let content: string | undefined;
+			if (this.storage.read) {
+				content = this.storage.read();
+			} else {
+				this.storage.withLock((current) => {
+					content = current;
+					return { result: undefined };
+				});
+			}
 			this.data = this.parseStorageData(content);
 		} catch {
 			// Preserve the last valid in-memory snapshot.
@@ -74,18 +78,21 @@ export class AuthStorage implements CredentialStore {
 		provider: string,
 		fn: (current: Credential | undefined) => Promise<Credential | undefined>,
 	): Promise<Credential | undefined> {
-		return this.storage.withLockAsync(async (content) => {
+		let persistedData: AuthStorageData | undefined;
+		const result = await this.storage.withLockAsync(async (content) => {
 			const currentData = this.parseStorageData(content);
 			const next = await fn(currentData[provider]);
 			if (next === undefined) {
-				this.data = currentData;
+				persistedData = currentData;
 				return { result: currentData[provider] };
 			}
 
 			const merged: AuthStorageData = { ...currentData, [provider]: next };
-			this.data = merged;
+			persistedData = merged;
 			return { result: next, next: JSON.stringify(merged, null, 2) };
 		});
+		if (persistedData) this.data = persistedData;
+		return result;
 	}
 
 	async delete(provider: string): Promise<void> {
@@ -94,12 +101,14 @@ export class AuthStorage implements CredentialStore {
 			this.data = this.parseStorageData(content);
 			return;
 		}
+		let persistedData: AuthStorageData | undefined;
 		await this.storage.withLockAsync(async (content) => {
 			const currentData = this.parseStorageData(content);
 			delete currentData[provider];
-			this.data = currentData;
+			persistedData = currentData;
 			return { result: undefined, next: JSON.stringify(currentData, null, 2) };
 		});
+		if (persistedData) this.data = persistedData;
 	}
 
 	/** List credential metadata without resolving configured key values. */

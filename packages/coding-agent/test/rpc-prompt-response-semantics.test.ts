@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "@earendil-works/pi-agent-core";
 import {
+	type Api,
 	type AssistantMessage,
 	type AssistantMessageEvent,
 	EventStream,
@@ -95,7 +96,12 @@ function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function createRuntimeHost(options: { withAuth: boolean; responseDelayMs: number; model?: Model<any> }): Promise<{
+async function createRuntimeHost(options: {
+	withAuth: boolean;
+	responseDelayMs: number;
+	model?: Model<Api>;
+	unsupportedFallback?: boolean;
+}): Promise<{
 	runtimeHost: AgentSessionRuntime;
 	cleanup: () => Promise<void>;
 }> {
@@ -143,14 +149,35 @@ async function createRuntimeHost(options: { withAuth: boolean; responseDelayMs: 
 		resourceLoader: createTestResourceLoader(),
 	});
 
+	const fallbackWarning = "Configured default model is unavailable or unsupported. Update defaultProvider/defaultModel or use /model.";
 	const runtimeHost = {
+		modelFallbackMessage: options.unsupportedFallback ? fallbackWarning : undefined,
+		modelFallbackReason: options.unsupportedFallback ? "configured-provider-unsupported" : undefined,
 		session,
 		services: { agentDir: tempDir },
-		newSession: vi.fn(async () => ({ cancelled: true })),
+		newSession: vi.fn(async function(this: { modelFallbackMessage?: string; modelFallbackReason?: string }) {
+			this.modelFallbackMessage = fallbackWarning;
+			this.modelFallbackReason = "configured-provider-unsupported";
+			return { cancelled: false };
+		}),
 		switchSession: vi.fn(async () => ({ cancelled: true })),
 		fork: vi.fn(async () => ({ cancelled: true, selectedText: "" })),
 		dispose: vi.fn(async () => {}),
 		setRebindSession: vi.fn(),
+		resolveModelFallback: vi.fn(function(this: { modelFallbackMessage?: string; modelFallbackReason?: string }) {
+			this.modelFallbackMessage = undefined;
+			this.modelFallbackReason = undefined;
+		}),
+		resolveModelFallbackAfterExplicitModelSelection: vi.fn(function(
+			this: { modelFallbackMessage?: string; modelFallbackReason?: string },
+			previous: Model<Api> | undefined,
+			selected: Model<Api> | null | undefined,
+		) {
+			if (selected && (!previous || previous.provider !== selected.provider || previous.id !== selected.id)) {
+				this.modelFallbackMessage = undefined;
+				this.modelFallbackReason = undefined;
+			}
+		}),
 	} as unknown as AgentSessionRuntime;
 
 	return {
@@ -171,9 +198,15 @@ async function createRuntimeHost(options: { withAuth: boolean; responseDelayMs: 
 	};
 }
 
-async function startRpcMode(options: { withAuth: boolean; responseDelayMs: number; model?: Model<any> }): Promise<{
+async function startRpcMode(options: {
+	withAuth: boolean;
+	responseDelayMs: number;
+	model?: Model<Api>;
+	unsupportedFallback?: boolean;
+}): Promise<{
 	lineHandler: (line: string) => void;
 	cleanup: () => Promise<void>;
+	runtimeHost: AgentSessionRuntime;
 }> {
 	rpcIo.outputLines = [];
 	rpcIo.lineHandler = undefined;
@@ -182,7 +215,7 @@ async function startRpcMode(options: { withAuth: boolean; responseDelayMs: numbe
 	void runRpcMode(runtimeHost);
 	await vi.waitFor(() => expect(rpcIo.lineHandler).toBeDefined());
 
-	return { lineHandler: rpcIo.lineHandler!, cleanup };
+	return { lineHandler: rpcIo.lineHandler!, cleanup, runtimeHost };
 }
 
 describe("RPC prompt response semantics", () => {
@@ -225,6 +258,107 @@ describe("RPC prompt response semantics", () => {
 					),
 				});
 			});
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("blocks unsupported prompts but stays live for set_model recovery", async () => {
+		const model = getModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("missing recovery model");
+		const { lineHandler, cleanup } = await startRpcMode({
+			withAuth: true,
+			responseDelayMs: 0,
+			model,
+			unsupportedFallback: true,
+		});
+		const warning = "Configured default model is unavailable or unsupported. Update defaultProvider/defaultModel or use /model.";
+
+		try {
+			lineHandler(JSON.stringify({ id: "blocked", type: "prompt", message: "Do not send" }));
+			await vi.waitFor(() => {
+				expect(getPromptResponses(rpcIo.outputLines, "blocked")).toEqual([
+					expect.objectContaining({ success: false, error: warning }),
+				]);
+			});
+			expect(parseOutputLines(rpcIo.outputLines).filter((record) => record.type !== "response")).toEqual([]);
+
+			lineHandler(JSON.stringify({ id: "catalog", type: "get_available_models" }));
+			lineHandler(JSON.stringify({ id: "recover", type: "set_model", provider: model.provider, modelId: model.id }));
+			await vi.waitFor(() => {
+				const records = parseOutputLines(rpcIo.outputLines);
+				expect(records.some((record) => record.id === "catalog" && record.success === true)).toBe(true);
+				expect(records.some((record) => record.id === "recover" && record.success === true)).toBe(true);
+			});
+
+			rpcIo.outputLines = [];
+			lineHandler(JSON.stringify({ id: "after", type: "prompt", message: "Now run" }));
+			await vi.waitFor(() => {
+				expect(getPromptResponses(rpcIo.outputLines, "after")).toEqual([
+					expect.objectContaining({ success: true }),
+				]);
+			});
+
+			lineHandler(JSON.stringify({ id: "replace", type: "new_session" }));
+			await vi.waitFor(() => {
+				expect(parseOutputLines(rpcIo.outputLines).some(
+					(record) => record.id === "replace" && record.success === true,
+				)).toBe(true);
+			});
+			rpcIo.outputLines = [];
+			lineHandler(JSON.stringify({ id: "blocked-again", type: "prompt", message: "blocked again" }));
+			await vi.waitFor(() => {
+				expect(getPromptResponses(rpcIo.outputLines, "blocked-again")).toEqual([
+					expect.objectContaining({ success: false, error: warning }),
+				]);
+			});
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("clears the unsupported prompt lock only after a successful changed cycle", async () => {
+		const initial = getModel("anthropic", "claude-sonnet-4-5");
+		const selected = getModel("anthropic", "claude-haiku-4-5");
+		if (!initial || !selected) throw new Error("missing cycle models");
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({
+			withAuth: true,
+			responseDelayMs: 0,
+			model: initial,
+			unsupportedFallback: true,
+		});
+		const lock = (): void => {
+			runtimeHost.modelFallbackMessage =
+				"Configured default model is unavailable or unsupported. Update defaultProvider/defaultModel or use /model.";
+			runtimeHost.modelFallbackReason = "configured-provider-unsupported";
+		};
+		const cycle = vi.spyOn(runtimeHost.session, "cycleModel");
+
+		try {
+			cycle.mockImplementationOnce(async () => {
+				runtimeHost.session.agent.state.model = selected;
+				return { model: selected, thinkingLevel: "off", isScoped: false };
+			});
+			lineHandler(JSON.stringify({ id: "changed-cycle", type: "cycle_model" }));
+			await vi.waitFor(() => expect(parseOutputLines(rpcIo.outputLines).some(
+				(record) => record.id === "changed-cycle" && record.success === true,
+			)).toBe(true));
+			expect(runtimeHost.modelFallbackReason).toBeUndefined();
+
+			for (const [id, implementation] of [
+				["null-cycle", async () => undefined],
+				["same-cycle", async () => ({ model: { ...selected }, thinkingLevel: "high" as const, isScoped: false })],
+				["failed-cycle", async () => { throw new Error("cycle hook failed"); }],
+			] as const) {
+				lock();
+				cycle.mockImplementationOnce(implementation);
+				lineHandler(JSON.stringify({ id, type: "cycle_model" }));
+				await vi.waitFor(() => expect(parseOutputLines(rpcIo.outputLines).some((record) => record.id === id)).toBe(true));
+				lineHandler(JSON.stringify({ id: `${id}-prompt`, type: "prompt", message: "must remain blocked" }));
+				await vi.waitFor(() => expect(getPromptResponses(rpcIo.outputLines, `${id}-prompt`)).toEqual([
+					expect.objectContaining({ success: false }),
+				]));
+			}
 		} finally {
 			await cleanup();
 		}

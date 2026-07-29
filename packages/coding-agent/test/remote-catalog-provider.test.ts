@@ -187,4 +187,26 @@ describe("remote catalog provider", () => {
 		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static"]);
 		expect(await store.read(provider.id)).toMatchObject({ models: [], checkedAt: expect.any(Number) });
 	});
+
+	it("pi publishes refreshed models before surfacing persistence failures", async () => {
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(JSON.stringify({ new: model("new") }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			}),
+		);
+		const provider = testProvider();
+		const store: ProviderModelsStore = {
+			read: async () => ({ models: [model("stale")], checkedAt: 0 }),
+			write: async () => { throw new Error("disk full"); },
+			delete: async () => {},
+		};
+
+		await expect(provider.refreshModels?.({
+			credential: { type: "api_key" },
+			store,
+			allowNetwork: true,
+		})).rejects.toThrow("disk full");
+		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static", "new"]);
+	});
 });

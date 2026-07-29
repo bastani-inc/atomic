@@ -1,7 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { AuthStorage, FileAuthStorageBackend } from "../src/core/auth-storage.ts";
 import {
 	clearConfigValueCache,
 	resolveConfigValue,
@@ -117,5 +119,89 @@ describe("resolveConfigValue", () => {
 		} finally {
 			if (platformDescriptor) Object.defineProperty(process, "platform", platformDescriptor);
 		}
+	});
+});
+
+describe("AuthStorage file backend regressions", () => {
+	let tempDir: string;
+	let authPath: string;
+
+	beforeEach(() => {
+		tempDir = join(tmpdir(), `atomic-auth-backend-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		mkdirSync(tempDir, { recursive: true });
+		authPath = join(tempDir, "auth.json");
+		writeFileSync(authPath, JSON.stringify({ anthropic: { type: "api_key", key: "anthropic-key" } }));
+	});
+
+	afterEach(() => {
+		if (existsSync(tempDir)) rmSync(tempDir, { recursive: true });
+	});
+
+	test("fresh storage reads credentials while another process holds the write lock", async () => {
+		const release = lockfile.lockSync(authPath, { realpath: false });
+		try {
+			const storage = AuthStorage.create(authPath);
+			await expect(storage.read("anthropic")).resolves.toEqual({ type: "api_key", key: "anthropic-key" });
+		} finally {
+			release();
+		}
+	});
+
+	test("many fresh storage reads succeed while the write lock is held", async () => {
+		const release = lockfile.lockSync(authPath, { realpath: false });
+		try {
+			for (let index = 0; index < 12; index++) {
+				const storage = AuthStorage.create(authPath);
+				await expect(storage.read("anthropic")).resolves.toEqual({ type: "api_key", key: "anthropic-key" });
+			}
+		} finally {
+			release();
+		}
+	});
+
+	test("reads resolve while an async writer holds the lock across an await", async () => {
+		const backend = new FileAuthStorageBackend(authPath, [authPath]);
+		let releaseHeld!: () => void;
+		const held = new Promise<void>((resolve) => {
+			releaseHeld = resolve;
+		});
+		let markEntered!: () => void;
+		const entered = new Promise<void>((resolve) => {
+			markEntered = resolve;
+		});
+		const writer = backend.withLockAsync(async () => {
+			markEntered();
+			await held;
+			return { result: undefined };
+		});
+		await entered;
+
+		try {
+			for (let index = 0; index < 10; index++) {
+				const storage = AuthStorage.create(authPath);
+				await expect(storage.read("anthropic")).resolves.toEqual({ type: "api_key", key: "anthropic-key" });
+			}
+		} finally {
+			releaseHeld();
+			await writer;
+		}
+	});
+
+	test("atomic writes leave no sibling temporary files", async () => {
+		const storage = AuthStorage.create(authPath);
+		await storage.modify("openai", async () => ({ type: "api_key", key: "openai-key" }));
+
+		expect(readdirSync(tempDir).filter((entry) => entry.endsWith(".tmp"))).toEqual([]);
+		expect(JSON.parse(readFileSync(authPath, "utf8"))).toEqual({
+			anthropic: { type: "api_key", key: "anthropic-key" },
+			openai: { type: "api_key", key: "openai-key" },
+		});
+	});
+
+	const posixTest = process.platform === "win32" ? test.skip : test;
+	posixTest("atomic writes preserve 0600 file permissions", async () => {
+		const storage = AuthStorage.create(authPath);
+		await storage.modify("openai", async () => ({ type: "api_key", key: "openai-key" }));
+		expect(statSync(authPath).mode & 0o777).toBe(0o600);
 	});
 });
