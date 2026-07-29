@@ -6,25 +6,24 @@
 
 import { getModel } from "@earendil-works/pi-ai/compat";
 import {
-	AuthStorage,
 	createAgentSession,
 	createExtensionRuntime,
-	ModelRegistry,
+	ModelRuntime,
 	type ResourceLoader,
 	SessionManager,
 	SettingsManager,
 } from "@bastani/atomic";
 
-// Custom auth storage location
-const authStorage = AuthStorage.create("/tmp/my-agent/auth.json");
+// Custom credential location with no custom models.json
+const modelRuntime = await ModelRuntime.create({
+	authPath: "/tmp/my-agent/auth.json",
+	modelsPath: null,
+});
 
 // Runtime API key override (not persisted)
 if (process.env.MY_ANTHROPIC_KEY) {
-	authStorage.setRuntimeApiKey("anthropic", process.env.MY_ANTHROPIC_KEY);
+	await modelRuntime.setRuntimeApiKey("anthropic", process.env.MY_ANTHROPIC_KEY);
 }
-
-// Model registry with no custom models.json
-const modelRegistry = ModelRegistry.inMemory(authStorage);
 
 const model = getModel("anthropic", "claude-sonnet-4-5");
 if (!model) throw new Error("Model not found");
@@ -46,7 +45,7 @@ const resourceLoader: ResourceLoader = {
 	getSystemPrompt: () => `You are a minimal assistant.
 Available: read, bash. Be concise.`,
 	getAppendSystemPrompt: () => [],
-	extendResources: () => {},
+	extendResources: async () => {},
 	reload: async () => {},
 };
 
@@ -55,8 +54,7 @@ const { session } = await createAgentSession({
 	agentDir: "/tmp/my-agent",
 	model,
 	thinkingLevel: "off",
-	authStorage,
-	modelRegistry,
+	modelRuntime,
 	resourceLoader,
 	tools: ["read", "bash"],
 	sessionManager: SessionManager.inMemory(cwd),

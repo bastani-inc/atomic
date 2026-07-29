@@ -21,6 +21,7 @@ import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
 import { builtInExtensions } from "./extensions/index.ts";
 import { type AppMode, isPlainRuntimeMetadataCommand, prepareInitialMessage, resolveAppMode, resolveCliPaths, resolveExcludedToolsForAppMode, toPrintOutputMode } from "./main-app-mode.ts";
 import { type EarlyInputCapture, startEarlyInputCapture } from "./main-early-input.ts";
+import { applyCliRuntimeApiKey } from "./main-runtime-api-key.ts";
 import { computeDeferExtensions, computeStartupInputCaptureEnabled, formatScopedModelList } from "./main-deferred-startup.ts";
 import { applyInheritedWorkflowSessionClassification, createSessionManager, promptForMissingSessionCwd, validateForkFlags, validateSessionIdFlags } from "./main-session.ts";
 import { buildSessionOptions } from "./main-session-options.ts";
@@ -314,7 +315,7 @@ export async function main(args: string[], options?: MainOptions) {
 					message: "--api-key requires a model to be specified via --model, --provider/--model, or --models",
 				});
 			} else {
-				await modelRuntime.setRuntimeApiKey(sessionOptions.model.provider, parsed.apiKey);
+				await applyCliRuntimeApiKey(modelRuntime, sessionOptions.model.provider, parsed.apiKey);
 			}
 		}
 

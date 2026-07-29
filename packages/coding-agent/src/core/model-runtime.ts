@@ -39,6 +39,7 @@ import { withRemoteCatalog } from "./remote-catalog-provider.ts";
 import { RuntimeCredentials } from "./runtime-credentials.ts";
 import { isOfflineModeEnabled } from "./package-manager-env.ts";
 import { collectOAuthProviderMetadata } from "./oauth-provider-metadata.ts";
+import { OAuthLoginTransactionError } from "./oauth-login.ts";
 import {
 	addRuntimeApiKeyProvider,
 	createEmptyModelRuntimeSnapshot,
@@ -384,8 +385,11 @@ export class ModelRuntime implements Models {
 
 	async login(providerId: string, type: AuthType, interaction: AuthInteraction): Promise<Credential> {
 		const credential = await this.models.login(providerId, type, interaction);
-		// Authentication is complete once the credential is persisted. Catalog refresh is best-effort.
-		await this.refresh({ allowNetwork: this.modelNetworkEnabled }).catch(() => undefined);
+		try {
+			await this.refresh({ allowNetwork: this.modelNetworkEnabled });
+		} catch (error) {
+			throw new OAuthLoginTransactionError(error);
+		}
 		return credential;
 	}
 

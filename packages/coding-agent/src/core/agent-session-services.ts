@@ -14,6 +14,7 @@ import {
 import { type CreateAgentSessionOptions, type CreateAgentSessionResult, createAgentSession } from "./sdk.ts";
 import type { SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
+import { endTimingSpan, startTimingSpan } from "./timings.ts";
 
 /**
  * Non-fatal issues collected while creating services or sessions.
@@ -139,22 +140,29 @@ export async function createAgentSessionServices(
 ): Promise<AgentSessionServices> {
 	const cwd = resolvePath(options.cwd);
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getAgentDir();
+	const modelRuntimeSpan = startTimingSpan("createAgentSessionServices.modelRuntime");
 	const modelRuntime =
 		options.modelRuntime ??
 		(await ModelRuntime.create({
 			authPath: join(agentDir, "auth.json"),
 			modelsPath: join(agentDir, "models.json"),
 		}));
+	endTimingSpan(modelRuntimeSpan);
+	const settingsSpan = startTimingSpan("createAgentSessionServices.settingsManager");
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
+	endTimingSpan(settingsSpan);
 	const resourceLoader = new DefaultResourceLoader({
 		...(options.resourceLoaderOptions ?? {}),
 		cwd,
 		agentDir,
 		settingsManager,
 	});
+	const reloadSpan = startTimingSpan("createAgentSessionServices.resourceLoader.reload");
 	await resourceLoader.reload(options.resourceLoaderReloadOptions);
+	endTimingSpan(reloadSpan);
 
 	const diagnostics: AgentSessionRuntimeDiagnostic[] = [];
+	const providerSpan = startTimingSpan("createAgentSessionServices.providerRegistrations");
 	const extensionsResult = resourceLoader.getExtensions();
 	for (const registration of extensionsResult.runtime.pendingProviderRegistrations) {
 		try {
@@ -166,7 +174,10 @@ export async function createAgentSessionServices(
 		}
 	}
 	extensionsResult.runtime.pendingProviderRegistrations = [];
+	endTimingSpan(providerSpan);
+	const catalogRestoreSpan = startTimingSpan("createAgentSessionServices.restoreModelCatalogs");
 	await modelRuntime.refresh({ allowNetwork: false });
+	endTimingSpan(catalogRestoreSpan);
 	diagnostics.push(...applyExtensionFlagValues(resourceLoader, options.extensionFlagValues));
 
 	return {

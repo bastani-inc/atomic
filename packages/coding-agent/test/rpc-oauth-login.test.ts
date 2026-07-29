@@ -379,10 +379,19 @@ describe("RPC OAuth credential survival", () => {
 		}));
 	});
 
-	it("keeps the acquired credential when post-login model refresh throws", async () => {
-		await expectSuccessfulLoginAndRetainedCredential(async () => {
-			throw new DOMException("refresh transport aborted", "AbortError");
-		});
+	it("keeps a thrown post-login model refresh failure visible without rolling back", async () => {
+		const { harness, handler } = await createRuntimeHarness();
+		vi.spyOn(harness.session.modelRuntime, "refresh").mockRejectedValue(
+			new DOMException("refresh transport aborted", "AbortError"),
+		);
+
+		await expect(handler({
+			id: "login",
+			type: "login_provider",
+			provider: "corp-oauth",
+			authType: "oauth",
+		})).rejects.toThrow("refresh transport aborted");
+		expect(await harness.authStorage.read("corp-oauth")).toMatchObject({ type: "oauth", access: "new-secret" });
 	});
 
 	it("keeps the acquired credential when post-login model refresh reports an aborted result", async () => {

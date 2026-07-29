@@ -1,52 +1,46 @@
 /**
  * API Keys and OAuth
  *
- * Configure API key resolution via AuthStorage and ModelRegistry.
+ * Configure credential and model resolution through ModelRuntime.
  */
 
-import { AuthStorage, createAgentSession, ModelRegistry, SessionManager } from "@bastani/atomic";
+import { createAgentSession, ModelRuntime, SessionManager } from "@bastani/atomic";
 
-// Default: AuthStorage uses ~/.atomic/agent/auth.json (legacy ~/.pi/agent/auth.json also works)
-// ModelRegistry loads built-in + custom models from ~/.atomic/agent/models.json (legacy ~/.pi/agent/models.json also works)
-const authStorage = AuthStorage.create();
-const modelRegistry = ModelRegistry.create(authStorage);
-
+// Default: createAgentSession builds a runtime from the active agent directory's
+// auth.json and models.json.
 const { session: defaultAuthSession } = await createAgentSession({
 	sessionManager: SessionManager.inMemory(),
-	authStorage,
-	modelRegistry,
 });
-console.log("Session with default auth storage and model registry");
+console.log("Session with default credential and model configuration");
 defaultAuthSession.dispose();
 
-// Custom auth storage location
-const customAuthStorage = AuthStorage.create("/tmp/my-app/auth.json");
-const customModelRegistry = ModelRegistry.create(customAuthStorage, "/tmp/my-app/models.json");
-
+// Custom credential and model configuration locations
+const customRuntime = await ModelRuntime.create({
+	authPath: "/tmp/my-app/auth.json",
+	modelsPath: "/tmp/my-app/models.json",
+});
 const { session: customAuthSession } = await createAgentSession({
 	sessionManager: SessionManager.inMemory(),
-	authStorage: customAuthStorage,
-	modelRegistry: customModelRegistry,
+	modelRuntime: customRuntime,
 });
-console.log("Session with custom auth storage location");
+console.log("Session with custom credential and model configuration");
 customAuthSession.dispose();
 
 // Runtime API key override (not persisted to disk)
-authStorage.setRuntimeApiKey("anthropic", "sk-my-temp-key");
+const runtimeKeyRuntime = await ModelRuntime.create();
+await runtimeKeyRuntime.setRuntimeApiKey("anthropic", "sk-my-temp-key");
 const { session: runtimeKeySession } = await createAgentSession({
 	sessionManager: SessionManager.inMemory(),
-	authStorage,
-	modelRegistry,
+	modelRuntime: runtimeKeyRuntime,
 });
 console.log("Session with runtime API key override");
 runtimeKeySession.dispose();
 
 // No models.json - only built-in models
-const simpleRegistry = ModelRegistry.inMemory(authStorage);
+const builtinsOnlyRuntime = await ModelRuntime.create({ modelsPath: null });
 const { session: builtInModelsSession } = await createAgentSession({
 	sessionManager: SessionManager.inMemory(),
-	authStorage,
-	modelRegistry: simpleRegistry,
+	modelRuntime: builtinsOnlyRuntime,
 });
 console.log("Session with only built-in models");
 builtInModelsSession.dispose();

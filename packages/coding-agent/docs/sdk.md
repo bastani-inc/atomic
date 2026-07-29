@@ -492,7 +492,7 @@ const customSession = await createAgentSession({
 const builtinsOnly = await ModelRuntime.create({ modelsPath: null });
 ```
 
-> See [examples/sdk/09-api-keys-and-oauth.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/sdk/09-api-keys-and-oauth.ts)
+> See the complete [`ModelRuntime` credential and model configuration example](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/sdk/09-api-keys-and-oauth.ts).
 
 ### System Prompt
 

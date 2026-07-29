@@ -5,9 +5,9 @@ import { isOAuthLoginCancelled } from "../../core/oauth-login.ts";
 
 InteractiveModeBase.prototype.completeProviderAuthentication = async function(this: InteractiveModeBase, providerId: string, providerName: string, authType: "oauth" | "api_key", previousModel: Model<Api> | undefined, options: { modelsRefreshed?: boolean } = {}): Promise<void> {
 	if (!options.modelsRefreshed) {
-		// Upstream pi parity: a failed or timeout-aborted catalog refresh after a
-		// completed login is non-fatal; models fall back to the cached snapshot.
-		await this.session.modelRuntime.refresh().catch(() => undefined);
+		// Match pi: after authentication persists the credential, a thrown catalog
+		// refresh failure remains visible to the caller without rolling it back.
+		await this.session.modelRuntime.refresh();
 	}
 
     const actionLabel =

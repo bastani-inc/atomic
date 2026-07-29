@@ -429,14 +429,12 @@ See [docs/packages.md](docs/packages.md).
 ### SDK
 
 ```typescript
-import { AuthStorage, createAgentSession, ModelRegistry, SessionManager } from "@bastani/atomic";
+import { createAgentSession, SessionManager } from "@bastani/atomic";
 
-const authStorage = AuthStorage.create();
-const modelRegistry = ModelRegistry.create(authStorage);
+// By default, createAgentSession builds a ModelRuntime from the active agent
+// directory's auth.json and models.json.
 const { session } = await createAgentSession({
   sessionManager: SessionManager.inMemory(),
-  authStorage,
-  modelRegistry,
 });
 
 await session.prompt("What files are in the current directory?");
