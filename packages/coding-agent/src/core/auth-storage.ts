@@ -124,10 +124,14 @@ export function readStoredCredential(providerId: string, authPath?: string | str
 		? getAgentConfigPaths("auth.json")
 		: Array.isArray(authPath) ? authPath : [authPath];
 	const storage = new FileAuthStorageBackend(paths[0] ?? join(getAgentDir(), "auth.json"), paths);
-	let credential: Credential | undefined;
-	storage.withLock((content) => {
-		credential = content ? (JSON.parse(content) as AuthStorageData)[providerId] : undefined;
-		return { result: undefined };
-	});
-	return credential;
+	try {
+		let credential: Credential | undefined;
+		storage.withLock((content) => {
+			credential = content ? (JSON.parse(content) as AuthStorageData)[providerId] : undefined;
+			return { result: undefined };
+		});
+		return credential;
+	} catch {
+		return undefined;
+	}
 }

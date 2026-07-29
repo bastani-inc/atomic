@@ -28,9 +28,9 @@ import { ModelConfig } from "./model-config.ts";
 import { FileModelsStore, InMemoryCodingAgentModelsStore } from "./models-store.ts";
 import {
 	type AuthStatus,
-	type CompatibilityRequestConfig,
 	composeModelProvider,
 	configuredRequestAuthStatus,
+	type CompatibilityRequestConfig,
 	type ProviderConfigInput,
 	resolveCompatibilityRequestConfig,
 	resolveConfiguredModelHeaders,
@@ -40,14 +40,14 @@ import { withRemoteCatalog } from "./remote-catalog-provider.ts";
 import { RuntimeCredentials } from "./runtime-credentials.ts";
 import { isOfflineModeEnabled } from "./package-manager-env.ts";
 import { collectOAuthProviderMetadata } from "./oauth-provider-metadata.ts";
-interface ModelRuntimeSnapshot {
-	all: readonly Model<Api>[];
-	available: readonly Model<Api>[];
-	configuredProviders: ReadonlySet<string>;
-	storedProviders: ReadonlySet<string>;
-	storedCredentialTypes: ReadonlyMap<string, CredentialInfo["type"]>;
-	auth: ReadonlyMap<string, AuthCheck | undefined>;
-}
+import {
+	addRuntimeApiKeyProvider,
+	createEmptyModelRuntimeSnapshot,
+	createModelRuntimeSnapshot,
+	getSnapshotProviderAuthStatus,
+	type ModelRuntimeSnapshot,
+	updateSnapshotModels,
+} from "./model-runtime-snapshot.ts";
 export type { CreateModelRuntimeOptions, ModelRuntimeAuthOverrides } from "./model-runtime-types.ts";
 import type { CreateModelRuntimeOptions, ModelRuntimeAuthOverrides } from "./model-runtime-types.ts";
 import { ModelRuntimeStreaming, mergeHeaders } from "./model-runtime-streaming.ts";
@@ -64,14 +64,7 @@ export class ModelRuntime implements Models {
 	private readonly modelsPath: string | undefined;
 	private readonly modelNetworkEnabled: boolean;
 	private config: ModelConfig;
-	private snapshot: ModelRuntimeSnapshot = {
-		all: [],
-		available: [],
-		configuredProviders: new Set(),
-		storedProviders: new Set(),
-		storedCredentialTypes: new Map(),
-		auth: new Map(),
-	};
+	private snapshot: ModelRuntimeSnapshot = createEmptyModelRuntimeSnapshot();
 	private availabilityRefresh: Promise<void> | undefined;
 	private availabilityError: string | undefined;
 	private constructor(
@@ -186,12 +179,7 @@ export class ModelRuntime implements Models {
 		this.updateModelSnapshot();
 	}
 	private updateModelSnapshot(): void {
-		const all = [...this.models.getModels()];
-		this.snapshot = {
-			...this.snapshot,
-			all,
-			available: all.filter((model) => this.snapshot.configuredProviders.has(model.provider)),
-		};
+		this.snapshot = updateSnapshotModels(this.snapshot, [...this.models.getModels()]);
 	}
 	private async runAvailabilityRefresh(): Promise<void> {
 		const providers = this.models.getProviders();
@@ -207,20 +195,12 @@ export class ModelRuntime implements Models {
 			),
 			this.credentials.list(),
 		]);
-		const auth = new Map(checks);
-		const configuredProviders = new Set(
-			checks
-				.filter((entry): entry is [string, AuthCheck] => entry[1] !== undefined)
-				.map(([providerId]) => providerId),
+		this.snapshot = createModelRuntimeSnapshot(
+			[...this.models.getModels()],
+			[...available],
+			checks,
+			credentials,
 		);
-		this.snapshot = {
-			all: [...this.models.getModels()],
-			available: [...available],
-			configuredProviders,
-			storedProviders: new Set(credentials.map((entry) => entry.providerId)),
-			storedCredentialTypes: new Map(credentials.map((entry) => [entry.providerId, entry.type])),
-			auth,
-		};
 		this.availabilityError = undefined;
 	}
 	private queueAvailabilityRefresh(after: Promise<void> | undefined): Promise<void> {
@@ -341,44 +321,48 @@ export class ModelRuntime implements Models {
 		};
 	}
 	/** Reload credentials changed by the authoritative isolated engine and update auth status snapshots. */
-	async reloadCredentials(): Promise<void> { await this.credentials.reload(); await this.forceRefreshAvailability(); }
-	async saveCredential(providerId: string, credential: Credential): Promise<void> { await this.credentials.modify(providerId, async () => credential); await this.refresh(); }
+	async reloadCredentials(): Promise<void> {
+		await this.credentials.reload();
+		await this.forceRefreshAvailability();
+	}
+
+	async saveCredential(providerId: string, credential: Credential): Promise<void> {
+		await this.credentials.modify(providerId, async () => credential);
+		await this.refresh();
+	}
 	async setRuntimeApiKey(
 		providerId: string,
 		apiKey: string,
 		refreshOptions: ModelsRefreshOptions = {},
 	): Promise<void> {
 		this.credentials.setRuntimeApiKey(providerId, apiKey);
-		const auth = new Map(this.snapshot.auth).set(providerId, { type: "api_key", source: "runtime API key" });
-		const configuredProviders = new Set(this.snapshot.configuredProviders).add(providerId);
-		const storedProviders = new Set(this.snapshot.storedProviders).add(providerId);
-		this.snapshot = {
-			...this.snapshot,
-			auth,
-			configuredProviders,
-			storedProviders,
-			available: this.snapshot.all.filter((model) => configuredProviders.has(model.provider)),
-		};
+		this.snapshot = addRuntimeApiKeyProvider(this.snapshot, providerId);
 		await this.refresh(refreshOptions);
 	}
 
 	async removeRuntimeApiKey(providerId: string): Promise<void> {
-		this.credentials.removeRuntimeApiKey(providerId); await this.refresh({ allowNetwork: this.modelNetworkEnabled });
+		this.credentials.removeRuntimeApiKey(providerId);
+		await this.refresh({ allowNetwork: this.modelNetworkEnabled });
 	}
 
-	listCredentials(): Promise<readonly CredentialInfo[]> { return this.credentials.list(); }
-	getStoredCredentialType(providerId: string): CredentialInfo["type"] | undefined { return this.snapshot.storedCredentialTypes.get(providerId); }
+	listCredentials(): Promise<readonly CredentialInfo[]> {
+		return this.credentials.list();
+	}
+
+	getStoredCredentialType(providerId: string): CredentialInfo["type"] | undefined {
+		return this.snapshot.storedCredentialTypes.get(providerId);
+	}
 
 	getProviderAuthStatus(providerId: string): AuthStatus {
-		if (this.credentials.hasRuntimeApiKey(providerId)) return { configured: true, source: "runtime" };
-		if (this.snapshot.storedProviders.has(providerId)) return { configured: true, source: "stored" };
-		const configured = configuredRequestAuthStatus(
-			this.config.getProvider(providerId),
-			this.extensionProviders.get(providerId),
+		return getSnapshotProviderAuthStatus(
+			this.snapshot,
+			providerId,
+			this.credentials.hasRuntimeApiKey(providerId),
+			configuredRequestAuthStatus(
+				this.config.getProvider(providerId),
+				this.extensionProviders.get(providerId),
+			),
 		);
-		if (configured) return configured;
-		const check = this.snapshot.auth.get(providerId);
-		return check ? { configured: true, source: "environment", label: check.source } : { configured: false };
 	}
 
 	stream<TApi extends Api>(

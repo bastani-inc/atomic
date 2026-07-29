@@ -61,15 +61,15 @@ afterEach(() => {
 
 describe("agent session service model paths", () => {
 
-	it("does not load project models while the project is untrusted", async () => {
-		const home = mkdtempSync(join(tmpdir(), "atomic-service-untrusted-models-"));
+	it("does not load project-scoped models for a trusted project", async () => {
+		const home = mkdtempSync(join(tmpdir(), "atomic-service-project-models-"));
 		tempDirs.push(home);
 		configureTemporaryHome(home);
 		const cwd = join(home, "project");
 		const agentDir = join(home, ".atomic", "agent");
 		mkdirSync(cwd);
-		writeCustomModel(join(cwd, ".atomic", "models.json"), "untrusted-project-model");
-		const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
+		writeCustomModel(join(cwd, ".atomic", "models.json"), "project-scoped-only");
+		const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: true });
 
 		const services = await createAgentSessionServices({
 			cwd,
@@ -79,7 +79,7 @@ describe("agent session service model paths", () => {
 			resourceLoaderOptions: { noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true },
 		});
 
-		expect(services.modelRuntime.getModel("project-probe", "untrusted-project-model")).toBeUndefined();
+		expect(services.modelRuntime.getModel("project-probe", "project-scoped-only")).toBeUndefined();
 	});
 
 	it("preserves an explicitly supplied model registry without adding project paths", async () => {

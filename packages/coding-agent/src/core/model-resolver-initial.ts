@@ -31,7 +31,7 @@ export async function resolveRestoredModelReference(
 ): Promise<Model<Api> | undefined> {
   const found = modelRuntime.getModel(provider, modelId);
   if (found) return modelRuntime.hasConfiguredAuth(found.provider) ? found : undefined;
-  if (!modelRuntime.getProvider(provider) !== undefined) return undefined;
+  if (modelRuntime.getProvider(provider) === undefined) return undefined;
   return buildConfiguredProviderFallbackModel(provider, modelId, modelRuntime);
 }
 

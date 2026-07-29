@@ -204,7 +204,7 @@ describe("default model selection", () => {
 		expect(result.model?.id).not.toBe("gpt-5.6");
 		expect(result.fallbackMessage).toContain("model no longer exists");
 	});
-	test("restoreModelFromSession does not synthesize missing IDs for registered providers", async () => {
+	test("restoreModelFromSession restores missing ids for registered OpenAI-compatible providers", async () => {
 		const registry = await createInMemoryModelRegistry(AuthStorage.inMemory());
 		registry.registerProvider("custom-openai", {
 			baseUrl: "https://custom.example/v1",
@@ -231,9 +231,9 @@ describe("default model selection", () => {
 			getModelRuntime(registry),
 		);
 
-		expect(result.fallbackMessage).toContain("model no longer exists");
+		expect(result.fallbackMessage).toBeUndefined();
 		expect(result.model?.provider).toBe("custom-openai");
-		expect(result.model?.id).toBe("catalog-template");
+		expect(result.model?.id).toBe("newly-discovered-model");
 	});
 	test("restoreModelFromSession rejects an exact unauthenticated model instead of synthesizing it", async () => {
 		const unauthenticatedExact = { ...allModels[1]!, id: "saved-exact" };
@@ -249,7 +249,7 @@ describe("default model selection", () => {
 		expect(result.model?.id).not.toBe("saved-exact");
 		expect(result.fallbackMessage).toContain("no auth configured");
 	});
-	test("restoreModelFromSession rejects unknown catalog IDs without synthesizing them", async () => {
+	test("restoreModelFromSession restores missing ids from registered provider models", async () => {
 		const registry = {
 			getModel: () => undefined,
 			getProvider: () => ({ id: "github-copilot" } as never),
@@ -263,8 +263,9 @@ describe("default model selection", () => {
 			false,
 			registry,
 		);
-		expect(result.fallbackMessage).toContain("model no longer exists");
-		expect(result.model).toBe(copilotSelectableBaseModel);
+		expect(result.fallbackMessage).toBeUndefined();
+		expect(result.model?.provider).toBe("github-copilot");
+		expect(result.model?.id).toBe("future-copilot-model");
 		expect(result.model?.contextWindow).toBe(400000);
 	});
 	test("findInitialModel selects ai-gateway default when available", async () => {

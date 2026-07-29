@@ -1,6 +1,6 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Text } from "@earendil-works/pi-tui";
@@ -145,6 +145,17 @@ test("readStoredCredential reads a single credential from an explicit Atomic aut
     await storage.modify("example", async () => ({ type: "api_key", key: "secret" }));
     assert.deepEqual(readStoredCredential("example", path), { type: "api_key", key: "secret" });
     assert.equal(readStoredCredential("missing", path), undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readStoredCredential returns undefined for malformed auth.json", () => {
+  const dir = mkdtempSync(join(tmpdir(), "atomic-auth-malformed-"));
+  const path = join(dir, "auth.json");
+  try {
+    writeFileSync(path, "{not valid json", "utf8");
+    assert.equal(readStoredCredential("example", path), undefined);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
