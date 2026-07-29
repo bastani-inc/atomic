@@ -30,10 +30,6 @@ export default defineConfig({
 		globals: true,
 		environment: "node",
 		testTimeout: defaultTestTimeoutMs,
-		// TEMPORARY: name whatever is keeping the Windows run alive after the summary
-		// prints. The hanging-process reporter sees nothing under `bun --bun`, so the
-		// global teardown dumps the surviving process tree instead.
-		globalSetup: ["./test-exit-diagnostic.ts"],
 		include: ["test/**/*.test.ts", "test/**/*.spec.ts", "test/**/*.suite.ts"],
 		exclude: [
 			"**/node_modules/**",
