@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -9,8 +9,14 @@ import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.ts";
 
 const tempDirs: string[] = [];
+beforeEach(() => {
+	// Saving triggers a catalog refresh. This persistence test does not exercise
+	// remote catalogs and must not inherit configured provider keys from the host.
+	vi.stubEnv("ATOMIC_OFFLINE", "1");
+});
 afterEach(() => {
 	vi.restoreAllMocks();
+	vi.unstubAllEnvs();
 	while (tempDirs.length > 0) rmSync(tempDirs.pop()!, { recursive: true, force: true });
 });
 

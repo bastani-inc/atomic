@@ -15,6 +15,7 @@ export class RemoteModelCatalog {
 	private readonly client: RpcClient;
 	private models: Model<Api>[] = [];
 	private scopedModels: Array<{ model: Model<Api>; thinkingLevel?: AgentSession["thinkingLevel"] }> = [];
+	private oauthProviders: NonNullable<RpcModelCatalog["oauthProviders"]> = [];
 	private refreshGeneration = 0;
 
 	constructor(client: RpcClient) {
@@ -23,6 +24,7 @@ export class RemoteModelCatalog {
 
 	apply(catalog: RpcModelCatalog): void {
 		this.applyModels(catalog);
+		if (catalog.oauthProviders) this.oauthProviders = catalog.oauthProviders;
 	}
 
 	applyModels(catalog: Pick<RpcModelCatalog, "models" | "scopedModels">): void {
@@ -37,7 +39,8 @@ export class RemoteModelCatalog {
 			getAvailableSnapshot: { configurable: true, value: () => [...this.models] },
 			getModels: { configurable: true, value: (provider?: string) => provider ? this.models.filter((model) => model.provider === provider) : [...this.models] },
 			getModel: { configurable: true, value: (provider: string, modelId: string) => this.models.find((model) => model.provider === provider && model.id === modelId) },
-			hasConfiguredAuth: { configurable: true, value: (provider: string) => this.models.some((model) => model.provider === provider) },
+			hasConfiguredAuth: { configurable: true, value: (provider: string) => runtime.getProviderAuthStatus(provider).configured },
+			getOAuthProviderMetadata: { configurable: true, value: () => [...this.oauthProviders] },
 		});
 		Object.defineProperty(session, "scopedModels", { configurable: true, get: () => this.scopedModels });
 	}

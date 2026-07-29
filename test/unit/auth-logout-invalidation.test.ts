@@ -5,7 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import lockfile from "proper-lockfile";
 import { RpcClient } from "../../packages/coding-agent/src/modes/rpc/rpc-client.ts";
+import { loginIsolatedOAuthProvider } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-auth.ts";
+import { RemoteModelCatalog } from "../../packages/coding-agent/src/modes/interactive-engine/remote-model-catalog.ts";
 import { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
+import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
 import { formatLogoutStatus } from "../../packages/coding-agent/src/modes/interactive/interactive-auth-routing.ts";
 import { AuthStorage, type AuthStorageData } from "../../packages/coding-agent/src/core/auth-storage.ts";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.ts";
@@ -199,6 +202,59 @@ describe("logout credential invalidation (#1919)", () => {
 		}
 	});
 
+	test("isolated login reloads the frontend credential snapshot after the engine persists OAuth", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "atomic-isolated-login-reload-"));
+		const authPath = join(directory, "auth.json");
+		await Bun.write(authPath, "{}\n");
+		const modelRuntime = await ModelRuntime.create({ authPath, modelsPath: null });
+		const session = { modelRuntime, scopedModels: [] };
+		const remoteCatalog = new RemoteModelCatalog({} as never);
+		remoteCatalog.patch(session as never);
+		const client = {
+			onExtensionUIRequest: () => () => {},
+			respondExtensionUI: async () => {},
+			cancelLoginProvider: async () => {},
+			requestInternal: async () => {
+				await Bun.write(authPath, JSON.stringify({
+					"corp-oauth": {
+						type: "oauth",
+						access: "engine-token",
+						refresh: "refresh-token",
+						expires: Date.now() + 60_000,
+					},
+				}));
+				return {
+					provider: "corp-oauth",
+					cancelled: false,
+					models: [{ provider: "corp-oauth", id: "corp-model" }],
+					scopedModels: [],
+					customAuthProviders: [],
+					oauthProviders: [{ id: "corp-oauth", name: "Corp OAuth" }],
+				};
+			},
+		};
+
+		try {
+			assert.deepEqual(modelRuntime.getProviderAuthStatus("corp-oauth"), { configured: false });
+			await loginIsolatedOAuthProvider(
+				session as never,
+				client as never,
+				remoteCatalog,
+				"corp-oauth",
+				{} as never,
+			);
+			assert.deepEqual(modelRuntime.getProviderAuthStatus("corp-oauth"), {
+				configured: true,
+				source: "stored",
+			});
+			assert.equal(modelRuntime.hasConfiguredAuth("corp-oauth"), true);
+			const logoutOptions = InteractiveModeBase.prototype.getLogoutProviderOptions.call({ session } as never);
+			assert.deepEqual(logoutOptions, [{ id: "corp-oauth", name: "Corp OAuth", authType: "oauth" }]);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
 	test("the isolated host applies the child logout catalog without persisting frontend credentials", async () => {
 		const model = { provider: "github-copilot", id: "claude-haiku-4.5" };
 		const authStorage = AuthStorage.inMemory({
@@ -211,6 +267,12 @@ describe("logout credential invalidation (#1919)", () => {
 			return originalDelete(...args);
 		};
 		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null });
+		let reloadCalls = 0;
+		const originalReloadCredentials = modelRuntime.reloadCredentials.bind(modelRuntime);
+		modelRuntime.reloadCredentials = async () => {
+			reloadCalls += 1;
+			await originalReloadCredentials();
+		};
 		const session = {
 			modelRuntime,
 			agent: {
@@ -256,6 +318,7 @@ describe("logout credential invalidation (#1919)", () => {
 		await runtime.logoutProvider("github-copilot");
 		assert.deepEqual(runtime.session.modelRuntime.getAvailableSnapshot(), []);
 		assert.equal(deleteCalls, 0);
+		assert.equal(reloadCalls, 1);
 		assert.notEqual(await authStorage.read("github-copilot"), undefined);
 	});
 

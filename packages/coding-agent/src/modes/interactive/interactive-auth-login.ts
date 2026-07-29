@@ -177,11 +177,9 @@ InteractiveModeBase.prototype.showOAuthLoginSelect = function(this: InteractiveM
 
 InteractiveModeBase.prototype.showLoginDialog = async function(this: InteractiveModeBase, providerId: string, providerName: string): Promise<void> {
     const previousModel = this.session.model;
+    const metadata = this.session.modelRuntime?.getOAuthProviderMetadata().find(({ id }) => id === providerId);
+    const usesCallbackServer = metadata?.usesCallbackServer === true;
 
-    // Providers that use callback servers (can paste redirect URL)
-    const usesCallbackServer = false;
-
-    // Create login dialog component
     const dialog = new LoginDialogComponent(
       this.ui,
       providerId,
@@ -189,6 +187,7 @@ InteractiveModeBase.prototype.showLoginDialog = async function(this: Interactive
         // Completion handled below
       },
       providerName,
+      metadata?.loginLabel,
     );
 
     // Show dialog in editor container

@@ -129,6 +129,7 @@ test("refresh_models is unbounded by default and honors an explicit caller timeo
 		},
 		getAvailableSnapshot: () => [],
 		getProviders: () => [],
+		getOAuthProviderMetadata: () => [],
 	};
 	const session = { modelRuntime, scopedModels: [] } as unknown as AgentSession;
 	const handle = createRpcCommandHandler({

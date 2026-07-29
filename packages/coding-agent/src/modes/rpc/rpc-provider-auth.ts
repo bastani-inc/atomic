@@ -73,7 +73,7 @@ export class RpcProviderAuth {
 	private catalog(session: AgentSession): RpcModelCatalog {
 		return {
 			models: [...session.modelRuntime.getAvailableSnapshot()], scopedModels: [...session.scopedModels], customAuthProviders: [],
-			oauthProviders: session.modelRuntime.getProviders().filter((provider) => provider.auth.oauth).map((provider) => ({ id: provider.id, name: provider.name ?? provider.id })),
+			oauthProviders: session.modelRuntime.getOAuthProviderMetadata(),
 		};
 	}
 }

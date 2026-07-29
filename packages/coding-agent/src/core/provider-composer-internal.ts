@@ -27,7 +27,7 @@ import {
 
 export interface ExtensionOAuthConfig {
 	name: string;
-	/** @deprecated Retained for extension source compatibility; ignored by canonical auth flows. */
+	loginLabel?: string;
 	usesCallbackServer?: boolean;
 	login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials>;
 	refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials>;

@@ -38,6 +38,7 @@ import {
 } from "./provider-composer.ts";
 import { withRemoteCatalog } from "./remote-catalog-provider.ts";
 import { RuntimeCredentials } from "./runtime-credentials.ts";
+import { collectOAuthProviderMetadata } from "./oauth-provider-metadata.ts";
 interface ModelRuntimeSnapshot {
 	all: readonly Model<Api>[];
 	available: readonly Model<Api>[];
@@ -294,7 +295,7 @@ export class ModelRuntime implements Models {
 	getRegisteredNativeProvider(providerId: string): Provider | undefined {
 		return this.nativeExtensionProviders.get(providerId);
 	}
-
+	getOAuthProviderMetadata() { return collectOAuthProviderMetadata(this.getProviders(), this.extensionProviders); }
 	/** @internal Compatibility fallback for ModelRegistry when provider auth is unconfigured. */
 	getCompatibilityRequestConfig(model: Model<Api>): CompatibilityRequestConfig {
 		return resolveCompatibilityRequestConfig(
@@ -335,9 +336,8 @@ export class ModelRuntime implements Models {
 			},
 		};
 	}
-	/** Reload credentials changed by the host before an isolated RPC refresh. */
-	async reloadCredentials(): Promise<void> { await this.credentials.reload(); }
-
+	/** Reload credentials changed by the authoritative isolated engine and update auth status snapshots. */
+	async reloadCredentials(): Promise<void> { await this.credentials.reload(); await this.forceRefreshAvailability(); }
 	async saveCredential(providerId: string, credential: Credential): Promise<void> {
 		await this.credentials.modify(providerId, async () => credential);
 		await this.refresh();

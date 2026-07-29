@@ -147,7 +147,7 @@ export function createRpcCommandHandler({
 					models,
 					scopedModels: session.scopedModels,
 					customAuthProviders: [],
-					oauthProviders: session.modelRuntime.getProviders().filter((provider) => provider.auth.oauth).map((provider) => ({ id: provider.id, name: provider.name ?? provider.id })),
+					oauthProviders: session.modelRuntime.getOAuthProviderMetadata(),
 				});
 			}
 
@@ -189,7 +189,7 @@ export function createRpcCommandHandler({
 						models: session.modelRuntime.getAvailableSnapshot(),
 						scopedModels: session.scopedModels,
 						customAuthProviders: [],
-						oauthProviders: session.modelRuntime.getProviders().filter((provider) => provider.auth.oauth).map((provider) => ({ id: provider.id, name: provider.name ?? provider.id })),
+						oauthProviders: session.modelRuntime.getOAuthProviderMetadata(),
 					});
 				} finally {
 					if (timeout) clearTimeout(timeout);

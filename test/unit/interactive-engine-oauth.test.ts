@@ -32,6 +32,8 @@ test.serial("real isolated child discovers and acquires engine-only custom OAuth
 		assert.deepEqual(before.oauthProviders?.find(({ id }) => id === "corp-oauth"), {
 			id: "corp-oauth",
 			name: "Corp OAuth",
+			loginLabel: "Sign in to Corp",
+			usesCallbackServer: true,
 		});
 		assert.equal(before.oauthProviders?.some(({ id }) => id === "openrouter"), true);
 		assert.equal(before.oauthProviders?.some(({ id }) => id === "kimi-coding"), true);

@@ -46,6 +46,7 @@ describe("OAuthSelectorComponent", () => {
 			session: {
 				modelRuntime: {
 					getProviders: () => providers,
+					getOAuthProviderMetadata: () => [{ id: "anthropic", name: "Anthropic" }],
 					getProviderAuthStatus: () => ({ configured: false }),
 					isUsingOAuth: () => false,
 				},

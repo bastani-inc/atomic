@@ -10,7 +10,7 @@ export type { AtomicOAuthLoginCallbacks } from "../../core/oauth-login.ts";
 
 /** Acquire and persist OAuth entirely in the engine, transporting only UI callbacks and catalog metadata. */
 export async function loginIsolatedOAuthProvider(
-	_session: AgentSession,
+	session: AgentSession,
 	client: RpcClient,
 	catalog: RemoteModelCatalog,
 	provider: string,
@@ -21,6 +21,8 @@ export async function loginIsolatedOAuthProvider(
 		throw normalizeOAuthLoginError(callbacks.signal?.reason ?? new Error("Login cancelled"), callbacks.signal);
 	}
 	catalog.apply(remoteCatalog);
-	// Reload only after the engine transaction and catalog refresh both succeed.
+	// The engine owns persistence. Refresh the frontend snapshot only after its
+	// credential transaction and catalog refresh both complete successfully.
+	await session.modelRuntime.reloadCredentials();
 	return { modelsRefreshed: true };
 }

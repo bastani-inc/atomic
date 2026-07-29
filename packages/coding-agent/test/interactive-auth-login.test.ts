@@ -103,6 +103,58 @@ describe("interactive OAuth cancellation", () => {
 		);
 	});
 
+	it("honors transported callback metadata and resolves manual redirect input", async () => {
+		const showManualInput = vi
+			.spyOn(LoginDialogComponent.prototype, "showManualInput")
+			.mockResolvedValue("https://localhost/callback?code=manual");
+		const completeProviderAuthentication = vi.fn(async () => {});
+		const editor = {};
+		const addedChildren: object[] = [];
+		const loginOAuthProvider = vi.fn(async (_provider: string, callbacks: {
+			onAuth(info: { url: string; instructions?: string }): void;
+			onManualCodeInput?(): Promise<string>;
+		}) => {
+			callbacks.onAuth({ url: "https://corp.invalid/login" });
+			expect(await callbacks.onManualCodeInput?.()).toBe("https://localhost/callback?code=manual");
+			return { modelsRefreshed: true };
+		});
+		const harness = {
+			session: {
+				model: undefined,
+				modelRuntime: {
+					getOAuthProviderMetadata: () => [{
+						id: "corp-oauth",
+						name: "Corp OAuth",
+						loginLabel: "Sign in to Corp",
+						usesCallbackServer: true,
+					}],
+				},
+			},
+			runtimeHost: { loginOAuthProvider },
+			ui: { setFocus: vi.fn(), requestRender: vi.fn() },
+			editorContainer: {
+				clear: vi.fn(),
+				addChild: vi.fn((child: object) => addedChildren.push(child)),
+			},
+			editor,
+			showError: vi.fn(),
+			completeProviderAuthentication,
+			showOAuthLoginSelect: vi.fn(),
+		};
+		const showLoginDialog = InteractiveModeBase.prototype.showLoginDialog as (
+			this: typeof harness, providerId: string, providerName: string,
+		) => Promise<void>;
+
+		await showLoginDialog.call(harness, "corp-oauth", "Corp OAuth");
+
+		expect(showManualInput).toHaveBeenCalledWith(
+			"Paste redirect URL below, or complete login in browser:",
+		);
+		const dialog = addedChildren[0] as LoginDialogComponent;
+		expect(dialog.render(100).join("\n")).toContain("Sign in to Corp");
+		expect(completeProviderAuthentication).toHaveBeenCalledOnce();
+	}, 1_000);
+
 	it("keeps a post-login refresh AbortError visible", async () => {
 		const refreshFailure = new DOMException("catalog refresh aborted", "AbortError");
 		const showError = vi.fn();

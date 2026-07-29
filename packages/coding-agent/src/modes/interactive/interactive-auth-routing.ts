@@ -38,26 +38,32 @@ InteractiveModeBase.prototype.getLoginProviderOptions = function(
   this: InteractiveModeBase,
   authType?: "oauth" | "api_key",
 ): AuthSelectorProvider[] {
-  const options: AuthSelectorProvider[] = [];
+  const options: AuthSelectorProvider[] = this.session.modelRuntime
+    .getOAuthProviderMetadata()
+    .map((provider) => ({ id: provider.id, name: provider.name, authType: "oauth" as const }));
   for (const provider of this.session.modelRuntime.getProviders()) {
-    if (provider.auth.oauth) options.push({ id: provider.id, name: provider.name ?? provider.id, authType: "oauth" });
     if (provider.auth.apiKey) options.push({ id: provider.id, name: provider.name ?? provider.id, authType: "api_key" });
   }
   return (authType ? options.filter((option) => option.authType === authType) : options)
     .sort((a, b) => a.name.localeCompare(b.name));
 };
-
 InteractiveModeBase.prototype.getLogoutProviderOptions = function(
   this: InteractiveModeBase,
 ): AuthSelectorProvider[] {
-  return this.session.modelRuntime.getProviders()
-    .filter((provider) => this.session.modelRuntime.getProviderAuthStatus(provider.id).source === "stored")
-    .map((provider) => ({
-      id: provider.id,
-      name: provider.name ?? provider.id,
-      authType: this.session.modelRuntime.isUsingOAuth(provider.id) ? "oauth" as const : "api_key" as const,
-    }))
-    .sort((a, b) => a.name.localeCompare(b.name));
+  const runtime = this.session.modelRuntime;
+  const providers = runtime.getProviders();
+  const localProviderIds = new Set(providers.map((provider) => provider.id));
+  const options: AuthSelectorProvider[] = runtime.getOAuthProviderMetadata()
+    .filter((provider) =>
+      runtime.getProviderAuthStatus(provider.id).source === "stored"
+      && (!localProviderIds.has(provider.id) || runtime.isUsingOAuth(provider.id)))
+    .map((provider) => ({ id: provider.id, name: provider.name, authType: "oauth" as const }));
+  for (const provider of providers) {
+    if (!provider.auth.apiKey || runtime.isUsingOAuth(provider.id)
+      || runtime.getProviderAuthStatus(provider.id).source !== "stored") continue;
+    options.push({ id: provider.id, name: provider.name ?? provider.id, authType: "api_key" });
+  }
+  return options.sort((a, b) => a.name.localeCompare(b.name));
 };
 
 InteractiveModeBase.prototype.startProviderLogin = async function(
