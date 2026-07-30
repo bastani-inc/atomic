@@ -67,6 +67,8 @@ interface Bridge {
 	readonly hostWrites: string[];
 	readonly hostMessages: InteractiveEngineMessage[];
 	readonly childCommands: InteractiveEngineCommand[];
+	/** componentIds in the order their host close callback ran. */
+	readonly closeOrder: string[];
 	readonly mounts: HostMount[];
 	focus: "editor" | "inline" | "overlay";
 	emitEngineReady(pid: number): void;
@@ -80,6 +82,7 @@ function makeBridge(): Bridge {
 	const hostMessages: InteractiveEngineMessage[] = [];
 	const mounts: HostMount[] = [];
 	const childCommands: InteractiveEngineCommand[] = [];
+	const closeOrder: string[] = [];
 	const generationEndedListeners: Array<(event: InteractiveEngineGenerationEnded) => void> = [];
 	const bridge = { focus: "editor" } as Bridge;
 
@@ -128,6 +131,7 @@ function makeBridge(): Bridge {
 					overlay: options.overlay === true,
 					focused: false,
 					done: (result: unknown) => {
+						closeOrder.push(componentId);
 						// Real host: overlay done hides + restores previous focus; inline
 						// done runs restoreEditor(setFocus editor). Model both as → editor.
 						if (mount.overlay ? bridge.focus === "overlay" : bridge.focus === "inline") {
@@ -183,7 +187,7 @@ function makeBridge(): Bridge {
 			});
 		}
 	};
-	return Object.assign(bridge, { child, controller, hostWrites, hostMessages, mounts, childCommands });
+	return Object.assign(bridge, { child, controller, hostWrites, hostMessages, mounts, childCommands, closeOrder });
 }
 
 /** Simulate the workflow graph overlay factory: enable mouse on mount, record input. */
@@ -471,4 +475,36 @@ describe("engine-death teardown of remote custom UI", () => {
 		);
 		bridge.controller.dispose();
 	});
+});
+
+/**
+ * Nested remote mounts must unwind newest-first. Oldest-first let an overlay
+ * mounted above an inline proxy restore focus to that proxy after it had
+ * already been closed and disposed.
+ */
+test("generation death closes nested remote mounts newest-first", async () => {
+	const bridge = makeBridge();
+	void bridge.child.custom(() => ({ render: () => ["inline"], handleInput: () => {}, invalidate: () => {} }), {
+		overlay: false,
+	});
+	await Bun.sleep(0);
+	void bridge.child.custom(() => ({ render: () => ["overlay"], handleInput: () => {}, invalidate: () => {} }), {
+		overlay: true,
+	});
+	await Bun.sleep(0);
+	assert.equal(bridge.mounts.length, 2, "both layers must be mounted");
+	const [inlineMount, overlayMount] = bridge.mounts;
+	assert.equal(inlineMount!.overlay, false);
+	assert.equal(overlayMount!.overlay, true);
+
+	bridge.emitGenerationEnded(1);
+	await Bun.sleep(0);
+
+	assert.deepEqual(
+		bridge.closeOrder,
+		[overlayMount!.componentId, inlineMount!.componentId],
+		"the overlay must close before the inline layer it was stacked on",
+	);
+	assert.equal(bridge.focus, "editor", "focus must end on the editor");
+	bridge.controller.dispose();
 });
