@@ -5,10 +5,11 @@ import {
 	restartInteractiveEngineForRemoteUi,
 	terminateInteractiveEngine,
 } from "../interactive-engine/extension-ui-bridge.ts";
-import { remoteEngineProxyOwnsInput } from "../interactive-engine/remote-input-ownership.ts";
+import { remoteEngineProxyOwner } from "../interactive-engine/remote-input-ownership.ts";
 import { StartupIdentityComponent } from "./components/startup-identity.ts";
 import { COMPACTION_ALREADY_IN_PROGRESS_WARNING } from "./interactive-bash-compact.ts";
 import { routeGlobalClearInput } from "./interactive-global-clear.ts";
+import { isPhysicalCtrlC, isPhysicalEscape, isSafetyKeyRelease } from "./interactive-key-identity.ts";
 import { InteractiveModeBase, seedStartupInput } from "./interactive-mode-base.ts";
 import { pasteClipboardImageToEditor, recordTimeSinceReset } from "./interactive-mode-deps.ts";
 import { pauseAndAbortInteractiveSession } from "./interactive-pause.ts";
@@ -19,12 +20,16 @@ export function registerStartupInputListeners(mode: InteractiveModeBase): void {
 	);
 	mode.ui.addInputListener((data) =>
 		routeGlobalClearInput(data, {
+			// Physical identity first: safety routing must survive an `app.clear` remap.
+			matchesCtrlC: isPhysicalCtrlC,
+			matchesEscape: isPhysicalEscape,
+			isSafetyKeyRelease,
 			matchesClear: (candidate) => mode.keybindings.matches(candidate, "app.clear"),
 			hasOverlay: () => mode.ui.hasOverlay(),
 			blockingInlineCustomUiActive: () => mode.blockingInlineCustomUiDepth > 0,
 			editorOwnsInput: () => mode.editorContainer.children.includes(mode.editor),
-			remoteEngineProxyOwnsInput: () =>
-				remoteEngineProxyOwnsInput(mode.runtimeHost, {
+			remoteEngineProxyOwner: () =>
+				remoteEngineProxyOwner(mode.runtimeHost, {
 					hasOverlay: () => mode.ui.hasOverlay(),
 					inlineComponents: () => mode.editorContainer.children,
 				}),
@@ -249,10 +254,12 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 			this.firstSubmitRecorded = true;
 			recordTimeSinceReset("interactive-first-submit");
 		}
-		// The prompt loop only ever sees the trimmed text, so keep the exact draft
-		// for the failure path: a send the engine never accepted must return to
-		// the editor byte-for-byte rather than reflowed.
-		const submittedDraft = text;
+		// pi-tui trims, expands pastes, and clears the editor before it calls
+		// onSubmit, so the callback argument is already reduced. Prefer the buffer
+		// CustomEditor snapshotted for this very dispatch, which is what the user
+		// actually had, and fall back to the argument for other editors and for
+		// tests that invoke onSubmit directly.
+		const submittedDraft = this.defaultEditor.takeSubmittedDraft?.() ?? text;
 		text = text.trim();
 		if (!text) return;
 
@@ -483,7 +490,6 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 			// never reach runUserPromptTurn(), so this is the only place their send
 			// failures can put the draft back. Anything else is not ours to absorb.
 			if (!restoreFailedSubmissionDraft(this, error, submittedDraft)) throw error;
-			this.showError(error instanceof Error ? error.message : "Unknown error occurred");
 		} finally {
 			this.advanceStartupInputReplay?.(text);
 		}

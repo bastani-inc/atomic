@@ -129,6 +129,14 @@ export class EngineHealthController {
 	handleGenerationEnded(event: InteractiveEngineGenerationEnded): void {
 		this.deps.clearActivity();
 		if (event.expected || this.stopped) return;
+		if (this.attempt) {
+			// A newer child died while the replacement attempt was still running, so
+			// that attempt cannot leave a viable generation behind. Latch instead of
+			// restarting again: automatic recovery stays single-shot, and Ctrl+C is
+			// armed once the in-flight attempt settles.
+			this.replacementNeeded = true;
+			return;
+		}
 		void this.recover(UNEXPECTED_ENGINE_LOSS_NOTICE).catch(() => {});
 	}
 

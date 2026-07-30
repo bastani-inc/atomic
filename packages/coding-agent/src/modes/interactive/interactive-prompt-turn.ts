@@ -40,14 +40,17 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 		}
 	} catch (error) {
 		this.discardDeferredRenderedUserInput(userInput);
-		restoreFailedSubmissionDraft(
+		const restored = restoreFailedSubmissionDraft(
 			this,
 			error,
 			this.submittedDraftText?.trim() === userInput ? this.submittedDraftText : userInput,
 			{ turnStarted },
 		);
-		const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
-		this.showError(errorMessage);
+		// A restored draft already tells the user the submission did not land, and
+		// the recovery status explains why. A red transport error beside it is noise.
+		if (!restored) {
+			this.showError(error instanceof Error ? error.message : "Unknown error occurred");
+		}
 	} finally {
 		unsubscribeTurnStart();
 		this.submittedDraftText = undefined;

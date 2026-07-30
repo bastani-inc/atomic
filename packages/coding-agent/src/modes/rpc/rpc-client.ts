@@ -25,6 +25,7 @@ import {
 	terminateRpcClientProcess,
 } from "./rpc-client-process.ts";
 import { collectRpcEvents, waitForRpcIdle } from "./rpc-client-waits.ts";
+import { DEFAULT_REQUEST_TIMEOUT_MS, LONG_LIVED_COMMANDS } from "./rpc-command-timeouts.ts";
 import { RpcEventBuffer } from "./rpc-event-buffer.ts";
 import type { RpcCommand, RpcEvent, RpcExtensionUIRequest, RpcExtensionUIResponse, RpcResponse } from "./rpc-types.ts";
 
@@ -64,45 +65,18 @@ export interface RpcClientOptions {
 		onDiagnostic: (diagnostic: ActivityWatchdogDiagnostic) => void;
 		onActivityChange?: (active: boolean) => void;
 		/**
+		 * Heartbeat observer. Deliberately NOT a generic engine-message listener:
+		 * subscribing there drains the buffered startup custom-UI messages into the
+		 * first subscriber and stops buffering for the real controllers.
+		 */
+		onHeartbeat?: () => void;
+		/**
 		 * Credential for the engine child. Delivered through the protected
 		 * bootstrap file, never through the child's environment or argv.
 		 */
 		apiKey?: string;
 	};
 }
-
-/**
- * Commands whose response is legitimately gated on human/agent interaction or a
- * turn boundary and therefore must not be subject to the generic request
- * timeout: interactive prompts and custom-UI pickers (routed through `prompt`),
- * queued turn-boundary sends (`steer`/`follow_up`), long-running shell and
- * compaction work, session-tree navigation/mutation that can open pickers, and
- * `abort`, whose whole contract is that Escape waits for the engine's own
- * cooperative cancellation for as long as it takes.
- *
- * Failure detection is unaffected: engine exit, transport violations, aborts,
- * generation replacement, and explicit stop all reject pending requests via
- * rejectPendingRequests/failTransport independently of any timer.
- */
-const LONG_LIVED_COMMANDS: ReadonlySet<string> = new Set<string>([
-	"abort",
-	"prompt",
-	"login_provider",
-	"steer",
-	"follow_up",
-	"bash",
-	"user_bash",
-	"compact",
-	"fork",
-	"clone",
-	"switch_session",
-	"new_session",
-	"import_session",
-	"navigate_tree",
-	"invoke_shortcut",
-]);
-
-const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
 export type RpcEventListener = (event: RpcEvent) => void;
 
@@ -436,6 +410,7 @@ export class RpcClient extends RpcClientApi {
 		this.emitInteractiveEngineMessage({ type: "engine_keybindings_reloaded", state });
 	}
 	private observeInteractiveEngineMessage(message: InteractiveEngineMessage): void {
+		if (message.type === "engine_heartbeat") this.options.interactiveEngine?.onHeartbeat?.();
 		if (message.type === "engine_ready") this.enginePid = message.pid;
 		if (message.type === "engine_keybindings_reloaded") this.latestEngineKeybindingState = message.state;
 		if (message.type === "engine_activity_started") this.activeActivityIds.add(message.activity.id);

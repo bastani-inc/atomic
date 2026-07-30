@@ -43,6 +43,7 @@ export async function createIsolatedInteractiveRuntime(options: {
 				callbackActive = active;
 				isolatedRuntime?.setEngineCallbackActive(active);
 			},
+			onHeartbeat: () => isolatedRuntime?.noteEngineHeartbeat(),
 			// Handed to the child through the protected bootstrap file so it never
 			// enters an environment the child's own subprocesses can inherit.
 			...(options.parsed.apiKey ? { apiKey: options.parsed.apiKey } : {}),

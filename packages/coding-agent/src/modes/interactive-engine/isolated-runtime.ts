@@ -72,11 +72,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		});
 		this.client.onEvent((event) => this.observeEvent(event));
 		this.client.onGenerationEnded((event) => this.health.handleGenerationEnded(event));
-		// A heartbeat proves the child's event loop is turning again, so a stall the
-		// watchdog already reported must stop arming the Ctrl+C escape hatch.
-		this.client.onInteractiveEngineMessage((message) => {
-			if (message.type === "engine_heartbeat") this.health.clearUnresponsive();
-		});
 	}
 
 	override get session(): AgentSession {
@@ -171,6 +166,13 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	onGenerationEnded(listener: InteractiveEngineGenerationEndedListener): () => void {
 		return this.client.onGenerationEnded(listener);
 	}
+	/**
+	 * A heartbeat proves the child's event loop is turning again, so a stall the
+	 * watchdog already reported must stop arming the Ctrl+C escape hatch. Fed by a
+	 * dedicated client callback rather than a generic engine-message subscriber,
+	 * which would consume buffered startup custom-UI messages.
+	 */
+	noteEngineHeartbeat(): void { this.health.clearUnresponsive(); }
 	/** True only when the engine is provably not answering (see EngineHealthController). */
 	needsExplicitTermination(): boolean {
 		return this.health.needsExplicitTermination();

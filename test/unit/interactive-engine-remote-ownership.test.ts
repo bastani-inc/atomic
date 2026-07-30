@@ -3,15 +3,17 @@ import assert from "node:assert/strict";
 import type { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
 import {
 	registerRemoteProxyOwnership,
-	remoteEngineProxyOwnsInput,
+	remoteEngineProxyOwner,
 	type RemoteProxyOwnershipSource,
 } from "../../packages/coding-agent/src/modes/interactive-engine/remote-input-ownership.ts";
 
 /**
- * Ctrl+C must escape a remote `ctx.ui.custom()` proxy that owns input, and must
- * NOT hijack a native selector, form, picker, or overlay. Visual modal state
- * alone cannot tell those apart, so ownership is reported by the controller that
- * actually mounted the proxies.
+ * Ctrl+C must be able to escape a remote `ctx.ui.custom()` proxy that owns
+ * input, and must not hijack a native selector, form, picker, or overlay.
+ * Visual modal state alone cannot tell those apart, so ownership is reported by
+ * the controller that actually mounted the proxies — and it reports identity,
+ * so the route can tell a repeat press on the same trapped component from a
+ * first press on a new one.
  */
 
 const REMOTE_INLINE = { kind: "remote-inline" };
@@ -25,27 +27,28 @@ function makeRuntime(): AgentSessionRuntime {
 
 function source(overrides?: Partial<RemoteProxyOwnershipSource>): RemoteProxyOwnershipSource {
 	return {
-		hasFocusedRemoteOverlay: () => false,
-		isRemoteProxy: (component) => component === REMOTE_INLINE || component === REMOTE_OVERLAY,
+		focusedRemoteOverlay: () => undefined,
+		remoteProxyOwner: (component: unknown) =>
+			component === REMOTE_INLINE || component === REMOTE_OVERLAY ? component : undefined,
 		...overrides,
 	};
 }
 
-test("an unregistered runtime never claims remote ownership", () => {
+test("an unregistered runtime never reports a remote owner", () => {
 	const runtime = makeRuntime();
 	assert.equal(
-		remoteEngineProxyOwnsInput(runtime, { hasOverlay: () => false, inlineComponents: () => [REMOTE_INLINE] }),
-		false,
+		remoteEngineProxyOwner(runtime, { hasOverlay: () => false, inlineComponents: () => [REMOTE_INLINE] }),
+		undefined,
 	);
 });
 
-test("a focused remote overlay owns input", () => {
+test("a focused remote overlay is the owner", () => {
 	const runtime = makeRuntime();
-	const dispose = registerRemoteProxyOwnership(runtime, source({ hasFocusedRemoteOverlay: () => true }));
+	const dispose = registerRemoteProxyOwnership(runtime, source({ focusedRemoteOverlay: () => REMOTE_OVERLAY }));
 	try {
 		assert.equal(
-			remoteEngineProxyOwnsInput(runtime, { hasOverlay: () => true, inlineComponents: () => [EDITOR] }),
-			true,
+			remoteEngineProxyOwner(runtime, { hasOverlay: () => true, inlineComponents: () => [EDITOR] }),
+			REMOTE_OVERLAY,
 		);
 	} finally {
 		dispose();
@@ -57,14 +60,14 @@ test("an inline remote proxy owns input only when no overlay is above it", () =>
 	const dispose = registerRemoteProxyOwnership(runtime, source());
 	try {
 		assert.equal(
-			remoteEngineProxyOwnsInput(runtime, { hasOverlay: () => false, inlineComponents: () => [REMOTE_INLINE] }),
-			true,
+			remoteEngineProxyOwner(runtime, { hasOverlay: () => false, inlineComponents: () => [REMOTE_INLINE] }),
+			REMOTE_INLINE,
 		);
 		// A native overlay above the remote inline mount owns input and keeps its
 		// own Ctrl+C-as-cancel.
 		assert.equal(
-			remoteEngineProxyOwnsInput(runtime, { hasOverlay: () => true, inlineComponents: () => [REMOTE_INLINE] }),
-			false,
+			remoteEngineProxyOwner(runtime, { hasOverlay: () => true, inlineComponents: () => [REMOTE_INLINE] }),
+			undefined,
 			"a native overlay above a remote inline mount must not be terminated",
 		);
 	} finally {
@@ -72,14 +75,14 @@ test("an inline remote proxy owns input only when no overlay is above it", () =>
 	}
 });
 
-test("native components and the editor never claim remote ownership", () => {
+test("native components and the editor never report a remote owner", () => {
 	const runtime = makeRuntime();
 	const dispose = registerRemoteProxyOwnership(runtime, source());
 	try {
 		for (const inline of [[EDITOR], [NATIVE], []]) {
 			assert.equal(
-				remoteEngineProxyOwnsInput(runtime, { hasOverlay: () => false, inlineComponents: () => inline }),
-				false,
+				remoteEngineProxyOwner(runtime, { hasOverlay: () => false, inlineComponents: () => inline }),
+				undefined,
 				`claimed ownership for ${JSON.stringify(inline)}`,
 			);
 		}
@@ -90,28 +93,29 @@ test("native components and the editor never claim remote ownership", () => {
 
 test("a widget proxy does not own keyboard input", () => {
 	const runtime = makeRuntime();
-	// Widgets render above/below the editor and are reported as non-proxies here.
-	const dispose = registerRemoteProxyOwnership(runtime, source({ isRemoteProxy: () => false }));
+	// Widgets render above/below the editor; the controller reports them as
+	// non-owners even though they are RemoteComponents.
+	const dispose = registerRemoteProxyOwnership(runtime, source({ remoteProxyOwner: () => undefined }));
 	try {
 		assert.equal(
-			remoteEngineProxyOwnsInput(runtime, { hasOverlay: () => false, inlineComponents: () => [EDITOR] }),
-			false,
+			remoteEngineProxyOwner(runtime, { hasOverlay: () => false, inlineComponents: () => [EDITOR] }),
+			undefined,
 		);
 	} finally {
 		dispose();
 	}
 });
 
-test("disposing the registration stops claiming ownership", () => {
+test("disposing the registration stops reporting an owner", () => {
 	const runtime = makeRuntime();
 	const dispose = registerRemoteProxyOwnership(runtime, source());
 	assert.equal(
-		remoteEngineProxyOwnsInput(runtime, { hasOverlay: () => false, inlineComponents: () => [REMOTE_INLINE] }),
-		true,
+		remoteEngineProxyOwner(runtime, { hasOverlay: () => false, inlineComponents: () => [REMOTE_INLINE] }),
+		REMOTE_INLINE,
 	);
 	dispose();
 	assert.equal(
-		remoteEngineProxyOwnsInput(runtime, { hasOverlay: () => false, inlineComponents: () => [REMOTE_INLINE] }),
-		false,
+		remoteEngineProxyOwner(runtime, { hasOverlay: () => false, inlineComponents: () => [REMOTE_INLINE] }),
+		undefined,
 	);
 });

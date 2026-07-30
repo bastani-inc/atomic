@@ -22,6 +22,7 @@ interface Mount {
 interface Harness {
 	controller: EngineDialogHostController;
 	mounts: Mount[];
+	widgetWrites: Array<{ key: string; cleared: boolean }>;
 	responses: Array<RpcExtensionUIResponse | undefined>;
 	generation: number;
 	send(request: RpcExtensionUIRequest): Promise<void>;
@@ -30,6 +31,7 @@ interface Harness {
 
 function harness(): Harness {
 	const mounts: Mount[] = [];
+	const widgetWrites: Array<{ key: string; cleared: boolean }> = [];
 	const responses: Array<RpcExtensionUIResponse | undefined> = [];
 	const generationListeners: Array<(event: InteractiveEngineGenerationEnded) => void> = [];
 	let handler: ((request: RpcExtensionUIRequest) => Promise<RpcExtensionUIResponse | undefined>) | undefined;
@@ -53,7 +55,7 @@ function harness(): Harness {
 		editor: (_title: string, _prefill?: string, opts?: { signal?: AbortSignal }) => mount("editor", opts?.signal),
 		notify: () => {},
 		setStatus: () => {},
-		setWidget: () => {},
+		setWidget: (key: string, lines: string[] | undefined) => { widgetWrites.push({ key, cleared: lines === undefined }); },
 		setTitle: () => {},
 		setEditorText: () => {},
 	} as unknown as ExtensionUIContext;
@@ -71,6 +73,7 @@ function harness(): Harness {
 	return {
 		controller,
 		mounts,
+		widgetWrites,
 		responses,
 		get generation(): number { return state.generation; },
 		set generation(value: number) { state.generation = value; },
@@ -162,4 +165,63 @@ test("disposing the controller cancels every live dialog", async () => {
 	await settled;
 	assert.equal(h.mounts[0]!.aborted, true);
 	assert.deepEqual(h.responses, [undefined]);
+});
+
+/**
+ * Line widgets are plain host state keyed by name with no component to close,
+ * so a dead generation used to leave its lines on screen forever. Ownership is
+ * tracked per key and released only for the generation that last wrote it.
+ */
+function widgetRequest(id: string, key: string, lines: string[] | undefined): RpcExtensionUIRequest {
+	return { type: "extension_ui_request", id, method: "setWidget", widgetKey: key, widgetLines: lines } as RpcExtensionUIRequest;
+}
+
+test("a line widget is released when its owning generation dies", async () => {
+	const h = harness();
+	await h.send(widgetRequest("w1", "engine-status", ["line"]));
+	assert.deepEqual(h.widgetWrites, [{ key: "engine-status", cleared: false }]);
+
+	h.endGeneration(1);
+	assert.deepEqual(h.widgetWrites.at(-1), { key: "engine-status", cleared: true });
+
+	// Nothing left to release on a second death.
+	const writes = h.widgetWrites.length;
+	h.endGeneration(2);
+	assert.equal(h.widgetWrites.length, writes);
+	h.controller.dispose();
+});
+
+test("an explicit widget clear also drops ownership", async () => {
+	const h = harness();
+	await h.send(widgetRequest("w1", "engine-status", ["line"]));
+	await h.send(widgetRequest("w2", "engine-status", undefined));
+	const writes = h.widgetWrites.length;
+	h.endGeneration(1);
+	assert.equal(h.widgetWrites.length, writes, "an already-cleared key must not be cleared again");
+	h.controller.dispose();
+});
+
+test("a newer generation takes over a widget key and survives stale cleanup", async () => {
+	const h = harness();
+	await h.send(widgetRequest("w1", "shared", ["from generation 1"]));
+	h.generation = 2;
+	await h.send(widgetRequest("w2", "shared", ["from generation 2"]));
+	const writes = h.widgetWrites.length;
+
+	// Generation 1's teardown must not wipe the replacement's live content.
+	h.controller.disposeGeneration(1);
+	assert.equal(h.widgetWrites.length, writes, "stale cleanup cleared a newer generation's widget");
+
+	h.controller.disposeGeneration(2);
+	assert.deepEqual(h.widgetWrites.at(-1), { key: "shared", cleared: true });
+	h.controller.dispose();
+});
+
+test("disposing the controller releases every widget key it still owns", async () => {
+	const h = harness();
+	await h.send(widgetRequest("w1", "a", ["x"]));
+	await h.send(widgetRequest("w2", "b", ["y"]));
+	h.controller.dispose();
+	assert.deepEqual(h.widgetWrites.slice(-2).map((write) => write.key).sort(), ["a", "b"]);
+	assert.ok(h.widgetWrites.slice(-2).every((write) => write.cleared));
 });

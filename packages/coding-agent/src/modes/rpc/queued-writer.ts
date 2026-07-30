@@ -10,6 +10,13 @@ interface PendingFrame {
 export class QueuedWriter {
 	private readonly critical: PendingFrame[] = [];
 	private readonly coalesced = new Map<string, PendingFrame>();
+	/**
+	 * The frame currently being written. It has already left the queue, so
+	 * `close()` would not see it; without this a stream callback failure (EPIPE
+	 * on a dying engine) leaves its `write()` promise pending forever and the
+	 * caller — a prompt, an abort — never learns the send failed.
+	 */
+	private active: PendingFrame | undefined;
 	private queuedBytes = 0;
 	private pumping = false;
 	private closedError: Error | undefined;
@@ -48,6 +55,10 @@ export class QueuedWriter {
 	close(error = new Error("RPC writer closed")): void {
 		if (this.closedError) return;
 		this.closedError = error;
+		// The in-flight frame first: it is no longer in either queue.
+		const active = this.active;
+		this.active = undefined;
+		active?.reject?.(error);
 		for (const frame of this.critical.splice(0)) frame.reject?.(error);
 		this.coalesced.clear();
 		this.queuedBytes = 0;
@@ -70,17 +81,20 @@ export class QueuedWriter {
 
 	private async runPump(): Promise<void> {
 		try {
-			while (!this.closedError) {
-				const frame = this.next();
-				if (frame === undefined) break;
+			let frame: PendingFrame | undefined;
+			while (!this.closedError && (frame = this.next())) {
+				this.active = frame;
 				this.queuedBytes -= frame.bytes.length;
 				await new Promise<void>((resolve, reject) => {
-					this.stream.write(frame.bytes, (error) => (error ? reject(error) : resolve()));
+					this.stream.write(frame!.bytes, (error) => (error ? reject(error) : resolve()));
 				});
+				this.active = undefined;
 				frame.resolve?.();
 			}
 		} catch (error) {
 			const failure = error instanceof Error ? error : new Error(String(error));
+			// The frame that failed is still `active`, so close() rejects it along
+			// with everything still queued. Nothing is left pending.
 			this.close(failure);
 		} finally {
 			this.pumping = false;

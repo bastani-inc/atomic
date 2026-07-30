@@ -342,3 +342,76 @@ test("a failed replacement keeps Ctrl+C armed and each press starts exactly one 
 	assert.equal(h.controller.isRecovering(), false);
 	assert.deepEqual(outcomes, []);
 });
+
+/**
+ * A newer child dying while the replacement attempt is still running means that
+ * attempt cannot leave a viable generation behind. Automatic recovery must stay
+ * single-shot, but the host must not settle into "recovered" with no engine and
+ * nothing arming Ctrl+C.
+ */
+test("a death during an active replacement latches Ctrl+C without starting a second restart", async () => {
+	const restarts: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
+	const h = harness(() => new Promise<void>((resolve, reject) => { restarts.push({ resolve, reject }); }));
+
+	h.controller.handleGenerationEnded(ended({ generation: 1 }));
+	await Bun.sleep(0);
+	assert.equal(h.restarts, 1, "one automatic attempt");
+
+	// Generation 2 dies while attempt A is still in flight.
+	h.controller.handleGenerationEnded(ended({ generation: 2 }));
+	await Bun.sleep(5);
+	assert.equal(h.restarts, 1, "the nested death must not start another automatic restart");
+
+	restarts[0]!.resolve();
+	await Bun.sleep(5);
+	assert.equal(h.controller.isRecovering(), false, "the attempt settled");
+	assert.equal(h.controller.needsExplicitTermination(), true, "the nested death must keep Ctrl+C armed");
+
+	// Still nothing automatic, however long we wait.
+	h.advance(ENGINE_UNRESPONSIVE_MS * 5);
+	await Bun.sleep(10);
+	assert.equal(h.restarts, 1, "no automatic retry loop");
+
+	const termination = h.controller.terminate();
+	await Bun.sleep(5);
+	assert.equal(h.restarts, 2, "Ctrl+C starts exactly one replacement");
+	restarts[1]!.resolve();
+	await termination;
+	assert.equal(h.controller.needsExplicitTermination(), false, "success clears the latch");
+});
+
+test("a death during a user-requested replacement re-arms Ctrl+C", async () => {
+	const restarts: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
+	const h = harness(() => new Promise<void>((resolve, reject) => { restarts.push({ resolve, reject }); }));
+	h.controller.publish(watchdogUnresponsive);
+	const termination = h.controller.terminate();
+	await Bun.sleep(5);
+	assert.equal(h.restarts, 1);
+	h.controller.handleGenerationEnded(ended({ generation: 3 }));
+	restarts[0]!.resolve();
+	await termination;
+	assert.equal(h.restarts, 1, "still no automatic retry");
+	assert.equal(h.controller.needsExplicitTermination(), true, "the nested death re-arms the escape hatch");
+});
+
+test("an expected generation end during a replacement does not latch", async () => {
+	const restarts: Array<() => void> = [];
+	const h = harness(() => new Promise<void>((resolve) => { restarts.push(resolve); }));
+	h.controller.handleGenerationEnded(ended({ generation: 1 }));
+	await Bun.sleep(0);
+	h.controller.handleGenerationEnded(ended({ generation: 2, expected: true, kind: "explicit-stop" }));
+	restarts[0]!();
+	await Bun.sleep(5);
+	assert.equal(h.controller.needsExplicitTermination(), false, "an expected end is not a failure");
+	assert.equal(h.restarts, 1);
+});
+
+test("shutdown ignores a later death entirely", async () => {
+	const h = harness(async () => {});
+	h.controller.shutdown();
+	h.controller.handleGenerationEnded(ended({ generation: 1 }));
+	h.controller.handleGenerationEnded(ended({ generation: 2 }));
+	await Bun.sleep(5);
+	assert.equal(h.restarts, 0);
+	assert.equal(h.controller.needsExplicitTermination(), false);
+});

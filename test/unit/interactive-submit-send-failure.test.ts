@@ -134,7 +134,9 @@ for (const branch of DIRECT_BRANCHES) {
 		const stub = makeSubmitStub({ ...branch.options, failSend: true });
 		await stub.submit(branch.text);
 		assert.equal(stub.editorText, branch.text, `${branch.name} discarded the submission`);
-		assert.deepEqual(stub.errors, [SEND_FAILURE]);
+		// A restored draft plus the recovery status is the whole story; a red
+		// transport error beside them is duplicate noise.
+		assert.deepEqual(stub.errors, [], `${branch.name} added a red error next to the restored draft`);
 		assert.equal(stub.startupCookedInputRecovered, true, "a restored draft must not be replayed as startup input");
 	});
 
@@ -177,7 +179,7 @@ test("Alt+Enter streaming follow-up returns the draft when the send fails", asyn
 	stub.editorText = "follow up while streaming";
 	await stub.followUp();
 	assert.equal(stub.editorText, "follow up while streaming");
-	assert.deepEqual(stub.errors, [SEND_FAILURE]);
+	assert.deepEqual(stub.errors, [], "a restored follow-up must not also show a red error");
 	assert.equal(stub.startupCookedInputRecovered, true);
 });
 
@@ -186,7 +188,7 @@ test("Alt+Enter extension command during compaction returns the draft when the s
 	stub.editorText = "/ext during compaction";
 	await stub.followUp();
 	assert.equal(stub.editorText, "/ext during compaction");
-	assert.deepEqual(stub.errors, [SEND_FAILURE]);
+	assert.deepEqual(stub.errors, []);
 });
 
 test("Alt+Enter clears the editor when the send is accepted", async () => {

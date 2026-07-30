@@ -52,7 +52,7 @@ async function handleRequest(
 }
 
 /**
- * Generation-owned host dialogs for the isolated engine.
+ * Generation-owned host dialogs and line widgets for the isolated engine.
  *
  * `select`, `confirm`, `input`, and `editor` mount real host components and can
  * outlive the engine child that asked for them. Without ownership a dead
@@ -60,11 +60,18 @@ async function handleRequest(
  * could answer through the replacement child's writer. Each request is recorded
  * with the generation that issued it; when that generation ends the mount is
  * aborted — closing only its own instance — and any answer is suppressed.
+ *
+ * Line widgets (`setWidget` with `string[]`) have the same problem without any
+ * component to close: they are plain host state keyed by name, so the key is
+ * tracked against its latest writer and released only if that writer's
+ * generation is the one that died.
  */
 export class EngineDialogHostController {
 	private readonly runtime: IsolatedInteractiveRuntime;
 	private readonly ui: ExtensionUIContext;
 	private readonly records = new Map<string, { generation: number; abort: AbortController }>();
+	/** Line-widget key -> generation that last wrote it. */
+	private readonly widgetOwners = new Map<string, number>();
 	private readonly unsubscribeHandler: () => void;
 	private readonly unsubscribeGenerationEnded: () => void;
 
@@ -79,14 +86,23 @@ export class EngineDialogHostController {
 		this.unsubscribeHandler();
 		this.unsubscribeGenerationEnded();
 		this.abortAll();
+		for (const key of [...this.widgetOwners.keys()]) this.ui.setWidget(key, undefined);
+		this.widgetOwners.clear();
 	}
 
-	/** Close every dialog owned by an ended generation and suppress its replies. */
+	/** Close every dialog and release every widget key owned by an ended generation. */
 	disposeGeneration(generation: number): void {
 		for (const [id, record] of [...this.records]) {
 			if (record.generation !== generation) continue;
 			this.records.delete(id);
 			record.abort.abort();
+		}
+		for (const [key, owner] of [...this.widgetOwners]) {
+			// A newer generation that rewrote this key owns it now; clearing here
+			// would wipe live content the replacement child just published.
+			if (owner !== generation) continue;
+			this.widgetOwners.delete(key);
+			this.ui.setWidget(key, undefined);
 		}
 	}
 
@@ -96,6 +112,11 @@ export class EngineDialogHostController {
 	}
 
 	private async handle(request: RpcExtensionUIRequest): Promise<RpcExtensionUIResponse | undefined> {
+		if (request.method === "setWidget") {
+			if (request.widgetLines === undefined) this.widgetOwners.delete(request.widgetKey);
+			else this.widgetOwners.set(request.widgetKey, this.runtime.getEngineGeneration());
+			return handleRequest(this.ui, request, undefined);
+		}
 		if (!MOUNTING_METHODS.has(request.method)) return handleRequest(this.ui, request, undefined);
 		const abort = new AbortController();
 		const generation = this.runtime.getEngineGeneration();
@@ -104,8 +125,7 @@ export class EngineDialogHostController {
 		try {
 			response = await handleRequest(this.ui, request, abort.signal);
 		} finally {
-			// Only the owning record may be removed: a replacement generation can
-			// already have reused nothing here, but a late settle must not delete a
+			// Only the owning record may be removed: a late settle must not delete a
 			// newer record that happens to share this id.
 			if (this.records.get(request.id)?.abort === abort) this.records.delete(request.id);
 		}

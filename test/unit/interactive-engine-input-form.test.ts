@@ -6,6 +6,11 @@ import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybind
 import { HostInputFormComponent } from "../../packages/coding-agent/src/modes/interactive/components/host-input-form.ts";
 import { openLocalHostInputForm } from "../../packages/coding-agent/src/modes/interactive/components/host-input-form-mount.ts";
 import { routeGlobalClearInput } from "../../packages/coding-agent/src/modes/interactive/interactive-global-clear.ts";
+import {
+	isPhysicalCtrlC,
+	isPhysicalEscape,
+	isSafetyKeyRelease,
+} from "../../packages/coding-agent/src/modes/interactive/interactive-key-identity.ts";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { EngineInputFormService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-input-form.ts";
 import { InputFormHostController } from "../../packages/coding-agent/src/modes/interactive-engine/input-form-host.ts";
@@ -210,6 +215,9 @@ describe("host-native input form", () => {
 		formTui.setFocus(component);
 		formTui.addInputListener((data) =>
 			routeGlobalClearInput(data, {
+				matchesCtrlC: isPhysicalCtrlC,
+				matchesEscape: isPhysicalEscape,
+				isSafetyKeyRelease,
 				matchesClear: (candidate) => keybindings.matches(candidate, "app.clear"),
 				hasOverlay: () => false,
 				blockingInlineCustomUiActive: () => true,
@@ -235,6 +243,9 @@ describe("host-native input form", () => {
 		});
 		editorTui.addInputListener((data) =>
 			routeGlobalClearInput(data, {
+				matchesCtrlC: isPhysicalCtrlC,
+				matchesEscape: isPhysicalEscape,
+				isSafetyKeyRelease,
 				matchesClear: (candidate) => keybindings.matches(candidate, "app.clear"),
 				hasOverlay: () => false,
 				blockingInlineCustomUiActive: () => false,

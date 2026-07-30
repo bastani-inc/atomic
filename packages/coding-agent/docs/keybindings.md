@@ -96,7 +96,9 @@ A held paused queue by itself is idle for Ctrl+C handling. After an interruption
 
 In interactive sessions the agent runs in a supervised engine child (see [Extensions](/extensions#interactive-callback-isolation)). Escape there requests the engine's cooperative cancellation and waits for it with no deadline; it never terminates or replaces the engine.
 
-Ctrl+C is the host's escape hatch in two cases. First, whenever an engine-owned `ctx.ui.custom()` component or overlay holds input: those forward every key to the engine, so Ctrl+C is always handled by the host there and replaces the engine, even while the engine is healthy. Second, when the engine is provably not answering — the watchdog has declared it unresponsive, a cooperative abort has gone unanswered past the same one-second threshold, a replacement has been waiting for readiness past it, or a replacement failed. A failed replacement keeps Ctrl+C armed so another press can try again; Atomic never retries on its own.
+Both keys are recognized by their physical identity, not by the configured `app.clear` action, so rebinding `app.clear` cannot make Escape stop the engine or take the host route away from Ctrl+C.
+
+Ctrl+C is the host's escape hatch in two cases. First, whenever an engine-owned `ctx.ui.custom()` component or overlay holds input: those forward every key to the engine, so a component that never resolves would swallow Ctrl+C. The first press still goes to the component — extensions that bind `ctrl+c` for their own Skip or Close keep working — and a second press against the same component is handled by the host, which replaces the engine even while it is healthy. Second, when the engine is provably not answering — the watchdog has declared it unresponsive, a cooperative abort has gone unanswered past the same one-second threshold, a replacement has been waiting for readiness past it, or a replacement failed. A failed replacement keeps Ctrl+C armed so another press can try again; Atomic never retries on its own.
 
 `tui.select.cancel` still keeps Ctrl+C as local cancel inside host-native selectors, dialogs, input forms, and session pickers.
 

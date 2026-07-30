@@ -229,7 +229,6 @@ InteractiveModeBase.prototype.handleFollowUp = async function (this: Interactive
 			await send();
 		} catch (error) {
 			if (!restoreFailedSubmissionDraft(this, error, rawText)) throw error;
-			this.showError(error instanceof Error ? error.message : "Unknown error occurred");
 		}
 	};
 

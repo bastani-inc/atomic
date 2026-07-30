@@ -1,4 +1,11 @@
 interface GlobalClearInputOptions {
+	/** Physical Ctrl+C, independent of any configured action. */
+	matchesCtrlC(data: string): boolean;
+	/** Physical Escape, independent of any configured action. */
+	matchesEscape(data: string): boolean;
+	/** A key-release event for either safety key; never acts, only consumes nothing. */
+	isSafetyKeyRelease(data: string): boolean;
+	/** The configured `app.clear` action, which governs ordinary editor clearing. */
 	matchesClear(data: string): boolean;
 	hasOverlay(): boolean;
 	blockingInlineCustomUiActive(): boolean;
@@ -11,12 +18,11 @@ interface GlobalClearInputOptions {
 	 */
 	editorOwnsInput(): boolean;
 	/**
-	 * True when the focused component is an engine-owned remote proxy. Such a
-	 * component forwards every key to the engine child, so deferring would send
-	 * Ctrl+C to the very thing the user is escaping — including when the engine
-	 * is perfectly healthy and the custom UI simply never resolves.
+	 * Identity of the engine-owned remote proxy that currently owns input, or
+	 * undefined when a native component does. Remote proxies forward every key to
+	 * the engine child, so a component that never resolves would trap Ctrl+C too.
 	 */
-	remoteEngineProxyOwnsInput?(): boolean;
+	remoteEngineProxyOwner?(): unknown;
 	/** Replace the engine because a remote proxy has trapped input. */
 	onRemoteEngineRestart?(): void;
 	/**
@@ -31,24 +37,55 @@ interface GlobalClearInputOptions {
 	requestRender(): void;
 }
 
+/** Remote proxy that saw an unanswered Ctrl+C, so the next press escalates. */
+let armedRemoteProxy: unknown;
+
+/** Test seam: forget any armed remote proxy between cases. */
+export function resetGlobalClearRouteState(): void {
+	armedRemoteProxy = undefined;
+}
+
 /**
- * Keep app.clear global unless a focused modal/inline component owns input.
+ * Route the host's safety keys before any configured action.
  *
- * Two exceptions, both of which would otherwise swallow the key entirely:
- * an engine-owned remote proxy holding input, and an engine that cannot answer.
- * Native host forms, selectors, dialogs, and overlays keep Ctrl+C-as-cancel
- * whenever the engine is healthy.
+ * Physical Escape never terminates or replaces anything here — it is purely a
+ * cooperative interrupt owned by the editor. Physical Ctrl+C keeps the host
+ * escape hatch even if `app.clear` has been rebound, and the configured
+ * `app.clear` key keeps its ordinary editor-clear behavior.
+ *
+ * A remote proxy gets the first Ctrl+C so extension UIs that bind it — the
+ * workflows prompt card's `ctrl+c Skip`, the stage chat's `ctrl+c Close` — keep
+ * working. A component that ignores it is still mounted and still owns input on
+ * the next press, and that press escapes to the host. Nothing is timed: only a
+ * second deliberate press escalates.
  */
 export function routeGlobalClearInput(data: string, options: GlobalClearInputOptions): { consume: true } | undefined {
-	if (!options.matchesClear(data)) return undefined;
-	if (options.onRemoteEngineRestart && options.remoteEngineProxyOwnsInput?.() === true) {
-		options.onRemoteEngineRestart();
-		options.requestRender();
-		return { consume: true };
+	// Kitty sends a release for every press; acting on both would fire twice.
+	if (options.isSafetyKeyRelease(data)) return undefined;
+	// Escape is never a stop/restart key, whatever `app.clear` is bound to.
+	if (options.matchesEscape(data)) return undefined;
+
+	const isCtrlC = options.matchesCtrlC(data);
+	if (isCtrlC && options.onRemoteEngineRestart) {
+		const owner = options.remoteEngineProxyOwner?.();
+		if (owner !== undefined) {
+			if (armedRemoteProxy !== owner) {
+				armedRemoteProxy = owner;
+				return undefined;
+			}
+			armedRemoteProxy = undefined;
+			options.onRemoteEngineRestart();
+			options.requestRender();
+			return { consume: true };
+		}
 	}
+	armedRemoteProxy = undefined;
+
+	if (!isCtrlC && !options.matchesClear(data)) return undefined;
 	const deferToFocusedComponent =
 		options.hasOverlay() || options.blockingInlineCustomUiActive() || !options.editorOwnsInput();
 	if (deferToFocusedComponent) {
+		if (!isCtrlC) return undefined;
 		if (!options.onEngineTerminate || options.engineNeedsExplicitTermination?.() !== true) return undefined;
 		options.onEngineTerminate();
 		options.requestRender();

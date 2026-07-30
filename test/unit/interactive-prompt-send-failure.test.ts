@@ -133,7 +133,7 @@ test("mergeRestoredDraft keeps temporal order and never trims either side", () =
 	);
 });
 
-test("a send that the engine never accepted restores the exact typed draft and reports the failure", async () => {
+test("a send that the engine never accepted restores the exact typed draft without a duplicate error", async () => {
 	for (const message of ["Agent process stopped", "Agent process exited (code=1 signal=null). Stderr: ", "Client not started"]) {
 		const { stub, run } = makeStub({
 			// Untrimmed: the prompt loop only sees the trimmed text, but the editor
@@ -144,7 +144,7 @@ test("a send that the engine never accepted restores the exact typed draft and r
 		await run("hello engine");
 		assert.equal(stub.editorText, "  hello engine\n", `draft was not restored verbatim for ${message}`);
 		assert.deepEqual(stub.discarded, ["hello engine"]);
-		assert.deepEqual(stub.errors, [message]);
+		assert.deepEqual(stub.errors, [], "a restored draft must not also raise a red transport error");
 		assert.ok(stub.renders > 0, "no render was requested after restoring the draft");
 		assert.equal(stub.submittedDraftText, undefined, "the pending draft must be released after the turn");
 	}

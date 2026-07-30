@@ -4,6 +4,11 @@ import { test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { ExtensionSelectorComponent } from "../../packages/coding-agent/src/modes/interactive/components/extension-selector.ts";
 import { routeGlobalClearInput } from "../../packages/coding-agent/src/modes/interactive/interactive-global-clear.ts";
+import {
+	isPhysicalCtrlC,
+	isPhysicalEscape,
+	isSafetyKeyRelease,
+} from "../../packages/coding-agent/src/modes/interactive/interactive-key-identity.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 
 /**
@@ -29,6 +34,9 @@ function makeOptions(
 	const keybindings = new KeybindingsManager();
 	const state = { clears: 0 };
 	const options = {
+		matchesCtrlC: isPhysicalCtrlC,
+		matchesEscape: isPhysicalEscape,
+		isSafetyKeyRelease,
 		matchesClear: (candidate: string) => keybindings.matches(candidate, "app.clear"),
 		hasOverlay: () => overrides.hasOverlay ?? false,
 		blockingInlineCustomUiActive: () => overrides.blockingInlineCustomUiActive ?? false,
@@ -57,6 +65,9 @@ test("global clear guards are evaluated live, not at registration time", () => {
 	const keybindings = new KeybindingsManager();
 	let clears = 0;
 	const options = {
+		matchesCtrlC: isPhysicalCtrlC,
+		matchesEscape: isPhysicalEscape,
+		isSafetyKeyRelease,
 		matchesClear: (candidate: string) => keybindings.matches(candidate, "app.clear"),
 		hasOverlay: () => overlay,
 		blockingInlineCustomUiActive: () => false,

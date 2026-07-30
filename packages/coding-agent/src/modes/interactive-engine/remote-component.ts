@@ -140,21 +140,21 @@ export class RemoteComponentController {
 		this.disposeAll("host-shutdown");
 	}
 
-	/** True when a remote overlay proxy currently holds focus (see remote-input-ownership.ts). */
-	hasFocusedRemoteOverlay(): boolean {
+	/** The remote overlay proxy that currently holds focus (see remote-input-ownership.ts). */
+	focusedRemoteOverlay(): unknown {
 		for (const record of this.mounted.values()) {
-			if (record.handle?.isFocused() === true) return true;
+			if (record.handle?.isFocused() === true) return record.component;
 		}
-		return false;
+		return undefined;
 	}
 
-	/** True when `component` is one of this generation's live remote proxies. */
-	isRemoteProxy(component: unknown): boolean {
-		if (!(component instanceof RemoteComponent)) return false;
+	/** `component` itself when it is one of this generation's live non-widget proxies. */
+	remoteProxyOwner(component: unknown): unknown {
+		if (!(component instanceof RemoteComponent)) return undefined;
 		for (const record of this.mounted.values()) {
-			if (record.component === component) return record.widgetKey === undefined;
+			if (record.component === component) return record.widgetKey === undefined ? component : undefined;
 		}
-		return false;
+		return undefined;
 	}
 
 	/**
