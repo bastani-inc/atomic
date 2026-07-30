@@ -1,13 +1,15 @@
+import { isRpcTransportFailure } from "../rpc/rpc-transport-error.ts";
 import type { InteractiveModeBase } from "./interactive-mode-base.ts";
 
 /**
- * Markers for a submission the engine never accepted.
+ * Legacy message fragments for a submission the engine never accepted.
  *
- * These are the errors `RpcClient` raises when the transport is gone or being
- * replaced: an explicit stop, an unexpected child exit, a detached stdin, a
- * client that is not started (the window inside a restart), and a transport
- * violation. A failure with any of these causes means the prompt was never
- * handed to an agent turn, so the typed text is still user-owned.
+ * Real `RpcClient` failures now carry a transport marker, so these are only a
+ * compatibility net for injected test errors and for any caller that still
+ * rejects with a plain message. Do not extend the list: a raw stream error such
+ * as `write EPIPE` or `Cannot call write after a stream was destroyed` matches
+ * none of them, and Node documents `error.message` as free to change in any
+ * release, while the transport boundary already knows the frame never landed.
  */
 const ENGINE_SEND_FAILURE_MARKERS = [
 	"Agent process stopped",
@@ -17,7 +19,12 @@ const ENGINE_SEND_FAILURE_MARKERS = [
 	"Interactive engine emitted malformed JSONL",
 ] as const;
 
+/**
+ * True when the prompt never reached an agent turn because the transport
+ * rejected it, so the typed text is still user-owned.
+ */
 export function isEngineSendFailure(error: unknown): boolean {
+	if (isRpcTransportFailure(error)) return true;
 	const message = error instanceof Error ? error.message : String(error);
 	return ENGINE_SEND_FAILURE_MARKERS.some((marker) => message.includes(marker));
 }

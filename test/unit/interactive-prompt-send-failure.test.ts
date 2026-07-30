@@ -1,12 +1,31 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
+import { Writable } from "node:stream";
 import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
 import {
 	isEngineSendFailure,
 	mergeRestoredDraft,
 	restoreUnsentPromptDraft,
 } from "../../packages/coding-agent/src/modes/interactive/interactive-prompt-restore.ts";
+import { QueuedWriter } from "../../packages/coding-agent/src/modes/rpc/queued-writer.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-prompt-turn.ts";
+
+/** A writable that hands its `_write` callback back so a test can fail it. */
+class ControlledWritable extends Writable {
+	private callbacks: Array<(error?: Error | null) => void> = [];
+	constructor() {
+		super();
+		this.on("error", () => {});
+	}
+	_write(_chunk: Buffer, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+		this.callbacks.push(callback);
+	}
+	failActive(error: Error): void {
+		const callback = this.callbacks.shift();
+		assert.ok(callback, "expected an in-flight write");
+		callback(error);
+	}
+}
 
 /**
  * Regression: a submission the engine never accepted used to be discarded from
@@ -147,6 +166,83 @@ test("a send that the engine never accepted restores the exact typed draft witho
 		assert.deepEqual(stub.errors, [], "a restored draft must not also raise a red transport error");
 		assert.ok(stub.renders > 0, "no render was requested after restoring the draft");
 	}
+});
+
+/**
+ * The real transport failure, end to end: a stream write callback fails with a
+ * raw coded error, `QueuedWriter` rejects the frame, the prompt send rejects
+ * with it, and the host must still recognize it as a send that never landed.
+ *
+ * `write EPIPE` matches none of the legacy message fragments, so before the
+ * transport marker this exact path showed a red error and threw the text away.
+ * Testing `isEngineSendFailure()` alone would not prove the writer applies it.
+ */
+test("a raw EPIPE from the writer restores the draft instead of reporting a red error", async () => {
+	for (const raw of [
+		Object.assign(new Error("write EPIPE"), { code: "EPIPE", errno: -32, syscall: "write" }),
+		Object.assign(new Error("Cannot call write after a stream was destroyed"), { code: "ERR_STREAM_DESTROYED" }),
+		Object.assign(new Error("write after end"), { code: "ERR_STREAM_WRITE_AFTER_END" }),
+	]) {
+		const stream = new ControlledWritable();
+		const writer = new QueuedWriter(stream);
+		const { stub, run } = makeStub({
+			draft: "  /freeze-test\n",
+			prompt: async () => {
+				const sent = writer.write('{"type":"prompt","message":"/freeze-test"}\n');
+				await Bun.sleep(0);
+				stream.failActive(raw);
+				// The user keeps typing while the doomed send is still pending.
+				stub.editorText = "typed during the hang";
+				await sent;
+			},
+		});
+		await run("/freeze-test");
+		assert.equal(
+			stub.editorText,
+			"  /freeze-test\n\n\ntyped during the hang",
+			`draft was not restored for ${raw.message}`,
+		);
+		assert.deepEqual(stub.errors, [], `a red error accompanied the restored draft for ${raw.message}`);
+		assert.equal(stub.startupCookedInputRecovered, true);
+		assert.ok(stub.renders > 0);
+	}
+});
+
+test("a raw writer failure after the agent turn started keeps the text in the transcript", async () => {
+	const stream = new ControlledWritable();
+	const writer = new QueuedWriter(stream);
+	const { stub, run } = makeStub({
+		draft: "  /freeze-test\n",
+		subscribe: (listener) => { listener({ type: "agent_start" }); return () => {}; },
+		prompt: async () => {
+			const sent = writer.write('{"type":"prompt"}\n');
+			await Bun.sleep(0);
+			stream.failActive(Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+			await sent;
+		},
+	});
+	await run("/freeze-test");
+	assert.equal(stub.editorText, "");
+	assert.equal(stub.errors.length, 1, "a mid-turn transport failure is still reported");
+});
+
+test("a raw writer failure restores queued submissions in FIFO order too", async () => {
+	const stream = new ControlledWritable();
+	const writer = new QueuedWriter(stream);
+	const queued = [{ text: "second", draft: "  second  " }, { text: "third", draft: "third\n" }];
+	const { stub, run } = makeStub({
+		draft: " first ",
+		queued,
+		prompt: async () => {
+			const sent = writer.write('{"type":"prompt"}\n');
+			await Bun.sleep(0);
+			stream.failActive(Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+			await sent;
+		},
+	});
+	await run("first");
+	assert.equal(stub.editorText, " first \n\n  second  \n\nthird\n");
+	assert.deepEqual(queued, []);
 });
 
 /**

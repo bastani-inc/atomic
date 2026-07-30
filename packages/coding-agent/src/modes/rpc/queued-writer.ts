@@ -1,4 +1,5 @@
 import type { Writable } from "node:stream";
+import { markRpcTransportFailure, rpcTransportError } from "./rpc-transport-error.ts";
 
 interface PendingFrame {
 	bytes: Buffer;
@@ -52,14 +53,22 @@ export class QueuedWriter {
 		return true;
 	}
 
-	close(error = new Error("RPC writer closed")): void {
+	/**
+	 * Reject the in-flight frame and everything queued behind it.
+	 *
+	 * The error is classified as a transport failure before it is stored, so the
+	 * active frame, the queued frames, and every later `write()` all reject with
+	 * the same classified value — a raw stream `EPIPE` included.
+	 */
+	close(error: Error = rpcTransportError("RPC writer closed")): void {
 		if (this.closedError) return;
-		this.closedError = error;
+		this.closedError = markRpcTransportFailure(error);
+		const closedError = this.closedError;
 		// The in-flight frame first: it is no longer in either queue.
 		const active = this.active;
 		this.active = undefined;
-		active?.reject?.(error);
-		for (const frame of this.critical.splice(0)) frame.reject?.(error);
+		active?.reject?.(closedError);
+		for (const frame of this.critical.splice(0)) frame.reject?.(closedError);
 		this.coalesced.clear();
 		this.queuedBytes = 0;
 	}
@@ -92,10 +101,11 @@ export class QueuedWriter {
 				frame.resolve?.();
 			}
 		} catch (error) {
-			const failure = error instanceof Error ? error : new Error(String(error));
-			// The frame that failed is still `active`, so close() rejects it along
-			// with everything still queued. Nothing is left pending.
-			this.close(failure);
+			// Any callback failure means the frame never reached the child, so it is
+			// a transport failure whatever the stream chose to call it. The frame
+			// that failed is still `active`, so close() rejects it along with
+			// everything still queued. Nothing is left pending.
+			this.close(markRpcTransportFailure(error));
 		} finally {
 			this.pumping = false;
 			if (!this.closedError && (this.critical.length > 0 || this.coalesced.size > 0)) this.pump();

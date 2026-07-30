@@ -28,6 +28,7 @@ import {
 import { collectRpcEvents, waitForRpcIdle } from "./rpc-client-waits.ts";
 import { DEFAULT_REQUEST_TIMEOUT_MS, LONG_LIVED_COMMANDS } from "./rpc-command-timeouts.ts";
 import { RpcEventBuffer } from "./rpc-event-buffer.ts";
+import { markRpcTransportFailure, rpcTransportError } from "./rpc-transport-error.ts";
 import { GenerationBuffer } from "./rpc-generation-buffer.ts";
 import type { RpcCommand, RpcEvent, RpcExtensionUIRequest, RpcExtensionUIResponse, RpcResponse } from "./rpc-types.ts";
 
@@ -158,16 +159,18 @@ export class RpcClient extends RpcClientApi {
 			this.rejectPendingRequests(error);
 			this.publishGenerationEnded(generation, error, "exit", false);
 		});
-		childProcess.once("error", (error) => {
+		childProcess.once("error", (rawError) => {
 			if (generation !== this.generation) return;
+			const error = markRpcTransportFailure(rawError);
 			this.exitError = error;
 			this.stdinWriter?.close(error);
 			this.engineMonitor?.fail(error);
 			this.rejectPendingRequests(error);
 			this.publishGenerationEnded(generation, error, "process-error", false);
 		});
-		childProcess.stdin?.on("error", (error) => {
+		childProcess.stdin?.on("error", (rawError) => {
 			if (generation !== this.generation) return;
+			const error = markRpcTransportFailure(rawError);
 			this.exitError = error;
 			this.stdinWriter?.close(error);
 			this.engineMonitor?.fail(error);
@@ -197,7 +200,7 @@ export class RpcClient extends RpcClientApi {
 		else await sleep(100);
 
 		if (generation !== this.generation || this.process?.exitCode !== null) {
-			throw new Error(`Agent process exited immediately. Stderr: ${this.stderr}`);
+			throw rpcTransportError(`Agent process exited immediately. Stderr: ${this.stderr}`);
 		}
 	}
 
@@ -205,7 +208,7 @@ export class RpcClient extends RpcClientApi {
 		const child = this.process;
 		if (!child) return;
 		const endedGeneration = this.generation;
-		const stopError = new Error("Agent process stopped");
+		const stopError = rpcTransportError("Agent process stopped");
 		this.invalidateEngineShortcuts();
 		const terminateTree = this.engineMonitor !== undefined;
 		this.stopReadingStdout?.();
@@ -387,7 +390,7 @@ export class RpcClient extends RpcClientApi {
 			if (this.eventBuffer) this.eventBuffer.enqueue(event);
 			else this.emitEvent(event);
 		} catch {
-			if (this.engineMonitor) this.failTransport(new Error("Interactive engine emitted malformed JSONL"));
+			if (this.engineMonitor) this.failTransport(rpcTransportError("Interactive engine emitted malformed JSONL"));
 		}
 	}
 	private emitEvent(event: RpcEvent): void {
@@ -400,7 +403,7 @@ export class RpcClient extends RpcClientApi {
 		for (const listener of this.engineMessageListeners) listener(message);
 	}
 	private createProcessExitError(code: number | null, signal: NodeJS.Signals | null): Error {
-		return new Error(`Agent process exited (code=${code} signal=${signal}). Stderr: ${this.stderr}`);
+		return rpcTransportError(`Agent process exited (code=${code} signal=${signal}). Stderr: ${this.stderr}`);
 	}
 	private invalidateEngineShortcuts(): void {
 		if (!this.latestEngineKeybindingState || this.latestEngineKeybindingState.shortcuts.length === 0) return;
@@ -441,8 +444,9 @@ export class RpcClient extends RpcClientApi {
 		this.pendingExtensionUIRequests.dropGeneration(generation);
 		for (const listener of [...this.generationEndedListeners]) listener(event);
 	}
-	private failTransport(error: Error): void {
+	private failTransport(rawError: Error): void {
 		const generation = this.generation;
+		const error = markRpcTransportFailure(rawError);
 		this.exitError = error;
 		this.stdinWriter?.close(error);
 		this.engineMonitor?.fail(error);
@@ -456,7 +460,7 @@ export class RpcClient extends RpcClientApi {
 		this.publishGenerationEnded(generation, error, "transport-error", false);
 	}
 	private requireWriter(): QueuedWriter {
-		if (!this.stdinWriter) throw new Error("Agent process stdin is not writable");
+		if (!this.stdinWriter) throw rpcTransportError("Agent process stdin is not writable");
 		return this.stdinWriter;
 	}
 	private bestEffort(operation: Promise<void>, label: string): void {
@@ -472,7 +476,7 @@ export class RpcClient extends RpcClientApi {
 	}
 	protected async request(command: RpcCommandBody, onRequestId?: (id: string) => void): Promise<RpcResponse> {
 		const childProcess = this.process;
-		if (!childProcess) throw new Error("Client not started");
+		if (!childProcess) throw rpcTransportError("Client not started");
 		if (this.exitError) throw this.exitError;
 		if (childProcess.exitCode !== null) {
 			const error = this.createProcessExitError(childProcess.exitCode, childProcess.signalCode);
@@ -501,7 +505,10 @@ export class RpcClient extends RpcClientApi {
 			await this.requireWriter().write(serializeJsonLine(fullCommand));
 		} catch (error) {
 			this.pendingRequests.delete(id);
-			rejectResponse(error instanceof Error ? error : new Error(String(error)));
+			// Idempotent: the writer already classified this, but a caller-supplied
+			// stream can reject with anything, and a send that never left the host
+			// is a transport failure whatever it threw.
+			rejectResponse(markRpcTransportFailure(error));
 			return response;
 		}
 		if (this.pendingRequests.has(id) && !LONG_LIVED_COMMANDS.has(command.type)) {
