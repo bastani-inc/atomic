@@ -11,7 +11,9 @@ export function registerInputsPickerSuite1(): void {
 
 	test("openInputsPicker hides Working while mounted and restores it on submit", async () => {
 		const mounted = mountInputsPicker();
-		assert.deepEqual(mounted.customOptions, [{ overlay: false }]);
+		// handlesCtrlC: the picker binds Ctrl+C as cancel, so the host must forward
+		// the key instead of closing the picker itself (interactive-global-clear.ts).
+		assert.deepEqual(mounted.customOptions, [{ overlay: false, handlesCtrlC: true }]);
 		assert.deepEqual(mounted.workingCalls, [false]);
 
 		mounted.component.handleInput?.("\t"); // focus Submit

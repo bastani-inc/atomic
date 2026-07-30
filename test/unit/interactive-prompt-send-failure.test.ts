@@ -21,7 +21,7 @@ interface PromptTurnStub {
 	renders: number;
 	errors: string[];
 	discarded: string[];
-	submittedDraftText: string | undefined;
+	queued: Array<{ text: string; draft: string }>;
 	startupCookedInputRecovered: boolean;
 }
 
@@ -30,7 +30,8 @@ function makeStub(options: {
 	prompt: (text: string) => Promise<void>;
 	subscribe?: (listener: (event: { type: string }) => void) => () => void;
 	editorMounted?: boolean;
-}): { stub: PromptTurnStub; run: (text: string) => Promise<void> } {
+	queued?: Array<{ text: string; draft: string }>;
+}): { stub: PromptTurnStub; run: (text: string, draft?: string) => Promise<void> } {
 	const editor = {
 		getText: () => state.editorText,
 		setText: (text: string) => { state.editorText = text; },
@@ -42,7 +43,7 @@ function makeStub(options: {
 		renders: 0,
 		errors: [],
 		discarded: [],
-		submittedDraftText: options.draft,
+		queued: options.queued ?? [],
 		startupCookedInputRecovered: false,
 	};
 	const host = {
@@ -55,8 +56,7 @@ function makeStub(options: {
 			setFocus: (component: unknown) => { state.focused = component; },
 			requestRender: () => { state.renders += 1; },
 		},
-		get submittedDraftText(): string | undefined { return state.submittedDraftText; },
-		set submittedDraftText(value: string | undefined) { state.submittedDraftText = value; },
+		pendingUserInputs: state.queued,
 		get startupCookedInputRecovered(): boolean { return state.startupCookedInputRecovered; },
 		set startupCookedInputRecovered(value: boolean) { state.startupCookedInputRecovered = value; },
 		session: {
@@ -76,9 +76,9 @@ function makeStub(options: {
 	Object.defineProperty(state, "editorRef", { value: editor });
 	return {
 		stub: state,
-		run: (text: string) => InteractiveModeBase.prototype.runUserPromptTurn.call(
+		run: (text: string, draft?: string) => InteractiveModeBase.prototype.runUserPromptTurn.call(
 			host as unknown as InteractiveModeBase,
-			text,
+			{ text, draft: draft ?? options.draft },
 		),
 	};
 }
@@ -146,8 +146,69 @@ test("a send that the engine never accepted restores the exact typed draft witho
 		assert.deepEqual(stub.discarded, ["hello engine"]);
 		assert.deepEqual(stub.errors, [], "a restored draft must not also raise a red transport error");
 		assert.ok(stub.renders > 0, "no render was requested after restoring the draft");
-		assert.equal(stub.submittedDraftText, undefined, "the pending draft must be released after the turn");
 	}
+});
+
+/**
+ * Two submissions whose drafts differ only in whitespace normalize to the same
+ * delivered text. A shared "last submitted draft" slot could not tell them
+ * apart, so a failure could restore the wrong buffer — or clear the slot before
+ * the other turn used it. Each submission now carries its own draft.
+ */
+test("overlapping submissions that normalize identically keep their own exact drafts", async () => {
+	let failFirst!: (error: Error) => void;
+	let sends = 0;
+	// One host, two Enters: exactly the case a shared slot cannot represent.
+	const { stub, run } = makeStub({
+		draft: " first ",
+		prompt: () => {
+			sends += 1;
+			return sends === 1
+				? new Promise<void>((_, reject) => { failFirst = reject; })
+				: Promise.resolve();
+		},
+	});
+	const firstTurn = run("first", " first ");
+	await Bun.sleep(0);
+	// A second Enter with a different raw buffer while the first is still pending.
+	await run("first", "  first  ");
+	assert.equal(stub.editorText, "", "a successful send leaves nothing behind");
+
+	failFirst(new Error("Agent process stopped"));
+	await firstTurn;
+	assert.equal(stub.editorText, " first ", "the failed submission restored the other submission's draft");
+});
+
+/**
+ * Queued submissions were never sent either. Restoring them with the active one
+ * in FIFO order keeps their relative order; leaving them queued would let each
+ * later failure prepend a newer draft above older restored text.
+ */
+test("still-queued submissions come back in order behind the failed one", async () => {
+	const queued = [
+		{ text: "second", draft: "  second  " },
+		{ text: "third", draft: "third\n" },
+	];
+	const { stub, run } = makeStub({
+		draft: " first ",
+		queued,
+		prompt: async () => { throw new Error("Agent process stopped"); },
+	});
+	await run("first");
+	assert.equal(stub.editorText, " first \n\n  second  \n\nthird\n");
+	assert.deepEqual(queued, [], "restored submissions must not also be delivered later");
+});
+
+test("a failure that restores nothing leaves the queue untouched", async () => {
+	const queued = [{ text: "second", draft: "second" }];
+	const { stub, run } = makeStub({
+		draft: "first",
+		queued,
+		prompt: async () => { throw new Error("Model provider returned 500"); },
+	});
+	await run("first");
+	assert.equal(stub.editorText, "");
+	assert.deepEqual(queued, [{ text: "second", draft: "second" }]);
 });
 
 /**
@@ -246,5 +307,5 @@ test("a successful send leaves the editor empty", async () => {
 	await run("hello");
 	assert.equal(stub.editorText, "");
 	assert.deepEqual(stub.errors, []);
-	assert.equal(stub.submittedDraftText, undefined);
+
 });

@@ -3,11 +3,13 @@ import { tryExecuteSessionSlashCommand } from "../../core/agent-session-prompt.t
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { restoreFailedSubmissionDraft } from "./interactive-prompt-restore.ts";
+import { type InteractiveSubmission, toInteractiveSubmission } from "./interactive-submission.ts";
 
 InteractiveModeBase.prototype.runUserPromptTurn = async function (
 	this: InteractiveModeBase,
-	userInput: string,
+	input: InteractiveSubmission | string,
 ): Promise<void> {
+	const { text: userInput, draft } = toInteractiveSubmission(input);
 	// Show the working spinner immediately on submit so there is no visible gap
 	// while prompt preflight runs before the agent emits `agent_start`. The
 	// ownership flag keeps deferred startup from tearing it down mid-way.
@@ -40,12 +42,7 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 		}
 	} catch (error) {
 		this.discardDeferredRenderedUserInput(userInput);
-		const restored = restoreFailedSubmissionDraft(
-			this,
-			error,
-			this.submittedDraftText?.trim() === userInput ? this.submittedDraftText : userInput,
-			{ turnStarted },
-		);
+		const restored = restoreFailedSubmissionDraft(this, error, draft, { turnStarted });
 		// A restored draft already tells the user the submission did not land, and
 		// the recovery status explains why. A red transport error beside it is noise.
 		if (!restored) {
@@ -53,7 +50,6 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 		}
 	} finally {
 		unsubscribeTurnStart();
-		this.submittedDraftText = undefined;
 		this.promptTurnWorkingLoaderActive = false;
 		// A submission that resolves without starting an agent turn (e.g. a
 		// handled slash command) never emits `agent_end`, so clear the pre-shown

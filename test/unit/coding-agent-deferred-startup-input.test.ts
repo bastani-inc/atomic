@@ -30,7 +30,7 @@ type SubmitContext = {
 	flushPendingBashComponents: () => void;
 	renderDeferredUserInput: (text: string) => void;
 	onInputCallback?: (text: string) => void;
-	pendingUserInputs: string[];
+	pendingUserInputs: Array<{ text: string; draft: string }>;
 };
 
 type DeferredModeContext = {
@@ -233,7 +233,9 @@ describe("coding-agent deferred startup input", () => {
 		interactivePrototype.setupEditorSubmitHandler.call(context);
 		await context.defaultEditor.onSubmit?.(" prompt while loading ");
 
-		assert.deepEqual(context.pendingUserInputs, ["prompt while loading"]);
+		// The queue carries each submission's exact pre-trim draft alongside the
+		// normalized delivery text (see interactive-submission.ts).
+		assert.deepEqual(context.pendingUserInputs, [{ text: "prompt while loading", draft: " prompt while loading " }]);
 		assert.equal(renderDeferredUserInput.mock.calls.length, 0);
 		assert.equal(prompt.mock.calls.length, 0);
 	});
@@ -265,11 +267,11 @@ describe("coding-agent deferred startup input", () => {
 		interactivePrototype.setupEditorSubmitHandler.call(submitContext);
 		await submitContext.defaultEditor.onSubmit?.("msg2");
 		const queuedInput = submitContext.pendingUserInputs.shift();
-		assert.equal(queuedInput, "msg2");
+		assert.deepEqual(queuedInput, { text: "msg2", draft: "msg2" });
 		if (queuedInput === undefined) throw new Error("Expected queued input");
 		await interactivePrototype.handleEvent.call(eventContext, {
 			type: "message_start",
-			message: { role: "user", content: queuedInput },
+			message: { role: "user", content: queuedInput.text },
 		});
 		chatContainer.addChild(new Text("resp2", 0, 0));
 

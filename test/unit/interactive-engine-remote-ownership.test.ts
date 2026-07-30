@@ -30,6 +30,8 @@ function source(overrides?: Partial<RemoteProxyOwnershipSource>): RemoteProxyOwn
 		focusedRemoteOverlay: () => undefined,
 		remoteProxyOwner: (component: unknown) =>
 			component === REMOTE_INLINE || component === REMOTE_OVERLAY ? component : undefined,
+		remoteProxyHandlesCtrlC: () => false,
+		dismissRemoteProxy: () => true,
 		...overrides,
 	};
 }

@@ -24,6 +24,8 @@ import {
 interface CustomUiOptions {
 	overlay?: boolean;
 	deferInlineCustomUiFocus?: boolean;
+	/** The component binds Ctrl+C itself; see ExtensionUIContext.custom options. */
+	handlesCtrlC?: boolean;
 	overlayOptions?: OverlayOptions | (() => OverlayOptions);
 	onHandle?: (handle: OverlayHandle) => void;
 	signal?: AbortSignal;
@@ -204,6 +206,7 @@ export class EngineCustomUiService {
 			componentId,
 			overlay: options?.overlay === true,
 			deferInlineCustomUiFocus: options?.deferInlineCustomUiFocus,
+			handlesCtrlC: options?.handlesCtrlC,
 			overlayOptions: serializableOverlayOptions(options?.overlayOptions),
 		});
 		if (options?.onHandle) options.onHandle(this.remoteHandle(componentId));

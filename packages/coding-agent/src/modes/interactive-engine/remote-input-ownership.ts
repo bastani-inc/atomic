@@ -10,15 +10,21 @@ import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
  * unrelated native overlay all look identical from the outside — so the remote
  * component controller reports its own mounts here instead.
  *
- * The identity, rather than a boolean, lets the route give the first Ctrl+C to
- * the component (extension UIs bind it for their own Skip/Close) and escalate
- * only when the very same component is still holding input on the next press.
+ * The identity, rather than a boolean, lets the route ask the controller what
+ * that exact mount declared: a component that binds Ctrl+C itself (the
+ * workflows prompt card's `ctrl+c Skip`, the stage chat's `ctrl+c Close`) keeps
+ * receiving the key, while an undeclared one is closed locally so it can never
+ * trap the keyboard.
  */
 export interface RemoteProxyOwnershipSource {
 	/** The remote overlay proxy that currently holds focus, if any. */
 	focusedRemoteOverlay(): unknown;
 	/** `component` itself when it is a live non-widget remote proxy, else undefined. */
 	remoteProxyOwner(component: unknown): unknown;
+	/** True when the extension declared that this mount binds Ctrl+C itself. */
+	remoteProxyHandlesCtrlC(component: unknown): boolean;
+	/** Close exactly this proxy through the ordinary host close path. */
+	dismissRemoteProxy(component: unknown): boolean;
 }
 
 export interface HostInputOwnership {
@@ -62,4 +68,14 @@ export function remoteEngineProxyOwner(
 		if (owner !== undefined) return owner;
 	}
 	return undefined;
+}
+
+/** True when the mount that owns input declared that it binds Ctrl+C itself. */
+export function remoteProxyHandlesCtrlC(runtime: AgentSessionRuntime, owner: unknown): boolean {
+	return sources.get(runtime)?.remoteProxyHandlesCtrlC(owner) === true;
+}
+
+/** Close exactly the remote proxy that owns input; the engine keeps running. */
+export function dismissRemoteProxy(runtime: AgentSessionRuntime, owner: unknown): boolean {
+	return sources.get(runtime)?.dismissRemoteProxy(owner) === true;
 }

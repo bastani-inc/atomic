@@ -171,7 +171,8 @@ export function openInputsPicker(ui: InputsUiSurface, opts: OpenInputsPickerOpts
 		// comment). The host owns geometry/focus; no overlayOptions are
 		// forwarded by interactive pi today.
 		try {
-			void Promise.resolve(custom(factory, { overlay: false })).catch(() => {
+			// handlesCtrlC: the picker treats Ctrl+C as cancel (inputs-picker-input).
+			void Promise.resolve(custom(factory, { overlay: false, handlesCtrlC: true })).catch(() => {
 				settleWithoutDone({ kind: "cancel" });
 			});
 		} catch {

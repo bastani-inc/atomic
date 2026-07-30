@@ -111,3 +111,21 @@ export async function terminateRpcClientProcess(child: ChildProcess, processTree
 export function createInteractiveJsonlOptions(enabled: boolean): { maxBytesPerTurn?: number } {
 	return enabled ? { maxBytesPerTurn: 256 * 1024 } : {};
 }
+
+/**
+ * CLI args for a replacement engine child: drop whatever session flag the
+ * previous generation carried and bind the replacement to `sessionFile`, so a
+ * restart resumes the same conversation instead of starting a fresh one.
+ */
+export function restartCliArgs(args: readonly string[] | undefined, sessionFile: string | undefined): string[] {
+	const result: string[] = [];
+	for (let index = 0; index < (args?.length ?? 0); index += 1) {
+		const value = args![index]!;
+		if (value === "--no-session") continue;
+		if (value === "--session") { index += 1; continue; }
+		result.push(value);
+	}
+	result.push(sessionFile ? "--session" : "--no-session");
+	if (sessionFile) result.push(sessionFile);
+	return result;
+}

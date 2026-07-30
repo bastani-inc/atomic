@@ -48,6 +48,7 @@ import {
 import type {} from "./interactive-mode-surface.ts";
 import type { CompactionQueuedMessage, InteractiveModeOptions } from "./interactive-mode-types.ts";
 import { StartupChatContainer } from "./interactive-startup-chat-container.ts";
+import type { InteractiveSubmission } from "./interactive-submission.ts";
 
 function isCommandLikeStartupInput(text: string): boolean {
 	const trimmed = text.trimStart();
@@ -55,7 +56,7 @@ function isCommandLikeStartupInput(text: string): boolean {
 }
 
 export function seedStartupInput(
-	pendingUserInputs: string[],
+	pendingUserInputs: InteractiveSubmission[],
 	editor: { setText(text: string): void },
 	startupInput: EarlyInputSnapshot | undefined,
 	startupReplayInputs: string[] = [],
@@ -73,7 +74,7 @@ export function seedStartupInput(
 			editor.setText(commandText);
 			setStartupReplayActiveInput?.(commandText);
 		} else {
-			pendingUserInputs.push(submission);
+			pendingUserInputs.push({ text: submission, draft: submission });
 		}
 	}
 	if (startupInput.text.length === 0) return;
@@ -129,9 +130,9 @@ export class InteractiveModeBase {
 
 	isInitialized = false;
 
-	onInputCallback?: (text: string) => void;
+	onInputCallback?: (submission: InteractiveSubmission) => void;
 
-	pendingUserInputs: string[] = [];
+	pendingUserInputs: InteractiveSubmission[] = [];
 
 	startupReplayInputs: string[] = [];
 
@@ -245,9 +246,6 @@ export class InteractiveModeBase {
 	inputHandlerReadyRecorded = false;
 
 	firstSubmitRecorded = false;
-
-	/** Exact untrimmed text of the submission the prompt loop is currently sending. */
-	submittedDraftText: string | undefined = undefined;
 
 	// Shutdown state
 	shutdownRequested = false;

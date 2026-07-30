@@ -14,11 +14,7 @@ export interface EngineHealthDeps {
 
 export const UNEXPECTED_ENGINE_LOSS_NOTICE = "Interactive engine stopped unexpectedly; restarting.";
 export const UNRESPONSIVE_ENGINE_NOTICE = "Interactive engine is not responding; restarting.";
-/** Used when the engine is healthy but a remote custom UI has trapped input. */
-export const REMOTE_UI_RESTART_NOTICE = "Restarting interactive engine.";
 
-/** Why the user asked for a replacement; decides only the status wording. */
-export type EngineTerminationReason = "unresponsive" | "remote-ui";
 
 export interface EngineHealthOptions {
 	/** Injectable clock so tests can cross the unresponsive threshold instantly. */
@@ -140,8 +136,7 @@ export class EngineHealthController {
 		void this.recover(UNEXPECTED_ENGINE_LOSS_NOTICE).catch(() => {});
 	}
 
-	terminate(options?: { reason?: EngineTerminationReason }): Promise<void> {
-		const notice = options?.reason === "remote-ui" ? REMOTE_UI_RESTART_NOTICE : UNRESPONSIVE_ENGINE_NOTICE;
+	terminate(): Promise<void> {
 		// A repeat Ctrl+C must be able to rescue a replacement that is itself
 		// overdue, instead of joining the in-flight termination forever. The stop
 		// is fenced by attempt id so repeated presses cannot stack restarts onto a
@@ -156,7 +151,7 @@ export class EngineHealthController {
 		if (inFlight) this.forceStoppedAttemptId = this.attemptId;
 		const run = (async () => {
 			this.deps.clearActivity();
-			this.notice(notice);
+			this.notice(UNRESPONSIVE_ENGINE_NOTICE);
 			await this.stopQuietly();
 			// An automatic attempt swallows its own errors, so this only waits for it
 			// to release the single-flight slot.
@@ -166,7 +161,7 @@ export class EngineHealthController {
 			// replacement attempt, so the escape hatch stays usable indefinitely.
 			while (this.rescueRequested && !this.stopped) {
 				this.rescueRequested = false;
-				this.notice(notice);
+				this.notice(UNRESPONSIVE_ENGINE_NOTICE);
 				await this.recover(undefined);
 			}
 		})().finally(() => {

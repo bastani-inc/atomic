@@ -47,6 +47,7 @@ import type {
 	TUI,
 	VerbatimCompactionResult,
 } from "./interactive-mode-deps.ts";
+import type { InteractiveSubmission } from "./interactive-submission.ts";
 
 declare module "./interactive-mode-base.ts" {
 	interface InteractiveModeBase {
@@ -254,8 +255,8 @@ declare module "./interactive-mode-base.ts" {
 		): void;
 		renderInitialMessages(): void;
 		attachStartupNoticesContainer(options?: { resetDetached?: boolean }): void;
-		getUserInput(): Promise<string>;
-		runUserPromptTurn(userInput: string): Promise<void>;
+		getUserInput(): Promise<InteractiveSubmission>;
+		runUserPromptTurn(submission: InteractiveSubmission | string): Promise<void>;
 		renderDeferredUserInput(text: string): void;
 		consumeDeferredRenderedUserInput(text: string): boolean;
 		discardDeferredRenderedUserInput(text: string): void;

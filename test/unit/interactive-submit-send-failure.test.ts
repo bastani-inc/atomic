@@ -71,6 +71,7 @@ function makeSubmitStub(options?: {
 		editor,
 		editorContainer: { children: options?.editorMounted === false ? [] : [editor] },
 		ui: { setFocus: () => {}, requestRender: () => {} },
+		pendingUserInputs: [],
 		get startupCookedInputRecovered(): boolean { return state.startupCookedInputRecovered; },
 		set startupCookedInputRecovered(value: boolean) { state.startupCookedInputRecovered = value; },
 		session: {
@@ -224,6 +225,7 @@ function makeBashStub(options: {
 		chatContainer: { addChild: () => {} },
 		pendingMessagesContainer: { addChild: () => {} },
 		pendingBashComponents: [] as unknown[],
+		pendingUserInputs: [],
 		ui: { requestRender: () => {} },
 		showError: (message: string) => { errors.push(message); },
 	};

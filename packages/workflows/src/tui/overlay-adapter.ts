@@ -433,6 +433,10 @@ export function buildGraphOverlayAdapter(
 		const options: PiCustomOverlayOptions = {
 			overlay: true,
 			deferInlineCustomUiFocus: true,
+			// The graph pane, stage chat, prompt cards, and inline form all bind
+			// Ctrl+C (Skip / Close / cancel), so the host must forward it here
+			// instead of closing this overlay on the first press.
+			handlesCtrlC: true,
 			overlayOptions: FULLSCREEN_OVERLAY_OPTIONS,
 			onHandle: (handle) => {
 				currentHandle = handle;

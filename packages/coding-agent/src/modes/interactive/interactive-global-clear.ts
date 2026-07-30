@@ -23,8 +23,10 @@ interface GlobalClearInputOptions {
 	 * the engine child, so a component that never resolves would trap Ctrl+C too.
 	 */
 	remoteEngineProxyOwner?(): unknown;
-	/** Replace the engine because a remote proxy has trapped input. */
-	onRemoteEngineRestart?(): void;
+	/** True when that exact mount declared that it binds Ctrl+C itself. */
+	remoteProxyHandlesCtrlC?(owner: unknown): boolean;
+	/** Close exactly that proxy, leaving the engine and its other work alone. */
+	onRemoteProxyDismiss?(owner: unknown): void;
 	/**
 	 * True only when the interactive engine still owes a cooperative abort, is
 	 * watchdog-unresponsive, or left a failed replacement behind. A host-native
@@ -37,7 +39,7 @@ interface GlobalClearInputOptions {
 	requestRender(): void;
 }
 
-/** Remote proxy that saw an unanswered Ctrl+C, so the next press escalates. */
+/** Remote proxy that declared Ctrl+C but did not act on it, so the next press closes it. */
 let armedRemoteProxy: unknown;
 
 /** Test seam: forget any armed remote proxy between cases. */
@@ -53,11 +55,15 @@ export function resetGlobalClearRouteState(): void {
  * escape hatch even if `app.clear` has been rebound, and the configured
  * `app.clear` key keeps its ordinary editor-clear behavior.
  *
- * A remote proxy gets the first Ctrl+C so extension UIs that bind it — the
- * workflows prompt card's `ctrl+c Skip`, the stage chat's `ctrl+c Close` — keep
- * working. A component that ignores it is still mounted and still owns input on
- * the next press, and that press escapes to the host. Nothing is timed: only a
- * second deliberate press escalates.
+ * While an engine-owned remote proxy owns input, Ctrl+C resolves in this order:
+ *
+ *  1. an engine that is provably not answering is terminated and replaced on the
+ *     first press — a wedged child cannot run the component's own handler;
+ *  2. a component that declared `handlesCtrlC` receives the press, so extension
+ *     UIs keep their own Skip/Close bindings; if it is still holding input on
+ *     the next press, that press closes it;
+ *  3. an undeclared component is closed on the first press through the ordinary
+ *     host close path. The engine keeps running and its other components stay.
  */
 export function routeGlobalClearInput(data: string, options: GlobalClearInputOptions): { consume: true } | undefined {
 	// Kitty sends a release for every press; acting on both would fire twice.
@@ -66,15 +72,19 @@ export function routeGlobalClearInput(data: string, options: GlobalClearInputOpt
 	if (options.matchesEscape(data)) return undefined;
 
 	const isCtrlC = options.matchesCtrlC(data);
-	if (isCtrlC && options.onRemoteEngineRestart) {
+	if (isCtrlC && options.onRemoteProxyDismiss) {
 		const owner = options.remoteEngineProxyOwner?.();
 		if (owner !== undefined) {
-			if (armedRemoteProxy !== owner) {
+			const armed = armedRemoteProxy;
+			armedRemoteProxy = undefined;
+			if (options.onEngineTerminate && options.engineNeedsExplicitTermination?.() === true) {
+				options.onEngineTerminate();
+			} else if (options.remoteProxyHandlesCtrlC?.(owner) === true && armed !== owner) {
 				armedRemoteProxy = owner;
 				return undefined;
+			} else {
+				options.onRemoteProxyDismiss(owner);
 			}
-			armedRemoteProxy = undefined;
-			options.onRemoteEngineRestart();
 			options.requestRender();
 			return { consume: true };
 		}

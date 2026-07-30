@@ -123,20 +123,6 @@ export function terminateInteractiveEngine(runtime: AgentSessionRuntime): boolea
 }
 
 /**
- * Replace the engine because a remote custom-UI proxy owns input.
- *
- * Unguarded by engine health on purpose: a healthy engine whose remote component
- * never resolves swallows every key, so Ctrl+C has to be able to escape it. The
- * notice stays calm rather than claiming the engine is unresponsive, which it is
- * not. Still an explicit user action; Escape never reaches this.
- */
-export function restartInteractiveEngineForRemoteUi(runtime: AgentSessionRuntime): boolean {
-	if (!(runtime instanceof IsolatedInteractiveRuntime)) return false;
-	void runtime.terminateAndRecover({ reason: "remote-ui" });
-	return true;
-}
-
-/**
  * Command catalog the engine child exposes to the isolated host. Returns an
  * empty list for non-isolated runtimes so callers can merge unconditionally.
  */

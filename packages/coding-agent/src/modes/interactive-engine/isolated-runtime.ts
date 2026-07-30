@@ -15,11 +15,7 @@ import type {
 } from "../rpc/rpc-types.ts";
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
 import type { InteractiveEngineGenerationEndedListener } from "./engine-generation.ts";
-import {
-	type EngineDiagnosticListener,
-	EngineHealthController,
-	type EngineTerminationReason,
-} from "./engine-health.ts";
+import { type EngineDiagnosticListener, EngineHealthController } from "./engine-health.ts";
 import { type AtomicOAuthLoginCallbacks, loginIsolatedOAuthProvider } from "./isolated-auth.ts";
 import type { EngineKeybindingState, InteractiveEngineCommand, InteractiveEngineMessage } from "./protocol.ts";
 import { RemoteCommandCatalog, type RemoteCommandsListener } from "./remote-command-catalog.ts";
@@ -172,14 +168,16 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	 * dedicated client callback rather than a generic engine-message subscriber,
 	 * which would consume buffered startup custom-UI messages.
 	 */
-	noteEngineHeartbeat(): void { this.health.clearUnresponsive(); }
+	noteEngineHeartbeat(): void {
+		this.health.clearUnresponsive();
+	}
 	/** True only when the engine is provably not answering (see EngineHealthController). */
 	needsExplicitTermination(): boolean {
 		return this.health.needsExplicitTermination();
 	}
 	/** Explicit user-driven engine termination and recovery (Ctrl+C escape hatch). */
-	terminateAndRecover(options?: { reason?: EngineTerminationReason }): Promise<void> {
-		return this.health.terminate(options);
+	terminateAndRecover(): Promise<void> {
+		return this.health.terminate();
 	}
 	getResourceOverlaps(): readonly ResourceOverlap[] {
 		return this.resourceOverlaps;

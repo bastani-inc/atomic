@@ -32,6 +32,7 @@ import {
 	UserMessageComponent,
 	type VerbatimCompactionResult,
 } from "./interactive-mode-deps.ts";
+import type { InteractiveSubmission } from "./interactive-submission.ts";
 
 InteractiveModeBase.prototype.showStatus = function (this: InteractiveModeBase, message: string): void {
 	const children = this.chatContainer.children;
@@ -411,7 +412,9 @@ InteractiveModeBase.prototype.renderInitialMessages = function (this: Interactiv
 	this.renderSessionEntries(entries, { updateFooter: true, populateHistory: true });
 };
 
-InteractiveModeBase.prototype.getUserInput = async function (this: InteractiveModeBase): Promise<string> {
+InteractiveModeBase.prototype.getUserInput = async function (
+	this: InteractiveModeBase,
+): Promise<InteractiveSubmission> {
 	for (let attempt = 0; !this.startupCookedInputRecovered && attempt < 10; attempt += 1) {
 		await yieldToEventLoop();
 		if (this.recoverCookedStartupInput?.()) break;
@@ -428,9 +431,9 @@ InteractiveModeBase.prototype.getUserInput = async function (this: InteractiveMo
 		}
 
 		return new Promise((resolve) => {
-			this.onInputCallback = (text: string) => {
+			this.onInputCallback = (submission: InteractiveSubmission) => {
 				this.onInputCallback = undefined;
-				resolve(text);
+				resolve(submission);
 			};
 			if (!this.inputHandlerReadyRecorded) {
 				this.inputHandlerReadyRecorded = true;

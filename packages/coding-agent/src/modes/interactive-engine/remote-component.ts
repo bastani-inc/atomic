@@ -9,6 +9,8 @@ interface MountedRemoteComponent {
 	component: RemoteComponent;
 	done: (result: JsonValue | undefined) => void;
 	engineDone: boolean;
+	/** The extension declared that this component binds Ctrl+C itself. */
+	handlesCtrlC: boolean;
 	handle?: OverlayHandle;
 	widgetKey?: string;
 }
@@ -97,7 +99,8 @@ class RemoteComponent implements Component {
 	dispose(notifyEngine = true): void {
 		if (this.disposed) return;
 		this.disposed = true;
-		if (notifyEngine) this.runtime.sendEngineCommand({ type: "engine_custom_dispose", componentId: this.componentId });
+		if (notifyEngine)
+			this.runtime.sendEngineCommand({ type: "engine_custom_dispose", componentId: this.componentId });
 	}
 }
 
@@ -157,6 +160,35 @@ export class RemoteComponentController {
 		return undefined;
 	}
 
+	/** True when the extension that mounted `component` declared it binds Ctrl+C. */
+	remoteProxyHandlesCtrlC(component: unknown): boolean {
+		for (const record of this.mounted.values()) {
+			if (record.component === component) return record.handlesCtrlC;
+		}
+		return false;
+	}
+
+	/**
+	 * Close exactly one live proxy through the ordinary host close path.
+	 *
+	 * The host escape from a component that traps Ctrl+C, and deliberately not
+	 * `disposeAll()`: that is generation-death teardown, which would also close
+	 * unrelated nested components and suppress the child notification. Here the
+	 * record stays registered while `done` runs, so `showExtensionCustom()`
+	 * hides this overlay (or remounts the editor) and its finalizer disposes the
+	 * proxy normally — which tells the healthy child to resolve its own
+	 * `ui.custom()` promise with `undefined`, exactly like a user cancel.
+	 */
+	dismissRemoteProxy(component: unknown): boolean {
+		for (const record of this.mounted.values()) {
+			if (record.component !== component || record.widgetKey !== undefined) continue;
+			record.done(undefined);
+			this.ui.requestRender();
+			return true;
+		}
+		return false;
+	}
+
 	/**
 	 * Close every mounted component.
 	 *
@@ -205,6 +237,7 @@ export class RemoteComponentController {
 					message.overlayOptions,
 					message.widgetKey,
 					message.widgetPlacement,
+					message.handlesCtrlC === true,
 				);
 				break;
 			case "engine_custom_close":
@@ -240,6 +273,7 @@ export class RemoteComponentController {
 		options: SerializableOverlayOptions | undefined,
 		widgetKey?: string,
 		widgetPlacement?: "aboveEditor" | "belowEditor",
+		handlesCtrlC = false,
 	): void {
 		if (this.mounted.has(componentId)) return;
 		if (widgetKey) {
@@ -250,7 +284,7 @@ export class RemoteComponentController {
 				() => this.ui.requestRender(),
 				() => rows,
 			);
-			this.mounted.set(componentId, { component, done: () => {}, engineDone: false, widgetKey });
+			this.mounted.set(componentId, { component, done: () => {}, engineDone: false, handlesCtrlC, widgetKey });
 			this.ui.setWidget(
 				widgetKey,
 				(tui) => {
@@ -271,7 +305,7 @@ export class RemoteComponentController {
 						() => this.ui.requestRender(),
 						() => tui.terminal.rows,
 					);
-					mounted = { component, done, engineDone: false };
+					mounted = { component, done, engineDone: false, handlesCtrlC };
 					this.mounted.set(componentId, mounted);
 					// Bind this component to the real host terminal so buffered/pending
 					// terminal-mode controls (e.g. mouse-scroll reporting the overlay

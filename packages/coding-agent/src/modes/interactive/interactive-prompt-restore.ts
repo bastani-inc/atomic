@@ -79,9 +79,13 @@ export function restoreFailedSubmissionDraft(
 	draft: string,
 	options?: { turnStarted?: boolean },
 ): boolean {
+	// Submissions still waiting in the queue were never sent either. They come
+	// back with this one, in FIFO order, because leaving them queued would let
+	// each later failure prepend a newer draft above older restored text.
+	const queued = mode.pendingUserInputs;
 	const restored = restoreUnsentPromptDraft(error, {
 		turnStarted: options?.turnStarted === true,
-		draft,
+		draft: [draft, ...queued.map((submission) => submission.draft)].join(RESTORED_DRAFT_SEPARATOR),
 		// Expand first: a large paste lives in the editor's private paste registry
 		// and shows only a `[paste #1 … chars]` marker in the visible buffer, and
 		// setText() clears that registry. Reading the marker would round-trip dead
@@ -96,6 +100,9 @@ export function restoreFailedSubmissionDraft(
 	// Without this, the next getUserInput() would run the startup-input recovery
 	// over the restored text and replay a command-like draft as a submission —
 	// re-running the very command whose send just failed.
-	if (restored) mode.startupCookedInputRecovered = true;
+	if (restored) {
+		queued.length = 0;
+		mode.startupCookedInputRecovered = true;
+	}
 	return restored;
 }

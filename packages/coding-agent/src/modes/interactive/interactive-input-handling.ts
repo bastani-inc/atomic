@@ -2,10 +2,13 @@ import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import {
 	interactiveEngineNeedsExplicitTermination,
 	interruptBlockedInteractiveEngine,
-	restartInteractiveEngineForRemoteUi,
 	terminateInteractiveEngine,
 } from "../interactive-engine/extension-ui-bridge.ts";
-import { remoteEngineProxyOwner } from "../interactive-engine/remote-input-ownership.ts";
+import {
+	dismissRemoteProxy,
+	remoteEngineProxyOwner,
+	remoteProxyHandlesCtrlC,
+} from "../interactive-engine/remote-input-ownership.ts";
 import { StartupIdentityComponent } from "./components/startup-identity.ts";
 import { COMPACTION_ALREADY_IN_PROGRESS_WARNING } from "./interactive-bash-compact.ts";
 import { routeGlobalClearInput } from "./interactive-global-clear.ts";
@@ -33,8 +36,9 @@ export function registerStartupInputListeners(mode: InteractiveModeBase): void {
 					hasOverlay: () => mode.ui.hasOverlay(),
 					inlineComponents: () => mode.editorContainer.children,
 				}),
-			onRemoteEngineRestart: () => {
-				restartInteractiveEngineForRemoteUi(mode.runtimeHost);
+			remoteProxyHandlesCtrlC: (owner) => remoteProxyHandlesCtrlC(mode.runtimeHost, owner),
+			onRemoteProxyDismiss: (owner) => {
+				dismissRemoteProxy(mode.runtimeHost, owner);
 			},
 			engineNeedsExplicitTermination: () => interactiveEngineNeedsExplicitTermination(mode.runtimeHost),
 			onEngineTerminate: () => {
@@ -147,9 +151,9 @@ InteractiveModeBase.prototype.deliverStartupReplayPrompt = function (this: Inter
 		}
 		const callback = this.onInputCallback;
 		this.onInputCallback = undefined;
-		callback(text);
+		callback({ text, draft: text });
 	} else {
-		this.pendingUserInputs.push(text);
+		this.pendingUserInputs.push({ text, draft: text });
 	}
 };
 
@@ -474,15 +478,18 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 			// Normal message submission
 			// First, move any pending bash components to chat
 			this.flushPendingBashComponents();
-			this.submittedDraftText = submittedDraft;
+			// The draft travels with this submission, never through shared state: a
+			// later submission whose trimmed text is identical must not be able to
+			// claim, or clear, this one's exact buffer.
+			const submission = { text, draft: submittedDraft };
 
 			if (this.onInputCallback) {
 				if (!text.startsWith("/")) {
 					this.renderDeferredUserInput(text);
 				}
-				this.onInputCallback(text);
+				this.onInputCallback(submission);
 			} else {
-				this.pendingUserInputs.push(text);
+				this.pendingUserInputs.push(submission);
 			}
 			this.editor.addToHistory?.(text);
 		} catch (error) {

@@ -114,6 +114,12 @@ export interface PiCustomOverlayOptions {
 	/** Keep host inline custom UI pending in the background while this overlay is visible. */
 	deferInlineCustomUiFocus?: boolean;
 	/**
+	 * Declare that this component binds Ctrl+C itself, so the host forwards the
+	 * first press instead of closing the component. Required by every workflow
+	 * surface whose hint row offers `ctrl+c Skip`, `ctrl+c Close`, or cancel.
+	 */
+	handlesCtrlC?: boolean;
+	/**
 	 * Geometry / anchoring intended for pi-tui's `resolveOverlayLayout`.
 	 * NOT forwarded by current pi interactive `custom()` — see
 	 * the host-compatibility note above. Treat as advisory metadata

@@ -240,6 +240,15 @@ export interface ExtensionUIContext {
 			overlay?: boolean;
 			/** Keep host inline custom UI pending in the background while this overlay is visible. */
 			deferInlineCustomUiFocus?: boolean;
+			/**
+			 * Declare that this component binds Ctrl+C itself (cancel, skip, close).
+			 * The host then forwards the first Ctrl+C to it instead of closing it.
+			 *
+			 * Leave it unset unless the component really handles the key: the host
+			 * closes an undeclared component on the first Ctrl+C so a component that
+			 * never resolves can never trap the keyboard.
+			 */
+			handlesCtrlC?: boolean;
 			/** AbortSignal to programmatically dismiss the custom UI. */
 			signal?: AbortSignal;
 			/** Overlay positioning/sizing options. Can be static or a function for dynamic updates. */

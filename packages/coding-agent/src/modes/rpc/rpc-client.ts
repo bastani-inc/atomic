@@ -21,32 +21,19 @@ import { QueuedWriter } from "./queued-writer.ts";
 import { RpcClientApi, type RpcCommandBody } from "./rpc-client-api.ts";
 import {
 	createInteractiveJsonlOptions,
+	restartCliArgs,
 	spawnRpcClientProcess,
 	terminateRpcClientProcess,
 } from "./rpc-client-process.ts";
 import { collectRpcEvents, waitForRpcIdle } from "./rpc-client-waits.ts";
 import { DEFAULT_REQUEST_TIMEOUT_MS, LONG_LIVED_COMMANDS } from "./rpc-command-timeouts.ts";
 import { RpcEventBuffer } from "./rpc-event-buffer.ts";
+import { GenerationBuffer } from "./rpc-generation-buffer.ts";
 import type { RpcCommand, RpcEvent, RpcExtensionUIRequest, RpcExtensionUIResponse, RpcResponse } from "./rpc-types.ts";
 
 export type { ModelInfo, RpcCommandBody } from "./rpc-client-api.ts";
 export type { RpcEvent } from "./rpc-types.ts";
 
-function restartArgs(args: readonly string[] | undefined, sessionFile: string | undefined): string[] {
-	const result: string[] = [];
-	for (let index = 0; index < (args?.length ?? 0); index += 1) {
-		const value = args![index]!;
-		if (value === "--no-session") continue;
-		if (value === "--session") {
-			index += 1;
-			continue;
-		}
-		result.push(value);
-	}
-	result.push(sessionFile ? "--session" : "--no-session");
-	if (sessionFile) result.push(sessionFile);
-	return result;
-}
 export interface RpcClientOptions {
 	cliPath?: string;
 	cwd?: string;
@@ -85,10 +72,10 @@ export class RpcClient extends RpcClientApi {
 	private stopReadingStdout: (() => void) | null = null;
 	private eventListeners: RpcEventListener[] = [];
 	private extensionUIListeners: Array<(request: RpcExtensionUIRequest) => void> = [];
-	private pendingExtensionUIRequests: RpcExtensionUIRequest[] = [];
+	private readonly pendingExtensionUIRequests = new GenerationBuffer<RpcExtensionUIRequest>();
 	private engineMessageListeners: Array<(message: InteractiveEngineMessage) => void> = [];
 	private latestEngineKeybindingState: EngineKeybindingState | undefined;
-	private pendingEngineMessages: InteractiveEngineMessage[] = [];
+	private readonly pendingEngineMessages = new GenerationBuffer<InteractiveEngineMessage>();
 	private pendingRequests: Map<string, { resolve: (response: RpcResponse) => void; reject: (error: Error) => void }> =
 		new Map();
 	private requestId = 0;
@@ -100,6 +87,12 @@ export class RpcClient extends RpcClientApi {
 	private generation = 0;
 	private lastEndedGeneration = 0;
 	private generationEndedListeners: InteractiveEngineGenerationEndedListener[] = [];
+	/**
+	 * The latest generation-end event, retained so a subscriber that attaches
+	 * after the child died still observes it. A child can exit between
+	 * `start()` returning and the runtime constructing its listeners.
+	 */
+	private retainedGenerationEnd: InteractiveEngineGenerationEnded | undefined;
 	private readonly activeActivityIds = new Set<string>();
 	private enginePid: number | undefined;
 
@@ -135,7 +128,7 @@ export class RpcClient extends RpcClientApi {
 		this.enginePid = undefined;
 		this.engineMonitor = this.options.interactiveEngine
 			? new InteractiveEngineMonitor(this.options.interactiveEngine.onDiagnostic, (message) =>
-					this.observeInteractiveEngineMessage(message),
+					this.observeInteractiveEngineMessage(message, generation),
 				)
 			: undefined;
 		this.eventBuffer = this.engineMonitor ? new RpcEventBuffer((event) => this.emitEvent(event)) : undefined;
@@ -196,7 +189,7 @@ export class RpcClient extends RpcClientApi {
 		this.stopReadingStdout = attachJsonlLineReader(
 			childProcess.stdout!,
 			(line) => {
-				if (generation === this.generation) this.handleLine(line);
+				if (generation === this.generation) this.handleLine(line, generation);
 			},
 			readerOptions,
 		);
@@ -252,7 +245,7 @@ export class RpcClient extends RpcClientApi {
 
 	onExtensionUIRequest(listener: (request: RpcExtensionUIRequest) => void): () => void {
 		this.extensionUIListeners.push(listener);
-		for (const request of this.pendingExtensionUIRequests.splice(0)) listener(request);
+		for (const request of this.pendingExtensionUIRequests.drain(this.generation)) listener(request);
 		return () => {
 			const index = this.extensionUIListeners.indexOf(listener);
 			if (index !== -1) this.extensionUIListeners.splice(index, 1);
@@ -265,7 +258,7 @@ export class RpcClient extends RpcClientApi {
 
 	onInteractiveEngineMessage(listener: (message: InteractiveEngineMessage) => void): () => void {
 		this.engineMessageListeners.push(listener);
-		for (const message of this.pendingEngineMessages.splice(0)) listener(message);
+		for (const message of this.pendingEngineMessages.drain(this.generation)) listener(message);
 		return () => {
 			const index = this.engineMessageListeners.indexOf(listener);
 			if (index !== -1) this.engineMessageListeners.splice(index, 1);
@@ -286,10 +279,16 @@ export class RpcClient extends RpcClientApi {
 
 	/**
 	 * Subscribe to host-local generation death. Fires at most once per
-	 * generation, synchronously, before any restart work.
+	 * generation, synchronously, before any restart work. A death that has
+	 * already happened for the current generation replays immediately, so a
+	 * listener attached after an exit still sees it.
 	 */
 	onGenerationEnded(listener: InteractiveEngineGenerationEndedListener): () => void {
 		this.generationEndedListeners.push(listener);
+		const retained = this.retainedGenerationEnd;
+		// Only while it still describes the live generation: once stop()/start()
+		// has moved on, that death belongs to a replaced child.
+		if (retained && retained.generation === this.generation) listener(retained);
 		return () => {
 			const index = this.generationEndedListeners.indexOf(listener);
 			if (index !== -1) this.generationEndedListeners.splice(index, 1);
@@ -322,7 +321,7 @@ export class RpcClient extends RpcClientApi {
 
 	async restart(sessionFile: string | undefined): Promise<void> {
 		await this.stop();
-		this.options = { ...this.options, args: restartArgs(this.options.args, sessionFile) };
+		this.options = { ...this.options, args: restartCliArgs(this.options.args, sessionFile) };
 		await this.start();
 		await this.waitForInteractiveEngineBound();
 	}
@@ -368,13 +367,13 @@ export class RpcClient extends RpcClientApi {
 		await this.prompt(message, images);
 		return eventsPromise;
 	}
-	private handleLine(line: string): void {
+	private handleLine(line: string, generation: number): void {
 		if (this.engineMonitor?.handleLine(line)) return;
 		try {
 			const data = JSON.parse(line) as { type?: string; id?: string };
 			if (data.type === "extension_ui_request") {
 				const request = data as RpcExtensionUIRequest;
-				if (this.extensionUIListeners.length === 0) this.pendingExtensionUIRequests.push(request);
+				if (this.extensionUIListeners.length === 0) this.pendingExtensionUIRequests.push(generation, request);
 				for (const listener of this.extensionUIListeners) listener(request);
 				return;
 			}
@@ -394,9 +393,9 @@ export class RpcClient extends RpcClientApi {
 	private emitEvent(event: RpcEvent): void {
 		for (const listener of this.eventListeners) listener(event);
 	}
-	private emitInteractiveEngineMessage(message: InteractiveEngineMessage): void {
+	private emitInteractiveEngineMessage(message: InteractiveEngineMessage, generation: number): void {
 		if (this.engineMessageListeners.length === 0 && message.type.startsWith("engine_custom_")) {
-			this.pendingEngineMessages.push(message);
+			this.pendingEngineMessages.push(generation, message);
 		}
 		for (const listener of this.engineMessageListeners) listener(message);
 	}
@@ -407,16 +406,19 @@ export class RpcClient extends RpcClientApi {
 		if (!this.latestEngineKeybindingState || this.latestEngineKeybindingState.shortcuts.length === 0) return;
 		const state: EngineKeybindingState = { ...this.latestEngineKeybindingState, shortcuts: [] };
 		this.latestEngineKeybindingState = state;
-		this.emitInteractiveEngineMessage({ type: "engine_keybindings_reloaded", state });
+		this.emitInteractiveEngineMessage({ type: "engine_keybindings_reloaded", state }, this.generation);
 	}
-	private observeInteractiveEngineMessage(message: InteractiveEngineMessage): void {
+	private observeInteractiveEngineMessage(message: InteractiveEngineMessage, generation: number): void {
+		// A frame from a replaced or already-dead generation must not touch host
+		// state: it would revive a PID, an activity, or a mount that is gone.
+		if (generation !== this.generation || generation <= this.lastEndedGeneration) return;
 		if (message.type === "engine_heartbeat") this.options.interactiveEngine?.onHeartbeat?.();
 		if (message.type === "engine_ready") this.enginePid = message.pid;
 		if (message.type === "engine_keybindings_reloaded") this.latestEngineKeybindingState = message.state;
 		if (message.type === "engine_activity_started") this.activeActivityIds.add(message.activity.id);
 		else if (message.type === "engine_activity_finished") this.activeActivityIds.delete(message.activityId);
 		this.options.interactiveEngine?.onActivityChange?.(this.activeActivityIds.size > 0);
-		this.emitInteractiveEngineMessage(message);
+		this.emitInteractiveEngineMessage(message, generation);
 	}
 	private rejectPendingRequests(error: Error): void {
 		for (const { reject } of this.pendingRequests.values()) reject(error);
@@ -431,6 +433,12 @@ export class RpcClient extends RpcClientApi {
 		if (generation <= this.lastEndedGeneration) return;
 		this.lastEndedGeneration = generation;
 		const event: InteractiveEngineGenerationEnded = { generation, error, kind, expected };
+		this.retainedGenerationEnd = event;
+		// Death is a strict boundary: drop this generation's buffered frames
+		// BEFORE teardown runs, so no listener can drain a stale mount frame
+		// while it is closing that very generation's components.
+		this.pendingEngineMessages.dropGeneration(generation);
+		this.pendingExtensionUIRequests.dropGeneration(generation);
 		for (const listener of [...this.generationEndedListeners]) listener(event);
 	}
 	private failTransport(error: Error): void {
