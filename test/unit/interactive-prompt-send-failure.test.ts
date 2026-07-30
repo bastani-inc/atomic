@@ -9,6 +9,7 @@ import {
 } from "../../packages/coding-agent/src/modes/interactive/interactive-prompt-restore.ts";
 import { QueuedWriter } from "../../packages/coding-agent/src/modes/rpc/queued-writer.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-prompt-turn.ts";
+import { asAcceptedRequestFailure, rpcTransportError } from "../../packages/coding-agent/src/modes/rpc/rpc-transport-error.ts";
 
 /** A writable that hands its `_write` callback back so a test can fail it. */
 class ControlledWritable extends Writable {
@@ -110,10 +111,29 @@ test("isEngineSendFailure matches every transport-loss error the RPC client rais
 		"Client not started",
 		"Interactive engine emitted malformed JSONL",
 	]) {
-		assert.equal(isEngineSendFailure(new Error(message)), true, message);
+		assert.equal(isEngineSendFailure(rpcTransportError(message)), true, message);
 	}
+	assert.equal(isEngineSendFailure(rpcTransportError("write EPIPE")), true, "the marker decides, not the wording");
 	assert.equal(isEngineSendFailure(new Error("Model provider returned 500")), false);
-	assert.equal(isEngineSendFailure("Agent process stopped"), true, "non-Error causes are still inspected");
+});
+
+test("isEngineSendFailure ignores message text so an admitted turn cannot be restored", () => {
+	// A provider, extension, or command failure is free to quote a transport
+	// phrase. The engine may already have run the submission, so restoring the
+	// draft here would hide the real error and invite a duplicate run.
+	for (const impostor of [
+		new Error("Model provider returned 500: Agent process stopped"),
+		new Error("Agent process exited (code=null signal=SIGKILL). Stderr: "),
+		new Error("Client not started"),
+		"Agent process stopped",
+		{ message: "Agent process stopped" },
+	]) {
+		assert.equal(isEngineSendFailure(impostor), false, String(impostor));
+	}
+	// Admission is the only discriminator between two identical messages.
+	const unsent = rpcTransportError("Agent process stopped");
+	assert.equal(isEngineSendFailure(unsent), true);
+	assert.equal(isEngineSendFailure(asAcceptedRequestFailure(unsent)), false);
 });
 
 test("restoreUnsentPromptDraft leaves a started turn alone and never steals focus from a modal", () => {
@@ -127,11 +147,11 @@ test("restoreUnsentPromptDraft leaves a started turn alone and never steals focu
 		focusEditor: () => { calls.focused += 1; },
 		requestRender: () => { calls.renders += 1; },
 	};
-	assert.equal(restoreUnsentPromptDraft(new Error("Agent process stopped"), target), false);
+	assert.equal(restoreUnsentPromptDraft(rpcTransportError("Agent process stopped"), target), false);
 	assert.equal(calls.text, undefined);
 
 	const modal = { ...target, turnStarted: false, editorOwnsInput: () => false };
-	assert.equal(restoreUnsentPromptDraft(new Error("Agent process stopped"), modal), true);
+	assert.equal(restoreUnsentPromptDraft(rpcTransportError("Agent process stopped"), modal), true);
 	assert.equal(calls.text, "draft");
 	assert.equal(calls.focused, 0, "focus must stay with the modal that owns input");
 	assert.equal(calls.renders, 1);
@@ -158,7 +178,7 @@ test("a send that the engine never accepted restores the exact typed draft witho
 			// Untrimmed: the prompt loop only sees the trimmed text, but the editor
 			// gets back exactly what the submit callback handed over.
 			draft: "  hello engine\n",
-			prompt: async () => { throw new Error(message); },
+			prompt: async () => { throw rpcTransportError(message); },
 		});
 		await run("hello engine");
 		assert.equal(stub.editorText, "  hello engine\n", `draft was not restored verbatim for ${message}`);
@@ -270,7 +290,7 @@ test("overlapping submissions that normalize identically keep their own exact dr
 	await run("first", "  first  ");
 	assert.equal(stub.editorText, "", "a successful send leaves nothing behind");
 
-	failFirst(new Error("Agent process stopped"));
+	failFirst(rpcTransportError("Agent process stopped"));
 	await firstTurn;
 	assert.equal(stub.editorText, " first ", "the failed submission restored the other submission's draft");
 });
@@ -288,7 +308,7 @@ test("still-queued submissions come back in order behind the failed one", async 
 	const { stub, run } = makeStub({
 		draft: " first ",
 		queued,
-		prompt: async () => { throw new Error("Agent process stopped"); },
+		prompt: async () => { throw rpcTransportError("Agent process stopped"); },
 	});
 	await run("first");
 	assert.equal(stub.editorText, " first \n\n  second  \n\nthird\n");
@@ -317,7 +337,7 @@ test("text typed while the send was pending survives alongside the restored draf
 		draft: "/freeze-test",
 		prompt: async function (this: void) {
 			stub.editorText = typedDuringSend;
-			throw new Error("Agent process exited (code=null signal=SIGKILL). Stderr: ");
+			throw rpcTransportError("Agent process exited (code=null signal=SIGKILL). Stderr: ");
 		},
 	});
 	await run("/freeze-test");
@@ -333,7 +353,7 @@ test("whitespace-only text typed during the pending send is preserved", async ()
 		draft: "hello",
 		prompt: async () => {
 			stub.editorText = "   ";
-			throw new Error("Agent process stopped");
+			throw rpcTransportError("Agent process stopped");
 		},
 	});
 	await run("hello");
@@ -345,7 +365,7 @@ test("multiline text typed during the pending send is preserved verbatim", async
 		draft: "first\nsecond",
 		prompt: async () => {
 			stub.editorText = "third\nfourth";
-			throw new Error("Agent process stopped");
+			throw rpcTransportError("Agent process stopped");
 		},
 	});
 	await run("first\nsecond");
@@ -361,7 +381,7 @@ test("multiline text typed during the pending send is preserved verbatim", async
 test("a restored draft is a draft, never cooked startup input", async () => {
 	const { stub, run } = makeStub({
 		draft: "/freeze-test",
-		prompt: async () => { throw new Error("Agent process exited (code=null signal=SIGKILL). Stderr: "); },
+		prompt: async () => { throw rpcTransportError("Agent process exited (code=null signal=SIGKILL). Stderr: "); },
 	});
 	await run("/freeze-test");
 	assert.equal(stub.editorText, "/freeze-test");
@@ -381,7 +401,7 @@ test("a failure after the agent turn started keeps the text in the transcript", 
 	const { stub, run } = makeStub({
 		draft: "run something",
 		subscribe: (listener) => { listener({ type: "agent_start" }); return () => {}; },
-		prompt: async () => { throw new Error("Agent process exited (code=null signal=SIGKILL). Stderr: "); },
+		prompt: async () => { throw rpcTransportError("Agent process exited (code=null signal=SIGKILL). Stderr: "); },
 	});
 	await run("run something");
 	assert.equal(stub.editorText, "", "a started turn must not resurrect the submission");

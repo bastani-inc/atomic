@@ -2,34 +2,22 @@ import { isRpcRequestAcceptedFailure, isRpcTransportFailure } from "../rpc/rpc-t
 import type { InteractiveModeBase } from "./interactive-mode-base.ts";
 
 /**
- * Legacy message fragments for a submission the engine never accepted.
- *
- * Real `RpcClient` failures now carry a transport marker, so these are only a
- * compatibility net for injected test errors and for any caller that still
- * rejects with a plain message. Do not extend the list: a raw stream error such
- * as `write EPIPE` or `Cannot call write after a stream was destroyed` matches
- * none of them, and Node documents `error.message` as free to change in any
- * release, while the transport boundary already knows the frame never landed.
- */
-const ENGINE_SEND_FAILURE_MARKERS = [
-	"Agent process stopped",
-	"Agent process exited",
-	"Agent process stdin is not writable",
-	"Client not started",
-	"Interactive engine emitted malformed JSONL",
-] as const;
-
-/**
  * True when the prompt never reached an agent turn because the transport
  * rejected it, so the typed text is still user-owned.
+ *
+ * Admission is the only input, and it is decisive. Every rejection `RpcClient`
+ * raises is built through `rpcTransportError`, and an accepted request is
+ * re-marked per request, so the classification already knows whether the child
+ * took ownership.
+ *
+ * Message text is deliberately not consulted. A provider, extension, or command
+ * error is free to contain a phrase like `Agent process stopped` after the
+ * engine admitted and ran the submission; restoring the draft there would hide
+ * a real failure and invite a duplicate run. Node also documents `error.message`
+ * as free to change in any release.
  */
 export function isEngineSendFailure(error: unknown): boolean {
-	// Decisive: a classified transport failure already knows whether the child
-	// took the request, and the legacy message list must not reclassify an
-	// accepted failure as unsent.
-	if (isRpcTransportFailure(error)) return !isRpcRequestAcceptedFailure(error);
-	const message = error instanceof Error ? error.message : String(error);
-	return ENGINE_SEND_FAILURE_MARKERS.some((marker) => message.includes(marker));
+	return isRpcTransportFailure(error) && !isRpcRequestAcceptedFailure(error);
 }
 
 /** Separator between a restored submission and text typed while it was pending. */

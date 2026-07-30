@@ -220,6 +220,12 @@ export class EngineHealthController {
 		// A new attempt is under way, so the previous failure is no longer the
 		// reason to arm Ctrl+C. It re-arms below only if this attempt fails too.
 		this.replacementNeeded = false;
+		// The watchdog verdict belonged to the generation being replaced. A fresh
+		// child emits no heartbeat until it is ready, so leaving the latch set
+		// would keep `needsExplicitTermination()` true through the whole pre-ready
+		// window and let the first Ctrl+C stop a replacement that never misbehaved.
+		// Only this child's own heartbeat, or its own stall, may set it again.
+		this.unresponsive = false;
 		const run = this.deps.restart()
 			.catch((error: Error) => {
 				// An attempt the user deliberately stopped, or one cancelled by

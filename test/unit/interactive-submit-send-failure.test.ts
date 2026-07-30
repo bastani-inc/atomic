@@ -54,7 +54,12 @@ function makeSubmitStub(options?: {
 		compactions: 0,
 	};
 	const fail = (): never => {
-		throw new Error(options?.failWith ?? SEND_FAILURE);
+		// A transport rejection is what the RPC client actually raises for a frame
+		// the engine never took; `failWith` injects an ordinary failure instead, so
+		// the two paths stay distinguishable by admission rather than by wording.
+		throw options?.failWith === undefined
+			? rpcTransportError(SEND_FAILURE)
+			: new Error(options.failWith);
 	};
 	const editor = {
 		getText: () => state.editorText,
@@ -317,7 +322,7 @@ function makeBashStub(options: {
 }
 
 test("bash rethrows a send the engine never accepted and renders every other failure", async () => {
-	const rejected = makeBashStub({ executeBash: async () => { throw new Error(SEND_FAILURE); } });
+	const rejected = makeBashStub({ executeBash: async () => { throw rpcTransportError(SEND_FAILURE); } });
 	await assert.rejects(
 		() => InteractiveModeBase.prototype.handleBashCommand.call(rejected.mode, "echo hi"),
 		/Agent process exited/,
@@ -370,7 +375,7 @@ test("/compact rethrows a send the engine never accepted and ignores other failu
 
 	await assert.rejects(
 		() => InteractiveModeBase.prototype.handleCompactCommand.call(
-			makeCompactStub(async () => { throw new Error(SEND_FAILURE); }),
+			makeCompactStub(async () => { throw rpcTransportError(SEND_FAILURE); }),
 		),
 		/Agent process exited/,
 	);

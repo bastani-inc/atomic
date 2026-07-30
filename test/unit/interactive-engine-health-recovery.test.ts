@@ -182,6 +182,29 @@ test("a replacement still waiting for readiness arms the escape hatch after the 
 	assert.equal(h.controller.needsExplicitTermination(), true, "an overdue pre-ready replacement must arm Ctrl+C");
 });
 
+/**
+ * The watchdog's verdict describes one generation. A replacement emits no
+ * heartbeat before `engine_ready`, so nothing would clear an inherited latch and
+ * the first Ctrl+C would stop a child that never misbehaved.
+ */
+test("a dead generation's unresponsive verdict does not arm the hatch against its replacement", async () => {
+	const h = harness(() => new Promise<void>(() => {}));
+	h.controller.publish(watchdogUnresponsive);
+	assert.equal(h.controller.needsExplicitTermination(), true, "the stalled child itself must arm Ctrl+C");
+	h.controller.handleGenerationEnded(ended());
+	await Bun.sleep(0);
+	assert.equal(h.controller.isRecovering(), true);
+	assert.equal(
+		h.controller.needsExplicitTermination(),
+		false,
+		"the replacement inherits no verdict during its pre-ready window",
+	);
+	// The fence is time-bounded, not permanent: this replacement is still on the
+	// hook for its own readiness.
+	h.advance(ENGINE_UNRESPONSIVE_MS);
+	assert.equal(h.controller.needsExplicitTermination(), true, "an overdue replacement still arms Ctrl+C");
+});
+
 test("a successful replacement disarms the escape hatch", async () => {
 	let settle!: () => void;
 	const h = harness(() => new Promise<void>((resolve) => { settle = resolve; }));

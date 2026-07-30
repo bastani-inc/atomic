@@ -37,26 +37,45 @@ serialTest("a pending abort outlives the generic request deadline and rejects on
 	// start() already waited for engine_ready, so the pid is recorded by now.
 	const enginePid = client.getEnginePid();
 	assert.ok(enginePid, "engine child never reported its pid");
-	// Freeze the child so it can never answer the cooperative abort.
-	process.kill(enginePid, "SIGSTOP");
-	let settled: "resolved" | "rejected" | undefined;
-	let rejection: Error | undefined;
-	const abort = client.abort().then(
-		() => { settled = "resolved"; },
-		(error: Error) => { settled = "rejected"; rejection = error; },
-	);
+	let resumed = false;
+	// A SIGSTOPped child cannot answer a stop request, and a failed assertion
+	// between here and the resume below would leak it: frozen, unkillable by the
+	// client, and still holding this process's stdio pipes — the same leak class
+	// that hung the Windows job. Teardown is unconditional for that reason.
+	const resume = (): void => {
+		if (resumed) return;
+		resumed = true;
+		try {
+			process.kill(enginePid, "SIGCONT");
+		} catch {
+			// Already gone: nothing to resume, and stop() below is idempotent.
+		}
+	};
+	try {
+		// Freeze the child so it can never answer the cooperative abort.
+		process.kill(enginePid, "SIGSTOP");
+		let settled: "resolved" | "rejected" | undefined;
+		let rejection: Error | undefined;
+		const abort = client.abort().then(
+			() => { settled = "resolved"; },
+			(error: Error) => { settled = "rejected"; rejection = error; },
+		);
 
-	// Well past the configured deadline; a timed request would already be dead.
-	await Bun.sleep(400);
-	assert.equal(settled, undefined, "the cooperative abort must not time out");
+		// Well past the configured deadline; a timed request would already be dead.
+		await Bun.sleep(400);
+		assert.equal(settled, undefined, "the cooperative abort must not time out");
 
-	// An ordinary short command still honours the deadline, proving the timer is
-	// live and only `abort` is exempt.
-	await assert.rejects(() => client.getState(), /Timeout waiting for response to get_state/);
+		// An ordinary short command still honours the deadline, proving the timer is
+		// live and only `abort` is exempt.
+		await assert.rejects(() => client.getState(), /Timeout waiting for response to get_state/);
 
-	process.kill(enginePid, "SIGCONT");
-	await client.stop();
-	await abort;
-	assert.equal(settled, "rejected", "explicit stop must settle the pending abort");
-	assert.match(rejection?.message ?? "", /Agent process stopped/);
+		resume();
+		await client.stop();
+		await abort;
+		assert.equal(settled, "rejected", "explicit stop must settle the pending abort");
+		assert.match(rejection?.message ?? "", /Agent process stopped/);
+	} finally {
+		resume();
+		await client.stop().catch(() => {});
+	}
 }, 30_000);

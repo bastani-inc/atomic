@@ -7,6 +7,7 @@ import { CustomEditor } from "../../packages/coding-agent/src/modes/interactive/
 import { getEditorTheme, initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-input-handling.ts";
+import { rpcTransportError } from "../../packages/coding-agent/src/modes/rpc/rpc-transport-error.ts";
 
 initTheme("dark");
 
@@ -112,7 +113,7 @@ test("the submit handler falls back to the callback text for editors without cap
 			isStreaming: false,
 			isBashRunning: false,
 			queuedMessagesPaused: false,
-			prompt: async () => { throw new Error("Agent process stopped"); },
+			prompt: async () => { throw rpcTransportError("Agent process stopped"); },
 		},
 		isExtensionCommand: () => false,
 		flushPendingBashComponents: () => {},
