@@ -83,8 +83,11 @@ function resolveExecutable(command: string): string | undefined {
 	for (const directory of (process.env.PATH ?? "").split(delimiter)) {
 		if (!directory) continue;
 		const base = join(directory, command);
-		if (existsSync(base)) return base;
+		// PATHEXT first on Windows. npm ships as both `npm` (a POSIX shell script
+		// that Windows cannot exec) and `npm.cmd` beside it, so preferring the
+		// extensionless match picks the one that fails with ENOENT.
 		for (const extension of extensions) if (existsSync(base + extension)) return base + extension;
+		if (existsSync(base)) return base;
 	}
 	return undefined;
 }
