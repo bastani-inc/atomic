@@ -48,22 +48,34 @@ The test workflow runs on pushes to `main`, `release/**`, and `prerelease/**`, a
 
 Those are the per-step costs sampled from four sequential-job runs, which put the critical path on the Windows `agent-suite` chain at about 247 s against the 452 s (434–483 s, n=3 healthy) the single sequential job measured. Runner-seconds rise about 35 % (709 s to roughly 957 s); that is the price of the wall-clock cut.
 
-### Observed on the first split run (30527771985)
+### Observed on the first two split runs (30527771985, 30528920082)
 
-| Job | queue | duration |
+| Job | run 1 | run 2 |
 | --- | ---: | ---: |
-| `static-checks (linux-x64)` | 9 s | 32 s |
-| `release-archive` Linux / Windows | 9 s / 42 s | 84 s / 162 s |
-| `agent-suite` Linux / Windows | 10 s / 68 s | 138 s / **349 s** |
-| `suites` Linux / Windows | 10 s / 45 s | 230 s / 348 s |
-| `test` gate, both legs | 8 s | 3 s / 4 s |
-| **whole run** | | **433 s** |
+| `static-checks (linux-x64)` | 32 s | 50 s |
+| `release-archive` Linux / Windows | 84 s / 162 s | 83 s / 175 s |
+| `suites` Linux / Windows | 230 s / 348 s | 147 s / 238 s |
+| `agent-suite` Linux / Windows | 138 s / **349 s** | 203 s / **380 s** |
+| `test` gate, both legs | 3 s / 4 s | 4 s / 5 s |
+| **whole run** | **433 s** | **440 s** |
 
 Read this carefully before planning further work, because it says two different things.
 
-The topology behaved exactly as designed. All seven work jobs started within 68 s of run creation, so Blacksmith does not cap concurrency below seven and the queueing risk did not materialize. `static-checks` was green in 32 s, giving fast feedback on typecheck and file length that used to arrive only at the end of a 257 s job. The gate ran in 3–4 s.
+The topology behaves exactly as designed. All seven work jobs started within 68 s of run creation, so Blacksmith does not cap concurrency below seven and the queueing risk did not materialize. `static-checks` was green in 32–50 s, giving feedback on typecheck and file length that used to arrive only at the end of a 257 s job. The gate costs 3–5 s. Both required contexts appear with byte-identical names.
 
-The saving was nevertheless only 452 s -> 433 s, because per-step costs on that run ran about 1.5x the sampled averages: Windows `coding-agent vitest` took 221 s against a 142 s sample, the Windows native binding build 63 s against 42 s, and the unit step fired its bounded flake retry on *both* platforms (Linux 101 s + 88 s, Windows 149 s + 117 s). The wall clock is now dominated by two steps rather than by fourteen, which is the point: sharding either one now has a direct effect, where before the split it would have been diluted by everything else in the job. Confirm the split's steady-state saving over several runs before deciding, and shard `coding-agent vitest` first.
+The saving is nevertheless about 15 s, not the estimated 205 s, because the sequential-job sampling that produced the table above understated the Windows steps by roughly 1.5x:
+
+| step | sampled | run 1 | run 2 |
+| --- | ---: | ---: | ---: |
+| Windows `coding-agent vitest` | 142 s | 221 s | 237 s |
+| Windows native binding build | 42 s | 63 s | 72 s |
+| Linux `coding-agent vitest` | 70 s | 78 s | 126 s |
+| Windows unit step | 127 s | 267 s (retried) | 150 s |
+| Linux unit step | 84 s | 190 s (retried) | 101 s |
+
+On both runs the critical path was Windows `agent-suite`, whose real cost is 349–380 s rather than the 232 s the estimate assumed. Run 1 also fired the unit step's one bounded flake retry on both platforms, from two different pre-existing flakes that each passed on the retry.
+
+The structural result still stands and is what matters for the next decision: wall clock is now dominated by **two** steps instead of fourteen. Sharding `coding-agent vitest` therefore has a direct effect where before the split it would have been diluted by everything else in the job. Each shard must repeat the native binding build, so the arithmetic to beat is `setup + native build + vitest/2`. Confirm the steady-state numbers over more runs first.
 
 ### Why steps are grouped this way
 
