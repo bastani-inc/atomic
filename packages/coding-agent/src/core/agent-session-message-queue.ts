@@ -180,7 +180,10 @@ export async function closeWorkflowStageGeneration(this: AgentSession): Promise<
 
 export function _appendCustomMessage<T>(this: AgentSession, message: CustomMessage<T>): void {
 	const owner = resolveWorkflowStageDeliveryTarget(this);
-	if (owner !== this) return owner._appendCustomMessage(message);
+	if (owner !== this) {
+		owner._appendCustomMessage(message);
+		return;
+	}
 	this.agent.state.messages.push(message);
 	this.sessionManager.appendCustomMessageEntry(
 		message.customType,
@@ -277,7 +280,10 @@ export function _ensureActiveInterruptQueueHold(this: AgentSession): InterruptQu
 
 export function _restoreAndClearActiveInterruptQueueHold(this: AgentSession): void {
 	const owner = resolveWorkflowStageDeliveryTarget(this);
-	if (owner !== this) return owner._restoreAndClearActiveInterruptQueueHold();
+	if (owner !== this) {
+		owner._restoreAndClearActiveInterruptQueueHold();
+		return;
+	}
 	if (this._queuedMessagesPaused) return;
 	const hold = this._activeInterruptQueueHold;
 	if (hold === undefined) return;
@@ -291,7 +297,10 @@ export function _restoreAndClearActiveInterruptQueueHold(this: AgentSession): vo
 
 export function _queueAgentMessage(this: AgentSession, message: AgentMessage, delivery: "steer" | "followUp"): void {
 	const owner = resolveWorkflowStageDeliveryTarget(this);
-	if (owner !== this) return owner._queueAgentMessage(message, delivery);
+	if (owner !== this) {
+		owner._queueAgentMessage(message, delivery);
+		return;
+	}
 	const hold = this._activeInterruptQueueHold;
 	if (hold !== undefined) {
 		if (delivery === "followUp") {

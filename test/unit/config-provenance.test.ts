@@ -185,19 +185,16 @@ describe("loadWorkflowConfig — provenance: both configs", () => {
 
 		// Provenance: raw configs preserved as-is
 		assert.equal(
-			result.globalConfig?.workflows?.["shared"]?.path,
+			result.globalConfig?.workflows?.shared?.path,
 			"../../packages/workflows/src/extension/global-shared.ts",
 		);
 		assert.equal(
-			result.projectConfig?.workflows?.["shared"]?.path,
+			result.projectConfig?.workflows?.shared?.path,
 			"../../packages/workflows/src/extension/project-shared.ts",
 		);
 
 		// Merged config: project entry wins
-		assert.equal(
-			result.config?.workflows?.["shared"]?.path,
-			"../../packages/workflows/src/extension/project-shared.ts",
-		);
+		assert.equal(result.config?.workflows?.shared?.path, "../../packages/workflows/src/extension/project-shared.ts");
 		// g-only from global still present in merged
 		assert.equal(result.config?.workflows?.["g-only"]?.path, "../../packages/workflows/src/extension/g-only.ts");
 	});
@@ -235,7 +232,7 @@ describe("toScopedDiscoveryConfig — global path resolution under <homeDir>/.at
 			{ homeDir, projectRoot: "/fake/project" },
 		);
 
-		assert.equal(result.globalWorkflows?.["foo"], expected);
+		assert.equal(result.globalWorkflows?.foo, expected);
 	});
 
 	test("loadWorkflowConfig result fed to toScopedDiscoveryConfig — global relative path uses .atomic/agent base", async () => {
@@ -257,7 +254,7 @@ describe("toScopedDiscoveryConfig — global path resolution under <homeDir>/.at
 		});
 
 		const expected = join(home, ".atomic", "agent", "../../packages/workflows/src/extension/workflows/foo.ts");
-		assert.equal(dc.globalWorkflows?.["foo"], expected);
+		assert.equal(dc.globalWorkflows?.foo, expected);
 		assert.equal("projectWorkflows" in dc, false);
 	});
 });
@@ -284,11 +281,11 @@ describe("toScopedDiscoveryConfig — project override changes scope", () => {
 
 		// project entry in projectWorkflows
 		assert.equal(
-			result.projectWorkflows?.["shared"],
+			result.projectWorkflows?.shared,
 			join(projectRoot, "../../packages/workflows/src/extension/project-shared.ts"),
 		);
 		// global entry for same key excluded
-		assert.equal(result.globalWorkflows?.["shared"], undefined);
+		assert.equal(result.globalWorkflows?.shared, undefined);
 		// global-only key still present
 		assert.equal(
 			result.globalWorkflows?.["g-only"],
@@ -314,12 +311,9 @@ describe("toScopedDiscoveryConfig — project override changes scope", () => {
 			projectRoot: proj,
 		});
 		// shared key in projectWorkflows (project wins)
-		assert.equal(
-			dc.projectWorkflows?.["shared"],
-			join(proj, "../../packages/workflows/src/extension/project-shared.ts"),
-		);
+		assert.equal(dc.projectWorkflows?.shared, join(proj, "../../packages/workflows/src/extension/project-shared.ts"));
 		// shared NOT in globalWorkflows
-		assert.equal(dc.globalWorkflows?.["shared"], undefined);
+		assert.equal(dc.globalWorkflows?.shared, undefined);
 		// globalWorkflows absent (only key was shared, which is overridden)
 		assert.equal("globalWorkflows" in dc, false);
 	});

@@ -6,7 +6,7 @@ import { APP_NAME, withFileMutationQueue } from "@bastani/atomic";
 import type { Message } from "@earendil-works/pi-ai/compat";
 import type { AgentConfig } from "./agents.ts";
 import { getFinalOutput } from "./display.js";
-import type { OnUpdateCallback, SingleResult, SubagentDetails } from "./types.js";
+import type { SingleResult, SubagentDetails } from "./types.js";
 
 export async function mapWithConcurrencyLimit<TIn, TOut>(
 	items: TIn[],

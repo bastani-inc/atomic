@@ -107,7 +107,7 @@ export function renderDispatchConfirm(opts: RenderDispatchConfirmOpts): string {
 
 	if (hasInputs && inlineBudget >= MIN_INLINE_INPUT_BUDGET) {
 		const inline = renderInputsSegment(opts.inputs, inlineBudget, theme);
-		if (inline && inline.fitted) {
+		if (inline?.fitted) {
 			titleSuffix = inline.rendered;
 		}
 	}

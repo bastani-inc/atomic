@@ -24,7 +24,8 @@ everywhere. Where the split differs from pi, the reason is written down.
 | Dependency install | `npm ci --ignore-scripts` | `package-lock.json` is the single verified lockfile. `npm ci` refuses to install when it and `package.json` disagree; nothing enforced that while two lockfiles coexisted |
 | Supply-chain gate | committed `.npmrc` | `min-release-age=3` and `min-release-age-exclude` replace bunfig's `minimumReleaseAge`/`minimumReleaseAgeExcludes` one-for-one, and bind every contributor's install, not just CI. `.github/dependabot.yml` carries the matching `cooldown` |
 | Build | `npm run build` | tsgo, not Bun; no behaviour change |
-| Typecheck / check | `npm run check` (`tsc --noEmit` + shrinkwrap check) | pi runs biome + tsgo here |
+| Lint / format | `biome check` (`npm run check`, `npm run format`) | pi's rule set exactly: recommended preset plus the same six overrides. Tab indent width 3, line width 120 |
+| Typecheck / check | `npm run check` (biome + `tsc --noEmit` + shrinkwrap check) | pi runs biome + tsgo here |
 | Root test suites | `vitest --run --project {unit,integration,ci}` | pi uses vitest for its workspace tests, with a shared `vitest.base.ts` setting only `resolve.alias` |
 | `packages/coding-agent` suite | `vitest --run` | already parity; it now runs under Node rather than `bun --bun`, SQLite selectors included |
 | Script tests | `node --test scripts/*.test.mjs` | pi parity. Scripts Node can run are tested with Node's own runner |

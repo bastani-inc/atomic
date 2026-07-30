@@ -167,8 +167,10 @@ function removeInheritedRegistrations<K extends string, V>(
 }
 
 function installRegistrationPolicy(extensionsResult: LoadExtensionsResult): void {
-	const flagOwners = (extensionsResult.runtime.flagOwners ??= new Map());
-	const flagOwnerOrigins = (extensionsResult.runtime.flagOwnerOrigins ??= new Map());
+	extensionsResult.runtime.flagOwners ??= new Map();
+	const flagOwners = extensionsResult.runtime.flagOwners;
+	extensionsResult.runtime.flagOwnerOrigins ??= new Map();
+	const flagOwnerOrigins = extensionsResult.runtime.flagOwnerOrigins;
 	extensionsResult.runtime.canRegisterResource = (extension, resourceType, name) => {
 		if (resourceType === "prompt") return true;
 		if (extension.sourceInfo.configurationOrigin === "inherited-pi") {
@@ -260,7 +262,8 @@ function recordOverlap(
 	bundled: Extension,
 	inherited: Extension,
 ): void {
-	const overlaps = (extensionsResult.overlaps ??= []);
+	extensionsResult.overlaps ??= [];
+	const overlaps = extensionsResult.overlaps;
 	if (
 		overlaps.some(
 			(overlap) =>
@@ -275,8 +278,10 @@ function recordOverlap(
 
 function rebuildFlagDefaults(extensionsResult: LoadExtensionsResult): void {
 	extensionsResult.runtime.flagValues.clear();
-	const flagOwners = (extensionsResult.runtime.flagOwners ??= new Map());
-	const flagOwnerOrigins = (extensionsResult.runtime.flagOwnerOrigins ??= new Map());
+	extensionsResult.runtime.flagOwners ??= new Map();
+	const flagOwners = extensionsResult.runtime.flagOwners;
+	extensionsResult.runtime.flagOwnerOrigins ??= new Map();
+	const flagOwnerOrigins = extensionsResult.runtime.flagOwnerOrigins;
 	flagOwners.clear();
 	flagOwnerOrigins.clear();
 	for (const extension of extensionsResult.extensions) {

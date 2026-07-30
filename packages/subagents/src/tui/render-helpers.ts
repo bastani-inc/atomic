@@ -58,9 +58,9 @@ export function renderHeader(text: string, width: number, theme: Theme): string 
 	const padLeft = Math.floor(padLen / 2);
 	const padRight = padLen - padLeft;
 	return (
-		theme.fg("border", "╭" + "─".repeat(padLeft)) +
+		theme.fg("border", `╭${"─".repeat(padLeft)}`) +
 		theme.fg("accent", text) +
-		theme.fg("border", "─".repeat(padRight) + "╮")
+		theme.fg("border", `${"─".repeat(padRight)}╮`)
 	);
 }
 
@@ -83,8 +83,8 @@ export function renderFooter(text: string, width: number, theme: Theme): string 
 	const padLeft = Math.floor(padLen / 2);
 	const padRight = padLen - padLeft;
 	return (
-		theme.fg("border", "╰" + "─".repeat(padLeft)) +
+		theme.fg("border", `╰${"─".repeat(padLeft)}`) +
 		theme.fg("dim", text) +
-		theme.fg("border", "─".repeat(padRight) + "╯")
+		theme.fg("border", `${"─".repeat(padRight)}╯`)
 	);
 }

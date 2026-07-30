@@ -49,7 +49,7 @@ test("nested post-mortem chat reopens in the durable root cwd while retaining ch
 		const sessionFile = join(tempRoot, `${durableCwdField}.jsonl`);
 		writeFileSync(
 			sessionFile,
-			[
+			`${[
 				JSON.stringify({
 					type: "session",
 					version: 3,
@@ -64,7 +64,7 @@ test("nested post-mortem chat reopens in the durable root cwd while retaining ch
 					timestamp: new Date().toISOString(),
 					message: { role: "user", content: "Original stage request" },
 				}),
-			].join("\n") + "\n",
+			].join("\n")}\n`,
 		);
 		const stage = {
 			id: "duplicate-stage-id",

@@ -81,7 +81,7 @@ export function effectiveRunStatus(run: RunSnapshot): RunStatus {
 	)
 		return "blocked";
 	if (run.status !== "completed") return run.status;
-	const returnedStatus = normalizeReturnedWorkflowStatus(run.result?.["status"]);
+	const returnedStatus = normalizeReturnedWorkflowStatus(run.result?.status);
 	if (returnedStatus === "failed") return "failed";
 	if (returnedStatus !== undefined && isReturnedBlockedWorkflowStatus(returnedStatus)) return "blocked";
 	return run.status;

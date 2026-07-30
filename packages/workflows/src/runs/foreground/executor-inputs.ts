@@ -40,12 +40,12 @@ export function resolveInputConcurrency(
 	schema: Readonly<Record<string, WorkflowInputSchema>>,
 	resolvedInputs: ResolvedInputs,
 ): number | undefined {
-	const concurrencySchema = schema["max_concurrency"];
+	const concurrencySchema = schema.max_concurrency;
 	if (concurrencySchema === undefined || schemaFieldKind(concurrencySchema) !== "number") {
 		return undefined;
 	}
 
-	const value = resolvedInputs["max_concurrency"];
+	const value = resolvedInputs.max_concurrency;
 	if (typeof value !== "number" || !Number.isFinite(value) || value < 1) return undefined;
 
 	return Math.floor(value);

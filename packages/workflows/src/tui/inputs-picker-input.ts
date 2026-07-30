@@ -167,7 +167,7 @@ function handleFormKey(
 	}
 	if (matchesAction(kb, key, TUI_ACTION.inputSubmit) || matchesAction(kb, key, "tui.input.newLine")) {
 		if (field.type === "text") {
-			state.rawText[name] = cur.slice(0, caret) + "\n" + cur.slice(caret);
+			state.rawText[name] = `${cur.slice(0, caret)}\n${cur.slice(caret)}`;
 			state.caret = caret + 1;
 		} else {
 			moveFocus(state, fields, +1);

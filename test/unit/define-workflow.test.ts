@@ -54,7 +54,7 @@ describe("workflow authoring door", () => {
 		assert.equal(def.__piWorkflow, true);
 		assert.equal(def.name, "my-workflow");
 		assert.equal(def.description, "test workflow");
-		assert.deepEqual(deriveInputField("prompt", def.inputs["prompt"]), {
+		assert.deepEqual(deriveInputField("prompt", def.inputs.prompt), {
 			name: "prompt",
 			type: "text",
 			required: true,
@@ -260,12 +260,12 @@ describe("workflow authoring door", () => {
 		});
 
 		assert.deepEqual(Object.keys(def.inputs), ["a", "b"]);
-		assert.equal(def.inputs["b"], defaultedNumber);
+		assert.equal(def.inputs.b, defaultedNumber);
 		assert.deepEqual(defaultedNumber, Type.Number({ default: 4 }));
 		// A defaulted input is a required KEY at the type level (always present
 		// after defaults are applied) but the picker/validation descriptor reports
 		// required:false because the caller need not supply it.
-		assert.deepEqual(deriveInputField("b", def.inputs["b"]), {
+		assert.deepEqual(deriveInputField("b", def.inputs.b), {
 			name: "b",
 			type: "number",
 			required: false,
@@ -305,7 +305,7 @@ describe("workflow authoring door", () => {
 		});
 
 		assert.equal(Object.isFrozen(def.inputs), true);
-		assert.deepEqual(deriveInputField("topic", def.inputs["topic"]), {
+		assert.deepEqual(deriveInputField("topic", def.inputs.topic), {
 			name: "topic",
 			type: "text",
 			required: true,
@@ -324,7 +324,7 @@ describe("workflow authoring door", () => {
 			run: async () => ({ summary: "ok" }),
 		});
 
-		const summarySchema = def.outputs["summary"];
+		const summarySchema = def.outputs.summary;
 		assert.equal(schemaFieldKind(summarySchema), "text");
 		assert.equal(schemaIsRequired(summarySchema), true);
 		assert.equal(schemaDescription(summarySchema), "Summary");

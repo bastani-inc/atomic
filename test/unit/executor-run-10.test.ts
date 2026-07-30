@@ -341,7 +341,7 @@ describe("executor.run", () => {
 	});
 
 	test("explicit model stage publishes running fast-mode metadata before prompt resolves", async () => {
-		const promptGate = deferred<string | void>();
+		const promptGate = deferred<string | undefined>();
 		const st = createStore();
 		const def = workflow({
 			name: "explicit-model-running-fast-metadata",
@@ -403,7 +403,7 @@ describe("executor.run", () => {
 			assert.equal(runningStage?.model, "openai/gpt-5.1-codex");
 			assert.equal(runningStage?.fastMode, true);
 		} finally {
-			promptGate.resolve();
+			promptGate.resolve(undefined);
 			await runPromise;
 		}
 	});

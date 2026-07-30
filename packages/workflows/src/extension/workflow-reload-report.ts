@@ -19,7 +19,7 @@ export type WorkflowReloadReport = WorkflowReloadReportState &
 		| { readonly outcome: "superseded" }
 	);
 
-export function normalizeWorkflowReloadReport(report: WorkflowReloadReport | void): WorkflowReloadReport {
+export function normalizeWorkflowReloadReport(report: WorkflowReloadReport | undefined): WorkflowReloadReport {
 	return (
 		report ?? {
 			outcome: "applied",

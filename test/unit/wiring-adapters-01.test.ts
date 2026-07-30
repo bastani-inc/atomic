@@ -10,7 +10,6 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import {
-	type CreateAgentSessionOptions,
 	DefaultResourceLoader,
 	type DefaultResourceLoaderInheritanceSnapshot,
 	type PackageSource,
@@ -21,14 +20,8 @@ import type {
 	PiSdkResourceLoader,
 	PiSdkSettingsManager,
 } from "../../packages/workflows/src/extension/wiring.js";
-import {
-	buildRuntimeAdapters,
-	prepareAtomicStageSessionOptions,
-} from "../../packages/workflows/src/extension/wiring.js";
+import { prepareAtomicStageSessionOptions } from "../../packages/workflows/src/extension/wiring.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
-import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
-import { createStore } from "../../packages/workflows/src/shared/store.js";
-import type { StageExecutionMeta } from "../../packages/workflows/src/shared/types.js";
 
 function fakeSession(): StageSessionRuntime {
 	let last = "";
@@ -301,13 +294,6 @@ describe("prepareAtomicStageSessionOptions", () => {
 		}> = [];
 
 		class GatedResourceLoader implements PiSdkResourceLoader {
-			constructor(_options: {
-				cwd: string;
-				agentDir: string;
-				settingsManager?: PiSdkSettingsManager;
-				builtinPackagePaths?: PackageSource[];
-			}) {}
-
 			async reload(): Promise<void> {
 				const release = deferred();
 				reloadGates.push({

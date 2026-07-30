@@ -65,11 +65,11 @@ function reservationIds(sdk: ReturnType<typeof createMockSdk>): string[] {
 		if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
 		const event = value as Record<string, WorkflowSerializableValue>;
 		if (
-			event["__atomicPromptReservation"] === true &&
-			event["operation"] === "reserve" &&
-			typeof event["reservationId"] === "string"
+			event.__atomicPromptReservation === true &&
+			event.operation === "reserve" &&
+			typeof event.reservationId === "string"
 		)
-			ids.add(event["reservationId"]);
+			ids.add(event.reservationId);
 	}
 	return [...ids];
 }
@@ -88,29 +88,29 @@ function makeAuthenticLegacyPromptShape(sdk: ReturnType<typeof createMockSdk>): 
 	for (const [key, value] of [...sdk.state.steps]) {
 		if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
 		const envelope = value as Record<string, WorkflowSerializableValue>;
-		if (envelope["kind"] !== "stage" || envelope["name"] !== "select") continue;
-		const topologyValue = envelope["topology"];
+		if (envelope.kind !== "stage" || envelope.name !== "select") continue;
+		const topologyValue = envelope.topology;
 		if (typeof topologyValue !== "object" || topologyValue === null || Array.isArray(topologyValue)) continue;
 		const topology = topologyValue as Record<string, WorkflowSerializableValue>;
-		if (topology["status"] === "running") {
+		if (topology.status === "running") {
 			sdk.state.steps.delete(key);
 			removedActive += 1;
 			continue;
 		}
-		if (topology["status"] !== "completed") continue;
+		if (topology.status !== "completed") continue;
 		const legacy = structuredClone(envelope);
-		const legacyTopology = legacy["topology"] as Record<string, WorkflowSerializableValue>;
-		delete legacyTopology["occurrenceKey"];
+		const legacyTopology = legacy.topology as Record<string, WorkflowSerializableValue>;
+		delete legacyTopology.occurrenceKey;
 		sdk.state.steps.set(key, legacy);
-		assert.equal(typeof legacy["checkpointId"], "string");
-		assert.equal(typeof legacy["replayKey"], "string");
-		assert.equal(typeof legacyTopology["stageId"], "string");
+		assert.equal(typeof legacy.checkpointId, "string");
+		assert.equal(typeof legacy.replayKey, "string");
+		assert.equal(typeof legacyTopology.stageId, "string");
 		stripped = {
 			key,
 			envelope: structuredClone(legacy),
-			checkpointId: legacy["checkpointId"] as string,
-			replayKey: legacy["replayKey"] as string,
-			stageId: legacyTopology["stageId"] as string,
+			checkpointId: legacy.checkpointId as string,
+			replayKey: legacy.replayKey as string,
+			stageId: legacyTopology.stageId as string,
 		};
 	}
 	assert.ok(stripped, "one completed select prompt record must be downgraded");

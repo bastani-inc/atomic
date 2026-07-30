@@ -94,10 +94,10 @@ describe("buildIntercomCallbacks — need_decision", () => {
 		assert.equal(emit.calls.length, 1);
 		assert.equal(emit.calls[0]!.event, "subagent:control-intercom:response");
 		const p = emit.calls[0]!.payload;
-		assert.equal(p["requestId"], "req-abc");
-		assert.equal(p["runId"], "run-1");
-		assert.equal(p["stageId"], "stage-2");
-		assert.equal(p["accepted"], true);
+		assert.equal(p.requestId, "req-abc");
+		assert.equal(p.runId, "run-1");
+		assert.equal(p.stageId, "stage-2");
+		assert.equal(p.accepted, true);
 	});
 
 	test("emits accepted=false when confirm returns false", async () => {
@@ -114,8 +114,8 @@ describe("buildIntercomCallbacks — need_decision", () => {
 			stageId: "stage-3",
 		});
 
-		assert.equal(emit.calls[0]!.payload["accepted"], false);
-		assert.equal(emit.calls[0]!.payload["requestId"], "req-xyz");
+		assert.equal(emit.calls[0]!.payload.accepted, false);
+		assert.equal(emit.calls[0]!.payload.requestId, "req-xyz");
 	});
 
 	test("emits empty string for missing requestId/runId/stageId", async () => {
@@ -127,9 +127,9 @@ describe("buildIntercomCallbacks — need_decision", () => {
 		await cb.onNeedDecision!({ type: "need_decision", message: "hi" });
 
 		const p = emit.calls[0]!.payload;
-		assert.equal(p["requestId"], "");
-		assert.equal(p["runId"], "");
-		assert.equal(p["stageId"], "");
+		assert.equal(p.requestId, "");
+		assert.equal(p.runId, "");
+		assert.equal(p.stageId, "");
 	});
 
 	test("acks notice after confirm", async () => {
@@ -153,8 +153,8 @@ describe("buildIntercomCallbacks — need_decision", () => {
 		await cb.onNeedDecision!({ type: "need_decision", message: "hi", requestId: "req-no-confirm" });
 
 		assert.equal(emit.calls.length, 1);
-		assert.equal(emit.calls[0]!.payload["accepted"], false);
-		assert.equal(emit.calls[0]!.payload["requestId"], "req-no-confirm");
+		assert.equal(emit.calls[0]!.payload.accepted, false);
+		assert.equal(emit.calls[0]!.payload.requestId, "req-no-confirm");
 	});
 
 	test("stores runId and stageId on the notice", async () => {

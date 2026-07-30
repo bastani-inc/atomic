@@ -245,7 +245,7 @@ export type StageSessionEvent =
 	  };
 
 export interface StageSessionRuntime {
-	prompt(text: string, options?: PromptOptions): Promise<string | void>;
+	prompt(text: string, options?: PromptOptions): Promise<string | undefined>;
 	sendUserMessage?(content: StageUserMessageContent, options?: StageSendUserMessageOptions): Promise<void>;
 	steer(text: string): Promise<void>;
 	followUp(text: string): Promise<void>;
@@ -441,7 +441,7 @@ export interface WorkflowRunChildOptions<TInputs extends WorkflowInputValues = W
 }
 
 type WorkflowRequiredKeys<T extends object> = {
-	[K in keyof T]-?: {} extends Pick<T, K> ? never : K;
+	[K in keyof T]-?: Record<never, never> extends Pick<T, K> ? never : K;
 }[keyof T];
 
 export type WorkflowRunChildOptionsArgument<TInputs extends WorkflowInputValues = WorkflowInputValues> = [

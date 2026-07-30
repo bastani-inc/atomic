@@ -60,7 +60,7 @@ test("temporary worktree uses main-root path, flattened branch, and post-creatio
 	writeFileSync(join(repo, "ignored", "skip.log"), "excluded\n");
 	mkdirSync(join(repo, "deps"));
 	writeFileSync(join(repo, "deps", "module.txt"), "dependency\n");
-	let setup;
+	let setup: ReturnType<typeof createWorktrees> | undefined;
 	try {
 		setup = createWorktrees(join(repo, "packages", "api"), "feature/name", 1, {
 			baseBranch: "main",
@@ -117,7 +117,7 @@ test("non-ignored local settings propagate without leaking into patches and repe
 test("linked-worktree invocation anchors temporary worktrees at the main root", () => {
 	const { root, repo } = createRepository();
 	const linked = join(root, "linked-source");
-	let setup;
+	let setup: ReturnType<typeof createWorktrees> | undefined;
 	try {
 		runGitChecked(repo, ["worktree", "add", "--detach", linked]);
 		setup = createWorktrees(join(linked, "packages", "api"), "inside/linked", 1, { baseBranch: "main" });
@@ -232,7 +232,7 @@ test("temporary base ref precedence is explicit then origin default then HEAD", 
 test("subagent worktrees use the same linked-invocation lifecycle", () => {
 	const { root, repo } = createRepository();
 	const linked = join(root, "subagent-linked");
-	let setup;
+	let setup: ReturnType<typeof createWorktrees> | undefined;
 	try {
 		runGitChecked(repo, ["worktree", "add", "--detach", linked]);
 		setup = createSubagentWorktrees(linked, "subagent/nested", 1);

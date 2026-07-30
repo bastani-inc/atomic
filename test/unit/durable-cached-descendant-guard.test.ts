@@ -65,11 +65,11 @@ function activeReservationIds(sdk: ReturnType<typeof createMockSdk>): string[] {
 		if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
 		const record = value as Record<string, unknown>;
 		if (
-			record["__atomicPromptReservation"] === true &&
-			record["operation"] === "reserve" &&
-			typeof record["reservationId"] === "string"
+			record.__atomicPromptReservation === true &&
+			record.operation === "reserve" &&
+			typeof record.reservationId === "string"
 		)
-			ids.add(record["reservationId"]);
+			ids.add(record.reservationId);
 	}
 	return [...ids];
 }
@@ -78,13 +78,13 @@ function removeDeepTerminal(sdk: ReturnType<typeof createMockSdk>): void {
 	for (const [key, value] of sdk.state.steps) {
 		if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
 		const envelope = value as Record<string, WorkflowSerializableValue>;
-		const topologyValue = envelope["topology"];
+		const topologyValue = envelope.topology;
 		if (typeof topologyValue !== "object" || topologyValue === null || Array.isArray(topologyValue)) continue;
 		const topology = topologyValue as Record<string, WorkflowSerializableValue>;
-		const boundaryValue = topology["boundary"];
+		const boundaryValue = topology.boundary;
 		if (typeof boundaryValue !== "object" || boundaryValue === null || Array.isArray(boundaryValue)) continue;
 		const boundary = boundaryValue as Record<string, WorkflowSerializableValue>;
-		if (boundary["event"] === "terminal" && boundary["workflow"] === "cached-guard-twig") {
+		if (boundary.event === "terminal" && boundary.workflow === "cached-guard-twig") {
 			sdk.state.steps.delete(key);
 			return;
 		}
@@ -226,13 +226,13 @@ function markHandledStageSkipped(sdk: ReturnType<typeof createMockSdk>): void {
 	for (const [key, value] of sdk.state.steps) {
 		if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
 		const envelope = value as Record<string, WorkflowSerializableValue>;
-		if (envelope["kind"] !== "stage" || envelope["name"] !== "handled-terminal") continue;
-		const topologyValue = envelope["topology"];
+		if (envelope.kind !== "stage" || envelope.name !== "handled-terminal") continue;
+		const topologyValue = envelope.topology;
 		if (typeof topologyValue !== "object" || topologyValue === null || Array.isArray(topologyValue)) continue;
 		const topology = topologyValue as Record<string, WorkflowSerializableValue>;
-		if (topology["status"] !== "failed") continue;
+		if (topology.status !== "failed") continue;
 		const skipped = structuredClone(envelope);
-		(skipped["topology"] as Record<string, WorkflowSerializableValue>)["status"] = "skipped";
+		(skipped.topology as Record<string, WorkflowSerializableValue>).status = "skipped";
 		sdk.state.steps.set(key, skipped);
 		return;
 	}

@@ -236,7 +236,7 @@ function renderPrimitivePromptBody(ctx: StageChatViewContext, width: number): st
 	bodyLines.push(...messageBox.render(innerWidth));
 	bodyLines.push(...new Text(paint("response", ctx.theme.textMuted, { bold: true }), 2, 0).render(innerWidth));
 	for (const line of editor.render(Math.max(20, innerWidth - 4))) {
-		bodyLines.push("  " + line);
+		bodyLines.push(`  ${line}`);
 	}
 	bodyLines.push("");
 	bodyLines.push(...new Text(renderHintsForPrompt(state.prompt.kind, ctx.theme), 2, 0).render(innerWidth));

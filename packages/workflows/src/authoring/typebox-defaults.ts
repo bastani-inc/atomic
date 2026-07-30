@@ -55,6 +55,10 @@ type TypeBoxKeysToIndexer<TKeys extends readonly PropertyKey[]> = TUnion<TypeBox
 
 type TypeBoxRecord<TKey extends TSchema, TValue extends TSchema> = ReturnType<typeof TypeBox.Type.Record<TKey, TValue>>;
 
+// The escaped characters below still declare TypeBox's exact public member names
+// (`String`, `Number`, `Boolean`, `Array`, and `Object`). They are ambient module
+// overloads, not local bindings that shadow JavaScript globals.
+
 declare module "typebox" {
 	export namespace Type {
 		export function Any<const TOptions extends TypeBoxDefaultOptions<TSchemaOptions>>(
@@ -65,11 +69,11 @@ declare module "typebox" {
 			options: TOptions,
 		): TUnknown & TypeBoxDefaulted<TOptions>;
 
-		export function String<const TOptions extends TypeBoxDefaultOptions<TStringOptions>>(
+		export function Str\u0069ng<const TOptions extends TypeBoxDefaultOptions<TStringOptions>>(
 			options: TOptions,
 		): TString & TypeBoxDefaulted<TOptions>;
 
-		export function Number<const TOptions extends TypeBoxDefaultOptions<TNumberOptions>>(
+		export function Numb\u0065r<const TOptions extends TypeBoxDefaultOptions<TNumberOptions>>(
 			options: TOptions,
 		): TNumber & TypeBoxDefaulted<TOptions>;
 
@@ -77,7 +81,7 @@ declare module "typebox" {
 			options: TOptions,
 		): TInteger & TypeBoxDefaulted<TOptions>;
 
-		export function Boolean<const TOptions extends TypeBoxDefaultOptions<TSchemaOptions>>(
+		export function Bool\u0065an<const TOptions extends TypeBoxDefaultOptions<TSchemaOptions>>(
 			options: TOptions,
 		): TBoolean & TypeBoxDefaulted<TOptions>;
 
@@ -98,12 +102,12 @@ declare module "typebox" {
 			options: TOptions,
 		): TEnum<TTypeScriptEnumToEnumValues<TEnumLike>> & TypeBoxDefaulted<TOptions>;
 
-		export function Array<const TItem extends TSchema, const TOptions extends TypeBoxDefaultOptions<TArrayOptions>>(
-			items: TItem,
-			options: TOptions,
-		): TArray<TItem> & TypeBoxDefaulted<TOptions>;
+		export function Arr\u0061y<
+			const TItem extends TSchema,
+			const TOptions extends TypeBoxDefaultOptions<TArrayOptions>,
+		>(items: TItem, options: TOptions): TArray<TItem> & TypeBoxDefaulted<TOptions>;
 
-		export function Object<
+		export function Obj\u0065ct<
 			const TSchemaProperties extends TProperties,
 			const TOptions extends TypeBoxDefaultOptions<TObjectOptions>,
 		>(properties: TSchemaProperties, options: TOptions): TObject<TSchemaProperties> & TypeBoxDefaulted<TOptions>;

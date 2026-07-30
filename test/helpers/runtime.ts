@@ -49,9 +49,15 @@ let cachedBunExecutable: string | undefined;
 export function bunExecutable(): string {
 	if (cachedBunExecutable !== undefined) return cachedBunExecutable;
 	const override = process.env.ATOMIC_BUN_EXECUTABLE;
-	if (override && existsSync(override)) return (cachedBunExecutable = override);
+	if (override && existsSync(override)) {
+		cachedBunExecutable = override;
+		return cachedBunExecutable;
+	}
 	const resolved = resolveExecutable("bun");
-	if (resolved) return (cachedBunExecutable = resolved);
+	if (resolved) {
+		cachedBunExecutable = resolved;
+		return cachedBunExecutable;
+	}
 	throw new Error(
 		"Bun was not found on PATH. It remains a declared engine of this repository: it compiles the " +
 			"release binaries and runs scripts/*.ts and the Bun-hosted test fixtures. " +

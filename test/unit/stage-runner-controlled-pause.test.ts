@@ -47,8 +47,8 @@ describe("createStageContext — controlled pause", () => {
 		const { session, state } = makeMockSession({
 			async prompt() {
 				state.promptCalls += 1;
-				return new Promise<void>((resolve) => {
-					resolvePrompt = resolve;
+				return new Promise<string | undefined>((resolve) => {
+					resolvePrompt = () => resolve(undefined);
 				});
 			},
 			async abort() {
@@ -136,11 +136,12 @@ describe("createStageContext — controlled pause", () => {
 				state.promptCalls += 1;
 				promptTexts.push(text);
 				if (state.promptCalls === 1) {
-					return new Promise<void>((_resolve, reject) => {
+					return new Promise<string | undefined>((_resolve, reject) => {
 						rejectFirstPrompt = reject;
 					});
 				}
 				secondPromptStarted.resolve();
+				return undefined;
 			},
 			async abort() {
 				state.abortCalls += 1;

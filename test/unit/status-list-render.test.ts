@@ -454,7 +454,7 @@ describe("renderStatusList — populated", () => {
 		const width = 64;
 		const run = makeRun({
 			id: "wide99uuid",
-			name: "研究".repeat(18) + "-status-list-overflow",
+			name: `${"研究".repeat(18)}-status-list-overflow`,
 			status: "running",
 			startedAt: now - 60_000,
 			stages: [

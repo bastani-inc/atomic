@@ -22,6 +22,6 @@ export function classifyDbosDeletionTombstone(
 	if (record === undefined) return "absent";
 	if (typeof record.output !== "object" || record.output === null || Array.isArray(record.output)) return "unknown";
 	const raw = record.output as Record<string, WorkflowSerializableValue>;
-	if (raw["__atomicDurableDeleted"] !== true || raw["workflowId"] !== workflowId) return "unknown";
-	return isCurrentDurableFormat(raw["version"]) ? "current" : "unknown";
+	if (raw.__atomicDurableDeleted !== true || raw.workflowId !== workflowId) return "unknown";
+	return isCurrentDurableFormat(raw.version) ? "current" : "unknown";
 }

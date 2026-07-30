@@ -14,16 +14,14 @@
 
 import assert from "node:assert/strict";
 import type { AgentSession } from "@bastani/atomic";
-import { type Component, type EditorComponent, Key, type TUI } from "@earendil-works/pi-tui";
+import { Key } from "@earendil-works/pi-tui";
 import { describe, test } from "vitest";
 import type { StageControlHandle } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
-import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { PendingPrompt, StageInputRequest } from "../../packages/workflows/src/shared/store-types.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
-import { makeFakeKeybindings } from "../support/fake-keybindings.js";
 
 type TestStageSeed = {
 	id: string;
@@ -61,7 +59,7 @@ function makePendingPrompt(overrides: Partial<PendingPrompt> = {}): PendingPromp
 	};
 }
 
-function makeInputRequest(overrides: Partial<StageInputRequest> = {}): StageInputRequest {
+function _makeInputRequest(overrides: Partial<StageInputRequest> = {}): StageInputRequest {
 	return {
 		id: "input-request-1",
 		kind: "ask_user_question",
@@ -75,36 +73,6 @@ function makeInputRequest(overrides: Partial<StageInputRequest> = {}): StageInpu
 		],
 		...overrides,
 	};
-}
-
-class FakePromptEditor implements EditorComponent {
-	text = "";
-	focused = false;
-	onSubmit?: (text: string) => void;
-	onChange?: (text: string) => void;
-
-	render(): string[] {
-		return [`fake-prompt-editor:${this.text}`];
-	}
-
-	handleInput(data: string): void {
-		if (data === Key.enter || data === "\r" || data === "\n") {
-			this.onSubmit?.(this.text);
-			return;
-		}
-		this.text += data;
-		this.onChange?.(this.text);
-	}
-
-	invalidate(): void {}
-
-	getText(): string {
-		return this.text;
-	}
-
-	setText(text: string): void {
-		this.text = text;
-	}
 }
 
 function makeHandle(runId: string, stageId: string): StageControlHandle {
@@ -142,19 +110,19 @@ function makeClock(start = 0): {
 	};
 }
 
-async function flush(): Promise<void> {
+async function _flush(): Promise<void> {
 	await Promise.resolve();
 }
 
 type AttachedStageChat = { handleInput(data: string): boolean };
 
-function getAttachedStageChat(pane: WorkflowAttachPane): AttachedStageChat {
+function _getAttachedStageChat(pane: WorkflowAttachPane): AttachedStageChat {
 	const chatView = (pane as unknown as { chatView: AttachedStageChat | null }).chatView;
 	assert.ok(chatView, "expected initialAttachStageId to create a stage chat");
 	return chatView;
 }
 
-function submitAttachedStageChatText(chatView: AttachedStageChat, text: string): void {
+function _submitAttachedStageChatText(chatView: AttachedStageChat, text: string): void {
 	for (const ch of text) chatView.handleInput(ch);
 	chatView.handleInput("\r");
 }

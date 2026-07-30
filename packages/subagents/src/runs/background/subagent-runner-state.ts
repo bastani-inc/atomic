@@ -313,7 +313,7 @@ function maybeEmitActiveLongRunning(state: RunnerExecutionState, flatIndex: numb
 	const { controlConfig, statusPayload, id } = state;
 	if (!controlConfig.enabled || state.activeLongRunningSteps.has(flatIndex)) return false;
 	const step = statusPayload.steps[flatIndex];
-	if (!step || step.status !== "running" || step.activityState === "needs_attention") return false;
+	if (step?.status !== "running" || step.activityState === "needs_attention") return false;
 	const reason = nextLongRunningTrigger(controlConfig, {
 		startedAt: step.startedAt ?? state.overallStartTime,
 		now,

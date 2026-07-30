@@ -107,8 +107,8 @@ describe("installCompactionHook", () => {
 
 		const runStart = appended.find((e) => e.type === "workflow.run.start");
 		assert.notEqual(runStart, undefined);
-		assert.equal(runStart!.payload["runId"], "r1");
-		assert.equal(runStart!.payload["name"], "my-wf");
+		assert.equal(runStart!.payload.runId, "r1");
+		assert.equal(runStart!.payload.name, "my-wf");
 	});
 
 	test("on compact: re-appends workflow.stage.start for non-ended stages", () => {
@@ -154,7 +154,7 @@ describe("installCompactionHook", () => {
 
 		const stageStarts = appended.filter((e) => e.type === "workflow.stage.start");
 		assert.equal(stageStarts.length, 1);
-		assert.equal(stageStarts[0]!.payload["stageId"], "s1");
+		assert.equal(stageStarts[0]!.payload.stageId, "s1");
 	});
 
 	test("on compact: multiple active runs all re-appended", () => {
@@ -178,7 +178,7 @@ describe("installCompactionHook", () => {
 
 		const runStarts = appended.filter((e) => e.type === "workflow.run.start");
 		assert.equal(runStarts.length, 2);
-		const ids = runStarts.map((e) => e.payload["runId"]);
+		const ids = runStarts.map((e) => e.payload.runId);
 		assert.ok(ids.includes("r1"));
 		assert.ok(ids.includes("r2"));
 	});

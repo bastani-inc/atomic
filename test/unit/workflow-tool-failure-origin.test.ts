@@ -29,8 +29,9 @@ function renderLifecycleCard(details: WorkflowLifecycleNoticeDetails): string {
 			renderer = registered as (payload: unknown) => unknown;
 		},
 	});
-	assert.notEqual(renderer, undefined);
-	return (renderer?.({ details }) as CardComponent).render(80).join("\n");
+	const render = renderer as ((payload: unknown) => unknown) | undefined;
+	assert.ok(render);
+	return (render({ details }) as CardComponent).render(80).join("\n");
 }
 
 function installFailureNotices(store: ReturnType<typeof createStore>): { sent: SentNotice[]; unsubscribe: () => void } {
@@ -188,7 +189,7 @@ describe("ctx.tool failure origin", () => {
 		assert.equal(inspection.ok && inspection.detail.failedToolNodeId, observedNodeId);
 		assert.equal(result.failedToolNodeId, observedNodeId);
 		const runEnd = persisted.find((entry) => entry.type === "workflow.run.end");
-		assert.equal(runEnd?.payload["failedToolNodeId"], observedNodeId);
+		assert.equal(runEnd?.payload.failedToolNodeId, observedNodeId);
 		assert.equal(sent.length, 1);
 		assert.equal(sent[0]?.details?.toolNodeId, observedNodeId);
 		assert.equal(sent[0]?.details?.toolName, "second-admitted");
@@ -419,13 +420,9 @@ describe("ctx.tool failure origin", () => {
 				inputs: {},
 				outputs: {},
 				run: async (ctx) => {
-					try {
-						await ctx.tool("rethrow-origin", {}, async () => {
-							throw shared;
-						});
-					} catch (error) {
-						throw error;
-					}
+					await ctx.tool("rethrow-origin", {}, async () => {
+						throw shared;
+					});
 					return {};
 				},
 			}),

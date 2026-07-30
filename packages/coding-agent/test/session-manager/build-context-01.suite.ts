@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai/compat";
+import type { ToolResultMessage } from "@earendil-works/pi-ai/compat";
 import { describe, expect, it } from "vitest";
 import {
 	type BranchSummaryEntry,
@@ -50,7 +50,7 @@ function compaction(id: string, parentId: string | null, summary: string, firstK
 	};
 }
 
-function toolResultMessage(toolCallId: string, text: string): ToolResultMessage {
+function _toolResultMessage(toolCallId: string, text: string): ToolResultMessage {
 	return {
 		role: "toolResult",
 		toolCallId,

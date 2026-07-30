@@ -12,9 +12,7 @@ async function registerIsolatedTests(): Promise<void> {
 	// Only ever reached inside the `bun test` child spawned below, where
 	// `bun:test`'s module registry is the real one. vitest has no equivalent.
 	const { mock } = await import("bun:test");
-	class TestComponent {
-		constructor(..._args: never[]) {}
-	}
+	class TestComponent {}
 
 	mock.module("@earendil-works/pi-tui", () => ({
 		Box: TestComponent,

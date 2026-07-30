@@ -297,7 +297,7 @@ export async function handleRunControlCommand(
 								return await handleDurableResume(resolved.runId, ctx, reporter, deps);
 							}
 							if (result.ok && result.mode === "partial") {
-								fail(result.message ?? "Partially resumed " + result.runId + ".");
+								fail(result.message ?? `Partially resumed ${result.runId}.`);
 							} else {
 								if (result.ok && policy.allowInputPicker)
 									deps.overlay.open(result.runId, overlaySurfaceFromContext(ctx));
@@ -513,7 +513,7 @@ export async function handleRunControlCommand(
 		if (!isPaused && run?.exitReason === "quit" && action === "resume") {
 			return await handleDurableResume(stageRunId, ctx, reporter, deps);
 		}
-		let result;
+		let result: Awaited<ReturnType<typeof resumeRun>>;
 		try {
 			result = await resumeRun(stageRunId, { stageId, message });
 		} catch (error) {
@@ -525,7 +525,7 @@ export async function handleRunControlCommand(
 			return true;
 		}
 		if (result.mode === "partial") {
-			fail(result.message ?? "Partially resumed " + result.runId + ".");
+			fail(result.message ?? `Partially resumed ${result.runId}.`);
 			return true;
 		}
 		if (result.snapshot.endedAt !== undefined && result.message !== undefined) {

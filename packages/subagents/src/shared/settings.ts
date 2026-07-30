@@ -360,13 +360,13 @@ export function buildChainInstructions(
 	}
 
 	// Include previous step's summary in suffix if available
-	if (previousSummary && previousSummary.trim()) {
+	if (previousSummary?.trim()) {
 		suffixParts.push(`Previous step output:\n${previousSummary.trim()}`);
 	}
 
-	const prefix = prefixParts.length > 0 ? prefixParts.join("\n") + "\n\n" : "";
+	const prefix = prefixParts.length > 0 ? `${prefixParts.join("\n")}\n\n` : "";
 
-	const suffix = suffixParts.length > 0 ? "\n\n---\n" + suffixParts.join("\n") : "";
+	const suffix = suffixParts.length > 0 ? `\n\n---\n${suffixParts.join("\n")}` : "";
 
 	return { prefix, suffix };
 }

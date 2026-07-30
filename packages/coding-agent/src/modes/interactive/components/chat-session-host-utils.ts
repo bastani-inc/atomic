@@ -79,7 +79,6 @@ export function extractMessageText(content: unknown): string {
 		}
 		const obj = item as { type?: unknown; text?: unknown };
 		if (typeof obj.text === "string") parts.push(obj.text);
-		else if (obj.type === "text" && typeof obj.text === "string") parts.push(obj.text);
 	}
 	return parts.join("");
 }

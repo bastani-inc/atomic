@@ -210,7 +210,7 @@ describe("multi-stage resume acknowledgement coherence", () => {
 		assert.equal(result.ok, true);
 		if (result.ok) {
 			assert.equal(result.mode, "partial");
-			assert.match(result.message ?? "", new RegExp(runId + "/reject-late.*late resume failed"));
+			assert.match(result.message ?? "", new RegExp(`${runId}/reject-late.*late resume failed`));
 		}
 		assert.equal(backend.getWorkflow(runId)?.status, "running");
 	});

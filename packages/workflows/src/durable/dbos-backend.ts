@@ -483,7 +483,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		this.invalid.delete(info.workflowId);
 		this.current.add(info.workflowId);
 		this.applyMetadata(info.workflowId, metadata.metadata);
-		checkpoints.forEach((checkpoint) => this.mem.recordCheckpoint(checkpoint));
+		for (const checkpoint of checkpoints) this.mem.recordCheckpoint(checkpoint);
 		const current = this.mem.getWorkflow(info.workflowId);
 		if (current !== undefined) {
 			const pendingPrompts = this.promptReservations.hydrate(

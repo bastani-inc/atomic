@@ -107,18 +107,17 @@ export function workflowToolOutcomeFromValue<TValue extends WorkflowSerializable
 ): WorkflowToolOutcome<TValue> | undefined {
 	if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
 	const candidate = value as Record<string, WorkflowSerializableValue>;
-	if (!Number.isInteger(candidate["attempts"]) || typeof candidate["cached"] !== "boolean") return undefined;
-	if (candidate["ok"] === true && "value" in candidate) return candidate as WorkflowToolSuccess<TValue>;
-	const error = candidate["error"];
-	if (candidate["ok"] !== false || error === null || typeof error !== "object" || Array.isArray(error))
-		return undefined;
+	if (!Number.isInteger(candidate.attempts) || typeof candidate.cached !== "boolean") return undefined;
+	if (candidate.ok === true && "value" in candidate) return candidate as WorkflowToolSuccess<TValue>;
+	const error = candidate.error;
+	if (candidate.ok !== false || error === null || typeof error !== "object" || Array.isArray(error)) return undefined;
 	const details = error as Record<string, WorkflowSerializableValue>;
 	if (
-		typeof details["name"] !== "string" ||
-		typeof details["message"] !== "string" ||
-		(details["exitCode"] !== undefined && !Number.isInteger(details["exitCode"])) ||
-		(details["stdout"] !== undefined && typeof details["stdout"] !== "string") ||
-		(details["stderr"] !== undefined && typeof details["stderr"] !== "string")
+		typeof details.name !== "string" ||
+		typeof details.message !== "string" ||
+		(details.exitCode !== undefined && !Number.isInteger(details.exitCode)) ||
+		(details.stdout !== undefined && typeof details.stdout !== "string") ||
+		(details.stderr !== undefined && typeof details.stderr !== "string")
 	)
 		return undefined;
 	return candidate as WorkflowToolFailure;

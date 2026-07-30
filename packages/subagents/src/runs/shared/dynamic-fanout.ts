@@ -227,7 +227,7 @@ export function validateDynamicStepShape(
 ): void {
 	const prefix = `Dynamic chain step ${stepIndex + 1}`;
 	assertOnlyKeys(step, config.allowRunnerFields ? RUNNER_DYNAMIC_STEP_KEYS : DYNAMIC_STEP_KEYS, prefix);
-	if (!step.expand || !step.expand.from) throw new DynamicFanoutError(`${prefix} requires expand.from.`);
+	if (!step.expand?.from) throw new DynamicFanoutError(`${prefix} requires expand.from.`);
 	assertOnlyKeys(step.expand, DYNAMIC_EXPAND_KEYS, `${prefix} expand`);
 	assertOnlyKeys(step.expand.from, DYNAMIC_EXPAND_FROM_KEYS, `${prefix} expand.from`);
 	if (!isSafeOutputName(step.expand.from.output))

@@ -20,12 +20,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { createStatusWriter } from "../../packages/workflows/src/extension/status-writer.js";
-import { pauseRun, resumeRun } from "../../packages/workflows/src/runs/background/status.js";
-import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
-import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowRuntimeConfig } from "../../packages/workflows/src/shared/types.js";
 
@@ -48,11 +44,11 @@ async function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function deferred<T = void>(): PromiseWithResolvers<T> {
+function _deferred<T = void>(): PromiseWithResolvers<T> {
 	return Promise.withResolvers<T>();
 }
 
-async function flushMicrotasks(): Promise<void> {
+async function _flushMicrotasks(): Promise<void> {
 	await new Promise<void>((resolve) => queueMicrotask(resolve));
 	await new Promise<void>((resolve) => queueMicrotask(resolve));
 }

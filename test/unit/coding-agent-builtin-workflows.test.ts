@@ -94,7 +94,7 @@ describe("coding-agent builtin resources", () => {
 				"export default function(pi) {",
 				"  const resources = pi.getWorkflowResources?.() ?? [];",
 				"  pi.registerCommand('workflow-resource-count', {",
-				"    description: `workflow resources: ${resources.filter((r) => r.enabled).length}` ,",
+				"    description: `workflow resources: $" + "{resources.filter((r) => r.enabled).length}` ,",
 				"    handler() {},",
 				"  });",
 				"}",

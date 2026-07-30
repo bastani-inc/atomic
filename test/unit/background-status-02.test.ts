@@ -6,14 +6,7 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
-import {
-	interruptRun,
-	killAllRuns,
-	killRun,
-	pauseRun,
-	resumeRun,
-	statusRuns,
-} from "../../packages/workflows/src/runs/background/status.js";
+import { pauseRun, resumeRun } from "../../packages/workflows/src/runs/background/status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 
@@ -21,7 +14,7 @@ import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/sh
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeStage(id: string, parentIds: string[] = []): StageSnapshot {
+function _makeStage(id: string, parentIds: string[] = []): StageSnapshot {
 	return {
 		id,
 		name: id,

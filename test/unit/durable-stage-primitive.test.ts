@@ -301,7 +301,7 @@ describe("run durable flush", () => {
 		const result = await run(def, {}, { runId: "wf-task-replay", store, durableBackend: backend });
 		const stage = store.runs()[0]?.stages[0];
 		exAssert.equal(result.status, "completed");
-		exAssert.equal(result.result?.["result"], "cached task text");
+		exAssert.equal(result.result?.result, "cached task text");
 		exAssert.equal(stage?.name, "cached-task");
 		exAssert.equal(stage?.status, "completed");
 		exAssert.equal(stage?.replayed, true);
@@ -442,7 +442,7 @@ describe("run durable flush", () => {
 			},
 		);
 		exAssert.equal(second.status, "completed");
-		exAssert.equal(second.result?.["result"], first.result?.["result"]);
+		exAssert.equal(second.result?.result, first.result?.result);
 		exAssert.equal(store.runs()[0]?.stages.filter((s) => s.replayed === true).length, 4);
 	});
 
@@ -495,7 +495,7 @@ describe("run durable flush", () => {
 			},
 		);
 		exAssert.equal(second.status, "completed");
-		exAssert.equal(second.result?.["result"], "child-value");
+		exAssert.equal(second.result?.result, "child-value");
 		exAssert.equal(
 			store.runs()[0]?.stages.some((s) => s.name === "workflow:durable-child" && s.replayed === true),
 			true,
@@ -592,8 +592,8 @@ describe("run durable flush", () => {
 		);
 		exAssert.equal(second.status, "completed");
 		exAssert.equal(childRuns, 0);
-		exAssert.equal(second.result?.["a"], first.result?.["a"]);
-		exAssert.equal(second.result?.["b"], first.result?.["b"]);
+		exAssert.equal(second.result?.a, first.result?.a);
+		exAssert.equal(second.result?.b, first.result?.b);
 	});
 
 	exTest("ctx.exit terminal status persisted to durable metadata", async () => {

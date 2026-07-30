@@ -384,7 +384,7 @@ function lifecycleOccurrenceAt(run: RunSnapshot, kind: "completed" | "failed" | 
 function returnedNoticeError(run: RunSnapshot, kind: "completed" | "failed" | "blocked"): string | undefined {
 	const structuredFailureText = structuredRecoverableWorkflowFailureText(run);
 	if (kind === "blocked" && structuredFailureText !== undefined) return structuredFailureText;
-	const returnedStatus = normalizeReturnedWorkflowStatus(run.result?.["status"]);
+	const returnedStatus = normalizeReturnedWorkflowStatus(run.result?.status);
 	if (returnedStatus === undefined) return undefined;
 	if (kind === "failed" && returnedStatus === "failed") return actionableReturnedStatusText(run.result);
 	if (kind === "blocked" && isReturnedBlockedWorkflowStatus(returnedStatus))

@@ -27,7 +27,7 @@ import { type WorkflowSendDeps, workflowSendAction } from "./workflow-tool-send.
 
 export function makeExecuteWorkflowTool(
 	runtime: ExtensionRuntime | ((ctx: PiExecuteContext) => ExtensionRuntime),
-	reloadWorkflowResources: () => Promise<WorkflowReloadReport | void> | void,
+	reloadWorkflowResources: () => Promise<WorkflowReloadReport | undefined> | undefined,
 	ensureWorkflowResourcesLoaded: () => Promise<void> | void = () => {},
 	sendDeps: WorkflowSendDeps = {},
 ): (args: WorkflowToolArgs, ctx: PiExecuteContext) => Promise<WorkflowToolResult> {

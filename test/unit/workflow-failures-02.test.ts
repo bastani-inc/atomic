@@ -9,7 +9,6 @@ import {
 	classifyWorkflowFailure,
 	WORKFLOW_AUTH_FAILURE_MESSAGE,
 	WORKFLOW_INVALID_PROVIDER_CREDENTIALS_MESSAGE,
-	WORKFLOW_MISSING_API_KEY_FAILURE_MESSAGE,
 	WORKFLOW_UNKNOWN_MODEL_MESSAGE,
 } from "../../packages/workflows/src/shared/workflow-failures.js";
 

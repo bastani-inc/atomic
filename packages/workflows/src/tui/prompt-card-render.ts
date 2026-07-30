@@ -28,17 +28,17 @@ export function renderPromptCard(opts: PromptCardRenderOpts): string[] {
 	lines.push(makeBorderTop(borderColor, " AWAITING INPUT ", theme, innerWidth, bg));
 	lines.push(makePaddedRow(bg, borderColor, innerWidth, ""));
 	for (const messageLine of wrapText(state.prompt.message, innerWidth - 4)) {
-		lines.push(makePaddedRow(bg, borderColor, innerWidth, "  " + paint(messageLine, theme.text)));
+		lines.push(makePaddedRow(bg, borderColor, innerWidth, `  ${paint(messageLine, theme.text)}`));
 	}
 	lines.push(makePaddedRow(bg, borderColor, innerWidth, ""));
 
 	const fieldLines = renderResponseFieldBox(state, theme, innerWidth - 4, opts.cursorOn);
 	for (const fl of fieldLines) {
-		lines.push(makePaddedRow(bg, borderColor, innerWidth, "  " + fl));
+		lines.push(makePaddedRow(bg, borderColor, innerWidth, `  ${fl}`));
 	}
 
 	lines.push(makePaddedRow(bg, borderColor, innerWidth, ""));
-	lines.push(makePaddedRow(bg, borderColor, innerWidth, "  " + renderHints(state.prompt.kind, theme)));
+	lines.push(makePaddedRow(bg, borderColor, innerWidth, `  ${renderHints(state.prompt.kind, theme)}`));
 	lines.push(makeBorderBottom(borderColor, innerWidth, bg));
 	return lines;
 }
@@ -47,11 +47,11 @@ function makeBorderTop(color: string, label: string, theme: GraphTheme, innerWid
 	const labelText = paint(label, theme.textMuted, { bold: true });
 	const labelW = visibleWidth(labelText);
 	const fillLen = Math.max(0, innerWidth - labelW);
-	return bg + paint("╭", color) + labelText + paint("─".repeat(fillLen) + "╮", color) + RESET;
+	return bg + paint("╭", color) + labelText + paint(`${"─".repeat(fillLen)}╮`, color) + RESET;
 }
 
 function makeBorderBottom(color: string, innerWidth: number, bg: string): string {
-	return bg + paint("╰" + "─".repeat(innerWidth) + "╯", color) + RESET;
+	return bg + paint(`╰${"─".repeat(innerWidth)}╯`, color) + RESET;
 }
 
 function makePaddedRow(bg: string, borderColor: string, innerWidth: number, content: string): string {
@@ -82,9 +82,9 @@ function renderResponseFieldBox(
 	const topFill = Math.max(0, boxWidth - labelW - 2);
 	const rows = renderResponseField(state, theme, contentWidth, cursorOn);
 	return [
-		paint("╭", borderColor) + labelText + paint("─".repeat(topFill) + "╮", borderColor),
+		paint("╭", borderColor) + labelText + paint(`${"─".repeat(topFill)}╮`, borderColor),
 		...rows.map((row) => makeFieldRow(row, contentWidth, borderColor)),
-		paint("╰" + "─".repeat(Math.max(0, boxWidth - 2)) + "╯", borderColor),
+		paint(`╰${"─".repeat(Math.max(0, boxWidth - 2))}╯`, borderColor),
 	];
 }
 
@@ -119,7 +119,7 @@ function renderConfirmRow(state: PromptCardState, theme: GraphTheme, usable: num
 		paint(!yes ? "●" : "○", !yes ? theme.error : theme.dim) +
 		" " +
 		paint("no", !yes ? theme.text : theme.dim, { bold: !yes });
-	const row = onCell + "    " + offCell;
+	const row = `${onCell}    ${offCell}`;
 	return padToUsable(row, usable);
 }
 

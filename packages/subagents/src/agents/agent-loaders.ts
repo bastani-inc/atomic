@@ -176,7 +176,7 @@ export function loadChainsFromDir(
 				? parseJsonChain(content, source, filePath)
 				: parseChain(content, source, filePath);
 			const existing = chains.get(chain.name);
-			if (existing && existing.filePath.endsWith(".chain.json") && filePath.endsWith(".chain.md")) continue;
+			if (existing?.filePath.endsWith(".chain.json") && filePath.endsWith(".chain.md")) continue;
 			chains.set(chain.name, chain);
 		} catch (error) {
 			diagnostics.push({ source, filePath, error: error instanceof Error ? error.message : String(error) });

@@ -415,15 +415,15 @@ describe("ctx.exit", () => {
 			const replayedStageEnds = entries.filter(
 				(entry) =>
 					entry.type === "workflow.stage.end" &&
-					entry.payload["runId"] === continued.runId &&
-					entry.payload["stageId"] === replayed?.id,
+					entry.payload.runId === continued.runId &&
+					entry.payload.stageId === replayed?.id,
 			);
 			assert.equal(
-				replayedStageEnds.some((entry) => entry.payload["status"] === "completed"),
+				replayedStageEnds.some((entry) => entry.payload.status === "completed"),
 				false,
 			);
 			assert.equal(
-				replayedStageEnds.some((entry) => entry.payload["status"] === "skipped"),
+				replayedStageEnds.some((entry) => entry.payload.status === "skipped"),
 				true,
 			);
 		}
@@ -511,15 +511,15 @@ describe("ctx.exit", () => {
 		const replayedPromptEnds = entries.filter(
 			(entry) =>
 				entry.type === "workflow.stage.end" &&
-				entry.payload["runId"] === continued.runId &&
-				entry.payload["stageId"] === replayedPrompt?.id,
+				entry.payload.runId === continued.runId &&
+				entry.payload.stageId === replayedPrompt?.id,
 		);
 		assert.equal(
-			replayedPromptEnds.some((entry) => entry.payload["status"] === "completed"),
+			replayedPromptEnds.some((entry) => entry.payload.status === "completed"),
 			false,
 		);
 		assert.equal(
-			replayedPromptEnds.some((entry) => entry.payload["status"] === "skipped"),
+			replayedPromptEnds.some((entry) => entry.payload.status === "skipped"),
 			true,
 		);
 	});

@@ -146,23 +146,23 @@ export function promptReservationAdjustment(state: DbosPromptReservationState): 
 function parseReservation(output: WorkflowSerializableValue): ParsedReservation | undefined {
 	if (
 		!isRecord(output) ||
-		output["__atomicPromptReservation"] !== true ||
-		output["version"] !== DURABLE_FORMAT_VERSION ||
-		typeof output["reservationId"] !== "string" ||
-		typeof output["generation"] !== "number" ||
-		!Number.isInteger(output["generation"]) ||
-		output["generation"] < 1 ||
-		(output["operation"] !== "reserve" && output["operation"] !== "release") ||
-		typeof output["tokenId"] !== "string" ||
-		typeof output["epoch"] !== "string"
+		output.__atomicPromptReservation !== true ||
+		output.version !== DURABLE_FORMAT_VERSION ||
+		typeof output.reservationId !== "string" ||
+		typeof output.generation !== "number" ||
+		!Number.isInteger(output.generation) ||
+		output.generation < 1 ||
+		(output.operation !== "reserve" && output.operation !== "release") ||
+		typeof output.tokenId !== "string" ||
+		typeof output.epoch !== "string"
 	)
 		return undefined;
 	return {
-		reservationId: output["reservationId"],
-		generation: output["generation"],
-		operation: output["operation"],
-		tokenId: output["tokenId"],
-		epoch: output["epoch"],
+		reservationId: output.reservationId,
+		generation: output.generation,
+		operation: output.operation,
+		tokenId: output.tokenId,
+		epoch: output.epoch,
 	};
 }
 

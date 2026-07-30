@@ -70,8 +70,8 @@ export function makeMockSession(overrides: Partial<StageSessionRuntime> = {}): {
 		async prompt() {
 			state.promptCalls += 1;
 			// Pretend the SDK is in-flight; return a controllable promise.
-			return new Promise<void>((resolve, reject) => {
-				state.resolvers.push(resolve);
+			return new Promise<string | undefined>((resolve, reject) => {
+				state.resolvers.push(() => resolve(undefined));
 				// Reject if abort is invoked.
 				(session as { __reject?: (err: Error) => void }).__reject = reject;
 			});

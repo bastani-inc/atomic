@@ -220,10 +220,10 @@ test.sequential("fresh root resume republishes and answers a pending depth-2 dur
 	const reservationEvent = [...sdk.state.steps.values()].find((value) => {
 		if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
 		const event = value as Record<string, unknown>;
-		return event["__atomicPromptReservation"] === true && event["operation"] === "reserve";
+		return event.__atomicPromptReservation === true && event.operation === "reserve";
 	});
 	assert.ok(reservationEvent && typeof reservationEvent === "object" && !Array.isArray(reservationEvent));
-	const reservationId = (reservationEvent as Record<string, unknown>)["reservationId"];
+	const reservationId = (reservationEvent as Record<string, unknown>).reservationId;
 	assert.equal(typeof reservationId, "string");
 	const oldOwnerToken = writer.pendingPromptToken(ROOT_ID, reservationId as string);
 	assert.ok(oldOwnerToken);

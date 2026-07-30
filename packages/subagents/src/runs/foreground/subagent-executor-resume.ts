@@ -237,7 +237,7 @@ export function interruptAsyncRun(state: SubagentState, runId: string | undefine
 	const target = getAsyncInterruptTarget(state, runId);
 	if (!target) return null;
 	const status = readStatus(target.asyncDir);
-	if (!status || status.state !== "running" || typeof status.pid !== "number") {
+	if (status?.state !== "running" || typeof status.pid !== "number") {
 		return {
 			content: [
 				{
@@ -373,7 +373,7 @@ function directNestedAsyncInterrupt(
 	if (!asyncDir) return undefined;
 	const status = readStatus(asyncDir);
 	const pid = typeof status?.pid === "number" && status.pid > 0 ? status.pid : run.pid;
-	if (!status || status.state !== "running" || typeof pid !== "number" || pid <= 0) return undefined;
+	if (status?.state !== "running" || typeof pid !== "number" || pid <= 0) return undefined;
 	try {
 		process.kill(pid, ASYNC_INTERRUPT_SIGNAL);
 		return {

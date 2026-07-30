@@ -14,11 +14,10 @@
 
 import assert from "node:assert/strict";
 import type { AgentSession } from "@bastani/atomic";
-import { type Component, type EditorComponent, Key, type TUI } from "@earendil-works/pi-tui";
+import { Key } from "@earendil-works/pi-tui";
 import { describe, test } from "vitest";
 import type { StageControlHandle } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
-import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { PendingPrompt, StageInputRequest } from "../../packages/workflows/src/shared/store-types.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
@@ -61,7 +60,7 @@ function makePendingPrompt(overrides: Partial<PendingPrompt> = {}): PendingPromp
 	};
 }
 
-function makeInputRequest(overrides: Partial<StageInputRequest> = {}): StageInputRequest {
+function _makeInputRequest(overrides: Partial<StageInputRequest> = {}): StageInputRequest {
 	return {
 		id: "input-request-1",
 		kind: "ask_user_question",
@@ -75,36 +74,6 @@ function makeInputRequest(overrides: Partial<StageInputRequest> = {}): StageInpu
 		],
 		...overrides,
 	};
-}
-
-class FakePromptEditor implements EditorComponent {
-	text = "";
-	focused = false;
-	onSubmit?: (text: string) => void;
-	onChange?: (text: string) => void;
-
-	render(): string[] {
-		return [`fake-prompt-editor:${this.text}`];
-	}
-
-	handleInput(data: string): void {
-		if (data === Key.enter || data === "\r" || data === "\n") {
-			this.onSubmit?.(this.text);
-			return;
-		}
-		this.text += data;
-		this.onChange?.(this.text);
-	}
-
-	invalidate(): void {}
-
-	getText(): string {
-		return this.text;
-	}
-
-	setText(text: string): void {
-		this.text = text;
-	}
 }
 
 function makeHandle(runId: string, stageId: string): StageControlHandle {
@@ -159,7 +128,7 @@ function submitAttachedStageChatText(chatView: AttachedStageChat, text: string):
 	chatView.handleInput("\r");
 }
 
-function setupTwoPromptAttachPane(
+function _setupTwoPromptAttachPane(
 	firstPrompt: PendingPrompt,
 	opts: { piKeybindings?: unknown; now?: () => number } = {},
 ) {
@@ -188,7 +157,7 @@ function setupTwoPromptAttachPane(
 	return { store, pane, pending, secondPrompt };
 }
 
-function assertNextGraphEnterAttaches(pane: WorkflowAttachPane, expectedStageId: string, message: string): void {
+function _assertNextGraphEnterAttaches(pane: WorkflowAttachPane, expectedStageId: string, message: string): void {
 	pane.handleInput(Key.enter);
 	assert.equal(pane._mode, "stage-chat", message);
 	assert.equal(pane._lastAttachedStageId, expectedStageId);

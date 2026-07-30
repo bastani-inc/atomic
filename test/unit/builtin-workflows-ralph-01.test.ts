@@ -1,27 +1,18 @@
 // @ts-nocheck
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
-import type { WorkflowDefinition } from "../../packages/workflows/src/types.js";
 import {
 	assertOutputTypes,
-	assertStringOutput,
 	assertWorkflowDefinition,
-	expectedDeepResearchAggregatorReadCount,
-	fieldChoices,
 	fieldDefault,
 	fieldDescription,
 	fieldKind,
 	fieldRequired,
 	makeMockCtx,
-	makeTaskResult,
-	normalizePathSeparators,
-	promptText,
-	readPathEndsWith,
-	readPaths,
 } from "./builtin-workflows-helpers.js";
 
 describe("ralph", () => {
@@ -121,26 +112,26 @@ describe("ralph", () => {
 
 	test("declares prompt, acceptance_criteria, max_loops, base_branch, git_worktree_dir, and create_pr inputs", async () => {
 		const mod = await import("../../packages/workflows/builtin/ralph.js");
-		assert.equal(fieldKind(mod.default.inputs["prompt"]), "text");
-		assert.equal(fieldRequired(mod.default.inputs["prompt"]), true);
-		assert.equal(fieldKind(mod.default.inputs["acceptance_criteria"]), "text");
-		assert.equal(fieldRequired(mod.default.inputs["acceptance_criteria"]), false);
-		assert.match(fieldDescription(mod.default.inputs["acceptance_criteria"]), /Original immutable task contract/);
-		assert.equal(fieldKind(mod.default.inputs["max_loops"]), "number");
-		assert.equal(fieldDefault(mod.default.inputs["max_loops"]), 10);
-		assert.equal(fieldKind(mod.default.inputs["base_branch"]), "text");
-		assert.equal(fieldDefault(mod.default.inputs["base_branch"]), "origin/main");
-		assert.equal(fieldKind(mod.default.inputs["git_worktree_dir"]), "text");
-		assert.equal(fieldDefault(mod.default.inputs["git_worktree_dir"]), "");
-		assert.equal(fieldKind(mod.default.inputs["create_pr"]), "boolean");
-		assert.equal(fieldDefault(mod.default.inputs["create_pr"]), false);
-		assert.equal(fieldRequired(mod.default.inputs["create_pr"]), false);
-		const description = fieldDescription(mod.default.inputs["git_worktree_dir"]);
+		assert.equal(fieldKind(mod.default.inputs.prompt), "text");
+		assert.equal(fieldRequired(mod.default.inputs.prompt), true);
+		assert.equal(fieldKind(mod.default.inputs.acceptance_criteria), "text");
+		assert.equal(fieldRequired(mod.default.inputs.acceptance_criteria), false);
+		assert.match(fieldDescription(mod.default.inputs.acceptance_criteria), /Original immutable task contract/);
+		assert.equal(fieldKind(mod.default.inputs.max_loops), "number");
+		assert.equal(fieldDefault(mod.default.inputs.max_loops), 10);
+		assert.equal(fieldKind(mod.default.inputs.base_branch), "text");
+		assert.equal(fieldDefault(mod.default.inputs.base_branch), "origin/main");
+		assert.equal(fieldKind(mod.default.inputs.git_worktree_dir), "text");
+		assert.equal(fieldDefault(mod.default.inputs.git_worktree_dir), "");
+		assert.equal(fieldKind(mod.default.inputs.create_pr), "boolean");
+		assert.equal(fieldDefault(mod.default.inputs.create_pr), false);
+		assert.equal(fieldRequired(mod.default.inputs.create_pr), false);
+		const description = fieldDescription(mod.default.inputs.git_worktree_dir);
 		assert.match(description, /inside a Git repo/);
 		assert.match(description, /absolute paths are used as-is/);
 		assert.match(description, /relative paths resolve from the repo root/);
 		assert.match(description, /existing Git worktrees from the invoking repository are reused\/shared as-is/);
-		const createPrDescription = fieldDescription(mod.default.inputs["create_pr"]);
+		const createPrDescription = fieldDescription(mod.default.inputs.create_pr);
 		assert.match(createPrDescription, /pull-request creation stage/);
 		assert.match(createPrDescription, /Defaults to false/);
 		assert.match(createPrDescription, /provider-appropriate PR\/MR\/review creation/);
@@ -368,7 +359,7 @@ describe("ralph", () => {
 		assertNoFinalHandoffMentions([
 			{
 				label: "implementation notes",
-				text: readFileSync(String(result["implementation_notes_path"]), "utf8"),
+				text: readFileSync(String(result.implementation_notes_path), "utf8"),
 			},
 		]);
 
@@ -396,12 +387,12 @@ describe("ralph", () => {
 		});
 
 		assert.equal(ctx.calls.task.includes("pull-request"), true);
-		assert.match(String(result["pr_report"]), /\[mock-task:pull-request\]/);
+		assert.match(String(result.pr_report), /\[mock-task:pull-request\]/);
 		assertNoFinalHandoffMentions(preFinalStageTexts(ctx));
 		assertNoFinalHandoffMentions([
 			{
 				label: "implementation notes",
-				text: readFileSync(String(result["implementation_notes_path"]), "utf8"),
+				text: readFileSync(String(result.implementation_notes_path), "utf8"),
 			},
 		]);
 
@@ -436,8 +427,8 @@ describe("ralph", () => {
 		});
 
 		assert.equal(ctx.calls.task.includes("pull-request"), true);
-		assert.match(String(result["pr_report"]), /\[mock-task:pull-request\]/);
-		assert.doesNotMatch(String(result["pr_report"]), /creation skipped/);
+		assert.match(String(result.pr_report), /\[mock-task:pull-request\]/);
+		assert.doesNotMatch(String(result.pr_report), /creation skipped/);
 	});
 
 	test("pull-request stage documents detached HEAD branch handoff without cleanup markers", async () => {

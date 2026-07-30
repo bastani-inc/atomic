@@ -28,7 +28,7 @@ function transcript(directory: string, name: string): string {
 	const file = join(directory, `${name}.jsonl`);
 	writeFileSync(
 		file,
-		[
+		`${[
 			JSON.stringify({ type: "session", version: 3, id: name, timestamp: new Date().toISOString(), cwd: directory }),
 			JSON.stringify({
 				type: "message",
@@ -37,7 +37,7 @@ function transcript(directory: string, name: string): string {
 				timestamp: new Date().toISOString(),
 				message: { role: "user", content: name },
 			}),
-		].join("\n") + "\n",
+		].join("\n")}\n`,
 	);
 	return file;
 }

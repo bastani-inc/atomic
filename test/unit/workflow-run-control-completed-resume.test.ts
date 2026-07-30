@@ -38,7 +38,7 @@ function retainedSession(name: string): string {
 	const path = join(tempDir, `${name}.jsonl`);
 	writeFileSync(
 		path,
-		[
+		`${[
 			JSON.stringify({
 				type: "session",
 				version: 3,
@@ -53,7 +53,7 @@ function retainedSession(name: string): string {
 				timestamp: new Date().toISOString(),
 				message: { role: "user", content: `Prior context for ${name}`, timestamp: Date.now() },
 			}),
-		].join("\n") + "\n",
+		].join("\n")}\n`,
 	);
 	return path;
 }

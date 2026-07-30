@@ -149,7 +149,7 @@ describe("renderWorkflowList — populated", () => {
 		const out = renderWorkflowList(
 			[
 				{
-					name: "研究".repeat(18) + "-catalogue-entry",
+					name: `${"研究".repeat(18)}-catalogue-entry`,
 					description: "説明".repeat(30),
 					inputs: [
 						{ name: "検索".repeat(8), required: true },

@@ -115,19 +115,19 @@ export function validateWorkflowDefinitionShape(value: unknown): string | null {
 	}
 	const d = value as Record<string, unknown>;
 
-	if (d["__piWorkflow"] !== true) {
+	if (d.__piWorkflow !== true) {
 		return "missing or incorrect __piWorkflow sentinel (expected true); export a workflow from workflow({...})";
 	}
 	if (!isBrandedWorkflowDefinition(value)) {
 		return "workflow definition is not produced by workflow({...}); hand-rolled __piWorkflow objects are not supported";
 	}
-	if (typeof d["name"] !== "string" || (d["name"] as string).trim().length === 0) {
+	if (typeof d.name !== "string" || (d.name as string).trim().length === 0) {
 		return "name must be a non-empty string";
 	}
-	if (typeof d["normalizedName"] !== "string" || (d["normalizedName"] as string).trim().length === 0) {
+	if (typeof d.normalizedName !== "string" || (d.normalizedName as string).trim().length === 0) {
 		return "normalizedName must be a non-empty string";
 	}
-	if (typeof d["run"] !== "function") {
+	if (typeof d.run !== "function") {
 		return "run must be a function";
 	}
 	return null;
@@ -141,8 +141,8 @@ export function collectWorkflowModuleCandidates(mod: Record<string, unknown>): W
 	const candidates: WorkflowModuleCandidate[] = [];
 
 	// Default export first (RFC §5.12: check mod.default before named exports)
-	if ("default" in mod && mod["default"] !== undefined) {
-		candidates.push({ value: mod["default"], exportKey: "default" });
+	if ("default" in mod && mod.default !== undefined) {
+		candidates.push({ value: mod.default, exportKey: "default" });
 	}
 
 	// Then all named exports (a file may export multiple workflow definitions)

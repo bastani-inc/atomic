@@ -3,8 +3,8 @@ import { WorkflowPromptModelFailure } from "./stage-runner-messages.js";
 export function unresolvedContextOverflowMessage(event: unknown): string | undefined {
 	if (event === null || typeof event !== "object") return undefined;
 	const record = event as Record<string, unknown>;
-	if (record["type"] !== "compaction_end" || record["unresolvedOverflow"] !== true) return undefined;
-	const message = record["errorMessage"];
+	if (record.type !== "compaction_end" || record.unresolvedOverflow !== true) return undefined;
+	const message = record.errorMessage;
 	return typeof message === "string" && message.trim().length > 0
 		? message
 		: "Context overflow recovery was exhausted for the current model.";
@@ -34,9 +34,9 @@ export function nextResumedContextOverflowFallbackIndex(
 export function terminatingToolCallId(event: unknown): string | undefined {
 	if (event === null || typeof event !== "object") return undefined;
 	const record = event as Record<string, unknown>;
-	const result = record["result"];
-	if (record["type"] !== "tool_execution_end" || result === null || typeof result !== "object") return undefined;
-	if ((result as Record<string, unknown>)["terminate"] !== true) return undefined;
-	const callId = record["toolCallId"];
+	const result = record.result;
+	if (record.type !== "tool_execution_end" || result === null || typeof result !== "object") return undefined;
+	if ((result as Record<string, unknown>).terminate !== true) return undefined;
+	const callId = record.toolCallId;
 	return typeof callId === "string" && callId.length > 0 ? callId : undefined;
 }

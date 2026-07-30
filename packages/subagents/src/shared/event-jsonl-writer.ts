@@ -285,7 +285,10 @@ function acquireEventWriterInternal(
 			if (closePromise) return closePromise;
 			writer!.sources.delete(source);
 			writer!.refs -= 1;
-			if (writer!.refs > 0 || writer!.failed) return (closePromise = Promise.resolve());
+			if (writer!.refs > 0 || writer!.failed) {
+				closePromise = Promise.resolve();
+				return closePromise;
+			}
 			writer!.closed = true;
 			try {
 				writer!.stream.end(() => {
@@ -303,7 +306,8 @@ function acquireEventWriterInternal(
 			} catch {
 				failWriter(writer!);
 			}
-			return (closePromise = writer!.settled);
+			closePromise = writer!.settled;
+			return closePromise;
 		},
 	};
 }

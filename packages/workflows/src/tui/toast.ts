@@ -99,7 +99,7 @@ export function renderToasts(toasts: Toast[], opts: ToastOpts): string[] {
 	for (const toast of toasts) {
 		const bg = hexBg(kindBg(toast.kind, theme));
 		const icon = kindIcon(toast.kind);
-		const msg = toast.message.length > 40 ? toast.message.slice(0, 39) + "…" : toast.message;
+		const msg = toast.message.length > 40 ? `${toast.message.slice(0, 39)}…` : toast.message;
 		lines.push(`${bg}${fg}${BOLD} ${icon} ${msg} ${RESET}`);
 	}
 

@@ -105,10 +105,10 @@ function seedTerminal(
 	suffix = status,
 ): void {
 	const raw = startTopology(runId) as unknown as Record<string, WorkflowSerializableValue>;
-	raw["status"] = status;
-	const boundary = raw["boundary"] as Record<string, WorkflowSerializableValue>;
-	boundary["event"] = "terminal";
-	boundary["status"] = status;
+	raw.status = status;
+	const boundary = raw.boundary as Record<string, WorkflowSerializableValue>;
+	boundary.event = "terminal";
+	boundary.status = status;
 	seedMockCheckpoint(sdk, runId, {
 		kind: "stage",
 		workflowId: runId,
@@ -284,9 +284,9 @@ const malformedCases: ReadonlyArray<readonly [string, (sdk: ReturnType<typeof cr
 			(sdk) => {
 				const encoded = [...sdk.state.steps.entries()].find(([key]) => key.endsWith(`:boundary-start:${SCOPE}`))!;
 				const envelope = structuredClone(encoded[1]) as Record<string, WorkflowSerializableValue>;
-				const topology = envelope["topology"] as Record<string, WorkflowSerializableValue>;
-				topology["status"] = "completed";
-				(topology["boundary"] as Record<string, WorkflowSerializableValue>)["status"] = "completed";
+				const topology = envelope.topology as Record<string, WorkflowSerializableValue>;
+				topology.status = "completed";
+				(topology.boundary as Record<string, WorkflowSerializableValue>).status = "completed";
 				sdk.state.steps.set(encoded[0], envelope);
 			},
 		],

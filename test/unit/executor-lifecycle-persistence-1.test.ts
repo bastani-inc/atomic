@@ -90,10 +90,10 @@ describe("executor.run — lifecycle persistence", () => {
 
 		const runStart = calls.find((c) => c.type === "workflow.run.start");
 		assert.notEqual(runStart, undefined);
-		assert.equal(runStart?.payload["runId"], wfResult.runId);
-		assert.equal(runStart?.payload["name"], "payload-wf");
-		assert.deepEqual(runStart?.payload["inputs"], { x: 1 }); // TODO: was toMatchObject — may need subset check;
-		assert.equal(typeof runStart?.payload["ts"], "number");
+		assert.equal(runStart?.payload.runId, wfResult.runId);
+		assert.equal(runStart?.payload.name, "payload-wf");
+		assert.deepEqual(runStart?.payload.inputs, { x: 1 }); // TODO: was toMatchObject — may need subset check;
+		assert.equal(typeof runStart?.payload.ts, "number");
 	});
 
 	test("stage.start payload contains runId, stageId, name, parentIds", async () => {
@@ -122,9 +122,9 @@ describe("executor.run — lifecycle persistence", () => {
 
 		const stageStart = calls.find((c) => c.type === "workflow.stage.start");
 		assert.notEqual(stageStart, undefined);
-		assert.equal(stageStart?.payload["runId"], wfResult.runId);
-		assert.equal(stageStart?.payload["name"], "my-stage");
-		assert.equal(Array.isArray(stageStart?.payload["parentIds"]), true);
+		assert.equal(stageStart?.payload.runId, wfResult.runId);
+		assert.equal(stageStart?.payload.name, "my-stage");
+		assert.equal(Array.isArray(stageStart?.payload.parentIds), true);
 	});
 
 	test("stage.end payload contains status completed on success", async () => {
@@ -152,7 +152,7 @@ describe("executor.run — lifecycle persistence", () => {
 		);
 
 		const stageEnd = calls.find((c) => c.type === "workflow.stage.end");
-		assert.equal(stageEnd?.payload["status"], "completed");
+		assert.equal(stageEnd?.payload.status, "completed");
 	});
 
 	test("run.end payload contains status completed on success", async () => {
@@ -182,8 +182,8 @@ describe("executor.run — lifecycle persistence", () => {
 		);
 
 		const runEnd = calls.find((c) => c.type === "workflow.run.end");
-		assert.equal(runEnd?.payload["status"], "completed");
-		assert.equal(typeof runEnd?.payload["ts"], "number");
+		assert.equal(runEnd?.payload.status, "completed");
+		assert.equal(typeof runEnd?.payload.ts, "number");
 	});
 
 	test("empty graph validation appends failed run.end without stage entries", async () => {
@@ -212,8 +212,8 @@ describe("executor.run — lifecycle persistence", () => {
 		assert.match(wfResult.error ?? "", /completed without creating any workflow stages/);
 		assert.deepEqual(lifecycleTypes(calls), ["workflow.run.start", "workflow.run.end"]);
 		const runEnd = calls.find((c) => c.type === "workflow.run.end");
-		assert.equal(runEnd?.payload["status"], "failed");
-		assert.match(String(runEnd?.payload["error"] ?? ""), /completed without creating any workflow stages/);
+		assert.equal(runEnd?.payload.status, "failed");
+		assert.match(String(runEnd?.payload.error ?? ""), /completed without creating any workflow stages/);
 	});
 
 	test("failed stage: stage.end status=failed, run.end status=failed", async () => {
@@ -249,18 +249,18 @@ describe("executor.run — lifecycle persistence", () => {
 		assert.equal(wfResult.status, "failed");
 
 		const stageEnd = calls.find((c) => c.type === "workflow.stage.end");
-		assert.equal(stageEnd?.payload["status"], "failed");
-		assert.equal(stageEnd.payload["error"], "boom");
-		assert.equal(stageEnd.payload["failureKind"], "unknown");
-		assert.equal(stageEnd.payload["failureMessage"], "boom");
+		assert.equal(stageEnd?.payload.status, "failed");
+		assert.equal(stageEnd.payload.error, "boom");
+		assert.equal(stageEnd.payload.failureKind, "unknown");
+		assert.equal(stageEnd.payload.failureMessage, "boom");
 
 		const runEnd = calls.find((c) => c.type === "workflow.run.end");
-		assert.equal(runEnd?.payload["status"], "failed");
-		assert.equal(runEnd.payload["error"], "boom");
-		assert.equal(runEnd.payload["failureKind"], "unknown");
-		assert.equal(runEnd.payload["failureMessage"], "boom");
-		assert.equal(runEnd.payload["failedStageId"], stageEnd.payload["stageId"]);
-		assert.equal(runEnd.payload["resumable"], true);
+		assert.equal(runEnd?.payload.status, "failed");
+		assert.equal(runEnd.payload.error, "boom");
+		assert.equal(runEnd.payload.failureKind, "unknown");
+		assert.equal(runEnd.payload.failureMessage, "boom");
+		assert.equal(runEnd.payload.failedStageId, stageEnd.payload.stageId);
+		assert.equal(runEnd.payload.resumable, true);
 	});
 
 	test("recoverable rate limit persists run.blocked without run.end", async () => {
@@ -307,22 +307,22 @@ describe("executor.run — lifecycle persistence", () => {
 			"workflow.run.blocked",
 		]);
 		const stageEnd = calls.find((c) => c.type === "workflow.stage.end")!;
-		assert.equal(stageEnd.payload["status"], "failed");
-		assert.equal(stageEnd.payload["failureKind"], "rate_limit");
-		assert.equal(stageEnd.payload["failureCode"], "rate_limited");
-		assert.equal(stageEnd.payload["failureRecoverability"], "recoverable");
-		assert.equal(stageEnd.payload["failureDisposition"], "active_blocked");
-		assert.equal(stageEnd.payload["retryAfterMs"], 1234);
+		assert.equal(stageEnd.payload.status, "failed");
+		assert.equal(stageEnd.payload.failureKind, "rate_limit");
+		assert.equal(stageEnd.payload.failureCode, "rate_limited");
+		assert.equal(stageEnd.payload.failureRecoverability, "recoverable");
+		assert.equal(stageEnd.payload.failureDisposition, "active_blocked");
+		assert.equal(stageEnd.payload.retryAfterMs, 1234);
 
 		const runBlocked = calls.find((c) => c.type === "workflow.run.blocked")!;
-		assert.equal(runBlocked.payload["runId"], wfResult.runId);
-		assert.equal(runBlocked.payload["failureKind"], "rate_limit");
-		assert.equal(runBlocked.payload["failureCode"], "rate_limited");
-		assert.equal(runBlocked.payload["failureRecoverability"], "recoverable");
-		assert.equal(runBlocked.payload["failureDisposition"], "active_blocked");
-		assert.equal(runBlocked.payload["resumable"], true);
-		assert.equal(runBlocked.payload["retryAfterMs"], 1234);
-		assert.equal(typeof runBlocked.payload["failedStageId"], "string");
+		assert.equal(runBlocked.payload.runId, wfResult.runId);
+		assert.equal(runBlocked.payload.failureKind, "rate_limit");
+		assert.equal(runBlocked.payload.failureCode, "rate_limited");
+		assert.equal(runBlocked.payload.failureRecoverability, "recoverable");
+		assert.equal(runBlocked.payload.failureDisposition, "active_blocked");
+		assert.equal(runBlocked.payload.resumable, true);
+		assert.equal(runBlocked.payload.retryAfterMs, 1234);
+		assert.equal(typeof runBlocked.payload.failedStageId, "string");
 		assert.equal(
 			calls.some((c) => c.type === "workflow.run.end"),
 			false,
@@ -385,10 +385,10 @@ describe("executor.run — lifecycle persistence", () => {
 			false,
 		);
 		const runBlocked = calls.find((c) => c.type === "workflow.run.blocked")!;
-		assert.equal(runBlocked.payload["failureKind"], "rate_limit");
-		assert.equal(runBlocked.payload["failureCode"], "rate_limited");
-		assert.equal(runBlocked.payload["failureDisposition"], "active_blocked");
-		assert.equal(runBlocked.payload["retryAfterMs"], 2500);
+		assert.equal(runBlocked.payload.failureKind, "rate_limit");
+		assert.equal(runBlocked.payload.failureCode, "rate_limited");
+		assert.equal(runBlocked.payload.failureDisposition, "active_blocked");
+		assert.equal(runBlocked.payload.retryAfterMs, 2500);
 	});
 
 	test("fail-fast skipped queued parallel stages persist start before end", async () => {
@@ -452,7 +452,7 @@ describe("executor.run — lifecycle persistence", () => {
 		}
 
 		const stageEntryKey = (payload: Record<string, unknown>): string =>
-			`${String(payload["runId"])}:${String(payload["stageId"])}`;
+			`${String(payload.runId)}:${String(payload.stageId)}`;
 		const startsByStage = new Map<string, number>();
 		for (const call of calls) {
 			if (call.type === "workflow.stage.start") {

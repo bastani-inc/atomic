@@ -20,7 +20,8 @@ export interface ProtectedStreamingCustomMessage {
 }
 
 function protectedMessages(session: AgentSession): ProtectedStreamingCustomMessage[] {
-	return (session._protectedStreamingCustomMessages ??= []);
+	session._protectedStreamingCustomMessages ??= [];
+	return session._protectedStreamingCustomMessages;
 }
 
 function appendDurableDisplayCard(

@@ -72,10 +72,10 @@ describe("appendRunStart", () => {
 		const api = makeMockApi();
 		appendRunStart(api, { runId: "r1", name: "wf", inputs: { x: 1 }, ts: 42 });
 		const p = api._entries[0]!.payload;
-		assert.equal(p["runId"], "r1");
-		assert.equal(p["name"], "wf");
-		assert.equal(p["ts"], 42);
-		assert.equal((p["inputs"] as Record<string, unknown>)["x"], 1);
+		assert.equal(p.runId, "r1");
+		assert.equal(p.name, "wf");
+		assert.equal(p.ts, 42);
+		assert.equal((p.inputs as Record<string, unknown>).x, 1);
 	});
 
 	test("calls setLabel with wf:<name>:<short-id> format", () => {
@@ -97,8 +97,8 @@ describe("appendRunStart", () => {
 			ts: 1,
 		});
 		const p = api._entries[0]!.payload;
-		assert.equal(p["resumedFromRunId"], "r1");
-		assert.equal(p["resumeFromStageId"], "s2");
+		assert.equal(p.resumedFromRunId, "r1");
+		assert.equal(p.resumeFromStageId, "s2");
 	});
 
 	test("no-op when appendEntry absent", () => {
@@ -150,12 +150,12 @@ describe("appendStageStart", () => {
 			ts: 200,
 		});
 		const p = api._entries[0]!.payload;
-		assert.equal(p["runId"], "r1");
-		assert.equal(p["stageId"], "s2");
-		assert.equal(p["name"], "analyze");
-		assert.deepEqual(p["parentIds"], ["s1"]);
-		assert.equal(p["model"], "sonnet");
-		assert.equal(p["ts"], 200);
+		assert.equal(p.runId, "r1");
+		assert.equal(p.stageId, "s2");
+		assert.equal(p.name, "analyze");
+		assert.deepEqual(p.parentIds, ["s1"]);
+		assert.equal(p.model, "sonnet");
+		assert.equal(p.ts, 200);
 	});
 
 	test("model omitted when not provided", () => {
@@ -177,9 +177,9 @@ describe("appendStageStart", () => {
 			ts: 1,
 		});
 		const p = api._entries[0]!.payload;
-		assert.equal(p["replayKey"], "prompt:confirm:abc:1");
-		assert.equal(p["replayedFromStageId"], "s-old");
-		assert.equal(p["replayed"], true);
+		assert.equal(p.replayKey, "prompt:confirm:abc:1");
+		assert.equal(p.replayedFromStageId, "s-old");
+		assert.equal(p.replayed, true);
 	});
 
 	test("no-op when appendEntry absent", () => {
@@ -202,7 +202,7 @@ describe("appendStageProgress", () => {
 	test("payload contains kind", () => {
 		const api = makeMockApi();
 		appendStageProgress(api, { runId: "r1", stageId: "s1", kind: "message_delta", payload: "hello" });
-		assert.equal(api._entries[0]!.payload["kind"], "message_delta");
+		assert.equal(api._entries[0]!.payload.kind, "message_delta");
 	});
 
 	test("no-op when appendEntry absent", () => {
@@ -226,8 +226,8 @@ describe("appendStageEnd", () => {
 		const api = makeMockApi();
 		appendStageEnd(api, { runId: "r1", stageId: "s1", status: "completed", durationMs: 500, summary: "done" });
 		const p = api._entries[0]!.payload;
-		assert.equal(p["durationMs"], 500);
-		assert.equal(p["summary"], "done");
+		assert.equal(p.durationMs, 500);
+		assert.equal(p.summary, "done");
 	});
 
 	test("omits durationMs/summary when not provided", () => {
@@ -253,14 +253,14 @@ describe("appendStageEnd", () => {
 			skippedReason: "fail-fast",
 		});
 		const p = api._entries[0]!.payload;
-		assert.equal(p["error"], "login required");
-		assert.equal(p["failureKind"], "auth");
-		assert.equal(p["failureCode"], "missing_api_key");
-		assert.equal(p["failureRecoverability"], "recoverable");
-		assert.equal(p["failureDisposition"], "active_blocked");
-		assert.equal(p["failureMessage"], "No API key found");
-		assert.equal(p["retryAfterMs"], 5000);
-		assert.equal(p["skippedReason"], "fail-fast");
+		assert.equal(p.error, "login required");
+		assert.equal(p.failureKind, "auth");
+		assert.equal(p.failureCode, "missing_api_key");
+		assert.equal(p.failureRecoverability, "recoverable");
+		assert.equal(p.failureDisposition, "active_blocked");
+		assert.equal(p.failureMessage, "No API key found");
+		assert.equal(p.retryAfterMs, 5000);
+		assert.equal(p.skippedReason, "fail-fast");
 	});
 	test("includes optional session metadata when provided", () => {
 		const api = makeMockApi();
@@ -272,8 +272,8 @@ describe("appendStageEnd", () => {
 			sessionFile: "/tmp/session-1.jsonl",
 		});
 		const p = api._entries[0]!.payload;
-		assert.equal(p["sessionId"], "session-1");
-		assert.equal(p["sessionFile"], "/tmp/session-1.jsonl");
+		assert.equal(p.sessionId, "session-1");
+		assert.equal(p.sessionFile, "/tmp/session-1.jsonl");
 	});
 	test("includes optional replay metadata when provided", () => {
 		const api = makeMockApi();
@@ -287,10 +287,10 @@ describe("appendStageEnd", () => {
 			replayed: true,
 		});
 		const p = api._entries[0]!.payload;
-		assert.equal(p["summary"], "old result");
-		assert.equal(p["replayKey"], "prompt:confirm:abc:1");
-		assert.equal(p["replayedFromStageId"], "s-old");
-		assert.equal(p["replayed"], true);
+		assert.equal(p.summary, "old result");
+		assert.equal(p.replayKey, "prompt:confirm:abc:1");
+		assert.equal(p.replayedFromStageId, "s-old");
+		assert.equal(p.replayed, true);
 	});
 	test("includes optional workflow child replay metadata when provided", () => {
 		const api = makeMockApi();
@@ -307,7 +307,7 @@ describe("appendStageEnd", () => {
 			},
 		});
 		const p = api._entries[0]!.payload;
-		assert.deepEqual(p["workflowChild"], {
+		assert.deepEqual(p.workflowChild, {
 			alias: "child",
 			workflow: "child-wf",
 			runId: "child-run",
@@ -367,9 +367,9 @@ describe("appendRunEnd", () => {
 		const api = makeMockApi();
 		appendRunEnd(api, { runId: "r1", status: "failed", ts: 123 });
 		const p = api._entries[0]!.payload;
-		assert.equal(p["runId"], "r1");
-		assert.equal(p["status"], "failed");
-		assert.equal(p["ts"], 123);
+		assert.equal(p.runId, "r1");
+		assert.equal(p.status, "failed");
+		assert.equal(p.ts, 123);
 	});
 	test("includes result and timing when provided", () => {
 		const api = makeMockApi();
@@ -382,9 +382,9 @@ describe("appendRunEnd", () => {
 			ts: 1,
 		});
 		const p = api._entries[0]!.payload;
-		assert.equal((p["result"] as Record<string, unknown>)["out"], 42);
-		assert.equal(p["endedAt"], 5000);
-		assert.equal(p["durationMs"], 4000);
+		assert.equal((p.result as Record<string, unknown>).out, 42);
+		assert.equal(p.endedAt, 5000);
+		assert.equal(p.durationMs, 4000);
 	});
 	test("includes optional run failure metadata when provided", () => {
 		const api = makeMockApi();
@@ -403,15 +403,15 @@ describe("appendRunEnd", () => {
 			ts: 1,
 		});
 		const p = api._entries[0]!.payload;
-		assert.equal(p["error"], "login required");
-		assert.equal(p["failureKind"], "auth");
-		assert.equal(p["failureCode"], "invalid_api_key");
-		assert.equal(p["failureRecoverability"], "non_recoverable");
-		assert.equal(p["failureDisposition"], "terminal_killed");
-		assert.equal(p["failureMessage"], "No API key found");
-		assert.equal(p["failedStageId"], "s1");
-		assert.equal(p["resumable"], false);
-		assert.equal(p["retryAfterMs"], 7000);
+		assert.equal(p.error, "login required");
+		assert.equal(p.failureKind, "auth");
+		assert.equal(p.failureCode, "invalid_api_key");
+		assert.equal(p.failureRecoverability, "non_recoverable");
+		assert.equal(p.failureDisposition, "terminal_killed");
+		assert.equal(p.failureMessage, "No API key found");
+		assert.equal(p.failedStageId, "s1");
+		assert.equal(p.resumable, false);
+		assert.equal(p.retryAfterMs, 7000);
 	});
 	test("strips active-blocked disposition from terminal failed run.end payloads", () => {
 		const api = makeMockApi();
@@ -430,13 +430,13 @@ describe("appendRunEnd", () => {
 			ts: 1,
 		});
 		const p = api._entries[0]!.payload;
-		assert.equal(p["status"], "failed");
-		assert.equal(p["failureKind"], "rate_limit");
-		assert.equal(p["failureCode"], "rate_limited");
-		assert.equal(p["failureRecoverability"], "recoverable");
+		assert.equal(p.status, "failed");
+		assert.equal(p.failureKind, "rate_limit");
+		assert.equal(p.failureCode, "rate_limited");
+		assert.equal(p.failureRecoverability, "recoverable");
 		assert.equal("failureDisposition" in p, false);
-		assert.equal(p["resumable"], true);
-		assert.equal(p["retryAfterMs"], 1000);
+		assert.equal(p.resumable, true);
+		assert.equal(p.retryAfterMs, 1000);
 	});
 	test("normalizes killed run.end payloads to terminal-killed and non-resumable", () => {
 		const api = makeMockApi();
@@ -453,10 +453,10 @@ describe("appendRunEnd", () => {
 			ts: 1,
 		});
 		const p = api._entries[0]!.payload;
-		assert.equal(p["status"], "killed");
-		assert.equal(p["failureRecoverability"], "non_recoverable");
-		assert.equal(p["failureDisposition"], "terminal_killed");
-		assert.equal(p["resumable"], false);
+		assert.equal(p.status, "killed");
+		assert.equal(p.failureRecoverability, "non_recoverable");
+		assert.equal(p.failureDisposition, "terminal_killed");
+		assert.equal(p.resumable, false);
 	});
 	test("no-op when appendEntry absent", () => {
 		const api: PersistenceAPI = {};
@@ -484,17 +484,17 @@ describe("appendRunBlocked", () => {
 		});
 		assert.equal(api._entries[0]!.type, "workflow.run.blocked");
 		const p = api._entries[0]!.payload;
-		assert.equal(p["runId"], "r1");
-		assert.equal(p["failedStageId"], "s1");
-		assert.equal(p["error"], "rate limit");
-		assert.equal(p["failureKind"], "rate_limit");
-		assert.equal(p["failureCode"], "rate_limited");
-		assert.equal(p["failureMessage"], "HTTP 429");
-		assert.equal(p["failureRecoverability"], "recoverable");
-		assert.equal(p["failureDisposition"], "active_blocked");
-		assert.equal(p["retryAfterMs"], 2500);
-		assert.equal(p["resumable"], true);
-		assert.equal(p["ts"], 123);
+		assert.equal(p.runId, "r1");
+		assert.equal(p.failedStageId, "s1");
+		assert.equal(p.error, "rate limit");
+		assert.equal(p.failureKind, "rate_limit");
+		assert.equal(p.failureCode, "rate_limited");
+		assert.equal(p.failureMessage, "HTTP 429");
+		assert.equal(p.failureRecoverability, "recoverable");
+		assert.equal(p.failureDisposition, "active_blocked");
+		assert.equal(p.retryAfterMs, 2500);
+		assert.equal(p.resumable, true);
+		assert.equal(p.ts, 123);
 	});
 	test("no-op when appendEntry absent", () => {
 		const api: PersistenceAPI = {};

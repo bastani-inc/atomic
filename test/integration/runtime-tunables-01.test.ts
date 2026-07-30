@@ -17,13 +17,9 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { Type } from "typebox";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { createStatusWriter } from "../../packages/workflows/src/extension/status-writer.js";
 import { pauseRun, resumeRun } from "../../packages/workflows/src/runs/background/status.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
@@ -132,7 +128,7 @@ describe("runtime tunables — maxDepth", () => {
 			},
 		);
 		assert.equal(result.status, "completed");
-		assert.equal(result.result?.["ran"], true);
+		assert.equal(result.result?.ran, true);
 	});
 	test("no config uses default maxDepth", async () => {
 		const wf = workflow({

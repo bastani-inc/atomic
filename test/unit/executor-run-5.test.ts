@@ -38,7 +38,7 @@ describe("executor.run", () => {
 			},
 			run: async (ctx) => {
 				const childResult = await ctx.workflow(child);
-				const after = await ctx.stage("after").prompt(`after:${String(childResult.outputs["value"])}`);
+				const after = await ctx.stage("after").prompt(`after:${String(childResult.outputs.value)}`);
 				return { after };
 			},
 		});
@@ -99,7 +99,7 @@ describe("executor.run", () => {
 			value: "child-ok",
 			helper: "serializable-extra",
 		});
-		assert.equal(continued.result?.["after"], "after-ok");
+		assert.equal(continued.result?.after, "after-ok");
 	});
 
 	test("ctx.workflow rejects non-workflow definitions before starting a child run", async () => {
@@ -166,7 +166,7 @@ describe("executor.run", () => {
 				const [first, second] = await Promise.all([ctx.workflow(child), ctx.workflow(child)]);
 				const after = await ctx
 					.stage("after")
-					.prompt(`after:${String(first.outputs["value"])}:${String(second.outputs["value"])}`);
+					.prompt(`after:${String(first.outputs.value)}:${String(second.outputs.value)}`);
 				return { after };
 			},
 		});
@@ -230,10 +230,10 @@ describe("executor.run", () => {
 			[true, true],
 		);
 		assert.deepEqual(
-			replayedBoundaries.map((stage) => stage.workflowChild?.outputs["value"]),
+			replayedBoundaries.map((stage) => stage.workflowChild?.outputs.value),
 			["child-1", "child-2"],
 		);
-		assert.equal(continued.result?.["after"], "after-ok");
+		assert.equal(continued.result?.after, "after-ok");
 	});
 
 	test("continuation maps legacy ctx.workflow boundary and reruns child when replay metadata is absent", async () => {
@@ -259,7 +259,7 @@ describe("executor.run", () => {
 			},
 			run: async (ctx) => {
 				const childResult = await ctx.workflow(child);
-				const after = await ctx.stage("after").prompt(`after:${String(childResult.outputs["value"])}`);
+				const after = await ctx.stage("after").prompt(`after:${String(childResult.outputs.value)}`);
 				return { after };
 			},
 		});

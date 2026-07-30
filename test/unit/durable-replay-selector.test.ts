@@ -61,7 +61,7 @@ test("ctx.task replay prefers task-shaped checkpoint and hydrates lifecycle meta
 
 	const stage = store.runs()[0]?.stages[0];
 	assert.equal(result.status, "completed");
-	assert.equal(result.result?.["result"], "task replay text");
+	assert.equal(result.result?.result, "task replay text");
 	assert.equal(stage?.replayed, true);
 	assert.equal(stage?.startedAt, 10);
 	assert.equal(stage?.endedAt, 20);
@@ -184,7 +184,7 @@ exTest("ctx.workflow replay prefers child-shaped checkpoint and hydrates lifecyc
 
 	const stage = store.runs()[0]?.stages[0];
 	assert.equal(result.status, "completed", result.error);
-	assert.equal(result.result?.["result"], "child replay value");
+	assert.equal(result.result?.result, "child replay value");
 	assert.equal(stage?.name, "workflow:selector-child");
 	assert.equal(stage?.replayed, true);
 	assert.equal(stage?.startedAt, 100);

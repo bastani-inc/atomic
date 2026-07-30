@@ -25,46 +25,46 @@ function validateConfig(value: unknown): string | null {
 
 	if (
 		"maxDepth" in c &&
-		(typeof c["maxDepth"] !== "number" || !Number.isInteger(c["maxDepth"]) || (c["maxDepth"] as number) < 0)
+		(typeof c.maxDepth !== "number" || !Number.isInteger(c.maxDepth) || (c.maxDepth as number) < 0)
 	) {
-		return `"maxDepth" must be a non-negative integer, got ${JSON.stringify(c["maxDepth"])}`;
+		return `"maxDepth" must be a non-negative integer, got ${JSON.stringify(c.maxDepth)}`;
 	}
 
 	if (
 		"defaultConcurrency" in c &&
-		(typeof c["defaultConcurrency"] !== "number" ||
-			!Number.isInteger(c["defaultConcurrency"]) ||
-			(c["defaultConcurrency"] as number) < 1)
+		(typeof c.defaultConcurrency !== "number" ||
+			!Number.isInteger(c.defaultConcurrency) ||
+			(c.defaultConcurrency as number) < 1)
 	) {
-		return `"defaultConcurrency" must be a positive integer, got ${JSON.stringify(c["defaultConcurrency"])}`;
+		return `"defaultConcurrency" must be a positive integer, got ${JSON.stringify(c.defaultConcurrency)}`;
 	}
 
-	if ("persistRuns" in c && typeof c["persistRuns"] !== "boolean") {
-		return `"persistRuns" must be a boolean, got ${JSON.stringify(c["persistRuns"])}`;
+	if ("persistRuns" in c && typeof c.persistRuns !== "boolean") {
+		return `"persistRuns" must be a boolean, got ${JSON.stringify(c.persistRuns)}`;
 	}
 
-	if ("statusFile" in c && typeof c["statusFile"] !== "boolean") {
-		return `"statusFile" must be a boolean, got ${JSON.stringify(c["statusFile"])}`;
+	if ("statusFile" in c && typeof c.statusFile !== "boolean") {
+		return `"statusFile" must be a boolean, got ${JSON.stringify(c.statusFile)}`;
 	}
 
 	if ("resumeInFlight" in c) {
-		const v = c["resumeInFlight"];
+		const v = c.resumeInFlight;
 		if (v !== "ask" && v !== "auto" && v !== "never") {
 			return `"resumeInFlight" must be "ask", "auto", or "never", got ${JSON.stringify(v)}`;
 		}
 	}
 
 	if ("workflowNotifications" in c) {
-		const value = c["workflowNotifications"];
+		const value = c.workflowNotifications;
 		if (value === null || typeof value !== "object" || Array.isArray(value)) {
 			return `"workflowNotifications" must be a JSON object, got ${JSON.stringify(typeof value)}`;
 		}
 		const notifications = value as Record<string, unknown>;
-		if ("enabled" in notifications && typeof notifications["enabled"] !== "boolean") {
-			return `"workflowNotifications.enabled" must be a boolean, got ${JSON.stringify(notifications["enabled"])}`;
+		if ("enabled" in notifications && typeof notifications.enabled !== "boolean") {
+			return `"workflowNotifications.enabled" must be a boolean, got ${JSON.stringify(notifications.enabled)}`;
 		}
 		if ("notifyOn" in notifications) {
-			const notifyOn = notifications["notifyOn"];
+			const notifyOn = notifications.notifyOn;
 			if (!Array.isArray(notifyOn)) {
 				return `"workflowNotifications.notifyOn" must be an array, got ${JSON.stringify(typeof notifyOn)}`;
 			}
@@ -79,13 +79,13 @@ function validateConfig(value: unknown): string | null {
 		}
 	}
 	if ("worktree" in c) {
-		const worktree = c["worktree"];
+		const worktree = c.worktree;
 		if (worktree === null || typeof worktree !== "object" || Array.isArray(worktree)) {
 			return `"worktree" must be a JSON object, got ${JSON.stringify(typeof worktree)}`;
 		}
 		const config = worktree as Record<string, unknown>;
 		if ("symlinkDirectories" in config) {
-			const directories = config["symlinkDirectories"];
+			const directories = config.symlinkDirectories;
 			if (!Array.isArray(directories) || directories.some((entry) => typeof entry !== "string")) {
 				return `"worktree.symlinkDirectories" must be an array of strings`;
 			}
@@ -93,17 +93,17 @@ function validateConfig(value: unknown): string | null {
 	}
 
 	if ("workflows" in c) {
-		if (c["workflows"] === null || typeof c["workflows"] !== "object" || Array.isArray(c["workflows"])) {
-			return `"workflows" must be a JSON object, got ${JSON.stringify(typeof c["workflows"])}`;
+		if (c.workflows === null || typeof c.workflows !== "object" || Array.isArray(c.workflows)) {
+			return `"workflows" must be a JSON object, got ${JSON.stringify(typeof c.workflows)}`;
 		}
-		const wf = c["workflows"] as Record<string, unknown>;
+		const wf = c.workflows as Record<string, unknown>;
 		for (const [name, entry] of Object.entries(wf)) {
 			if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
 				return `"workflows.${name}" must be an object with a "path" field`;
 			}
 			const e = entry as Record<string, unknown>;
-			if (typeof e["path"] !== "string" || (e["path"] as string).trim().length === 0) {
-				return `"workflows.${name}.path" must be a non-empty string, got ${JSON.stringify(e["path"])}`;
+			if (typeof e.path !== "string" || (e.path as string).trim().length === 0) {
+				return `"workflows.${name}.path" must be a non-empty string, got ${JSON.stringify(e.path)}`;
 			}
 		}
 	}

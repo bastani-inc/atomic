@@ -2,6 +2,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/compat";
 import { describe } from "vitest";
 import { createHarness, getMessageText, type Harness } from "../../packages/coding-agent/test/suite/harness.ts";
+import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { sleep } from "../helpers/runtime.js";
 import {
 	assert,
@@ -97,7 +98,7 @@ describe("workflow paused queued messages", () => {
 					adapters: {
 						agentSession: {
 							async create() {
-								return harness.session;
+								return harness.session as unknown as StageSessionRuntime;
 							},
 						},
 					},
@@ -258,7 +259,7 @@ describe("workflow paused queued messages", () => {
 					adapters: {
 						agentSession: {
 							async create() {
-								return harness.session;
+								return harness.session as unknown as StageSessionRuntime;
 							},
 						},
 					},
@@ -356,7 +357,7 @@ describe("workflow paused queued messages", () => {
 						adapters: {
 							agentSession: {
 								async create() {
-									return harness.session;
+									return harness.session as unknown as StageSessionRuntime;
 								},
 							},
 						},
@@ -431,7 +432,7 @@ describe("workflow paused queued messages", () => {
 						adapters: {
 							agentSession: {
 								async create() {
-									return harness.session;
+									return harness.session as unknown as StageSessionRuntime;
 								},
 							},
 						},

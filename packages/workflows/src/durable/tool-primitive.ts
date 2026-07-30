@@ -58,7 +58,7 @@ export interface CreateToolPrimitiveInput {
 	/** Optional signal for aborting retry backoff sleeps. */
 	readonly signal?: AbortSignal;
 	/** Track the final logical execution promise and bind it to its graph node. */
-	readonly trackExecution?: <T>(execution: Promise<T>) => WorkflowToolExecutionAdmission | void;
+	readonly trackExecution?: <T>(execution: Promise<T>) => WorkflowToolExecutionAdmission | undefined;
 	/** Observe a logical throwing-mode failure before graph publication or promise rejection. */
 	readonly onFailureObserved?: (error: unknown, nodeId: string) => void;
 	/** Admit/update a first-class graph node around the durable call. */

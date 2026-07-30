@@ -167,7 +167,7 @@ function renderHintsRow(width: number, theme: GraphTheme, state: SessionPickerSt
 	// Two-space indent matches `renderEmptyState` and the section-row
 	// chrome, keeping the hint glyphs aligned with the panel interior
 	// even though they live outside the box border.
-	const line = "  " + parts.join(sep);
+	const line = `  ${parts.join(sep)}`;
 	// Keep test-time render() output width-safe even before the overlay host
 	// gets a chance to composite/truncate it.
 	const clipped = truncateToWidth(line, width, "…");

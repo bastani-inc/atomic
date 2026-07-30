@@ -117,7 +117,7 @@ describe("executor.run", () => {
 
 		const result = await runPromise;
 		assert.equal(result.status, "completed");
-		assert.equal(result.result?.["error"], "custom prompt cancelled");
+		assert.equal(result.result?.error, "custom prompt cancelled");
 		const stage = st
 			.runs()
 			.find((candidate) => candidate.id === custom.runId)!

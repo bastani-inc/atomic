@@ -14,8 +14,7 @@
 
 import * as path from "node:path";
 import type { ExtensionAPI } from "@bastani/atomic";
-import { CONFIG_DIR_NAME, getAgentDir, getMarkdownTheme } from "@bastani/atomic";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import { CONFIG_DIR_NAME, getAgentDir } from "@bastani/atomic";
 import type { AgentScope } from "./agents.ts";
 import { discoverAgents } from "./agents.ts";
 import { getFinalOutput } from "./display.js";

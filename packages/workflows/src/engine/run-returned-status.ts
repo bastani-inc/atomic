@@ -27,7 +27,7 @@ export function classifyReturnedRunStatus(
 			metadata: structuredFailure.metadata,
 		};
 	}
-	const returnedStatus = normalizeReturnedWorkflowStatus(result?.["status"]);
+	const returnedStatus = normalizeReturnedWorkflowStatus(result?.status);
 	if (returnedStatus === undefined || returnedStatus === "completed" || returnedStatus === "complete") {
 		return { status: "completed" };
 	}

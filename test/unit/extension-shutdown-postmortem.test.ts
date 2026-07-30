@@ -39,7 +39,7 @@ test("every non-quit session shutdown invalidates a post-mortem prompt whose ses
 			const sessionFile = join(root, `${reason}.jsonl`);
 			writeFileSync(
 				sessionFile,
-				[
+				`${[
 					JSON.stringify({
 						type: "session",
 						version: 3,
@@ -54,7 +54,7 @@ test("every non-quit session shutdown invalidates a post-mortem prompt whose ses
 						timestamp: new Date().toISOString(),
 						message: { role: "user", content: "Original stage request" },
 					}),
-				].join("\n") + "\n",
+				].join("\n")}\n`,
 			);
 			const creationStarted = Promise.withResolvers<void>();
 			const created = Promise.withResolvers<StageSessionRuntime>();

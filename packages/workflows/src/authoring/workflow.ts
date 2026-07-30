@@ -28,7 +28,7 @@ export type {
 const BRANDED_WORKFLOW_DEFINITIONS = new WeakSet<object>();
 
 export type AuthoredWorkflowSpec<
-	TInputs extends WorkflowInputSchemaMap = {},
+	TInputs extends WorkflowInputSchemaMap = Record<never, never>,
 	TOutputs extends WorkflowOutputSchemaMap = WorkflowOutputSchemaMap,
 	TActualOutputs extends WorkflowOutputsFromSchemas<TOutputs> = WorkflowOutputsFromSchemas<TOutputs>,
 > = SharedAuthoredWorkflowSpec<
@@ -133,7 +133,7 @@ function freezeInputBindings(binding: WorkflowWorktreeInputBinding | undefined):
 }
 
 export function workflow<
-	const TInputs extends WorkflowInputSchemaMap = {},
+	const TInputs extends WorkflowInputSchemaMap = Record<never, never>,
 	const TOutputs extends WorkflowOutputSchemaMap = WorkflowOutputSchemaMap,
 	TActualOutputs extends WorkflowOutputsFromSchemas<TOutputs> = WorkflowOutputsFromSchemas<TOutputs>,
 >(spec: AuthoredWorkflowSpec<TInputs, TOutputs, TActualOutputs>): AuthoredWorkflowDefinition<TInputs, TOutputs> {

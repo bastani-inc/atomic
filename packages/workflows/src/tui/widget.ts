@@ -183,7 +183,6 @@ function statusGlyph(run: RunSnapshot): string {
 			return "✗";
 		case "killed":
 			return "⊘";
-		case "pending":
 		default:
 			return "○";
 	}
@@ -205,7 +204,6 @@ function statusFg(run: RunSnapshot, theme: GraphTheme): string {
 			return theme.error;
 		case "killed":
 			return theme.warning;
-		case "pending":
 		default:
 			return theme.dim;
 	}

@@ -292,7 +292,8 @@ describe("ctx.tool durable graph replay", () => {
 		await firstBackend.flush();
 		assert.equal(first.status, "completed");
 		assert.equal(toolCalls, 1);
-		const firstTool = firstStore.runs()[0]?.toolNodes?.[0]!;
+		const firstTool = firstStore.runs()[0]?.toolNodes?.[0];
+		assert.ok(firstTool);
 
 		const freshBackend = new DbosDurableBackend(sdk);
 		await freshBackend.hydrateWorkflow(runId);

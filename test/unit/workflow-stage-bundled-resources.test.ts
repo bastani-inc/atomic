@@ -19,6 +19,7 @@ import {
 	type PiSdkSettingsManager,
 	prepareAtomicStageSessionOptions,
 } from "../../packages/workflows/src/extension/wiring.js";
+import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 
 const tempDirs: string[] = [];
 const ENV_KEYS = [
@@ -78,7 +79,7 @@ function makeSdk(agentDir: string): PiCodingAgentSdk {
 		DefaultResourceLoader: StageDefaultResourceLoader,
 		async createAgentSession(options) {
 			const result = await createAgentSession(options as CreateAgentSessionOptions);
-			return { session: result.session };
+			return { session: result.session as unknown as StageSessionRuntime };
 		},
 	};
 }

@@ -507,7 +507,7 @@ describe("Large session fixture", () => {
 
 	it("DEFAULT_COMPACTION_SETTINGS has no keepRecentTokens", () => {
 		// Verify the metrics-only settings shape does not include legacy keepRecentTokens
-		expect((DEFAULT_COMPACTION_SETTINGS as Record<string, unknown>)["keepRecentTokens"]).toBeUndefined();
+		expect((DEFAULT_COMPACTION_SETTINGS as Record<string, unknown>).keepRecentTokens).toBeUndefined();
 		expect(DEFAULT_COMPACTION_SETTINGS.enabled).toBe(true);
 		expect(DEFAULT_COMPACTION_SETTINGS.reserveTokens).toBeGreaterThan(0);
 	});

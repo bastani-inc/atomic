@@ -180,7 +180,7 @@ test("fresh DBOS uses the latest legal atomic boundary terminal without hybrid c
 		assert.equal(boundary?.status, expectedStatus, name);
 		assert.equal(boundary?.workflowChild !== undefined, hasChild, name);
 		assert.equal(boundary?.workflowChildRun !== undefined, false, name);
-		if (hasChild) assert.equal(boundary?.workflowChild?.outputs["value"], "new", name);
+		if (hasChild) assert.equal(boundary?.workflowChild?.outputs.value, "new", name);
 		else assert.equal(boundary?.result, undefined, name);
 		const store = createStore();
 		const opened = openCompletedDurableWorkflow(ROOT, {
@@ -200,18 +200,18 @@ test("fresh DBOS rejects impossible event/status pairs, malformed outputs, and c
 		const sdk = seedLifecycle([{ status: "completed", at: 3, output: childOutput() }]);
 		const encoded = [...sdk.state.steps.entries()].find(([key]) => key.endsWith(":boundary-start"))!;
 		const envelope = structuredClone(encoded[1]) as Record<string, WorkflowSerializableValue>;
-		const stage = envelope["topology"] as Record<string, WorkflowSerializableValue>;
-		const boundary = stage["boundary"] as Record<string, WorkflowSerializableValue>;
-		boundary["status"] = status;
-		stage["status"] = status;
+		const stage = envelope.topology as Record<string, WorkflowSerializableValue>;
+		const boundary = stage.boundary as Record<string, WorkflowSerializableValue>;
+		boundary.status = status;
+		stage.status = status;
 		sdk.state.steps.set(encoded[0], envelope);
 		invalidCases.push([`start-${status}`, sdk]);
 	}
 	for (const status of ["running", "blocked", "paused"] as const) {
 		const sdk = seedLifecycle([]);
 		const raw = topology("terminal", "failed") as unknown as Record<string, WorkflowSerializableValue>;
-		raw["status"] = status;
-		(raw["boundary"] as Record<string, WorkflowSerializableValue>)["status"] = status;
+		raw.status = status;
+		(raw.boundary as Record<string, WorkflowSerializableValue>).status = status;
 		seedMockCheckpoint(sdk, ROOT, {
 			kind: "stage",
 			workflowId: ROOT,

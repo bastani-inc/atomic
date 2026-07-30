@@ -502,10 +502,10 @@ describe("ctx.exit", () => {
 		const parentBoundaryEnd = entries.find(
 			(entry) =>
 				entry.type === "workflow.stage.end" &&
-				entry.payload["runId"] === result.runId &&
-				entry.payload["stageId"] === boundary?.id,
+				entry.payload.runId === result.runId &&
+				entry.payload.stageId === boundary?.id,
 		);
-		assert.equal(parentBoundaryEnd?.payload["status"], "skipped");
+		assert.equal(parentBoundaryEnd?.payload.status, "skipped");
 		assert.equal("workflowChild" in (parentBoundaryEnd?.payload ?? {}), false);
 		const childSnapshot = store.runs().find((runSnapshot) => runSnapshot.name === "exit-inflight-child");
 		assert.ok(childSnapshot);
@@ -527,33 +527,33 @@ describe("ctx.exit", () => {
 		const childStageEnds = entries.filter(
 			(entry) =>
 				entry.type === "workflow.stage.end" &&
-				entry.payload["runId"] === childSnapshot.id &&
-				entry.payload["stageId"] === childStage.id,
+				entry.payload.runId === childSnapshot.id &&
+				entry.payload.stageId === childStage.id,
 		);
 		assert.equal(childStageEnds.length, 1);
 		const childRunEnds = entries.filter(
-			(entry) => entry.type === "workflow.run.end" && entry.payload["runId"] === childSnapshot.id,
+			(entry) => entry.type === "workflow.run.end" && entry.payload.runId === childSnapshot.id,
 		);
 		assert.equal(childRunEnds.length, 1);
 		const childStageEndIndex = entries.findIndex(
 			(entry) =>
 				entry.type === "workflow.stage.end" &&
-				entry.payload["runId"] === childSnapshot.id &&
-				entry.payload["stageId"] === childStage.id,
+				entry.payload.runId === childSnapshot.id &&
+				entry.payload.stageId === childStage.id,
 		);
 		const childRunEndIndex = entries.findIndex(
-			(entry) => entry.type === "workflow.run.end" && entry.payload["runId"] === childSnapshot.id,
+			(entry) => entry.type === "workflow.run.end" && entry.payload.runId === childSnapshot.id,
 		);
 		const childDisposeIndex = entries.findIndex((entry) => entry.type === "test.child-session.dispose");
 		const parentRunEndIndex = entries.findIndex(
-			(entry) => entry.type === "workflow.run.end" && entry.payload["runId"] === result.runId,
+			(entry) => entry.type === "workflow.run.end" && entry.payload.runId === result.runId,
 		);
 		assert.notEqual(childStageEndIndex, -1);
 		assert.notEqual(childRunEndIndex, -1);
 		assert.notEqual(childDisposeIndex, -1);
 		assert.notEqual(parentRunEndIndex, -1);
-		assert.equal(entries[childStageEndIndex]?.payload["status"], "skipped");
-		assert.equal(entries[childStageEndIndex]?.payload["skippedReason"], "workflow-exit: parent gate");
+		assert.equal(entries[childStageEndIndex]?.payload.status, "skipped");
+		assert.equal(entries[childStageEndIndex]?.payload.skippedReason, "workflow-exit: parent gate");
 		assert.equal(childStageEndIndex < childRunEndIndex, true);
 		assert.equal(childDisposeIndex < childRunEndIndex, true);
 		assert.equal(childRunEndIndex < parentRunEndIndex, true);
@@ -562,13 +562,13 @@ describe("ctx.exit", () => {
 				(entry, index) =>
 					index > childRunEndIndex &&
 					entry.type === "workflow.stage.end" &&
-					entry.payload["runId"] === childSnapshot.id,
+					entry.payload.runId === childSnapshot.id,
 			),
 			false,
 		);
-		assert.equal(childRunEnds[0]?.payload["status"], "cancelled");
-		assert.equal(childRunEnds[0]?.payload["exited"], true);
-		assert.equal(childRunEnds[0]?.payload["exitReason"], "parent workflow exited: parent gate");
+		assert.equal(childRunEnds[0]?.payload.status, "cancelled");
+		assert.equal(childRunEnds[0]?.payload.exited, true);
+		assert.equal(childRunEnds[0]?.payload.exitReason, "parent workflow exited: parent gate");
 		assert.equal(
 			store
 				.runs()

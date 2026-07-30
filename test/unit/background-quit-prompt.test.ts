@@ -39,7 +39,7 @@ function control(input: {
 	readonly stageId: string;
 	readonly status: () => StageControlStatus;
 	readonly pause: () => Promise<void>;
-	readonly resume?: () => Promise<void>;
+	readonly resume?: () => Promise<undefined>;
 }): StageControlHandle {
 	return {
 		runId: input.runId,
@@ -57,7 +57,7 @@ function control(input: {
 		async steer() {},
 		async followUp() {},
 		pause: input.pause,
-		resume: input.resume ?? (async () => {}),
+		resume: input.resume ?? (async () => undefined),
 		subscribe: () => () => {},
 	};
 }
@@ -239,6 +239,7 @@ describe("graceful quit at user-input boundaries", () => {
 				resume: async () => {
 					status = "running";
 					store.recordStageResumed(runId, stageId);
+					return undefined;
 				},
 			}),
 		);

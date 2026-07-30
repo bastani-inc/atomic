@@ -62,10 +62,11 @@ describe("public workflow queue-pause adapter compatibility", () => {
 				mock.state.promptCalls += 1;
 				promptTexts.push(text);
 				if (mock.state.promptCalls === 1) {
-					return new Promise<void>((_resolve, reject) => {
+					return new Promise<string | undefined>((_resolve, reject) => {
 						rejectInitial = reject;
 					});
 				}
+				return undefined;
 			},
 			async abort() {
 				mock.state.abortCalls += 1;

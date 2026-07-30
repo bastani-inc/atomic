@@ -126,14 +126,14 @@ test("answered prompt-node topology survives fresh DBOS active-child resume with
 					? (output as Record<string, WorkflowSerializableValue>)
 					: undefined;
 			const topology =
-				typeof envelope?.["topology"] === "object" && envelope["topology"] !== null
-					? (envelope["topology"] as Record<string, WorkflowSerializableValue>)
+				typeof envelope?.topology === "object" && envelope.topology !== null
+					? (envelope.topology as Record<string, WorkflowSerializableValue>)
 					: undefined;
 			if (
 				holdPromptWrite &&
-				envelope?.["kind"] === "stage" &&
-				envelope["name"] === "input" &&
-				topology?.["status"] === "completed"
+				envelope?.kind === "stage" &&
+				envelope.name === "input" &&
+				topology?.status === "completed"
 			) {
 				reportPromptWrite();
 				await promptWriteGate;
@@ -244,7 +244,7 @@ test("answered prompt-node topology survives fresh DBOS active-child resume with
 	);
 	await freshBackend.flush();
 	assert.equal(resumed.status, "completed", resumed.error);
-	assert.equal(resumed.result?.["value"], "answer:child-active");
+	assert.equal(resumed.result?.value, "answer:child-active");
 	assert.equal(childStageCalls, 2, "only the interrupted child stage reruns");
 	const freshRoot = freshStore.runs().find((candidate) => candidate.id === runId)!;
 	const freshPrompt = freshRoot.stages.find((stage) => stage.name === "input")!;

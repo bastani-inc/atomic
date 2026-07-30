@@ -353,7 +353,6 @@ function stateBadges(detail: RunDetail, theme: GraphTheme): FlatBandBadge[] {
 			return [{ text: "✗ failed", fg: theme.error }];
 		case "killed":
 			return [{ text: "⊘ killed", fg: theme.dim }];
-		case "pending":
 		default:
 			return [{ text: "○ pending", fg: theme.dim }];
 	}
@@ -377,7 +376,6 @@ function stateLabel(detail: RunDetail): string {
 			return "✗ failed";
 		case "killed":
 			return "⊘ killed";
-		case "pending":
 		default:
 			return "○ pending";
 	}

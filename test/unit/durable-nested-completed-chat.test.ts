@@ -116,7 +116,7 @@ function createTranscript(directory: string, id: string): string {
 	const sessionFile = join(directory, `${id}.jsonl`);
 	writeFileSync(
 		sessionFile,
-		[
+		`${[
 			JSON.stringify({ type: "session", version: 3, id, timestamp: new Date().toISOString(), cwd: directory }),
 			JSON.stringify({
 				type: "message",
@@ -125,7 +125,7 @@ function createTranscript(directory: string, id: string): string {
 				timestamp: new Date().toISOString(),
 				message: { role: "user", content: "prior" },
 			}),
-		].join("\n") + "\n",
+		].join("\n")}\n`,
 	);
 	return sessionFile;
 }

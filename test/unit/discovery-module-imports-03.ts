@@ -322,7 +322,7 @@ export function registerDiscoveryModuleImportsSuite3(): void {
 			assert.equal(result.registry.has("user-global-wf"), true);
 			const src = result.sources.find((s) => s.id === "user-global-wf");
 			assert.equal(src?.kind, "user-global");
-			assert.ok(src?.filePath!.includes(join(".atomic", "agent", "workflows")));
+			assert.ok(src?.filePath?.includes(join(".atomic", "agent", "workflows")));
 		});
 
 		test("missing ~/.atomic/agent/workflows/ dir is silently skipped (no error)", async () => {

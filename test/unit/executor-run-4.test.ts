@@ -222,7 +222,7 @@ describe("executor.run", () => {
 		assert.equal(replayed.status, "completed");
 		assert.equal(replayed.replayed, true);
 		assert.equal(replayed.replayedFromStageId, source.stages[0]!.id);
-		assert.equal(continued.result?.["first"], "first-result");
+		assert.equal(continued.result?.first, "first-result");
 		const continuedRun = st.runs().find((candidate) => candidate.id === continued.runId)!;
 		assert.equal(continuedRun.resumedFromRunId, source.id);
 		assert.equal(continuedRun.resumeFromStageId, failedStageId);
@@ -252,7 +252,7 @@ describe("executor.run", () => {
 			},
 			run: async (ctx) => {
 				const childResult = await ctx.workflow(child);
-				const after = await ctx.stage("after").prompt(`after:${String(childResult.outputs["value"])}`);
+				const after = await ctx.stage("after").prompt(`after:${String(childResult.outputs.value)}`);
 				return { after };
 			},
 		});
@@ -282,7 +282,7 @@ describe("executor.run", () => {
 		const source = st.runs().find((candidate) => candidate.id === firstRun.runId)!;
 		const failedStageId = source.failedStageId!;
 		const sourceBoundary = source.stages.find((stage) => stage.name === "workflow:resume-import-child")!;
-		assert.equal(sourceBoundary.workflowChild?.outputs["value"], "child-ok");
+		assert.equal(sourceBoundary.workflowChild?.outputs.value, "child-ok");
 
 		const continuationCalls: string[] = [];
 		const continued = await run(
@@ -309,9 +309,9 @@ describe("executor.run", () => {
 		const after = continued.stages.find((stage) => stage.name === "after")!;
 		assert.equal(boundary.replayed, true);
 		assert.equal(boundary.replayedFromStageId, sourceBoundary.id);
-		assert.equal(boundary.workflowChild?.outputs["value"], "child-ok");
+		assert.equal(boundary.workflowChild?.outputs.value, "child-ok");
 		assert.deepEqual(after.parentIds, [boundary.id]);
-		assert.equal(continued.result?.["after"], "after-ok");
+		assert.equal(continued.result?.after, "after-ok");
 	});
 
 	test("continuation deep-clones replayed ctx.workflow metadata", async () => {
@@ -337,7 +337,7 @@ describe("executor.run", () => {
 			},
 			run: async (ctx) => {
 				const childResult = await ctx.workflow(child);
-				const value = childResult.outputs["value"] as {
+				const value = childResult.outputs.value as {
 					nested: string;
 				};
 				const after = await ctx.stage("after").prompt(`after:${value.nested}`);
@@ -386,10 +386,10 @@ describe("executor.run", () => {
 		assert.equal(boundary.replayed, true);
 		assert.notEqual(boundary.workflowChild, sourceBoundary.workflowChild);
 		assert.notEqual(boundary.workflowChild?.outputs, sourceBoundary.workflowChild?.outputs);
-		const replayedValue = boundary.workflowChild?.outputs["value"] as {
+		const replayedValue = boundary.workflowChild?.outputs.value as {
 			nested: string;
 		};
-		const sourceValue = sourceBoundary.workflowChild?.outputs["value"] as {
+		const sourceValue = sourceBoundary.workflowChild?.outputs.value as {
 			nested: string;
 		};
 		assert.notEqual(replayedValue, sourceValue);

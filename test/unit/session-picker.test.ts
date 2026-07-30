@@ -184,7 +184,7 @@ test("renderSessionPicker clamps long and wide workflow names to the panel width
 		{
 			run: makeRun({
 				id: "wide1111-0000-0000-0000-000000000000",
-				name: "研究".repeat(24) + "-super-long-workflow-name",
+				name: `${"研究".repeat(24)}-super-long-workflow-name`,
 				startedAt: 1000,
 			}),
 			bucket: "active" as const,

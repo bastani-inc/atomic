@@ -110,7 +110,7 @@ export interface WorkflowRunChildOptions<TInputs extends WorkflowInputValues = W
 }
 
 type WorkflowRequiredKeys<T extends object> = {
-	[K in keyof T]-?: {} extends Pick<T, K> ? never : K;
+	[K in keyof T]-?: Record<never, never> extends Pick<T, K> ? never : K;
 }[keyof T];
 
 export type WorkflowRunChildOptionsArgument<TInputs extends WorkflowInputValues = WorkflowInputValues> = [

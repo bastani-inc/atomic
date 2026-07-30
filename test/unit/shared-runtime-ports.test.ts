@@ -108,7 +108,7 @@ describe("WorkflowPersistencePort", () => {
 		port.setLabel?.("e1", "wf:test:abc123");
 		port.appendCustomMessageEntry?.("stage completed");
 
-		assert.equal(labels["e1"], "wf:test:abc123");
+		assert.equal(labels.e1, "wf:test:abc123");
 		assert.ok(messages.includes("stage completed"));
 	});
 });
@@ -288,10 +288,10 @@ describe("ctx.stage with StageOptions", () => {
 		const scopeCalls: string[] = [];
 		const mcpPort: WorkflowMcpPort = {
 			setScope(stageId) {
-				scopeCalls.push("setScope:" + stageId);
+				scopeCalls.push(`setScope:${stageId}`);
 			},
 			clearScope(stageId) {
-				scopeCalls.push("clearScope:" + stageId);
+				scopeCalls.push(`clearScope:${stageId}`);
 			},
 		};
 

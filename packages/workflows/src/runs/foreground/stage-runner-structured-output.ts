@@ -27,13 +27,13 @@ function toolResultText(content: unknown): string | undefined {
 export function structuredOutputToolErrorFromEvent(event: unknown): string | undefined {
 	if (event === null || typeof event !== "object") return undefined;
 	const record = event as Record<string, unknown>;
-	if (record["type"] !== "tool_execution_end") return undefined;
-	if (record["toolName"] !== STRUCTURED_OUTPUT_TOOL_NAME) return undefined;
-	const result = record["result"];
+	if (record.type !== "tool_execution_end") return undefined;
+	if (record.toolName !== STRUCTURED_OUTPUT_TOOL_NAME) return undefined;
+	const result = record.result;
 	const resultRecord = result !== null && typeof result === "object" ? (result as Record<string, unknown>) : undefined;
-	const isError = record["isError"] === true || resultRecord?.["isError"] === true;
+	const isError = record.isError === true || resultRecord?.isError === true;
 	if (!isError) return undefined;
-	return toolResultText(resultRecord?.["content"]) ?? "structured_output tool call failed schema validation.";
+	return toolResultText(resultRecord?.content) ?? "structured_output tool call failed schema validation.";
 }
 
 export function formatStructuredOutputCorrectionPrompt(error: string, attempt: number): string {

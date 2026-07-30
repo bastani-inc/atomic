@@ -15,7 +15,7 @@ export async function _getRequiredRequestAuth(
 	headers?: ProviderHeaders;
 	env?: Record<string, string>;
 }> {
-	let result;
+	let result: Awaited<ReturnType<AgentSession["_modelRuntime"]["getAuth"]>>;
 	try {
 		result = await this._modelRuntime.getAuth(model);
 	} catch (error) {

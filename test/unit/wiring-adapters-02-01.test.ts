@@ -8,12 +8,10 @@
  */
 
 import assert from "node:assert/strict";
-import { join } from "node:path";
-import {
-	type CreateAgentSessionOptions,
-	DefaultResourceLoader,
-	type DefaultResourceLoaderInheritanceSnapshot,
-	type PackageSource,
+import type {
+	CreateAgentSessionOptions,
+	DefaultResourceLoaderInheritanceSnapshot,
+	PackageSource,
 } from "@bastani/atomic";
 import { describe, test } from "vitest";
 import type {
@@ -21,14 +19,8 @@ import type {
 	PiSdkResourceLoader,
 	PiSdkSettingsManager,
 } from "../../packages/workflows/src/extension/wiring.js";
-import {
-	buildRuntimeAdapters,
-	prepareAtomicStageSessionOptions,
-} from "../../packages/workflows/src/extension/wiring.js";
+import { buildRuntimeAdapters } from "../../packages/workflows/src/extension/wiring.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
-import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
-import { createStore } from "../../packages/workflows/src/shared/store.js";
-import type { StageExecutionMeta } from "../../packages/workflows/src/shared/types.js";
 
 function fakeSession(): StageSessionRuntime {
 	let last = "";
@@ -74,7 +66,7 @@ function fakeSession(): StageSessionRuntime {
 	};
 }
 
-function deferred(): {
+function _deferred(): {
 	readonly promise: Promise<void>;
 	readonly resolve: () => void;
 	readonly reject: (reason?: unknown) => void;
@@ -92,7 +84,7 @@ function deferred(): {
 	};
 }
 
-async function waitUntil(predicate: () => boolean, message: string): Promise<void> {
+async function _waitUntil(predicate: () => boolean, message: string): Promise<void> {
 	for (let attempt = 0; attempt < 50; attempt += 1) {
 		if (predicate()) return;
 		await new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -100,7 +92,7 @@ async function waitUntil(predicate: () => boolean, message: string): Promise<voi
 	assert.fail(message);
 }
 
-function makeFakeAtomicSdk(
+function _makeFakeAtomicSdk(
 	defaultAgentDir: string,
 	builtinPackagePaths: string[] = [],
 ): {
@@ -189,10 +181,10 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
 		// no caller-provided seam). Otherwise stages that rely on the default
 		// SDK-backed prompt() path crash with "prompt adapter not configured"
 		// at runtime.
-		const savedNodeEnv = process.env["NODE_ENV"];
-		const savedNodeTestCtx = process.env["NODE_TEST_CONTEXT"];
-		delete process.env["NODE_ENV"];
-		delete process.env["NODE_TEST_CONTEXT"];
+		const savedNodeEnv = process.env.NODE_ENV;
+		const savedNodeTestCtx = process.env.NODE_TEST_CONTEXT;
+		delete process.env.NODE_ENV;
+		delete process.env.NODE_TEST_CONTEXT;
 		try {
 			const adapters = buildRuntimeAdapters({});
 			assert.notEqual(
@@ -201,10 +193,10 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
 				"production buildRuntimeAdapters MUST wire an agentSession adapter via the pi SDK; got undefined.",
 			);
 		} finally {
-			if (savedNodeEnv === undefined) delete process.env["NODE_ENV"];
-			else process.env["NODE_ENV"] = savedNodeEnv;
-			if (savedNodeTestCtx === undefined) delete process.env["NODE_TEST_CONTEXT"];
-			else process.env["NODE_TEST_CONTEXT"] = savedNodeTestCtx;
+			if (savedNodeEnv === undefined) delete process.env.NODE_ENV;
+			else process.env.NODE_ENV = savedNodeEnv;
+			if (savedNodeTestCtx === undefined) delete process.env.NODE_TEST_CONTEXT;
+			else process.env.NODE_TEST_CONTEXT = savedNodeTestCtx;
 		}
 	});
 

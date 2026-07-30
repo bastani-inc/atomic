@@ -20,7 +20,7 @@ function stageHandle(input: {
 	runId: string;
 	stageId: string;
 	pause: () => Promise<void>;
-	resume?: () => Promise<void>;
+	resume?: () => Promise<undefined>;
 	status: () => StageControlStatus;
 }): StageControlHandle {
 	return {
@@ -39,7 +39,7 @@ function stageHandle(input: {
 		async steer() {},
 		async followUp() {},
 		pause: input.pause,
-		resume: input.resume ?? (async () => {}),
+		resume: input.resume ?? (async () => undefined),
 		subscribe: () => () => {},
 	};
 }
@@ -212,6 +212,7 @@ describe("graceful workflow quit acknowledgement", () => {
 				},
 				resume: async () => {
 					status = "running";
+					return undefined;
 				},
 			}),
 		);

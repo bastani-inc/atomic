@@ -279,7 +279,8 @@ describe("StageUiBroker", () => {
 			assert.equal(resolved[0]?.stageId, "stage-1");
 			assert.equal(resolved[0]?.prompt.id, "prompt-1");
 			assert.equal(resolved[0]?.prompt.kind, "ask_user_question");
-			assert.deepEqual((resolved[0]?.answer as BuiltResult).answers[0]?.answer, "Blue");
+			const resolvedAnswer = resolved[0]?.answer as BuiltResult | undefined;
+			assert.deepEqual(resolvedAnswer?.answers[0]?.answer, "Blue");
 			assert.equal(typeof resolved[0]?.answeredAt, "number");
 			unsubscribe();
 

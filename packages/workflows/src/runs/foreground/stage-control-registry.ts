@@ -92,7 +92,7 @@ export interface StageControlHandle {
 	 * Release a paused stage. If `message` is provided it is sent as the
 	 * next user message before resuming. `beforeResume` guards final admission.
 	 */
-	resume(message?: string, beforeResume?: () => void): Promise<void | StageUserMessageDeliveryAction>;
+	resume(message?: string, beforeResume?: () => void): Promise<undefined | StageUserMessageDeliveryAction>;
 	/**
 	 * Subscribe to AgentSession events. The pending-listener semantics
 	 * from `InternalStageContext.subscribe` apply: listeners registered
@@ -250,7 +250,7 @@ export function createStageControlRegistry(): StageControlRegistry {
 				const controlEntries = controlledEntries(runId);
 				const targets = stageId
 					? [runMap.get(stageId)]
-							.filter((entry): entry is RegistryEntry => entry !== undefined && entry.controlsDependencies)
+							.filter((entry): entry is RegistryEntry => entry?.controlsDependencies === true)
 							.map((entry) => entry.handle)
 					: controlEntries
 							.map((entry) => entry.handle)
@@ -275,7 +275,7 @@ export function createStageControlRegistry(): StageControlRegistry {
 				const before = new Map(controlEntries.map((entry) => [entry.handle.stageId, entry.handle.status]));
 				const targets = stageId
 					? [runMap.get(stageId)]
-							.filter((entry): entry is RegistryEntry => entry !== undefined && entry.controlsDependencies)
+							.filter((entry): entry is RegistryEntry => entry?.controlsDependencies === true)
 							.map((entry) => entry.handle)
 					: controlEntries.map((entry) => entry.handle).filter((h) => h.status === "paused");
 				for (const handle of targets) {

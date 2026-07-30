@@ -107,8 +107,8 @@ describe("session-aware bash environment", () => {
 		try {
 			const { session } = await createSession({ persisted: false });
 			const bash = session.agent.state.tools.find((tool) => tool.name === "bash")!;
-			const command =
-				'printf \'%s\\n\' "${ATOMIC_SESSION_FILE-unset}" "${PI_SESSION_FILE-unset}" "$ATOMIC_PROVIDER" "$PI_PROVIDER"';
+			const shellExpansionStart = "${";
+			const command = `printf '%s\\n' "${shellExpansionStart}ATOMIC_SESSION_FILE-unset}" "${shellExpansionStart}PI_SESSION_FILE-unset}" "$ATOMIC_PROVIDER" "$PI_PROVIDER"`;
 			const lines = text(await bash.execute("unsaved", { command }))
 				.trim()
 				.split("\n");

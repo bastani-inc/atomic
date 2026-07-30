@@ -35,7 +35,7 @@ describe("workflow config object semantics", () => {
 		});
 
 		inputs.a = Type.Optional(Type.Number());
-		assert.notEqual(def.inputs["a"], inputs.a);
+		assert.notEqual(def.inputs.a, inputs.a);
 		assert.equal(Object.isFrozen(def.inputs), true);
 		assert.equal(Object.isFrozen(def.outputs), true);
 	});
@@ -129,7 +129,7 @@ describe("workflow select input", () => {
 			run: async () => ({}),
 		});
 
-		const schema = def.inputs["mode"];
+		const schema = def.inputs.mode;
 		assert.equal(schemaFieldKind(schema), "select");
 		assert.deepEqual(schemaChoices(schema), ["fast", "thorough", "balanced"]);
 	});
@@ -178,7 +178,7 @@ describe("WorkflowDefinition deep freeze", () => {
 
 		assert.throws(() => {
 			// @ts-expect-error intentionally mutating frozen object
-			def.inputs["y"] = Type.String();
+			def.inputs.y = Type.String();
 		});
 	});
 

@@ -135,9 +135,6 @@ function extractMessageText(content: unknown): string {
 		}
 		const obj = item as { type?: unknown; text?: unknown };
 		if (typeof obj.text === "string") parts.push(obj.text);
-		else if (obj.type === "text" && typeof obj.text === "string") {
-			parts.push(obj.text);
-		}
 	}
 	return parts.join("");
 }
@@ -201,7 +198,6 @@ function stageNoticeCard(entry: NoticeEntry): {
 				tone: "info",
 				fields: stageNoticeFields(entry, "muted"),
 			};
-		case "mcp":
 		default:
 			return {
 				title: "STAGE NOTICE",

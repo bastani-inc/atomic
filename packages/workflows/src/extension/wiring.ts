@@ -131,7 +131,7 @@ type BindableStageSession = StageSessionRuntime & {
 
 function isTestContext(): boolean {
 	// Node's test runner sets NODE_TEST_CONTEXT; Bun's test runner sets NODE_ENV=test.
-	return process.env["NODE_TEST_CONTEXT"] !== undefined || process.env["NODE_ENV"] === "test";
+	return process.env.NODE_TEST_CONTEXT !== undefined || process.env.NODE_ENV === "test";
 }
 
 async function createPiSdkAgentSession(

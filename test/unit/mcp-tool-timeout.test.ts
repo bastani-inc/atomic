@@ -256,7 +256,7 @@ test("UI server tool path threads the configured inactivity timeout options", as
 		sessionToken: "timeout-test-session",
 	});
 	try {
-		const response = await fetch("http://127.0.0.1:" + handle.port + "/proxy/tools/call", {
+		const response = await fetch(`http://127.0.0.1:${handle.port}/proxy/tools/call`, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({
@@ -305,7 +305,7 @@ test("UI server timeout response names the server and configured inactivity limi
 		sessionToken: "timeout-error-session",
 	});
 	try {
-		const response = await fetch("http://127.0.0.1:" + handle.port + "/proxy/tools/call", {
+		const response = await fetch(`http://127.0.0.1:${handle.port}/proxy/tools/call`, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({

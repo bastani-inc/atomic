@@ -111,8 +111,10 @@ export function createExtensionRuntime(): ExtensionRuntime {
 			const key = registrationKey(extension, name);
 			const firstDefault = pendingFlags.get(key)?.defaultValue;
 			pendingFlags.set(key, { extension, name, registration, defaultValue: firstDefault ?? defaultValue });
-			const owners = (runtime.flagOwners ??= new Map());
-			const ownerOrigins = (runtime.flagOwnerOrigins ??= new Map());
+			runtime.flagOwners ??= new Map();
+			const owners = runtime.flagOwners;
+			runtime.flagOwnerOrigins ??= new Map();
+			const ownerOrigins = runtime.flagOwnerOrigins;
 			if (!owners.has(name)) {
 				owners.set(name, extension.path);
 				ownerOrigins.set(name, extension.sourceInfo.configurationOrigin);

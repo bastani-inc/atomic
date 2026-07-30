@@ -6,22 +6,16 @@
  */
 
 import assert from "node:assert/strict";
-import { beforeEach, describe, test } from "vitest";
-import type { Store } from "../../packages/workflows/src/shared/store.js";
-import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { describe, test } from "vitest";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import type { WidgetRenderState } from "../../packages/workflows/src/tui/store-widget-installer.js";
-import {
-	decideWidgetAction,
-	installStoreWidget,
-	installToolExecutionHooks,
-} from "../../packages/workflows/src/tui/store-widget-installer.js";
+import { decideWidgetAction } from "../../packages/workflows/src/tui/store-widget-installer.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeRun(id: string, name: string): RunSnapshot {
+function _makeRun(id: string, name: string): RunSnapshot {
 	return {
 		id,
 		name,
@@ -32,7 +26,7 @@ function makeRun(id: string, name: string): RunSnapshot {
 	};
 }
 
-function makeStage(id: string, name: string): StageSnapshot {
+function _makeStage(id: string, name: string): StageSnapshot {
 	return {
 		id,
 		name,
@@ -58,7 +52,7 @@ interface FakeTimerHandle {
 	unref(): void;
 }
 
-function makeFakeTimers(): {
+function _makeFakeTimers(): {
 	setTimeout: (handler: () => void, delayMs: number) => FakeTimerHandle;
 	clearTimeout: (handle: FakeTimerHandle) => void;
 	scheduled: Array<{ handle: FakeTimerHandle; handler: () => void; delayMs: number; cleared: boolean }>;
@@ -85,7 +79,7 @@ function makeFakeTimers(): {
 	};
 }
 
-function makeMockPi(): {
+function _makeMockPi(): {
 	pi: {
 		ui: {
 			setWidget: (

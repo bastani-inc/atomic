@@ -205,7 +205,7 @@ export class InlineFormEditor implements PiEditorComponent {
 	}
 	handleInput(data: string): void {
 		const state = getForm(this.opts.formId);
-		if (!state || state.status !== "editing") return;
+		if (state?.status !== "editing") return;
 		if (data.includes(PASTE_START)) {
 			this.isInPaste = true;
 			this.pasteBuffer = "";
@@ -454,7 +454,7 @@ export class InlineFormEditor implements PiEditorComponent {
 		}
 		if (matchesAction(this.kb, data, TUI_ACTION.inputSubmit) || matchesAction(this.kb, data, "tui.input.newLine")) {
 			if (field.type === "text") {
-				state.rawText[name] = cur.slice(0, caret) + "\n" + cur.slice(caret);
+				state.rawText[name] = `${cur.slice(0, caret)}\n${cur.slice(caret)}`;
 				state.caret = caret + 1;
 			} else {
 				this.moveFocus(state, +1);

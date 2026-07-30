@@ -1,5 +1,6 @@
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/compat";
 import { createHarness, getMessageText } from "../../packages/coding-agent/test/suite/harness.ts";
+import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { sleep } from "../helpers/runtime.js";
 import { assert, createStageControlRegistry, createStore, deferred, run, test, workflow } from "./executor-shared.js";
 
@@ -45,7 +46,7 @@ test("transient native release failure keeps durable workflow pause retryable", 
 				adapters: {
 					agentSession: {
 						async create() {
-							return harness.session;
+							return harness.session as unknown as StageSessionRuntime;
 						},
 					},
 				},

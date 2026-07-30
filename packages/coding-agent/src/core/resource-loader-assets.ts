@@ -98,7 +98,8 @@ export async function updatePromptsFromPathsAsync(
 		if (prompt.sourceInfo) state.extensionPromptSourceInfos.set(prompt.filePath, prompt.sourceInfo);
 	}
 	const promptsResult = dedupePrompts(sourcedPrompts);
-	const overlaps = (state.extensionsResult.overlaps ??= []);
+	state.extensionsResult.overlaps ??= [];
+	const overlaps = state.extensionsResult.overlaps;
 	const extensionOverlaps = overlaps.filter((overlap) => overlap.resourceType !== "prompt");
 	overlaps.splice(0, overlaps.length, ...extensionOverlaps, ...promptsResult.overlaps);
 	applyPromptsResult(loader, promptsResult, metadataByPath);

@@ -30,6 +30,10 @@ function normalizeTrackedStageCallOptions(
 	return { eagerSession: input?.eagerSession === true, allowFinalized: input?.allowFinalized === true };
 }
 
+function throwFinalizationError(error: unknown): never {
+	throw error;
+}
+
 export function createTrackedStageCaller(input: {
 	readonly runtime: LiveStageRuntime;
 	readonly limiter: ConcurrencyLimiter;
@@ -311,7 +315,7 @@ export function createTrackedStageCaller(input: {
 				await runtime.releaseLiveHandle().catch(() => {});
 			}
 			input.limiter.release();
-			if (finalizationError !== undefined) throw finalizationError.error;
+			if (finalizationError !== undefined) throwFinalizationError(finalizationError.error);
 		}
 	};
 }

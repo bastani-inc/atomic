@@ -69,7 +69,7 @@ describe("current DBOS stage topology", () => {
 			string,
 			import("../../packages/workflows/src/shared/types.js").WorkflowSerializableValue
 		>;
-		const boundary = topology["boundary"] as Record<
+		const boundary = topology.boundary as Record<
 			string,
 			import("../../packages/workflows/src/shared/types.js").WorkflowSerializableValue
 		>;

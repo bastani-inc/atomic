@@ -307,9 +307,9 @@ describe("workflow-first execution routing", () => {
 			"const cwd = ctx.cwd ?? ctx.inputs.git_worktree_dir",
 			'["git", "switch", "-c", branch, baseRef]',
 			'ctx.task("implement"',
-			"ctx.task(`review-${round}`",
-			"ctx.task(`repair-${round}`",
-			"ctx.tool(`check-${index + 1}`",
+			"ctx.task(`review-$" + "{round}`",
+			"ctx.task(`repair-$" + "{round}`",
+			"ctx.tool(`check-$" + "{index + 1}`",
 			'["gh", "pr", "create"',
 			'ctx.tool("push-feature-branch"',
 		])

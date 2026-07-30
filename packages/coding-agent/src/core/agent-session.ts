@@ -66,7 +66,7 @@ export type {
 	SessionStats,
 } from "./agent-session-types.ts";
 
-export class AgentSession {
+class AgentSessionBase {
 	readonly agent: Agent;
 	readonly sessionManager: SessionManager;
 	readonly settingsManager: SettingsManager;
@@ -192,7 +192,12 @@ export class AgentSession {
 	}
 }
 
-export interface AgentSession extends AgentSessionPublicSurface {}
+export interface AgentSession extends AgentSessionBase, AgentSessionPublicSurface {}
+
+export const AgentSession = AgentSessionBase as unknown as {
+	new (config: AgentSessionConfig): AgentSession;
+	readonly prototype: AgentSession;
+};
 
 installAgentSessionAccessors(AgentSession.prototype as unknown as AgentSessionInternalSurface);
 Object.assign(

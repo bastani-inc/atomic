@@ -209,7 +209,7 @@ export function createWorkflowStageFactory(input: {
 			} else {
 				return;
 			}
-			if (toolResultHasChatAnswer((event as Record<string, unknown>)["result"]))
+			if (toolResultHasChatAnswer((event as Record<string, unknown>).result))
 				state.chatAnswerObservedThisTurn = true;
 			if (!hasActiveAskUserQuestion()) {
 				input.activeStore.recordStageAwaitingInput(input.runId, stageId, false);

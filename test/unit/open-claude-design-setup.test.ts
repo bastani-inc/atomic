@@ -21,7 +21,7 @@ function makeRecorder(taskText) {
 			calls.tasks.push(name);
 			calls.prompts[name] = options.prompt;
 			const text = taskText?.(name) ?? `[mock:${name}]`;
-			let structured;
+			let structured: unknown;
 			try {
 				structured = JSON.parse(text);
 			} catch {
@@ -62,7 +62,7 @@ describe("open-claude-design setup", () => {
 				discoveryConfig: {},
 			});
 			assert.deepEqual(calls.tasks, ["discovery"]);
-			const prompt = calls.prompts["discovery"] ?? "";
+			const prompt = calls.prompts.discovery ?? "";
 			assert.match(prompt, /\/skill:impeccable shape/);
 			assert.match(prompt, /\/skill:impeccable init/);
 			assert.match(prompt, /ask_user_question/);

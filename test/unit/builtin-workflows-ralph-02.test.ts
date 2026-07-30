@@ -1,28 +1,11 @@
 // @ts-nocheck
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
-import type { WorkflowDefinition } from "../../packages/workflows/src/types.js";
-import {
-	assertOutputTypes,
-	assertStringOutput,
-	assertWorkflowDefinition,
-	expectedDeepResearchAggregatorReadCount,
-	fieldChoices,
-	fieldDefault,
-	fieldDescription,
-	fieldKind,
-	fieldRequired,
-	makeMockCtx,
-	makeTaskResult,
-	normalizePathSeparators,
-	promptText,
-	readPathEndsWith,
-	readPaths,
-} from "./builtin-workflows-helpers.js";
+import { makeMockCtx, normalizePathSeparators, readPaths } from "./builtin-workflows-helpers.js";
 import { assertReviewerIntercomCoordination } from "./reviewer-intercom-prompt-assertions.js";
 
 describe("ralph", () => {
@@ -44,7 +27,7 @@ describe("ralph", () => {
 		return tempCwd;
 	}
 
-	function assertEveryRalphStageCwd(ctx: { readonly calls: MockCalls }, expectedCwd: string | undefined): void {
+	function _assertEveryRalphStageCwd(ctx: { readonly calls: MockCalls }, expectedCwd: string | undefined): void {
 		for (const [taskName, entries] of Object.entries(ctx.calls.taskOptions)) {
 			for (const options of entries) {
 				assert.equal(options.cwd, expectedCwd, `unexpected cwd for ${taskName}`);
@@ -55,7 +38,7 @@ describe("ralph", () => {
 		}
 	}
 
-	function preFinalStageTexts(ctx: {
+	function _preFinalStageTexts(ctx: {
 		readonly calls: MockCalls;
 	}): readonly { readonly label: string; readonly text: string }[] {
 		return [
@@ -83,7 +66,7 @@ describe("ralph", () => {
 		];
 	}
 
-	function assertNoFinalHandoffMentions(entries: readonly { readonly label: string; readonly text: string }[]): void {
+	function _assertNoFinalHandoffMentions(entries: readonly { readonly label: string; readonly text: string }[]): void {
 		const finalHandoffPatterns = [
 			/<pr_policy>/i,
 			/preparing a provider-appropriate pull request, merge request, or code-review handoff/i,
@@ -130,8 +113,8 @@ describe("ralph", () => {
 
 		const result = await mod.default.run({ ...ctx, cwd });
 
-		assert.equal(result["plan_path"], expectedResearchPath);
-		assert.equal(result["research_path"], expectedResearchPath);
+		assert.equal(result.plan_path, expectedResearchPath);
+		assert.equal(result.research_path, expectedResearchPath);
 		assert.equal(readFileSync(expectedResearchPath, "utf8"), "second research");
 		assert.deepEqual(readPaths(ctx.calls.taskOptions["research-prompt-refinement-1"]?.[0]), []);
 		const secondPromptEngineerReads = readPaths(ctx.calls.taskOptions["research-prompt-refinement-2"]?.[0]);
@@ -361,7 +344,7 @@ describe("ralph", () => {
 			ctx.calls.parallel.flat().some((name) => name.startsWith("infra-")),
 			false,
 		);
-		assert.equal(typeof result["review_report_path"], "string");
-		assert.match(normalizePathSeparators(result["review_report_path"] as string), /review-round-latest\.json$/);
+		assert.equal(typeof result.review_report_path, "string");
+		assert.match(normalizePathSeparators(result.review_report_path as string), /review-round-latest\.json$/);
 	});
 });

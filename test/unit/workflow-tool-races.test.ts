@@ -206,9 +206,9 @@ describe("ctx.tool persistence and cancellation races", () => {
 		assert.equal(snapshot?.failedToolNodeId, failedNode?.id);
 		const runEnds = persisted.filter((entry) => entry.type === "workflow.run.end");
 		assert.equal(runEnds.length, 1);
-		assert.equal(runEnds[0]?.payload["status"], "failed");
-		assert.equal(runEnds[0]?.payload["failedToolNodeId"], failedNode?.id);
-		assert.equal((runEnds[0]?.payload["failedToolNode"] as { status?: string } | undefined)?.status, "failed");
+		assert.equal(runEnds[0]?.payload.status, "failed");
+		assert.equal(runEnds[0]?.payload.failedToolNodeId, failedNode?.id);
+		assert.equal((runEnds[0]?.payload.failedToolNode as { status?: string } | undefined)?.status, "failed");
 		assert.equal(lifecycle.notices.length, 1);
 		assert.equal(lifecycle.notices[0]?.toolName, "unawaited-second");
 		assert.equal(lifecycle.notices[0]?.error, "second-admitted failure won");

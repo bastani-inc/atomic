@@ -37,7 +37,7 @@ describe("durableHash (collision-resistant digest)", () => {
 		// the old DJB2 hash because their canonical strings produced the same 32-bit
 		// remainder. SHA-256 prefixes must differ.
 		const a = durableHash({ n: "a".repeat(70000) });
-		const b = durableHash({ n: "a".repeat(70000) + "x" });
+		const b = durableHash({ n: `${"a".repeat(70000)}x` });
 		assert.notEqual(a, b);
 	});
 
@@ -328,7 +328,7 @@ describe("run() child ctx.tool is checkpointed under the root workflow", () => {
 			},
 		);
 		assert.equal(first.status, "completed");
-		assert.equal(first.result?.["result"], "child-side-effect");
+		assert.equal(first.result?.result, "child-side-effect");
 		assert.equal(childToolCalls, 1);
 
 		// The child's tool checkpoint must be stored under the ROOT workflow id,

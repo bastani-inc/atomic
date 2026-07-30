@@ -30,27 +30,27 @@ function promptAdapter(fn: (text: string) => Promise<string> | string = (t) => `
 describe("resolveInputs — Phase C", () => {
 	test("applies default when key absent", () => {
 		const r = resolveInputs({ msg: Type.String({ default: "hello" }) }, {});
-		assert.equal(r["msg"], "hello");
+		assert.equal(r.msg, "hello");
 	});
 
 	test("provided value overrides default", () => {
 		const r = resolveInputs({ msg: Type.String({ default: "hello" }) }, { msg: "world" });
-		assert.equal(r["msg"], "world");
+		assert.equal(r.msg, "world");
 	});
 
 	test("boolean false is preserved and not overridden by default", () => {
 		const r = resolveInputs({ flag: Type.Boolean({ default: true }) }, { flag: false });
-		assert.equal(r["flag"], false);
+		assert.equal(r.flag, false);
 	});
 
 	test("number default applied", () => {
 		const r = resolveInputs({ count: Type.Number({ default: 7 }) }, {});
-		assert.equal(r["count"], 7);
+		assert.equal(r.count, 7);
 	});
 
 	test("required field present — no throw", () => {
 		const r = resolveInputs({ q: Type.String() }, { q: "value" });
-		assert.equal(r["q"], "value");
+		assert.equal(r.q, "value");
 	});
 
 	test("required field absent — throws with field name", () => {
@@ -75,7 +75,7 @@ describe("resolveInputs — Phase C", () => {
 
 	test("optional field with no default and not provided — stays undefined", () => {
 		const r = resolveInputs({ x: Type.Optional(Type.String()) }, {});
-		assert.equal(r["x"], undefined);
+		assert.equal(r.x, undefined);
 	});
 });
 
@@ -108,7 +108,7 @@ describe("executor single-stage — Phase C", () => {
 		);
 
 		assert.equal(result.status, "completed");
-		assert.equal(result.result?.["out"], "result:do work");
+		assert.equal(result.result?.out, "result:do work");
 	});
 
 	test("returned stages array has length 1 with correct name", async () => {
@@ -164,7 +164,7 @@ describe("executor single-stage — Phase C", () => {
 		const snap = store.snapshot();
 		assert.equal(snap.runs.length, 1);
 		assert.equal(snap.runs[0]?.status, "completed");
-		assert.equal(snap.runs[0]?.result?.["done"], true);
+		assert.equal(snap.runs[0]?.result?.done, true);
 	});
 
 	test("store records stage snapshot with completed status", async () => {
@@ -279,13 +279,13 @@ describe("executor input resolution — Phase C", () => {
 			},
 			run: async (ctx) => {
 				await ctx.stage("read-default").prompt("x");
-				return { greeting: ctx.inputs["greeting"] };
+				return { greeting: ctx.inputs.greeting };
 			},
 		}) as never as WorkflowDefinition;
 
 		const result = await run(def, {}, { adapters: promptAdapter(), store: createStore() });
 		assert.equal(result.status, "completed");
-		assert.equal(result.result?.["greeting"], "hi");
+		assert.equal(result.result?.greeting, "hi");
 	});
 
 	test("caller-provided value takes precedence over default", async () => {
@@ -300,7 +300,7 @@ describe("executor input resolution — Phase C", () => {
 			},
 			run: async (ctx) => {
 				await ctx.stage("read-override").prompt("x");
-				return { name: ctx.inputs["name"] };
+				return { name: ctx.inputs.name };
 			},
 		}) as never as WorkflowDefinition;
 
@@ -313,7 +313,7 @@ describe("executor input resolution — Phase C", () => {
 			},
 		);
 
-		assert.equal(result.result?.["name"], "custom");
+		assert.equal(result.result?.name, "custom");
 	});
 
 	test("missing required input rejects before run starts", async () => {
@@ -452,7 +452,7 @@ describe("stage result propagation — Phase C", () => {
 			},
 		);
 
-		assert.equal(result.result?.["answer"], "4");
+		assert.equal(result.result?.answer, "4");
 	});
 
 	test("stage snapshot result field matches adapter response", async () => {

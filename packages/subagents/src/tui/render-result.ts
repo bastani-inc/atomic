@@ -84,7 +84,7 @@ export function renderSubagentResult(
 		);
 		return container;
 	}
-	if (!d || !d.results.length) {
+	if (!d?.results.length) {
 		const t = result.content[0];
 		const text = t?.type === "text" ? t.text : "(no output)";
 		const contextPrefix = d?.context === "fork" ? `${theme.fg("warning", "[fork]")} ` : "";

@@ -8,15 +8,11 @@ import {
 	formatWorkflowLifecycleNoticeText,
 	installWorkflowLifecycleNotifications,
 	LIFECYCLE_NOTICE_CUSTOM_TYPE,
-	LIFECYCLE_NOTICE_SNIPPET_LIMIT,
 	registerLifecycleNoticeRenderer,
-	resetWorkflowLifecycleNotificationState,
 	seedWorkflowLifecycleNotificationState,
 	type WorkflowLifecycleNoticeDetails,
-	withWorkflowLifecycleNotificationsSuppressed,
 	withWorkflowLifecycleNotificationsSuppressedAsync,
 } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
-import { restoreOnSessionStart, type SessionEntry } from "../../packages/workflows/src/shared/persistence-restore.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { PendingPrompt, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 
@@ -58,7 +54,7 @@ function runningStage(overrides: Partial<StageSnapshot> = {}): StageSnapshot {
 	};
 }
 
-function prompt(overrides: Partial<PendingPrompt> = {}): PendingPrompt {
+function _prompt(overrides: Partial<PendingPrompt> = {}): PendingPrompt {
 	return {
 		id: "prompt-1",
 		kind: "confirm",
@@ -85,7 +81,7 @@ function install() {
 	return { store, state, sent, options, unsubscribe };
 }
 
-function installWithState(
+function _installWithState(
 	store: ReturnType<typeof createStore>,
 	state: ReturnType<typeof createWorkflowLifecycleNotificationState>,
 	sent: SentMessage[],
@@ -519,8 +515,11 @@ describe("installWorkflowLifecycleNotifications", () => {
 				registered.push({ event, renderer: renderer as (payload: unknown) => unknown });
 			},
 		});
-		const render = (details: WorkflowLifecycleNoticeDetails, width: number): string[] =>
-			(registered[0]?.renderer({ details }) as CardComponent).render(width);
+		const render = (details: WorkflowLifecycleNoticeDetails, width: number): string[] => {
+			const renderer = registered[0]?.renderer;
+			assert.ok(renderer);
+			return (renderer({ details }) as CardComponent).render(width);
+		};
 		const base: WorkflowLifecycleNoticeDetails = {
 			kind: "failed",
 			scope: "run",

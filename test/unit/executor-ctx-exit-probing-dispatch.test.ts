@@ -192,16 +192,16 @@ describe("ctx.exit", () => {
 		assert.equal(snapshot?.error, "workflow killed");
 		assert.equal(snapshot?.exitReason, undefined);
 		const runEndEntries = entries.filter(
-			(entry) => entry.type === "workflow.run.end" && entry.payload["runId"] === runId,
+			(entry) => entry.type === "workflow.run.end" && entry.payload.runId === runId,
 		);
 		assert.equal(runEndEntries.length, 1);
-		assert.equal(runEndEntries[0]?.payload["status"], "killed");
+		assert.equal(runEndEntries[0]?.payload.status, "killed");
 		assert.equal(
-			runEndEntries.some((entry) => entry.payload["status"] === "failed"),
+			runEndEntries.some((entry) => entry.payload.status === "failed"),
 			false,
 		);
 		assert.equal(
-			runEndEntries.some((entry) => entry.payload["status"] === "completed"),
+			runEndEntries.some((entry) => entry.payload.status === "completed"),
 			false,
 		);
 		assert.deepEqual(onRunEndCalls, [{ status: "killed", error: "workflow killed" }]);
@@ -355,17 +355,17 @@ describe("ctx.exit", () => {
 		assert.equal(boundary?.workflowChild?.exited, true);
 		assert.deepEqual(boundary?.workflowChild?.outputs, { optionalCount: 7 });
 		const childRunEnd = entries.find(
-			(entry) => entry.type === "workflow.run.end" && entry.payload["runId"] === childSnapshot?.id,
+			(entry) => entry.type === "workflow.run.end" && entry.payload.runId === childSnapshot?.id,
 		);
-		assert.equal(childRunEnd?.payload["status"], "completed");
-		assert.equal(childRunEnd?.payload["exited"], true);
+		assert.equal(childRunEnd?.payload.status, "completed");
+		assert.equal(childRunEnd?.payload.exited, true);
 		const boundaryEnd = entries.find(
 			(entry) =>
 				entry.type === "workflow.stage.end" &&
-				(entry.payload["workflowChild"] as { workflow?: unknown } | undefined)?.workflow ===
+				(entry.payload.workflowChild as { workflow?: unknown } | undefined)?.workflow ===
 					"exit-child-completed-partial",
 		);
-		assert.equal((boundaryEnd?.payload["workflowChild"] as { exited?: unknown } | undefined)?.exited, true);
+		assert.equal((boundaryEnd?.payload.workflowChild as { exited?: unknown } | undefined)?.exited, true);
 	});
 
 	test("WorkflowChildResult narrows full outputs behind exited === false", () => {

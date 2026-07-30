@@ -57,8 +57,8 @@ describe("createStageContext — model fallback", () => {
 					async prompt(text) {
 						promptTexts.push(text);
 						if (promptTexts.length === 1) {
-							return new Promise<void>((resolve) => {
-								resolveFirstPrompt = resolve;
+							return new Promise<string | undefined>((resolve) => {
+								resolveFirstPrompt = () => resolve(undefined);
 								firstPromptStarted.resolve();
 							});
 						}

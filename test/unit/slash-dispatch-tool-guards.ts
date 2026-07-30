@@ -1,73 +1,36 @@
 // @ts-nocheck
 import { describe, test } from "vitest";
 import type {
-	ChatSurfacePayload,
 	ExtensionAPI,
 	ExtensionRuntime,
-	PiArgumentCompletion,
-	PiCommandContext,
-	PiCommandOptions,
-	PiCustomComponent,
-	PiCustomOverlayFactoryTui,
-	PiCustomOverlayFunction,
-	PiCustomOverlayOptions,
-	PiOverlayHandle,
 	PiToolOpts,
-	SessionEntry,
 	StageControlHandle,
-	StageSessionRuntime,
-	WorkflowDefinition,
-	WorkflowPersistencePort,
 	WorkflowToolArgs,
 } from "./slash-dispatch-utils.js";
 import {
 	addFactoryStubs,
 	assert,
-	buildCtx,
 	buildMockPi,
-	buildStagePromptAdapter,
 	createExtensionRuntime,
 	createRegistry,
-	fakeAgentSession,
 	installSlashDispatchTestHooks,
-	jobTracker,
 	join,
 	LIFECYCLE_NOTICE_CUSTOM_TYPE,
 	makeExecuteWorkflowTool,
-	makeInflightRun,
-	makeRegisteredWorkflowTool,
 	makeRegisteredWorkflowToolWithResource,
 	mkdtemp,
-	parseWorkflowArgs,
-	recordTerminalRun,
-	registerLiveStageHandle,
-	registerTestStageHandle,
-	registerWorkflowCommand,
-	renderResult,
-	restoreOnSessionStart,
 	rm,
-	runFactory,
 	stageControlRegistry,
-	stageUiBroker,
 	store,
-	Type,
 	tmpdir,
-	tokenizeWorkflowArgs,
-	WORKFLOW_COMMAND_OUTPUT_CUSTOM_TYPE,
-	WORKFLOW_INVALID_PROVIDER_CREDENTIALS_MESSAGE,
 	WORKFLOW_STAGE_SUBAGENT_GUARD_ENV,
-	waitForToolPrompt,
-	waitForToolRunEnded,
-	workflow,
-	workflowPolicyFromContext,
 	writeFile,
-	writeWorkflowFixture,
 } from "./slash-dispatch-utils.js";
 
 installSlashDispatchTestHooks();
 
 describe("tool run-control actions", () => {
-	function makeToolHandler() {
+	function _makeToolHandler() {
 		const registry = createRegistry([]);
 		const runtime = createExtensionRuntime({ registry });
 		return makeExecuteWorkflowTool(runtime, () => undefined);
@@ -193,7 +156,7 @@ export default workflow({
 		}
 	});
 
-	async function makeRegisteredWorkflowTool(): Promise<PiToolOpts<WorkflowToolArgs, WorkflowToolResult>> {
+	async function _makeRegisteredWorkflowTool(): Promise<PiToolOpts<WorkflowToolArgs, WorkflowToolResult>> {
 		const { pi } = buildMockPi();
 		addFactoryStubs(pi);
 		let registered: PiToolOpts<WorkflowToolArgs, WorkflowToolResult> | undefined;
@@ -206,7 +169,7 @@ export default workflow({
 		return registered;
 	}
 
-	async function makeRegisteredWorkflowToolWithResource(
+	async function _makeRegisteredWorkflowToolWithResource(
 		fileName: string,
 		source: string,
 	): Promise<{
@@ -250,7 +213,7 @@ export default workflow({
 		};
 	}
 
-	function registerLiveStageHandle(
+	function _registerLiveStageHandle(
 		runId: string,
 		stageId: string,
 		options?: {
@@ -298,7 +261,7 @@ export default workflow({
 		};
 	}
 
-	async function waitForToolPrompt(runId: string, timeoutMs = 1000): Promise<{ stageId: string; promptId: string }> {
+	async function _waitForToolPrompt(runId: string, timeoutMs = 1000): Promise<{ stageId: string; promptId: string }> {
 		const deadline = Date.now() + timeoutMs;
 		while (Date.now() < deadline) {
 			const run = store.runs().find((candidate) => candidate.id === runId);
@@ -309,7 +272,7 @@ export default workflow({
 		throw new Error(`pending prompt did not appear for run ${runId}`);
 	}
 
-	async function waitForToolRunEnded(runId: string, timeoutMs = 1000): Promise<void> {
+	async function _waitForToolRunEnded(runId: string, timeoutMs = 1000): Promise<void> {
 		const deadline = Date.now() + timeoutMs;
 		while (Date.now() < deadline) {
 			const run = store.runs().find((candidate) => candidate.id === runId);

@@ -15,35 +15,11 @@
 
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import type { WorkflowInputEntry } from "../../packages/workflows/src/extension/render-result.ts";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.ts";
-import { renderInlineCard } from "../../packages/workflows/src/tui/inline-form-card.ts";
 import { InlineFormEditor } from "../../packages/workflows/src/tui/inline-form-editor.ts";
-import {
-	openInlineInputsForm,
-	registerInlineFormRenderer,
-} from "../../packages/workflows/src/tui/inline-form-overlay.ts";
-import {
-	_resetForms,
-	clearForms,
-	createForm,
-	finalizeForm,
-	getForm,
-	touch,
-} from "../../packages/workflows/src/tui/inline-form-store.ts";
-import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.ts";
 import { makeFakeKeybindings } from "../support/fake-keybindings.ts";
 
-import {
-	ansi,
-	assertLinesWithinWidth,
-	FIELDS,
-	makeEditor,
-	makeFakeCtx,
-	makeFakePi,
-	makeState,
-	plain,
-} from "./inline-form-helpers.ts";
+import { makeEditor, makeState } from "./inline-form-helpers.ts";
 
 test("editor: alt+left / alt+right jump by whole word", () => {
 	const e = makeEditor(

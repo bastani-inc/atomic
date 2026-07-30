@@ -57,11 +57,11 @@ describe("MockExtensionAPI — tool inputs returns schema for fan-out-and-synthe
 		};
 		assert.equal(r.name, "fan-out-and-synthesize");
 		const byName = Object.fromEntries(r.inputs.map((input) => [input.name, input]));
-		assert.equal(byName["prompt"]?.type, "text");
-		assert.equal(byName["prompt"]?.required, true);
-		assert.equal(byName["max_branches"]?.type, "integer");
-		assert.equal(byName["max_branches"]?.default, 4);
-		assert.equal(byName["max_concurrency"]?.default, 4);
+		assert.equal(byName.prompt?.type, "text");
+		assert.equal(byName.prompt?.required, true);
+		assert.equal(byName.max_branches?.type, "integer");
+		assert.equal(byName.max_branches?.default, 4);
+		assert.equal(byName.max_concurrency?.default, 4);
 	});
 
 	test("action='inputs' has no error field", async () => {

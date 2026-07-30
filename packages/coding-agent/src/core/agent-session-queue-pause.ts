@@ -28,7 +28,10 @@ export function composePauseAbortBoundaries(
 /** Synchronously hold raw queue entries before pausing and aborting an active turn. */
 export function pauseQueuedMessages(this: AgentSession): void {
 	const owner = resolveWorkflowStageDeliveryTarget(this);
-	if (owner !== this) return owner.pauseQueuedMessages();
+	if (owner !== this) {
+		owner.pauseQueuedMessages();
+		return;
+	}
 	if (this._queuedMessagesPaused) return;
 	this._queuedMessagesPaused = true;
 	this._queuedMessagesPauseAbortBoundary = undefined;

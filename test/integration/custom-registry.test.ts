@@ -479,10 +479,10 @@ describe("shared registry invariant — extension consumers see same workflows",
 		const r = inputsResult as { action: "inputs"; inputs: Array<{ name: string; type: string }> };
 		const inputsByName = Object.fromEntries(r.inputs.map((i) => [i.name, i]));
 
-		assert.notEqual(inputsByName["message"], undefined);
+		assert.notEqual(inputsByName.message, undefined);
 		// TString normalizes to the "text" descriptor kind via schema-introspection.
-		assert.equal(inputsByName["message"]!.type, "text");
-		assert.notEqual(inputsByName["count"], undefined);
-		assert.equal(inputsByName["count"]!.type, "number");
+		assert.equal(inputsByName.message!.type, "text");
+		assert.notEqual(inputsByName.count, undefined);
+		assert.equal(inputsByName.count!.type, "number");
 	});
 });

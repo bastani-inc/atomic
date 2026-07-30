@@ -335,7 +335,7 @@ export class WorkflowAttachPane implements Component {
 		}
 		return this.graphView.render(width);
 	}
-	handleInput(data: string): boolean | void {
+	handleInput(data: string): boolean | undefined {
 		if (!this.visible) return false;
 		if (this.mode === "stage-chat" && this.chatView) {
 			if (this._shouldQuarantineStagePromptEnter(data)) return true;

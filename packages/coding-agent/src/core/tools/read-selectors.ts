@@ -232,9 +232,12 @@ function parseArchiveReadSelector(value: string): ReadLineSelector {
 	if (!extracted) return { path: working, raw: state.raw, conflicts: state.conflicts };
 	const suffixState = { ...state };
 	const peeledPath = peelArchiveReadSuffixes(extracted.path, suffixState);
-	const selectorPath = hasArchiveMember(peeledPath)
-		? ((state.raw = suffixState.raw), (state.conflicts = suffixState.conflicts), peeledPath)
-		: extracted.path;
+	let selectorPath = extracted.path;
+	if (hasArchiveMember(peeledPath)) {
+		state.raw = suffixState.raw;
+		state.conflicts = suffixState.conflicts;
+		selectorPath = peeledPath;
+	}
 	if (!hasArchiveMember(selectorPath)) return { path: working, raw: state.raw, conflicts: state.conflicts };
 	return selectorFromRanges(selectorPath, extracted.ranges, state.raw, state.conflicts);
 }

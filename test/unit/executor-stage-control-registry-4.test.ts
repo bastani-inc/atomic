@@ -32,7 +32,7 @@ describe("executor — stage-control registry integration", () => {
 			async prompt(text: string) {
 				promptCalls.push(text);
 				if (text === "go") {
-					await new Promise<void>((_resolve, reject) => {
+					await new Promise<string | undefined>((_resolve, reject) => {
 						currentReject = reject;
 					});
 					return;
@@ -53,7 +53,7 @@ describe("executor — stage-control registry integration", () => {
 				if (text === RESUME_CONTINUATION_PROMPT) {
 					const occurrence = promptCalls.filter((call) => call === text).length;
 					if (occurrence === 1) {
-						await new Promise<void>((_resolve, reject) => {
+						await new Promise<string | undefined>((_resolve, reject) => {
 							currentReject = reject;
 						});
 					}
@@ -160,6 +160,7 @@ describe("executor — stage-control registry integration", () => {
 						currentResolve = resolve;
 					});
 					await currentIdle;
+					return undefined;
 				},
 				async closeWorkflowStageGeneration() {
 					lifecycleEvents.push(`close:${currentPrompt}`);
@@ -252,10 +253,10 @@ describe("executor — stage-control registry integration", () => {
 			...mockSession(),
 			async prompt() {
 				streaming = true;
-				return new Promise<void>((resolve, reject) => {
+				return new Promise<string | undefined>((resolve, reject) => {
 					promptResolve = () => {
 						streaming = false;
-						resolve();
+						resolve(undefined);
 					};
 					promptReject = (err) => {
 						streaming = false;
@@ -333,10 +334,9 @@ describe("executor — stage-control registry integration", () => {
 				...mockSession(),
 				async prompt() {
 					streaming = true;
-					return new Promise<void>((resolve, rej) => {
+					return new Promise<string | undefined>((_resolve, rej) => {
 						// Resolve on resume-without-message (pause loop returns) is
 						// driven by the executor; abort rejects the in-flight turn.
-						void resolve;
 						reject = (err) => {
 							streaming = false;
 							rej(err);

@@ -71,7 +71,7 @@ export class EngineRenderService {
 
 	handleLine(line: string): boolean {
 		const command = parseInteractiveEngineCommand(line);
-		if (!command || !command.type.startsWith("engine_") || command.type.startsWith("engine_custom_")) return false;
+		if (!command?.type.startsWith("engine_") || command.type.startsWith("engine_custom_")) return false;
 		if (command.type === "engine_render_dispose") {
 			this.disposeRecord(command.componentId);
 			return true;

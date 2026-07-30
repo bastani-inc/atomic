@@ -313,7 +313,7 @@ function tarHeader(name: string, size: number): Buffer {
 	header.write("0000644\0", 100);
 	header.write("0000000\0", 108);
 	header.write("0000000\0", 116);
-	header.write(size.toString(8).padStart(11, "0") + "\0", 124);
+	header.write(`${size.toString(8).padStart(11, "0")}\0`, 124);
 	header.write("00000000000\0", 136);
 	header.fill(0x20, 148, 156);
 	header[156] = 48;
@@ -321,7 +321,7 @@ function tarHeader(name: string, size: number): Buffer {
 	header.write("00", 263);
 	let sum = 0;
 	for (const byte of header) sum += byte;
-	header.write(sum.toString(8).padStart(6, "0") + "\0 ", 148);
+	header.write(`${sum.toString(8).padStart(6, "0")}\0 `, 148);
 	return header;
 }
 function writeTar(path: string, entries: Map<string, Buffer>): void {

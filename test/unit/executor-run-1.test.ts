@@ -40,7 +40,7 @@ describe("executor.run", () => {
 		);
 
 		assert.equal(wfResult.status, "completed");
-		assert.equal(wfResult.result?.["result"], "response to: do the thing");
+		assert.equal(wfResult.result?.result, "response to: do the thing");
 		assert.equal(wfResult.stages.length, 1);
 		assert.equal(wfResult.stages[0]?.name, "stage-one");
 		assert.equal(wfResult.stages[0]?.status, "completed");
@@ -217,8 +217,8 @@ describe("executor.run", () => {
 		);
 
 		assert.equal(wfResult.status, "completed");
-		assert.equal(wfResult.result?.["scout"], "scout findings");
-		assert.equal(wfResult.result?.["planner"], "planner output");
+		assert.equal(wfResult.result?.scout, "scout findings");
+		assert.equal(wfResult.result?.planner, "planner output");
 		assert.deepEqual(seenPrompts, ["scout repo", "plan from scout findings"]);
 		assert.deepEqual(
 			wfResult.stages.map((s) => s.name),
@@ -334,7 +334,7 @@ describe("executor.run", () => {
 
 		assert.equal(wfResult.status, "completed");
 		assert.deepEqual(seenPrompts, ["child:auth", "final:child-output"]);
-		assert.equal(wfResult.result?.["final"], "final-output");
+		assert.equal(wfResult.result?.final, "final-output");
 		assert.deepEqual(
 			wfResult.stages.map((stage) => stage.name),
 			["workflow:research-child", "final"],
@@ -342,7 +342,7 @@ describe("executor.run", () => {
 		const boundary = wfResult.stages[0]!;
 		const final = wfResult.stages[1]!;
 		assert.equal(boundary.status, "completed");
-		assert.equal(boundary.workflowChildRun?.runId, wfResult.result?.["childRunId"]);
+		assert.equal(boundary.workflowChildRun?.runId, wfResult.result?.childRunId);
 		assert.deepEqual(final.parentIds, [boundary.id]);
 		assert.equal(st.runs().length, 2);
 	});
@@ -397,11 +397,7 @@ describe("executor.run", () => {
 			childRunId = boundary?.workflowChildRun?.runId;
 			const childRun =
 				childRunId !== undefined ? st.runs().find((candidate) => candidate.id === childRunId) : undefined;
-			if (
-				boundary !== undefined &&
-				childRun !== undefined &&
-				childRun.stages.some((stage) => stage.name === "child-wait")
-			) {
+			if (boundary && childRun?.stages.some((stage) => stage.name === "child-wait")) {
 				break;
 			}
 			await new Promise((resolve) => setTimeout(resolve, 5));
@@ -418,7 +414,7 @@ describe("executor.run", () => {
 		const wfResult = await running;
 
 		assert.equal(wfResult.status, "completed");
-		assert.equal(wfResult.result?.["result"], "child-output");
+		assert.equal(wfResult.result?.result, "child-output");
 	});
 
 	test("ctx.workflow child runs can be killed directly through their live child run id", async () => {

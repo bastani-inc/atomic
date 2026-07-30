@@ -27,10 +27,7 @@ export function createToolNodeLifecycle(input: {
 			const sourceParents =
 				node.replayed === true && node.topologyState !== "unavailable" ? node.parentIds : undefined;
 			const restored = sourceParents?.map((sourceId) => sourceToReplayedNodeIds.get(sourceId));
-			const parentIds =
-				restored !== undefined && restored.every((id): id is string => id !== undefined)
-					? restored
-					: inferredParents;
+			const parentIds = restored?.every((id): id is string => id !== undefined) ? restored : inferredParents;
 			tracker.replaceParents(node.id, parentIds);
 			(node as ToolNodeSnapshot & { parentIds: readonly string[] }).parentIds = Object.freeze([...parentIds]);
 			sourceToReplayedNodeIds.set(node.id, node.id);

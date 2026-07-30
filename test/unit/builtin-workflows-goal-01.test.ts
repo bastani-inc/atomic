@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { describe, test } from "vitest";
 import type { WorkflowDefinition } from "../../packages/workflows/src/types.js";
 import {
 	assertOutputTypes,
@@ -110,27 +110,27 @@ describe("goal", () => {
 
 	test("declares objective, acceptance_criteria, max_turns, base_branch, git_worktree_dir, and create_pr inputs", async () => {
 		const mod = await import("../../packages/workflows/builtin/goal.js");
-		assert.equal(fieldKind(mod.default.inputs["objective"]), "text");
-		assert.equal(fieldRequired(mod.default.inputs["objective"]), true);
-		assert.equal(fieldKind(mod.default.inputs["acceptance_criteria"]), "text");
-		assert.equal(fieldRequired(mod.default.inputs["acceptance_criteria"]), false);
-		assert.match(fieldDescription(mod.default.inputs["acceptance_criteria"]), /Original immutable task contract/);
-		assert.equal(fieldKind(mod.default.inputs["max_turns"]), "number");
-		assert.equal(fieldDefault(mod.default.inputs["max_turns"]), 10);
-		assert.equal(fieldKind(mod.default.inputs["base_branch"]), "text");
-		assert.equal(fieldDefault(mod.default.inputs["base_branch"]), "origin/main");
-		assert.equal(fieldKind(mod.default.inputs["git_worktree_dir"]), "text");
-		assert.equal(fieldDefault(mod.default.inputs["git_worktree_dir"]), "");
-		const description = fieldDescription(mod.default.inputs["git_worktree_dir"]);
+		assert.equal(fieldKind(mod.default.inputs.objective), "text");
+		assert.equal(fieldRequired(mod.default.inputs.objective), true);
+		assert.equal(fieldKind(mod.default.inputs.acceptance_criteria), "text");
+		assert.equal(fieldRequired(mod.default.inputs.acceptance_criteria), false);
+		assert.match(fieldDescription(mod.default.inputs.acceptance_criteria), /Original immutable task contract/);
+		assert.equal(fieldKind(mod.default.inputs.max_turns), "number");
+		assert.equal(fieldDefault(mod.default.inputs.max_turns), 10);
+		assert.equal(fieldKind(mod.default.inputs.base_branch), "text");
+		assert.equal(fieldDefault(mod.default.inputs.base_branch), "origin/main");
+		assert.equal(fieldKind(mod.default.inputs.git_worktree_dir), "text");
+		assert.equal(fieldDefault(mod.default.inputs.git_worktree_dir), "");
+		const description = fieldDescription(mod.default.inputs.git_worktree_dir);
 		assert.match(description, /inside a Git repo/);
 		assert.match(description, /absolute paths are used as-is/);
 		assert.match(description, /relative paths resolve from the repo root/);
 		assert.match(description, /existing Git worktrees from the invoking repository are reused\/shared as-is/);
 		assert.match(description, /missing paths are created from base_branch/);
-		assert.equal(fieldKind(mod.default.inputs["create_pr"]), "boolean");
-		assert.equal(fieldDefault(mod.default.inputs["create_pr"]), false);
-		assert.equal(fieldRequired(mod.default.inputs["create_pr"]), false);
-		const createPrDescription = fieldDescription(mod.default.inputs["create_pr"]);
+		assert.equal(fieldKind(mod.default.inputs.create_pr), "boolean");
+		assert.equal(fieldDefault(mod.default.inputs.create_pr), false);
+		assert.equal(fieldRequired(mod.default.inputs.create_pr), false);
+		const createPrDescription = fieldDescription(mod.default.inputs.create_pr);
 		assert.match(createPrDescription, /pull-request creation stage/);
 		assert.match(createPrDescription, /Defaults to false/);
 		assert.match(createPrDescription, /after reviewer\/reducer approval/);
@@ -282,19 +282,19 @@ describe("goal", () => {
 		assert.match(reviewerPrompt, /<qa_e2e_video_review>/);
 		assert.match(reviewerPrompt, /inspect the actual video before approving/i);
 		assert.match(reviewerPrompt, /Look for QA E2E video references in the goal ledger/i);
-		assert.equal(result["status"], "complete");
-		assert.equal(result["approved"], true);
-		assert.equal(result["turns_completed"], 1);
-		assert.equal(result["iterations_completed"], 1);
-		assert.equal(typeof result["goal_id"], "string");
-		assert.equal(typeof result["result"], "string");
-		assert.equal(typeof result["review_report"], "string");
-		assert.equal(typeof result["ledger_path"], "string");
+		assert.equal(result.status, "complete");
+		assert.equal(result.approved, true);
+		assert.equal(result.turns_completed, 1);
+		assert.equal(result.iterations_completed, 1);
+		assert.equal(typeof result.goal_id, "string");
+		assert.equal(typeof result.result, "string");
+		assert.equal(typeof result.review_report, "string");
+		assert.equal(typeof result.ledger_path, "string");
 		assert.match(
-			normalizePathSeparators(result["ledger_path"] as string),
+			normalizePathSeparators(result.ledger_path as string),
 			/atomic-goal-runner-[^/]+\/goal-ledger\.json$/,
 		);
-		const ledger = JSON.parse(readFileSync(result["ledger_path"] as string, "utf8")) as {
+		const ledger = JSON.parse(readFileSync(result.ledger_path as string, "utf8")) as {
 			goal_id: string;
 			objective: string;
 			acceptance_criteria: string;
@@ -312,10 +312,10 @@ describe("goal", () => {
 				turn: number;
 			}[];
 		};
-		assert.equal(ledger.goal_id, result["goal_id"]);
+		assert.equal(ledger.goal_id, result.goal_id);
 		assert.equal(ledger.objective, "Refactor tests");
 		assert.equal(ledger.acceptance_criteria, "Refactor tests");
-		assert.equal(result["acceptance_criteria"], "Refactor tests");
+		assert.equal(result.acceptance_criteria, "Refactor tests");
 		assert.equal(Object.hasOwn(ledger, "objective_revision"), false);
 		assert.equal(ledger.status, "complete");
 		assert.equal(Object.hasOwn(ledger, "turns"), false);
@@ -327,8 +327,8 @@ describe("goal", () => {
 			assert.match(normalizePathSeparators(review.artifact_path), /review-[a-z-]+-reviewer\.json$/);
 			assert.equal(existsSync(review.artifact_path), true);
 		}
-		assert.equal(typeof result["review_report_path"], "string");
-		assert.equal(existsSync(result["review_report_path"] as string), true);
+		assert.equal(typeof result.review_report_path, "string");
+		assert.equal(existsSync(result.review_report_path as string), true);
 		assert.equal(ledger.blockers.length, 0);
 		assert.deepEqual(
 			ledger.decisions.map((decision) => decision.decision),
@@ -362,9 +362,9 @@ describe("goal", () => {
 
 		const result = await d.run(ctx);
 
-		assert.equal(result["status"], "complete");
-		assert.equal(result["approved"], true);
-		assert.equal(result["remaining_work"], "none");
+		assert.equal(result.status, "complete");
+		assert.equal(result.approved, true);
+		assert.equal(result.remaining_work, "none");
 	});
 
 	test("omits verification_remaining gaps for structured approved reviews", async () => {
@@ -387,8 +387,8 @@ describe("goal", () => {
 
 		const result = await d.run(ctx);
 
-		assert.equal(result["status"], "complete");
-		const ledger = JSON.parse(readFileSync(result["ledger_path"] as string, "utf8")) as {
+		assert.equal(result.status, "complete");
+		const ledger = JSON.parse(readFileSync(result.ledger_path as string, "utf8")) as {
 			reviews: readonly { reviewer: string; gaps: readonly string[] }[];
 		};
 		const completionReview = ledger.reviews.find((review) => review.reviewer === "completion-reviewer");

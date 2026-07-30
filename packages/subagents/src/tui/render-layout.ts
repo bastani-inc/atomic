@@ -54,7 +54,7 @@ export function truncLine(text: string, maxWidth: number): string {
 			const graphemeWidth = visibleWidth(grapheme);
 
 			if (currentWidth + graphemeWidth > targetWidth) {
-				return result + activeStyles.join("") + "…";
+				return `${result + activeStyles.join("")}…`;
 			}
 
 			result += grapheme;
@@ -63,7 +63,7 @@ export function truncLine(text: string, maxWidth: number): string {
 		i = end;
 	}
 
-	return result + activeStyles.join("") + "…";
+	return `${result + activeStyles.join("")}…`;
 }
 
 export const RUNNING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];

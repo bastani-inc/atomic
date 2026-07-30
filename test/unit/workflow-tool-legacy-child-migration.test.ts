@@ -190,7 +190,8 @@ describe("legacy scoped child tool topology migration", () => {
 		assert.equal(result.status, "completed");
 		assert.equal(callbackCalls, 0);
 		const childRun = store.runs().find((candidate) => candidate.parentRunId === runId)!;
-		const childTool = childRun.toolNodes?.[0]!;
+		const childTool = childRun.toolNodes?.[0];
+		assert.ok(childTool);
 		const childStage = childRun.stages[0]!;
 		assert.equal(childTool.status, "cached");
 		assert.deepEqual(childStage.parentIds, [childTool.id]);

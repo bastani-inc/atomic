@@ -27,7 +27,7 @@ function handle(input: {
 	readonly stageId: string;
 	readonly status: () => StageControlStatus;
 	readonly pause?: () => Promise<void>;
-	readonly resume?: () => Promise<void>;
+	readonly resume?: () => Promise<undefined>;
 }): StageControlHandle {
 	return {
 		runId: input.runId,
@@ -45,7 +45,7 @@ function handle(input: {
 		async steer() {},
 		async followUp() {},
 		pause: input.pause ?? (async () => {}),
-		resume: input.resume ?? (async () => {}),
+		resume: input.resume ?? (async () => undefined),
 		subscribe: () => () => {},
 	};
 }
@@ -209,6 +209,7 @@ describe("post-commit quit and nested resume coherence", () => {
 				status: () => targetStore.runs().find((run) => run.id === "child-primitive")?.stages[0]?.status ?? "paused",
 				resume: async () => {
 					calls += 1;
+					return undefined;
 				},
 			}),
 		);
@@ -252,6 +253,7 @@ describe("post-commit quit and nested resume coherence", () => {
 							?.stages.find((stage) => stage.id === stageId)?.status ?? "paused",
 					resume: async () => {
 						calls.set(stageId, (calls.get(stageId) ?? 0) + 1);
+						return undefined;
 					},
 				}),
 			);
@@ -304,6 +306,7 @@ describe("post-commit quit and nested resume coherence", () => {
 							?.stages.find((stage) => stage.id === stageId)?.status ?? "paused",
 					resume: async () => {
 						calls.set(stageId, (calls.get(stageId) ?? 0) + 1);
+						return undefined;
 					},
 				}),
 			);
@@ -443,6 +446,7 @@ describe("post-commit quit and nested resume coherence", () => {
 					});
 					singletonStore.recordRunEnd(runId, "completed", { answer: "held-answer" });
 					backend.setWorkflowStatus(runId, "completed");
+					return undefined;
 				},
 			}),
 		);
@@ -527,6 +531,7 @@ describe("post-commit quit and nested resume coherence", () => {
 					});
 					singletonStore.recordRunEnd(runId, "completed", { answer: "held-answer" });
 					backend.setWorkflowStatus(runId, "completed");
+					return undefined;
 				},
 			}),
 		);

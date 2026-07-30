@@ -41,7 +41,7 @@ export interface WorkflowSlashCommandDeps {
 	runtimeProxy: ExtensionRuntime;
 	runtimeForContext: (ctx?: PiCommandContext) => ExtensionRuntime;
 	overlay: GraphOverlayPort;
-	reloadWorkflowResources: () => Promise<WorkflowReloadReport | void> | void;
+	reloadWorkflowResources: () => Promise<WorkflowReloadReport | undefined> | undefined;
 	ensureWorkflowResourcesLoaded: () => Promise<void> | void;
 	runWithLifecycleSuppressedForPolicy: <T>(policy: WorkflowExecutionPolicy, fn: () => Promise<T>) => Promise<T>;
 	runControl: WorkflowRunControlDeps;

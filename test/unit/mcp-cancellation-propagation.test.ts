@@ -321,11 +321,17 @@ test("direct UI startup aborts promptly and closes a late runtime", async () => 
 		uiResourceUri: "ui://test",
 	};
 	const { state, calls, getInFlight } = createConnectedState([]);
-	let releaseUi!: (runtime: { reused: false; requestMeta: {}; close(reason?: string): void }) => void;
+	let releaseUi!: (runtime: {
+		reused: false;
+		requestMeta: Record<string, never>;
+		close(reason?: string): void;
+	}) => void;
 	let closes = 0;
-	const uiStartup = new Promise<{ reused: false; requestMeta: {}; close(reason?: string): void }>((resolve) => {
-		releaseUi = resolve;
-	});
+	const uiStartup = new Promise<{ reused: false; requestMeta: Record<string, never>; close(reason?: string): void }>(
+		(resolve) => {
+			releaseUi = resolve;
+		},
+	);
 	const execute = createDirectToolExecutor(
 		async () => state,
 		(candidate) => candidate === state,

@@ -60,7 +60,7 @@ describe("safe fs.watch path handling", () => {
 		assert.equal(isUnsafeWindowsShortPath(String.raw`C:\Users\USERNA~1\AppData\Local\Temp`, "win32"), true);
 		assert.equal(isUnsafeWindowsShortPath(String.raw`C:\PROGRA~1\Atomic\theme.json`, "win32"), true);
 		assert.equal(isUnsafeWindowsShortPath(String.raw`C:\Users\Alex Lavaee\AppData\Local\Temp`, "win32"), false);
-		assert.equal(isUnsafeWindowsShortPath(String.raw`/tmp/USERNA~1`, "linux"), false);
+		assert.equal(isUnsafeWindowsShortPath("/tmp/USERNA~1", "linux"), false);
 	});
 
 	test("canonicalizes Windows watch paths before native fs.watch", () => {

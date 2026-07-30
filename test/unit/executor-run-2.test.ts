@@ -67,7 +67,7 @@ describe("executor.run", () => {
 		);
 		assert.equal(wfResult.status, "completed");
 		assert.deepEqual(seenPrompts, ["direct:imports", "final:child-output"]);
-		assert.equal(wfResult.result?.["final"], "final-output");
+		assert.equal(wfResult.result?.final, "final-output");
 		assert.deepEqual(
 			wfResult.stages.map((stage) => stage.name),
 			["run direct child", "final"],
@@ -216,7 +216,7 @@ describe("executor.run", () => {
 		);
 		assert.equal(wfResult.status, "completed");
 		assert.deepEqual(seenPrompts, ["topic:fallback-topic"]);
-		assert.equal(wfResult.result?.["summary"], "child-result");
+		assert.equal(wfResult.result?.summary, "child-result");
 		assert.equal(st.runs().length, 2);
 	});
 	test("ctx.workflow exposes exactly the child's declared outputs", async () => {
@@ -255,7 +255,7 @@ describe("executor.run", () => {
 		);
 		assert.equal(wfResult.status, "completed");
 		// No implicit `result`: outputs are exactly the declared `summary`.
-		assert.deepEqual(wfResult.result?.["childOutputs"], {
+		assert.deepEqual(wfResult.result?.childOutputs, {
 			summary: "summary-value",
 		});
 	});
@@ -421,7 +421,7 @@ describe("executor.run", () => {
 			},
 		);
 		assert.equal(wfResult.status, "completed");
-		assert.deepEqual(wfResult.result?.["childOutputs"], {});
+		assert.deepEqual(wfResult.result?.childOutputs, {});
 	});
 	test("ctx.workflow exposes a declared result output", async () => {
 		const declaredResult = { ok: true };
@@ -460,6 +460,6 @@ describe("executor.run", () => {
 			},
 		);
 		assert.equal(wfResult.status, "completed");
-		assert.deepEqual(wfResult.result?.["childResult"], declaredResult);
+		assert.deepEqual(wfResult.result?.childResult, declaredResult);
 	});
 });

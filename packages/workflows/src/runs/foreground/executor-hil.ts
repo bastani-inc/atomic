@@ -247,12 +247,12 @@ function isAskUserQuestionToolName(name: string | undefined): boolean {
 export function askUserQuestionToolEvent(event: unknown): AskUserQuestionToolEvent | undefined {
 	if (event === null || typeof event !== "object") return undefined;
 	const record = event as Record<string, unknown>;
-	const type = typeof record["type"] === "string" ? record["type"] : "";
+	const type = typeof record.type === "string" ? record.type : "";
 	const toolName = stringField(record, ["toolName", "tool_name", "name"]);
 	const callId = stringField(record, ["toolCallId", "tool_call_id", "toolUseId", "tool_use_id", "id"]);
 
 	if (type === "tool_execution_start" && isAskUserQuestionToolName(toolName)) {
-		return { phase: "start", callId, args: record["args"] };
+		return { phase: "start", callId, args: record.args };
 	}
 	if (type === "tool_execution_end" || type === "tool_execution_error" || type === "tool_result") {
 		return { phase: "end", callId, nameMatched: isAskUserQuestionToolName(toolName) };
@@ -306,11 +306,11 @@ export function readinessResultMeansAdvance(result: unknown): boolean {
 
 export function toolResultHasChatAnswer(result: unknown): boolean {
 	if (result === null || typeof result !== "object") return false;
-	const details = (result as Record<string, unknown>)["details"];
+	const details = (result as Record<string, unknown>).details;
 	if (details === null || typeof details !== "object") return false;
-	const answers = (details as Record<string, unknown>)["answers"];
+	const answers = (details as Record<string, unknown>).answers;
 	if (!Array.isArray(answers)) return false;
-	return answers.some((a) => a !== null && typeof a === "object" && (a as Record<string, unknown>)["kind"] === "chat");
+	return answers.some((a) => a !== null && typeof a === "object" && (a as Record<string, unknown>).kind === "chat");
 }
 
 export { RESUME_CONTINUATION_PROMPT } from "../../shared/resume-continuation.js";
@@ -326,7 +326,10 @@ export function shouldInjectResumeContinuation(state: {
 
 let cachedReadinessGateTool: ReturnType<typeof createAskUserQuestionToolDefinition> | undefined;
 function readinessGateTool(): ReturnType<typeof createAskUserQuestionToolDefinition> {
-	return (cachedReadinessGateTool ??= createAskUserQuestionToolDefinition());
+	if (cachedReadinessGateTool === undefined) {
+		cachedReadinessGateTool = createAskUserQuestionToolDefinition();
+	}
+	return cachedReadinessGateTool;
 }
 
 export async function askReadinessViaStageBroker(

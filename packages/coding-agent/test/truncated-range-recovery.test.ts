@@ -424,7 +424,7 @@ describe("truncated recovery: private diagnostic sidecar", () => {
 describe("truncated recovery: real-world Copilot GPT shape", () => {
 	it("recovers large number of records from Copilot-style truncated response", () => {
 		const records = Array.from({ length: 50 }, (_, i) => `${i * 10 + 5},${i * 10 + 9}`);
-		const text = records.join("\n") + "\n505,";
+		const text = `${records.join("\n")}\n505,`;
 		const result = recoverTruncatedRecords(text);
 		expect(result).toBeDefined();
 		expect(result!.recoveredCount).toBe(50);
@@ -434,7 +434,7 @@ describe("truncated recovery: real-world Copilot GPT shape", () => {
 
 	it("end-to-end: Copilot GPT truncated response flows through planner", async () => {
 		const records = Array.from({ length: 15 }, (_, i) => `${i * 12 + 5},${i * 12 + 10}`);
-		const truncatedText = records.join("\n") + "\n185,";
+		const truncatedText = `${records.join("\n")}\n185,`;
 		const result = await plan(truncatedText, "length", { lineCount: 200 });
 		expect(result.length).toBe(15);
 		expect(result[0]).toEqual({ start: 5, end: 10 });

@@ -42,7 +42,7 @@ function getFirstToolResultMessage(
 	harness: Harness,
 ): Extract<(typeof harness.session.messages)[number], { role: "toolResult" }> {
 	const message = harness.session.messages.find((candidate) => candidate.role === "toolResult");
-	if (!message || message.role !== "toolResult") {
+	if (message?.role !== "toolResult") {
 		throw new Error("Expected a toolResult message");
 	}
 	return message;

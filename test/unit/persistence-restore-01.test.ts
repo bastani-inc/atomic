@@ -6,9 +6,8 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
-import type { InFlightRun, SessionEntry } from "../../packages/workflows/src/shared/persistence-restore.js";
-import { restoreOnSessionStart, scanInFlightRuns } from "../../packages/workflows/src/shared/persistence-restore.js";
-import { createStore } from "../../packages/workflows/src/shared/store.js";
+import type { SessionEntry } from "../../packages/workflows/src/shared/persistence-restore.js";
+import { scanInFlightRuns } from "../../packages/workflows/src/shared/persistence-restore.js";
 
 // ---------------------------------------------------------------------------
 // scanInFlightRuns
@@ -93,7 +92,7 @@ describe("scanInFlightRuns", () => {
 			{ id: "e1", type: "workflow.run.start", payload: { runId: "r1", name: "wf", inputs: { key: "val" }, ts: 1 } },
 		];
 		const result = scanInFlightRuns(entries);
-		assert.equal((result[0]!.inputs as Record<string, unknown>)["key"], "val");
+		assert.equal((result[0]!.inputs as Record<string, unknown>).key, "val");
 	});
 
 	test("handles missing/malformed run.start payload gracefully", () => {

@@ -249,7 +249,7 @@ if (scenarioKey === "stages") {
 const lines = view.render(width);
 
 process.stdout.write(`\n=== overlay  scenario=${scenarioKey}  width=${width}  rows=${rows} ===\n\n`);
-for (const line of lines) process.stdout.write(line + "\n");
+for (const line of lines) process.stdout.write(`${line}\n`);
 process.stdout.write("\n=== end ===\n");
 
 view.dispose();

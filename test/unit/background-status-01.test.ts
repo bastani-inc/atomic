@@ -11,7 +11,6 @@ import {
 	interruptRun,
 	killAllRuns,
 	killRun,
-	pauseRun,
 	resumeRun,
 	statusRuns,
 } from "../../packages/workflows/src/runs/background/status.js";
@@ -75,7 +74,7 @@ import type {
 	StageControlStatus,
 } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 
-function registerStageHandle(
+function _registerStageHandle(
 	registry: ReturnType<typeof createStageControlRegistry>,
 	runId: string,
 	stageId: string,

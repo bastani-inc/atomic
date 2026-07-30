@@ -28,7 +28,7 @@ function retainedSession(): string {
 	const sessionFile = join(tempDir, "retained.jsonl");
 	writeFileSync(
 		sessionFile,
-		[
+		`${[
 			JSON.stringify({
 				type: "session",
 				version: 3,
@@ -43,7 +43,7 @@ function retainedSession(): string {
 				timestamp: new Date().toISOString(),
 				message: { role: "user", content: "Original request" },
 			}),
-		].join("\n") + "\n",
+		].join("\n")}\n`,
 	);
 	return sessionFile;
 }
@@ -342,7 +342,9 @@ test("a handle without admission-aware send never enters the legacy fallback", a
 			fallbackMutations += 1;
 		},
 		async pause() {},
-		async resume() {},
+		async resume() {
+			return undefined;
+		},
 		subscribe() {
 			return () => {};
 		},
@@ -408,11 +410,15 @@ test("replacement revokes provisional admission and settles its send lease", asy
 			deliveryMutations += 1;
 			return "prompt" as const;
 		},
-		async prompt() {},
+		async prompt() {
+			return undefined;
+		},
 		async steer() {},
 		async followUp() {},
 		async pause() {},
-		async resume() {},
+		async resume() {
+			return undefined;
+		},
 		subscribe() {
 			return () => {};
 		},

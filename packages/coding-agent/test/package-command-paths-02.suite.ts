@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -26,7 +26,7 @@ describe("package commands", () => {
 		return typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
 	}
 
-	async function waitForDrainMarker(getCallback: () => WriteCallback | undefined): Promise<WriteCallback> {
+	async function _waitForDrainMarker(getCallback: () => WriteCallback | undefined): Promise<WriteCallback> {
 		for (let attempt = 0; attempt < 10; attempt++) {
 			const callback = getCallback();
 			if (callback) {
@@ -37,7 +37,7 @@ describe("package commands", () => {
 		throw new Error("stdio drain marker was not written");
 	}
 
-	function createWriteMock(onEmptyWrite: (callback: WriteCallback | undefined) => void): typeof process.stdout.write {
+	function _createWriteMock(onEmptyWrite: (callback: WriteCallback | undefined) => void): typeof process.stdout.write {
 		return ((
 			chunk: string | Uint8Array,
 			encodingOrCallback?: WriteEncodingOrCallback,

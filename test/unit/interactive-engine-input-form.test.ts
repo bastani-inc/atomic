@@ -112,10 +112,11 @@ function makeBridge(keybindings = new KeybindingsManager()) {
 		hostMessages,
 		mounts,
 		workingVisibility,
-		emitReady: () =>
-			listeners.forEach((listener) =>
-				listener({ type: "engine_ready", protocolVersion: INTERACTIVE_ENGINE_PROTOCOL_VERSION, pid: 7 }),
-			),
+		emitReady: () => {
+			listeners.forEach((listener) => {
+				listener({ type: "engine_ready", protocolVersion: INTERACTIVE_ENGINE_PROTOCOL_VERSION, pid: 7 });
+			});
+		},
 	};
 }
 
@@ -313,7 +314,7 @@ describe("host-native input form", () => {
 		assert.ok(direct);
 		assert.equal(Object.getPrototypeOf(direct), Object.prototype);
 		assert.equal(Object.hasOwn(direct, "__proto__"), true);
-		assert.equal(direct.__proto__, "kept");
+		assert.equal(Reflect.get(direct, "__proto__"), "kept");
 
 		const bridge = makeBridge();
 		const isolated = bridge.child.open({
@@ -327,7 +328,7 @@ describe("host-native input form", () => {
 		assert.ok(values);
 		assert.equal(Object.getPrototypeOf(values), Object.prototype);
 		assert.equal(Object.hasOwn(values, "__proto__"), true);
-		assert.equal(values.__proto__, "kept");
+		assert.equal(Reflect.get(values, "__proto__"), "kept");
 		bridge.controller.dispose();
 	});
 

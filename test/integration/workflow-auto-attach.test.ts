@@ -40,7 +40,7 @@ async function createFactoryHost() {
 	}
 
 	assert.ok(registeredTool, "expected workflow tool registration");
-	const workflowCommand = mock.commands["workflow"];
+	const workflowCommand = mock.commands.workflow;
 	assert.ok(workflowCommand, "expected /workflow command registration");
 
 	return { ...mock, tool: registeredTool, workflowCommand };

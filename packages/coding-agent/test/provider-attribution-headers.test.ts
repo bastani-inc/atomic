@@ -73,7 +73,7 @@ describe("mergeProviderAttributionHeaders — ProviderHeaders null preservation"
 		// A lone null is a real suppression directive; the merged object must be
 		// returned (not collapsed to undefined) so pi-ai receives it.
 		expect(merged).toBeDefined();
-		expect(merged?.["Authorization"]).toBeNull();
+		expect(merged?.Authorization).toBeNull();
 	});
 
 	it("lets a later null override an earlier string value for the same (case-insensitive) header", () => {

@@ -155,7 +155,7 @@ describe("executor.run", () => {
 		);
 		assert.equal(wfResult.status, "completed");
 		assert.deepEqual(seenPrompts, ["analyze auth", "out:1", "implement from out:2"]);
-		assert.equal(wfResult.result?.["final"], "out:3");
+		assert.equal(wfResult.result?.final, "out:3");
 	});
 	test("ctx.parallel follows direct workflow shared task fallback", async () => {
 		const seenPrompts: string[] = [];
@@ -188,7 +188,7 @@ describe("executor.run", () => {
 		);
 		assert.equal(wfResult.status, "completed");
 		assert.deepEqual(seenPrompts.sort(), ["audit UI", "audit UI"]);
-		assert.equal(wfResult.result?.["count"], 2);
+		assert.equal(wfResult.result?.count, 2);
 	});
 	test("ctx.task forwards createAgentSession options to the SDK session", async () => {
 		const calls: CreateAgentSessionOptions[] = [];
@@ -264,7 +264,7 @@ describe("executor.run", () => {
 			},
 		);
 		assert.equal(wfResult.status, "completed");
-		assert.equal(wfResult.result?.["approved"], true);
+		assert.equal(wfResult.result?.approved, true);
 		assert.deepEqual(calls[0]?.tools, ["read", "structured_output"]);
 		assert.equal(
 			calls[0]?.customTools?.some((tool) => tool.name === "structured_output"),
@@ -317,9 +317,9 @@ describe("executor.run", () => {
 			},
 		);
 		assert.equal(wfResult.status, "completed");
-		assert.equal(wfResult.result?.["chainStructured"], true);
-		assert.equal(wfResult.result?.["parallelStructured"], true);
-		assert.equal(wfResult.result?.["plainStructured"], false);
+		assert.equal(wfResult.result?.chainStructured, true);
+		assert.equal(wfResult.result?.parallelStructured, true);
+		assert.equal(wfResult.result?.plainStructured, false);
 		assert.equal(
 			calls.filter((call) => call.customTools?.some((tool) => tool.name === "structured_output")).length,
 			2,
@@ -354,7 +354,7 @@ describe("executor.run", () => {
 			},
 		);
 		assert.equal(wfResult.status, "completed");
-		assert.match(String(wfResult.result?.["text"]), /^first li\n\n\[workflow output truncated/);
+		assert.match(String(wfResult.result?.text), /^first li\n\n\[workflow output truncated/);
 	});
 	test("ctx.chain prepends reads as resolved instructions from chainDir", async () => {
 		const seenPrompts: string[] = [];
@@ -431,7 +431,7 @@ describe("executor.run", () => {
 		);
 		assert.equal(wfResult.status, "completed");
 		assert.equal(readFileSync(output, "utf8"), "full task output");
-		assert.match(String(wfResult.result?.["text"]), /Output saved to:/);
+		assert.match(String(wfResult.result?.text), /Output saved to:/);
 	});
 	test("ctx.parallel forwards step output options", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "workflow-parallel-output-"));
@@ -469,6 +469,6 @@ describe("executor.run", () => {
 		);
 		assert.equal(wfResult.status, "completed");
 		assert.equal(readFileSync(output, "utf8"), "parallel task output");
-		assert.match(String(wfResult.result?.["text"]), /Output saved to:/);
+		assert.match(String(wfResult.result?.text), /Output saved to:/);
 	});
 });

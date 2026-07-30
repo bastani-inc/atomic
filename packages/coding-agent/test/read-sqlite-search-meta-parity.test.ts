@@ -8,15 +8,6 @@ import { createSearchToolDefinition } from "../src/core/tools/search.ts";
 import { createWriteToolDefinition } from "../src/core/tools/write.ts";
 import { sqlite } from "./helpers/sqlite.ts";
 
-interface SqliteQuery {
-	all(...params: Array<string | number>): Record<string, string | number | null>[];
-	run(...params: Array<string | number>): void;
-}
-interface SqliteDb {
-	run(sql: string, ...params: Array<string | number>): void;
-	query(sql: string): SqliteQuery;
-	close(): void;
-}
 const text = (result: { content: Array<{ type: string; text?: string }> }): string =>
 	result.content.map((item) => item.text ?? "").join("\n");
 const tempDirs: string[] = [];

@@ -55,7 +55,7 @@ export class EngineInputFormService {
 
 	handleLine(line: string): boolean {
 		const command = parseInteractiveEngineCommand(line);
-		if (!command || !command.type.startsWith("engine_input_form_")) return false;
+		if (!command?.type.startsWith("engine_input_form_")) return false;
 		const record = this.active.get(command.componentId);
 		if (!record) return true;
 		if (command.type === "engine_input_form_submit") record.resolve(command.values);

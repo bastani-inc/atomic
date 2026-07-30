@@ -36,7 +36,7 @@ type DeclaredOutputEntry<K extends string, S extends TSchema> =
 type WorkflowResolvedInputShapeFromSchemas<TSchemas extends WorkflowInputSchemaMap> = [SchemaKeys<TSchemas>] extends [
 	never,
 ]
-	? {}
+	? Record<never, never>
 	: Simplify<
 			UnionToIntersection<
 				{
@@ -48,7 +48,7 @@ type WorkflowResolvedInputShapeFromSchemas<TSchemas extends WorkflowInputSchemaM
 type WorkflowProvidedInputShapeFromSchemas<TSchemas extends WorkflowInputSchemaMap> = [SchemaKeys<TSchemas>] extends [
 	never,
 ]
-	? {}
+	? Record<never, never>
 	: Simplify<
 			UnionToIntersection<
 				{
@@ -68,7 +68,7 @@ export type WorkflowProvidedInputsFromSchemas<TSchemas extends WorkflowInputSche
 type WorkflowDeclaredOutputsFromSchemas<TSchemas extends WorkflowOutputSchemaMap> = [SchemaKeys<TSchemas>] extends [
 	never,
 ]
-	? {}
+	? Record<never, never>
 	: Simplify<
 			UnionToIntersection<
 				{
@@ -90,7 +90,7 @@ export type WorkflowRunOutputResult<
 > = NoExtraWorkflowOutputs<WorkflowOutputsFromSchemas<TOutputs>, TActualOutputs>;
 
 export interface AuthoredWorkflowSpec<
-	TInputs extends WorkflowInputSchemaMap = {},
+	TInputs extends WorkflowInputSchemaMap = Record<never, never>,
 	TOutputs extends WorkflowOutputSchemaMap = WorkflowOutputSchemaMap,
 	TActualOutputs extends WorkflowOutputsFromSchemas<TOutputs> = WorkflowOutputsFromSchemas<TOutputs>,
 	TRunContext = unknown,

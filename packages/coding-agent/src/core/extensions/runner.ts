@@ -295,7 +295,8 @@ export class ExtensionRunner {
 
 	setFlagValue(name: string, value: boolean | string): void {
 		this.runtime.flagValues.set(name, value);
-		(this.runtime.explicitFlagNames ??= new Set()).add(name);
+		this.runtime.explicitFlagNames ??= new Set();
+		this.runtime.explicitFlagNames.add(name);
 	}
 
 	getFlagValues(): Map<string, boolean | string> {

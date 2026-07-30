@@ -215,10 +215,10 @@ describe("interactive durable tool failure lifecycle", () => {
 		assert.equal(failed.toolNodes?.[0]?.error, "commit hook rejected docs");
 		assert.equal(failed.failedToolNodeId, failed.toolNodes?.[0]?.id);
 		const persistedRunEnd = persisted.find(
-			(entry) => entry.type === "workflow.run.end" && entry.payload["runId"] === runId,
+			(entry) => entry.type === "workflow.run.end" && entry.payload.runId === runId,
 		);
-		assert.equal(persistedRunEnd?.payload["failedToolNodeId"], failed.failedToolNodeId);
-		assert.equal((persistedRunEnd?.payload["failedToolNode"] as { status?: string } | undefined)?.status, "failed");
+		assert.equal(persistedRunEnd?.payload.failedToolNodeId, failed.failedToolNodeId);
+		assert.equal((persistedRunEnd?.payload.failedToolNode as { status?: string } | undefined)?.status, "failed");
 		const failureCheckpoint = backend
 			.listCheckpoints(runId)
 			.find((checkpoint) => checkpoint.kind === "tool" && checkpoint.throwingFailureError !== undefined);

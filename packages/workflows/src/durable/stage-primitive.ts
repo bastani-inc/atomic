@@ -513,7 +513,7 @@ export function recordCachedStageWithTracker(
 			sourceToReplayedNodeIds?.get(sourceId) ??
 			run?.stages.find((stage) => stage.id === sourceId || stage.replayedFromStageId === sourceId)?.id,
 	);
-	if (restored !== undefined && restored.every((id): id is string => id !== undefined)) {
+	if (restored?.every((id): id is string => id !== undefined)) {
 		parentIds = restored;
 		tracker.replaceParents(stageId, parentIds);
 	} else if (stageFailFastScope !== undefined) {
@@ -535,7 +535,7 @@ export function recordCachedStageWithTracker(
 }
 function isWorkflowTaskResult(value: WorkflowSerializableValue): value is WorkflowTaskResult {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-	return typeof (value as Record<string, WorkflowSerializableValue>)["text"] === "string";
+	return typeof (value as Record<string, WorkflowSerializableValue>).text === "string";
 }
 
 function workflowChildSnapshotFromResult(

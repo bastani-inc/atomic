@@ -112,8 +112,7 @@ export function renderSwitcher(stages: readonly StageSnapshot[], state: Switcher
 
 	// Quiet rule under header. Keep it inside the rounded panel instead of
 	// joining into the side borders with square tee glyphs.
-	const rule =
-		innerWidth <= 2 ? " ".repeat(innerWidth) : " " + `${dim}${"─".repeat(innerWidth - 2)}${RESET}${panelBg}` + " ";
+	const rule = innerWidth <= 2 ? " ".repeat(innerWidth) : ` ${dim}${"─".repeat(innerWidth - 2)}${RESET}${panelBg} `;
 	lines.push(`${border}│${RESET}${panelBg}${rule}${border}│${RESET}`);
 
 	// Stage list — viewport of 8 around selection

@@ -89,8 +89,8 @@ describe("goal create_pr", () => {
 
 		const result = await d.run(ctx);
 
-		assert.equal(result["status"], "needs_human");
-		assert.equal(result["approved"], false);
+		assert.equal(result.status, "needs_human");
+		assert.equal(result.approved, false);
 		assert.equal(ctx.calls.task.includes("pull-request"), false);
 		assert.equal(Object.hasOwn(result, "pr_report"), false);
 	});
@@ -133,8 +133,8 @@ describe("goal create_pr", () => {
 		const result = await d.run({ ...ctx, cwd });
 
 		assert.equal(ctx.calls.task.includes("pull-request"), true);
-		assert.match(String(result["pr_report"]), /\[mock-task:pull-request\]/);
-		assert.doesNotMatch(String(result["pr_report"]), /creation skipped/);
+		assert.match(String(result.pr_report), /\[mock-task:pull-request\]/);
+		assert.doesNotMatch(String(result.pr_report), /creation skipped/);
 
 		const prompt = ctx.calls.prompts["pull-request"]?.[0] ?? "";
 		assert.match(prompt, /provider-appropriate pull request, merge request, or code-review handoff/i);
@@ -148,8 +148,8 @@ describe("goal create_pr", () => {
 		assert.match(prompt, /Sapling\/Phabricator `sl`\/Phabricator\/Differential tooling/);
 
 		const prReads = readPaths(ctx.calls.taskOptions["pull-request"]?.[0]);
-		assert.ok(prReads.includes(result["ledger_path"] as string));
-		assert.ok(prReads.includes(result["review_report_path"] as string));
+		assert.ok(prReads.includes(result.ledger_path as string));
+		assert.ok(prReads.includes(result.review_report_path as string));
 		assert.ok(prReads.some((path) => path.endsWith("orchestrator-receipt.md")));
 	});
 });

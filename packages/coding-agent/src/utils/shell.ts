@@ -178,7 +178,7 @@ interface DetachedChildGuardian {
 
 let detachedChildGuardian: DetachedChildGuardian | undefined;
 
-const PARENT_GUARDIAN_SOURCE = String.raw`
+const PARENT_GUARDIAN_SOURCE = `
 const { parentPort, workerData } = require("node:worker_threads");
 const { spawn } = require("node:child_process");
 const { existsSync } = require("node:fs");

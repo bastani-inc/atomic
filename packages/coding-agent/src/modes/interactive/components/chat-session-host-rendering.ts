@@ -122,7 +122,7 @@ export function renderChatSessionEditor<TExtraEntry extends ChatTranscriptEntryL
 		: disabled
 			? ""
 			: state.style.cursor();
-	const left = state.style.accentBold("❯") + " " + value;
+	const left = `${state.style.accentBold("❯")} ${value}`;
 	const gap = Math.max(0, width - visibleWidth(stripAnsi(left)));
 	const body = left + " ".repeat(gap);
 	return [rule, body, rule];

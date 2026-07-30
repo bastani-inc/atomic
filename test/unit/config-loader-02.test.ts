@@ -37,7 +37,7 @@ async function writeJson(dir: string, filename: string, content: unknown): Promi
 	return filePath;
 }
 
-async function writeBadJson(dir: string, filename: string): Promise<string> {
+async function _writeBadJson(dir: string, filename: string): Promise<string> {
 	const filePath = join(dir, filename);
 	await writeFile(filePath, "{ this is not valid json }", "utf8");
 	return filePath;

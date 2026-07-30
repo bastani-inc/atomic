@@ -478,7 +478,7 @@ test("durable boundary records preserve failed and exited child lifecycle withou
 					Record<string, import("../../packages/workflows/src/shared/types.js").WorkflowSerializableValue>
 				>)
 			: undefined;
-	assert.equal(exitedRecord?.["status"], "skipped");
+	assert.equal(exitedRecord?.status, "skipped");
 	assert.equal(terminals[0]?.kind === "stage" ? terminals[0].output : undefined, undefined);
 });
 

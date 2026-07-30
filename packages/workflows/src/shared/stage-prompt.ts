@@ -139,7 +139,7 @@ export function coerceStageInputAnswer(value: unknown): StageInputAnswer {
 	// (e.g. `{ answers: [{ question, answer }] }`) is NOT genuine: forwarding it
 	// raw makes the tool envelope match no question index and reply
 	// "User declined to answer questions", stranding the prompt.
-	const answersArray = Array.isArray(record["answers"]) ? (record["answers"] as readonly unknown[]) : undefined;
+	const answersArray = Array.isArray(record.answers) ? (record.answers as readonly unknown[]) : undefined;
 	if (
 		answersArray !== undefined &&
 		answersArray.length > 0 &&
@@ -147,7 +147,7 @@ export function coerceStageInputAnswer(value: unknown): StageInputAnswer {
 			(entry) =>
 				entry !== null &&
 				typeof entry === "object" &&
-				typeof (entry as Record<string, unknown>)["questionIndex"] === "number",
+				typeof (entry as Record<string, unknown>).questionIndex === "number",
 		)
 	) {
 		return { raw: value };
@@ -158,10 +158,10 @@ export function coerceStageInputAnswer(value: unknown): StageInputAnswer {
 	// value the adapter can resolve against the question's options (so it assigns
 	// the correct questionIndex), rather than forwarding an unusable result.
 	const source = answerBearingRecord(record);
-	const labels = readStringArray(source["optionLabels"]) ?? readStringArray(source["selected"]);
+	const labels = readStringArray(source.optionLabels) ?? readStringArray(source.selected);
 	if (labels !== undefined) return { optionLabels: labels };
 
-	const text = readFirstString(source["answer"], source["response"], source["label"], source["text"]);
+	const text = readFirstString(source.answer, source.response, source.label, source.text);
 	if (text !== undefined) return { text };
 
 	// Nothing resolvable — decline rather than forward an unusable result.
@@ -174,29 +174,29 @@ function firstObjectOf(value: unknown): Record<string, unknown> | undefined {
 }
 
 function answerBearingRecord(record: Record<string, unknown>): Record<string, unknown> {
-	return firstObjectOf(record["answers"]) ?? firstObjectOf(record["questions"]) ?? record;
+	return firstObjectOf(record.answers) ?? firstObjectOf(record.questions) ?? record;
 }
 
 function parseOption(value: unknown): StageInputQuestion["options"][number] | undefined {
 	if (value === null || typeof value !== "object") return undefined;
 	const record = value as Record<string, unknown>;
-	const label = asString(record["label"]);
+	const label = asString(record.label);
 	if (label === undefined) return undefined;
-	const description = asString(record["description"]);
+	const description = asString(record.description);
 	return description !== undefined ? { label, description } : { label };
 }
 
 function parseQuestion(value: unknown): StageInputQuestion | undefined {
 	if (value === null || typeof value !== "object") return undefined;
 	const record = value as Record<string, unknown>;
-	const question = asString(record["question"]);
+	const question = asString(record.question);
 	if (question === undefined) return undefined;
-	const rawOptions = Array.isArray(record["options"]) ? record["options"] : [];
+	const rawOptions = Array.isArray(record.options) ? record.options : [];
 	const options = rawOptions
 		.map(parseOption)
 		.filter((option): option is StageInputQuestion["options"][number] => option !== undefined);
-	const header = asString(record["header"]);
-	const multiSelect = record["multiSelect"] === true;
+	const header = asString(record.header);
+	const multiSelect = record.multiSelect === true;
 	return {
 		question,
 		...(header !== undefined ? { header } : {}),
@@ -212,7 +212,7 @@ function parseQuestion(value: unknown): StageInputQuestion | undefined {
  */
 export function parseAskUserQuestionArgs(args: unknown): readonly StageInputQuestion[] | undefined {
 	if (args === null || typeof args !== "object") return undefined;
-	const rawQuestions = (args as Record<string, unknown>)["questions"];
+	const rawQuestions = (args as Record<string, unknown>).questions;
 	if (!Array.isArray(rawQuestions)) return undefined;
 	const questions = rawQuestions
 		.map(parseQuestion)

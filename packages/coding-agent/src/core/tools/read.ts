@@ -274,7 +274,7 @@ function formatReadResult(
 }
 function archiveSelectorMemberExists(pathValue: string, cwd: string): boolean {
 	const archive = parseArchiveSelector(pathValue);
-	if (!archive || !archive.memberPath) return false;
+	if (!archive?.memberPath) return false;
 	try {
 		readArchiveSelector(resolveArchiveSelector(archive, cwd));
 		return true;

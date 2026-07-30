@@ -90,8 +90,10 @@ export function createExtensionAPI(
 			const registration = { name, extensionPath: extension.path, ...options };
 			if (runtime.stageFlagRegistration?.(extension, name, registration, options.default)) return;
 			extension.flags.set(name, registration);
-			const flagOwners = (runtime.flagOwners ??= new Map());
-			const flagOwnerOrigins = (runtime.flagOwnerOrigins ??= new Map());
+			runtime.flagOwners ??= new Map();
+			const flagOwners = runtime.flagOwners;
+			runtime.flagOwnerOrigins ??= new Map();
+			const flagOwnerOrigins = runtime.flagOwnerOrigins;
 			if (!flagOwners.has(name)) {
 				flagOwners.set(name, extension.path);
 				flagOwnerOrigins.set(name, extension.sourceInfo.configurationOrigin);

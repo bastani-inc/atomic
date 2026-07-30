@@ -249,12 +249,13 @@ describe("buildRuntimeAdapters — SDK sessions", () => {
 		);
 
 		const uiContext = bindCalls[0]?.uiContext;
-		assert.equal(uiContext?.theme, theme);
-		assert.deepEqual((uiContext?.getAllThemes as () => unknown)(), [
+		assert.ok(uiContext);
+		assert.equal(uiContext.theme, theme);
+		assert.deepEqual((uiContext.getAllThemes as () => unknown)(), [
 			{ name: "host-theme", path: "/themes/host.json" },
 		]);
-		assert.equal((uiContext?.getTheme as (name: string) => unknown)("host-theme"), theme);
-		assert.equal((uiContext?.setTheme as (name: string) => { success: boolean })("host-theme").success, true);
-		assert.equal((uiContext?.getToolsExpanded as () => boolean)(), true);
+		assert.equal((uiContext.getTheme as (name: string) => unknown)("host-theme"), theme);
+		assert.equal((uiContext.setTheme as (name: string) => { success: boolean })("host-theme").success, true);
+		assert.equal((uiContext.getToolsExpanded as () => boolean)(), true);
 	});
 });

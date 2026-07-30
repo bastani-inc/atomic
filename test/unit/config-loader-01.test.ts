@@ -19,7 +19,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, test } from "vitest";
-import { type ConfigDiagnostic, loadWorkflowConfig } from "../../packages/workflows/src/extension/config-loader.js";
+import { loadWorkflowConfig } from "../../packages/workflows/src/extension/config-loader.js";
 
 // ---------------------------------------------------------------------------
 // Helpers

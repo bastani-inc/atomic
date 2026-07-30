@@ -180,7 +180,7 @@ type WorkflowRunInputArgument<TInputs extends WorkflowInputValues> = [keyof TInp
 	: TInputs;
 
 export type AuthoredWorkflowSpec<
-	TInputs extends WorkflowInputSchemaMap = {},
+	TInputs extends WorkflowInputSchemaMap = Record<never, never>,
 	TOutputs extends WorkflowOutputSchemaMap = WorkflowOutputSchemaMap,
 	TActualOutputs extends WorkflowOutputsFromSchemas<TOutputs> = WorkflowOutputsFromSchemas<TOutputs>,
 > = SharedAuthoredWorkflowSpec<
@@ -233,7 +233,7 @@ export interface WorkflowRegistry {
  */
 export declare const runWorkflow: never;
 export declare function workflow<
-	const TInputs extends WorkflowInputSchemaMap = {},
+	const TInputs extends WorkflowInputSchemaMap = Record<never, never>,
 	const TOutputs extends WorkflowOutputSchemaMap = WorkflowOutputSchemaMap,
 	TActualOutputs extends WorkflowOutputsFromSchemas<TOutputs> = WorkflowOutputsFromSchemas<TOutputs>,
 >(spec: AuthoredWorkflowSpec<TInputs, TOutputs, TActualOutputs>): AuthoredWorkflowDefinition<TInputs, TOutputs>;

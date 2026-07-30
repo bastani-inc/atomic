@@ -10,12 +10,7 @@ import { beforeEach, describe, test } from "vitest";
 import type { Store } from "../../packages/workflows/src/shared/store.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import type { WidgetRenderState } from "../../packages/workflows/src/tui/store-widget-installer.js";
-import {
-	decideWidgetAction,
-	installStoreWidget,
-	installToolExecutionHooks,
-} from "../../packages/workflows/src/tui/store-widget-installer.js";
+import { installToolExecutionHooks } from "../../packages/workflows/src/tui/store-widget-installer.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -58,7 +53,7 @@ interface FakeTimerHandle {
 	unref(): void;
 }
 
-function makeFakeTimers(): {
+function _makeFakeTimers(): {
 	setTimeout: (handler: () => void, delayMs: number) => FakeTimerHandle;
 	clearTimeout: (handle: FakeTimerHandle) => void;
 	scheduled: Array<{ handle: FakeTimerHandle; handler: () => void; delayMs: number; cleared: boolean }>;

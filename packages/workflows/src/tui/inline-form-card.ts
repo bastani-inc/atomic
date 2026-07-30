@@ -239,7 +239,7 @@ function renderFieldTop(
 	const label = ` ${title} `;
 	const labelText = paint(label, focused ? theme.accent : theme.textMuted, { bold: focused });
 	const fill = Math.max(0, width - visibleWidth(label) - 2);
-	return paint("╭", borderColor) + labelText + paint("─".repeat(fill) + "╮", borderColor);
+	return paint("╭", borderColor) + labelText + paint(`${"─".repeat(fill)}╮`, borderColor);
 }
 
 function renderFieldRow(row: string, contentWidth: number, borderColor: string): string {
@@ -249,7 +249,7 @@ function renderFieldRow(row: string, contentWidth: number, borderColor: string):
 }
 
 function renderFieldBottom(width: number, borderColor: string): string {
-	return paint("╰" + "─".repeat(Math.max(0, width - 2)) + "╯", borderColor);
+	return paint(`╰${"─".repeat(Math.max(0, width - 2))}╯`, borderColor);
 }
 
 function renderFieldMeta(field: WorkflowInputEntry, theme: GraphTheme, width: number): string[] {

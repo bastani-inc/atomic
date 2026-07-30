@@ -124,11 +124,11 @@ function reservationIds(sdk: ReturnType<typeof createMockSdk>): string[] {
 		if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
 		const event = value as Record<string, unknown>;
 		if (
-			event["__atomicPromptReservation"] === true &&
-			event["operation"] === "reserve" &&
-			typeof event["reservationId"] === "string"
+			event.__atomicPromptReservation === true &&
+			event.operation === "reserve" &&
+			typeof event.reservationId === "string"
 		)
-			ids.add(event["reservationId"]);
+			ids.add(event.reservationId);
 	}
 	return [...ids];
 }

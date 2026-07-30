@@ -23,7 +23,7 @@
  */
 
 import { existsSync, readdirSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { $ } from "bun";
 
 interface PackageJson {

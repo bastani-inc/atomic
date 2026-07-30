@@ -141,10 +141,10 @@ export function renderTodoCall(args: TodoToolParams, theme: Theme): Text {
 	const title = typeof args.title === "string" ? args.title : "";
 	let text = theme.fg("toolTitle", theme.bold("todo ")) + theme.fg("muted", action);
 	if (normalizedId) {
-		text += " " + theme.fg("accent", formatTodoId(normalizedId));
+		text += ` ${theme.fg("accent", formatTodoId(normalizedId))}`;
 	}
 	if (title) {
-		text += " " + theme.fg("dim", `"${title}"`);
+		text += ` ${theme.fg("dim", `"${title}"`)}`;
 	}
 	return new Text(text, 0, 0);
 }

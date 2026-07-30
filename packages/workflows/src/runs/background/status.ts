@@ -254,7 +254,7 @@ export async function resumeRun(
 		}
 		const reconciledRoot = activeStore.runs().find((candidate) => candidate.id === runId);
 		if (acknowledgements.failures.length > 0) {
-			const failureMessage = "Failed to resume workflow stages: " + acknowledgements.failures.join("; ");
+			const failureMessage = `Failed to resume workflow stages: ${acknowledgements.failures.join("; ")}`;
 			if (reconciledRoot?.status !== "running") throw new Error(failureMessage);
 			partialFailureMessage =
 				"Partially resumed " +
@@ -283,17 +283,16 @@ export async function resumeRun(
 		try {
 			const transition = await markDurableResumed(aggregateRootRunId);
 			if (transition === "refused") {
-				durabilityFailure =
-					"authoritative durable workflow " + aggregateRootRunId + " refused the running transition";
+				durabilityFailure = `authoritative durable workflow ${aggregateRootRunId} refused the running transition`;
 			}
 		} catch (error) {
 			durabilityFailure = error instanceof Error ? error.message : String(error);
 		}
 	}
 	if (durabilityFailure !== undefined) {
-		const durableMessage = "Durable resume transition failed after visible local resume: " + durabilityFailure + ".";
+		const durableMessage = `Durable resume transition failed after visible local resume: ${durabilityFailure}.`;
 		partialFailureMessage =
-			partialFailureMessage === undefined ? durableMessage : partialFailureMessage + " " + durableMessage;
+			partialFailureMessage === undefined ? durableMessage : `${partialFailureMessage} ${durableMessage}`;
 	}
 
 	const current = activeStore.runs().find((candidate) => candidate.id === runId) ?? run;

@@ -1,20 +1,11 @@
 // @ts-nocheck
 
 import assert from "node:assert/strict";
-import { describe, test } from "vitest";
-import {
-	buildModelCandidateIds,
-	buildModelCandidates,
-	buildModelCandidatesFromCatalog,
-	isRetryableModelFailure,
-	normalizeModelFailureSignal,
-	splitReasoningSuffix,
-	validateWorkflowModels,
-	WorkflowModelValidationError,
-} from "../../packages/workflows/src/runs/shared/model-fallback.js";
+import { test } from "vitest";
+import { splitReasoningSuffix } from "../../packages/workflows/src/runs/shared/model-fallback.js";
 import type { WorkflowModelInfo } from "../../packages/workflows/src/shared/types.js";
 
-const models: readonly WorkflowModelInfo[] = [
+const _models: readonly WorkflowModelInfo[] = [
 	{
 		provider: "anthropic",
 		id: "claude-sonnet-4",

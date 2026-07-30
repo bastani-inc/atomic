@@ -1,79 +1,32 @@
 // @ts-nocheck
 import { describe, test } from "vitest";
-import type {
-	ChatSurfacePayload,
-	ExtensionAPI,
-	ExtensionRuntime,
-	PiArgumentCompletion,
-	PiCommandContext,
-	PiCommandOptions,
-	PiCustomComponent,
-	PiCustomOverlayFactoryTui,
-	PiCustomOverlayFunction,
-	PiCustomOverlayOptions,
-	PiOverlayHandle,
-	PiToolOpts,
-	SessionEntry,
-	StageControlHandle,
-	StageSessionRuntime,
-	WorkflowDefinition,
-	WorkflowPersistencePort,
-	WorkflowToolArgs,
-} from "./slash-dispatch-utils.js";
+import type { ExtensionRuntime } from "./slash-dispatch-utils.js";
 import {
-	addFactoryStubs,
 	assert,
-	buildCtx,
-	buildMockPi,
-	buildStagePromptAdapter,
 	createExtensionRuntime,
 	createRegistry,
-	fakeAgentSession,
 	installSlashDispatchTestHooks,
-	jobTracker,
-	join,
-	LIFECYCLE_NOTICE_CUSTOM_TYPE,
 	makeExecuteWorkflowTool,
 	makeInflightRun,
 	makeRegisteredWorkflowTool,
-	makeRegisteredWorkflowToolWithResource,
-	mkdtemp,
-	parseWorkflowArgs,
-	recordTerminalRun,
-	registerLiveStageHandle,
-	registerTestStageHandle,
-	registerWorkflowCommand,
-	renderResult,
-	restoreOnSessionStart,
-	rm,
-	runFactory,
-	stageControlRegistry,
-	stageUiBroker,
 	store,
 	Type,
-	tmpdir,
-	tokenizeWorkflowArgs,
-	WORKFLOW_COMMAND_OUTPUT_CUSTOM_TYPE,
-	WORKFLOW_INVALID_PROVIDER_CREDENTIALS_MESSAGE,
 	WORKFLOW_STAGE_SUBAGENT_GUARD_ENV,
 	waitForToolPrompt,
 	waitForToolRunEnded,
 	workflow,
-	workflowPolicyFromContext,
-	writeFile,
-	writeWorkflowFixture,
 } from "./slash-dispatch-utils.js";
 
 installSlashDispatchTestHooks();
 
 describe("tool run-control actions", () => {
-	function makeToolHandler() {
+	function _makeToolHandler() {
 		const registry = createRegistry([]);
 		const runtime = createExtensionRuntime({ registry });
 		return makeExecuteWorkflowTool(runtime, () => undefined);
 	}
 
-	function makeDispatchTrackingWorkflowHandler(): {
+	function _makeDispatchTrackingWorkflowHandler(): {
 		handler: ReturnType<typeof makeExecuteWorkflowTool>;
 		wasDispatched: () => boolean;
 	} {
@@ -96,7 +49,7 @@ describe("tool run-control actions", () => {
 		};
 	}
 
-	function restoreWorkflowStageGuard(previousGuard: string | undefined): void {
+	function _restoreWorkflowStageGuard(previousGuard: string | undefined): void {
 		if (previousGuard === undefined) {
 			delete process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
 			return;
@@ -104,7 +57,7 @@ describe("tool run-control actions", () => {
 		process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV] = previousGuard;
 	}
 
-	function assertWorkflowToolBlocked(result: WorkflowToolResult, wasDispatched: () => boolean): void {
+	function _assertWorkflowToolBlocked(result: WorkflowToolResult, wasDispatched: () => boolean): void {
 		assert.equal(wasDispatched(), false);
 		assert.match((result as { error?: string }).error ?? "", /workflows cannot invoke workflows/);
 	}

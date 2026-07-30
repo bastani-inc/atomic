@@ -113,8 +113,6 @@ export function coerceValues(fields: readonly WorkflowInputEntry[], raw: Record<
 			case "select":
 				out[f.name] = v;
 				break;
-			case "text":
-			case "string":
 			default: {
 				// Try JSON for power users pasting structured data; otherwise treat
 				// as a literal string. Mirrors parseWorkflowArgs.

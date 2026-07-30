@@ -68,7 +68,6 @@ function pickBorder(status: StageStatus, focused: boolean, phase: number, theme:
 			return theme.dim;
 		case "skipped":
 			return theme.dim;
-		case "pending":
 		default:
 			// Pending has no semantic colour; the focused-tab carries the
 			// cursor signal, so we only lift the border one step.

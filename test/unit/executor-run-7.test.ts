@@ -62,7 +62,7 @@ describe("executor.run", () => {
 		);
 
 		assert.equal(result.status, "completed");
-		assert.equal(result.result?.["after"], "after-ok");
+		assert.equal(result.result?.after, "after-ok");
 		const stages = st.runs().find((runSnap) => runSnap.id === result.runId)!.stages;
 		const after = stages.find((stage) => stage.name === "after")!;
 		assert.equal(after.status, "completed");
@@ -325,7 +325,7 @@ describe("executor.run", () => {
 
 			const result = await runPromise;
 			assert.equal(result.status, "completed");
-			assert.equal(result.result?.["choice"], "prod");
+			assert.equal(result.result?.choice, "prod");
 			const completed = st
 				.runs()
 				.find((candidate) => candidate.id === custom.runId)!
@@ -406,7 +406,7 @@ describe("executor.run", () => {
 
 		const continued = await continuedPromise;
 		assert.equal(continued.status, "completed");
-		assert.equal(continued.result?.["choice"], "prod");
+		assert.equal(continued.result?.choice, "prod");
 		const replayedCustom = continued.stages.find((stage) => stage.name === "custom")!;
 		assert.equal(replayedCustom.replayed, true);
 		assert.equal(replayedCustom.replayedFromStageId, sourceCustom.id);

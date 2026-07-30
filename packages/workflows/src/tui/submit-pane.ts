@@ -128,7 +128,7 @@ function renderCompactSubmitButton(
 
 function renderReviewValueRows(field: WorkflowInputEntry, raw: string, theme: GraphTheme, width: number): string[] {
 	const plainPrefix = "   → ";
-	const firstPrefix = "   " + paint("→ ", theme.dim);
+	const firstPrefix = `   ${paint("→ ", theme.dim)}`;
 	return renderWrappedPrefixedLines({
 		text: formatFieldReviewValue(field, raw),
 		width,

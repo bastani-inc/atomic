@@ -6,8 +6,8 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
-import type { InFlightRun, SessionEntry } from "../../packages/workflows/src/shared/persistence-restore.js";
-import { restoreOnSessionStart, scanInFlightRuns } from "../../packages/workflows/src/shared/persistence-restore.js";
+import type { SessionEntry } from "../../packages/workflows/src/shared/persistence-restore.js";
+import { restoreOnSessionStart } from "../../packages/workflows/src/shared/persistence-restore.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 
 // ---------------------------------------------------------------------------

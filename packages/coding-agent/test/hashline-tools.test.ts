@@ -760,7 +760,7 @@ describe("hashline file tool parity", () => {
 		const dir = await createTempDir();
 		await writeFile(
 			join(dir, "long.txt"),
-			Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join("\n") + "\n",
+			`${Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join("\n")}\n`,
 			"utf8",
 		);
 		const read = createReadToolDefinition(dir, { hashlineStore });

@@ -38,7 +38,7 @@ function timingBucket(elapsedMs: number): number {
 export function priorRunElapsedMs(backend: DurableWorkflowBackend, workflowId: string): number | undefined {
 	const output = backend.getToolOutput(workflowId, RUN_TIMING_CHECKPOINT_NAME);
 	if (typeof output !== "object" || output === null || Array.isArray(output)) return undefined;
-	const elapsedMs = (output as Record<string, unknown>)["elapsedMs"];
+	const elapsedMs = (output as Record<string, unknown>).elapsedMs;
 	if (typeof elapsedMs !== "number" || !Number.isFinite(elapsedMs) || elapsedMs <= 0) return undefined;
 	return elapsedMs;
 }

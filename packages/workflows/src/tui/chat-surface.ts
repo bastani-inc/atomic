@@ -439,7 +439,6 @@ function stageGlyph(status: StageStatus): string {
 			return "？";
 		case "skipped":
 			return "⊘";
-		case "pending":
 		default:
 			return "○";
 	}
@@ -458,7 +457,6 @@ function stageColor(status: StageStatus, theme: GraphTheme): string {
 			return hexToAnsi(theme.info);
 		case "skipped":
 			return hexToAnsi(theme.dim);
-		case "pending":
 		default:
 			return hexToAnsi(theme.dim);
 	}

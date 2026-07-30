@@ -5,7 +5,7 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Agent, type AgentEvent, type AgentMessage } from "@earendil-works/pi-agent-core";
+import { Agent, type AgentMessage } from "@earendil-works/pi-agent-core";
 import {
 	type AssistantMessage,
 	type AssistantMessageEvent,
@@ -13,7 +13,6 @@ import {
 	getModel,
 	type TextContent,
 } from "@earendil-works/pi-ai/compat";
-import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -21,7 +20,6 @@ import { convertToLlm } from "../src/core/messages.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import type { BuildSystemPromptOptions } from "../src/core/system-prompt.ts";
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.ts";
 
 // Mock stream that mimics AssistantMessageEventStream
@@ -88,7 +86,7 @@ function textFromAgentMessage(message: AgentMessage): string {
 		.join("\n");
 }
 
-function drainQueuedTexts(agent: Agent): { steering: string[]; followUp: string[] } {
+function _drainQueuedTexts(agent: Agent): { steering: string[]; followUp: string[] } {
 	const agentWithQueues = agent as unknown as AgentQueueAccessForTest;
 	const drain = (queue: PendingAgentMessageQueueForTest | undefined): string[] => {
 		const texts: string[] = [];

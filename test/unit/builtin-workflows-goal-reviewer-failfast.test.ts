@@ -27,16 +27,16 @@ describe("goal reviewer failure fail-fast", () => {
 
 		const result = await d.run(ctx);
 
-		assert.equal(result["status"], "needs_human");
-		assert.equal(result["approved"], false);
-		assert.equal(result["turns_completed"], 1);
+		assert.equal(result.status, "needs_human");
+		assert.equal(result.approved, false);
+		assert.equal(result.turns_completed, 1);
 		assert.deepEqual(ctx.calls.task, ["orchestrator-1"]);
 		assert.equal(ctx.calls.parallel.length, 1);
 		assert.equal(ctx.calls.parallelOptions[0]?.failFast, true);
-		assert.match(String(result["remaining_work"]), /Recover reviewer execution/);
-		assert.match(String(result["remaining_work"]), /github-copilot/);
+		assert.match(String(result.remaining_work), /Recover reviewer execution/);
+		assert.match(String(result.remaining_work), /github-copilot/);
 
-		const ledger = JSON.parse(readFileSync(result["ledger_path"] as string, "utf8")) as {
+		const ledger = JSON.parse(readFileSync(result.ledger_path as string, "utf8")) as {
 			status: string;
 			receipts: readonly unknown[];
 			reviews: readonly { reviewer: string; decision: string }[];

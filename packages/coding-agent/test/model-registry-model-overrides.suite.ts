@@ -4,16 +4,7 @@ import { describeModelRegistry } from "./model-registry-fixtures.ts";
 import { createModelRegistry } from "./model-runtime-test-utils.ts";
 
 describeModelRegistry((context) => {
-	const {
-		providerConfig,
-		writeModelsJson,
-		getModelsForProvider,
-		toShPath,
-		overrideConfig,
-		writeRawModelsJson,
-		openAiModel,
-		emptyContext,
-	} = context;
+	const { getModelsForProvider, writeRawModelsJson } = context;
 	describe("modelOverrides (per-model customization)", () => {
 		test("model override applies to a single built-in model", async () => {
 			writeRawModelsJson({

@@ -152,7 +152,6 @@ function toneColor(theme: GraphTheme, tone: WorkflowNoticeTone): string {
 			return theme.error;
 		case "mauve":
 			return theme.mauve;
-		case "info":
 		default:
 			return theme.info;
 	}

@@ -156,10 +156,10 @@ describe("executor — stage-control registry integration", () => {
 			...mockSession(),
 			async prompt() {
 				streaming = true;
-				return new Promise<void>((resolve, reject) => {
+				return new Promise<string | undefined>((resolve, reject) => {
 					promptResolve = () => {
 						streaming = false;
-						resolve();
+						resolve(undefined);
 					};
 					promptReject = (err) => {
 						streaming = false;
@@ -407,8 +407,8 @@ describe("executor — stage-control registry integration", () => {
 		);
 
 		const stageEnd = calls.find((call) => call.type === "workflow.stage.end");
-		assert.equal(stageEnd?.payload["sessionId"], "sess-test-1");
-		assert.equal(stageEnd?.payload["sessionFile"], "/tmp/atomic-test-session.ndjson");
+		assert.equal(stageEnd?.payload.sessionId, "sess-test-1");
+		assert.equal(stageEnd?.payload.sessionFile, "/tmp/atomic-test-session.ndjson");
 	});
 
 	test("attachable flag is cleared once the stage settles", async () => {

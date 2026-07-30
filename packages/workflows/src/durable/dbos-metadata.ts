@@ -115,10 +115,10 @@ function classifyMetadataRecord(
 		return { kind: "unknown" };
 	}
 	const raw = record.output as Record<string, WorkflowSerializableValue>;
-	if (raw["__atomicDurableMetadata"] !== true || !isCurrentDurableFormat(raw["version"])) {
+	if (raw.__atomicDurableMetadata !== true || !isCurrentDurableFormat(raw.version)) {
 		return { kind: "unknown" };
 	}
-	const metadata = parseDurableWorkflowMetadata(raw["metadata"], workflowId);
+	const metadata = parseDurableWorkflowMetadata(raw.metadata, workflowId);
 	return metadata === undefined ? { kind: "unknown" } : { kind: "current", metadata };
 }
 

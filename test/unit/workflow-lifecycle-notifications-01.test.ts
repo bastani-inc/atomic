@@ -1,20 +1,16 @@
 // @ts-nocheck
 
 import assert from "node:assert/strict";
-import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, test } from "vitest";
 import {
 	createWorkflowLifecycleNotificationState,
-	formatWorkflowLifecycleNoticeText,
 	installWorkflowLifecycleNotifications,
 	LIFECYCLE_NOTICE_CUSTOM_TYPE,
 	LIFECYCLE_NOTICE_SNIPPET_LIMIT,
-	registerLifecycleNoticeRenderer,
 	resetWorkflowLifecycleNotificationState,
 	seedWorkflowLifecycleNotificationState,
 	type WorkflowLifecycleNoticeDetails,
 	withWorkflowLifecycleNotificationsSuppressed,
-	withWorkflowLifecycleNotificationsSuppressedAsync,
 } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
 import { restoreOnSessionStart, type SessionEntry } from "../../packages/workflows/src/shared/persistence-restore.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
@@ -25,16 +21,6 @@ interface SentMessage {
 	readonly content?: string;
 	readonly display?: boolean;
 	readonly details?: WorkflowLifecycleNoticeDetails;
-}
-
-interface CardComponent {
-	render(width: number): string[];
-	invalidate?(): void;
-}
-
-interface RegisteredRenderer {
-	readonly event: string;
-	readonly renderer: (payload: unknown) => unknown;
 }
 
 type SendOptions = {

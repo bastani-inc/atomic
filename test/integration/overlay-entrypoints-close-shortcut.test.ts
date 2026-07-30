@@ -116,7 +116,7 @@ describe("extension factory — F2 shortcut", () => {
 		const { pi, shortcuts, customCalls } = buildMockPi();
 		factory(pi);
 
-		shortcuts["F2"]!();
+		shortcuts.F2!();
 
 		assert.ok(customCalls.length >= 1);
 		assert.equal(customCalls[0]!.options.overlay, true);
@@ -130,7 +130,7 @@ describe("extension factory — F2 shortcut", () => {
 		factory(pi);
 
 		const { ctx, customCalls } = buildPrintCtxWithRealCustom();
-		shortcuts["F2"]!(ctx);
+		shortcuts.F2!(ctx);
 
 		assert.equal(customCalls.length, 1);
 		assert.equal(customCalls[0]!.options.overlay, true);
@@ -140,7 +140,7 @@ describe("extension factory — F2 shortcut", () => {
 		const { pi, shortcuts } = buildMockPi();
 		factory(pi);
 		// store.activeRunId() → null when no run started.
-		assert.doesNotThrow(() => shortcuts["F2"]!());
+		assert.doesNotThrow(() => shortcuts.F2!());
 	});
 
 	test("F2 shortcut NOT registered when registerShortcut absent", () => {

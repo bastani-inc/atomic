@@ -30,7 +30,7 @@ export interface SlashSubagentUpdate {
 }
 
 interface EventBus {
-	on(event: string, handler: (data: unknown) => void): (() => void) | void;
+	on(event: string, handler: (data: unknown) => void): (() => void) | undefined;
 	emit(event: string, data: unknown): void;
 }
 

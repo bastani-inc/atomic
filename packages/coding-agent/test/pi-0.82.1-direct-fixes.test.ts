@@ -92,8 +92,8 @@ describe("Pi 0.82.1 remaining direct coding-agent parity", () => {
 		for (const [relativePath, expected] of Object.entries(sources)) {
 			const source = readFileSync(join(import.meta.dirname, "../src", relativePath), "utf8");
 			expect(source, relativePath).toContain(expected);
-			for (const constructor of source.match(/new TUI\([\s\S]*?\);/g) ?? []) {
-				expect(constructor, `${relativePath}: ${constructor}`).toContain(expected);
+			for (const constructorCall of source.match(/new TUI\([\s\S]*?\);/g) ?? []) {
+				expect(constructorCall, `${relativePath}: ${constructorCall}`).toContain(expected);
 			}
 		}
 	});

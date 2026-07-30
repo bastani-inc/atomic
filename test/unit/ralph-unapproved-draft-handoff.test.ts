@@ -95,8 +95,8 @@ describe("ralph unapproved draft handoff", () => {
 
 		const result = await mod.default.run({ ...ctx, cwd: requireTempCwd() });
 
-		assert.equal(result["approved"], false, "budget exhausted without approval");
-		assert.equal(result["iterations_completed"], 2, "every configured loop ran");
+		assert.equal(result.approved, false, "budget exhausted without approval");
+		assert.equal(result.iterations_completed, 2, "every configured loop ran");
 		assert.equal(ctx.calls.task.includes("pull-request"), true, "handoff still runs");
 
 		const prompt = ctx.calls.prompts["pull-request"]?.[0] ?? "";
@@ -119,7 +119,7 @@ describe("ralph unapproved draft handoff", () => {
 
 		const result = await mod.default.run({ ...ctx, cwd: requireTempCwd() });
 
-		assert.equal(result["approved"], true);
+		assert.equal(result.approved, true);
 		assert.equal(ctx.calls.task.includes("pull-request"), true);
 
 		const prompt = ctx.calls.prompts["pull-request"]?.[0] ?? "";

@@ -182,7 +182,9 @@ export interface ExtensionAPI {
 				sessionManager?: SessionManager;
 				hasUI?: boolean;
 			},
-		) => void | object | Promise<void | object>,
+			// `unknown`: a handler may return a result object, a promise of one, or
+			// nothing at all. The host narrows what it actually consumes.
+		) => unknown,
 	) => void;
 	sessionManager?: SessionManager;
 	ui?: {

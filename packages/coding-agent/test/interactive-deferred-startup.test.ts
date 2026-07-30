@@ -4,7 +4,7 @@ import type { ModelRegistry } from "../src/core/model-registry.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { applyDeferredModelScope } from "../src/modes/interactive/interactive-deferred-startup.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
-import { createInMemoryModelRegistry, createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
+import { createInMemoryModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 
 const claudeModel = {
 	provider: "anthropic",

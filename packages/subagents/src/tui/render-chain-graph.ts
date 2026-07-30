@@ -2,7 +2,7 @@ import { formatAgentRunningLabel } from "../shared/status-format.ts";
 import type { AsyncParallelGroupStatus, Details, WorkflowNodeStatus } from "../shared/types.ts";
 
 export function parseParallelGroupAgentCount(label: string | undefined): number | undefined {
-	if (!label || !label.startsWith("[") || !label.endsWith("]")) return undefined;
+	if (!label?.startsWith("[") || !label.endsWith("]")) return undefined;
 	const inner = label.slice(1, -1).trim();
 	if (!inner) return 0;
 	return inner

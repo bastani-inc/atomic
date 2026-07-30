@@ -1,27 +1,20 @@
 // @ts-nocheck
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { join } from "node:path";
+import { describe, test } from "vitest";
 import type { WorkflowDefinition } from "../../packages/workflows/src/types.js";
 import {
 	assertOutputTypes,
-	assertStringOutput,
 	assertWorkflowDefinition,
-	expectedDeepResearchAggregatorReadCount,
 	fieldChoices,
 	fieldDefault,
 	fieldDescription,
 	fieldKind,
 	fieldRequired,
 	makeMockCtx,
-	makeTaskResult,
-	normalizePathSeparators,
-	promptText,
-	readPathEndsWith,
-	readPaths,
 } from "./builtin-workflows-helpers.js";
 
 describe("open-claude-design", () => {
@@ -39,19 +32,17 @@ describe("open-claude-design", () => {
 		}
 		// Removed inputs: reference, output_type, design_system are now gathered
 		// by the discovery interview rather than passed as parameters.
-		assert.equal(d.inputs["reference"], undefined);
-		assert.equal(d.inputs["output_type"], undefined);
-		assert.equal(d.inputs["design_system"], undefined);
+		assert.equal(d.inputs.reference, undefined);
+		assert.equal(d.inputs.output_type, undefined);
+		assert.equal(d.inputs.design_system, undefined);
 		assert.equal(d.inputs["output-type"], undefined);
 		assert.equal(d.inputs["design-system"], undefined);
-		assert.equal(fieldRequired(d.inputs["prompt"]), true);
+		assert.equal(fieldRequired(d.inputs.prompt), true);
 	});
 
 	test("discovery decision schema offers the canonical output types", async () => {
 		const utils = await import("../../packages/workflows/builtin/open-claude-design-utils.js");
-		const schema = (utils.discoveryDecisionSchema as { properties: Record<string, unknown> }).properties[
-			"output_type"
-		];
+		const schema = (utils.discoveryDecisionSchema as { properties: Record<string, unknown> }).properties.output_type;
 		assert.equal(fieldKind(schema), "select");
 		const choices = fieldChoices(schema);
 		for (const choice of ["prototype", "wireframe", "page", "component", "theme", "tokens"]) {
@@ -61,7 +52,7 @@ describe("open-claude-design", () => {
 
 	test("declares discover_references boolean input defaulting true", async () => {
 		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
-		const schema = mod.default.inputs["discover_references"];
+		const schema = mod.default.inputs.discover_references;
 		assert.equal(fieldKind(schema), "boolean");
 		assert.equal(fieldDefault(schema), true);
 		assert.ok(fieldDescription(schema).length > 0);
@@ -114,14 +105,14 @@ describe("open-claude-design", () => {
 			(ctx as { cwd?: string }).cwd = dir;
 			const result = await d.run(ctx);
 			assert.equal(ctx.calls.task.includes("init"), false);
-			const discoveryPrompt = ctx.calls.prompts["discovery"]?.[0] ?? "";
+			const discoveryPrompt = ctx.calls.prompts.discovery?.[0] ?? "";
 			assert.match(discoveryPrompt, /\/skill:impeccable shape/);
 			assert.match(discoveryPrompt, /\/skill:impeccable init/);
 			assert.match(discoveryPrompt, /Let impeccable init perform its own PRODUCT\.md\/DESIGN\.md detection/);
 			assert.equal(ctx.calls.task.includes("design-system-builder"), false);
 			const genPrompt = ctx.calls.prompts["generate-1"]?.[0] ?? "";
 			assert.match(genPrompt, /shape.*init/s);
-			const artifactDir = result["artifact_dir"] as string | undefined;
+			const artifactDir = result.artifact_dir as string | undefined;
 			if (artifactDir) rmSync(artifactDir, { recursive: true, force: true });
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
@@ -165,7 +156,7 @@ describe("open-claude-design", () => {
 		await d.run(ctx);
 		assert.equal(ctx.calls.task.includes("init"), false);
 		assert.ok(ctx.calls.task.includes("discovery"));
-		const discoveryPrompt = ctx.calls.prompts["discovery"]?.[0] ?? "";
+		const discoveryPrompt = ctx.calls.prompts.discovery?.[0] ?? "";
 		assert.match(discoveryPrompt, /\/skill:impeccable shape/);
 		assert.match(discoveryPrompt, /\/skill:impeccable init/);
 		const feedbackPrompt = ctx.calls.prompts["user-feedback-1"]?.[0] ?? "";
@@ -240,9 +231,9 @@ describe("open-claude-design", () => {
 		const feedbackPrompt = ctx.calls.prompts["user-feedback-1"]?.[0] ?? "";
 		assert.match(feedbackPrompt, /\/skill:impeccable live/);
 		assert.match(feedbackPrompt, /`user_notes`/);
-		assert.equal(result["output_type"], "component");
-		assert.equal(typeof result["artifact"], "string");
-		assert.equal(typeof result["handoff"], "string");
+		assert.equal(result.output_type, "component");
+		assert.equal(typeof result.artifact, "string");
+		assert.equal(typeof result.handoff, "string");
 	});
 
 	test("uses default output_type 'prototype' when not provided", async () => {
@@ -258,7 +249,7 @@ describe("open-claude-design", () => {
 			},
 		);
 		const result = await d.run(ctx);
-		assert.equal(result["output_type"], "prototype");
+		assert.equal(result.output_type, "prototype");
 	});
 
 	test("browser-capable prompts use playwright-cli bootstrap rules", async () => {
@@ -352,7 +343,7 @@ describe("open-claude-design", () => {
 		assert.doesNotMatch(generatePrompt, /screenshot-validated/);
 
 		// Annotations persisted as durable workflow artifacts.
-		const artifactDir = result["artifact_dir"] as string;
+		const artifactDir = result.artifact_dir as string;
 		const mdPath = join(artifactDir, "feedback", "iteration-1.md");
 		const jsonPath = join(artifactDir, "feedback", "iteration-1.json");
 		assert.ok(existsSync(mdPath));
@@ -381,8 +372,8 @@ describe("open-claude-design", () => {
 		// No notes means no second generate stage and no feedback artifacts.
 		assert.equal(ctx.calls.task.includes("generate-2"), false);
 		assert.equal(ctx.calls.task.includes("apply-changes-1"), false);
-		assert.equal(typeof result["handoff"], "string");
-		const artifactDir = result["artifact_dir"] as string;
+		assert.equal(typeof result.handoff, "string");
+		const artifactDir = result.artifact_dir as string;
 		assert.equal(existsSync(join(artifactDir, "feedback")), false);
 		rmSync(artifactDir, { recursive: true, force: true });
 	});

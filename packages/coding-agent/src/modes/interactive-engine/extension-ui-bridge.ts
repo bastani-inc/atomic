@@ -85,7 +85,7 @@ export function attachInteractiveEngineHost(
 	runtime: AgentSessionRuntime,
 	ui: ExtensionUIContext,
 	onDiagnostic: (diagnostic: ActivityWatchdogDiagnostic) => void,
-	setShortcutHandler?: (handler: (data: string) => boolean) => void | (() => void),
+	setShortcutHandler?: (handler: (data: string) => boolean) => undefined | (() => void),
 	keybindings?: KeybindingsManager,
 ): () => void {
 	if (!(runtime instanceof IsolatedInteractiveRuntime)) return () => {};

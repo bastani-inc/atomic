@@ -21,9 +21,9 @@ test("live pause and resume keep the workflow invocation group", async () => {
 		...mockSession(),
 		async prompt() {
 			promptCalls += 1;
-			if (promptCalls !== 1) return;
+			if (promptCalls !== 1) return undefined;
 			promptStarted.resolve();
-			return new Promise<void>((_resolve, reject) => {
+			return new Promise<string | undefined>((_resolve, reject) => {
 				rejectPrompt = reject;
 			});
 		},

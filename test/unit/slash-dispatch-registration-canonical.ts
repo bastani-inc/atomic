@@ -1,67 +1,16 @@
 // @ts-nocheck
 import { describe, test } from "vitest";
-import type {
-	ChatSurfacePayload,
-	ExtensionAPI,
-	ExtensionRuntime,
-	PiArgumentCompletion,
-	PiCommandContext,
-	PiCommandOptions,
-	PiCustomComponent,
-	PiCustomOverlayFactoryTui,
-	PiCustomOverlayFunction,
-	PiCustomOverlayOptions,
-	PiOverlayHandle,
-	PiToolOpts,
-	SessionEntry,
-	StageControlHandle,
-	StageSessionRuntime,
-	WorkflowDefinition,
-	WorkflowPersistencePort,
-	WorkflowToolArgs,
-} from "./slash-dispatch-utils.js";
+import type { ExtensionAPI, PiCommandContext, PiCommandOptions, StageControlHandle } from "./slash-dispatch-utils.js";
 import {
 	addFactoryStubs,
 	assert,
 	buildCtx,
 	buildMockPi,
-	buildStagePromptAdapter,
-	createExtensionRuntime,
-	createRegistry,
-	fakeAgentSession,
 	installSlashDispatchTestHooks,
-	jobTracker,
-	join,
-	LIFECYCLE_NOTICE_CUSTOM_TYPE,
-	makeExecuteWorkflowTool,
-	makeInflightRun,
-	makeRegisteredWorkflowTool,
-	makeRegisteredWorkflowToolWithResource,
-	mkdtemp,
-	parseWorkflowArgs,
-	recordTerminalRun,
-	registerLiveStageHandle,
-	registerTestStageHandle,
-	registerWorkflowCommand,
-	renderResult,
-	restoreOnSessionStart,
-	rm,
 	runFactory,
 	stageControlRegistry,
-	stageUiBroker,
 	store,
-	Type,
-	tmpdir,
-	tokenizeWorkflowArgs,
 	WORKFLOW_COMMAND_OUTPUT_CUSTOM_TYPE,
-	WORKFLOW_INVALID_PROVIDER_CREDENTIALS_MESSAGE,
-	WORKFLOW_STAGE_SUBAGENT_GUARD_ENV,
-	waitForToolPrompt,
-	waitForToolRunEnded,
-	workflow,
-	workflowPolicyFromContext,
-	writeFile,
-	writeWorkflowFixture,
 } from "./slash-dispatch-utils.js";
 
 installSlashDispatchTestHooks();
@@ -206,7 +155,7 @@ function makeInflightRun(id: string) {
 	};
 }
 
-async function registerWorkflowCommand() {
+async function _registerWorkflowCommand() {
 	const { pi, commands, sent } = buildMockPi();
 	addFactoryStubs(pi);
 	const factoryModule = await import("../../packages/workflows/src/extension/index.js");
@@ -216,7 +165,7 @@ async function registerWorkflowCommand() {
 	return { pi, commands, sent, workflowCmd: workflowCmd! };
 }
 
-function recordTerminalRun(
+function _recordTerminalRun(
 	id: string,
 	status: "completed" | "failed" | "killed",
 	overrides: { name?: string; startedAt?: number; endedAt?: number } = {},
@@ -237,7 +186,7 @@ function recordTerminalRun(
 	}
 }
 
-function registerTestStageHandle(
+function _registerTestStageHandle(
 	runId: string,
 	stageId: string,
 	status: StageControlHandle["status"] = "running",

@@ -166,7 +166,7 @@ function xterm256ToHex(idx: number): string | undefined {
 	const r = steps[Math.floor(cube / 36)]!;
 	const g = steps[Math.floor((cube % 36) / 6)]!;
 	const b = steps[cube % 6]!;
-	return "#" + [r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("");
+	return `#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("")}`;
 }
 
 /**
@@ -183,7 +183,7 @@ function parsePiAnsiToHex(ansi: string | undefined): string | undefined {
 		const r = Math.min(255, Math.max(0, parseInt(truecolor[1]!, 10)));
 		const g = Math.min(255, Math.max(0, parseInt(truecolor[2]!, 10)));
 		const b = Math.min(255, Math.max(0, parseInt(truecolor[3]!, 10)));
-		return "#" + [r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("");
+		return `#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("")}`;
 	}
 	const indexed = /\x1b\[(?:38|48);5;(\d{1,3})m/.exec(ansi);
 	if (indexed) {

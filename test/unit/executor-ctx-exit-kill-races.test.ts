@@ -156,16 +156,16 @@ describe("ctx.exit", () => {
 		assert.equal(snapshot?.exited, undefined);
 		assert.equal(snapshot?.exitReason, undefined);
 		const runEndEntries = entries.filter(
-			(entry) => entry.type === "workflow.run.end" && entry.payload["runId"] === runId,
+			(entry) => entry.type === "workflow.run.end" && entry.payload.runId === runId,
 		);
 		assert.equal(runEndEntries.length, 1);
-		assert.equal(runEndEntries[0]?.payload["status"], "killed");
+		assert.equal(runEndEntries[0]?.payload.status, "killed");
 		assert.equal(
-			runEndEntries.some((entry) => entry.payload["status"] === "skipped"),
+			runEndEntries.some((entry) => entry.payload.status === "skipped"),
 			false,
 		);
 		assert.equal(
-			runEndEntries.some((entry) => entry.payload["status"] === "completed"),
+			runEndEntries.some((entry) => entry.payload.status === "completed"),
 			false,
 		);
 		assert.equal(onRunEndCalls.length, 1);

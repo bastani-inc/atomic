@@ -177,7 +177,7 @@ async function executeAppendAction(
 	const result = await withTodoLock<TodoRecord>(todosDir, normalizedId, ctx, async () => {
 		const existing = await ensureTodoExists(filePath, normalizedId);
 		if (!existing) return { error: `Todo ${displayId} not found` };
-		if (!params.body || !params.body.trim()) {
+		if (!params.body?.trim()) {
 			return existing;
 		}
 		return appendTodoBody(filePath, existing, params.body);

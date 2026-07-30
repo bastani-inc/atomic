@@ -190,7 +190,7 @@ export function replaceForegroundRunChild(
 		return;
 	}
 	const child = run.children.find((entry) => entry.index === index);
-	if (!child || child.status !== "detached") return;
+	if (child?.status !== "detached") return;
 	child.status = resolveSubagentResultStatus({
 		exitCode: retainedResult.exitCode,
 		interrupted: retainedResult.interrupted,

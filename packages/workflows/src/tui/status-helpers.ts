@@ -29,7 +29,6 @@ export function statusColor(status: StageStatus | RunStatus, theme: GraphTheme):
 			return theme.dim;
 		case "cancelled":
 			return theme.dim;
-		case "pending":
 		default:
 			return theme.dim;
 	}

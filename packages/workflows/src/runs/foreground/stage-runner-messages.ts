@@ -26,7 +26,7 @@ export function extractMessageText(message: AgentSession["messages"][number]): s
 export function lastAssistantTextFromMessages(messages: AgentSession["messages"]): string | undefined {
 	for (let index = messages.length - 1; index >= 0; index -= 1) {
 		const message = messages[index];
-		if (!message || message.role !== "assistant") continue;
+		if (message?.role !== "assistant") continue;
 		const text = extractMessageText(message).trim();
 		if (text) return text;
 	}
@@ -65,7 +65,7 @@ export function latestTerminalAssistantFailureSince(
 ): AgentSession["messages"][number] | undefined {
 	for (let index = messages.length - 1; index >= startIndex; index -= 1) {
 		const message = messages[index];
-		if (!message || message.role !== "assistant") continue;
+		if (message?.role !== "assistant") continue;
 		const stopReason = messageStopReason(message);
 		if (isTerminalAssistantFailureStopReason(stopReason)) return message;
 		if (isCleanAssistantStopReason(stopReason)) return undefined;
@@ -115,7 +115,7 @@ export function lastAssistantTextFromSession(
 	const terminatingText = terminatingToolResultText(activeSession.messages, terminatingToolCallIds);
 	if (terminatingText !== undefined) return terminatingText;
 	const direct = activeSession.getLastAssistantText?.();
-	if (direct !== undefined && direct.trim()) return direct;
+	if (direct?.trim()) return direct;
 	return lastAssistantTextFromMessages(activeSession.messages) ?? direct ?? fallback;
 }
 

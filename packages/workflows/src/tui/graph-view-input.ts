@@ -295,7 +295,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 
 	private _sgrLeftMousePress(data: string): { col: number; row: number } | null {
 		const event = parseTerminalMouseInput(data);
-		if (!event || event.protocol !== "sgr" || !isTerminalLeftMousePress(event)) return null;
+		if (event?.protocol !== "sgr" || !isTerminalLeftMousePress(event)) return null;
 		return { col: event.col, row: event.row };
 	}
 

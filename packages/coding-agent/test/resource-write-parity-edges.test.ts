@@ -9,14 +9,6 @@ import { readZipEntriesFromBuffer } from "../src/core/tools/resource-selectors.t
 import { createWriteToolDefinition } from "../src/core/tools/write.ts";
 import { sqlite } from "./helpers/sqlite.ts";
 
-interface SqliteQuery {
-	get(): Record<string, string | number | null> | undefined;
-}
-interface SqliteDb {
-	run(sql: string): void;
-	query(sql: string): SqliteQuery;
-	close(): void;
-}
 const text = (result: { content: Array<{ type: string; text?: string }> }): string =>
 	result.content.map((item) => item.text ?? "").join("\n");
 

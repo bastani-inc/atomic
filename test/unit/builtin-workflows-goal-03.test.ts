@@ -1,28 +1,11 @@
 // @ts-nocheck
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { describe, test } from "vitest";
 import type { WorkflowDefinition } from "../../packages/workflows/src/types.js";
-import {
-	assertOutputTypes,
-	assertStringOutput,
-	assertWorkflowDefinition,
-	expectedDeepResearchAggregatorReadCount,
-	fieldChoices,
-	fieldDefault,
-	fieldDescription,
-	fieldKind,
-	fieldRequired,
-	makeMockCtx,
-	makeTaskResult,
-	normalizePathSeparators,
-	promptText,
-	readPathEndsWith,
-	readPaths,
-} from "./builtin-workflows-helpers.js";
+import { makeMockCtx } from "./builtin-workflows-helpers.js";
 
 describe("goal", () => {
 	type ReviewJsonFinding = {
@@ -135,9 +118,9 @@ describe("goal", () => {
 
 		const result = await d.run(ctx);
 
-		assert.equal(result["status"], "needs_human");
-		assert.equal(result["turns_completed"], 3);
-		const ledger = JSON.parse(readFileSync(result["ledger_path"] as string, "utf8")) as {
+		assert.equal(result.status, "needs_human");
+		assert.equal(result.turns_completed, 3);
+		const ledger = JSON.parse(readFileSync(result.ledger_path as string, "utf8")) as {
 			blockers: readonly unknown[];
 			decisions: readonly { decision: string }[];
 		};
@@ -172,9 +155,9 @@ describe("goal", () => {
 
 		const result = await d.run(ctx);
 
-		assert.equal(result["status"], "blocked");
-		assert.equal(result["turns_completed"], 2);
-		const ledger = JSON.parse(readFileSync(result["ledger_path"] as string, "utf8")) as {
+		assert.equal(result.status, "blocked");
+		assert.equal(result.turns_completed, 2);
+		const ledger = JSON.parse(readFileSync(result.ledger_path as string, "utf8")) as {
 			decisions: readonly { decision: string; reason: string }[];
 		};
 		assert.deepEqual(
@@ -208,17 +191,17 @@ describe("goal", () => {
 
 		const result = await d.run(ctx);
 
-		assert.equal(result["status"], "blocked");
-		assert.equal(result["turns_completed"], 3);
+		assert.equal(result.status, "blocked");
+		assert.equal(result.turns_completed, 3);
 		assert.ok(ctx.calls.task.includes("orchestrator-2"));
-		const ledger = JSON.parse(readFileSync(result["ledger_path"] as string, "utf8")) as {
+		const ledger = JSON.parse(readFileSync(result.ledger_path as string, "utf8")) as {
 			decisions: readonly { decision: string }[];
 		};
 		assert.deepEqual(
 			ledger.decisions.map((decision) => decision.decision),
 			["continue", "continue", "blocked"],
 		);
-		assert.match(String(result["remaining_work"]), /missing production credentials/);
+		assert.match(String(result.remaining_work), /missing production credentials/);
 	});
 
 	test("stops as needs_human when default max_turns are exhausted without quorum", async () => {
@@ -245,10 +228,10 @@ describe("goal", () => {
 
 		const result = await d.run(ctx);
 
-		assert.equal(result["status"], "needs_human");
-		assert.equal(result["approved"], false);
-		assert.equal(result["turns_completed"], 10);
-		assert.match(String(result["remaining_work"]), /published docs proof missing/);
+		assert.equal(result.status, "needs_human");
+		assert.equal(result.approved, false);
+		assert.equal(result.turns_completed, 10);
+		assert.match(String(result.remaining_work), /published docs proof missing/);
 	});
 
 	test("honors custom max_turns before requiring human follow-up", async () => {
@@ -275,12 +258,12 @@ describe("goal", () => {
 
 		const result = await d.run(ctx);
 
-		assert.equal(result["status"], "needs_human");
-		assert.equal(result["approved"], false);
-		assert.equal(result["turns_completed"], 2);
+		assert.equal(result.status, "needs_human");
+		assert.equal(result.approved, false);
+		assert.equal(result.turns_completed, 2);
 		assert.equal(ctx.calls.task.includes("orchestrator-3"), false);
 		assert.doesNotMatch(ctx.calls.prompts["orchestrator-1"]?.[0] ?? "", /Turn: \d/);
-		assert.match(String(result["remaining_work"]), /published docs proof missing/);
+		assert.match(String(result.remaining_work), /published docs proof missing/);
 	});
 
 	test("orchestrator failures stop with needs_human and persist a decision", async () => {
@@ -300,13 +283,13 @@ describe("goal", () => {
 
 		const result = await d.run(ctx);
 
-		assert.equal(result["status"], "needs_human");
-		assert.equal(result["approved"], false);
-		assert.equal(result["turns_completed"], 1);
-		assert.match(String(result["remaining_work"]), /provider outage/);
-		assert.equal(result["review_report"], "No reviewer decisions were recorded.");
+		assert.equal(result.status, "needs_human");
+		assert.equal(result.approved, false);
+		assert.equal(result.turns_completed, 1);
+		assert.match(String(result.remaining_work), /provider outage/);
+		assert.equal(result.review_report, "No reviewer decisions were recorded.");
 		assert.equal(ctx.calls.parallel.length, 0);
-		const ledger = JSON.parse(readFileSync(result["ledger_path"] as string, "utf8")) as {
+		const ledger = JSON.parse(readFileSync(result.ledger_path as string, "utf8")) as {
 			status: string;
 			turns: number;
 			receipts: readonly unknown[];
@@ -347,13 +330,13 @@ describe("goal", () => {
 
 		const result = await d.run(ctx);
 
-		assert.equal(result["status"], "needs_human");
-		assert.equal(result["approved"], false);
-		assert.equal(result["turns_completed"], 1);
-		assert.match(String(result["remaining_work"]), /Recover reviewer execution/);
-		assert.equal(typeof result["review_report_path"], "string");
-		assert.match(readFileSync(result["review_report_path"] as string, "utf8"), /parallel transport failed/);
-		const ledger = JSON.parse(readFileSync(result["ledger_path"] as string, "utf8")) as {
+		assert.equal(result.status, "needs_human");
+		assert.equal(result.approved, false);
+		assert.equal(result.turns_completed, 1);
+		assert.match(String(result.remaining_work), /Recover reviewer execution/);
+		assert.equal(typeof result.review_report_path, "string");
+		assert.match(readFileSync(result.review_report_path as string, "utf8"), /parallel transport failed/);
+		const ledger = JSON.parse(readFileSync(result.ledger_path as string, "utf8")) as {
 			reviews: readonly {
 				reviewer: string;
 				decision: string;
@@ -397,11 +380,11 @@ describe("goal", () => {
 
 		const result = await d.run(ctx);
 
-		assert.equal(result["status"], "needs_human");
-		assert.equal(result["turns_completed"], 2);
-		assert.match(String(result["remaining_work"]), /provider outage on second turn/);
-		assert.equal(result["review_report"], "No reviewer decisions were recorded.");
-		const ledger = JSON.parse(readFileSync(result["ledger_path"] as string, "utf8")) as {
+		assert.equal(result.status, "needs_human");
+		assert.equal(result.turns_completed, 2);
+		assert.match(String(result.remaining_work), /provider outage on second turn/);
+		assert.equal(result.review_report, "No reviewer decisions were recorded.");
+		const ledger = JSON.parse(readFileSync(result.ledger_path as string, "utf8")) as {
 			reviews: readonly unknown[];
 			decisions: readonly { decision: string }[];
 		};

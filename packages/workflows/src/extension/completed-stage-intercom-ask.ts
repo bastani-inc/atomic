@@ -28,7 +28,10 @@ interface CompletedStageAskEvent {
 
 interface WorkflowEventSurface {
 	readonly events?: {
-		on?(event: string, listener: (payload: unknown) => void): (() => void) | void;
+		// `unknown`, not `(() => void) | undefined`: the host ExtensionAPI's `on`
+		// returns nothing while our own event bus returns an unsubscribe. The
+		// call site narrows with a typeof check.
+		on?(event: string, listener: (payload: unknown) => void): unknown;
 	};
 	on?(event: "session_shutdown", listener: () => void): void;
 }
@@ -49,7 +52,7 @@ export function registerCompletedStageIntercomAskRouter(
 ): () => void {
 	const queues = new Map<string, Promise<void>>();
 	let disposed = false;
-	const unsubscribe = pi.events?.on?.(LATE_STAGE_MESSAGE_EVENT, (payload) => {
+	const subscription = pi.events?.on?.(LATE_STAGE_MESSAGE_EVENT, (payload) => {
 		if (disposed || !isCompletedStageAskEvent(payload) || payload.handled === true) return;
 		payload.handled = true;
 		payload.completion = enqueueTargetTurn(queues, `${payload.workflowRunId}:${payload.workflowStageId}`, () =>
@@ -59,7 +62,7 @@ export function registerCompletedStageIntercomAskRouter(
 	const dispose = (): void => {
 		disposed = true;
 		queues.clear();
-		unsubscribe?.();
+		if (typeof subscription === "function") subscription();
 	};
 	pi.on?.("session_shutdown", dispose);
 	return dispose;

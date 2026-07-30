@@ -1,7 +1,7 @@
 import type { Theme } from "@bastani/atomic";
 import type { Component, OverlayHandle, TUI } from "@earendil-works/pi-tui";
-import { Input, matchesKey } from "@earendil-works/pi-tui";
-import { BaseOverlay, sleep } from "./overlay-qa-shared.js";
+import { matchesKey } from "@earendil-works/pi-tui";
+import { BaseOverlay } from "./overlay-qa-shared.js";
 
 export class StreamingInputController extends BaseOverlay {
 	private tui: TUI;

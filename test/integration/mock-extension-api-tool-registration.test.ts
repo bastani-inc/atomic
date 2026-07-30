@@ -76,7 +76,7 @@ describe("MockExtensionAPI — tool registration", () => {
 		const params = mock.tools[0]!.opts.parameters as Record<string, unknown>;
 		assert.notEqual(params, undefined);
 		// TypeBox TObject has a 'type' property equal to 'object'
-		assert.equal(params["type"], "object");
+		assert.equal(params.type, "object");
 	});
 
 	test("tool parameters include only named execution, discovery, inspection, messaging, and control properties", () => {

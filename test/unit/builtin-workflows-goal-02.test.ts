@@ -1,28 +1,11 @@
 // @ts-nocheck
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { describe, test } from "vitest";
 import type { WorkflowDefinition } from "../../packages/workflows/src/types.js";
-import {
-	assertOutputTypes,
-	assertStringOutput,
-	assertWorkflowDefinition,
-	expectedDeepResearchAggregatorReadCount,
-	fieldChoices,
-	fieldDefault,
-	fieldDescription,
-	fieldKind,
-	fieldRequired,
-	makeMockCtx,
-	makeTaskResult,
-	normalizePathSeparators,
-	promptText,
-	readPathEndsWith,
-	readPaths,
-} from "./builtin-workflows-helpers.js";
+import { makeMockCtx, normalizePathSeparators, readPaths } from "./builtin-workflows-helpers.js";
 import { assertReviewerIntercomCoordination } from "./reviewer-intercom-prompt-assertions.js";
 
 describe("goal", () => {
@@ -137,8 +120,8 @@ describe("goal", () => {
 
 		const result = await d.run(ctx);
 
-		assert.equal(result["status"], "needs_human");
-		assert.equal(String(result["remaining_work"]).includes(verboseExplanation), false);
+		assert.equal(result.status, "needs_human");
+		assert.equal(String(result.remaining_work).includes(verboseExplanation), false);
 	});
 
 	test("carries receipts and reviewer gaps into the next orchestrator continuation", async () => {
@@ -172,9 +155,9 @@ describe("goal", () => {
 		const result = await d.run(ctx);
 
 		assert.ok(ctx.calls.task.includes("orchestrator-2"));
-		assert.equal(result["status"], "complete");
-		assert.equal(result["turns_completed"], 2);
-		const ledger = JSON.parse(readFileSync(result["ledger_path"] as string, "utf8")) as {
+		assert.equal(result.status, "complete");
+		assert.equal(result.turns_completed, 2);
+		const ledger = JSON.parse(readFileSync(result.ledger_path as string, "utf8")) as {
 			decisions: readonly { decision: string }[];
 			blockers: readonly unknown[];
 		};
@@ -216,7 +199,7 @@ describe("goal", () => {
 
 		const result = await d.run(ctx);
 
-		assert.equal(result["status"], "complete");
+		assert.equal(result.status, "complete");
 		assert.equal(ctx.calls.taskOptions["orchestrator-1"]?.[0]?.context, undefined);
 		assert.equal(ctx.calls.taskOptions["orchestrator-1"]?.[0]?.forkFromSessionFile, undefined);
 		assert.equal(ctx.calls.taskOptions["orchestrator-2"]?.[0]?.context, "fork");
@@ -293,9 +276,9 @@ describe("goal", () => {
 
 		const result = await d.run(ctx);
 
-		assert.equal(result["status"], "needs_human");
-		assert.equal(result["approved"], false);
-		assert.equal(result["turns_completed"], 10);
+		assert.equal(result.status, "needs_human");
+		assert.equal(result.approved, false);
+		assert.equal(result.turns_completed, 10);
 	});
 
 	test("uses default max_turns when fractional input floors below one", async () => {
@@ -321,9 +304,9 @@ describe("goal", () => {
 
 		const result = await d.run(ctx);
 
-		assert.equal(result["status"], "needs_human");
-		assert.equal(result["approved"], false);
-		assert.equal(result["turns_completed"], 10);
+		assert.equal(result.status, "needs_human");
+		assert.equal(result.approved, false);
+		assert.equal(result.turns_completed, 10);
 	});
 
 	test("uses schema-backed reviewer stages without prompt tool nudges", async () => {
@@ -387,9 +370,9 @@ describe("goal", () => {
 
 		const result = await d.run(ctx);
 
-		assert.equal(result["status"], "blocked");
-		assert.equal(result["turns_completed"], 3);
+		assert.equal(result.status, "blocked");
+		assert.equal(result.turns_completed, 3);
 		assert.equal(ctx.calls.task.includes("orchestrator-4"), false);
-		assert.match(String(result["remaining_work"]), /missing production credentials/);
+		assert.match(String(result.remaining_work), /missing production credentials/);
 	});
 });

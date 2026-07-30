@@ -17,7 +17,7 @@ import {
 
 describe("executor.run", () => {
 	test("bare explicit model stage publishes running fast-mode metadata after catalog resolution", async () => {
-		const promptGate = deferred<string | void>();
+		const promptGate = deferred<string | undefined>();
 		const st = createStore();
 		const def = workflow({
 			name: "bare-explicit-model-running-fast-metadata",
@@ -89,7 +89,7 @@ describe("executor.run", () => {
 			assert.equal(runningStage?.model, "openai/gpt-5.1-codex");
 			assert.equal(runningStage?.fastMode, true);
 		} finally {
-			promptGate.resolve();
+			promptGate.resolve(undefined);
 			await runPromise;
 		}
 	});
@@ -132,7 +132,7 @@ describe("executor.run", () => {
 	});
 
 	test("workflow fallback refreshes running fast metadata when switching to an eligible model", async () => {
-		const fallbackGate = deferred<string | void>();
+		const fallbackGate = deferred<string | undefined>();
 		const st = createStore();
 		const def = workflow({
 			name: "fallback-running-fast-metadata",
@@ -212,7 +212,7 @@ describe("executor.run", () => {
 			assert.equal(runningStage?.model, "openai/fallback");
 			assert.equal(runningStage?.fastMode, true);
 		} finally {
-			fallbackGate.resolve();
+			fallbackGate.resolve(undefined);
 			await runPromise;
 		}
 	});
@@ -415,6 +415,6 @@ describe("executor.run", () => {
 		assert.equal(wfResult.status, "failed");
 		const badStage = wfResult.stages.find((s) => s.name === "bad-stage");
 		assert.equal(badStage?.status, "failed");
-		assert.ok(badStage?.error!.includes("explode"));
+		assert.ok(badStage?.error?.includes("explode"));
 	});
 });

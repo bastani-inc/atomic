@@ -77,7 +77,7 @@ export class EngineSessionPickerService {
 
 	handleLine(line: string): boolean {
 		const command = parseInteractiveEngineCommand(line);
-		if (!command || !command.type.startsWith("engine_session_picker_")) return false;
+		if (!command?.type.startsWith("engine_session_picker_")) return false;
 		const record = this.active.get(command.componentId);
 		if (!record) return true;
 		switch (command.type) {

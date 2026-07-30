@@ -50,8 +50,8 @@ describe("open-claude-design — generate/user-feedback refinement loop (#1464)"
 		assert.ok(generatePrompt.includes("Apple website"));
 		assert.doesNotMatch(generatePrompt, /screenshot-validated/i);
 		assert.doesNotMatch(generatePrompt, /critique finding/i);
-		assert.equal(typeof result["handoff"], "string");
-		const artifactDir = result["artifact_dir"] as string;
+		assert.equal(typeof result.handoff, "string");
+		const artifactDir = result.artifact_dir as string;
 		rmSync(artifactDir, { recursive: true, force: true });
 	});
 
@@ -81,7 +81,7 @@ describe("open-claude-design — generate/user-feedback refinement loop (#1464)"
 		const feedbackTwoOptions = ctx.calls.taskOptions["user-feedback-2"]?.[0];
 		assert.equal(feedbackTwoOptions?.context, "fork");
 		assert.equal(feedbackTwoOptions?.forkFromSessionFile, "/tmp/user-feedback-1.jsonl");
-		const artifactDir = result["artifact_dir"] as string;
+		const artifactDir = result.artifact_dir as string;
 		rmSync(artifactDir, { recursive: true, force: true });
 	});
 
@@ -114,7 +114,7 @@ describe("open-claude-design — generate/user-feedback refinement loop (#1464)"
 		const generateThreeOptions = ctx.calls.taskOptions["generate-3"]?.[0];
 		assert.equal(generateThreeOptions?.context, "fork");
 		assert.equal(generateThreeOptions?.forkFromSessionFile, "/tmp/generate-2.jsonl");
-		const artifactDir = result["artifact_dir"] as string;
+		const artifactDir = result.artifact_dir as string;
 		rmSync(artifactDir, { recursive: true, force: true });
 	});
 
@@ -140,8 +140,8 @@ describe("open-claude-design — generate/user-feedback refinement loop (#1464)"
 			ctx.calls.task.filter((name) => name === "exporter" || name === "final-display"),
 			["exporter", "final-display"],
 		);
-		assert.equal(result["approved_for_export"], true);
-		const artifactDir = result["artifact_dir"] as string;
+		assert.equal(result.approved_for_export, true);
+		const artifactDir = result.artifact_dir as string;
 		rmSync(artifactDir, { recursive: true, force: true });
 	});
 });

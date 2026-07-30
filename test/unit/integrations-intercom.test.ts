@@ -115,6 +115,7 @@ describe("subscribeIntercomControl", () => {
 			events: {
 				on: (event: string, _handler: (payload: unknown) => void) => {
 					registrations.push({ event });
+					return undefined;
 				},
 			},
 		};
@@ -130,6 +131,7 @@ describe("subscribeIntercomControl", () => {
 			events: {
 				on: (_event: string, handler: (payload: unknown) => void) => {
 					capturedHandler = handler;
+					return undefined;
 				},
 			},
 		};
@@ -152,6 +154,7 @@ describe("subscribeIntercomControl", () => {
 			events: {
 				on: (_event: string, handler: (payload: unknown) => void) => {
 					capturedHandler = handler;
+					return undefined;
 				},
 			},
 		};
@@ -172,6 +175,7 @@ describe("subscribeIntercomControl", () => {
 			events: {
 				on: (_event: string, handler: (payload: unknown) => void) => {
 					capturedHandler = handler;
+					return undefined;
 				},
 			},
 		};
@@ -192,6 +196,7 @@ describe("subscribeIntercomControl", () => {
 			events: {
 				on: (_event: string, handler: (payload: unknown) => void) => {
 					capturedHandler = handler;
+					return undefined;
 				},
 			},
 		};
@@ -228,6 +233,7 @@ describe("subscribeIntercomControl", () => {
 			events: {
 				on: (_event: string, handler: (payload: unknown) => void) => {
 					capturedHandler = handler;
+					return undefined;
 				},
 			},
 		};
@@ -255,6 +261,7 @@ function makeEventBus(): {
 			events: {
 				on: (_event: string, handler: (payload: unknown) => void) => {
 					capturedHandler = handler;
+					return undefined;
 				},
 			},
 		},
@@ -313,6 +320,7 @@ describe("result-intercom + intercom-routing — need_decision records requiresA
 			store,
 			emit: (event, payload) => {
 				emitCalls.push({ event, payload });
+				return undefined;
 			},
 			confirm: undefined,
 		});
@@ -336,6 +344,7 @@ describe("result-intercom + intercom-routing — need_decision records requiresA
 			store,
 			emit: (event, payload) => {
 				emitCalls.push({ event, payload });
+				return undefined;
 			},
 			confirm: undefined,
 		});
@@ -346,8 +355,8 @@ describe("result-intercom + intercom-routing — need_decision records requiresA
 
 		assert.equal(emitCalls.length, 1);
 		assert.equal(emitCalls[0]!.event, "subagent:control-intercom:response");
-		assert.equal(emitCalls[0]!.payload["accepted"], false);
-		assert.equal(emitCalls[0]!.payload["requestId"], "req-noui");
+		assert.equal(emitCalls[0]!.payload.accepted, false);
+		assert.equal(emitCalls[0]!.payload.requestId, "req-noui");
 	});
 
 	test("need_decision notice is acked after response emitted", async () => {
@@ -404,6 +413,7 @@ describe("result-intercom + intercom-routing — unknown event records warning",
 			store,
 			emit: (event, payload) => {
 				emitCalls.push({ event, payload });
+				return undefined;
 			},
 			confirm: undefined,
 		});

@@ -120,7 +120,7 @@ export function wrapPlainText(text: string, width: number): string[] {
 			} else if (line.length === 0) {
 				line = word;
 			} else if (visibleWidth(line) + 1 + visibleWidth(word) <= budget) {
-				line += " " + word;
+				line += ` ${word}`;
 			} else {
 				out.push(line);
 				line = word;

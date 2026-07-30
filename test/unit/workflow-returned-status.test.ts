@@ -89,7 +89,7 @@ describe("workflow returned status outputs", () => {
 		assert.equal(durableHandle?.status, "blocked");
 		assert.equal(durableHandle?.resumable, false);
 		assert.deepEqual(durableBackend.listResumableWorkflows(), []);
-		assert.equal(runEnd?.payload["resumable"], false);
+		assert.equal(runEnd?.payload.resumable, false);
 		assert.deepEqual(result.result, { status: "blocked", summary: "required checks are pending" });
 	});
 
@@ -265,7 +265,7 @@ describe("workflow returned status outputs", () => {
 		assert.equal(snapshot?.status, "blocked");
 		assert.equal(statusEntry?.status, "blocked");
 		assert.match(result.error ?? "", /No API key for provider: github-copilot/);
-		assert.equal(snapshot?.result?.["status"], "needs_human");
+		assert.equal(snapshot?.result?.status, "needs_human");
 		assert.equal(snapshot?.failureKind, undefined);
 		assert.equal(snapshot?.failureCode, undefined);
 		assert.equal(snapshot?.failureRecoverability, "recoverable");
@@ -273,8 +273,8 @@ describe("workflow returned status outputs", () => {
 		assert.equal(snapshot?.resumable, true);
 		assert.equal(durableHandle?.status, "blocked");
 		assert.equal(durableHandle?.resumable, true);
-		assert.equal(runEnd?.payload["status"], "blocked");
-		assert.equal(runEnd?.payload["resumable"], true);
+		assert.equal(runEnd?.payload.status, "blocked");
+		assert.equal(runEnd?.payload.resumable, true);
 	});
 
 	test("restores returned blocked run metadata without marking it as ctx.exit", () => {

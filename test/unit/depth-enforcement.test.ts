@@ -99,7 +99,7 @@ describe("maxDepth enforcement — executor.run", () => {
 		);
 
 		assert.equal(result.status, "completed");
-		assert.equal(result.result?.["ok"], true);
+		assert.equal(result.result?.ok, true);
 	});
 
 	test("depth 0 (default) executes normally with maxDepth 2", async () => {

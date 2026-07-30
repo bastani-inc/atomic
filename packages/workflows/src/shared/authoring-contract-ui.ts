@@ -84,7 +84,7 @@ export interface WorkflowUIAdapter {
 
 export interface WorkflowRunContext<
 	TInputs extends WorkflowInputValues = WorkflowInputValues,
-	TDefinitionBrand extends object = {},
+	TDefinitionBrand extends object = Record<never, never>,
 	TOutputs extends WorkflowOutputValues = WorkflowOutputValues,
 > {
 	readonly inputs: Readonly<TInputs>;
@@ -183,7 +183,7 @@ export interface WorkflowToolPrimitive {
 export type WorkflowRunFn<
 	TInputs extends WorkflowInputValues = WorkflowInputValues,
 	TOutputs extends WorkflowOutputValues = WorkflowOutputValues,
-	TDefinitionBrand extends object = {},
+	TDefinitionBrand extends object = Record<never, never>,
 > = (ctx: WorkflowRunContext<TInputs, TDefinitionBrand, TOutputs>) => Promise<TOutputs> | TOutputs;
 
 export interface WorkflowRuntimeConfig {
@@ -211,7 +211,7 @@ export interface WorkflowDefinition<
 	TInputs extends WorkflowInputValues = WorkflowInputValues,
 	TOutputs extends WorkflowOutputValues = WorkflowOutputValues,
 	TRunInputs extends WorkflowInputValues = TInputs,
-	TDefinitionBrand extends object = {},
+	TDefinitionBrand extends object = Record<never, never>,
 > {
 	readonly __piWorkflow: true;
 	readonly __runInputs?: TRunInputs;

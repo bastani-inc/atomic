@@ -80,7 +80,7 @@ describe("executor.run", () => {
 				out: Type.Optional(Type.Any()),
 			},
 			run: async (ctx) => {
-				const greeting = ctx.stage("greet").prompt(String(ctx.inputs["greeting"]));
+				const greeting = ctx.stage("greet").prompt(String(ctx.inputs.greeting));
 				return { out: await greeting };
 			},
 		});
@@ -95,7 +95,7 @@ describe("executor.run", () => {
 		);
 
 		assert.equal(wfResult.status, "completed");
-		assert.equal(wfResult.result?.["out"], "hello");
+		assert.equal(wfResult.result?.out, "hello");
 	});
 
 	test("throws for missing required input before run starts", async () => {

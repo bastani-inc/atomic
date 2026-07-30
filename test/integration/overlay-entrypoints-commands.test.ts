@@ -64,7 +64,7 @@ function registerInspectableCompleted(backend: InMemoryDurableBackend, workflowI
 	const sessionFile = join(dir, "stage.jsonl");
 	writeFileSync(
 		sessionFile,
-		[
+		`${[
 			JSON.stringify({
 				type: "session",
 				version: 3,
@@ -79,7 +79,7 @@ function registerInspectableCompleted(backend: InMemoryDurableBackend, workflowI
 				timestamp: new Date().toISOString(),
 				message: { role: "user", content: "prior context", timestamp: Date.now() },
 			}),
-		].join("\n") + "\n",
+		].join("\n")}\n`,
 	);
 	backend.registerWorkflow({ workflowId, name, inputs: {}, createdAt: 1, status: "completed" });
 	backend.recordCheckpoint({
@@ -104,7 +104,7 @@ describe("/workflow resume — overlay integration", () => {
 		const { pi, commands, customCalls } = buildMockPi();
 		factory(pi);
 
-		const wfCmd = commands["workflow"]!;
+		const wfCmd = commands.workflow!;
 		const { ctx } = buildPrintCtx();
 
 		void wfCmd.options.handler("resume no-such-run", ctx);
@@ -117,7 +117,7 @@ describe("/workflow resume — overlay integration", () => {
 		const { pi, commands } = buildMockPi();
 		factory(pi);
 
-		const wfCmd = commands["workflow"]!;
+		const wfCmd = commands.workflow!;
 		const { ctx, messages } = buildPrintCtx();
 
 		await wfCmd.options.handler("resume", ctx);
@@ -143,7 +143,7 @@ describe("/workflow resume — overlay integration", () => {
 		try {
 			const { pi, commands } = buildMockPi();
 			factory(pi);
-			const wfCmd = commands["workflow"]!;
+			const wfCmd = commands.workflow!;
 			const { ctx, customCalls } = buildPrintCtxWithRealCustom();
 			void wfCmd.options.handler("resume", ctx);
 			await delay(5);
@@ -183,7 +183,7 @@ describe("/workflow resume — overlay integration", () => {
 			const { pi, commands } = buildMockPi();
 			factory(pi);
 			const { ctx, customCalls } = buildPrintCtxWithRealCustom();
-			void commands["workflow"]!.options.handler("resume", ctx);
+			void commands.workflow!.options.handler("resume", ctx);
 			await delay(5);
 			assert.equal(customCalls.length, 1);
 			assert.match(visibleText(customCalls[0]!.component.render(80)), /durable-history/);
@@ -206,7 +206,7 @@ describe("/workflow resume — overlay integration", () => {
 		singletonStore.recordRunPaused(runId);
 		const { pi, commands, customCalls } = buildMockPi();
 		factory(pi);
-		const wfCmd = commands["workflow"]!;
+		const wfCmd = commands.workflow!;
 		const { ctx, customCalls: realCustomCalls } = buildPrintCtxWithRealCustom();
 
 		void wfCmd.options.handler("resume", ctx);
@@ -221,7 +221,7 @@ describe("/workflow resume — overlay integration", () => {
 		const { pi, commands } = buildMockPi();
 		factory(pi);
 
-		const wfCmd = commands["workflow"]!;
+		const wfCmd = commands.workflow!;
 		const completions = (await wfCmd.options.getArgumentCompletions?.("res")) ?? [];
 
 		assert.equal(
@@ -256,7 +256,7 @@ describe("/workflow resume — overlay integration", () => {
 			const { pi, commands } = buildMockPi();
 			factory(pi);
 			const { ctx, customCalls } = buildPrintCtxWithRealCustom();
-			const handlerPromise = commands["workflow"]!.options.handler("resume", ctx);
+			const handlerPromise = commands.workflow!.options.handler("resume", ctx);
 			await delay(5);
 			assert.ok(customCalls.length >= 1);
 			const text = visibleText(customCalls[0]!.component.render(80)).replace(/\n/g, " ");
@@ -290,7 +290,7 @@ describe("/workflow resume — overlay integration", () => {
 			factory(pi);
 			const { ctx } = buildPrintCtx();
 
-			await commands["workflow"]!.options.handler(`resume ${runId}`, ctx);
+			await commands.workflow!.options.handler(`resume ${runId}`, ctx);
 
 			assert.ok(customCalls.length >= 1);
 			assert.equal(customCalls[0]!.options.overlay, true);
@@ -316,7 +316,7 @@ describe("/workflow resume — overlay integration", () => {
 		const { pi, commands, customCalls } = buildMockPi();
 		factory(pi);
 
-		const wfCmd = commands["workflow"]!;
+		const wfCmd = commands.workflow!;
 		const { ctx, messages } = buildPrintCtx();
 
 		await wfCmd.options.handler(`resume ${runId}`, ctx);
@@ -335,7 +335,7 @@ describe("/workflow resume — overlay integration", () => {
 		delete pi.ui;
 		factory(pi);
 
-		const wfCmd = commands["workflow"]!;
+		const wfCmd = commands.workflow!;
 		const { ctx, customCalls } = buildPrintCtxWithRealCustom();
 
 		// No-arg resume opens the shared /resume-style selector host-natively
@@ -352,7 +352,7 @@ describe("/workflow resume — overlay integration", () => {
 		delete pi.ui;
 		factory(pi);
 
-		const wfCmd = commands["workflow"]!;
+		const wfCmd = commands.workflow!;
 		const { ctx, customCalls } = buildPrintCtxWithRealCustom();
 
 		await wfCmd.options.handler("fan-out-and-synthesize prompt=test", ctx);
@@ -370,7 +370,7 @@ describe("/workflow pause — top-level command", () => {
 		singletonStore.clear();
 		const { pi, commands } = buildMockPi();
 		factory(pi);
-		const wfCmd = commands["workflow"]!;
+		const wfCmd = commands.workflow!;
 		const { ctx, messages } = buildPrintCtx();
 		await wfCmd.options.handler("pause", ctx);
 		const joined = messages.join("\n");
@@ -384,7 +384,7 @@ describe("/workflow pause — top-level command", () => {
 		singletonStore.clear();
 		const { pi, commands } = buildMockPi();
 		factory(pi);
-		const wfCmd = commands["workflow"]!;
+		const wfCmd = commands.workflow!;
 		const { ctx, messages } = buildPrintCtx();
 		await wfCmd.options.handler("pause no-such-run", ctx);
 		const joined = messages.join("\n");
@@ -411,7 +411,7 @@ describe("/workflow resume — paused vs non-paused branching", () => {
 		const { pi, commands, customCalls } = buildMockPi();
 		factory(pi);
 		const { ctx, messages } = buildPrintCtx();
-		await commands["workflow"]!.options.handler(`resume ${runId}`, ctx);
+		await commands.workflow!.options.handler(`resume ${runId}`, ctx);
 		assert.equal(customCalls.length, 0);
 		assert.match(
 			messages.join("\n"),
@@ -441,7 +441,7 @@ describe("/workflow attach — top-level command", () => {
 		});
 		const { pi, commands, customCalls } = buildMockPi();
 		factory(pi);
-		const wfCmd = commands["workflow"]!;
+		const wfCmd = commands.workflow!;
 		const { ctx } = buildPrintCtx();
 		await wfCmd.options.handler(`attach ${runId}`, ctx);
 		assert.ok(customCalls.length >= 1);
@@ -452,7 +452,7 @@ describe("/workflow attach — top-level command", () => {
 		singletonStore.clear();
 		const { pi, commands, customCalls } = buildMockPi();
 		factory(pi);
-		const wfCmd = commands["workflow"]!;
+		const wfCmd = commands.workflow!;
 		const { ctx, messages } = buildPrintCtx();
 		await wfCmd.options.handler("attach not-a-run", ctx);
 		assert.match(messages.join("\n"), /Run not found/);
@@ -463,7 +463,7 @@ describe("/workflow attach — top-level command", () => {
 		singletonStore.clear();
 		const { pi, commands, customCalls } = buildMockPi();
 		factory(pi);
-		const wfCmd = commands["workflow"]!;
+		const wfCmd = commands.workflow!;
 		const { ctx } = buildPrintCtx();
 		// Unknown id — hermetic durable backend has no matching record.
 		await wfCmd.options.handler("resume not-a-durable-wf", ctx);
@@ -497,7 +497,7 @@ describe("/workflow attach — top-level command", () => {
 			const { pi, commands } = buildMockPi();
 			factory(pi);
 			const { ctx, customCalls } = buildPrintCtxWithRealCustom();
-			const handlerPromise = commands["workflow"]!.options.handler("resume", ctx);
+			const handlerPromise = commands.workflow!.options.handler("resume", ctx);
 			await delay(5);
 			assert.ok(customCalls.length >= 1);
 			assert.equal(customCalls[0]!.options.overlay, false);
@@ -527,7 +527,7 @@ describe("/workflow attach — top-level command", () => {
 		const { pi, commands, customCalls } = buildMockPi();
 		factory(pi);
 		const { ctx, customCalls: realCustomCalls } = buildPrintCtxWithRealCustom();
-		void commands["workflow"]!.options.handler("resume", ctx);
+		void commands.workflow!.options.handler("resume", ctx);
 		await delay(5);
 		// The resume command should open the shared /resume-style selector directly.
 		assert.equal(customCalls.length, 0);
@@ -566,7 +566,7 @@ describe("/workflow attach — top-level command", () => {
 			factory(pi);
 			const { ctx, customCalls } = buildPrintCtxWithRealCustom();
 			// Fire the handler; it will open the shared live+durable selector.
-			const handlerPromise = commands["workflow"]!.options.handler("resume", ctx);
+			const handlerPromise = commands.workflow!.options.handler("resume", ctx);
 			await delay(5);
 			// Shared selector is open.
 			assert.ok(customCalls.length >= 1);
@@ -608,7 +608,7 @@ describe("/workflow attach — top-level command", () => {
 			const { pi, commands } = buildMockPi();
 			factory(pi);
 			const { ctx, customCalls } = buildPrintCtxWithRealCustom();
-			const handlerPromise = commands["workflow"]!.options.handler("resume", ctx);
+			const handlerPromise = commands.workflow!.options.handler("resume", ctx);
 			await delay(10);
 			assert.ok(customCalls.length >= 1);
 			const text = visibleText(customCalls[0]!.component.render(80)).replace(/\n/g, " ");

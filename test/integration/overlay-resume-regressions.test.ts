@@ -166,7 +166,7 @@ describe("/workflow resume — durable regression coverage", () => {
 		factory(pi);
 		const { ctx, customCalls, messages } = buildPrintCtxWithRealCustom();
 
-		const handlerPromise = commands["workflow"]!.options.handler("resume", ctx);
+		const handlerPromise = commands.workflow!.options.handler("resume", ctx);
 		await delay(5);
 
 		assert.equal(messages.length, 0);
@@ -194,7 +194,7 @@ describe("/workflow resume — durable regression coverage", () => {
 		factory(pi);
 		const { ctx, customCalls } = buildPrintCtxWithRealCustom();
 
-		const handlerPromise = commands["workflow"]!.options.handler("resume", ctx);
+		const handlerPromise = commands.workflow!.options.handler("resume", ctx);
 		await delay(5);
 
 		assert.ok(customCalls.length >= 1);
@@ -237,7 +237,7 @@ describe("/workflow resume — durable regression coverage", () => {
 		factory(pi);
 		const { ctx, customCalls } = buildPrintCtxWithRealCustom();
 
-		const handlerPromise = commands["workflow"]!.options.handler("resume", ctx);
+		const handlerPromise = commands.workflow!.options.handler("resume", ctx);
 		await delay(5);
 
 		assert.ok(customCalls.length >= 1);
@@ -264,7 +264,7 @@ describe("/workflow resume — durable regression coverage", () => {
 		factory(pi);
 		const { ctx, customCalls, messages } = buildPrintCtxWithRealCustom();
 
-		const handlerPromise = commands["workflow"]!.options.handler("resume", ctx);
+		const handlerPromise = commands.workflow!.options.handler("resume", ctx);
 		await delay(5);
 		assert.ok(customCalls.length >= 1);
 		customCalls[0]!.component.handleInput?.("\r");
@@ -302,7 +302,7 @@ describe("/workflow resume — durable regression coverage", () => {
 		factory(pi);
 		const { ctx, customCalls } = buildPrintCtxWithRealCustom();
 
-		const handlerPromise = commands["workflow"]!.options.handler("resume", ctx);
+		const handlerPromise = commands.workflow!.options.handler("resume", ctx);
 		await delay(5);
 		assert.ok(customCalls.length >= 1);
 		customCalls[0]!.component.handleInput?.("\r");
@@ -343,7 +343,7 @@ describe("/workflow resume — durable regression coverage", () => {
 		factory(pi);
 		const { ctx, customCalls, messages } = buildPrintCtxWithRealCustom();
 
-		const handlerPromise = commands["workflow"]!.options.handler("resume", ctx);
+		const handlerPromise = commands.workflow!.options.handler("resume", ctx);
 		await delay(5);
 		assert.ok(customCalls.length >= 1);
 		customCalls[0]!.component.handleInput?.("\r");

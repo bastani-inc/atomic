@@ -23,7 +23,7 @@ import {
 } from "./workflow-targets.js";
 
 export interface WorkflowControlActionDeps {
-	reloadWorkflowResources: () => Promise<WorkflowReloadReport | void> | void;
+	reloadWorkflowResources: () => Promise<WorkflowReloadReport | undefined> | undefined;
 	getRuntime: () => ExtensionRuntime;
 	policy: WorkflowExecutionPolicy;
 	ensureWorkflowResourcesLoaded: () => Promise<void> | void;
@@ -387,8 +387,7 @@ export async function workflowResumeAction(
 			action: "resume",
 			runId: target.runId,
 			status: "noop",
-			message:
-				"Workflow " + target.runId + " has no durable checkpoint or pending prompt progress and is not resumable.",
+			message: `Workflow ${target.runId} has no durable checkpoint or pending prompt progress and is not resumable.`,
 		};
 	}
 	if (!backend.isWorkflowLoadable(target.runId)) {

@@ -23,7 +23,7 @@ import type { WorkflowDetails } from "../shared/types.js";
 
 /** Minimal pi events bus surface used by this module. */
 export interface PiEventBus {
-	on?: (event: string, handler: (payload: unknown) => void) => void | (() => void);
+	on?: (event: string, handler: (payload: unknown) => void) => unknown;
 	emit?: (event: string, payload: Record<string, unknown>) => void;
 }
 

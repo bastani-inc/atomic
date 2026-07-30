@@ -49,11 +49,11 @@ describe("goal objective-drift workflow behavior", () => {
 		const ctx = makeMockCtx({ objective: "Follow-up delta", acceptance_criteria: "Original task" });
 
 		const result = await d.run(ctx);
-		const ledger = JSON.parse(readFileSync(result["ledger_path"] as string, "utf8"));
+		const ledger = JSON.parse(readFileSync(result.ledger_path as string, "utf8"));
 
 		assert.equal(ledger.objective, "Follow-up delta");
 		assert.equal(ledger.acceptance_criteria, "Original task");
-		assert.equal(result["acceptance_criteria"], "Original task");
+		assert.equal(result.acceptance_criteria, "Original task");
 	});
 
 	test("allows approval when correct reviewers only include in-scope P3 nice-to-have findings", async () => {
@@ -80,8 +80,8 @@ describe("goal objective-drift workflow behavior", () => {
 
 		const result = await d.run(ctx);
 
-		assert.equal(result["status"], "complete");
-		assert.equal(result["approved"], true);
+		assert.equal(result.status, "complete");
+		assert.equal(result.approved, true);
 	});
 
 	test("a dissenting reviewer's findings do not veto boolean quorum — the reducer completes on stop_review_loop quorum", async () => {
@@ -108,9 +108,9 @@ describe("goal objective-drift workflow behavior", () => {
 
 		const result = await d.run(ctx);
 
-		assert.equal(result["status"], "complete");
-		assert.equal(result["approved"], true);
-		const ledger = JSON.parse(readFileSync(result["ledger_path"] as string, "utf8"));
+		assert.equal(result.status, "complete");
+		assert.equal(result.approved, true);
+		const ledger = JSON.parse(readFileSync(result.ledger_path as string, "utf8"));
 		assert.match(
 			ledger.decisions[0].reason,
 			/Reviewer quorum met: 2\/2 reviewers independently reported stop_review_loop=true/,
@@ -140,9 +140,9 @@ describe("goal objective-drift workflow behavior", () => {
 
 		const result = await d.run(ctx);
 
-		assert.equal(result["status"], "needs_human");
-		assert.equal(result["approved"], false);
-		const ledger = JSON.parse(readFileSync(result["ledger_path"] as string, "utf8"));
+		assert.equal(result.status, "needs_human");
+		assert.equal(result.approved, false);
+		const ledger = JSON.parse(readFileSync(result.ledger_path as string, "utf8"));
 		assert.match(ledger.decisions[0].reason, /Orchestrator attempt budget reached without reviewer quorum/);
 	});
 });

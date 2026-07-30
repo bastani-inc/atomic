@@ -57,7 +57,7 @@ export function createAdmittedToolExecutionTracker(
 		options.onFailureDuringDrain?.(failure);
 	};
 
-	const drainRecordedFailures = (): Promise<void[]> =>
+	const drainRecordedFailures = (): Promise<unknown[]> =>
 		Promise.all(
 			admissions.flatMap((admission) =>
 				admission.failure !== undefined && admission.observed !== undefined ? [admission.observed] : [],

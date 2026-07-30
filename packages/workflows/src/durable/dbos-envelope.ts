@@ -187,9 +187,9 @@ export function classifyCheckpointPayload(
 	value: WorkflowSerializableValue,
 ): DbosCheckpointCompatibility {
 	if (!hasCheckpointEnvelopeMarker(value) || !isCurrentDurableFormat(value.v)) return { kind: "unknown" };
-	const hasOutput = value["hasOutput"];
-	const containsOutput = value["output"] !== undefined;
-	if (value["checkpointId"] !== stepName || typeof hasOutput !== "boolean" || hasOutput !== containsOutput) {
+	const hasOutput = value.hasOutput;
+	const containsOutput = value.output !== undefined;
+	if (value.checkpointId !== stepName || typeof hasOutput !== "boolean" || hasOutput !== containsOutput) {
 		return { kind: "unknown" };
 	}
 	const checkpoint = decodeEnvelope(workflowId, value as DbosCheckpointEnvelope);
@@ -306,27 +306,27 @@ function toolTopology(value: WorkflowSerializableValue): DurableToolTopology | u
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
 	const record = value as Record<string, WorkflowSerializableValue>;
 	if (
-		record["version"] !== DURABLE_TOOL_TOPOLOGY_VERSION ||
-		typeof record["nodeId"] !== "string" ||
-		typeof record["ordinal"] !== "number" ||
-		!Number.isInteger(record["ordinal"]) ||
-		typeof record["order"] !== "number" ||
-		!Number.isInteger(record["order"]) ||
-		!isStringArray(record["parentIds"]) ||
-		!isOptionalFiniteNumber(record["startedAt"]) ||
-		!isOptionalFiniteNumber(record["endedAt"])
+		record.version !== DURABLE_TOOL_TOPOLOGY_VERSION ||
+		typeof record.nodeId !== "string" ||
+		typeof record.ordinal !== "number" ||
+		!Number.isInteger(record.ordinal) ||
+		typeof record.order !== "number" ||
+		!Number.isInteger(record.order) ||
+		!isStringArray(record.parentIds) ||
+		!isOptionalFiniteNumber(record.startedAt) ||
+		!isOptionalFiniteNumber(record.endedAt)
 	)
 		return undefined;
-	const run = stageRunTopology(record["run"]);
-	if (record["run"] !== undefined && run === undefined) return undefined;
+	const run = stageRunTopology(record.run);
+	if (record.run !== undefined && run === undefined) return undefined;
 	return {
 		version: DURABLE_TOOL_TOPOLOGY_VERSION,
-		nodeId: record["nodeId"],
-		ordinal: record["ordinal"],
-		order: record["order"],
-		parentIds: record["parentIds"],
-		...(typeof record["startedAt"] === "number" ? { startedAt: record["startedAt"] } : {}),
-		...(typeof record["endedAt"] === "number" ? { endedAt: record["endedAt"] } : {}),
+		nodeId: record.nodeId,
+		ordinal: record.ordinal,
+		order: record.order,
+		parentIds: record.parentIds,
+		...(typeof record.startedAt === "number" ? { startedAt: record.startedAt } : {}),
+		...(typeof record.endedAt === "number" ? { endedAt: record.endedAt } : {}),
 		...(run !== undefined ? { run } : {}),
 	};
 }
@@ -335,26 +335,26 @@ function stageTopology(value: WorkflowSerializableValue | undefined): DurableSta
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
 	const record = value as Record<string, WorkflowSerializableValue>;
 	if (
-		record["version"] !== DURABLE_STAGE_TOPOLOGY_VERSION ||
-		typeof record["stageId"] !== "string" ||
-		!isStringArray(record["parentIds"]) ||
-		!isOptionalSourceOrder(record["sourceOrder"]) ||
-		(record["occurrenceKey"] !== undefined && typeof record["occurrenceKey"] !== "string") ||
-		(record["status"] !== undefined && !isStageLifecycleStatus(record["status"]))
+		record.version !== DURABLE_STAGE_TOPOLOGY_VERSION ||
+		typeof record.stageId !== "string" ||
+		!isStringArray(record.parentIds) ||
+		!isOptionalSourceOrder(record.sourceOrder) ||
+		(record.occurrenceKey !== undefined && typeof record.occurrenceKey !== "string") ||
+		(record.status !== undefined && !isStageLifecycleStatus(record.status))
 	)
 		return undefined;
-	const run = stageRunTopology(record["run"]);
-	if (record["run"] !== undefined && run === undefined) return undefined;
-	const boundary = boundaryTopology(record["boundary"]);
-	if (record["boundary"] !== undefined && boundary === undefined) return undefined;
+	const run = stageRunTopology(record.run);
+	if (record.run !== undefined && run === undefined) return undefined;
+	const boundary = boundaryTopology(record.boundary);
+	if (record.boundary !== undefined && boundary === undefined) return undefined;
 	return {
 		version: DURABLE_STAGE_TOPOLOGY_VERSION,
-		stageId: record["stageId"],
-		parentIds: record["parentIds"],
-		...(typeof record["sourceOrder"] === "number" ? { sourceOrder: record["sourceOrder"] } : {}),
-		...(typeof record["occurrenceKey"] === "string" ? { occurrenceKey: record["occurrenceKey"] } : {}),
-		...(isStageLifecycleStatus(record["status"]) ? { status: record["status"] } : {}),
-		...(typeof record["order"] === "number" && Number.isInteger(record["order"]) ? { order: record["order"] } : {}),
+		stageId: record.stageId,
+		parentIds: record.parentIds,
+		...(typeof record.sourceOrder === "number" ? { sourceOrder: record.sourceOrder } : {}),
+		...(typeof record.occurrenceKey === "string" ? { occurrenceKey: record.occurrenceKey } : {}),
+		...(isStageLifecycleStatus(record.status) ? { status: record.status } : {}),
+		...(typeof record.order === "number" && Number.isInteger(record.order) ? { order: record.order } : {}),
 		...(run !== undefined ? { run } : {}),
 		...(boundary !== undefined ? { boundary } : {}),
 	};
@@ -363,19 +363,19 @@ function stageTopology(value: WorkflowSerializableValue | undefined): DurableSta
 function boundaryTopology(value: WorkflowSerializableValue | undefined): DurableWorkflowBoundaryTopology | undefined {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
 	const boundary = value as Record<string, WorkflowSerializableValue>;
-	const childValue = boundary["child"];
-	const event = boundary["event"];
-	const status = boundary["status"];
-	const invocationFingerprint = boundary["invocationFingerprint"];
+	const childValue = boundary.child;
+	const event = boundary.event;
+	const status = boundary.status;
+	const invocationFingerprint = boundary.invocationFingerprint;
 	if (
-		boundary["version"] !== DURABLE_BOUNDARY_TOPOLOGY_VERSION ||
+		boundary.version !== DURABLE_BOUNDARY_TOPOLOGY_VERSION ||
 		(event !== "start" && event !== "terminal") ||
 		(event === "start"
 			? status !== "running"
 			: status !== "completed" && status !== "failed" && status !== "skipped") ||
-		typeof boundary["replayScope"] !== "string" ||
-		typeof boundary["alias"] !== "string" ||
-		typeof boundary["workflow"] !== "string" ||
+		typeof boundary.replayScope !== "string" ||
+		typeof boundary.alias !== "string" ||
+		typeof boundary.workflow !== "string" ||
 		(invocationFingerprint !== undefined && typeof invocationFingerprint !== "string") ||
 		typeof childValue !== "object" ||
 		childValue === null ||
@@ -389,16 +389,16 @@ function boundaryTopology(value: WorkflowSerializableValue | undefined): Durable
 		return undefined;
 	const identity = {
 		version: DURABLE_BOUNDARY_TOPOLOGY_VERSION,
-		replayScope: boundary["replayScope"] as string,
-		alias: boundary["alias"] as string,
-		workflow: boundary["workflow"] as string,
+		replayScope: boundary.replayScope as string,
+		alias: boundary.alias as string,
+		workflow: boundary.workflow as string,
 		...(typeof invocationFingerprint === "string" ? { invocationFingerprint } : {}),
 		child: {
-			runId: child["runId"] as string,
-			runName: child["runName"] as string,
-			parentRunId: child["parentRunId"] as string,
-			parentStageId: child["parentStageId"] as string,
-			rootRunId: child["rootRunId"] as string,
+			runId: child.runId as string,
+			runName: child.runName as string,
+			parentRunId: child.parentRunId as string,
+			parentStageId: child.parentStageId as string,
+			rootRunId: child.rootRunId as string,
 		},
 	};
 	if (event === "start") return { ...identity, event, status: "running" };
@@ -431,16 +431,16 @@ function stageRunTopology(
 ): NonNullable<DurableStageTopology["run"]> | undefined {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
 	const run = value as Record<string, WorkflowSerializableValue>;
-	if (typeof run["runId"] !== "string" || typeof run["runName"] !== "string") return undefined;
+	if (typeof run.runId !== "string" || typeof run.runName !== "string") return undefined;
 	for (const key of ["parentRunId", "parentStageId", "rootRunId"] as const) {
 		if (run[key] !== undefined && typeof run[key] !== "string") return undefined;
 	}
 	return {
-		runId: run["runId"],
-		runName: run["runName"],
-		...(typeof run["parentRunId"] === "string" ? { parentRunId: run["parentRunId"] } : {}),
-		...(typeof run["parentStageId"] === "string" ? { parentStageId: run["parentStageId"] } : {}),
-		...(typeof run["rootRunId"] === "string" ? { rootRunId: run["rootRunId"] } : {}),
+		runId: run.runId,
+		runName: run.runName,
+		...(typeof run.parentRunId === "string" ? { parentRunId: run.parentRunId } : {}),
+		...(typeof run.parentStageId === "string" ? { parentStageId: run.parentStageId } : {}),
+		...(typeof run.rootRunId === "string" ? { rootRunId: run.rootRunId } : {}),
 	};
 }
 
@@ -451,11 +451,11 @@ function isModelAttempts(value: WorkflowSerializableValue | undefined): boolean 
 			if (typeof attempt !== "object" || attempt === null || Array.isArray(attempt)) return false;
 			const record = attempt as Record<string, WorkflowSerializableValue>;
 			return (
-				typeof record["model"] === "string" &&
-				typeof record["success"] === "boolean" &&
-				(record["reasoningLevel"] === undefined || isReasoningLevel(record["reasoningLevel"])) &&
-				(record["error"] === undefined || typeof record["error"] === "string") &&
-				(record["usage"] === undefined || isModelUsage(record["usage"]))
+				typeof record.model === "string" &&
+				typeof record.success === "boolean" &&
+				(record.reasoningLevel === undefined || isReasoningLevel(record.reasoningLevel)) &&
+				(record.error === undefined || typeof record.error === "string") &&
+				(record.usage === undefined || isModelUsage(record.usage))
 			);
 		})
 	);

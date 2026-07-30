@@ -26,7 +26,7 @@ afterEach(() => {
 function writeSessionTranscript(path: string, id: string): void {
 	writeFileSync(
 		path,
-		[
+		`${[
 			JSON.stringify({ type: "session", version: 3, id, timestamp: new Date().toISOString(), cwd: tempDir }),
 			JSON.stringify({
 				type: "message",
@@ -35,7 +35,7 @@ function writeSessionTranscript(path: string, id: string): void {
 				timestamp: new Date().toISOString(),
 				message: { role: "user", content: "prior context", timestamp: Date.now() },
 			}),
-		].join("\n") + "\n",
+		].join("\n")}\n`,
 	);
 }
 

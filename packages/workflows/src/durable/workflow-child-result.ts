@@ -10,12 +10,12 @@ export function parseWorkflowChildResult(
 	value: WorkflowSerializableValue | undefined,
 ): WorkflowChildResult<WorkflowOutputValues> | undefined {
 	if (!isOrdinaryObject(value)) return undefined;
-	const workflow = value["workflow"];
-	const runId = value["runId"];
-	const status = value["status"];
-	const exited = value["exited"];
-	const outputs = value["outputs"];
-	const exitReason = value["exitReason"];
+	const workflow = value.workflow;
+	const runId = value.runId;
+	const status = value.status;
+	const exited = value.exited;
+	const outputs = value.outputs;
+	const exitReason = value.exitReason;
 	if (typeof workflow !== "string" || typeof runId !== "string" || !isOrdinaryObject(outputs)) return undefined;
 	if (exited === false) {
 		if (status !== "completed" || exitReason !== undefined) return undefined;
@@ -31,12 +31,12 @@ export function parseLegacyWorkflowChildResult(
 ): WorkflowChildResult<WorkflowOutputValues> | undefined {
 	if (!isOrdinaryObject(value)) return undefined;
 	if (
-		typeof value["workflow"] !== "string" ||
-		typeof value["runId"] !== "string" ||
-		value["status"] !== "completed" ||
-		value["exited"] !== undefined ||
-		value["exitReason"] !== undefined ||
-		!isOrdinaryObject(value["outputs"])
+		typeof value.workflow !== "string" ||
+		typeof value.runId !== "string" ||
+		value.status !== "completed" ||
+		value.exited !== undefined ||
+		value.exitReason !== undefined ||
+		!isOrdinaryObject(value.outputs)
 	)
 		return undefined;
 	return value as WorkflowChildResult<WorkflowOutputValues>;

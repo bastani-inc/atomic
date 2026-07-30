@@ -340,8 +340,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	const workflowBoundaryReplayCounts = new Map<string, number>();
 	const nextWorkflowBoundaryReplayKey = (name: string): string => {
 		const durableScopePrefix = pendingChildDurableInvocation?.scope.scopePrefix;
-		if (durableScopePrefix !== undefined && durableScopePrefix.startsWith(`workflow:${name}:`))
-			return durableScopePrefix;
+		if (durableScopePrefix?.startsWith(`workflow:${name}:`)) return durableScopePrefix;
 		const next = (workflowBoundaryReplayCounts.get(name) ?? 0) + 1;
 		workflowBoundaryReplayCounts.set(name, next);
 		return `workflow:${name}:${next}`;

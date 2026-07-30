@@ -344,7 +344,7 @@ export function renderResult(result: WorkflowToolResult, opts?: RenderResultOpts
 			const r = result as GetResult;
 			if (r.error) return renderNotice("WORKFLOW GET", `${r.workflow}: ${r.error}`, opts, themed);
 			const output = r.details?.output;
-			const description = typeof output?.["description"] === "string" ? ` — ${output["description"]}` : "";
+			const description = typeof output?.description === "string" ? ` — ${output.description}` : "";
 			return renderNotice(
 				"WORKFLOW GET",
 				`${r.workflow}: ${r.details?.status ?? "completed"}${description}`,

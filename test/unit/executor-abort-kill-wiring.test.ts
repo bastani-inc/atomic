@@ -133,8 +133,8 @@ describe("executor.run — abort/kill wiring", () => {
 		// appendRunEndWhenRecorded skipped → total workflow.run.end entries = 1 (from killRun only)
 		const runEndCalls = calls.filter((c) => c.type === "workflow.run.end");
 		assert.equal(runEndCalls.length, 1);
-		assert.equal(runEndCalls[0]?.payload["status"], "killed");
-		assert.equal(runEndCalls[0]?.payload["runId"], capturedRunId);
+		assert.equal(runEndCalls[0]?.payload.status, "killed");
+		assert.equal(runEndCalls[0]?.payload.runId, capturedRunId);
 	});
 
 	test("later resolution doesn't overwrite killed status", async () => {
@@ -268,10 +268,10 @@ describe("executor.run — abort/kill wiring", () => {
 		// No "completed" entry should exist.
 		const runEndEntries = persistenceCalls.filter((c) => c.type === "workflow.run.end");
 		assert.equal(runEndEntries.length, 1);
-		assert.equal(runEndEntries[0]?.payload["status"], "killed");
+		assert.equal(runEndEntries[0]?.payload.status, "killed");
 
 		const completedEntries = persistenceCalls.filter(
-			(c) => c.type === "workflow.run.end" && c.payload["status"] === "completed",
+			(c) => c.type === "workflow.run.end" && c.payload.status === "completed",
 		);
 		assert.equal(completedEntries.length, 0);
 	});

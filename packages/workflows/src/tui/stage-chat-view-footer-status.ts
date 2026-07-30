@@ -25,7 +25,7 @@ export function renderHeader(ctx: StageChatViewContext, width: number, stage: St
 		paint(" / ", t.dim) +
 		paint(stageName, t.text, { bold: true });
 	const meta = headerMeta(ctx, stage);
-	const right = meta ? paint(meta, t.dim) + " " : "";
+	const right = meta ? `${paint(meta, t.dim)} ` : "";
 	const leftW = visibleWidth(ctx.workflowName) + visibleWidth(stageName) + visibleWidth("  STAGE   /  ") + 1;
 	const rightW = visibleWidth(meta) + (meta ? 1 : 0);
 	const gap = Math.max(1, width - leftW - rightW);
@@ -188,7 +188,6 @@ export function editorRuleColor(
 			return ctx.theme.error;
 		case "max":
 			return ctx.theme.error;
-		case "off":
 		default:
 			return ctx.theme.border;
 	}

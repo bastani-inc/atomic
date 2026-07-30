@@ -124,9 +124,9 @@ describe("executor.run", () => {
 		assert.equal(stage.failureDisposition, "active_blocked");
 
 		const runEnd = calls.find((call) => call.type === "workflow.run.end")!;
-		assert.equal(runEnd.payload["failedStageId"], undefined);
-		assert.equal(runEnd.payload["failureCode"], "invalid_api_key");
-		assert.equal(String(runEnd.payload["failureMessage"] ?? "").includes(rawSecret), false);
+		assert.equal(runEnd.payload.failedStageId, undefined);
+		assert.equal(runEnd.payload.failureCode, "invalid_api_key");
+		assert.equal(String(runEnd.payload.failureMessage ?? "").includes(rawSecret), false);
 		assert.equal(JSON.stringify({ wfResult, runs: st.runs(), calls }).includes(rawSecret), false);
 	});
 

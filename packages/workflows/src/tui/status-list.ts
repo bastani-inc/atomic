@@ -167,7 +167,6 @@ function runAccent(run: RunSnapshot, theme?: GraphTheme): string {
 			return theme.error;
 		case "killed":
 			return theme.error;
-		case "pending":
 		default:
 			return theme.dim;
 	}
@@ -192,7 +191,6 @@ function runTrailing(run: RunSnapshot, theme?: GraphTheme): { text: string; fg?:
 			return { text: "✗ failed", fg: theme?.error };
 		case "killed":
 			return { text: "⊘ killed", fg: theme?.error };
-		case "pending":
 		default:
 			return { text: "○ pending", fg: theme?.dim };
 	}
@@ -318,7 +316,6 @@ function stageStatusFromRun(run: RunSnapshot): StageStatus {
 			return "failed";
 		case "killed":
 			return "failed";
-		case "pending":
 		default:
 			return "pending";
 	}
@@ -434,7 +431,6 @@ function statusIconForRun(run: RunSnapshot): string {
 			return "✗";
 		case "killed":
 			return "⊘";
-		case "pending":
 		default:
 			return "○";
 	}

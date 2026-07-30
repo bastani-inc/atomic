@@ -208,7 +208,7 @@ describe("renderRunDetail — themed", () => {
 		const detail = detailFromRun(
 			makeRun({
 				id: "wide-run-detail",
-				name: "研究".repeat(20) + "-detail",
+				name: `${"研究".repeat(20)}-detail`,
 				status: "running",
 				startedAt: now - 117_000,
 				inputs: { ["検索".repeat(10)]: "value" },

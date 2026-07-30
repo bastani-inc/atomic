@@ -49,7 +49,7 @@ describe("executor.run — HIL adapter injection", () => {
 		);
 
 		assert.equal(wfResult.status, "completed");
-		assert.equal(wfResult.result?.["value"], "user-input");
+		assert.equal(wfResult.result?.value, "user-input");
 		assert.equal(capturedPrompt, "What is your name?");
 	});
 
@@ -86,7 +86,7 @@ describe("executor.run — HIL adapter injection", () => {
 		);
 
 		assert.equal(wfResult.status, "completed");
-		assert.equal(wfResult.result?.["ok"], true);
+		assert.equal(wfResult.result?.ok, true);
 	});
 
 	test("ctx.ui.select delegates to injected adapter", async () => {
@@ -122,7 +122,7 @@ describe("executor.run — HIL adapter injection", () => {
 		);
 
 		assert.equal(wfResult.status, "completed");
-		assert.equal(wfResult.result?.["choice"], "b");
+		assert.equal(wfResult.result?.choice, "b");
 	});
 
 	test("ctx.ui.editor delegates to injected adapter", async () => {
@@ -158,7 +158,7 @@ describe("executor.run — HIL adapter injection", () => {
 		);
 
 		assert.equal(wfResult.status, "completed");
-		assert.equal(wfResult.result?.["content"], "edited: draft");
+		assert.equal(wfResult.result?.content, "edited: draft");
 	});
 
 	test("ctx.ui.custom delegates to an injected adapter when prompt nodes are disabled", async () => {
@@ -209,7 +209,7 @@ describe("executor.run — HIL adapter injection", () => {
 		);
 
 		assert.equal(wfResult.status, "completed");
-		assert.equal(wfResult.result?.["value"], "adapter-custom-result");
+		assert.equal(wfResult.result?.value, "adapter-custom-result");
 		assert.equal(capturedLabel, "Adapter custom");
 	});
 
@@ -271,7 +271,7 @@ describe("executor.run — HIL adapter injection", () => {
 		);
 
 		assert.equal(wfResult.status, "completed");
-		assert.deepEqual(wfResult.result?.["values"], {
+		assert.deepEqual(wfResult.result?.values, {
 			input: "object-method:input:hello",
 			confirm: true,
 			select: "b",
@@ -343,7 +343,7 @@ describe("executor.run — HIL adapter injection", () => {
 		);
 
 		assert.equal(wfResult.status, "completed");
-		assert.deepEqual(wfResult.result?.["values"], {
+		assert.deepEqual(wfResult.result?.values, {
 			input: "class-adapter:input:hello",
 			confirm: true,
 			select: "b",
@@ -490,7 +490,7 @@ describe("executor.run — HIL adapter injection", () => {
 		);
 
 		assert.equal(wfResult.status, "completed");
-		assert.equal(wfResult.result?.["r"], "ok");
+		assert.equal(wfResult.result?.r, "ok");
 	});
 });
 

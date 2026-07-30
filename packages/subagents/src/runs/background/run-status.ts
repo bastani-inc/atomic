@@ -167,7 +167,7 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 		}
 	}
 
-	let location;
+	let location: ReturnType<typeof resolveAsyncRunLocation>;
 	try {
 		const requestedId = params.id ?? params.runId;
 		if (!params.dir && requestedId) {
@@ -215,7 +215,7 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 	}
 
 	if (asyncDir) {
-		let reconciliation;
+		let reconciliation: ReturnType<typeof reconcileAsyncRun>;
 		try {
 			reconciliation = reconcileAsyncRun(asyncDir, { resultsDir, kill: deps.kill, now: deps.now });
 		} catch (error) {

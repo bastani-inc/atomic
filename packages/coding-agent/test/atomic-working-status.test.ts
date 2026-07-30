@@ -42,7 +42,7 @@ const luminance = (hex: string): number => {
 		.slice(1)
 		.match(/../g)
 		?.map((value) => Number.parseInt(value, 16) / 255);
-	if (!channels || channels.length !== 3) throw new Error(`Invalid hex color: ${hex}`);
+	if (channels?.length !== 3) throw new Error(`Invalid hex color: ${hex}`);
 	const [red, green, blue] = channels.map((value) =>
 		value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4,
 	);

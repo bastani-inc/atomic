@@ -250,7 +250,7 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 			const run = context.findRun(runId);
 			if (!run) return false;
 			const stage = context.findStage(run, stageId);
-			if (!stage || stage.status !== "blocked") return false;
+			if (stage?.status !== "blocked") return false;
 			stage.status = "pending";
 			delete stage.blockedByStageId;
 			delete stage.awaitingInputSince;

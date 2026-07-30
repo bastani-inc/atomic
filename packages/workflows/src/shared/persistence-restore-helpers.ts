@@ -41,13 +41,13 @@ export function _buildStageSnapshots(
 	const endedStages = new Set<string>();
 
 	for (const entry of entries) {
-		if (entry.payload["runId"] !== runId) continue;
+		if (entry.payload.runId !== runId) continue;
 
 		if (entry.type === "workflow.stage.start") {
-			const stageId = entry.payload["stageId"];
-			const name = entry.payload["name"];
-			const parentIds = entry.payload["parentIds"];
-			const ts = entry.payload["ts"];
+			const stageId = entry.payload.stageId;
+			const name = entry.payload.name;
+			const parentIds = entry.payload.parentIds;
+			const ts = entry.payload.ts;
 			if (typeof stageId !== "string" || typeof name !== "string") continue;
 			if (!stageMap.has(stageId)) {
 				stageMap.set(stageId, {
@@ -63,20 +63,20 @@ export function _buildStageSnapshots(
 		}
 
 		if (entry.type === "workflow.stage.end") {
-			const stageId = entry.payload["stageId"];
-			const status = entry.payload["status"];
-			const durationMs = entry.payload["durationMs"];
-			const summary = entry.payload["summary"];
-			const error = entry.payload["error"];
-			const failureKind = entry.payload["failureKind"];
-			const failureCode = entry.payload["failureCode"];
-			const failureRecoverability = entry.payload["failureRecoverability"];
-			const failureDisposition = entry.payload["failureDisposition"];
-			const retryAfterMs = entry.payload["retryAfterMs"];
-			const failureMessage = entry.payload["failureMessage"];
-			const skippedReason = entry.payload["skippedReason"];
-			const sessionId = entry.payload["sessionId"];
-			const sessionFile = entry.payload["sessionFile"];
+			const stageId = entry.payload.stageId;
+			const status = entry.payload.status;
+			const durationMs = entry.payload.durationMs;
+			const summary = entry.payload.summary;
+			const error = entry.payload.error;
+			const failureKind = entry.payload.failureKind;
+			const failureCode = entry.payload.failureCode;
+			const failureRecoverability = entry.payload.failureRecoverability;
+			const failureDisposition = entry.payload.failureDisposition;
+			const retryAfterMs = entry.payload.retryAfterMs;
+			const failureMessage = entry.payload.failureMessage;
+			const skippedReason = entry.payload.skippedReason;
+			const sessionId = entry.payload.sessionId;
+			const sessionFile = entry.payload.sessionFile;
 			if (typeof stageId !== "string") continue;
 			endedStages.add(stageId);
 			const snap = stageMap.get(stageId);
@@ -166,9 +166,9 @@ function restoreBlockedStageState(
 function replayMetadata(
 	payload: Record<string, unknown>,
 ): Pick<StageSnapshot, "replayKey" | "replayedFromStageId" | "replayed"> {
-	const replayKey = payload["replayKey"];
-	const replayedFromStageId = payload["replayedFromStageId"];
-	const replayed = payload["replayed"];
+	const replayKey = payload.replayKey;
+	const replayedFromStageId = payload.replayedFromStageId;
+	const replayed = payload.replayed;
 	return {
 		...(typeof replayKey === "string" ? { replayKey } : {}),
 		...(typeof replayedFromStageId === "string" ? { replayedFromStageId } : {}),
@@ -193,16 +193,16 @@ function isWorkflowChildReplayStatus(status: unknown): status is WorkflowExitSta
 }
 
 function workflowChildMetadata(payload: Record<string, unknown>): Pick<StageSnapshot, "workflowChild"> {
-	if (payload["status"] !== "completed") return {};
-	const workflowChild = payload["workflowChild"];
+	if (payload.status !== "completed") return {};
+	const workflowChild = payload.workflowChild;
 	if (!isRecord(workflowChild)) return {};
-	const alias = workflowChild["alias"];
-	const workflow = workflowChild["workflow"];
-	const childRunId = workflowChild["runId"];
-	const status = workflowChild["status"];
-	const outputs = workflowChild["outputs"];
-	const exited = workflowChild["exited"];
-	const exitReason = workflowChild["exitReason"];
+	const alias = workflowChild.alias;
+	const workflow = workflowChild.workflow;
+	const childRunId = workflowChild.runId;
+	const status = workflowChild.status;
+	const outputs = workflowChild.outputs;
+	const exited = workflowChild.exited;
+	const exitReason = workflowChild.exitReason;
 	if (
 		typeof alias !== "string" ||
 		typeof workflow !== "string" ||
@@ -307,17 +307,17 @@ export function findRunBlockedMetadata(
 ): RestoredRunBlockedMetadata | undefined {
 	let latest: RestoredRunBlockedMetadata | undefined;
 	for (const entry of entries) {
-		if (entry.type !== "workflow.run.blocked" || entry.payload["runId"] !== runId) continue;
-		const failedStageId = entry.payload["failedStageId"];
-		const error = entry.payload["error"];
-		const failureKind = entry.payload["failureKind"];
-		const failureCode = entry.payload["failureCode"];
-		const failureRecoverability = entry.payload["failureRecoverability"];
-		const failureDisposition = entry.payload["failureDisposition"];
-		const failureMessage = entry.payload["failureMessage"];
-		const retryAfterMs = numericRetryAfterMs(entry.payload["retryAfterMs"]);
-		const resumable = entry.payload["resumable"];
-		const ts = entry.payload["ts"];
+		if (entry.type !== "workflow.run.blocked" || entry.payload.runId !== runId) continue;
+		const failedStageId = entry.payload.failedStageId;
+		const error = entry.payload.error;
+		const failureKind = entry.payload.failureKind;
+		const failureCode = entry.payload.failureCode;
+		const failureRecoverability = entry.payload.failureRecoverability;
+		const failureDisposition = entry.payload.failureDisposition;
+		const failureMessage = entry.payload.failureMessage;
+		const retryAfterMs = numericRetryAfterMs(entry.payload.retryAfterMs);
+		const resumable = entry.payload.resumable;
+		const ts = entry.payload.ts;
 		if (
 			typeof failedStageId !== "string" ||
 			typeof error !== "string" ||
@@ -356,10 +356,10 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
 
 	for (const entry of entries) {
 		if (entry.type === "workflow.run.start") {
-			const runId = entry.payload["runId"];
-			const name = entry.payload["name"];
-			const inputs = entry.payload["inputs"];
-			const ts = entry.payload["ts"];
+			const runId = entry.payload.runId;
+			const name = entry.payload.name;
+			const inputs = entry.payload.inputs;
+			const ts = entry.payload.ts;
 			if (typeof runId === "string" && typeof name === "string" && typeof ts === "number") {
 				started.set(runId, {
 					name,
@@ -369,7 +369,7 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
 			}
 		}
 		if (entry.type === "workflow.run.end") {
-			const runId = entry.payload["runId"];
+			const runId = entry.payload.runId;
 			if (typeof runId === "string") ended.set(runId, entry.payload);
 		}
 	}
@@ -377,16 +377,16 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
 	for (const [runId, start] of started) {
 		if (store.runs().some((run) => run.id === runId)) continue;
 		const end = ended.get(runId);
-		const status = restoreTerminalRunStatus(end?.["status"]);
+		const status = restoreTerminalRunStatus(end?.status);
 		if (end === undefined || status === undefined) continue;
 
 		const runMeta = findRunStartMetadata(entries, runId);
 		const stages = _buildStageSnapshots(entries, runId);
-		const exited = end["exited"];
-		const exitReason = end["exitReason"];
-		const resumable = end["resumable"];
-		const failedToolNodeId = end["failedToolNodeId"];
-		const failedToolNode = restoreFailedToolNode(end["failedToolNode"]);
+		const exited = end.exited;
+		const exitReason = end.exitReason;
+		const resumable = end.resumable;
+		const failedToolNodeId = end.failedToolNodeId;
+		const failedToolNode = restoreFailedToolNode(end.failedToolNode);
 		const restoredAuthorExit =
 			isWorkflowExitTerminalStatus(status) && (exited === true || typeof exitReason === "string");
 		if (status === "completed" && !restoredAuthorExit && stages.some((stage) => stage.status !== "completed"))
@@ -411,17 +411,17 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
 				: {}),
 		});
 
-		const error = end["error"];
-		const result = serializableObject(end["result"]);
-		const failureKind = end["failureKind"];
-		const failureCode = end["failureCode"];
-		const failureRecoverability = end["failureRecoverability"];
-		const failureDisposition = end["failureDisposition"];
-		const retryAfterMs = numericRetryAfterMs(end["retryAfterMs"]);
-		const failureMessage = end["failureMessage"];
-		const failedStageId = end["failedStageId"];
-		const restoredEndedAt = numericTimestamp(end["endedAt"]);
-		const restoredDurationMs = numericDuration(end["durationMs"]);
+		const error = end.error;
+		const result = serializableObject(end.result);
+		const failureKind = end.failureKind;
+		const failureCode = end.failureCode;
+		const failureRecoverability = end.failureRecoverability;
+		const failureDisposition = end.failureDisposition;
+		const retryAfterMs = numericRetryAfterMs(end.retryAfterMs);
+		const failureMessage = end.failureMessage;
+		const failedStageId = end.failedStageId;
+		const restoredEndedAt = numericTimestamp(end.endedAt);
+		const restoredDurationMs = numericDuration(end.durationMs);
 		store.recordRunEnd(runId, status, result, typeof error === "string" ? error : undefined, {
 			...(typeof failureKind === "string" && isWorkflowFailureKind(failureKind) ? { failureKind } : {}),
 			...(typeof failureCode === "string" && isWorkflowFailureCode(failureCode) ? { failureCode } : {}),
@@ -483,13 +483,13 @@ export function findRunStartMetadata(
 	readonly accumulatedDurationMs?: number;
 } {
 	for (const entry of entries) {
-		if (entry.type !== "workflow.run.start" || entry.payload["runId"] !== runId) continue;
-		const parentRunId = entry.payload["parentRunId"];
-		const parentStageId = entry.payload["parentStageId"];
-		const rootRunId = entry.payload["rootRunId"];
-		const resumedFromRunId = entry.payload["resumedFromRunId"];
-		const resumeFromStageId = entry.payload["resumeFromStageId"];
-		const accumulatedDurationMs = entry.payload["accumulatedDurationMs"];
+		if (entry.type !== "workflow.run.start" || entry.payload.runId !== runId) continue;
+		const parentRunId = entry.payload.parentRunId;
+		const parentStageId = entry.payload.parentStageId;
+		const rootRunId = entry.payload.rootRunId;
+		const resumedFromRunId = entry.payload.resumedFromRunId;
+		const resumeFromStageId = entry.payload.resumeFromStageId;
+		const accumulatedDurationMs = entry.payload.accumulatedDurationMs;
 		return {
 			...(typeof parentRunId === "string" ? { parentRunId } : {}),
 			...(typeof parentStageId === "string" ? { parentStageId } : {}),

@@ -39,7 +39,7 @@ export interface StageUserMessageDeliveryHooks {
 }
 
 export interface StageSessionRuntime {
-	prompt(text: string, options?: PromptOptions): Promise<string | void>;
+	prompt(text: string, options?: PromptOptions): Promise<string | undefined>;
 	sendUserMessage?(
 		content: StageUserMessageContent,
 		options?: StageSendUserMessageOptions & { readonly __workflowDelivery?: StageUserMessageDeliveryHooks },

@@ -70,10 +70,10 @@ describe("ctx.exit", () => {
 		const boundaryEnd = entries.find(
 			(entry) =>
 				entry.type === "workflow.stage.end" &&
-				entry.payload["runId"] === result.runId &&
-				entry.payload["stageId"] === boundary?.id,
+				entry.payload.runId === result.runId &&
+				entry.payload.stageId === boundary?.id,
 		);
-		assert.equal(boundaryEnd?.payload["status"], "failed");
+		assert.equal(boundaryEnd?.payload.status, "failed");
 		assert.equal("workflowChild" in (boundaryEnd?.payload ?? {}), false);
 	});
 
@@ -140,7 +140,7 @@ describe("ctx.exit", () => {
 		const source = store.runs().find((runSnapshot) => runSnapshot.id === sourceResult.runId)!;
 		const sourceBoundary = source.stages.find((stage) => stage.name === "workflow:exit-replay-child");
 		assert.equal(sourceBoundary?.status, "completed");
-		assert.equal(sourceBoundary?.workflowChild?.outputs["value"], "child-ok");
+		assert.equal(sourceBoundary?.workflowChild?.outputs.value, "child-ok");
 
 		const continued = await run(
 			parent,
@@ -163,10 +163,10 @@ describe("ctx.exit", () => {
 		const boundaryEnd = entries.find(
 			(entry) =>
 				entry.type === "workflow.stage.end" &&
-				entry.payload["runId"] === continued.runId &&
-				entry.payload["stageId"] === boundary?.id,
+				entry.payload.runId === continued.runId &&
+				entry.payload.stageId === boundary?.id,
 		);
-		assert.equal(boundaryEnd?.payload["status"], "skipped");
+		assert.equal(boundaryEnd?.payload.status, "skipped");
 		assert.equal("workflowChild" in (boundaryEnd?.payload ?? {}), false);
 		assert.equal(store.runs().filter((runSnapshot) => runSnapshot.name === "exit-replay-child").length, 1);
 	});
@@ -243,11 +243,11 @@ describe("ctx.exit", () => {
 		const persistedPromptEnd = entries.find(
 			(entry) =>
 				entry.type === "workflow.stage.end" &&
-				entry.payload["runId"] === result.runId &&
-				entry.payload["stageId"] === promptStage?.id,
+				entry.payload.runId === result.runId &&
+				entry.payload.stageId === promptStage?.id,
 		);
-		assert.equal(persistedPromptEnd?.payload["status"], "skipped");
-		assert.equal(persistedPromptEnd?.payload["skippedReason"], "workflow-exit: prompt gate");
+		assert.equal(persistedPromptEnd?.payload.status, "skipped");
+		assert.equal(persistedPromptEnd?.payload.skippedReason, "workflow-exit: prompt gate");
 	});
 
 	test("keeps the first exit when a later exit is thrown during unwind", async () => {
@@ -415,11 +415,9 @@ describe("ctx.exit", () => {
 			snapshot?.stages.some((stage) => stage.status === "running" || stage.attachable === true),
 			false,
 		);
-		const runEnd = entries.find(
-			(entry) => entry.type === "workflow.run.end" && entry.payload["runId"] === result.runId,
-		);
-		assert.equal(runEnd?.payload["status"], "failed");
-		assert.equal(runEnd?.payload["resumable"], false);
-		assert.equal(runEnd?.payload["exitReason"], "bad outputs after cleanup");
+		const runEnd = entries.find((entry) => entry.type === "workflow.run.end" && entry.payload.runId === result.runId);
+		assert.equal(runEnd?.payload.status, "failed");
+		assert.equal(runEnd?.payload.resumable, false);
+		assert.equal(runEnd?.payload.exitReason, "bad outputs after cleanup");
 	});
 });

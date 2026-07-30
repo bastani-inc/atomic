@@ -8,16 +8,7 @@ import { describeModelRegistry } from "./model-registry-fixtures.ts";
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 
 describeModelRegistry((context) => {
-	const {
-		providerConfig,
-		writeModelsJson,
-		getModelsForProvider,
-		toShPath,
-		overrideConfig,
-		writeRawModelsJson,
-		openAiModel,
-		emptyContext,
-	} = context;
+	const { providerConfig, writeModelsJson, getModelsForProvider, writeRawModelsJson } = context;
 	describe("custom models merge behavior", () => {
 		test("built-in provider custom models inherit api and baseUrl without explicit fields", async () => {
 			// Built-in providers already have api/baseUrl on every model, and auth

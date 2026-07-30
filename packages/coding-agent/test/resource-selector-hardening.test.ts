@@ -6,11 +6,6 @@ import { createReadToolDefinition } from "../src/core/tools/read.ts";
 import { createWriteToolDefinition } from "../src/core/tools/write.ts";
 import { sqlite } from "./helpers/sqlite.ts";
 
-interface SqliteDb {
-	run(sql: string): void;
-	close(): void;
-}
-
 const tempDirs: string[] = [];
 async function tempDir(): Promise<string> {
 	const dir = await mkdtemp(join(tmpdir(), "atomic-resource-hardening-"));

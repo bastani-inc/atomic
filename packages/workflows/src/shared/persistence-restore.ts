@@ -93,10 +93,10 @@ export function scanInFlightRuns(entries: readonly SessionEntry[]): InFlightRun[
 
 	for (const entry of normalizeSessionEntries(entries)) {
 		if (entry.type === "workflow.run.start") {
-			const runId = entry.payload["runId"];
-			const name = entry.payload["name"];
-			const inputs = entry.payload["inputs"];
-			const ts = entry.payload["ts"];
+			const runId = entry.payload.runId;
+			const name = entry.payload.name;
+			const inputs = entry.payload.inputs;
+			const ts = entry.payload.ts;
 			if (typeof runId === "string" && typeof name === "string" && typeof ts === "number") {
 				started.set(runId, {
 					name,
@@ -108,8 +108,8 @@ export function scanInFlightRuns(entries: readonly SessionEntry[]): InFlightRun[
 		}
 
 		if (entry.type === "workflow.stage.start") {
-			const runId = entry.payload["runId"];
-			const stageId = entry.payload["stageId"];
+			const runId = entry.payload.runId;
+			const stageId = entry.payload.stageId;
 			if (typeof runId === "string" && typeof stageId === "string") {
 				const run = started.get(runId);
 				if (run && !run.stageIds.includes(stageId)) {
@@ -119,7 +119,7 @@ export function scanInFlightRuns(entries: readonly SessionEntry[]): InFlightRun[
 		}
 
 		if (entry.type === "workflow.run.end") {
-			const runId = entry.payload["runId"];
+			const runId = entry.payload.runId;
 			if (typeof runId === "string") {
 				ended.add(runId);
 			}

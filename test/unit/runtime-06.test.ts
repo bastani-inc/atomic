@@ -22,15 +22,12 @@ import type { CreateAgentSessionOptions } from "@bastani/atomic";
 import { Type } from "typebox";
 import { describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { dispatch } from "../../packages/workflows/src/extension/dispatcher.js";
-import type { WorkflowInputEntry, WorkflowToolResult } from "../../packages/workflows/src/extension/render-result.js";
-import { renderResult } from "../../packages/workflows/src/extension/render-result.js";
+import type { WorkflowToolResult } from "../../packages/workflows/src/extension/render-result.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import type { StageAdapters, StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import type { WorkflowDefinition, WorkflowPersistencePort } from "../../packages/workflows/src/shared/types.js";
+import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 import { NON_INTERACTIVE_WORKFLOW_POLICY } from "../../packages/workflows/src/shared/types.js";
-import { WORKFLOW_UNKNOWN_MODEL_MESSAGE } from "../../packages/workflows/src/shared/workflow-failures.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 
 // ---------------------------------------------------------------------------
@@ -45,7 +42,7 @@ function asList(r: WorkflowToolResult): ListResult {
 	if (r.action !== "list") throw new Error(`expected list, got ${r.action}`);
 	return r as ListResult;
 }
-function asInputs(r: WorkflowToolResult): InputsResult {
+function _asInputs(r: WorkflowToolResult): InputsResult {
 	if (r.action !== "inputs") throw new Error(`expected inputs, got ${r.action}`);
 	return r as InputsResult;
 }
@@ -54,7 +51,7 @@ function asRun(r: WorkflowToolResult): RunResult {
 	return r as RunResult;
 }
 
-async function waitForRunEnded(store: ReturnType<typeof createStore>, runId: string, timeoutMs = 1000): Promise<void> {
+async function _waitForRunEnded(store: ReturnType<typeof createStore>, runId: string, timeoutMs = 1000): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
 		const run = store.runs().find((r) => r.id === runId);
@@ -68,7 +65,7 @@ async function waitForRunEnded(store: ReturnType<typeof createStore>, runId: str
 // Shared fixtures
 // ---------------------------------------------------------------------------
 
-const noopAdapters: StageAdapters = {
+const _noopAdapters: StageAdapters = {
 	prompt: { prompt: async (text) => `echo:${text}` },
 	complete: { complete: async (text) => `echo:${text}` },
 };
@@ -124,7 +121,7 @@ const helloWorkflow = workflow({
 	},
 	run: async (ctx) => {
 		const stage = ctx.stage("greet");
-		const out = await stage.prompt(`Hello ${String(ctx.inputs["name"])}`);
+		const out = await stage.prompt(`Hello ${String(ctx.inputs.name)}`);
 		return { greeting: out };
 	},
 }) as WorkflowDefinition;

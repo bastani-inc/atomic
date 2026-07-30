@@ -2,37 +2,10 @@
 
 import assert from "node:assert/strict";
 import { describe, it, vi } from "vitest";
-import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
-import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { BOLD, RESET } from "../../packages/workflows/src/tui/color-utils.js";
-import { buildConnector, buildMergeConnector } from "../../packages/workflows/src/tui/connectors.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
-import { renderHeader } from "../../packages/workflows/src/tui/header.js";
-import { computeLayout, NODE_W } from "../../packages/workflows/src/tui/layout.js";
-import { renderNodeCard } from "../../packages/workflows/src/tui/node-card.js";
-import { fmtDuration, statusColor, statusIcon } from "../../packages/workflows/src/tui/status-helpers.js";
-import { renderSwitcher } from "../../packages/workflows/src/tui/switcher.js";
-import { Key } from "../../packages/workflows/src/tui/text-helpers.js";
-import { makeFakeKeybindings } from "../support/fake-keybindings.js";
 import * as h from "./overlay-graph-helpers.js";
 
-const {
-	makeStage,
-	makeSnap,
-	makeRunPromptSnap,
-	makePendingPrompt,
-	makeAwaitingInputStage,
-	makeInputRequest,
-	makeStore,
-	makeRun,
-	defaultTheme,
-	SGR_MOUSE_WHEEL_DOWN,
-	visibleText,
-	assertVisibleWidths,
-	waitForRenderCount,
-	typeIntoView,
-	makeView,
-} = h;
+const { makeStage, makeSnap, makeStore, defaultTheme, waitForRenderCount } = h;
 
 describe("GraphView animation timer", () => {
 	it("fires requestRender on a steady cadence in overlay mode", async () => {
