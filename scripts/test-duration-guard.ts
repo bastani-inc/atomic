@@ -14,7 +14,7 @@
  * must not be judged against one it did not choose.
  */
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 
 /** Emit a warning once a test consumes this share of its effective timeout. */
 export const WARN_RATIO = 0.4;
@@ -79,6 +79,7 @@ export function parseTestDurations(output: string): DurationSample[] {
 }
 
 const DECLARATION_HEAD = "(?:\\.(?:only|skip|todo|failing|serial|concurrent))*\\s*\\(";
+const DESCRIBE = /^(\s*)describe(?:\.(?:only|skip|todo|each|if))*\s*\(/u;
 const CLOSER = /^(\s*)\},\s*([0-9][0-9_]*|[A-Za-z_$][A-Za-z0-9_$]*)\s*\)\s*;?\s*$/u;
 const TRAILING_VALUE = /^\s*([0-9][0-9_]*|[A-Za-z_$][A-Za-z0-9_$]*)\s*,?\s*$/u;
 const CALL_END = /^(\s*)\)\s*;?\s*$/u;
@@ -93,6 +94,15 @@ function numericConstants(lines: string[]): Map<string, number> {
   return constants;
 }
 
+/**
+ * Escape every RegExp metacharacter, backslash included, so an alias name is
+ * only ever matched literally. Escaping a subset would leave a backslash in the
+ * input able to re-open the escape it was meant to neutralise.
+ */
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
 /** `test`, `it`, and any local alias bound to them (e.g. `const runTest = ... test.skip`). */
 function declarationPattern(lines: string[]): RegExp {
   const names = new Set(["test", "it"]);
@@ -100,13 +110,32 @@ function declarationPattern(lines: string[]): RegExp {
     const match = /^\s*(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=[^;]*\b(?:test|it)\b/u.exec(line);
     if (match?.[1]) names.add(match[1]);
   }
-  const alternation = [...names].map((name) => name.replace(/[$]/gu, "\\$")).join("|");
+  const alternation = [...names].map(escapeRegExp).join("|");
   return new RegExp(`^(\\s*)(?:${alternation})${DECLARATION_HEAD}`, "u");
 }
 
 function previousMeaningfulIndex(lines: string[], index: number): number {
   for (let back = index - 1; back >= 0; back--) if ((lines[back] as string).trim() !== "") return back;
   return -1;
+}
+
+/**
+ * Reconstruct the `describe` path enclosing a declaration, outermost first, by
+ * walking outwards through strictly shallower `describe(` openers. Bun reports a
+ * test as `scope > name`, so without the path two same-named tests in different
+ * scopes would collapse onto one budget and be scored against each other's.
+ */
+function describeScopes(lines: string[], index: number, indent: string): string[] {
+  const scopes: string[] = [];
+  let inner = indent;
+  for (let back = index - 1; back >= 0 && inner.length > 0; back--) {
+    const opener = DESCRIBE.exec(lines[back] as string);
+    if (!opener || (opener[1] as string).length >= inner.length) continue;
+    const name = NAME_LITERAL.exec((lines[back] as string).slice((opener[0] as string).length))?.[2];
+    if (name) scopes.unshift(name);
+    inner = opener[1] as string;
+  }
+  return scopes;
 }
 
 /**
@@ -159,16 +188,20 @@ export function declaredTimeouts(source: string): Map<string, number> {
       if (!opener || opener[1] !== tail.indent) continue;
       const head = lines.slice(back, back + 3).join(" ").slice((opener[0] as string).length);
       const name = NAME_LITERAL.exec(head)?.[2];
-      if (name) record(name, value);
+      if (name) {
+        const qualified = [...describeScopes(lines, back, tail.indent), name].join(" > ");
+        record(qualified, value);
+        if (qualified !== name) record(name, value);
+      }
       break;
     }
   }
   return declared;
 }
 
-function timeoutIndex(rootDir: string): (file: string, name: string) => number | undefined {
+function timeoutIndex(rootDir: string): (file: string, name: string, fullName: string) => number | undefined {
   const cache = new Map<string, Map<string, number>>();
-  return (file, name) => {
+  return (file, name, fullName) => {
     if (!file) return undefined;
     let declared = cache.get(file);
     if (!declared) {
@@ -176,7 +209,7 @@ function timeoutIndex(rootDir: string): (file: string, name: string) => number |
       declared = existsSync(path) ? declaredTimeouts(readFileSync(path, "utf8")) : new Map<string, number>();
       cache.set(file, declared);
     }
-    return declared.get(name);
+    return declared.get(fullName) ?? declared.get(name);
   };
 }
 
@@ -184,23 +217,39 @@ function timeoutIndex(rootDir: string): (file: string, name: string) => number |
  * Resolve the suite-wide `--timeout` a command actually runs with, following one
  * `bun run <script>` indirection into package.json. Returns undefined when the
  * command declares no budget, which disables the gate rather than inventing one.
+ *
+ * Only a Bun test invocation is read for a budget. `--timeout` means something
+ * else to every other runner, so accepting it from an arbitrary wrapped command
+ * would score unrelated output against a budget Bun never applied.
  */
 export function resolveDefaultTimeoutMs(command: string[], rootDir: string): number | undefined {
-  const direct = timeoutFromArgs(command);
-  if (direct !== undefined) return direct;
+  if (!isBunInvocation(command)) return undefined;
   const script = scriptInvocation(command);
-  if (!script) return undefined;
+  if (!script) return timeoutFromArgs(command);
   const manifestPath = resolve(rootDir, script.cwd, "package.json");
   if (!existsSync(manifestPath)) return undefined;
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { scripts?: Record<string, string> };
-  const body = manifest.scripts?.[script.name];
-  return body ? timeoutFromArgs(body.split(/\s+/u)) : undefined;
+  const args = manifest.scripts?.[script.name]?.split(/\s+/u);
+  if (!args || !isBunInvocation(args) || subcommand(args) !== "test") return undefined;
+  return timeoutFromArgs(args);
+}
+
+const BUN_BINARY = /^bunx?(?:\.exe)?$/u;
+
+function isBunInvocation(args: string[]): boolean {
+  const binary = args[0];
+  return binary !== undefined && BUN_BINARY.test(basename(binary));
+}
+
+/** First non-flag argument after the binary, i.e. `test` in `bun --bun test x`. */
+function subcommand(args: string[]): string | undefined {
+  return args.slice(1).find((arg) => !arg.startsWith("-"));
 }
 
 /** Resolve `bun run [--cwd <dir>] [--bun] <script>` to its manifest directory and name. */
 function scriptInvocation(command: string[]): { cwd: string; name: string } | undefined {
   const runIndex = command.indexOf("run");
-  if (runIndex === -1) return undefined;
+  if (runIndex === -1 || subcommand(command) !== "run") return undefined;
   let cwd = ".";
   for (let index = runIndex + 1; index < command.length; index++) {
     const part = command[index] as string;
@@ -233,7 +282,7 @@ export function evaluateDurations(
   const lookup = timeoutIndex(rootDir);
   const samples: BudgetedSample[] = [];
   for (const sample of parseTestDurations(output)) {
-    const explicitTimeout = lookup(sample.file, sample.name);
+    const explicitTimeout = lookup(sample.file, sample.name, sample.fullName);
     const timeoutMs = explicitTimeout ?? defaultTimeoutMs ?? BUN_DEFAULT_TIMEOUT_MS;
     samples.push({
       ...sample,

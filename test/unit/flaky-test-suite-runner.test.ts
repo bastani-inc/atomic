@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const runner = join(root, "scripts/run-flaky-test-suite.ts");
 
-type Mode = "success" | "flake" | "persistent" | "deterministic" | "headroom";
+type Mode = "success" | "flake" | "persistent" | "deterministic" | "headroom" | "retry-headroom";
 
 async function fixture(mode: Mode, extraArgs: string[] = []): Promise<{ code: number; output: string; files: string[]; summary: string; durations: string }> {
   const dir = mkdtempSync(join(tmpdir(), "atomic-flake-runner-"));
@@ -25,6 +25,14 @@ async function fixture(mode: Mode, extraArgs: string[] = []): Promise<{ code: nu
     const mode = ${JSON.stringify(mode)};
     if (mode === "flake") console.log("test/unit/ci-workflow-contracts.test.ts:\\n(pass) deterministic contract");
     if (mode === "headroom") console.log("test/unit/drift.test.ts:\\n(pass) drifting test [25000.00ms]\\n(pass) healthy test [120.00ms]");
+    if (mode === "retry-headroom") {
+      if (attempt === 1) {
+        console.log("test/unit/drift.test.ts:\\n(pass) drifting test [25000.00ms]");
+        console.error("test/unit/unrelated.test.ts:\\n(fail) unrelated failure");
+        process.exit(7);
+      }
+      console.log("test/unit/drift.test.ts:\\n(pass) drifting test [120.00ms]");
+    }
     if (mode === "persistent" || (mode === "flake" && attempt === 1)) { console.error("test/unit/unrelated.test.ts:\\n(fail) unrelated failure"); process.exit(7); }
     if (mode === "deterministic") { console.error("test/ci/ci-workflow-contracts.test.ts:\\n(fail) deterministic contract"); process.exit(8); }
   `);
@@ -95,4 +103,15 @@ test("the headroom gate stays disabled for a suite that declares no timeout budg
   assert.equal(ungated.code, 0);
   assert.doesNotMatch(ungated.output, /Timeout headroom exhausted/);
   assert.match(ungated.durations, /not declared \(gate disabled\)[\s\S]*drifting test/);
+});
+
+test("a passing retry cannot hide the failed attempt's exhausted headroom", async () => {
+  const result = await fixture("retry-headroom", ["--timeout", "30000"]);
+  assert.equal(result.code, 1);
+  assert.match(
+    result.output,
+    /::error title=Timeout headroom exhausted[^\n]*attempt 1: test\/unit\/drift\.test\.ts > drifting test took 25000ms/,
+  );
+  assert.match(result.durations, /## attempt 1[\s\S]*25000[\s\S]*## attempt 2[\s\S]*120/);
+  assert.match(result.summary, /Detected flake/);
 });

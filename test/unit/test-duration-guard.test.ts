@@ -84,6 +84,40 @@ test("explicit timeouts are resolved from both declaration shapes and never from
   );
 });
 
+test("same-named tests in different describe scopes keep their own explicit budgets", () => {
+  const source = [
+    'describe("outer", () => {',
+    '  test("shared", async () => {',
+    "  }, 1_000);",
+    "});",
+    "",
+    'describe("other", () => {',
+    '  describe("nested", () => {',
+    '    test("shared", async () => {',
+    "    }, 10_000);",
+    "  });",
+    "});",
+  ].join("\n");
+  const declared = declaredTimeouts(source);
+  assert.equal(declared.get("outer > shared"), 1_000);
+  assert.equal(declared.get("other > nested > shared"), 10_000);
+
+  const directory = mkdtempSync(join(tmpdir(), "atomic-duration-scope-"));
+  try {
+    writeFileSync(join(directory, "package.json"), JSON.stringify({ scripts: { "test:unit": "bun test --timeout 30000 test/unit" } }));
+    writeFileSync(join(directory, "scoped.test.ts"), source);
+    const report = evaluateDurations(
+      ["scoped.test.ts:", "(pass) outer > shared [900.00ms]", "(pass) other > nested > shared [900.00ms]"].join("\n"),
+      ["bun", "run", "test:unit"],
+      directory,
+    );
+    assert.deepEqual(report.samples.map((sample) => sample.timeoutMs), [1_000, 10_000]);
+    assert.deepEqual(report.failures.map((sample) => sample.fullName), ["outer > shared"]);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("repository declarations resolve to their real budgets", async () => {
   const builtins = declaredTimeouts(await Bun.file(join(root, "test/unit/coding-agent-builtin-workflows.test.ts")).text());
   assert.equal(builtins.get("loads builtin pi package resources"), 60_000);
@@ -102,6 +136,8 @@ test("the suite budget is read from the command or the package script it runs", 
   assert.equal(resolveDefaultTimeoutMs(["bun", "run", "typecheck"], root), undefined);
   assert.equal(resolveDefaultTimeoutMs(["bun", "run", "--cwd", "packages/coding-agent", "--bun", "test"], root), undefined);
   assert.equal(resolveDefaultTimeoutMs(["bun", "fixture.ts"], root), undefined);
+  assert.equal(resolveDefaultTimeoutMs(["node", "scripts/migrate.mjs", "--timeout", "10000"], root), undefined);
+  assert.equal(resolveDefaultTimeoutMs(["vitest", "run", "--timeout=10000"], root), undefined);
 });
 
 test("headroom is scored against the effective timeout, not a fixed ceiling", () => {

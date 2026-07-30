@@ -111,6 +111,11 @@ function findFailedDeterministicFile(output: string, files: string[]): string | 
   return undefined;
 }
 
+interface Attempt {
+  label: string;
+  output: string;
+}
+
 /**
  * Duration-headroom gate.
  *
@@ -121,27 +126,36 @@ function findFailedDeterministicFile(output: string, files: string[]): string | 
  * neighbour happened to lose the coin flip. The full table is always written as
  * an artifact, including on green runs, so cross-platform ratios need one
  * download instead of a log scrape.
+ *
+ * Every attempt is scored, not just the one that decided the exit code. A first
+ * attempt that exhausted a test's headroom and a retry that happened to be fast
+ * are the same regression; reporting only the retry would discard the sample
+ * that actually shows the drift.
  */
-function reportDurations(output: string, options: Options, name: string): number {
-  const report = evaluateDurations(output, options.command);
+function reportDurations(attempts: Attempt[], options: Options, name: string): number {
+  const scored = attempts.map((attempt) => ({ label: attempt.label, report: evaluateDurations(attempt.output, options.command) }));
   mkdirSync(options.diagnosticsDir, { recursive: true });
-  const table = renderDurationTable(report);
+  const table = scored.map(({ label, report }) => `## ${label}\n\n${renderDurationTable(report)}`).join("\n\n");
   writeFileSync(
     resolve(options.diagnosticsDir, `${name}-durations.md`),
     `# ${options.label}: per-test duration headroom\n\n${table}\n`,
   );
-  if (!report.enabled) return 0;
-  const describe = (sample: BudgetedSample): string =>
-    `${sample.file} > ${sample.fullName} took ${sample.durationMs.toFixed(0)}ms of its ${sample.timeoutMs}ms budget (${(sample.ratio * 100).toFixed(0)}%).`;
-  for (const sample of report.warnings.slice(0, 10)) {
-    console.error(`::warning title=Slow test: ${options.label}::${describe(sample)}`);
+  const gated = scored.filter(({ report }) => report.enabled);
+  if (gated.length === 0) return 0;
+  const describe = (label: string, sample: BudgetedSample): string =>
+    `${label}: ${sample.file} > ${sample.fullName} took ${sample.durationMs.toFixed(0)}ms of its ${sample.timeoutMs}ms budget (${(sample.ratio * 100).toFixed(0)}%).`;
+  const collect = (pick: (entry: { label: string; report: ReturnType<typeof evaluateDurations> }) => BudgetedSample[]): string[] =>
+    gated.flatMap((entry) => pick(entry).map((sample) => describe(entry.label, sample)));
+  for (const message of collect((entry) => entry.report.warnings).slice(0, 10)) {
+    console.error(`::warning title=Slow test: ${options.label}::${message}`);
   }
-  if (report.failures.length === 0) return 0;
-  for (const sample of report.failures.slice(0, 10)) {
-    console.error(`::error title=Timeout headroom exhausted: ${options.label}::${describe(sample)}`);
+  const failures = collect((entry) => entry.report.failures);
+  if (failures.length === 0) return 0;
+  for (const message of failures.slice(0, 10)) {
+    console.error(`::error title=Timeout headroom exhausted: ${options.label}::${message}`);
   }
   appendSummary(
-    `### ❌ Timeout headroom exhausted: ${options.label}\n${report.failures.length} test(s) used at least ${FAIL_RATIO * 100} % of their per-test timeout (warning threshold ${WARN_RATIO * 100} %). Raise the specific test's explicit timeout only if the cost is structural, and make it fast otherwise.\n\n${table}`,
+    `### ❌ Timeout headroom exhausted: ${options.label}\n${failures.length} test(s) used at least ${FAIL_RATIO * 100} % of their per-test timeout (warning threshold ${WARN_RATIO * 100} %). Raise the specific test's explicit timeout only if the cost is structural, and make it fast otherwise.\n\n${table}`,
   );
   return 1;
 }
@@ -154,7 +168,8 @@ rmSync(firstLog, { force: true });
 rmSync(secondLog, { force: true });
 
 const first = await runAttempt(options.command, firstLog, false);
-if (first.code === 0) process.exit(reportDurations(first.output, options, name));
+const firstAttempt: Attempt = { label: "attempt 1", output: first.output };
+if (first.code === 0) process.exit(reportDurations([firstAttempt], options, name));
 
 mkdirSync(options.diagnosticsDir, { recursive: true });
 writeFileSync(firstLog, first.output);
@@ -165,7 +180,7 @@ console.error(`\n${debug}\n`);
 
 const deterministicHit = findFailedDeterministicFile(first.output, options.deterministicFiles);
 if (deterministicHit) {
-  reportDurations(first.output, options, name);
+  reportDurations([firstAttempt], options, name);
   appendSummary(`### ❌ ${options.label}\nNo retry: deterministic test file failed (\`${deterministicHit}\`). First-attempt diagnostics were preserved.`);
   console.error(`No retry: deterministic test file failed (${deterministicHit}).`);
   process.exit(first.code);
@@ -173,13 +188,14 @@ if (deterministicHit) {
 
 console.error(`Retrying ${options.label} once (smallest safe suite)...`);
 const second = await runAttempt(options.command, secondLog, true);
+const attempts: Attempt[] = [firstAttempt, { label: "attempt 2", output: second.output }];
 if (second.code === 0) {
-  const guard = reportDurations(second.output, options, name);
+  const guard = reportDurations(attempts, options, name);
   appendSummary(`### ⚠️ Detected flake: ${options.label}\nAttempt 1 failed and the single bounded retry passed. Diagnostic logs are retained as CI artifacts.`);
   console.error(`::warning title=Detected flake: ${options.label}::Attempt 1 failed; bounded retry passed. See diagnostic artifact.`);
   process.exit(guard);
 }
-reportDurations(second.output, options, name);
+reportDurations(attempts, options, name);
 appendSummary(`### ❌ Persistent failure: ${options.label}\nBoth the first attempt and the single bounded retry failed. Both logs are retained.`);
 console.error(`::error title=Persistent failure: ${options.label}::Both attempts failed; see both diagnostic logs.`);
 process.exit(second.code);
