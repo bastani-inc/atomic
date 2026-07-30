@@ -62,14 +62,15 @@ test("every work job the gate names exists and is otherwise independent", async 
 /**
  * Per-job wall-clock caps replace the blanket 10/15 minute pair. A cap is a hang
  * detector at roughly 2x measured p100 and must leave room for the one bounded
- * flake retry the job owns.
+ * flake retry the job owns: the first split run fired that retry on both
+ * platforms and took 230 s / 348 s in `suites` alone.
  */
 test("each split job declares its own measured timeout", async () => {
   const workflow = await readText(testPath);
   const blocks = await jobs();
   const caps: Record<string, [number, number]> = {
-    suites: [6, 8],
-    "agent-suite": [6, 9],
+    suites: [8, 12],
+    "agent-suite": [6, 12],
     "release-archive": [5, 6],
   };
   for (const [job, [linux, windows]] of Object.entries(caps)) {
@@ -82,8 +83,12 @@ test("each split job declares its own measured timeout", async () => {
   assert.match(blocks.get("static-checks") as string, /^[ \t]+timeout-minutes: 6$/mu);
   assert.match(blocks.get("test") as string, /^[ \t]+timeout-minutes: 5$/mu);
   // The blanket per-platform pair covered fourteen sequential steps and detected
-  // nothing about the step that actually hung.
+  // nothing about the step that actually hung. Every cap must also stay under
+  // the 15-minute Windows blanket it replaced.
   assert.doesNotMatch(workflow, /timeout_minutes: (10|15)\b/u);
+  for (const [, value] of workflow.matchAll(/^\s+timeout_minutes: (\d+)$/gmu)) {
+    assert.ok(Number(value) < 15, `cap ${value} is no tighter than the blanket it replaced`);
+  }
 });
 
 /**

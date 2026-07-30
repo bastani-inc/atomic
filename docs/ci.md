@@ -46,7 +46,24 @@ The test workflow runs on pushes to `main`, `release/**`, and `prerelease/**`, a
 | `static-checks` | Linux only | typecheck, file length, docs links, Mintlify, CI contracts | 30 s | – |
 | `test` | 2 gate legs | assert every work-job result is `success` | 15 s | – |
 
-The critical path is the Windows `agent-suite` chain, so the workflow costs about 247 s instead of the 452 s the single sequential job measured. Runner-seconds rise about 35 % (709 s to roughly 957 s); that is the price of the wall-clock cut.
+Those are the per-step costs sampled from four sequential-job runs, which put the critical path on the Windows `agent-suite` chain at about 247 s against the 452 s (434–483 s, n=3 healthy) the single sequential job measured. Runner-seconds rise about 35 % (709 s to roughly 957 s); that is the price of the wall-clock cut.
+
+### Observed on the first split run (30527771985)
+
+| Job | queue | duration |
+| --- | ---: | ---: |
+| `static-checks (linux-x64)` | 9 s | 32 s |
+| `release-archive` Linux / Windows | 9 s / 42 s | 84 s / 162 s |
+| `agent-suite` Linux / Windows | 10 s / 68 s | 138 s / **349 s** |
+| `suites` Linux / Windows | 10 s / 45 s | 230 s / 348 s |
+| `test` gate, both legs | 8 s | 3 s / 4 s |
+| **whole run** | | **433 s** |
+
+Read this carefully before planning further work, because it says two different things.
+
+The topology behaved exactly as designed. All seven work jobs started within 68 s of run creation, so Blacksmith does not cap concurrency below seven and the queueing risk did not materialize. `static-checks` was green in 32 s, giving fast feedback on typecheck and file length that used to arrive only at the end of a 257 s job. The gate ran in 3–4 s.
+
+The saving was nevertheless only 452 s -> 433 s, because per-step costs on that run ran about 1.5x the sampled averages: Windows `coding-agent vitest` took 221 s against a 142 s sample, the Windows native binding build 63 s against 42 s, and the unit step fired its bounded flake retry on *both* platforms (Linux 101 s + 88 s, Windows 149 s + 117 s). The wall clock is now dominated by two steps rather than by fourteen, which is the point: sharding either one now has a direct effect, where before the split it would have been diluted by everything else in the job. Confirm the split's steady-state saving over several runs before deciding, and shard `coding-agent vitest` first.
 
 ### Why steps are grouped this way
 
@@ -78,7 +95,7 @@ If maintainers later prefer real per-job required contexts, that is a separate d
 
 ### Per-job time limits
 
-The blanket 10/15-minute pair is gone. Each job declares its own cap as a hang detector at roughly 2x measured p100, with room for the one bounded flake retry it owns: `suites` 6/8, `agent-suite` 6/9, `release-archive` 5/6, `static-checks` 6, gate 5. An earlier Linux run showed `Unit tests` at 176 s, which is that retry firing rather than a slow suite; capacity planning uses 84 s and treats 176 s as the retried worst case.
+The blanket 10/15-minute pair is gone. Each job declares its own cap as a hang detector at roughly 2x measured p100, with room for the one bounded flake retry it owns: `suites` 8/12, `agent-suite` 6/12, `release-archive` 5/6, `static-checks` 6, gate 5. The two Windows caps are 12 rather than the 8 and 9 that the sequential-job sampling implied, because the first split run measured 348 s and 349 s there; a cap that cancels a passing retried run is worse than a late hang detection. Every cap still sits under the 15-minute Windows blanket it replaced, and the contract test enforces that.
 
 Every job that runs a suite through `scripts/run-flaky-test-suite.ts` uploads `.ci-diagnostics/` under a job-unique artifact name (`test-diagnostics-<job>-<binary_platform>`). `actions/upload-artifact@v4+` fails the entire run when two jobs upload the same name.
 
