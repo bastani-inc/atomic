@@ -9,6 +9,9 @@ import {
   evaluateDurations,
   FAIL_RATIO,
   parseTestDurations,
+  perTestReportingEnv,
+  QUIET_REPORTER_ENV,
+  ranTestCount,
   renderDurationTable,
   resolveDefaultTimeoutMs,
   WARN_RATIO,
@@ -44,6 +47,61 @@ test("duration parsing attributes each sample to its file and ignores non-test l
   );
   assert.deepEqual(parseTestDurations("Ran 3 tests across 2 files. [38.00ms]"), []);
   assert.equal(parseTestDurations("test\\unit\\win.test.ts:\n(pass) a [1ms]")[0]?.file, "test/unit/win.test.ts");
+});
+
+test("GitHub Actions log groups do not become part of the test file path", () => {
+  // Bun folds each file into a log group under Actions; an unstripped marker
+  // makes every path unresolvable, which silently voids explicit budgets.
+  const actions = [
+    "::group::test/unit/alpha.test.ts:",
+    "(pass) group > quick assertion [0.28ms]",
+    "::endgroup::",
+    "##[group]test\\unit\\beta.test.ts:",
+    "(pass) heavy [900.00ms]",
+  ].join("\n");
+  assert.deepEqual(
+    parseTestDurations(actions).map((sample) => [sample.file, sample.name]),
+    [["test/unit/alpha.test.ts", "quick assertion"], ["test/unit/beta.test.ts", "heavy"]],
+  );
+});
+
+test("an explicit budget still resolves from output wrapped in Actions log groups", () => {
+  const directory = mkdtempSync(join(tmpdir(), "atomic-duration-group-"));
+  try {
+    writeFileSync(join(directory, "package.json"), JSON.stringify({ scripts: { "test:unit": "bun test --timeout 30000 test/unit" } }));
+    writeFileSync(join(directory, "suite.test.ts"), ['test("heavy but declared", async () => {', "}, 60_000);"].join("\n"));
+    const report = evaluateDurations(
+      ["::group::suite.test.ts:", "(pass) heavy but declared [25000.00ms]", "::endgroup::", "Ran 1 test across 1 file. [25000.00ms]"].join("\n"),
+      ["bun", "run", "test:unit"],
+      directory,
+    );
+    assert.equal(report.samples[0]?.timeoutMs, 60_000);
+    assert.equal(report.samples[0]?.explicit, true);
+    assert.deepEqual(report.failures, []);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("a run that prints no per-test durations is reported blind, not clean", () => {
+  const quiet = ["bun test v1.3.14 (0d9b296a)", " 2 pass", " 0 fail", "Ran 2 tests across 1 file. [134.00ms]"].join("\n");
+  assert.equal(ranTestCount(quiet), 2);
+  const report = evaluateDurations(quiet, ["bun", "test", "--timeout", "30000"], root);
+  assert.equal(report.enabled, true);
+  assert.equal(report.blind, true);
+  assert.match(renderDurationTable(report), /Samples: 0 of 2 test\(s\) run[\s\S]*printed no per-test durations/);
+
+  // Nothing ran at all is a different fact and must not be reported as blind.
+  const empty = evaluateDurations("bun test v1.3.14 (0d9b296a)\n 0 pass\n 0 fail", ["bun", "test", "--timeout", "30000"], root);
+  assert.equal(empty.blind, false);
+  // Neither is a suite that declared no budget: the gate is off by choice.
+  assert.equal(evaluateDurations(quiet, ["bun", "test"], root).blind, false);
+});
+
+test("the spawned suite never inherits Bun's per-test record suppression", () => {
+  const env = perTestReportingEnv({ PATH: "/usr/bin", CLAUDECODE: "1", REPL_ID: "x", AGENT: "1" });
+  assert.deepEqual(Object.keys(env), ["PATH"]);
+  assert.deepEqual([...QUIET_REPORTER_ENV], ["CLAUDECODE", "REPL_ID", "AGENT"]);
 });
 
 test("explicit timeouts are resolved from both declaration shapes and never from nested callbacks", () => {

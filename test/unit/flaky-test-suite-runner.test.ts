@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const runner = join(root, "scripts/run-flaky-test-suite.ts");
 
-type Mode = "success" | "flake" | "persistent" | "deterministic" | "headroom" | "retry-headroom";
+type Mode = "success" | "flake" | "persistent" | "deterministic" | "headroom" | "retry-headroom" | "quiet";
 
 async function fixture(mode: Mode, extraArgs: string[] = []): Promise<{ code: number; output: string; files: string[]; summary: string; durations: string }> {
   const dir = mkdtempSync(join(tmpdir(), "atomic-flake-runner-"));
@@ -25,6 +25,7 @@ async function fixture(mode: Mode, extraArgs: string[] = []): Promise<{ code: nu
     const mode = ${JSON.stringify(mode)};
     if (mode === "flake") console.log("test/unit/ci-workflow-contracts.test.ts:\\n(pass) deterministic contract");
     if (mode === "headroom") console.log("test/unit/drift.test.ts:\\n(pass) drifting test [25000.00ms]\\n(pass) healthy test [120.00ms]");
+    if (mode === "quiet") console.log(" 2 pass\\n 0 fail\\nRan 2 tests across 1 file. [134.00ms]");
     if (mode === "retry-headroom") {
       if (attempt === 1) {
         console.log("test/unit/drift.test.ts:\\n(pass) drifting test [25000.00ms]");
@@ -114,4 +115,57 @@ test("a passing retry cannot hide the failed attempt's exhausted headroom", asyn
   );
   assert.match(result.durations, /## attempt 1[\s\S]*25000[\s\S]*## attempt 2[\s\S]*120/);
   assert.match(result.summary, /Detected flake/);
+});
+
+/**
+ * The gate is only as good as the output it reads, so this exercises the real
+ * Bun test runner through the real wrapper, in the two conditions that had
+ * silently emptied it: Bun's agent-quiet reporter (which prints no per-test
+ * records at all) and the Actions reporter (which wraps each file header in a
+ * log group). A populated table with the explicit budget attached is the proof.
+ */
+test("the wrapper scores real Bun output under the agent-quiet and Actions reporters", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "atomic-flake-real-"));
+  const diagnostics = join(dir, "diagnostics");
+  writeFileSync(join(dir, "suite.test.ts"), [
+    'import { test, expect } from "bun:test";',
+    'test("inherits the suite budget", () => { expect(1).toBe(1); });',
+    'test("declares its own budget", async () => {',
+    "  await new Promise((resolve) => setTimeout(resolve, 30));",
+    "}, 2_000);",
+  ].join("\n"));
+  try {
+    const spawned = Bun.spawn(
+      ["bun", runner, "--label", "real suite", "--diagnostics-dir", diagnostics, "--", "bun", "test", "--timeout", "30000", "suite.test.ts"],
+      {
+        cwd: dir,
+        // Both reporter conditions at once: agent-quiet must be neutralised for
+        // the child, and Actions log groups must not corrupt the file path.
+        env: { ...process.env, AGENT: "1", CLAUDECODE: "1", GITHUB_ACTIONS: "true", GITHUB_STEP_SUMMARY: undefined },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(spawned.stdout).text(),
+      new Response(spawned.stderr).text(),
+      spawned.exited,
+    ]);
+    const durations = await Bun.file(join(diagnostics, "real-suite-durations.md")).text();
+    assert.equal(code, 0, `${stdout}${stderr}`);
+    assert.doesNotMatch(stdout + stderr, /Duration guard blind/);
+    assert.match(durations, /Samples: 2 of 2 test\(s\) run/);
+    assert.match(durations, /\| 30000 ms \| suite\.test\.ts \| inherits the suite budget \|/);
+    assert.match(durations, /\| 2000 ms \(explicit\) \| suite\.test\.ts \| declares its own budget \|/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a suite whose tests ran without printing durations fails instead of passing blind", async () => {
+  const result = await fixture("quiet", ["--timeout", "30000"]);
+  assert.equal(result.code, 1);
+  assert.match(result.output, /::error title=Duration guard blind[^\n]*2 test\(s\) ran but printed no per-test durations/);
+  assert.match(result.summary, /Duration guard blind/);
+  assert.match(result.durations, /Samples: 0 of 2 test\(s\) run/);
 });

@@ -6,6 +6,8 @@ import { basename, resolve } from "node:path";
 import {
   evaluateDurations,
   FAIL_RATIO,
+  perTestReportingEnv,
+  QUIET_REPORTER_ENV,
   renderDurationTable,
   WARN_RATIO,
   type BudgetedSample,
@@ -66,7 +68,10 @@ async function pump(stream: ReadableStream<Uint8Array> | undefined, sink: NodeJS
  * contract while making a timed-out attempt self-describing in the step log.
  */
 async function runAttempt(command: string[], logPath: string, persist: boolean): Promise<{ code: number; output: string }> {
-  const child = Bun.spawn(command, { stdout: "pipe", stderr: "pipe", env: process.env });
+  // Bun prints no per-test records under its agent-quiet reporter, which would
+  // leave the duration gate with nothing to score. The suite's stdout here is a
+  // CI log, so the child always runs with per-test reporting on.
+  const child = Bun.spawn(command, { stdout: "pipe", stderr: "pipe", env: perTestReportingEnv(process.env) });
   const [stdout, stderr, code] = await Promise.all([
     pump(child.stdout, process.stdout),
     pump(child.stderr, process.stderr),
@@ -131,6 +136,10 @@ interface Attempt {
  * attempt that exhausted a test's headroom and a retry that happened to be fast
  * are the same regression; reporting only the retry would discard the sample
  * that actually shows the drift.
+ *
+ * A gate that cannot see is reported, never assumed green: an attempt whose
+ * tests ran without printing a single duration fails the step, because an empty
+ * sample set otherwise looks exactly like a suite with nothing to report.
  */
 function reportDurations(attempts: Attempt[], options: Options, name: string): number {
   const scored = attempts.map((attempt) => ({ label: attempt.label, report: evaluateDurations(attempt.output, options.command) }));
@@ -142,6 +151,18 @@ function reportDurations(attempts: Attempt[], options: Options, name: string): n
   );
   const gated = scored.filter(({ report }) => report.enabled);
   if (gated.length === 0) return 0;
+  const blind = gated.filter(({ report }) => report.blind);
+  if (blind.length > 0) {
+    for (const { label, report } of blind) {
+      console.error(
+        `::error title=Duration guard blind: ${options.label}::${label}: ${report.ranTests} test(s) ran but printed no per-test durations, so no headroom could be measured. Bun suppresses those records when ${QUIET_REPORTER_ENV.join("/")} is set.`,
+      );
+    }
+    appendSummary(
+      `### ❌ Duration guard blind: ${options.label}\nThe suite ran tests but printed no per-test durations, so the ${FAIL_RATIO * 100} % headroom gate measured nothing. Restore Bun's per-test records before trusting this run.\n\n${table}`,
+    );
+    return 1;
+  }
   const describe = (label: string, sample: BudgetedSample): string =>
     `${label}: ${sample.file} > ${sample.fullName} took ${sample.durationMs.toFixed(0)}ms of its ${sample.timeoutMs}ms budget (${(sample.ratio * 100).toFixed(0)}%).`;
   const collect = (pick: (entry: { label: string; report: ReturnType<typeof evaluateDurations> }) => BudgetedSample[]): string[] =>

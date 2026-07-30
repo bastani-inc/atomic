@@ -54,6 +54,7 @@ Every Bun suite runs with a shared **30000 ms** per-test budget, declared as `--
 - Do not put the budget in `bunfig.toml` (Bun ignores `[test] timeout`) or only in the CI workflow (CI and local runs would drift apart), and do not make it platform-specific.
 - Pass an explicit third-argument timeout only when a test is structurally heavy — it reloads the full builtin package graph, spawns a real CLI child, runs `tsc`, or installs a built package. Otherwise rely on the shared default; never restate it.
 - CI scores every test against its effective timeout on every attempt, including a failed one that a bounded retry later rescued, and fails the step at 70 % of budget. The full duration table is uploaded as a `.ci-diagnostics/` artifact. If your test trips that gate, make it faster rather than raising the shared default.
+- That scoring reads the per-test duration records Bun prints, which its agent-quiet reporter (`CLAUDECODE`/`REPL_ID`/`AGENT`) suppresses, so the CI wrapper clears those variables for the suite it runs. A run that executes tests without printing durations fails the step instead of reporting no slow tests.
 
 ## Pull requests
 

@@ -73,6 +73,7 @@ test("hello world", () => {
 - One platform-neutral value, never a Windows-only branch. A Windows-only bump would leave Linux as the only place the budget is enforced and hide Windows regressions until they were far worse.
 - Add an explicit third-argument timeout only for a test whose cost is *structural* (a full builtin-package loader reload, a real CLI child process, a `tsc` invocation, a built-package install). Name the constant and keep it at the call site. Never restate the default value — an explicit timeout that merely repeats it silently lowers that test's budget when the default rises.
 - `scripts/run-flaky-test-suite.ts` scores every duration Bun prints against that test's effective timeout: warn at 40 % of budget, fail the step at 70 %. Every attempt is scored, so a fast bounded retry cannot hide a first attempt that burned a test's headroom. It always writes the per-test duration table to `.ci-diagnostics/<suite>-durations.md`, on green runs too. If it fails your test, make the test faster or justify a structural explicit timeout — do not raise the shared default.
+- The gate reads the `(pass) name [Nms]` records Bun prints per test, so `scripts/run-flaky-test-suite.ts` clears `CLAUDECODE`/`REPL_ID`/`AGENT` for the suite it spawns (Bun's agent-quiet reporter prints only the aggregate footer) and understands the `::group::` file headers Bun emits on GitHub Actions. A suite that runs tests yet prints no durations fails the step as *blind* rather than reporting a clean sheet.
 
 ### Hook name compatibility
 

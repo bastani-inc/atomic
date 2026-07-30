@@ -40,6 +40,8 @@ export interface BudgetedSample extends DurationSample {
 export interface DurationGuardReport {
   enabled: boolean;
   defaultTimeoutMs: number | undefined;
+  ranTests: number;
+  blind: boolean;
   samples: BudgetedSample[];
   warnings: BudgetedSample[];
   failures: BudgetedSample[];
@@ -48,6 +50,42 @@ export interface DurationGuardReport {
 const ANSI = /\u001b\[[0-9;]*m/g;
 const FILE_HEADER = /^(\S.*\.(?:test|spec)\.[cm]?[jt]sx?):$/u;
 const RESULT_LINE = /^\((pass|fail)\)\s+(.+?)\s+\[([0-9]+(?:\.[0-9]+)?)ms\]$/u;
+/**
+ * On GitHub Actions Bun folds each file's results into a log group, so the
+ * header arrives as `::group::path/to/x.test.ts:`. Left in place the marker
+ * becomes part of the path, the source file never resolves, and every explicit
+ * per-test timeout silently degrades to the suite default -- in the one
+ * environment this guard exists to protect. The rendered `##[group]` form is
+ * accepted too so a downloaded step log parses like the live stream.
+ */
+const GROUP_PREFIX = /^(?:::group::|##\[group\])/u;
+/** Bun's suite footer. It is printed even when per-test records are not. */
+const RAN_TESTS = /^Ran\s+([0-9]+)\s+tests?\s+across\b/mu;
+
+/**
+ * Tests Bun reported running, from its footer. Used to tell "nothing ran" from
+ * "tests ran but printed no durations": the second means the guard is blind and
+ * must say so rather than report a clean sheet.
+ */
+export function ranTestCount(output: string): number {
+  const match = RAN_TESTS.exec(output.replace(ANSI, ""));
+  return match?.[1] === undefined ? 0 : Number(match[1]);
+}
+
+/**
+ * Bun silences its per-test records -- and with them every duration this guard
+ * scores -- when any of these is set, leaving only the aggregate footer. They
+ * are a presentation choice for interactive agent sessions; a CI log is not
+ * one, so the wrapper drops them from the suite it spawns.
+ */
+export const QUIET_REPORTER_ENV = ["CLAUDECODE", "REPL_ID", "AGENT"] as const;
+
+/** Copy `env` without the variables that suppress Bun's per-test records. */
+export function perTestReportingEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const copy: NodeJS.ProcessEnv = { ...env };
+  for (const key of QUIET_REPORTER_ENV) delete copy[key];
+  return copy;
+}
 
 /**
  * Extract every `(pass|fail) name [Nms]` sample, attributing each to the test
@@ -58,13 +96,13 @@ export function parseTestDurations(output: string): DurationSample[] {
   const samples: DurationSample[] = [];
   let file = "";
   for (const rawLine of output.split(/\r?\n/)) {
-    const line = rawLine.replace(ANSI, "").trimEnd();
-    const header = FILE_HEADER.exec(line.trim());
+    const line = rawLine.replace(ANSI, "").trim();
+    const header = FILE_HEADER.exec(line.replace(GROUP_PREFIX, ""));
     if (header?.[1]) {
       file = header[1].replaceAll("\\", "/");
       continue;
     }
-    const result = RESULT_LINE.exec(line.trim());
+    const result = RESULT_LINE.exec(line);
     if (!result) continue;
     const [, status, fullName, duration] = result;
     samples.push({
@@ -297,7 +335,12 @@ export function evaluateDurations(
   const warnings = enabled
     ? samples.filter((sample) => sample.ratio >= WARN_RATIO && sample.ratio < FAIL_RATIO)
     : [];
-  return { enabled, defaultTimeoutMs, samples, warnings, failures };
+  // A suite that ran tests yet yielded no durations has not been measured. An
+  // empty sample set is otherwise indistinguishable from a healthy run, which
+  // is exactly how a silently disabled gate survives.
+  const ranTests = ranTestCount(output);
+  const blind = enabled && ranTests > 0 && samples.length === 0;
+  return { enabled, defaultTimeoutMs, ranTests, blind, samples, warnings, failures };
 }
 
 function row(sample: BudgetedSample): string {
@@ -311,11 +354,14 @@ function row(sample: BudgetedSample): string {
 export function renderDurationTable(report: DurationGuardReport, limit = 40): string {
   const header = [
     `Default per-test timeout: ${report.defaultTimeoutMs === undefined ? "not declared (gate disabled)" : `${report.defaultTimeoutMs} ms`}`,
-    `Warn at ${WARN_RATIO * 100} % of budget, fail at ${FAIL_RATIO * 100} %. Samples: ${report.samples.length}.`,
+    `Warn at ${WARN_RATIO * 100} % of budget, fail at ${FAIL_RATIO * 100} %. Samples: ${report.samples.length} of ${report.ranTests} test(s) run.`,
     "",
     "| Budget used | Duration | Timeout | File | Test |",
     "|---|---|---|---|---|",
   ];
   const rows = report.samples.slice(0, limit).map(row);
-  return [...header, ...(rows.length > 0 ? rows : ["| n/a | n/a | n/a | n/a | no duration samples parsed |"])].join("\n");
+  const empty = report.blind
+    ? "| n/a | n/a | n/a | n/a | tests ran but printed no per-test durations |"
+    : "| n/a | n/a | n/a | n/a | no duration samples parsed |";
+  return [...header, ...(rows.length > 0 ? rows : [empty])].join("\n");
 }
