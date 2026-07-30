@@ -2,6 +2,7 @@ import { describe, test } from "bun:test";
 import { StageSessionPause } from "../../packages/workflows/src/runs/foreground/stage-runner-pause.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner-types.js";
 import { assert, makeMockSession } from "./stage-runner-helpers.js";
+import { sleep } from "../helpers/runtime.js";
 
 type Settlement =
   | { readonly status: "resolved" }
@@ -144,7 +145,7 @@ describe("StageSessionPause error settlement", () => {
       assert.equal(resolution.message, "retryable message");
       assert.equal(await heldDelivery, "delivered");
       await resolution.runnerOwnedDeliverySettlement;
-      await Bun.sleep(10);
+      await sleep(10);
 
       assert.equal(control.isPaused(), false);
       assert.equal(nativePaused, false);

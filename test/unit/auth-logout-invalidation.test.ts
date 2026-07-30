@@ -12,6 +12,7 @@ import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/inter
 import { formatLogoutStatus } from "../../packages/coding-agent/src/modes/interactive/interactive-auth-routing.ts";
 import { AuthStorage, type AuthStorageData } from "../../packages/coding-agent/src/core/auth-storage.ts";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.ts";
+import { bunExecutable, moduleDir, sleep, writeFileEnsuringDir } from "../helpers/runtime.js";
 
 function readAuth(path: string): AuthStorageData {
 	return JSON.parse(readFileSync(path, "utf8")) as AuthStorageData;
@@ -23,11 +24,11 @@ describe("logout credential invalidation (#1919)", () => {
 			const directory = mkdtempSync(join(tmpdir(), `atomic-logout-${platform}-`));
 			const primary = join(directory, ".atomic", "agent", "auth.json");
 			const legacy = join(directory, ".pi", "agent", "auth.json");
-			await Bun.write(primary, JSON.stringify({
+			await writeFileEnsuringDir(primary, JSON.stringify({
 				"github-copilot": { type: "oauth", access: "primary", refresh: "refresh", expires: Date.now() + 60_000 },
 				openai: { type: "api_key", key: "primary-openai" },
 			}, null, 2));
-			await Bun.write(legacy, JSON.stringify({
+			await writeFileEnsuringDir(legacy, JSON.stringify({
 				"github-copilot": { type: "oauth", access: "legacy", refresh: "refresh", expires: Date.now() + 60_000 },
 				anthropic: { type: "api_key", key: "legacy-anthropic" },
 			}, null, 2));
@@ -58,13 +59,13 @@ describe("logout credential invalidation (#1919)", () => {
 		const directory = mkdtempSync(join(tmpdir(), "atomic-logout-locks-"));
 		const primary = join(directory, "a-primary-auth.json");
 		const legacy = join(directory, "z-legacy-auth.json");
-		await Bun.write(primary, JSON.stringify({ "github-copilot": { type: "api_key", key: "primary" } }));
-		await Bun.write(legacy, JSON.stringify({ "github-copilot": { type: "api_key", key: "legacy" } }));
+		await writeFileEnsuringDir(primary, JSON.stringify({ "github-copilot": { type: "api_key", key: "primary" } }));
+		await writeFileEnsuringDir(legacy, JSON.stringify({ "github-copilot": { type: "api_key", key: "legacy" } }));
 		const releaseLegacy = await lockfile.lock(legacy, { realpath: false });
 		const logout = AuthStorage.create([primary, legacy]).delete("github-copilot");
 
 		try {
-			for (let attempt = 0; attempt < 50 && !existsSync(`${primary}.lock`); attempt += 1) await Bun.sleep(10);
+			for (let attempt = 0; attempt < 50 && !existsSync(`${primary}.lock`); attempt += 1) await sleep(10);
 			assert.equal(existsSync(`${primary}.lock`), true, "logout did not acquire the primary source lock");
 			const competingLock = await lockfile.lock(primary, { realpath: false, retries: 0 }).then(
 				(release) => ({ release }),
@@ -85,11 +86,11 @@ describe("logout credential invalidation (#1919)", () => {
 	test("the engine child drops stored auth, its model projection, and prompt access immediately", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "atomic-engine-logout-"));
 		const authPath = join(directory, "auth.json");
-		await Bun.write(authPath, JSON.stringify({ anthropic: { type: "api_key", key: "controlled-fake-key" } }));
+		await writeFileEnsuringDir(authPath, JSON.stringify({ anthropic: { type: "api_key", key: "controlled-fake-key" } }));
 		const client = new RpcClient({
-			cliPath: join(import.meta.dir, "../../packages/coding-agent/src/cli.ts"),
-			cwd: join(import.meta.dir, "../.."),
-			runtimeExecutable: process.execPath,
+			cliPath: join(moduleDir(import.meta.url), "../../packages/coding-agent/src/cli.ts"),
+			cwd: join(moduleDir(import.meta.url), "../.."),
+			runtimeExecutable: bunExecutable(),
 			provider: "anthropic",
 			model: "claude-sonnet-4-5",
 			env: {
@@ -126,13 +127,13 @@ describe("logout credential invalidation (#1919)", () => {
 	test("the Linux Copilot regression clears the authoritative child and stays logged out after restart", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "atomic-copilot-logout-linux-"));
 		const authPath = join(directory, "auth.json");
-		await Bun.write(authPath, JSON.stringify({
+		await writeFileEnsuringDir(authPath, JSON.stringify({
 			"github-copilot": { type: "oauth", access: "controlled-fake-token", refresh: "refresh", expires: Date.now() + 60_000 },
 		}));
 		const makeClient = () => new RpcClient({
-			cliPath: join(import.meta.dir, "../../packages/coding-agent/src/cli.ts"),
-			cwd: join(import.meta.dir, "../.."),
-			runtimeExecutable: process.execPath,
+			cliPath: join(moduleDir(import.meta.url), "../../packages/coding-agent/src/cli.ts"),
+			cwd: join(moduleDir(import.meta.url), "../.."),
+			runtimeExecutable: bunExecutable(),
 			provider: "github-copilot",
 			model: "claude-haiku-4.5",
 			env: { ATOMIC_CODING_AGENT_DIR: directory, COPILOT_GITHUB_TOKEN: "" },
@@ -175,11 +176,11 @@ describe("logout credential invalidation (#1919)", () => {
 	test("logout reports environment authentication that it cannot clear", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "atomic-environment-logout-"));
 		const authPath = join(directory, "auth.json");
-		await Bun.write(authPath, JSON.stringify({ anthropic: { type: "api_key", key: "stored-key" } }));
+		await writeFileEnsuringDir(authPath, JSON.stringify({ anthropic: { type: "api_key", key: "stored-key" } }));
 		const client = new RpcClient({
-			cliPath: join(import.meta.dir, "../../packages/coding-agent/src/cli.ts"),
-			cwd: join(import.meta.dir, "../.."),
-			runtimeExecutable: process.execPath,
+			cliPath: join(moduleDir(import.meta.url), "../../packages/coding-agent/src/cli.ts"),
+			cwd: join(moduleDir(import.meta.url), "../.."),
+			runtimeExecutable: bunExecutable(),
 			env: { ATOMIC_CODING_AGENT_DIR: directory, ANTHROPIC_API_KEY: "environment-key", ANTHROPIC_OAUTH_TOKEN: "" },
 			args: ["--no-session", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--offline"],
 			interactiveEngine: { onDiagnostic: () => {} },
@@ -205,7 +206,7 @@ describe("logout credential invalidation (#1919)", () => {
 	test("isolated login reloads the frontend credential snapshot after the engine persists OAuth", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "atomic-isolated-login-reload-"));
 		const authPath = join(directory, "auth.json");
-		await Bun.write(authPath, "{}\n");
+		await writeFileEnsuringDir(authPath, "{}\n");
 		const modelRuntime = await ModelRuntime.create({ authPath, modelsPath: null });
 		const session = { modelRuntime, scopedModels: [] };
 		const remoteCatalog = new RemoteModelCatalog({} as never);
@@ -215,7 +216,7 @@ describe("logout credential invalidation (#1919)", () => {
 			respondExtensionUI: async () => {},
 			cancelLoginProvider: async () => {},
 			requestInternal: async () => {
-				await Bun.write(authPath, JSON.stringify({
+				await writeFileEnsuringDir(authPath, JSON.stringify({
 					"corp-oauth": {
 						type: "oauth",
 						access: "engine-token",

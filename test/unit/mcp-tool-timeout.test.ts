@@ -18,6 +18,7 @@ import { executeCall } from "../../packages/mcp/proxy-call.js";
 import type { McpExtensionState } from "../../packages/mcp/state.js";
 import { startUiServer } from "../../packages/mcp/ui-server.js";
 import type { DirectToolSpec, McpConfig, ToolMetadata } from "../../packages/mcp/types.js";
+import { sleep } from "../helpers/runtime.js";
 
 const TOOL: ToolMetadata = {
   name: "server_run",
@@ -163,7 +164,7 @@ test("timeoutMs config accepts positive values for local and remote servers", ()
 
 test("configured direct tool timeout fires and names the server and inactivity limit", async () => {
   const pair = await createSdkPair(async () => {
-    await Bun.sleep(100);
+    await sleep(100);
     return { content: [{ type: "text", text: "late" }] };
   });
   try {
@@ -184,10 +185,10 @@ test("progress notifications reset the configured proxy inactivity timeout", asy
   const pair = await createSdkPair(async (context) => {
     progressTokenObserved = context.hasProgressToken;
     for (let progress = 1; progress <= 3; progress += 1) {
-      await Bun.sleep(30);
+      await sleep(30);
       await context.sendProgress(progress);
     }
-    await Bun.sleep(15);
+    await sleep(15);
     return { content: [{ type: "text", text: "completed" }] };
   });
   try {
@@ -207,7 +208,7 @@ test("omitted timeoutMs keeps SDK-default behavior and does not request progress
   let progressTokenObserved = false;
   const pair = await createSdkPair(async (context) => {
     progressTokenObserved = context.hasProgressToken;
-    await Bun.sleep(70);
+    await sleep(70);
     return { content: [{ type: "text", text: "default" }] };
   });
   try {

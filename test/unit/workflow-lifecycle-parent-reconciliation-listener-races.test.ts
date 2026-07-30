@@ -15,6 +15,7 @@ import {
 	lifecycleConfig,
 	providerSawWorkflowState,
 } from "./workflow-lifecycle-parent-reconciliation-support.js";
+import { sleep } from "../helpers/runtime.js";
 
 const HIDDEN_RECONCILIATION_CUSTOM_TYPE = "atomic:protected-streaming-reconciliation";
 
@@ -22,7 +23,7 @@ async function waitUntil(check: () => boolean): Promise<void> {
 	const deadline = Date.now() + 5_000;
 	while (!check()) {
 		if (Date.now() > deadline) throw new Error("timed out waiting for streaming custom-message delivery");
-		await Bun.sleep(2);
+		await sleep(2);
 	}
 }
 

@@ -9,6 +9,7 @@ import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expande
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
 import { createMockSdk } from "./durable-dbos-backend-helpers.js";
+import { sleep } from "../helpers/runtime.js";
 
 async function waitForPendingPrompt(store: ReturnType<typeof createStore>) {
   const deadline = Date.now() + 2_000;
@@ -19,7 +20,7 @@ async function waitForPendingPrompt(store: ReturnType<typeof createStore>) {
         return { runId: runSnapshot.id, stageId: stage.id, promptId: stage.pendingPrompt.id };
       }
     }
-    await Bun.sleep(5);
+    await sleep(5);
   }
   throw new Error("pending prompt did not appear");
 }

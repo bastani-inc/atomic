@@ -5,6 +5,7 @@ import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
 import { ReplyWaiterSlot } from "../../packages/intercom/reply-waiter.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
 import { routeIncomingReply } from "../../packages/intercom/reply-routing.js";
+import { sleep } from "../helpers/runtime.js";
 
 type ToolResult = {
   content: Array<{ text: string }>;
@@ -131,7 +132,7 @@ describe("Intercom displayed session ID targeting", () => {
       undefined,
       context,
     );
-    await Bun.sleep(0);
+    await sleep(0);
     const waiter = current.waiterSlot.current();
     const routed = waiter === null ? false : routeIncomingReply(waiter, recipient, {
       id: "threaded-reply",

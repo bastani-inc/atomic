@@ -18,6 +18,7 @@ import {
 	type InteractiveEngineMessage,
 } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
 import { InputFormHostController } from "../../packages/coding-agent/src/modes/interactive-engine/input-form-host.ts";
+import { sleep } from "../helpers/runtime.js";
 
 const TAB = "\t";
 const SHIFT_TAB = "\x1b[Z";
@@ -94,7 +95,7 @@ function makeBridge(keybindings = new KeybindingsManager()) {
 function stripAnsi(value: string): string {
 	return value.replace(/\u001b\[[0-9;]*m/g, "");
 }
-async function flush(): Promise<void> { for (let i = 0; i < 4; i += 1) await Bun.sleep(0); }
+async function flush(): Promise<void> { for (let i = 0; i < 4; i += 1) await sleep(0); }
 
 describe("engine input form protocol", () => {
 	test("strictly round-trips valid forms and rejects malformed fields/results", () => {

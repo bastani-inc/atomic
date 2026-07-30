@@ -6,6 +6,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
+import { type SpawnedProcess, bunExecutable, decodeStream, moduleDir, readStreamText, sleep, spawnProcess } from "../helpers/runtime.js";
 
 const serialTest = process.platform === "win32" ? test.serial.skip : test.serial;
 const prefix = "@@ATOMIC_TEST@@";
@@ -23,7 +24,7 @@ interface Report {
 }
 
 class Driver {
-	readonly process: ReturnType<typeof Bun.spawn>;
+	readonly process: SpawnedProcess;
 	readonly reports: Report[] = [];
 	private readonly waiters = new Set<() => void>();
 	private stderr = "";
@@ -33,9 +34,9 @@ class Driver {
 		for (const key of Object.keys(baseEnv)) {
 			if (key.startsWith("ATOMIC_INTERACTIVE_ENGINE_")) delete baseEnv[key];
 		}
-		this.process = Bun.spawn([
-			process.execPath,
-			join(import.meta.dir, "fixtures", "default-main-interactive-host.ts"),
+		this.process = spawnProcess([
+			bunExecutable(),
+			join(moduleDir(import.meta.url), "fixtures", "default-main-interactive-host.ts"),
 			...args,
 		], {
 			cwd,
@@ -79,7 +80,7 @@ class Driver {
 		const deadline = performance.now() + 10_000;
 		while (performance.now() < deadline) {
 			this.send("state");
-			await Bun.sleep(25);
+			await sleep(25);
 			const state = this.reports.slice(from).find((report) => report.type === "state" && predicate(report));
 			if (state) return state;
 		}
@@ -94,14 +95,14 @@ class Driver {
 	async waitForExit(): Promise<number> {
 		return Promise.race([
 			this.process.exited,
-			Bun.sleep(5_000).then(() => { throw new Error(`Timed out waiting for exit: ${this.stderr}`); }),
+			sleep(5_000).then(() => { throw new Error(`Timed out waiting for exit: ${this.stderr}`); }),
 		]);
 	}
 
 	private async readReports(): Promise<void> {
 		const stdout = this.process.stdout;
 		if (!stdout || typeof stdout === "number") return;
-		const reader = stdout.pipeThrough(new TextDecoderStream()).getReader();
+		const reader = decodeStream(stdout).getReader();
 		let buffer = "";
 		for (;;) {
 			const { done, value } = await reader.read();
@@ -123,7 +124,7 @@ class Driver {
 	private async readStderr(): Promise<void> {
 		const stderr = this.process.stderr;
 		if (!stderr || typeof stderr === "number") return;
-		this.stderr = await new Response(stderr).text();
+		this.stderr = await readStreamText(stderr);
 	}
 }
 

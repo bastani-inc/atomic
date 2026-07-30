@@ -10,7 +10,7 @@ This document covers setup, the local dev loop, testing patterns, and project la
 - **[uv](https://docs.astral.sh/uv/)** — Python package/environment manager for the `evals/` harness
 - **Docker** — required for local Pier/DeepSWE sandbox runs
 
-This repo uses **Bun** for all development, scripts, and testing. The `@bastani/workflows` workspace package ships raw `.ts` files with no build step; Atomic bundles it into `@bastani/atomic` during the coding-agent build.
+This repo runs a hybrid toolchain matching upstream `earendil-works/pi`: **npm** installs, builds, checks, and runs the vitest suites; **Bun** compiles the release binaries, runs `scripts/*.ts`, and hosts the test fixtures that need it. `AGENTS.md` carries the full table. The `@bastani/workflows` workspace package ships raw `.ts` files with no build step; Atomic bundles it into `@bastani/atomic` during the coding-agent build.
 
 ---
 
@@ -19,8 +19,11 @@ This repo uses **Bun** for all development, scripts, and testing. The `@bastani/
 ```bash
 git clone --recurse-submodules git@github.com:bastani-inc/atomic.git
 cd atomic
-bun install
+npm ci --ignore-scripts
 ```
+
+The committed `.npmrc` applies a three-day minimum release age to anything you add with
+`npm install`, and pins exact versions. `package-lock.json` is the only lockfile.
 
 If you cloned without submodules, initialize them before running evals or touching vendored benchmark harnesses:
 
@@ -64,7 +67,7 @@ uv run pier run \
   --force-build
 ```
 
-`bun install` runs the root `prepare` script, which installs Git hooks with [`prek`](https://prek.j178.dev/) from [`prek.toml`](./prek.toml). The hook shims installed by default come from `default_install_hook_types`; currently that is `pre-commit`. To reinstall hooks manually, run `bun run hooks:install`. Set `PREK_DISABLE_INSTALL=1` to skip hook installation for a local install; CI skips it automatically.
+`npm install` runs the root `prepare` script, which installs Git hooks with [`prek`](https://prek.j178.dev/) from [`prek.toml`](./prek.toml). The hook shims installed by default come from `default_install_hook_types`; currently that is `pre-commit`. To reinstall hooks manually, run `npm run hooks:install`. Set `PREK_DISABLE_INSTALL=1` to skip hook installation for a local install; CI skips it automatically.
 
 The root `package.json` is a private workspace package named `atomic-monorepo`. The only publishable package is `packages/coding-agent` (`@bastani/atomic`); other `packages/*` workspaces are bundled or internal.
 
@@ -168,34 +171,48 @@ Run these from the workspace root:
 
 | Command                    | Description                                                      |
 | -------------------------- | ---------------------------------------------------------------- |
-| `bun run typecheck`        | Type-check the workspace                                         |
-| `bun test`                 | Run unit tests                                                   |
-| `bun run test:unit`        | Run unit tests                                                   |
-| `bun run test:integration` | Run integration tests                                            |
-| `bun run test:all`         | Run both unit + integration                                      |
-| `bun run lint`             | Alias for typecheck                                              |
-| `bun run hooks:install`    | Install `prek.toml` Git hooks using `default_install_hook_types` |
-| `bun run hooks:run`        | Run all `prek.toml` hooks across the repository                  |
+| `npm ci --ignore-scripts`   | Install from `package-lock.json`                                 |
+| `npm run check`             | Typecheck plus the published-shrinkwrap check                    |
+| `npm run typecheck`         | Type-check the workspace                                         |
+| `npm run test:unit`         | Run unit tests                                                   |
+| `npm run test:integration`  | Run integration tests                                            |
+| `npm run test:ci-contracts` | Run the CI and release contract suite                            |
+| `npm run test:all`          | Run both unit + integration                                      |
+| `npm run test:scripts`      | `node --test scripts/*.test.mjs`                                 |
+| `npm run hooks:install`     | Install `prek.toml` Git hooks using `default_install_hook_types` |
+| `npm run hooks:run`         | Run all `prek.toml` hooks across the repository                  |
 
-Both `typecheck` and `lint` run `tsc --noEmit`. There is no separate ESLint pipeline. Git hook configuration lives in [`prek.toml`](./prek.toml), not `.pre-commit-config.yaml`.
+`check` runs `tsc --noEmit` and then verifies `packages/coding-agent/npm-shrinkwrap.json` is
+still derivable from `package-lock.json`; `lint` is an alias for `check`. There is no separate
+ESLint pipeline yet — adopting Biome for lint and format, as pi does, is a planned follow-up.
+Git hook configuration lives in [`prek.toml`](./prek.toml), not `.pre-commit-config.yaml`.
 
 ---
 
 ## Testing patterns
 
-All tests use **Bun's built-in `bun:test` runner** with `node:assert/strict` assertions.
+All suites run under **vitest** with `node:assert/strict` assertions. Existing files still
+import from `"bun:test"`: `vitest.base.ts` aliases that specifier to
+`test/helpers/bun-test-shim.ts`, which re-exports vitest's API, so the migration needed no
+import edits. New files may use either; prefer `"vitest"`.
+
+Because the suites run under Node, `Bun.*` and `import.meta.dir` are unavailable in tests.
+`test/helpers/runtime.ts` provides the replacements (`sleep`, `readText`, `readJson`,
+`fileExists`, `writeFileEnsuringDir`, `spawnSyncCollect`, `spawnProcess`, `moduleDir`,
+`bunExecutable`); several close traps a direct port would not, so use them rather than
+reaching for `node:fs` or `node:child_process`. See `AGENTS.md` for the table.
 
 ### Unit tests (`test/unit/*.test.ts`)
 
 Pure-TS tests against modules in `packages/workflows/src/`. They mock pi's `ExtensionAPI` surface with hand-built fakes — fast, deterministic, no pi runtime in the loop.
 
-Run: `bun run test:unit`.
+Run: `npm run test:unit`.
 
 ### Integration tests (`test/integration/*.test.ts`)
 
 Higher-fidelity tests that compose multiple modules (runtime, wiring, overlay) and exercise the extension factory against a structural mock of `ExtensionAPI`. Still no real pi process — but they cover end-to-end registration, lifecycle, and overlay paths.
 
-Run: `bun run test:integration`.
+Run: `npm run test:integration`.
 
 ### Improved coverage with pi's SDK
 
@@ -265,6 +282,9 @@ Examples import the workspace package `@bastani/workflows`.
 ├── examples/
 ├── docs/
 ├── scripts/
+├── vitest.config.ts
+├── vitest.base.ts
+├── .npmrc
 ├── bunfig.toml
 └── tsconfig.json
 ```

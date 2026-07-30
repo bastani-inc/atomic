@@ -22,6 +22,7 @@ import type { StageSnapshot } from "../../packages/workflows/src/shared/store-ty
 import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { createMockSdk, seedMockCheckpoint, seedMockWorkflow } from "./durable-dbos-backend-helpers.js";
+import { sleep } from "../helpers/runtime.js";
 
 const ROOT_ID = "prompt-occurrence-upgrade-root";
 const SELECT_MESSAGE = "  Preserve this prompt exactly?\nSecond line.  ";
@@ -53,7 +54,7 @@ async function waitForPrompt(
       const stage = snapshot.stages.find((candidate) => candidate.pendingPrompt?.kind === kind);
       if (stage !== undefined) return { runId: snapshot.id, stage };
     }
-    await Bun.sleep(5);
+    await sleep(5);
   }
   throw new Error(`pending ${kind} prompt did not appear`);
 }

@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import assert from "node:assert/strict";
 
 import type { CodingAgentShrinkwrap as Shrinkwrap } from "../../scripts/generate-coding-agent-shrinkwrap.mjs";
+import { readJson, writeFileEnsuringDir } from "../helpers/runtime.js";
 
 interface PackageJson {
 	name: string;
@@ -64,11 +65,11 @@ function assertDeterministicNativeEntries(shrinkwrap: Shrinkwrap, expectedVersio
 }
 
 async function readPackageJson(path: string): Promise<PackageJson> {
-	return (await Bun.file(path).json()) as PackageJson;
+	return (await readJson(path)) as PackageJson;
 }
 
 async function writePackageJson(path: string, packageJson: PackageJson): Promise<void> {
-	await Bun.write(path, `${JSON.stringify(packageJson, null, 2)}\n`);
+	await writeFileEnsuringDir(path, `${JSON.stringify(packageJson, null, 2)}\n`);
 }
 
 async function createStampedShrinkwrapFixture(version: string): Promise<string> {
@@ -95,7 +96,7 @@ async function createStampedShrinkwrapFixture(version: string): Promise<string> 
 }
 
 test("checked-in coding-agent shrinkwrap includes deterministic atomic native optional packages", async () => {
-	const shrinkwrap = await Bun.file("packages/coding-agent/npm-shrinkwrap.json").json();
+	const shrinkwrap = await readJson<Shrinkwrap>("packages/coding-agent/npm-shrinkwrap.json");
 	assertDeterministicNativeEntries(shrinkwrap);
 });
 

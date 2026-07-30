@@ -83,17 +83,31 @@ fi
 
 if [[ "$SKIP_INSTALL" == "false" ]]; then
     echo "==> Installing dependencies..."
-    bun install --frozen-lockfile
+    npm ci --ignore-scripts
 else
     echo "==> Reusing caller-installed dependencies (--skip-install)"
 fi
 
 if [[ "$SKIP_DEPS" == "false" ]]; then
+    echo "==> Installing cross-platform Atomic native bindings..."
+    # Mirrors pi's build-binaries.sh. Every platform binding goes in one command
+    # because npm prunes what a previous --no-save install added, so a binding
+    # per invocation would leave only the last one on disk. --force bypasses the
+    # os/cpu restrictions that exist to prevent exactly this, and --ignore-scripts
+    # because none of these are meant to run on this host.
+    natives_version="$(node -p 'require("./packages/natives/package.json").version')"
+    natives_targets=()
+    for natives_platform in darwin-arm64 darwin-x64 linux-x64-gnu linux-arm64-gnu win32-x64-msvc win32-arm64-msvc; do
+        natives_targets+=("@bastani/atomic-natives-${natives_platform}@${natives_version}")
+    done
+    npm install --include=optional --no-save --package-lock=false --force --ignore-scripts \
+        "${natives_targets[@]}" || echo "==> Cross-platform bindings unavailable; the host build below covers this platform"
+
     echo "==> Staging cross-platform native bindings for clipboard..."
     # Stage in a disposable package so release preparation never mutates the
-    # repository manifest or lockfiles. --os '*' --cpu '*' bypasses Bun's host
+    # repository manifest or lockfiles. --os '*' --cpu '*' bypasses host
     # filtering and installs every exact-version release target.
-    clipboard_version="$(bun -e 'const p = await Bun.file("node_modules/@mariozechner/clipboard/package.json").json(); console.log(p.version)')"
+    clipboard_version="$(node -p 'require("./node_modules/@mariozechner/clipboard/package.json").version')"
     CLIPBOARD_STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/atomic-clipboard-stage.XXXXXX")"
     # mktemp may echo a relative path when TMPDIR is relative. Canonicalize it
     # before the later cd into packages/coding-agent so staging and cleanup
@@ -109,13 +123,13 @@ if compgen -G "packages/natives/native/*.node" >/dev/null; then
     echo "==> Using existing Atomic native binding artifacts..."
 else
     echo "==> Building Atomic native bindings for host platform..."
-    bun run --cwd packages/natives build
+    npm run build --workspace=@bastani/atomic-natives
 fi
 
 if [[ "$SKIP_PACKAGE_BUILD" == "false" ]]; then
     echo "==> Building @bastani/atomic package..."
     cd packages/coding-agent
-    bun run build
+    npm run build
 else
     echo "==> Reusing caller-built @bastani/atomic package (--skip-package-build)"
     test -f packages/coding-agent/dist/bun/cli.js || {

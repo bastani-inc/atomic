@@ -5,6 +5,7 @@ import { runSynchronousCallback, setCallbackActivityReporter } from "../../packa
 import { ActivityWatchdog, shouldRenderEngineDiagnosticAsChatError, type ActivityWatchdogDiagnostic } from "../../packages/coding-agent/src/modes/interactive-engine/activity-watchdog.ts";
 import { QueuedWriter } from "../../packages/coding-agent/src/modes/rpc/queued-writer.ts";
 import { attachJsonlLineReader } from "../../packages/coding-agent/src/modes/rpc/jsonl.ts";
+import { sleep } from "../helpers/runtime.js";
 
 class SlowWritable extends Writable {
 	_write(_chunk: Buffer, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
@@ -50,12 +51,12 @@ test("activity watchdog retains nested and concurrent attribution", async () => 
 	watchdog.activityFinished("inner-a");
 	watchdog.start();
 	now = 12;
-	await Bun.sleep(5);
+	await sleep(5);
 	assert.equal(diagnostics[0]?.activity?.id, "inner-b");
 	watchdog.activityFinished("inner-b");
 	watchdog.heartbeat();
 	now = 24;
-	await Bun.sleep(5);
+	await sleep(5);
 	assert.equal(diagnostics.at(-1)?.activity?.id, "outer");
 	watchdog.stop();
 });
@@ -70,9 +71,9 @@ test("watchdog diagnostics are tagged with their source at both thresholds", asy
 	});
 	watchdog.start();
 	now = 12;
-	await Bun.sleep(5);
+	await sleep(5);
 	now = 24;
-	await Bun.sleep(5);
+	await sleep(5);
 	watchdog.stop();
 	assert.deepEqual(diagnostics.map((diagnostic) => diagnostic.level), ["blocking", "unresponsive"]);
 	for (const diagnostic of diagnostics) {

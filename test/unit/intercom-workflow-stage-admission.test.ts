@@ -1,6 +1,7 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { admitWorkflowStageInbound } from "../../packages/intercom/workflow-stage-admission.js";
+import { sleep } from "../helpers/runtime.js";
 
 const stageContext = {
 	isIdle: () => true,
@@ -117,7 +118,7 @@ describe("Intercom workflow-stage admission", () => {
 
 		assert.ok(admitted);
 		void admitted.finally(() => { settled = true; }).catch(() => {});
-		await Bun.sleep(0);
+		await sleep(0);
 		assert.equal(settled, false, "correlated failure reporting remains inside admitted work");
 		failureReported.resolve();
 		await assert.rejects(admitted, /retired during foreground-owner admission/);

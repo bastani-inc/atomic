@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { bunExecutable, spawnSyncCollect } from "../helpers/runtime.js";
 
 interface VersionedPackageJson {
   name: string;
@@ -82,8 +83,8 @@ if (bindingPackageVersion !== '0.1.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHE
 }
 
 function runBump(root: string, version: string): BumpResult {
-  const result = Bun.spawnSync({
-    cmd: [process.execPath, "run", join(process.cwd(), "scripts", "bump-version.ts"), version, "--root", root],
+  const result = spawnSyncCollect({
+    cmd: [bunExecutable(), "run", join(process.cwd(), "scripts", "bump-version.ts"), version, "--root", root],
     stdout: "pipe",
     stderr: "pipe",
   });

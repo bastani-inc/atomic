@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { moduleDir } from "../helpers/runtime.js";
 
-const repoRoot = resolve(import.meta.dir, "../..");
+const repoRoot = resolve(moduleDir(import.meta.url), "../..");
 
 test("session cleanup retires old OAuth waiters before same-server replacement auth", () => {
   const fixtureDir = mkdtempSync(join(repoRoot, ".mcp-oauth-reset-"));

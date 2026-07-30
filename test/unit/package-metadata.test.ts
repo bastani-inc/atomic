@@ -3,6 +3,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 import { subset as semverSubset } from "semver";
+import { globSync } from "tinyglobby";
 import atomicPackageJson from "../../packages/coding-agent/package.json" with { type: "json" };
 import intercomPackageJson from "../../packages/intercom/package.json" with { type: "json" };
 import mcpPackageJson from "../../packages/mcp/package.json" with { type: "json" };
@@ -10,6 +11,7 @@ import nativesPackageJson from "../../packages/natives/package.json" with { type
 import subagentsPackageJson from "../../packages/subagents/package.json" with { type: "json" };
 import webAccessPackageJson from "../../packages/web-access/package.json" with { type: "json" };
 import workflowsPackageJson from "../../packages/workflows/package.json" with { type: "json" };
+import { readJson } from "../helpers/runtime.js";
 
 const STRICT_RELEASE_VERSION_RE =
     /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-alpha\.([1-9]\d*))?$/;
@@ -60,9 +62,9 @@ async function workspacePackages(): Promise<WorkspacePackage[]> {
                         "package.json",
                     );
                     if (!existsSync(manifestPath)) return undefined;
-                    const packageJson = (await Bun.file(
+                    const packageJson = (await readJson(
                         manifestPath,
-                    ).json()) as WorkspacePackageJson;
+                    )) as WorkspacePackageJson;
                     return { manifestPath, packageJson };
                 }),
         )
@@ -130,7 +132,7 @@ async function runtimeDependencyPackageJson(
     dependencyName: string,
 ): Promise<RuntimeDependencyPackageJson> {
     const manifestPath = join("node_modules", dependencyName, "package.json");
-    return (await Bun.file(manifestPath).json()) as RuntimeDependencyPackageJson;
+    return (await readJson(manifestPath)) as RuntimeDependencyPackageJson;
 }
 
 describe("package metadata", () => {
@@ -253,7 +255,7 @@ describe("package metadata", () => {
         const topLevelPattern = "*.ts";
         assert.ok(intercomPackageJson.files.includes(topLevelPattern));
         const matchedTopLevelModules = new Set(
-            new Bun.Glob(topLevelPattern).scanSync({
+            globSync(topLevelPattern, {
                 cwd: "packages/intercom",
                 onlyFiles: true,
             }),

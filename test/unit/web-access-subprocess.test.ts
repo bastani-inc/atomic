@@ -6,6 +6,13 @@ import { delimiter, join } from "node:path";
 import { runBunSubprocess } from "../../packages/web-access/subprocess.ts";
 import { getLocalVideoDuration, extractVideoFrame } from "../../packages/web-access/video-extract.ts";
 import { getYouTubeStreamInfo } from "../../packages/web-access/youtube-extract.ts";
+import { bunExecutable, installBunGlobal } from "../helpers/runtime.js";
+
+// packages/web-access/subprocess.ts is shipped Bun-binary code that calls
+// Bun.spawn/Bun.sleep unguarded, and this suite imports it in-process. See
+// installBunGlobal for why the primitives are supplied rather than the file
+// re-executed under Bun.
+installBunGlobal();
 
 function executable(path: string, body: string): void {
 	writeFileSync(path, `#!/usr/bin/env bun\n${body}\n`, "utf8");
@@ -16,7 +23,7 @@ test("Bun subprocess execution drains binary output without blocking the event l
 	let ticks = 0;
 	const timer = setInterval(() => { ticks += 1; }, 1);
 	try {
-		const result = await runBunSubprocess(process.execPath, ["-e", "await Bun.sleep(25); process.stdout.write(Buffer.from([0,1,2,255]))"], {
+		const result = await runBunSubprocess(bunExecutable(), ["-e", "await Bun.sleep(25); process.stdout.write(Buffer.from([0,1,2,255]))"], {
 			timeoutMs: 1_000,
 			maxStdoutBytes: 1024,
 		});
@@ -29,11 +36,11 @@ test("Bun subprocess execution drains binary output without blocking the event l
 
 test("Bun subprocess execution enforces timeout and output byte caps", async () => {
 	await assert.rejects(
-		runBunSubprocess(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { timeoutMs: 20, maxStdoutBytes: 1024 }),
+		runBunSubprocess(bunExecutable(), ["-e", "setInterval(() => {}, 1000)"], { timeoutMs: 20, maxStdoutBytes: 1024 }),
 		(error: Error & { code?: string; killed?: boolean }) => error.code === "ETIMEDOUT" && error.killed === true,
 	);
 	await assert.rejects(
-		runBunSubprocess(process.execPath, ["-e", "process.stdout.write('x'.repeat(2048))"], { timeoutMs: 1_000, maxStdoutBytes: 1024 }),
+		runBunSubprocess(bunExecutable(), ["-e", "process.stdout.write('x'.repeat(2048))"], { timeoutMs: 1_000, maxStdoutBytes: 1024 }),
 		(error: Error & { code?: string }) => error.code === "ENOBUFS",
 	);
 });
@@ -41,7 +48,7 @@ test("Bun subprocess execution enforces timeout and output byte caps", async () 
 test("Bun subprocess execution aborts the child on caller signal with tree-kill escalation", async () => {
 	const controller = new AbortController();
 	const started = performance.now();
-	const pending = runBunSubprocess(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+	const pending = runBunSubprocess(bunExecutable(), ["-e", "setInterval(() => {}, 1000)"], {
 		timeoutMs: 10_000,
 		maxStdoutBytes: 1024,
 		signal: controller.signal,
@@ -60,7 +67,7 @@ test("Bun subprocess execution maps spawn ENOENT and non-zero exits with stderr"
 		(error: Error & { code?: string }) => error.code === "ENOENT",
 	);
 	await assert.rejects(
-		runBunSubprocess(process.execPath, ["-e", "process.stderr.write('boom'); process.exit(3)"], { timeoutMs: 1_000, maxStdoutBytes: 1024 }),
+		runBunSubprocess(bunExecutable(), ["-e", "process.stderr.write('boom'); process.exit(3)"], { timeoutMs: 1_000, maxStdoutBytes: 1024 }),
 		(error: Error & { code?: string; stderr?: string }) => error.code === "3" && error.stderr === "boom",
 	);
 });

@@ -10,6 +10,7 @@ import type {
   PiCustomOverlayFactoryTui,
   PiOverlayHandle,
 } from "../../packages/workflows/src/extension/wiring.js";
+import { bunExecutable } from "../helpers/runtime.js";
 
 const ISOLATED_PROCESS_ENV = "ATOMIC_OVERLAY_AUTOWRAP_ISOLATED";
 
@@ -287,7 +288,7 @@ if (process.env[ISOLATED_PROCESS_ENV] === "1") {
 } else {
   test("runs terminal autowrap checks without leaking module mocks", () => {
     const testPath = fileURLToPath(import.meta.url);
-    const result = spawnSync(process.execPath, ["test", testPath], {
+    const result = spawnSync(bunExecutable(), ["test", testPath], {
       cwd: process.cwd(),
       env: { ...process.env, [ISOLATED_PROCESS_ENV]: "1" },
       encoding: "utf8",

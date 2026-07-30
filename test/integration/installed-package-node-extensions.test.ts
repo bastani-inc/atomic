@@ -18,8 +18,9 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import { delimiter, join, resolve } from "node:path";
+import { moduleDir } from "../helpers/runtime.js";
 
-const repoRoot = resolve(import.meta.dir, "../..");
+const repoRoot = resolve(moduleDir(import.meta.url), "../..");
 const repoNodeModules = join(repoRoot, "node_modules");
 const packageDir = join(repoRoot, "packages", "coding-agent");
 const distCli = join(packageDir, "dist", "cli.js");

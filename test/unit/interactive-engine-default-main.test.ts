@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type SpawnedProcess, bunExecutable, decodeStream, moduleDir, readStreamText, sleep, spawnProcess } from "../helpers/runtime.js";
 
 /**
  * This harness drives POSIX process-tree semantics end to end: SIGKILL of the
@@ -35,7 +36,7 @@ interface HarnessReport {
 const PREFIX = "@@ATOMIC_TEST@@";
 
 class DefaultMainDriver {
-	readonly process: ReturnType<typeof Bun.spawn>;
+	readonly process: SpawnedProcess;
 	readonly reports: HarnessReport[] = [];
 	private readonly waiters = new Set<() => void>();
 	private stderr = "";
@@ -48,12 +49,12 @@ class DefaultMainDriver {
 		for (const key of Object.keys(baseEnv)) {
 			if (key.startsWith("ATOMIC_INTERACTIVE_ENGINE_")) delete baseEnv[key];
 		}
-		this.process = Bun.spawn([
-			process.execPath,
-			join(import.meta.dir, "fixtures", "default-main-interactive-host.ts"),
+		this.process = spawnProcess([
+			bunExecutable(),
+			join(moduleDir(import.meta.url), "fixtures", "default-main-interactive-host.ts"),
 			...args,
 		], {
-			cwd: join(import.meta.dir, "../.."),
+			cwd: join(moduleDir(import.meta.url), "../.."),
 			env: { ...baseEnv, ...env },
 			stdin: "pipe",
 			stdout: "pipe",
@@ -123,7 +124,7 @@ class DefaultMainDriver {
 	private async readReports(): Promise<void> {
 		const stdout = this.process.stdout;
 		if (!stdout || typeof stdout === "number") return;
-		const reader = stdout.pipeThrough(new TextDecoderStream()).getReader();
+		const reader = decodeStream(stdout).getReader();
 		let buffer = "";
 		while (true) {
 			const { done, value } = await reader.read();
@@ -147,7 +148,7 @@ class DefaultMainDriver {
 	private async readStderr(): Promise<void> {
 		const stderr = this.process.stderr;
 		if (!stderr || typeof stderr === "number") return;
-		this.stderr = await new Response(stderr).text();
+		this.stderr = await readStreamText(stderr);
 	}
 }
 
@@ -162,7 +163,7 @@ async function waitForFile(path: string, timeoutMs = 5_000): Promise<number> {
 			const pid = Number(readFileSync(path, "utf8"));
 			if (Number.isSafeInteger(pid) && pid > 0) return pid;
 		} catch {}
-		await Bun.sleep(10);
+		await sleep(10);
 	}
 	throw new Error(`Timed out waiting for ${path}`);
 }
@@ -171,7 +172,7 @@ async function waitForExit(pid: number, timeoutMs = 4_000): Promise<void> {
 	const deadline = performance.now() + timeoutMs;
 	while (performance.now() < deadline) {
 		if (!isAlive(pid)) return;
-		await Bun.sleep(20);
+		await sleep(20);
 	}
 	throw new Error(`PID ${pid} remained alive`);
 }
@@ -180,7 +181,7 @@ serialTest("PID-file polling ignores an observable empty file while the writer i
 	const temp = mkdtempSync(join(tmpdir(), "atomic-pid-file-"));
 	const path = join(temp, "process.pid");
 	writeFileSync(path, "", "utf8");
-	const publish = Bun.sleep(25).then(() => writeFileSync(path, "123", "utf8"));
+	const publish = sleep(25).then(() => writeFileSync(path, "123", "utf8"));
 	try {
 		assert.equal(await waitForFile(path), 123);
 	} finally {
@@ -219,7 +220,7 @@ serialTest("default main InteractiveMode survives Escape, restarts, and kills th
 	const temp = mkdtempSync(join(tmpdir(), "atomic-default-main-"));
 	const toolPidFile = join(temp, "tool.pid");
 	const grandchildPidFile = join(temp, "grandchild.pid");
-	const driver = new DefaultMainDriver(fixtureArgs(join(import.meta.dir, "fixtures", "blocking-tool-extension.ts")), {
+	const driver = new DefaultMainDriver(fixtureArgs(join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts")), {
 		ATOMIC_BLOCKING_TOOL_PID_FILE: toolPidFile,
 		ATOMIC_BLOCKING_GRANDCHILD_PID_FILE: grandchildPidFile,
 		ATOMIC_CODING_AGENT_DIR: join(temp, "agent"),
@@ -267,7 +268,7 @@ serialTest("forced default-main host death leaves no engine or detached grandchi
 	const temp = mkdtempSync(join(tmpdir(), "atomic-host-death-"));
 	const toolPidFile = join(temp, "tool.pid");
 	const grandchildPidFile = join(temp, "grandchild.pid");
-	const driver = new DefaultMainDriver(fixtureArgs(join(import.meta.dir, "fixtures", "blocking-tool-extension.ts")), {
+	const driver = new DefaultMainDriver(fixtureArgs(join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts")), {
 		ATOMIC_BLOCKING_TOOL_PID_FILE: toolPidFile,
 		ATOMIC_BLOCKING_GRANDCHILD_PID_FILE: grandchildPidFile,
 		ATOMIC_CODING_AGENT_DIR: join(temp, "agent"),
@@ -290,7 +291,7 @@ serialTest("forced default-main host death leaves no engine or detached grandchi
 
 serialTest("default InteractiveMode host mutations persist exactly once in the engine", async () => {
 	const temp = mkdtempSync(join(tmpdir(), "atomic-exact-once-"));
-	const extension = join(import.meta.dir, "fixtures", "blocking-tool-extension.ts");
+	const extension = join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts");
 	const args = fixtureArgs(extension).filter((value) => value !== "--no-session");
 	args.push("--session-dir", join(temp, "sessions"));
 	const toolPidFile = join(temp, "tool.pid");
@@ -328,7 +329,7 @@ serialTest("default InteractiveMode preserves child-owned custom renderers and f
 	const widgetPidFile = join(temp, "widget.pid");
 	const toolPidFile = join(temp, "tool.pid");
 	const toolRendererPidFile = join(temp, "tool-renderer.pid");
-	const extension = join(import.meta.dir, "fixtures", "blocking-tool-extension.ts");
+	const extension = join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts");
 	const driver = new DefaultMainDriver(fixtureArgs(extension), {
 		ATOMIC_RENDERER_FIXTURE: "1",
 		ATOMIC_RENDERER_PID_FILE: rendererPidFile,
@@ -379,7 +380,7 @@ async function waitForSlashCommands(driver: DefaultMainDriver, prefix: string, r
 	while (performance.now() < deadline) {
 		names = await listSlashCommands(driver, prefix);
 		if (required.every((name) => names.has(name))) return names;
-		await Bun.sleep(50);
+		await sleep(50);
 	}
 	throw new Error(`Autocomplete for '${prefix}' never listed ${required.join(", ")}. Saw: ${[...names].join(", ")}`);
 }
@@ -415,14 +416,14 @@ async function invokeSlashCommand(driver: DefaultMainDriver, logPath: string, na
 			submitted = true;
 			driver.send({ type: "input", data: "\r" });
 		}
-		await Bun.sleep(20);
+		await sleep(20);
 	}
 	throw new Error(`Command '${name}' was never invoked after typing ${JSON.stringify(text)} (log: ${logPath})`);
 }
 
 serialTest("isolated default main lists and executes engine-only /workflow and /workflows while the host has no extensions", async () => {
 	const temp = mkdtempSync(join(tmpdir(), "atomic-remote-commands-"));
-	const extension = join(import.meta.dir, "fixtures", "workflow-command-extension.ts");
+	const extension = join(moduleDir(import.meta.url), "fixtures", "workflow-command-extension.ts");
 	// Reproduction parity with `bun packages/coding-agent/src/cli.ts` from the
 	// worktree: interactive host isolates extensions, engine child owns them.
 	const args = fixtureArgs(extension).filter((value) => value !== "--no-session");

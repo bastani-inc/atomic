@@ -292,3 +292,8 @@ evals/jobs/
 
 # CI flake-retry and duration-headroom artifacts (uploaded from CI, never tracked)
 .ci-diagnostics/
+
+# Scratch workspaces test/unit/flaky-test-suite-runner.test.ts creates under the
+# repository root, so vitest and node_modules resolve by the ordinary upward
+# walk. Removed on success; ignored so an interrupted run leaves nothing tracked.
+.tmp-flake-real-*/

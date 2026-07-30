@@ -10,6 +10,7 @@ import { serializeAgent } from "../../packages/subagents/src/agents/agent-serial
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { spawnRunner } from "../../packages/subagents/src/runs/background/async-execution-common.js";
 import { runPiStreaming } from "../../packages/subagents/src/runs/background/subagent-runner-streaming.js";
+import { bunExecutable } from "../helpers/runtime.js";
 
 function agentConfig(): AgentConfig {
 	return {
@@ -140,7 +141,7 @@ describe("subagent acceptance removal", () => {
 				console.log(JSON.stringify(result));
 			`, "utf8");
 
-			const proc = spawnSync(process.execPath, [scriptPath], { cwd: process.cwd(), encoding: "utf8" });
+			const proc = spawnSync(bunExecutable(), [scriptPath], { cwd: process.cwd(), encoding: "utf8" });
 			assert.equal(proc.status, 0, `${proc.stdout}\n${proc.stderr}`);
 			const result = JSON.parse(proc.stdout.trim()) as { error?: string };
 			assert.ok((result.error ?? "").includes(`failed to spawn subagent runtime '${fakeRuntime}'`));
@@ -223,7 +224,7 @@ describe("subagent acceptance removal", () => {
 			}), "utf8");
 
 			const runnerPath = join(process.cwd(), "packages/subagents/src/runs/background/subagent-runner.ts");
-			const proc = spawnSync(process.execPath, [runnerPath, configPath], { cwd: process.cwd(), encoding: "utf8" });
+			const proc = spawnSync(bunExecutable(), [runnerPath, configPath], { cwd: process.cwd(), encoding: "utf8" });
 			assert.equal(proc.status, 0, `${proc.stdout}\n${proc.stderr}`);
 			const result = JSON.parse(readFileSync(resultPath, "utf8")) as { exitCode?: number; state?: string; success?: boolean; summary?: string };
 			assert.equal(result.exitCode, 0);

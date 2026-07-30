@@ -6,6 +6,7 @@ import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
 import { ReplyWaiterSlot } from "../../packages/intercom/reply-waiter.js";
 import { routeIncomingReply } from "../../packages/intercom/reply-routing.js";
 import type { SessionInfo } from "../../packages/intercom/types.js";
+import { sleep } from "../helpers/runtime.js";
 
 type ToolResult = { content: Array<{ text: string }>; isError: boolean };
 type Tool = { execute(id: string, params: Record<string, unknown>, signal: AbortSignal | undefined, update: undefined, ctx: object): Promise<ToolResult> };
@@ -27,7 +28,7 @@ function fixture(options: { send?: SendBehavior; resolveGate?: Promise<void> } =
 	const slot = new ReplyWaiterSlot();
 	const sent: Array<{ to: string; message: { messageId?: string; text: string } }> = [];
 	const send = async (to: string, message: { messageId?: string; text: string }) => {
-		if (options.send?.delayMs) await Bun.sleep(options.send.delayMs);
+		if (options.send?.delayMs) await sleep(options.send.delayMs);
 		if (options.send?.throwError) throw options.send.throwError;
 		sent.push({ to, message });
 		return {
@@ -115,15 +116,15 @@ describe("concurrent blocking intercom requests", () => {
 		// used to surface a pre-rejected promise.
 		const first = current.ask();
 		const second = current.ask();
-		await Bun.sleep(0);
+		await sleep(0);
 		release();
-		await Bun.sleep(5);
+		await sleep(5);
 
 		const loser = await second;
 		assert.equal(loser.isError, true);
 		assert.match(loser.content[0]?.text ?? "", /Already waiting for a reply/);
 
-		await Bun.sleep(15);
+		await sleep(15);
 		assert.equal(current.sent.length, 1, "only the winning ask sends its question");
 		current.replyToPending();
 		const winner = await first;
@@ -138,16 +139,16 @@ describe("concurrent blocking intercom requests", () => {
 
 		const askExecution = current.ask();
 		const superviseExecution = current.supervise();
-		await Bun.sleep(0);
+		await sleep(0);
 		release();
-		await Bun.sleep(5);
+		await sleep(5);
 
 		const superviseResult = await superviseExecution;
 		assert.equal(superviseResult.isError, true);
 		assert.match(superviseResult.content[0]?.text ?? "", /Already waiting for a reply/);
 		assert.ok(current.slot.has(), "the losing tool call must not tear down the winner's waiter");
 
-		await Bun.sleep(15);
+		await sleep(15);
 		current.replyToPending();
 		const askResult = await askExecution;
 		assert.equal(askResult.isError, false);
@@ -171,7 +172,7 @@ describe("concurrent blocking intercom requests", () => {
 
 		const retryable = fixture();
 		const retried = retryable.ask();
-		await Bun.sleep(5);
+		await sleep(5);
 		retryable.replyToPending();
 		assert.equal((await retried).isError, false);
 	});
@@ -180,7 +181,7 @@ describe("concurrent blocking intercom requests", () => {
 		const current = fixture();
 		const controller = new AbortController();
 		const execution = current.ask(controller.signal);
-		await Bun.sleep(5);
+		await sleep(5);
 		assert.ok(current.slot.has(), "the ask is waiting before cancellation");
 		controller.abort();
 		const result = await execution;
@@ -189,7 +190,7 @@ describe("concurrent blocking intercom requests", () => {
 		assert.equal(current.slot.has(), false);
 
 		const next = current.ask();
-		await Bun.sleep(5);
+		await sleep(5);
 		current.replyToPending();
 		assert.equal((await next).isError, false);
 	});
@@ -198,7 +199,7 @@ describe("concurrent blocking intercom requests", () => {
 		const current = fixture();
 		const controller = new AbortController();
 		const execution = current.supervise(controller.signal);
-		await Bun.sleep(5);
+		await sleep(5);
 		controller.abort();
 		const result = await execution;
 		assert.equal(result.isError, true);
@@ -212,9 +213,9 @@ describe("concurrent blocking intercom requests", () => {
 		const current = fixture({ resolveGate });
 		const winner = current.ask();
 		const loser = current.ask();
-		await Bun.sleep(0);
+		await sleep(0);
 		release();
-		await Bun.sleep(5);
+		await sleep(5);
 		assert.equal((await loser).isError, true);
 
 		const waiter = current.slot.current();
@@ -248,14 +249,14 @@ describe("concurrent blocking intercom requests", () => {
 		const controller = new AbortController();
 
 		const first = current.ask(controller.signal);
-		await Bun.sleep(5);
+		await sleep(5);
 		assert.ok(current.slot.has(), "the first ask reserves the slot before it is aborted");
 		controller.abort();
-		await Bun.sleep(0);
+		await sleep(0);
 		assert.equal(current.slot.has(), false, "aborting mid-send releases the reservation");
 
 		const second = current.ask();
-		await Bun.sleep(5);
+		await sleep(5);
 		assert.ok(current.slot.has(), "a second ask reserves the freed slot");
 
 		const firstResult = await first;

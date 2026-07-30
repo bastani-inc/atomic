@@ -2,6 +2,7 @@ import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { registerIntercomLifecycle } from "../../packages/intercom/lifecycle.js";
 import { InboundIdleQueue } from "../../packages/intercom/inbound-idle-queue.js";
+import { sleep } from "../helpers/runtime.js";
 
 interface TestContext { sessionManager: { getSessionId(): string }; model: { id: string } }
 type Handler = (event: Record<string, never>, ctx: TestContext) => void | Promise<void>;
@@ -43,7 +44,7 @@ function fixture(disconnectRejects = false) {
 
 async function emit(current: ReturnType<typeof fixture>, name: string, ctx: TestContext): Promise<void> {
   await current.handlers.get(name)?.({}, ctx);
-  await Bun.sleep(1);
+  await sleep(1);
 }
 
 describe("intercom lifecycle replacement", () => {

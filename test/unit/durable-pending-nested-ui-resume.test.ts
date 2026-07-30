@@ -21,6 +21,7 @@ import { createStore, store as workflowStore } from "../../packages/workflows/sr
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { createMockSdk } from "./durable-dbos-backend-helpers.js";
+import { sleep } from "../helpers/runtime.js";
 
 const ROOT_ID = "pending-nested-ui-root";
 
@@ -46,7 +47,7 @@ async function waitForPendingInput(
       const stage = runSnapshot.stages.find((candidate) => candidate.pendingPrompt?.kind === "input");
       if (stage !== undefined) return { runId: runSnapshot.id, stage };
     }
-    await Bun.sleep(5);
+    await sleep(5);
   }
   const shape = store.runs().map((runSnapshot) => ({
     id: runSnapshot.id,

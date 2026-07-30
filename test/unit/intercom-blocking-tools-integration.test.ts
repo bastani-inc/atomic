@@ -12,6 +12,7 @@ import type { Message, SessionInfo } from "../../packages/intercom/types.js";
 import { routeIncomingReply } from "../../packages/intercom/reply-routing.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { agentConfig, successEvent, withFakeCli } from "./subagents-attempt-watchdog-helpers.js";
+import { sleep } from "../helpers/runtime.js";
 
 type Tool = { execute(id: string, params: Record<string, unknown>, signal: AbortSignal | undefined, update: undefined, ctx: object): Promise<{ content: Array<{ text: string }>; isError: boolean }> };
 
@@ -83,7 +84,7 @@ describe("registered blocking intercom tools", () => {
   test("intercom ask waits for an exact threaded reply and resumes", async () => {
     const current = fixture("intercom");
     const execution = current.tool.execute("call", { action: "ask", to: "parent", message: "Choose" }, undefined, undefined, context);
-    await Bun.sleep(0);
+    await sleep(0);
     assert.equal(current.sent.length, 1);
     const question = current.sent[0]!;
     assert.equal(question.to, "parent-id");
@@ -101,7 +102,7 @@ describe("registered blocking intercom tools", () => {
   test("intercom ask surfaces a correlated completed-target revival failure as a tool error", async () => {
     const current = fixture("intercom");
     const execution = current.tool.execute("call", { action: "ask", to: "parent", message: "Choose" }, undefined, undefined, context);
-    await Bun.sleep(0);
+    await sleep(0);
     current.reply("Completed workflow stage could not process intercom ask", "Completed workflow stage is not resumable");
     const result = await execution;
     assert.equal(result.isError, true);
@@ -111,7 +112,7 @@ describe("registered blocking intercom tools", () => {
   test("contact_supervisor need_decision uses the same threaded waiter path", async () => {
     const current = fixture("supervisor");
     const execution = current.tool.execute("call", { reason: "need_decision", message: "Choose" }, undefined, undefined, context);
-    await Bun.sleep(0);
+    await sleep(0);
     assert.equal(current.sent.length, 1);
     assert.equal(current.sent[0]?.to, "parent-id");
     assert.equal(current.sent[0]?.message.expectsReply, true);

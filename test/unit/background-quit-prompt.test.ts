@@ -14,6 +14,7 @@ import {
   type StageControlStatus,
 } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { sleep } from "../helpers/runtime.js";
 
 async function waitForPrompt(store: ReturnType<typeof createStore>): Promise<{
   readonly runId: string;
@@ -28,7 +29,7 @@ async function waitForPrompt(store: ReturnType<typeof createStore>): Promise<{
         return { runId: runSnapshot.id, stageId: stage.id, promptId: stage.pendingPrompt.id };
       }
     }
-    await Bun.sleep(5);
+    await sleep(5);
   }
   throw new Error("pending prompt did not appear");
 }
@@ -148,7 +149,7 @@ describe("graceful quit at user-input boundaries", () => {
     assert.equal((await resumeRun(runId, { store, stageControlRegistry: registry })).ok, true);
     assert.equal((await quitRun(runId, { store, stageControlRegistry: registry })).ok, true);
     assert.equal(store.resolveStagePendingPrompt(runId, pending.stageId, pending.promptId, "answer"), true);
-    await Bun.sleep(10);
+    await sleep(10);
     assert.equal(advancedPastPrompt, false, "the second quit must install a new unresolved gate");
     assert.equal(store.runs().find((candidate) => candidate.id === runId)?.status, "paused");
     assert.equal(backend.getWorkflow(runId)?.status, "paused");

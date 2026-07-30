@@ -16,6 +16,7 @@ import { completedWorkflowRunSnapshots } from "../../packages/workflows/src/dura
 import type { DurableToolCheckpoint, DurableUiCheckpoint, DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
 import { createMockSdk, seedMockWorkflow, seedMockCheckpoint } from "./durable-dbos-backend-helpers.js";
+import { sleep } from "../helpers/runtime.js";
 
 describe("DbosDurableBackend hydration (fresh process)", () => {
   let sdk: ReturnType<typeof createMockSdk>;
@@ -150,7 +151,7 @@ describe("DbosDurableBackend hydration (fresh process)", () => {
     assert.equal(restored?.toolNodes?.[0]?.status, "failed");
     assert.equal(restored?.toolNodes?.[0]?.error, "commit hook rejected docs");
 
-    await Bun.sleep(2);
+    await sleep(2);
     session1.registerWorkflow({ workflowId, name: "throwing-failure", inputs: {}, createdAt: 10, status: "running" });
     session1.recordCheckpoint({
       kind: "tool",

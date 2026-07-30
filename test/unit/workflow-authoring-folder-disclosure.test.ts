@@ -4,13 +4,14 @@ import {
   DEFAULT_PROMPT_GUIDANCE,
   WORKFLOW_TOOL_DESCRIPTION,
 } from "../../packages/workflows/src/extension/workflow-prompts.js";
+import { moduleDir, readText } from "../helpers/runtime.js";
 
-const repositoryRoot = resolve(import.meta.dir, "../..");
+const repositoryRoot = resolve(moduleDir(import.meta.url), "../..");
 const disclosureMessage = "Custom workflow created. You can inspect its code at: <workflow-folder-path>";
 const newCustomWorkflowScope = "only for newly created custom workflows";
 
 async function readRepositoryFile(path: string): Promise<string> {
-  return (await Bun.file(resolve(repositoryRoot, path)).text()).replaceAll("\r\n", "\n");
+  return (await readText(resolve(repositoryRoot, path))).replaceAll("\r\n", "\n");
 }
 
 function expectFolderDisclosure(content: string, source: string): void {

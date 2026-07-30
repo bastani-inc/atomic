@@ -6,6 +6,7 @@ import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/bac
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createAdmittedToolExecutionTracker } from "../../packages/workflows/src/engine/run-tool-execution-tracker.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { sleep } from "../helpers/runtime.js";
 
 describe("ctx.tool admitted execution barrier", () => {
   test("tracking returns the exact execution promise and callback value", async () => {
@@ -83,7 +84,7 @@ describe("ctx.tool admitted execution barrier", () => {
     void pending.then(() => { rootSettled = true; });
 
     await entered.promise;
-    await Bun.sleep(0);
+    await sleep(0);
     assert.equal(rootSettled, false, "admitted tools are part of root completion");
     assert.equal(store.runs()[0]?.status, "running");
     assert.equal(store.runs()[0]?.toolNodes?.[0]?.status, "running");
@@ -149,7 +150,7 @@ describe("ctx.tool admitted execution barrier", () => {
       await entered.promise;
       release.resolve();
       const result = await pending;
-      await Bun.sleep(0);
+      await sleep(0);
       assert.equal(result.status, "failed");
       assert.match(result.error ?? "", /unawaited original failure/);
       assert.equal(result.toolNodes?.[0]?.status, "failed");
@@ -183,7 +184,7 @@ describe("ctx.tool admitted execution barrier", () => {
 
     firstRelease.resolve();
     await secondEntered.promise;
-    await Bun.sleep(0);
+    await sleep(0);
     assert.equal(rootSettled, false);
     assert.deepEqual(store.runs()[0]?.toolNodes?.map((node) => [node.name, node.status]), [
       ["first", "completed"],
@@ -264,7 +265,7 @@ describe("ctx.tool admitted execution barrier", () => {
     }), {});
 
     secondRelease.resolve();
-    await Bun.sleep(0);
+    await sleep(0);
     firstRelease.resolve();
     const result = await pending;
     assert.equal(result.status, "failed");
@@ -356,7 +357,7 @@ describe("ctx.tool admitted execution barrier", () => {
     let closed = false;
     void close.then(() => { closed = true; });
     first.resolve();
-    await Bun.sleep(0);
+    await sleep(0);
     assert.equal(closed, false);
     second.resolve();
     await close;

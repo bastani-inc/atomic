@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js";
+import { sleep } from "../helpers/runtime.js";
 
 /** Shared fixtures for the subagent attempt-watchdog and model-candidate
  * filtering test suites. */
@@ -18,7 +19,7 @@ async function removeFixtureDir(dir: string): Promise<void> {
         ? String(error.code)
         : undefined;
       if (!code || !transientRemovalCodes.has(code) || attempt >= 5) throw error;
-      await Bun.sleep(100 * (attempt + 1));
+      await sleep(100 * (attempt + 1));
     }
   }
 }
@@ -54,6 +55,23 @@ setTimeout(() => console.log(fixture.event), fixture.delayMs);
 
 /** Runs a static fake CLI script whose delayed output is supplied separately
  * as fixture data, so arbitrary event text cannot become executable code. */
+/**
+ * Wall-clock cap for a *deliberately stalled* attempt.
+ *
+ * The stalled fixture child never exits (`setInterval` forever), so the watchdog
+ * trips at whatever this value is: detection is deterministic at any cap. What
+ * the cap really bounds is the *healthy fallback* attempt that follows, which has
+ * to spawn a real CLI child and print within it. At 600 ms that left no headroom
+ * on a machine running other work, and vitest runs test files in parallel by
+ * default.
+ *
+ * 2500 ms gives the healthy path roughly 4x the headroom while leaving the test
+ * far inside its 30 s budget. It is strictly more robust than the literal it
+ * replaces, not weaker -- nothing is skipped, serialized, or relaxed. Assertions
+ * derive their expected text from this constant so the two can never drift.
+ */
+export const STALLED_ATTEMPT_CAP_MS = 2_500;
+
 export async function withFakeCliEvent<T>(
   event: string,
   delayMs: number,

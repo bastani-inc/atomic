@@ -15,6 +15,7 @@ import {
     RESUME_CONTINUATION_PROMPT,
     workflow,
 } from "./executor-shared.js";
+import { sleep } from "../helpers/runtime.js";
 
 type QueueHold = {
     readonly steering: AgentMessage[];
@@ -272,7 +273,7 @@ describe("workflow paused queued messages", () => {
             await handle.resume();
             const resumedWithoutExternalTurn = await Promise.race([
                 runPromise.then(() => true),
-                Bun.sleep(25).then(() => false),
+                sleep(25).then(() => false),
             ]);
             if (!resumedWithoutExternalTurn) {
                 await handle.prompt("cleanup stranded readiness-stage chat");

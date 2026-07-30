@@ -7,6 +7,7 @@ import type { AtomicOAuthLoginCallbacks } from "../../packages/coding-agent/src/
 import { RpcClient } from "../../packages/coding-agent/src/modes/rpc/rpc-client.ts";
 import { loginRpcOAuthProvider } from "../../packages/coding-agent/src/modes/rpc/rpc-oauth-client.ts";
 import type { RpcModelCatalog } from "../../packages/coding-agent/src/modes/rpc/rpc-types.ts";
+import { bunExecutable, moduleDir } from "../helpers/runtime.js";
 
 test.serial("real isolated child discovers and acquires engine-only custom OAuth", async () => {
 	const temp = mkdtempSync(join(tmpdir(), "atomic-engine-oauth-"));
@@ -14,13 +15,13 @@ test.serial("real isolated child discovers and acquires engine-only custom OAuth
 	const logFile = join(temp, "oauth.log");
 	const callbackLog: string[] = [];
 	const client = new RpcClient({
-		cliPath: join(import.meta.dir, "../../packages/coding-agent/src/cli.ts"),
-		cwd: join(import.meta.dir, "../.."),
-		runtimeExecutable: process.execPath,
+		cliPath: join(moduleDir(import.meta.url), "../../packages/coding-agent/src/cli.ts"),
+		cwd: join(moduleDir(import.meta.url), "../.."),
+		runtimeExecutable: bunExecutable(),
 		env: { ATOMIC_CODING_AGENT_DIR: agentDir, ATOMIC_CUSTOM_OAUTH_LOG: logFile },
 		args: [
 			"--no-session", "--no-extensions", "--extension",
-			join(import.meta.dir, "fixtures", "custom-oauth-extension.ts"),
+			join(moduleDir(import.meta.url), "fixtures", "custom-oauth-extension.ts"),
 			"--no-skills", "--no-prompt-templates", "--no-themes", "--offline",
 		],
 		interactiveEngine: { onDiagnostic: () => {} },

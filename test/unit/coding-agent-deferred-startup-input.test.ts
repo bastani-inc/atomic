@@ -7,6 +7,7 @@ import { loadExtensionsCached } from "../../packages/coding-agent/src/core/exten
 import { InteractiveMode } from "../../packages/coding-agent/src/modes/interactive/interactive-mode.js";
 import { type Component, type MarkdownTheme, Container, Text, getMarkdownTheme } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-deps.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { readText } from "../helpers/runtime.js";
 
 type SubmitContext = {
   defaultEditor: { onSubmit?: (text: string) => void | Promise<void> };
@@ -153,7 +154,7 @@ describe("coding-agent deferred startup input", () => {
     await waitForImmediate;
 
     assert.deepEqual(result.errors, []);
-    assert.equal(await Bun.file(logPath).text(), "first\nimmediate\nsecond-after-immediate\n");
+    assert.equal(await readText(logPath), "first\nimmediate\nsecond-after-immediate\n");
   });
 
   test("preserves editor text and cursor while deferred startup completes", async () => {

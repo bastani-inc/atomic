@@ -10,6 +10,7 @@ import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybind
 import { EngineCustomUiService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-custom-ui.ts";
 import { parseInteractiveEngineMessage, serializeInteractiveEngineFrame } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
 import { attachJsonlLineReader } from "../../packages/coding-agent/src/modes/rpc/jsonl.ts";
+import { bunExecutable, moduleDir, sleep } from "../helpers/runtime.js";
 
 function maximumGap(timestamps: readonly number[]): number {
 	let maximum = 0;
@@ -34,15 +35,15 @@ test.serial("the real agent path isolates a blocking extension tool and reports 
 		resolveDiagnostic = resolve;
 	});
 	const client = new RpcClient({
-		cliPath: join(import.meta.dir, "../../packages/coding-agent/src/cli.ts"),
-		cwd: join(import.meta.dir, "../.."),
-		runtimeExecutable: process.execPath,
+		cliPath: join(moduleDir(import.meta.url), "../../packages/coding-agent/src/cli.ts"),
+		cwd: join(moduleDir(import.meta.url), "../.."),
+		runtimeExecutable: bunExecutable(),
 		provider: "isolation-fixture",
 		model: "blocking-model",
 		env: { ATOMIC_BLOCKING_TOOL_PID_FILE: pidFile },
 		args: [
 			"--no-session", "--no-extensions", "--extension",
-			join(import.meta.dir, "fixtures", "blocking-tool-extension.ts"),
+			join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts"),
 			"--no-skills", "--no-prompt-templates", "--no-themes", "--offline",
 		],
 		interactiveEngine: { onDiagnostic: resolveDiagnostic },
@@ -59,7 +60,7 @@ test.serial("the real agent path isolates a blocking extension tool and reports 
 		assert.notEqual(Number(readFileSync(pidFile, "utf8")), process.pid, "tool callback ran in the TUI host process");
 		const inputAtDiagnostic = inputTicks;
 		const rendersAtDiagnostic = renderTicks;
-		await Bun.sleep(150);
+		await sleep(150);
 		assert.ok(inputTicks > inputAtDiagnostic, "input proxy stopped during the real blocking tool");
 		assert.ok(renderTicks > rendersAtDiagnostic, "render proxy stopped during the real blocking tool");
 	} finally {
@@ -82,13 +83,13 @@ test("remote custom components render and receive input through the engine proto
 		handleInput: (data) => { if (data === "\r") done("accepted"); },
 		invalidate: () => {},
 	}));
-	await Bun.sleep(0);
+	await sleep(0);
 	const open = output.map(parseInteractiveEngineMessage).find((message) => message?.type === "engine_custom_open");
 	assert.ok(open?.type === "engine_custom_open");
 	service.handleLine(serializeInteractiveEngineFrame({
 		type: "engine_custom_render", componentId: open.componentId, requestId: 1, width: 72, rows: 40,
 	}));
-	await Bun.sleep(0);
+	await sleep(0);
 	const frame = output.map(parseInteractiveEngineMessage).find((message) => message?.type === "engine_custom_frame");
 	assert.ok(frame?.type === "engine_custom_frame");
 	assert.deepEqual(frame.lines, ["width:72,rows:40"]);
@@ -101,15 +102,15 @@ test("remote custom components render and receive input through the engine proto
 
 test.serial("startup custom UI can unblock engine binding after transport readiness", async () => {
 	const client = new RpcClient({
-		cliPath: join(import.meta.dir, "../../packages/coding-agent/src/cli.ts"),
-		cwd: join(import.meta.dir, "../.."),
-		runtimeExecutable: process.execPath,
+		cliPath: join(moduleDir(import.meta.url), "../../packages/coding-agent/src/cli.ts"),
+		cwd: join(moduleDir(import.meta.url), "../.."),
+		runtimeExecutable: bunExecutable(),
 		provider: "isolation-fixture",
 		model: "blocking-model",
 		env: { ATOMIC_STARTUP_CUSTOM_UI: "1" },
 		args: [
 			"--no-session", "--no-extensions", "--extension",
-			join(import.meta.dir, "fixtures", "blocking-tool-extension.ts"),
+			join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts"),
 			"--no-skills", "--no-prompt-templates", "--no-themes", "--offline",
 		],
 		interactiveEngine: { onDiagnostic: () => {} },
@@ -124,7 +125,7 @@ test.serial("startup custom UI can unblock engine binding after transport readin
 		client.sendInteractiveEngineCommand({ type: "engine_custom_input", componentId: open.componentId, data: "\r" });
 		await Promise.race([
 			client.waitForInteractiveEngineBound(),
-			Bun.sleep(2_000).then(() => { throw new Error("engine binding did not resume after startup custom UI"); }),
+			sleep(2_000).then(() => { throw new Error("engine binding did not resume after startup custom UI"); }),
 		]);
 	} finally {
 		await client.stop();
@@ -137,15 +138,15 @@ test.serial("blocking extension initialization cannot delay creation of the inte
 	let resolveDiagnostic!: (diagnostic: ActivityWatchdogDiagnostic) => void;
 	const diagnosticPromise = new Promise<ActivityWatchdogDiagnostic>((resolve) => { resolveDiagnostic = resolve; });
 	const client = new RpcClient({
-		cliPath: join(import.meta.dir, "../../packages/coding-agent/src/cli.ts"),
-		cwd: join(import.meta.dir, "../.."),
-		runtimeExecutable: process.execPath,
+		cliPath: join(moduleDir(import.meta.url), "../../packages/coding-agent/src/cli.ts"),
+		cwd: join(moduleDir(import.meta.url), "../.."),
+		runtimeExecutable: bunExecutable(),
 		provider: "isolation-fixture",
 		model: "blocking-model",
 		env: { ATOMIC_BLOCKING_EXTENSION_INIT: "1" },
 		args: [
 			"--no-session", "--no-extensions", "--extension",
-			join(import.meta.dir, "fixtures", "blocking-tool-extension.ts"),
+			join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts"),
 			"--no-skills", "--no-prompt-templates", "--no-themes", "--offline",
 		],
 		interactiveEngine: { onDiagnostic: resolveDiagnostic },

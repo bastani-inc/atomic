@@ -13,8 +13,8 @@
  *   1. validate the version + a clean working tree
  *   2. resolve the current attached branch (or `--base`) to its exact remote branch SHA
  *   3. stamp the real version into the worktree via scripts/bump-version.ts
- *      (bun.lock keeps main's 0.0.0 placeholders; `bun install --frozen-lockfile`
- *      tolerates the workspace version-string mismatch, so the lockfile is left as-is)
+ *      (including package-lock.json's workspace entries: `npm ci` refuses to
+ *      install when the lockfile and a package.json disagree)
  *   4. regenerate release artifacts that must carry the stamped version, including
  *      packages/coding-agent/npm-shrinkwrap.json
  *   5. commit `Release <version>` and tag `<version>` inside the worktree
@@ -169,9 +169,9 @@ async function main(): Promise<void> {
     await $`bun run ${join(ROOT, "scripts/bump-version.ts")} ${version} --root ${worktreeDir}`;
     await $`bun run ${join(worktreeDir, "scripts/generate-coding-agent-shrinkwrap.mjs")}`;
 
-    // bun.lock intentionally keeps main's 0.0.0 workspace placeholders: it is not
-    // shipped in the npm tarball and `bun install --frozen-lockfile` tolerates the
-    // mismatch, so there is no need to relock (which also avoids a network round-trip).
+    // bump-version.ts also stamps package-lock.json's workspace entries, so the
+    // tagged commit installs cleanly with `npm ci`. No relock is needed: only
+    // first-party versions changed, which avoids a network round-trip here.
     await $`git -C ${worktreeDir} add -A`;
     const commitMessage = `Release ${version}\n\nRelease-base-ref: ${baseRef}\nRelease-base-sha: ${baseSha}`;
     await $`git -C ${worktreeDir} -c user.name=${name} -c user.email=${email} commit --no-verify -m ${commitMessage}`.quiet();

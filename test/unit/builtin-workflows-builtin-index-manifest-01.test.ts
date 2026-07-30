@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { isBrandedWorkflowDefinition } from "../../packages/workflows/src/authoring/workflow.js";
 import { schemaDescription, schemaFieldKind } from "../../packages/workflows/src/shared/schema-introspection.js";
 import { getBundledWorkflowArgumentCompletions } from "../../packages/coding-agent/src/core/slash-commands.js";
+import { moduleDir } from "../helpers/runtime.js";
 
 const expectedBuiltinNames = [
   "adversarial-verification",
@@ -46,7 +47,7 @@ describe("builtin workflow manifest", () => {
   });
 
   test("contains no files for the retired deep-research-codebase workflow", () => {
-    const builtinRoot = join(import.meta.dir, "../../packages/workflows/builtin");
+    const builtinRoot = join(moduleDir(import.meta.url), "../../packages/workflows/builtin");
     const stem = ["deep", "research", "codebase"].join("-");
     const suffixes = [".ts", ".d.ts", "-runner.ts", "-utils.ts", "-models.ts"];
 

@@ -11,6 +11,7 @@ import {
 	eventWriterHydrationCacheSizeForTests,
 	resetEventWriterHydrationCacheForTests,
 } from "../../packages/subagents/src/shared/event-jsonl-writer.js";
+import { withBunRuntime } from "../helpers/runtime.js";
 
 const tempRoots: string[] = [];
 afterEach(() => {
@@ -300,9 +301,11 @@ for (let i = 0; i < 3000; i++) {
 }
 console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "FINAL-CONTENT" }], stopReason: "stop", usage: {} } }));
 `);
-	const result = await runPiStreaming([], root, outputPath, undefined, undefined, fakeCli, undefined, undefined, {
+	// The fake CLI is TypeScript, so the shipped spawner only accepts it when the
+	// runtime is Bun; vitest runs this file under Node.
+	const result = await withBunRuntime(() => runPiStreaming([], root, outputPath, undefined, undefined, fakeCli, undefined, undefined, {
 		eventsPath, runId: "e2e", stepIndex: 0, agent: "worker",
-	});
+	}));
 	assert.equal(result.exitCode, 0);
 	fs.appendFileSync(eventsPath, `${JSON.stringify({ type: "subagent.control", runId: "e2e" })}\n`);
 	const text = fs.readFileSync(eventsPath, "utf-8");
@@ -329,9 +332,9 @@ test("raw child stdout and stderr share the bounded telemetry budget", async () 
 	const fakeCli = path.join(root, "fake-cli.ts");
 	const eventsPath = path.join(root, "events.jsonl");
 	fs.writeFileSync(fakeCli, `for (let i = 0; i < 1500; i++) console.error("e".repeat(1024));\nconsole.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: "FINAL" } }));`);
-	const result = await runPiStreaming([], root, path.join(root, "output.log"), undefined, undefined, fakeCli, undefined, undefined, {
+	const result = await withBunRuntime(() => runPiStreaming([], root, path.join(root, "output.log"), undefined, undefined, fakeCli, undefined, undefined, {
 		eventsPath, runId: "raw", stepIndex: 0, agent: "worker",
-	});
+	}));
 	assert.equal(result.exitCode, 0);
 	const text = fs.readFileSync(eventsPath, "utf-8");
 	assert.ok(Buffer.byteLength(text) < 600 * 1024, `raw telemetry exceeded bound: ${Buffer.byteLength(text)}`);

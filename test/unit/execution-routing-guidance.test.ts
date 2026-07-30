@@ -6,11 +6,12 @@ import { DEFAULT_PROMPT_GUIDANCE as workflowGuidance, WORKFLOW_TOOL_DESCRIPTION 
 import { WorkflowParametersSchema } from "../../packages/workflows/src/extension/workflow-schema.js";
 import { DEFAULT_PROMPT_GUIDANCE as subagentGuidance } from "../../packages/subagents/src/extension/prompt-guidance.js";
 import { SUBAGENT_TOOL_DESCRIPTION } from "../../packages/subagents/src/extension/tool-description.js";
+import { moduleDir, readText } from "../helpers/runtime.js";
 
-const repositoryRoot = resolve(import.meta.dir, "../..");
+const repositoryRoot = resolve(moduleDir(import.meta.url), "../..");
 
 async function readRepositoryFile(path: string): Promise<string> {
-  return (await Bun.file(resolve(repositoryRoot, path)).text()).replaceAll("\r\n", "\n");
+  return (await readText(resolve(repositoryRoot, path))).replaceAll("\r\n", "\n");
 }
 
 const combinedGuidance = [...workflowGuidance, ...subagentGuidance].join("\n");

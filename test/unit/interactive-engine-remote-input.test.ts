@@ -34,6 +34,7 @@ import {
 	setupRun,
 	StageChatView,
 } from "./stage-chat-view-helpers.ts";
+import { sleep } from "../helpers/runtime.js";
 
 type HostComponent = Component & { handleInput?: (data: string) => void };
 
@@ -80,7 +81,7 @@ function makeBridge(): Bridge {
 }
 
 async function flush(times = 4): Promise<void> {
-	for (let index = 0; index < times; index += 1) await Bun.sleep(0);
+	for (let index = 0; index < times; index += 1) await sleep(0);
 }
 
 test("a forwarded keypress pipelines a fresh frame request behind the input", async () => {

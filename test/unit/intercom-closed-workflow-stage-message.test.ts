@@ -11,6 +11,7 @@ import intercom from "../../packages/intercom/index.js";
 import { registerCompletedStageIntercomAskRouter, type CompletedStageHandleResolver } from "../../packages/workflows/src/extension/completed-stage-intercom-ask.js";
 import type { StageControlHandle } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
+import { sleep } from "../helpers/runtime.js";
 
 const sender: SessionInfo = {
   id: "stage-b-intercom", name: "B", cwd: "/repo", model: "test",
@@ -30,7 +31,7 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   const deadline = Date.now() + 1_000;
   while (!predicate()) {
     if (Date.now() > deadline) throw new Error("condition did not settle");
-    await Bun.sleep(2);
+    await sleep(2);
   }
 }
 
@@ -212,7 +213,7 @@ test("production listener composition preserves the workflow owner's failed revi
     );
     const failure = await Promise.race([
       sent.promise,
-      Bun.sleep(100).then(() => { throw new Error(`correlated failure timed out for ${order}`); }),
+      sleep(100).then(() => { throw new Error(`correlated failure timed out for ${order}`); }),
     ]);
     const exact = "Completed workflow stage could not process intercom ask: Intercom ask target is unavailable: completed workflow stage run-1/stage-a was deleted or is no longer retained.";
     assert.deepEqual(failure, {

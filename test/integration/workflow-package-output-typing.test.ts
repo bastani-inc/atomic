@@ -6,8 +6,9 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { moduleDir } from "../helpers/runtime.js";
 
-const repoRoot = resolve(import.meta.dir, "../..");
+const repoRoot = resolve(moduleDir(import.meta.url), "../..");
 const workflowsPackage = join(repoRoot, "packages", "workflows");
 const typeboxPackage = join(repoRoot, "node_modules", "typebox");
 

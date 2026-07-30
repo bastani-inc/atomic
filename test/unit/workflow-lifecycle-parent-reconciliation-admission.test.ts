@@ -18,6 +18,7 @@ import {
 } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { assertWorkflowToolOrdering, lifecycleConfig } from "./workflow-lifecycle-parent-reconciliation-support.js";
+import { sleep } from "../helpers/runtime.js";
 
 describe("workflow lifecycle parent reconciliation admission boundaries", () => {
 	const harnesses: Harness[] = [];
@@ -280,7 +281,7 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 		assert.equal(store.recordRunEnd(runId, "failed", undefined, "durable tool rejected"), true);
 		await Promise.race([
 			providerStarted.promise,
-			Bun.sleep(1_000).then(() => { throw new Error("hidden reconciliation retry did not start"); }),
+			sleep(1_000).then(() => { throw new Error("hidden reconciliation retry did not start"); }),
 		]);
 		await harness.session.agent.waitForIdle();
 
@@ -460,7 +461,7 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 		harnesses.push(later);
 		later.setResponses([() => fauxAssistantMessage("unexpected duplicate correction")]);
 		await later.session.bindExtensions({});
-		await Bun.sleep(0);
+		await sleep(0);
 		assert.equal(later.faux.state.callCount, 0, "a later restore must not repeat the resolved correction");
 	});
 });

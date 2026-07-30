@@ -19,6 +19,7 @@ import {
 } from "../../packages/coding-agent/src/modes/interactive/components/host-session-picker.ts";
 import { SessionSelectorComponent } from "../../packages/coding-agent/src/modes/interactive/components/session-selector.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { sleep } from "../helpers/runtime.js";
 
 const DOWN = "\x1b[B";
 const ENTER = "\r";
@@ -86,7 +87,7 @@ function renderText(mount: LocalMount, width = 120): string {
 }
 
 async function flush(times = 6): Promise<void> {
-	for (let index = 0; index < times; index += 1) await Bun.sleep(0);
+	for (let index = 0; index < times; index += 1) await sleep(0);
 }
 
 describe("in-process host session picker (non-isolated)", () => {

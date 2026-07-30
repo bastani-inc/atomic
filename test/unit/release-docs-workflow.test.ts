@@ -19,6 +19,7 @@ import {
     type UpdateArtifactStatus,
 } from "../../.atomic/workflows/lib/release-docs.js";
 import { createGitEnvironment } from "@bastani/atomic";
+import { bunExecutable } from "../helpers/runtime.js";
 
 const task = (id: string, ownerDocs: string[]): StaleDocTask => ({
     id,
@@ -108,7 +109,7 @@ describe("release-docs workflow guards", () => {
             // intentionally the Bun runtime for this child TypeScript script.
             // Without release-docs' sanitizer, nested Git commands would read
             // the detached decoy repo instead of `repo`.
-            const output = execFileSync(process.execPath, [scriptPath], {
+            const output = execFileSync(bunExecutable(), [scriptPath], {
                 encoding: "utf8",
                 env: {
                     ...process.env,

@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
+import { type SpawnedProcess, bunExecutable, decodeStream, moduleDir, readStreamText, sleep, spawnProcess } from "../helpers/runtime.js";
 
 const serialTest = process.platform === "win32" ? test.serial.skip : test.serial;
 const PREFIX = "@@ATOMIC_TEST@@";
@@ -20,7 +21,7 @@ interface HarnessReport {
 }
 
 class Driver {
-	readonly process: ReturnType<typeof Bun.spawn>;
+	readonly process: SpawnedProcess;
 	readonly reports: HarnessReport[] = [];
 	private readonly waiters = new Set<() => void>();
 	private stderr = "";
@@ -30,12 +31,12 @@ class Driver {
 		for (const key of Object.keys(baseEnv)) {
 			if (key.startsWith("ATOMIC_INTERACTIVE_ENGINE_")) delete baseEnv[key];
 		}
-		this.process = Bun.spawn([
-			process.execPath,
-			join(import.meta.dir, "fixtures", "default-main-interactive-host.ts"),
+		this.process = spawnProcess([
+			bunExecutable(),
+			join(moduleDir(import.meta.url), "fixtures", "default-main-interactive-host.ts"),
 			...args,
 		], {
-			cwd: join(import.meta.dir, "../.."),
+			cwd: join(moduleDir(import.meta.url), "../.."),
 			env: { ...baseEnv, ...env },
 			stdin: "pipe",
 			stdout: "pipe",
@@ -78,7 +79,7 @@ class Driver {
 	}
 
 	async waitForCleanExit(timeoutMs = 5_000): Promise<number> {
-		const timeout = Bun.sleep(timeoutMs).then(() => {
+		const timeout = sleep(timeoutMs).then(() => {
 			throw new Error(`Timed out waiting for clean fixture exit; stderr=${this.stderr.slice(-2000)}`);
 		});
 		return Promise.race([this.process.exited, timeout]);
@@ -87,7 +88,7 @@ class Driver {
 	private async readReports(): Promise<void> {
 		const stdout = this.process.stdout;
 		if (!stdout || typeof stdout === "number") return;
-		const reader = stdout.pipeThrough(new TextDecoderStream()).getReader();
+		const reader = decodeStream(stdout).getReader();
 		let buffer = "";
 		while (true) {
 			const { done, value } = await reader.read();
@@ -109,7 +110,7 @@ class Driver {
 	private async readStderr(): Promise<void> {
 		const stderr = this.process.stderr;
 		if (!stderr || typeof stderr === "number") return;
-		this.stderr = await new Response(stderr).text();
+		this.stderr = await readStreamText(stderr);
 	}
 }
 
@@ -131,7 +132,7 @@ serialTest("isolated interactive startup replaces preliminary fallback with exte
 		firstRunOnboardingStartedVersion: "0.0.0",
 		onboardedVersion: "0.0.0",
 	}));
-	const extension = join(import.meta.dir, "fixtures", "blocking-tool-extension.ts");
+	const extension = join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts");
 	const driver = new Driver([
 		"--no-session", "--no-extensions", "--extension", extension,
 		"--no-skills", "--no-prompt-templates", "--no-themes", "--offline", "--approve",

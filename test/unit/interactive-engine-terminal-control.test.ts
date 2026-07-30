@@ -38,6 +38,7 @@ import {
   HOST_TERMINAL_AUTOWRAP_ON,
   TerminalModeController,
 } from "../../packages/coding-agent/src/modes/interactive-engine/terminal-mode-controller.ts";
+import { sleep } from "../helpers/runtime.js";
 
 const WHEEL_UP = "\x1b[<64;10;10M";
 
@@ -265,19 +266,19 @@ describe("isolated overlay mouse bridge (source-path)", () => {
       pickerDone = done as (result: unknown) => void;
       return { render: () => ["picker"], handleInput: () => {}, invalidate: () => {} };
     }, { overlay: false });
-    await Bun.sleep(0);
+    await sleep(0);
     assert.equal(bridge.focus, "inline");
 
     // 2. Selecting a row disposes the picker (host restores editor focus) BEFORE
     //    the graph overlay opens. The picker never touched the terminal modes.
     pickerDone("resume");
-    await Bun.sleep(0);
+    await sleep(0);
     assert.equal(bridge.focus, "editor");
     assert.deepEqual(bridge.hostWrites, [], "inline picker must not toggle host terminal modes");
 
     // 3. The durable resume then mounts the graph overlay (overlay:true).
     void bridge.child.custom(graphFactory(graphInputs), { overlay: true });
-    await Bun.sleep(0);
+    await sleep(0);
 
     const overlayOpen = bridge.hostMessages.find(
       (m) => m.type === "engine_custom_open" && m.overlay === true,
@@ -295,7 +296,7 @@ describe("isolated overlay mouse bridge (source-path)", () => {
 
     // 4. A mouse wheel gesture reaches the child graph's handleInput.
     overlayMount(bridge).component.handleInput?.(WHEEL_UP);
-    await Bun.sleep(0);
+    await sleep(0);
     assert.deepEqual(graphInputs, [WHEEL_UP]);
 
     bridge.controller.dispose();
@@ -309,11 +310,11 @@ describe("isolated overlay mouse bridge (source-path)", () => {
       remoteTerm(_tui).setMouseScrollTracking?.(true);
       return { render: () => ["graph"], handleInput: () => {}, invalidate: () => {} };
     }, { overlay: true });
-    await Bun.sleep(0);
+    await sleep(0);
     assert.deepEqual(bridge.hostWrites, [HOST_MOUSE_SCROLL_TRACKING_ON]);
 
     done(undefined);
-    await Bun.sleep(0);
+    await sleep(0);
     assert.deepEqual(bridge.hostWrites, [HOST_MOUSE_SCROLL_TRACKING_ON, HOST_MOUSE_SCROLL_TRACKING_OFF]);
 
     bridge.controller.dispose();
@@ -325,7 +326,7 @@ describe("isolated overlay mouse bridge (source-path)", () => {
       remoteTerm(_tui).setMouseScrollTracking?.(true);
       return { render: () => ["graph"], handleInput: () => {}, invalidate: () => {} };
     }, { overlay: true });
-    await Bun.sleep(0);
+    await sleep(0);
     assert.deepEqual(bridge.hostWrites, [HOST_MOUSE_SCROLL_TRACKING_ON]);
 
     // The engine child crashes and a fresh generation binds: modes must reset.
@@ -343,11 +344,11 @@ describe("isolated overlay mouse bridge (source-path)", () => {
       remoteTerm(_tui).setAutowrap?.(false);
       return { render: () => ["graph"], handleInput: () => {}, invalidate: () => {} };
     }, { overlay: true });
-    await Bun.sleep(0);
+    await sleep(0);
     assert.deepEqual(bridge.hostWrites, [HOST_TERMINAL_AUTOWRAP_OFF]);
 
     done(undefined);
-    await Bun.sleep(0);
+    await sleep(0);
     assert.deepEqual(bridge.hostWrites, [HOST_TERMINAL_AUTOWRAP_OFF, HOST_TERMINAL_AUTOWRAP_ON]);
 
     bridge.controller.dispose();

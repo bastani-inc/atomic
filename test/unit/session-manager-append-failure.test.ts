@@ -1,13 +1,14 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import { bunExecutable, moduleDir, spawnSyncCollect } from "../helpers/runtime.js";
 
 describe("SessionManager physical append failures", () => {
   test("rolls back partial single and batch writes before reopen and retry", () => {
-    const preload = join(import.meta.dir, "../fixtures/session-manager-partial-append-preload.ts");
-    const probe = join(import.meta.dir, "../fixtures/session-manager-partial-append-probe.ts");
-    const child = Bun.spawnSync({
-      cmd: [process.execPath, "--preload", preload, probe],
+    const preload = join(moduleDir(import.meta.url), "../fixtures/session-manager-partial-append-preload.ts");
+    const probe = join(moduleDir(import.meta.url), "../fixtures/session-manager-partial-append-probe.ts");
+    const child = spawnSyncCollect({
+      cmd: [bunExecutable(), "--preload", preload, probe],
       cwd: process.cwd(),
       stdout: "pipe",
       stderr: "pipe",

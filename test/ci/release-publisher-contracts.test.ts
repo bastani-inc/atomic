@@ -1,11 +1,11 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { $ } from "bun";
 import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readText } from "./workflow-text.js";
+import { bunExecutable, readJson, spawnSyncCollect } from "../helpers/runtime.js";
 
 
 type NativeManifest = {
@@ -49,20 +49,30 @@ test("prepared native root tarball contains all six exact-version optional depen
     for (const file of ["index.js", "index.d.ts"]) {
       copyFileSync(join(root, "packages/natives/native", file), join(nativeDir, file));
     }
-    const sourceManifest = await Bun.file(join(root, "packages/natives/package.json")).json() as NativeManifest;
+    const sourceManifest = await readJson(join(root, "packages/natives/package.json")) as NativeManifest;
     writeFileSync(join(stage, "package.json"), `${JSON.stringify({ ...sourceManifest, version }, null, 2)}\n`);
     for (const file of nativeBinaryNames) writeFileSync(join(nativeDir, file), "fixture");
 
     const toolPath = [join(root, "node_modules/.bin"), process.env.PATH].filter(Boolean).join(delimiter);
     const env = { ...process.env, PATH: toolPath };
-    await $`bun run --cwd ${stage} create-npm-dirs`.env(env).quiet();
-    await $`bun run --cwd ${stage} artifacts`.env(env).quiet();
-    await $`bun run --cwd ${stage} prepublish:native -- --skip-optional-publish`.env(env).quiet();
-    await $`bun pm pack --cwd ${stage} --destination ${outputDir} --quiet`.quiet();
+    // Bun's `$` shell was the only import of the `bun` module in the suites. The
+    // commands themselves are unchanged, including `bun pm pack`, which is what
+    // the publish pipeline actually runs.
+    const run = (command: string, args: string[]): void => {
+      const result = spawnSyncCollect([command, ...args], { cwd: stage, env });
+      assert.equal(result.exitCode, 0, `${command} ${args.join(" ")}\n${result.stderr.toString()}`);
+    };
+    const bun = bunExecutable();
+    run(bun, ["run", "create-npm-dirs"]);
+    run(bun, ["run", "artifacts"]);
+    run(bun, ["run", "prepublish:native", "--", "--skip-optional-publish"]);
+    run(bun, ["pm", "pack", "--destination", outputDir, "--quiet"]);
 
     const tarballs = readdirSync(outputDir).filter((file) => file.endsWith(".tgz"));
     assert.equal(tarballs.length, 1);
-    const packedJson = await $`tar -xOf ${join(outputDir, tarballs[0]!)} package/package.json`.text();
+    const extracted = spawnSyncCollect(["tar", "-xOf", join(outputDir, tarballs[0] as string), "package/package.json"]);
+    assert.equal(extracted.exitCode, 0, extracted.stderr.toString());
+    const packedJson = extracted.stdout.toString();
     const packed = JSON.parse(packedJson) as NativeManifest;
     assert.equal(packed.name, "@bastani/atomic-natives");
     assert.equal(packed.version, version);

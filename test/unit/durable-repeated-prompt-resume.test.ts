@@ -21,6 +21,7 @@ import type { StageSnapshot } from "../../packages/workflows/src/shared/store-ty
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { createMockSdk } from "./durable-dbos-backend-helpers.js";
+import { sleep } from "../helpers/runtime.js";
 
 const QUESTION = "Keep this exact repeated question?";
 
@@ -47,7 +48,7 @@ async function waitForPending(
       const stages = runSnapshot.stages.filter((stage) => stage.pendingPrompt?.kind === "confirm");
       if (stages.length === count) return { runId: runSnapshot.id, stages };
     }
-    await Bun.sleep(5);
+    await sleep(5);
   }
   throw new Error(`expected ${count} pending confirms: ${JSON.stringify(store.runs().map((snapshot) => ({
     id: snapshot.id,
@@ -64,7 +65,7 @@ async function waitForPromptCount(
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (backend.getWorkflow(workflowId)?.pendingPrompts === expected) return;
-    await Bun.sleep(5);
+    await sleep(5);
   }
   assert.equal(backend.getWorkflow(workflowId)?.pendingPrompts, expected);
 }
@@ -227,7 +228,7 @@ test.serial("fresh nested resume keeps sequential identical same-callsite prompt
   );
   let secondPending = await waitForPending(writerStore, 1);
   while (secondPending.stages[0]!.id === firstPending.stages[0]!.id) {
-    await Bun.sleep(5);
+    await sleep(5);
     secondPending = await waitForPending(writerStore, 1);
   }
   await writer.flush();

@@ -4,8 +4,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { bunExecutable, moduleDir, spawnSyncCollect } from "../helpers/runtime.js";
 
-const root = resolve(import.meta.dir, "../..");
+const root = resolve(moduleDir(import.meta.url), "../..");
 const read = (path: string): string => readFileSync(join(root, path), "utf8");
 
 describe("removed provider active surfaces", () => {
@@ -62,12 +63,12 @@ describe("removed provider active surfaces", () => {
       mkdirSync(join(cwd, ".agents", "skills", "impeccable"), { recursive: true });
       mkdirSync(join(cwd, ".cursor", "skills", "impeccable"), { recursive: true });
 
-      const admin = Bun.spawnSync({ cmd: ["bun", join(scripts, "hook-admin.mjs"), "on"], cwd });
+      const admin = spawnSyncCollect({ cmd: ["bun", join(scripts, "hook-admin.mjs"), "on"], cwd });
       assert.equal(admin.exitCode, 0, admin.stderr.toString());
       assert.equal(existsSync(join(cwd, ".codex", "hooks.json")), true);
       assert.equal(existsSync(join(cwd, ".cursor", "hooks.json")), false);
 
-      const pin = Bun.spawnSync({ cmd: ["bun", join(scripts, "pin.mjs"), "pin", "audit"], cwd });
+      const pin = spawnSyncCollect({ cmd: ["bun", join(scripts, "pin.mjs"), "pin", "audit"], cwd });
       assert.equal(pin.exitCode, 0, pin.stderr.toString());
       assert.equal(existsSync(join(cwd, ".agents", "skills", "audit", "SKILL.md")), true);
       assert.equal(existsSync(join(cwd, ".cursor", "skills", "audit")), false);
@@ -91,8 +92,8 @@ describe("removed provider active surfaces", () => {
       writeFileSync(removedPath, '{"mcpServers":{"removed":{}}}\n');
 
       const configUrl = pathToFileURL(join(root, "packages/mcp/config.ts")).href;
-      const child = Bun.spawnSync({
-        cmd: [process.execPath, "-e", `const { findAvailableImportConfigs } = await import(${JSON.stringify(configUrl)}); console.log(JSON.stringify(findAvailableImportConfigs(${JSON.stringify(cwd)})));`],
+      const child = spawnSyncCollect({
+        cmd: [bunExecutable(), "-e", `const { findAvailableImportConfigs } = await import(${JSON.stringify(configUrl)}); console.log(JSON.stringify(findAvailableImportConfigs(${JSON.stringify(cwd)})));`],
         cwd,
         env: { ...process.env, HOME: home, USERPROFILE: home },
       });
@@ -110,9 +111,10 @@ describe("removed provider active surfaces", () => {
 
   test("published Atomic dependency metadata omits the removed provider's protobuf runtime", () => {
     const dependency = "@bufbuild/" + "protobuf";
+    // bun.lock was deleted when install moved to npm; package-lock.json is now
+    // the single verified lockfile and already covered both surfaces.
     for (const path of [
       "packages/coding-agent/package.json",
-      "bun.lock",
       "package-lock.json",
       "packages/coding-agent/npm-shrinkwrap.json",
     ]) {

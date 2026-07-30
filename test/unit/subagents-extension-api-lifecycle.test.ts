@@ -11,6 +11,7 @@ import { createResultWatcher } from "../../packages/subagents/src/runs/backgroun
 import { buildSlashInitialResult, getSlashRenderableSnapshot } from "../../packages/subagents/src/slash/slash-live-state.js";
 import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../../packages/subagents/src/runs/shared/pi-args.js";
 import { SUBAGENT_ASYNC_COMPLETE_EVENT, type SubagentState } from "../../packages/subagents/src/shared/types.js";
+import { sleep } from "../helpers/runtime.js";
 
 class TestEventBus {
 	private readonly handlers = new Map<string, Set<(payload: object) => void>>();
@@ -192,7 +193,7 @@ describe("subagent ExtensionAPI lifecycle ownership", () => {
 		parentWatchListener?.("rename", ".parent-result.json.atomic-write-123.tmp");
 		parentWatchListener?.("change", null);
 		parentWatchListener?.("rename", ".parent-result.json.atomic-write-123.tmp");
-		await Bun.sleep(150);
+		await sleep(150);
 
 		assert.equal(parent.messages.length, 1);
 		assert.equal(parent.messages[0]?.customType, "subagent-notify");
@@ -223,7 +224,7 @@ describe("subagent ExtensionAPI lifecycle ownership", () => {
 		}));
 		listener?.("rename", ".stopped-result.json.atomic-write.tmp");
 		watcher.stopResultWatcher();
-		await Bun.sleep(100);
+		await sleep(100);
 
 		assert.equal(api.messages.length, 0);
 		assert.equal(fs.existsSync(resultPath), true, "stopped watcher must not rescan or consume results");

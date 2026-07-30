@@ -31,6 +31,7 @@ import {
 	type InteractiveEngineMessage,
 } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
 import { SessionPickerHostController } from "../../packages/coding-agent/src/modes/interactive-engine/session-picker-host.ts";
+import { sleep } from "../helpers/runtime.js";
 
 const DOWN = "\x1b[B";
 const UP = "\x1b[A";
@@ -133,7 +134,7 @@ function renderText(bridge: Bridge, width = 120): string {
 }
 
 async function flush(times = 6): Promise<void> {
-	for (let index = 0; index < times; index += 1) await Bun.sleep(0);
+	for (let index = 0; index < times; index += 1) await sleep(0);
 }
 
 describe("engine_session_picker protocol", () => {

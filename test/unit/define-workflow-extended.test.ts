@@ -11,10 +11,11 @@ import {
   schemaChoices,
   schemaFieldKind,
 } from "../../packages/workflows/src/shared/schema-introspection.js";
+import { moduleDir } from "../helpers/runtime.js";
 
 type NamedDefinition = { readonly name: string; readonly normalizedName: string };
 
-const repoRoot = resolve(import.meta.dir, "../..");
+const repoRoot = resolve(moduleDir(import.meta.url), "../..");
 const workflowModuleUrl = pathToFileURL(join(repoRoot, "packages", "workflows", "src", "authoring", "workflow.ts")).href;
 
 async function importDefaultDefinition(filePath: string): Promise<NamedDefinition> {

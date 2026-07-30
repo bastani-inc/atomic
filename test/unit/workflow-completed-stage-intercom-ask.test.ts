@@ -2,6 +2,7 @@ import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { registerCompletedStageIntercomAskRouter } from "../../packages/workflows/src/extension/completed-stage-intercom-ask.js";
 import type { StageControlHandle } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
+import { sleep } from "../helpers/runtime.js";
 
 interface LateAskEvent {
   handled: boolean;
@@ -108,7 +109,7 @@ test("concurrent duplicate wakeups serialize onto the retained completed convers
 
   const firstEvent = harness.emit(askEvent({ messages: [{ ...askEvent().messages[0]!, content: "first" }] }));
   const secondEvent = harness.emit(askEvent({ messages: [{ ...askEvent().messages[0]!, content: "second", details: { ...askEvent().messages[0]!.details, message: { ...askEvent().messages[0]!.details.message, id: "ask-2" } } }] }));
-  await Bun.sleep(0);
+  await sleep(0);
   assert.deepEqual(order, ["start:first"]);
   first.resolve();
   await Promise.all([firstEvent.completion, secondEvent.completion]);

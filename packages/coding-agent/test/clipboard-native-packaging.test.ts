@@ -191,9 +191,10 @@ describe("standalone clipboard native packaging", () => {
 		"stages and copies every release target through Bun's real cross-platform install path",
 		() => {
 			const repoRoot = resolve(import.meta.dirname, "..", "..", "..");
+			// bun.lock was deleted when install moved to `npm ci`; package-lock.json
+			// is now the single lockfile this staging must leave untouched.
 			const protectedFiles = [
 				"package.json",
-				"bun.lock",
 				"package-lock.json",
 				"packages/coding-agent/npm-shrinkwrap.json",
 			] as const;

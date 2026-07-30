@@ -5,7 +5,8 @@ import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
-const repoRoot = resolve(import.meta.dir, "../..");
+import { moduleDir } from "../helpers/runtime.js";
+const repoRoot = resolve(moduleDir(import.meta.url), "../..");
 const workflowsPackage = join(repoRoot, "packages", "workflows");
 describe("standalone workflow package typing", () => {
   test("type-checks workflow from @bastani/workflows and Type from typebox without a local shim", () => {

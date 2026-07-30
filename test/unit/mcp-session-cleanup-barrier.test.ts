@@ -5,8 +5,9 @@ import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { McpSessionCleanupBarrier } from "../../packages/mcp/session-cleanup-barrier.js";
+import { moduleDir } from "../helpers/runtime.js";
 
-const repoRoot = resolve(import.meta.dir, "../..");
+const repoRoot = resolve(moduleDir(import.meta.url), "../..");
 
 test("cleanup deadline does not let a never-settling task poison later generations", async () => {
   const barrier = new McpSessionCleanupBarrier(10);

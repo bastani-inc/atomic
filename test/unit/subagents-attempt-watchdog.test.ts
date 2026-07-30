@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { runSingleStep } from "../../packages/subagents/src/runs/background/subagent-runner-step.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { resolveAttemptTimeoutConfig } from "../../packages/subagents/src/runs/shared/attempt-watchdog.js";
-import { agentConfig, successEvent, toolEndEvent, toolStartEvent, withFakeCli } from "./subagents-attempt-watchdog-helpers.js";
+import { agentConfig, STALLED_ATTEMPT_CAP_MS, successEvent, toolEndEvent, toolStartEvent, withFakeCli } from "./subagents-attempt-watchdog-helpers.js";
 
 describe("subagent per-attempt watchdog", () => {
   test("kills a stalled model attempt and advances to the next fallback", async () => {
@@ -132,7 +132,7 @@ describe("subagent per-attempt watchdog", () => {
         console.log(${JSON.stringify(successEvent("fallback ok"))});
       }
     `, async (dir) => {
-      process.env.ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS = "700";
+      process.env.ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS = String(STALLED_ATTEMPT_CAP_MS);
       const result = await runSync(dir, [agentConfig()], "fake-worker", "Do work", {
         cwd: dir,
         runId: "watchdog-abnormal-tool-end",
@@ -147,7 +147,7 @@ describe("subagent per-attempt watchdog", () => {
       assert.match(result.finalOutput ?? "", /fallback ok/);
       assert.equal(result.modelAttempts?.length, 2);
       assert.equal(result.modelAttempts?.[0]?.success, false);
-      assert.match(result.modelAttempts?.[0]?.error ?? "", /timed out after 700ms\./i);
+      assert.match(result.modelAttempts?.[0]?.error ?? "", new RegExp(`timed out after ${STALLED_ATTEMPT_CAP_MS}ms\\.`, "i"));
       assert.doesNotMatch(result.modelAttempts?.[0]?.error ?? "", /without child activity/i);
       assert.equal(result.modelAttempts?.[1]?.success, true);
     });
@@ -160,7 +160,7 @@ describe("subagent per-attempt watchdog", () => {
       if (model === "provider-a/stalled") setInterval(() => process.stderr.write("tick\\n"), 50);
       else console.log(${JSON.stringify(successEvent("fallback ok"))});
     `, async (dir) => {
-      process.env.ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS = "600";
+      process.env.ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS = String(STALLED_ATTEMPT_CAP_MS);
       const result = await runSync(dir, [agentConfig()], "fake-worker", "Do work", {
         cwd: dir,
         runId: "watchdog-wall-cap",
@@ -175,7 +175,7 @@ describe("subagent per-attempt watchdog", () => {
       assert.match(result.finalOutput ?? "", /fallback ok/);
       assert.equal(result.modelAttempts?.length, 2);
       assert.equal(result.modelAttempts?.[0]?.success, false);
-      assert.match(result.modelAttempts?.[0]?.error ?? "", /timed out after 600ms\./i);
+      assert.match(result.modelAttempts?.[0]?.error ?? "", new RegExp(`timed out after ${STALLED_ATTEMPT_CAP_MS}ms\\.`, "i"));
       assert.doesNotMatch(result.modelAttempts?.[0]?.error ?? "", /without child activity/i);
       assert.equal(result.modelAttempts?.[1]?.success, true);
     });
@@ -249,7 +249,7 @@ describe("subagent per-attempt watchdog", () => {
       else console.log(${JSON.stringify(successEvent("fallback ok"))});
     `, async (dir) => {
       process.env.ATOMIC_SUBAGENT_ATTEMPT_IDLE_TIMEOUT_MS = "0";
-      process.env.ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS = "600";
+      process.env.ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS = String(STALLED_ATTEMPT_CAP_MS);
       const result = await runSync(dir, [agentConfig()], "fake-worker", "Do work", {
         cwd: dir,
         runId: "watchdog-idle-disabled",
@@ -266,7 +266,7 @@ describe("subagent per-attempt watchdog", () => {
       assert.equal(result.modelAttempts?.[0]?.success, false);
       // A fully silent child must outlive the (disabled) idle window and only be
       // bounded by the wall-clock cap.
-      assert.match(result.modelAttempts?.[0]?.error ?? "", /timed out after 600ms\./i);
+      assert.match(result.modelAttempts?.[0]?.error ?? "", new RegExp(`timed out after ${STALLED_ATTEMPT_CAP_MS}ms\\.`, "i"));
       assert.doesNotMatch(result.modelAttempts?.[0]?.error ?? "", /without child activity/i);
       assert.equal(result.modelAttempts?.[1]?.success, true);
     });

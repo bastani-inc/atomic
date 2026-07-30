@@ -12,6 +12,7 @@ import {
   type WorkflowLifecycleNoticeDetails,
 } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { sleep } from "../helpers/runtime.js";
 
 
 function installFailureNotices(store: ReturnType<typeof createStore>): {
@@ -162,7 +163,7 @@ describe("ctx.tool persistence and cancellation races", () => {
     failureRelease.resolve();
     const result = await Promise.race([
       pending,
-      Bun.sleep(250).then(() => undefined),
+      sleep(250).then(() => undefined),
     ]);
     assert.ok(result, "failure observed during drain must settle without an external cancellation");
 
@@ -188,7 +189,7 @@ describe("ctx.tool persistence and cancellation races", () => {
     assert.equal(lifecycle.notices[0]?.error, "second-admitted failure won");
 
     blockerRelease.resolve();
-    await Bun.sleep(0);
+    await sleep(0);
     lifecycle.unsubscribe();
     assert.equal(backend.listCheckpoints(runId).some(
       (checkpoint) => checkpoint.kind === "tool" && checkpoint.name === "normal-drain-blocker",
@@ -225,7 +226,7 @@ describe("ctx.tool persistence and cancellation races", () => {
     releaseFailure.resolve();
     const result = await Promise.race([
       pending,
-      Bun.sleep(250).then(() => undefined),
+      sleep(250).then(() => undefined),
     ]);
 
     assert.ok(result, "ordinary failure must not wait forever for a callback that ignores cancellation");
@@ -238,7 +239,7 @@ describe("ctx.tool persistence and cancellation races", () => {
     assert.equal(lifecycle.notices[0]?.toolName, "failure-winner");
 
     blockerRelease.resolve();
-    await Bun.sleep(0);
+    await sleep(0);
     lifecycle.unsubscribe();
     assert.equal(result.toolNodes?.find((node) => node.name === "non-cooperative")?.status, "cancelled");
     assert.equal(backend.listCheckpoints(runId).some(

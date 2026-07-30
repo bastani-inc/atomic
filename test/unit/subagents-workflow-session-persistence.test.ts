@@ -9,6 +9,7 @@ import { SessionManager } from "../../packages/coding-agent/src/core/session-man
 import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
+import { bunExecutable } from "../helpers/runtime.js";
 
 const workflow = { runId: "run-1", stageId: "stage-1", stageName: "build" };
 
@@ -152,7 +153,7 @@ describe("workflow subagent persisted session classification", () => {
 				piArgv1: scriptPath, resultMode: "single", workflowStageSubagentGuard: true,
 			}), "utf8");
 			const runnerPath = join(process.cwd(), "packages/subagents/src/runs/background/subagent-runner.ts");
-			const proc = spawnSync(process.execPath, [runnerPath, configPath], {
+			const proc = spawnSync(bunExecutable(), [runnerPath, configPath], {
 				cwd: process.cwd(),
 				encoding: "utf8",
 				env: { ...process.env, [WORKFLOW_SESSION_METADATA_ENV]: JSON.stringify(workflow) },

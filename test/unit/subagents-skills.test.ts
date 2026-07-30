@@ -8,8 +8,9 @@ import {
     clearSkillCache,
     resolveSkills,
 } from "../../packages/subagents/src/agents/skills.js";
+import { moduleDir } from "../helpers/runtime.js";
 
-const repoRoot = resolve(import.meta.dir, "../..");
+const repoRoot = resolve(moduleDir(import.meta.url), "../..");
 const builtinSubagentsSkillsRoot = join(
     repoRoot,
     "packages",

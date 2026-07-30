@@ -10,6 +10,8 @@ import {
   parseReleaseBaseTrailers,
   validateCanonicalReleaseBaseRef,
 } from "../../scripts/release-base.js";
+import { parse as parseYaml } from "yaml";
+import { readJson } from "../helpers/runtime.js";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const publishPath = join(root, ".github/workflows/publish.yml");
@@ -22,28 +24,46 @@ const warmPath = join(root, ".github/workflows/warm-toolchain-cache.yml");
  * anti-un-protection assertions belong beside the ones describing that split.
  */
 /**
- * The per-test timeout budget lives in package.json and nowhere else.
+ * The per-test timeout budget is declared once, in vitest.config.ts.
  *
- * Bun 1.3.14 silently ignores `[test] timeout` in bunfig.toml, and CI reaches
- * every suite through `bun run <script>`, so the scripts are the one choke point
- * where the local and CI budgets cannot drift apart. A single platform-neutral
- * value keeps Windows regressions enforced against the same contract as Linux.
+ * It used to live in the three `test:*` package scripts as `--timeout 30000`,
+ * because Bun 1.3.14 silently ignores `[test] timeout` in bunfig.toml and CI
+ * reached every suite through `bun run <script>`. Under vitest the budget is a
+ * config value, so the choke point moves with it -- the policy does not: one
+ * platform-neutral value, resolved identically by every project and by CI, never
+ * a Windows-only branch. This asserts the resolution, not the spelling.
  */
-test("every Bun test suite entry point declares one shared per-test timeout", async () => {
-  const manifest = (await Bun.file(join(root, "package.json")).json()) as { scripts: Record<string, string> };
-  const budgets = new Set<string>();
+test("every test suite entry point resolves to one shared per-test timeout", async () => {
+  const manifest = (await readJson(join(root, "package.json"))) as { scripts: Record<string, string> };
+  const config = (await import("../../vitest.config.js")) as {
+    default: { test?: { projects?: { test?: { name?: string; testTimeout?: number } }[] } };
+  };
+  const projects = config.default.test?.projects ?? [];
+  assert.equal(projects.length, 3, "one vitest project per suite directory");
+
+  const budgets = new Set<number>();
   for (const script of ["test:unit", "test:integration", "test:ci-contracts"]) {
     const command = manifest.scripts[script];
     assert.ok(command, `missing script: ${script}`);
-    const timeout = /--timeout[= ](\d+)/u.exec(command as string);
-    assert.ok(timeout, `${script} must pass --timeout (bunfig [test] timeout is ignored by Bun)`);
-    const value = Number(timeout[1]);
+    const selected = /--project[= ](\S+)/u.exec(command as string);
+    assert.ok(selected, `${script} must select exactly one vitest project`);
+    const project = projects.find((entry) => entry.test?.name === selected[1]);
+    assert.ok(project, `${script} selects an unknown vitest project: ${selected[1]}`);
+    const value = project.test?.testTimeout;
+    assert.ok(typeof value === "number", `project ${selected[1]} declares no testTimeout`);
     assert.ok(value >= 30_000, `${script} timeout ${value} is below the 30000 ms floor`);
     assert.ok(value <= 120_000, `${script} timeout ${value} would outlive the Windows job budget`);
-    budgets.add(timeout[1] as string);
+    budgets.add(value);
   }
   assert.equal(budgets.size, 1, `suite timeouts diverged: ${[...budgets].join(", ")}`);
+
+  // bunfig.toml must not grow a per-test budget again: Bun ignores it, so a
+  // value there would look authoritative and enforce nothing.
   assert.doesNotMatch(await readText(join(root, "bunfig.toml")), /^\s*timeout\s*=/mu);
+  // No script may reintroduce a second declaration beside the config one.
+  for (const command of Object.values(manifest.scripts)) {
+    assert.doesNotMatch(command, /--timeout[= ]\d+/u, `the budget lives in vitest.config.ts only: ${command}`);
+  }
   assert.match(
     await readText(join(root, ".github/workflows/test.yml")),
     /run-flaky-test-suite\.ts/u,
@@ -170,7 +190,7 @@ test("release build retains Atomic native, smoke, shrinkwrap, metadata, and asse
   const workflow = await readText(publishPath);
   assert.match(workflow, /"win32-arm64-msvc"/);
   assert.match(workflow, /atomic-windows-arm64\.zip/);
-  assert.match(workflow, /bun run check:shrinkwrap/);
+  assert.match(workflow, /npm run check:shrinkwrap/);
   assert.match(workflow, /Build Linux x64 archive[\s\S]*--platform linux-x64/);
   assert.match(workflow, /Build Windows x64 archive[\s\S]*--platform windows-x64/);
   assert.match(workflow, /Failed to load extension/);
@@ -409,7 +429,7 @@ test("Blacksmith runners are used everywhere they are supported", async () => {
   assert.ok(workflowFiles.length >= 3, "expected the workflows directory to be enumerable");
   const hosted: string[] = [];
   for (const file of workflowFiles) {
-    const workflow = Bun.YAML.parse(await readText(join(workflowDir, file))) as Workflow;
+    const workflow = parseYaml(await readText(join(workflowDir, file))) as Workflow;
     for (const [name, job] of Object.entries(workflow.jobs ?? {})) {
       hosted.push(...jobRunners(`${file} ${name}`, job).filter((runner) => !runner.startsWith("blacksmith-")));
     }

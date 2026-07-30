@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 
 /**
  * Workflow-text helpers shared by the CI contract suites.
@@ -11,7 +12,7 @@ import assert from "node:assert/strict";
  * cannot silently regress if that attribute is ever relaxed.
  */
 export async function readText(path: string): Promise<string> {
-  return (await Bun.file(path).text()).replaceAll("\r\n", "\n");
+  return (await readFile(path, "utf8")).replaceAll("\r\n", "\n");
 }
 
 /** The text of one job, from its `  <name>:` header to the next job or EOF. */

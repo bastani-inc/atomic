@@ -12,6 +12,7 @@ import { attachInteractiveEngineKeybindingSync } from "../../packages/coding-age
 import { CustomEditor } from "../../packages/coding-agent/src/modes/interactive/components/custom-editor.ts";
 import { getEditorTheme, initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../../packages/coding-agent/src/utils/ansi.ts";
+import { bunExecutable, moduleDir } from "../helpers/runtime.js";
 
 class FakeTerminal implements Terminal {
 	columns = 80;
@@ -33,15 +34,15 @@ class FakeTerminal implements Terminal {
 
 function createClient(agentDir: string, env: Record<string, string> = {}): RpcClient {
 	return new RpcClient({
-		cliPath: join(import.meta.dir, "../../packages/coding-agent/src/cli.ts"),
-		cwd: join(import.meta.dir, "../.."),
-		runtimeExecutable: process.execPath,
+		cliPath: join(moduleDir(import.meta.url), "../../packages/coding-agent/src/cli.ts"),
+		cwd: join(moduleDir(import.meta.url), "../.."),
+		runtimeExecutable: bunExecutable(),
 		provider: "isolation-fixture",
 		model: "blocking-model",
 		env: { ATOMIC_CODING_AGENT_DIR: agentDir, ...env },
 		args: [
 			"--no-session", "--no-extensions", "--extension",
-			join(import.meta.dir, "fixtures", "blocking-tool-extension.ts"),
+			join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts"),
 			"--no-skills", "--no-prompt-templates", "--no-themes", "--offline", "--approve",
 		],
 		interactiveEngine: { onDiagnostic: () => {} },

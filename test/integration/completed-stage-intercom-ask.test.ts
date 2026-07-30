@@ -14,6 +14,7 @@ import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
 import { ReplyWaiterSlot } from "../../packages/intercom/reply-waiter.js";
 import { routeIncomingReply } from "../../packages/intercom/reply-routing.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
+import { sleep } from "../helpers/runtime.js";
 
 const config: WorkflowRuntimeConfig = {
   maxDepth: 4,
@@ -60,7 +61,7 @@ async function waitForCompletedStage(store: ReturnType<typeof createStore>, name
       const stage = currentRun.stages.find((candidate) => candidate.name === name && candidate.status === "completed");
       if (stage) return { runId: currentRun.id, stageId: stage.id };
     }
-    await Bun.sleep(2);
+    await sleep(2);
   }
   throw new Error(`stage ${name} did not complete`);
 }

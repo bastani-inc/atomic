@@ -13,6 +13,7 @@ import registerSubagentNotify from "../../packages/subagents/src/runs/background
 import { SUBAGENT_ASYNC_COMPLETE_EVENT } from "../../packages/subagents/src/shared/types.js";
 import type { InboundMessageEntry } from "../../packages/intercom/intercom-utils.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
+import { sleep } from "../helpers/runtime.js";
 
 function source(id: string, name: string): SessionInfo {
   return { id, name, cwd: "/tmp", model: "test", pid: 1, startedAt: 1, lastActivity: 1 };
@@ -356,7 +357,7 @@ describe("per-child terminal ordering barrier", () => {
       to: "parent", message: "terminal result", requestId: "relay-result",
       runId: "relay-run", children: [{ agent: "worker", index: 0, intercomTarget: "" }],
     });
-    await Bun.sleep(0);
+    await sleep(0);
 
     assert.deepEqual(harness.deliveries, ["Ready from relay", "subagent-result"]);
   });

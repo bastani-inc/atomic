@@ -26,6 +26,7 @@ import { createStore, store as workflowStore } from "../../packages/workflows/sr
 import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
 import { classifyWorkflowFailure } from "../../packages/workflows/src/shared/workflow-failures.js";
 import { lifecycleConfig } from "./workflow-lifecycle-parent-reconciliation-support.js";
+import { sleep } from "../helpers/runtime.js";
 
 interface PersistedEntry {
   readonly id: string;
@@ -170,11 +171,11 @@ describe("interactive durable tool failure lifecycle", () => {
     const prompt = harness.session.prompt("Run post-admission-tool-failure.");
     await Promise.race([
       callbackEntered.promise,
-      Bun.sleep(2_000).then(() => { throw new Error(`callback did not start; calls=${harness!.faux.state.callCount} messages=${JSON.stringify(harness!.session.messages)} runs=${JSON.stringify(store.runs())}`); }),
+      sleep(2_000).then(() => { throw new Error(`callback did not start; calls=${harness!.faux.state.callCount} messages=${JSON.stringify(harness!.session.messages)} runs=${JSON.stringify(store.runs())}`); }),
     ]);
     await Promise.race([
       prompt,
-      Bun.sleep(2_000).then(() => { throw new Error(`prompt did not settle; calls=${harness!.faux.state.callCount} released=${failureReleased} runs=${JSON.stringify(store.runs())}`); }),
+      sleep(2_000).then(() => { throw new Error(`prompt did not settle; calls=${harness!.faux.state.callCount} released=${failureReleased} runs=${JSON.stringify(store.runs())}`); }),
     ]);
 
     const failed = store.runs().find((run) => run.id === runId);

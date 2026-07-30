@@ -5,6 +5,7 @@ import type { AgentSessionRuntime } from "../../packages/coding-agent/src/core/a
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.ts";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.ts";
 import { createRpcCommandHandler } from "../../packages/coding-agent/src/modes/rpc/rpc-command-handler.ts";
+import { sleep } from "../helpers/runtime.js";
 
 async function createSessionRuntime() {
 	const authStorage = AuthStorage.inMemory();
@@ -71,7 +72,7 @@ test("cancel_login_provider aborts an active child login without storing credent
 	});
 
 	const login = handle({ id: "login", type: "login_provider", provider: "extension-login" });
-	await Bun.sleep(0);
+	await sleep(0);
 	const cancelled = await handle({ id: "cancel", type: "cancel_login_provider", provider: "extension-login" });
 	const response = await login;
 

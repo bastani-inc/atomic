@@ -8,6 +8,7 @@ import {
 	type IntercomEventBus,
 } from "../../packages/subagents/src/shared/types.js";
 import { agentConfig, withFakeCli } from "./subagents-attempt-watchdog-helpers.js";
+import { sleep } from "../helpers/runtime.js";
 
 class TestEventBus implements IntercomEventBus {
 	private readonly handlers = new Map<string, Set<(data: unknown) => void>>();
@@ -28,7 +29,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<voi
 	const deadline = Date.now() + timeoutMs;
 	while (!predicate()) {
 		if (Date.now() >= deadline) throw new Error("Timed out waiting for condition");
-		await Bun.sleep(10);
+		await sleep(10);
 	}
 }
 
@@ -67,7 +68,7 @@ test("intercom detach returns before child close and reports detached exit exact
 
 		await waitFor(() => detachedExitCalls === 1);
 		assert.equal(existsSync(join(dir, "child-closed")), true, "callback must follow actual child close");
-		await Bun.sleep(50);
+		await sleep(50);
 		assert.equal(detachedExitCalls, 1);
 	});
 });

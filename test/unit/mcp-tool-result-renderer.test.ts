@@ -10,6 +10,7 @@ import {
   renderMcpToolResult,
   type McpToolResultDetails,
 } from "../../packages/mcp/tool-result-renderer.ts";
+import { moduleDir } from "../helpers/runtime.js";
 
 const theme = {
   fg: (_name: string, text: string) => text,
@@ -34,7 +35,7 @@ afterEach(() => setKeybindings(previousKeybindings));
 
 describe("MCP tool result rendering", () => {
   test("README documents the exact Atomic-normal expand hint", () => {
-    const readme = readFileSync(join(import.meta.dir, "../../packages/mcp/README.md"), "utf8");
+    const readme = readFileSync(join(moduleDir(import.meta.url), "../../packages/mcp/README.md"), "utf8");
     assert.match(readme, /`ctrl\+o Expand`/);
     assert.doesNotMatch(readme, /`Ctrl\+o Expand`/);
   });

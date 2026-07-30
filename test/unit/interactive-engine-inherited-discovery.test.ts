@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type SpawnedProcess, bunExecutable, decodeStream, moduleDir, readStreamText, sleep, spawnProcess } from "../helpers/runtime.js";
 
 const serialTest = process.platform === "win32" ? test.serial.skip : test.serial;
 const PREFIX = "@@ATOMIC_TEST@@";
@@ -15,7 +16,7 @@ interface HarnessReport {
 }
 
 class InteractiveDriver {
-	readonly process: ReturnType<typeof Bun.spawn>;
+	readonly process: SpawnedProcess;
 	readonly reports: HarnessReport[] = [];
 	private readonly waiters = new Set<() => void>();
 	private stderr = "";
@@ -29,12 +30,12 @@ class InteractiveDriver {
 		for (const [key, value] of Object.entries({ ...inherited, ...overrides })) {
 			if (value !== undefined) env[key] = value;
 		}
-		this.process = Bun.spawn([
-			process.execPath,
-			join(import.meta.dir, "fixtures", "default-main-interactive-host.ts"),
+		this.process = spawnProcess([
+			bunExecutable(),
+			join(moduleDir(import.meta.url), "fixtures", "default-main-interactive-host.ts"),
 			...args,
 		], {
-			cwd: join(import.meta.dir, "../.."),
+			cwd: join(moduleDir(import.meta.url), "../.."),
 			env,
 			stdin: "pipe",
 			stdout: "pipe",
@@ -88,7 +89,7 @@ class InteractiveDriver {
 	private async readReports(): Promise<void> {
 		const stdout = this.process.stdout;
 		if (!stdout || typeof stdout === "number") return;
-		const reader = stdout.pipeThrough(new TextDecoderStream()).getReader();
+		const reader = decodeStream(stdout).getReader();
 		let buffer = "";
 		while (true) {
 			const { done, value } = await reader.read();
@@ -112,7 +113,7 @@ class InteractiveDriver {
 	private async readStderr(): Promise<void> {
 		const stderr = this.process.stderr;
 		if (!stderr || typeof stderr === "number") return;
-		this.stderr = await new Response(stderr).text();
+		this.stderr = await readStreamText(stderr);
 	}
 }
 
@@ -134,7 +135,7 @@ export default function(pi) {
 
 function args(): string[] {
 	return [
-		"--no-session", "--extension", join(import.meta.dir, "fixtures", "workflow-command-extension.ts"),
+		"--no-session", "--extension", join(moduleDir(import.meta.url), "fixtures", "workflow-command-extension.ts"),
 		"--no-skills", "--no-prompt-templates", "--no-themes", "--offline", "--approve",
 		"--provider", "isolation-fixture", "--model", "blocking-model",
 	];
@@ -146,7 +147,7 @@ async function waitForCommand(driver: InteractiveDriver): Promise<Set<string>> {
 	while (performance.now() < deadline) {
 		names = await driver.autocomplete("/legacy-compatible");
 		if (names.has("legacy-compatible")) return names;
-		await Bun.sleep(50);
+		await sleep(50);
 	}
 	return names;
 }
@@ -168,7 +169,7 @@ serialTest("isolated interactive mode discovers and runs compatible inherited Pi
 		await driver.waitFor((report) => report.type === "heartbeat" && report.editorText === "/legacy-compatible");
 		driver.send({ type: "input", data: "\r" });
 		const deadline = performance.now() + 5_000;
-		while (!existsSync(logFile) && performance.now() < deadline) await Bun.sleep(20);
+		while (!existsSync(logFile) && performance.now() < deadline) await sleep(20);
 		assert.equal(readFileSync(logFile, "utf8"), "invoked\n");
 	} finally {
 		await driver.stop();
@@ -186,7 +187,7 @@ serialTest("isolated interactive mode preserves an explicit Atomic agent directo
 	});
 	try {
 		await driver.waitFor((report) => report.type === "terminal_ready", 15_000);
-		await Bun.sleep(500);
+		await sleep(500);
 		assert.equal((await driver.autocomplete("/legacy-compatible")).has("legacy-compatible"), false);
 	} finally {
 		await driver.stop();

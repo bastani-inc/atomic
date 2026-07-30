@@ -64,7 +64,8 @@ import type {
     StageSessionRuntime,
     StageControlHandle,
 } from "./slash-dispatch-utils.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+// InMemoryDurableBackend is already bound at line 46. Bun tolerated the repeated
+// binding; every standards-conforming parser rejects it, and vitest's did.
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 
 installSlashDispatchTestHooks();

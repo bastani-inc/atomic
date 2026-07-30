@@ -10,8 +10,9 @@ import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/reso
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { clearSkillCache, resolveSkills } from "../../packages/subagents/src/agents/skills.js";
 import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-env.js";
+import { moduleDir, spawnSyncCollect } from "../helpers/runtime.js";
 
-const root = resolve(import.meta.dir, "../..");
+const root = resolve(moduleDir(import.meta.url), "../..");
 const subagentSkills = join(root, "packages/subagents/skills");
 const workflowSkills = join(root, "packages/workflows/skills");
 const liteparseSkill = join(subagentSkills, "liteparse");
@@ -44,7 +45,7 @@ function assertLiteParseContent(path: string, expected: string, displayPath: str
 }
 
 function runFixtureGit(cwd: string, args: readonly string[]): string {
-  const result = Bun.spawnSync(["git", ...args], { cwd, env: createGitEnvironment() });
+  const result = spawnSyncCollect(["git", ...args], { cwd, env: createGitEnvironment() });
   assert.equal(result.exitCode, 0, result.stderr.toString());
   return result.stdout.toString().trim();
 }
@@ -52,7 +53,7 @@ function runFixtureGit(cwd: string, args: readonly string[]): string {
 // Git hooks export repository-local variables that override cwd and can redirect
 // fixture commands into the invoking linked worktree unless they are removed.
 function initializeFixtureRepository(cwd: string, env: NodeJS.ProcessEnv = process.env): void {
-  const result = Bun.spawnSync(["git", "init", "--quiet"], { cwd, env: createGitEnvironment(undefined, env) });
+  const result = spawnSyncCollect(["git", "init", "--quiet"], { cwd, env: createGitEnvironment(undefined, env) });
   assert.equal(result.exitCode, 0, result.stderr.toString());
 }
 
@@ -80,7 +81,7 @@ function assertNoScaffolding(base: string): void {
 }
 
 function packedPaths(packageDir: string): string[] {
-  const result = Bun.spawnSync(["bun", "pm", "pack", "--dry-run"], { cwd: packageDir });
+  const result = spawnSyncCollect(["bun", "pm", "pack", "--dry-run"], { cwd: packageDir });
   assert.equal(result.exitCode, 0, result.stderr.toString());
   return result.stdout
     .toString()
@@ -206,7 +207,7 @@ describe("synced upstream skill trees", () => {
   });
 
   test("tracks the LiteParse tree as non-executable and packs exactly its two files", () => {
-    const staged = Bun.spawnSync(
+    const staged = spawnSyncCollect(
       ["git", "ls-files", "--stage", "--", "packages/subagents/skills/liteparse"],
       { cwd: root, env: createGitEnvironment() },
     );
@@ -237,13 +238,13 @@ describe("synced upstream skill trees", () => {
     assert.ok(skillFiles.length > 100, `expected a complete bundled skill inventory, saw ${skillFiles.length}`);
     // `--no-index` reports ignore rules even for already-tracked paths, so a broad
     // rule (such as the Python packaging `lib/`) cannot silently truncate a sync.
-    const ignored = Bun.spawnSync(["git", "check-ignore", "--no-index", "--stdin"], {
+    const ignored = spawnSyncCollect(["git", "check-ignore", "--no-index", "--stdin"], {
       cwd: root,
       env: createGitEnvironment(),
       stdin: Buffer.from(`${skillFiles.join("\n")}\n`),
     });
     assert.equal(ignored.stdout.toString().trim(), "", "bundled skill files are excluded by .gitignore");
-    const tracked = Bun.spawnSync(["git", "ls-files", "packages/workflows/skills/impeccable"], { cwd: root, env: createGitEnvironment() });
+    const tracked = spawnSyncCollect(["git", "ls-files", "packages/workflows/skills/impeccable"], { cwd: root, env: createGitEnvironment() });
     assert.equal(tracked.exitCode, 0, tracked.stderr.toString());
     for (const path of ["scripts/lib/staleness.mjs", "scripts/lib/surface-briefs.mjs", "scripts/lib/provider.mjs"]) {
       assert.ok(tracked.stdout.toString().includes(`packages/workflows/skills/impeccable/${path}\n`), `untracked bundled file: ${path}`);
@@ -336,7 +337,7 @@ describe("synced upstream skill trees", () => {
       });
 
       assert.equal(existsSync(join(target, ".git")), true, "fixture repository was not initialized at its cwd");
-      const coreWorktree = Bun.spawnSync(
+      const coreWorktree = spawnSyncCollect(
         ["git", `--git-dir=${commonGitDir}`, "config", "--get-all", "core.worktree"],
         { env: createGitEnvironment() },
       );

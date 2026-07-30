@@ -17,6 +17,7 @@ import { SessionManager } from "../../packages/coding-agent/src/core/session-man
 import { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
 import type { RpcClient } from "../../packages/coding-agent/src/modes/rpc/rpc-client.ts";
 import type { RpcModelRefreshResult } from "../../packages/coding-agent/src/modes/rpc/rpc-types.ts";
+import { sleep } from "../helpers/runtime.js";
 
 async function kimiModel(): Promise<Model<Api>> {
 	const auth = AuthStorage.inMemory({ "kimi-coding": { type: "api_key", key: "fake-kimi-key" } });
@@ -130,7 +131,7 @@ test("an aborted isolated refresh does not replace the current model catalog", a
 
 	assert.deepEqual(await refresh, { aborted: true, errors: new Map() });
 	resolveRefresh({ aborted: false, errors: [], models: [model], scopedModels: [{ model }], customAuthProviders: [] });
-	await Bun.sleep(0);
+	await sleep(0);
 	assert.deepEqual(modelRuntime.getAvailableSnapshot(), []);
 	assert.deepEqual(session.scopedModels, []);
 });
@@ -384,7 +385,7 @@ test("isolated queue pause reaches the engine before abort and resumes remotely"
 
 	runtime.session.pauseQueuedMessages();
 	const abort = runtime.session.abort();
-	await Bun.sleep(150);
+	await sleep(150);
 	assert.deepEqual(calls, ["pause_queued_messages", "abort"]);
 	assert.equal(runtime.session.queuedMessagesPaused, true);
 	await abort;

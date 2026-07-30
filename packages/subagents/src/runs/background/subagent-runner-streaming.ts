@@ -42,6 +42,16 @@ export function runPiStreaming(
 	}
 	return new Promise((resolve) => {
 		const outputStream = fs.createWriteStream(outputFile, { flags: "w" });
+		// A write stream with no `error` listener turns any failure to open or write
+		// the transcript -- a removed run directory, a full disk, EPERM -- into an
+		// uncaught exception that takes the host process down, asynchronously and
+		// long after the call that caused it returned. The transcript is diagnostic,
+		// so degrade the way the child-event journal beside it already does.
+		outputStream.on("error", (streamError) => {
+			console.error(
+				`Failed to write the subagent transcript to '${outputFile}'; continuing without it: ${String(streamError)}`,
+			);
+		});
 		const spawnEnv = {
 			...process.env,
 			...(env ?? {}),

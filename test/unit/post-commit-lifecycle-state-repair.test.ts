@@ -15,6 +15,7 @@ import { createStageControlRegistry, stageControlRegistry, type StageControlHand
 import { createStore, store as singletonStore } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { buildCtx, installSlashDispatchTestHooks, registerWorkflowCommand } from "./slash-dispatch-utils.js";
+import { sleep } from "../helpers/runtime.js";
 
 function handle(input: {
   readonly runId: string;
@@ -98,7 +99,7 @@ async function startAnsweredQuitSyntheticPrompt(runId: string): Promise<InMemory
       (stage) => stage.pendingPrompt !== undefined,
     );
     if (promptStage !== undefined) break;
-    await Bun.sleep(5);
+    await sleep(5);
   }
   assert.notEqual(promptStage?.pendingPrompt, undefined);
   assert.equal((await quitRun(runId)).ok, true);
@@ -428,7 +429,7 @@ describe("post-commit quit and nested resume coherence", () => {
       const stage = singletonStore.runs().find((run) => run.id === runId)?.stages
         .find((candidate) => candidate.pendingPrompt !== undefined);
       if (stage?.pendingPrompt !== undefined) prompt = { stageId: stage.id, promptId: stage.pendingPrompt.id };
-      else await Bun.sleep(5);
+      else await sleep(5);
     }
     assert.notEqual(prompt, undefined, "synthetic prompt must be visible before command control");
     const { workflowCmd } = await registerWorkflowCommand();
@@ -439,7 +440,7 @@ describe("post-commit quit and nested resume coherence", () => {
     await workflowCmd.options.handler(`quit ${runId}`, ctx);
     await workflowCmd.options.handler(`quit ${runId}`, ctx);
     assert.equal(singletonStore.resolveStagePendingPrompt(runId, prompt!.stageId, prompt!.promptId, "held-answer"), true);
-    await Bun.sleep(10);
+    await sleep(10);
     assert.equal(singletonStore.runs().find((run) => run.id === runId)?.status, "paused");
     messages.length = 0;
     levels.length = 0;

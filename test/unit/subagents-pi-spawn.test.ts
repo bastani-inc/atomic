@@ -1,5 +1,6 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
+import { bunExecutable } from "../helpers/runtime.js";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -104,12 +105,16 @@ describe("subagent CLI spawning", () => {
                 cliPath,
                 'const forwarded: string[] = process.argv.slice(2); process.stdout.write(JSON.stringify(forwarded));',
             );
+            // The shipped resolver only treats a .ts CLI as runnable when the
+            // exec path is a Bun runtime, which is the whole point of this case.
+            // Under Bun `process.execPath` supplied that implicitly; under vitest
+            // the Bun runtime has to be named.
             const command = getPiSpawnCommand(forwardedArgs, {
                 platform: process.platform,
-                execPath: process.execPath,
+                execPath: bunExecutable(),
                 argv1: cliPath,
             });
-            assert.equal(command.command, process.execPath);
+            assert.equal(command.command, bunExecutable());
             assert.deepEqual(command.args, [cliPath, ...forwardedArgs]);
 
             const child = spawnSync(command.command, command.args, { encoding: "utf8" });

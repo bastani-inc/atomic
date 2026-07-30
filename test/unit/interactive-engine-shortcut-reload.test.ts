@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type SpawnedProcess, bunExecutable, decodeStream, moduleDir, readStreamText, sleep, spawnProcess } from "../helpers/runtime.js";
 
 const serialTest = process.platform === "win32" ? test.serial.skip : test.serial;
 const PREFIX = "@@ATOMIC_TEST@@";
@@ -25,7 +26,7 @@ interface HarnessReport {
 }
 
 class InteractiveModeDriver {
-	readonly process: ReturnType<typeof Bun.spawn>;
+	readonly process: SpawnedProcess;
 	readonly reports: HarnessReport[] = [];
 	private readonly waiters = new Set<() => void>();
 	private stderr = "";
@@ -35,12 +36,12 @@ class InteractiveModeDriver {
 		for (const key of Object.keys(baseEnv)) {
 			if (key.startsWith("ATOMIC_INTERACTIVE_ENGINE_")) delete baseEnv[key];
 		}
-		this.process = Bun.spawn([
-			process.execPath,
-			join(import.meta.dir, "fixtures", "default-main-interactive-host.ts"),
+		this.process = spawnProcess([
+			bunExecutable(),
+			join(moduleDir(import.meta.url), "fixtures", "default-main-interactive-host.ts"),
 			...args,
 		], {
-			cwd: join(import.meta.dir, "../.."),
+			cwd: join(moduleDir(import.meta.url), "../.."),
 			env: { ...baseEnv, ...env },
 			stdin: "pipe",
 			stdout: "pipe",
@@ -134,7 +135,7 @@ class InteractiveModeDriver {
 	private async readReports(): Promise<void> {
 		const stdout = this.process.stdout;
 		if (!stdout || typeof stdout === "number") return;
-		const reader = stdout.pipeThrough(new TextDecoderStream()).getReader();
+		const reader = decodeStream(stdout).getReader();
 		let buffer = "";
 		for (;;) {
 			const { done, value } = await reader.read();
@@ -155,7 +156,7 @@ class InteractiveModeDriver {
 
 	private async readStderr(): Promise<void> {
 		const stderr = this.process.stderr;
-		if (stderr && typeof stderr !== "number") this.stderr = await new Response(stderr).text();
+		if (stderr && typeof stderr !== "number") this.stderr = await readStreamText(stderr);
 	}
 }
 
@@ -211,7 +212,7 @@ async function reloadThroughExtensionContext(
 			);
 			return;
 		}
-		await Bun.sleep(20);
+		await sleep(20);
 	}
 	throw new Error(`Extension-context reload never committed ${expectedBinding}`);
 }
@@ -223,7 +224,7 @@ serialTest("real isolated InteractiveMode refreshes remote shortcuts and preserv
 	const shortcutLog = join(temp, "shortcut.log");
 	const sessionStartFile = join(temp, "session-start.log");
 	const keybindingsPath = join(agentDir, "keybindings.json");
-	const extension = join(import.meta.dir, "fixtures", "blocking-tool-extension.ts");
+	const extension = join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts");
 	mkdirSync(agentDir, { recursive: true });
 	writeFileSync(shortcutConfig, "ctrl+x,ctrl+y");
 	writeFileSync(keybindingsPath, JSON.stringify({ "app.tools.expand": "ctrl+x" }));
@@ -242,7 +243,7 @@ serialTest("real isolated InteractiveMode refreshes remote shortcuts and preserv
 		assert.equal(state.expandDisplay, "ctrl+x");
 		const initiallyExpanded = state.toolsExpanded;
 		driver.send({ type: "input", data: "\x18" });
-		await Bun.sleep(50);
+		await sleep(50);
 		assert.deepEqual(shortcutInvocations(shortcutLog), []);
 		const stateIndex = driver.reports.length;
 		driver.send({ type: "state" });
@@ -251,27 +252,27 @@ serialTest("real isolated InteractiveMode refreshes remote shortcuts and preserv
 		await driver.waitUntilEngineBound("ctrl+y");
 		driver.send({ type: "input", data: "\x19" });
 		const startupDeadline = performance.now() + 3_000;
-		while (shortcutInvocations(shortcutLog).length === 0 && performance.now() < startupDeadline) await Bun.sleep(20);
+		while (shortcutInvocations(shortcutLog).length === 0 && performance.now() < startupDeadline) await sleep(20);
 		assert.deepEqual(shortcutInvocations(shortcutLog), ["ctrl+y"]);
 
 		writeFileSync(keybindingsPath, JSON.stringify({ "app.tools.expand": "ctrl+y" }));
 		await reloadThroughExtensionContext(driver, sessionStartFile, "ctrl+y");
 		driver.send({ type: "input", data: "\x18" });
 		const firstDeadline = performance.now() + 3_000;
-		while (shortcutInvocations(shortcutLog).length < 2 && performance.now() < firstDeadline) await Bun.sleep(20);
+		while (shortcutInvocations(shortcutLog).length < 2 && performance.now() < firstDeadline) await sleep(20);
 		assert.deepEqual(shortcutInvocations(shortcutLog), ["ctrl+y", "ctrl+x"]);
 		driver.send({ type: "input", data: "\x19" });
-		await Bun.sleep(50);
+		await sleep(50);
 		assert.deepEqual(shortcutInvocations(shortcutLog), ["ctrl+y", "ctrl+x"], "reserved callback must be removed");
 
 		writeFileSync(keybindingsPath, JSON.stringify({ "app.tools.expand": "ctrl+x" }));
 		await reloadInteractiveMode(driver, "ctrl+x");
 		driver.send({ type: "input", data: "\x18" });
-		await Bun.sleep(50);
+		await sleep(50);
 		assert.deepEqual(shortcutInvocations(shortcutLog), ["ctrl+y", "ctrl+x"], "stale callback must not survive");
 		driver.send({ type: "input", data: "\x19" });
 		const secondDeadline = performance.now() + 3_000;
-		while (shortcutInvocations(shortcutLog).length < 3 && performance.now() < secondDeadline) await Bun.sleep(20);
+		while (shortcutInvocations(shortcutLog).length < 3 && performance.now() < secondDeadline) await sleep(20);
 		assert.deepEqual(shortcutInvocations(shortcutLog), ["ctrl+y", "ctrl+x", "ctrl+y"]);
 	} finally {
 		await driver.stop();
@@ -286,7 +287,7 @@ serialTest("startup shortcut dispatch waits for extension binding", async () => 
 	const shortcutLog = join(temp, "shortcut.log");
 	const startupGate = join(temp, "session-start.gate");
 	const keybindingsPath = join(agentDir, "keybindings.json");
-	const extension = join(import.meta.dir, "fixtures", "blocking-tool-extension.ts");
+	const extension = join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts");
 	mkdirSync(agentDir, { recursive: true });
 	writeFileSync(shortcutConfig, "ctrl+y");
 	writeFileSync(keybindingsPath, JSON.stringify({ "app.tools.expand": "ctrl+x" }));
@@ -299,7 +300,7 @@ serialTest("startup shortcut dispatch waits for extension binding", async () => 
 	try {
 		await driver.waitFor((report) => report.type === "terminal_ready");
 		await driver.waitFor((report) => report.type === "heartbeat" && typeof report.enginePid === "number");
-		while (!existsSync(startupGate)) await Bun.sleep(10);
+		while (!existsSync(startupGate)) await sleep(10);
 		assert.equal(
 			driver.reports.some((report) => report.type === "keybinding_state" && report.shortcutKeys?.includes("ctrl+y") === true),
 			false,
@@ -310,7 +311,7 @@ serialTest("startup shortcut dispatch waits for extension binding", async () => 
 		await driver.waitUntilShortcutReady("ctrl+y", readinessIndex);
 		driver.send({ type: "input", data: "\x19" });
 		const dispatchDeadline = performance.now() + 3_000;
-		while (shortcutInvocations(shortcutLog).length === 0 && performance.now() < dispatchDeadline) await Bun.sleep(20);
+		while (shortcutInvocations(shortcutLog).length === 0 && performance.now() < dispatchDeadline) await sleep(20);
 		assert.deepEqual(shortcutInvocations(shortcutLog), ["ctrl+y"]);
 	} finally {
 		await driver.stop();
@@ -329,7 +330,7 @@ serialTest("post-bind shortcut readiness survives delayed extension session star
 	const shortcutConfig = join(temp, "shortcut.txt");
 	const shortcutLog = join(temp, "shortcut.log");
 	const keybindingsPath = join(agentDir, "keybindings.json");
-	const extension = join(import.meta.dir, "fixtures", "blocking-tool-extension.ts");
+	const extension = join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts");
 	mkdirSync(agentDir, { recursive: true });
 	writeFileSync(shortcutConfig, "ctrl+y");
 	writeFileSync(keybindingsPath, JSON.stringify({ "app.tools.expand": "ctrl+x" }));
@@ -350,7 +351,7 @@ serialTest("post-bind shortcut readiness survives delayed extension session star
 		);
 		driver.send({ type: "input", data: "\x19" });
 		const dispatchDeadline = performance.now() + 3_000;
-		while (shortcutInvocations(shortcutLog).length === 0 && performance.now() < dispatchDeadline) await Bun.sleep(20);
+		while (shortcutInvocations(shortcutLog).length === 0 && performance.now() < dispatchDeadline) await sleep(20);
 		assert.deepEqual(shortcutInvocations(shortcutLog), ["ctrl+y"]);
 	} finally {
 		await driver.stop();
@@ -365,7 +366,7 @@ serialTest("real engine restart republishes bindings and replaces the remote sho
 	const shortcutLog = join(temp, "shortcut.log");
 	const toolPidFile = join(temp, "tool.pid");
 	const keybindingsPath = join(agentDir, "keybindings.json");
-	const extension = join(import.meta.dir, "fixtures", "blocking-tool-extension.ts");
+	const extension = join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts");
 	mkdirSync(agentDir, { recursive: true });
 	writeFileSync(shortcutConfig, "ctrl+x,ctrl+y");
 	writeFileSync(keybindingsPath, JSON.stringify({ "app.tools.expand": "ctrl+x" }));
@@ -385,7 +386,7 @@ serialTest("real engine restart republishes bindings and replaces the remote sho
 		await driver.waitUntilEngineBound("ctrl+y");
 		driver.send({ type: "input", data: "\x19" });
 		const initialShortcutDeadline = performance.now() + 3_000;
-		while (shortcutInvocations(shortcutLog).length === 0 && performance.now() < initialShortcutDeadline) await Bun.sleep(20);
+		while (shortcutInvocations(shortcutLog).length === 0 && performance.now() < initialShortcutDeadline) await sleep(20);
 		assert.deepEqual(shortcutInvocations(shortcutLog), ["ctrl+y"]);
 
 		writeFileSync(keybindingsPath, JSON.stringify({ "app.tools.expand": "ctrl+y" }));
@@ -393,7 +394,7 @@ serialTest("real engine restart republishes bindings and replaces the remote sho
 		driver.send({ type: "input", data: "restart with new shortcuts" });
 		await driver.waitFor((report) => report.type === "heartbeat" && report.editorText === "restart with new shortcuts");
 		driver.send({ type: "input", data: "\r" });
-		while (!existsSync(toolPidFile)) await Bun.sleep(10);
+		while (!existsSync(toolPidFile)) await sleep(10);
 		const interruptReadyIndex = driver.reports.length;
 		await driver.waitForNext(
 			interruptReadyIndex,
@@ -431,7 +432,7 @@ serialTest("real engine restart republishes bindings and replaces the remote sho
 
 		driver.send({ type: "input", data: "\x18" });
 		const restartedShortcutDeadline = performance.now() + 3_000;
-		while (shortcutInvocations(shortcutLog).length < 2 && performance.now() < restartedShortcutDeadline) await Bun.sleep(20);
+		while (shortcutInvocations(shortcutLog).length < 2 && performance.now() < restartedShortcutDeadline) await sleep(20);
 		assert.deepEqual(shortcutInvocations(shortcutLog), ["ctrl+y", "ctrl+x"]);
 	} finally {
 		await driver.stop();

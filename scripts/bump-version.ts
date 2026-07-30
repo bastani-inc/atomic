@@ -38,7 +38,8 @@ type VersionTarget =
   | { kind: "cargo"; filePath: string }
   | { kind: "cargoLock"; filePath: string }
   | { kind: "readme"; filePath: string; optional?: boolean }
-  | { kind: "nativeIndex"; filePath: string };
+  | { kind: "nativeIndex"; filePath: string }
+  | { kind: "npmLock"; filePath: string };
 
 /**
  * Parse argv once into the values both `resolveRoot` and `getVersion` need.
@@ -183,13 +184,27 @@ function cargoTargets(): VersionTarget[] {
   return [...cargoTomlTargets, ...cargoLockTargets];
 }
 
+/**
+ * The root lockfile records each workspace package's version.
+ *
+ * `bun install --frozen-lockfile` used to tolerate the mismatch a version stamp
+ * created, so bun.lock was deliberately left at the 0.0.0 placeholders. `npm ci`
+ * does not: it refuses to install when the lockfile and a package.json disagree,
+ * and publish.yml installs from the tagged release commit. Stamping the lockfile
+ * here keeps that commit installable without a relock or a network round-trip.
+ */
+function npmLockTargets(): VersionTarget[] {
+  const filePath = "package-lock.json";
+  return existsSync(resolve(ROOT, filePath)) ? [{ kind: "npmLock", filePath }] : [];
+}
+
 function nativeIndexTargets(): VersionTarget[] {
   const filePath = "packages/natives/native/index.js";
   return existsSync(resolve(ROOT, filePath)) ? [{ kind: "nativeIndex", filePath }] : [];
 }
 
 async function versionTargets(): Promise<VersionTarget[]> {
-  return [...(await packageJsonTargets()), ...cargoTargets(), ...readmeTargets(), ...nativeIndexTargets()];
+  return [...(await packageJsonTargets()), ...cargoTargets(), ...readmeTargets(), ...nativeIndexTargets(), ...npmLockTargets()];
 }
 
 function shieldBadgeVersion(version: string): string {
@@ -341,6 +356,35 @@ async function bumpNativeIndex(filePath: string, version: string): Promise<void>
   console.log(`  ${filePath}: generated NAPI version checks → ${version}`);
 }
 
+interface NpmLockEntry {
+  version?: string;
+  dependencies?: Record<string, string>;
+  optionalDependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+}
+
+/** Stamp every workspace entry, and every first-party range inside one, in place. */
+async function bumpNpmLock(filePath: string, version: string): Promise<void> {
+  const fullPath = resolve(ROOT, filePath);
+  const lock = (await Bun.file(fullPath).json()) as { packages?: Record<string, NpmLockEntry> };
+  let changed = 0;
+  for (const [entryPath, entry] of Object.entries(lock.packages ?? {})) {
+    if (!entryPath.startsWith("packages/") || entry.version === undefined) continue;
+    entry.version = version;
+    changed += 1;
+    for (const section of FIRST_PARTY_DEPENDENCY_SECTIONS) {
+      const ranges = entry[section];
+      if (!ranges) continue;
+      for (const name of Object.keys(ranges)) {
+        if (shouldBumpFirstPartyDependency(name)) ranges[name] = version;
+      }
+    }
+  }
+  await Bun.write(fullPath, `${JSON.stringify(lock, null, 2)}\n`);
+  console.log(`  ${filePath}: ${changed} workspace entries → ${version}`);
+}
+
 async function bumpTarget(target: VersionTarget, version: string): Promise<void> {
   switch (target.kind) {
     case "json":
@@ -358,6 +402,9 @@ async function bumpTarget(target: VersionTarget, version: string): Promise<void>
     case "nativeIndex":
       await bumpNativeIndex(target.filePath, version);
       break;
+    case "npmLock":
+      await bumpNpmLock(target.filePath, version);
+      break;
   }
 }
 
@@ -371,7 +418,7 @@ async function main(): Promise<void> {
     await bumpTarget(target, version);
   }
 
-  console.log("\nDone. Run bun install to refresh bun.lock.");
+  console.log("\nDone. Run `npm install --package-lock-only --ignore-scripts` if dependency ranges also changed.");
 }
 
 await main();

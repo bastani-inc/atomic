@@ -12,6 +12,7 @@ import {
 	type StageSessionRuntime,
 	Type,
 } from "./executor-shared.js";
+import { sleep } from "../helpers/runtime.js";
 
 test("admitted queued delivery drains before stage finalization and supplies the terminal result", async () => {
 	const store = createStore();
@@ -47,7 +48,7 @@ test("admitted queued delivery drains before stage finalization and supplies the
 		onStageEnd: () => { stageEnded = true; },
 	});
 	await closeStarted.promise;
-	await Bun.sleep(0);
+	await sleep(0);
 	assert.equal(stageEnded, false, "terminal stage publication must wait for admitted delivery");
 	drain.resolve();
 	const result = await execution;
@@ -163,7 +164,7 @@ test("stage close waits for a busy Intercom admission barrier before draining it
 	let closed = false;
 	const close = closeWorkflowStageGeneration.call(surface as never).then(() => { closed = true; });
 
-	await Bun.sleep(0);
+	await sleep(0);
 	assert.equal(closed, false, "terminal close must wait for the admitted handoff");
 	assert.deepEqual(queued, []);
 	firstRefusal.resolve();

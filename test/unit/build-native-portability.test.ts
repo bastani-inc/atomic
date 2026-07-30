@@ -9,6 +9,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { bunExecutable, spawnSyncCollect } from "../helpers/runtime.js";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const script = join(root, "packages/natives/scripts/build-native.ts");
@@ -27,7 +28,7 @@ unixTest("glibc-suffixed Linux targets use cargo-zigbuild and copy from the bare
     writeFileSync(cargo, `#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s\\n' "$*" > "$CARGO_ARGS_FILE"\nmkdir -p "$CARGO_TARGET_DIR/x86_64-unknown-linux-gnu/release"\nprintf 'portable-fixture' > "$CARGO_TARGET_DIR/x86_64-unknown-linux-gnu/release/libatomic_natives.so"\n`);
     chmodSync(cargo, 0o755);
 
-    const result = Bun.spawnSync([process.execPath, script], {
+    const result = spawnSyncCollect([bunExecutable(), script], {
       cwd: root,
       env: {
         ...process.env,
@@ -60,7 +61,7 @@ unixTest("explicit Darwin targets stay native and do not request cross compilati
     const bunx = join(bin, "bunx");
     writeFileSync(bunx, `#!/usr/bin/env bash\nprintf '%s\\n' "$*" > "$BUNX_ARGS_FILE"\n`);
     chmodSync(bunx, 0o755);
-    const result = Bun.spawnSync([process.execPath, script], {
+    const result = spawnSyncCollect([bunExecutable(), script], {
       cwd: root,
       env: {
         ...process.env,

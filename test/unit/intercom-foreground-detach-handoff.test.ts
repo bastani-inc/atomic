@@ -4,6 +4,7 @@ import { EventEmitter } from "node:events";
 import { ForegroundDetachHandoff, handleForegroundInboundDelivery, INTERCOM_DETACH_REQUEST_EVENT, INTERCOM_DETACH_RESPONSE_EVENT } from "../../packages/intercom/foreground-detach-handoff.js";
 import { createForwardedHandlerMap, createHeavyProxy, type CapturedHeavy } from "../../packages/intercom/lazy-heavy-proxy.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
+import { sleep } from "../helpers/runtime.js";
 
 const from = (id: string, name: string): SessionInfo => ({ id, name, cwd: "/tmp", model: "m", pid: 1, startedAt: 1, lastActivity: 1 });
 const message = (id: string, expectsReply: boolean): Message => ({ id, timestamp: 1, expectsReply, content: { text: "hello" } });
@@ -195,7 +196,7 @@ describe("broker foreground delivery handshake", () => {
       handoff, from: from("a", "child-a"), message: message("reset-probe", true), generation: 1,
       surface: () => surfaced++, isCurrent: () => true, onUnclaimed: () => unclaimed++,
     });
-    await Bun.sleep(0);
+    await sleep(0);
     assert.equal(emitter.listenerCount(INTERCOM_DETACH_RESPONSE_EVENT), 1);
     handoff.reset();
     await delivery;
@@ -226,7 +227,7 @@ describe("broker foreground delivery handshake", () => {
       handoff, from: from("a", "child-a"), message: message("reset-commit", true), generation: 1,
       surface: () => surfaced++, isCurrent: () => true, onUnclaimed: () => unclaimed++,
     });
-    await Bun.sleep(0);
+    await sleep(0);
     assert.ok(commit, "commit wait must be active before reset");
     assert.equal(emitter.listenerCount(INTERCOM_DETACH_RESPONSE_EVENT), 1);
     handoff.reset();

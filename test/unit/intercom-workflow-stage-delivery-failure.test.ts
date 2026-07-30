@@ -6,6 +6,7 @@ import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
 import { ReplyWaiterSlot } from "../../packages/intercom/reply-waiter.js";
 import { createWorkflowStageDeliveryFailureHandler, sendWorkflowStageDeliveryFailure } from "../../packages/intercom/workflow-stage-delivery-failure.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
+import { sleep } from "../helpers/runtime.js";
 
 const asker: SessionInfo = {
   id: "asking-stage",
@@ -89,7 +90,7 @@ test("open-stage failure settlement is awaited and sends one correlated error ac
       isConnected: () => true,
       async send() {
         sends += 1;
-        await Bun.sleep(10);
+        await sleep(10);
         return { id: "failure", delivered: true };
       },
     }) as never,

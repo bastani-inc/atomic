@@ -1,17 +1,17 @@
 #!/usr/bin/env bun
 /** Bounded CI-only flake recovery: one retry with durable first-attempt diagnostics. */
-import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { cpus, freemem, loadavg, platform, release, totalmem } from "node:os";
 import { basename, resolve } from "node:path";
 import {
   evaluateDurations,
   FAIL_RATIO,
-  perTestReportingEnv,
-  QUIET_REPORTER_ENV,
   renderDurationTable,
+  resolveDefaultTimeoutMs,
   WARN_RATIO,
   type BudgetedSample,
 } from "./test-duration-guard.js";
+import { spawnProcess } from "../test/helpers/runtime.js";
 
 interface Options {
   label: string;
@@ -42,22 +42,41 @@ function safeName(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "tests";
 }
 
+/**
+ * Ask the suite for a machine-readable report *in addition to* the human one.
+ *
+ * The default reporter is what makes a cancelled or timed-out step readable in
+ * the live log; the JSON reporter is what the duration gate scores. Requesting
+ * only the second would trade a diagnosable step log for a measurable one.
+ *
+ * The reporter flags are added here rather than in the workflow so the child
+ * command stays exactly the one a developer runs locally --
+ * test/ci/test-workflow-topology.test.ts asserts that.
+ */
+function withJsonReporter(command: string[], outputFile: string): string[] {
+  const flags = ["--reporter=default", "--reporter=json", `--outputFile.json=${outputFile}`];
+  const isNpmRun = /^(?:npm|npx)(?:\.cmd|\.exe)?$/u.test(basename(command[0] ?? "")) && command[1] === "run";
+  return isNpmRun ? [...command, "--", ...flags] : [...command, ...flags];
+}
+
 /** Tee one child stream to the live step log while capturing it for diagnostics. */
-async function pump(stream: ReadableStream<Uint8Array> | undefined, sink: NodeJS.WriteStream): Promise<string> {
+async function pump(stream: ReadableStream<Uint8Array> | null, sink: NodeJS.WriteStream): Promise<string> {
   if (!stream) return "";
-  const decoder = new TextDecoder();
+  const reader = stream.pipeThrough(new TextDecoderStream()).getReader();
   let text = "";
-  for await (const chunk of stream) {
-    const piece = decoder.decode(chunk, { stream: true });
-    text += piece;
-    sink.write(piece);
-  }
-  const tail = decoder.decode();
-  if (tail) {
-    text += tail;
-    sink.write(tail);
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    text += value;
+    sink.write(value);
   }
   return text;
+}
+
+interface AttemptResult {
+  code: number;
+  output: string;
+  report: string | undefined;
 }
 
 /**
@@ -67,11 +86,9 @@ async function pump(stream: ReadableStream<Uint8Array> | undefined, sink: NodeJS
  * step with no record of which test stalled. Teeing preserves the retry and diagnostics
  * contract while making a timed-out attempt self-describing in the step log.
  */
-async function runAttempt(command: string[], logPath: string, persist: boolean): Promise<{ code: number; output: string }> {
-  // Bun prints no per-test records under its agent-quiet reporter, which would
-  // leave the duration gate with nothing to score. The suite's stdout here is a
-  // CI log, so the child always runs with per-test reporting on.
-  const child = Bun.spawn(command, { stdout: "pipe", stderr: "pipe", env: perTestReportingEnv(process.env) });
+async function runAttempt(command: string[], logPath: string, reportPath: string, persist: boolean): Promise<AttemptResult> {
+  rmSync(reportPath, { force: true });
+  const child = spawnProcess(withJsonReporter(command, reportPath), { stdout: "pipe", stderr: "pipe", env: process.env });
   const [stdout, stderr, code] = await Promise.all([
     pump(child.stdout, process.stdout),
     pump(child.stderr, process.stderr),
@@ -79,7 +96,7 @@ async function runAttempt(command: string[], logPath: string, persist: boolean):
   ]);
   const output = `${stdout}${stderr}`;
   if (persist) writeFileSync(logPath, output);
-  return { code, output };
+  return { code, output, report: existsSync(reportPath) ? readFileSync(reportPath, "utf8") : undefined };
 }
 
 function debugSummary(label: string, command: string[]): string {
@@ -88,7 +105,7 @@ function debugSummary(label: string, command: string[]): string {
     `suite: ${label}`,
     `command: ${command.join(" ")}`,
     `platform: ${platform()} ${release()} (${process.arch})`,
-    `bun: ${Bun.version}`,
+    `node: ${process.version}`,
     `cpu: ${cpus().length} logical`,
     `memory: ${gib(freemem())} free / ${gib(totalmem())} total`,
     `loadavg: ${loadavg().map((value) => value.toFixed(2)).join(", ")}`,
@@ -101,32 +118,48 @@ function appendSummary(markdown: string): void {
   if (summary) appendFileSync(summary, `${markdown}\n`);
 }
 
-function findFailedDeterministicFile(output: string, files: string[]): string | undefined {
-  let current: string | undefined;
-  for (const line of output.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    const header = files.find((file) => trimmed.endsWith(`${file}:`));
-    if (header) {
-      current = header;
-      continue;
+/**
+ * Whether a file that must never be retried is among the failures.
+ *
+ * vitest names the failing file in its `FAIL <path>` line and again in the
+ * per-failure header, so the file set is read from the report when one exists
+ * and from the log only as a fallback for a suite that died before writing one.
+ */
+function findFailedDeterministicFile(attempt: AttemptResult, files: string[]): string | undefined {
+  if (attempt.report) {
+    try {
+      const parsed = JSON.parse(attempt.report) as { testResults?: { name?: string; assertionResults?: { status?: string }[] }[] };
+      for (const result of parsed.testResults ?? []) {
+        const failed = (result.assertionResults ?? []).some((assertion) => assertion.status === "failed");
+        if (!failed) continue;
+        const match = files.find((file) => (result.name ?? "").replaceAll("\\", "/").endsWith(`/${file}`));
+        if (match) return match;
+      }
+      return undefined;
+    } catch {
+      // Fall through to the log scan below.
     }
-    if (/\.(?:test|spec)\.[cm]?[jt]sx?:$/.test(trimmed)) current = undefined;
-    if (current && trimmed.startsWith("(fail)")) return current;
+  }
+  for (const line of attempt.output.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!/^(?:FAIL|❯|×)/u.test(trimmed) && !trimmed.startsWith("FAIL")) continue;
+    const match = files.find((file) => trimmed.includes(file));
+    if (match) return match;
   }
   return undefined;
 }
 
 interface Attempt {
   label: string;
-  output: string;
+  result: AttemptResult;
 }
 
 /**
  * Duration-headroom gate.
  *
- * Raising the suite-wide `--timeout` removes the flake but would otherwise let
- * tests drift silently toward the new ceiling until the class returns. The gate
- * scores every duration Bun printed against that test's effective timeout, so a
+ * Raising the per-test budget removes a flake but would otherwise let tests
+ * drift silently toward the new ceiling until the class returns. The gate scores
+ * every duration vitest reported against that test's effective timeout, so a
  * regression is reported on the slow test itself rather than on whichever
  * neighbour happened to lose the coin flip. The full table is always written as
  * an artifact, including on green runs, so cross-platform ratios need one
@@ -137,12 +170,17 @@ interface Attempt {
  * are the same regression; reporting only the retry would discard the sample
  * that actually shows the drift.
  *
- * A gate that cannot see is reported, never assumed green: an attempt whose
- * tests ran without printing a single duration fails the step, because an empty
- * sample set otherwise looks exactly like a suite with nothing to report.
+ * A gate that cannot see is reported, never assumed green: an attempt that ran
+ * tests without producing a report fails the step, because an empty sample set
+ * otherwise looks exactly like a suite with nothing to report.
  */
-function reportDurations(attempts: Attempt[], options: Options, name: string): number {
-  const scored = attempts.map((attempt) => ({ label: attempt.label, report: evaluateDurations(attempt.output, options.command) }));
+async function reportDurations(attempts: Attempt[], options: Options, name: string): Promise<number> {
+  const budget = await resolveDefaultTimeoutMs(options.command, process.cwd());
+  const scored = attempts.map((attempt) => ({
+    label: attempt.label,
+    missing: attempt.result.report === undefined,
+    report: evaluateDurations(attempt.result.report ?? '{"numTotalTests":0,"testResults":[]}', budget),
+  }));
   mkdirSync(options.diagnosticsDir, { recursive: true });
   const table = scored.map(({ label, report }) => `## ${label}\n\n${renderDurationTable(report)}`).join("\n\n");
   writeFileSync(
@@ -151,15 +189,15 @@ function reportDurations(attempts: Attempt[], options: Options, name: string): n
   );
   const gated = scored.filter(({ report }) => report.enabled);
   if (gated.length === 0) return 0;
-  const blind = gated.filter(({ report }) => report.blind);
+  const blind = gated.filter(({ report, missing }) => report.blind || missing);
   if (blind.length > 0) {
-    for (const { label, report } of blind) {
+    for (const { label, report, missing } of blind) {
       console.error(
-        `::error title=Duration guard blind: ${options.label}::${label}: ${report.ranTests} test(s) ran but printed no per-test durations, so no headroom could be measured. Bun suppresses those records when ${QUIET_REPORTER_ENV.join("/")} is set.`,
+        `::error title=Duration guard blind: ${options.label}::${label}: ${missing ? "the suite wrote no JSON report" : `${report.ranTests} test(s) ran but the report carried no durations`}, so no headroom could be measured.`,
       );
     }
     appendSummary(
-      `### ❌ Duration guard blind: ${options.label}\nThe suite ran tests but printed no per-test durations, so the ${FAIL_RATIO * 100} % headroom gate measured nothing. Restore Bun's per-test records before trusting this run.\n\n${table}`,
+      `### ❌ Duration guard blind: ${options.label}\nThe suite ran tests but produced no per-test durations, so the ${FAIL_RATIO * 100} % headroom gate measured nothing. Restore vitest's JSON reporter output before trusting this run.\n\n${table}`,
     );
     return 1;
   }
@@ -185,38 +223,40 @@ const options = parseArgs();
 const name = safeName(options.label);
 const firstLog = resolve(options.diagnosticsDir, `${name}-attempt-1.log`);
 const secondLog = resolve(options.diagnosticsDir, `${name}-attempt-2.log`);
+const firstReport = resolve(options.diagnosticsDir, `${name}-attempt-1.json`);
+const secondReport = resolve(options.diagnosticsDir, `${name}-attempt-2.json`);
 rmSync(firstLog, { force: true });
 rmSync(secondLog, { force: true });
-
-const first = await runAttempt(options.command, firstLog, false);
-const firstAttempt: Attempt = { label: "attempt 1", output: first.output };
-if (first.code === 0) process.exit(reportDurations([firstAttempt], options, name));
-
 mkdirSync(options.diagnosticsDir, { recursive: true });
+
+const first = await runAttempt(options.command, firstLog, firstReport, false);
+const firstAttempt: Attempt = { label: "attempt 1", result: first };
+if (first.code === 0) process.exit(await reportDurations([firstAttempt], options, name));
+
 writeFileSync(firstLog, first.output);
 const debug = debugSummary(options.label, options.command);
 writeFileSync(resolve(options.diagnosticsDir, `${name}-debug.txt`), `${debug}\n`);
 console.error(`\n::warning title=${options.label} first attempt failed::Preserved diagnostics; evaluating one bounded retry.`);
 console.error(`\n${debug}\n`);
 
-const deterministicHit = findFailedDeterministicFile(first.output, options.deterministicFiles);
+const deterministicHit = findFailedDeterministicFile(first, options.deterministicFiles);
 if (deterministicHit) {
-  reportDurations([firstAttempt], options, name);
+  await reportDurations([firstAttempt], options, name);
   appendSummary(`### ❌ ${options.label}\nNo retry: deterministic test file failed (\`${deterministicHit}\`). First-attempt diagnostics were preserved.`);
   console.error(`No retry: deterministic test file failed (${deterministicHit}).`);
   process.exit(first.code);
 }
 
 console.error(`Retrying ${options.label} once (smallest safe suite)...`);
-const second = await runAttempt(options.command, secondLog, true);
-const attempts: Attempt[] = [firstAttempt, { label: "attempt 2", output: second.output }];
+const second = await runAttempt(options.command, secondLog, secondReport, true);
+const attempts: Attempt[] = [firstAttempt, { label: "attempt 2", result: second }];
 if (second.code === 0) {
-  const guard = reportDurations(attempts, options, name);
+  const guard = await reportDurations(attempts, options, name);
   appendSummary(`### ⚠️ Detected flake: ${options.label}\nAttempt 1 failed and the single bounded retry passed. Diagnostic logs are retained as CI artifacts.`);
   console.error(`::warning title=Detected flake: ${options.label}::Attempt 1 failed; bounded retry passed. See diagnostic artifact.`);
   process.exit(guard);
 }
-reportDurations(attempts, options, name);
+await reportDurations(attempts, options, name);
 appendSummary(`### ❌ Persistent failure: ${options.label}\nBoth the first attempt and the single bounded retry failed. Both logs are retained.`);
 console.error(`::error title=Persistent failure: ${options.label}::Both attempts failed; see both diagnostic logs.`);
 process.exit(second.code);

@@ -10,6 +10,7 @@ import {
   workflow,
 } from "./executor-shared.js";
 import { createHarness } from "../../packages/coding-agent/test/suite/harness.ts";
+import { sleep } from "../helpers/runtime.js";
 
 test("transient native release failure keeps durable workflow pause retryable", async () => {
   const harness = await createHarness();
@@ -82,7 +83,7 @@ test("transient native release failure keeps durable workflow pause retryable", 
 
     await handle.resume();
     const [deliveryAction, result] = await Promise.all([runnerDelivery, runPromise]);
-    await Bun.sleep(10);
+    await sleep(10);
 
     assert.equal(deliveryAction, "prompt");
     assert.equal(result.status, "completed");

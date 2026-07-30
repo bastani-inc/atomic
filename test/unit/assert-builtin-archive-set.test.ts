@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { buffer } from "node:stream/consumers";
 import JSZip from "jszip";
+import { extract as tarExtract, pack as tarPack } from "tar-stream";
 import { assertExactBuiltinSet, EXPECTED_BUILTIN_DIRECTORY_NAMES } from "../../scripts/assert-builtin-set.js";
 
 const unexpectedName = "retired-provider";
@@ -37,10 +39,43 @@ async function withExtraction(
   }
 }
 
+/**
+ * `Bun.Archive` built and unpacked the TAR in two calls and has no Node
+ * equivalent; `tar-stream` is the streaming replacement, and it restores the
+ * symmetry with the ZIP half of this file, which has always used JSZip.
+ */
+async function packTar(payload: Record<string, string>): Promise<Uint8Array> {
+  const pack = tarPack();
+  for (const [path, contents] of Object.entries(payload)) pack.entry({ name: path }, contents);
+  pack.finalize();
+  return new Uint8Array(await buffer(pack));
+}
+
+async function unpackTar(bytes: Uint8Array, root: string): Promise<void> {
+  const extractor = tarExtract();
+  const done = new Promise<void>((resolve, reject) => {
+    extractor.on("finish", resolve);
+    extractor.on("error", reject);
+  });
+  extractor.on("entry", (header, stream, next) => {
+    const target = join(root, header.name);
+    void buffer(stream).then((contents) => {
+      if (header.type === "directory") mkdirSync(target, { recursive: true });
+      else {
+        mkdirSync(dirname(target), { recursive: true });
+        writeFileSync(target, contents);
+      }
+      next();
+    }, next);
+  });
+  extractor.end(Buffer.from(bytes));
+  await done;
+}
+
 test("TAR transport preserves and rejects an unexpected builtin file", async () => {
-  const bytes = await new Bun.Archive(archivePayload()).bytes();
+  const bytes = await packTar(archivePayload());
   await withExtraction("tar", async (root) => {
-    await new Bun.Archive(bytes).extract(root);
+    await unpackTar(bytes, root);
   });
 });
 

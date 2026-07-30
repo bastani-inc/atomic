@@ -121,11 +121,35 @@ test("build-consuming steps stay in the job that produced the build", async () =
 
   const staticChecks = blocks.get("static-checks") as string;
   assert.match(staticChecks, /^[ \t]+runs-on: blacksmith-4vcpu-ubuntu-2404$/mu);
-  assert.doesNotMatch(staticChecks, /rust-toolchain|setup-node/u);
-  for (const step of ["Typecheck", "Docs link validation", "Mintlify docs validation", "Deterministic CI and release contracts"]) {
+  assert.doesNotMatch(staticChecks, /rust-toolchain/u);
+  for (const step of ["Check", "Docs link validation", "Mintlify docs validation", "Script tests", "Deterministic CI and release contracts"]) {
     namedStep(jobSteps(staticChecks), step);
   }
-  assert.match(namedStep(jobSteps(staticChecks), "Deterministic CI and release contracts"), /run: bun run test:ci-contracts/u);
+  assert.match(namedStep(jobSteps(staticChecks), "Deterministic CI and release contracts"), /run: npm run test:ci-contracts/u);
+  // pi parity: repository scripts Node can run are covered by `node --test`.
+  assert.match(namedStep(jobSteps(staticChecks), "Script tests"), /run: npm run test:scripts/u);
+});
+
+/**
+ * Dependencies install with `npm ci --ignore-scripts` everywhere, so every work
+ * job needs Node. Bun is still set up wherever a `scripts/*.ts`, the release
+ * binary compiler, or a Bun-hosted test fixture runs -- which is all four. A job
+ * that installs with npm but never sets Node up would fall back to whatever the
+ * runner image happens to ship, which is the drift this guards against.
+ */
+test("every work job installs with npm ci and sets up both runtimes it uses", async () => {
+  const blocks = await jobs();
+  for (const job of WORK_JOBS) {
+    const block = blocks.get(job) as string;
+    assert.match(block, /uses: actions\/setup-node@/u, `${job} installs with npm and must pin Node`);
+    assert.match(block, /^[ \t]+cache: npm$/mu, `${job} must cache the npm download`);
+    assert.match(block, /uses: oven-sh\/setup-bun@/u, `${job} runs Bun scripts, binaries, or fixtures`);
+    assert.match(namedStep(jobSteps(block), "Install dependencies"), /run: npm ci --ignore-scripts/u, job);
+    assert.doesNotMatch(block, /bun install/u, `${job} must not install with Bun`);
+  }
+  const workflow = await readText(testPath);
+  // The lockfile npm ci verifies is the only one left; bun.lock was deleted.
+  assert.doesNotMatch(workflow, /bun\.lock/u);
 });
 
 /**
@@ -148,22 +172,30 @@ test("every diagnostics upload has a job-unique artifact name", async () => {
 });
 
 /**
- * The duration-headroom guard parses Bun's per-test `(pass) name [Nms]` records.
- * Every suite must keep reaching it through an unmodified `bun run <script>`
- * command: a bare `bun test` or an added `--parallel` would change the records
- * the guard scores, and `--parallel` re-executes tests imported by an aggregator
- * file so healthy tests get scored twice, once under contention.
+ * The duration-headroom guard reads vitest's JSON reporter, and the wrapper adds
+ * those reporter flags itself. Every suite must keep reaching it through the
+ * unmodified `npm run <script>` command a developer also runs: a bare `vitest`
+ * invocation would bypass the script the budget is resolved through.
+ *
+ * The `--parallel|--shard|--concurrent|--max-concurrency` prohibition stays, and
+ * matters more than before. vitest parallelises by default, so sharding is the
+ * tempting way to "fix" a test that assumes an idle machine. It is not a fix; it
+ * hides the test that needs one, and it double-scores tests reached through an
+ * aggregator file, once under contention.
  */
 test("every retried suite still runs through the duration guard unmodified", async () => {
   const workflow = await readText(testPath);
-  const invocations = [...workflow.matchAll(/-- (bun run [^\n]+)$/gmu)].map(([, command]) => (command as string).trim());
+  const invocations = [...workflow.matchAll(/-- (npm run [^\n]+)$/gmu)].map(([, command]) => (command as string).trim());
   assert.deepEqual(invocations, [
-    "bun run test:unit",
-    "bun run test:integration",
-    "bun run --cwd packages/coding-agent --bun test",
+    "npm run test:unit",
+    "npm run test:integration",
+    "npm run test --workspace=@bastani/atomic",
   ]);
   assert.equal(workflow.split("run-flaky-test-suite.ts").length - 1, invocations.length);
   assert.doesNotMatch(workflow, /--parallel|--shard|--concurrent|--max-concurrency/u);
+  // The wrapper owns the reporter flags; a workflow that spelled them out would
+  // drift from the command developers run locally.
+  assert.doesNotMatch(workflow, /--reporter=json|--outputFile/u);
 });
 
 /**

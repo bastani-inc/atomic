@@ -5,6 +5,7 @@ import { createCheckpointIdGenerator } from "../../packages/workflows/src/durabl
 import { wrapUiWithDurable } from "../../packages/workflows/src/durable/ui-primitive.js";
 import type { WorkflowUIContext } from "../../packages/workflows/src/shared/authoring-contract-ui.js";
 import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
+import { sleep } from "../helpers/runtime.js";
 
 function mockDbos(): DbosSdkHandle {
   const workflows = new Map<string, DbosWorkflowInfo>();
@@ -67,7 +68,7 @@ describe("durable pending-prompt counter backends", () => {
     const promptB = wrapUiWithDurable(pendingInputUi(answerB.promise), {
       workflowId, backend: backendB, nextCheckpointId: createCheckpointIdGenerator(),
     }).input("B");
-    await Bun.sleep(0);
+    await sleep(0);
     await Promise.all([backendA.flush(), backendB.flush()]);
 
     const bothOpen = new DbosDurableBackend(sdk);

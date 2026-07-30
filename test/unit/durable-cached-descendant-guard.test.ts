@@ -17,6 +17,7 @@ import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/sh
 import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { createMockSdk } from "./durable-dbos-backend-helpers.js";
+import { sleep } from "../helpers/runtime.js";
 
 const HOLD_MESSAGE = "Hold the unrelated live sibling";
 
@@ -39,7 +40,7 @@ async function waitForInput(store: ReturnType<typeof createStore>, timeoutMs = 2
       const stage = runSnapshot.stages.find((candidate) => candidate.pendingPrompt?.kind === "input");
       if (stage !== undefined) return { runId: runSnapshot.id, stage };
     }
-    await Bun.sleep(5);
+    await sleep(5);
   }
   throw new Error(`input did not become pending: ${JSON.stringify(store.runs().map((snapshot) => ({
     id: snapshot.id, error: snapshot.error,
@@ -319,7 +320,7 @@ test.serial("cached completed boundary rejects an active descendant before publi
   assert.ok(job);
   const outcome = await Promise.race([
     job.then(() => ({ kind: "result" as const })),
-    Bun.sleep(250).then(() => ({ kind: "timeout" as const })),
+    sleep(250).then(() => ({ kind: "timeout" as const })),
   ]);
   if (outcome.kind === "timeout") {
     await quitRun(rootId, { store: workflowStore, stageControlRegistry: controls });

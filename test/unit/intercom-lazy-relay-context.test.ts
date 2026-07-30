@@ -26,6 +26,7 @@ import intercom from "../../packages/intercom/index.js";
 import intercomHeavy from "../../packages/intercom/index-heavy.js";
 import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 import type { IntercomExtensionTestOverrides } from "../../packages/intercom/intercom-test-seams.js";
+import { sleep } from "../helpers/runtime.js";
 
 type Handler = (event: Record<string, unknown>, ctx: Record<string, unknown>) => void | Promise<void>;
 
@@ -127,10 +128,10 @@ function fixture(options: { rejectLateRoutes?: number } = {}) {
 }
 
 async function settle(done: () => boolean): Promise<void> {
-	for (let attempt = 0; attempt < 200 && !done(); attempt++) await Bun.sleep(5);
+	for (let attempt = 0; attempt < 200 && !done(); attempt++) await sleep(5);
 	// One extra tick so any spurious follow-up work (extra acks, error
 	// entries) has a chance to surface before assertions.
-	await Bun.sleep(10);
+	await sleep(10);
 }
 
 describe("lazy relay lifecycle-context fallback", () => {

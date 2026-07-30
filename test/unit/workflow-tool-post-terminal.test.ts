@@ -7,6 +7,7 @@ import type { WorkflowToolPrimitive } from "../../packages/workflows/src/durable
 import { run } from "../../packages/workflows/src/engine/run.js";
 import type { Store } from "../../packages/workflows/src/shared/store-public-types.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { sleep } from "../helpers/runtime.js";
 
 async function assertClosedBeforeEffects(
   retainedTool: WorkflowToolPrimitive | undefined,
@@ -28,7 +29,7 @@ async function assertClosedBeforeEffects(
     assert.equal(rejected instanceof Promise, true, "ctx.tool still returns a native promise");
     await assert.rejects(rejected, /ctx\.tool admission is closed for this run/i);
     void retainedTool("late-void", {}, async () => { callbacks += 1; return "too late"; });
-    await Bun.sleep(0);
+    await sleep(0);
   } finally {
     process.off("unhandledRejection", onUnhandled);
   }

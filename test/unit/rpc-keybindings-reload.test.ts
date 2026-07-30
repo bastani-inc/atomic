@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import type { AgentSessionReloadOptions } from "../../packages/coding-agent/src/core/agent-session-types.ts";
 import { KeybindingsReloadCoordinator, reloadSessionWithKeybindings } from "../../packages/coding-agent/src/modes/rpc/rpc-keybindings-reload.ts";
+import { sleep } from "../helpers/runtime.js";
 
 function writeExpandBinding(agentDir: string, binding: string): void {
 	writeFileSync(join(agentDir, "keybindings.json"), JSON.stringify({ "app.tools.expand": binding }));
@@ -93,7 +94,7 @@ describe("RPC effective-keybinding reload transaction", () => {
 			const first = coordinator.reload(session);
 			await enteredPromises[0];
 			const second = coordinator.reload(session);
-			await Bun.sleep(0);
+			await sleep(0);
 			assert.equal(call, 1, "second transaction must not enter while first is pending");
 			releases[0]?.();
 			await first;

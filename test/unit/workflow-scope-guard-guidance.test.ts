@@ -11,12 +11,13 @@ import {
   type StageSessionRuntime,
   type WorkflowDefinition,
 } from "./executor-shared.js";
+import { fileExists, moduleDir, readText } from "../helpers/runtime.js";
 
-const repositoryRoot = resolve(import.meta.dir, "../..");
+const repositoryRoot = resolve(moduleDir(import.meta.url), "../..");
 const documentationPath = resolve(repositoryRoot, "packages/coding-agent/docs/workflows.md");
 
 async function readDocumentation(): Promise<string> {
-  return (await Bun.file(documentationPath).text()).replaceAll("\r\n", "\n");
+  return (await readText(documentationPath)).replaceAll("\r\n", "\n");
 }
 
 function extractExample(documentation: string, filename: string): string {
@@ -207,7 +208,7 @@ describe("workflow scope-guard guidance", () => {
       expect(result.status).toBe("completed");
       expect(prompts.get("retained scope guard")).toHaveLength(2);
       expect(prompts.get("retained scope guard")?.[1]).toContain("Recheck the complete candidate");
-      expect(await Bun.file(resolve(tempDirectory, "scope-decisions.md")).exists()).toBe(true);
+      expect(await fileExists(resolve(tempDirectory, "scope-decisions.md"))).toBe(true);
     } finally {
       await rm(tempDirectory, { recursive: true, force: true });
     }
@@ -267,13 +268,13 @@ describe("workflow scope-guard guidance", () => {
       const available = await execute("available", "warn", availableDir, () => { editorCalls += 1; });
       expect(available.status).toBe("completed");
       expect(editorCalls).toBe(0);
-      expect(await Bun.file(resolve(availableDir, "scope-decisions.md")).exists()).toBe(true);
+      expect(await fileExists(resolve(availableDir, "scope-decisions.md"))).toBe(true);
 
       const blockedDir = resolve(tempDirectory, "blocked");
       const blocked = await execute("unavailable", "block", blockedDir, () => { editorCalls += 1; });
       expect(blocked.status).toBe("completed");
       expect(editorCalls).toBe(1);
-      expect(await Bun.file(resolve(blockedDir, "scope-decisions.md")).exists()).toBe(true);
+      expect(await fileExists(resolve(blockedDir, "scope-decisions.md"))).toBe(true);
     } finally {
       await rm(tempDirectory, { recursive: true, force: true });
     }

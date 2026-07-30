@@ -10,6 +10,7 @@ import {
 } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
 import { inspectRun } from "../../packages/workflows/src/runs/background/run-inspect.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { sleep } from "../helpers/runtime.js";
 
 interface SentNotice {
   readonly content?: string;
@@ -132,7 +133,7 @@ describe("ctx.tool failure origin", () => {
     }), {}, { store, persistence });
 
     secondRelease.resolve();
-    await Bun.sleep(0);
+    await sleep(0);
     firstRelease.resolve();
     const result = await pending;
     unsubscribe();
@@ -248,7 +249,7 @@ describe("ctx.tool failure origin", () => {
     }), {}, { store });
 
     await secondEntered.promise;
-    await Bun.sleep(0);
+    await sleep(0);
     assert.deepEqual(store.runs()[0]?.toolNodes?.map((node) => [node.name, node.status]), [
       ["first-delayed", "cancelled"],
       ["second-awaited", "failed"],
@@ -283,7 +284,7 @@ describe("ctx.tool failure origin", () => {
     }), {}, { store });
 
     await awaitedEntered.promise;
-    await Bun.sleep(0);
+    await sleep(0);
     assert.deepEqual(store.runs()[0]?.toolNodes?.map((node) => [node.name, node.status]), [
       ["awaited-first", "running"],
       ["later-unawaited", "failed"],

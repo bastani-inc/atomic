@@ -1,5 +1,6 @@
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 interface PackageJson {
 	readonly dependencies?: Record<string, string>;
@@ -17,7 +18,7 @@ interface CopyRuntimeDependenciesOptions {
 	readonly destinationNodeModules?: string;
 }
 
-const defaultPackageRoot = resolve(import.meta.dir, "..");
+const defaultPackageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 function readPackageJson(packageJsonPath: string): PackageJson {
 	return JSON.parse(readFileSync(packageJsonPath, "utf-8")) as PackageJson;

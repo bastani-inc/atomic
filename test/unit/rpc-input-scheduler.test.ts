@@ -4,6 +4,7 @@ import { createRpcInputLineHandler } from "../../packages/coding-agent/src/modes
 import { createRpcInputScheduler, isConcurrentRpcControlLine } from "../../packages/coding-agent/src/modes/rpc/rpc-input-scheduler.ts";
 import { createRpcSuccessResponse, type RpcOutputRecord } from "../../packages/coding-agent/src/modes/rpc/rpc-responses.ts";
 import { createRpcCommandHandler, type RpcCommandHandler } from "../../packages/coding-agent/src/modes/rpc/rpc-command-handler.ts";
+import { sleep } from "../helpers/runtime.js";
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
 	let resolve!: () => void;
@@ -28,12 +29,12 @@ test("abort_compaction reaches a running compact command without waiting for it 
 
 	await Promise.race([
 		abortHandled.promise,
-		Bun.sleep(50).then(() => { throw new Error("abort_compaction remained queued behind compact"); }),
+		sleep(50).then(() => { throw new Error("abort_compaction remained queued behind compact"); }),
 	]);
 	assert.deepEqual(calls, ["compact:start", "abort_compaction:start", "abort_compaction:end"]);
 
 	compact.resolve();
-	await Bun.sleep(0);
+	await sleep(0);
 	assert.deepEqual(calls, ["compact:start", "abort_compaction:start", "abort_compaction:end", "compact:end"]);
 });
 
@@ -53,12 +54,12 @@ test("pause_queued_messages reaches a running prompt before abort", async () => 
 	dispatch('{"type":"pause_queued_messages"}');
 	await Promise.race([
 		pauseHandled.promise,
-		Bun.sleep(50).then(() => { throw new Error("pause remained queued behind prompt"); }),
+		sleep(50).then(() => { throw new Error("pause remained queued behind prompt"); }),
 	]);
 	assert.deepEqual(calls, ["prompt:start", "pause_queued_messages:start", "pause_queued_messages:end"]);
 
 	prompt.resolve();
-	await Bun.sleep(0);
+	await sleep(0);
 });
 
 test("ordinary RPC commands remain ordered while a command is running", async () => {
@@ -73,11 +74,11 @@ test("ordinary RPC commands remain ordered while a command is running", async ()
 
 	dispatch('{"type":"compact"}');
 	dispatch('{"type":"get_state"}');
-	await Bun.sleep(0);
+	await sleep(0);
 	assert.deepEqual(calls, ["compact:start"]);
 
 	compact.resolve();
-	await Bun.sleep(0);
+	await sleep(0);
 	assert.deepEqual(calls, ["compact:start", "compact:end", "get_state:start", "get_state:end"]);
 });
 
@@ -93,7 +94,7 @@ test("host protocol responses bypass a running RPC command", async () => {
 	dispatch('{"type":"compact"}');
 	dispatch('{"type":"extension_ui_response","id":"ui-1","value":true}');
 	dispatch('{"type":"engine_custom_input","componentId":"ui-2","data":"escape"}');
-	await Bun.sleep(0);
+	await sleep(0);
 
 	assert.deepEqual(handled, ["compact", "extension_ui_response", "engine_custom_input"]);
 	compact.resolve();
@@ -132,7 +133,7 @@ test("a rejected ordinary command drains the next ordinary frame", async () => {
 	dispatch('{"type":"compact"}');
 	dispatch('{"type":"get_state"}');
 	compact.resolve();
-	await Bun.sleep(0);
+	await sleep(0);
 	assert.deepEqual(calls, ["compact", "get_state"]);
 });
 
@@ -148,13 +149,13 @@ test("duplicate and late compaction aborts remain independent harmless controls"
 	dispatch('{"id":"compact","type":"compact"}');
 	dispatch('{"id":"abort-1","type":"abort_compaction"}');
 	dispatch('{"id":"abort-2","type":"abort_compaction"}');
-	await Bun.sleep(0);
+	await sleep(0);
 	assert.deepEqual(calls, ["compact", "abort-1", "abort-2"]);
 
 	compact.resolve();
-	await Bun.sleep(0);
+	await sleep(0);
 	dispatch('{"id":"abort-late","type":"abort_compaction"}');
-	await Bun.sleep(0);
+	await sleep(0);
 	assert.deepEqual(calls, ["compact", "abort-1", "abort-2", "abort-late"]);
 });
 
@@ -180,14 +181,14 @@ test("RPC input returns the correlated abort response before compact settles", a
 	dispatch('{"id":"abort-1","type":"abort_compaction"}');
 	await Promise.race([
 		(async () => {
-			while (records.length === 0) await Bun.sleep(1);
+			while (records.length === 0) await sleep(1);
 		})(),
-		Bun.sleep(50).then(() => { throw new Error("abort_compaction response timed out"); }),
+		sleep(50).then(() => { throw new Error("abort_compaction response timed out"); }),
 	]);
 	assert.deepEqual(records, [{ id: "abort-1", type: "response", command: "abort_compaction", success: true }]);
 
 	compact.resolve();
-	await Bun.sleep(0);
+	await sleep(0);
 	assert.deepEqual(records[1], {
 		id: "compact-1",
 		type: "response",
@@ -226,9 +227,9 @@ test("abort_compaction reaches the RPC session and terminates active compaction"
 	dispatch('{"id":"abort-real","type":"abort_compaction"}');
 	await Promise.race([
 		(async () => {
-			while (records.length < 2) await Bun.sleep(1);
+			while (records.length < 2) await sleep(1);
 		})(),
-		Bun.sleep(50).then(() => { throw new Error("active compaction did not terminate"); }),
+		sleep(50).then(() => { throw new Error("active compaction did not terminate"); }),
 	]);
 
 	assert.equal(abortCalls, 1);

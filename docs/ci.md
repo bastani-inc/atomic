@@ -298,7 +298,7 @@ Linux and Windows x64 each run `scripts/build-binaries.sh` for their platform, e
 
 After native and smoke jobs pass, `build`:
 
-1. Installs with `bun install --frozen-lockfile` and runs `bun run check:shrinkwrap`.
+1. Installs with `npm ci --ignore-scripts` and runs `npm run check:shrinkwrap`.
 2. Generates native platform package directories and the native root manifest.
 3. Runs `scripts/build-binaries.sh --skip-install` for all six archives.
 4. Validates package identity, versions, public/private metadata, binary entrypoint, workspace dependency ranges, build outputs, six native modules, and six exact-version native optional dependencies.

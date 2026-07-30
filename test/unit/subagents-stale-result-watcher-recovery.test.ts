@@ -12,6 +12,7 @@ import {
 	SUBAGENT_RESULT_INTERCOM_EVENT,
 	type SubagentState,
 } from "../../packages/subagents/src/shared/types.js";
+import { sleep } from "../helpers/runtime.js";
 
 function createResultWatcher(...args: Parameters<typeof createRawResultWatcher>): ReturnType<typeof createRawResultWatcher> {
 	const [pi, state, resultsDir, ttl, deps = {}] = args;
@@ -46,7 +47,7 @@ function makeWatcher(resultsDir: string, sessionId: string) {
 	return { watcher: createResultWatcher({ events }, state(sessionId), resultsDir, 60_000), delivered };
 }
 
-async function settle(): Promise<void> { await Bun.sleep(80); }
+async function settle(): Promise<void> { await sleep(80); }
 
 test("stale repair does not commit terminal status until its exact result payload is staged", () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-stale-repair-retry-"));
@@ -169,7 +170,7 @@ test("failed local completion notification remains retryable until acknowledged"
 	};
 	const watcher = createResultWatcher({ events }, runState, resultsDir, 60_000, { deliveryRetryBaseMs: 10 });
 	watcher.primeExistingResults();
-	await Bun.sleep(100);
+	await sleep(100);
 	assert.equal(attempts, 2);
 	assert.equal(fs.existsSync(resultPath), false);
 	assert.equal(runState.completionSeen.size, 1);
@@ -212,13 +213,13 @@ test("acknowledged intercom remains idempotent while local notification retries"
 	};
 	const firstWatcher = createResultWatcher({ events }, runState, resultsDir, 5, { deliveryRetryBaseMs: 500 });
 	firstWatcher.primeExistingResults();
-	await Bun.sleep(80);
+	await sleep(80);
 	assert.equal(intercomAttempts, 1);
 	assert.equal(completionAttempts, 1);
 	firstWatcher.stopResultWatcher();
 	const replacement = createResultWatcher({ events }, state("session"), resultsDir, 5, { deliveryRetryBaseMs: 20 });
 	replacement.primeExistingResults();
-	await Bun.sleep(100);
+	await sleep(100);
 	assert.equal(intercomAttempts, 1, "a completed Intercom phase must survive TTL and watcher replacement");
 	assert.equal(completionAttempts, 2);
 	assert.equal(fs.existsSync(resultPath), false);
