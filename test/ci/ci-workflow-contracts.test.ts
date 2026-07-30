@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { jobBlock, jobBlocks, jobSteps, namedStep, readText } from "./workflow-text.js";
 import {
   canonicalReleaseBaseRef,
   parseReleaseBaseTrailers,
@@ -16,73 +17,10 @@ const testPath = join(root, ".github/workflows/test.yml");
 const warmPath = join(root, ".github/workflows/warm-toolchain-cache.yml");
 
 /**
- * File text with platform-neutral newlines.
- *
- * These contracts assert on what the repository stores, which is LF. But
- * `.gitattributes` marks `*.yml` as `text` without `eol=lf`, so the Windows
- * runner checks the workflows out as CRLF, and any pattern here containing a
- * literal `\n` would then pass on Linux and fail on Windows.
+ * The `test` job's own topology contracts live in test-workflow-topology.test.ts.
+ * It is now a result gate over four concurrent work jobs, and the
+ * anti-un-protection assertions belong beside the ones describing that split.
  */
-async function readText(path: string): Promise<string> {
-  return (await Bun.file(path).text()).replaceAll("\r\n", "\n");
-}
-
-function jobBlock(workflow: string, name: string, next?: string): string {
-  const start = workflow.indexOf(`  ${name}:`);
-  assert.notEqual(start, -1, `missing job: ${name}`);
-  const end = next ? workflow.indexOf(`  ${next}:`, start + 1) : workflow.length;
-  return workflow.slice(start, end);
-}
-
-function stepBlock(workflow: string, name: string, next: string): string {
-  const start = workflow.indexOf(`- name: ${name}`);
-  assert.notEqual(start, -1, `missing step: ${name}`);
-  const end = workflow.indexOf(`- name: ${next}`, start + 1);
-  assert.notEqual(end, -1, `missing next step: ${next}`);
-  return workflow.slice(start, end);
-}
-
-/** Split a job block into its individual steps, indentation-agnostically. */
-function jobSteps(block: string): string[] {
-  const header = /^(\s*)steps:$/mu.exec(block);
-  assert.ok(header, "job declares no steps");
-  const body = block.slice(header.index + header[0].length);
-  const first = /^([ \t]+)- /mu.exec(body);
-  assert.ok(first, "job declares no steps");
-  return body.split(new RegExp(`^${first[1] as string}- `, "gmu")).slice(1);
-}
-
-/** Every job in a workflow, paired with its own block. */
-function jobBlocks(workflow: string): [string, string][] {
-  const jobs = workflow.slice(workflow.indexOf("\njobs:\n"));
-  const names = [...jobs.matchAll(/^  ([a-z][a-z0-9-]*):$/gmu)].map(([, name]) => name as string);
-  return names.map((name, index) => [name, jobBlock(jobs, name, names[index + 1])]);
-}
-
-test("test workflow preserves its two-platform matrix and deterministic contracts", async () => {
-  const workflow = await readText(join(root, ".github/workflows/test.yml"));
-  const testJob = jobBlock(workflow, "test");
-  assert.match(testJob, /^[ \t]+name: test \(\$\{\{ matrix\.os \}\}, \$\{\{ matrix\.binary_platform \}\}\)$/mu);
-  const matrixContexts = [...testJob.matchAll(/^[ \t]+- os: (\S+)\s+binary_platform: (\S+)$/gmu)]
-    .map(([, os, platform]) => `test (${os}, ${platform})`);
-  assert.deepEqual(matrixContexts, [
-    "test (blacksmith-4vcpu-ubuntu-2404, linux-x64)",
-    "test (blacksmith-4vcpu-windows-2025, windows-x64)",
-  ]);
-  assert.match(workflow, /blacksmith-4vcpu-ubuntu-2404/);
-  assert.match(workflow, /blacksmith-4vcpu-windows-2025/);
-  assert.match(workflow, /blacksmith-4vcpu-ubuntu-2404\s+binary_platform: linux-x64\s+timeout_minutes: 10/);
-  assert.match(workflow, /blacksmith-4vcpu-windows-2025\s+binary_platform: windows-x64\s+timeout_minutes: 15/);
-  assert.match(workflow, /timeout-minutes: \$\{\{ matrix\.timeout_minutes \}\}/);
-  assert.match(workflow, /name: Deterministic CI and release contracts[\s\S]*run: bun run test:ci-contracts/);
-  assert.match(workflow, /Smoke test Linux release archive/);
-  assert.match(workflow, /Smoke test Windows release archive/);
-  assert.match(
-    stepBlock(workflow, "coding-agent vitest suite (one bounded flake retry)", "Build native release binary"),
-    /ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE: "1"/u,
-  );
-});
-
 /**
  * The per-test timeout budget lives in package.json and nowhere else.
  *
@@ -124,8 +62,12 @@ test("binary staging and every release smoke verify the exact builtin directory 
   const publishWorkflow = await readText(publishPath);
   const buildScript = await readText(join(root, "scripts/build-binaries.sh"));
 
-  assert.match(stepBlock(testWorkflow, "Smoke test Linux release archive", "Smoke test Windows release archive"), checker);
-  assert.match(stepBlock(testWorkflow, "Smoke test Windows release archive", "Upload flaky-test diagnostics"), checker);
+  // Both smoke steps now live in the release-archive job. Anchor on the job so
+  // the assertion does not depend on which step happens to follow them.
+  const archiveSteps = jobSteps(jobBlock(testWorkflow, "release-archive", "static-checks"));
+  for (const platform of ["Linux", "Windows"]) {
+    assert.match(namedStep(archiveSteps, `Smoke test ${platform} release archive`), checker);
+  }
   assert.equal(testWorkflow.split("scripts/assert-builtin-set.ts").length - 1, 2);
   assert.match(jobBlock(publishWorkflow, "linux-binary-smoke", "windows-binary-smoke"), checker);
   assert.match(jobBlock(publishWorkflow, "windows-binary-smoke", "build"), checker);
@@ -341,14 +283,22 @@ test("sticky-disk checkout stays on Blacksmith Linux runners", async () => {
     }
   }
   const publish = await readText(publishPath);
+  const testWorkflow = await readText(testPath);
   assert.doesNotMatch(jobBlock(publish, "windows-binary-smoke", "build"), /useblacksmith/u);
+  // Every cross-platform job in test.yml now checks out for itself, so each one
+  // must keep the Linux/non-Linux checkout pair.
+  const crossPlatformJobs = ["suites", "agent-suite", "release-archive"] as const;
+  const testJobs = new Map(jobBlocks(testWorkflow));
   for (const block of [
     jobBlock(publish, "native-artifacts", "linux-binary-smoke"),
-    jobBlock(await readText(testPath), "test"),
+    ...crossPlatformJobs.map((job) => testJobs.get(job) as string),
   ]) {
     assert.match(block, /uses: useblacksmith\/checkout@[0-9a-f]{40}[^\n]*\n\s+if: runner\.os == 'Linux'/u);
     assert.match(block, /uses: actions\/checkout@[0-9a-f]{40}[^\n]*\n\s+if: runner\.os != 'Linux'/u);
   }
+  // The Linux-only static-checks job needs no guard, and the result gate checks
+  // out nothing at all.
+  assert.doesNotMatch(testJobs.get("test") as string, /checkout/u);
 });
 
 test("every third-party action is pinned to a full commit SHA with a version comment", async () => {

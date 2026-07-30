@@ -1,216 +1,385 @@
 name: Tests
 
 env:
-    PREK_DISABLE_INSTALL: "1"
+  PREK_DISABLE_INSTALL: "1"
 
 permissions:
-    contents: read
+  contents: read
 
 on:
-    push:
-        branches: [main, "release/**", "prerelease/**"]
-    pull_request:
+  push:
+    branches: [main, "release/**", "prerelease/**"]
+  pull_request:
 
+# The work runs as four concurrent jobs instead of one sequential per-platform
+# job, so the wall clock is the longest *dependent* chain rather than the sum of
+# every step. Steps stay together only when one consumes another's build output:
+#
+#   suites          build package -> unit -> integration
+#   agent-suite     build native bindings -> coding-agent vitest
+#   release-archive build package -> build-binaries.sh -> archive smoke
+#   static-checks   typecheck, file length, docs, Mintlify, CI contracts (Linux)
+#   test            result gate; carries the two required check contexts
+#
+# Nothing is passed between jobs as an artifact: rebuilding in parallel is
+# cheaper in wall clock than serializing on an upload/download pair.
 jobs:
-    test:
-        name: test (${{ matrix.os }}, ${{ matrix.binary_platform }})
-        strategy:
-            matrix:
-                include:
-                    - os: blacksmith-4vcpu-ubuntu-2404
-                      binary_platform: linux-x64
-                      timeout_minutes: 10
-                    - os: blacksmith-4vcpu-windows-2025
-                      binary_platform: windows-x64
-                      timeout_minutes: 15
-            fail-fast: false
-        runs-on: ${{ matrix.os }}
-        # Bounded so a hung process cannot consume GitHub's 360-minute default.
-        timeout-minutes: ${{ matrix.timeout_minutes }}
-        steps:
-            # Sticky disks are Blacksmith-Linux-only; Windows takes a standard clone.
-            - uses: useblacksmith/checkout@01ab2a058dd0d41e292217b76582a6f9867c02ce # v1.0.0-beta
-              if: runner.os == 'Linux'
-              with:
-                  # LFS fixtures are required by the coding-agent test suite.
-                  lfs: true
-                  # Full history and tags support CI contract fixtures and release tooling.
-                  fetch-depth: 0
-            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-              if: runner.os != 'Linux'
-              with:
-                  lfs: true
-                  fetch-depth: 0
-            - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-              with:
-                  # Pinned to match publish.yml; `latest` cannot be cached by setup-bun.
-                  bun-version: 1.3.14
-            # Node is required by installed-package-node-extensions.test.ts, which
-            # smoke-tests the built npm package under the Node runtime.
-            - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-              with:
-                  node-version: 24
-            - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
-              timeout-minutes: 4
-              with:
-                  # Required once pinned by SHA: the version otherwise comes from the ref.
-                  toolchain: stable
-            - name: Install dependencies
-              run: bun install --frozen-lockfile
-            - name: Typecheck
-              if: runner.os == 'Linux'
-              run: bun run typecheck
-            - name: File length check
-              if: runner.os == 'Linux'
-              run: bun run check:file-length
-            - name: Docs link validation
-              if: runner.os == 'Linux'
-              working-directory: packages/coding-agent
-              run: bun run docs:check
-            - name: Mintlify docs validation
-              if: runner.os == 'Linux' && github.event_name == 'pull_request'
-              working-directory: packages/coding-agent/docs
-              # Pinned: mintlify@4.2.732 pulls a package missing from the registry.
-              # Unpin once upstream publishes a resolvable release.
-              timeout-minutes: 5
-              run: |
-                  bunx --bun mintlify@4.2.731 validate
-                  bunx --bun mintlify@4.2.731 broken-links
-            - name: Build @bastani/atomic package
-              working-directory: packages/coding-agent
-              run: bun run build
-            - name: Deterministic CI and release contracts
-              run: bun run test:ci-contracts
-            - name: Unit tests (one bounded flake retry)
-              run: >-
-                  bun run scripts/run-flaky-test-suite.ts --label "unit tests (${{ matrix.binary_platform }})"
-                  --no-retry-file flaky-test-suite-runner.test.ts
-                  -- bun run test:unit
-            - name: Integration tests (one bounded flake retry)
-              run: >-
-                  bun run scripts/run-flaky-test-suite.ts --label "integration tests (${{ matrix.binary_platform }})"
-                  -- bun run test:integration
-              env:
-                  # Hard-require the installed-package Node smoke where the package
-                  # build above guarantees dist/ exists on both supported hosts.
-                  ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE: "1"
-            - name: Build native bindings for package tests
-              run: bun run --cwd packages/natives build
-            - name: coding-agent vitest suite (one bounded flake retry)
-              run: >-
-                  bun run scripts/run-flaky-test-suite.ts --label "coding-agent tests (${{ matrix.binary_platform }})"
-                  -- bun run --cwd packages/coding-agent --bun test
-              env:
-                  ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE: "1"
-            - name: Build native release binary
-              shell: bash
-              run: ./scripts/build-binaries.sh --skip-install --skip-package-build --platform "${{ matrix.binary_platform }}"
-            - name: Smoke test Linux release archive
-              if: runner.os == 'Linux'
-              shell: bash
-              run: |
-                  set -euo pipefail
-                  smoke_dir="$RUNNER_TEMP/atomic-binary-smoke"
-                  rm -rf "$smoke_dir"
-                  mkdir -p "$smoke_dir"
-                  tar -xzf packages/coding-agent/binaries/atomic-linux-x64.tar.gz -C "$smoke_dir"
-                  "$smoke_dir/atomic/atomic" --version
-                  bun run scripts/assert-builtin-set.ts "$smoke_dir/atomic/builtin"
-                  for required_path in \
-                    builtin/workflows/package.json \
-                    builtin/workflows/src/extension/index.ts \
-                    builtin/subagents/package.json \
-                    builtin/subagents/src/extension/index.ts \
-                    builtin/mcp/package.json \
-                    builtin/mcp/index.ts \
-                    builtin/web-access/package.json \
-                    builtin/web-access/index.ts \
-                    builtin/intercom/package.json \
-                    builtin/intercom/index.ts \
-                    node_modules/@bastani/atomic-natives/package.json \
-                    node_modules/@bastani/atomic-natives/native/index.js \
-                    node_modules/@bastani/atomic-natives/native/atomic_natives.linux-x64-gnu.node \
-                    node_modules/@modelcontextprotocol/ext-apps/package.json \
-                    node_modules/@mozilla/readability/package.json; do
-                    test -f "$smoke_dir/atomic/$required_path" || {
-                      echo "Missing release archive path: $required_path" >&2
-                      exit 1
-                    }
-                  done
-                  # Run from a clean temp cwd so repo-local config (e.g. .mcp.json)
-                  # can't leak into the smoke run and hang startup.
-                  work_dir="$RUNNER_TEMP/atomic-binary-smoke-cwd"
-                  rm -rf "$work_dir"
-                  mkdir -p "$work_dir"
-                  set +e
-                  output=$(cd "$work_dir" && printf '' | "$smoke_dir/atomic/atomic" --no-session 2>&1)
-                  status=$?
-                  set -e
-                  echo "$output"
-                  if grep -q 'Failed to load extension' <<<"$output"; then
-                    exit 1
-                  fi
-                  if [ "$status" -ne 0 ] && ! grep -Eq 'No models available|No model selected|No API key found' <<<"$output"; then
-                    exit "$status"
-                  fi
-            - name: Smoke test Windows release archive
-              if: runner.os == 'Windows'
-              shell: pwsh
-              run: |
-                  $ErrorActionPreference = "Stop"
-                  $smokeDir = Join-Path $env:RUNNER_TEMP "atomic-binary-smoke"
-                  Remove-Item -Recurse -Force $smokeDir -ErrorAction SilentlyContinue
-                  New-Item -ItemType Directory -Path $smokeDir | Out-Null
-                  Expand-Archive -Path packages/coding-agent/binaries/atomic-windows-x64.zip -DestinationPath $smokeDir
-                  $atomic = Join-Path $smokeDir "atomic.exe"
-                  & $atomic --version
-                  if ($LASTEXITCODE -ne 0) {
-                    exit $LASTEXITCODE
-                  }
-                  bun run scripts/assert-builtin-set.ts (Join-Path $smokeDir "builtin")
-                  foreach ($requiredPath in @(
-                    "builtin/workflows/package.json",
-                    "builtin/workflows/src/extension/index.ts",
-                    "builtin/subagents/package.json",
-                    "builtin/subagents/src/extension/index.ts",
-                    "builtin/mcp/package.json",
-                    "builtin/mcp/index.ts",
-                    "builtin/web-access/package.json",
-                    "builtin/web-access/index.ts",
-                    "builtin/intercom/package.json",
-                    "builtin/intercom/index.ts",
-                    "node_modules/@bastani/atomic-natives/package.json",
-                    "node_modules/@bastani/atomic-natives/native/index.js",
-                    "node_modules/@bastani/atomic-natives/native/atomic_natives.win32-x64-msvc.node",
-                    "node_modules/@modelcontextprotocol/ext-apps/package.json",
-                    "node_modules/@mozilla/readability/package.json"
-                  )) {
-                    $archivePath = Join-Path $smokeDir $requiredPath
-                    if (-not (Test-Path $archivePath)) {
-                      throw "Missing release archive path: $requiredPath"
-                    }
-                  }
-                  # Run from a clean temp cwd so repo-local config (e.g. .mcp.json)
-                  # can't leak into the smoke run and hang startup.
-                  $workDir = Join-Path $env:RUNNER_TEMP "atomic-binary-smoke-cwd"
-                  Remove-Item -Recurse -Force $workDir -ErrorAction SilentlyContinue
-                  New-Item -ItemType Directory -Path $workDir | Out-Null
-                  Push-Location $workDir
-                  $output = "" | & $atomic --no-session 2>&1 | Out-String
-                  $status = $LASTEXITCODE
-                  Pop-Location
-                  Write-Host $output
-                  if ($output -match "Failed to load extension") {
-                    exit 1
-                  }
-                  if ($status -ne 0 -and $output -notmatch "No models available|No model selected|No API key found") {
-                    exit $status
-                  }
-            - name: Upload flaky-test diagnostics
-              if: always()
-              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-              with:
-                  name: test-diagnostics-${{ matrix.binary_platform }}
-                  path: .ci-diagnostics/
-                  if-no-files-found: ignore
-                  retention-days: 14
+  suites:
+    name: suites (${{ matrix.os }}, ${{ matrix.binary_platform }})
+    strategy:
+      matrix:
+        include:
+          - os: blacksmith-4vcpu-ubuntu-2404
+            binary_platform: linux-x64
+            timeout_minutes: 6
+          - os: blacksmith-4vcpu-windows-2025
+            binary_platform: windows-x64
+            timeout_minutes: 8
+      fail-fast: false
+    runs-on: ${{ matrix.os }}
+    # Measured 121s Linux / 195s Windows, and the unit step can double when its
+    # one bounded flake retry fires. The cap is a hang detector at roughly 2x
+    # measured p100, not a performance budget.
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    steps:
+      # Sticky disks are Blacksmith-Linux-only; Windows takes a standard clone.
+      - uses: useblacksmith/checkout@01ab2a058dd0d41e292217b76582a6f9867c02ce # v1.0.0-beta
+        if: runner.os == 'Linux'
+        with:
+          # LFS fixtures are required by the coding-agent test suite.
+          lfs: true
+          # Full history and tags support CI contract fixtures and release tooling.
+          fetch-depth: 0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: runner.os != 'Linux'
+        with:
+          lfs: true
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          # Pinned to match publish.yml; `latest` cannot be cached by setup-bun.
+          bun-version: 1.3.14
+      # Node is required by installed-package-node-extensions.test.ts, which
+      # smoke-tests the built npm package under the Node runtime.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      # Both suites below consume this build. test/unit/pi-0.82.1-artifacts.test.ts
+      # silently degrades to test.skip when packages/coding-agent/dist is absent,
+      # so moving the unit suite out of this job would lose coverage without
+      # failing anything.
+      - name: Build @bastani/atomic package
+        working-directory: packages/coding-agent
+        run: bun run build
+      - name: Unit tests (one bounded flake retry)
+        run: >-
+          bun run scripts/run-flaky-test-suite.ts --label "unit tests (${{ matrix.binary_platform }})"
+          --no-retry-file flaky-test-suite-runner.test.ts
+          -- bun run test:unit
+      - name: Integration tests (one bounded flake retry)
+        run: >-
+          bun run scripts/run-flaky-test-suite.ts --label "integration tests (${{ matrix.binary_platform }})"
+          -- bun run test:integration
+        env:
+          # Hard-require the installed-package Node smoke where the package
+          # build above guarantees dist/ exists on both supported hosts.
+          ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE: "1"
+      - name: Upload flaky-test diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          # Artifact names must be unique across every job in the run:
+          # actions/upload-artifact@v4+ fails the whole run on a duplicate.
+          name: test-diagnostics-suites-${{ matrix.binary_platform }}
+          path: .ci-diagnostics/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  agent-suite:
+    name: agent-suite (${{ matrix.os }}, ${{ matrix.binary_platform }})
+    strategy:
+      matrix:
+        include:
+          - os: blacksmith-4vcpu-ubuntu-2404
+            binary_platform: linux-x64
+            timeout_minutes: 6
+          - os: blacksmith-4vcpu-windows-2025
+            binary_platform: windows-x64
+            timeout_minutes: 9
+      fail-fast: false
+    runs-on: ${{ matrix.os }}
+    # Measured 126s Linux / 232s Windows. This is the critical path of the whole
+    # workflow, so its cap is the one with the least slack to give.
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    steps:
+      - uses: useblacksmith/checkout@01ab2a058dd0d41e292217b76582a6f9867c02ce # v1.0.0-beta
+        if: runner.os == 'Linux'
+        with:
+          # The only LFS fixtures in the repository live under
+          # packages/coding-agent/test/fixtures, so this job genuinely needs them.
+          lfs: true
+          fetch-depth: 0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: runner.os != 'Linux'
+        with:
+          lfs: true
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        timeout-minutes: 4
+        with:
+          # Required once pinned by SHA: the version otherwise comes from the ref.
+          toolchain: stable
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      # packages/coding-agent/test/native-binding-exports.test.ts is hard-required
+      # by ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE below, so the vitest suite must
+      # stay behind this build.
+      - name: Build native bindings for package tests
+        run: bun run --cwd packages/natives build
+      - name: coding-agent vitest suite (one bounded flake retry)
+        run: >-
+          bun run scripts/run-flaky-test-suite.ts --label "coding-agent tests (${{ matrix.binary_platform }})"
+          -- bun run --cwd packages/coding-agent --bun test
+        env:
+          ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE: "1"
+      - name: Upload flaky-test diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-diagnostics-agent-suite-${{ matrix.binary_platform }}
+          path: .ci-diagnostics/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  release-archive:
+    name: release-archive (${{ matrix.os }}, ${{ matrix.binary_platform }})
+    strategy:
+      matrix:
+        include:
+          - os: blacksmith-4vcpu-ubuntu-2404
+            binary_platform: linux-x64
+            timeout_minutes: 5
+          - os: blacksmith-4vcpu-windows-2025
+            binary_platform: windows-x64
+            timeout_minutes: 6
+      fail-fast: false
+    runs-on: ${{ matrix.os }}
+    # Measured 74s Linux / 149s Windows, including the native binding rebuild
+    # this job pays for itself (see the Rust toolchain note below).
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    steps:
+      - uses: useblacksmith/checkout@01ab2a058dd0d41e292217b76582a6f9867c02ce # v1.0.0-beta
+        if: runner.os == 'Linux'
+        with:
+          lfs: true
+          fetch-depth: 0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: runner.os != 'Linux'
+        with:
+          lfs: true
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+      # scripts/build-binaries.sh reuses packages/natives/native/*.node when they
+      # exist and otherwise builds them, so this job needs the Rust toolchain and
+      # pays the native build again rather than waiting on agent-suite. That is a
+      # runner-second cost, not a wall-clock one.
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        timeout-minutes: 4
+        with:
+          toolchain: stable
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Build @bastani/atomic package
+        working-directory: packages/coding-agent
+        run: bun run build
+      - name: Build native release binary
+        shell: bash
+        run: ./scripts/build-binaries.sh --skip-install --skip-package-build --platform "${{ matrix.binary_platform }}"
+      - name: Smoke test Linux release archive
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          smoke_dir="$RUNNER_TEMP/atomic-binary-smoke"
+          rm -rf "$smoke_dir"
+          mkdir -p "$smoke_dir"
+          tar -xzf packages/coding-agent/binaries/atomic-linux-x64.tar.gz -C "$smoke_dir"
+          "$smoke_dir/atomic/atomic" --version
+          bun run scripts/assert-builtin-set.ts "$smoke_dir/atomic/builtin"
+          for required_path in \
+            builtin/workflows/package.json \
+            builtin/workflows/src/extension/index.ts \
+            builtin/subagents/package.json \
+            builtin/subagents/src/extension/index.ts \
+            builtin/mcp/package.json \
+            builtin/mcp/index.ts \
+            builtin/web-access/package.json \
+            builtin/web-access/index.ts \
+            builtin/intercom/package.json \
+            builtin/intercom/index.ts \
+            node_modules/@bastani/atomic-natives/package.json \
+            node_modules/@bastani/atomic-natives/native/index.js \
+            node_modules/@bastani/atomic-natives/native/atomic_natives.linux-x64-gnu.node \
+            node_modules/@modelcontextprotocol/ext-apps/package.json \
+            node_modules/@mozilla/readability/package.json; do
+            test -f "$smoke_dir/atomic/$required_path" || {
+              echo "Missing release archive path: $required_path" >&2
+              exit 1
+            }
+          done
+          # Run from a clean temp cwd so repo-local config (e.g. .mcp.json)
+          # can't leak into the smoke run and hang startup.
+          work_dir="$RUNNER_TEMP/atomic-binary-smoke-cwd"
+          rm -rf "$work_dir"
+          mkdir -p "$work_dir"
+          set +e
+          output=$(cd "$work_dir" && printf '' | "$smoke_dir/atomic/atomic" --no-session 2>&1)
+          status=$?
+          set -e
+          echo "$output"
+          if grep -q 'Failed to load extension' <<<"$output"; then
+            exit 1
+          fi
+          if [ "$status" -ne 0 ] && ! grep -Eq 'No models available|No model selected|No API key found' <<<"$output"; then
+            exit "$status"
+          fi
+      - name: Smoke test Windows release archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $smokeDir = Join-Path $env:RUNNER_TEMP "atomic-binary-smoke"
+          Remove-Item -Recurse -Force $smokeDir -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $smokeDir | Out-Null
+          Expand-Archive -Path packages/coding-agent/binaries/atomic-windows-x64.zip -DestinationPath $smokeDir
+          $atomic = Join-Path $smokeDir "atomic.exe"
+          & $atomic --version
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          bun run scripts/assert-builtin-set.ts (Join-Path $smokeDir "builtin")
+          foreach ($requiredPath in @(
+            "builtin/workflows/package.json",
+            "builtin/workflows/src/extension/index.ts",
+            "builtin/subagents/package.json",
+            "builtin/subagents/src/extension/index.ts",
+            "builtin/mcp/package.json",
+            "builtin/mcp/index.ts",
+            "builtin/web-access/package.json",
+            "builtin/web-access/index.ts",
+            "builtin/intercom/package.json",
+            "builtin/intercom/index.ts",
+            "node_modules/@bastani/atomic-natives/package.json",
+            "node_modules/@bastani/atomic-natives/native/index.js",
+            "node_modules/@bastani/atomic-natives/native/atomic_natives.win32-x64-msvc.node",
+            "node_modules/@modelcontextprotocol/ext-apps/package.json",
+            "node_modules/@mozilla/readability/package.json"
+          )) {
+            $archivePath = Join-Path $smokeDir $requiredPath
+            if (-not (Test-Path $archivePath)) {
+              throw "Missing release archive path: $requiredPath"
+            }
+          }
+          # Run from a clean temp cwd so repo-local config (e.g. .mcp.json)
+          # can't leak into the smoke run and hang startup.
+          $workDir = Join-Path $env:RUNNER_TEMP "atomic-binary-smoke-cwd"
+          Remove-Item -Recurse -Force $workDir -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $workDir | Out-Null
+          Push-Location $workDir
+          $output = "" | & $atomic --no-session 2>&1 | Out-String
+          $status = $LASTEXITCODE
+          Pop-Location
+          Write-Host $output
+          if ($output -match "Failed to load extension") {
+            exit 1
+          }
+          if ($status -ne 0 -and $output -notmatch "No models available|No model selected|No API key found") {
+            exit $status
+          }
+
+  static-checks:
+    name: static-checks (linux-x64)
+    # Platform-independent checks. They cost 30s in total and need neither the
+    # Rust toolchain nor Node, so they run once on Linux instead of twice.
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 6
+    steps:
+      - uses: useblacksmith/checkout@01ab2a058dd0d41e292217b76582a6f9867c02ce # v1.0.0-beta
+        with:
+          lfs: true
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Typecheck
+        run: bun run typecheck
+      - name: File length check
+        run: bun run check:file-length
+      - name: Docs link validation
+        working-directory: packages/coding-agent
+        run: bun run docs:check
+      - name: Mintlify docs validation
+        if: github.event_name == 'pull_request'
+        working-directory: packages/coding-agent/docs
+        # Pinned: mintlify@4.2.732 pulls a package missing from the registry.
+        # Unpin once upstream publishes a resolvable release.
+        timeout-minutes: 5
+        run: |
+          bunx --bun mintlify@4.2.731 validate
+          bunx --bun mintlify@4.2.731 broken-links
+      - name: Deterministic CI and release contracts
+        run: bun run test:ci-contracts
+
+  # Result gate. This job exists to carry the two contexts required by
+  # repository ruleset 9310196:
+  #
+  #   test (blacksmith-4vcpu-ubuntu-2404, linux-x64)
+  #   test (blacksmith-4vcpu-windows-2025, windows-x64)
+  #
+  # Its matrix reproduces those exact strings and nothing else; the gate does no
+  # platform work, so both legs run on the Linux runner. `if: always()` is
+  # mandatory: a job whose `needs` failed is *skipped*, and GitHub counts a
+  # skipped required check as satisfied, which would turn a red suite green.
+  # `needs.<job>.result` collapses a matrix to one value, so each leg asserts
+  # every platform's work jobs, which is strictly stronger than the per-platform
+  # meaning this context had before.
+  test:
+    name: test (${{ matrix.os }}, ${{ matrix.binary_platform }})
+    needs: [suites, agent-suite, release-archive, static-checks]
+    if: always()
+    strategy:
+      matrix:
+        include:
+          - os: blacksmith-4vcpu-ubuntu-2404
+            binary_platform: linux-x64
+          - os: blacksmith-4vcpu-windows-2025
+            binary_platform: windows-x64
+      fail-fast: false
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 5
+    steps:
+      - name: Require every work job to have succeeded
+        shell: bash
+        run: |
+          set -euo pipefail
+          results="${{ join(needs.*.result, ',') }}"
+          echo "work job results: $results"
+          if [ -z "$results" ]; then
+            echo "No work job results were reported; failing closed." >&2
+            exit 1
+          fi
+          case ",$results," in
+            *,failure,*|*,cancelled,*|*,skipped,*)
+              echo "A required work job did not succeed: $results" >&2
+              exit 1
+              ;;
+          esac

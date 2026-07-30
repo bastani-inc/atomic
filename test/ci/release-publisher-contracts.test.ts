@@ -5,6 +5,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readText } from "./workflow-text.js";
 
 
 type NativeManifest = {
@@ -75,7 +76,7 @@ test("prepared native root tarball contains all six exact-version optional depen
 });
 
 test("publish pipeline prepares exact native package set and publishes in dependency order", async () => {
-  const workflow = await Bun.file(`${root}/.github/workflows/publish.yml`).text();
+  const workflow = await readText(`${root}/.github/workflows/publish.yml`);
   const expectedOrder = [
     ...nativePackageNames,
     "@bastani/atomic-natives",

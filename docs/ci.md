@@ -6,10 +6,12 @@ Atomic publishes `@bastani/atomic` from `packages/coding-agent` and `@bastani/at
 
 ```text
 Pull request / selected branch push
-└─ test.yml (Linux and Windows matrix)
-   ├─ install, typecheck, file-length and docs checks
-   ├─ unit, integration, native, and coding-agent tests
-   └─ Linux and Windows release-archive smoke tests
+└─ test.yml (four concurrent work jobs + one result gate)
+   ├─ suites (Linux, Windows): build package -> unit -> integration
+   ├─ agent-suite (Linux, Windows): native bindings -> coding-agent vitest
+   ├─ release-archive (Linux, Windows): build package -> binaries -> smoke
+   ├─ static-checks (Linux): typecheck, file length, docs, Mintlify, contracts
+   └─ test (2 legs): result gate carrying both required contexts
 
 Release tag push (`0.9.10` or `0.9.10-alpha.1`)
 └─ publish.yml
@@ -34,19 +36,53 @@ This release graph follows pi's draft-first publication shape. Public GitHub Rel
 
 ## Tests (`test.yml`)
 
-The test workflow runs on pushes to `main`, `release/**`, and `prerelease/**`, and on every pull request. Its matrix is unchanged:
+The test workflow runs on pushes to `main`, `release/**`, and `prerelease/**`, and on every pull request. Its work runs as four independent jobs so the wall clock is one job's longest dependent chain rather than the sum of every step in file order.
 
-- `blacksmith-4vcpu-ubuntu-2404` with `linux-x64` archive coverage
-- `blacksmith-4vcpu-windows-2025` with `windows-x64` archive coverage
+| Job | Platforms | Chain | Linux | Windows |
+| --- | --- | --- | ---: | ---: |
+| `suites` | both | build `@bastani/atomic` -> unit -> integration | 121 s | 195 s |
+| `agent-suite` | both | build native bindings -> coding-agent vitest | 126 s | 232 s |
+| `release-archive` | both | build package -> `scripts/build-binaries.sh` -> archive smoke | 74 s | 149 s |
+| `static-checks` | Linux only | typecheck, file length, docs links, Mintlify, CI contracts | 30 s | – |
+| `test` | 2 gate legs | assert every work-job result is `success` | 15 s | – |
+
+The critical path is the Windows `agent-suite` chain, so the workflow costs about 247 s instead of the 452 s the single sequential job measured. Runner-seconds rise about 35 % (709 s to roughly 957 s); that is the price of the wall-clock cut.
+
+### Why steps are grouped this way
+
+Steps stay in one job only when one consumes another's build output. Nothing is passed between jobs as an artifact, because rebuilding in parallel is cheaper in wall clock than serializing on an upload/download pair.
+
+- `test/unit/pi-0.82.1-artifacts.test.ts` gates its assertions on `packages/coding-agent/dist` and degrades to `test.skip` with a warning when the build has not run, so the unit suite must stay behind the package build. Moving it into a build-less job would lose coverage without failing anything.
+- `test/integration/installed-package-node-extensions.test.ts` needs `dist/` and Node 24 and is hard-required by `ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE=1`, so `suites` is the only job that installs Node.
+- `packages/coding-agent/test/native-binding-exports.test.ts` is hard-required by `ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE=1`, so the vitest suite stays behind `bun run --cwd packages/natives build`.
+- `scripts/build-binaries.sh` reuses `packages/natives/native/*.node` when present and otherwise builds them, so `release-archive` carries its own Rust toolchain and pays that build again rather than waiting on `agent-suite`. `suites` and `static-checks` need no Rust at all.
+
+No suite uses `--parallel`, `--shard`, `--concurrent`, or `--max-concurrency`. `--parallel` implies `--isolate`, and 20 files in `test/unit` import 108 sibling `*.test.ts` files, so a fresh module registry per file re-executes those tests: 5407 executions against 4426 distinct tests, with the duplicates scored twice by the duration guard, once under contention. `--shard` is deterministic and roughly 1.85x faster locally, but it buys no wall clock while Windows `agent-suite` is the critical path. If a further cut is wanted, shard vitest first, then unit; that is worth roughly 70 s for a 60 % increase in runner count.
+
+### The `test` job is a result gate
 
 Repository ruleset `9310196` requires these exact job contexts:
 
 - `test (blacksmith-4vcpu-ubuntu-2404, linux-x64)`
 - `test (blacksmith-4vcpu-windows-2025, windows-x64)`
 
-The matrix job sets its display name from only `matrix.os` and `matrix.binary_platform` to keep those contexts stable. Per-platform timeout values remain matrix data, but they must not form part of the display name: without an explicit name, GitHub appends every matrix value, so timeout tuning would silently rename the required checks. Change the display-name contract and repository ruleset together; normal runner or timeout tuning must leave both contexts unchanged.
+The `test` job keeps its id, its two matrix rows, and a display name built from only `matrix.os` and `matrix.binary_platform`, so both strings survive the split byte-for-byte and no ruleset edit is needed. Without an explicit name GitHub appends every matrix value, so timeout tuning would silently rename the required checks; per-platform timeouts therefore stay out of the gate's matrix. Change the display-name contract and the repository ruleset together.
 
-Both legs install with Bun, build `@bastani/atomic`, run deterministic CI contracts and test suites, build native bindings, and smoke an installed release archive. Platform-independent typecheck, file-length, and documentation checks run on Linux. Archive smoke tests verify bundled builtins, native modules, runtime dependencies, `--version`, and startup far enough to reject extension-load failures.
+The gate does no platform work — both legs run on the Linux runner — and it exists to fail closed:
+
+- Moving work into new jobs without a gate would silently un-protect every step that left `test`. The two contexts would still exist and still go green.
+- `if: always()` is mandatory. A job whose `needs` failed is *skipped*, and GitHub counts a skipped required check as satisfied, which would turn a red suite green.
+- The gate fails on `failure`, `cancelled`, and `skipped`. Because `needs.<job>.result` collapses a matrix to one value, each leg asserts every platform's work jobs, which is strictly stronger than the per-platform meaning this context had before.
+
+If maintainers later prefer real per-job required contexts, that is a separate deliberate change: replace the two contexts in ruleset `9310196` with the eight work-job contexts in the same window as the workflow merge. Do not do both at once.
+
+### Per-job time limits
+
+The blanket 10/15-minute pair is gone. Each job declares its own cap as a hang detector at roughly 2x measured p100, with room for the one bounded flake retry it owns: `suites` 6/8, `agent-suite` 6/9, `release-archive` 5/6, `static-checks` 6, gate 5. An earlier Linux run showed `Unit tests` at 176 s, which is that retry firing rather than a slow suite; capacity planning uses 84 s and treats 176 s as the retried worst case.
+
+Every job that runs a suite through `scripts/run-flaky-test-suite.ts` uploads `.ci-diagnostics/` under a job-unique artifact name (`test-diagnostics-<job>-<binary_platform>`). `actions/upload-artifact@v4+` fails the entire run when two jobs upload the same name.
+
+Archive smoke tests verify bundled builtins, native modules, runtime dependencies, `--version`, and startup far enough to reject extension-load failures.
 
 ## Direct release trigger and recovery
 
