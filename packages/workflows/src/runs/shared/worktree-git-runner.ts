@@ -11,9 +11,16 @@ let gitRunnerOverride: GitRunner | undefined;
 function gitCommandArgs(args: readonly string[]): string[] {
 	return ["-c", `core.hooksPath=${DISABLED_GIT_HOOKS_PATH}`, "-c", "core.fsmonitor=false", ...args];
 }
-function gitCommandArgv(args: readonly string[]): string[] { return ["git", ...gitCommandArgs(args)]; }
+function gitCommandArgv(args: readonly string[]): string[] {
+	return ["git", ...gitCommandArgs(args)];
+}
 function withDiagnostics(result: GitResult, cwd: string, args: readonly string[]): GitResult {
-	return { ...result, argv: result.argv ?? gitCommandArgv(args), cwd: result.cwd ?? cwd, timeoutMs: result.timeoutMs ?? GIT_COMMAND_TIMEOUT_MS };
+	return {
+		...result,
+		argv: result.argv ?? gitCommandArgv(args),
+		cwd: result.cwd ?? cwd,
+		timeoutMs: result.timeoutMs ?? GIT_COMMAND_TIMEOUT_MS,
+	};
 }
 function spawnGit(cwd: string, args: readonly string[], plain: boolean): GitResult {
 	const startedAt = Date.now();
@@ -24,15 +31,22 @@ function spawnGit(cwd: string, args: readonly string[], plain: boolean): GitResu
 		timeout: GIT_COMMAND_TIMEOUT_MS,
 	});
 	return {
-		stdout: result.stdout ?? "", stderr: result.stderr ?? "", status: result.status ?? null,
-		signal: result.signal ?? null, elapsedMs: Math.max(0, Date.now() - startedAt),
+		stdout: result.stdout ?? "",
+		stderr: result.stderr ?? "",
+		status: result.status ?? null,
+		signal: result.signal ?? null,
+		elapsedMs: Math.max(0, Date.now() - startedAt),
 		...(result.error === undefined ? {} : { error: result.error }),
 	};
 }
 export function withGitRunnerForTest<T>(runner: GitRunner, callback: () => T): T {
 	const previous = gitRunnerOverride;
 	gitRunnerOverride = runner;
-	try { return callback(); } finally { gitRunnerOverride = previous; }
+	try {
+		return callback();
+	} finally {
+		gitRunnerOverride = previous;
+	}
 }
 export function runGit(cwd: string, args: readonly string[]): GitResult {
 	return withDiagnostics((gitRunnerOverride ?? ((dir, values) => spawnGit(dir, values, false)))(cwd, args), cwd, args);
@@ -73,7 +87,8 @@ function diagnosticSuffix(result: GitResult): string {
 export function gitFailureMessage(result: GitResult): string {
 	if (result.error !== undefined) {
 		const code = gitErrorCode(result.error);
-		if (isGitTimeoutResult(result)) return `git command timed out after ${result.timeoutMs ?? GIT_COMMAND_TIMEOUT_MS}ms${code === undefined ? "" : ` (${code})`}: ${result.error.message}${diagnosticSuffix(result)}`;
+		if (isGitTimeoutResult(result))
+			return `git command timed out after ${result.timeoutMs ?? GIT_COMMAND_TIMEOUT_MS}ms${code === undefined ? "" : ` (${code})`}: ${result.error.message}${diagnosticSuffix(result)}`;
 		return `${code === undefined ? result.error.message : `${code}: ${result.error.message}`}${diagnosticSuffix(result)}`;
 	}
 	return `${result.stderr.trim() || result.stdout.trim() || `git exited with status ${result.status}`}${diagnosticSuffix(result)}`;

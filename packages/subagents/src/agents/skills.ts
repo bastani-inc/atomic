@@ -4,7 +4,13 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { buildSkillPaths, clearSkillPathDiscoveryCache, inferSkillSource, type SkillSearchPath } from "./skills-paths.ts";
+import {
+	buildSkillPaths,
+	clearSkillPathDiscoveryCache,
+	inferSkillSource,
+	type SkillSearchPath,
+} from "./skills-paths.ts";
+
 export { __setGlobalNpmRootExecSyncForTest } from "./skills-paths.ts";
 
 export type SkillSource =
@@ -68,7 +74,10 @@ function stripSkillFrontmatter(content: string): string {
 	return normalized.slice(endIndex + 4).trim();
 }
 
-function chooseHigherPrioritySkill(existing: CachedSkillEntry | undefined, candidate: CachedSkillEntry): CachedSkillEntry {
+function chooseHigherPrioritySkill(
+	existing: CachedSkillEntry | undefined,
+	candidate: CachedSkillEntry,
+): CachedSkillEntry {
 	if (!existing) return candidate;
 	const existingPriority = SOURCE_PRIORITY[existing.source] ?? 0;
 	const candidatePriority = SOURCE_PRIORITY[candidate.source] ?? 0;
@@ -89,7 +98,7 @@ function maybeReadSkillDescription(filePath: string): string | undefined {
 		const frontmatter = normalized.slice(3, endIndex).trim();
 		const match = frontmatter.match(/^description:\s*(.+)$/m);
 		if (!match) return undefined;
-		return match[1]?.trim().replace(/^['\"]|['\"]$/g, "");
+		return match[1]?.trim().replace(/^['"]|['"]$/g, "");
 	} catch {
 		// Description parsing is best-effort metadata extraction.
 		return undefined;
@@ -128,9 +137,10 @@ function collectFilesystemSkills(cwd: string, skillPaths: SkillSearchPath[]): Ca
 		if (stat.isFile()) {
 			const fileName = path.basename(skillPath.path);
 			if (!fileName.toLowerCase().endsWith(".md")) continue;
-			const skillName = fileName.toLowerCase() === "skill.md"
-				? path.basename(path.dirname(skillPath.path))
-				: path.basename(fileName, path.extname(fileName));
+			const skillName =
+				fileName.toLowerCase() === "skill.md"
+					? path.basename(path.dirname(skillPath.path))
+					: path.basename(fileName, path.extname(fileName));
 			pushEntry(skillName, skillPath.path, skillPath.source);
 			continue;
 		}
@@ -188,21 +198,14 @@ function getCachedSkills(cwd: string): CachedSkillEntry[] {
 	return skills;
 }
 
-export function resolveSkillPath(
-	skillName: string,
-	cwd: string,
-): { path: string; source: SkillSource } | undefined {
+export function resolveSkillPath(skillName: string, cwd: string): { path: string; source: SkillSource } | undefined {
 	const skills = getCachedSkills(cwd);
 	const skill = skills.find((s) => s.name === skillName);
 	if (!skill) return undefined;
 	return { path: skill.filePath, source: skill.source };
 }
 
-function readSkill(
-	skillName: string,
-	skillPath: string,
-	source: SkillSource,
-): ResolvedSkill | undefined {
+function readSkill(skillName: string, skillPath: string, source: SkillSource): ResolvedSkill | undefined {
 	try {
 		const stat = fs.statSync(skillPath);
 		const cached = skillCache.get(skillPath);
@@ -232,10 +235,7 @@ function readSkill(
 	}
 }
 
-export function resolveSkills(
-	skillNames: string[],
-	cwd: string,
-): { resolved: ResolvedSkill[]; missing: string[] } {
+export function resolveSkills(skillNames: string[], cwd: string): { resolved: ResolvedSkill[]; missing: string[] } {
 	const resolved: ResolvedSkill[] = [];
 	const missing: string[] = [];
 
@@ -283,14 +283,10 @@ export function resolveSkillsWithFallback(
 export function buildSkillInjection(skills: ResolvedSkill[]): string {
 	if (skills.length === 0) return "";
 
-	return skills
-		.map((s) => `<skill name="${s.name}">\n${s.content}\n</skill>`)
-		.join("\n\n");
+	return skills.map((s) => `<skill name="${s.name}">\n${s.content}\n</skill>`).join("\n\n");
 }
 
-export function normalizeSkillInput(
-	input: string | string[] | boolean | undefined,
-): string[] | false | undefined {
+export function normalizeSkillInput(input: string | string[] | boolean | undefined): string[] | false | undefined {
 	if (input === false) return false;
 	if (input === true || input === undefined) return undefined;
 	if (Array.isArray(input)) {
@@ -311,7 +307,14 @@ export function normalizeSkillInput(
 			// Not valid JSON – fall through to comma-split
 		}
 	}
-	return [...new Set(input.split(",").map((s) => s.trim()).filter((s) => s.length > 0))];
+	return [
+		...new Set(
+			input
+				.split(",")
+				.map((s) => s.trim())
+				.filter((s) => s.length > 0),
+		),
+	];
 }
 
 export function discoverAvailableSkills(cwd: string): Array<{

@@ -255,5 +255,4 @@ describe("DefaultPackageManager", () => {
 			expect(result.skills.some((r) => isEnabled(r, "document-processor-api", "includes"))).toBe(true);
 		});
 	});
-
 });

@@ -35,14 +35,16 @@ test("offline model candidate startup restores caches without catalog network re
 	expect(refresh).toHaveBeenCalledWith({ allowNetwork: false });
 });
 
-
 test("footer provider count uses the current snapshot without refreshing catalogs", async () => {
 	const refresh = vi.fn();
 	const setAvailableProviderCount = vi.fn();
 	const mode = {
 		session: {
 			scopedModels: [],
-			modelRuntime: { refresh, getAvailableSnapshot: () => [{ provider: "one" }, { provider: "one" }, { provider: "two" }] },
+			modelRuntime: {
+				refresh,
+				getAvailableSnapshot: () => [{ provider: "one" }, { provider: "one" }, { provider: "two" }],
+			},
 		},
 		footerDataProvider: { setAvailableProviderCount },
 	};

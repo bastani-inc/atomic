@@ -39,16 +39,16 @@
  *   3 inputs · 1 required · pass via key=value or run with no args for picker
  */
 
-import type { GraphTheme } from "../tui/graph-theme.js";
-import { paint } from "../tui/color-utils.js";
-import { renderRoundedBox, chatWidth } from "../tui/chat-surface.js";
 import type { WorkflowInputEntry } from "../extension/render-result.js";
+import { chatWidth, renderRoundedBox } from "../tui/chat-surface.js";
+import { paint } from "../tui/color-utils.js";
+import type { GraphTheme } from "../tui/graph-theme.js";
 
 export interface RenderInputsSchemaOptions {
-  /** When provided, output uses ANSI colours and indented `INPUTS` chrome. */
-  theme?: GraphTheme;
-  /** Optional host render width in terminal cells. */
-  width?: number;
+	/** When provided, output uses ANSI colours and indented `INPUTS` chrome. */
+	theme?: GraphTheme;
+	/** Optional host render width in terminal cells. */
+	width?: number;
 }
 
 /**
@@ -57,13 +57,13 @@ export interface RenderInputsSchemaOptions {
  * the historical plain-text form, byte-for-byte stable for snapshot tests.
  */
 export function renderInputsSchema(
-  name: string,
-  inputs: WorkflowInputEntry[],
-  opts: RenderInputsSchemaOptions = {},
+	name: string,
+	inputs: WorkflowInputEntry[],
+	opts: RenderInputsSchemaOptions = {},
 ): string {
-  return opts.theme === undefined
-    ? renderPlain(name, inputs, opts.width)
-    : renderPretty(name, inputs, opts.theme, opts.width);
+	return opts.theme === undefined
+		? renderPlain(name, inputs, opts.width)
+		: renderPretty(name, inputs, opts.theme, opts.width);
 }
 
 // ---------------------------------------------------------------------------
@@ -71,25 +71,25 @@ export function renderInputsSchema(
 // ---------------------------------------------------------------------------
 
 function renderPlain(name: string, inputs: WorkflowInputEntry[], width?: number): string {
-  const boxWidth = chatWidth(width);
-  const body: string[] = [];
+	const boxWidth = chatWidth(width);
+	const body: string[] = [];
 
-  if (inputs.length === 0) {
-    body.push(` Workflow has no declared inputs. Workflow: "${name}". `);
-  } else {
-    for (let i = 0; i < inputs.length; i++) {
-      if (i > 0) body.push("");
-      body.push(...renderInputRows(inputs[i]!));
-    }
-    body.push("");
-    body.push(` ${inputsSummary(name, inputs)} `);
-  }
+	if (inputs.length === 0) {
+		body.push(` Workflow has no declared inputs. Workflow: "${name}". `);
+	} else {
+		for (let i = 0; i < inputs.length; i++) {
+			if (i > 0) body.push("");
+			body.push(...renderInputRows(inputs[i]!));
+		}
+		body.push("");
+		body.push(` ${inputsSummary(name, inputs)} `);
+	}
 
-  return renderRoundedBox({
-    title: `INPUTS FOR ${name}`,
-    bodyLines: body,
-    width: boxWidth,
-  });
+	return renderRoundedBox({
+		title: `INPUTS FOR ${name}`,
+		bodyLines: body,
+		width: boxWidth,
+	});
 }
 
 // ---------------------------------------------------------------------------
@@ -101,68 +101,61 @@ function renderPlain(name: string, inputs: WorkflowInputEntry[], width?: number)
 // without being alarming the way red would.
 // ---------------------------------------------------------------------------
 
-function renderPretty(
-  name: string,
-  inputs: WorkflowInputEntry[],
-  theme: GraphTheme,
-  width?: number,
-): string {
-  const boxWidth = chatWidth(width);
-  const body: string[] = [];
+function renderPretty(name: string, inputs: WorkflowInputEntry[], theme: GraphTheme, width?: number): string {
+	const boxWidth = chatWidth(width);
+	const body: string[] = [];
 
-  if (inputs.length === 0) {
-    body.push(` ${paint(`Workflow has no declared inputs. Workflow: "${name}".`, theme.dim)} `);
-  } else {
-    for (let i = 0; i < inputs.length; i++) {
-      if (i > 0) body.push("");
-      body.push(...renderInputRows(inputs[i]!, theme));
-    }
-    body.push("");
-    body.push(` ${paint(inputsSummary(name, inputs), theme.dim)} `);
-  }
+	if (inputs.length === 0) {
+		body.push(` ${paint(`Workflow has no declared inputs. Workflow: "${name}".`, theme.dim)} `);
+	} else {
+		for (let i = 0; i < inputs.length; i++) {
+			if (i > 0) body.push("");
+			body.push(...renderInputRows(inputs[i]!, theme));
+		}
+		body.push("");
+		body.push(` ${paint(inputsSummary(name, inputs), theme.dim)} `);
+	}
 
-  return renderRoundedBox({
-    title: `INPUTS FOR ${name.toUpperCase()}`,
-    bodyLines: body,
-    accent: theme.mauve,
-    theme,
-    width: boxWidth,
-  });
+	return renderRoundedBox({
+		title: `INPUTS FOR ${name.toUpperCase()}`,
+		bodyLines: body,
+		accent: theme.mauve,
+		theme,
+		width: boxWidth,
+	});
 }
 
-function renderInputRows(
-  field: WorkflowInputEntry,
-  theme?: GraphTheme,
-): string[] {
-  const tagLabel = field.required ? "required" : "optional";
-  const heading = theme
-    ? ` ${paint(field.name, theme.text, { bold: true })}  ${paint(field.type, theme.dim)}  ·  ${paint(tagLabel, field.required ? theme.warning : theme.dim)} `
-    : ` ${field.name}  ${field.type}  ·  ${tagLabel} `;
-  const lines: string[] = [heading];
+function renderInputRows(field: WorkflowInputEntry, theme?: GraphTheme): string[] {
+	const tagLabel = field.required ? "required" : "optional";
+	const heading = theme
+		? ` ${paint(field.name, theme.text, { bold: true })}  ${paint(field.type, theme.dim)}  ·  ${paint(tagLabel, field.required ? theme.warning : theme.dim)} `
+		: ` ${field.name}  ${field.type}  ·  ${tagLabel} `;
+	const lines: string[] = [heading];
 
-  if (field.description) {
-    lines.push(`   ${theme ? paint(field.description, theme.textMuted) : field.description} `);
-  }
-  if (field.choices && field.choices.length > 0) {
-    const values = field.choices.join("  ·  ");
-    lines.push(`   ${theme ? paint("values: ", theme.dim) + paint(values, theme.text) : `values: ${values}`} `);
-  }
-  if (field.default !== undefined) {
-    const value = JSON.stringify(field.default);
-    lines.push(`   ${theme ? paint("default: ", theme.dim) + paint(value, theme.text) : `default: ${value}`} `);
-  }
-  if (field.placeholder) {
-    lines.push(`   ${theme ? paint("placeholder: ", theme.dim) + paint(field.placeholder, theme.textMuted) : `placeholder: ${field.placeholder}`} `);
-  }
+	if (field.description) {
+		lines.push(`   ${theme ? paint(field.description, theme.textMuted) : field.description} `);
+	}
+	if (field.choices && field.choices.length > 0) {
+		const values = field.choices.join("  ·  ");
+		lines.push(`   ${theme ? paint("values: ", theme.dim) + paint(values, theme.text) : `values: ${values}`} `);
+	}
+	if (field.default !== undefined) {
+		const value = JSON.stringify(field.default);
+		lines.push(`   ${theme ? paint("default: ", theme.dim) + paint(value, theme.text) : `default: ${value}`} `);
+	}
+	if (field.placeholder) {
+		lines.push(
+			`   ${theme ? paint("placeholder: ", theme.dim) + paint(field.placeholder, theme.textMuted) : `placeholder: ${field.placeholder}`} `,
+		);
+	}
 
-  return lines;
+	return lines;
 }
 
 function inputsSummary(name: string, inputs: readonly WorkflowInputEntry[]): string {
-  const required = inputs.filter((i) => i.required).length;
-  const total = inputs.length;
-  const totalLabel = `${total} input${total === 1 ? "" : "s"}`;
-  const reqLabel = `${required} required`;
-  return `${totalLabel}  ·  ${reqLabel}  ·  pass via key=value or run \`/workflow ${name}\` with no args for picker`;
+	const required = inputs.filter((i) => i.required).length;
+	const total = inputs.length;
+	const totalLabel = `${total} input${total === 1 ? "" : "s"}`;
+	const reqLabel = `${required} required`;
+	return `${totalLabel}  ·  ${reqLabel}  ·  pass via key=value or run \`/workflow ${name}\` with no args for picker`;
 }
-

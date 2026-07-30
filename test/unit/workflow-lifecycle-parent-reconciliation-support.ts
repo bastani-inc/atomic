@@ -17,15 +17,22 @@ export function assertWorkflowToolOrdering(context: { messages: Context["message
 	assert.equal((toolResult.details as { status?: string } | undefined)?.status, "running");
 	const callId = toolResult.toolCallId;
 	const assistantIndex = context.messages.findIndex(
-		(message) => message.role === "assistant" && message.content.some(
-			(part) => part.type === "toolCall" && part.id === callId && part.name === "workflow",
-		),
+		(message) =>
+			message.role === "assistant" &&
+			message.content.some((part) => part.type === "toolCall" && part.id === callId && part.name === "workflow"),
 	);
-	assert.equal(toolResultIndex, assistantIndex + 1, "no lifecycle user turn may split the workflow tool call from its result");
+	assert.equal(
+		toolResultIndex,
+		assistantIndex + 1,
+		"no lifecycle user turn may split the workflow tool call from its result",
+	);
 }
 
 export function providerSawWorkflowState(context: Context | undefined, workflowName: string, state: string): boolean {
-	return context?.messages.some(
-		(message) => message.role === "user" && getMessageText(message).includes(`Workflow "${workflowName}" ${state}`),
-	) === true;
+	return (
+		context?.messages.some(
+			(message) =>
+				message.role === "user" && getMessageText(message).includes(`Workflow "${workflowName}" ${state}`),
+		) === true
+	);
 }

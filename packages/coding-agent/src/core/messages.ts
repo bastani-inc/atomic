@@ -308,9 +308,10 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 					};
 				case "custom": {
 					if (!messageStartsLlmUserTurn(m)) return undefined;
-					const content = typeof m.content === "string"
-						? [{ type: "text" as const, text: m.content }]
-						: filterUserLikeContentBlocks(m.content) as Message["content"];
+					const content =
+						typeof m.content === "string"
+							? [{ type: "text" as const, text: m.content }]
+							: (filterUserLikeContentBlocks(m.content) as Message["content"]);
 					return { role: "user", content, timestamp: m.timestamp } as Message;
 				}
 				case "branchSummary":

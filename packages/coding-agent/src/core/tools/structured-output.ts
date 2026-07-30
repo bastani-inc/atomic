@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import { type Static, type TSchema } from "typebox";
+import type { Static, TSchema } from "typebox";
 import { defineTool, type ToolDefinition } from "../extensions/types.ts";
 
 export const STRUCTURED_OUTPUT_TOOL_NAME = "structured_output";
@@ -34,7 +34,9 @@ function stringifyParams<TSchemaDef extends TSchema>(params: Static<TSchemaDef>)
 	try {
 		return JSON.stringify(params, null, 2);
 	} catch (error) {
-		throw new Error(`Structured output must be JSON-serializable: ${error instanceof Error ? error.message : String(error)}`);
+		throw new Error(
+			`Structured output must be JSON-serializable: ${error instanceof Error ? error.message : String(error)}`,
+		);
 	}
 }
 
@@ -49,7 +51,9 @@ async function writeCapturedOutput(output: StructuredOutputFileCapture, serializ
 	try {
 		await writePrivateJsonFile(output.outputPath, serializedParams);
 	} catch (error) {
-		throw new Error(`Failed to write structured output capture: ${error instanceof Error ? error.message : String(error)}`);
+		throw new Error(
+			`Failed to write structured output capture: ${error instanceof Error ? error.message : String(error)}`,
+		);
 	}
 }
 

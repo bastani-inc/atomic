@@ -1,8 +1,8 @@
 import { Container, Text } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
+import type { UserMessageSelectorComponent } from "../src/modes/interactive/components/user-message-selector.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
-import type { UserMessageSelectorComponent } from "../src/modes/interactive/components/user-message-selector.ts";
 
 interface InteractiveOrderingAccess {
 	showUserMessageSelector(): Promise<void>;
@@ -32,9 +32,7 @@ describe("interactive ordering", () => {
 				},
 			},
 			ensureDeferredStartupComplete: vi.fn(async () => {}),
-			showSelector: (
-				create: (close: () => void) => { component: UserMessageSelectorComponent },
-			) => {
+			showSelector: (create: (close: () => void) => { component: UserMessageSelectorComponent }) => {
 				selector = create(done).component;
 			},
 			renderCurrentSessionState: vi.fn(),

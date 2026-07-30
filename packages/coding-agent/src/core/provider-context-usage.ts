@@ -5,7 +5,11 @@ import type { CompactionEntry, SessionEntry } from "./session-manager.ts";
 function findLatestCompactionBoundary(entries: readonly SessionEntry[]): CompactionEntry | undefined {
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const entry = entries[i];
-		if (entry.type === "compaction" && (entry.details as { strategy?: string } | undefined)?.strategy === "verbatim-lines") return entry;
+		if (
+			entry.type === "compaction" &&
+			(entry.details as { strategy?: string } | undefined)?.strategy === "verbatim-lines"
+		)
+			return entry;
 	}
 	return undefined;
 }

@@ -4,9 +4,9 @@ import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createJiti } from "jiti/static";
 import { getExtensionTranspileCacheDir, isBunBinary, isBundledBuild } from "../../config.ts";
-import { moduleDirFromMetaUrl } from "../../utils/split-launcher.ts";
 import { resolutionBaseUrl } from "../../utils/module-require.ts";
 import { resolvePath } from "../../utils/paths.ts";
+import { moduleDirFromMetaUrl } from "../../utils/split-launcher.ts";
 import type { ExtensionFactory } from "./types.ts";
 
 const require = createRequire(import.meta.url);
@@ -14,58 +14,59 @@ let _virtualModules: Record<string, object> | null = null;
 let _virtualModulesPromise: Promise<Record<string, object>> | null = null;
 
 async function loadVirtualModules(): Promise<Record<string, object>> {
-  const [typebox, typeboxCompile, typeboxValue, piAgentCore, piTui, piAi, piAiOauth, piCodingAgent] = await Promise.all([
-    import("typebox"),
-    import("typebox/compile"),
-    import("typebox/value"),
-    import("@earendil-works/pi-agent-core"),
-    import("@earendil-works/pi-tui"),
-    // pi 0.80.2: the old global pi-ai API moved off the root entrypoint onto
-    // `/compat` (a strict superset). Extensions still `import ... from
-    // "@earendil-works/pi-ai"`, so we load the compat module here and key it
-    // under the root specifier below to keep every extension working unchanged.
-    import("@earendil-works/pi-ai/compat"),
-    import("@earendil-works/pi-ai/oauth"),
-    // NOTE: This import works because loader.ts exports are NOT re-exported from index.ts,
-    // avoiding a circular dependency while preserving the package-name extension import path.
-    import("../../index.ts"),
-  ]);
+	const [typebox, typeboxCompile, typeboxValue, piAgentCore, piTui, piAi, piAiOauth, piCodingAgent] =
+		await Promise.all([
+			import("typebox"),
+			import("typebox/compile"),
+			import("typebox/value"),
+			import("@earendil-works/pi-agent-core"),
+			import("@earendil-works/pi-tui"),
+			// pi 0.80.2: the old global pi-ai API moved off the root entrypoint onto
+			// `/compat` (a strict superset). Extensions still `import ... from
+			// "@earendil-works/pi-ai"`, so we load the compat module here and key it
+			// under the root specifier below to keep every extension working unchanged.
+			import("@earendil-works/pi-ai/compat"),
+			import("@earendil-works/pi-ai/oauth"),
+			// NOTE: This import works because loader.ts exports are NOT re-exported from index.ts,
+			// avoiding a circular dependency while preserving the package-name extension import path.
+			import("../../index.ts"),
+		]);
 
-  return {
-    typebox,
-    "typebox/compile": typeboxCompile,
-    "typebox/value": typeboxValue,
-    "@sinclair/typebox": typebox,
-    "@sinclair/typebox/compile": typeboxCompile,
-    "@sinclair/typebox/value": typeboxValue,
-    "@earendil-works/pi-agent-core": piAgentCore,
-    "@earendil-works/pi-tui": piTui,
-    "@earendil-works/pi-ai": piAi,
-    "@earendil-works/pi-ai/compat": piAi,
-    "@earendil-works/pi-ai/oauth": piAiOauth,
-    "@bastani/atomic": piCodingAgent,
-    "@mariozechner/pi-agent-core": piAgentCore,
-    "@mariozechner/pi-tui": piTui,
-    "@mariozechner/pi-ai": piAi,
-    "@mariozechner/pi-ai/compat": piAi,
-    "@mariozechner/pi-ai/oauth": piAiOauth,
-  };
+	return {
+		typebox,
+		"typebox/compile": typeboxCompile,
+		"typebox/value": typeboxValue,
+		"@sinclair/typebox": typebox,
+		"@sinclair/typebox/compile": typeboxCompile,
+		"@sinclair/typebox/value": typeboxValue,
+		"@earendil-works/pi-agent-core": piAgentCore,
+		"@earendil-works/pi-tui": piTui,
+		"@earendil-works/pi-ai": piAi,
+		"@earendil-works/pi-ai/compat": piAi,
+		"@earendil-works/pi-ai/oauth": piAiOauth,
+		"@bastani/atomic": piCodingAgent,
+		"@mariozechner/pi-agent-core": piAgentCore,
+		"@mariozechner/pi-tui": piTui,
+		"@mariozechner/pi-ai": piAi,
+		"@mariozechner/pi-ai/compat": piAi,
+		"@mariozechner/pi-ai/oauth": piAiOauth,
+	};
 }
 
 /** Modules available to extensions via virtualModules (for compiled Bun binary). */
 async function getVirtualModules(): Promise<Record<string, object>> {
-  if (_virtualModules) return _virtualModules;
-  _virtualModulesPromise ??= loadVirtualModules().then(
-    (virtualModules) => {
-      _virtualModules = virtualModules;
-      return virtualModules;
-    },
-    (error: Error) => {
-      _virtualModulesPromise = null;
-      throw error;
-    },
-  );
-  return _virtualModulesPromise;
+	if (_virtualModules) return _virtualModules;
+	_virtualModulesPromise ??= loadVirtualModules().then(
+		(virtualModules) => {
+			_virtualModules = virtualModules;
+			return virtualModules;
+		},
+		(error: Error) => {
+			_virtualModulesPromise = null;
+			throw error;
+		},
+	);
+	return _virtualModulesPromise;
 }
 let _aliases: Record<string, string> | null = null;
 let _transpileCacheDir: string | null = null;
@@ -77,26 +78,26 @@ let _transpileCacheDir: string | null = null;
  * in the background.
  */
 function getTranspileCacheDir(): string {
-  if (_transpileCacheDir) return _transpileCacheDir;
-  _transpileCacheDir = getExtensionTranspileCacheDir();
-  fs.mkdirSync(_transpileCacheDir, { recursive: true });
-  pruneStaleTranspileCaches(_transpileCacheDir);
-  return _transpileCacheDir;
+	if (_transpileCacheDir) return _transpileCacheDir;
+	_transpileCacheDir = getExtensionTranspileCacheDir();
+	fs.mkdirSync(_transpileCacheDir, { recursive: true });
+	pruneStaleTranspileCaches(_transpileCacheDir);
+	return _transpileCacheDir;
 }
 
 function pruneStaleTranspileCaches(currentDir: string): void {
-  const parent = path.dirname(currentDir);
-  const keep = path.basename(currentDir);
-  void fs.promises
-    .readdir(parent)
-    .then((entries) =>
-      Promise.all(
-        entries
-          .filter((entry) => entry !== keep)
-          .map((entry) => fs.promises.rm(path.join(parent, entry), { recursive: true, force: true })),
-      ),
-    )
-    .catch(() => {});
+	const parent = path.dirname(currentDir);
+	const keep = path.basename(currentDir);
+	void fs.promises
+		.readdir(parent)
+		.then((entries) =>
+			Promise.all(
+				entries
+					.filter((entry) => entry !== keep)
+					.map((entry) => fs.promises.rm(path.join(parent, entry), { recursive: true, force: true })),
+			),
+		)
+		.catch(() => {});
 }
 
 let extensionCacheCwd: string | undefined;
@@ -104,38 +105,38 @@ let extensionCacheGeneration = 0;
 const extensionCache = new Map<string, ExtensionFactory>();
 
 export interface ExtensionCacheToken {
-  cwd: string;
-  generation: number;
+	cwd: string;
+	generation: number;
 }
 
 export function clearExtensionCache(): void {
-  extensionCache.clear();
-  extensionCacheCwd = undefined;
-  extensionCacheGeneration++;
+	extensionCache.clear();
+	extensionCacheCwd = undefined;
+	extensionCacheGeneration++;
 }
 
 export function useExtensionCacheCwd(cwd: string): ExtensionCacheToken {
-  const resolvedCwd = resolvePath(cwd);
-  if (extensionCacheCwd !== undefined && extensionCacheCwd !== resolvedCwd) {
-    clearExtensionCache();
-  }
-  extensionCacheCwd = resolvedCwd;
-  return { cwd: resolvedCwd, generation: extensionCacheGeneration };
+	const resolvedCwd = resolvePath(cwd);
+	if (extensionCacheCwd !== undefined && extensionCacheCwd !== resolvedCwd) {
+		clearExtensionCache();
+	}
+	extensionCacheCwd = resolvedCwd;
+	return { cwd: resolvedCwd, generation: extensionCacheGeneration };
 }
 
 function isCurrentCacheToken(cacheToken: ExtensionCacheToken | undefined): cacheToken is ExtensionCacheToken {
-  return (
-    cacheToken !== undefined &&
-    extensionCacheCwd === cacheToken.cwd &&
-    extensionCacheGeneration === cacheToken.generation
-  );
+	return (
+		cacheToken !== undefined &&
+		extensionCacheCwd === cacheToken.cwd &&
+		extensionCacheGeneration === cacheToken.generation
+	);
 }
 
 function extensionImportSpecifier(extensionPath: string, cacheToken: ExtensionCacheToken | undefined): string {
-  const url = pathToFileURL(extensionPath);
-  const cacheKey = cacheToken ? `${cacheToken.generation}:${cacheToken.cwd}` : `${Date.now()}:${Math.random()}`;
-  url.searchParams.set("atomicExtensionCache", cacheKey);
-  return url.href;
+	const url = pathToFileURL(extensionPath);
+	const cacheKey = cacheToken ? `${cacheToken.generation}:${cacheToken.cwd}` : `${Date.now()}:${Math.random()}`;
+	url.searchParams.set("atomicExtensionCache", cacheKey);
+	return url.href;
 }
 
 /**
@@ -148,85 +149,84 @@ function extensionImportSpecifier(extensionPath: string, cacheToken: ExtensionCa
  * the same node_modules chain Node would, without exports-map encapsulation.
  */
 function findPackageRoot(packageName: string, searchPaths?: string[]): string {
-  for (const base of searchPaths ?? require.resolve.paths(packageName) ?? []) {
-    const candidate = path.join(base, packageName);
-    if (fs.existsSync(path.join(candidate, "package.json"))) {
-      return candidate;
-    }
-  }
-  throw new Error(`Cannot locate package directory for "${packageName}"`);
+	for (const base of searchPaths ?? require.resolve.paths(packageName) ?? []) {
+		const candidate = path.join(base, packageName);
+		if (fs.existsSync(path.join(candidate, "package.json"))) {
+			return candidate;
+		}
+	}
+	throw new Error(`Cannot locate package directory for "${packageName}"`);
 }
 function currentModuleDir(): string {
-  return moduleDirFromMetaUrl(import.meta.url, "dist", "core", "extensions");
+	return moduleDirFromMetaUrl(import.meta.url, "dist", "core", "extensions");
 }
-
 
 /**
  * Get aliases for jiti (used in Node.js/development mode).
  * In Bun binary mode, virtualModules is used instead.
  */
 function getAliases(): Record<string, string> {
-  if (_aliases) return _aliases;
+	if (_aliases) return _aliases;
 
-  const __dirname = currentModuleDir();
-  const packageIndex = path.resolve(__dirname, "../..", "index.js");
+	const __dirname = currentModuleDir();
+	const packageIndex = path.resolve(__dirname, "../..", "index.js");
 
-  const typeboxEntry = require.resolve("typebox");
-  const typeboxCompileEntry = require.resolve("typebox/compile");
-  const typeboxValueEntry = require.resolve("typebox/value");
+	const typeboxEntry = require.resolve("typebox");
+	const typeboxCompileEntry = require.resolve("typebox/compile");
+	const typeboxValueEntry = require.resolve("typebox/value");
 
-  const packagesRoot = path.resolve(__dirname, "../../../../");
-  const resolveWorkspaceOrImport = (workspaceRelativePath: string, packageName: string): string => {
-    const workspacePath = path.join(packagesRoot, workspaceRelativePath);
-    if (fs.existsSync(workspacePath)) {
-      return workspacePath;
-    }
-    const packageRoot = findPackageRoot(packageName);
-    const entryRelativePath = workspaceRelativePath.split("/").slice(1).join("/");
-    return path.join(packageRoot, entryRelativePath);
-  };
+	const packagesRoot = path.resolve(__dirname, "../../../../");
+	const resolveWorkspaceOrImport = (workspaceRelativePath: string, packageName: string): string => {
+		const workspacePath = path.join(packagesRoot, workspaceRelativePath);
+		if (fs.existsSync(workspacePath)) {
+			return workspacePath;
+		}
+		const packageRoot = findPackageRoot(packageName);
+		const entryRelativePath = workspaceRelativePath.split("/").slice(1).join("/");
+		return path.join(packageRoot, entryRelativePath);
+	};
 
-  const piCodingAgentEntry = packageIndex;
-  const piAgentCoreEntry = resolveWorkspaceOrImport("agent/dist/index.js", "@earendil-works/pi-agent-core");
-  const piTuiEntry = resolveWorkspaceOrImport("tui/dist/index.js", "@earendil-works/pi-tui");
-  // The workspace path mirrors pi-ai 0.80.x's built dist layout. If an
-  // upstream layout change moves these files, this join needs updating to
-  // match the package's real dist paths.
-  const piAiEntry = resolveWorkspaceOrImport("ai/dist/compat.js", "@earendil-works/pi-ai");
-  const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@earendil-works/pi-ai");
-  const piAiProvidersEntry = resolveWorkspaceOrImport("ai/dist/providers/all.js", "@earendil-works/pi-ai");
+	const piCodingAgentEntry = packageIndex;
+	const piAgentCoreEntry = resolveWorkspaceOrImport("agent/dist/index.js", "@earendil-works/pi-agent-core");
+	const piTuiEntry = resolveWorkspaceOrImport("tui/dist/index.js", "@earendil-works/pi-tui");
+	// The workspace path mirrors pi-ai 0.80.x's built dist layout. If an
+	// upstream layout change moves these files, this join needs updating to
+	// match the package's real dist paths.
+	const piAiEntry = resolveWorkspaceOrImport("ai/dist/compat.js", "@earendil-works/pi-ai");
+	const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@earendil-works/pi-ai");
+	const piAiProvidersEntry = resolveWorkspaceOrImport("ai/dist/providers/all.js", "@earendil-works/pi-ai");
 
-  _aliases = {
-    "@bastani/atomic": piCodingAgentEntry,
-    "@earendil-works/pi-coding-agent": piCodingAgentEntry,
-    "@earendil-works/pi-agent-core": piAgentCoreEntry,
-    "@earendil-works/pi-tui": piTuiEntry,
-    "@earendil-works/pi-ai/oauth": piAiOauthEntry,
-    "@earendil-works/pi-ai/providers/all": piAiProvidersEntry,
-    "@earendil-works/pi-ai/compat": piAiEntry,
-    "@earendil-works/pi-ai": piAiEntry,
-    "@mariozechner/pi-agent-core": piAgentCoreEntry,
-    "@mariozechner/pi-tui": piTuiEntry,
-    "@mariozechner/pi-ai/oauth": piAiOauthEntry,
-    "@mariozechner/pi-ai/providers/all": piAiProvidersEntry,
-    "@mariozechner/pi-ai/compat": piAiEntry,
-    "@mariozechner/pi-ai": piAiEntry,
-    typebox: typeboxEntry,
-    "typebox/compile": typeboxCompileEntry,
-    "typebox/value": typeboxValueEntry,
-    "@sinclair/typebox": typeboxEntry,
-    "@sinclair/typebox/compile": typeboxCompileEntry,
-    "@sinclair/typebox/value": typeboxValueEntry,
-  };
+	_aliases = {
+		"@bastani/atomic": piCodingAgentEntry,
+		"@earendil-works/pi-coding-agent": piCodingAgentEntry,
+		"@earendil-works/pi-agent-core": piAgentCoreEntry,
+		"@earendil-works/pi-tui": piTuiEntry,
+		"@earendil-works/pi-ai/oauth": piAiOauthEntry,
+		"@earendil-works/pi-ai/providers/all": piAiProvidersEntry,
+		"@earendil-works/pi-ai/compat": piAiEntry,
+		"@earendil-works/pi-ai": piAiEntry,
+		"@mariozechner/pi-agent-core": piAgentCoreEntry,
+		"@mariozechner/pi-tui": piTuiEntry,
+		"@mariozechner/pi-ai/oauth": piAiOauthEntry,
+		"@mariozechner/pi-ai/providers/all": piAiProvidersEntry,
+		"@mariozechner/pi-ai/compat": piAiEntry,
+		"@mariozechner/pi-ai": piAiEntry,
+		typebox: typeboxEntry,
+		"typebox/compile": typeboxCompileEntry,
+		"typebox/value": typeboxValueEntry,
+		"@sinclair/typebox": typeboxEntry,
+		"@sinclair/typebox/compile": typeboxCompileEntry,
+		"@sinclair/typebox/value": typeboxValueEntry,
+	};
 
-  return _aliases;
+	return _aliases;
 }
 
 export const extensionLoaderTestHooks = {
-  loadVirtualModules,
-  getAliases,
-  findPackageRoot,
-  getTranspileCacheDir,
+	loadVirtualModules,
+	getAliases,
+	findPackageRoot,
+	getTranspileCacheDir,
 };
 
 /**
@@ -238,49 +238,49 @@ export const extensionLoaderTestHooks = {
 const nativelyImportedPaths = new Set<string>();
 
 export async function loadExtensionModule(
-  extensionPath: string,
-  cacheToken?: ExtensionCacheToken,
+	extensionPath: string,
+	cacheToken?: ExtensionCacheToken,
 ): Promise<ExtensionFactory | undefined> {
-  if (isCurrentCacheToken(cacheToken)) {
-    const cachedFactory = extensionCache.get(extensionPath);
-    if (cachedFactory) return cachedFactory;
-  }
+	if (isCurrentCacheToken(cacheToken)) {
+		const cachedFactory = extensionCache.get(extensionPath);
+		if (cachedFactory) return cachedFactory;
+	}
 
-  const isWindows = process.platform === "win32";
-  // Single-file builds (compiled binary or dev bundle) cannot alias host
-  // package specifiers to files on disk: extensions must share the live
-  // module instances baked into the build, so virtualModules is used instead
-  // (which requires jiti's transformed-import path).
-  const isSingleFileBuild = isBunBinary || isBundledBuild;
-  // Windows first-load fast path: native import() (jiti's default tryNative)
-  // skips per-launch transpilation of the extension module graph. Re-loads of
-  // the same path fall back to transformed imports for fresh evaluation.
-  //
-  // That fallback is not free. Measured on Windows CI, a transformed re-import
-  // costs ~15 ms per module file in the extension's transitive graph, so a
-  // reload of all five builtin packages (621 files) takes ~10.7 s cold and
-  // ~2.5 s against a warm jiti fsCache, against ~40 ms on Linux and macOS. The
-  // cost is correctness-driven and is paid interactively on every Windows
-  // `/reload`; removing it needs a content-hash-keyed evaluation cache or a
-  // narrower trigger, not a larger timeout.
-  const forceTransformedImports = isSingleFileBuild || (isWindows && nativelyImportedPaths.has(extensionPath));
-  const jiti = createJiti(resolutionBaseUrl(import.meta.url), {
-    moduleCache: false,
-    ...(forceTransformedImports
-      ? { fsCache: getTranspileCacheDir(), tryNative: false }
-      : isWindows
-        ? { fsCache: getTranspileCacheDir() }
-        : {}),
-    ...(isSingleFileBuild ? { virtualModules: await getVirtualModules() } : { alias: getAliases() }),
-  });
-  const module = await jiti.import(extensionImportSpecifier(extensionPath, cacheToken), { default: true });
-  if (isWindows && !forceTransformedImports) {
-    nativelyImportedPaths.add(extensionPath);
-  }
-  const factory = module as ExtensionFactory;
-  if (typeof factory !== "function") return undefined;
-  if (isCurrentCacheToken(cacheToken)) {
-    extensionCache.set(extensionPath, factory);
-  }
-  return factory;
+	const isWindows = process.platform === "win32";
+	// Single-file builds (compiled binary or dev bundle) cannot alias host
+	// package specifiers to files on disk: extensions must share the live
+	// module instances baked into the build, so virtualModules is used instead
+	// (which requires jiti's transformed-import path).
+	const isSingleFileBuild = isBunBinary || isBundledBuild;
+	// Windows first-load fast path: native import() (jiti's default tryNative)
+	// skips per-launch transpilation of the extension module graph. Re-loads of
+	// the same path fall back to transformed imports for fresh evaluation.
+	//
+	// That fallback is not free. Measured on Windows CI, a transformed re-import
+	// costs ~15 ms per module file in the extension's transitive graph, so a
+	// reload of all five builtin packages (621 files) takes ~10.7 s cold and
+	// ~2.5 s against a warm jiti fsCache, against ~40 ms on Linux and macOS. The
+	// cost is correctness-driven and is paid interactively on every Windows
+	// `/reload`; removing it needs a content-hash-keyed evaluation cache or a
+	// narrower trigger, not a larger timeout.
+	const forceTransformedImports = isSingleFileBuild || (isWindows && nativelyImportedPaths.has(extensionPath));
+	const jiti = createJiti(resolutionBaseUrl(import.meta.url), {
+		moduleCache: false,
+		...(forceTransformedImports
+			? { fsCache: getTranspileCacheDir(), tryNative: false }
+			: isWindows
+				? { fsCache: getTranspileCacheDir() }
+				: {}),
+		...(isSingleFileBuild ? { virtualModules: await getVirtualModules() } : { alias: getAliases() }),
+	});
+	const module = await jiti.import(extensionImportSpecifier(extensionPath, cacheToken), { default: true });
+	if (isWindows && !forceTransformedImports) {
+		nativelyImportedPaths.add(extensionPath);
+	}
+	const factory = module as ExtensionFactory;
+	if (typeof factory !== "function") return undefined;
+	if (isCurrentCacheToken(cacheToken)) {
+		extensionCache.set(extensionPath, factory);
+	}
+	return factory;
 }

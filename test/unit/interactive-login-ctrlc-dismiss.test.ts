@@ -1,9 +1,9 @@
-import { test } from "vitest";
 import assert from "node:assert/strict";
 import { getKeybindings, Key, type KeyId, parseKey, setKeybindings } from "@earendil-works/pi-tui";
+import { test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
-import { routeGlobalClearInput } from "../../packages/coding-agent/src/modes/interactive/interactive-global-clear.ts";
 import { ExtensionSelectorComponent } from "../../packages/coding-agent/src/modes/interactive/components/extension-selector.ts";
+import { routeGlobalClearInput } from "../../packages/coding-agent/src/modes/interactive/interactive-global-clear.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 
 /**
@@ -19,11 +19,13 @@ function rawKeyData(sequence: string, keyId: KeyId): string {
 const CTRL_C = rawKeyData("\u0003", Key.ctrl("c"));
 const ESCAPE = rawKeyData("\u001b", Key.escape);
 
-function makeOptions(overrides: Partial<{
-	hasOverlay: boolean;
-	blockingInlineCustomUiActive: boolean;
-	editorOwnsInput: boolean;
-}> = {}) {
+function makeOptions(
+	overrides: Partial<{
+		hasOverlay: boolean;
+		blockingInlineCustomUiActive: boolean;
+		editorOwnsInput: boolean;
+	}> = {},
+) {
 	const keybindings = new KeybindingsManager();
 	const state = { clears: 0 };
 	const options = {
@@ -31,7 +33,9 @@ function makeOptions(overrides: Partial<{
 		hasOverlay: () => overrides.hasOverlay ?? false,
 		blockingInlineCustomUiActive: () => overrides.blockingInlineCustomUiActive ?? false,
 		editorOwnsInput: () => overrides.editorOwnsInput ?? true,
-		onClear: () => { state.clears += 1; },
+		onClear: () => {
+			state.clears += 1;
+		},
 		requestRender: () => {},
 	};
 	return { options, state };
@@ -57,7 +61,9 @@ test("global clear guards are evaluated live, not at registration time", () => {
 		hasOverlay: () => overlay,
 		blockingInlineCustomUiActive: () => false,
 		editorOwnsInput: () => editorOwns,
-		onClear: () => { clears += 1; },
+		onClear: () => {
+			clears += 1;
+		},
 		requestRender: () => {},
 	};
 
@@ -88,7 +94,9 @@ test("a single ctrl+c cancels the login auth-method selector once input reaches 
 			"Select authentication method:",
 			["Use a subscription", "Use an API key"],
 			() => {},
-			() => { cancelled += 1; },
+			() => {
+				cancelled += 1;
+			},
 		);
 		// With the fix, the deferred global handler lets the focused selector
 		// receive the raw ctrl+c byte; tui.select.cancel binds escape AND ctrl+c.
@@ -99,7 +107,9 @@ test("a single ctrl+c cancels the login auth-method selector once input reaches 
 			"Select authentication method:",
 			["Use a subscription", "Use an API key"],
 			() => {},
-			() => { cancelled += 1; },
+			() => {
+				cancelled += 1;
+			},
 		);
 		viaEscape.handleInput(ESCAPE);
 		assert.equal(cancelled, 2);

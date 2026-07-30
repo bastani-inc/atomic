@@ -7,8 +7,8 @@ import {
 	Spacer,
 	TruncatedText,
 } from "@earendil-works/pi-tui";
-import type { AuthStatus } from "../../../core/provider-composer.ts";
 import type { ModelRuntime } from "../../../core/model-runtime.ts";
+import type { AuthStatus } from "../../../core/provider-composer.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 
@@ -160,16 +160,22 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 		const status = this.getAuthStatus(provider.id);
 		if (!status.configured) return theme.fg("muted", " • unconfigured");
 		switch (status.source) {
-			case "environment": return theme.fg("success", ` ✓ env: ${status.label ?? "API key"}`);
-			case "runtime": return theme.fg("success", " ✓ runtime API key");
+			case "environment":
+				return theme.fg("success", ` ✓ env: ${status.label ?? "API key"}`);
+			case "runtime":
+				return theme.fg("success", " ✓ runtime API key");
 			case "stored": {
 				const storedType = this.modelRuntime.getStoredCredentialType(provider.id);
 				return theme.fg("success", ` ✓ ${storedType === "oauth" ? "subscription" : "API key"} configured`);
 			}
-			case "fallback": return theme.fg("success", " ✓ configured");
-			case "models_json_key": return theme.fg("success", " ✓ key in models.json");
-			case "models_json_command": return theme.fg("success", " ✓ command in models.json");
-			default: return theme.fg("muted", " • unconfigured");
+			case "fallback":
+				return theme.fg("success", " ✓ configured");
+			case "models_json_key":
+				return theme.fg("success", " ✓ key in models.json");
+			case "models_json_command":
+				return theme.fg("success", " ✓ command in models.json");
+			default:
+				return theme.fg("muted", " • unconfigured");
 		}
 	}
 

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import type { AgentSession } from "../src/core/agent-session.ts";
+import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.ts";
 import { RpcSessionBinding } from "../src/modes/rpc/rpc-session-binding.ts";
 import type { RpcCommand } from "../src/modes/rpc/rpc-types.ts";
@@ -23,7 +23,7 @@ async function createRealReplacementContext() {
 	const runtime = new AgentSessionRuntime(
 		first.session,
 		{ cwd: first.tempDir, agentDir: first.tempDir } as never,
-		async () => ({ session: second.session, services: secondServices, diagnostics: [] } as never),
+		async () => ({ session: second.session, services: secondServices, diagnostics: [] }) as never,
 	);
 	const output: object[] = [];
 	const binding = new RpcSessionBinding({
@@ -54,8 +54,11 @@ async function createRealReplacementContext() {
 
 function updatesFor(output: object[], id: string): string {
 	return output
-		.filter((event) => (event as { type?: string; id?: string }).type === "bash_execution_update" &&
-			(event as { id?: string }).id === id)
+		.filter(
+			(event) =>
+				(event as { type?: string; id?: string }).type === "bash_execution_update" &&
+				(event as { id?: string }).id === id,
+		)
 		.map((event) => (event as { delta: string }).delta)
 		.join("");
 }
@@ -65,14 +68,19 @@ describe("RPC bash ownership across session replacement", () => {
 		const context = await createRealReplacementContext();
 		vi.spyOn(context.first.session, "isStreaming", "get").mockReturnValue(true);
 		const execution = context.handle({
-			id: "old-target", type: "bash", command: "printf old-start; sleep 1; printf old-end",
+			id: "old-target",
+			type: "bash",
+			command: "printf old-start; sleep 1; printf old-end",
 		});
 		await waitFor(() => updatesFor(context.output, "old-target") === "old-start");
 		await context.handle({ id: "replace", type: "new_session" });
-		await expect(context.handle({ id: "cancel-old", type: "abort_bash", requestId: "old-target" }))
-			.resolves.toMatchObject({ success: true });
+		await expect(
+			context.handle({ id: "cancel-old", type: "abort_bash", requestId: "old-target" }),
+		).resolves.toMatchObject({ success: true });
 		await expect(execution).resolves.toMatchObject({
-			id: "old-target", success: true, data: { cancelled: true },
+			id: "old-target",
+			success: true,
+			data: { cancelled: true },
 		});
 		expect(updatesFor(context.output, "old-target")).toBe("old-start");
 		const sourceReader = createRpcCommandHandler({
@@ -81,10 +89,10 @@ describe("RPC bash ownership across session replacement", () => {
 			rebindSession: async () => {},
 			output: () => {},
 		});
-		const sourceEntries = await sourceReader({ id: "source-entries", type: "get_entries" }) as {
+		const sourceEntries = (await sourceReader({ id: "source-entries", type: "get_entries" })) as {
 			data: { entries: Array<{ type: string; message?: { role?: string } }> };
 		};
-		const targetEntries = await context.handle({ id: "target-entries", type: "get_entries" }) as {
+		const targetEntries = (await context.handle({ id: "target-entries", type: "get_entries" })) as {
 			data: { entries: Array<{ type: string; message?: { role?: string } }> };
 		};
 		expect(sourceEntries.data.entries.some((entry) => entry.message?.role === "bashExecution")).toBe(true);
@@ -97,12 +105,16 @@ describe("RPC bash ownership across session replacement", () => {
 	it("legacy abort reaches concurrent owners on both sides of a replacement", async () => {
 		const context = await createRealReplacementContext();
 		const oldExecution = context.handle({
-			id: "old-all", type: "bash", command: "printf old-start; sleep 1; printf old-end",
+			id: "old-all",
+			type: "bash",
+			command: "printf old-start; sleep 1; printf old-end",
 		});
 		await waitFor(() => updatesFor(context.output, "old-all") === "old-start");
 		await context.handle({ id: "replace", type: "new_session" });
 		const newExecution = context.handle({
-			id: "new-all", type: "bash", command: "printf new-start; sleep 1; printf new-end",
+			id: "new-all",
+			type: "bash",
+			command: "printf new-start; sleep 1; printf new-end",
 		});
 		await waitFor(() => updatesFor(context.output, "new-all") === "new-start");
 		await context.handle({ id: "cancel-all", type: "abort_bash" });
@@ -124,7 +136,9 @@ describe("RPC bash ownership across session replacement", () => {
 		};
 		const runtimeHost = {
 			services: { agentDir: first.tempDir },
-			get session() { return current; },
+			get session() {
+				return current;
+			},
 			newSession: replace,
 			switchSession: replace,
 			importFromJsonl: replace,
@@ -141,8 +155,16 @@ describe("RPC bash ownership across session replacement", () => {
 		vi.spyOn(first.session, "reload").mockResolvedValue();
 		const transitions: Array<{ name: string; command: RpcCommand; replaces: boolean }> = [
 			{ name: "new", command: { id: "swap-new", type: "new_session" }, replaces: true },
-			{ name: "switch", command: { id: "swap-switch", type: "switch_session", sessionPath: "/tmp/target.jsonl" }, replaces: true },
-			{ name: "import", command: { id: "swap-import", type: "import_session", inputPath: "/tmp/import.jsonl" }, replaces: true },
+			{
+				name: "switch",
+				command: { id: "swap-switch", type: "switch_session", sessionPath: "/tmp/target.jsonl" },
+				replaces: true,
+			},
+			{
+				name: "import",
+				command: { id: "swap-import", type: "import_session", inputPath: "/tmp/import.jsonl" },
+				replaces: true,
+			},
 			{ name: "fork", command: { id: "swap-fork", type: "fork", entryId: "entry" }, replaces: true },
 			{ name: "clone", command: { id: "swap-clone", type: "clone" }, replaces: true },
 			{ name: "reload", command: { id: "same-reload", type: "reload" }, replaces: false },
@@ -158,7 +180,9 @@ describe("RPC bash ownership across session replacement", () => {
 			await expect(execution).resolves.toMatchObject({ success: true, data: { output: "beforeafter" } });
 			expect(updatesFor(output, id)).toBe("beforeafter");
 		}
-		expect(first.session.messages.filter((message) => message.role === "bashExecution")).toHaveLength(transitions.length);
+		expect(first.session.messages.filter((message) => message.role === "bashExecution")).toHaveLength(
+			transitions.length,
+		);
 		expect(second.session.messages.filter((message) => message.role === "bashExecution")).toHaveLength(0);
 		second.cleanup();
 		first.cleanup();
@@ -174,13 +198,20 @@ describe("RPC bash ownership across session replacement", () => {
 		const handle = createRpcCommandHandler({
 			runtimeHost,
 			getSession: () => harness.session,
-			rebindSession: async () => { throw new Error("must not rebind cancelled replacement"); },
+			rebindSession: async () => {
+				throw new Error("must not rebind cancelled replacement");
+			},
 			output: (event) => output.push(event),
 		});
-		const execution = handle({ id: "cancelled-swap-bash", type: "bash", command: "printf before; sleep 0.05; printf after" });
+		const execution = handle({
+			id: "cancelled-swap-bash",
+			type: "bash",
+			command: "printf before; sleep 0.05; printf after",
+		});
 		await waitFor(() => updatesFor(output, "cancelled-swap-bash") === "before");
 		await expect(handle({ id: "cancelled-swap", type: "new_session" })).resolves.toMatchObject({
-			success: true, data: { cancelled: true },
+			success: true,
+			data: { cancelled: true },
 		});
 		await expect(execution).resolves.toMatchObject({ success: true, data: { output: "beforeafter" } });
 		expect(updatesFor(output, "cancelled-swap-bash")).toBe("beforeafter");
@@ -190,7 +221,10 @@ describe("RPC bash ownership across session replacement", () => {
 	it("does not append a late result to the shared target manager after an actual unpersisted clone", async () => {
 		const source = await createHarness();
 		source.session.recordBashResult("seed", {
-			output: "seed", exitCode: 0, cancelled: false, truncated: false,
+			output: "seed",
+			exitCode: 0,
+			cancelled: false,
+			truncated: false,
 		});
 		const startingSessionId = source.sessionManager.getSessionId();
 		let target: Awaited<ReturnType<typeof createHarness>> | undefined;
@@ -218,11 +252,15 @@ describe("RPC bash ownership across session replacement", () => {
 		const handle = createRpcCommandHandler({
 			runtimeHost: runtime,
 			getSession: () => current,
-			rebindSession: async () => { current = runtime.session; },
+			rebindSession: async () => {
+				current = runtime.session;
+			},
 			output: (event) => output.push(event),
 		});
 		const execution = handle({
-			id: "shared-manager", type: "bash", command: "printf source; sleep 0.2; printf result",
+			id: "shared-manager",
+			type: "bash",
+			command: "printf source; sleep 0.2; printf result",
 		});
 		await waitFor(() => updatesFor(output, "shared-manager") === "source");
 		await expect(handle({ id: "clone", type: "clone" })).resolves.toMatchObject({ success: true });
@@ -231,8 +269,11 @@ describe("RPC bash ownership across session replacement", () => {
 		await expect(execution).resolves.toMatchObject({ success: true, data: { output: "sourceresult" } });
 		expect(source.session.messages.filter((message) => message.role === "bashExecution")).toHaveLength(2);
 		expect(target?.session.messages.filter((message) => message.role === "bashExecution")).toHaveLength(1);
-		expect(source.sessionManager.getEntries().filter((entry) =>
-			entry.type === "message" && entry.message.role === "bashExecution")).toHaveLength(1);
+		expect(
+			source.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "message" && entry.message.role === "bashExecution"),
+		).toHaveLength(1);
 
 		target?.cleanup();
 		source.cleanup();

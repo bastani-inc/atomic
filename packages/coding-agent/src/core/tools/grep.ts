@@ -9,8 +9,8 @@ import { parenthesizedKeyHint } from "../../modes/interactive/components/keybind
 import { ensureTool } from "../../utils/tools-manager.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { resolveToCwd } from "./path-utils.ts";
-import { loadNativeSearchBinding, type NativeGrepMatch } from "./search-native.ts";
 import { getTextOutput, invalidArgText, shortenPath, str } from "./render-utils.ts";
+import { loadNativeSearchBinding, type NativeGrepMatch } from "./search-native.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import {
 	DEFAULT_MAX_BYTES,
@@ -21,29 +21,34 @@ import {
 	truncateLine,
 } from "./truncate.ts";
 
-const grepSchema = Type.Object({
-	pattern: Type.String({ description: "Search pattern (regex or literal string)" }),
-	path: Type.Optional(Type.String({ description: "Directory or file to search (default: current directory)" })),
-	glob: Type.Optional(Type.String({ description: "Filter files by glob pattern, e.g. '*.ts' or '**/*.spec.ts'" })),
-	ignoreCase: Type.Optional(Type.Boolean({ description: "Case-insensitive search (default: false)" })),
-	type: Type.Optional(Type.String({ description: "File type filter for native grep." })),
-	literal: Type.Optional(
-		Type.Boolean({ description: "Treat pattern as literal string instead of regex (default: false)" }),
-	),
-	context: Type.Optional(
-		Type.Number({ description: "Number of lines to show before and after each match (default: 0)" }),
-	),
-	contextBefore: Type.Optional(Type.Number({ description: "Lines to show before each match." })),
-	contextAfter: Type.Optional(Type.Number({ description: "Lines to show after each match." })),
-	limit: Type.Optional(Type.Number({ description: "Maximum number of matches to return (default: 100)" })),
-	offset: Type.Optional(Type.Number({ description: "Skip first N matches." })),
-	mode: Type.Optional(Type.Union([Type.Literal("content"), Type.Literal("count"), Type.Literal("filesWithMatches")])),
-	maxCountPerFile: Type.Optional(Type.Number({ description: "Maximum matches per file." })),
-	hidden: Type.Optional(Type.Boolean({ description: "Search hidden files (default true)." })),
-	cache: Type.Optional(Type.Boolean({ description: "Use native cache." })),
-	timeoutMs: Type.Optional(Type.Number({ description: "Native grep timeout in milliseconds." })),
-	gitignore: Type.Optional(Type.Boolean({ description: "Respect .gitignore files (default: true)" })),
-}, { additionalProperties: false });
+const grepSchema = Type.Object(
+	{
+		pattern: Type.String({ description: "Search pattern (regex or literal string)" }),
+		path: Type.Optional(Type.String({ description: "Directory or file to search (default: current directory)" })),
+		glob: Type.Optional(Type.String({ description: "Filter files by glob pattern, e.g. '*.ts' or '**/*.spec.ts'" })),
+		ignoreCase: Type.Optional(Type.Boolean({ description: "Case-insensitive search (default: false)" })),
+		type: Type.Optional(Type.String({ description: "File type filter for native grep." })),
+		literal: Type.Optional(
+			Type.Boolean({ description: "Treat pattern as literal string instead of regex (default: false)" }),
+		),
+		context: Type.Optional(
+			Type.Number({ description: "Number of lines to show before and after each match (default: 0)" }),
+		),
+		contextBefore: Type.Optional(Type.Number({ description: "Lines to show before each match." })),
+		contextAfter: Type.Optional(Type.Number({ description: "Lines to show after each match." })),
+		limit: Type.Optional(Type.Number({ description: "Maximum number of matches to return (default: 100)" })),
+		offset: Type.Optional(Type.Number({ description: "Skip first N matches." })),
+		mode: Type.Optional(
+			Type.Union([Type.Literal("content"), Type.Literal("count"), Type.Literal("filesWithMatches")]),
+		),
+		maxCountPerFile: Type.Optional(Type.Number({ description: "Maximum matches per file." })),
+		hidden: Type.Optional(Type.Boolean({ description: "Search hidden files (default true)." })),
+		cache: Type.Optional(Type.Boolean({ description: "Use native cache." })),
+		timeoutMs: Type.Optional(Type.Number({ description: "Native grep timeout in milliseconds." })),
+		gitignore: Type.Optional(Type.Boolean({ description: "Respect .gitignore files (default: true)" })),
+	},
+	{ additionalProperties: false },
+);
 
 export type GrepToolInput = Static<typeof grepSchema>;
 const DEFAULT_LIMIT = 100;
@@ -128,7 +133,8 @@ function formatGrepResult(
 		const remaining = lines.length - maxLines;
 		text += `\n${displayLines.map((line) => theme.fg("toolOutput", line)).join("\n")}`;
 		if (remaining > 0) {
-			text += theme.fg("muted", "\n... ") + parenthesizedKeyHint("app.tools.expand", "Expand", `${remaining} more lines`);
+			text +=
+				theme.fg("muted", "\n... ") + parenthesizedKeyHint("app.tools.expand", "Expand", `${remaining} more lines`);
 		}
 	}
 
@@ -241,37 +247,55 @@ export function createGrepToolDefinition(
 									cwd,
 									glob,
 									ignoreCase,
-								hidden: hidden ?? true,
-								gitignore: gitignore !== false,
-								cache: cache ?? nativeCache,
-								maxCount: mode === "count" ? undefined : effectiveLimit + 1,
-								offset,
-								context: contextBefore === undefined && contextAfter === undefined ? contextValue : undefined,
-								contextBefore,
-								contextAfter,
-								type,
-								mode,
-								maxCountPerFile,
-								maxColumns: GREP_MAX_LINE_LENGTH,
-								multiline: pattern.includes("\n") || pattern.includes("\\n"),
-								signal,
-								timeoutMs: timeoutMs ?? 30_000,
+									hidden: hidden ?? true,
+									gitignore: gitignore !== false,
+									cache: cache ?? nativeCache,
+									maxCount: mode === "count" ? undefined : effectiveLimit + 1,
+									offset,
+									context:
+										contextBefore === undefined && contextAfter === undefined ? contextValue : undefined,
+									contextBefore,
+									contextAfter,
+									type,
+									mode,
+									maxCountPerFile,
+									maxColumns: GREP_MAX_LINE_LENGTH,
+									multiline: pattern.includes("\n") || pattern.includes("\\n"),
+									signal,
+									timeoutMs: timeoutMs ?? 30_000,
 								});
 								if (nativeResult.error) throw new Error(nativeResult.error);
 								if (nativeResult.matches.length === 0) {
-									settle(() => resolve({ content: [{ type: "text", text: mode === "count" ? "0" : "No matches found" }], details: undefined }));
+									settle(() =>
+										resolve({
+											content: [{ type: "text", text: mode === "count" ? "0" : "No matches found" }],
+											details: undefined,
+										}),
+									);
 									return;
 								}
 								const visibleMatches = nativeResult.matches.slice(0, effectiveLimit);
-								const filesOutput = mode === "filesWithMatches" && !isDirectory && (offset ?? 0) > 0 ? "" : visibleMatches.map((match) => formatPath(match.path)).join("\n");
+								const filesOutput =
+									mode === "filesWithMatches" && !isDirectory && (offset ?? 0) > 0
+										? ""
+										: visibleMatches.map((match) => formatPath(match.path)).join("\n");
 								const countOutput = String(Math.max(0, nativeResult.totalMatches - (offset ?? 0)));
-								const rawOutput = mode === "count" ? countOutput : mode === "filesWithMatches" ? (filesOutput || "No matches found") : visibleMatches.flatMap((match) => formatNativeGrepMatch(match, formatPath(match.path))).join("\n");
+								const rawOutput =
+									mode === "count"
+										? countOutput
+										: mode === "filesWithMatches"
+											? filesOutput || "No matches found"
+											: visibleMatches
+													.flatMap((match) => formatNativeGrepMatch(match, formatPath(match.path)))
+													.join("\n");
 								const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
 								let output = truncation.content;
 								const details: GrepToolDetails = {};
 								const notices: string[] = [];
 								if (nativeResult.matches.length > effectiveLimit || nativeResult.limitReached) {
-									notices.push(`${effectiveLimit} matches limit reached. Use limit=${effectiveLimit * 2} for more, or refine pattern`);
+									notices.push(
+										`${effectiveLimit} matches limit reached. Use limit=${effectiveLimit * 2} for more, or refine pattern`,
+									);
 									details.matchLimitReached = effectiveLimit;
 								}
 								if (truncation.truncated) {
@@ -279,16 +303,21 @@ export function createGrepToolDefinition(
 									details.truncation = truncation;
 								}
 								if (visibleMatches.some((match) => match.truncated)) {
-									notices.push(`Some lines truncated to ${GREP_MAX_LINE_LENGTH} chars. Use read tool to see full lines`);
+									notices.push(
+										`Some lines truncated to ${GREP_MAX_LINE_LENGTH} chars. Use read tool to see full lines`,
+									);
 									details.linesTruncated = true;
 								}
 								if (notices.length > 0) output += `\n\n[${notices.join(". ")}]`;
-								settle(() => resolve({ content: [{ type: "text", text: output }], details: Object.keys(details).length > 0 ? details : undefined }));
+								settle(() =>
+									resolve({
+										content: [{ type: "text", text: output }],
+										details: Object.keys(details).length > 0 ? details : undefined,
+									}),
+								);
 								return;
 							}
 						}
-
-
 
 						const fileCache = new Map<string, string[]>();
 						const getFileLines = async (filePath: string): Promise<string[]> => {
@@ -359,7 +388,8 @@ export function createGrepToolDefinition(
 							if (!lines.length) return [`${relativePath}:${lineNumber}: (unable to read file)`];
 							const block: string[] = [];
 							const start = contextBeforeValue > 0 ? Math.max(1, lineNumber - contextBeforeValue) : lineNumber;
-							const end = contextAfterValue > 0 ? Math.min(lines.length, lineNumber + contextAfterValue) : lineNumber;
+							const end =
+								contextAfterValue > 0 ? Math.min(lines.length, lineNumber + contextAfterValue) : lineNumber;
 							for (let current = start; current <= end; current++) {
 								const lineText = lines[current - 1] ?? "";
 								const sanitized = lineText.replace(/\r/g, "");
@@ -375,16 +405,40 @@ export function createGrepToolDefinition(
 
 						// Collect matches during streaming, then format them after rg exits.
 						const matches: Array<{ filePath: string; lineNumber: number; lineText?: string }> = [];
-						let seenMatches = 0, seenFiles = 0; const seenFilePaths = new Set<string>(), filesWithMatches = new Set<string>();
+						let seenMatches = 0,
+							seenFiles = 0;
+						const seenFilePaths = new Set<string>(),
+							filesWithMatches = new Set<string>();
 						rl.on("line", (line) => {
-							if (!line.trim() || (mode !== "count" && mode !== "filesWithMatches" && matchCount >= effectiveLimit)) return;
+							if (
+								!line.trim() ||
+								(mode !== "count" && mode !== "filesWithMatches" && matchCount >= effectiveLimit)
+							)
+								return;
 							let event: unknown;
 							try {
 								event = JSON.parse(line) as unknown;
-							} catch { return; }
+							} catch {
+								return;
+							}
 							if (isRipgrepMatchEvent(event)) {
 								const filePath = event.data?.path?.text;
-								if (mode === "filesWithMatches") { if (typeof filePath === "string") { const formatted = formatPath(filePath); if (!seenFilePaths.has(formatted)) { seenFilePaths.add(formatted); seenFiles++; if (offset === undefined || seenFiles > offset) filesWithMatches.add(formatted); } } matchCount = filesWithMatches.size; if (matchCount >= effectiveLimit) { matchLimitReached = true; stopChild(true); } return; }
+								if (mode === "filesWithMatches") {
+									if (typeof filePath === "string") {
+										const formatted = formatPath(filePath);
+										if (!seenFilePaths.has(formatted)) {
+											seenFilePaths.add(formatted);
+											seenFiles++;
+											if (offset === undefined || seenFiles > offset) filesWithMatches.add(formatted);
+										}
+									}
+									matchCount = filesWithMatches.size;
+									if (matchCount >= effectiveLimit) {
+										matchLimitReached = true;
+										stopChild(true);
+									}
+									return;
+								}
 								seenMatches++;
 								if (mode !== "count" && offset !== undefined && seenMatches <= offset) return;
 								matchCount++;
@@ -392,8 +446,15 @@ export function createGrepToolDefinition(
 								const lineText = event.data?.lines?.text;
 								if (typeof filePath === "string") filesWithMatches.add(formatPath(filePath));
 								if (typeof filePath === "string" && typeof lineNumber === "number")
-									matches.push({ filePath, lineNumber, lineText: typeof lineText === "string" ? lineText : undefined });
-								if (mode !== "count" && matchCount >= effectiveLimit) { matchLimitReached = true; stopChild(true); }
+									matches.push({
+										filePath,
+										lineNumber,
+										lineText: typeof lineText === "string" ? lineText : undefined,
+									});
+								if (mode !== "count" && matchCount >= effectiveLimit) {
+									matchLimitReached = true;
+									stopChild(true);
+								}
 							}
 						});
 
@@ -413,11 +474,29 @@ export function createGrepToolDefinition(
 								return;
 							}
 							if (matchCount === 0) {
-								settle(() => resolve({ content: [{ type: "text", text: mode === "count" ? "0" : "No matches found" }], details: undefined }));
+								settle(() =>
+									resolve({
+										content: [{ type: "text", text: mode === "count" ? "0" : "No matches found" }],
+										details: undefined,
+									}),
+								);
 								return;
 							}
 							if (mode === "count" || mode === "filesWithMatches") {
-								settle(() => resolve({ content: [{ type: "text", text: mode === "count" ? String(Math.max(0, matchCount - (offset ?? 0))) : ([...filesWithMatches].join("\n") || "No matches found") }], details: matchLimitReached ? { matchLimitReached: effectiveLimit } : undefined }));
+								settle(() =>
+									resolve({
+										content: [
+											{
+												type: "text",
+												text:
+													mode === "count"
+														? String(Math.max(0, matchCount - (offset ?? 0)))
+														: [...filesWithMatches].join("\n") || "No matches found",
+											},
+										],
+										details: matchLimitReached ? { matchLimitReached: effectiveLimit } : undefined,
+									}),
+								);
 								return;
 							}
 

@@ -96,7 +96,8 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("working-indicator", {
-		description: "Set the Working indicator for prompt startup and active turns: dot, pulse, none, spinner, or reset.",
+		description:
+			"Set the Working indicator for prompt startup and active turns: dot, pulse, none, spinner, or reset.",
 		handler: async (args, ctx) => {
 			const nextMode = args.trim().toLowerCase();
 			if (!nextMode) {

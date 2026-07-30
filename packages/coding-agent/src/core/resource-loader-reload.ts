@@ -5,12 +5,20 @@ import { isLocalPath } from "../utils/paths.ts";
 import { clearExtensionCache, createExtensionRuntime, loadExtensionsCached } from "./extensions/loader.ts";
 import type { LoadExtensionsResult } from "./extensions/types.ts";
 import type { PathMetadata, ResolvedPaths } from "./package-manager.ts";
-import { resetTimings, startTimingSpan, endTimingSpan } from "./timings.ts";
+import {
+	updatePromptsFromPathsAsync,
+	updateSkillsFromPathsAsync,
+	updateThemesFromPathsAsync,
+} from "./resource-loader-assets.ts";
 import { loadProjectContextFiles, resolvePromptInput } from "./resource-loader-context-files.ts";
-import { discoverAppendSystemPromptFile, discoverSystemPromptFile } from "./resource-loader-discovery.ts";
-import { loadExtensionFactories, loadFinalExtensionSet, resolveInheritedExtensionOverlaps } from "./resource-loader-extensions.ts";
-import { resourceInternals } from "./resource-loader-internals.ts";
 import type { DefaultResourceLoader } from "./resource-loader-core.ts";
+import { discoverAppendSystemPromptFile, discoverSystemPromptFile } from "./resource-loader-discovery.ts";
+import {
+	loadExtensionFactories,
+	loadFinalExtensionSet,
+	resolveInheritedExtensionOverlaps,
+} from "./resource-loader-extensions.ts";
+import { resourceInternals } from "./resource-loader-internals.ts";
 import {
 	collectWorkflowResources,
 	createInheritanceSnapshotProvider,
@@ -18,10 +26,10 @@ import {
 	resolvePackageResourcePaths,
 	resolveTrustedBorrowedProjectLocalSources,
 } from "./resource-loader-package-resources.ts";
-import { applyExtensionSourceInfo } from "./resource-loader-source-info.ts";
-import { updatePromptsFromPathsAsync, updateSkillsFromPathsAsync, updateThemesFromPathsAsync } from "./resource-loader-assets.ts";
 import { mergeResourcePaths, resolveResourcePath } from "./resource-loader-paths.ts";
+import { applyExtensionSourceInfo } from "./resource-loader-source-info.ts";
 import type { ResourceLoaderReloadOptions } from "./resource-loader-types.ts";
+import { endTimingSpan, resetTimings, startTimingSpan } from "./timings.ts";
 
 function getEnabledResources(
 	resources: Array<{ path: string; enabled: boolean; metadata: PathMetadata }>,
@@ -149,8 +157,14 @@ export async function reloadDefaultResourceLoader(
 	}
 	if (options?.deferResources && !options.resolveProjectTrust && !options.resolveBorrowedProjectTrust) {
 		await state.settingsManager.reload();
-		const deferredExtensions: LoadExtensionsResult = { extensions: [], errors: [], runtime: createExtensionRuntime() };
-		state.extensionsResult = state.extensionsOverride ? state.extensionsOverride(deferredExtensions) : deferredExtensions;
+		const deferredExtensions: LoadExtensionsResult = {
+			extensions: [],
+			errors: [],
+			runtime: createExtensionRuntime(),
+		};
+		state.extensionsResult = state.extensionsOverride
+			? state.extensionsOverride(deferredExtensions)
+			: deferredExtensions;
 		state.extensionSkillSourceInfos = new Map();
 		state.extensionPromptSourceInfos = new Map();
 		state.extensionThemeSourceInfos = new Map();
@@ -179,7 +193,9 @@ export async function reloadDefaultResourceLoader(
 		const baseAppend = appendSources
 			.map((s) => resolvePromptInput(s, "append system prompt"))
 			.filter((s): s is string => s !== undefined);
-		state.appendSystemPrompt = state.appendSystemPromptOverride ? state.appendSystemPromptOverride(baseAppend) : baseAppend;
+		state.appendSystemPrompt = state.appendSystemPromptOverride
+			? state.appendSystemPromptOverride(baseAppend)
+			: baseAppend;
 		state.loaded = true;
 		return;
 	}
@@ -208,9 +224,7 @@ export async function reloadDefaultResourceLoader(
 	const builtinEnabledPrompts = state.noPromptTemplates
 		? []
 		: getEnabledPaths(builtinPackagePaths.prompts, metadataByPath);
-	const builtinEnabledThemes = state.noThemes
-		? []
-		: getEnabledPaths(builtinPackagePaths.themes, metadataByPath);
+	const builtinEnabledThemes = state.noThemes ? [] : getEnabledPaths(builtinPackagePaths.themes, metadataByPath);
 
 	const enabledSkills = enabledSkillResources.map((resource) => mapSkillPath(resource, metadataByPath));
 	const builtinEnabledSkills = builtinEnabledSkillResources.map((resource) => mapSkillPath(resource, metadataByPath));
@@ -254,7 +268,11 @@ export async function reloadDefaultResourceLoader(
 
 	const skillPaths = state.noSkills
 		? mergeResourcePaths(state.cwd, cliEnabledSkills, state.additionalSkillPaths)
-		: mergeResourcePaths(state.cwd, [...cliEnabledSkills, ...enabledSkills, ...builtinEnabledSkills], state.additionalSkillPaths);
+		: mergeResourcePaths(
+				state.cwd,
+				[...cliEnabledSkills, ...enabledSkills, ...builtinEnabledSkills],
+				state.additionalSkillPaths,
+			);
 
 	state.lastSkillPaths = skillPaths;
 	const skillsStartedAt = Date.now();
@@ -273,7 +291,11 @@ export async function reloadDefaultResourceLoader(
 
 	const promptPaths = state.noPromptTemplates
 		? mergeResourcePaths(state.cwd, cliEnabledPrompts, state.additionalPromptTemplatePaths)
-		: mergeResourcePaths(state.cwd, [...cliEnabledPrompts, ...enabledPrompts, ...builtinEnabledPrompts], state.additionalPromptTemplatePaths);
+		: mergeResourcePaths(
+				state.cwd,
+				[...cliEnabledPrompts, ...enabledPrompts, ...builtinEnabledPrompts],
+				state.additionalPromptTemplatePaths,
+			);
 
 	state.lastPromptPaths = promptPaths;
 	const promptsStartedAt = Date.now();
@@ -296,7 +318,11 @@ export async function reloadDefaultResourceLoader(
 
 	const themePaths = state.noThemes
 		? mergeResourcePaths(state.cwd, cliEnabledThemes, state.additionalThemePaths)
-		: mergeResourcePaths(state.cwd, [...cliEnabledThemes, ...enabledThemes, ...builtinEnabledThemes], state.additionalThemePaths);
+		: mergeResourcePaths(
+				state.cwd,
+				[...cliEnabledThemes, ...enabledThemes, ...builtinEnabledThemes],
+				state.additionalThemePaths,
+			);
 
 	state.lastThemePaths = themePaths;
 	const themesStartedAt = Date.now();

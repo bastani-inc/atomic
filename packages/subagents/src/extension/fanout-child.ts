@@ -1,21 +1,25 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-
-import { APP_NAME, getEnvValue } from "@bastani/atomic";
 import type { ExtensionAPI, ToolDefinition } from "@bastani/atomic";
+import { APP_NAME, getEnvValue } from "@bastani/atomic";
 
 import { discoverAgents } from "../agents/agents.ts";
 import { resolveSubagentIntercomTarget } from "../intercom/intercom-bridge.ts";
 import { deliverSubagentIntercomMessageEvent } from "../intercom/result-intercom.ts";
 import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
-import { readNestedControlRequests, resolveNestedRouteFromEnv, writeNestedControlResult, type NestedRoute } from "../runs/shared/nested-events.ts";
+import {
+	type NestedRoute,
+	readNestedControlRequests,
+	resolveNestedRouteFromEnv,
+	writeNestedControlResult,
+} from "../runs/shared/nested-events.ts";
 import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../runs/shared/pi-args.ts";
 import { getArtifactsDir } from "../shared/artifacts.ts";
-import { type Details, type SubagentState } from "../shared/types.ts";
+import type { Details, SubagentState } from "../shared/types.ts";
+import { beginApiLifecycle } from "./api-lifecycle.ts";
 import { loadConfig } from "./config.ts";
 import { SubagentParams } from "./schemas.ts";
-import { beginApiLifecycle } from "./api-lifecycle.ts";
 
 function getSubagentSessionRoot(parentSessionFile: string | null): string {
 	if (parentSessionFile) {
@@ -86,9 +90,11 @@ function dropControlRequestFile(filePath: string, requestId: string): void {
 }
 
 function shouldDropPendingResult(pending: PendingControlResult, pendingSize: number, now: number): boolean {
-	return pending.attempts >= MAX_PENDING_RESULT_ATTEMPTS
-		|| now - pending.firstFailureAt >= MAX_PENDING_RESULT_AGE_MS
-		|| pendingSize > MAX_PENDING_RESULTS;
+	return (
+		pending.attempts >= MAX_PENDING_RESULT_ATTEMPTS ||
+		now - pending.firstFailureAt >= MAX_PENDING_RESULT_AGE_MS ||
+		pendingSize > MAX_PENDING_RESULTS
+	);
 }
 
 function buildNestedControlResult(
@@ -152,7 +158,7 @@ export function startNestedControlInboxListener(pi: ExtensionAPI, state: Subagen
 				void (async () => {
 					try {
 						const pending = pendingResults.get(request.requestId);
-						const result = pending?.result ?? await buildNestedControlResult(pi, state, request);
+						const result = pending?.result ?? (await buildNestedControlResult(pi, state, request));
 						try {
 							writeNestedControlResult(route, result);
 						} catch (error) {
@@ -167,9 +173,15 @@ export function startNestedControlInboxListener(pi: ExtensionAPI, state: Subagen
 								pendingResults.delete(request.requestId);
 								rememberSeenRequest(seen, request.requestId);
 								dropControlRequestFile(request.filePath, request.requestId);
-								console.error(`Dropping nested control result for request '${request.requestId}' targeting '${request.targetRunId}' after ${nextPending.attempts} failed write attempts via inbox '${route.controlInbox}':`, error);
+								console.error(
+									`Dropping nested control result for request '${request.requestId}' targeting '${request.targetRunId}' after ${nextPending.attempts} failed write attempts via inbox '${route.controlInbox}':`,
+									error,
+								);
 							} else if (nextPending.attempts === 1) {
-								console.error(`Failed to write nested control result for request '${request.requestId}' targeting '${request.targetRunId}' via inbox '${route.controlInbox}'; keeping request for retry:`, error);
+								console.error(
+									`Failed to write nested control result for request '${request.requestId}' targeting '${request.targetRunId}' via inbox '${route.controlInbox}'; keeping request for retry:`,
+									error,
+								);
 							}
 							return;
 						}
@@ -182,7 +194,10 @@ export function startNestedControlInboxListener(pi: ExtensionAPI, state: Subagen
 				})();
 			}
 		} catch (error) {
-			console.error(`Failed to poll nested control inbox '${route.controlInbox}' for root '${route.rootRunId}':`, error);
+			console.error(
+				`Failed to poll nested control inbox '${route.controlInbox}' for root '${route.rootRunId}':`,
+				error,
+			);
 		}
 	}, 200);
 	timer.unref?.();

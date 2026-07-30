@@ -3,7 +3,6 @@ import type { Component, OverlayHandle, OverlayOptions, TUI } from "@earendil-wo
 import { Input, matchesKey } from "@earendil-works/pi-tui";
 import { BaseOverlay, sleep } from "./overlay-qa-shared.js";
 
-
 export type ToggleHandleAccessor = () => OverlayHandle | null;
 
 export class ToggleDemoComponent extends BaseOverlay {
@@ -166,4 +165,3 @@ export class TimerPanel extends BaseOverlay {
 }
 
 // === Focus cycling demo ===
-

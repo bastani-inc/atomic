@@ -1,4 +1,4 @@
-import { getModel, type Api, type Model } from "@earendil-works/pi-ai/compat";
+import { type Api, getModel, type Model } from "@earendil-works/pi-ai/compat";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { LoginDialogComponent } from "../src/modes/interactive/components/login-dialog.ts";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
@@ -29,7 +29,9 @@ describe("interactive API-key login persistence failures", () => {
 		const showStatus = vi.fn();
 		const completeProviderAuthentication = vi.fn();
 		const editor = {};
-		const login = vi.fn(async () => { throw saveError; });
+		const login = vi.fn(async () => {
+			throw saveError;
+		});
 		const harness = {
 			session: { model: undefined, modelRuntime: { login } },
 			ui: { setFocus: vi.fn(), requestRender: vi.fn() },
@@ -47,19 +49,20 @@ describe("interactive API-key login persistence failures", () => {
 		) => Promise<void>;
 		await showApiKeyLoginDialog.call(harness, "example", "Example Provider");
 
-		expect(login).toHaveBeenCalledWith("example", "api_key", expect.objectContaining({
-			prompt: expect.any(Function),
-			notify: expect.any(Function),
-		}));
+		expect(login).toHaveBeenCalledWith(
+			"example",
+			"api_key",
+			expect.objectContaining({
+				prompt: expect.any(Function),
+				notify: expect.any(Function),
+			}),
+		);
 		expect(completeProviderAuthentication).not.toHaveBeenCalled();
 		expect(showStatus).not.toHaveBeenCalled();
-		expect(showError).toHaveBeenCalledWith(
-			"Failed to save API key for Example Provider: auth.json is read-only",
-		);
+		expect(showError).toHaveBeenCalledWith("Failed to save API key for Example Provider: auth.json is read-only");
 		expect(harness.editorContainer.addChild).toHaveBeenLastCalledWith(editor);
 	});
 });
-
 
 describe("interactive OAuth cancellation", () => {
 	it("restores the editor silently for a native AbortError", async () => {
@@ -68,7 +71,11 @@ describe("interactive OAuth cancellation", () => {
 		const editor = {};
 		const harness = {
 			session: { model: undefined },
-			runtimeHost: { loginOAuthProvider: async () => { throw new DOMException("The operation was aborted.", "AbortError"); } },
+			runtimeHost: {
+				loginOAuthProvider: async () => {
+					throw new DOMException("The operation was aborted.", "AbortError");
+				},
+			},
 			ui: { setFocus: vi.fn(), requestRender: vi.fn() },
 			editorContainer: { clear: vi.fn(), addChild: vi.fn() },
 			editor,
@@ -77,7 +84,9 @@ describe("interactive OAuth cancellation", () => {
 			showOAuthLoginSelect: vi.fn(),
 		};
 		const showLoginDialog = InteractiveModeBase.prototype.showLoginDialog as (
-			this: typeof harness, providerId: string, providerName: string,
+			this: typeof harness,
+			providerId: string,
+			providerName: string,
 		) => Promise<void>;
 
 		await showLoginDialog.call(harness, "kimi-coding", "Kimi For Coding");
@@ -101,14 +110,16 @@ describe("interactive OAuth cancellation", () => {
 			showOAuthLoginSelect: vi.fn(),
 		};
 		const showLoginDialog = InteractiveModeBase.prototype.showLoginDialog as (
-			this: typeof harness, providerId: string, providerName: string,
+			this: typeof harness,
+			providerId: string,
+			providerName: string,
 		) => Promise<void>;
 
 		await showLoginDialog.call(harness, "corp-oauth", "Corp OAuth");
 
-		expect(completeProviderAuthentication).toHaveBeenCalledWith(
-			"corp-oauth", "Corp OAuth", "oauth", undefined, { modelsRefreshed: true },
-		);
+		expect(completeProviderAuthentication).toHaveBeenCalledWith("corp-oauth", "Corp OAuth", "oauth", undefined, {
+			modelsRefreshed: true,
+		});
 	});
 
 	it("honors transported callback metadata and resolves manual redirect input", async () => {
@@ -118,24 +129,31 @@ describe("interactive OAuth cancellation", () => {
 		const completeProviderAuthentication = vi.fn(async () => {});
 		const editor = {};
 		const addedChildren: object[] = [];
-		const loginOAuthProvider = vi.fn(async (_provider: string, callbacks: {
-			onAuth(info: { url: string; instructions?: string }): void;
-			onManualCodeInput?(): Promise<string>;
-		}) => {
-			callbacks.onAuth({ url: "https://corp.invalid/login" });
-			expect(await callbacks.onManualCodeInput?.()).toBe("https://localhost/callback?code=manual");
-			return { modelsRefreshed: true };
-		});
+		const loginOAuthProvider = vi.fn(
+			async (
+				_provider: string,
+				callbacks: {
+					onAuth(info: { url: string; instructions?: string }): void;
+					onManualCodeInput?(): Promise<string>;
+				},
+			) => {
+				callbacks.onAuth({ url: "https://corp.invalid/login" });
+				expect(await callbacks.onManualCodeInput?.()).toBe("https://localhost/callback?code=manual");
+				return { modelsRefreshed: true };
+			},
+		);
 		const harness = {
 			session: {
 				model: undefined,
 				modelRuntime: {
-					getOAuthProviderMetadata: () => [{
-						id: "corp-oauth",
-						name: "Corp OAuth",
-						loginLabel: "Sign in to Corp",
-						usesCallbackServer: true,
-					}],
+					getOAuthProviderMetadata: () => [
+						{
+							id: "corp-oauth",
+							name: "Corp OAuth",
+							loginLabel: "Sign in to Corp",
+							usesCallbackServer: true,
+						},
+					],
 				},
 			},
 			runtimeHost: { loginOAuthProvider },
@@ -150,14 +168,14 @@ describe("interactive OAuth cancellation", () => {
 			showOAuthLoginSelect: vi.fn(),
 		};
 		const showLoginDialog = InteractiveModeBase.prototype.showLoginDialog as (
-			this: typeof harness, providerId: string, providerName: string,
+			this: typeof harness,
+			providerId: string,
+			providerName: string,
 		) => Promise<void>;
 
 		await showLoginDialog.call(harness, "corp-oauth", "Corp OAuth");
 
-		expect(showManualInput).toHaveBeenCalledWith(
-			"Paste redirect URL below, or complete login in browser:",
-		);
+		expect(showManualInput).toHaveBeenCalledWith("Paste redirect URL below, or complete login in browser:");
 		const dialog = addedChildren[0] as LoginDialogComponent;
 		expect(dialog.render(100).join("\n")).toContain("Sign in to Corp");
 		expect(completeProviderAuthentication).toHaveBeenCalledOnce();
@@ -175,11 +193,15 @@ describe("interactive OAuth cancellation", () => {
 			editorContainer: { clear: vi.fn(), addChild: vi.fn() },
 			editor,
 			showError,
-			completeProviderAuthentication: async () => { throw refreshFailure; },
+			completeProviderAuthentication: async () => {
+				throw refreshFailure;
+			},
 			showOAuthLoginSelect: vi.fn(),
 		};
 		const showLoginDialog = InteractiveModeBase.prototype.showLoginDialog as (
-			this: typeof harness, providerId: string, providerName: string,
+			this: typeof harness,
+			providerId: string,
+			providerName: string,
 		) => Promise<void>;
 
 		await showLoginDialog.call(harness, "corp-oauth", "Corp OAuth");
@@ -192,7 +214,11 @@ describe("interactive OAuth cancellation", () => {
 		const editor = {};
 		const harness = {
 			session: { model: undefined },
-			runtimeHost: { loginOAuthProvider: async () => { throw new Error("Kimi Code login was denied."); } },
+			runtimeHost: {
+				loginOAuthProvider: async () => {
+					throw new Error("Kimi Code login was denied.");
+				},
+			},
 			ui: { setFocus: vi.fn(), requestRender: vi.fn() },
 			editorContainer: { clear: vi.fn(), addChild: vi.fn() },
 			editor,
@@ -201,7 +227,9 @@ describe("interactive OAuth cancellation", () => {
 			showOAuthLoginSelect: vi.fn(),
 		};
 		const showLoginDialog = InteractiveModeBase.prototype.showLoginDialog as (
-			this: typeof harness, providerId: string, providerName: string,
+			this: typeof harness,
+			providerId: string,
+			providerName: string,
 		) => Promise<void>;
 
 		await showLoginDialog.call(harness, "kimi-coding", "Kimi For Coding");
@@ -249,13 +277,18 @@ describe("post-login model refresh", () => {
 			expect(refresh).toHaveBeenCalledWith();
 			expect(setModel).toHaveBeenCalledWith(model);
 			expect(refresh.mock.invocationCallOrder[0]).toBeLessThan(getAvailable.mock.invocationCallOrder[0]!);
-			expect(setModel.mock.invocationCallOrder[0]).toBeLessThan(updateAvailableProviderCount.mock.invocationCallOrder[0]!);
+			expect(setModel.mock.invocationCallOrder[0]).toBeLessThan(
+				updateAvailableProviderCount.mock.invocationCallOrder[0]!,
+			);
 			expect(showStatus).toHaveBeenCalledWith(expect.stringContaining(`Selected ${scenario.modelId}`));
 		});
 	}
 
 	for (const outcome of [
-		{ label: "reports provider errors", result: { aborted: false, errors: new Map([["corp-oauth", new Error("catalog unavailable")]]) } },
+		{
+			label: "reports provider errors",
+			result: { aborted: false, errors: new Map([["corp-oauth", new Error("catalog unavailable")]]) },
+		},
 		{ label: "aborts on timeout", result: { aborted: true, errors: new Map() } },
 	]) {
 		it(`completes login when the post-login model refresh ${outcome.label}`, async () => {

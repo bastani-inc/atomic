@@ -223,26 +223,28 @@ describe("DefaultPackageManager", () => {
 				expect(args).toEqual(["root", "-g"]);
 				return legacyRoot;
 			});
-			const runCommandSpy = vi.spyOn(managerWithInternals, "runCommand").mockImplementation(async (command, args) => {
-				expect(command).toBe("npm");
-				expect(args).toEqual([
-					"install",
-					"example@^2.0.0",
-					"--prefix",
-					join(agentDir, "npm"),
-					"--legacy-peer-deps",
-				]);
-				mkdirSync(join(managedPath, "extensions"), { recursive: true });
-				writeFileSync(
-					join(managedPath, "package.json"),
-					JSON.stringify({
-						name: "example",
-						version: "2.0.0",
-						atomic: { extensions: ["extensions/managed.ts"] },
-					}),
-				);
-				writeFileSync(managedExtensionPath, "export default function managed() {};");
-			});
+			const runCommandSpy = vi
+				.spyOn(managerWithInternals, "runCommand")
+				.mockImplementation(async (command, args) => {
+					expect(command).toBe("npm");
+					expect(args).toEqual([
+						"install",
+						"example@^2.0.0",
+						"--prefix",
+						join(agentDir, "npm"),
+						"--legacy-peer-deps",
+					]);
+					mkdirSync(join(managedPath, "extensions"), { recursive: true });
+					writeFileSync(
+						join(managedPath, "package.json"),
+						JSON.stringify({
+							name: "example",
+							version: "2.0.0",
+							atomic: { extensions: ["extensions/managed.ts"] },
+						}),
+					);
+					writeFileSync(managedExtensionPath, "export default function managed() {};");
+				});
 
 			const result = await packageManager.resolve();
 
@@ -286,29 +288,29 @@ describe("DefaultPackageManager", () => {
 				expect(args).toEqual(["root", "-g"]);
 				return legacyRoot;
 			});
-			const runCommandCaptureSpy = vi
-				.spyOn(managerWithInternals, "runCommandCapture")
-				.mockResolvedValue('"2.0.0"');
-			const runCommandSpy = vi.spyOn(managerWithInternals, "runCommand").mockImplementation(async (command, args) => {
-				expect(command).toBe("npm");
-				expect(args).toEqual([
-					"install",
-					"example@beta",
-					"--prefix",
-					join(agentDir, "npm"),
-					"--legacy-peer-deps",
-				]);
-				mkdirSync(join(managedPath, "extensions"), { recursive: true });
-				writeFileSync(
-					join(managedPath, "package.json"),
-					JSON.stringify({
-						name: "example",
-						version: "2.0.0",
-						atomic: { extensions: ["extensions/managed.ts"] },
-					}),
-				);
-				writeFileSync(managedExtensionPath, "export default function managed() {};");
-			});
+			const runCommandCaptureSpy = vi.spyOn(managerWithInternals, "runCommandCapture").mockResolvedValue('"2.0.0"');
+			const runCommandSpy = vi
+				.spyOn(managerWithInternals, "runCommand")
+				.mockImplementation(async (command, args) => {
+					expect(command).toBe("npm");
+					expect(args).toEqual([
+						"install",
+						"example@beta",
+						"--prefix",
+						join(agentDir, "npm"),
+						"--legacy-peer-deps",
+					]);
+					mkdirSync(join(managedPath, "extensions"), { recursive: true });
+					writeFileSync(
+						join(managedPath, "package.json"),
+						JSON.stringify({
+							name: "example",
+							version: "2.0.0",
+							atomic: { extensions: ["extensions/managed.ts"] },
+						}),
+					);
+					writeFileSync(managedExtensionPath, "export default function managed() {};");
+				});
 
 			const result = await packageManager.resolve();
 
@@ -408,5 +410,4 @@ describe("DefaultPackageManager", () => {
 			expect(packageManager.getInstalledPath("npm:pnpm-pkg", "user")).toBeUndefined();
 		});
 	});
-
 });

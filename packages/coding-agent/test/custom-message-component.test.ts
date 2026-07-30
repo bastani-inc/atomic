@@ -20,8 +20,7 @@ describe("CustomMessageComponent renderer guard (issue #1236)", () => {
 		// non-null value). Before the guard such a string was added as a child and
 		// Container.render() threw "child.render is not a function"; it now falls
 		// through to the default boxed rendering instead.
-		const stringRenderer: MessageRenderer = () =>
-			"  stack-workflow-test  ·  (snapshot lost)" as unknown as Component;
+		const stringRenderer: MessageRenderer = () => "  stack-workflow-test  ·  (snapshot lost)" as unknown as Component;
 		const component = new CustomMessageComponent(makeMessage(), stringRenderer);
 
 		let rendered = "";

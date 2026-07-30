@@ -4,11 +4,11 @@ import { join } from "node:path";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ExtensionCommandContextActions } from "../src/core/extensions/index.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import type { ExtensionCommandContextActions } from "../src/core/extensions/index.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 
 type PromptTurnHarness = {
@@ -64,7 +64,10 @@ describe("interactive deferred startup first prompt readiness", () => {
 
 	it("loads extension tools, resources, and provider overrides before the first prompt", async () => {
 		const skillFile = join(tempDir, "startup-skill.md");
-		writeFileSync(skillFile, `---\nname: startup-skill\ndescription: Use when deferred startup resources are ready.\n---\n\n# Startup Skill\n`);
+		writeFileSync(
+			skillFile,
+			`---\nname: startup-skill\ndescription: Use when deferred startup resources are ready.\n---\n\n# Startup Skill\n`,
+		);
 		const deferredBaseUrl = "http://localhost:8080/deferred-startup";
 		const settingsManager = SettingsManager.create(tempDir, agentDir);
 		const sessionManager = SessionManager.inMemory();

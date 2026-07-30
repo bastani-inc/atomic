@@ -3,8 +3,16 @@ import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { ReadonlySessionManager } from "../session-manager.ts";
 
 const SESSION_ENVIRONMENT_KEYS = [
-	"ATOMIC_SESSION_ID", "ATOMIC_SESSION_FILE", "ATOMIC_PROVIDER", "ATOMIC_MODEL", "ATOMIC_REASONING_LEVEL",
-	"PI_SESSION_ID", "PI_SESSION_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL",
+	"ATOMIC_SESSION_ID",
+	"ATOMIC_SESSION_FILE",
+	"ATOMIC_PROVIDER",
+	"ATOMIC_MODEL",
+	"ATOMIC_REASONING_LEVEL",
+	"PI_SESSION_ID",
+	"PI_SESSION_FILE",
+	"PI_PROVIDER",
+	"PI_MODEL",
+	"PI_REASONING_LEVEL",
 ] as const;
 
 export interface BashSessionContext {
@@ -27,16 +35,20 @@ export function snapshotBashSessionEnvironment(
 		ATOMIC_SESSION_ID: sessionId,
 		PI_SESSION_ID: sessionId,
 		...(sessionFile ? { ATOMIC_SESSION_FILE: sessionFile, PI_SESSION_FILE: sessionFile } : {}),
-		...(model ? {
-			ATOMIC_PROVIDER: model.provider,
-			PI_PROVIDER: model.provider,
-			ATOMIC_MODEL: model.id,
-			PI_MODEL: model.id,
-		} : {}),
-		...(thinkingLevel ? {
-			ATOMIC_REASONING_LEVEL: thinkingLevel,
-			PI_REASONING_LEVEL: thinkingLevel,
-		} : {}),
+		...(model
+			? {
+					ATOMIC_PROVIDER: model.provider,
+					PI_PROVIDER: model.provider,
+					ATOMIC_MODEL: model.id,
+					PI_MODEL: model.id,
+				}
+			: {}),
+		...(thinkingLevel
+			? {
+					ATOMIC_REASONING_LEVEL: thinkingLevel,
+					PI_REASONING_LEVEL: thinkingLevel,
+				}
+			: {}),
 	};
 }
 

@@ -74,7 +74,11 @@ describe("AgentSession safety-refusal retry", () => {
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
-		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null, allowModelNetwork: false });
+		const modelRuntime = await ModelRuntime.create({
+			credentials: authStorage,
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
 		settingsManager.applyOverrides({ retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } });
 
 		session = new AgentSession({

@@ -117,10 +117,7 @@ describe("upstream model scope resolution", () => {
 	});
 
 	test("retains exact no-match patterns and classified diagnostics for selector cleanup", async () => {
-		const result = await resolve(
-			["openrouter/unavailable[free]", "openrouter/missing"],
-			[model("available")],
-		);
+		const result = await resolve(["openrouter/unavailable[free]", "openrouter/missing"], [model("available")]);
 
 		expect(result.scopedModels).toEqual([]);
 		expect(result.diagnostics).toEqual([

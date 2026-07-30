@@ -87,7 +87,7 @@ describe("ExtensionRunner", () => {
 		getSystemPrompt: () => "",
 	};
 
-		describe("command collection", () => {
+	describe("command collection", () => {
 		it("collects commands from multiple extensions", async () => {
 			const cmdCode = (name: string) => `
 				export default function(pi) {
@@ -223,5 +223,4 @@ describe("ExtensionRunner", () => {
 			expect(ctx.hasUI).toBe(true);
 		});
 	});
-
 });

@@ -15,10 +15,7 @@ interface GlobalClearInputOptions {
 }
 
 /** Keep app.clear global unless a focused modal/inline component owns input. */
-export function routeGlobalClearInput(
-	data: string,
-	options: GlobalClearInputOptions,
-): { consume: true } | undefined {
+export function routeGlobalClearInput(data: string, options: GlobalClearInputOptions): { consume: true } | undefined {
 	if (!options.matchesClear(data)) return undefined;
 	if (options.hasOverlay() || options.blockingInlineCustomUiActive()) return undefined;
 	if (!options.editorOwnsInput()) return undefined;

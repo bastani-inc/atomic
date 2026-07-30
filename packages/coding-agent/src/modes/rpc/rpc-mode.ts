@@ -12,25 +12,25 @@
  */
 
 import { setKeybindings } from "@earendil-works/pi-tui";
-import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import type { AgentSession } from "../../core/agent-session.ts";
+import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import { KeybindingsManager } from "../../core/keybindings.ts";
 import { flushRawStdout, takeOverStdout, writeRawStdout } from "../../core/output-guard.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
+import { startInteractiveEngineLiveness } from "../interactive-engine/engine-child-liveness.ts";
 import { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
 import { EngineInputFormService } from "../interactive-engine/engine-input-form.ts";
 import { EngineRenderService } from "../interactive-engine/engine-render-service.ts";
 import { EngineSessionPickerService } from "../interactive-engine/engine-session-picker.ts";
-import { startInteractiveEngineLiveness } from "../interactive-engine/engine-child-liveness.ts";
 import { serializeInteractiveEngineMessage } from "../interactive-engine/protocol.ts";
 import { attachJsonlLineReader } from "./jsonl.ts";
 import { createRpcCommandHandler } from "./rpc-command-handler.ts";
+import type { RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
 import { createRpcInputLineHandler } from "./rpc-input.ts";
 import { createRpcInputScheduler } from "./rpc-input-scheduler.ts";
-import type { RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
+import { KeybindingsReloadCoordinator } from "./rpc-keybindings-reload.ts";
 import { RpcOutputBuffer } from "./rpc-output-buffer.ts";
 import { RpcSessionBinding } from "./rpc-session-binding.ts";
-import { KeybindingsReloadCoordinator } from "./rpc-keybindings-reload.ts";
 
 // Re-export types for consumers
 export type {
@@ -57,24 +57,17 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	const pendingExtensionRequests: RpcPendingExtensionRequests = new Map();
 	const signalCleanupHandlers: Array<() => void> = [];
 	const engineLiveness = startInteractiveEngineLiveness(writeRawStdout);
-	const customUi = keybindings
-		? new EngineCustomUiService(writeRawStdout, keybindings)
-		: undefined;
-	const renderService = interactiveEngineChild
-		? new EngineRenderService(writeRawStdout)
-		: undefined;
-	const sessionPicker = interactiveEngineChild
-		? new EngineSessionPickerService(writeRawStdout)
-		: undefined;
-	const inputForm = interactiveEngineChild
-		? new EngineInputFormService(writeRawStdout)
-		: undefined;
+	const customUi = keybindings ? new EngineCustomUiService(writeRawStdout, keybindings) : undefined;
+	const renderService = interactiveEngineChild ? new EngineRenderService(writeRawStdout) : undefined;
+	const sessionPicker = interactiveEngineChild ? new EngineSessionPickerService(writeRawStdout) : undefined;
+	const inputForm = interactiveEngineChild ? new EngineInputFormService(writeRawStdout) : undefined;
 	const reloadCoordinator = keybindings
 		? new KeybindingsReloadCoordinator<AgentSession>(
 				keybindings,
-				(state) => writeRawStdout(serializeInteractiveEngineMessage({ type: "engine_keybindings_reloaded", state })),
-				(session, effectiveBindings) => [...session.extensionRunner.getShortcuts(effectiveBindings)]
-					.map(([key, shortcut]) => ({
+				(state) =>
+					writeRawStdout(serializeInteractiveEngineMessage({ type: "engine_keybindings_reloaded", state })),
+				(session, effectiveBindings) =>
+					[...session.extensionRunner.getShortcuts(effectiveBindings)].map(([key, shortcut]) => ({
 						key,
 						...(shortcut.description === undefined ? {} : { description: shortcut.description }),
 					})),
@@ -162,15 +155,19 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		}
 	};
 
-
 	const handleInputLine = createRpcInputLineHandler({
 		output,
 		pendingExtensionRequests,
 		handleCommand,
 		checkShutdownRequested,
-		handleInteractiveEngineLine: customUi || renderService || sessionPicker || inputForm
-			? (line) => customUi?.handleLine(line) === true || renderService?.handleLine(line) === true || sessionPicker?.handleLine(line) === true || inputForm?.handleLine(line) === true
-			: undefined,
+		handleInteractiveEngineLine:
+			customUi || renderService || sessionPicker || inputForm
+				? (line) =>
+						customUi?.handleLine(line) === true ||
+						renderService?.handleLine(line) === true ||
+						sessionPicker?.handleLine(line) === true ||
+						inputForm?.handleLine(line) === true
+				: undefined,
 	});
 
 	const onInputEnd = () => {

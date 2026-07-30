@@ -20,11 +20,21 @@ function fuzzyScore(query: string, text: string): number {
 	return qi === lq.length ? score : 0;
 }
 
-export function fuzzyFilter<T extends { name: string; description: string; model?: string }>(items: T[], query: string): T[] {
+export function fuzzyFilter<T extends { name: string; description: string; model?: string }>(
+	items: T[],
+	query: string,
+): T[] {
 	const q = query.trim();
 	if (!q) return items;
 	return items
-		.map((item) => ({ item, score: Math.max(fuzzyScore(q, item.name), fuzzyScore(q, item.description) * 0.8, fuzzyScore(q, item.model ?? "") * 0.6) }))
+		.map((item) => ({
+			item,
+			score: Math.max(
+				fuzzyScore(q, item.name),
+				fuzzyScore(q, item.description) * 0.8,
+				fuzzyScore(q, item.model ?? "") * 0.6,
+			),
+		}))
 		.filter((x) => x.score > 0)
 		.sort((a, b) => b.score - a.score)
 		.map((x) => x.item);

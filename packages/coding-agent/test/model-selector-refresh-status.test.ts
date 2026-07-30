@@ -94,11 +94,9 @@ describe("model selector catalog refresh status", () => {
 		const selector = createSelector(
 			(options) =>
 				new Promise<RefreshResult>((resolve) => {
-					options?.signal?.addEventListener(
-						"abort",
-						() => resolve({ aborted: true, errors: new Map() }),
-						{ once: true },
-					);
+					options?.signal?.addEventListener("abort", () => resolve({ aborted: true, errors: new Map() }), {
+						once: true,
+					});
 				}),
 		);
 		await vi.advanceTimersByTimeAsync(15_000);

@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai/compat";
-import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import { runCallback } from "../callback-activity.ts";
+import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import type {
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
@@ -88,12 +88,7 @@ const isSessionBeforeEvent = (event: RunnerEmitEvent): event is SessionBeforeEve
 	event.type === "session_before_compact" ||
 	event.type === "session_before_tree";
 
-const emitCaughtError = (
-	emitError: EmitExtensionError,
-	extensionPath: string,
-	event: string,
-	error: unknown,
-): void => {
+const emitCaughtError = (emitError: EmitExtensionError, extensionPath: string, event: string, error: unknown): void => {
 	emitError({
 		extensionPath,
 		event,
@@ -406,9 +401,8 @@ export async function runResourcesDiscoverHandlers(
 		for (const handler of handlers) {
 			try {
 				const event: ResourcesDiscoverEvent = { type: "resources_discover", cwd, reason };
-				const result = (await runCallback(
-					{ kind: "extension.hook", name: event.type, sourcePath: ext.path },
-					() => handler(event, ctx),
+				const result = (await runCallback({ kind: "extension.hook", name: event.type, sourcePath: ext.path }, () =>
+					handler(event, ctx),
 				)) as ResourcesDiscoverResult | undefined;
 				if (result?.skillPaths?.length) {
 					skillPaths.push(...result.skillPaths.map((path) => ({ path, extensionPath: ext.path })));
@@ -450,9 +444,8 @@ export async function runInputHandlers(
 					source,
 					streamingBehavior,
 				};
-				const result = (await runCallback(
-					{ kind: "extension.hook", name: event.type, sourcePath: ext.path },
-					() => handler(event, ctx),
+				const result = (await runCallback({ kind: "extension.hook", name: event.type, sourcePath: ext.path }, () =>
+					handler(event, ctx),
 				)) as InputEventResult | undefined;
 				if (result?.action === "handled") return result;
 				if (result?.action === "transform") {

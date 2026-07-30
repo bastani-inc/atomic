@@ -1,13 +1,13 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/compat";
 import { afterEach, describe, expect, test } from "vitest";
+import { StageSessionReplacement } from "../../workflows/src/runs/foreground/stage-runner-replacement.ts";
 import type { AgentSession } from "../src/core/agent-session.ts";
+import { PROTECTED_RECONCILIATION_CUSTOM_TYPE } from "../src/core/agent-session-persistent-custom-messages.ts";
 import { createSessionAsyncDeliveryHandler } from "../src/core/async/session-manager.ts";
 import type { SendMessageOptions, SendMessagesOptions } from "../src/core/extensions/index.ts";
 import type { CustomMessage } from "../src/core/messages.ts";
 import { WorkflowStageAdmissionBoundary } from "../src/core/workflow-stage-admission.ts";
-import { PROTECTED_RECONCILIATION_CUSTOM_TYPE } from "../src/core/agent-session-persistent-custom-messages.ts";
-import { StageSessionReplacement } from "../../workflows/src/runs/foreground/stage-runner-replacement.ts";
 import { createHarness, getMessageText, type Harness } from "./suite/harness.ts";
 
 type QueueHold = {
@@ -22,12 +22,14 @@ type TransferSession = AgentSession & {
 	_agentEventQueue: Promise<void>;
 	_queuedMessagesPauseAbortBoundary: Promise<void> | undefined;
 	_workflowStageAdmission: WorkflowStageAdmissionBoundary | undefined;
-	_orchestrationContext: {
-		lateMessageRouter: {
-			routeMessage(message: CustomInput): void;
-			routeMessages(messages: CustomInput[]): void;
-		};
-	} | undefined;
+	_orchestrationContext:
+		| {
+				lateMessageRouter: {
+					routeMessage(message: CustomInput): void;
+					routeMessages(messages: CustomInput[]): void;
+				};
+		  }
+		| undefined;
 	readonly _protectedStreamingCustomMessages: Array<{
 		readonly message: AgentMessage;
 		readonly delivery: "steer" | "followUp";
@@ -41,36 +43,46 @@ function rawUser(text: string): AgentMessage {
 	return { role: "user", content: [{ type: "text", text }], timestamp: Date.now() };
 }
 
-function shareAdmissionBoundary(source: TransferSession, target: TransferSession): {
-  readonly boundary: WorkflowStageAdmissionBoundary;
-  readonly late: string[];
+function shareAdmissionBoundary(
+	source: TransferSession,
+	target: TransferSession,
+): {
+	readonly boundary: WorkflowStageAdmissionBoundary;
+	readonly late: string[];
 } {
-  const boundary = new WorkflowStageAdmissionBoundary();
-  const late: string[] = [];
-  const lateMessageRouter = {
-    routeMessage(message: CustomInput) { late.push(message.customType); },
-    routeMessages(messages: CustomInput[]) { late.push(...messages.map((message) => message.customType)); },
-  };
-  source._workflowStageAdmission = boundary;
-  target._workflowStageAdmission = boundary;
-  source._orchestrationContext = { lateMessageRouter };
-  target._orchestrationContext = { lateMessageRouter };
-  return { boundary, late };
+	const boundary = new WorkflowStageAdmissionBoundary();
+	const late: string[] = [];
+	const lateMessageRouter = {
+		routeMessage(message: CustomInput) {
+			late.push(message.customType);
+		},
+		routeMessages(messages: CustomInput[]) {
+			late.push(...messages.map((message) => message.customType));
+		},
+	};
+	source._workflowStageAdmission = boundary;
+	target._workflowStageAdmission = boundary;
+	source._orchestrationContext = { lateMessageRouter };
+	target._orchestrationContext = { lateMessageRouter };
+	return { boundary, late };
 }
 
 function barrierOptions(
-  key: string,
-  entered: PromiseWithResolvers<void>,
-  release: PromiseWithResolvers<void>,
-  extra: SendMessageOptions = {},
+	key: string,
+	entered: PromiseWithResolvers<void>,
+	release: PromiseWithResolvers<void>,
+	extra: SendMessageOptions = {},
 ): SendMessageOptions {
-  return {
-    triggerTurn: true,
-    deliverAs: "followUp",
-    ...extra,
-    stageAdmissionKey: key,
-    stageAdmissionBarrier: () => { entered.resolve(); return release.promise; },
-  };
+	return {
+		triggerTurn: true,
+		deliverAs: "followUp",
+		...extra,
+		stageAdmissionKey: key,
+		stageAdmissionBarrier: () => {
+			entered.resolve();
+			return release.promise;
+		},
+	};
 }
 
 describe("paused queue stage-session transfer", () => {
@@ -111,10 +123,7 @@ describe("paused queue stage-session transfer", () => {
 
 		expect(target.session.queuedMessagesPaused).toBe(true);
 		expect(target.session.pendingMessageCount).toBe(5);
-		expect(target.session.getSteeringMessages()).toEqual([
-			"old source held steer",
-			"newest target steer",
-		]);
+		expect(target.session.getSteeringMessages()).toEqual(["old source held steer", "newest target steer"]);
 		expect(target.session.getFollowUpMessages()).toEqual([
 			"duplicate old source follow-up",
 			"duplicate old source follow-up",
@@ -160,10 +169,7 @@ describe("paused queue stage-session transfer", () => {
 		const source = await createHarness();
 		const target = await createHarness();
 		harnesses.push(source, target);
-		target.setResponses([
-			fauxAssistantMessage("resume driver"),
-			fauxAssistantMessage("held follow-up"),
-		]);
+		target.setResponses([fauxAssistantMessage("resume driver"), fauxAssistantMessage("held follow-up")]);
 		const exactHeldContent = "\ttransferred held content  \n";
 		const older = Promise.withResolvers<void>();
 		const newer = Promise.withResolvers<void>();
@@ -181,8 +187,13 @@ describe("paused queue stage-session transfer", () => {
 		let firstResumeState: "pending" | "fulfilled" | "rejected" = "pending";
 		let firstResumeRejections = 0;
 		void firstResume.then(
-			() => { firstResumeState = "fulfilled"; },
-			() => { firstResumeState = "rejected"; firstResumeRejections += 1; },
+			() => {
+				firstResumeState = "fulfilled";
+			},
+			() => {
+				firstResumeState = "rejected";
+				firstResumeRejections += 1;
+			},
 		);
 
 		older.reject(originalError);
@@ -200,9 +211,11 @@ describe("paused queue stage-session transfer", () => {
 		expect(targetInternal._queuedMessagesPauseAbortBoundary).toBeUndefined();
 		expect(await target.session.resumeQueuedMessages()).toBe(true);
 		await target.session.prompt("resume transferred boundary");
-		expect(target.session.messages.filter(
-			(message) => message.role === "user" && getMessageText(message) === exactHeldContent,
-		)).toHaveLength(1);
+		expect(
+			target.session.messages.filter(
+				(message) => message.role === "user" && getMessageText(message) === exactHeldContent,
+			),
+		).toHaveLength(1);
 	});
 
 	test("successful transferred pause boundaries settle only after every constituent", async () => {
@@ -218,7 +231,9 @@ describe("paused queue stage-session transfer", () => {
 		(source.session as TransferSession).transferWorkflowStageDeliveriesTo(target.session);
 		const resume = target.session.resumeQueuedMessages();
 		let settled = false;
-		void resume.finally(() => { settled = true; });
+		void resume.finally(() => {
+			settled = true;
+		});
 
 		older.resolve();
 		await new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -273,9 +288,11 @@ describe("paused queue stage-session transfer", () => {
 		expect(sourceInternal._protectedStreamingCustomMessages).toEqual([]);
 		expect(source.session.agent.hasQueuedMessages()).toBe(false);
 		expect(source.session.queuedMessagesPaused).toBe(false);
-		expect(source.session.messages.filter(
-			(message) => message.role === "custom" && message.customType === "in-flight-protected-card",
-		)).toHaveLength(0);
+		expect(
+			source.session.messages.filter(
+				(message) => message.role === "custom" && message.customType === "in-flight-protected-card",
+			),
+		).toHaveLength(0);
 		expect(target.session.queuedMessagesPaused).toBe(true);
 		expect(targetInternal._protectedStreamingCustomMessages).toHaveLength(1);
 		expect(targetInternal._protectedStreamingCustomMessages[0]).toMatchObject({
@@ -283,9 +300,11 @@ describe("paused queue stage-session transfer", () => {
 			phase: "queued",
 			message: { customType: PROTECTED_RECONCILIATION_CUSTOM_TYPE, display: false },
 		});
-		expect(target.session.messages.filter(
-			(message) => message.role === "custom" && message.customType === "in-flight-protected-card",
-		)).toHaveLength(1);
+		expect(
+			target.session.messages.filter(
+				(message) => message.role === "custom" && message.customType === "in-flight-protected-card",
+			),
+		).toHaveLength(1);
 		expect(targetInternal._activeInterruptQueueHold?.steering).toContain(
 			targetInternal._protectedStreamingCustomMessages[0]?.message,
 		);
@@ -294,10 +313,13 @@ describe("paused queue stage-session transfer", () => {
 		expect(released).toBe(true);
 		await target.session.prompt("resume replacement once");
 		expect(targetInternal._protectedStreamingCustomMessages).toEqual([]);
-		expect(target.session.sessionManager.getEntries().filter(
-			(entry) => entry.type === "custom_message" && entry.customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE,
-		)).toHaveLength(1);
-
+		expect(
+			target.session.sessionManager
+				.getEntries()
+				.filter(
+					(entry) => entry.type === "custom_message" && entry.customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE,
+				),
+		).toHaveLength(1);
 	});
 
 	test("retired forwarding rejects a reverse cycle and delivers later work once to the live target", async () => {
@@ -334,9 +356,11 @@ describe("paused queue stage-session transfer", () => {
 		await source.session.prompt("post-retirement prompt payload");
 
 		expect(source.getPendingResponseCount()).toBe(1);
-		expect(source.session.messages.some(
-			(message) => message.role === "user" && getMessageText(message) === "post-retirement prompt payload",
-		)).toBe(false);
+		expect(
+			source.session.messages.some(
+				(message) => message.role === "user" && getMessageText(message) === "post-retirement prompt payload",
+			),
+		).toBe(false);
 		expect(target.session.queuedMessagesPaused).toBe(true);
 		expect(targetInternal._activeInterruptQueueHold?.steering.map(getMessageText)).toEqual([
 			"post-retirement prompt payload",
@@ -376,10 +400,13 @@ describe("paused queue stage-session transfer", () => {
 		targetInternal._workflowStageAdmission = batchBoundary;
 		const batchEntered = Promise.withResolvers<void>();
 		const batchRelease = Promise.withResolvers<void>();
-		const batch = secondSourceInternal.sendCustomMessages([
-			{ customType: "accepted-batch", content: "duplicate", display: true, details: { id: 2 } },
-			{ customType: "accepted-batch", content: "duplicate", display: true, details: { id: 3 } },
-		], barrierOptions("accepted-batch", batchEntered, batchRelease) as SendMessagesOptions);
+		const batch = secondSourceInternal.sendCustomMessages(
+			[
+				{ customType: "accepted-batch", content: "duplicate", display: true, details: { id: 2 } },
+				{ customType: "accepted-batch", content: "duplicate", display: true, details: { id: 3 } },
+			],
+			barrierOptions("accepted-batch", batchEntered, batchRelease) as SendMessagesOptions,
+		);
 		await batchEntered.promise;
 		secondSourceInternal.transferWorkflowStageDeliveriesTo(target.session);
 		batchBoundary.seal();
@@ -387,11 +414,13 @@ describe("paused queue stage-session transfer", () => {
 		await batch;
 
 		const held = targetInternal._activeInterruptQueueHold?.followUp ?? [];
-		expect(held.map((message) => message.role === "custom" ? `${message.customType}:${String(message.details && "id" in message.details ? message.details.id : "")}` : "other")).toEqual([
-			"accepted-single:1",
-			"accepted-batch:2",
-			"accepted-batch:3",
-		]);
+		expect(
+			held.map((message) =>
+				message.role === "custom"
+					? `${message.customType}:${String(message.details && "id" in message.details ? message.details.id : "")}`
+					: "other",
+			),
+		).toEqual(["accepted-single:1", "accepted-batch:2", "accepted-batch:3"]);
 		expect(late).toEqual([]);
 		await source.session.sendCustomMessage(
 			{ customType: "first-admitted-after-seal", content: "late normally", display: true },
@@ -416,7 +445,10 @@ describe("paused queue stage-session transfer", () => {
 				return source.session.sendCustomMessage(message, {
 					...options,
 					persistWhenStreaming: true,
-					stageAdmissionBarrier: () => { entered.resolve(); return release.promise; },
+					stageAdmissionBarrier: () => {
+						entered.resolve();
+						return release.promise;
+					},
 				});
 			},
 		});
@@ -438,9 +470,15 @@ describe("paused queue stage-session transfer", () => {
 		await delivery;
 
 		expect(late).toEqual([]);
-		expect(target.session.messages.filter((message) => message.role === "custom" && message.customType === "async-job-result")).toHaveLength(1);
+		expect(
+			target.session.messages.filter(
+				(message) => message.role === "custom" && message.customType === "async-job-result",
+			),
+		).toHaveLength(1);
 		expect(targetInternal._protectedStreamingCustomMessages).toHaveLength(1);
-		expect(targetInternal._activeInterruptQueueHold?.followUp).toContain(targetInternal._protectedStreamingCustomMessages[0]?.message);
+		expect(targetInternal._activeInterruptQueueHold?.followUp).toContain(
+			targetInternal._protectedStreamingCustomMessages[0]?.message,
+		);
 	});
 
 	test("idle batch transfer queues every protected reconciliation on the paused target", async () => {
@@ -457,10 +495,13 @@ describe("paused queue stage-session transfer", () => {
 				sourceInternal.transferWorkflowStageDeliveriesTo(target.session);
 			}
 		});
-		await source.session.sendCustomMessages([
-			{ customType: "source-protected-card", content: "source protected payload 1", display: true },
-			{ customType: "source-protected-card", content: "source protected payload 2", display: true },
-		], { triggerTurn: true, deliverAs: "followUp", persistWhenStreaming: true });
+		await source.session.sendCustomMessages(
+			[
+				{ customType: "source-protected-card", content: "source protected payload 1", display: true },
+				{ customType: "source-protected-card", content: "source protected payload 2", display: true },
+			],
+			{ triggerTurn: true, deliverAs: "followUp", persistWhenStreaming: true },
+		);
 		await target.session.sendCustomMessage(
 			{ customType: "target-protected-card", content: "target protected payload", display: true },
 			{ triggerTurn: true, deliverAs: "followUp", persistWhenStreaming: true },
@@ -471,7 +512,8 @@ describe("paused queue stage-session transfer", () => {
 		expect(targetInternal._protectedStreamingCustomMessages).toHaveLength(3);
 		target.session.dispose();
 
-		const persistedOrder = target.sessionManager.getEntries()
+		const persistedOrder = target.sessionManager
+			.getEntries()
 			.filter((entry) => entry.type === "custom_message")
 			.map((entry) => `${entry.customType}:${getMessageText(entry)}`);
 		expect(persistedOrder).toEqual([

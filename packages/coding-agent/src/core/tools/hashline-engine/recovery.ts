@@ -12,7 +12,11 @@
  */
 import * as Diff from "diff";
 import { applyEdits } from "./apply.js";
-import { RECOVERY_EXTERNAL_WARNING, RECOVERY_SESSION_CHAIN_WARNING, RECOVERY_SESSION_REPLAY_WARNING } from "./messages.js";
+import {
+	RECOVERY_EXTERNAL_WARNING,
+	RECOVERY_SESSION_CHAIN_WARNING,
+	RECOVERY_SESSION_REPLAY_WARNING,
+} from "./messages.js";
 import type { Snapshot, SnapshotStore } from "./snapshots.js";
 import type { Anchor, ApplyResult, Edit } from "./types.js";
 
@@ -166,7 +170,9 @@ function isHeadSnapshot(head: Snapshot | null, snapshot: Snapshot): boolean {
  */
 export class Recovery {
 	readonly store: SnapshotStore;
-	constructor(store: SnapshotStore) { this.store = store; }
+	constructor(store: SnapshotStore) {
+		this.store = store;
+	}
 	/**
 	 * Attempt recovery. Returns `null` when no path forward is found — the
 	 * caller should then surface a {@link MismatchError}.

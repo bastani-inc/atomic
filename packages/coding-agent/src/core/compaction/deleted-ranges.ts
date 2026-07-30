@@ -106,10 +106,7 @@ function cumulativeDeletedCount(region: NumberedRegion, range: LineRange): numbe
 }
 
 /** Rebuild a compacted transcript mechanically from validated ranges. */
-export function reconstructCompactedTranscript(
-	region: NumberedRegion,
-	ranges: ValidatedRanges,
-): CompactedTranscript {
+export function reconstructCompactedTranscript(region: NumberedRegion, ranges: ValidatedRanges): CompactedTranscript {
 	const finalRanges = foldAdjacentMarkers(region, ranges);
 	const output: string[] = [];
 	let line = 1;

@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { delimiter } from "node:path";
-import { spawn, spawnSync } from "child_process";
 import { Worker } from "node:worker_threads";
+import { spawn, spawnSync } from "child_process";
 import { getBinDir } from "../config.ts";
 
 export interface ShellConfig {

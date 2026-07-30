@@ -13,10 +13,14 @@
  * host `SessionPickerHostController` through an in-process message pump (no
  * spawned process).
  */
-import { afterAll, beforeAll, describe, test } from "vitest";
+
 import assert from "node:assert/strict";
 import { getKeybindings, setKeybindings } from "@earendil-works/pi-tui";
-import type { ExtensionUIContext, HostSessionPickerRow } from "../../packages/coding-agent/src/core/extensions/index.ts";
+import { afterAll, beforeAll, describe, test } from "vitest";
+import type {
+	ExtensionUIContext,
+	HostSessionPickerRow,
+} from "../../packages/coding-agent/src/core/extensions/index.ts";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { SessionSelectorComponent } from "../../packages/coding-agent/src/modes/interactive/components/session-selector.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
@@ -24,11 +28,11 @@ import { EngineSessionPickerService } from "../../packages/coding-agent/src/mode
 import type { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
 import {
 	INTERACTIVE_ENGINE_PROTOCOL_VERSION,
+	type InteractiveEngineCommand,
+	type InteractiveEngineMessage,
 	parseInteractiveEngineCommand,
 	parseInteractiveEngineMessage,
 	serializeInteractiveEngineFrame,
-	type InteractiveEngineCommand,
-	type InteractiveEngineMessage,
 } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
 import { SessionPickerHostController } from "../../packages/coding-agent/src/modes/interactive-engine/session-picker-host.ts";
 import { sleep } from "../helpers/runtime.js";
@@ -81,7 +85,12 @@ function makeBridge(): Bridge {
 		requestRender: () => {},
 		setWidget: () => {},
 		custom: (
-			factory: (tui: unknown, theme: unknown, keys: unknown, done: (result: unknown) => void) => SessionSelectorComponent,
+			factory: (
+				tui: unknown,
+				theme: unknown,
+				keys: unknown,
+				done: (result: unknown) => void,
+			) => SessionSelectorComponent,
 		) =>
 			new Promise((resolve) => {
 				const mount: HostMount = { component: undefined as unknown as SessionSelectorComponent, resolved: false };
@@ -153,7 +162,9 @@ describe("engine_session_picker protocol", () => {
 
 	test("rejects malformed rows, colors, and missing fields", () => {
 		const reject = (payload: Record<string, unknown>) =>
-			parseInteractiveEngineMessage(JSON.stringify({ type: "engine_session_picker_open", componentId: "p1", ...payload }));
+			parseInteractiveEngineMessage(
+				JSON.stringify({ type: "engine_session_picker_open", componentId: "p1", ...payload }),
+			);
 		assert.equal(reject({ sessions: "rows" }), undefined);
 		assert.equal(reject({ sessions: [{ ...row("a"), modifiedAt: "soon" }] }), undefined);
 		assert.equal(reject({ sessions: [{ ...row("a"), messageColor: "rainbow" }] }), undefined);
@@ -173,7 +184,10 @@ describe("engine_session_picker protocol", () => {
 		] as const) {
 			assert.deepEqual(parseInteractiveEngineCommand(serializeInteractiveEngineFrame(command)), command);
 		}
-		assert.equal(parseInteractiveEngineCommand(JSON.stringify({ type: "engine_session_picker_select", componentId: "p1" })), undefined);
+		assert.equal(
+			parseInteractiveEngineCommand(JSON.stringify({ type: "engine_session_picker_select", componentId: "p1" })),
+			undefined,
+		);
 		assert.equal(parseInteractiveEngineCommand(JSON.stringify({ type: "engine_session_picker_cancel" })), undefined);
 	});
 });

@@ -5,9 +5,7 @@ export interface GitWorktreeSetupCacheOwner {
 	release(finalizer: () => void): void;
 }
 
-export function createGitWorktreeSetupCacheOwner(
-	suppliedCache?: GitWorktreeSetupCache,
-): GitWorktreeSetupCacheOwner {
+export function createGitWorktreeSetupCacheOwner(suppliedCache?: GitWorktreeSetupCache): GitWorktreeSetupCacheOwner {
 	const cache = suppliedCache ?? createGitWorktreeSetupCache();
 	const ownsCache = suppliedCache === undefined;
 	let released = false;

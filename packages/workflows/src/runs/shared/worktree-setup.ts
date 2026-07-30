@@ -21,9 +21,10 @@ const DEFAULT_WORKTREE_SETUP_HOOK_TIMEOUT_MS = 30000;
 
 function originDefaultBranch(mainRoot: string): string | undefined {
 	const symbolic = runGit(mainRoot, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
-	let branch = symbolic.status === 0 && symbolic.stdout.trim().startsWith("origin/")
-		? symbolic.stdout.trim().slice("origin/".length)
-		: undefined;
+	let branch =
+		symbolic.status === 0 && symbolic.stdout.trim().startsWith("origin/")
+			? symbolic.stdout.trim().slice("origin/".length)
+			: undefined;
 	if (!branch) {
 		const remote = runGit(mainRoot, ["remote", "show", "origin"]);
 		branch = remote.status === 0 ? remote.stdout.match(/^\s*HEAD branch:\s*(\S+)\s*$/m)?.[1] : undefined;
@@ -77,10 +78,7 @@ export function findWorktreeTaskCwdConflict(
 	return undefined;
 }
 
-export function formatWorktreeTaskCwdConflict(
-	conflict: WorktreeTaskCwdConflict,
-	sharedCwd: string,
-): string {
+export function formatWorktreeTaskCwdConflict(conflict: WorktreeTaskCwdConflict, sharedCwd: string): string {
 	return `worktree isolation uses the shared cwd (${sharedCwd}); task ${conflict.index + 1} (${conflict.agent}) sets cwd to ${conflict.cwd}. Remove task-level cwd overrides or disable worktree.`;
 }
 
@@ -108,9 +106,7 @@ function resolveRepoCwdRelative(cwd: string): string {
 		throw new Error("worktree isolation requires a git repository");
 	}
 	const rawPrefix = runGitChecked(cwd, ["rev-parse", "--show-prefix"]).trim();
-	const normalizedPrefix = rawPrefix
-		? path.normalize(rawPrefix.replace(/[\\/]+$/, ""))
-		: "";
+	const normalizedPrefix = rawPrefix ? path.normalize(rawPrefix.replace(/[\\/]+$/, "")) : "";
 	return normalizedPrefix === "." ? "" : normalizedPrefix;
 }
 
@@ -203,10 +199,7 @@ function parseWorktreeSetupHookOutput(rawStdout: string): WorktreeSetupHookOutpu
 	return parsed as WorktreeSetupHookOutput;
 }
 
-function runWorktreeSetupHook(
-	hook: ResolvedWorktreeSetupHook,
-	input: WorktreeSetupHookInput,
-): string[] {
+function runWorktreeSetupHook(hook: ResolvedWorktreeSetupHook, input: WorktreeSetupHookInput): string[] {
 	const result = spawnSync(hook.hookPath, [], {
 		cwd: input.worktreePath,
 		encoding: "utf-8",
@@ -253,11 +246,15 @@ function waitForGitLockRelease(): void {
 }
 
 function cleanupSingleWorktree(repoCwd: string, worktree: Pick<WorktreeInfo, "path" | "branch">): void {
-	try { runGitChecked(repoCwd, ["worktree", "remove", "--force", worktree.path]); } catch {
+	try {
+		runGitChecked(repoCwd, ["worktree", "remove", "--force", worktree.path]);
+	} catch {
 		// Cleanup is idempotent and best-effort.
 	}
 	waitForGitLockRelease();
-	try { runGitChecked(repoCwd, ["branch", "-D", worktree.branch]); } catch {
+	try {
+		runGitChecked(repoCwd, ["branch", "-D", worktree.branch]);
+	} catch {
 		// Cleanup is idempotent and best-effort.
 	}
 }
@@ -313,7 +310,12 @@ function createSingleWorktree(
 	}
 }
 
-export function createWorktrees(cwd: string, runId: string, count: number, options?: CreateWorktreesOptions): WorktreeSetup {
+export function createWorktrees(
+	cwd: string,
+	runId: string,
+	count: number,
+	options?: CreateWorktreesOptions,
+): WorktreeSetup {
 	const repo = resolveRepoState(cwd, options?.baseBranch);
 	ensureWorktreeIgnore(repo.mainRoot);
 	const setupHook = resolveWorktreeSetupHook(repo.mainRoot, options?.setupHook);
@@ -322,17 +324,19 @@ export function createWorktrees(cwd: string, runId: string, count: number, optio
 
 	try {
 		for (let index = 0; index < count; index++) {
-			worktrees.push(createSingleWorktree(
-				repo.mainRoot,
-				repo.cwdRelative,
-				runId,
-				index,
-				repo.baseRef,
-				repo.baseCommit,
-				symlinkDirectories,
-				setupHook,
-				options?.agents?.[index],
-			));
+			worktrees.push(
+				createSingleWorktree(
+					repo.mainRoot,
+					repo.cwdRelative,
+					runId,
+					index,
+					repo.baseRef,
+					repo.baseCommit,
+					symlinkDirectories,
+					setupHook,
+					options?.agents?.[index],
+				),
+			);
 		}
 	} catch (error) {
 		cleanupWorktrees({ cwd: repo.mainRoot, worktrees, baseCommit: repo.baseCommit });

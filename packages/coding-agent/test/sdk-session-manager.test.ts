@@ -333,9 +333,7 @@ describe("createAgentSession session manager defaults", () => {
 				sessionManager: persistedSession(cwd, "absent-session-provider", "absent-session-model"),
 			});
 
-			expect(modelFallbackMessage).toContain(
-				"Could not restore model absent-session-provider/absent-session-model",
-			);
+			expect(modelFallbackMessage).toContain("Could not restore model absent-session-provider/absent-session-model");
 			expect(modelFallbackMessage).toContain(`Using ${session.model?.provider}/${session.model?.id}`);
 			expect(modelFallbackReason).toBe("session-restore");
 			session.dispose();

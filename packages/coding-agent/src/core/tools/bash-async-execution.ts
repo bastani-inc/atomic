@@ -1,9 +1,9 @@
 import type { AsyncJobManager } from "../async/job-manager.js";
 import type { AsyncJobDeliveryHandler } from "../async/types.js";
-import { invalidateNativeSearchCache } from "./search-native.js";
-import { createAsyncOutputAppender } from "./bash-async-output.js";
-import { createManagedBashJob, discardManagedBashJob, formatAsyncJobError } from "./bash-async-jobs.js";
 import type { BashOperations, BashToolDetails } from "./bash.js";
+import { createManagedBashJob, discardManagedBashJob, formatAsyncJobError } from "./bash-async-jobs.js";
+import { createAsyncOutputAppender } from "./bash-async-output.js";
+import { invalidateNativeSearchCache } from "./search-native.js";
 
 interface StartAsyncBashCommandOptions {
 	command: string;
@@ -23,8 +23,14 @@ export async function startAsyncBashCommand(options: StartAsyncBashCommandOption
 	content: Array<{ type: "text"; text: string }>;
 	details: BashToolDetails;
 }> {
-	if (options.manager?.atCapacity) throw new Error("Background job limit reached. Wait for running jobs to finish or cancel one.");
-	const job = createManagedBashJob(options.command, options.cwd, options.timeoutSeconds, options.requestedTimeoutSeconds);
+	if (options.manager?.atCapacity)
+		throw new Error("Background job limit reached. Wait for running jobs to finish or cancel one.");
+	const job = createManagedBashJob(
+		options.command,
+		options.cwd,
+		options.timeoutSeconds,
+		options.requestedTimeoutSeconds,
+	);
 	try {
 		options.manager?.registerBashJob(job, options.deliveryHandler, options.sessionId);
 	} catch (registerError) {
@@ -46,13 +52,15 @@ export async function startAsyncBashCommand(options: StartAsyncBashCommandOption
 		let error: Error | string | undefined;
 		let exitCode: number | null | undefined;
 		try {
-			exitCode = (await options.operations.exec(options.command, options.cwd, {
-				onData: appendAsyncOutput.append,
-				timeout: options.timeoutSeconds,
-				env: options.env,
-				pty: options.pty,
-				signal: job.abortController?.signal,
-			})).exitCode;
+			exitCode = (
+				await options.operations.exec(options.command, options.cwd, {
+					onData: appendAsyncOutput.append,
+					timeout: options.timeoutSeconds,
+					env: options.env,
+					pty: options.pty,
+					signal: job.abortController?.signal,
+				})
+			).exitCode;
 		} catch (execError) {
 			error = execError instanceof Error ? execError : String(execError);
 		}
@@ -74,11 +82,18 @@ export async function startAsyncBashCommand(options: StartAsyncBashCommandOption
 		options.signal?.removeEventListener("abort", onParentAbort);
 	})();
 	return {
-		content: [{ type: "text", text: `Started async bash command ${job.jobId}: ${options.command}\nPoll with bash({ command: "__atomic_bash_job ${job.jobId}" }); cancel with bash({ command: "__atomic_bash_job_cancel ${job.jobId}" })` }],
+		content: [
+			{
+				type: "text",
+				text: `Started async bash command ${job.jobId}: ${options.command}\nPoll with bash({ command: "__atomic_bash_job ${job.jobId}" }); cancel with bash({ command: "__atomic_bash_job_cancel ${job.jobId}" })`,
+			},
+		],
 		details: {
 			async: { jobId: job.jobId, type: "bash", state: "running", command: options.command, status: "running" },
 			timeoutSeconds: options.timeoutSeconds,
-			...(options.requestedTimeoutSeconds !== undefined ? { requestedTimeoutSeconds: options.requestedTimeoutSeconds } : {}),
+			...(options.requestedTimeoutSeconds !== undefined
+				? { requestedTimeoutSeconds: options.requestedTimeoutSeconds }
+				: {}),
 		},
 	};
 }

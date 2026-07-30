@@ -40,10 +40,7 @@ function loadContextFileFromDir(dir: string): { path: string; content: string } 
 	return null;
 }
 
-export function getAncestorDirectories(
-	startDir: string,
-	parentOf: (path: string) => string = dirname,
-): string[] {
+export function getAncestorDirectories(startDir: string, parentOf: (path: string) => string = dirname): string[] {
 	const directories: string[] = [];
 	let currentDir = startDir;
 	while (true) {

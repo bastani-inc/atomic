@@ -21,8 +21,12 @@ function outputPath(): string {
 	return join(tmpdir(), `${APP_NAME}-bash-async-${randomBytes(8).toString("hex")}.log`);
 }
 
-function byteLength(text: string): number { return Buffer.byteLength(text, "utf8"); }
-function sanitizeDecodedOutput(text: string): string { return sanitizeBinaryOutput(stripAnsi(text)).replace(/\r/g, ""); }
+function byteLength(text: string): number {
+	return Buffer.byteLength(text, "utf8");
+}
+function sanitizeDecodedOutput(text: string): string {
+	return sanitizeBinaryOutput(stripAnsi(text)).replace(/\r/g, "");
+}
 function utf8Prefix(text: string, maxBytes: number): string {
 	if (byteLength(text) <= maxBytes) return text;
 	let end = text.length;
@@ -30,7 +34,10 @@ function utf8Prefix(text: string, maxBytes: number): string {
 	return text.slice(0, end);
 }
 
-export function createAsyncOutputAppender(job: BashAsyncOutputTarget, options?: { persistAfterBytes?: number }): BashAsyncOutputAppender {
+export function createAsyncOutputAppender(
+	job: BashAsyncOutputTarget,
+	options?: { persistAfterBytes?: number },
+): BashAsyncOutputAppender {
 	const persistAfterBytes = options?.persistAfterBytes ?? DEFAULT_MAX_BYTES;
 	let outputBytes = 0;
 	let truncated = false;

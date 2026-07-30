@@ -20,14 +20,14 @@ import { createHash } from "node:crypto";
 
 /** Minimal ExtensionAPI surface expected by intercom integration. */
 export interface PiIntercomExtensionAPI {
-  /** Sets the session name that children can use as `contact_supervisor` target. */
-  setSessionName?: (name: string) => void;
-  /** Event subscription surface used by multiple integrations. */
-  events?: {
-    emit?: (event: string, payload: Record<string, unknown>) => void;
-    on?: (event: string, handler: (payload: unknown) => void) => void;
-  };
-  [key: string]: unknown;
+	/** Sets the session name that children can use as `contact_supervisor` target. */
+	setSessionName?: (name: string) => void;
+	/** Event subscription surface used by multiple integrations. */
+	events?: {
+		emit?: (event: string, payload: Record<string, unknown>) => void;
+		on?: (event: string, handler: (payload: unknown) => void) => void;
+	};
+	[key: string]: unknown;
 }
 
 // ---------------------------------------------------------------------------
@@ -39,7 +39,7 @@ export interface PiIntercomExtensionAPI {
  * Stable across restarts for the same directory, short enough for display.
  */
 export function deriveCwdHash(cwd: string): string {
-  return createHash("sha256").update(cwd).digest("hex").slice(0, 8);
+	return createHash("sha256").update(cwd).digest("hex").slice(0, 8);
 }
 
 /**
@@ -49,7 +49,7 @@ export function deriveCwdHash(cwd: string): string {
  * Spec default: derive from cwd (§9 open question 7 → resolved as cwd hash).
  */
 export function buildParentSessionName(cwd: string = process.cwd()): string {
-  return `pi-workflows-parent-${deriveCwdHash(cwd)}`;
+	return `pi-workflows-parent-${deriveCwdHash(cwd)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -61,7 +61,7 @@ export function buildParentSessionName(cwd: string = process.cwd()): string {
  * method. Purely structural — does not import pi-intercom.
  */
 export function isIntercomPresent(pi: PiIntercomExtensionAPI): boolean {
-  return typeof pi.setSessionName === "function";
+	return typeof pi.setSessionName === "function";
 }
 
 // ---------------------------------------------------------------------------
@@ -80,14 +80,11 @@ export function isIntercomPresent(pi: PiIntercomExtensionAPI): boolean {
  *             `process.cwd()`.
  * @returns    The session name that was set, or `null` if intercom absent.
  */
-export function registerIntercomParentSession(
-  pi: PiIntercomExtensionAPI,
-  cwd: string = process.cwd(),
-): string | null {
-  if (!isIntercomPresent(pi)) return null;
+export function registerIntercomParentSession(pi: PiIntercomExtensionAPI, cwd: string = process.cwd()): string | null {
+	if (!isIntercomPresent(pi)) return null;
 
-  const name = buildParentSessionName(cwd);
-  // Safe: isIntercomPresent guard above ensures setSessionName exists.
-  pi.setSessionName!(name);
-  return name;
+	const name = buildParentSessionName(cwd);
+	// Safe: isIntercomPresent guard above ensures setSessionName exists.
+	pi.setSessionName!(name);
+	return name;
 }

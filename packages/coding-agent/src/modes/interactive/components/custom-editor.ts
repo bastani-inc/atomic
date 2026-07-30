@@ -1,4 +1,12 @@
-import { CURSOR_MARKER, Editor, type EditorOptions, type EditorTheme, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import {
+	CURSOR_MARKER,
+	Editor,
+	type EditorOptions,
+	type EditorTheme,
+	type TUI,
+	truncateToWidth,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
 import type { AppKeybinding, KeybindingsManager } from "../../../core/keybindings.ts";
 import { theme } from "../theme/theme.ts";
 

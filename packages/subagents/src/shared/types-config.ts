@@ -2,8 +2,8 @@
  * Configuration, execution option, display, and event bus types.
  */
 
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { SessionWorkflowMetadata } from "@bastani/atomic";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { NestedRouteInfo } from "./types-async.ts";
 import type {
 	ArtifactConfig,

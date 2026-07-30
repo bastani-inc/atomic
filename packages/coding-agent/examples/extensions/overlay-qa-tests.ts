@@ -21,7 +21,8 @@
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@bastani/atomic";
 import type { OverlayAnchor, OverlayHandle, OverlayOptions } from "@earendil-works/pi-tui";
-import { sleep } from "./overlay-qa-shared.js";
+import { AnimationDemoComponent, StreamingOverflowComponent } from "./overlay-qa-animation-components.js";
+import { FocusDemoController } from "./overlay-qa-focus-components.js";
 import {
 	AnchorTestComponent,
 	EdgeTestComponent,
@@ -31,10 +32,9 @@ import {
 	SidepanelComponent,
 	StackOverlayComponent,
 } from "./overlay-qa-position-components.js";
-import { AnimationDemoComponent, StreamingOverflowComponent } from "./overlay-qa-animation-components.js";
-import { PassiveDemoController, ToggleDemoComponent } from "./overlay-qa-toggle-passive-components.js";
-import { FocusDemoController } from "./overlay-qa-focus-components.js";
+import { sleep } from "./overlay-qa-shared.js";
 import { StreamingInputController } from "./overlay-qa-streaming-input-components.js";
+import { PassiveDemoController, ToggleDemoComponent } from "./overlay-qa-toggle-passive-components.js";
 
 // Global handle for toggle demo (in real code, use a more elegant pattern)
 let globalToggleHandle: OverlayHandle | null = null;
@@ -258,16 +258,19 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("overlay-toggle", {
 		description: "Test overlay toggle (press 't' to toggle visibility)",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
-			await ctx.ui.custom<void>((tui, theme, _kb, done) => new ToggleDemoComponent(tui, theme, done, () => globalToggleHandle), {
-				overlay: true,
-				overlayOptions: { anchor: "center", width: 50 },
-				// onHandle callback provides access to the OverlayHandle for visibility control
-				onHandle: (handle) => {
-					// Store handle globally so component can access it
-					// (In real code, you'd use a more elegant pattern like a store or event emitter)
-					globalToggleHandle = handle;
+			await ctx.ui.custom<void>(
+				(tui, theme, _kb, done) => new ToggleDemoComponent(tui, theme, done, () => globalToggleHandle),
+				{
+					overlay: true,
+					overlayOptions: { anchor: "center", width: 50 },
+					// onHandle callback provides access to the OverlayHandle for visibility control
+					onHandle: (handle) => {
+						// Store handle globally so component can access it
+						// (In real code, you'd use a more elegant pattern like a store or event emitter)
+						globalToggleHandle = handle;
+					},
 				},
-			});
+			);
 			globalToggleHandle = null;
 		},
 	});
@@ -308,4 +311,3 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 }
-

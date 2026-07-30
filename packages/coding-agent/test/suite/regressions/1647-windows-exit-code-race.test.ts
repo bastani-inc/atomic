@@ -1,4 +1,4 @@
-import { type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -44,7 +44,6 @@ describe("issue #1647 Windows exit poll", () => {
 			aliveChecks += 1;
 			return false;
 		};
-
 
 		const wait = waitForChildProcess(synthetic.child, {
 			platform: "win32",

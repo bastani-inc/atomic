@@ -14,7 +14,14 @@ function assistant(text: string, timestamp: number): AssistantMessage {
 		api: "anthropic-messages",
 		provider: "anthropic",
 		model: "claude-sonnet-4-5",
-		usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		usage: {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
 		stopReason: "stop",
 		timestamp,
 	};
@@ -23,7 +30,11 @@ function assistant(text: string, timestamp: number): AssistantMessage {
 function seedTranscript(harness: Harness): void {
 	const now = Date.now();
 	for (let turn = 0; turn < 5; turn++) {
-		harness.sessionManager.appendMessage({ role: "user", content: `task ${turn}\nline a\nline b`, timestamp: now + turn * 2 });
+		harness.sessionManager.appendMessage({
+			role: "user",
+			content: `task ${turn}\nline a\nline b`,
+			timestamp: now + turn * 2,
+		});
 		harness.sessionManager.appendMessage(assistant(`answer ${turn}\nline c\nline d`, now + turn * 2 + 1));
 	}
 	harness.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
@@ -37,8 +48,12 @@ function boundaryCount(harness: Harness): number {
 function createGate() {
 	let signalStarted!: () => void;
 	let release!: () => void;
-	const started = new Promise<void>((resolve) => { signalStarted = resolve; });
-	const released = new Promise<void>((resolve) => { release = resolve; });
+	const started = new Promise<void>((resolve) => {
+		signalStarted = resolve;
+	});
+	const released = new Promise<void>((resolve) => {
+		release = resolve;
+	});
 	const calls: string[] = [];
 	const factory: ExtensionFactory = (pi) => {
 		pi.on("session_before_compact", async (event) => {
@@ -53,7 +68,9 @@ function createGate() {
 
 describe("manual compaction re-entrancy", () => {
 	const harnesses: Harness[] = [];
-	afterEach(() => { for (const harness of harnesses.splice(0)) harness.cleanup(); });
+	afterEach(() => {
+		for (const harness of harnesses.splice(0)) harness.cleanup();
+	});
 
 	async function createHarness(factory: ExtensionFactory): Promise<Harness> {
 		const harness = await createHarnessWithExtensions({ extensionFactories: [factory] });
@@ -85,11 +102,15 @@ describe("manual compaction re-entrancy", () => {
 
 	it("does not overwrite the live abort controller, so abortCompaction() cancels both callers", async () => {
 		let signalStarted!: () => void;
-		const started = new Promise<void>((resolve) => { signalStarted = resolve; });
+		const started = new Promise<void>((resolve) => {
+			signalStarted = resolve;
+		});
 		const abortable: ExtensionFactory = (pi) => {
 			pi.on("session_before_compact", async (event) => {
 				signalStarted();
-				await new Promise<void>((resolve) => event.signal.addEventListener("abort", () => resolve(), { once: true }));
+				await new Promise<void>((resolve) =>
+					event.signal.addEventListener("abort", () => resolve(), { once: true }),
+				);
 				return { cancel: true };
 			});
 		};

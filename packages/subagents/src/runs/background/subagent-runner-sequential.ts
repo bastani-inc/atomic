@@ -2,13 +2,34 @@ import * as path from "node:path";
 import { appendJsonl } from "../../shared/artifacts.ts";
 import { resolveEffectiveThinking } from "../../shared/model-info.ts";
 import { parseSessionTokens } from "../../shared/session-tokens.ts";
+import {
+	resetStepLiveDetail,
+	updateStepFromChildEvent,
+	updateStepModel,
+	writeStatusPayload,
+} from "./subagent-runner-state.ts";
 import { outputEntryFromAsyncResult, runSingleStep } from "./subagent-runner-step.ts";
 import type { RunnerExecutionState, SubagentStep } from "./subagent-runner-types.ts";
-import { resetStepLiveDetail, updateStepFromChildEvent, updateStepModel, writeStatusPayload } from "./subagent-runner-state.ts";
 import { tokenUsageFromAttempts } from "./subagent-runner-utils.ts";
 
-export async function runSequentialStep(state: RunnerExecutionState, seqStep: SubagentStep, stepIndex: number): Promise<boolean> {
-	const { statusPayload, asyncDir, id, cwd, placeholder, sessionEnabled, outputs, config, artifactsDir, artifactConfig, flatSteps } = state;
+export async function runSequentialStep(
+	state: RunnerExecutionState,
+	seqStep: SubagentStep,
+	stepIndex: number,
+): Promise<boolean> {
+	const {
+		statusPayload,
+		asyncDir,
+		id,
+		cwd,
+		placeholder,
+		sessionEnabled,
+		outputs,
+		config,
+		artifactsDir,
+		artifactConfig,
+		flatSteps,
+	} = state;
 	const flatIndex = state.flatIndex;
 	const stepStartTime = Date.now();
 	statusPayload.currentStep = flatIndex;
@@ -24,14 +45,29 @@ export async function runSequentialStep(state: RunnerExecutionState, seqStep: Su
 	statusPayload.outputFile = path.join(asyncDir, `output-${flatIndex}.log`);
 	writeStatusPayload(state);
 
-	appendJsonl(state.eventsPath, JSON.stringify({ type: "subagent.step.started", ts: stepStartTime, runId: id, stepIndex: flatIndex, agent: seqStep.agent }));
+	appendJsonl(
+		state.eventsPath,
+		JSON.stringify({
+			type: "subagent.step.started",
+			ts: stepStartTime,
+			runId: id,
+			stepIndex: flatIndex,
+			agent: seqStep.agent,
+		}),
+	);
 
 	const singleResult = await runSingleStep(seqStep, {
-		previousOutput: state.previousOutput, placeholder, cwd, sessionEnabled,
+		previousOutput: state.previousOutput,
+		placeholder,
+		cwd,
+		sessionEnabled,
 		outputs,
 		sessionDir: config.sessionDir,
-		artifactsDir, artifactConfig, id,
-		flatIndex, flatStepCount: flatSteps.length,
+		artifactsDir,
+		artifactConfig,
+		id,
+		flatIndex,
+		flatStepCount: flatSteps.length,
 		outputFile: path.join(asyncDir, `output-${flatIndex}.log`),
 		piPackageRoot: config.piPackageRoot,
 		piArgv1: config.piArgv1,
@@ -67,17 +103,20 @@ export async function runSequentialStep(state: RunnerExecutionState, seqStep: Su
 		structuredOutputSchemaPath: singleResult.structuredOutputSchemaPath,
 	});
 	if (seqStep.outputName) {
-		outputs[seqStep.outputName] = outputEntryFromAsyncResult({ agent: singleResult.agent, output: singleResult.output, structuredOutput: singleResult.structuredOutput }, stepIndex);
+		outputs[seqStep.outputName] = outputEntryFromAsyncResult(
+			{ agent: singleResult.agent, output: singleResult.output, structuredOutput: singleResult.structuredOutput },
+			stepIndex,
+		);
 	}
 	statusPayload.outputs = outputs;
 
 	const cumulativeTokens = config.sessionDir ? parseSessionTokens(config.sessionDir) : null;
 	let stepTokens = cumulativeTokens
 		? {
-			input: cumulativeTokens.input - state.previousCumulativeTokens.input,
-			output: cumulativeTokens.output - state.previousCumulativeTokens.output,
-			total: cumulativeTokens.total - state.previousCumulativeTokens.total,
-		}
+				input: cumulativeTokens.input - state.previousCumulativeTokens.input,
+				output: cumulativeTokens.output - state.previousCumulativeTokens.output,
+				total: cumulativeTokens.total - state.previousCumulativeTokens.total,
+			}
 		: null;
 	if (cumulativeTokens) {
 		state.previousCumulativeTokens = cumulativeTokens;
@@ -98,7 +137,10 @@ export async function runSequentialStep(state: RunnerExecutionState, seqStep: Su
 	statusPayload.steps[flatIndex].durationMs = stepEndTime - stepStartTime;
 	statusPayload.steps[flatIndex].exitCode = singleResult.exitCode;
 	statusPayload.steps[flatIndex].model = singleResult.model;
-	statusPayload.steps[flatIndex].thinking = resolveEffectiveThinking(singleResult.model, statusPayload.steps[flatIndex].thinking);
+	statusPayload.steps[flatIndex].thinking = resolveEffectiveThinking(
+		singleResult.model,
+		statusPayload.steps[flatIndex].thinking,
+	);
 	statusPayload.steps[flatIndex].fastMode = singleResult.fastMode ? true : undefined;
 	statusPayload.steps[flatIndex].attemptedModels = singleResult.attemptedModels;
 	statusPayload.steps[flatIndex].modelAttempts = singleResult.modelAttempts;
@@ -113,16 +155,19 @@ export async function runSequentialStep(state: RunnerExecutionState, seqStep: Su
 	statusPayload.lastUpdate = stepEndTime;
 	writeStatusPayload(state);
 
-	appendJsonl(state.eventsPath, JSON.stringify({
-		type: singleResult.exitCode === 0 ? "subagent.step.completed" : "subagent.step.failed",
-		ts: stepEndTime,
-		runId: id,
-		stepIndex: flatIndex,
-		agent: seqStep.agent,
-		exitCode: singleResult.exitCode,
-		durationMs: stepEndTime - stepStartTime,
-		tokens: stepTokens,
-	}));
+	appendJsonl(
+		state.eventsPath,
+		JSON.stringify({
+			type: singleResult.exitCode === 0 ? "subagent.step.completed" : "subagent.step.failed",
+			ts: stepEndTime,
+			runId: id,
+			stepIndex: flatIndex,
+			agent: seqStep.agent,
+			exitCode: singleResult.exitCode,
+			durationMs: stepEndTime - stepStartTime,
+			tokens: stepTokens,
+		}),
+	);
 	state.flatIndex++;
 	return singleResult.exitCode === 0;
 }

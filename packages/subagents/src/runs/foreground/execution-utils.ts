@@ -36,15 +36,20 @@ export function snapshotProgress(progress: AgentProgress): AgentProgress {
 export function snapshotResult(result: SingleResult, progress: AgentProgress): SingleResult {
 	return {
 		...result,
-		messages: result.outputMode === "file-only" && result.savedOutputPath ? undefined : result.messages ? [...result.messages] : undefined,
+		messages:
+			result.outputMode === "file-only" && result.savedOutputPath
+				? undefined
+				: result.messages
+					? [...result.messages]
+					: undefined,
 		usage: { ...result.usage },
 		skills: result.skills ? [...result.skills] : undefined,
 		attemptedModels: result.attemptedModels ? [...result.attemptedModels] : undefined,
 		modelAttempts: result.modelAttempts
 			? result.modelAttempts.map((attempt) => ({
-				...attempt,
-				usage: attempt.usage ? { ...attempt.usage } : undefined,
-			}))
+					...attempt,
+					usage: attempt.usage ? { ...attempt.usage } : undefined,
+				}))
 			: undefined,
 		controlEvents: result.controlEvents ? result.controlEvents.map((event) => ({ ...event })) : undefined,
 		progress,

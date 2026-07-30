@@ -1,25 +1,61 @@
 import * as path from "node:path";
+import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
+import type { SupervisorAuthorization } from "../../intercom/supervisor-authorization.ts";
 import { appendJsonl } from "../../shared/artifacts.ts";
 import { resolveEffectiveThinking } from "../../shared/model-info.ts";
-import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
-import { aggregateParallelOutputs, mapConcurrent, MAX_PARALLEL_CONCURRENCY } from "../shared/parallel-utils.ts";
-import { collectDynamicResults, DynamicFanoutError, materializeDynamicParallelStep, validateDynamicCollection } from "../shared/dynamic-fanout.ts";
+import {
+	collectDynamicResults,
+	DynamicFanoutError,
+	materializeDynamicParallelStep,
+	validateDynamicCollection,
+} from "../shared/dynamic-fanout.ts";
+import { createMutatingFailureState } from "../shared/long-running-guard.ts";
+import { aggregateParallelOutputs, MAX_PARALLEL_CONCURRENCY, mapConcurrent } from "../shared/parallel-utils.ts";
+import {
+	markDynamicGraphGroup,
+	resetStepLiveDetail,
+	updateStepFromChildEvent,
+	updateStepModel,
+	writeStatusPayload,
+} from "./subagent-runner-state.ts";
 import { runSingleStep } from "./subagent-runner-step.ts";
 import type { RunnerExecutionState, RunnerStatusStep, RunnerStep, SubagentStep } from "./subagent-runner-types.ts";
-import type { SupervisorAuthorization } from "../../intercom/supervisor-authorization.ts";
-import { createMutatingFailureState } from "../shared/long-running-guard.ts";
-import { markDynamicGraphGroup, resetStepLiveDetail, updateStepFromChildEvent, updateStepModel, writeStatusPayload } from "./subagent-runner-state.ts";
 
-export async function runDynamicGroup(state: RunnerExecutionState, step: RunnerStep, stepIndex: number): Promise<boolean> {
-	const { outputs, statusPayload, asyncDir, id, cwd, placeholder, sessionEnabled, config, artifactsDir, artifactConfig } = state;
+export async function runDynamicGroup(
+	state: RunnerExecutionState,
+	step: RunnerStep,
+	stepIndex: number,
+): Promise<boolean> {
+	const {
+		outputs,
+		statusPayload,
+		asyncDir,
+		id,
+		cwd,
+		placeholder,
+		sessionEnabled,
+		config,
+		artifactsDir,
+		artifactConfig,
+	} = state;
 	const groupStartFlatIndex = state.flatIndex;
 	let materialized: ReturnType<typeof materializeDynamicParallelStep>;
 	try {
-		materialized = materializeDynamicParallelStep(step as Parameters<typeof materializeDynamicParallelStep>[0], outputs, stepIndex, { maxItems: config.dynamicFanoutMaxItems, allowRunnerFields: true });
-		if (materialized.collectedOnEmpty) validateDynamicCollection((step as Parameters<typeof materializeDynamicParallelStep>[0]).collect.outputSchema, materialized.collectedOnEmpty);
+		materialized = materializeDynamicParallelStep(
+			step as Parameters<typeof materializeDynamicParallelStep>[0],
+			outputs,
+			stepIndex,
+			{ maxItems: config.dynamicFanoutMaxItems, allowRunnerFields: true },
+		);
+		if (materialized.collectedOnEmpty)
+			validateDynamicCollection(
+				(step as Parameters<typeof materializeDynamicParallelStep>[0]).collect.outputSchema,
+				materialized.collectedOnEmpty,
+			);
 	} catch (error) {
 		const now = Date.now();
-		const message = error instanceof DynamicFanoutError ? error.message : error instanceof Error ? error.message : String(error);
+		const message =
+			error instanceof DynamicFanoutError ? error.message : error instanceof Error ? error.message : String(error);
 		statusPayload.state = "failed";
 		statusPayload.error = message;
 		statusPayload.currentStep = state.flatIndex;
@@ -36,7 +72,13 @@ export async function runDynamicGroup(state: RunnerExecutionState, step: RunnerS
 		markDynamicGraphGroup(state, stepIndex, "failed", message);
 		writeStatusPayload(state);
 		const dynamicStep = step as Parameters<typeof materializeDynamicParallelStep>[0];
-		state.results.push({ agent: dynamicStep.parallel.agent, output: message, error: message, success: false, exitCode: 1 });
+		state.results.push({
+			agent: dynamicStep.parallel.agent,
+			output: message,
+			error: message,
+			success: false,
+			exitCode: 1,
+		});
 		return false;
 	}
 
@@ -45,7 +87,12 @@ export async function runDynamicGroup(state: RunnerExecutionState, step: RunnerS
 	if (materialized.parallel.length === 0) {
 		const now = Date.now();
 		const collection = materialized.collectedOnEmpty ?? [];
-		outputs[dynamicStep.collect.as] = { text: JSON.stringify(collection), structured: collection, agent: dynamicStep.parallel.agent, stepIndex };
+		outputs[dynamicStep.collect.as] = {
+			text: JSON.stringify(collection),
+			structured: collection,
+			agent: dynamicStep.parallel.agent,
+			stepIndex,
+		};
 		statusPayload.outputs = outputs;
 		const placeholderStep = statusPayload.steps[groupStartFlatIndex];
 		if (placeholderStep) {
@@ -80,24 +127,35 @@ export async function runDynamicGroup(state: RunnerExecutionState, step: RunnerS
 		skills: task.skills,
 		model: task.model,
 		thinking: task.thinking,
-		attemptedModels: task.modelCandidates && task.modelCandidates.length > 0 ? task.modelCandidates : task.model ? [task.model] : undefined,
+		attemptedModels:
+			task.modelCandidates && task.modelCandidates.length > 0
+				? task.modelCandidates
+				: task.model
+					? [task.model]
+					: undefined,
 		recentTools: [],
 		recentOutput: [],
 	}));
 	statusPayload.steps.splice(groupStartFlatIndex, 1, ...dynamicStatusSteps);
-	if (config.childIntercomTargets) config.childIntercomTargets = statusPayload.steps.map((statusStep, index) => resolveSubagentIntercomTarget(id, statusStep.agent, index));
+	if (config.childIntercomTargets)
+		config.childIntercomTargets = statusPayload.steps.map((statusStep, index) =>
+			resolveSubagentIntercomTarget(id, statusStep.agent, index),
+		);
 	const dynamicAuthorizations = config.dynamicSupervisorAuthorizations?.[stepIndex];
 	if (dynamicAuthorizations) {
-		const authorizations = config.supervisorAuthorizations
-			?? new Array<SupervisorAuthorization | undefined>(statusPayload.steps.length - dynamicStatusSteps.length + 1).fill(undefined);
-		authorizations.splice(
-			groupStartFlatIndex,
-			1,
-			...dynamicSteps.map((_, index) => dynamicAuthorizations[index]),
-		);
+		const authorizations =
+			config.supervisorAuthorizations ??
+			new Array<SupervisorAuthorization | undefined>(
+				statusPayload.steps.length - dynamicStatusSteps.length + 1,
+			).fill(undefined);
+		authorizations.splice(groupStartFlatIndex, 1, ...dynamicSteps.map((_, index) => dynamicAuthorizations[index]));
 		config.supervisorAuthorizations = authorizations;
 	}
-	state.mutatingFailureStates.splice(groupStartFlatIndex, 1, ...dynamicStatusSteps.map(() => createMutatingFailureState()));
+	state.mutatingFailureStates.splice(
+		groupStartFlatIndex,
+		1,
+		...dynamicStatusSteps.map(() => createMutatingFailureState()),
+	);
 	state.pendingToolResults.splice(groupStartFlatIndex, 1, ...dynamicStatusSteps.map(() => undefined));
 	const materializedDelta = dynamicStatusSteps.length - 1;
 	for (const group of statusPayload.parallelGroups) {
@@ -111,7 +169,13 @@ export async function runDynamicGroup(state: RunnerExecutionState, step: RunnerS
 	if (statusPayload.workflowGraph) {
 		const shiftFlatIndexes = (nodes: NonNullable<typeof statusPayload.workflowGraph>["nodes"]): void => {
 			for (const node of nodes) {
-				if (node.stepIndex !== undefined && node.stepIndex > stepIndex && node.flatIndex !== undefined && node.flatIndex >= groupStartFlatIndex) node.flatIndex += dynamicStatusSteps.length;
+				if (
+					node.stepIndex !== undefined &&
+					node.stepIndex > stepIndex &&
+					node.flatIndex !== undefined &&
+					node.flatIndex >= groupStartFlatIndex
+				)
+					node.flatIndex += dynamicStatusSteps.length;
 				if (node.children) shiftFlatIndexes(node.children);
 			}
 		};
@@ -163,12 +227,28 @@ export async function runDynamicGroup(state: RunnerExecutionState, step: RunnerS
 		statusPayload.lastActivityAt = taskStartTime;
 		statusPayload.lastUpdate = taskStartTime;
 		writeStatusPayload(state);
-		appendJsonl(state.eventsPath, JSON.stringify({ type: "subagent.step.started", ts: taskStartTime, runId: id, stepIndex: fi, agent: task.agent }));
+		appendJsonl(
+			state.eventsPath,
+			JSON.stringify({
+				type: "subagent.step.started",
+				ts: taskStartTime,
+				runId: id,
+				stepIndex: fi,
+				agent: task.agent,
+			}),
+		);
 		const singleResult = await runSingleStep(task, {
-			previousOutput: state.previousOutput, placeholder, cwd, sessionEnabled, outputs,
+			previousOutput: state.previousOutput,
+			placeholder,
+			cwd,
+			sessionEnabled,
+			outputs,
 			sessionDir: config.sessionDir ? path.join(config.sessionDir, `dynamic-${stepIndex}-${taskIdx}`) : undefined,
-			artifactsDir, artifactConfig, id,
-			flatIndex: fi, flatStepCount: Math.max(statusPayload.steps.length, 1),
+			artifactsDir,
+			artifactConfig,
+			id,
+			flatIndex: fi,
+			flatStepCount: Math.max(statusPayload.steps.length, 1),
 			outputFile: path.join(asyncDir, `output-${fi}.log`),
 			piPackageRoot: config.piPackageRoot,
 			piArgv1: config.piArgv1,
@@ -197,31 +277,99 @@ export async function runDynamicGroup(state: RunnerExecutionState, step: RunnerS
 		statusPayload.steps[fi].structuredOutputSchemaPath = singleResult.structuredOutputSchemaPath;
 		statusPayload.lastUpdate = taskEndTime;
 		writeStatusPayload(state);
-		appendJsonl(state.eventsPath, JSON.stringify({ type: singleResult.exitCode === 0 ? "subagent.step.completed" : "subagent.step.failed", ts: taskEndTime, runId: id, stepIndex: fi, agent: task.agent, exitCode: singleResult.exitCode, durationMs: taskEndTime - taskStartTime }));
+		appendJsonl(
+			state.eventsPath,
+			JSON.stringify({
+				type: singleResult.exitCode === 0 ? "subagent.step.completed" : "subagent.step.failed",
+				ts: taskEndTime,
+				runId: id,
+				stepIndex: fi,
+				agent: task.agent,
+				exitCode: singleResult.exitCode,
+				durationMs: taskEndTime - taskStartTime,
+			}),
+		);
 		if (singleResult.exitCode !== 0 && failFast) aborted = true;
 		return { ...singleResult, skipped: false };
 	});
 
 	state.flatIndex += dynamicSteps.length;
-	for (const pr of parallelResults) state.results.push({ agent: pr.agent, output: pr.output, error: pr.error, success: pr.exitCode === 0, exitCode: pr.exitCode, skipped: pr.skipped, sessionFile: pr.sessionFile, intercomTarget: pr.intercomTarget, model: pr.model, attemptedModels: pr.attemptedModels, modelAttempts: pr.modelAttempts, artifactPaths: pr.artifactPaths, structuredOutput: pr.structuredOutput, structuredOutputPath: pr.structuredOutputPath, structuredOutputSchemaPath: pr.structuredOutputSchemaPath });
-	const collection = collectDynamicResults(dynamicStep as Parameters<typeof collectDynamicResults>[0], materialized.items, parallelResults as Parameters<typeof collectDynamicResults>[2]);
+	for (const pr of parallelResults)
+		state.results.push({
+			agent: pr.agent,
+			output: pr.output,
+			error: pr.error,
+			success: pr.exitCode === 0,
+			exitCode: pr.exitCode,
+			skipped: pr.skipped,
+			sessionFile: pr.sessionFile,
+			intercomTarget: pr.intercomTarget,
+			model: pr.model,
+			attemptedModels: pr.attemptedModels,
+			modelAttempts: pr.modelAttempts,
+			artifactPaths: pr.artifactPaths,
+			structuredOutput: pr.structuredOutput,
+			structuredOutputPath: pr.structuredOutputPath,
+			structuredOutputSchemaPath: pr.structuredOutputSchemaPath,
+		});
+	const collection = collectDynamicResults(
+		dynamicStep as Parameters<typeof collectDynamicResults>[0],
+		materialized.items,
+		parallelResults as Parameters<typeof collectDynamicResults>[2],
+	);
 	const failures = parallelResults.filter((result) => result.exitCode !== 0 && result.exitCode !== -1);
 	if (failures.length === 0) {
 		try {
 			validateDynamicCollection(dynamicStep.collect.outputSchema, collection);
-			outputs[dynamicStep.collect.as] = { text: JSON.stringify(collection), structured: collection, agent: parallelTemplate.agent, stepIndex };
+			outputs[dynamicStep.collect.as] = {
+				text: JSON.stringify(collection),
+				structured: collection,
+				agent: parallelTemplate.agent,
+				stepIndex,
+			};
 			statusPayload.outputs = outputs;
 			markDynamicGraphGroup(state, stepIndex, "completed");
 		} catch (error) {
-			const message = error instanceof DynamicFanoutError ? error.message : error instanceof Error ? error.message : String(error);
-			state.results.push({ agent: parallelTemplate.agent, output: message, error: message, success: false, exitCode: 1, structuredOutput: collection });
+			const message =
+				error instanceof DynamicFanoutError
+					? error.message
+					: error instanceof Error
+						? error.message
+						: String(error);
+			state.results.push({
+				agent: parallelTemplate.agent,
+				output: message,
+				error: message,
+				success: false,
+				exitCode: 1,
+				structuredOutput: collection,
+			});
 			statusPayload.error = message;
 			markDynamicGraphGroup(state, stepIndex, "failed", message);
 		}
 	}
-	state.previousOutput = aggregateParallelOutputs(parallelResults.map((r, i) => ({ agent: r.agent, taskIndex: i, output: r.output, exitCode: r.exitCode, error: r.error })), (i, agent) => `=== Dynamic Item ${i + 1} (${agent}, key ${materialized.items[i]?.key ?? i}) ===`);
-	appendJsonl(state.eventsPath, JSON.stringify({ type: "subagent.dynamic.completed", ts: Date.now(), runId: id, stepIndex, success: failures.length === 0 }));
-	if (failures.length > 0) markDynamicGraphGroup(state, stepIndex, "failed", failures[0]?.error ?? "Dynamic fanout child failed.");
+	state.previousOutput = aggregateParallelOutputs(
+		parallelResults.map((r, i) => ({
+			agent: r.agent,
+			taskIndex: i,
+			output: r.output,
+			exitCode: r.exitCode,
+			error: r.error,
+		})),
+		(i, agent) => `=== Dynamic Item ${i + 1} (${agent}, key ${materialized.items[i]?.key ?? i}) ===`,
+	);
+	appendJsonl(
+		state.eventsPath,
+		JSON.stringify({
+			type: "subagent.dynamic.completed",
+			ts: Date.now(),
+			runId: id,
+			stepIndex,
+			success: failures.length === 0,
+		}),
+	);
+	if (failures.length > 0)
+		markDynamicGraphGroup(state, stepIndex, "failed", failures[0]?.error ?? "Dynamic fanout child failed.");
 	statusPayload.lastUpdate = Date.now();
 	writeStatusPayload(state);
 	return !(failures.length > 0 || statusPayload.error);

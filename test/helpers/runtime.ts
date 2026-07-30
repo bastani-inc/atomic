@@ -70,9 +70,10 @@ export function bunExecutable(): string {
  */
 function resolveExecutable(command: string): string | undefined {
 	if (command.includes("/") || command.includes("\\")) return existsSync(command) ? command : undefined;
-	const extensions = process.platform === "win32"
-		? (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter((part) => part !== "")
-		: [];
+	const extensions =
+		process.platform === "win32"
+			? (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter((part) => part !== "")
+			: [];
 	for (const directory of (process.env.PATH ?? "").split(delimiter)) {
 		if (!directory) continue;
 		const base = join(directory, command);
@@ -106,10 +107,7 @@ export function fileExists(path: string): Promise<boolean> {
  * `fs.writeFile` throws ENOENT, so a codemod that reached for `writeFile`
  * directly would convert working setup code into a failure at an unrelated line.
  */
-export async function writeFileEnsuringDir(
-	path: string,
-	data: string | Uint8Array | ArrayBuffer,
-): Promise<void> {
+export async function writeFileEnsuringDir(path: string, data: string | Uint8Array | ArrayBuffer): Promise<void> {
 	await mkdir(dirname(path), { recursive: true });
 	await writeFile(path, data instanceof ArrayBuffer ? new Uint8Array(data) : data);
 }
@@ -250,10 +248,7 @@ export interface SpawnedProcess {
  * `new Response(stream).text()` — both of which a Node `Readable` does not
  * support. `exited` reproduces Bun's promise; Node only emits an event.
  */
-export function spawnProcess(
-	first: readonly string[] | BunSpawnOptions,
-	second?: BunSpawnOptions,
-): SpawnedProcess {
+export function spawnProcess(first: readonly string[] | BunSpawnOptions, second?: BunSpawnOptions): SpawnedProcess {
 	const { command, args, options } = normalize(first, second);
 	// Bun refuses a missing binary synchronously; reproduce that so a caller's
 	// try/catch around the spawn still sees an ENOENT it can classify.

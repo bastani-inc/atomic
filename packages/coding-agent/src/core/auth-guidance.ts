@@ -47,8 +47,7 @@ export function formatAuthStorageLoadFailedMessage(provider: string | undefined,
 		provider === undefined || provider.length === 0 || provider === UNKNOWN_PROVIDER
 			? ""
 			: ` or run '/login ${provider}' to re-authenticate`;
-	const detail =
-		error instanceof Error && error.message.trim().length > 0 ? error.message.trim() : String(error);
+	const detail = error instanceof Error && error.message.trim().length > 0 ? error.message.trim() : String(error);
 	return (
 		`Could not load stored credentials for ${providerDisplay}: the auth credential store ` +
 		`could not be read (${detail}). This is not a missing API key — stored credentials may ` +

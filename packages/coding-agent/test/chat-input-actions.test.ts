@@ -2,10 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-	cleanupStaleClipboardFiles,
-	openExternalEditorForText,
-} from "../src/modes/interactive/chat-input-actions.ts";
+import { cleanupStaleClipboardFiles, openExternalEditorForText } from "../src/modes/interactive/chat-input-actions.ts";
 
 const createdDirs: string[] = [];
 const createdPaths: string[] = [];
@@ -54,11 +51,7 @@ describeExternalEditor("openExternalEditorForText", () => {
 		const testDir = fs.mkdtempSync(path.join(os.tmpdir(), "atomic editor test-"));
 		createdDirs.push(testDir);
 		const editorScript = path.join(testDir, "editor with spaces.sh");
-		fs.writeFileSync(
-			editorScript,
-			`#!/bin/sh\nprintf '\\nquoted command worked' >> "$1"\n`,
-			{ mode: 0o700 },
-		);
+		fs.writeFileSync(editorScript, `#!/bin/sh\nprintf '\\nquoted command worked' >> "$1"\n`, { mode: 0o700 });
 
 		const host = {
 			stop: () => {},

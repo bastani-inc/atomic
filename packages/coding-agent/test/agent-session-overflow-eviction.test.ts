@@ -2,14 +2,14 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent, type AgentMessage } from "@earendil-works/pi-agent-core";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentSession, type AgentSessionEvent } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import { createTestResourceLoader } from "./utilities.ts";
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
+import { createTestResourceLoader } from "./utilities.ts";
 
 interface AutoCompactionSurface {
 	_runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<void>;
@@ -123,7 +123,13 @@ describe("AgentSession auth-missing compaction failure semantics", () => {
 		await (session as unknown as AutoCompactionSurface)._runAutoCompaction("threshold", true);
 
 		const end = events.find((event) => event.type === "compaction_end" && event.reason === "threshold");
-		expect(end).toMatchObject({ type: "compaction_end", reason: "threshold", result: undefined, aborted: false, willRetry: false });
+		expect(end).toMatchObject({
+			type: "compaction_end",
+			reason: "threshold",
+			result: undefined,
+			aborted: false,
+			willRetry: false,
+		});
 		if (end?.type !== "compaction_end") throw new Error("missing compaction_end");
 		expect(end.errorMessage).toContain("No API key found for faux");
 		expect(sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(0);

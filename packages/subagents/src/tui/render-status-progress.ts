@@ -1,7 +1,7 @@
-import type { AgentProgress, Details } from "../shared/types.ts";
 import { formatDuration, formatTokens, formatToolCall } from "../shared/formatters.ts";
-import { getDisplayItems } from "../shared/utils.ts";
 import { formatActivityLabel } from "../shared/status-format.ts";
+import type { AgentProgress, Details } from "../shared/types.ts";
+import { getDisplayItems } from "../shared/utils.ts";
 import { getTermWidth, pulseGlyph, type Theme } from "./render-layout.ts";
 
 export function extractOutputTarget(task: string): string | undefined {
@@ -28,14 +28,17 @@ export function getToolCallLines(
 			.filter((item): item is { type: "tool"; name: string; args: Record<string, unknown> } => item.type === "tool")
 			.map((item) => formatToolCall(item.name, item.args, expanded));
 	}
-	return result.toolCalls?.map((toolCall) => expanded ? toolCall.expandedText : toolCall.text) ?? [];
+	return result.toolCalls?.map((toolCall) => (expanded ? toolCall.expandedText : toolCall.text)) ?? [];
 }
 
-
-export function snapshotNowForProgress(progress: Pick<AgentProgress, "currentToolStartedAt" | "durationMs" | "lastActivityAt">, now?: number): number | undefined {
+export function snapshotNowForProgress(
+	progress: Pick<AgentProgress, "currentToolStartedAt" | "durationMs" | "lastActivityAt">,
+	now?: number,
+): number | undefined {
 	if (now !== undefined) return now;
 	if (progress.lastActivityAt !== undefined) return progress.lastActivityAt;
-	if (progress.currentToolStartedAt !== undefined && progress.durationMs !== undefined) return progress.currentToolStartedAt + progress.durationMs;
+	if (progress.currentToolStartedAt !== undefined && progress.durationMs !== undefined)
+		return progress.currentToolStartedAt + progress.durationMs;
 	return undefined;
 }
 
@@ -48,20 +51,25 @@ export function formatCurrentToolLine(
 	if (!progress.currentTool) return undefined;
 	const maxToolArgsLen = Math.max(50, availableWidth - 20);
 	const toolArgsPreview = progress.currentToolArgs
-		? (expanded || progress.currentToolArgs.length <= maxToolArgsLen
+		? expanded || progress.currentToolArgs.length <= maxToolArgsLen
 			? progress.currentToolArgs
-			: `${progress.currentToolArgs.slice(0, maxToolArgsLen)}...`)
+			: `${progress.currentToolArgs.slice(0, maxToolArgsLen)}...`
 		: "";
-	const durationSuffix = progress.currentToolStartedAt !== undefined && snapshotNow !== undefined
-		? ` | ${formatDuration(Math.max(0, snapshotNow - progress.currentToolStartedAt))}`
-		: "";
+	const durationSuffix =
+		progress.currentToolStartedAt !== undefined && snapshotNow !== undefined
+			? ` | ${formatDuration(Math.max(0, snapshotNow - progress.currentToolStartedAt))}`
+			: "";
 	return toolArgsPreview
 		? `${progress.currentTool}: ${toolArgsPreview}${durationSuffix}`
 		: `${progress.currentTool}${durationSuffix}`;
 }
 
-export function buildLiveStatusLine(progress: Pick<AgentProgress, "activityState" | "lastActivityAt">, snapshotNow?: number): string | undefined {
-	if (progress.lastActivityAt !== undefined && snapshotNow !== undefined) return formatActivityLabel(progress.lastActivityAt, progress.activityState, snapshotNow);
+export function buildLiveStatusLine(
+	progress: Pick<AgentProgress, "activityState" | "lastActivityAt">,
+	snapshotNow?: number,
+): string | undefined {
+	if (progress.lastActivityAt !== undefined && snapshotNow !== undefined)
+		return formatActivityLabel(progress.lastActivityAt, progress.activityState, snapshotNow);
 	if (progress.activityState === "needs_attention") return "needs attention";
 	if (progress.activityState === "active_long_running") return "active but long-running";
 	if (progress.lastActivityAt !== undefined) return "active";
@@ -69,11 +77,14 @@ export function buildLiveStatusLine(progress: Pick<AgentProgress, "activityState
 }
 
 export function themeBold(theme: Theme, text: string): string {
-	return ((theme as { bold?: (value: string) => string }).bold?.(text)) ?? text;
+	return (theme as { bold?: (value: string) => string }).bold?.(text) ?? text;
 }
 
 export function statJoin(theme: Theme, parts: string[]): string {
-	return parts.filter(Boolean).map((part) => theme.fg("dim", part)).join(` ${theme.fg("dim", "·")} `);
+	return parts
+		.filter(Boolean)
+		.map((part) => theme.fg("dim", part))
+		.join(` ${theme.fg("dim", "·")} `);
 }
 
 export function formatTokenStat(tokens: number): string {
@@ -84,7 +95,10 @@ export function formatToolUseStat(count: number): string {
 	return `${count} tool use${count === 1 ? "" : "s"}`;
 }
 
-export function displayProgressDurationMs(progress: Pick<AgentProgress, "durationMs"> & Partial<Pick<AgentProgress, "lastActivityAt" | "status">>, now?: number): number {
+export function displayProgressDurationMs(
+	progress: Pick<AgentProgress, "durationMs"> & Partial<Pick<AgentProgress, "lastActivityAt" | "status">>,
+	now?: number,
+): number {
 	if (progress.status === "running" && progress.lastActivityAt !== undefined && now !== undefined) {
 		return progress.durationMs + Math.max(0, now - progress.lastActivityAt);
 	}
@@ -93,7 +107,10 @@ export function displayProgressDurationMs(progress: Pick<AgentProgress, "duratio
 
 export function formatProgressStats(
 	theme: Theme,
-	progress: (Pick<AgentProgress, "toolCount" | "tokens" | "durationMs"> & Partial<Pick<AgentProgress, "lastActivityAt" | "status">>) | undefined,
+	progress:
+		| (Pick<AgentProgress, "toolCount" | "tokens" | "durationMs"> &
+				Partial<Pick<AgentProgress, "lastActivityAt" | "status">>)
+		| undefined,
 	includeDuration = true,
 	now?: number,
 ): string {
@@ -107,7 +124,12 @@ export function formatProgressStats(
 }
 
 export function firstOutputLine(text: string): string {
-	return text.split("\n").find((line) => line.trim())?.trim() ?? "";
+	return (
+		text
+			.split("\n")
+			.find((line) => line.trim())
+			?.trim() ?? ""
+	);
 }
 
 export function resultStatusLine(result: Details["results"][number], output: string): string {
@@ -118,7 +140,13 @@ export function resultStatusLine(result: Details["results"][number], output: str
 	return "Done";
 }
 
-export function resultGlyph(result: Details["results"][number], output: string, theme: Theme, running = result.progress?.status === "running", pulseFrame?: number): string {
+export function resultGlyph(
+	result: Details["results"][number],
+	output: string,
+	theme: Theme,
+	running = result.progress?.status === "running",
+	pulseFrame?: number,
+): string {
 	if (running) return theme.fg("accent", pulseGlyph(pulseFrame));
 	if (result.detached) return theme.fg("warning", "■");
 	if (result.interrupted) return theme.fg("warning", "■");
@@ -129,5 +157,9 @@ export function resultGlyph(result: Details["results"][number], output: string, 
 
 export function compactCurrentActivity(progress: AgentProgress, now?: number): string {
 	const snapshotNow = snapshotNowForProgress(progress, now);
-	return formatCurrentToolLine(progress, getTermWidth() - 4, false, snapshotNow) ?? buildLiveStatusLine(progress, snapshotNow) ?? "thinking…";
+	return (
+		formatCurrentToolLine(progress, getTermWidth() - 4, false, snapshotNow) ??
+		buildLiveStatusLine(progress, snapshotNow) ??
+		"thinking…"
+	);
 }

@@ -1,16 +1,21 @@
 import { access, readdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { CONFIG_DIR_NAME } from "../config.ts";
-import { parseFrontmatter } from "../utils/frontmatter.ts";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
+import { parseFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
-import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import type { LoadPromptTemplatesOptions, PromptTemplate } from "./prompt-templates.ts";
+import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 
 const YIELD_AFTER_MS = 8;
 
 async function exists(path: string): Promise<boolean> {
-	try { await access(path); return true; } catch { return false; }
+	try {
+		await access(path);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 async function loadTemplateFromFile(filePath: string, sourceInfo: SourceInfo): Promise<PromptTemplate | null> {
@@ -50,7 +55,11 @@ async function loadTemplatesFromDir(
 			const fullPath = join(dir, entry.name);
 			let isFile = entry.isFile();
 			if (entry.isSymbolicLink()) {
-				try { isFile = (await stat(fullPath)).isFile(); } catch { continue; }
+				try {
+					isFile = (await stat(fullPath)).isFile();
+				} catch {
+					continue;
+				}
 			}
 			if (!isFile || !entry.name.endsWith(".md")) continue;
 			const template = await loadTemplateFromFile(fullPath, await getSourceInfo(fullPath));
@@ -70,21 +79,31 @@ export async function loadPromptTemplatesAsync(options: LoadPromptTemplatesOptio
 	const projectPromptsDir = resolve(resolvedCwd, CONFIG_DIR_NAME, "prompts");
 	const isUnderPath = (target: string, root: string): boolean => {
 		const normalizedRoot = resolve(root);
-		return target === normalizedRoot || target.startsWith(normalizedRoot.endsWith(sep) ? normalizedRoot : `${normalizedRoot}${sep}`);
+		return (
+			target === normalizedRoot ||
+			target.startsWith(normalizedRoot.endsWith(sep) ? normalizedRoot : `${normalizedRoot}${sep}`)
+		);
 	};
 	const getSourceInfo = async (resolvedPath: string): Promise<SourceInfo> => {
 		if (isUnderPath(resolvedPath, globalPromptsDir)) {
 			return createSyntheticSourceInfo(resolvedPath, { source: "local", scope: "user", baseDir: globalPromptsDir });
 		}
 		if (isUnderPath(resolvedPath, projectPromptsDir)) {
-			return createSyntheticSourceInfo(resolvedPath, { source: "local", scope: "project", baseDir: projectPromptsDir });
+			return createSyntheticSourceInfo(resolvedPath, {
+				source: "local",
+				scope: "project",
+				baseDir: projectPromptsDir,
+			});
 		}
 		const stats = await stat(resolvedPath);
-		return createSyntheticSourceInfo(resolvedPath, { source: "local", baseDir: stats.isDirectory() ? resolvedPath : dirname(resolvedPath) });
+		return createSyntheticSourceInfo(resolvedPath, {
+			source: "local",
+			baseDir: stats.isDirectory() ? resolvedPath : dirname(resolvedPath),
+		});
 	};
 	if (includeDefaults) {
-		templates.push(...await loadTemplatesFromDir(globalPromptsDir, getSourceInfo));
-		templates.push(...await loadTemplatesFromDir(projectPromptsDir, getSourceInfo));
+		templates.push(...(await loadTemplatesFromDir(globalPromptsDir, getSourceInfo)));
+		templates.push(...(await loadTemplatesFromDir(projectPromptsDir, getSourceInfo)));
 	}
 	const startedAt = Date.now();
 	for (const rawPath of promptPaths) {
@@ -94,7 +113,7 @@ export async function loadPromptTemplatesAsync(options: LoadPromptTemplatesOptio
 		try {
 			const stats = await stat(resolvedPath);
 			if (stats.isDirectory()) {
-				templates.push(...await loadTemplatesFromDir(resolvedPath, getSourceInfo));
+				templates.push(...(await loadTemplatesFromDir(resolvedPath, getSourceInfo)));
 			} else if (stats.isFile() && resolvedPath.endsWith(".md")) {
 				const template = await loadTemplateFromFile(resolvedPath, await getSourceInfo(resolvedPath));
 				if (template) templates.push(template);

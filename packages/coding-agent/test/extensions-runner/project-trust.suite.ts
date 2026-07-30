@@ -87,7 +87,7 @@ describe("ExtensionRunner", () => {
 		getSystemPrompt: () => "",
 	};
 
-		describe("shortcut conflicts", () => {
+	describe("shortcut conflicts", () => {
 		it("warns when extension shortcut conflicts with built-in", async () => {
 			const extCode = `
 				export default function(pi) {
@@ -294,5 +294,4 @@ describe("ExtensionRunner", () => {
 			warnSpy.mockRestore();
 		});
 	});
-
 });

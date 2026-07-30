@@ -230,10 +230,7 @@ export class ToolExecutionComponent extends Container {
 		this.disposeRendererComponent(this.resultRendererComponent);
 		this.callRendererComponent = undefined;
 		this.resultRendererComponent = undefined;
-		this.clearRendererStateTimer(
-			SUBAGENT_RESULT_ANIMATION_TIMER_KEY,
-			SUBAGENT_RESULT_ANIMATION_CLEANUP_KEY,
-		);
+		this.clearRendererStateTimer(SUBAGENT_RESULT_ANIMATION_TIMER_KEY, SUBAGENT_RESULT_ANIMATION_CLEANUP_KEY);
 	}
 
 	override render(width: number): string[] {

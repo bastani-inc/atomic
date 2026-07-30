@@ -1,12 +1,12 @@
 import type { ImageContent, Message, TextContent, Usage } from "@earendil-works/pi-ai/compat";
 import { join } from "path";
-import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
+import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { validSessionWorkflowMetadata } from "./session-manager-classification.ts";
 import {
-	CURRENT_SESSION_VERSION,
 	type BranchSummaryEntry,
 	type CompactionEntry,
+	CURRENT_SESSION_VERSION,
 	type CustomEntry,
 	type CustomMessageEntry,
 	type FileEntry,
@@ -22,7 +22,10 @@ import {
 } from "./session-manager-types.ts";
 import { generateId } from "./session-manager-validation.ts";
 
-function entryBase(byId: { has(id: string): boolean }, parentId: string | null): Pick<SessionEntryBase, "id" | "parentId" | "timestamp"> {
+function entryBase(
+	byId: { has(id: string): boolean },
+	parentId: string | null,
+): Pick<SessionEntryBase, "id" | "parentId" | "timestamp"> {
 	return {
 		id: generateId(byId),
 		parentId,
@@ -115,7 +118,6 @@ export function createCompactionEntry(
 		fromHook: details.rung === "extension" || undefined,
 	};
 }
-
 
 export function createCustomEntry(
 	customType: string,

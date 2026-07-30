@@ -104,7 +104,7 @@ export class InMemorySnapshotStore extends SnapshotStore {
 		this.#versions = new LRUCache<string, Snapshot[]>({
 			max: options.maxPaths ?? DEFAULT_MAX_PATHS,
 			maxSize: options.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES,
-			sizeCalculation: history => {
+			sizeCalculation: (history) => {
 				let total = 1;
 				for (const version of history) total += version.text.length;
 				return total;
@@ -118,21 +118,21 @@ export class InMemorySnapshotStore extends SnapshotStore {
 	}
 
 	byHash(path: string, hash: string): Snapshot | null {
-		const matches = this.#versions.get(path)?.filter(version => version.hash === hash) ?? [];
+		const matches = this.#versions.get(path)?.filter((version) => version.hash === hash) ?? [];
 		// A 4-hex tag can collide. Recovery only proceeds when the tag maps to a
 		// single retained snapshot; otherwise the caller must re-read.
 		return matches.length === 1 ? matches[0]! : null;
 	}
 
 	override byHashAndText(path: string, hash: string, text: string): Snapshot | null {
-		return this.#versions.get(path)?.find(version => version.hash === hash && version.text === text) ?? null;
+		return this.#versions.get(path)?.find((version) => version.hash === hash && version.text === text) ?? null;
 	}
 
 	record(path: string, fullText: string): string {
 		const hash = computeFileHash(fullText);
 		// `get` refreshes LRU recency for `path`.
 		const history = this.#versions.get(path) ?? [];
-		const existing = history.find(version => version.hash === hash && version.text === fullText);
+		const existing = history.find((version) => version.hash === hash && version.text === fullText);
 		if (existing) {
 			// Same content state observed again: refresh recency and promote to
 			// head (it is the current file content), then reuse the tag. Hash
@@ -140,7 +140,7 @@ export class InMemorySnapshotStore extends SnapshotStore {
 			// snapshots; the 4-hex tag is only a lookup key, not proof of identity.
 			existing.recordedAt = Date.now();
 			if (history[0] !== existing) {
-				this.#versions.set(path, [existing, ...history.filter(version => version !== existing)]);
+				this.#versions.set(path, [existing, ...history.filter((version) => version !== existing)]);
 			}
 			return hash;
 		}

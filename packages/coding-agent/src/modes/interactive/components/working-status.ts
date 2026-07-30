@@ -1,9 +1,9 @@
-import { Text, type Component } from "@earendil-works/pi-tui";
+import { type Component, Text } from "@earendil-works/pi-tui";
 import { theme } from "../theme/theme.ts";
 import {
-	atomicWorkingFrame,
 	type AtomicWorkingPalette,
 	AtomicWorkingStatusComponent,
+	atomicWorkingFrame,
 } from "./atomic-working-status.ts";
 
 export interface WorkingStatusComponentOptions {

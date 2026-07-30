@@ -1,10 +1,17 @@
-import { test } from "vitest";
 import assert from "node:assert/strict";
 import { Readable, Writable } from "node:stream";
-import { runSynchronousCallback, setCallbackActivityReporter } from "../../packages/coding-agent/src/core/callback-activity.ts";
-import { ActivityWatchdog, shouldRenderEngineDiagnosticAsChatError, type ActivityWatchdogDiagnostic } from "../../packages/coding-agent/src/modes/interactive-engine/activity-watchdog.ts";
-import { QueuedWriter } from "../../packages/coding-agent/src/modes/rpc/queued-writer.ts";
+import { test } from "vitest";
+import {
+	runSynchronousCallback,
+	setCallbackActivityReporter,
+} from "../../packages/coding-agent/src/core/callback-activity.ts";
+import {
+	ActivityWatchdog,
+	type ActivityWatchdogDiagnostic,
+	shouldRenderEngineDiagnosticAsChatError,
+} from "../../packages/coding-agent/src/modes/interactive-engine/activity-watchdog.ts";
 import { attachJsonlLineReader } from "../../packages/coding-agent/src/modes/rpc/jsonl.ts";
+import { QueuedWriter } from "../../packages/coding-agent/src/modes/rpc/queued-writer.ts";
 import { sleep } from "../helpers/runtime.js";
 
 class SlowWritable extends Writable {
@@ -15,16 +22,20 @@ class SlowWritable extends Writable {
 
 test("interactive JSONL preserves large UTF-8 frames", async () => {
 	const large = JSON.stringify({ value: "🙂".repeat(300_000) });
-	const stream = Readable.from([`${large}\n{\"type\":\"terminal\"}\n`]);
+	const stream = Readable.from([`${large}\n{"type":"terminal"}\n`]);
 	const lines: string[] = [];
 	await new Promise<void>((resolve) => {
-		attachJsonlLineReader(stream, (line) => {
-			lines.push(line);
-			if (lines.length === 2) resolve();
-		}, { maxBytesPerTurn: 128 * 1024 });
+		attachJsonlLineReader(
+			stream,
+			(line) => {
+				lines.push(line);
+				if (lines.length === 2) resolve();
+			},
+			{ maxBytesPerTurn: 128 * 1024 },
+		);
 	});
 	assert.equal(lines[0], large);
-	assert.equal(lines[1], '{\"type\":\"terminal\"}');
+	assert.equal(lines[1], '{"type":"terminal"}');
 });
 
 test("queued writer preserves large critical frames", async () => {
@@ -75,7 +86,10 @@ test("watchdog diagnostics are tagged with their source at both thresholds", asy
 	now = 24;
 	await sleep(5);
 	watchdog.stop();
-	assert.deepEqual(diagnostics.map((diagnostic) => diagnostic.level), ["blocking", "unresponsive"]);
+	assert.deepEqual(
+		diagnostics.map((diagnostic) => diagnostic.level),
+		["blocking", "unresponsive"],
+	);
 	for (const diagnostic of diagnostics) {
 		assert.equal(diagnostic.source, "watchdog");
 		assert.match(diagnostic.message, /Engine callback unknown callback has not yielded/);
@@ -84,9 +98,7 @@ test("watchdog diagnostics are tagged with their source at both thresholds", asy
 
 test("chat-error policy: watchdog diagnostics stay internal while concrete failures surface", () => {
 	const activity = { id: "a1", kind: "extension.hook" as const, name: "tool_execution_end", startedAt: 0 };
-	const diagnostic = (
-		overrides: Partial<ActivityWatchdogDiagnostic>,
-	): ActivityWatchdogDiagnostic => ({
+	const diagnostic = (overrides: Partial<ActivityWatchdogDiagnostic>): ActivityWatchdogDiagnostic => ({
 		activity: undefined,
 		elapsedMs: 1_011,
 		level: "unresponsive",
@@ -96,31 +108,49 @@ test("chat-error policy: watchdog diagnostics stay internal while concrete failu
 
 	// Heartbeat-watchdog gaps stay internal whether or not a callback was attributed.
 	assert.equal(shouldRenderEngineDiagnosticAsChatError(diagnostic({ source: "watchdog" })), false);
-	assert.equal(shouldRenderEngineDiagnosticAsChatError(diagnostic({
-		source: "watchdog",
-		activity,
-		message: "Engine callback extension.hook tool_execution_end has not yielded for 1011 ms; Esc interrupt · Ctrl+C terminate",
-	})), false);
+	assert.equal(
+		shouldRenderEngineDiagnosticAsChatError(
+			diagnostic({
+				source: "watchdog",
+				activity,
+				message:
+					"Engine callback extension.hook tool_execution_end has not yielded for 1011 ms; Esc interrupt · Ctrl+C terminate",
+			}),
+		),
+		false,
+	);
 	// Early 250 ms blocking signals stay internal regardless of attribution.
 	assert.equal(shouldRenderEngineDiagnosticAsChatError(diagnostic({ source: "watchdog", level: "blocking" })), false);
-	assert.equal(shouldRenderEngineDiagnosticAsChatError(diagnostic({ source: "watchdog", activity, level: "blocking" })), false);
+	assert.equal(
+		shouldRenderEngineDiagnosticAsChatError(diagnostic({ source: "watchdog", activity, level: "blocking" })),
+		false,
+	);
 	// Concrete termination and RPC failures are not watchdog-sourced and always surface.
 	assert.equal(
-		shouldRenderEngineDiagnosticAsChatError(diagnostic({
-			elapsedMs: 0,
-			message: "Engine terminated; engine callback result unknown; inspect side effects before retrying",
-		})),
+		shouldRenderEngineDiagnosticAsChatError(
+			diagnostic({
+				elapsedMs: 0,
+				message: "Engine terminated; engine callback result unknown; inspect side effects before retrying",
+			}),
+		),
 		true,
 	);
 	assert.equal(
-		shouldRenderEngineDiagnosticAsChatError(diagnostic({ elapsedMs: 0, message: "Interactive engine set steering mode failed: closed" })),
+		shouldRenderEngineDiagnosticAsChatError(
+			diagnostic({ elapsedMs: 0, message: "Interactive engine set steering mode failed: closed" }),
+		),
 		true,
 	);
 });
 
 test.sequential("synchronous callback publishes activity before entering user code", () => {
 	let started = false;
-	setCallbackActivityReporter({ started: () => { started = true; }, finished: () => {} });
+	setCallbackActivityReporter({
+		started: () => {
+			started = true;
+		},
+		finished: () => {},
+	});
 	try {
 		runSynchronousCallback({ kind: "tool.prepare", name: "sync" }, () => {
 			assert.equal(started, true);

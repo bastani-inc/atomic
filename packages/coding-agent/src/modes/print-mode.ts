@@ -249,7 +249,10 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 					writeRawStdout(`${text}\n`);
 				}
 			} else if (lastMessage?.role === "toolResult") {
-				const text = terminatingStructuredOutputText(lastMessage as ToolResultMessage, terminatingStructuredOutputCallIds);
+				const text = terminatingStructuredOutputText(
+					lastMessage as ToolResultMessage,
+					terminatingStructuredOutputCallIds,
+				);
 				if (text !== undefined) {
 					writeRawStdout(`${text}\n`);
 				}

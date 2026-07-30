@@ -1,11 +1,11 @@
+import type { Theme } from "../modes/interactive/theme/theme.ts";
+import type { ResourceDiagnostic } from "./diagnostics.ts";
 import type { EventBus } from "./event-bus.ts";
 import type { InlineExtension, LoadExtensionsResult } from "./extensions/types.ts";
 import type { PathMetadata, ResolvedResource } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
-import type { SettingsManager, PackageSource } from "./settings-manager.ts";
+import type { PackageSource, SettingsManager } from "./settings-manager.ts";
 import type { Skill } from "./skills.ts";
-import type { ResourceDiagnostic } from "./diagnostics.ts";
-import type { Theme } from "../modes/interactive/theme/theme.ts";
 
 export interface ResourceExtensionPaths {
 	skillPaths?: Array<{ path: string; metadata: PathMetadata }>;

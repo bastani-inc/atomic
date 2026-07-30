@@ -3,17 +3,28 @@ import { test } from "vitest";
 // The setup-hook failure contract executes a bash-shebang script directly,
 // which Windows cannot spawn; the error-path contract runs on unix jobs.
 const unixTest = process.platform === "win32" ? test.skip : test;
+
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cleanupWorktrees, createWorktrees } from "../../packages/workflows/src/runs/shared/worktree-setup.js";
-import { diffWorktrees } from "../../packages/workflows/src/runs/shared/worktree-diff.js";
-import { runGit, runGitChecked, runGitPlain } from "../../packages/workflows/src/runs/shared/worktree-git.js";
 import {
 	cleanupWorktrees as cleanupSubagentWorktrees,
 	createWorktrees as createSubagentWorktrees,
 } from "../../packages/subagents/src/runs/shared/worktree.js";
+import { diffWorktrees } from "../../packages/workflows/src/runs/shared/worktree-diff.js";
+import { runGit, runGitChecked, runGitPlain } from "../../packages/workflows/src/runs/shared/worktree-git.js";
+import { cleanupWorktrees, createWorktrees } from "../../packages/workflows/src/runs/shared/worktree-setup.js";
 
 function createRepository(ignoreSettings = true): { root: string; repo: string } {
 	const root = realpathSync.native(mkdtempSync(join(tmpdir(), "atomic-worktree-lifecycle-")));
@@ -22,10 +33,15 @@ function createRepository(ignoreSettings = true): { root: string; repo: string }
 	runGitChecked(repo, ["init", "-b", "main"]);
 	runGitChecked(repo, ["config", "user.name", "Atomic Test"]);
 	runGitChecked(repo, ["config", "user.email", "atomic@example.com"]);
-	writeFileSync(join(repo, ".gitignore"), [
-		...(ignoreSettings ? [".atomic/settings.local.json", ".atomic/settings.json"] : []),
-		"ignored/", "deps/", "",
-	].join("\n"));
+	writeFileSync(
+		join(repo, ".gitignore"),
+		[
+			...(ignoreSettings ? [".atomic/settings.local.json", ".atomic/settings.json"] : []),
+			"ignored/",
+			"deps/",
+			"",
+		].join("\n"),
+	);
 	writeFileSync(join(repo, ".worktreeinclude"), "ignored/**/*.txt\n");
 	mkdirSync(join(repo, "packages", "api"), { recursive: true });
 	writeFileSync(join(repo, "packages", "api", "tracked.txt"), "tracked\n");
@@ -37,8 +53,8 @@ function createRepository(ignoreSettings = true): { root: string; repo: string }
 test("temporary worktree uses main-root path, flattened branch, and post-creation setup", () => {
 	const { root, repo } = createRepository();
 	mkdirSync(join(repo, ".atomic"), { recursive: true });
-	writeFileSync(join(repo, ".atomic", "settings.local.json"), "{\"local\":true}\n");
-	writeFileSync(join(repo, ".atomic", "settings.json"), "{\"shared\":true}\n");
+	writeFileSync(join(repo, ".atomic", "settings.local.json"), '{"local":true}\n');
+	writeFileSync(join(repo, ".atomic", "settings.json"), '{"shared":true}\n');
 	mkdirSync(join(repo, "ignored", "nested"), { recursive: true });
 	writeFileSync(join(repo, "ignored", "nested", "secret.txt"), "included\n");
 	writeFileSync(join(repo, "ignored", "skip.log"), "excluded\n");
@@ -55,8 +71,8 @@ test("temporary worktree uses main-root path, flattened branch, and post-creatio
 		assert.equal(worktree.agentCwd, join(worktree.path, "packages", "api"));
 		assert.equal(worktree.branch, "worktree-feature+name-0");
 		assert.equal(runGitChecked(worktree.path, ["branch", "--show-current"]).trim(), worktree.branch);
-		assert.equal(readFileSync(join(worktree.path, ".atomic", "settings.local.json"), "utf8"), "{\"local\":true}\n");
-		assert.equal(readFileSync(join(worktree.path, ".atomic", "settings.json"), "utf8"), "{\"shared\":true}\n");
+		assert.equal(readFileSync(join(worktree.path, ".atomic", "settings.local.json"), "utf8"), '{"local":true}\n');
+		assert.equal(readFileSync(join(worktree.path, ".atomic", "settings.json"), "utf8"), '{"shared":true}\n');
 		assert.equal(readFileSync(join(worktree.path, "ignored", "nested", "secret.txt"), "utf8"), "included\n");
 		assert.equal(existsSync(join(worktree.path, "ignored", "skip.log")), false);
 		assert.equal(lstatSync(join(worktree.path, "deps")).isSymbolicLink(), true);
@@ -71,13 +87,16 @@ test("non-ignored local settings propagate without leaking into patches and repe
 	const { root, repo } = createRepository(false);
 	const diffs = join(root, "diffs");
 	mkdirSync(join(repo, ".atomic"), { recursive: true });
-	writeFileSync(join(repo, ".atomic", "settings.local.json"), "{\"secret\":true}\n");
-	writeFileSync(join(repo, ".atomic", "settings.json"), "{\"local\":true}\n");
+	writeFileSync(join(repo, ".atomic", "settings.local.json"), '{"secret":true}\n');
+	writeFileSync(join(repo, ".atomic", "settings.json"), '{"local":true}\n');
 	let first: ReturnType<typeof createWorktrees> | undefined;
 	let second: ReturnType<typeof createWorktrees> | undefined;
 	try {
 		first = createWorktrees(repo, "settings/first", 1, { baseBranch: "main", symlinkDirectories: [] });
-		assert.equal(readFileSync(join(first.worktrees[0]!.path, ".atomic", "settings.local.json"), "utf8"), "{\"secret\":true}\n");
+		assert.equal(
+			readFileSync(join(first.worktrees[0]!.path, ".atomic", "settings.local.json"), "utf8"),
+			'{"secret":true}\n',
+		);
 		writeFileSync(join(first.worktrees[0]!.path, "agent-change.txt"), "agent\n");
 		const [diff] = diffWorktrees(first, ["worker"], diffs);
 		assert.ok(diff);
@@ -144,7 +163,10 @@ test("post-creation setup writes exact hooks paths and skips an already-correct 
 	try {
 		mkdirSync(join(huskyRepo.repo, ".husky"));
 		first = createWorktrees(huskyRepo.repo, "hooks/husky", 1, { baseBranch: "main", symlinkDirectories: [] });
-		assert.equal(runGitPlain(huskyRepo.repo, ["config", "--get", "core.hooksPath"]).stdout.trim(), join(huskyRepo.repo, ".husky"));
+		assert.equal(
+			runGitPlain(huskyRepo.repo, ["config", "--get", "core.hooksPath"]).stdout.trim(),
+			join(huskyRepo.repo, ".husky"),
+		);
 		cleanupWorktrees(first);
 		first = undefined;
 		const configBefore = readFileSync(join(huskyRepo.repo, ".git", "config"), "utf8");
@@ -161,7 +183,10 @@ test("post-creation setup writes exact hooks paths and skips an already-correct 
 	try {
 		writeFileSync(join(nativeRepo.repo, ".git", "hooks", "pre-commit"), "#!/bin/sh\n");
 		nativeSetup = createWorktrees(nativeRepo.repo, "hooks/native", 1, { baseBranch: "main", symlinkDirectories: [] });
-		assert.equal(runGitPlain(nativeRepo.repo, ["config", "--get", "core.hooksPath"]).stdout.trim(), join(nativeRepo.repo, ".git", "hooks"));
+		assert.equal(
+			runGitPlain(nativeRepo.repo, ["config", "--get", "core.hooksPath"]).stdout.trim(),
+			join(nativeRepo.repo, ".git", "hooks"),
+		);
 	} finally {
 		if (nativeSetup) cleanupWorktrees(nativeSetup);
 		rmSync(nativeRepo.root, { recursive: true, force: true });
@@ -178,8 +203,14 @@ test("temporary base ref precedence is explicit then origin default then HEAD", 
 		runGitChecked(explicitRepo.repo, ["add", "explicit.txt"]);
 		runGitChecked(explicitRepo.repo, ["commit", "--no-gpg-sign", "-m", "explicit"]);
 		runGitChecked(explicitRepo.repo, ["checkout", "main"]);
-		explicitSetup = createWorktrees(explicitRepo.repo, "base/explicit", 1, { baseBranch: "explicit-base", symlinkDirectories: [] });
-		assert.equal(runGitChecked(explicitSetup.worktrees[0]!.path, ["rev-parse", "HEAD"]).trim(), runGitChecked(explicitRepo.repo, ["rev-parse", "explicit-base"]).trim());
+		explicitSetup = createWorktrees(explicitRepo.repo, "base/explicit", 1, {
+			baseBranch: "explicit-base",
+			symlinkDirectories: [],
+		});
+		assert.equal(
+			runGitChecked(explicitSetup.worktrees[0]!.path, ["rev-parse", "HEAD"]).trim(),
+			runGitChecked(explicitRepo.repo, ["rev-parse", "explicit-base"]).trim(),
+		);
 	} finally {
 		if (explicitSetup) cleanupWorktrees(explicitSetup);
 		rmSync(explicitRepo.root, { recursive: true, force: true });
@@ -189,7 +220,10 @@ test("temporary base ref precedence is explicit then origin default then HEAD", 
 	let fallbackSetup: ReturnType<typeof createWorktrees> | undefined;
 	try {
 		fallbackSetup = createWorktrees(fallbackRepo.repo, "base/head", 1, { symlinkDirectories: [] });
-		assert.equal(runGitChecked(fallbackSetup.worktrees[0]!.path, ["rev-parse", "HEAD"]).trim(), runGitChecked(fallbackRepo.repo, ["rev-parse", "HEAD"]).trim());
+		assert.equal(
+			runGitChecked(fallbackSetup.worktrees[0]!.path, ["rev-parse", "HEAD"]).trim(),
+			runGitChecked(fallbackRepo.repo, ["rev-parse", "HEAD"]).trim(),
+		);
 	} finally {
 		if (fallbackSetup) cleanupWorktrees(fallbackSetup);
 		rmSync(fallbackRepo.root, { recursive: true, force: true });
@@ -217,11 +251,17 @@ unixTest("post-creation setup failure removes the worktree and branch", () => {
 	writeFileSync(hook, "#!/bin/sh\nprintf 'not-json'\n");
 	chmodSync(hook, 0o755);
 	try {
-		assert.throws(() => createWorktrees(repo, "failed/setup", 1, {
-			baseBranch: "main",
-			setupHook: { hookPath: hook },
-		}), /invalid JSON/);
+		assert.throws(
+			() =>
+				createWorktrees(repo, "failed/setup", 1, {
+					baseBranch: "main",
+					setupHook: { hookPath: hook },
+				}),
+			/invalid JSON/,
+		);
 		assert.equal(existsSync(join(repo, ".atomic", "worktrees", "failed+setup-0")), false);
 		assert.equal(runGitChecked(repo, ["branch", "--list", "worktree-failed+setup-0"]).trim(), "");
-	} finally { rmSync(root, { recursive: true, force: true }); }
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });

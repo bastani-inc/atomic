@@ -87,7 +87,7 @@ describe("ExtensionRunner", () => {
 		getSystemPrompt: () => "",
 	};
 
-		describe("before_agent_start", () => {
+	describe("before_agent_start", () => {
 		it("keeps ctx.getSystemPrompt() in sync with chained system prompt updates", async () => {
 			const extCode1 = `
 				export default function(pi) {
@@ -222,5 +222,4 @@ describe("ExtensionRunner", () => {
 			});
 		});
 	});
-
 });

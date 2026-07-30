@@ -6,15 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeBashWithOperations } from "../src/core/bash-executor.ts";
 import { type BashOperations, createBashTool, createLocalBashOperations } from "../src/core/tools/bash.ts";
 import { computeEditsDiff } from "../src/core/tools/edit-diff.ts";
-import {
-	createEditTool,
-	createFindTool,
-	createLsTool,
-	createReadTool,
-	createWriteTool,
-} from "../src/index.ts";
 import { createGrepTool } from "../src/core/tools/grep.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
+import { createEditTool, createFindTool, createLsTool, createReadTool, createWriteTool } from "../src/index.ts";
 import * as shellModule from "../src/utils/shell.ts";
 
 const readTool = createReadTool(process.cwd());
@@ -138,7 +132,11 @@ describe("Coding Agent Tools", () => {
 		it("should decode and sanitize async output chunks", async () => {
 			const euro = Buffer.from("\u001b[31m€\u001b[0m\r\n", "utf-8");
 			const operations: BashOperations = {
-				exec: async (_command, _cwd, { onData }) => { onData(euro.subarray(0, 5)); onData(euro.subarray(5)); return { exitCode: 0 }; },
+				exec: async (_command, _cwd, { onData }) => {
+					onData(euro.subarray(0, 5));
+					onData(euro.subarray(5));
+					return { exitCode: 0 };
+				},
 			};
 			const bash = createBashTool(testDir, { operations, asyncEnabled: true });
 			const started = await bash.execute("async-utf-start", { command: "utf", async: true });

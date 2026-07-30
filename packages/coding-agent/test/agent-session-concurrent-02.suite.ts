@@ -157,7 +157,11 @@ describe("AgentSession concurrent prompt guard", () => {
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
-		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null, allowModelNetwork: false });
+		const modelRuntime = await ModelRuntime.create({
+			credentials: authStorage,
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
 
 		session = new AgentSession({
 			agent,
@@ -170,7 +174,6 @@ describe("AgentSession concurrent prompt guard", () => {
 
 		return session;
 	}
-
 
 	it("should replace generic abort events for interrupt custom messages", async () => {
 		const model = getModel("anthropic", "claude-sonnet-4-5")!;
@@ -186,7 +189,11 @@ describe("AgentSession concurrent prompt guard", () => {
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
-		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null, allowModelNetwork: false });
+		const modelRuntime = await ModelRuntime.create({
+			credentials: authStorage,
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
 
 		session = new AgentSession({
 			agent,
@@ -281,7 +288,11 @@ describe("AgentSession concurrent prompt guard", () => {
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
-		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null, allowModelNetwork: false });
+		const modelRuntime = await ModelRuntime.create({
+			credentials: authStorage,
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
 
 		session = new AgentSession({
 			agent,
@@ -362,7 +373,11 @@ describe("AgentSession concurrent prompt guard", () => {
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
-		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null, allowModelNetwork: false });
+		const modelRuntime = await ModelRuntime.create({
+			credentials: authStorage,
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
 
 		session = new AgentSession({
 			agent,

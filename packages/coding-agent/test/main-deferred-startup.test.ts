@@ -2,7 +2,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { computeDeferExtensions, computeStartupInputCaptureEnabled, type ComputeDeferExtensionsInput, type ComputeStartupInputCaptureInput } from "../src/main-deferred-startup.ts";
+import {
+	type ComputeDeferExtensionsInput,
+	type ComputeStartupInputCaptureInput,
+	computeDeferExtensions,
+	computeStartupInputCaptureEnabled,
+} from "../src/main-deferred-startup.ts";
 
 function baseInput(overrides: Partial<ComputeDeferExtensionsInput> = {}): ComputeDeferExtensionsInput {
 	return {
@@ -23,7 +28,9 @@ function baseInput(overrides: Partial<ComputeDeferExtensionsInput> = {}): Comput
 	};
 }
 
-function baseStartupCaptureInput(overrides: Partial<ComputeStartupInputCaptureInput> = {}): ComputeStartupInputCaptureInput {
+function baseStartupCaptureInput(
+	overrides: Partial<ComputeStartupInputCaptureInput> = {},
+): ComputeStartupInputCaptureInput {
 	const sessionCwd = mkdtempSync(join(tmpdir(), "atomic-startup-capture-"));
 	return {
 		appMode: "interactive",
@@ -73,9 +80,15 @@ describe("computeDeferExtensions", () => {
 	});
 
 	it("keeps unstored prompt-required trust on the synchronous path but defers once a decision exists", () => {
-		expect(computeDeferExtensions(baseInput({ shouldResolveProjectTrust: true, storedProjectTrust: null }))).toBe(false);
-		expect(computeDeferExtensions(baseInput({ shouldResolveProjectTrust: true, storedProjectTrust: true }))).toBe(true);
-		expect(computeDeferExtensions(baseInput({ shouldResolveProjectTrust: true, storedProjectTrust: false }))).toBe(true);
+		expect(computeDeferExtensions(baseInput({ shouldResolveProjectTrust: true, storedProjectTrust: null }))).toBe(
+			false,
+		);
+		expect(computeDeferExtensions(baseInput({ shouldResolveProjectTrust: true, storedProjectTrust: true }))).toBe(
+			true,
+		);
+		expect(computeDeferExtensions(baseInput({ shouldResolveProjectTrust: true, storedProjectTrust: false }))).toBe(
+			true,
+		);
 	});
 
 	it("does not defer non-interactive, non-TTY, or resumed startup runs", () => {

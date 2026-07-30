@@ -1,7 +1,6 @@
 import { join } from "node:path";
 import chalk from "chalk";
 import { selectConfig } from "./cli/config-selector.ts";
-import { parseConfigCommand } from "./config-command-parser.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
 import {
 	APP_NAME,
@@ -17,22 +16,28 @@ import {
 	type SelfUpdateTarget,
 	VERSION,
 } from "./config.ts";
+import { parseConfigCommand } from "./config-command-parser.ts";
 import { AuthStorage } from "./core/auth-storage.ts";
 import type { InlineExtension } from "./core/extensions/types.ts";
+import { ModelRuntime } from "./core/model-runtime.ts";
 import { DefaultPackageManager } from "./core/package-manager.ts";
 import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
 import { DefaultResourceLoader } from "./core/resource-loader.ts";
-import { ModelRuntime } from "./core/model-runtime.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { hasProjectTrustInputs, ProjectTrustStore } from "./core/trust-manager.ts";
-import { spawnProcess } from "./utils/child-process.ts";
+import {
+	getPackageCommandUsage,
+	parsePackageCommand,
+	printPackageCommandHelp,
+	type UpdateTarget,
+} from "./package-manager-cli-parser.ts";
 import { renderSelfUpdateNote, resolveSelfUpdatePlan } from "./self-update-plan.ts";
+import { spawnProcess } from "./utils/child-process.ts";
 import {
 	cleanupWindowsSelfUpdateQuarantine,
 	quarantineWindowsNativeDependencies,
 } from "./utils/windows-self-update.ts";
 
-import { getPackageCommandUsage, parsePackageCommand, printPackageCommandHelp, type UpdateTarget } from "./package-manager-cli-parser.ts";
 function reportSettingsErrors(settingsManager: SettingsManager, context: string): void {
 	const errors = settingsManager.drainErrors();
 	for (const { scope, error } of errors) {
@@ -62,7 +67,8 @@ export async function refreshModelCatalogs(
 	});
 	try {
 		const cwd = options.cwd ?? process.cwd();
-		const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir, { projectTrusted: true });
+		const settingsManager =
+			options.settingsManager ?? SettingsManager.create(cwd, agentDir, { projectTrusted: true });
 		const resourceLoader = new DefaultResourceLoader({
 			cwd,
 			agentDir,
@@ -74,9 +80,13 @@ export async function refreshModelCatalogs(
 		});
 		const loaded = await Promise.race([resourceLoader.reload().then(() => true), aborted]);
 		if (!loaded) throw new Error("Model catalog refresh timed out.");
-		const authPaths = [join(agentDir, "auth.json"), ...getAgentConfigPaths("auth.json")]
-			.filter((path, index, paths) => paths.indexOf(path) === index);
-		const modelRuntime = await ModelRuntime.create({ credentials: AuthStorage.create(authPaths), modelsPath: join(agentDir, "models.json") });
+		const authPaths = [join(agentDir, "auth.json"), ...getAgentConfigPaths("auth.json")].filter(
+			(path, index, paths) => paths.indexOf(path) === index,
+		);
+		const modelRuntime = await ModelRuntime.create({
+			credentials: AuthStorage.create(authPaths),
+			modelsPath: join(agentDir, "models.json"),
+		});
 		const extensionsResult = resourceLoader.getExtensions();
 		if (extensionsResult.errors.length > 0) {
 			const details = extensionsResult.errors.map(({ path, error }) => `${path}: ${error}`).join("; ");
@@ -153,7 +163,6 @@ function prepareWindowsNpmSelfUpdate(): void {
 	quarantineWindowsNativeDependencies(packageDir);
 }
 
-
 export interface PackageCommandRuntimeOptions {
 	extensionFactories?: InlineExtension[];
 	refreshModelCatalogs?: (agentDir: string) => Promise<void>;
@@ -222,11 +231,15 @@ export async function handleConfigCommand(
 	if (!options) return false;
 	const usage = `${APP_NAME} config [-l] [--approve|--no-approve]`;
 	if (options.help) {
-		console.log(`${chalk.bold("Usage:")}\n  ${usage}\n\nOpen the resource configuration TUI. Without -l, starts in global settings (~/${CONFIG_DIR_NAME}/agent/settings.json).\n\n${chalk.bold("Options:")}\n  -l, --local       Start in project-local settings\n  -a, --approve     Trust this project\n  -na, --no-approve Do not trust this project\n  -h, --help        Show this help`);
+		console.log(
+			`${chalk.bold("Usage:")}\n  ${usage}\n\nOpen the resource configuration TUI. Without -l, starts in global settings (~/${CONFIG_DIR_NAME}/agent/settings.json).\n\n${chalk.bold("Options:")}\n  -l, --local       Start in project-local settings\n  -a, --approve     Trust this project\n  -na, --no-approve Do not trust this project\n  -h, --help        Show this help`,
+		);
 		return true;
 	}
 	if (options.invalidOption || options.invalidArgument) {
-		const message = options.invalidOption ? `Unknown option ${options.invalidOption} for "config".` : `Unexpected argument ${options.invalidArgument}.`;
+		const message = options.invalidOption
+			? `Unknown option ${options.invalidOption} for "config".`
+			: `Unexpected argument ${options.invalidArgument}.`;
 		console.error(chalk.red(message));
 		console.error(chalk.dim(`Usage: ${usage}`));
 		process.exitCode = 1;
@@ -235,7 +248,10 @@ export async function handleConfigCommand(
 	const cwd = process.cwd();
 	const agentDir = getAgentDir();
 	const { settingsManager, projectTrustWarnings } = await createCommandSettingsManager({
-		cwd, agentDir, projectTrustOverride: options.projectTrustOverride, extensionFactories: runtimeOptions.extensionFactories,
+		cwd,
+		agentDir,
+		projectTrustOverride: options.projectTrustOverride,
+		extensionFactories: runtimeOptions.extensionFactories,
 	});
 	reportProjectTrustWarnings(projectTrustWarnings);
 	if (options.local && !settingsManager.isProjectTrusted()) {
@@ -250,8 +266,12 @@ export async function handleConfigCommand(
 		? await new DefaultPackageManager({ cwd, agentDir, settingsManager }).resolve()
 		: global;
 	await selectConfig({
-		resolvedPaths: { global, project }, settingsManager, cwd, agentDir,
-		writeScope: options.local ? "project" : "global", projectModeAvailable: settingsManager.isProjectTrusted(),
+		resolvedPaths: { global, project },
+		settingsManager,
+		cwd,
+		agentDir,
+		writeScope: options.local ? "project" : "global",
+		projectModeAvailable: settingsManager.isProjectTrusted(),
 	});
 	process.exit(0);
 }

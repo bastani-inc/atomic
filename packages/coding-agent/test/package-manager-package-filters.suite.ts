@@ -244,7 +244,13 @@ describe("DefaultPackageManager", () => {
 			settingsManager.setPackages([pkgDir]);
 
 			const result = await packageManager.resolve();
-			const resources = [...result.extensions, ...result.skills, ...result.prompts, ...result.themes, ...result.workflows];
+			const resources = [
+				...result.extensions,
+				...result.skills,
+				...result.prompts,
+				...result.themes,
+				...result.workflows,
+			];
 			expect(resources.some((r) => r.path === atomicExtension)).toBe(false);
 			expect(resources.some((r) => r.path === piPrompt)).toBe(false);
 			expect(resources.some((r) => r.path === agentsSkill)).toBe(false);
@@ -288,5 +294,4 @@ describe("DefaultPackageManager", () => {
 			expect(result.prompts.some((r) => isDisabled(r, "disabled.md"))).toBe(true);
 		});
 	});
-
 });

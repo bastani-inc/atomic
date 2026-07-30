@@ -1,11 +1,14 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, ToolResultMessage, Usage } from "@earendil-works/pi-ai/compat";
-import { Container, Text, type Component } from "@earendil-works/pi-tui";
+import { type Component, Container, Text } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import type { AgentSessionEvent } from "../../../src/core/agent-session.ts";
 import type { SessionContext } from "../../../src/core/session-manager.ts";
+import type {
+	ChatMessageEntry,
+	ChatMessageRenderOptions,
+} from "../../../src/modes/interactive/components/chat-message-renderer.ts";
 import type { ToolExecutionComponent } from "../../../src/modes/interactive/components/tool-execution.ts";
-import type { ChatMessageEntry, ChatMessageRenderOptions } from "../../../src/modes/interactive/components/chat-message-renderer.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
 import { getMarkdownTheme, initTheme } from "../../../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../../../src/utils/ansi.ts";
@@ -147,9 +150,8 @@ describe("InteractiveMode.renderSessionContext", () => {
 
 	test("keeps unresolved rendered tool calls registered for live completion events", async () => {
 		const fakeThis = createFakeInteractiveModeThis();
-		const renderSessionContext = (
-			InteractiveMode.prototype as { renderSessionContext: RenderSessionContext }
-		).renderSessionContext;
+		const renderSessionContext = (InteractiveMode.prototype as { renderSessionContext: RenderSessionContext })
+			.renderSessionContext;
 		const handleEvent = (InteractiveMode.prototype as { handleEvent: HandleEvent }).handleEvent;
 
 		renderSessionContext.call(fakeThis, createSessionContext([createAssistantToolCallMessage()]));
@@ -170,9 +172,8 @@ describe("InteractiveMode.renderSessionContext", () => {
 
 	test("does not keep completed historical tool calls registered as pending", () => {
 		const fakeThis = createFakeInteractiveModeThis();
-		const renderSessionContext = (
-			InteractiveMode.prototype as { renderSessionContext: RenderSessionContext }
-		).renderSessionContext;
+		const renderSessionContext = (InteractiveMode.prototype as { renderSessionContext: RenderSessionContext })
+			.renderSessionContext;
 
 		renderSessionContext.call(
 			fakeThis,

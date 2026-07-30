@@ -4,10 +4,10 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { Usage, SingleResult } from "./types.ts";
+import { splitKnownThinkingSuffix, THINKING_LEVELS } from "./model-info.ts";
 import type { ChainStep } from "./settings.ts";
 import { isDynamicParallelStep, isParallelStep } from "./settings.ts";
-import { splitKnownThinkingSuffix, THINKING_LEVELS } from "./model-info.ts";
+import type { SingleResult, Usage } from "./types.ts";
 
 /**
  * Format token count with k suffix for large numbers
@@ -70,7 +70,13 @@ export function buildChainSummary(
 	failedStep?: { index: number; error: string },
 ): string {
 	const stepNames = steps
-		.map((step) => (isParallelStep(step) ? `parallel[${step.parallel.length}]` : isDynamicParallelStep(step) ? `expand:${step.parallel.agent}` : step.agent))
+		.map((step) =>
+			isParallelStep(step)
+				? `parallel[${step.parallel.length}]`
+				: isDynamicParallelStep(step)
+					? `expand:${step.parallel.agent}`
+					: step.agent,
+		)
 		.join(" → ");
 
 	const totalDuration = results.reduce((sum, r) => sum + (r.progress?.durationMs || 0), 0);
@@ -113,11 +119,8 @@ export function formatToolCall(name: string, args: Record<string, unknown>, expa
 		case "read":
 		case "write":
 		case "edit": {
-			const target = typeof args.path === "string"
-				? args.path
-				: typeof args.file_path === "string"
-					? args.file_path
-					: "";
+			const target =
+				typeof args.path === "string" ? args.path : typeof args.file_path === "string" ? args.file_path : "";
 			return `${name} ${shortenPath(target)}`;
 		}
 		default: {

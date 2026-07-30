@@ -76,19 +76,38 @@ export function createAuthInteraction(callbacks: AtomicOAuthLoginCallbacks): Aut
 		prompt: async (prompt) => {
 			switch (prompt.type) {
 				case "select":
-					return (await callbacks.onSelect({ message: prompt.message, options: prompt.options.map(({ id, label }) => ({ id, label })) })) ?? "";
+					return (
+						(await callbacks.onSelect({
+							message: prompt.message,
+							options: prompt.options.map(({ id, label }) => ({ id, label })),
+						})) ?? ""
+					);
 				case "manual_code":
-					return abortable(callbacks.onManualCodeInput ? callbacks.onManualCodeInput() : callbacks.onPrompt({ message: prompt.message, placeholder: prompt.placeholder }), prompt.signal, callbacks.onManualCodeCancel);
+					return abortable(
+						callbacks.onManualCodeInput
+							? callbacks.onManualCodeInput()
+							: callbacks.onPrompt({ message: prompt.message, placeholder: prompt.placeholder }),
+						prompt.signal,
+						callbacks.onManualCodeCancel,
+					);
 				default:
 					return callbacks.onPrompt({ message: prompt.message, placeholder: prompt.placeholder });
 			}
 		},
 		notify: (event) => {
 			switch (event.type) {
-				case "auth_url": callbacks.onAuth({ url: event.url, instructions: event.instructions }); break;
-				case "device_code": callbacks.onDeviceCode(event); break;
-				case "progress": callbacks.onProgress?.(event.message); break;
-				case "info": callbacks.onInfo?.(event.message, event.links ?? []); break;
+				case "auth_url":
+					callbacks.onAuth({ url: event.url, instructions: event.instructions });
+					break;
+				case "device_code":
+					callbacks.onDeviceCode(event);
+					break;
+				case "progress":
+					callbacks.onProgress?.(event.message);
+					break;
+				case "info":
+					callbacks.onInfo?.(event.message, event.links ?? []);
+					break;
 			}
 		},
 	};

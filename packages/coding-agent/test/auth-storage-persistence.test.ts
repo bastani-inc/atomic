@@ -33,11 +33,8 @@ class ControllableAuthBackend implements AuthStorageBackend {
 }
 
 describe("AuthStorage persistence failures", () => {
-
 	test("surfaces malformed storage without overwriting the last valid snapshot", async () => {
-		const backend = new ControllableAuthBackend(
-			JSON.stringify({ anthropic: { type: "api_key", key: "existing" } }),
-		);
+		const backend = new ControllableAuthBackend(JSON.stringify({ anthropic: { type: "api_key", key: "existing" } }));
 		const storage = AuthStorage.fromStorage(backend);
 		backend.value = "{invalid-json";
 		storage.reload();
@@ -49,23 +46,19 @@ describe("AuthStorage persistence failures", () => {
 	});
 
 	test("failed modify remains transactional in storage and memory", async () => {
-		const backend = new ControllableAuthBackend(
-			JSON.stringify({ anthropic: { type: "api_key", key: "existing" } }),
-		);
+		const backend = new ControllableAuthBackend(JSON.stringify({ anthropic: { type: "api_key", key: "existing" } }));
 		const storage = AuthStorage.fromStorage(backend);
 		backend.writeError = new Error("disk full");
 
-		await expect(
-			storage.modify("anthropic", async () => ({ type: "api_key", key: "replacement" })),
-		).rejects.toThrow("disk full");
+		await expect(storage.modify("anthropic", async () => ({ type: "api_key", key: "replacement" }))).rejects.toThrow(
+			"disk full",
+		);
 		expect(await storage.read("anthropic")).toEqual({ type: "api_key", key: "existing" });
 		expect(JSON.parse(backend.value ?? "{}")).toEqual({ anthropic: { type: "api_key", key: "existing" } });
 	});
 
 	test("failed delete remains transactional in storage and memory", async () => {
-		const backend = new ControllableAuthBackend(
-			JSON.stringify({ anthropic: { type: "api_key", key: "existing" } }),
-		);
+		const backend = new ControllableAuthBackend(JSON.stringify({ anthropic: { type: "api_key", key: "existing" } }));
 		const storage = AuthStorage.fromStorage(backend);
 		backend.writeError = new Error("disk full");
 

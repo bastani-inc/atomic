@@ -1,6 +1,10 @@
 import type { AgentSessionReloadOptions } from "../../core/agent-session-types.ts";
 import type { KeybindingsConfig, KeybindingsManager } from "../../core/keybindings.ts";
-import type { EngineExtensionShortcut, EngineKeybindingState, SerializableKeybindingsConfig } from "../interactive-engine/protocol.ts";
+import type {
+	EngineExtensionShortcut,
+	EngineKeybindingState,
+	SerializableKeybindingsConfig,
+} from "../interactive-engine/protocol.ts";
 
 export interface ReloadableSession {
 	reload(options?: AgentSessionReloadOptions): Promise<void>;
@@ -45,7 +49,10 @@ export class KeybindingsReloadCoordinator<TSession extends ReloadableSession = R
 			() => this.runTransaction(session),
 			() => this.runTransaction(session),
 		);
-		this.tail = transaction.then(() => {}, () => {});
+		this.tail = transaction.then(
+			() => {},
+			() => {},
+		);
 		return transaction;
 	}
 

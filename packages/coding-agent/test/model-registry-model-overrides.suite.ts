@@ -1,7 +1,7 @@
 import type { OpenAICompletionsCompat } from "@earendil-works/pi-ai/compat";
 import { describe, expect, test } from "vitest";
-import { createModelRegistry } from "./model-runtime-test-utils.ts";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
+import { createModelRegistry } from "./model-runtime-test-utils.ts";
 
 describeModelRegistry((context) => {
 	const {
@@ -287,5 +287,4 @@ describeModelRegistry((context) => {
 			expect(restoredName).not.toBe("Custom Name");
 		});
 	});
-
 });

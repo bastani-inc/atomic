@@ -82,12 +82,7 @@ describe("convertToLlm", () => {
 			toolResult("call-a"),
 		]);
 
-		expect(converted.map((message) => message.role)).toEqual([
-			"assistant",
-			"toolResult",
-			"assistant",
-			"toolResult",
-		]);
+		expect(converted.map((message) => message.role)).toEqual(["assistant", "toolResult", "assistant", "toolResult"]);
 	});
 
 	test("normalizes null and omitted assistant content without mutating durable messages", () => {

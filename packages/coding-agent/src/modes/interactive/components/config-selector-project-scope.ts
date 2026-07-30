@@ -27,12 +27,13 @@ function toggleProjectPackage(settings: SettingsManager, item: ResourceItem, cwd
 	let index = packages.findIndex((pkg) => {
 		const source = typeof pkg === "string" ? pkg : pkg.source;
 		if (source === item.metadata.source) return true;
-		return itemRoot !== undefined && isLocalPath(source) && resolvePath(source, projectBase, { trim: true }) === itemRoot;
+		return (
+			itemRoot !== undefined && isLocalPath(source) && resolvePath(source, projectBase, { trim: true }) === itemRoot
+		);
 	});
 	if (index < 0) {
-		const source = isLocalPath(item.metadata.source) && itemRoot
-			? relative(projectBase, itemRoot) || "."
-			: item.metadata.source;
+		const source =
+			isLocalPath(item.metadata.source) && itemRoot ? relative(projectBase, itemRoot) || "." : item.metadata.source;
 		packages.push({ source, autoload: false });
 		index = packages.length - 1;
 	}
@@ -58,7 +59,8 @@ export function toggleProjectResource(
 	}
 	const current = [...(settings.getProjectSettings()[item.resourceType] ?? [])];
 	const projectBase = join(cwd, CONFIG_DIR_NAME);
-	const pattern = item.metadata.scope === "user" ? item.path : relative(item.metadata.baseDir ?? projectBase, item.path);
+	const pattern =
+		item.metadata.scope === "user" ? item.path : relative(item.metadata.baseDir ?? projectBase, item.path);
 	const updated = current.filter((entry) => stripPrefix(entry) !== pattern);
 	updated.push(`${enabled ? "+" : "-"}${pattern}`);
 	setProjectPaths(settings, item.resourceType, updated);

@@ -1,14 +1,25 @@
-import { test } from "vitest";
 import assert from "node:assert/strict";
+import { test } from "vitest";
+import {
+	createRpcCommandHandler,
+	type RpcCommandHandler,
+} from "../../packages/coding-agent/src/modes/rpc/rpc-command-handler.ts";
 import { createRpcInputLineHandler } from "../../packages/coding-agent/src/modes/rpc/rpc-input.ts";
-import { createRpcInputScheduler, isConcurrentRpcControlLine } from "../../packages/coding-agent/src/modes/rpc/rpc-input-scheduler.ts";
-import { createRpcSuccessResponse, type RpcOutputRecord } from "../../packages/coding-agent/src/modes/rpc/rpc-responses.ts";
-import { createRpcCommandHandler, type RpcCommandHandler } from "../../packages/coding-agent/src/modes/rpc/rpc-command-handler.ts";
+import {
+	createRpcInputScheduler,
+	isConcurrentRpcControlLine,
+} from "../../packages/coding-agent/src/modes/rpc/rpc-input-scheduler.ts";
+import {
+	createRpcSuccessResponse,
+	type RpcOutputRecord,
+} from "../../packages/coding-agent/src/modes/rpc/rpc-responses.ts";
 import { sleep } from "../helpers/runtime.js";
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
 	let resolve!: () => void;
-	const promise = new Promise<void>((done) => { resolve = done; });
+	const promise = new Promise<void>((done) => {
+		resolve = done;
+	});
 	return { promise, resolve };
 }
 
@@ -29,7 +40,9 @@ test("abort_compaction reaches a running compact command without waiting for it 
 
 	await Promise.race([
 		abortHandled.promise,
-		sleep(50).then(() => { throw new Error("abort_compaction remained queued behind compact"); }),
+		sleep(50).then(() => {
+			throw new Error("abort_compaction remained queued behind compact");
+		}),
 	]);
 	assert.deepEqual(calls, ["compact:start", "abort_compaction:start", "abort_compaction:end"]);
 
@@ -54,7 +67,9 @@ test("pause_queued_messages reaches a running prompt before abort", async () => 
 	dispatch('{"type":"pause_queued_messages"}');
 	await Promise.race([
 		pauseHandled.promise,
-		sleep(50).then(() => { throw new Error("pause remained queued behind prompt"); }),
+		sleep(50).then(() => {
+			throw new Error("pause remained queued behind prompt");
+		}),
 	]);
 	assert.deepEqual(calls, ["prompt:start", "pause_queued_messages:start", "pause_queued_messages:end"]);
 
@@ -105,14 +120,17 @@ test("only validated cancellation and host-control frames bypass the ordinary la
 		assert.equal(isConcurrentRpcControlLine(JSON.stringify({ type })), true, type);
 	}
 	assert.equal(isConcurrentRpcControlLine('{"type":"extension_ui_response","id":"ui-1","cancelled":true}'), true);
-	assert.equal(isConcurrentRpcControlLine('{"type":"engine_custom_input","componentId":"ui-1","data":"escape"}'), true);
+	assert.equal(
+		isConcurrentRpcControlLine('{"type":"engine_custom_input","componentId":"ui-1","data":"escape"}'),
+		true,
+	);
 
 	for (const line of [
 		'{"type":"compact"}',
 		'{"type":"extension_ui_response"}',
 		'{"type":"engine_custom_input","componentId":"ui-1"}',
 		'{"type":"engine_unknown","componentId":"ui-1"}',
-		'not json',
+		"not json",
 	]) {
 		assert.equal(isConcurrentRpcControlLine(line), false, line);
 	}
@@ -183,7 +201,9 @@ test("RPC input returns the correlated abort response before compact settles", a
 		(async () => {
 			while (records.length === 0) await sleep(1);
 		})(),
-		sleep(50).then(() => { throw new Error("abort_compaction response timed out"); }),
+		sleep(50).then(() => {
+			throw new Error("abort_compaction response timed out");
+		}),
 	]);
 	assert.deepEqual(records, [{ id: "abort-1", type: "response", command: "abort_compaction", success: true }]);
 
@@ -202,7 +222,10 @@ test("abort_compaction reaches the RPC session and terminates active compaction"
 	let rejectCompaction: ((error: Error) => void) | undefined;
 	let abortCalls = 0;
 	const session = {
-		compact: () => new Promise((_resolve, reject) => { rejectCompaction = reject; }),
+		compact: () =>
+			new Promise((_resolve, reject) => {
+				rejectCompaction = reject;
+			}),
 		abortCompaction: () => {
 			abortCalls += 1;
 			rejectCompaction?.(new Error("Compaction cancelled"));
@@ -229,7 +252,9 @@ test("abort_compaction reaches the RPC session and terminates active compaction"
 		(async () => {
 			while (records.length < 2) await sleep(1);
 		})(),
-		sleep(50).then(() => { throw new Error("active compaction did not terminate"); }),
+		sleep(50).then(() => {
+			throw new Error("active compaction did not terminate");
+		}),
 	]);
 
 	assert.equal(abortCalls, 1);

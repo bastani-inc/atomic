@@ -1,5 +1,5 @@
-import { test } from "vitest";
 import assert from "node:assert/strict";
+import { test } from "vitest";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.ts";
@@ -52,7 +52,10 @@ test("login_provider prompts in the host, persists the credential, refreshes, an
 	assert.ok(state.refreshCount() > 0);
 	if (!response.data.cancelled) {
 		assert.deepEqual(response.data.customAuthProviders, []);
-		assert.equal(response.data.models.some((model) => model.provider === "extension-login"), true);
+		assert.equal(
+			response.data.models.some((model) => model.provider === "extension-login"),
+			true,
+		);
 	}
 });
 
@@ -65,9 +68,10 @@ test("cancel_login_provider aborts an active child login without storing credent
 		rebindSession: async () => {},
 		output: () => {},
 		inputForm: {
-			open: async (_request, signal) => new Promise((resolve) => {
-				signal?.addEventListener("abort", () => resolve(undefined), { once: true });
-			}),
+			open: async (_request, signal) =>
+				new Promise((resolve) => {
+					signal?.addEventListener("abort", () => resolve(undefined), { once: true });
+				}),
 		},
 	});
 

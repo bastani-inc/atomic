@@ -1,7 +1,11 @@
-import type { AnthropicMessagesCompat, OpenAICompletionsCompat, OpenAIResponsesCompat } from "@earendil-works/pi-ai/compat";
+import type {
+	AnthropicMessagesCompat,
+	OpenAICompletionsCompat,
+	OpenAIResponsesCompat,
+} from "@earendil-works/pi-ai/compat";
 import { describe, expect, test } from "vitest";
-import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
+import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 
 describeModelRegistry((context) => {
 	const {
@@ -466,5 +470,4 @@ describeModelRegistry((context) => {
 			expect(anthropicModels.some((m) => m.id.includes("claude"))).toBe(true);
 		});
 	});
-
 });

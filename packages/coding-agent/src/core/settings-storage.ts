@@ -2,8 +2,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME } from "../config.ts";
-import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { parseJsonFileContent } from "../utils/json.ts";
+import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { deepMergeSettings } from "./settings-merge.ts";
 import type { Settings, SettingsFieldOrigin, SettingsScope, SettingsStorage } from "./settings-types.ts";
 
@@ -19,7 +19,9 @@ export class FileSettingsStorage implements SettingsStorage {
 		this.globalSettingsPath = join(resolvedAgentDir, "settings.json");
 		this.projectSettingsPath = join(resolvedCwd, CONFIG_DIR_NAME, "settings.json");
 		this.globalReadPaths = (options?.globalReadPaths ?? [this.globalSettingsPath]).map((path) => normalizePath(path));
-		this.projectReadPaths = (options?.projectReadPaths ?? [this.projectSettingsPath]).map((path) => normalizePath(path));
+		this.projectReadPaths = (options?.projectReadPaths ?? [this.projectSettingsPath]).map((path) =>
+			normalizePath(path),
+		);
 	}
 
 	getFieldOrigin(scope: SettingsScope, field: keyof Settings): SettingsFieldOrigin | undefined {
@@ -28,7 +30,7 @@ export class FileSettingsStorage implements SettingsStorage {
 			if (!existsSync(readPath)) continue;
 			try {
 				const parsed = parseJsonFileContent(readFileSync(readPath, "utf-8")) as Settings;
-				if (Object.prototype.hasOwnProperty.call(parsed, field)) {
+				if (Object.hasOwn(parsed, field)) {
 					return index === 0 ? "primary" : "legacy";
 				}
 			} catch {
@@ -131,6 +133,6 @@ export class InMemorySettingsStorage implements SettingsStorage {
 	getFieldOrigin(scope: SettingsScope, field: keyof Settings): SettingsFieldOrigin | undefined {
 		const raw = scope === "global" ? this.global : this.project;
 		const settings = JSON.parse(raw ?? "{}") as Settings;
-		return Object.prototype.hasOwnProperty.call(settings, field) ? "primary" : undefined;
+		return Object.hasOwn(settings, field) ? "primary" : undefined;
 	}
 }

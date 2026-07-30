@@ -72,58 +72,65 @@ function getTextOutput(result: { content?: Array<{ type: string; text?: string }
 // Bun on Windows currently does not expose direct-child exit independently from
 // inherited pipe closure in this synthetic Git Bash scenario, so this Node
 // regression test would self-hang under the Bun-driven package suite.
-describe.skipIf(process.platform !== "win32" || Boolean(process.versions.bun))("Windows child-process close handling", () => {
-	let testDir: string;
+describe.skipIf(process.platform !== "win32" || Boolean(process.versions.bun))(
+	"Windows child-process close handling",
+	() => {
+		let testDir: string;
 
-	beforeEach(() => {
-		testDir = join(tmpdir(), `coding-agent-bash-close-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-		mkdirSync(testDir, { recursive: true });
-	});
+		beforeEach(() => {
+			testDir = join(tmpdir(), `coding-agent-bash-close-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+			mkdirSync(testDir, { recursive: true });
+		});
 
-	afterEach(() => {
-		rmSync(testDir, { recursive: true, force: true });
-	});
+		afterEach(() => {
+			rmSync(testDir, { recursive: true, force: true });
+		});
 
-	it("executeBash resolves after the shell exits even if inherited stdio handles stay open", async () => {
-		const pidFile = join(testDir, "executor-grandchild.pid");
-		const command = createInheritedStdioCommand(pidFile);
-		const controller = new AbortController();
+		it("executeBash resolves after the shell exits even if inherited stdio handles stay open", async () => {
+			const pidFile = join(testDir, "executor-grandchild.pid");
+			const command = createInheritedStdioCommand(pidFile);
+			const controller = new AbortController();
 
-		try {
-			const result = await withTimeout(
-				executeBashWithOperations(command, process.cwd(), createLocalBashOperations(), {
-					signal: controller.signal,
-				}),
-				10000,
-				() => {
-					controller.abort();
-				},
-			);
+			try {
+				const result = await withTimeout(
+					executeBashWithOperations(command, process.cwd(), createLocalBashOperations(), {
+						signal: controller.signal,
+					}),
+					10000,
+					() => {
+						controller.abort();
+					},
+				);
 
-			expect(result.output).toContain("child-exiting");
-			expect(result.exitCode).toBe(0);
-			expect(result.cancelled).toBe(false);
-		} finally {
-			controller.abort();
-			cleanupDetachedChild(pidFile);
-		}
-	});
-
-	it("bash tool resolves after the shell exits even if inherited stdio handles stay open", async () => {
-		const pidFile = join(testDir, "tool-grandchild.pid");
-		const command = createInheritedStdioCommand(pidFile);
-		const controller = new AbortController();
-		const bashTool = createBashTool(testDir);
-
-		try {
-			const result = await withTimeout(bashTool.execute("test-call", { command }, controller.signal), 10000, () => {
+				expect(result.output).toContain("child-exiting");
+				expect(result.exitCode).toBe(0);
+				expect(result.cancelled).toBe(false);
+			} finally {
 				controller.abort();
-			});
+				cleanupDetachedChild(pidFile);
+			}
+		});
 
-			expect(getTextOutput(result)).toContain("child-exiting");
-		} finally {
-			controller.abort();
-			cleanupDetachedChild(pidFile);
-		}
-	});
-});
+		it("bash tool resolves after the shell exits even if inherited stdio handles stay open", async () => {
+			const pidFile = join(testDir, "tool-grandchild.pid");
+			const command = createInheritedStdioCommand(pidFile);
+			const controller = new AbortController();
+			const bashTool = createBashTool(testDir);
+
+			try {
+				const result = await withTimeout(
+					bashTool.execute("test-call", { command }, controller.signal),
+					10000,
+					() => {
+						controller.abort();
+					},
+				);
+
+				expect(getTextOutput(result)).toContain("child-exiting");
+			} finally {
+				controller.abort();
+				cleanupDetachedChild(pidFile);
+			}
+		});
+	},
+);

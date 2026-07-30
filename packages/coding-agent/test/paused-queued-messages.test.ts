@@ -3,12 +3,7 @@ import { fauxAssistantMessage } from "@earendil-works/pi-ai/compat";
 import { afterEach, describe, expect, test } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
-import {
-	createHarness,
-	getMessageText,
-	getUserTexts,
-	type Harness,
-} from "./suite/harness.ts";
+import { createHarness, getMessageText, getUserTexts, type Harness } from "./suite/harness.ts";
 
 type QueueHold = {
 	readonly steering: AgentMessage[];
@@ -53,8 +48,8 @@ type EscapeHost = {
 	deferredStartupPending: boolean;
 	deferredStartupPromise: Promise<void> | undefined;
 	discardDeferredRenderedUserInput: () => void;
-  showError: (message: string) => void;
-  isExtensionCommand(text: string): boolean;
+	showError: (message: string) => void;
+	isExtensionCommand(text: string): boolean;
 };
 
 type SubmitHost = EscapeHost & {
@@ -69,16 +64,15 @@ type SubmitHost = EscapeHost & {
 	advanceStartupInputReplay(text: string): void;
 };
 
-const setupKeyHandlers = Reflect.get(InteractiveMode.prototype, "setupKeyHandlers") as (
+const setupKeyHandlers = Reflect.get(InteractiveMode.prototype, "setupKeyHandlers") as (this: EscapeHost) => void;
+const restoreQueuedMessagesToEditor = Reflect.get(InteractiveMode.prototype, "restoreQueuedMessagesToEditor") as (
 	this: EscapeHost,
-) => void;
-const restoreQueuedMessagesToEditor = Reflect.get(
-	InteractiveMode.prototype,
-	"restoreQueuedMessagesToEditor",
-) as (this: EscapeHost, options?: { abort?: boolean; currentText?: string }) => number;
-const clearAllQueues = Reflect.get(InteractiveMode.prototype, "clearAllQueues") as (
-	this: EscapeHost,
-) => { steering: string[]; followUp: string[] };
+	options?: { abort?: boolean; currentText?: string },
+) => number;
+const clearAllQueues = Reflect.get(InteractiveMode.prototype, "clearAllQueues") as (this: EscapeHost) => {
+	steering: string[];
+	followUp: string[];
+};
 const runUserPromptTurn = Reflect.get(InteractiveMode.prototype, "runUserPromptTurn") as (
 	this: EscapeHost,
 	text: string,
@@ -129,7 +123,6 @@ function createEscapeHost(session: AgentSession): EscapeHost {
 	return host;
 }
 
-
 async function queueRawMessages(session: AgentSession): Promise<void> {
 	await session.steer("first raw steering");
 	await session.steer("second raw steering");
@@ -148,17 +141,11 @@ async function queueRawMessages(session: AgentSession): Promise<void> {
 
 function expectExactHeldQueue(session: AgentSession): void {
 	const hold = (session as PauseAwareSession)._activeInterruptQueueHold;
-	expect(hold?.steering.map(getMessageText)).toEqual([
-		"first raw steering",
-		"second raw steering",
-	]);
+	expect(hold?.steering.map(getMessageText)).toEqual(["first raw steering", "second raw steering"]);
 	expect(hold?.followUp).toHaveLength(3);
 	const [first, second, custom] = hold?.followUp ?? [];
 	expect(first).not.toBe(second);
-	expect([first, second].map(getMessageText)).toEqual([
-		"duplicate raw follow-up",
-		"duplicate raw follow-up",
-	]);
+	expect([first, second].map(getMessageText)).toEqual(["duplicate raw follow-up", "duplicate raw follow-up"]);
 	expect(custom).toMatchObject({
 		role: "custom",
 		customType: "pause-raw-custom",
@@ -203,14 +190,8 @@ describe("regular chat paused queued messages", () => {
 		const activePrompt = harness.session.prompt("start regular chat");
 		await providerStarted.promise;
 		await queueRawMessages(harness.session);
-		expect(harness.session.getSteeringMessages()).toEqual([
-			"first raw steering",
-			"second raw steering",
-		]);
-		expect(harness.session.getFollowUpMessages()).toEqual([
-			"duplicate raw follow-up",
-			"duplicate raw follow-up",
-		]);
+		expect(harness.session.getSteeringMessages()).toEqual(["first raw steering", "second raw steering"]);
+		expect(harness.session.getFollowUpMessages()).toEqual(["duplicate raw follow-up", "duplicate raw follow-up"]);
 		expect(harness.session.agent.hasQueuedMessages()).toBe(true);
 
 		const host = createEscapeHost(harness.session);
@@ -236,9 +217,14 @@ describe("regular chat paused queued messages", () => {
 		host.defaultEditor.onEscape?.();
 		await Promise.resolve();
 		expectExactHeldQueue(harness.session);
-		const resumedSubmission = runUserPromptTurn.call(host, "resume regular chat")
-			.catch((error) => { resumedSubmissionError = error instanceof Error ? error : new Error(String(error)); })
-			.finally(() => { resumedSubmissionSettled = true; });
+		const resumedSubmission = runUserPromptTurn
+			.call(host, "resume regular chat")
+			.catch((error) => {
+				resumedSubmissionError = error instanceof Error ? error : new Error(String(error));
+			})
+			.finally(() => {
+				resumedSubmissionSettled = true;
+			});
 		await resumedSubmission;
 
 		expect(settledBeforeAbort).toBe(false);
@@ -329,7 +315,9 @@ describe("regular chat paused queued messages", () => {
 				(pi) => {
 					pi.registerCommand("stay-paused", {
 						description: "Handle without releasing paused work",
-						handler: async (args) => { commandArgs.push(args); },
+						handler: async (args) => {
+							commandArgs.push(args);
+						},
 					});
 				},
 			],
@@ -347,9 +335,18 @@ describe("regular chat paused queued messages", () => {
 				});
 				return fauxAssistantMessage("slash pause interrupted");
 			},
-			() => { providerCalls += 1; return fauxAssistantMessage("ordinary resume accepted"); },
-			() => { providerCalls += 1; return fauxAssistantMessage("late held trigger delivered"); },
-			() => { providerCalls += 1; return fauxAssistantMessage("unexpected duplicate delivery"); },
+			() => {
+				providerCalls += 1;
+				return fauxAssistantMessage("ordinary resume accepted");
+			},
+			() => {
+				providerCalls += 1;
+				return fauxAssistantMessage("late held trigger delivered");
+			},
+			() => {
+				providerCalls += 1;
+				return fauxAssistantMessage("unexpected duplicate delivery");
+			},
 		]);
 		const activePrompt = harness.session.prompt("start handled slash pause");
 		await providerStarted.promise;
@@ -375,17 +372,21 @@ describe("regular chat paused queued messages", () => {
 		expect(harness.getPendingResponseCount()).toBe(responsesBeforeCommand);
 		expect(harness.session.queuedMessagesPaused).toBe(true);
 		expect((harness.session as PauseAwareSession)._activeInterruptQueueHold).toBe(heldBeforeCommand);
-		expect(heldBeforeCommand?.steering.filter(
-			(message) => message.role === "custom" && message.customType === "late-held-slash-trigger",
-		)).toHaveLength(1);
+		expect(
+			heldBeforeCommand?.steering.filter(
+				(message) => message.role === "custom" && message.customType === "late-held-slash-trigger",
+			),
+		).toHaveLength(1);
 
 		await runUserPromptTurn.call(host, "ordinary input resumes held work");
 
 		expect(harness.session.queuedMessagesPaused).toBe(false);
 		expect(getUserTexts(harness).filter((text) => text === "ordinary input resumes held work")).toHaveLength(1);
-		expect(harness.session.messages.filter(
-			(message) => message.role === "custom" && message.customType === "late-held-slash-trigger",
-		)).toHaveLength(1);
+		expect(
+			harness.session.messages.filter(
+				(message) => message.role === "custom" && message.customType === "late-held-slash-trigger",
+			),
+		).toHaveLength(1);
 		expect(providerCalls).toBe(2);
 		expect(harness.getPendingResponseCount()).toBe(2);
 	});
@@ -395,8 +396,14 @@ describe("regular chat paused queued messages", () => {
 		harnesses.push(harness);
 		let providerCalls = 0;
 		harness.setResponses([
-			() => { providerCalls += 1; return fauxAssistantMessage("ordinary built-in resume accepted"); },
-			() => { providerCalls += 1; return fauxAssistantMessage("queued steering delivered"); },
+			() => {
+				providerCalls += 1;
+				return fauxAssistantMessage("ordinary built-in resume accepted");
+			},
+			() => {
+				providerCalls += 1;
+				return fauxAssistantMessage("queued steering delivered");
+			},
 		]);
 		const exactQueuedText = "\tqueued before built-in usage  \n";
 		const exactLateTrigger = "\tlate built-in trigger payload  \n";
@@ -426,9 +433,11 @@ describe("regular chat paused queued messages", () => {
 		expect(heldBeforeCommand?.steering).toEqual(rawBeforeCommand);
 		expect(heldBeforeCommand?.steering.map(getMessageText)).toEqual([exactQueuedText, exactLateTrigger]);
 		expect(harness.session.getSteeringMessages()).toEqual(displayBeforeCommand);
-		expect(harness.session.messages.filter(
-			(message) => message.role === "custom" && message.customType === "atomic" && message.display === true,
-		)).toHaveLength(1);
+		expect(
+			harness.session.messages.filter(
+				(message) => message.role === "custom" && message.customType === "atomic" && message.display === true,
+			),
+		).toHaveLength(1);
 
 		await runUserPromptTurn.call(host, "ordinary input resumes built-in hold");
 
@@ -436,9 +445,14 @@ describe("regular chat paused queued messages", () => {
 		expect(harness.session.agent.hasQueuedMessages()).toBe(false);
 		expect(getUserTexts(harness).filter((text) => text === exactQueuedText)).toHaveLength(1);
 		expect(getUserTexts(harness).filter((text) => text === "ordinary input resumes built-in hold")).toHaveLength(1);
-		expect(harness.session.messages.filter(
-			(message) => message.role === "custom" && message.customType === "late-held-built-in-trigger" && getMessageText(message) === exactLateTrigger,
-		)).toHaveLength(1);
+		expect(
+			harness.session.messages.filter(
+				(message) =>
+					message.role === "custom" &&
+					message.customType === "late-held-built-in-trigger" &&
+					getMessageText(message) === exactLateTrigger,
+			),
+		).toHaveLength(1);
 		expect(providerCalls).toBe(2);
 	});
 
@@ -447,8 +461,14 @@ describe("regular chat paused queued messages", () => {
 		harnesses.push(harness);
 		let providerCalls = 0;
 		harness.setResponses([
-			() => { providerCalls += 1; return fauxAssistantMessage("unknown slash resumed"); },
-			() => { providerCalls += 1; return fauxAssistantMessage("unexpected duplicate held delivery"); },
+			() => {
+				providerCalls += 1;
+				return fauxAssistantMessage("unknown slash resumed");
+			},
+			() => {
+				providerCalls += 1;
+				return fauxAssistantMessage("unexpected duplicate held delivery");
+			},
 		]);
 		const exactHeldText = "\theld before unknown slash  \n";
 		const exactUnknownSlash = "/not-a-handled-command  exact args  ";

@@ -1,5 +1,11 @@
-import { computeFileHash, formatHashlineHeader, formatNumberedLines, InMemorySnapshotStore, type SnapshotStore } from "./hashline-engine/index.ts";
 import { isAbsolute, normalize as normalizePath, relative, sep } from "node:path";
+import {
+	computeFileHash,
+	formatHashlineHeader,
+	formatNumberedLines,
+	InMemorySnapshotStore,
+	type SnapshotStore,
+} from "./hashline-engine/index.ts";
 
 export interface HashlineSnapshot {
 	absolutePath: string;
@@ -25,7 +31,10 @@ export function hashlineDisplayPath(absolutePath: string, cwd: string): string {
 }
 
 export function normalizeHashlineContent(content: string): string {
-	return content.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+	return content
+		.replace(/^\uFEFF/, "")
+		.replace(/\r\n/g, "\n")
+		.replace(/\r/g, "\n");
 }
 
 export function computeHashlineTag(content: string): string {
@@ -52,20 +61,40 @@ export function createHashlineSnapshotStore(): HashlineSnapshotStore {
 	};
 }
 
-export function recordHashlineSnapshot(absolutePath: string, cwd: string, content: string, store: HashlineSnapshotStore): HashlineSnapshot {
+export function recordHashlineSnapshot(
+	absolutePath: string,
+	cwd: string,
+	content: string,
+	store: HashlineSnapshotStore,
+): HashlineSnapshot {
 	return store.record(absolutePath, cwd, content);
 }
 
 export function formatHashlineContent(snapshot: HashlineSnapshot, content = snapshot.content, startLine = 1): string {
-	return [formatHashlineHeader(snapshot.displayPath, snapshot.tag), formatNumberedLines(normalizeHashlineContent(content), startLine)].join("\n");
+	return [
+		formatHashlineHeader(snapshot.displayPath, snapshot.tag),
+		formatNumberedLines(normalizeHashlineContent(content), startLine),
+	].join("\n");
 }
 
-export interface StrippedHashlineContent { content: string; stripped: boolean }
+export interface StrippedHashlineContent {
+	content: string;
+	stripped: boolean;
+}
 
-export function stripKnownHashlineCopiedContentWithMeta(content: string, _absolutePath: string, _cwd: string, store: HashlineSnapshotStore): StrippedHashlineContent {
+export function stripKnownHashlineCopiedContentWithMeta(
+	content: string,
+	_absolutePath: string,
+	_cwd: string,
+	store: HashlineSnapshotStore,
+): StrippedHashlineContent {
 	const normalized = normalizeHashlineContent(content);
 	const lines = normalized.split("\n");
-	const headerIndex = lines.findIndex((line, index) => /^\[[^\]\n]+#[0-9A-Fa-f]{4}\]$/.test(line) && lines.slice(0, index).every((prefix) => prefix.trim() === "" || /^#\s+.+\/?$/.test(prefix)));
+	const headerIndex = lines.findIndex(
+		(line, index) =>
+			/^\[[^\]\n]+#[0-9A-Fa-f]{4}\]$/.test(line) &&
+			lines.slice(0, index).every((prefix) => prefix.trim() === "" || /^#\s+.+\/?$/.test(prefix)),
+	);
 	if (headerIndex < 0) return { content, stripped: false };
 	const header = (lines[headerIndex] ?? "").match(/^\[([^\]\n]+)#([0-9A-Fa-f]{4})\]$/);
 	if (!header) return { content, stripped: false };
@@ -83,14 +112,14 @@ export function stripKnownHashlineCopiedContentWithMeta(content: string, _absolu
 	// number, so they mark the end of the numbered body — they must not abort
 	// stripping the way an arbitrary non-row line would.
 	const isToolFooter = (line: string): boolean =>
-		line.trim() === ""
-		|| /^\[\d+ more lines in file\./.test(line)
-		|| /^\[Showing lines /.test(line)
-		|| /^Successfully wrote \d+ bytes to /.test(line)
-		|| /^Resolved \d+ conflicts?/.test(line)
-		|| /^Resolved conflict \d+/.test(line)
-		|| /^Note: stripped copied hashline/.test(line)
-		|| /^\[[^\]\n]+#[0-9A-Fa-f]{4}\]$/.test(line);
+		line.trim() === "" ||
+		/^\[\d+ more lines in file\./.test(line) ||
+		/^\[Showing lines /.test(line) ||
+		/^Successfully wrote \d+ bytes to /.test(line) ||
+		/^Resolved \d+ conflicts?/.test(line) ||
+		/^Resolved conflict \d+/.test(line) ||
+		/^Note: stripped copied hashline/.test(line) ||
+		/^\[[^\]\n]+#[0-9A-Fa-f]{4}\]$/.test(line);
 	let onlyFooter = true;
 	for (const line of body) {
 		if (isToolFooter(line)) {
@@ -116,10 +145,23 @@ export function stripKnownHashlineCopiedContentWithMeta(content: string, _absolu
 	return { content, stripped: false };
 }
 
-export function stripKnownHashlineCopiedContent(content: string, absolutePath: string, cwd: string, store: HashlineSnapshotStore): string {
+export function stripKnownHashlineCopiedContent(
+	content: string,
+	absolutePath: string,
+	cwd: string,
+	store: HashlineSnapshotStore,
+): string {
 	return stripKnownHashlineCopiedContentWithMeta(content, absolutePath, cwd, store).content;
 }
 
-export function formatCompactHashlineEditResult(snapshot: HashlineSnapshot, diff: { diff?: string; firstChangedLine?: number }, messages: readonly string[] = []): string {
-	return [formatHashlineHeader(snapshot.displayPath, snapshot.tag), ...messages, diff.diff?.trim() || `First changed line: ${diff.firstChangedLine ?? 1}`].join("\n");
+export function formatCompactHashlineEditResult(
+	snapshot: HashlineSnapshot,
+	diff: { diff?: string; firstChangedLine?: number },
+	messages: readonly string[] = [],
+): string {
+	return [
+		formatHashlineHeader(snapshot.displayPath, snapshot.tag),
+		...messages,
+		diff.diff?.trim() || `First changed line: ${diff.firstChangedLine ?? 1}`,
+	].join("\n");
 }

@@ -66,10 +66,7 @@ function baseUrlFromServerHost(host: string): string | undefined {
  *
  * Returns `undefined` when nothing applies, leaving pi's individual-host default.
  */
-export function resolveCopilotEnvBaseUrl(
-	env: CopilotRoutingEnv,
-	enterpriseDomain?: string,
-): string | undefined {
+export function resolveCopilotEnvBaseUrl(env: CopilotRoutingEnv, enterpriseDomain?: string): string | undefined {
 	const override = env.COPILOT_API_TARGET?.trim() || env.GITHUB_COPILOT_BASE_URL?.trim();
 	if (override) return normalizeBaseUrl(override);
 
@@ -91,10 +88,7 @@ export function resolveCopilotEnvBaseUrl(
 	return token ? PUBLIC_COPILOT_HUB : undefined;
 }
 
-function withModelBaseUrl<TApi extends Api>(
-	models: readonly Model<TApi>[],
-	baseUrl: string,
-): Model<TApi>[] {
+function withModelBaseUrl<TApi extends Api>(models: readonly Model<TApi>[], baseUrl: string): Model<TApi>[] {
 	return models.map((model) => ({ ...model, baseUrl }));
 }
 

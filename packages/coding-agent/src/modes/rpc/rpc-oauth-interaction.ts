@@ -11,10 +11,9 @@ export interface OAuthInteractionTransport {
 }
 
 type WithoutEnvelope<T> = T extends object ? Omit<T, "type" | "id"> : never;
-type OAuthValueRequest = WithoutEnvelope<Extract<
-	RpcExtensionUIRequest,
-	{ method: "oauth_prompt" | "oauth_select" | "oauth_manual_code" }
->>;
+type OAuthValueRequest = WithoutEnvelope<
+	Extract<RpcExtensionUIRequest, { method: "oauth_prompt" | "oauth_select" | "oauth_manual_code" }>
+>;
 type OAuthNotification = WithoutEnvelope<Extract<RpcExtensionUIRequest, { provider: string }>>;
 
 function responseValue(response: RpcExtensionUIResponse): string | undefined {
@@ -67,10 +66,13 @@ export function createRpcOAuthCallbacks(
 		onAuth: (info) => notify(transport, { method: "oauth_auth", provider, loginId, info }),
 		onDeviceCode: (info) => notify(transport, { method: "oauth_device_code", provider, loginId, info }),
 		onProgress: (message) => notify(transport, { method: "oauth_progress", provider, loginId, message }),
-		onInfo: (message, links) => notify(transport, { method: "oauth_info", provider, loginId, message, links: [...links] }),
-		onPrompt: async (prompt) => (await requestValue(transport, { method: "oauth_prompt", provider, loginId, prompt }, signal)) ?? "",
+		onInfo: (message, links) =>
+			notify(transport, { method: "oauth_info", provider, loginId, message, links: [...links] }),
+		onPrompt: async (prompt) =>
+			(await requestValue(transport, { method: "oauth_prompt", provider, loginId, prompt }, signal)) ?? "",
 		onSelect: (prompt) => requestValue(transport, { method: "oauth_select", provider, loginId, prompt }, signal),
-		onManualCodeInput: async () => (await requestValue(transport, { method: "oauth_manual_code", provider, loginId }, signal)) ?? "",
+		onManualCodeInput: async () =>
+			(await requestValue(transport, { method: "oauth_manual_code", provider, loginId }, signal)) ?? "",
 		onManualCodeCancel: () => notify(transport, { method: "oauth_manual_code_cancel", provider, loginId }),
 	};
 }

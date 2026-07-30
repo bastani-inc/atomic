@@ -15,7 +15,9 @@ import { createRequire } from "node:module";
  * predate oven-sh/bun#32498.
  */
 
-interface FixtureRow { [column: string]: unknown }
+interface FixtureRow {
+	[column: string]: unknown;
+}
 interface FixtureStatement {
 	all(...params: unknown[]): FixtureRow[];
 	get(...params: unknown[]): FixtureRow | undefined;

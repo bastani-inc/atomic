@@ -1,16 +1,19 @@
-import { test } from "vitest";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
-import { formatKeyText } from "../../packages/coding-agent/src/modes/interactive/components/keybinding-hints.ts";
-import { RpcClient } from "../../packages/coding-agent/src/modes/rpc/rpc-client.ts";
 import { type Terminal, TUI } from "@earendil-works/pi-tui";
-import { parseInteractiveEngineMessage, type InteractiveEngineMessage } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
-import { attachInteractiveEngineKeybindingSync } from "../../packages/coding-agent/src/modes/interactive-engine/extension-ui-bridge.ts";
+import { test } from "vitest";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { CustomEditor } from "../../packages/coding-agent/src/modes/interactive/components/custom-editor.ts";
+import { formatKeyText } from "../../packages/coding-agent/src/modes/interactive/components/keybinding-hints.ts";
 import { getEditorTheme, initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { attachInteractiveEngineKeybindingSync } from "../../packages/coding-agent/src/modes/interactive-engine/extension-ui-bridge.ts";
+import {
+	type InteractiveEngineMessage,
+	parseInteractiveEngineMessage,
+} from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
+import { RpcClient } from "../../packages/coding-agent/src/modes/rpc/rpc-client.ts";
 import { stripAnsi } from "../../packages/coding-agent/src/utils/ansi.ts";
 import { bunExecutable, moduleDir } from "../helpers/runtime.js";
 
@@ -41,9 +44,15 @@ function createClient(agentDir: string, env: Record<string, string> = {}): RpcCl
 		model: "blocking-model",
 		env: { ATOMIC_CODING_AGENT_DIR: agentDir, ...env },
 		args: [
-			"--no-session", "--no-extensions", "--extension",
+			"--no-session",
+			"--no-extensions",
+			"--extension",
 			join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts"),
-			"--no-skills", "--no-prompt-templates", "--no-themes", "--offline", "--approve",
+			"--no-skills",
+			"--no-prompt-templates",
+			"--no-themes",
+			"--offline",
+			"--approve",
 		],
 		interactiveEngine: { onDiagnostic: () => {} },
 	});
@@ -86,8 +95,10 @@ function readSessionStartBindings(path: string): string[] {
 }
 
 function nextFrame(client: RpcClient, componentId: string, requestId: number) {
-	return nextMessage(client, "engine_custom_frame", (message) =>
-		message.componentId === componentId && message.requestId === requestId,
+	return nextMessage(
+		client,
+		"engine_custom_frame",
+		(message) => message.componentId === componentId && message.requestId === requestId,
 	);
 }
 
@@ -139,9 +150,15 @@ test("host applies the committed engine payload without rereading a later filesy
 		writeExpandBinding(tempDir, "ctrl+x");
 		const hostKeybindings = KeybindingsManager.create(tempDir);
 		let listener: ((message: InteractiveEngineMessage) => void) | undefined;
-		attachInteractiveEngineKeybindingSync({
-			onEngineMessage: (next) => { listener = next; return () => {}; },
-		}, hostKeybindings);
+		attachInteractiveEngineKeybindingSync(
+			{
+				onEngineMessage: (next) => {
+					listener = next;
+					return () => {};
+				},
+			},
+			hostKeybindings,
+		);
 		const committed = {
 			type: "engine_keybindings_reloaded",
 			state: {
@@ -159,14 +176,16 @@ test("host applies the committed engine payload without rereading a later filesy
 });
 
 test("keybinding state protocol preserves raw ordered arrays", () => {
-	const message = parseInteractiveEngineMessage(JSON.stringify({
-		type: "engine_keybindings_reloaded",
-		state: {
-			userBindings: { "app.tools.expand": ["", "ctrl+x", ""] },
-			effectiveBindings: { "app.tools.expand": ["", "ctrl+x", ""] },
-			shortcuts: [{ key: "ctrl+y", description: "fixture" }],
-		},
-	}));
+	const message = parseInteractiveEngineMessage(
+		JSON.stringify({
+			type: "engine_keybindings_reloaded",
+			state: {
+				userBindings: { "app.tools.expand": ["", "ctrl+x", ""] },
+				effectiveBindings: { "app.tools.expand": ["", "ctrl+x", ""] },
+				shortcuts: [{ key: "ctrl+y", description: "fixture" }],
+			},
+		}),
+	);
 	assert.equal(message?.type, "engine_keybindings_reloaded");
 	if (message?.type !== "engine_keybindings_reloaded") return;
 	assert.deepEqual(message.state.userBindings["app.tools.expand"], ["", "ctrl+x", ""]);
@@ -184,10 +203,13 @@ test.sequential("late host attachment receives the latest committed child state"
 		await client.waitForInteractiveEngineBound();
 		writeExpandBinding(tempDir, "ctrl+y");
 		await client.requestInternal<void>({ type: "reload" });
-		const detach = attachInteractiveEngineKeybindingSync({
-			onEngineMessage: (listener) => client.onInteractiveEngineMessage(listener),
-			onKeybindingState: (listener) => client.onInteractiveEngineKeybindingState(listener),
-		}, hostKeybindings);
+		const detach = attachInteractiveEngineKeybindingSync(
+			{
+				onEngineMessage: (listener) => client.onInteractiveEngineMessage(listener),
+				onKeybindingState: (listener) => client.onInteractiveEngineKeybindingState(listener),
+			},
+			hostKeybindings,
+		);
 		assert.deepEqual(hostKeybindings.getKeys("app.tools.expand"), ["ctrl+y"]);
 		detach();
 	} finally {
@@ -244,11 +266,16 @@ test.sequential("direct RPC reload updates one shared global and injected manage
 	});
 	const hostKeybindings = KeybindingsManager.create(tempDir);
 	const hostIdentity = hostKeybindings;
-	const detachHostSync = attachInteractiveEngineKeybindingSync({
-		onEngineMessage: (listener) => client.onInteractiveEngineMessage(listener),
-	}, hostKeybindings);
+	const detachHostSync = attachInteractiveEngineKeybindingSync(
+		{
+			onEngineMessage: (listener) => client.onInteractiveEngineMessage(listener),
+		},
+		hostKeybindings,
+	);
 	try {
-		const opened = nextMessage(client, "engine_custom_open", (message) => message.componentId.startsWith("remote_component_"));
+		const opened = nextMessage(client, "engine_custom_open", (message) =>
+			message.componentId.startsWith("remote_component_"),
+		);
 		await client.start();
 		await client.waitForInteractiveEngineBound();
 		const open = await opened;
@@ -301,12 +328,19 @@ test.sequential("extension command-context reload updates the existing shared ma
 	initTheme("dark");
 	const editor = new CustomEditor(new TUI(new FakeTerminal()), getEditorTheme(), hostKeybindings);
 	let expandDispatches = 0;
-	editor.onAction("app.tools.expand", () => { expandDispatches++; });
-	const detachHostSync = attachInteractiveEngineKeybindingSync({
-		onEngineMessage: (listener) => client.onInteractiveEngineMessage(listener),
-	}, hostKeybindings);
+	editor.onAction("app.tools.expand", () => {
+		expandDispatches++;
+	});
+	const detachHostSync = attachInteractiveEngineKeybindingSync(
+		{
+			onEngineMessage: (listener) => client.onInteractiveEngineMessage(listener),
+		},
+		hostKeybindings,
+	);
 	try {
-		const opened = nextMessage(client, "engine_custom_open", (message) => message.componentId.startsWith("remote_component_"));
+		const opened = nextMessage(client, "engine_custom_open", (message) =>
+			message.componentId.startsWith("remote_component_"),
+		);
 		await client.start();
 		await client.waitForInteractiveEngineBound();
 		const open = await opened;

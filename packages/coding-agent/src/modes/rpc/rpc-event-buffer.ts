@@ -9,11 +9,12 @@ export class RpcEventBuffer {
 	}
 
 	enqueue(event: RpcEvent): void {
-		const key = event.type === "message_update"
-			? "message"
-			: event.type === "tool_execution_update"
-				? `tool:${event.toolCallId}`
-				: undefined;
+		const key =
+			event.type === "message_update"
+				? "message"
+				: event.type === "tool_execution_update"
+					? `tool:${event.toolCallId}`
+					: undefined;
 		if (!key) {
 			this.flush();
 			this.emit(event);
@@ -30,5 +31,7 @@ export class RpcEventBuffer {
 		this.updates.clear();
 	}
 
-	dispose(): void { this.flush(); }
+	dispose(): void {
+		this.flush();
+	}
 }

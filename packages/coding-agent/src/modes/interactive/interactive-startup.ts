@@ -1,225 +1,257 @@
-import { InteractiveModeBase, seedStartupInput } from "./interactive-mode-base.ts";
-import { type Container, type MarkdownTheme, os, path, Markdown, Spacer, Text, visibleWidth, spawn, APP_NAME, APP_TITLE, ENV_OFFLINE, getEnvValue, getAgentDir, VERSION, formatCodexFastModeModelLabel, shouldApplyCodexFastMode, DefaultPackageManager, isInstallTelemetryEnabled, getChangelogPath, getEntriesForVersion, getNewEntries, normalizeChangelogLinks, parseChangelog, getCwdRelativePath, getPiUserAgent, recordTimeSinceReset, ensureTool, checkForNewPiVersion, composeStartupIdentity, DynamicBorder, getMarkdownTheme, onThemeChange, theme } from "./interactive-mode-deps.ts";
-import { refreshCatalogsAfterTuiStartup, updateProviderCountFromSnapshot } from "./interactive-model-catalog-startup.ts";
+import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
+import {
+	onInteractiveEngineRemoteCommandsChanged,
+	waitForInteractiveEngineBound,
+} from "../interactive-engine/extension-ui-bridge.ts";
 import { renderAtomicAssemblyBanner, renderStartupManifesto } from "./components/atomic-banner.ts";
 import { StartupIdentityComponent } from "./components/startup-identity.ts";
-import { ONBOARDING_COPY } from "./interactive-onboarding.ts";
-import { onInteractiveEngineRemoteCommandsChanged, waitForInteractiveEngineBound } from "../interactive-engine/extension-ui-bridge.ts";
-import { restoreTerminalTitleAfterPackageCheck } from "./interactive-terminal-title.ts";
-import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
 import { bindInitialEagerSession } from "./interactive-initial-session-binding.ts";
+import { InteractiveModeBase, seedStartupInput } from "./interactive-mode-base.ts";
+import {
+	APP_NAME,
+	APP_TITLE,
+	type Container,
+	checkForNewPiVersion,
+	composeStartupIdentity,
+	DefaultPackageManager,
+	DynamicBorder,
+	ENV_OFFLINE,
+	ensureTool,
+	formatCodexFastModeModelLabel,
+	getAgentDir,
+	getChangelogPath,
+	getCwdRelativePath,
+	getEntriesForVersion,
+	getEnvValue,
+	getMarkdownTheme,
+	getNewEntries,
+	getPiUserAgent,
+	isInstallTelemetryEnabled,
+	Markdown,
+	type MarkdownTheme,
+	normalizeChangelogLinks,
+	onThemeChange,
+	os,
+	parseChangelog,
+	path,
+	recordTimeSinceReset,
+	Spacer,
+	shouldApplyCodexFastMode,
+	spawn,
+	Text,
+	theme,
+	VERSION,
+	visibleWidth,
+} from "./interactive-mode-deps.ts";
+import {
+	refreshCatalogsAfterTuiStartup,
+	updateProviderCountFromSnapshot,
+} from "./interactive-model-catalog-startup.ts";
+import { ONBOARDING_COPY } from "./interactive-onboarding.ts";
+import { restoreTerminalTitleAfterPackageCheck } from "./interactive-terminal-title.ts";
 
 export const shouldRefreshCatalogsOnStartup = (): boolean => !isOfflineModeEnabled();
 
 function prepareStartupNotices(mode: InteractiveModeBase): void {
-    if (mode.startupNoticesPrepared) return;
-    mode.startupNoticesPrepared = true;
-    mode.hadLastChangelogVersionAtStartup = Boolean(mode.settingsManager.getLastChangelogVersion?.());
-    if (mode.changelogMarkdown === undefined) {
-      mode.changelogMarkdown = mode.getChangelogForDisplay?.();
-    }
-    mode.initializeFirstRunOnboardingMarkers?.();
-    if (!mode.firstRunNoticeVisible) {
-      mode.firstRunNoticeVisible = mode.isFirstRunOnboardingEligible?.() ?? false;
-    }
-  }
+	if (mode.startupNoticesPrepared) return;
+	mode.startupNoticesPrepared = true;
+	mode.hadLastChangelogVersionAtStartup = Boolean(mode.settingsManager.getLastChangelogVersion?.());
+	if (mode.changelogMarkdown === undefined) {
+		mode.changelogMarkdown = mode.getChangelogForDisplay?.();
+	}
+	mode.initializeFirstRunOnboardingMarkers?.();
+	if (!mode.firstRunNoticeVisible) {
+		mode.firstRunNoticeVisible = mode.isFirstRunOnboardingEligible?.() ?? false;
+	}
+}
 
-InteractiveModeBase.prototype.showStartupNoticesIfNeeded = function(this: InteractiveModeBase, targetContainer: Container = this.chatContainer): void {
-    if (this.startupNoticesShown) {
-      return;
-    }
-    prepareStartupNotices(this);
-    this.startupNoticesShown = true;
+InteractiveModeBase.prototype.showStartupNoticesIfNeeded = function (
+	this: InteractiveModeBase,
+	targetContainer: Container = this.chatContainer,
+): void {
+	if (this.startupNoticesShown) {
+		return;
+	}
+	prepareStartupNotices(this);
+	this.startupNoticesShown = true;
 
-    const changelogMarkdown = this.changelogMarkdown;
-    if (!changelogMarkdown && !this.firstRunNoticeVisible) {
-      return;
-    }
+	const changelogMarkdown = this.changelogMarkdown;
+	if (!changelogMarkdown && !this.firstRunNoticeVisible) {
+		return;
+	}
 
-    if (changelogMarkdown) {
-      if (targetContainer.children.length > 0) {
-        targetContainer.addChild(new Spacer(1));
-      }
-      targetContainer.addChild(new DynamicBorder());
-      if (this.settingsManager.getCollapseChangelog()) {
-        const versionMatch = changelogMarkdown.match(
-          /##\s+\[?((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:alpha\.)?(?:0|[1-9]\d*))?)\]?/,
-        );
-        const latestVersion = versionMatch ? versionMatch[1] : this.version;
-        const condensedText = `Updated to v${latestVersion}. Use ${theme.bold("/changelog")} to view full changelog.`;
-        targetContainer.addChild(new Text(condensedText, 1, 0));
-      } else {
-        targetContainer.addChild(
-          new Text(theme.bold(theme.fg("accent", "What's New")), 1, 0),
-        );
-        targetContainer.addChild(new Spacer(1));
-        targetContainer.addChild(
-          new Markdown(
-            changelogMarkdown.trim(),
-            1,
-            0,
-            this.getMarkdownThemeWithSettings(),
-          ),
-        );
-        targetContainer.addChild(new Spacer(1));
-      }
-      targetContainer.addChild(new DynamicBorder());
-    }
+	if (changelogMarkdown) {
+		if (targetContainer.children.length > 0) {
+			targetContainer.addChild(new Spacer(1));
+		}
+		targetContainer.addChild(new DynamicBorder());
+		if (this.settingsManager.getCollapseChangelog()) {
+			const versionMatch = changelogMarkdown.match(
+				/##\s+\[?((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:alpha\.)?(?:0|[1-9]\d*))?)\]?/,
+			);
+			const latestVersion = versionMatch ? versionMatch[1] : this.version;
+			const condensedText = `Updated to v${latestVersion}. Use ${theme.bold("/changelog")} to view full changelog.`;
+			targetContainer.addChild(new Text(condensedText, 1, 0));
+		} else {
+			targetContainer.addChild(new Text(theme.bold(theme.fg("accent", "What's New")), 1, 0));
+			targetContainer.addChild(new Spacer(1));
+			targetContainer.addChild(new Markdown(changelogMarkdown.trim(), 1, 0, this.getMarkdownThemeWithSettings()));
+			targetContainer.addChild(new Spacer(1));
+		}
+		targetContainer.addChild(new DynamicBorder());
+	}
 
-    if (this.firstRunNoticeVisible) {
-      this.firstRunOnboardingNoticeComponents = [];
-      if (targetContainer.children.length > 0) {
-        this.firstRunOnboardingNoticeComponents.push(new Spacer(1));
-      }
-      this.firstRunOnboardingNoticeComponents.push(
-        new DynamicBorder(),
-        new Text(ONBOARDING_COPY, 1, 0),
-        new DynamicBorder(),
-        new Spacer(1),
-      );
-      for (const component of this.firstRunOnboardingNoticeComponents) {
-        targetContainer.addChild(component);
-      }
-      // Mark completion only after queueing the notice in the chat canvas so
-      // launches that skip rendering retry the first-run notice next time.
-      this.settingsManager.setOnboardedVersion(this.version);
-    }
+	if (this.firstRunNoticeVisible) {
+		this.firstRunOnboardingNoticeComponents = [];
+		if (targetContainer.children.length > 0) {
+			this.firstRunOnboardingNoticeComponents.push(new Spacer(1));
+		}
+		this.firstRunOnboardingNoticeComponents.push(
+			new DynamicBorder(),
+			new Text(ONBOARDING_COPY, 1, 0),
+			new DynamicBorder(),
+			new Spacer(1),
+		);
+		for (const component of this.firstRunOnboardingNoticeComponents) {
+			targetContainer.addChild(component);
+		}
+		// Mark completion only after queueing the notice in the chat canvas so
+		// launches that skip rendering retry the first-run notice next time.
+		this.settingsManager.setOnboardedVersion(this.version);
+	}
 
-    this.ui.requestRender();
-  };
+	this.ui.requestRender();
+};
 
-InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): Promise<void> {
-    if (this.isInitialized) return;
+InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase): Promise<void> {
+	if (this.isInitialized) return;
 
-    this.registerSignalHandlers();
+	this.registerSignalHandlers();
 
-    // Add header container as first child. Populate it after theme initialization.
-    this.ui.addChild(this.headerContainer);
+	// Add header container as first child. Populate it after theme initialization.
+	this.ui.addChild(this.headerContainer);
 
-    this.ui.addChild(this.chatContainer);
-    this.ui.addChild(this.pendingMessagesContainer);
-    this.ui.addChild(this.statusContainer);
-    this.renderWidgets(); // Initialize with default spacer
-    this.ui.addChild(this.widgetContainerAbove);
-    this.ui.addChild(this.usageMeter);
-    this.ui.addChild(this.editorContainer);
-    // Footer (persistent model + cwd identity) stays pinned directly under the
-    // editor; below-editor widgets render after it, at the very bottom. This
-    // keeps the session identity line attached to the input and places
-    // transient run status (e.g. the workflow companion counter) beneath it.
-    // Rendering below-editor widgets last also keeps a live widget at the
-    // absolute bottom of the buffer (always within the viewport), so its
-    // per-tick updates never sit above the fold — preserving the #1109
-    // resize-flicker fix.
-    this.ui.addChild(this.footer);
-    this.ui.addChild(this.widgetContainerBelow);
-    this.ui.setFocus(this.editor);
+	this.ui.addChild(this.chatContainer);
+	this.ui.addChild(this.pendingMessagesContainer);
+	this.ui.addChild(this.statusContainer);
+	this.renderWidgets(); // Initialize with default spacer
+	this.ui.addChild(this.widgetContainerAbove);
+	this.ui.addChild(this.usageMeter);
+	this.ui.addChild(this.editorContainer);
+	// Footer (persistent model + cwd identity) stays pinned directly under the
+	// editor; below-editor widgets render after it, at the very bottom. This
+	// keeps the session identity line attached to the input and places
+	// transient run status (e.g. the workflow companion counter) beneath it.
+	// Rendering below-editor widgets last also keeps a live widget at the
+	// absolute bottom of the buffer (always within the viewport), so its
+	// per-tick updates never sit above the fold — preserving the #1109
+	// resize-flicker fix.
+	this.ui.addChild(this.footer);
+	this.ui.addChild(this.widgetContainerBelow);
+	this.ui.setFocus(this.editor);
 
-    this.setupKeyHandlers();
-    this.setupEditorSubmitHandler();
-    // Rebuild autocomplete whenever the engine child's command catalog arrives or
-    // changes (initial bind, engine restart, reload, new/resume/fork). Subscribed
-    // before bind so the first async catalog fetch can never be missed. No-op when
-    // the host is not isolated.
-    onInteractiveEngineRemoteCommandsChanged(this.runtimeHost, () => {
-      this.setupAutocompleteProvider();
-    });
+	this.setupKeyHandlers();
+	this.setupEditorSubmitHandler();
+	// Rebuild autocomplete whenever the engine child's command catalog arrives or
+	// changes (initial bind, engine restart, reload, new/resume/fork). Subscribed
+	// before bind so the first async catalog fetch can never be missed. No-op when
+	// the host is not isolated.
+	onInteractiveEngineRemoteCommandsChanged(this.runtimeHost, () => {
+		this.setupAutocompleteProvider();
+	});
 
-    seedStartupInput(
-      this.pendingUserInputs,
-      this.defaultEditor,
-      this.options.startupInputCapture?.consume(),
-      this.startupReplayInputs,
-      (text) => {
-        this.startupDraftText = text;
-      },
-      (text) => {
-        this.startupReplayActiveInput = text;
-      },
-    );
+	seedStartupInput(
+		this.pendingUserInputs,
+		this.defaultEditor,
+		this.options.startupInputCapture?.consume(),
+		this.startupReplayInputs,
+		(text) => {
+			this.startupDraftText = text;
+		},
+		(text) => {
+			this.startupReplayActiveInput = text;
+		},
+	);
 
-    // Start UI before extension/session work; fd/rg readiness and git watching move after first paint.
-    this.ui.start();
-    await waitForInteractiveEngineBound(this.runtimeHost);
-    recordTimeSinceReset("time-to-first-frame");
-    this.footerDataProvider.onBranchChange(() => {
-      this.ui.requestRender();
-    });
-    this.isInitialized = true;
+	// Start UI before extension/session work; fd/rg readiness and git watching move after first paint.
+	this.ui.start();
+	await waitForInteractiveEngineBound(this.runtimeHost);
+	recordTimeSinceReset("time-to-first-frame");
+	this.footerDataProvider.onBranchChange(() => {
+		this.ui.requestRender();
+	});
+	this.isInitialized = true;
 
-    await this.themeController.applyFromSettings();
+	await this.themeController.applyFromSettings();
 
-    // Add the quiet startup identity unless silenced.
-    if (this.options.verbose || !this.settingsManager.getQuietStartup()) {
-		this.builtInHeader = new StartupIdentityComponent(
-			this.ui,
-			(width, state) => this.getStartupIdentityText(width, state.gap, state.manifestoPhase),
+	// Add the quiet startup identity unless silenced.
+	if (this.options.verbose || !this.settingsManager.getQuietStartup()) {
+		this.builtInHeader = new StartupIdentityComponent(this.ui, (width, state) =>
+			this.getStartupIdentityText(width, state.gap, state.manifestoPhase),
 		);
 
-      this.headerContainer.addChild(new Spacer(1));
-      this.headerContainer.addChild(this.builtInHeader);
-      this.headerContainer.addChild(new Spacer(1));
-    } else {
-      // Minimal header when silenced
-      this.builtInHeader = new Text("", 0, 0);
-      this.headerContainer.addChild(this.builtInHeader);
-    }
-    this.ui.requestRender();
+		this.headerContainer.addChild(new Spacer(1));
+		this.headerContainer.addChild(this.builtInHeader);
+		this.headerContainer.addChild(new Spacer(1));
+	} else {
+		// Minimal header when silenced
+		this.builtInHeader = new Text("", 0, 0);
+		this.headerContainer.addChild(this.builtInHeader);
+	}
+	this.ui.requestRender();
 
-    void Promise.all([ensureTool("fd"), ensureTool("rg")])
-      .then(([fdPath]) => {
-        this.fdPath = fdPath;
-        this.setupAutocompleteProvider();
-      })
-      .catch((error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(`Tool readiness check failed: ${message}`);
-      });
+	void Promise.all([ensureTool("fd"), ensureTool("rg")])
+		.then(([fdPath]) => {
+			this.fdPath = fdPath;
+			this.setupAutocompleteProvider();
+		})
+		.catch((error) => {
+			const message = error instanceof Error ? error.message : String(error);
+			console.error(`Tool readiness check failed: ${message}`);
+		});
 
-    // When startup resources are deferred, keep the already-painted editor responsive.
-    // Extension UI bindings are installed at the deferred reload boundary, not here,
-    // so no post-paint resource work can block visible typing.
-    if (this.deferredStartupPending) {
-      this.applyRuntimeSettings();
-      this.subscribeToAgent();
-      this.updateEditorBorderColor();
-      this.updateTerminalTitle();
-    } else {
-      await bindInitialEagerSession(this);
-    }
+	// When startup resources are deferred, keep the already-painted editor responsive.
+	// Extension UI bindings are installed at the deferred reload boundary, not here,
+	// so no post-paint resource work can block visible typing.
+	if (this.deferredStartupPending) {
+		this.applyRuntimeSettings();
+		this.subscribeToAgent();
+		this.updateEditorBorderColor();
+		this.updateTerminalTitle();
+	} else {
+		await bindInitialEagerSession(this);
+	}
 
-    this.attachStartupNoticesContainer();
-    // Render initial messages AFTER the initial session binding is in place.
-    this.renderInitialMessages();
-    // Set up theme file watcher
-    onThemeChange(() => {
-      this.ui.invalidate();
-      this.updateEditorBorderColor();
-      this.ui.requestRender();
-    });
+	this.attachStartupNoticesContainer();
+	// Render initial messages AFTER the initial session binding is in place.
+	this.renderInitialMessages();
+	// Set up theme file watcher
+	onThemeChange(() => {
+		this.ui.invalidate();
+		this.updateEditorBorderColor();
+		this.ui.requestRender();
+	});
 
 	updateProviderCountFromSnapshot(this);
-  };
+};
 
-InteractiveModeBase.prototype.updateTerminalTitle = function(this: InteractiveModeBase): void {
-    const cwdBasename = path.basename(this.sessionManager.getCwd());
-    const sessionName = this.sessionManager.getSessionName();
-    if (sessionName) {
-      this.ui.terminal.setTitle(
-        `${APP_TITLE} - ${sessionName} - ${cwdBasename}`,
-      );
-    } else {
-      this.ui.terminal.setTitle(`${APP_TITLE} - ${cwdBasename}`);
-    }
-  };
+InteractiveModeBase.prototype.updateTerminalTitle = function (this: InteractiveModeBase): void {
+	const cwdBasename = path.basename(this.sessionManager.getCwd());
+	const sessionName = this.sessionManager.getSessionName();
+	if (sessionName) {
+		this.ui.terminal.setTitle(`${APP_TITLE} - ${sessionName} - ${cwdBasename}`);
+	} else {
+		this.ui.terminal.setTitle(`${APP_TITLE} - ${cwdBasename}`);
+	}
+};
 
-InteractiveModeBase.prototype.run = async function(this: InteractiveModeBase): Promise<void> {
-    await this.init();
+InteractiveModeBase.prototype.run = async function (this: InteractiveModeBase): Promise<void> {
+	await this.init();
 
 	if (shouldRefreshCatalogsOnStartup()) void refreshCatalogsAfterTuiStartup(this);
 
 	setTimeout(() => {
-    const startupNoticesContainer = this.startupNoticesContainer;
+		const startupNoticesContainer = this.startupNoticesContainer;
 		checkForNewPiVersion(this.version).then((newVersion) => {
 			if (newVersion) this.showNewVersionNotification(newVersion, startupNoticesContainer);
 		});
@@ -239,243 +271,236 @@ InteractiveModeBase.prototype.run = async function(this: InteractiveModeBase): P
 		}
 	}, 500);
 
-    // Show startup warnings
-    const {
-      migratedProviders,
-      initialMessage,
-      initialImages,
-      initialMessages,
-    } = this.options;
+	// Show startup warnings
+	const { migratedProviders, initialMessage, initialImages, initialMessages } = this.options;
 
-    if (migratedProviders && migratedProviders.length > 0) {
-      this.showWarning(
-        `Migrated credentials to auth.json: ${migratedProviders.join(", ")}`,
-      );
-    }
+	if (migratedProviders && migratedProviders.length > 0) {
+		this.showWarning(`Migrated credentials to auth.json: ${migratedProviders.join(", ")}`);
+	}
 
-    const modelsJsonError = this.session.modelRuntime.getError();
-    if (modelsJsonError) {
-      this.showError(`models.json error: ${modelsJsonError}`);
-    }
+	const modelsJsonError = this.session.modelRuntime.getError();
+	if (modelsJsonError) {
+		this.showError(`models.json error: ${modelsJsonError}`);
+	}
 
-    const modelFallbackMessage = this.runtimeHost.modelFallbackMessage;
-    if (modelFallbackMessage && !this.deferredStartupPending) {
-      this.showWarning(modelFallbackMessage, this.startupNoticesContainer);
-    }
+	const modelFallbackMessage = this.runtimeHost.modelFallbackMessage;
+	if (modelFallbackMessage && !this.deferredStartupPending) {
+		this.showWarning(modelFallbackMessage, this.startupNoticesContainer);
+	}
 
-    // CLI-provided startup prompts need extension tools/resources; wait before sending them,
-    // but do not block the normal no-prompt input loop from becoming ready.
-    if (this.deferredStartupPending && (initialMessage || (initialMessages && initialMessages.length > 0))) {
-      await this.ensureDeferredStartupComplete();
-    }
+	// CLI-provided startup prompts need extension tools/resources; wait before sending them,
+	// but do not block the normal no-prompt input loop from becoming ready.
+	if (this.deferredStartupPending && (initialMessage || (initialMessages && initialMessages.length > 0))) {
+		await this.ensureDeferredStartupComplete();
+	}
 
-    // Process initial messages
-    if (initialMessage) {
-      try {
-        await this.session.prompt(initialMessage, { images: initialImages });
-      } catch (error: unknown) {
-        const errorMessage =
-          error instanceof Error ? error.message : "Unknown error occurred";
-        this.showError(errorMessage);
-      }
-    }
+	// Process initial messages
+	if (initialMessage) {
+		try {
+			await this.session.prompt(initialMessage, { images: initialImages });
+		} catch (error: unknown) {
+			const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
+			this.showError(errorMessage);
+		}
+	}
 
-    if (initialMessages) {
-      for (const message of initialMessages) {
-        try {
-          await this.session.prompt(message);
-        } catch (error: unknown) {
-          const errorMessage =
-            error instanceof Error ? error.message : "Unknown error occurred";
-          this.showError(errorMessage);
-        }
-      }
-    }
+	if (initialMessages) {
+		for (const message of initialMessages) {
+			try {
+				await this.session.prompt(message);
+			} catch (error: unknown) {
+				const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
+				this.showError(errorMessage);
+			}
+		}
+	}
 
-    // Main interactive loop
-    while (true) {
-      const userInput = await this.getUserInput();
-      await this.runUserPromptTurn(userInput);
-    }
-  };
+	// Main interactive loop
+	while (true) {
+		const userInput = await this.getUserInput();
+		await this.runUserPromptTurn(userInput);
+	}
+};
 
-InteractiveModeBase.prototype.checkForPackageUpdates = async function(this: InteractiveModeBase): Promise<string[]> {
-    if (getEnvValue(ENV_OFFLINE)) {
-      return [];
-    }
+InteractiveModeBase.prototype.checkForPackageUpdates = async function (this: InteractiveModeBase): Promise<string[]> {
+	if (getEnvValue(ENV_OFFLINE)) {
+		return [];
+	}
 
-    try {
-      const packageManager = new DefaultPackageManager({
-        cwd: this.sessionManager.getCwd(),
-        agentDir: getAgentDir(),
-        settingsManager: this.settingsManager,
-      });
-      const updates = await packageManager.checkForAvailableUpdates();
-      return updates.map((update) => update.displayName);
-    } catch {
-      return [];
-    }
-  };
+	try {
+		const packageManager = new DefaultPackageManager({
+			cwd: this.sessionManager.getCwd(),
+			agentDir: getAgentDir(),
+			settingsManager: this.settingsManager,
+		});
+		const updates = await packageManager.checkForAvailableUpdates();
+		return updates.map((update) => update.displayName);
+	} catch {
+		return [];
+	}
+};
 
-InteractiveModeBase.prototype.checkTmuxKeyboardSetup = async function(this: InteractiveModeBase): Promise<string | undefined> {
-    if (!process.env.TMUX) return undefined;
+InteractiveModeBase.prototype.checkTmuxKeyboardSetup = async function (
+	this: InteractiveModeBase,
+): Promise<string | undefined> {
+	if (!process.env.TMUX) return undefined;
 
-    const runTmuxShow = (option: string): Promise<string | undefined> => {
-      return new Promise((resolve) => {
-        const proc = spawn("tmux", ["show", "-gv", option], {
-          stdio: ["ignore", "pipe", "ignore"],
-        });
-        let stdout = "";
-        const timer = setTimeout(() => {
-          proc.kill();
-          resolve(undefined);
-        }, 2000);
+	const runTmuxShow = (option: string): Promise<string | undefined> => {
+		return new Promise((resolve) => {
+			const proc = spawn("tmux", ["show", "-gv", option], {
+				stdio: ["ignore", "pipe", "ignore"],
+			});
+			let stdout = "";
+			const timer = setTimeout(() => {
+				proc.kill();
+				resolve(undefined);
+			}, 2000);
 
-        proc.stdout?.on("data", (data) => {
-          stdout += data.toString();
-        });
-        proc.on("error", () => {
-          clearTimeout(timer);
-          resolve(undefined);
-        });
-        proc.on("close", (code) => {
-          clearTimeout(timer);
-          resolve(code === 0 ? stdout.trim() : undefined);
-        });
-      });
-    };
+			proc.stdout?.on("data", (data) => {
+				stdout += data.toString();
+			});
+			proc.on("error", () => {
+				clearTimeout(timer);
+				resolve(undefined);
+			});
+			proc.on("close", (code) => {
+				clearTimeout(timer);
+				resolve(code === 0 ? stdout.trim() : undefined);
+			});
+		});
+	};
 
-    const [extendedKeys, extendedKeysFormat] = await Promise.all([
-      runTmuxShow("extended-keys"),
-      runTmuxShow("extended-keys-format"),
-    ]);
+	const [extendedKeys, extendedKeysFormat] = await Promise.all([
+		runTmuxShow("extended-keys"),
+		runTmuxShow("extended-keys-format"),
+	]);
 
-    // If we couldn't query tmux (timeout, sandbox, etc.), don't warn
-    if (extendedKeys === undefined) return undefined;
+	// If we couldn't query tmux (timeout, sandbox, etc.), don't warn
+	if (extendedKeys === undefined) return undefined;
 
-    if (extendedKeys !== "on" && extendedKeys !== "always") {
-      return "tmux extended-keys is off. Modified enter keys may not work. Add `set -g extended-keys on` to ~/.tmux.conf and restart tmux.";
-    }
+	if (extendedKeys !== "on" && extendedKeys !== "always") {
+		return "tmux extended-keys is off. Modified enter keys may not work. Add `set -g extended-keys on` to ~/.tmux.conf and restart tmux.";
+	}
 
-    if (extendedKeysFormat === "xterm") {
-      return `tmux extended-keys-format is xterm. ${APP_TITLE} works best with csi-u. Add \`set -g extended-keys-format csi-u\` to ~/.tmux.conf and restart tmux.`;
-    }
+	if (extendedKeysFormat === "xterm") {
+		return `tmux extended-keys-format is xterm. ${APP_TITLE} works best with csi-u. Add \`set -g extended-keys-format csi-u\` to ~/.tmux.conf and restart tmux.`;
+	}
 
-    return undefined;
-  };
+	return undefined;
+};
 
-InteractiveModeBase.prototype.getChangelogForDisplay = function(this: InteractiveModeBase): string | undefined {
-    // Skip changelog for resumed/continued sessions (already have messages)
-    if (this.session.state.messages.length > 0) {
-      return undefined;
-    }
+InteractiveModeBase.prototype.getChangelogForDisplay = function (this: InteractiveModeBase): string | undefined {
+	// Skip changelog for resumed/continued sessions (already have messages)
+	if (this.session.state.messages.length > 0) {
+		return undefined;
+	}
 
-    const lastVersion = this.settingsManager.getLastChangelogVersion();
-    const changelogPath = getChangelogPath();
-    const entries = parseChangelog(changelogPath);
+	const lastVersion = this.settingsManager.getLastChangelogVersion();
+	const changelogPath = getChangelogPath();
+	const entries = parseChangelog(changelogPath);
 
-    if (!lastVersion) {
-      // Fresh install - record the version, send telemetry, don't show changelog
-      this.settingsManager.setLastChangelogVersion(VERSION);
-      this.reportInstallTelemetry(VERSION);
-      return undefined;
-    }
+	if (!lastVersion) {
+		// Fresh install - record the version, send telemetry, don't show changelog
+		this.settingsManager.setLastChangelogVersion(VERSION);
+		this.reportInstallTelemetry(VERSION);
+		return undefined;
+	}
 
-    const newEntries = getNewEntries(entries, lastVersion, VERSION);
-    const currentEntries = getEntriesForVersion(newEntries, VERSION);
-    if (currentEntries.length > 0) {
-      this.settingsManager.setLastChangelogVersion(VERSION);
-      this.reportInstallTelemetry(VERSION);
-      return currentEntries.map((e) => normalizeChangelogLinks(e.content, e)).join("\n\n");
-    }
+	const newEntries = getNewEntries(entries, lastVersion, VERSION);
+	const currentEntries = getEntriesForVersion(newEntries, VERSION);
+	if (currentEntries.length > 0) {
+		this.settingsManager.setLastChangelogVersion(VERSION);
+		this.reportInstallTelemetry(VERSION);
+		return currentEntries.map((e) => normalizeChangelogLinks(e.content, e)).join("\n\n");
+	}
 
-    return undefined;
-  };
+	return undefined;
+};
 
-InteractiveModeBase.prototype.reportInstallTelemetry = function(this: InteractiveModeBase, version: string): void {
-    if (getEnvValue(ENV_OFFLINE)) {
-      return;
-    }
+InteractiveModeBase.prototype.reportInstallTelemetry = function (this: InteractiveModeBase, version: string): void {
+	if (getEnvValue(ENV_OFFLINE)) {
+		return;
+	}
 
-    if (!isInstallTelemetryEnabled(this.settingsManager)) {
-      return;
-    }
+	if (!isInstallTelemetryEnabled(this.settingsManager)) {
+		return;
+	}
 
-    void fetch(
-      `https://pi.dev/api/report-install?version=${encodeURIComponent(version)}`,
-      {
-        headers: {
-          "User-Agent": getPiUserAgent(version),
-        },
-        signal: AbortSignal.timeout(5000),
-      },
-    )
-      .then(() => undefined)
-      .catch(() => undefined);
-  };
+	void fetch(`https://pi.dev/api/report-install?version=${encodeURIComponent(version)}`, {
+		headers: {
+			"User-Agent": getPiUserAgent(version),
+		},
+		signal: AbortSignal.timeout(5000),
+	})
+		.then(() => undefined)
+		.catch(() => undefined);
+};
 
-InteractiveModeBase.prototype.getMarkdownThemeWithSettings = function(this: InteractiveModeBase): MarkdownTheme {
-    return {
-      ...getMarkdownTheme(),
-      codeBlockIndent: this.settingsManager.getCodeBlockIndent(),
-    };
-  };
+InteractiveModeBase.prototype.getMarkdownThemeWithSettings = function (this: InteractiveModeBase): MarkdownTheme {
+	return {
+		...getMarkdownTheme(),
+		codeBlockIndent: this.settingsManager.getCodeBlockIndent(),
+	};
+};
 
-InteractiveModeBase.prototype.formatDisplayPath = function(this: InteractiveModeBase, p: string): string {
-    const home = os.homedir();
-    let result = p;
+InteractiveModeBase.prototype.formatDisplayPath = function (this: InteractiveModeBase, p: string): string {
+	const home = os.homedir();
+	let result = p;
 
-    // Replace home directory with ~
-    if (result.startsWith(home)) {
-      result = `~${result.slice(home.length)}`;
-    }
+	// Replace home directory with ~
+	if (result.startsWith(home)) {
+		result = `~${result.slice(home.length)}`;
+	}
 
-    return result;
-  };
+	return result;
+};
 
-InteractiveModeBase.prototype.formatExtensionDisplayPath = function(this: InteractiveModeBase, path: string): string {
-    let result = this.formatDisplayPath(path);
-    result = result.replace(/\/index\.ts$/, "").replace(/\/index\.js$/, "");
-    return result;
-  };
+InteractiveModeBase.prototype.formatExtensionDisplayPath = function (this: InteractiveModeBase, path: string): string {
+	let result = this.formatDisplayPath(path);
+	result = result.replace(/\/index\.ts$/, "").replace(/\/index\.js$/, "");
+	return result;
+};
 
-InteractiveModeBase.prototype.formatContextPath = function(this: InteractiveModeBase, p: string): string {
-    const cwd = path.resolve(this.sessionManager.getCwd());
-    const absolutePath = path.isAbsolute(p)
-      ? path.resolve(p)
-      : path.resolve(cwd, p);
-    const relativePath = getCwdRelativePath(absolutePath, cwd);
-    if (relativePath !== undefined) {
-      return relativePath;
-    }
+InteractiveModeBase.prototype.formatContextPath = function (this: InteractiveModeBase, p: string): string {
+	const cwd = path.resolve(this.sessionManager.getCwd());
+	const absolutePath = path.isAbsolute(p) ? path.resolve(p) : path.resolve(cwd, p);
+	const relativePath = getCwdRelativePath(absolutePath, cwd);
+	if (relativePath !== undefined) {
+		return relativePath;
+	}
 
-    return this.formatDisplayPath(absolutePath);
-  };
+	return this.formatDisplayPath(absolutePath);
+};
 
-InteractiveModeBase.prototype.getStartupModelLabel = function(this: InteractiveModeBase): string {
-    const model = this.session.state.model;
-    let modelLabel = model?.id ?? "no-model";
+InteractiveModeBase.prototype.getStartupModelLabel = function (this: InteractiveModeBase): string {
+	const model = this.session.state.model;
+	let modelLabel = model?.id ?? "no-model";
 
-    if (model?.reasoning) {
-      modelLabel = `${modelLabel} ${this.session.thinkingLevel || "off"}`;
-    }
+	if (model?.reasoning) {
+		modelLabel = `${modelLabel} ${this.session.thinkingLevel || "off"}`;
+	}
 
-    if (!model) {
-      return modelLabel;
-    }
+	if (!model) {
+		return modelLabel;
+	}
 
-    const fastModeEnabled = shouldApplyCodexFastMode(
-      model,
-      this.session.settingsManager.getCodexFastModeSettings(),
-      this.session.orchestrationContext,
-    );
-    return formatCodexFastModeModelLabel(modelLabel, fastModeEnabled);
-  };
+	const fastModeEnabled = shouldApplyCodexFastMode(
+		model,
+		this.session.settingsManager.getCodexFastModeSettings(),
+		this.session.orchestrationContext,
+	);
+	return formatCodexFastModeModelLabel(modelLabel, fastModeEnabled);
+};
 
-InteractiveModeBase.prototype.getStartupIdentityText = function(this: InteractiveModeBase, maxWidth?: number, gap = 0, manifestoPhase = 4): string {
+InteractiveModeBase.prototype.getStartupIdentityText = function (
+	this: InteractiveModeBase,
+	maxWidth?: number,
+	gap = 0,
+	manifestoPhase = 4,
+): string {
 	const appLabel = APP_NAME.length > 0 ? `${APP_NAME[0]!.toUpperCase()}${APP_NAME.slice(1)}` : "Atomic";
 	const noColor = process.env.NO_COLOR !== undefined;
-	const fg = (role: "text" | "muted" | "dim", text: string): string => noColor ? text : theme.fg(role, text);
+	const fg = (role: "text" | "muted" | "dim", text: string): string => (noColor ? text : theme.fg(role, text));
 	const title = `${theme.bold(fg("text", appLabel))} ${fg("muted", `v${this.version}`)}`;
 	const model = this.session.state.model;
 	const provider = model ? fg("dim", `(${model.provider})`) : fg("dim", "(no-provider)");
@@ -486,13 +511,18 @@ InteractiveModeBase.prototype.getStartupIdentityText = function(this: Interactiv
 	const metaLines = showMeta
 		? [title, modelLine, fg("muted", this.formatDisplayPath(this.sessionManager.getCwd()))]
 		: [];
-	return composeStartupIdentity(markLines, metaLines, maxWidth, gap === 0 ? renderStartupManifesto(manifestoPhase) : []);
+	return composeStartupIdentity(
+		markLines,
+		metaLines,
+		maxWidth,
+		gap === 0 ? renderStartupManifesto(manifestoPhase) : [],
+	);
 };
 
-InteractiveModeBase.prototype.getAtomicAnsiMarkLines = function(this: InteractiveModeBase, gap = 0): string[] {
+InteractiveModeBase.prototype.getAtomicAnsiMarkLines = function (this: InteractiveModeBase, gap = 0): string[] {
 	return renderAtomicAssemblyBanner(gap, theme, this.session.thinkingLevel || "off");
 };
 
-InteractiveModeBase.prototype.getStartupExpansionState = function(this: InteractiveModeBase): boolean {
-    return this.options.verbose || this.toolOutputExpanded;
-  };
+InteractiveModeBase.prototype.getStartupExpansionState = function (this: InteractiveModeBase): boolean {
+	return this.options.verbose || this.toolOutputExpanded;
+};

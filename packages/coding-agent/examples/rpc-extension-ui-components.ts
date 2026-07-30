@@ -1,4 +1,4 @@
-import { type Component, Input, matchesKey, SelectList, TUI } from "@earendil-works/pi-tui";
+import { type Component, Input, matchesKey, SelectList, type TUI } from "@earendil-works/pi-tui";
 
 const GREEN = "\x1b[32m";
 const YELLOW = "\x1b[33m";
@@ -186,4 +186,3 @@ export class InputDialog implements Component {
 		];
 	}
 }
-

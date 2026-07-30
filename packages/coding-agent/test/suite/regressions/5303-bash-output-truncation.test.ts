@@ -1,4 +1,4 @@
-import { type ChildProcess, type ChildProcessByStdio } from "node:child_process";
+import type { ChildProcess, ChildProcessByStdio } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough, type Readable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";

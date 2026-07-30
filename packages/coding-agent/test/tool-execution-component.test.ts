@@ -101,8 +101,13 @@ describe("ToolExecutionComponent parity", () => {
 	test("uses built-in rendering for built-in overrides without custom renderers", () => {
 		const overrideDefinition: ToolDefinition = { ...createBaseToolDefinition("edit") };
 		const component = new ToolExecutionComponent(
-			"edit", "tool-2", { input: "[README.md#ABCD]\nreplace 1..1:\n+after" }, {},
-			overrideDefinition, createFakeTui(), process.cwd(),
+			"edit",
+			"tool-2",
+			{ input: "[README.md#ABCD]\nreplace 1..1:\n+after" },
+			{},
+			overrideDefinition,
+			createFakeTui(),
+			process.cwd(),
 		);
 		component.updateResult({ content: [], details: { diff: "+1 after", firstChangedLine: 1 }, isError: false });
 		const rawRendered = component.render(120).join("\n");

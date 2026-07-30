@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,11 +31,13 @@ export function spawnRpcClientProcess(options: RpcClientProcessOptions): ChildPr
 			env: {
 				...process.env,
 				...options.env,
-				...(options.interactiveEngine ? {
-					ATOMIC_INTERACTIVE_ENGINE_CHILD: "1",
-					ATOMIC_INTERACTIVE_ENGINE_HOST_PID: String(process.pid),
-					ATOMIC_INTERACTIVE_ENGINE_GUARD_FILE: guardianFile!,
-				} : {}),
+				...(options.interactiveEngine
+					? {
+							ATOMIC_INTERACTIVE_ENGINE_CHILD: "1",
+							ATOMIC_INTERACTIVE_ENGINE_HOST_PID: String(process.pid),
+							ATOMIC_INTERACTIVE_ENGINE_GUARD_FILE: guardianFile!,
+						}
+					: {}),
 			},
 			detached: options.interactiveEngine && process.platform !== "win32",
 			stdio: ["pipe", "pipe", "pipe"],
@@ -52,7 +54,9 @@ export function spawnRpcClientProcess(options: RpcClientProcessOptions): ChildPr
 export async function terminateRpcClientProcess(child: ChildProcess, processTree: boolean): Promise<void> {
 	if (child.exitCode !== null || child.signalCode !== null) return;
 	let resolveExit!: () => void;
-	const exited = new Promise<void>((resolve) => { resolveExit = resolve; });
+	const exited = new Promise<void>((resolve) => {
+		resolveExit = resolve;
+	});
 	child.once("exit", resolveExit);
 	const guardianFile = guardianFiles.get(child);
 	child.kill("SIGTERM");

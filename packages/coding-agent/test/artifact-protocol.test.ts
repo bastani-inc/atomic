@@ -2,13 +2,30 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+	createArtifactRouter,
+	readArtifactUrl,
+	registerArtifactDir,
+	resolveArtifactUrl,
+	unregisterArtifactDir,
+} from "../src/core/tools/artifact-protocol.ts";
 import { ArtifactManager, getArtifactManager, resetArtifactManagerCache } from "../src/core/tools/artifacts.ts";
-import { createArtifactRouter, readArtifactUrl, registerArtifactDir, resolveArtifactUrl, unregisterArtifactDir } from "../src/core/tools/artifact-protocol.ts";
 
 const dirs: string[] = [];
-async function tempDir() { const d = await mkdtemp(join(tmpdir(), "atomic-art-")); dirs.push(d); return d; }
-beforeEach(() => { resetArtifactManagerCache(); });
-afterEach(async () => { for (const d of dirs.splice(0)) { unregisterArtifactDir(d); await rm(d, { recursive: true, force: true }); } });
+async function tempDir() {
+	const d = await mkdtemp(join(tmpdir(), "atomic-art-"));
+	dirs.push(d);
+	return d;
+}
+beforeEach(() => {
+	resetArtifactManagerCache();
+});
+afterEach(async () => {
+	for (const d of dirs.splice(0)) {
+		unregisterArtifactDir(d);
+		await rm(d, { recursive: true, force: true });
+	}
+});
 
 describe("artifact manager", () => {
 	it("saves with sequential ids and scan-inits existing", async () => {

@@ -73,6 +73,7 @@ export function migrateAuthToAuthJson(): string[] {
 }
 
 import { migrateAuthJsonConfigValues, migrateModelsJsonConfigValues } from "./migrations-config-values.ts";
+
 function getAgentDirsForConfigMigration(): string[] {
 	const dirs = new Set<string>();
 	for (const path of [...getAgentConfigPaths("auth.json"), ...getAgentConfigPaths("models.json")]) {

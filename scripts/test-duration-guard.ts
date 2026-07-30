@@ -125,7 +125,10 @@ const NAME_LITERAL = /^\s*(["'`])((?:\\.|(?!\1).)*)\1/u;
 function numericConstants(lines: string[]): Map<string, number> {
 	const constants = new Map<string, number>();
 	for (const line of lines) {
-		const match = /^\s*(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::\s*number\s*)?=\s*([0-9][0-9_]*)\s*;?\s*$/u.exec(line);
+		const match =
+			/^\s*(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::\s*number\s*)?=\s*([0-9][0-9_]*)\s*;?\s*$/u.exec(
+				line,
+			);
 		if (match?.[1] && match[2]) constants.set(match[1], Number(match[2].replaceAll("_", "")));
 	}
 	return constants;
@@ -229,7 +232,10 @@ export function declaredTimeouts(source: string): Map<string, number> {
 			const candidate = lines[back] as string;
 			const opener = declaration.exec(candidate);
 			if (!opener || opener[1] !== tail.indent) continue;
-			const head = lines.slice(back, back + 3).join(" ").slice((opener[0] as string).length);
+			const head = lines
+				.slice(back, back + 3)
+				.join(" ")
+				.slice((opener[0] as string).length);
 			const name = NAME_LITERAL.exec(head)?.[2];
 			if (name) record([...describeScopes(lines, back, tail.indent), name].join(" > "), value);
 			break;
@@ -286,11 +292,20 @@ function scriptInvocation(command: string[]): { cwd: string; name: string } | un
 	if (!name) return undefined;
 	// Workspace names are resolved through the root manifest's `workspaces` glob
 	// only in the one shape this repository uses.
-	const cwd = workspace === undefined ? "." : workspace.startsWith("@bastani/") ? `packages/${workspace === "@bastani/atomic" ? "coding-agent" : workspace.slice("@bastani/".length)}` : workspace;
+	const cwd =
+		workspace === undefined
+			? "."
+			: workspace.startsWith("@bastani/")
+				? `packages/${workspace === "@bastani/atomic" ? "coding-agent" : workspace.slice("@bastani/".length)}`
+				: workspace;
 	return { cwd, name };
 }
 
-async function readConfiguredTimeout(rootDir: string, cwd: string, project: string | undefined): Promise<number | undefined> {
+async function readConfiguredTimeout(
+	rootDir: string,
+	cwd: string,
+	project: string | undefined,
+): Promise<number | undefined> {
 	for (const candidate of ["vitest.config.ts", "vitest.config.mts", "vitest.config.js"]) {
 		const path = resolve(rootDir, cwd, candidate);
 		if (!existsSync(path)) continue;
@@ -325,7 +340,10 @@ async function readConfiguredTimeout(rootDir: string, cwd: string, project: stri
  * and scoring its output against one would report drift against a ceiling
  * nothing enforces.
  */
-export async function resolveDefaultTimeoutMs(command: string[], rootDir: string = process.cwd()): Promise<number | undefined> {
+export async function resolveDefaultTimeoutMs(
+	command: string[],
+	rootDir: string = process.cwd(),
+): Promise<number | undefined> {
 	let args = command;
 	let cwd = ".";
 	const script = scriptInvocation(command);
@@ -382,9 +400,7 @@ export function evaluateDurations(
 	samples.sort((left, right) => right.ratio - left.ratio);
 	const enabled = defaultTimeoutMs !== undefined;
 	const failures = enabled ? samples.filter((sample) => sample.ratio >= FAIL_RATIO) : [];
-	const warnings = enabled
-		? samples.filter((sample) => sample.ratio >= WARN_RATIO && sample.ratio < FAIL_RATIO)
-		: [];
+	const warnings = enabled ? samples.filter((sample) => sample.ratio >= WARN_RATIO && sample.ratio < FAIL_RATIO) : [];
 	// A suite that ran tests yet yielded no durations has not been measured. An
 	// empty sample set is otherwise indistinguishable from a healthy run, which
 	// is exactly how a silently disabled gate survives. Under the JSON reporter

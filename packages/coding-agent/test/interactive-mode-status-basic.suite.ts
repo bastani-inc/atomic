@@ -117,18 +117,18 @@ describe("InteractiveMode /trust", () => {
 				runtimeHost: { services: { agentDir: runtimeAgentDir } },
 				showStatus: vi.fn(),
 				ui: { requestRender: vi.fn() },
-				showSelector: vi.fn((factory: (done: () => void) => { component: { handleInput(input: string): void } }) => {
-					createdSelector = factory(vi.fn()).component;
-				}),
+				showSelector: vi.fn(
+					(factory: (done: () => void) => { component: { handleInput(input: string): void } }) => {
+						createdSelector = factory(vi.fn()).component;
+					},
+				),
 			};
 
 			(InteractiveMode as any).prototype.showTrustSelector.call(fakeThis);
 			createdSelector?.handleInput("\n");
 
 			expect(new ProjectTrustStore(runtimeAgentDir).get(cwd)).toBe(true);
-			expect(fakeThis.showStatus).toHaveBeenCalledWith(
-				expect.stringContaining("Saved trust decision: trusted"),
-			);
+			expect(fakeThis.showStatus).toHaveBeenCalledWith(expect.stringContaining("Saved trust decision: trusted"));
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
@@ -362,4 +362,3 @@ describe("InteractiveMode.createExtensionUIContext setTheme", () => {
 		expect(fakeThis.ui.requestRender).not.toHaveBeenCalled();
 	});
 });
-

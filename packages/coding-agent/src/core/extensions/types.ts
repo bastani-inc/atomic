@@ -26,17 +26,17 @@ export type * from "./provider-types.ts";
 export type * from "./runtime-types.ts";
 export type * from "./session-events.ts";
 export type * from "./tool-events.ts";
-export type * from "./tool-types.ts";
-export type * from "./ui-types.ts";
-
-export { defineTool } from "./tool-types.ts";
 export {
 	isBashToolResult,
 	isEditToolResult,
 	isFindToolResult,
 	isLsToolResult,
-	isSearchToolResult,
 	isReadToolResult,
+	isSearchToolResult,
 	isToolCallEventType,
 	isWriteToolResult,
 } from "./tool-events.ts";
+export type * from "./tool-types.ts";
+
+export { defineTool } from "./tool-types.ts";
+export type * from "./ui-types.ts";

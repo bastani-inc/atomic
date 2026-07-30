@@ -80,7 +80,10 @@ export function resolveNearestProjectChainDirs(cwd: string): { readDirs: string[
 
 	const preferredDir = path.join(getProjectConfigDirs(projectRoot)[0]!, "chains");
 	return {
-		readDirs: getProjectConfigDirs(projectRoot).reverse().map((configDir) => path.join(configDir, "chains")).filter(isDirectory),
+		readDirs: getProjectConfigDirs(projectRoot)
+			.reverse()
+			.map((configDir) => path.join(configDir, "chains"))
+			.filter(isDirectory),
 		preferredDir,
 	};
 }

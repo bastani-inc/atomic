@@ -4,10 +4,18 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { Message } from "@earendil-works/pi-ai/compat";
 import { getAgentDir as getAtomicAgentDir } from "@bastani/atomic";
+import type { Message } from "@earendil-works/pi-ai/compat";
 import { formatToolCall } from "./formatters.ts";
-import type { AgentProgress, AsyncStatus, Details, DisplayItem, ErrorInfo, SingleResult, ToolCallSummary } from "./types.ts";
+import type {
+	AgentProgress,
+	AsyncStatus,
+	Details,
+	DisplayItem,
+	ErrorInfo,
+	SingleResult,
+	ToolCallSummary,
+} from "./types.ts";
 
 // ============================================================================
 // File System Utilities
@@ -29,10 +37,12 @@ export function resolveChildCwd(baseCwd: string, childCwd: string | undefined): 
 }
 
 function isNotFoundError(error: unknown): boolean {
-	return typeof error === "object"
-		&& error !== null
-		&& "code" in error
-		&& (error as NodeJS.ErrnoException).code === "ENOENT";
+	return (
+		typeof error === "object" &&
+		error !== null &&
+		"code" in error &&
+		(error as NodeJS.ErrnoException).code === "ENOENT"
+	);
 }
 
 /**
@@ -86,7 +96,7 @@ export function readStatus(asyncDir: string): AsyncStatus | null {
 /**
  * Get human-readable last activity time for a file
  */
-	export function getLastActivity(outputFile: string | undefined): string {
+export function getLastActivity(outputFile: string | undefined): string {
 	if (!outputFile) return "";
 	try {
 		const stat = fs.statSync(outputFile);
@@ -105,7 +115,8 @@ export function readStatus(asyncDir: string): AsyncStatus | null {
  */
 export function findLatestSessionFile(sessionDir: string): string | null {
 	if (!fs.existsSync(sessionDir)) return null;
-	const files = fs.readdirSync(sessionDir)
+	const files = fs
+		.readdirSync(sessionDir)
 		.filter((f) => f.endsWith(".jsonl"))
 		.map((f) => {
 			const filePath = path.join(sessionDir, f);
@@ -158,8 +169,9 @@ function getStructuredOutputToolResultText(message: Message): string | undefined
 
 function getAssistantOutputText(message: Message): string | undefined {
 	if (message.role !== "assistant") return undefined;
-	const hasAssistantError = ("errorMessage" in message && typeof message.errorMessage === "string" && message.errorMessage.length > 0)
-		|| ("stopReason" in message && message.stopReason === "error");
+	const hasAssistantError =
+		("errorMessage" in message && typeof message.errorMessage === "string" && message.errorMessage.length > 0) ||
+		("stopReason" in message && message.stopReason === "error");
 	if (hasAssistantError) return undefined;
 	return getLastNonEmptyTextContent(message.content);
 }
@@ -228,9 +240,10 @@ function extractToolCallSummaries(messages: Message[] | undefined): ToolCallSumm
 		if (msg.role !== "assistant") continue;
 		for (const part of msg.content) {
 			if (part.type !== "toolCall") continue;
-			const args = typeof part.arguments === "object" && part.arguments !== null && !Array.isArray(part.arguments)
-				? part.arguments
-				: {};
+			const args =
+				typeof part.arguments === "object" && part.arguments !== null && !Array.isArray(part.arguments)
+					? part.arguments
+					: {};
 			summaries.push({
 				text: formatToolCall(part.name, args),
 				expandedText: formatToolCall(part.name, args, true),
@@ -255,9 +268,7 @@ export function compactForegroundDetails(details: Details): Details {
 	return {
 		...details,
 		results: details.results.map(compactForegroundResult),
-		progress: details.progress
-			? details.progress.map(compactCompletedProgress)
-			: undefined,
+		progress: details.progress ? details.progress.map(compactCompletedProgress) : undefined,
 	};
 }
 
@@ -269,9 +280,11 @@ export function detectSubagentError(messages: Message[]): ErrorInfo {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const msg = messages[i];
 		if (msg.role === "assistant") {
-			const hasText = Array.isArray(msg.content) && msg.content.some(
-				(c) => c.type === "text" && "text" in c && typeof c.text === "string" && c.text.trim().length > 0,
-			);
+			const hasText =
+				Array.isArray(msg.content) &&
+				msg.content.some(
+					(c) => c.type === "text" && "text" in c && typeof c.text === "string" && c.text.trim().length > 0,
+				);
 			if (hasText) {
 				lastAssistantTextIndex = i;
 				break;
@@ -367,7 +380,8 @@ export function extractToolArgsPreview(args: Record<string, unknown>): string {
 	const queriesPreview = previewArray(args.queries);
 	if (queriesPreview) return truncatePreview(queriesPreview, 60);
 	if (typeof args.query === "string" && args.query.trim().length > 0) return truncatePreview(args.query, 60);
-	if (typeof args.workflow === "string" && args.workflow.trim().length > 0) return `workflow=${truncatePreview(args.workflow, 48)}`;
+	if (typeof args.workflow === "string" && args.workflow.trim().length > 0)
+		return `workflow=${truncatePreview(args.workflow, 48)}`;
 
 	if (typeof args.url === "string" && args.url.trim().length > 0) return truncatePreview(args.url, 60);
 	const urlsPreview = previewArray(args.urls);

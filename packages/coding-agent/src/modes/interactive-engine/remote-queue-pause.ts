@@ -1,5 +1,5 @@
-import type { RpcClient } from "../rpc/rpc-client.js";
 import { sleep } from "../../utils/sleep.js";
+import type { RpcClient } from "../rpc/rpc-client.js";
 
 export class RemoteQueuePause {
 	private paused = false;

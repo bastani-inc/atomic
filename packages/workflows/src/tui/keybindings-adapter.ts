@@ -35,33 +35,29 @@
  * pi-tui `KeybindingsManager.matches` is fully covariant with this type.
  */
 export interface KeybindingsLike {
-  matches(data: string, action: string): boolean;
+	matches(data: string, action: string): boolean;
 }
 
 export const APP_ACTION = {
-  toolsExpand: "app.tools.expand",
+	toolsExpand: "app.tools.expand",
 } as const;
 
 export const TUI_ACTION = {
-  editorCursorUp: "tui.editor.cursorUp",
-  editorCursorDown: "tui.editor.cursorDown",
-  editorCursorLeft: "tui.editor.cursorLeft",
-  editorCursorRight: "tui.editor.cursorRight",
-  inputSubmit: "tui.input.submit",
-  selectUp: "tui.select.up",
-  selectDown: "tui.select.down",
-  selectPageUp: "tui.select.pageUp",
-  selectPageDown: "tui.select.pageDown",
-  selectConfirm: "tui.select.confirm",
+	editorCursorUp: "tui.editor.cursorUp",
+	editorCursorDown: "tui.editor.cursorDown",
+	editorCursorLeft: "tui.editor.cursorLeft",
+	editorCursorRight: "tui.editor.cursorRight",
+	inputSubmit: "tui.input.submit",
+	selectUp: "tui.select.up",
+	selectDown: "tui.select.down",
+	selectPageUp: "tui.select.pageUp",
+	selectPageDown: "tui.select.pageDown",
+	selectConfirm: "tui.select.confirm",
 } as const;
 
 /** Runtime guard for hosts that wire the keybindings manager. */
 export function isKeybindingsLike(kb: unknown): kb is KeybindingsLike {
-  return (
-    typeof kb === "object" &&
-    kb !== null &&
-    typeof (kb as { matches?: unknown }).matches === "function"
-  );
+	return typeof kb === "object" && kb !== null && typeof (kb as { matches?: unknown }).matches === "function";
 }
 
 /**
@@ -71,13 +67,9 @@ export function isKeybindingsLike(kb: unknown): kb is KeybindingsLike {
  * expected to provide a `KeybindingsManager` and tests pass a real or
  * structural fake one.
  */
-export function matchesAction(
-  kb: KeybindingsLike | undefined,
-  data: string,
-  action: string,
-): boolean {
-  if (!kb) return false;
-  return kb.matches(data, action);
+export function matchesAction(kb: KeybindingsLike | undefined, data: string, action: string): boolean {
+	if (!kb) return false;
+	return kb.matches(data, action);
 }
 
 // ── Word boundary helpers ────────────────────────────────────────────────
@@ -91,7 +83,7 @@ export function matchesAction(
 // helper free of native-module deps so tests run on any host.
 
 function isWordBoundary(ch: string): boolean {
-  return /\s/.test(ch);
+	return /\s/.test(ch);
 }
 
 /**
@@ -101,12 +93,12 @@ function isWordBoundary(ch: string): boolean {
  * the start of the string.
  */
 export function wordLeft(text: string, caret: number): number {
-  let i = Math.max(0, Math.min(caret, text.length));
-  // Skip trailing whitespace (including newlines).
-  while (i > 0 && isWordBoundary(text[i - 1]!)) i -= 1;
-  // Skip word body.
-  while (i > 0 && !isWordBoundary(text[i - 1]!)) i -= 1;
-  return i;
+	let i = Math.max(0, Math.min(caret, text.length));
+	// Skip trailing whitespace (including newlines).
+	while (i > 0 && isWordBoundary(text[i - 1]!)) i -= 1;
+	// Skip word body.
+	while (i > 0 && !isWordBoundary(text[i - 1]!)) i -= 1;
+	return i;
 }
 
 /**
@@ -116,11 +108,11 @@ export function wordLeft(text: string, caret: number): number {
  * the string.
  */
 export function wordRight(text: string, caret: number): number {
-  const len = text.length;
-  let i = Math.max(0, Math.min(caret, len));
-  while (i < len && isWordBoundary(text[i]!)) i += 1;
-  while (i < len && !isWordBoundary(text[i]!)) i += 1;
-  return i;
+	const len = text.length;
+	let i = Math.max(0, Math.min(caret, len));
+	while (i < len && isWordBoundary(text[i]!)) i += 1;
+	while (i < len && !isWordBoundary(text[i]!)) i += 1;
+	return i;
 }
 
 // ── Logical-line helpers ─────────────────────────────────────────────────
@@ -132,14 +124,14 @@ export function wordRight(text: string, caret: number): number {
 // offset of the next `\n` (or `text.length`).
 
 export function lineStart(text: string, caret: number): number {
-  const c = Math.max(0, Math.min(caret, text.length));
-  return text.lastIndexOf("\n", c - 1) + 1;
+	const c = Math.max(0, Math.min(caret, text.length));
+	return text.lastIndexOf("\n", c - 1) + 1;
 }
 
 export function lineEnd(text: string, caret: number): number {
-  const c = Math.max(0, Math.min(caret, text.length));
-  const nl = text.indexOf("\n", c);
-  return nl === -1 ? text.length : nl;
+	const c = Math.max(0, Math.min(caret, text.length));
+	const nl = text.indexOf("\n", c);
+	return nl === -1 ? text.length : nl;
 }
 
 /**
@@ -149,23 +141,23 @@ export function lineEnd(text: string, caret: number): number {
  * text and `caret`).
  */
 export interface DeleteRangeResult {
-  text: string;
-  caret: number;
+	text: string;
+	caret: number;
 }
 
 export function deleteRange(text: string, start: number, end: number, caret: number): DeleteRangeResult {
-  const len = text.length;
-  const s = Math.max(0, Math.min(start, len));
-  const e = Math.max(s, Math.min(end, len));
-  if (s === e) return { text, caret };
-  const next = text.slice(0, s) + text.slice(e);
-  // The caret tracks the user's logical position. Cases:
-  //   - caret < s              → unaffected, stays in place
-  //   - s <= caret <= e        → collapses to s
-  //   - caret > e              → shifts left by the deleted run's length
-  let nextCaret: number;
-  if (caret <= s) nextCaret = caret;
-  else if (caret <= e) nextCaret = s;
-  else nextCaret = caret - (e - s);
-  return { text: next, caret: nextCaret };
+	const len = text.length;
+	const s = Math.max(0, Math.min(start, len));
+	const e = Math.max(s, Math.min(end, len));
+	if (s === e) return { text, caret };
+	const next = text.slice(0, s) + text.slice(e);
+	// The caret tracks the user's logical position. Cases:
+	//   - caret < s              → unaffected, stays in place
+	//   - s <= caret <= e        → collapses to s
+	//   - caret > e              → shifts left by the deleted run's length
+	let nextCaret: number;
+	if (caret <= s) nextCaret = caret;
+	else if (caret <= e) nextCaret = s;
+	else nextCaret = caret - (e - s);
+	return { text: next, caret: nextCaret };
 }

@@ -4,8 +4,8 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "vitest";
-import { WORKFLOW_SESSION_METADATA_ENV } from "../../packages/coding-agent/src/core/session-manager-classification.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { WORKFLOW_SESSION_METADATA_ENV } from "../../packages/coding-agent/src/core/session-manager-classification.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
@@ -34,7 +34,11 @@ function assistantMessage(text: string) {
 		provider: "openai",
 		model: "gpt-5.4",
 		usage: {
-			input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 		stopReason: "stop" as const,
@@ -142,16 +146,32 @@ describe("workflow subagent persisted session classification", () => {
 			const sessionDir = join(root, "background-sessions");
 			const resultPath = join(root, "result.json");
 			const configPath = join(root, "runner-config.json");
-			writeFileSync(configPath, JSON.stringify({
-				id: "background-workflow-child",
-				steps: [{
-					agent: "fake-worker", task: "Do work", cwd: root,
-					systemPrompt: "Finish immediately.", systemPromptMode: "replace",
-					inheritProjectContext: false, inheritSkills: false,
-				}],
-				resultPath, cwd: root, placeholder: "{previous}", asyncDir, sessionDir,
-				piArgv1: scriptPath, resultMode: "single", workflowStageSubagentGuard: true,
-			}), "utf8");
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					id: "background-workflow-child",
+					steps: [
+						{
+							agent: "fake-worker",
+							task: "Do work",
+							cwd: root,
+							systemPrompt: "Finish immediately.",
+							systemPromptMode: "replace",
+							inheritProjectContext: false,
+							inheritSkills: false,
+						},
+					],
+					resultPath,
+					cwd: root,
+					placeholder: "{previous}",
+					asyncDir,
+					sessionDir,
+					piArgv1: scriptPath,
+					resultMode: "single",
+					workflowStageSubagentGuard: true,
+				}),
+				"utf8",
+			);
 			const runnerPath = join(process.cwd(), "packages/subagents/src/runs/background/subagent-runner.ts");
 			const proc = spawnSync(bunExecutable(), [runnerPath, configPath], {
 				cwd: process.cwd(),

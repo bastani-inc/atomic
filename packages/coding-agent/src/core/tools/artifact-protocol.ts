@@ -43,7 +43,9 @@ export function resolveArtifactUrl(url: string, pinnedDirs: readonly string[] = 
 		const resolved = getArtifactManager(dir).resolve(id);
 		if (resolved) return resolved;
 	}
-	const available = [...new Set([...pinnedDirs, ...activeArtifactDirs])].flatMap((dir) => getArtifactManager(dir).list());
+	const available = [...new Set([...pinnedDirs, ...activeArtifactDirs])].flatMap((dir) =>
+		getArtifactManager(dir).list(),
+	);
 	throw new Error(`Artifact ${id} not found. Available: ${available.join(", ") || "none"}`);
 }
 
@@ -52,7 +54,11 @@ export function createArtifactRouter(getPinnedDirs: () => readonly string[]): In
 	return {
 		resolve: (url) => {
 			if (!/^artifact:\/\//i.test(url)) return undefined;
-			try { return resolveArtifactUrl(url, getPinnedDirs()); } catch { return undefined; }
+			try {
+				return resolveArtifactUrl(url, getPinnedDirs());
+			} catch {
+				return undefined;
+			}
 		},
 		read: (url) => {
 			if (!/^artifact:\/\//i.test(url)) return undefined;

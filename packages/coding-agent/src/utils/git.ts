@@ -6,7 +6,7 @@ import hostedGitInfo from "hosted-git-info";
  * the composed clone URL to characters that cannot carry shell or option
  * meaning, so a parsed source can never smuggle a metacharacter downstream.
  */
-const SAFE_CLONE_URL = /^[A-Za-z0-9._~:@\/%+-]+$/;
+const SAFE_CLONE_URL = /^[A-Za-z0-9._~:@/%+-]+$/;
 
 /**
  * Parsed git URL information.

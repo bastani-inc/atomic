@@ -1,9 +1,9 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/compat";
 import { afterEach, describe, expect, test } from "vitest";
+import { StageSessionPause } from "../../workflows/src/runs/foreground/stage-runner-pause.ts";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import { PROTECTED_RECONCILIATION_CUSTOM_TYPE } from "../src/core/agent-session-persistent-custom-messages.ts";
-import { StageSessionPause } from "../../workflows/src/runs/foreground/stage-runner-pause.ts";
 import { createHarness, type Harness } from "./suite/harness.ts";
 
 type PausedSession = AgentSession & {

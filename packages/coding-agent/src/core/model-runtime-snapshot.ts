@@ -43,10 +43,7 @@ export function createModelRuntimeSnapshot(
 	};
 }
 
-export function updateSnapshotModels(
-	snapshot: ModelRuntimeSnapshot,
-	all: readonly Model<Api>[],
-): ModelRuntimeSnapshot {
+export function updateSnapshotModels(snapshot: ModelRuntimeSnapshot, all: readonly Model<Api>[]): ModelRuntimeSnapshot {
 	return {
 		...snapshot,
 		all,
@@ -54,10 +51,7 @@ export function updateSnapshotModels(
 	};
 }
 
-export function addRuntimeApiKeyProvider(
-	snapshot: ModelRuntimeSnapshot,
-	providerId: string,
-): ModelRuntimeSnapshot {
+export function addRuntimeApiKeyProvider(snapshot: ModelRuntimeSnapshot, providerId: string): ModelRuntimeSnapshot {
 	const configuredProviders = new Set(snapshot.configuredProviders).add(providerId);
 	return {
 		...snapshot,

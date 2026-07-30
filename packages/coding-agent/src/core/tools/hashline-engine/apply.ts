@@ -9,7 +9,11 @@
  * which absorbs common model mistakes where a payload restates unchanged range
  * boundaries or duplicates/drops structural closers.
  */
-import { afterInsertLandingShiftWarning, blockInsertLandingShiftWarning, UNRESOLVED_BLOCK_INTERNAL } from "./messages.js";
+import {
+	afterInsertLandingShiftWarning,
+	blockInsertLandingShiftWarning,
+	UNRESOLVED_BLOCK_INTERNAL,
+} from "./messages.js";
 import { cloneCursor } from "./tokenizer.js";
 import type { Anchor, ApplyResult, Cursor, Edit } from "./types.js";
 
@@ -49,7 +53,7 @@ function trailingPhantomLine(fileLines: readonly string[]): number {
 function dropTrailingPhantomDeletes(edits: AppliedEdit[], fileLines: readonly string[]): AppliedEdit[] {
 	const phantomLine = trailingPhantomLine(fileLines);
 	if (phantomLine === 0) return edits;
-	return edits.filter(edit => edit.kind !== "delete" || edit.anchor.line !== phantomLine);
+	return edits.filter((edit) => edit.kind !== "delete" || edit.anchor.line !== phantomLine);
 }
 
 /**
@@ -455,8 +459,8 @@ function repairReplacementBoundaries(
 			i++;
 			continue;
 		}
-		const inserts = group.insertIndices.map(idx => edits[idx]);
-		const deletes = group.deleteIndices.map(idx => edits[idx]);
+		const inserts = group.insertIndices.map((idx) => edits[idx]);
+		const deletes = group.deleteIndices.map((idx) => edits[idx]);
 		i = group.deleteIndices[group.deleteIndices.length - 1] + 1;
 
 		const boundaryEcho = findBoundaryEcho(group, fileLines);
@@ -580,7 +584,7 @@ function bodyTargetIndent(rows: readonly string[]): string | undefined {
 	const nonBlank = rows.filter(hasNonWhitespace);
 	if (nonBlank.length === 0) return undefined;
 	// A body of pure closers re-balances delimiters; it claims no depth.
-	if (nonBlank.every(row => STRUCTURAL_CLOSER_RE.test(row))) return undefined;
+	if (nonBlank.every((row) => STRUCTURAL_CLOSER_RE.test(row))) return undefined;
 	let target = leadingIndent(nonBlank[0] ?? "");
 	for (const row of nonBlank) {
 		const indent = leadingIndent(row);
@@ -707,7 +711,7 @@ function repairAfterInsertLandings(
 		}
 	};
 	for (const group of groups.values()) {
-		const target = bodyTargetIndent(group.members.map(idx => (edits[idx] as InsertEdit).text));
+		const target = bodyTargetIndent(group.members.map((idx) => (edits[idx] as InsertEdit).text));
 		if (target === undefined) continue;
 		const outward = resolveShiftedLanding(group, target, fileLines, targetedLines);
 		if (outward !== undefined) {

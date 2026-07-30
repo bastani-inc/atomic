@@ -3,8 +3,8 @@ import { basename, dirname, join } from "node:path";
 import { maxSatisfying, rcompare, satisfies } from "semver";
 import { APP_NAME, CONFIG_DIR_NAME, getProjectConfigDirs } from "../config.ts";
 import { markPathIgnoredByCloudSync } from "../utils/paths.ts";
-import { NETWORK_TIMEOUT_MS } from "./package-manager-constants.ts";
 import { runCommand, runCommandCapture, runCommandSync } from "./package-manager-command.ts";
+import { NETWORK_TIMEOUT_MS } from "./package-manager-constants.ts";
 import { isOfflineModeEnabled } from "./package-manager-env.ts";
 import { getNpmInstallRoot } from "./package-manager-paths.ts";
 import type { InstalledSourceScope, NpmSource, PackageManagerContext, SourceScope } from "./package-manager-types.ts";
@@ -58,11 +58,7 @@ export function getGitDependencyInstallArgs(context: PackageManagerContext): str
 	return ["install", "--omit=dev"];
 }
 
-export function getNpmInstallArgs(
-	context: PackageManagerContext,
-	specs: string[],
-	installRoot: string,
-): string[] {
+export function getNpmInstallArgs(context: PackageManagerContext, specs: string[], installRoot: string): string[] {
 	const packageManagerName = getPackageManagerName(context);
 	if (packageManagerName === "bun") {
 		return ["install", ...specs, "--cwd", installRoot, "--omit=peer"];
@@ -188,7 +184,9 @@ function getLegacyGlobalNpmInstallPath(context: PackageManagerContext, source: N
 	try {
 		const pnpmPath = getPnpmGlobalPackagePath(context, source.name);
 		if (pnpmPath) return pnpmPath;
-		const globalRoot = context.driver?.getGlobalNpmRoot ? context.driver.getGlobalNpmRoot() : getGlobalNpmRoot(context);
+		const globalRoot = context.driver?.getGlobalNpmRoot
+			? context.driver.getGlobalNpmRoot()
+			: getGlobalNpmRoot(context);
 		return join(globalRoot, source.name);
 	} catch {
 		return undefined;
@@ -250,7 +248,11 @@ export async function npmHasAvailableUpdate(
 	const installedVersion = getInstalledNpmVersion(installedPath);
 	if (!installedVersion) return false;
 	try {
-		const targetVersion = await getLatestNpmVersion(context, source.version ? source.spec : source.name, source.range);
+		const targetVersion = await getLatestNpmVersion(
+			context,
+			source.version ? source.spec : source.name,
+			source.range,
+		);
 		return targetVersion !== installedVersion;
 	} catch {
 		return false;
@@ -276,10 +278,14 @@ export async function getLatestNpmVersion(
 ): Promise<string> {
 	const npmCommand = getNpmCommand(context);
 	const stdout = context.driver
-		? await context.driver.runCommandCapture(npmCommand.command, [...npmCommand.args, "view", packageSpec, "version", "--json"], {
-				cwd: context.cwd,
-				timeoutMs: NETWORK_TIMEOUT_MS,
-			})
+		? await context.driver.runCommandCapture(
+				npmCommand.command,
+				[...npmCommand.args, "view", packageSpec, "version", "--json"],
+				{
+					cwd: context.cwd,
+					timeoutMs: NETWORK_TIMEOUT_MS,
+				},
+			)
 		: await runCommandCapture(npmCommand.command, [...npmCommand.args, "view", packageSpec, "version", "--json"], {
 				cwd: context.cwd,
 				timeoutMs: NETWORK_TIMEOUT_MS,

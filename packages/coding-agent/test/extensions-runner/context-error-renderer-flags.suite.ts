@@ -87,7 +87,7 @@ describe("ExtensionRunner", () => {
 		getSystemPrompt: () => "",
 	};
 
-		describe("error handling", () => {
+	describe("error handling", () => {
 		it("calls error listeners when handler throws", async () => {
 			const extCode = `
 				export default function(pi) {
@@ -205,5 +205,4 @@ describe("ExtensionRunner", () => {
 			expect(result.runtime.flagValues.get("--test-flag")).toBe(true);
 		});
 	});
-
 });

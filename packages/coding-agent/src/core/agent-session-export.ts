@@ -3,12 +3,12 @@ import { dirname } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
 import { theme } from "../modes/interactive/theme/theme.ts";
 import { resolvePath } from "../utils/paths.ts";
-import { calculateContextTokens, estimateContextTokens } from "./compaction/index.ts";
-import type { ContextUsage, ReplacedSessionContext } from "./extensions/index.ts";
-import type { ToolHtmlRenderer } from "./export-html/index.ts";
-import { CURRENT_SESSION_VERSION, getLatestCompactionBoundaryEntry, type SessionHeader } from "./session-manager.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { SessionStats } from "./agent-session-types.ts";
+import { calculateContextTokens, estimateContextTokens } from "./compaction/index.ts";
+import type { ToolHtmlRenderer } from "./export-html/index.ts";
+import type { ContextUsage, ReplacedSessionContext } from "./extensions/index.ts";
+import { CURRENT_SESSION_VERSION, getLatestCompactionBoundaryEntry, type SessionHeader } from "./session-manager.ts";
 import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
 
 export function getSessionStats(this: AgentSession): SessionStats {
@@ -54,7 +54,6 @@ export function getSessionStats(this: AgentSession): SessionStats {
 		contextUsage: this.getContextUsage(),
 	};
 }
-
 
 export function getContextUsage(this: AgentSession): ContextUsage | undefined {
 	const model = this.model;
@@ -206,7 +205,6 @@ export function getLastAssistantText(this: AgentSession): string | undefined {
 // =========================================================================
 // Extension System
 // =========================================================================
-
 
 export function createReplacedSessionContext(this: AgentSession): ReplacedSessionContext {
 	const context = Object.defineProperties(

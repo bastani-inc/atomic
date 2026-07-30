@@ -2,23 +2,25 @@ import type { DurableWorkflowStatus } from "./types.js";
 
 /** Metadata required to classify a current DBOS workflow as resumable. */
 export interface DurableResumeCandidate {
-  readonly workflowId: string;
-  readonly status: DurableWorkflowStatus;
-  readonly completedCheckpoints: number;
-  readonly pendingPrompts: number;
-  readonly rootWorkflowId?: string;
-  readonly resumable?: boolean;
+	readonly workflowId: string;
+	readonly status: DurableWorkflowStatus;
+	readonly completedCheckpoints: number;
+	readonly pendingPrompts: number;
+	readonly rootWorkflowId?: string;
+	readonly resumable?: boolean;
 }
 
 /** Authoritative status/progress rules for durable workflow resume discovery. */
 export function isDurableWorkflowResumable(candidate: DurableResumeCandidate): boolean {
-  const isRoot = candidate.rootWorkflowId === undefined || candidate.rootWorkflowId === candidate.workflowId;
-  if (!isRoot) return false;
-  if (candidate.status === "failed" || candidate.status === "blocked") return candidate.resumable !== false;
-  const hasResumeProgress = candidate.completedCheckpoints > 0 || candidate.pendingPrompts > 0;
-  return candidate.resumable !== false
-    && (candidate.status === "running" || candidate.status === "paused")
-    && hasResumeProgress;
+	const isRoot = candidate.rootWorkflowId === undefined || candidate.rootWorkflowId === candidate.workflowId;
+	if (!isRoot) return false;
+	if (candidate.status === "failed" || candidate.status === "blocked") return candidate.resumable !== false;
+	const hasResumeProgress = candidate.completedCheckpoints > 0 || candidate.pendingPrompts > 0;
+	return (
+		candidate.resumable !== false &&
+		(candidate.status === "running" || candidate.status === "paused") &&
+		hasResumeProgress
+	);
 }
 
 /**
@@ -30,20 +32,20 @@ export function isDurableWorkflowResumable(candidate: DurableResumeCandidate): b
 export const FOREIGN_LIVE_WORKFLOW_WINDOW_MS = 120_000;
 
 export interface ForeignLivenessCandidate {
-  readonly status: DurableWorkflowStatus;
-  readonly updatedAt: number;
-  readonly ownerExecutorId?: string;
+	readonly status: DurableWorkflowStatus;
+	readonly updatedAt: number;
+	readonly ownerExecutorId?: string;
 }
 
 /** Whether a running workflow appears live in a DIFFERENT Atomic process. */
 export function isForeignLiveWorkflow(
-  candidate: ForeignLivenessCandidate,
-  localExecutorId: string,
-  now: number = Date.now(),
+	candidate: ForeignLivenessCandidate,
+	localExecutorId: string,
+	now: number = Date.now(),
 ): boolean {
-  if (candidate.status !== "running") return false;
-  if (candidate.ownerExecutorId === undefined || candidate.ownerExecutorId === localExecutorId) return false;
-  return now - candidate.updatedAt < FOREIGN_LIVE_WORKFLOW_WINDOW_MS;
+	if (candidate.status !== "running") return false;
+	if (candidate.ownerExecutorId === undefined || candidate.ownerExecutorId === localExecutorId) return false;
+	return now - candidate.updatedAt < FOREIGN_LIVE_WORKFLOW_WINDOW_MS;
 }
 
 /**
@@ -53,8 +55,8 @@ export function isForeignLiveWorkflow(
  * workflows surface, presented as crashed rather than running.
  */
 export function isLiveRunningWorkflow(
-  candidate: Pick<ForeignLivenessCandidate, "status" | "updatedAt">,
-  now: number = Date.now(),
+	candidate: Pick<ForeignLivenessCandidate, "status" | "updatedAt">,
+	now: number = Date.now(),
 ): boolean {
-  return candidate.status === "running" && now - candidate.updatedAt < FOREIGN_LIVE_WORKFLOW_WINDOW_MS;
+	return candidate.status === "running" && now - candidate.updatedAt < FOREIGN_LIVE_WORKFLOW_WINDOW_MS;
 }

@@ -4,9 +4,18 @@ type NativeBinding = {
 	glob: (options: NativeGlobOptions) => Promise<NativeGlobResult>;
 	grep: (options: NativeGrepOptions) => Promise<NativeGrepResult>;
 	search?: (content: string | Uint8Array, options: NativeTextSearchOptions) => NativeTextSearchResult;
-	hasMatch?: (content: string | Uint8Array, pattern: string | Uint8Array, ignoreCase?: boolean | null, multiline?: boolean | null) => boolean;
+	hasMatch?: (
+		content: string | Uint8Array,
+		pattern: string | Uint8Array,
+		ignoreCase?: boolean | null,
+		multiline?: boolean | null,
+	) => boolean;
 	invalidateFsScanCache?: (path?: string | null) => void;
-	blockRangeAt?: (options: { code: string; path: string; line: number }) => { startLine: number; endLine: number } | null;
+	blockRangeAt?: (options: {
+		code: string;
+		path: string;
+		line: number;
+	}) => { startLine: number; endLine: number } | null;
 };
 
 export type NativeGlobMatch = {
@@ -78,8 +87,16 @@ export type NativeGrepResult = {
 	skippedOversized?: number;
 	error?: string;
 };
-export type NativeTextSearchOptions = Omit<NativeGrepOptions, "path" | "cwd" | "glob" | "type" | "hidden" | "gitignore" | "cache" | "maxCountPerFile" | "signal" | "timeoutMs">;
-export type NativeTextSearchResult = { matches: Array<Omit<NativeGrepMatch, "path">>; matchCount: number; limitReached: boolean; error?: string };
+export type NativeTextSearchOptions = Omit<
+	NativeGrepOptions,
+	"path" | "cwd" | "glob" | "type" | "hidden" | "gitignore" | "cache" | "maxCountPerFile" | "signal" | "timeoutMs"
+>;
+export type NativeTextSearchResult = {
+	matches: Array<Omit<NativeGrepMatch, "path">>;
+	matchCount: number;
+	limitReached: boolean;
+	error?: string;
+};
 
 let cachedLoadResult: NativeBinding | null | false = null;
 

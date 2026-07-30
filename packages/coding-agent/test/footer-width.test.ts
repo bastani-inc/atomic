@@ -3,7 +3,11 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import type { ReadonlyFooterDataProvider } from "../src/core/footer-data-provider.ts";
-import { FooterComponent, formatCwdForFooter, UsageMeterComponent } from "../src/modes/interactive/components/footer.ts";
+import {
+	FooterComponent,
+	formatCwdForFooter,
+	UsageMeterComponent,
+} from "../src/modes/interactive/components/footer.ts";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
@@ -119,7 +123,6 @@ describe("formatCwdForFooter", () => {
 		expect(formatCwdForFooter("/home/user/project", "/home/user")).toBe(`~${sep}project`);
 	});
 });
-
 
 describe("UsageMeterComponent context color", () => {
 	beforeAll(() => {

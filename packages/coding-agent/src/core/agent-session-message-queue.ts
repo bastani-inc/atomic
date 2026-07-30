@@ -1,14 +1,22 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai/compat";
-import type { CustomMessage } from "./messages.ts";
-import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.ts";
-import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
-import { customMessageExcludesContext, drainAgentMessageQueue, normalizeInterruptAbortMessage, type AgentQueueAccess, type DrainedAgentQueues, type InterruptQueueHold } from "./agent-session-types.ts";
-import { forwardedMessageOptions, resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
-import { transferWorkflowStageDeliveriesTo } from "./agent-session-transfer.ts";
-import { abort, pauseQueuedMessages, resumeQueuedMessages } from "./agent-session-queue-pause.ts";
-import { restoreProtectedStreamingCustomMessages } from "./agent-session-persistent-custom-messages.ts";
 import { commitAdmittedCustomMessage, commitAdmittedCustomMessages } from "./agent-session-custom-message-commit.ts";
+import { forwardedMessageOptions, resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
+import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { restoreProtectedStreamingCustomMessages } from "./agent-session-persistent-custom-messages.ts";
+import { abort, pauseQueuedMessages, resumeQueuedMessages } from "./agent-session-queue-pause.ts";
+import { transferWorkflowStageDeliveriesTo } from "./agent-session-transfer.ts";
+import {
+	type AgentQueueAccess,
+	customMessageExcludesContext,
+	type DrainedAgentQueues,
+	drainAgentMessageQueue,
+	type InterruptQueueHold,
+	normalizeInterruptAbortMessage,
+} from "./agent-session-types.ts";
+import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.ts";
+import type { CustomMessage } from "./messages.ts";
+
 export { transferWorkflowStageDeliveriesTo };
 
 const interruptMutationQueues = new WeakMap<AgentSession, Promise<void>>();
@@ -16,7 +24,10 @@ const interruptMutationQueues = new WeakMap<AgentSession, Promise<void>>();
 function serializeInterruptMutation(owner: AgentSession, operation: () => Promise<void>): Promise<void> {
 	const previous = interruptMutationQueues.get(owner) ?? Promise.resolve();
 	const delivery = previous.then(operation);
-	interruptMutationQueues.set(owner, delivery.catch(() => undefined));
+	interruptMutationQueues.set(
+		owner,
+		delivery.catch(() => undefined),
+	);
 	return delivery;
 }
 
@@ -93,7 +104,8 @@ export function _throwIfExtensionCommand(this: AgentSession, text: string): void
  * @param options.deliverAs Delivery mode: "steer", "followUp", "nextTurn", or "interrupt"
  */
 
-export async function sendCustomMessage<T = unknown>(this: AgentSession,
+export async function sendCustomMessage<T = unknown>(
+	this: AgentSession,
 	message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
 	options?: SendMessageOptions,
 ): Promise<void> {
@@ -114,34 +126,34 @@ export async function sendCustomMessage<T = unknown>(this: AgentSession,
 		await commitAdmittedCustomMessage(this, appMessage, options);
 	};
 	if (boundary === undefined) return deliver();
-	await boundary.admit(
-		options?.stageAdmissionKey,
-		deliver,
-		() => {
-			const router = this._orchestrationContext?.lateMessageRouter;
-			if (router === undefined) throw new Error("Workflow stage closed without a late-message router");
-			return router.routeMessage(message, options);
-		},
-	).completion;
+	await boundary.admit(options?.stageAdmissionKey, deliver, () => {
+		const router = this._orchestrationContext?.lateMessageRouter;
+		if (router === undefined) throw new Error("Workflow stage closed without a late-message router");
+		return router.routeMessage(message, options);
+	}).completion;
 }
 
 /** Atomically admits a custom-message batch in array order. */
-export async function sendCustomMessages<T = unknown>(this: AgentSession,
+export async function sendCustomMessages<T = unknown>(
+	this: AgentSession,
 	messages: Array<Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">>,
 	options?: SendMessagesOptions,
 ): Promise<void> {
 	const currentOwner = resolveWorkflowStageDeliveryTarget(this);
 	if (currentOwner !== this) return currentOwner.sendCustomMessages(messages, options);
 	const timestamp = Date.now();
-	const appMessages = messages.map((message) => ({
-		role: "custom" as const,
-		customType: message.customType,
-		content: message.content ?? [],
-		display: message.display,
-		details: message.details,
-		timestamp,
-		...(options?.excludeFromContext === true ? { excludeFromContext: true } : {}),
-	} satisfies CustomMessage<T>));
+	const appMessages = messages.map(
+		(message) =>
+			({
+				role: "custom" as const,
+				customType: message.customType,
+				content: message.content ?? [],
+				display: message.display,
+				details: message.details,
+				timestamp,
+				...(options?.excludeFromContext === true ? { excludeFromContext: true } : {}),
+			}) satisfies CustomMessage<T>,
+	);
 	if (appMessages.length === 0) return;
 	const boundary = this._workflowStageAdmission;
 	const deliver = async (): Promise<void> => {
@@ -149,15 +161,11 @@ export async function sendCustomMessages<T = unknown>(this: AgentSession,
 		await commitAdmittedCustomMessages(this, appMessages, options);
 	};
 	if (boundary === undefined) return deliver();
-	await boundary.admit(
-		options?.stageAdmissionKey,
-		deliver,
-		() => {
-			const router = this._orchestrationContext?.lateMessageRouter;
-			if (router === undefined) throw new Error("Workflow stage closed without a late-message router");
-			return router.routeMessages(messages, options);
-		},
-	).completion;
+	await boundary.admit(options?.stageAdmissionKey, deliver, () => {
+		const router = this._orchestrationContext?.lateMessageRouter;
+		if (router === undefined) throw new Error("Workflow stage closed without a late-message router");
+		return router.routeMessages(messages, options);
+	}).completion;
 }
 
 export function sealWorkflowStageGeneration(this: AgentSession): void {
@@ -185,7 +193,11 @@ export function _appendCustomMessage<T>(this: AgentSession, message: CustomMessa
 	this._emit({ type: "message_end", message });
 }
 
-export function _enqueueInterruptCustomMessage<T>(this: AgentSession, message: CustomMessage<T>, options?: SendMessageOptions): Promise<void> {
+export function _enqueueInterruptCustomMessage<T>(
+	this: AgentSession,
+	message: CustomMessage<T>,
+	options?: SendMessageOptions,
+): Promise<void> {
 	const owner = resolveWorkflowStageDeliveryTarget(this);
 	if (owner !== this) return owner._enqueueInterruptCustomMessage(message, forwardedMessageOptions(options));
 	this._pendingInterruptDeliveries += 1;
@@ -211,7 +223,6 @@ export function _enqueueInterruptCustomMessage<T>(this: AgentSession, message: C
 	this._interruptDeliveryQueue = delivery.catch(() => undefined);
 	return delivery;
 }
-
 
 async function sendInterruptCustomMessageUnlocked<T>(
 	session: AgentSession,
@@ -240,7 +251,8 @@ async function sendInterruptCustomMessageUnlocked<T>(
 	await session.agent.prompt(message);
 }
 
-export function _sendInterruptCustomMessageNow<T>(this: AgentSession,
+export function _sendInterruptCustomMessageNow<T>(
+	this: AgentSession,
 	message: CustomMessage<T>,
 	options?: SendMessageOptions,
 ): Promise<void> {
@@ -248,7 +260,6 @@ export function _sendInterruptCustomMessageNow<T>(this: AgentSession,
 	if (owner !== this) return owner._sendInterruptCustomMessageNow(message, forwardedMessageOptions(options));
 	return serializeInterruptMutation(this, () => sendInterruptCustomMessageUnlocked(this, message, options));
 }
-
 
 export function _ensureActiveInterruptQueueHold(this: AgentSession): InterruptQueueHold {
 	const owner = resolveWorkflowStageDeliveryTarget(this);
@@ -264,7 +275,6 @@ export function _ensureActiveInterruptQueueHold(this: AgentSession): InterruptQu
 	return this._activeInterruptQueueHold;
 }
 
-
 export function _restoreAndClearActiveInterruptQueueHold(this: AgentSession): void {
 	const owner = resolveWorkflowStageDeliveryTarget(this);
 	if (owner !== this) return owner._restoreAndClearActiveInterruptQueueHold();
@@ -278,7 +288,6 @@ export function _restoreAndClearActiveInterruptQueueHold(this: AgentSession): vo
 	});
 	this._activeInterruptQueueHold = undefined;
 }
-
 
 export function _queueAgentMessage(this: AgentSession, message: AgentMessage, delivery: "steer" | "followUp"): void {
 	const owner = resolveWorkflowStageDeliveryTarget(this);
@@ -299,7 +308,6 @@ export function _queueAgentMessage(this: AgentSession, message: AgentMessage, de
 	}
 }
 
-
 export function _drainQueuedAgentMessages(this: AgentSession): DrainedAgentQueues {
 	// pi-agent-core exposes public clear methods but no public drain/restore pair.
 	// Interrupt and pause holds prevent an aborting run from consuming queued raw
@@ -310,7 +318,6 @@ export function _drainQueuedAgentMessages(this: AgentSession): DrainedAgentQueue
 		followUp: drainAgentMessageQueue(agentWithQueues.followUpQueue),
 	};
 }
-
 
 export function _restoreQueuedAgentMessages(this: AgentSession, queues: DrainedAgentQueues): void {
 	for (const message of queues.steering) {
@@ -341,8 +348,13 @@ export function clearQueue(this: AgentSession): { steering: string[]; followUp: 
 	}
 	restoreProtectedStreamingCustomMessages(this, removed);
 	const hold = this._activeInterruptQueueHold;
-	if (!this._queuedMessagesPaused && this._pendingInterruptDeliveries === 0 && hold !== undefined
-		&& hold.steering.length === 0 && hold.followUp.length === 0) {
+	if (
+		!this._queuedMessagesPaused &&
+		this._pendingInterruptDeliveries === 0 &&
+		hold !== undefined &&
+		hold.steering.length === 0 &&
+		hold.followUp.length === 0
+	) {
 		this._activeInterruptQueueHold = undefined;
 	}
 	this._emitQueueUpdate();
@@ -359,11 +371,9 @@ export function getFollowUpMessages(this: AgentSession): readonly string[] {
 	return this._followUpMessages;
 }
 
-
 // =========================================================================
 // Model Management
 // =========================================================================
-
 
 export function setSteeringMode(this: AgentSession, mode: "all" | "one-at-a-time"): void {
 	this.agent.steeringMode = mode;

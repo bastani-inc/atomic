@@ -1,5 +1,5 @@
-import { readFileSync, realpathSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";

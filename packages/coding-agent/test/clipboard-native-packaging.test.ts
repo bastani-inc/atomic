@@ -1,12 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-	CLIPBOARD_NATIVE_TARGETS,
-	copyClipboardNativeBindings,
-} from "../scripts/copy-clipboard-native-bindings.ts";
+import { CLIPBOARD_NATIVE_TARGETS, copyClipboardNativeBindings } from "../scripts/copy-clipboard-native-bindings.ts";
 import { stageClipboardNativePackages } from "../scripts/stage-clipboard-native-bindings.ts";
 
 const tempDirs: string[] = [];
@@ -44,12 +41,7 @@ describe("standalone clipboard native packaging", () => {
 		});
 
 		for (const target of Object.values(CLIPBOARD_NATIVE_TARGETS)) {
-			const copied = join(
-				destinationNodeModules,
-				"@mariozechner",
-				"clipboard",
-				target.bindingName,
-			);
+			const copied = join(destinationNodeModules, "@mariozechner", "clipboard", target.bindingName);
 			expect(readFileSync(copied, "utf-8")).toBe(`binding:${target.packageName}`);
 		}
 	});
@@ -96,10 +88,7 @@ describe("standalone clipboard native packaging", () => {
 			allowMissing: true,
 		});
 		expect(
-			readFileSync(
-				join(destinationNodeModules, "@mariozechner", "clipboard", availableTarget.bindingName),
-				"utf-8",
-			),
+			readFileSync(join(destinationNodeModules, "@mariozechner", "clipboard", availableTarget.bindingName), "utf-8"),
 		).toBe(`binding:${availableTarget.packageName}`);
 	});
 
@@ -126,7 +115,7 @@ describe("standalone clipboard native packaging", () => {
 	it("canonicalizes a relative clipboard staging path before changing directories", () => {
 		const repoRoot = resolve(import.meta.dirname, "..", "..", "..");
 		const buildScript = readFileSync(join(repoRoot, "scripts", "build-binaries.sh"), "utf-8");
-		const stageCreationIndex = buildScript.indexOf("CLIPBOARD_STAGE_DIR=\"$(mktemp -d");
+		const stageCreationIndex = buildScript.indexOf('CLIPBOARD_STAGE_DIR="$(mktemp -d');
 		const canonicalizationIndex = buildScript.indexOf(
 			'CLIPBOARD_STAGE_DIR="$(cd -- "$CLIPBOARD_STAGE_DIR" && pwd -P)"',
 		);
@@ -187,70 +176,55 @@ describe("standalone clipboard native packaging", () => {
 		expect(repoCdIndex).toBeGreaterThan(tmpdirNormalizationIndex);
 	});
 
-	it(
-		"stages and copies every release target through Bun's real cross-platform install path",
-		() => {
-			const repoRoot = resolve(import.meta.dirname, "..", "..", "..");
-			// bun.lock was deleted when install moved to `npm ci`; package-lock.json
-			// is now the single lockfile this staging must leave untouched.
-			const protectedFiles = [
-				"package.json",
-				"package-lock.json",
-				"packages/coding-agent/npm-shrinkwrap.json",
-			] as const;
-			const before = new Map(
-				protectedFiles.map((path) => [path, readFileSync(join(repoRoot, path), "utf-8")]),
-			);
-			const root = mkdtempSync(join(tmpdir(), "atomic-clipboard-real-stage-"));
-			try {
-				const stageRoot = join(root, "stage");
-				const destinationNodeModules = join(root, "destination", "node_modules");
-				const wrapperMetadata = JSON.parse(
-					readFileSync(
-						join(repoRoot, "node_modules", "@mariozechner", "clipboard", "package.json"),
-						"utf-8",
-					),
-				) as { version: string };
-				writePackage(
-					destinationNodeModules,
-					"@mariozechner/clipboard",
-					wrapperMetadata.version,
+	it("stages and copies every release target through Bun's real cross-platform install path", () => {
+		const repoRoot = resolve(import.meta.dirname, "..", "..", "..");
+		// bun.lock was deleted when install moved to `npm ci`; package-lock.json
+		// is now the single lockfile this staging must leave untouched.
+		const protectedFiles = [
+			"package.json",
+			"package-lock.json",
+			"packages/coding-agent/npm-shrinkwrap.json",
+		] as const;
+		const before = new Map(protectedFiles.map((path) => [path, readFileSync(join(repoRoot, path), "utf-8")]));
+		const root = mkdtempSync(join(tmpdir(), "atomic-clipboard-real-stage-"));
+		try {
+			const stageRoot = join(root, "stage");
+			const destinationNodeModules = join(root, "destination", "node_modules");
+			const wrapperMetadata = JSON.parse(
+				readFileSync(join(repoRoot, "node_modules", "@mariozechner", "clipboard", "package.json"), "utf-8"),
+			) as { version: string };
+			writePackage(destinationNodeModules, "@mariozechner/clipboard", wrapperMetadata.version);
+
+			stageClipboardNativePackages({
+				destination: stageRoot,
+				version: wrapperMetadata.version,
+			});
+			const sourceNodeModules = join(stageRoot, "node_modules");
+			for (const target of Object.values(CLIPBOARD_NATIVE_TARGETS)) {
+				const packageDir = join(sourceNodeModules, ...target.packageName.split("/"));
+				const metadata = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf-8")) as {
+					version: string;
+				};
+				expect(metadata.version).toBe(wrapperMetadata.version);
+				expect(existsSync(join(packageDir, target.bindingName))).toBe(true);
+			}
+
+			copyClipboardNativeBindings({
+				sourceNodeModules,
+				destinationNodeModules,
+				platforms: Object.keys(CLIPBOARD_NATIVE_TARGETS),
+			});
+			for (const target of Object.values(CLIPBOARD_NATIVE_TARGETS)) {
+				expect(existsSync(join(destinationNodeModules, "@mariozechner", "clipboard", target.bindingName))).toBe(
+					true,
 				);
-
-				stageClipboardNativePackages({
-					destination: stageRoot,
-					version: wrapperMetadata.version,
-				});
-				const sourceNodeModules = join(stageRoot, "node_modules");
-				for (const target of Object.values(CLIPBOARD_NATIVE_TARGETS)) {
-					const packageDir = join(sourceNodeModules, ...target.packageName.split("/"));
-					const metadata = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf-8")) as {
-						version: string;
-					};
-					expect(metadata.version).toBe(wrapperMetadata.version);
-					expect(existsSync(join(packageDir, target.bindingName))).toBe(true);
-				}
-
-				copyClipboardNativeBindings({
-					sourceNodeModules,
-					destinationNodeModules,
-					platforms: Object.keys(CLIPBOARD_NATIVE_TARGETS),
-				});
-				for (const target of Object.values(CLIPBOARD_NATIVE_TARGETS)) {
-					expect(
-						existsSync(
-							join(destinationNodeModules, "@mariozechner", "clipboard", target.bindingName),
-						),
-					).toBe(true);
-				}
-			} finally {
-				rmSync(root, { recursive: true, force: true });
 			}
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 
-			for (const [path, contents] of before) {
-				expect(readFileSync(join(repoRoot, path), "utf-8")).toBe(contents);
-			}
-		},
-		180_000,
-	);
+		for (const [path, contents] of before) {
+			expect(readFileSync(join(repoRoot, path), "utf-8")).toBe(contents);
+		}
+	}, 180_000);
 });

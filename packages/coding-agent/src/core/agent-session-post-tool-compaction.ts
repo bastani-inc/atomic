@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { estimateContextTokens, shouldCompact, type VerbatimCompactionResult } from "./compaction/index.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { estimateContextTokens, shouldCompact, type VerbatimCompactionResult } from "./compaction/index.ts";
 import { scrubPreCompactionAssistantUsage } from "./provider-context-usage.ts";
 
 function postToolFailureMessage(error: unknown): string {
@@ -109,10 +109,7 @@ export async function _preflightPostToolContext(
 }
 
 /** Gate the transformed message context immediately before provider conversion. */
-export function _finishPostToolCompactionPreflight(
-	this: AgentSession,
-	messages: AgentMessage[],
-): AgentMessage[] {
+export function _finishPostToolCompactionPreflight(this: AgentSession, messages: AgentMessage[]): AgentMessage[] {
 	const pending = this._pendingPostToolCompactionGuard;
 	if (!pending) return messages;
 	this._pendingPostToolCompactionGuard = undefined;

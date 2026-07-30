@@ -1,9 +1,9 @@
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import type { ExtensionContext } from "../extensions/types.ts";
+import { withTodoLock } from "./todos-locks.ts";
 import { displayTodoId, isTodoClosed, validateTodoId } from "./todos-model.ts";
 import { getTodoPath } from "./todos-paths.ts";
-import { withTodoLock } from "./todos-locks.ts";
 import { ensureTodoExists, writeTodoFile } from "./todos-storage.ts";
 import type { TodoOperationResult, TodoRecord } from "./todos-types.ts";
 

@@ -1,4 +1,4 @@
-export { getThemeExportColors, getResolvedThemeColors, isLightTheme } from "./export-colors.ts";
+export { getResolvedThemeColors, getThemeExportColors, isLightTheme } from "./export-colors.ts";
 export {
 	initTheme,
 	onThemeChange,
@@ -25,8 +25,8 @@ export {
 	getAvailableThemes,
 	getAvailableThemesWithPaths,
 	getThemeByName,
-	loadThemeFromPath,
 	loadThemeFromContent,
+	loadThemeFromPath,
 	setRegisteredThemes,
 	type ThemeInfo,
 } from "./theme-loading.ts";

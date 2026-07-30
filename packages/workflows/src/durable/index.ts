@@ -1,83 +1,82 @@
 /** DBOS-only durable workflow API. */
 
-export type {
-  DurableCheckpoint,
-  DurableWorkflowMetadata,
-  DurableStageCheckpoint,
-  DurableToolCheckpoint,
-  DurableUiCheckpoint,
-  DurableWorkflowHandle,
-  DurableWorkflowStatus,
-  ResumableWorkflowEntry,
-  UiPromptKind,
-  WorkflowSerializableObject,
-} from "./types.js";
-
 export type { DurableWorkflowBackend, DurableWorkflowCatalogEntries } from "./backend.js";
-export { InMemoryDurableBackend, durableHash } from "./backend.js";
+export { durableHash, InMemoryDurableBackend } from "./backend.js";
 export {
-  DbosDurableBackend,
-  configureDbosDurableBackend,
-  type ConfiguredDbosDurability,
-  type DbosSdkHandle,
-  type DbosWorkflowInfo,
-  type DbosStepRecord,
-} from "./dbos-backend.js";
-export {
-  DbosDurabilityError,
-  DbosNotReadyError,
-  DbosShutdownError,
-  configureDbosOnce,
-  launchDbosOnce,
-  getReadyDbosBackend,
-  flushDbos,
-  shutdownDbos,
-} from "./dbos-lifecycle.js";
-export {
-  encodeCheckpoint,
-  decodeToCheckpoint,
-  isCheckpointEnvelope,
-  DBOS_ENVELOPE_VERSION,
-  type DbosCheckpointEnvelope,
-} from "./dbos-envelope.js";
-export {
-  getDurableBackend,
-  setDurableBackend,
-  createInMemoryTestBackend,
-  initializeDurableBackend,
-} from "./factory.js";
-export { listResumableFromBackend, formatResumableWorkflowList } from "./resume-catalog.js";
-export {
-  completedWorkflowSnapshot,
-  listCompletedFromBackend,
-  listOpenableCompletedWorkflows,
-  resolveCompletedWorkflow,
-  type CompletedWorkflowResolution,
+	type CompletedWorkflowResolution,
+	completedWorkflowSnapshot,
+	listCompletedFromBackend,
+	listOpenableCompletedWorkflows,
+	resolveCompletedWorkflow,
 } from "./completed-catalog.js";
 export {
-  openCompletedDurableWorkflow,
-  type OpenCompletedDurableDeps,
-  type OpenCompletedDurableResult,
+	type OpenCompletedDurableDeps,
+	type OpenCompletedDurableResult,
+	openCompletedDurableWorkflow,
 } from "./completed-inspection.js";
 export {
-  createToolPrimitive,
-  createCheckpointIdGenerator,
-  type WorkflowToolPrimitive,
-  type WorkflowToolOptions,
-} from "./tool-primitive.js";
-export { wrapUiWithDurable, type DurableUiDeps } from "./ui-primitive.js";
+	type ConfiguredDbosDurability,
+	configureDbosDurableBackend,
+	DbosDurableBackend,
+	type DbosSdkHandle,
+	type DbosStepRecord,
+	type DbosWorkflowInfo,
+} from "./dbos-backend.js";
 export {
-  recordStageCheckpoint,
-  createDurableStagePrimitive,
-  createDurableTaskPrimitive,
-  createStageReplayKeyGenerator,
-  stableCheckpointId,
-  type DurableStageDeps,
+	DBOS_ENVELOPE_VERSION,
+	type DbosCheckpointEnvelope,
+	decodeToCheckpoint,
+	encodeCheckpoint,
+	isCheckpointEnvelope,
+} from "./dbos-envelope.js";
+export {
+	configureDbosOnce,
+	DbosDurabilityError,
+	DbosNotReadyError,
+	DbosShutdownError,
+	flushDbos,
+	getReadyDbosBackend,
+	launchDbosOnce,
+	shutdownDbos,
+} from "./dbos-lifecycle.js";
+export {
+	createInMemoryTestBackend,
+	getDurableBackend,
+	initializeDurableBackend,
+	setDurableBackend,
+} from "./factory.js";
+export { formatResumableWorkflowList, listResumableFromBackend } from "./resume-catalog.js";
+export {
+	prepareDurableResume,
+	type ResumeDurableDeps,
+	type ResumeDurableResult,
+	resolveDurableEntry,
+	resumeDurableWorkflow,
+} from "./resume-runtime.js";
+export {
+	createDurableStagePrimitive,
+	createDurableTaskPrimitive,
+	createStageReplayKeyGenerator,
+	type DurableStageDeps,
+	recordStageCheckpoint,
+	stableCheckpointId,
 } from "./stage-primitive.js";
 export {
-  resumeDurableWorkflow,
-  resolveDurableEntry,
-  prepareDurableResume,
-  type ResumeDurableDeps,
-  type ResumeDurableResult,
-} from "./resume-runtime.js";
+	createCheckpointIdGenerator,
+	createToolPrimitive,
+	type WorkflowToolOptions,
+	type WorkflowToolPrimitive,
+} from "./tool-primitive.js";
+export type {
+	DurableCheckpoint,
+	DurableStageCheckpoint,
+	DurableToolCheckpoint,
+	DurableUiCheckpoint,
+	DurableWorkflowHandle,
+	DurableWorkflowMetadata,
+	DurableWorkflowStatus,
+	ResumableWorkflowEntry,
+	UiPromptKind,
+	WorkflowSerializableObject,
+} from "./types.js";
+export { type DurableUiDeps, wrapUiWithDurable } from "./ui-primitive.js";

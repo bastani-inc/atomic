@@ -41,7 +41,8 @@ type ResultWatcherDeps = {
 
 function getErrorCode(error: unknown): string | undefined {
 	return typeof error === "object" && error !== null && "code" in error
-		? (error as NodeJS.ErrnoException).code : undefined;
+		? (error as NodeJS.ErrnoException).code
+		: undefined;
 }
 
 function isNotFoundError(error: unknown): boolean {
@@ -70,17 +71,27 @@ export function createResultWatcher(
 	let activeWatcherInstallation = 0;
 	const inFlight = new Set<string>();
 	const rerunAfterFlight = new Set<string>();
-	const statusRetries = createRetryScheduler(timers, deps.statusRecheckBaseMs ?? STATUS_RECHECK_BASE_MS, deps.statusRecheckMaxMs ?? STATUS_RECHECK_MAX_MS);
-	const deliveryRetries = createRetryScheduler(timers, deps.deliveryRetryBaseMs ?? DELIVERY_RETRY_BASE_MS, deps.deliveryRetryMaxMs ?? DELIVERY_RETRY_MAX_MS);
+	const statusRetries = createRetryScheduler(
+		timers,
+		deps.statusRecheckBaseMs ?? STATUS_RECHECK_BASE_MS,
+		deps.statusRecheckMaxMs ?? STATUS_RECHECK_MAX_MS,
+	);
+	const deliveryRetries = createRetryScheduler(
+		timers,
+		deps.deliveryRetryBaseMs ?? DELIVERY_RETRY_BASE_MS,
+		deps.deliveryRetryMaxMs ?? DELIVERY_RETRY_MAX_MS,
+	);
 	const isEpochActive = (epoch: number): boolean => !stopped && epoch === processingEpoch;
 	const entryExists = (entry: string): boolean => {
 		const claimId = claimIdFromScheduleKey(entry);
-		return claimId ? Boolean(listResultClaims(resultsDir, fsApi).some((claim) => claim.id === claimId))
+		return claimId
+			? Boolean(listResultClaims(resultsDir, fsApi).some((claim) => claim.id === claimId))
 			: fsApi.existsSync(path.join(resultsDir, entry));
 	};
-	const ownsResult = (data: ResultFileData): boolean => !stopped
-		&& (!data.sessionId || data.sessionId === state.currentSessionId)
-		&& Boolean(data.sessionId || !data.cwd || (state.baseCwd && data.cwd === state.baseCwd));
+	const ownsResult = (data: ResultFileData): boolean =>
+		!stopped &&
+		(!data.sessionId || data.sessionId === state.currentSessionId) &&
+		Boolean(data.sessionId || !data.cwd || (state.baseCwd && data.cwd === state.baseCwd));
 
 	const coalescerKey = (entry: string, epoch: number): string => `${epoch}\0${entry}`;
 	const parseCoalescerKey = (key: string): { epoch: number; entry: string } => {
@@ -94,14 +105,20 @@ export function createResultWatcher(
 	const scheduleStatusRecheck = (entry: string, epoch: number) => {
 		if (!isEpochActive(epoch)) return;
 		statusRetries.schedule(entry, () => {
-			if (!isEpochActive(epoch) || !entryExists(entry)) { statusRetries.clear(entry); return; }
+			if (!isEpochActive(epoch) || !entryExists(entry)) {
+				statusRetries.clear(entry);
+				return;
+			}
 			scheduleResultEntry(entry, 0, epoch);
 		});
 	};
 	const scheduleDeliveryRetry = (entry: string, epoch: number) => {
 		if (!isEpochActive(epoch)) return;
 		deliveryRetries.schedule(entry, () => {
-			if (!isEpochActive(epoch) || !entryExists(entry)) { deliveryRetries.clear(entry); return; }
+			if (!isEpochActive(epoch) || !entryExists(entry)) {
+				deliveryRetries.clear(entry);
+				return;
+			}
 			scheduleResultEntry(entry, 0, epoch);
 		});
 	};
@@ -109,11 +126,18 @@ export function createResultWatcher(
 	const handleResult = async (entry: string, epoch: number) => {
 		if (!isEpochActive(epoch)) return;
 		const flightKey = coalescerKey(entry, epoch);
-		if (inFlight.has(flightKey)) { rerunAfterFlight.add(flightKey); return; }
+		if (inFlight.has(flightKey)) {
+			rerunAfterFlight.add(flightKey);
+			return;
+		}
 		inFlight.add(flightKey);
 		try {
 			const outcome = await processResultEntry(entry, {
-				pi, state, resultsDir, completionTtlMs, fsApi,
+				pi,
+				state,
+				resultsDir,
+				completionTtlMs,
+				fsApi,
 				allowedStatusRoots: deps.allowedStatusRoots,
 				maxStatusBytes: deps.maxStatusBytes,
 				maxNoProgressFailures: deps.maxNoProgressFailures,
@@ -124,7 +148,10 @@ export function createResultWatcher(
 			const nextEntry = outcome.entry ?? entry;
 			if (outcome.status === "status-pending") scheduleStatusRecheck(nextEntry, epoch);
 			else if (outcome.status === "delivery-retry") scheduleDeliveryRetry(nextEntry, epoch);
-			else { statusRetries.clear(entry); deliveryRetries.clear(entry); }
+			else {
+				statusRetries.clear(entry);
+				deliveryRetries.clear(entry);
+			}
 		} catch (error) {
 			if (!isNotFoundError(error)) {
 				console.error(`Failed to process subagent result entry '${entry}':`, error);
@@ -136,17 +163,23 @@ export function createResultWatcher(
 		}
 	};
 
-	state.resultFileCoalescer = createFileCoalescer((key) => {
-		const { epoch, entry } = parseCoalescerKey(key);
-		void handleResult(entry, epoch);
-	}, 50, { setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout });
+	state.resultFileCoalescer = createFileCoalescer(
+		(key) => {
+			const { epoch, entry } = parseCoalescerKey(key);
+			void handleResult(entry, epoch);
+		},
+		50,
+		{ setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout },
+	);
 
 	const primeExistingResults = () => {
 		if (stopped) return;
 		const epoch = processingEpoch;
 		try {
-			for (const file of fsApi.readdirSync(resultsDir)) if (file.endsWith(".json")) scheduleResultEntry(file, 0, epoch);
-			for (const claim of listResultClaims(resultsDir, fsApi)) scheduleResultEntry(claimScheduleKey(claim.id), 0, epoch);
+			for (const file of fsApi.readdirSync(resultsDir))
+				if (file.endsWith(".json")) scheduleResultEntry(file, 0, epoch);
+			for (const claim of listResultClaims(resultsDir, fsApi))
+				scheduleResultEntry(claimScheduleKey(claim.id), 0, epoch);
 		} catch (error) {
 			if (!isNotFoundError(error)) console.error(`Failed to scan subagent result directory '${resultsDir}':`, error);
 		}
@@ -167,9 +200,13 @@ export function createResultWatcher(
 		state.watcher = null;
 		activeWatcherInstallation = 0;
 		if (state.watcherRestartTimer) return;
-		console.error(`Subagent result watcher for '${resultsDir}' fell back to polling because native fs.watch is unavailable (${getErrorCode(reason) ?? "unknown error"}).`);
+		console.error(
+			`Subagent result watcher for '${resultsDir}' fell back to polling because native fs.watch is unavailable (${getErrorCode(reason) ?? "unknown error"}).`,
+		);
 		primeExistingResults();
-		state.watcherRestartTimer = timers.setInterval(() => { if (isEpochActive(epoch)) primeExistingResults(); }, POLL_INTERVAL_MS);
+		state.watcherRestartTimer = timers.setInterval(() => {
+			if (isEpochActive(epoch)) primeExistingResults();
+		}, POLL_INTERVAL_MS);
 		state.watcherRestartTimer.unref?.();
 	};
 
@@ -179,11 +216,16 @@ export function createResultWatcher(
 		timer = timers.setTimeout(() => {
 			if (state.watcherRestartTimer !== timer || !isEpochActive(epoch)) return;
 			state.watcherRestartTimer = null;
-			try { fsApi.mkdirSync(resultsDir, { recursive: true }); openResultWatcher(epoch); }
-			catch (error) {
+			try {
+				fsApi.mkdirSync(resultsDir, { recursive: true });
+				openResultWatcher(epoch);
+			} catch (error) {
 				if (!isEpochActive(epoch)) return;
 				if (shouldFallBackToPolling(error)) startPollingFallback(error, epoch);
-				else { console.error(`Failed to restart subagent result watcher for '${resultsDir}':`, error); scheduleRestart(epoch); }
+				else {
+					console.error(`Failed to restart subagent result watcher for '${resultsDir}':`, error);
+					scheduleRestart(epoch);
+				}
 			}
 		}, WATCHER_RESTART_DELAY_MS);
 		state.watcherRestartTimer = timer;
@@ -196,9 +238,15 @@ export function createResultWatcher(
 		let handle: fs.FSWatcher | null = null;
 		let pendingSynchronousError: Error | undefined;
 		const handleWatcherError = (error: Error) => {
-			if (!handle) { pendingSynchronousError = error; return; }
+			if (!handle) {
+				pendingSynchronousError = error;
+				return;
+			}
 			if (!isEpochActive(epoch) || installation !== activeWatcherInstallation || state.watcher !== handle) return;
-			if (shouldFallBackToPolling(error)) { startPollingFallback(error, epoch, installation); return; }
+			if (shouldFallBackToPolling(error)) {
+				startPollingFallback(error, epoch, installation);
+				return;
+			}
 			console.error(`Subagent result watcher failed for '${resultsDir}':`, error);
 			handle.close();
 			if (state.watcher === handle) state.watcher = null;
@@ -206,13 +254,24 @@ export function createResultWatcher(
 			scheduleRestart(epoch);
 		};
 		try {
-			handle = safeWatch(resultsDir, (_event, file) => {
-				if (!isEpochActive(epoch) || installation !== activeWatcherInstallation) return;
-				if (file) { const name = file.toString(); if (name.endsWith(".json")) scheduleResultEntry(name, 50, epoch); }
-				scheduleDirectoryRescan(epoch);
-			}, handleWatcherError, { watch: fsApi.watch, realpathSyncNative: fsApi.realpathSync?.native });
+			handle = safeWatch(
+				resultsDir,
+				(_event, file) => {
+					if (!isEpochActive(epoch) || installation !== activeWatcherInstallation) return;
+					if (file) {
+						const name = file.toString();
+						if (name.endsWith(".json")) scheduleResultEntry(name, 50, epoch);
+					}
+					scheduleDirectoryRescan(epoch);
+				},
+				handleWatcherError,
+				{ watch: fsApi.watch, realpathSyncNative: fsApi.realpathSync?.native },
+			);
 			if (!handle) throw pendingSynchronousError ?? new Error("Result watcher installation returned no handle");
-			if (!isEpochActive(epoch)) { handle.close(); return; }
+			if (!isEpochActive(epoch)) {
+				handle.close();
+				return;
+			}
 			state.watcher = handle;
 			activeWatcherInstallation = installation;
 			handle.unref?.();
@@ -223,7 +282,10 @@ export function createResultWatcher(
 			activeWatcherInstallation = 0;
 			if (!isEpochActive(epoch)) return;
 			if (shouldFallBackToPolling(error)) startPollingFallback(error, epoch);
-			else { console.error(`Failed to start subagent result watcher for '${resultsDir}':`, error); scheduleRestart(epoch); }
+			else {
+				console.error(`Failed to start subagent result watcher for '${resultsDir}':`, error);
+				scheduleRestart(epoch);
+			}
 		}
 	}
 
@@ -231,7 +293,9 @@ export function createResultWatcher(
 		stopped = false;
 		processingEpoch += 1;
 		if (state.watcherRestartTimer) {
-			timers.clearTimeout(state.watcherRestartTimer); timers.clearInterval(state.watcherRestartTimer); state.watcherRestartTimer = null;
+			timers.clearTimeout(state.watcherRestartTimer);
+			timers.clearInterval(state.watcherRestartTimer);
+			state.watcherRestartTimer = null;
 		}
 		openResultWatcher(processingEpoch);
 	};
@@ -241,11 +305,16 @@ export function createResultWatcher(
 		state.watcher?.close();
 		state.watcher = null;
 		activeWatcherInstallation = 0;
-		if (state.watcherRestartTimer) { timers.clearTimeout(state.watcherRestartTimer); timers.clearInterval(state.watcherRestartTimer); }
+		if (state.watcherRestartTimer) {
+			timers.clearTimeout(state.watcherRestartTimer);
+			timers.clearInterval(state.watcherRestartTimer);
+		}
 		state.watcherRestartTimer = null;
 		if (directoryRescanTimer) timers.clearTimeout(directoryRescanTimer);
 		directoryRescanTimer = null;
-		statusRetries.clearAll(); deliveryRetries.clearAll(); state.resultFileCoalescer.clear();
+		statusRetries.clearAll();
+		deliveryRetries.clearAll();
+		state.resultFileCoalescer.clear();
 	};
 	return { startResultWatcher, primeExistingResults, stopResultWatcher };
 }

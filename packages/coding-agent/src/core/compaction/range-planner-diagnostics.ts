@@ -9,10 +9,10 @@
  * writes a private recovery diagnostic sidecar for operational observability.
  */
 
-import { chmodSync, writeFileSync } from "fs";
-import { basename, dirname, join } from "path";
 import { uuidv7 } from "@earendil-works/pi-ai";
 import type { Api, AssistantMessage, Model, Usage } from "@earendil-works/pi-ai/compat";
+import { chmodSync, writeFileSync } from "fs";
+import { basename, dirname, join } from "path";
 
 /**
  * Write one private sidecar, never replacing an existing record.
@@ -33,7 +33,11 @@ function writeSidecar(sessionFilePath: string, kind: string, payload: unknown): 
 		const filePath = join(dir, `${base}-compaction-${kind}-${timestamp}-${uuidv7()}.json`);
 		try {
 			writeFileSync(filePath, body, { encoding: "utf-8", mode: 0o600, flag: "wx" });
-			try { chmodSync(filePath, 0o600); } catch { /* best-effort on non-POSIX */ }
+			try {
+				chmodSync(filePath, 0o600);
+			} catch {
+				/* best-effort on non-POSIX */
+			}
 			return filePath;
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException)?.code === "EEXIST") continue;

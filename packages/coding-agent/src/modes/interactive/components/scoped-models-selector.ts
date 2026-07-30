@@ -128,9 +128,7 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));
 		this.addChild(new Text(theme.fg("accent", theme.bold("Model Configuration")), 0, 0));
-		this.addChild(
-			new Text(theme.fg("muted", `Session-only. ${keyText("app.models.save")} Save Settings.`), 0, 0),
-		);
+		this.addChild(new Text(theme.fg("muted", `Session-only. ${keyText("app.models.save")} Save Settings.`), 0, 0));
 		this.addChild(new Spacer(1));
 
 		// Search input
@@ -184,9 +182,11 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 		const query = this.searchInput.getValue();
 		const items = this.buildItems();
 		this.filteredItems = query
-			? fuzzyFilter(items, query, (item) => item.model
-				? getModelSearchText({ id: item.model.id, provider: item.model.provider, name: item.model.name })
-				: item.fullId)
+			? fuzzyFilter(items, query, (item) =>
+					item.model
+						? getModelSearchText({ id: item.model.id, provider: item.model.provider, name: item.model.name })
+						: item.fullId,
+				)
 			: items;
 		this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredItems.length - 1));
 		this.updateList();
@@ -220,7 +220,11 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 			const modelText = isSelected ? theme.fg("accent", id) : id;
 			const providerBadge = theme.fg("muted", item.model ? ` [${item.model.provider}]` : " [unavailable]");
 			const status = item.model
-				? allEnabled ? "" : item.enabled ? theme.fg("success", " ✓") : theme.fg("dim", " ✗")
+				? allEnabled
+					? ""
+					: item.enabled
+						? theme.fg("success", " ✓")
+						: theme.fg("dim", " ✗")
 				: theme.fg("dim", " ✗");
 			this.listContainer.addChild(new Text(`${prefix}${modelText}${providerBadge}${status}`, 0, 0));
 		}
@@ -235,11 +239,13 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 		if (this.filteredItems.length > 0) {
 			const selected = this.filteredItems[this.selectedIndex]!;
 			this.listContainer.addChild(new Spacer(1));
-			this.listContainer.addChild(new Text(
-				theme.fg("muted", `  ${selected.model ? `Model Name: ${selected.model.name}` : "Model unavailable"}`),
-				0,
-				0,
-			));
+			this.listContainer.addChild(
+				new Text(
+					theme.fg("muted", `  ${selected.model ? `Model Name: ${selected.model.name}` : "Model unavailable"}`),
+					0,
+					0,
+				),
+			);
 		}
 	}
 

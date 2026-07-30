@@ -14,10 +14,13 @@ export function isAssistantFailureStopReason(stopReason: string | undefined): bo
 }
 
 export function assistantMessageHasToolCall(message: SubagentAssistantDrainMessage): boolean {
-	return Array.isArray(message.content)
-		&& message.content.some((part) => part !== null
-			&& typeof part === "object"
-			&& (part as { readonly type?: unknown }).type === "toolCall");
+	return (
+		Array.isArray(message.content) &&
+		message.content.some(
+			(part) =>
+				part !== null && typeof part === "object" && (part as { readonly type?: unknown }).type === "toolCall",
+		)
+	);
 }
 
 function assistantMessageHasError(message: SubagentAssistantDrainMessage): boolean {
@@ -28,7 +31,9 @@ function assistantMessageHasError(message: SubagentAssistantDrainMessage): boole
 
 export function shouldStartSubagentFinalDrain(message: SubagentAssistantDrainMessage): boolean {
 	if (message.role !== undefined && message.role !== "assistant") return false;
-	return assistantStopReason(message) === "stop"
-		&& !assistantMessageHasError(message)
-		&& !assistantMessageHasToolCall(message);
+	return (
+		assistantStopReason(message) === "stop" &&
+		!assistantMessageHasError(message) &&
+		!assistantMessageHasToolCall(message)
+	);
 }

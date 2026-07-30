@@ -40,14 +40,18 @@ export function filterSpawnableModelCandidates(params: {
 			continue;
 		}
 		const provider = providerFromModel(candidate);
-		const shouldSkip = provider !== undefined
-			&& knownProviders.has(provider)
-			&& !providersWithAvailableAuth.has(provider);
+		const shouldSkip =
+			provider !== undefined && knownProviders.has(provider) && !providersWithAvailableAuth.has(provider);
 		if (!shouldSkip) {
 			filtered.push(candidate);
 			continue;
 		}
-		skippedAttempts.push(skippedModelAttempt(candidate, `Skipped ${candidate}: provider '${provider}' has no configured API key/auth in the current session.`));
+		skippedAttempts.push(
+			skippedModelAttempt(
+				candidate,
+				`Skipped ${candidate}: provider '${provider}' has no configured API key/auth in the current session.`,
+			),
+		);
 	}
 	return { candidates: filtered, skippedAttempts };
 }

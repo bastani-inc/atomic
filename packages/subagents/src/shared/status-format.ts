@@ -8,7 +8,11 @@ function formatActivityAge(ms: number): string {
 	return `${Math.floor(ms / 60000)}m`;
 }
 
-export function formatActivityLabel(lastActivityAt: number | undefined, activityState?: ActivityState, now = Date.now()): string | undefined {
+export function formatActivityLabel(
+	lastActivityAt: number | undefined,
+	activityState?: ActivityState,
+	now = Date.now(),
+): string | undefined {
 	if (lastActivityAt === undefined) {
 		if (activityState === "needs_attention") return "needs attention";
 		if (activityState === "active_long_running") return "active but long-running";
@@ -36,7 +40,11 @@ export function formatAgentRunningLabel(count: number): string {
 	return count === 1 ? "1 agent running" : `${count} agents running`;
 }
 
-export function formatParallelOutcome(steps: StepStatusLike[], total: number, options: { showRunning?: boolean } = {}): string {
+export function formatParallelOutcome(
+	steps: StepStatusLike[],
+	total: number,
+	options: { showRunning?: boolean } = {},
+): string {
 	const running = steps.filter((step) => step.status === "running").length;
 	const done = steps.filter((step) => isCompletedStepStatus(step.status)).length;
 	const failed = steps.filter((step) => step.status === "failed").length;

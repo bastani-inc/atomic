@@ -1,20 +1,20 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { TEMP_ROOT_DIR, type NestedRouteInfo, type NestedRunSummary } from "../../shared/types.ts";
-import { isSafeNestedPathId, parseNestedPathEnv, type NestedPathEntry } from "./nested-path.ts";
+import { getEnvValue } from "@bastani/atomic";
+import { type NestedRouteInfo, type NestedRunSummary, TEMP_ROOT_DIR } from "../../shared/types.ts";
+import { isSafeNestedPathId, type NestedPathEntry, parseNestedPathEnv } from "./nested-path.ts";
 import {
 	SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV,
 	SUBAGENT_PARENT_CHILD_INDEX_ENV,
 	SUBAGENT_PARENT_CONTROL_INBOX_ENV,
 	SUBAGENT_PARENT_DEPTH_ENV,
 	SUBAGENT_PARENT_EVENT_SINK_ENV,
+	SUBAGENT_PARENT_MAX_DEPTH,
 	SUBAGENT_PARENT_PATH_ENV,
 	SUBAGENT_PARENT_ROOT_RUN_ID_ENV,
 	SUBAGENT_PARENT_RUN_ID_ENV,
-	SUBAGENT_PARENT_MAX_DEPTH,
 } from "./pi-args.ts";
-import { getEnvValue } from "@bastani/atomic";
 
 export const NESTED_EVENTS_DIR = path.join(TEMP_ROOT_DIR, "nested-subagent-events");
 export const NESTED_RUNS_DIR = path.join(TEMP_ROOT_DIR, "nested-subagent-runs");
@@ -94,9 +94,12 @@ export function commonRouteRoot(route: Pick<NestedRoute, "eventSink" | "controlI
 export function validateNestedRouteShape(route: NestedRoute): void {
 	assertSafeId("rootRunId", route.rootRunId);
 	assertSafeId("capabilityToken", route.capabilityToken);
-	if (!containedPath(NESTED_EVENTS_DIR, route.eventSink)) throw new Error("Nested event sink is outside the subagent nested event root.");
-	if (!containedPath(NESTED_EVENTS_DIR, route.controlInbox)) throw new Error("Nested control inbox is outside the subagent nested event root.");
-	if (commonRouteRoot(route) !== path.dirname(path.resolve(route.controlInbox))) throw new Error("Nested event sink and control inbox must share one route root.");
+	if (!containedPath(NESTED_EVENTS_DIR, route.eventSink))
+		throw new Error("Nested event sink is outside the subagent nested event root.");
+	if (!containedPath(NESTED_EVENTS_DIR, route.controlInbox))
+		throw new Error("Nested control inbox is outside the subagent nested event root.");
+	if (commonRouteRoot(route) !== path.dirname(path.resolve(route.controlInbox)))
+		throw new Error("Nested event sink and control inbox must share one route root.");
 }
 
 export function validateRouteShape(route: NestedRoute): void {
@@ -111,7 +114,11 @@ export function createNestedRoute(rootRunId: string): NestedRoute {
 	const controlInbox = path.join(routeRoot, "controls");
 	fs.mkdirSync(eventSink, { recursive: true, mode: 0o700 });
 	fs.mkdirSync(controlInbox, { recursive: true, mode: 0o700 });
-	fs.writeFileSync(path.join(routeRoot, ROUTE_FILE), `${JSON.stringify({ rootRunId, capabilityToken, createdAt: Date.now() })}\n`, { mode: 0o600 });
+	fs.writeFileSync(
+		path.join(routeRoot, ROUTE_FILE),
+		`${JSON.stringify({ rootRunId, capabilityToken, createdAt: Date.now() })}\n`,
+		{ mode: 0o600 },
+	);
 	return { rootRunId, eventSink, controlInbox, capabilityToken };
 }
 
@@ -175,7 +182,10 @@ export function resolveNestedRouteFromEnv(env: NodeJS.ProcessEnv = process.env):
 	const route = { rootRunId, eventSink, controlInbox, capabilityToken };
 	validateRouteShape(route);
 	const routeFile = path.join(commonRouteRoot(route), ROUTE_FILE);
-	const metadata = JSON.parse(fs.readFileSync(routeFile, "utf-8")) as { rootRunId?: unknown; capabilityToken?: unknown };
+	const metadata = JSON.parse(fs.readFileSync(routeFile, "utf-8")) as {
+		rootRunId?: unknown;
+		capabilityToken?: unknown;
+	};
 	if (metadata.rootRunId !== rootRunId || metadata.capabilityToken !== capabilityToken) {
 		throw new Error("Nested event route metadata does not match the provided root id and capability token.");
 	}
@@ -191,14 +201,21 @@ export function resolveInheritedNestedRouteFromEnv(env: NodeJS.ProcessEnv = proc
 	}
 }
 
-export function resolveNestedParentAddressFromEnv(env: NodeJS.ProcessEnv = process.env): { parentRunId: string; parentStepIndex?: number; depth: number; path: NestedPathEntry[] } | undefined {
+export function resolveNestedParentAddressFromEnv(
+	env: NodeJS.ProcessEnv = process.env,
+): { parentRunId: string; parentStepIndex?: number; depth: number; path: NestedPathEntry[] } | undefined {
 	const parentRunId = readSubagentEnv(env, SUBAGENT_PARENT_RUN_ID_ENV);
 	if (!isSafeNestedId(parentRunId)) return undefined;
 	const rawIndex = readSubagentEnv(env, SUBAGENT_PARENT_CHILD_INDEX_ENV);
 	const parentStepIndex = rawIndex && /^\d+$/.test(rawIndex) ? Number(rawIndex) : undefined;
-	const depth = Math.min(Math.max(1, clampNumber(Number(readSubagentEnv(env, SUBAGENT_PARENT_DEPTH_ENV))) ?? 1), MAX_NESTED_DEPTH);
+	const depth = Math.min(
+		Math.max(1, clampNumber(Number(readSubagentEnv(env, SUBAGENT_PARENT_DEPTH_ENV))) ?? 1),
+		MAX_NESTED_DEPTH,
+	);
 	const parsedPath = parseNestedPathEnv(readSubagentEnv(env, SUBAGENT_PARENT_PATH_ENV));
-	const nestedPath = parsedPath.length ? parsedPath : [{ runId: parentRunId, ...(parentStepIndex !== undefined ? { stepIndex: parentStepIndex } : {}) }];
+	const nestedPath = parsedPath.length
+		? parsedPath
+		: [{ runId: parentRunId, ...(parentStepIndex !== undefined ? { stepIndex: parentStepIndex } : {}) }];
 	return { parentRunId, ...(parentStepIndex !== undefined ? { parentStepIndex } : {}), depth, path: nestedPath };
 }
 

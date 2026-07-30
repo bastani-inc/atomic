@@ -1,11 +1,13 @@
 import { existsSync } from "node:fs";
 import { convertBufferWithMarkit, convertFileWithMarkit } from "../../utils/markit.ts";
-import { selectExactReadRanges, selectReadRanges, type ReadLineRange } from "./read-selectors.ts";
+import { type ReadLineRange, selectExactReadRanges, selectReadRanges } from "./read-selectors.ts";
 
 const DOCUMENT_EXTENSIONS = /\.(?:pdf|doc|docx|ppt|pptx|xls|xlsx|rtf|epub|ipynb)(?:$|[?#])/i;
 const MARKIT_EXTENSIONS = /\.(?:pdf|doc|docx|ppt|pptx|xls|xlsx|rtf|epub)(?:$|[?#])/i;
 
-export function isDocumentPath(pathValue: string): boolean { return DOCUMENT_EXTENSIONS.test(pathValue); }
+export function isDocumentPath(pathValue: string): boolean {
+	return DOCUMENT_EXTENSIONS.test(pathValue);
+}
 
 function documentExtensionFromContentType(contentType: string): string | undefined {
 	if (/ipynb|jupyter/i.test(contentType)) return ".ipynb";
@@ -21,7 +23,9 @@ function documentExtensionFromContentType(contentType: string): string | undefin
 	return undefined;
 }
 
-function isHtmlWhitespace(char: string | undefined): boolean { return char === " " || char === "\t" || char === "\n" || char === "\r" || char === "\f"; }
+function isHtmlWhitespace(char: string | undefined): boolean {
+	return char === " " || char === "\t" || char === "\n" || char === "\r" || char === "\f";
+}
 
 function findElementStart(lowerHtml: string, tagName: string, fromIndex: number): number {
 	const needle = `<${tagName}`;
@@ -57,11 +61,20 @@ function stripElementBlocks(html: string, tagName: string): string {
 		if (start < 0) break;
 		chunks.push(html.slice(index, start));
 		const startEnd = html.indexOf(">", start);
-		if (startEnd < 0) { index = html.length; break; }
+		if (startEnd < 0) {
+			index = html.length;
+			break;
+		}
 		const closeStart = findClosingTag(lowerHtml, tagName, startEnd + 1);
-		if (closeStart < 0) { index = html.length; break; }
+		if (closeStart < 0) {
+			index = html.length;
+			break;
+		}
 		const closeEnd = html.indexOf(">", closeStart);
-		if (closeEnd < 0) { index = html.length; break; }
+		if (closeEnd < 0) {
+			index = html.length;
+			break;
+		}
 		index = closeEnd + 1;
 	}
 	chunks.push(html.slice(index));
@@ -87,7 +100,8 @@ function readTagName(tagContent: string): { closing: boolean; name: string } {
 	const start = index;
 	while (index < tagContent.length) {
 		const char = tagContent[index];
-		if (!char || !(char >= "a" && char <= "z") && !(char >= "A" && char <= "Z") && !(char >= "0" && char <= "9")) break;
+		if (!char || (!(char >= "a" && char <= "z") && !(char >= "A" && char <= "Z") && !(char >= "0" && char <= "9")))
+			break;
 		index++;
 	}
 	return { closing, name: tagContent.slice(start, index).toLowerCase() };
@@ -98,12 +112,20 @@ function htmlMarkupToPlainText(html: string): string {
 	let index = 0;
 	while (index < html.length) {
 		const open = html.indexOf("<", index);
-		if (open < 0) { output += html.slice(index); break; }
+		if (open < 0) {
+			output += html.slice(index);
+			break;
+		}
 		output += html.slice(index, open);
 		const close = html.indexOf(">", open + 1);
 		if (close < 0) break;
 		const tag = readTagName(html.slice(open + 1, close));
-		if (tag.name === "br" || tag.closing && ["h1", "h2", "h3", "h4", "h5", "h6", "p", "div", "li", "tr", "blockquote", "pre"].includes(tag.name)) output += "\n";
+		if (
+			tag.name === "br" ||
+			(tag.closing &&
+				["h1", "h2", "h3", "h4", "h5", "h6", "p", "div", "li", "tr", "blockquote", "pre"].includes(tag.name))
+		)
+			output += "\n";
 		else if (!tag.closing && tag.name === "li") output += "- ";
 		index = close + 1;
 	}
@@ -111,7 +133,11 @@ function htmlMarkupToPlainText(html: string): string {
 }
 
 function normalizeDecodedText(value: string): string {
-	return decodeEntities(value).split("\n").map((line) => line.trim()).filter(Boolean).join("\n");
+	return decodeEntities(value)
+		.split("\n")
+		.map((line) => line.trim())
+		.filter(Boolean)
+		.join("\n");
 }
 
 function htmlToReadableText(html: string): string {
@@ -128,10 +154,17 @@ function decodeEntities(value: string): string {
 	let index = 0;
 	while (index < value.length) {
 		const ampersand = value.indexOf("&", index);
-		if (ampersand < 0) { output += value.slice(index); break; }
+		if (ampersand < 0) {
+			output += value.slice(index);
+			break;
+		}
 		output += value.slice(index, ampersand);
 		const semicolon = value.indexOf(";", ampersand + 1);
-		if (semicolon < 0 || semicolon - ampersand > 12) { output += "&"; index = ampersand + 1; continue; }
+		if (semicolon < 0 || semicolon - ampersand > 12) {
+			output += "&";
+			index = ampersand + 1;
+			continue;
+		}
 		const entity = value.slice(ampersand + 1, semicolon).toLowerCase();
 		const decoded = entities[entity];
 		output += decoded ?? value.slice(ampersand, semicolon + 1);
@@ -141,15 +174,23 @@ function decodeEntities(value: string): string {
 }
 
 function notebookMarkdown(buffer: Buffer, source: string): string {
-	const nb = JSON.parse(buffer.toString("utf8")) as { cells?: Array<{ cell_type?: string; source?: string | string[] }> };
+	const nb = JSON.parse(buffer.toString("utf8")) as {
+		cells?: Array<{ cell_type?: string; source?: string | string[] }>;
+	};
 	const cells = nb.cells ?? [];
-	return cells.map((cell, index) => {
-		const sourceText = Array.isArray(cell.source) ? cell.source.join("") : cell.source ?? "";
-		return `# %% [${cell.cell_type ?? "raw"}] cell:${index}\n${sourceText.trimEnd()}`;
-	}).join("\n\n") || `# ${source}\n\n(empty notebook)`;
+	return (
+		cells
+			.map((cell, index) => {
+				const sourceText = Array.isArray(cell.source) ? cell.source.join("") : (cell.source ?? "");
+				return `# %% [${cell.cell_type ?? "raw"}] cell:${index}\n${sourceText.trimEnd()}`;
+			})
+			.join("\n\n") || `# ${source}\n\n(empty notebook)`
+	);
 }
 
-function documentExtension(source: string): string { return `.${source.match(/\.(pdf|docx?|pptx?|xlsx?|rtf|epub)(?:$|[?#])/i)?.[1]?.toLowerCase() ?? "bin"}`; }
+function documentExtension(source: string): string {
+	return `.${source.match(/\.(pdf|docx?|pptx?|xlsx?|rtf|epub)(?:$|[?#])/i)?.[1]?.toLowerCase() ?? "bin"}`;
+}
 
 async function extractMarkitDocument(buffer: Buffer, source: string): Promise<string> {
 	const ext = documentExtension(source);
@@ -167,16 +208,32 @@ export async function decodeReadableUrl(response: Response, url: string): Promis
 	const contentType = response.headers.get("content-type") ?? "";
 	const buffer = Buffer.from(await response.arrayBuffer());
 	const contentTypeExtension = documentExtensionFromContentType(contentType);
-	if (contentTypeExtension || isDocumentPath(url)) return extractDocumentMarkdown(buffer, contentTypeExtension && !isDocumentPath(url) ? `${url}${contentTypeExtension}` : url);
+	if (contentTypeExtension || isDocumentPath(url))
+		return extractDocumentMarkdown(
+			buffer,
+			contentTypeExtension && !isDocumentPath(url) ? `${url}${contentTypeExtension}` : url,
+		);
 	const text = buffer.toString("utf8");
 	if (/html/i.test(contentType) || /<html[\s>]/i.test(text)) return htmlToReadableText(text);
 	return text;
 }
 
-export function applyReadLineSelection(allLines: string[], ranges: ReadLineRange[] | undefined, offset?: number, limit?: number, exact = false): { lines: string[]; firstLine: number } {
+export function applyReadLineSelection(
+	allLines: string[],
+	ranges: ReadLineRange[] | undefined,
+	offset?: number,
+	limit?: number,
+	exact = false,
+): { lines: string[]; firstLine: number } {
 	const rangeSelection = (exact ? selectExactReadRanges : selectReadRanges)(allLines, ranges);
 	const rangeStart = ranges?.[0]?.start;
-	const startLine = rangeSelection ? (rangeSelection.selectedLines.length === 0 ? rangeStart ?? rangeSelection.firstLine : rangeSelection.firstLine) - 1 : offset ? Math.max(0, offset - 1) : 0;
+	const startLine = rangeSelection
+		? (rangeSelection.selectedLines.length === 0
+				? (rangeStart ?? rangeSelection.firstLine)
+				: rangeSelection.firstLine) - 1
+		: offset
+			? Math.max(0, offset - 1)
+			: 0;
 	const endLine = limit !== undefined ? Math.min(startLine + limit, allLines.length) : allLines.length;
 	return { lines: rangeSelection?.selectedLines ?? allLines.slice(startLine, endLine), firstLine: startLine + 1 };
 }

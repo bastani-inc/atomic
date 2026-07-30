@@ -1,29 +1,40 @@
-
 import type { ChildProcess } from "node:child_process";
+import type { ImageContent } from "@earendil-works/pi-ai/compat";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { BashOutputChannel } from "../../core/tools/bash.ts";
-import type { ImageContent } from "@earendil-works/pi-ai/compat";
-import { QueuedWriter } from "./queued-writer.ts";
-import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
+import { sleep } from "../../utils/sleep.ts";
 import type { ActivityWatchdogDiagnostic } from "../interactive-engine/activity-watchdog.ts";
 import { InteractiveEngineMonitor } from "../interactive-engine/engine-monitor.ts";
-import { serializeInteractiveEngineFrame, type EngineKeybindingState, type InteractiveEngineCommand, type InteractiveEngineMessage } from "../interactive-engine/protocol.ts";
-import { sleep } from "../../utils/sleep.ts";
-import { createInteractiveJsonlOptions, spawnRpcClientProcess, terminateRpcClientProcess } from "./rpc-client-process.ts";
+import {
+	type EngineKeybindingState,
+	type InteractiveEngineCommand,
+	type InteractiveEngineMessage,
+	serializeInteractiveEngineFrame,
+} from "../interactive-engine/protocol.ts";
+import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
+import { QueuedWriter } from "./queued-writer.ts";
 import { RpcClientApi, type RpcCommandBody } from "./rpc-client-api.ts";
-import { RpcEventBuffer } from "./rpc-event-buffer.ts";
+import {
+	createInteractiveJsonlOptions,
+	spawnRpcClientProcess,
+	terminateRpcClientProcess,
+} from "./rpc-client-process.ts";
 import { collectRpcEvents, waitForRpcIdle } from "./rpc-client-waits.ts";
-import type { RpcCommand, RpcExtensionUIRequest, RpcExtensionUIResponse, RpcEvent, RpcResponse } from "./rpc-types.ts";
+import { RpcEventBuffer } from "./rpc-event-buffer.ts";
+import type { RpcCommand, RpcEvent, RpcExtensionUIRequest, RpcExtensionUIResponse, RpcResponse } from "./rpc-types.ts";
+
 export type { ModelInfo, RpcCommandBody } from "./rpc-client-api.ts";
 export type { RpcEvent } from "./rpc-types.ts";
-
 
 function restartArgs(args: readonly string[] | undefined, sessionFile: string | undefined): string[] {
 	const result: string[] = [];
 	for (let index = 0; index < (args?.length ?? 0); index += 1) {
 		const value = args![index]!;
 		if (value === "--no-session") continue;
-		if (value === "--session") { index += 1; continue; }
+		if (value === "--session") {
+			index += 1;
+			continue;
+		}
 		result.push(value);
 	}
 	result.push(sessionFile ? "--session" : "--no-session");
@@ -80,9 +91,7 @@ const LONG_LIVED_COMMANDS: ReadonlySet<string> = new Set<string>([
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
-
 export type RpcEventListener = (event: RpcEvent) => void;
-
 
 export class RpcClient extends RpcClientApi {
 	private process: ChildProcess | null = null;
@@ -105,7 +114,7 @@ export class RpcClient extends RpcClientApi {
 	private readonly activeActivityIds = new Set<string>();
 	private enginePid: number | undefined;
 
-	declare private options: RpcClientOptions;
+	private declare options: RpcClientOptions;
 
 	constructor(options: RpcClientOptions = {}) {
 		super();
@@ -136,9 +145,8 @@ export class RpcClient extends RpcClientApi {
 		this.activeActivityIds.clear();
 		this.enginePid = undefined;
 		this.engineMonitor = this.options.interactiveEngine
-			? new InteractiveEngineMonitor(
-					this.options.interactiveEngine.onDiagnostic,
-					(message) => this.observeInteractiveEngineMessage(message),
+			? new InteractiveEngineMonitor(this.options.interactiveEngine.onDiagnostic, (message) =>
+					this.observeInteractiveEngineMessage(message),
 				)
 			: undefined;
 		this.eventBuffer = this.engineMonitor ? new RpcEventBuffer((event) => this.emitEvent(event)) : undefined;
@@ -181,15 +189,22 @@ export class RpcClient extends RpcClientApi {
 		childProcess.stderr?.on("data", (data) => {
 			if (generation !== this.generation) return;
 			const next = this.stderr + data.toString();
-			this.stderr = Buffer.byteLength(next, "utf8") <= 256 * 1024
-				? next
-				: `${Buffer.from(next).subarray(-256 * 1024).toString("utf8")}\n[stderr truncated]`;
+			this.stderr =
+				Buffer.byteLength(next, "utf8") <= 256 * 1024
+					? next
+					: `${Buffer.from(next)
+							.subarray(-256 * 1024)
+							.toString("utf8")}\n[stderr truncated]`;
 			process.stderr.write(data);
 		});
 		const readerOptions = createInteractiveJsonlOptions(this.engineMonitor !== undefined);
-		this.stopReadingStdout = attachJsonlLineReader(childProcess.stdout!, (line) => {
-			if (generation === this.generation) this.handleLine(line);
-		}, readerOptions);
+		this.stopReadingStdout = attachJsonlLineReader(
+			childProcess.stdout!,
+			(line) => {
+				if (generation === this.generation) this.handleLine(line);
+			},
+			readerOptions,
+		);
 		if (this.engineMonitor) await this.engineMonitor.waitUntilReady();
 		else await sleep(100);
 
@@ -268,15 +283,25 @@ export class RpcClient extends RpcClientApi {
 		const writer = this.stdinWriter;
 		if (!writer) return;
 		const frame = serializeInteractiveEngineFrame(command);
-		if (command.type === "engine_custom_render" || command.type === "engine_tool_render" || command.type === "engine_message_render") {
+		if (
+			command.type === "engine_custom_render" ||
+			command.type === "engine_tool_render" ||
+			command.type === "engine_message_render"
+		) {
 			writer.offerLatest(`render:${command.componentId}`, frame);
 			return;
 		}
 		this.bestEffort(writer.write(frame), `engine command ${command.type}`);
 	}
-	waitForInteractiveEngineBound(): Promise<void> { return this.engineMonitor?.waitUntilBound() ?? Promise.resolve(); }
-	getEnginePid(): number | undefined { return this.enginePid; }
-	getGeneration(): number { return this.generation; }
+	waitForInteractiveEngineBound(): Promise<void> {
+		return this.engineMonitor?.waitUntilBound() ?? Promise.resolve();
+	}
+	getEnginePid(): number | undefined {
+		return this.enginePid;
+	}
+	getGeneration(): number {
+		return this.generation;
+	}
 
 	async restart(sessionFile: string | undefined): Promise<void> {
 		await this.stop();
@@ -298,10 +323,15 @@ export class RpcClient extends RpcClientApi {
 			if (event.type === "bash_execution_update" && event.id === requestId) onUpdate(event.delta, event.channel);
 		});
 		try {
-			return this.data(await this.request(
-				{ type: "user_bash", command, excludeFromContext: options?.excludeFromContext },
-				(id) => { requestId = id; options?.onRequestId?.(id); },
-			));
+			return this.data(
+				await this.request(
+					{ type: "user_bash", command, excludeFromContext: options?.excludeFromContext },
+					(id) => {
+						requestId = id;
+						options?.onRequestId?.(id);
+					},
+				),
+			);
 		} finally {
 			unsubscribe();
 		}
@@ -309,7 +339,6 @@ export class RpcClient extends RpcClientApi {
 	getStderr(): string {
 		return this.stderr;
 	}
-
 
 	waitForIdle(timeout = 60000): Promise<void> {
 		return waitForRpcIdle(this, timeout);
@@ -381,7 +410,10 @@ export class RpcClient extends RpcClientApi {
 		this.engineMonitor?.fail(error);
 		this.rejectPendingRequests(error);
 		this.options.interactiveEngine?.onDiagnostic({
-			activity: undefined, elapsedMs: 0, level: "unresponsive", message: error.message,
+			activity: undefined,
+			elapsedMs: 0,
+			level: "unresponsive",
+			message: error.message,
 		});
 	}
 	private requireWriter(): QueuedWriter {
@@ -392,7 +424,9 @@ export class RpcClient extends RpcClientApi {
 		void operation.catch((error: Error) => {
 			if (!this.process || this.exitError) return;
 			this.options.interactiveEngine?.onDiagnostic({
-				activity: undefined, elapsedMs: 0, level: "unresponsive",
+				activity: undefined,
+				elapsedMs: 0,
+				level: "unresponsive",
 				message: `Interactive engine ${label} failed: ${error.message}`,
 			});
 		});
@@ -414,8 +448,14 @@ export class RpcClient extends RpcClientApi {
 		const response = new Promise<RpcResponse>((resolve, reject) => {
 			rejectResponse = reject;
 			this.pendingRequests.set(id, {
-				resolve: (value) => { if (timeout) clearTimeout(timeout); resolve(value); },
-				reject: (error) => { if (timeout) clearTimeout(timeout); reject(error); },
+				resolve: (value) => {
+					if (timeout) clearTimeout(timeout);
+					resolve(value);
+				},
+				reject: (error) => {
+					if (timeout) clearTimeout(timeout);
+					reject(error);
+				},
 			});
 		});
 		try {

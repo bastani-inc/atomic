@@ -1,7 +1,7 @@
-import type { BranchSummaryEntry } from "./session-manager.ts";
+import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { collectEntriesForBranchSummary, generateBranchSummary } from "./compaction/index.ts";
 import type { SessionBeforeTreeResult, TreePreparation } from "./extensions/index.ts";
-import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import type { BranchSummaryEntry } from "./session-manager.ts";
 import { createSummarizationRetryCallbacks } from "./summarization-retry.ts";
 
 export function setSessionName(this: AgentSession, name: string): void {
@@ -27,7 +27,8 @@ export function setSessionName(this: AgentSession, name: string): void {
  * @returns Result with editorText (if user message) and cancelled status
  */
 
-export async function navigateTree(this: AgentSession, 
+export async function navigateTree(
+	this: AgentSession,
 	targetId: string,
 	options: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string } = {},
 ): Promise<{ editorText?: string; cancelled: boolean; aborted?: boolean; summaryEntry?: BranchSummaryEntry }> {
@@ -242,8 +243,10 @@ export function getUserMessagesForForking(this: AgentSession): Array<{ entryId: 
 	return result;
 }
 
-
-export function _extractUserMessageText(this: AgentSession, content: string | Array<{ type: string; text?: string }>): string {
+export function _extractUserMessageText(
+	this: AgentSession,
+	content: string | Array<{ type: string; text?: string }>,
+): string {
 	if (typeof content === "string") return content;
 	if (Array.isArray(content)) {
 		return content

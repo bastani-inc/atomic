@@ -1,7 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { createModelRegistry } from "./model-runtime-test-utils.ts";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
-
+import { createModelRegistry } from "./model-runtime-test-utils.ts";
 
 describeModelRegistry((context) => {
 	const {
@@ -246,5 +245,4 @@ describeModelRegistry((context) => {
 			expect(getModelsForProvider(registry, "anthropic")[0].baseUrl).toBe("https://second-proxy.example.com/v1");
 		});
 	});
-
 });

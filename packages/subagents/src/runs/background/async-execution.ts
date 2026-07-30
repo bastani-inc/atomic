@@ -3,12 +3,12 @@
  */
 
 export { executeAsyncChain } from "./async-execution-chain.ts";
-export { executeAsyncSingle } from "./async-execution-single.ts";
 export {
 	formatAsyncStartedMessage,
 	isAsyncAvailable,
 	writeAsyncRunnerConfig,
 } from "./async-execution-common.ts";
+export { executeAsyncSingle } from "./async-execution-single.ts";
 export type {
 	AsyncChainParams,
 	AsyncExecutionContext,

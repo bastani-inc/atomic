@@ -317,5 +317,4 @@ export default function(api) { api.registerTool({ name: "test", description: "te
 			expect(result.extensions.filter((r) => r.enabled).length).toBe(1);
 		});
 	});
-
 });

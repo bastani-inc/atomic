@@ -8,14 +8,14 @@ export interface SessionAsyncJobManagerHandle {
 	sessionId: symbol;
 }
 interface AsyncDeliverySession {
-	sendCustomMessage(
-		message: AsyncJobDeliveryMessage,
-		options?: SendMessageOptions,
-	): Promise<void>;
+	sendCustomMessage(message: AsyncJobDeliveryMessage, options?: SendMessageOptions): Promise<void>;
 }
 
-
-export function createSessionAsyncDeliveryHandler(session: AsyncDeliverySession, manager?: AsyncJobManager, sessionId?: symbol): AsyncJobDeliveryHandler {
+export function createSessionAsyncDeliveryHandler(
+	session: AsyncDeliverySession,
+	manager?: AsyncJobManager,
+	sessionId?: symbol,
+): AsyncJobDeliveryHandler {
 	return async (message: AsyncJobDeliveryMessage) => {
 		const isStale = () =>
 			manager?.disposed === true ||
@@ -41,9 +41,11 @@ export function createSessionAsyncJobManager(session: AsyncDeliverySession): Ses
 	return { manager, owns: true, sessionId: manager.registerSession() };
 }
 
-export function disposeSessionAsyncJobManager(manager: AsyncJobManager | undefined, sessionId: symbol | undefined): void {
+export function disposeSessionAsyncJobManager(
+	manager: AsyncJobManager | undefined,
+	sessionId: symbol | undefined,
+): void {
 	if (!manager || !sessionId) return;
 	manager.releaseSession(sessionId);
 	if (manager.disposed && AsyncJobManager.instance() === manager) AsyncJobManager.setInstance(undefined);
 }
-

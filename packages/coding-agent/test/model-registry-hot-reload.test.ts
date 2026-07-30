@@ -15,16 +15,19 @@ afterEach(() => {
 });
 
 function writeModels(path: string, ids: string[]): void {
-	writeFileSync(path, JSON.stringify({
-		providers: {
-			configured: {
-				api: "openai-completions",
-				baseUrl: "https://example.test/v1",
-				apiKey: "local",
-				models: ids.map((id) => ({ id })),
+	writeFileSync(
+		path,
+		JSON.stringify({
+			providers: {
+				configured: {
+					api: "openai-completions",
+					baseUrl: "https://example.test/v1",
+					apiKey: "local",
+					models: ids.map((id) => ({ id })),
+				},
 			},
-		},
-	}));
+		}),
+	);
 }
 
 describe("model config hot reload", () => {
@@ -58,9 +61,16 @@ describe("model config hot reload", () => {
 		} as unknown as ModelRuntime;
 		const tui = { requestRender: vi.fn() } as unknown as TUI;
 		const settings = { setDefaultModelAndProvider: vi.fn() } as unknown as SettingsManager;
-		const openPicker = () => new ModelSelectorComponent(
-			tui, undefined, settings, runtime, [], () => {}, () => {},
-		);
+		const openPicker = () =>
+			new ModelSelectorComponent(
+				tui,
+				undefined,
+				settings,
+				runtime,
+				[],
+				() => {},
+				() => {},
+			);
 
 		openPicker();
 		await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));

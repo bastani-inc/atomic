@@ -1,15 +1,18 @@
-import { test } from "vitest";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { Readable } from "node:stream";
 import { join } from "node:path";
-import type { ActivityWatchdogDiagnostic } from "../../packages/coding-agent/src/modes/interactive-engine/activity-watchdog.ts";
-import { RpcClient } from "../../packages/coding-agent/src/modes/rpc/rpc-client.ts";
+import { Readable } from "node:stream";
+import { test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
+import type { ActivityWatchdogDiagnostic } from "../../packages/coding-agent/src/modes/interactive-engine/activity-watchdog.ts";
 import { EngineCustomUiService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-custom-ui.ts";
-import { parseInteractiveEngineMessage, serializeInteractiveEngineFrame } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
+import {
+	parseInteractiveEngineMessage,
+	serializeInteractiveEngineFrame,
+} from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
 import { attachJsonlLineReader } from "../../packages/coding-agent/src/modes/rpc/jsonl.ts";
+import { RpcClient } from "../../packages/coding-agent/src/modes/rpc/rpc-client.ts";
 import { bunExecutable, moduleDir, sleep } from "../helpers/runtime.js";
 
 function maximumGap(timestamps: readonly number[]): number {
@@ -27,8 +30,12 @@ test.sequential("the real agent path isolates a blocking extension tool and repo
 	let inputTicks = 0;
 	let renderTicks = 0;
 	const heartbeat = setInterval(() => heartbeatTimes.push(performance.now()), 10);
-	const input = setInterval(() => { inputTicks += 1; }, 20);
-	const render = setInterval(() => { renderTicks += 1; }, 16);
+	const input = setInterval(() => {
+		inputTicks += 1;
+	}, 20);
+	const render = setInterval(() => {
+		renderTicks += 1;
+	}, 16);
 	let resolveDiagnostic!: (diagnostic: ActivityWatchdogDiagnostic) => void;
 	const diagnosticPromise = new Promise<ActivityWatchdogDiagnostic>((resolve) => {
 		resolveDiagnostic = resolve;
@@ -41,9 +48,14 @@ test.sequential("the real agent path isolates a blocking extension tool and repo
 		model: "blocking-model",
 		env: { ATOMIC_BLOCKING_TOOL_PID_FILE: pidFile },
 		args: [
-			"--no-session", "--no-extensions", "--extension",
+			"--no-session",
+			"--no-extensions",
+			"--extension",
 			join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts"),
-			"--no-skills", "--no-prompt-templates", "--no-themes", "--offline",
+			"--no-skills",
+			"--no-prompt-templates",
+			"--no-themes",
+			"--offline",
 		],
 		interactiveEngine: { onDiagnostic: resolveDiagnostic },
 	});
@@ -79,22 +91,34 @@ test("remote custom components render and receive input through the engine proto
 	const service = new EngineCustomUiService((line) => output.push(line), new KeybindingsManager());
 	const result = service.custom<string>((_tui, _theme, _keybindings, done) => ({
 		render: (width) => [`width:${width},rows:${_tui.terminal.rows}`],
-		handleInput: (data) => { if (data === "\r") done("accepted"); },
+		handleInput: (data) => {
+			if (data === "\r") done("accepted");
+		},
 		invalidate: () => {},
 	}));
 	await sleep(0);
 	const open = output.map(parseInteractiveEngineMessage).find((message) => message?.type === "engine_custom_open");
 	assert.ok(open?.type === "engine_custom_open");
-	service.handleLine(serializeInteractiveEngineFrame({
-		type: "engine_custom_render", componentId: open.componentId, requestId: 1, width: 72, rows: 40,
-	}));
+	service.handleLine(
+		serializeInteractiveEngineFrame({
+			type: "engine_custom_render",
+			componentId: open.componentId,
+			requestId: 1,
+			width: 72,
+			rows: 40,
+		}),
+	);
 	await sleep(0);
 	const frame = output.map(parseInteractiveEngineMessage).find((message) => message?.type === "engine_custom_frame");
 	assert.ok(frame?.type === "engine_custom_frame");
 	assert.deepEqual(frame.lines, ["width:72,rows:40"]);
-	service.handleLine(serializeInteractiveEngineFrame({
-		type: "engine_custom_input", componentId: open.componentId, data: "\r",
-	}));
+	service.handleLine(
+		serializeInteractiveEngineFrame({
+			type: "engine_custom_input",
+			componentId: open.componentId,
+			data: "\r",
+		}),
+	);
 	assert.equal(await result, "accepted");
 	service.dispose();
 });
@@ -108,9 +132,14 @@ test.sequential("startup custom UI can unblock engine binding after transport re
 		model: "blocking-model",
 		env: { ATOMIC_STARTUP_CUSTOM_UI: "1" },
 		args: [
-			"--no-session", "--no-extensions", "--extension",
+			"--no-session",
+			"--no-extensions",
+			"--extension",
 			join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts"),
-			"--no-skills", "--no-prompt-templates", "--no-themes", "--offline",
+			"--no-skills",
+			"--no-prompt-templates",
+			"--no-themes",
+			"--offline",
 		],
 		interactiveEngine: { onDiagnostic: () => {} },
 	});
@@ -124,7 +153,9 @@ test.sequential("startup custom UI can unblock engine binding after transport re
 		client.sendInteractiveEngineCommand({ type: "engine_custom_input", componentId: open.componentId, data: "\r" });
 		await Promise.race([
 			client.waitForInteractiveEngineBound(),
-			sleep(2_000).then(() => { throw new Error("engine binding did not resume after startup custom UI"); }),
+			sleep(2_000).then(() => {
+				throw new Error("engine binding did not resume after startup custom UI");
+			}),
 		]);
 	} finally {
 		await client.stop();
@@ -135,7 +166,9 @@ test.sequential("blocking extension initialization cannot delay creation of the 
 	const ticks: number[] = [performance.now()];
 	const heartbeat = setInterval(() => ticks.push(performance.now()), 10);
 	let resolveDiagnostic!: (diagnostic: ActivityWatchdogDiagnostic) => void;
-	const diagnosticPromise = new Promise<ActivityWatchdogDiagnostic>((resolve) => { resolveDiagnostic = resolve; });
+	const diagnosticPromise = new Promise<ActivityWatchdogDiagnostic>((resolve) => {
+		resolveDiagnostic = resolve;
+	});
 	const client = new RpcClient({
 		cliPath: join(moduleDir(import.meta.url), "../../packages/coding-agent/src/cli.ts"),
 		cwd: join(moduleDir(import.meta.url), "../.."),
@@ -144,9 +177,14 @@ test.sequential("blocking extension initialization cannot delay creation of the 
 		model: "blocking-model",
 		env: { ATOMIC_BLOCKING_EXTENSION_INIT: "1" },
 		args: [
-			"--no-session", "--no-extensions", "--extension",
+			"--no-session",
+			"--no-extensions",
+			"--extension",
 			join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts"),
-			"--no-skills", "--no-prompt-templates", "--no-themes", "--offline",
+			"--no-skills",
+			"--no-prompt-templates",
+			"--no-themes",
+			"--offline",
 		],
 		interactiveEngine: { onDiagnostic: resolveDiagnostic },
 	});
@@ -158,7 +196,9 @@ test.sequential("blocking extension initialization cannot delay creation of the 
 		// host readiness MUST resolve while the deliberately blocking extension
 		// initialization is still pending.
 		const startPromise = client.start();
-		const boundPromise = client.waitForInteractiveEngineBound().then(() => { bound = true; });
+		const boundPromise = client.waitForInteractiveEngineBound().then(() => {
+			bound = true;
+		});
 		await startPromise;
 		assert.equal(bound, false, "host creation waited for blocking extension initialization");
 		const diagnostic = await diagnosticPromise;
@@ -174,14 +214,18 @@ test.sequential("blocking extension initialization cannot delay creation of the 
 
 test("interactive JSONL drainage preserves frames larger than 1 MiB", async () => {
 	const large = "x".repeat(1_100_000);
-	const stream = Readable.from([`${large}\n{\"ok\":true}\n`]);
+	const stream = Readable.from([`${large}\n{"ok":true}\n`]);
 	const lines: string[] = [];
 	await new Promise<void>((resolve) => {
-		attachJsonlLineReader(stream, (line) => {
-			lines.push(line);
-			if (lines.length === 2) resolve();
-		}, { maxBytesPerTurn: 64 * 1024, maxLinesPerTurn: 64 });
+		attachJsonlLineReader(
+			stream,
+			(line) => {
+				lines.push(line);
+				if (lines.length === 2) resolve();
+			},
+			{ maxBytesPerTurn: 64 * 1024, maxLinesPerTurn: 64 },
+		);
 	});
 	assert.equal(lines[0], large);
-	assert.equal(lines[1], '{\"ok\":true}');
+	assert.equal(lines[1], '{"ok":true}');
 });

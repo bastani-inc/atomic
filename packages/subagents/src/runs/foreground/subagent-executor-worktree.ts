@@ -1,6 +1,7 @@
 import * as path from "node:path";
+import { type ChainStep, isParallelStep, type ResolvedStepBehavior } from "../../shared/settings.ts";
+import type { ExtensionConfig, SubagentToolResult } from "../../shared/types.ts";
 import { resolveChildCwd } from "../../shared/utils.ts";
-import { isParallelStep, type ChainStep, type ResolvedStepBehavior } from "../../shared/settings.ts";
 import { resolveSingleOutputPath } from "../shared/single-output.ts";
 import {
 	createWorktrees,
@@ -10,7 +11,6 @@ import {
 	formatWorktreeTaskCwdConflict,
 	type WorktreeSetup,
 } from "../shared/worktree.ts";
-import type { ExtensionConfig, SubagentToolResult } from "../../shared/types.ts";
 import type { TaskParam } from "./subagent-executor-types.ts";
 
 export function buildParallelModeError(message: string): SubagentToolResult {
@@ -34,9 +34,7 @@ export function createParallelWorktreeSetup(
 		return {
 			setup: createWorktrees(cwd, runId, tasks.length, {
 				agents: tasks.map((task) => task.agent),
-				setupHook: setupHook
-					? { hookPath: setupHook, timeoutMs: setupHookTimeoutMs }
-					: undefined,
+				setupHook: setupHook ? { hookPath: setupHook, timeoutMs: setupHookTimeoutMs } : undefined,
 			}),
 		};
 	} catch (error) {
@@ -84,7 +82,11 @@ export function buildParallelWorktreeSuffix(
 ): string {
 	if (!worktreeSetup) return "";
 	const diffsDir = path.join(artifactsDir, "worktree-diffs");
-	const diffs = diffWorktrees(worktreeSetup, tasks.map((task) => task.agent), diffsDir);
+	const diffs = diffWorktrees(
+		worktreeSetup,
+		tasks.map((task) => task.agent),
+		diffsDir,
+	);
 	return formatWorktreeDiffSummary(diffs);
 }
 

@@ -10,10 +10,10 @@ import {
 	extractDeletedRanges,
 	planDeletedLineRanges,
 } from "../src/core/compaction/range-planner.js";
-import { planner, run } from "./compaction-planner-fixtures.js";
 import { createNumberedRegion } from "../src/core/compaction/transcript-serialization.js";
 import { buildSessionContext } from "../src/core/session-manager-history.js";
 import type { SessionEntry } from "../src/core/session-manager-types.js";
+import { planner, run } from "./compaction-planner-fixtures.js";
 import { createFauxStreamFn } from "./test-harness.js";
 
 const model: Model<Api> = {
@@ -40,14 +40,28 @@ function assistant(text: string, timestamp: number): AgentMessage {
 		api: "openai-responses",
 		provider: "test",
 		model: "planner-test",
-		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
 		stopReason: "stop",
 		timestamp,
 	};
 }
 
 function toolResult(text: string, timestamp: number): AgentMessage {
-	return { role: "toolResult", toolCallId: `tool-${timestamp}`, toolName: "read", content: [{ type: "text", text }], isError: false, timestamp };
+	return {
+		role: "toolResult",
+		toolCallId: `tool-${timestamp}`,
+		toolName: "read",
+		content: [{ type: "text", text }],
+		isError: false,
+		timestamp,
+	};
 }
 
 function entry(id: string, message: AgentMessage, parentId: string | null): SessionEntry {
@@ -56,9 +70,12 @@ function entry(id: string, message: AgentMessage, parentId: string | null): Sess
 
 function preparation(): VerbatimCompactionPreparation {
 	const text = [
-		"[User]: objective", ...Array.from({ length: 9 }, (_, index) => `objective ${index}`),
-		"[Assistant]: answer", ...Array.from({ length: 9 }, (_, index) => `answer ${index}`),
-		"[Tool result]: output", ...Array.from({ length: 9 }, (_, index) => `output ${index}`),
+		"[User]: objective",
+		...Array.from({ length: 9 }, (_, index) => `objective ${index}`),
+		"[Assistant]: answer",
+		...Array.from({ length: 9 }, (_, index) => `answer ${index}`),
+		"[Tool result]: output",
+		...Array.from({ length: 9 }, (_, index) => `output ${index}`),
 	].join("\n");
 	const region = createNumberedRegion(text);
 	return {
@@ -98,7 +115,16 @@ describe("compaction boundary preparation", () => {
 			entry("m4", user(long, 4), "m3"),
 			entry("m5", assistant("answer two", 5), "m4"),
 			entry("m6", toolResult("result two", 6), "m5"),
-			{ type: "custom_message", id: "x6", parentId: "m6", timestamp: new Date(6_500).toISOString(), customType: "hidden", content: "not context-visible", display: false, excludeFromContext: true },
+			{
+				type: "custom_message",
+				id: "x6",
+				parentId: "m6",
+				timestamp: new Date(6_500).toISOString(),
+				customType: "hidden",
+				content: "not context-visible",
+				display: false,
+				excludeFromContext: true,
+			},
 			entry("m7", user("final", 7), "x6"),
 		];
 		const result = prepareCompactionBoundary(entries, DEFAULT_COMPACTION_SETTINGS, options);
@@ -114,9 +140,28 @@ describe("compaction boundary preparation", () => {
 			entry("m2", user(long, 2), "m1"),
 			entry("m3", user("tail one", 3), "m2"),
 			{
-				type: "compaction", id: "c4", parentId: "m3", timestamp: new Date(4_000).toISOString(),
-				summary: "[User]: prior\n(filtered 12 lines)", firstKeptEntryId: "m3", tokensBefore: 100,
-				details: { strategy: "verbatim-lines", promptVersion: 2, parameters: { compression_ratio: 0.5, preserve_recent: 0, query: "q" }, stats: { linesBefore: 30, linesDeleted: 12, linesKept: 18, rangeCount: 1, tokensBefore: 100, tokensAfter: 60, percentReduction: 40 }, rung: "standard" },
+				type: "compaction",
+				id: "c4",
+				parentId: "m3",
+				timestamp: new Date(4_000).toISOString(),
+				summary: "[User]: prior\n(filtered 12 lines)",
+				firstKeptEntryId: "m3",
+				tokensBefore: 100,
+				details: {
+					strategy: "verbatim-lines",
+					promptVersion: 2,
+					parameters: { compression_ratio: 0.5, preserve_recent: 0, query: "q" },
+					stats: {
+						linesBefore: 30,
+						linesDeleted: 12,
+						linesKept: 18,
+						rangeCount: 1,
+						tokensBefore: 100,
+						tokensAfter: 60,
+						percentReduction: 40,
+					},
+					rung: "standard",
+				},
 			},
 			entry("m5", user(long, 5), "c4"),
 			entry("m6", user("final", 6), "m5"),
@@ -135,9 +180,28 @@ describe("compaction boundary preparation", () => {
 			entry("m2", user(long, 2), "m1"),
 			entry("m3", user("kept from prior boundary", 3), "m2"),
 			{
-				type: "compaction", id: "c4", parentId: "m3", timestamp: new Date(4_000).toISOString(),
-				summary: "[User]: durable prior\n(filtered 40 lines)", firstKeptEntryId: "m3", tokensBefore: 500,
-				details: { strategy: "verbatim-lines", promptVersion: 2, parameters: { compression_ratio: 0.5, preserve_recent: 0, query: "q" }, stats: { linesBefore: 50, linesDeleted: 40, linesKept: 10, rangeCount: 1, tokensBefore: 500, tokensAfter: 100, percentReduction: 80 }, rung: "standard" },
+				type: "compaction",
+				id: "c4",
+				parentId: "m3",
+				timestamp: new Date(4_000).toISOString(),
+				summary: "[User]: durable prior\n(filtered 40 lines)",
+				firstKeptEntryId: "m3",
+				tokensBefore: 500,
+				details: {
+					strategy: "verbatim-lines",
+					promptVersion: 2,
+					parameters: { compression_ratio: 0.5, preserve_recent: 0, query: "q" },
+					stats: {
+						linesBefore: 50,
+						linesDeleted: 40,
+						linesKept: 10,
+						rangeCount: 1,
+						tokensBefore: 500,
+						tokensAfter: 100,
+						percentReduction: 80,
+					},
+					rung: "standard",
+				},
 			},
 			entry("m5", user(long, 5), "c4"),
 			entry("m6", user("final protected turn", 6), "m5"),
@@ -150,13 +214,19 @@ describe("compaction boundary preparation", () => {
 
 	it("allows one context-visible message when its complete region meets the line minimum", () => {
 		const long = Array.from({ length: 20 }, (_, index) => `line ${index}`).join("\n");
-		const result = prepareCompactionBoundary([entry("m1", user(long, 1), null)], DEFAULT_COMPACTION_SETTINGS, { preserve_recent: 0 });
+		const result = prepareCompactionBoundary([entry("m1", user(long, 1), null)], DEFAULT_COMPACTION_SETTINGS, {
+			preserve_recent: 0,
+		});
 		expect(result?.regionEntryIds).toEqual(["m1"]);
 		expect(result?.firstKeptEntryId).toBeNull();
 	});
 
 	it("returns undefined below the region minimum", () => {
-		const entries = [entry("m1", user("one", 1), null), entry("m2", user("two", 2), "m1"), entry("m3", user("three", 3), "m2")];
+		const entries = [
+			entry("m1", user("one", 1), null),
+			entry("m2", user("two", 2), "m1"),
+			entry("m3", user("three", 3), "m2"),
+		];
 		expect(prepareCompactionBoundary(entries, DEFAULT_COMPACTION_SETTINGS, { preserve_recent: 0 })).toBeUndefined();
 	});
 });
@@ -178,13 +248,15 @@ describe("one-pass range planner", () => {
 	it("uses the evidence-tuned one-pass contract with whole-region numbering", () => {
 		const prep = preparation();
 		const prompt = buildRangePlannerPrompt(prep.region, prep.parameters, 12);
-		expect(prompt).toContain('Target lines to keep: 12');
+		expect(prompt).toContain("Target lines to keep: 12");
 		expect(prompt).toContain("120,180\n6,40\n300,305");
 		expect(prompt).toContain("Rank lines inside long tool results individually across the whole result");
 		expect(prompt).toContain("Do not truncate by position or blanket-delete merely because a result is long");
 		expect(prompt).toContain("keyword matches do not guarantee retention");
 		expect(prompt).not.toContain("cannot erase generally critical context");
-		expect(prompt).toContain("No category, first/last position, or top/deep stack position is automatically kept or deleted");
+		expect(prompt).toContain(
+			"No category, first/last position, or top/deep stack position is automatically kept or deleted",
+		);
 		expect(prompt).toContain("Treat old filtered/truncation markers as low-priority gap anchors");
 		expect(prompt).toContain(`1→${prep.region.lines[0]}`);
 		expect(prompt).toContain(`${prep.region.lines.length}→${prep.region.lines.at(-1)}`);
@@ -203,7 +275,11 @@ describe("one-pass range planner", () => {
 		const prep = preparation();
 		const faux = createFauxStreamFn(["1,20\n"]);
 		const calls: Array<{ candidate: Model<Api>; request: SimpleStreamOptions }> = [];
-		const capture = (candidate: Model<Api>, context: Parameters<typeof faux.streamFn>[1], request?: SimpleStreamOptions) => {
+		const capture = (
+			candidate: Model<Api>,
+			context: Parameters<typeof faux.streamFn>[1],
+			request?: SimpleStreamOptions,
+		) => {
 			calls.push({ candidate, request: request ?? {} });
 			return faux.streamFn(candidate, context, request);
 		};
@@ -225,9 +301,9 @@ describe("one-pass range planner", () => {
 		expect(calls[0].request.cacheRetention).toBe("none");
 		expect(calls[0].request.sessionId).toEqual(expect.any(String));
 		const firstSessionId = calls[0].request.sessionId;
-		await planDeletedLineRanges(
-			prep.region, prep.parameters, planner(reasoningModel, "off", { apiKey: "key" }), 10, { streamFn: capture },
-		);
+		await planDeletedLineRanges(prep.region, prep.parameters, planner(reasoningModel, "off", { apiKey: "key" }), 10, {
+			streamFn: capture,
+		});
 		expect(calls[1].request.cacheRetention).toBe("none");
 		expect(calls[1].request.sessionId).not.toBe(firstSessionId);
 	});
@@ -239,9 +315,9 @@ describe("one-pass range planner", () => {
 	])("classifies one %s response as unusable with no semantic retry", async (_label, response, category) => {
 		const prep = preparation();
 		const faux = createFauxStreamFn([response]);
-		const outcome = await planDeletedLineRanges(
-			prep.region, prep.parameters, planner(model, "off"), 10, { streamFn: faux.streamFn },
-		);
+		const outcome = await planDeletedLineRanges(prep.region, prep.parameters, planner(model, "off"), 10, {
+			streamFn: faux.streamFn,
+		});
 		expect(outcome).toMatchObject({ kind: "unusable", category });
 		expect(faux.state.callCount).toBe(1);
 	});
@@ -254,14 +330,13 @@ describe("one-pass range planner", () => {
 		for (const [error, kind] of cases) {
 			const prep = preparation();
 			const faux = createFauxStreamFn([{ error }]);
-			const outcome = await planDeletedLineRanges(
-				prep.region, prep.parameters, planner(model, "off"), 10, { streamFn: faux.streamFn },
-			);
+			const outcome = await planDeletedLineRanges(prep.region, prep.parameters, planner(model, "off"), 10, {
+				streamFn: faux.streamFn,
+			});
 			expect(outcome.kind).toBe(kind);
 			expect(faux.state.callCount).toBe(1);
 		}
 	});
-
 
 	it("retries transient provider errors with the configured lifecycle callbacks", async () => {
 		const prep = preparation();
@@ -271,17 +346,11 @@ describe("one-pass range planner", () => {
 			onRetryAttemptStart: vi.fn(),
 			onRetryFinished: vi.fn(),
 		};
-		const outcome = await planDeletedLineRanges(
-			prep.region,
-			prep.parameters,
-			planner(model, "off"),
-			10,
-			{
-				streamFn: faux.streamFn,
-				retry: { enabled: true, maxRetries: 2, baseDelayMs: 0 },
-				callbacks,
-			},
-		);
+		const outcome = await planDeletedLineRanges(prep.region, prep.parameters, planner(model, "off"), 10, {
+			streamFn: faux.streamFn,
+			retry: { enabled: true, maxRetries: 2, baseDelayMs: 0 },
+			callbacks,
+		});
 
 		expect(outcome).toEqual({ kind: "ranked", ranges: [{ start: 1, end: 20 }] });
 		expect(faux.state.callCount).toBe(2);
@@ -292,14 +361,17 @@ describe("one-pass range planner", () => {
 });
 
 describe("single planned compaction rung", () => {
-	it.each(["manual", "threshold", "overflow"] as const)("makes one whole-region provider call for %s compaction", async (_reason) => {
-		const prep = preparation();
-		const faux = createFauxStreamFn(["2,10\n"]);
-		await runVerbatimCompaction(prep, model, run({ streamFn: faux.streamFn }));
-		expect(faux.state.callCount).toBe(1);
-		expect(JSON.stringify(faux.state.contexts[0])).toContain(`<numbered-transcript>`);
-		expect(JSON.stringify(faux.state.contexts[0])).toContain(`${prep.region.lines.length}→`);
-	});
+	it.each(["manual", "threshold", "overflow"] as const)(
+		"makes one whole-region provider call for %s compaction",
+		async (_reason) => {
+			const prep = preparation();
+			const faux = createFauxStreamFn(["2,10\n"]);
+			await runVerbatimCompaction(prep, model, run({ streamFn: faux.streamFn }));
+			expect(faux.state.callCount).toBe(1);
+			expect(JSON.stringify(faux.state.contexts[0])).toContain(`<numbered-transcript>`);
+			expect(JSON.stringify(faux.state.contexts[0])).toContain(`${prep.region.lines.length}→`);
+		},
+	);
 
 	it("dispatches the planner with header-only bearer authentication", async () => {
 		const faux = createFauxStreamFn(["2,10\n"]);
@@ -341,10 +413,16 @@ describe("single planned compaction rung", () => {
 	it("honors abort before the request", async () => {
 		const controller = new AbortController();
 		controller.abort();
-		await expect(runVerbatimCompaction(
-			preparation(),
-			model,
-			run({ signal: controller.signal, thinkingLevel: undefined, streamFn: createFauxStreamFn(["1,1\n"]).streamFn }),
-		)).rejects.toThrow("Compaction cancelled");
+		await expect(
+			runVerbatimCompaction(
+				preparation(),
+				model,
+				run({
+					signal: controller.signal,
+					thinkingLevel: undefined,
+					streamFn: createFauxStreamFn(["1,1\n"]).streamFn,
+				}),
+			),
+		).rejects.toThrow("Compaction cancelled");
 	});
 });

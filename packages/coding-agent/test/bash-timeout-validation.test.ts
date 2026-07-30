@@ -24,7 +24,9 @@ describe("bash timeout validation", () => {
 	test("local operations accept omitted timeout and the 3600 second maximum", async () => {
 		const operations = createLocalBashOperations();
 		await expect(operations.exec("true", process.cwd(), { onData: () => {} })).resolves.toEqual({ exitCode: 0 });
-		await expect(operations.exec("true", process.cwd(), { timeout: 3600, onData: () => {} })).resolves.toEqual({ exitCode: 0 });
+		await expect(operations.exec("true", process.cwd(), { timeout: 3600, onData: () => {} })).resolves.toEqual({
+			exitCode: 0,
+		});
 	});
 
 	test.each([0, -1, 3600.1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
@@ -37,13 +39,12 @@ describe("bash timeout validation", () => {
 						executed = true;
 						return { exitCode: 0 };
 					},
-
 				},
 			});
 
-			await expect(bash.execute("invalid", { command: "true", timeout }, undefined, undefined, context)).rejects.toThrow(
-				/timeout/i,
-			);
+			await expect(
+				bash.execute("invalid", { command: "true", timeout }, undefined, undefined, context),
+			).rejects.toThrow(/timeout/i);
 			expect(executed).toBe(false);
 		},
 	);

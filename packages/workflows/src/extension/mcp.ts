@@ -17,13 +17,13 @@
 
 /** Minimal pi events bus surface used by this module. */
 export interface PiEventBus {
-  emit: (event: string, payload: Record<string, unknown>) => void;
+	emit: (event: string, payload: Record<string, unknown>) => void;
 }
 
 /** Minimal ExtensionAPI surface expected by mcp integration. */
 export interface PiMcpExtensionAPI {
-  events?: PiEventBus;
-  [key: string]: unknown;
+	events?: PiEventBus;
+	[key: string]: unknown;
 }
 
 // ---------------------------------------------------------------------------
@@ -35,27 +35,27 @@ export interface PiMcpExtensionAPI {
  * Mirrors the stage-level `mcpServers` declaration in a workflow definition.
  */
 export interface McpScopeOpts {
-  /**
-   * Stage ID scoping this restriction. The adapter may use this to
-   * namespace the scope so concurrent stages don't interfere.
-   */
-  stageId: string;
-  /**
-   * Server IDs to allow exclusively. When provided, all other servers are
-   * implicitly denied for this stage.
-   */
-  allow?: string[];
-  /**
-   * Server IDs to deny explicitly. Applied after `allow` when both present.
-   */
-  deny?: string[];
+	/**
+	 * Stage ID scoping this restriction. The adapter may use this to
+	 * namespace the scope so concurrent stages don't interfere.
+	 */
+	stageId: string;
+	/**
+	 * Server IDs to allow exclusively. When provided, all other servers are
+	 * implicitly denied for this stage.
+	 */
+	allow?: string[];
+	/**
+	 * Server IDs to deny explicitly. Applied after `allow` when both present.
+	 */
+	deny?: string[];
 }
 
 /** Payload shape emitted on `mcp.scope.set`. */
 export interface McpScopeSetPayload {
-  stageId: string;
-  allow: string[] | null;
-  deny: string[] | null;
+	stageId: string;
+	allow: string[] | null;
+	deny: string[] | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -71,15 +71,15 @@ export interface McpScopeSetPayload {
  *   setMcpScope(pi, { stageId, allow: ["github", "fetch"], deny: ["filesystem"] });
  */
 export function setMcpScope(pi: PiMcpExtensionAPI, opts: McpScopeOpts): void {
-  if (!pi.events) return;
+	if (!pi.events) return;
 
-  const payload: McpScopeSetPayload = {
-    stageId: opts.stageId,
-    allow: opts.allow ?? null,
-    deny: opts.deny ?? null,
-  };
+	const payload: McpScopeSetPayload = {
+		stageId: opts.stageId,
+		allow: opts.allow ?? null,
+		deny: opts.deny ?? null,
+	};
 
-  pi.events.emit("mcp.scope.set", payload as unknown as Record<string, unknown>);
+	pi.events.emit("mcp.scope.set", payload as unknown as Record<string, unknown>);
 }
 
 /**
@@ -90,15 +90,15 @@ export function setMcpScope(pi: PiMcpExtensionAPI, opts: McpScopeOpts): void {
  *   clearMcpScope(pi, stageId);
  */
 export function clearMcpScope(pi: PiMcpExtensionAPI, stageId: string): void {
-  if (!pi.events) return;
+	if (!pi.events) return;
 
-  const payload: McpScopeSetPayload = {
-    stageId,
-    allow: null,
-    deny: null,
-  };
+	const payload: McpScopeSetPayload = {
+		stageId,
+		allow: null,
+		deny: null,
+	};
 
-  pi.events.emit("mcp.scope.set", payload as unknown as Record<string, unknown>);
+	pi.events.emit("mcp.scope.set", payload as unknown as Record<string, unknown>);
 }
 
 /**
@@ -106,5 +106,5 @@ export function clearMcpScope(pi: PiMcpExtensionAPI, stageId: string): void {
  * When false, per-stage server restrictions silently have no effect.
  */
 export function isMcpScopeSupported(pi: PiMcpExtensionAPI): boolean {
-  return pi.events !== undefined && pi.events !== null;
+	return pi.events !== undefined && pi.events !== null;
 }

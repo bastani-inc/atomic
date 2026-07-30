@@ -32,7 +32,10 @@ describe("fetch-url parseReadUrlTarget", () => {
 
 	it("parses multi-range into ranges", () => {
 		const t = parseReadUrlTarget("https://example.com/page:5-10,20-30");
-		expect(t?.ranges).toEqual([{ start: 5, end: 10 }, { start: 20, end: 30 }]);
+		expect(t?.ranges).toEqual([
+			{ start: 5, end: 10 },
+			{ start: 20, end: 30 },
+		]);
 		expect(t?.offset).toBeUndefined();
 	});
 

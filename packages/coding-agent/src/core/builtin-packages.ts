@@ -63,10 +63,7 @@ const BUILTIN_PACKAGES: readonly BuiltinPackageDescriptor[] = WORKSPACE_BUILTINS
 		requiredEntry: spec.requiredEntry,
 		sourceCandidates: ({ here, packageDir, isSourceCheckout }) =>
 			isSourceCheckout
-				? [
-						join(packageDir, "..", spec.workspaceDirName),
-						join(here, "..", "..", "..", spec.workspaceDirName),
-					]
+				? [join(packageDir, "..", spec.workspaceDirName), join(here, "..", "..", "..", spec.workspaceDirName)]
 				: [],
 	}),
 );

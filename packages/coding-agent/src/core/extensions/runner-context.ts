@@ -6,6 +6,13 @@ import type { SessionManager } from "../session-manager.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import { createArtifactRouter, registerArtifactDir } from "../tools/artifact-protocol.ts";
 import type {
+	ForkHandler,
+	NavigateTreeHandler,
+	NewSessionHandler,
+	ReloadHandler,
+	SwitchSessionHandler,
+} from "./runner-handlers.ts";
+import type {
 	CompactOptions,
 	ContextUsage,
 	ExtensionCommandContext,
@@ -14,13 +21,6 @@ import type {
 	ExtensionUIContext,
 	OrchestrationContext,
 } from "./types.ts";
-import type {
-	ForkHandler,
-	NavigateTreeHandler,
-	NewSessionHandler,
-	ReloadHandler,
-	SwitchSessionHandler,
-} from "./runner-handlers.ts";
 
 export interface ExtensionContextSource {
 	assertActive(): void;

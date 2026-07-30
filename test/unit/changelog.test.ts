@@ -1,25 +1,25 @@
-import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { describe, test } from "vitest";
 import {
-  compareVersions,
-  getEntriesForVersion,
-  getNewEntries,
-  parseChangelog,
+	compareVersions,
+	getEntriesForVersion,
+	getNewEntries,
+	parseChangelog,
 } from "../../packages/coding-agent/src/utils/changelog.js";
 
 function writeChangelog(content: string): string {
-  const root = mkdtempSync(join(tmpdir(), "atomic-changelog-"));
-  const changelogPath = join(root, "CHANGELOG.md");
-  writeFileSync(changelogPath, content);
-  return changelogPath;
+	const root = mkdtempSync(join(tmpdir(), "atomic-changelog-"));
+	const changelogPath = join(root, "CHANGELOG.md");
+	writeFileSync(changelogPath, content);
+	return changelogPath;
 }
 
 describe("changelog parsing", () => {
-  test("parses numeric prerelease versions as distinct changelog entries", () => {
-    const changelogPath = writeChangelog(`# Changelog
+	test("parses numeric prerelease versions as distinct changelog entries", () => {
+		const changelogPath = writeChangelog(`# Changelog
 
 ## [0.8.1] - 2026-05-15
 
@@ -34,21 +34,21 @@ describe("changelog parsing", () => {
 - Prerelease fix.
 `);
 
-    try {
-      const entries = parseChangelog(changelogPath);
-      assert.deepEqual(
-        entries.map((entry) => entry.version),
-        ["0.8.1", "0.8.1-0"],
-      );
-      assert.equal(entries[0]?.prerelease, null);
-      assert.equal(entries[1]?.prerelease, 0);
-    } finally {
-      rmSync(dirname(changelogPath), { recursive: true, force: true });
-    }
-  });
+		try {
+			const entries = parseChangelog(changelogPath);
+			assert.deepEqual(
+				entries.map((entry) => entry.version),
+				["0.8.1", "0.8.1-0"],
+			);
+			assert.equal(entries[0]?.prerelease, null);
+			assert.equal(entries[1]?.prerelease, 0);
+		} finally {
+			rmSync(dirname(changelogPath), { recursive: true, force: true });
+		}
+	});
 
-  test("parses alpha prerelease versions, round-tripping the header and ordering by revision", () => {
-    const changelogPath = writeChangelog(`# Changelog
+	test("parses alpha prerelease versions, round-tripping the header and ordering by revision", () => {
+		const changelogPath = writeChangelog(`# Changelog
 
 ## [0.8.24] - 2026-06-10
 
@@ -69,33 +69,33 @@ describe("changelog parsing", () => {
 - First prerelease fix.
 `);
 
-    try {
-      const entries = parseChangelog(changelogPath);
-      assert.deepEqual(
-        entries.map((entry) => entry.version),
-        ["0.8.24", "0.8.24-alpha.2", "0.8.24-alpha.1"],
-      );
-      assert.equal(entries[0]?.prerelease, null);
-      assert.equal(entries[1]?.prerelease, 2);
-      assert.equal(entries[2]?.prerelease, 1);
+		try {
+			const entries = parseChangelog(changelogPath);
+			assert.deepEqual(
+				entries.map((entry) => entry.version),
+				["0.8.24", "0.8.24-alpha.2", "0.8.24-alpha.1"],
+			);
+			assert.equal(entries[0]?.prerelease, null);
+			assert.equal(entries[1]?.prerelease, 2);
+			assert.equal(entries[2]?.prerelease, 1);
 
-      const [stable, alpha2, alpha1] = entries;
-      assert.ok(stable && alpha2 && alpha1);
-      // stable 0.8.24 is newer than 0.8.24-alpha.2, which is newer than 0.8.24-alpha.1.
-      assert.equal(compareVersions(stable, alpha2), 1);
-      assert.equal(compareVersions(alpha2, alpha1), 1);
+			const [stable, alpha2, alpha1] = entries;
+			assert.ok(stable && alpha2 && alpha1);
+			// stable 0.8.24 is newer than 0.8.24-alpha.2, which is newer than 0.8.24-alpha.1.
+			assert.equal(compareVersions(stable, alpha2), 1);
+			assert.equal(compareVersions(alpha2, alpha1), 1);
 
-      assert.deepEqual(
-        getEntriesForVersion(entries, "0.8.24-alpha.1").map((entry) => entry.version),
-        ["0.8.24-alpha.1"],
-      );
-    } finally {
-      rmSync(dirname(changelogPath), { recursive: true, force: true });
-    }
-  });
+			assert.deepEqual(
+				getEntriesForVersion(entries, "0.8.24-alpha.1").map((entry) => entry.version),
+				["0.8.24-alpha.1"],
+			);
+		} finally {
+			rmSync(dirname(changelogPath), { recursive: true, force: true });
+		}
+	});
 
-  test("bounds update entries to the current Atomic version", () => {
-    const changelogPath = writeChangelog(`# Changelog
+	test("bounds update entries to the current Atomic version", () => {
+		const changelogPath = writeChangelog(`# Changelog
 
 ## [0.10.0] - 2026-05-20
 
@@ -118,20 +118,20 @@ describe("changelog parsing", () => {
 - Historical upstream Pi section with the same version number.
 `);
 
-    try {
-      const entries = parseChangelog(changelogPath);
-      const newEntries = getNewEntries(entries, "0.8.1-0", "0.10.0");
+		try {
+			const entries = parseChangelog(changelogPath);
+			const newEntries = getNewEntries(entries, "0.8.1-0", "0.10.0");
 
-      assert.deepEqual(
-        newEntries.map((entry) => entry.version),
-        ["0.10.0", "0.9.0"],
-      );
-      assert.deepEqual(
-        getEntriesForVersion(newEntries, "0.10.0").map((entry) => entry.version),
-        ["0.10.0"],
-      );
-    } finally {
-      rmSync(dirname(changelogPath), { recursive: true, force: true });
-    }
-  });
+			assert.deepEqual(
+				newEntries.map((entry) => entry.version),
+				["0.10.0", "0.9.0"],
+			);
+			assert.deepEqual(
+				getEntriesForVersion(newEntries, "0.10.0").map((entry) => entry.version),
+				["0.10.0"],
+			);
+		} finally {
+			rmSync(dirname(changelogPath), { recursive: true, force: true });
+		}
+	});
 });

@@ -66,7 +66,10 @@ export function emptyNotebook(): NotebookDocument {
 
 export function newNotebookCell(cellType: NotebookCellType, source: string): NotebookCell {
 	const cell: NotebookCell = { cell_type: cellType, metadata: {}, source: splitNotebookSource(source) };
-	if (cellType === "code") { cell.execution_count = null; cell.outputs = []; }
+	if (cellType === "code") {
+		cell.execution_count = null;
+		cell.outputs = [];
+	}
 	return cell;
 }
 
@@ -112,7 +115,11 @@ function parseNotebookEditableText(text: string, displayPath: string): ParsedVir
 	return cells;
 }
 
-export function applyNotebookEditableText(notebook: NotebookDocument, text: string, displayPath: string): NotebookDocument {
+export function applyNotebookEditableText(
+	notebook: NotebookDocument,
+	text: string,
+	displayPath: string,
+): NotebookDocument {
 	const parsed = parseNotebookEditableText(text, displayPath);
 	const next = structuredClone(notebook) as NotebookDocument;
 	const used = new Set<number>();
@@ -140,20 +147,35 @@ export function applyNotebookEditableText(notebook: NotebookDocument, text: stri
 }
 
 export function readEditableNotebookText(absolutePath: string, displayPath: string): string {
-	const notebook = existsSync(absolutePath) ? parseNotebookSafe(readFileSync(absolutePath, "utf8"), displayPath) : emptyNotebook();
+	const notebook = existsSync(absolutePath)
+		? parseNotebookSafe(readFileSync(absolutePath, "utf8"), displayPath)
+		: emptyNotebook();
 	return notebookToEditableText(notebook);
 }
 
 export function serializeEditedNotebookText(absolutePath: string, displayPath: string, text: string): string {
-	const notebook = existsSync(absolutePath) ? parseNotebookSafe(readFileSync(absolutePath, "utf8"), displayPath) : emptyNotebook();
+	const notebook = existsSync(absolutePath)
+		? parseNotebookSafe(readFileSync(absolutePath, "utf8"), displayPath)
+		: emptyNotebook();
 	const next = applyNotebookEditableText(notebook, text, displayPath);
 	return JSON.stringify(next, null, 1);
 }
 
 function parseNotebookSafe(raw: string, displayPath: string): NotebookDocument {
 	let parsed: unknown;
-	try { parsed = JSON.parse(raw); } catch { throw new Error(`Invalid notebook JSON for ${displayPath}`); }
-	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`Invalid notebook JSON for ${displayPath}`);
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		throw new Error(`Invalid notebook JSON for ${displayPath}`);
+	}
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+		throw new Error(`Invalid notebook JSON for ${displayPath}`);
 	const doc = parsed as Partial<NotebookDocument>;
-	return { ...doc, cells: Array.isArray(doc.cells) ? doc.cells as NotebookCell[] : [], metadata: (doc.metadata ?? {}) as Record<string, unknown>, nbformat: doc.nbformat ?? 4, nbformat_minor: doc.nbformat_minor ?? 5 };
+	return {
+		...doc,
+		cells: Array.isArray(doc.cells) ? (doc.cells as NotebookCell[]) : [],
+		metadata: (doc.metadata ?? {}) as Record<string, unknown>,
+		nbformat: doc.nbformat ?? 4,
+		nbformat_minor: doc.nbformat_minor ?? 5,
+	};
 }

@@ -17,7 +17,7 @@
  * separate variables. Only the agent cursor is ever exposed to the agent.
  */
 
-import { StringEnum, type ExtensionAPI, type ExtensionContext, type ToolExecutionMode } from "@bastani/atomic";
+import { type ExtensionAPI, type ExtensionContext, StringEnum, type ToolExecutionMode } from "@bastani/atomic";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { buildTicTacToeInstructions } from "./tic-tac-toe-instructions.js";
@@ -25,15 +25,15 @@ import { BannerMessageComponent, GameOverMessageComponent, TicTacToeComponent } 
 import {
 	AGENT_CURSOR_HOME_COL,
 	AGENT_CURSOR_HOME_ROW,
-	TicTacToeError,
+	type BoardDetails,
 	boardToAscii,
 	checkWin,
 	createInitialState,
 	delay,
-	toBoardDetails,
-	type BoardDetails,
 	type GameState,
 	type GameStatus,
+	TicTacToeError,
+	toBoardDetails,
 } from "./tic-tac-toe-state.js";
 
 const SAVE_TYPE = "tic-tac-toe-save";

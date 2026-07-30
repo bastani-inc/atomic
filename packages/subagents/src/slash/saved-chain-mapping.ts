@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ChainConfig } from "../agents/agents.ts";
-import { isDynamicParallelStep, isParallelStep, type ChainStep } from "../shared/settings.ts";
+import { type ChainStep, isDynamicParallelStep, isParallelStep } from "../shared/settings.ts";
 import type { JsonSchemaObject } from "../shared/types.ts";
 
 function loadSavedOutputSchema(
@@ -30,13 +30,11 @@ export function mapSavedChainSteps(chain: ChainConfig, worktree = false): ChainS
 			return { ...step, parallel, ...(worktree ? { worktree: true } : {}) };
 		}
 		if (isDynamicParallelStep(step)) {
-			const { outputSchema: rawOutputSchema, ...parallelRest } = step.parallel as typeof step.parallel & { outputSchema?: unknown };
+			const { outputSchema: rawOutputSchema, ...parallelRest } = step.parallel as typeof step.parallel & {
+				outputSchema?: unknown;
+			};
 			const outputSchema = loadSavedOutputSchema(chain, step.parallel.agent, rawOutputSchema);
-			const collectSchema = loadSavedOutputSchema(
-				chain,
-				`${step.collect.as} collection`,
-				step.collect.outputSchema,
-			);
+			const collectSchema = loadSavedOutputSchema(chain, `${step.collect.as} collection`, step.collect.outputSchema);
 			return {
 				...step,
 				parallel: { ...parallelRest, ...(outputSchema ? { outputSchema } : {}) },

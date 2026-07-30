@@ -1,20 +1,20 @@
-import {
-	type Api,
-	type ApiKeyAuth,
-	type AssistantMessageEventStream,
-	type AuthContext,
-	type AuthInteraction,
-	type AuthResult,
-	type Context,
-	type Model,
-	type ModelAuth,
-	type OAuthAuth,
-	type OAuthCredentials,
-	type OAuthLoginCallbacks,
-	type Provider,
-	type ProviderHeaders,
-	type RefreshModelsContext,
-	type SimpleStreamOptions,
+import type {
+	Api,
+	ApiKeyAuth,
+	AssistantMessageEventStream,
+	AuthContext,
+	AuthInteraction,
+	AuthResult,
+	Context,
+	Model,
+	ModelAuth,
+	OAuthAuth,
+	OAuthCredentials,
+	OAuthLoginCallbacks,
+	Provider,
+	ProviderHeaders,
+	RefreshModelsContext,
+	SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import type { ModelsJsonModel, ModelsJsonModelOverride, ModelsJsonProvider } from "./model-config.ts";
 import {
@@ -394,4 +394,3 @@ export function rawModelHeaders(
 	};
 	return Object.keys(headers).length > 0 ? headers : undefined;
 }
-

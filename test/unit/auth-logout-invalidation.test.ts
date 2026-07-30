@@ -1,17 +1,17 @@
-import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import lockfile from "proper-lockfile";
-import { RpcClient } from "../../packages/coding-agent/src/modes/rpc/rpc-client.ts";
-import { loginIsolatedOAuthProvider } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-auth.ts";
-import { RemoteModelCatalog } from "../../packages/coding-agent/src/modes/interactive-engine/remote-model-catalog.ts";
-import { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
-import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
-import { formatLogoutStatus } from "../../packages/coding-agent/src/modes/interactive/interactive-auth-routing.ts";
+import { describe, test } from "vitest";
 import { AuthStorage, type AuthStorageData } from "../../packages/coding-agent/src/core/auth-storage.ts";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.ts";
+import { formatLogoutStatus } from "../../packages/coding-agent/src/modes/interactive/interactive-auth-routing.ts";
+import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
+import { loginIsolatedOAuthProvider } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-auth.ts";
+import { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
+import { RemoteModelCatalog } from "../../packages/coding-agent/src/modes/interactive-engine/remote-model-catalog.ts";
+import { RpcClient } from "../../packages/coding-agent/src/modes/rpc/rpc-client.ts";
 import { bunExecutable, moduleDir, sleep, writeFileEnsuringDir } from "../helpers/runtime.js";
 
 function readAuth(path: string): AuthStorageData {
@@ -24,14 +24,38 @@ describe("logout credential invalidation (#1919)", () => {
 			const directory = mkdtempSync(join(tmpdir(), `atomic-logout-${platform}-`));
 			const primary = join(directory, ".atomic", "agent", "auth.json");
 			const legacy = join(directory, ".pi", "agent", "auth.json");
-			await writeFileEnsuringDir(primary, JSON.stringify({
-				"github-copilot": { type: "oauth", access: "primary", refresh: "refresh", expires: Date.now() + 60_000 },
-				openai: { type: "api_key", key: "primary-openai" },
-			}, null, 2));
-			await writeFileEnsuringDir(legacy, JSON.stringify({
-				"github-copilot": { type: "oauth", access: "legacy", refresh: "refresh", expires: Date.now() + 60_000 },
-				anthropic: { type: "api_key", key: "legacy-anthropic" },
-			}, null, 2));
+			await writeFileEnsuringDir(
+				primary,
+				JSON.stringify(
+					{
+						"github-copilot": {
+							type: "oauth",
+							access: "primary",
+							refresh: "refresh",
+							expires: Date.now() + 60_000,
+						},
+						openai: { type: "api_key", key: "primary-openai" },
+					},
+					null,
+					2,
+				),
+			);
+			await writeFileEnsuringDir(
+				legacy,
+				JSON.stringify(
+					{
+						"github-copilot": {
+							type: "oauth",
+							access: "legacy",
+							refresh: "refresh",
+							expires: Date.now() + 60_000,
+						},
+						anthropic: { type: "api_key", key: "legacy-anthropic" },
+					},
+					null,
+					2,
+				),
+			);
 
 			try {
 				const storage = AuthStorage.create([primary, legacy]);
@@ -48,7 +72,10 @@ describe("logout credential invalidation (#1919)", () => {
 
 				const restarted = AuthStorage.create([primary, legacy]);
 				assert.equal(await restarted.read("github-copilot"), undefined);
-				assert.deepEqual((await restarted.list()).map(({ providerId }) => providerId).sort(), ["anthropic", "openai"]);
+				assert.deepEqual((await restarted.list()).map(({ providerId }) => providerId).sort(), [
+					"anthropic",
+					"openai",
+				]);
 			} finally {
 				rmSync(directory, { recursive: true, force: true });
 			}
@@ -86,7 +113,10 @@ describe("logout credential invalidation (#1919)", () => {
 	test("the engine child drops stored auth, its model projection, and prompt access immediately", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "atomic-engine-logout-"));
 		const authPath = join(directory, "auth.json");
-		await writeFileEnsuringDir(authPath, JSON.stringify({ anthropic: { type: "api_key", key: "controlled-fake-key" } }));
+		await writeFileEnsuringDir(
+			authPath,
+			JSON.stringify({ anthropic: { type: "api_key", key: "controlled-fake-key" } }),
+		);
 		const client = new RpcClient({
 			cliPath: join(moduleDir(import.meta.url), "../../packages/coding-agent/src/cli.ts"),
 			cwd: join(moduleDir(import.meta.url), "../.."),
@@ -111,7 +141,10 @@ describe("logout credential invalidation (#1919)", () => {
 
 			assert.equal(Object.getPrototypeOf(result), Object.prototype);
 			assert.deepEqual(result.authStatus, { configured: false });
-			assert.equal(result.models.some((model) => model.provider === "anthropic"), false);
+			assert.equal(
+				result.models.some((model) => model.provider === "anthropic"),
+				false,
+			);
 			assert.deepEqual(readAuth(authPath), {});
 			assert.equal((await client.getState()).model?.provider, "anthropic");
 			await assert.rejects(
@@ -127,19 +160,35 @@ describe("logout credential invalidation (#1919)", () => {
 	test("the Linux Copilot regression clears the authoritative child and stays logged out after restart", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "atomic-copilot-logout-linux-"));
 		const authPath = join(directory, "auth.json");
-		await writeFileEnsuringDir(authPath, JSON.stringify({
-			"github-copilot": { type: "oauth", access: "controlled-fake-token", refresh: "refresh", expires: Date.now() + 60_000 },
-		}));
-		const makeClient = () => new RpcClient({
-			cliPath: join(moduleDir(import.meta.url), "../../packages/coding-agent/src/cli.ts"),
-			cwd: join(moduleDir(import.meta.url), "../.."),
-			runtimeExecutable: bunExecutable(),
-			provider: "github-copilot",
-			model: "claude-haiku-4.5",
-			env: { ATOMIC_CODING_AGENT_DIR: directory, COPILOT_GITHUB_TOKEN: "" },
-			args: ["--no-session", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--offline"],
-			interactiveEngine: { onDiagnostic: () => {} },
-		});
+		await writeFileEnsuringDir(
+			authPath,
+			JSON.stringify({
+				"github-copilot": {
+					type: "oauth",
+					access: "controlled-fake-token",
+					refresh: "refresh",
+					expires: Date.now() + 60_000,
+				},
+			}),
+		);
+		const makeClient = () =>
+			new RpcClient({
+				cliPath: join(moduleDir(import.meta.url), "../../packages/coding-agent/src/cli.ts"),
+				cwd: join(moduleDir(import.meta.url), "../.."),
+				runtimeExecutable: bunExecutable(),
+				provider: "github-copilot",
+				model: "claude-haiku-4.5",
+				env: { ATOMIC_CODING_AGENT_DIR: directory, COPILOT_GITHUB_TOKEN: "" },
+				args: [
+					"--no-session",
+					"--no-extensions",
+					"--no-skills",
+					"--no-prompt-templates",
+					"--no-themes",
+					"--offline",
+				],
+				interactiveEngine: { onDiagnostic: () => {} },
+			});
 		const client = makeClient();
 
 		try {
@@ -151,7 +200,10 @@ describe("logout credential invalidation (#1919)", () => {
 
 			assert.equal(result.provider, "github-copilot");
 			assert.deepEqual(result.authStatus, { configured: false });
-			assert.equal(result.models.some((model) => model.provider === "github-copilot"), false);
+			assert.equal(
+				result.models.some((model) => model.provider === "github-copilot"),
+				false,
+			);
 			assert.equal((await client.getState()).model?.provider, "github-copilot");
 			await assert.rejects(
 				client.requestInternal<void>({ type: "prompt", message: "Do not contact Copilot" }),
@@ -163,7 +215,10 @@ describe("logout credential invalidation (#1919)", () => {
 			try {
 				await restarted.start();
 				await restarted.waitForInteractiveEngineBound();
-				assert.equal((await restarted.getAvailableModels()).some((model) => model.provider === "github-copilot"), false);
+				assert.equal(
+					(await restarted.getAvailableModels()).some((model) => model.provider === "github-copilot"),
+					false,
+				);
 			} finally {
 				await restarted.stop();
 			}
@@ -195,7 +250,10 @@ describe("logout credential invalidation (#1919)", () => {
 				source: "environment",
 				label: "ANTHROPIC_API_KEY",
 			});
-			assert.equal(result.models.some((model) => model.provider === "anthropic"), true);
+			assert.equal(
+				result.models.some((model) => model.provider === "anthropic"),
+				true,
+			);
 			assert.deepEqual(readAuth(authPath), {});
 		} finally {
 			await client.stop();
@@ -216,14 +274,17 @@ describe("logout credential invalidation (#1919)", () => {
 			respondExtensionUI: async () => {},
 			cancelLoginProvider: async () => {},
 			requestInternal: async () => {
-				await writeFileEnsuringDir(authPath, JSON.stringify({
-					"corp-oauth": {
-						type: "oauth",
-						access: "engine-token",
-						refresh: "refresh-token",
-						expires: Date.now() + 60_000,
-					},
-				}));
+				await writeFileEnsuringDir(
+					authPath,
+					JSON.stringify({
+						"corp-oauth": {
+							type: "oauth",
+							access: "engine-token",
+							refresh: "refresh-token",
+							expires: Date.now() + 60_000,
+						},
+					}),
+				);
 				return {
 					provider: "corp-oauth",
 					cancelled: false,
@@ -237,13 +298,7 @@ describe("logout credential invalidation (#1919)", () => {
 
 		try {
 			assert.deepEqual(modelRuntime.getProviderAuthStatus("corp-oauth"), { configured: false });
-			await loginIsolatedOAuthProvider(
-				session as never,
-				client as never,
-				remoteCatalog,
-				"corp-oauth",
-				{} as never,
-			);
+			await loginIsolatedOAuthProvider(session as never, client as never, remoteCatalog, "corp-oauth", {} as never);
 			assert.deepEqual(modelRuntime.getProviderAuthStatus("corp-oauth"), {
 				configured: true,
 				source: "stored",
@@ -310,7 +365,9 @@ describe("logout credential invalidation (#1919)", () => {
 		};
 		const runtime = new IsolatedInteractiveRuntime(
 			{ session, services: {}, diagnostics: [] } as never,
-			async () => { throw new Error("not used"); },
+			async () => {
+				throw new Error("not used");
+			},
 			client as never,
 		);
 
@@ -337,5 +394,4 @@ describe("logout credential invalidation (#1919)", () => {
 			"Logged out of GitHub Copilot. Authentication remains active through COPILOT_GITHUB_TOKEN.",
 		);
 	});
-
 });

@@ -1,24 +1,24 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
+	assertSafeId,
+	clampNumber,
+	containedPath,
+	isSafeNestedId,
+	MAX_NESTED_EVENT_BYTES,
+	type NestedControlRequestRecord,
+	type NestedControlResultRecord,
+	type NestedRoute,
+	stringValue,
+	validateRouteShape,
+} from "./nested-events-core.ts";
+import { writeRouteRecord } from "./nested-events-registry.ts";
+import {
 	SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV,
 	SUBAGENT_PARENT_CONTROL_INBOX_ENV,
 	SUBAGENT_PARENT_EVENT_SINK_ENV,
 	SUBAGENT_PARENT_ROOT_RUN_ID_ENV,
 } from "./pi-args.ts";
-import {
-	MAX_NESTED_EVENT_BYTES,
-	assertSafeId,
-	clampNumber,
-	containedPath,
-	isSafeNestedId,
-	stringValue,
-	validateRouteShape,
-	type NestedControlRequestRecord,
-	type NestedControlResultRecord,
-	type NestedRoute,
-} from "./nested-events-core.ts";
-import { writeRouteRecord } from "./nested-events-registry.ts";
 
 export function parseNestedControlRequest(content: string, route: NestedRoute): NestedControlRequestRecord | undefined {
 	if (Buffer.byteLength(content, "utf-8") > MAX_NESTED_EVENT_BYTES) return undefined;
@@ -75,7 +75,10 @@ export function parseNestedControlResult(content: string, route: NestedRoute): N
 	};
 }
 
-export function writeNestedControlRequest(route: NestedRoute, request: Omit<NestedControlRequestRecord, "type" | "rootRunId" | "capabilityToken">): string {
+export function writeNestedControlRequest(
+	route: NestedRoute,
+	request: Omit<NestedControlRequestRecord, "type" | "rootRunId" | "capabilityToken">,
+): string {
 	validateRouteShape(route);
 	assertSafeId("requestId", request.requestId);
 	assertSafeId("targetRunId", request.targetRunId);
@@ -90,11 +93,16 @@ export function writeNestedControlRequest(route: NestedRoute, request: Omit<Nest
 	return writeRouteRecord(route.controlInbox, sanitized.ts, sanitized);
 }
 
-export function readNestedControlRequests(route: NestedRoute): Array<NestedControlRequestRecord & { filePath: string }> {
+export function readNestedControlRequests(
+	route: NestedRoute,
+): Array<NestedControlRequestRecord & { filePath: string }> {
 	validateRouteShape(route);
 	let entries: string[] = [];
 	try {
-		entries = fs.readdirSync(route.controlInbox).filter((entry) => entry.endsWith(".json")).sort();
+		entries = fs
+			.readdirSync(route.controlInbox)
+			.filter((entry) => entry.endsWith(".json"))
+			.sort();
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 	}
@@ -107,14 +115,15 @@ export function readNestedControlRequests(route: NestedRoute): Array<NestedContr
 			if (!stat.isFile() || stat.size > MAX_NESTED_EVENT_BYTES) continue;
 			const request = parseNestedControlRequest(fs.readFileSync(filePath, "utf-8"), route);
 			if (request) requests.push({ ...request, filePath });
-		} catch {
-			continue;
-		}
+		} catch {}
 	}
 	return requests;
 }
 
-export function writeNestedControlResult(route: NestedRoute, result: Omit<NestedControlResultRecord, "type" | "rootRunId" | "capabilityToken">): void {
+export function writeNestedControlResult(
+	route: NestedRoute,
+	result: Omit<NestedControlResultRecord, "type" | "rootRunId" | "capabilityToken">,
+): void {
 	validateRouteShape(route);
 	assertSafeId("requestId", result.requestId);
 	assertSafeId("targetRunId", result.targetRunId);
@@ -133,7 +142,10 @@ export function readNestedControlResults(route: NestedRoute): NestedControlResul
 	validateRouteShape(route);
 	let entries: string[] = [];
 	try {
-		entries = fs.readdirSync(route.eventSink).filter((entry) => entry.endsWith(".json") || entry.endsWith(".jsonl")).sort();
+		entries = fs
+			.readdirSync(route.eventSink)
+			.filter((entry) => entry.endsWith(".json") || entry.endsWith(".jsonl"))
+			.sort();
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 	}
@@ -150,9 +162,7 @@ export function readNestedControlResults(route: NestedRoute): NestedControlResul
 				const result = parseNestedControlResult(line, route);
 				if (result) results.push(result);
 			}
-		} catch {
-			continue;
-		}
+		} catch {}
 	}
 	return results;
 }

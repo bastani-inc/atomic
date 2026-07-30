@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { ensureDeferredStartupComplete, type DeferredStartupMode } from "../src/modes/interactive/interactive-deferred-startup.ts";
+import {
+	type DeferredStartupMode,
+	ensureDeferredStartupComplete,
+} from "../src/modes/interactive/interactive-deferred-startup.ts";
 
 function createMode(): DeferredStartupMode & { starts: number } {
 	return {

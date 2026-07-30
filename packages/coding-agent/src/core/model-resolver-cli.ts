@@ -5,34 +5,32 @@ import type { ResolveCliModelResult } from "./model-resolver-types.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 
 function buildProviderMap(availableModels: Model<Api>[]): Map<string, string> {
-  const providerMap = new Map<string, string>();
-  for (const model of availableModels) {
-    providerMap.set(model.provider.toLowerCase(), model.provider);
-  }
-  return providerMap;
+	const providerMap = new Map<string, string>();
+	for (const model of availableModels) {
+		providerMap.set(model.provider.toLowerCase(), model.provider);
+	}
+	return providerMap;
 }
 
 function findRawExactModel(cliModel: string, availableModels: Model<Api>[]): Model<Api> | undefined {
-  const lower = cliModel.toLowerCase();
-  return availableModels.find(
-    (m) => m.id.toLowerCase() === lower || `${m.provider}/${m.id}`.toLowerCase() === lower,
-  );
+	const lower = cliModel.toLowerCase();
+	return availableModels.find((m) => m.id.toLowerCase() === lower || `${m.provider}/${m.id}`.toLowerCase() === lower);
 }
 
 function splitCustomModelThinkingSuffix(pattern: string): {
-  modelId: string;
-  thinkingLevel: ResolveCliModelResult["thinkingLevel"];
+	modelId: string;
+	thinkingLevel: ResolveCliModelResult["thinkingLevel"];
 } {
-  const lastColonIndex = pattern.lastIndexOf(":");
-  if (lastColonIndex <= 0) return { modelId: pattern, thinkingLevel: undefined };
+	const lastColonIndex = pattern.lastIndexOf(":");
+	if (lastColonIndex <= 0) return { modelId: pattern, thinkingLevel: undefined };
 
-  const suffix = pattern.substring(lastColonIndex + 1);
-  if (!isValidThinkingLevel(suffix)) return { modelId: pattern, thinkingLevel: undefined };
+	const suffix = pattern.substring(lastColonIndex + 1);
+	if (!isValidThinkingLevel(suffix)) return { modelId: pattern, thinkingLevel: undefined };
 
-  return {
-    modelId: pattern.substring(0, lastColonIndex),
-    thinkingLevel: suffix,
-  };
+	return {
+		modelId: pattern.substring(0, lastColonIndex),
+		thinkingLevel: suffix,
+	};
 }
 
 /**
@@ -47,131 +45,131 @@ function splitCustomModelThinkingSuffix(pattern: string): {
  * return a thinking level from "<pattern>:<thinking>" so the caller can apply it.
  */
 export function resolveCliModel(options: {
-  cliProvider?: string;
-  cliModel?: string;
-  modelRuntime: ModelRuntime;
+	cliProvider?: string;
+	cliModel?: string;
+	modelRuntime: ModelRuntime;
 }): ResolveCliModelResult {
-  const { cliProvider, cliModel, modelRuntime } = options;
+	const { cliProvider, cliModel, modelRuntime } = options;
 
-  if (!cliModel) {
-    return { model: undefined, warning: undefined, error: undefined };
-  }
+	if (!cliModel) {
+		return { model: undefined, warning: undefined, error: undefined };
+	}
 
-  const availableModels = [...modelRuntime.getModels()];
-  if (availableModels.length === 0) {
-    return {
-      model: undefined,
-      warning: undefined,
-      error: "No models available. Check your installation or add models to models.json.",
-    };
-  }
+	const availableModels = [...modelRuntime.getModels()];
+	if (availableModels.length === 0) {
+		return {
+			model: undefined,
+			warning: undefined,
+			error: "No models available. Check your installation or add models to models.json.",
+		};
+	}
 
-  const providerMap = buildProviderMap(availableModels);
+	const providerMap = buildProviderMap(availableModels);
 
-  // A registered raw ID may itself look like "provider/model:thinking" (for example,
-  // a gateway-owned ID). Preserve that exact ID before provider inference consumes the suffix.
-  const rawPattern = splitCustomModelThinkingSuffix(cliModel);
-  if (!cliProvider && rawPattern.thinkingLevel !== undefined) {
-    const exact = findRawExactModel(cliModel, availableModels);
-    if (exact) {
-      return { model: exact, warning: undefined, thinkingLevel: undefined, error: undefined };
-    }
-  }
+	// A registered raw ID may itself look like "provider/model:thinking" (for example,
+	// a gateway-owned ID). Preserve that exact ID before provider inference consumes the suffix.
+	const rawPattern = splitCustomModelThinkingSuffix(cliModel);
+	if (!cliProvider && rawPattern.thinkingLevel !== undefined) {
+		const exact = findRawExactModel(cliModel, availableModels);
+		if (exact) {
+			return { model: exact, warning: undefined, thinkingLevel: undefined, error: undefined };
+		}
+	}
 
-  let provider = cliProvider ? providerMap.get(cliProvider.toLowerCase()) : undefined;
-  if (cliProvider && !provider) {
-    return {
-      model: undefined,
-      warning: undefined,
-      error: `Unknown provider "${cliProvider}". Use --list-models to see available providers/models.`,
-    };
-  }
+	let provider = cliProvider ? providerMap.get(cliProvider.toLowerCase()) : undefined;
+	if (cliProvider && !provider) {
+		return {
+			model: undefined,
+			warning: undefined,
+			error: `Unknown provider "${cliProvider}". Use --list-models to see available providers/models.`,
+		};
+	}
 
-  let pattern = cliModel;
-  let inferredProvider = false;
+	let pattern = cliModel;
+	let inferredProvider = false;
 
-  if (!provider) {
-    const slashIndex = cliModel.indexOf("/");
-    if (slashIndex !== -1) {
-      const maybeProvider = cliModel.substring(0, slashIndex);
-      const canonical = providerMap.get(maybeProvider.toLowerCase());
-      if (canonical) {
-        provider = canonical;
-        pattern = cliModel.substring(slashIndex + 1);
-        inferredProvider = true;
-      }
-    }
-  }
+	if (!provider) {
+		const slashIndex = cliModel.indexOf("/");
+		if (slashIndex !== -1) {
+			const maybeProvider = cliModel.substring(0, slashIndex);
+			const canonical = providerMap.get(maybeProvider.toLowerCase());
+			if (canonical) {
+				provider = canonical;
+				pattern = cliModel.substring(slashIndex + 1);
+				inferredProvider = true;
+			}
+		}
+	}
 
-  if (!provider) {
-    const exact = findRawExactModel(cliModel, availableModels);
-    if (exact) {
-      return { model: exact, warning: undefined, thinkingLevel: undefined, error: undefined };
-    }
-  }
+	if (!provider) {
+		const exact = findRawExactModel(cliModel, availableModels);
+		if (exact) {
+			return { model: exact, warning: undefined, thinkingLevel: undefined, error: undefined };
+		}
+	}
 
-  if (cliProvider && provider) {
-    const prefix = `${provider}/`;
-    if (cliModel.toLowerCase().startsWith(prefix.toLowerCase())) {
-      pattern = cliModel.substring(prefix.length);
-    }
-  }
+	if (cliProvider && provider) {
+		const prefix = `${provider}/`;
+		if (cliModel.toLowerCase().startsWith(prefix.toLowerCase())) {
+			pattern = cliModel.substring(prefix.length);
+		}
+	}
 
-  const candidates = provider ? availableModels.filter((m) => m.provider === provider) : availableModels;
-  const { model, thinkingLevel, warning } = parseModelPattern(pattern, candidates, {
-    allowInvalidThinkingLevelFallback: false,
-  });
+	const candidates = provider ? availableModels.filter((m) => m.provider === provider) : availableModels;
+	const { model, thinkingLevel, warning } = parseModelPattern(pattern, candidates, {
+		allowInvalidThinkingLevelFallback: false,
+	});
 
-  if (model) {
-    return { model, thinkingLevel, warning, error: undefined };
-  }
+	if (model) {
+		return { model, thinkingLevel, warning, error: undefined };
+	}
 
-  if (inferredProvider) {
-    const exact = findRawExactModel(cliModel, availableModels);
-    if (exact) {
-      return { model: exact, warning: undefined, thinkingLevel: undefined, error: undefined };
-    }
+	if (inferredProvider) {
+		const exact = findRawExactModel(cliModel, availableModels);
+		if (exact) {
+			return { model: exact, warning: undefined, thinkingLevel: undefined, error: undefined };
+		}
 
-    const fallback = parseModelPattern(cliModel, availableModels, {
-      allowInvalidThinkingLevelFallback: false,
-    });
-    if (fallback.model) {
-      return {
-        model: fallback.model,
-        thinkingLevel: fallback.thinkingLevel,
-        warning: fallback.warning,
-        error: undefined,
-      };
-    }
-  }
+		const fallback = parseModelPattern(cliModel, availableModels, {
+			allowInvalidThinkingLevelFallback: false,
+		});
+		if (fallback.model) {
+			return {
+				model: fallback.model,
+				thinkingLevel: fallback.thinkingLevel,
+				warning: fallback.warning,
+				error: undefined,
+			};
+		}
+	}
 
-  if (provider) {
-    // Registered resolution above takes precedence, including model IDs whose final colon
-    // segment happens to look like a thinking level. Only custom fallback splits it.
-    const customPattern = splitCustomModelThinkingSuffix(pattern);
-    const fallbackModel = buildFallbackModel(provider, customPattern.modelId, availableModels);
-    if (fallbackModel) {
-      const customModel =
-        customPattern.thinkingLevel && customPattern.thinkingLevel !== "off"
-          ? { ...fallbackModel, reasoning: true }
-          : fallbackModel;
-      const fallbackWarning = warning
-        ? `${warning} Model "${customPattern.modelId}" not found for provider "${provider}". Using custom model id.`
-        : `Model "${customPattern.modelId}" not found for provider "${provider}". Using custom model id.`;
-      return {
-        model: customModel,
-        thinkingLevel: customPattern.thinkingLevel,
-        warning: fallbackWarning,
-        error: undefined,
-      };
-    }
-  }
+	if (provider) {
+		// Registered resolution above takes precedence, including model IDs whose final colon
+		// segment happens to look like a thinking level. Only custom fallback splits it.
+		const customPattern = splitCustomModelThinkingSuffix(pattern);
+		const fallbackModel = buildFallbackModel(provider, customPattern.modelId, availableModels);
+		if (fallbackModel) {
+			const customModel =
+				customPattern.thinkingLevel && customPattern.thinkingLevel !== "off"
+					? { ...fallbackModel, reasoning: true }
+					: fallbackModel;
+			const fallbackWarning = warning
+				? `${warning} Model "${customPattern.modelId}" not found for provider "${provider}". Using custom model id.`
+				: `Model "${customPattern.modelId}" not found for provider "${provider}". Using custom model id.`;
+			return {
+				model: customModel,
+				thinkingLevel: customPattern.thinkingLevel,
+				warning: fallbackWarning,
+				error: undefined,
+			};
+		}
+	}
 
-  const display = provider ? `${provider}/${pattern}` : cliModel;
-  return {
-    model: undefined,
-    thinkingLevel: undefined,
-    warning,
-    error: `Model "${display}" not found. Use --list-models to see available models.`,
-  };
+	const display = provider ? `${provider}/${pattern}` : cliModel;
+	return {
+		model: undefined,
+		thinkingLevel: undefined,
+		warning,
+		error: `Model "${display}" not found. Use --list-models to see available models.`,
+	};
 }

@@ -1,7 +1,7 @@
 import { calculateCost, type Usage } from "@earendil-works/pi-ai";
 import { describe, expect, test } from "vitest";
-import { createInMemoryModelRegistry, createModelRegistry } from "./model-runtime-test-utils.ts";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
+import { createInMemoryModelRegistry, createModelRegistry } from "./model-runtime-test-utils.ts";
 
 const replacementTier = {
 	inputTokensAbove: 100_000,

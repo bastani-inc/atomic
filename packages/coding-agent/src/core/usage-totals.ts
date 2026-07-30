@@ -21,7 +21,11 @@ export function addUsageToTotals(totals: UsageTotals, usage: Usage): void {
 	totals.cost += usage.cost.total;
 }
 
-export interface UsageCostBreakdownEntry { key: string; cost: number; tokens: number }
+export interface UsageCostBreakdownEntry {
+	key: string;
+	cost: number;
+	tokens: number;
+}
 
 type MessageWithUsage = { role: "toolResult"; usage?: Usage };
 
@@ -45,9 +49,12 @@ export function getUsageCostBreakdown(entries: SessionEntry[]): UsageCostBreakdo
 		addUsageToTotals(totals, usage);
 		totalsByKey.set(key, totals);
 	}
-	return [...totalsByKey].map(([key, totals]) => ({
-		key,
-		cost: totals.cost,
-		tokens: totals.input + totals.output + totals.cacheRead + totals.cacheWrite,
-	})).filter((entry) => entry.cost > 0 || entry.tokens > 0).sort((a, b) => b.cost - a.cost);
+	return [...totalsByKey]
+		.map(([key, totals]) => ({
+			key,
+			cost: totals.cost,
+			tokens: totals.input + totals.output + totals.cacheRead + totals.cacheWrite,
+		}))
+		.filter((entry) => entry.cost > 0 || entry.tokens > 0)
+		.sort((a, b) => b.cost - a.cost);
 }

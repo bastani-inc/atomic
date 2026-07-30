@@ -1,9 +1,8 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { createModelRegistry } from "./model-runtime-test-utils.ts";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
-
+import { createModelRegistry } from "./model-runtime-test-utils.ts";
 
 describeModelRegistry((context) => {
 	const {

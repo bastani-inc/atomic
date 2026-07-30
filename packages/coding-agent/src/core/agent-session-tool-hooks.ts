@@ -86,9 +86,7 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 			: undefined);
 	const previousTransformContext = this.agent.transformContext;
 	this.agent.transformContext = async (messages, signal) => {
-		const transformed = previousTransformContext
-			? await previousTransformContext(messages, signal)
-			: messages;
+		const transformed = previousTransformContext ? await previousTransformContext(messages, signal) : messages;
 		const guarded = this._finishPostToolCompactionPreflight(transformed);
 		// Last checkpoint before provider conversion: a structurally invalid context
 		// here becomes an unrecoverable provider 400, so surface it as an Atomic error.
@@ -98,15 +96,14 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 	this.agent.prepareNextTurnWithContext = async (turn, signal) => {
 		const previousSnapshot = await previousPrepareNextTurnWithContext?.(turn, signal);
 		const previousContext = previousSnapshot?.context ?? turn.context;
-		const toolCallIds = turn.message.content
-			.filter((part) => part.type === "toolCall")
-			.map((part) => part.id);
+		const toolCallIds = turn.message.content.filter((part) => part.type === "toolCall").map((part) => part.id);
 		const terminatingBatch =
 			toolCallIds.length > 0 && toolCallIds.every((id) => this._terminatingToolCallIds.has(id));
 		for (const id of toolCallIds) this._terminatingToolCallIds.delete(id);
-		const messages = turn.toolResults.length > 0 && !terminatingBatch
-			? await this._preflightPostToolContext(previousContext.messages, signal)
-			: previousContext.messages;
+		const messages =
+			turn.toolResults.length > 0 && !terminatingBatch
+				? await this._preflightPostToolContext(previousContext.messages, signal)
+				: previousContext.messages;
 
 		return {
 			...previousSnapshot,

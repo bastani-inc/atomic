@@ -37,7 +37,17 @@ export class RpcSessionBinding {
 	private readonly reloadCoordinator: KeybindingsReloadCoordinator<AgentSession> | undefined;
 
 	private footerDataProvider: FooterDataProvider | undefined;
-	constructor({ runtimeHost, output, pendingExtensionRequests, requestShutdown, customUi, renderService, sessionPicker, inputForm, reloadCoordinator }: RpcSessionBindingOptions) {
+	constructor({
+		runtimeHost,
+		output,
+		pendingExtensionRequests,
+		requestShutdown,
+		customUi,
+		renderService,
+		sessionPicker,
+		inputForm,
+		reloadCoordinator,
+	}: RpcSessionBindingOptions) {
 		this.runtimeHost = runtimeHost;
 		this.output = output;
 		this.pendingExtensionRequests = pendingExtensionRequests;
@@ -64,9 +74,10 @@ export class RpcSessionBinding {
 		// updateProviderCountFromSnapshot() in interactive startup, so the
 		// embedded footer shows the (provider) model prefix in multi-provider
 		// sessions instead of defaulting to 0.
-		const models = session.scopedModels.length > 0
-			? session.scopedModels.map((scoped) => scoped.model)
-			: session.modelRuntime.getAvailableSnapshot();
+		const models =
+			session.scopedModels.length > 0
+				? session.scopedModels.map((scoped) => scoped.model)
+				: session.modelRuntime.getAvailableSnapshot();
 		this.footerDataProvider.setAvailableProviderCount(new Set(models.map((model) => model.provider)).size);
 
 		try {
@@ -110,7 +121,12 @@ export class RpcSessionBinding {
 				},
 				shutdownHandler: this.requestShutdown,
 				onError: (err) => {
-					this.output({ type: "extension_error", extensionPath: err.extensionPath, event: err.event, error: err.error });
+					this.output({
+						type: "extension_error",
+						extensionPath: err.extensionPath,
+						event: err.event,
+						error: err.error,
+					});
 				},
 			});
 			this.footerDataProvider.startGitWatcher();

@@ -2,9 +2,14 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { VERBATIM_COMPACTION_PREFIX, convertToLlm, isVerbatimCompactionMessage, type CustomMessage } from "../../src/core/messages.js";
-import { buildSessionContext, SessionManager, type SessionEntry } from "../../src/core/session-manager.js";
 import type { VerbatimCompactionDetails } from "../../src/core/compaction/compaction-types.js";
+import {
+	type CustomMessage,
+	convertToLlm,
+	isVerbatimCompactionMessage,
+	VERBATIM_COMPACTION_PREFIX,
+} from "../../src/core/messages.js";
+import { buildSessionContext, type SessionEntry, SessionManager } from "../../src/core/session-manager.js";
 import { assistantMsg, userMsg } from "../utilities.js";
 
 function details(rung: VerbatimCompactionDetails["rung"] = "standard"): VerbatimCompactionDetails {
@@ -63,10 +68,12 @@ describe("verbatim compaction persistence and resume", () => {
 		expect(beforeResume).toHaveLength(2);
 		expect(beforeResume[0]).toMatchObject({
 			role: "user",
-			content: [{
-				type: "text",
-				text: `${VERBATIM_COMPACTION_PREFIX + compactedText}\n\n[User]: kept user\n\n[Assistant]: kept answer`,
-			}],
+			content: [
+				{
+					type: "text",
+					text: `${VERBATIM_COMPACTION_PREFIX + compactedText}\n\n[User]: kept user\n\n[Assistant]: kept answer`,
+				},
+			],
 		});
 		expect(JSON.stringify(beforeResume)).not.toContain("historical answer");
 		expect(JSON.stringify(beforeResume)).toContain("post boundary");
@@ -111,10 +118,12 @@ describe("verbatim compaction persistence and resume", () => {
 		expect(messages.every((message) => message.role !== "assistant")).toBe(true);
 		expect(convertToLlm(messages)[0]).toMatchObject({
 			role: "user",
-			content: [{
-				type: "text",
-				text: `${VERBATIM_COMPACTION_PREFIX}[User]: durable\n\n[Assistant]: looking\n\n[Assistant tool calls]: read(path="old.ts")`,
-			}],
+			content: [
+				{
+					type: "text",
+					text: `${VERBATIM_COMPACTION_PREFIX}[User]: durable\n\n[Assistant]: looking\n\n[Assistant tool calls]: read(path="old.ts")`,
+				},
+			],
 		});
 	});
 
@@ -166,7 +175,10 @@ describe("verbatim compaction persistence and resume", () => {
 
 		expect(converted).toHaveLength(1);
 		expect(converted[0].role).toBe("user");
-		const content = converted[0].content as ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[];
+		const content = converted[0].content as (
+			| { type: "text"; text: string }
+			| { type: "image"; data: string; mimeType: string }
+		)[];
 		expect(content).toHaveLength(2);
 		expect(content[0]).toMatchObject({
 			type: "text",
@@ -215,7 +227,14 @@ describe("verbatim compaction persistence and resume", () => {
 			promptVersion: 1,
 			deletedTargets: [{ kind: "entry", entryId: "m1" }],
 			protectedEntryIds: [],
-			stats: { objectsBefore: 1, objectsAfter: 0, objectsDeleted: 1, tokensBefore: 4, tokensAfter: 0, percentReduction: 100 },
+			stats: {
+				objectsBefore: 1,
+				objectsAfter: 0,
+				objectsDeleted: 1,
+				tokensBefore: 4,
+				tokensAfter: 0,
+				percentReduction: 100,
+			},
 		};
 		const legacySummary: SessionEntry = {
 			type: "compaction",
@@ -229,7 +248,10 @@ describe("verbatim compaction persistence and resume", () => {
 		};
 		const last = messageEntry("m2", "c1", "last");
 		const context = buildSessionContext([first, legacyDeletion, legacySummary, last]);
-		expect(context.messages.map((message) => message.role === "user" ? message.content : "")).toEqual(["first", "last"]);
+		expect(context.messages.map((message) => (message.role === "user" ? message.content : ""))).toEqual([
+			"first",
+			"last",
+		]);
 	});
 
 	it("falls back to boundary plus post-boundary messages when the kept id is missing", () => {
@@ -274,7 +296,9 @@ describe("verbatim compaction persistence and resume", () => {
 			firstKeptEntryId: "m2",
 		};
 		const after = messageEntry("m3", "c2", "after latest");
-		const serialized = JSON.stringify(buildSessionContext([root, firstBoundary, middle, latestBoundary, after]).messages);
+		const serialized = JSON.stringify(
+			buildSessionContext([root, firstBoundary, middle, latestBoundary, after]).messages,
+		);
 		expect(serialized).toContain("latest durable summary");
 		expect(serialized).not.toContain("first durable summary");
 		expect(serialized).toContain("middle tail");

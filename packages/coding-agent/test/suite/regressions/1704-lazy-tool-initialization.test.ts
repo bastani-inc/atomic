@@ -1,8 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { spawnSync } from "node:child_process";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { spawnSync } from "node:child_process";
+import { describe, expect, it } from "vitest";
 import { buildSearchReturn } from "../../../../web-access/web-search-return.js";
 
 import { createRepositoryFixtureDir, repoRoot, runIntercomFixture, runWebFixture } from "./lazy-tool-fixtures.js";
@@ -16,24 +16,39 @@ function runFetchClassificationFixture(): FetchClassificationFixtureResult {
 	const tempDir = createRepositoryFixtureDir("fetch-classification");
 	try {
 		writeFileSync(join(tempDir, "package.json"), JSON.stringify({ type: "module" }));
-		writeFileSync(join(tempDir, "content-tools.ts"), readFileSync(resolve(repoRoot, "packages/web-access/content-tools.ts"), "utf-8"));
-		writeFileSync(join(tempDir, "result-renderers.ts"), `export const renderCodeSearchResult = () => undefined; export const renderFetchContentResult = () => undefined; export const renderGetSearchContentResult = () => undefined;
-`);
-		writeFileSync(join(tempDir, "code-search.ts"), `export async function executeCodeSearch() { return { content: [], details: {} }; }
-`);
-		writeFileSync(join(tempDir, "extract.ts"), `
+		writeFileSync(
+			join(tempDir, "content-tools.ts"),
+			readFileSync(resolve(repoRoot, "packages/web-access/content-tools.ts"), "utf-8"),
+		);
+		writeFileSync(
+			join(tempDir, "result-renderers.ts"),
+			`export const renderCodeSearchResult = () => undefined; export const renderFetchContentResult = () => undefined; export const renderGetSearchContentResult = () => undefined;
+`,
+		);
+		writeFileSync(
+			join(tempDir, "code-search.ts"),
+			`export async function executeCodeSearch() { return { content: [], details: {} }; }
+`,
+		);
+		writeFileSync(
+			join(tempDir, "extract.ts"),
+			`
 export async function fetchAllContent(urls, signal) {
  signal?.throwIfAborted();
  return urls.map((url) => url.startsWith("ok:")
    ? { url, title: url, content: "content", error: null }
    : { url, title: "", content: "", error: "fetch failed" });
 }
-`);
-		writeFileSync(join(tempDir, "storage.ts"), `
+`,
+		);
+		writeFileSync(
+			join(tempDir, "storage.ts"),
+			`
 export const generateId = () => "response-id";
 export const getResult = () => undefined;
 export const storeResult = () => {};
-`);
+`,
+		);
 		const moduleUrl = pathToFileURL(join(tempDir, "content-tools.ts")).href;
 		const script = `
 const { registerContentTools } = await import(${JSON.stringify(moduleUrl)});
@@ -56,7 +71,8 @@ console.log(JSON.stringify({ failed: { isError: failed.isError, details: failed.
 
 describe("lazy tool initialization hardening (#1704)", () => {
 	it("replays a failed web lifecycle before a retry executes either public tool", () => {
-		const result = runWebFixture<{ replays: number; tool: string }>(`
+		const result = runWebFixture<{ replays: number; tool: string }>(
+			`
 let replays = 0;
 let cleanups = 0;
 export default async function init(pi) {
@@ -65,7 +81,8 @@ export default async function init(pi) {
   pi.registerTool({ name: "web_search", execute: async () => ({ content: [], details: { replays, cleanups, tool: "search" } }) });
   pi.registerTool({ name: "fetch_content", execute: async () => ({ content: [], details: { replays, cleanups, tool: "fetch" } }) });
 }
-`, `
+`,
+			`
 const ctx = { sessionManager: { getBranch() { return []; } } };
 await emit("session_start", { type: "session_start", reason: "new" }, ctx);
 let originalFailure = false;
@@ -74,12 +91,20 @@ try { await execute("web_search", "first", { query: "one" }, new AbortController
 }
 const retried = await execute("fetch_content", "second", { url: "https://example.test" }, new AbortController().signal, ctx);
 console.log(JSON.stringify({ ...retried.details, originalFailure }));
-`);
+`,
+		);
 		expect(result).toEqual({ replays: 2, cleanups: 1, tool: "fetch", originalFailure: true });
 	});
 
 	it("single-flights a later failed web replay before concurrent public tools execute", () => {
-		const result = runWebFixture<{ originalFailure: boolean; attempts: number; beforeRelease: number; searchCalls: number; fetchCalls: number }>(`
+		const result = runWebFixture<{
+			originalFailure: boolean;
+			attempts: number;
+			beforeRelease: number;
+			searchCalls: number;
+			fetchCalls: number;
+		}>(
+			`
 let treeAttempts = 0;
 let releaseRetry;
 const retryGate = new Promise((resolve) => { releaseRetry = resolve; });
@@ -96,7 +121,8 @@ export default async function init(pi) {
  globalThis.releaseRetry = releaseRetry;
  globalThis.replayState = () => ({ treeAttempts, executions: [...executions] });
 }
-`, `
+`,
+			`
 const ctx = {};
 await emit("session_start", { type: "session_start", reason: "new" }, ctx);
 await execute("web_search", "initial", { query: "initial" }, new AbortController().signal, ctx);
@@ -115,12 +141,14 @@ console.log(JSON.stringify({
  searchCalls: state.executions.filter((name) => name === "search").length,
  fetchCalls: state.executions.filter((name) => name === "fetch").length,
 }));
-`);
+`,
+		);
 		expect(result).toEqual({ originalFailure: true, attempts: 2, beforeRelease: 1, searchCalls: 2, fetchCalls: 1 });
 	});
 
 	it("waits for the newest generation before publishing a web candidate", () => {
-		const result = runWebFixture<{ beforeLatest: boolean; seen: string[] }>(`
+		const result = runWebFixture<{ beforeLatest: boolean; seen: string[] }>(
+			`
 let releaseStart;
 const startGate = new Promise((resolve) => { releaseStart = resolve; });
 let releaseTree;
@@ -132,7 +160,8 @@ export default async function init(pi) {
  pi.registerTool({ name: "web_search", execute: async () => ({ content: [], details: { seen: [...seen] } }) });
  globalThis.releaseStart = releaseStart; globalThis.releaseTree = releaseTree;
 }
-`, `
+`,
+			`
 const ctx = {};
 await emit("session_start", { type: "session_start", reason: "new" }, ctx);
 let settled = false;
@@ -146,12 +175,14 @@ globalThis.releaseTree();
 await tree;
 const completed = await pending;
 console.log(JSON.stringify({ beforeLatest, seen: completed.details.seen }));
-`);
+`,
+		);
 		expect(result).toEqual({ beforeLatest: false, seen: ["start", "tree"] });
 	});
 
 	it("rejects a web candidate invalidated by shutdown and replays cleanup", () => {
-		const result = runWebFixture<{ rejected: boolean; cleanups: number; executions: number }>(`
+		const result = runWebFixture<{ rejected: boolean; cleanups: number; executions: number }>(
+			`
 let release;
 const gate = new Promise((resolve) => { release = resolve; });
 let cleanups = 0;
@@ -163,7 +194,8 @@ export default async function init(pi) {
  pi.registerTool({ name: "web_search", execute: async () => { executions += 1; return { content: [], details: {} }; } });
  globalThis.state = () => ({ cleanups, executions });
 }
-`, `
+`,
+			`
 const ctx = {};
 await emit("session_start", { type: "session_start", reason: "new" }, ctx);
 const pending = execute("web_search", "call", { query: "one" }, new AbortController().signal, ctx);
@@ -174,12 +206,14 @@ await shutdown;
 let rejected = false;
 try { await pending; } catch (error) { rejected = String(error).includes("invalidated by session shutdown"); }
 console.log(JSON.stringify({ rejected, ...globalThis.state() }));
-`);
+`,
+		);
 		expect(result).toEqual({ rejected: true, cleanups: 1, executions: 0 });
 	});
 
 	it("cancels one web caller promptly while a survivor waits for shared initialization", () => {
-		const result = runWebFixture<{ exact: boolean; beforeRelease: boolean; executions: number }>(`
+		const result = runWebFixture<{ exact: boolean; beforeRelease: boolean; executions: number }>(
+			`
 let release;
 const gate = new Promise((resolve) => { release = resolve; });
 let executions = 0;
@@ -189,7 +223,8 @@ export default async function init(pi) {
  pi.registerTool({ name: "web_search", execute: async () => { executions += 1; return { content: [], details: { executions } }; } });
  pi.registerTool({ name: "fetch_content", execute: async () => ({ content: [], details: { executions } }) });
 }
-`, `
+`,
+			`
 const controller = new AbortController();
 const reason = new Error("caller cancelled during lazy load");
 const cancelled = execute("web_search", "call", { query: "one" }, controller.signal, {});
@@ -202,19 +237,22 @@ const beforeRelease = early !== null;
 globalThis.releaseInit();
 const next = await survivor;
 console.log(JSON.stringify({ exact: early?.exact === true, beforeRelease, executions: next.details.executions }));
-`);
+`,
+		);
 		expect(result).toEqual({ exact: true, beforeRelease: true, executions: 0 });
 	});
 
 	it("observes a shared web initializer rejection after its only caller aborts", () => {
-		const result = runWebFixture<{ exact: boolean; beforeReject: boolean; unhandled: number }>(`
+		const result = runWebFixture<{ exact: boolean; beforeReject: boolean; unhandled: number }>(
+			`
 let rejectInit;
 const gate = new Promise((_resolve, reject) => { rejectInit = reject; });
 export default async function init() {
  globalThis.rejectInit = rejectInit;
  await gate;
 }
-`, `
+`,
+			`
 const unhandled = [];
 process.on("unhandledRejection", (error) => unhandled.push(error));
 const controller = new AbortController();
@@ -228,31 +266,46 @@ const beforeReject = early !== null;
 globalThis.rejectInit(new Error("late shared initializer failure"));
 await new Promise((resolve) => setTimeout(resolve, 25));
 console.log(JSON.stringify({ exact: early?.exact === true, beforeReject, unhandled: unhandled.length }));
-`);
+`,
+		);
 		expect(result).toEqual({ exact: true, beforeReject: true, unhandled: 0 });
 	});
 
 	it("rejects cold web calls after the current session has shut down", () => {
-		const result = runWebFixture<{ rejected: boolean; initialized: boolean }>(`
+		const result = runWebFixture<{ rejected: boolean; initialized: boolean }>(
+			`
 globalThis.webInitialized = true;
 export default async function init() {}
-`, `
+`,
+			`
 const ctx = {};
 await emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
 let rejected = false;
 try { await execute("web_search", "late", { query: "one" }, new AbortController().signal, ctx); }
 catch (error) { rejected = String(error).includes("no active session"); }
 console.log(JSON.stringify({ rejected, initialized: globalThis.webInitialized === true }));
-`);
+`,
+		);
 		expect(result).toEqual({ rejected: true, initialized: false });
 	});
 
 	it("marks only all-failed search aggregates as errors with provider-stage diagnostics", () => {
-		const make = (errors: Array<string | null>) => buildSearchReturn({
-			queryList: errors.map((_, index) => `q${index}`),
-			results: errors.map((error, index) => ({ query: `q${index}`, answer: "", results: [], error, provider: "exa" })),
-			urls: [], includeContent: false,
-		}, { pi: { appendEntry() {} } as never, startBackgroundFetch: () => null });
+		const make = (errors: Array<string | null>) =>
+			buildSearchReturn(
+				{
+					queryList: errors.map((_, index) => `q${index}`),
+					results: errors.map((error, index) => ({
+						query: `q${index}`,
+						answer: "",
+						results: [],
+						error,
+						provider: "exa",
+					})),
+					urls: [],
+					includeContent: false,
+				},
+				{ pi: { appendEntry() {} } as never, startBackgroundFetch: () => null },
+			);
 		const failed = make(["one", "two"]);
 		const partial = make([null, "two"]);
 		expect(failed.details).toMatchObject({ outcome: "all_failed", stage: "provider_execution", failedQueries: 2 });
@@ -261,16 +314,25 @@ console.log(JSON.stringify({ rejected, initialized: globalThis.webInitialized ==
 
 	it("marks only all-failed fetch aggregates as errors with fetch-stage diagnostics", () => {
 		const result = runFetchClassificationFixture();
-		expect(result.failed.details).toMatchObject({ outcome: "all_failed", stage: "fetch", failedUrls: 2, successful: 0 });
+		expect(result.failed.details).toMatchObject({
+			outcome: "all_failed",
+			stage: "fetch",
+			failedUrls: 2,
+			successful: 0,
+		});
 		expect(result.partial.details).not.toHaveProperty("outcome");
 		expect(result.partial.details).toMatchObject({ successful: 1 });
 	});
 
 	it("promotes only all-failed web payloads through the host tool-result middleware", () => {
-		const runnerEventsUrl = pathToFileURL(resolve(repoRoot, "packages/coding-agent/src/core/extensions/runner-events.ts")).href;
-		const result = runWebFixture<{ search: boolean; fetch: boolean; partial?: boolean }>(`
+		const runnerEventsUrl = pathToFileURL(
+			resolve(repoRoot, "packages/coding-agent/src/core/extensions/runner-events.ts"),
+		).href;
+		const result = runWebFixture<{ search: boolean; fetch: boolean; partial?: boolean }>(
+			`
 export default async function init() {}
-`, `
+`,
+			`
 const { runToolResultHandlers } = await import(${JSON.stringify(runnerEventsUrl)});
 const extension = { path: "web-fixture", handlers };
 const run = (event) => runToolResultHandlers([extension], {}, event, () => {});
@@ -279,12 +341,14 @@ const searchPatch = await run({ ...base, toolName: "web_search", details: { outc
 const fetchPatch = await run({ ...base, toolName: "fetch_content", details: { outcome: "all_failed" } });
 const partialPatch = await run({ ...base, toolName: "web_search", details: { successfulQueries: 1 } });
 console.log(JSON.stringify({ search: searchPatch?.isError, fetch: fetchPatch?.isError, partial: partialPatch?.isError }));
-`);
+`,
+		);
 		expect(result).toEqual({ search: true, fetch: true });
 	});
 
 	it("replays a failed Intercom lifecycle before a retry executes", () => {
-		const result = runIntercomFixture<{ replays: number }>(`
+		const result = runIntercomFixture<{ replays: number }>(
+			`
 let replays = 0;
 let cleanups = 0;
 export default async function init(pi) {
@@ -292,19 +356,27 @@ export default async function init(pi) {
  pi.on("session_shutdown", async () => { cleanups += 1; });
  pi.registerTool({ name: "intercom", execute: async () => ({ content: [], details: { replays, cleanups } }) });
 }
-`, `
+`,
+			`
 await emit("session_start", { type: "session_start", reason: "new" });
 let originalFailure = false;
 try { await execute("first"); } catch (error) { originalFailure = String(error).includes("intercom replay failed once"); }
 const retried = await execute("retry");
 console.log(JSON.stringify({ ...retried.details, originalFailure }));
-`);
+`,
+		);
 		expect(result).toEqual({ replays: 2, cleanups: 1, originalFailure: true });
 	});
 
-
 	it("single-flights a later failed Intercom replay before concurrent public tools execute", () => {
-		const result = runIntercomFixture<{ originalFailure: boolean; attempts: number; beforeRelease: number; executions: number; order: string[] }>(`
+		const result = runIntercomFixture<{
+			originalFailure: boolean;
+			attempts: number;
+			beforeRelease: number;
+			executions: number;
+			order: string[];
+		}>(
+			`
 let startAttempts = 0;
 let releaseRetry;
 const retryGate = new Promise((resolve) => { releaseRetry = resolve; });
@@ -325,7 +397,8 @@ export default async function init(pi) {
  globalThis.releaseRetry = releaseRetry;
  globalThis.replayState = () => ({ startAttempts, executions, order: [...order] });
 }
-`, `
+`,
+			`
 await emit("session_start", { type: "session_start", reason: "new" });
 await emit("turn_start", { type: "turn_start" });
 await emit("model_select", { type: "model_select" });
@@ -343,28 +416,47 @@ globalThis.releaseRetry();
 await Promise.all([first, second]);
 const state = globalThis.replayState();
 console.log(JSON.stringify({ originalFailure, attempts: state.startAttempts, beforeRelease, executions: state.executions, order: state.order }));
-`);
+`,
+		);
 		expect(result).toEqual({
-			originalFailure: true, attempts: 3, beforeRelease: 1, executions: 3,
-			order: ["session:1", "turn", "model", "agent", "tool", "execute", "session:2", "session:3", "execute", "execute"],
+			originalFailure: true,
+			attempts: 3,
+			beforeRelease: 1,
+			executions: 3,
+			order: [
+				"session:1",
+				"turn",
+				"model",
+				"agent",
+				"tool",
+				"execute",
+				"session:2",
+				"session:3",
+				"execute",
+				"execute",
+			],
 		});
 	});
 
 	it("rejects cold Intercom calls after shutdown without synthesizing a replacement session", () => {
-		const result = runIntercomFixture<{ rejected: boolean; initialized: boolean }>(`
+		const result = runIntercomFixture<{ rejected: boolean; initialized: boolean }>(
+			`
 globalThis.intercomInitialized = true;
 export default async function init() {}
-`, `
+`,
+			`
 await emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
 let rejected = false;
 try { await execute("late"); } catch (error) { rejected = String(error).includes("no active session"); }
 console.log(JSON.stringify({ rejected, initialized: globalThis.intercomInitialized === true }));
-`);
+`,
+		);
 		expect(result).toEqual({ rejected: true, initialized: false });
 	});
 
 	it("retries failed lazy Intercom initialization once for concurrent callers", () => {
-		const result = runIntercomFixture<{ attempts: number; same: number; firstRejected: boolean; errors: string[] }>(`
+		const result = runIntercomFixture<{ attempts: number; same: number; firstRejected: boolean; errors: string[] }>(
+			`
 let attempts = 0;
 export default async function init(pi) {
  attempts += 1;
@@ -373,13 +465,15 @@ export default async function init(pi) {
  pi.registerTool({ name: "intercom", execute: async () => ({ content: [], details: { attempts } }) });
  pi.on("session_start", async () => {});
 }
-`, `
+`,
+			`
 await emit("session_start", { type: "session_start", reason: "new" });
 let firstRejected = false;
 try { await execute("initial"); } catch (error) { firstRejected = String(error).includes("lazy broker unavailable"); }
 const [a, b] = await Promise.all([execute("a"), execute("b")]);
 console.log(JSON.stringify({ attempts: a.details.attempts, same: b.details.attempts, firstRejected, errors }));
-`);
+`,
+		);
 		expect(result.attempts).toBe(2);
 		expect(result.same).toBe(2);
 		expect(result.firstRejected).toBe(true);

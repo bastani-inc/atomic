@@ -26,10 +26,9 @@ type CtrlCHost = {
 };
 
 const handleCtrlC = Reflect.get(InteractiveMode.prototype, "handleCtrlC") as (this: CtrlCHost) => void;
-const interruptActiveOperation = Reflect.get(
-	InteractiveMode.prototype,
-	"interruptActiveOperation",
-) as (this: CtrlCHost) => boolean;
+const interruptActiveOperation = Reflect.get(InteractiveMode.prototype, "interruptActiveOperation") as (
+	this: CtrlCHost,
+) => boolean;
 const setupKeyHandlers = Reflect.get(InteractiveMode.prototype, "setupKeyHandlers") as (this: object) => void;
 
 function createHost(sessionOverrides: Partial<CtrlCSession> = {}): CtrlCHost {

@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
-import { getBaseDirsForScope, resolvePathFromBase } from "./package-manager-paths.ts";
 import { getExistingGitInstallPath } from "./package-manager-git.ts";
 import { getExistingNpmInstallPath } from "./package-manager-npm.ts";
+import { getBaseDirsForScope, resolvePathFromBase } from "./package-manager-paths.ts";
 import {
 	getPackageSourceString,
 	normalizePackageSourceForSettings,
@@ -27,7 +27,8 @@ export function addSourceToSettings(
 			return false;
 		}
 		const nextPackages = [...currentPackages];
-		nextPackages[matchIndex] = typeof existing === "string" ? normalizedSource : { ...existing, source: normalizedSource };
+		nextPackages[matchIndex] =
+			typeof existing === "string" ? normalizedSource : { ...existing, source: normalizedSource };
 		if (scope === "project") {
 			context.settingsManager.setProjectPackages(nextPackages);
 		} else {
@@ -111,4 +112,3 @@ export function listConfiguredPackages(context: PackageManagerContext): Configur
 
 	return configuredPackages;
 }
-

@@ -1,6 +1,12 @@
-import { getStepAgents, isDynamicParallelStep, isParallelStep, type ChainStep, type SequentialStep } from "../../shared/settings.ts";
-import { wrapForkTask, type Details, type SubagentToolResult } from "../../shared/types.ts";
 import type { AgentConfig } from "../../agents/agents.ts";
+import {
+	type ChainStep,
+	getStepAgents,
+	isDynamicParallelStep,
+	isParallelStep,
+	type SequentialStep,
+} from "../../shared/settings.ts";
+import { type Details, type SubagentToolResult, wrapForkTask } from "../../shared/types.ts";
 import type { SubagentParamsLike, TaskParam } from "./subagent-executor-types.ts";
 
 export function validateExecutionInput(
@@ -24,7 +30,11 @@ export function validateExecutionInput(
 	}
 	if (hasSingle) {
 		const reads = (params as SubagentParamsLike & { reads?: unknown }).reads;
-		if (reads !== undefined && reads !== false && (!Array.isArray(reads) || reads.some((entry) => typeof entry !== "string"))) {
+		if (
+			reads !== undefined &&
+			reads !== false &&
+			(!Array.isArray(reads) || reads.some((entry) => typeof entry !== "string"))
+		) {
 			return {
 				content: [{ type: "text", text: "reads must be an array of file path strings or false" }],
 				isError: true,
@@ -67,14 +77,24 @@ export function validateExecutionInput(
 			const missingTaskIndex = firstStep.parallel.findIndex((t) => !t.task);
 			if (missingTaskIndex !== -1) {
 				return {
-					content: [{ type: "text", text: `First parallel step: task ${missingTaskIndex + 1} must have a task (no previous output to reference)` }],
+					content: [
+						{
+							type: "text",
+							text: `First parallel step: task ${missingTaskIndex + 1} must have a task (no previous output to reference)`,
+						},
+					],
 					isError: true,
 					details: { mode: "chain" as const, results: [] },
 				};
 			}
 		} else if (isDynamicParallelStep(firstStep)) {
 			return {
-				content: [{ type: "text", text: "First step in chain cannot be dynamic fanout; expand.from requires a prior structured named output" }],
+				content: [
+					{
+						type: "text",
+						text: "First step in chain cannot be dynamic fanout; expand.from requires a prior structured named output",
+					},
+				],
 				isError: true,
 				details: { mode: "chain" as const, results: [] },
 			};
@@ -124,9 +144,7 @@ export function applyAgentDefaultContext(params: SubagentParamsLike, agents: Age
 	if (params.agent) names.push(params.agent);
 	for (const task of params.tasks ?? []) names.push(task.agent);
 	for (const step of params.chain ?? []) names.push(...getStepAgents(step));
-	return names.some((name) => byName.get(name)?.defaultContext === "fork")
-		? { ...params, context: "fork" }
-		: params;
+	return names.some((name) => byName.get(name)?.defaultContext === "fork") ? { ...params, context: "fork" } : params;
 }
 
 function buildRequestedModeError(params: SubagentParamsLike, message: string): SubagentToolResult {
@@ -181,7 +199,10 @@ function expandChainParallelCounts(chain: ChainStep[]): { chain?: ChainStep[]; e
 	return { chain: expandedChain };
 }
 
-export function normalizeRepeatedParallelCounts(params: SubagentParamsLike): { params?: SubagentParamsLike; error?: SubagentToolResult } {
+export function normalizeRepeatedParallelCounts(params: SubagentParamsLike): {
+	params?: SubagentParamsLike;
+	error?: SubagentToolResult;
+} {
 	if (params.tasks) {
 		const expandedTasks = expandTopLevelTaskCounts(params.tasks);
 		if (expandedTasks.error) {

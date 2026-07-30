@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
@@ -13,17 +13,27 @@ let packageDir: string;
 function writeFixturePackage(): void {
 	packageDir = join(tempDir, "builtin-package");
 	mkdirSync(join(packageDir, "skills", "demo"), { recursive: true });
-	writeFileSync(join(packageDir, "package.json"), JSON.stringify({
-		name: "@example/builtin-package",
-		pi: { skills: ["./skills"] },
-	}, null, 2));
-	writeFileSync(join(packageDir, "skills", "demo", "SKILL.md"), `---
+	writeFileSync(
+		join(packageDir, "package.json"),
+		JSON.stringify(
+			{
+				name: "@example/builtin-package",
+				pi: { skills: ["./skills"] },
+			},
+			null,
+			2,
+		),
+	);
+	writeFileSync(
+		join(packageDir, "skills", "demo", "SKILL.md"),
+		`---
 name: demo-skill
 description: Use when verifying deferred resource loading in tests.
 ---
 
 # Demo
-`);
+`,
+	);
 }
 
 describe("DefaultResourceLoader deferResources", () => {

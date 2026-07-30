@@ -2,16 +2,16 @@
  * Public foreground chain execution API.
  */
 
-import { collectKnownModelProviders, toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
+import { buildChainSummary } from "../../shared/formatters.ts";
+import { collectKnownModelProviders, type ModelInfo, toModelInfo } from "../../shared/model-info.ts";
 import {
 	createChainDir,
 	isDynamicParallelStep,
 	isParallelStep,
-	resolveChainTemplates,
 	type ResolvedTemplates,
+	resolveChainTemplates,
 	type SequentialStep,
 } from "../../shared/settings.ts";
-import { buildChainSummary } from "../../shared/formatters.ts";
 import { ChainOutputValidationError, validateChainOutputBindings } from "../shared/chain-outputs.ts";
 import { buildChainExecutionDetails } from "./chain-execution-details.ts";
 import { runDynamicParallelChainStep } from "./chain-execution-dynamic-step.ts";
@@ -74,7 +74,9 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				: (step as SequentialStep).agent,
 	);
 	const totalSteps = chainSteps.length;
-	const makeDetailsInput = (overrides: Pick<Partial<ChainExecutionDetailsInput>, "currentStepIndex" | "currentFlatIndex"> = {}): ChainExecutionDetailsInput => ({
+	const makeDetailsInput = (
+		overrides: Pick<Partial<ChainExecutionDetailsInput>, "currentStepIndex" | "currentFlatIndex"> = {},
+	): ChainExecutionDetailsInput => ({
 		results: state.results,
 		...(includeProgress !== undefined ? { includeProgress } : {}),
 		allProgress: state.allProgress,
@@ -91,8 +93,9 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 	});
 
 	const firstStep = chainSteps[0]!;
-	const originalTask = params.task
-		?? (isParallelStep(firstStep)
+	const originalTask =
+		params.task ??
+		(isParallelStep(firstStep)
 			? firstStep.parallel[0]!.task!
 			: isDynamicParallelStep(firstStep)
 				? firstStep.parallel.task!

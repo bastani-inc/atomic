@@ -76,7 +76,7 @@ describe("isPrivateIpAddress — IPv6", () => {
 		{ address: "64:ff9b::8.8.8.8", expected: false, note: "NAT64 embedding public" },
 	];
 	for (const { address, expected, note } of cases) {
-		it(`${note ? `${note}: `: ""}isPrivateIpAddress(${JSON.stringify(address)}) === ${expected}`, () => {
+		it(`${note ? `${note}: ` : ""}isPrivateIpAddress(${JSON.stringify(address)}) === ${expected}`, () => {
 			expect(isPrivateIpAddress(address)).toBe(expected);
 		});
 	}

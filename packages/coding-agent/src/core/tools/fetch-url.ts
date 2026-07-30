@@ -15,13 +15,13 @@
  *    truncation metadata when the visible output is head-truncated.
  */
 import { lookup } from "node:dns/promises";
-import { ipFamily, isPrivateIpAddress, normalizeIpLiteralHost } from "./url-ip-guards.ts";
 import { LRUCache } from "lru-cache";
 import TurndownService from "turndown";
-import { Agent, request as undiciRequest, type Dispatcher } from "undici";
+import { Agent, type Dispatcher, request as undiciRequest } from "undici";
 import { getArtifactManager } from "./artifacts.ts";
 import { extractDocumentMarkdown, isDocumentPath } from "./read-document-extract.ts";
 import type { TruncationResult } from "./truncate.ts";
+import { ipFamily, isPrivateIpAddress, normalizeIpLiteralHost } from "./url-ip-guards.ts";
 
 export const FETCH_DEFAULT_MAX_LINES = 300;
 export const READ_URL_CACHE_MAX_ENTRIES = 100;
@@ -30,7 +30,10 @@ const MAX_URL_REDIRECTS = 5;
 const MAX_URL_RESPONSE_BYTES = 10 * 1024 * 1024;
 const MIN_CONTENT_LENGTH = 100;
 
-export interface LineRange { start: number; end?: number }
+export interface LineRange {
+	start: number;
+	end?: number;
+}
 
 export interface ParsedReadUrlTarget {
 	url: string;
@@ -67,7 +70,8 @@ export interface LoadedPage {
 const readUrlCache = new LRUCache<string, ReadUrlCacheEntry>({ max: READ_URL_CACHE_MAX_ENTRIES });
 let turndown: TurndownService | undefined;
 function getTurndown(): TurndownService {
-	if (!turndown) turndown = new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced", bulletListMarker: "-" });
+	if (!turndown)
+		turndown = new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced", bulletListMarker: "-" });
 	return turndown;
 }
 
@@ -95,20 +99,32 @@ function isUrlSelectorToken(token: string): boolean {
 function parseSingleRange(token: string): LineRange | undefined {
 	const plus = token.match(/^(\d+)\+(\d+)$/);
 	if (plus) {
-		const start = Number.parseInt(plus[1]!, 10), count = Number.parseInt(plus[2]!, 10);
+		const start = Number.parseInt(plus[1]!, 10),
+			count = Number.parseInt(plus[2]!, 10);
 		return start < 1 || count < 1 ? undefined : { start, end: start + count - 1 };
 	}
 	const range = token.match(/^(\d+)(?:-|\.\.)(\d+)$/);
-	if (range) { const start = Number.parseInt(range[1]!, 10); const end = Number.parseInt(range[2]!, 10); return start < 1 || end < start ? undefined : { start, end }; }
+	if (range) {
+		const start = Number.parseInt(range[1]!, 10);
+		const end = Number.parseInt(range[2]!, 10);
+		return start < 1 || end < start ? undefined : { start, end };
+	}
 	const single = token.match(/^(\d+)$/);
-	if (single) { const start = Number.parseInt(single[1]!, 10); return start < 1 ? undefined : { start }; }
+	if (single) {
+		const start = Number.parseInt(single[1]!, 10);
+		return start < 1 ? undefined : { start };
+	}
 	return undefined;
 }
 
 function parseRangeGroup(token: string): LineRange[] | undefined {
 	const groups = token.split(",");
 	const ranges: LineRange[] = [];
-	for (const group of groups) { const r = parseSingleRange(group); if (!r) return undefined; ranges.push(r); }
+	for (const group of groups) {
+		const r = parseSingleRange(group);
+		if (!r) return undefined;
+		ranges.push(r);
+	}
 	return ranges;
 }
 
@@ -121,7 +137,13 @@ function tryExtractEmbeddedUrlSelector(readPath: string): { path: string; sels: 
 		const candidate = basePath.slice(lastColonIndex + 1);
 		const remainder = basePath.slice(0, lastColonIndex);
 		if (!isReadableUrlPath(remainder) || !isUrlSelectorToken(candidate)) break;
-		try { new URL(remainder.startsWith("http://") || remainder.startsWith("https://") ? remainder : `https://${remainder}`); } catch { break; }
+		try {
+			new URL(
+				remainder.startsWith("http://") || remainder.startsWith("https://") ? remainder : `https://${remainder}`,
+			);
+		} catch {
+			break;
+		}
 		sels.unshift(candidate);
 		basePath = remainder;
 	}
@@ -136,8 +158,12 @@ export function parseReadUrlTarget(readPath: string): ParsedReadUrlTarget | null
 	let raw = false;
 	let ranges: LineRange[] | undefined;
 	for (const sel of embedded?.sels ?? []) {
-		if (/^raw$/i.test(sel)) { raw = true; continue; }
-		if (ranges !== undefined) throw new Error("URL selector has multiple range groups; combine them with commas (e.g. `:5-10,20-30`).");
+		if (/^raw$/i.test(sel)) {
+			raw = true;
+			continue;
+		}
+		if (ranges !== undefined)
+			throw new Error("URL selector has multiple range groups; combine them with commas (e.g. `:5-10,20-30`).");
 		const parsed = parseRangeGroup(sel);
 		if (!parsed) throw new Error(`Invalid URL line selector: ${sel}`);
 		ranges = parsed;
@@ -172,11 +198,28 @@ function documentExtensionFromContentType(contentType: string): string | undefin
 	return undefined;
 }
 
-interface SafeFetchAddress { address: string; family: 4 | 6; /** True only when the address came from DNS resolution and must be pinned to prevent rebinding at connect time. */ pinned: boolean }
-type LookupCallback = (error: NodeJS.ErrnoException | null, address: string | SafeFetchAddress[], family?: number) => void;
+interface SafeFetchAddress {
+	address: string;
+	family:
+		| 4
+		| 6 /** True only when the address came from DNS resolution and must be pinned to prevent rebinding at connect time. */;
+	pinned: boolean;
+}
+type LookupCallback = (
+	error: NodeJS.ErrnoException | null,
+	address: string | SafeFetchAddress[],
+	family?: number,
+) => void;
 
 function createPinnedDispatcher(pinned: SafeFetchAddress): Agent {
-	return new Agent({ connect: { lookup: (_hostname: string, options: { all?: boolean }, callback: LookupCallback) => { if (options.all) callback(null, [pinned]); else callback(null, pinned.address, pinned.family); } } });
+	return new Agent({
+		connect: {
+			lookup: (_hostname: string, options: { all?: boolean }, callback: LookupCallback) => {
+				if (options.all) callback(null, [pinned]);
+				else callback(null, pinned.address, pinned.family);
+			},
+		},
+	});
 }
 
 async function closePinnedDispatcher(dispatcher: Agent | undefined): Promise<void> {
@@ -191,8 +234,17 @@ async function closePinnedDispatcher(dispatcher: Agent | undefined): Promise<voi
  * client honors the dispatcher's custom `lookup` regardless of host runtime.
  * Adapts the undici response to the WHATWG-Response shape loadPage consumes.
  */
-async function pinnedFetch(url: string, dispatcher: Dispatcher, options: { signal: AbortSignal; headers?: Record<string, string> }): Promise<Response> {
-	const result = await undiciRequest(url, { method: "GET", dispatcher, signal: options.signal, headers: options.headers });
+async function pinnedFetch(
+	url: string,
+	dispatcher: Dispatcher,
+	options: { signal: AbortSignal; headers?: Record<string, string> },
+): Promise<Response> {
+	const result = await undiciRequest(url, {
+		method: "GET",
+		dispatcher,
+		signal: options.signal,
+		headers: options.headers,
+	});
 	const body = result.body;
 	const status = result.statusCode;
 	const headers = new Headers();
@@ -202,30 +254,53 @@ async function pinnedFetch(url: string, dispatcher: Dispatcher, options: { signa
 		for (const entry of values) headers.append(key, entry);
 	}
 	const stream = new ReadableStream({
-		start(controller) { body.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk))); body.on("end", () => controller.close()); body.on("error", (error: unknown) => controller.error(error)); },
-		cancel() { body.destroy(); },
+		start(controller) {
+			body.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)));
+			body.on("end", () => controller.close());
+			body.on("error", (error: unknown) => controller.error(error));
+		},
+		cancel() {
+			body.destroy();
+		},
 	});
 	return new Response(stream, { status, headers });
 }
 
-
 async function assertSafeFetchUrl(url: string): Promise<SafeFetchAddress | undefined> {
 	const parsed = new URL(url);
-	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error(`Unsupported URL protocol: ${parsed.protocol}`);
+	if (parsed.protocol !== "http:" && parsed.protocol !== "https:")
+		throw new Error(`Unsupported URL protocol: ${parsed.protocol}`);
 	if (process.env.ATOMIC_ALLOW_PRIVATE_URL_READS === "1") return undefined;
-	const hostname = parsed.hostname.replace(/^\[|\]$/g, "").replace(/\.$/, "").toLowerCase();
-	if (hostname === "localhost" || hostname.endsWith(".localhost") || hostname === "metadata.google.internal") throw new Error(`Refusing to fetch private or metadata URL: ${url}`);
+	const hostname = parsed.hostname
+		.replace(/^\[|\]$/g, "")
+		.replace(/\.$/, "")
+		.toLowerCase();
+	if (hostname === "localhost" || hostname.endsWith(".localhost") || hostname === "metadata.google.internal")
+		throw new Error(`Refusing to fetch private or metadata URL: ${url}`);
 	const literalAddress = normalizeIpLiteralHost(hostname);
-	if (literalAddress) { if (isPrivateIpAddress(literalAddress)) throw new Error(`Refusing to fetch private or metadata URL: ${url}`); return { address: literalAddress, family: ipFamily(literalAddress), pinned: false }; }
-	const addresses = await lookup(hostname, { all: true }).catch((error: unknown) => { throw new Error(`Could not resolve URL host ${hostname}: ${error instanceof Error ? error.message : String(error)}`); });
+	if (literalAddress) {
+		if (isPrivateIpAddress(literalAddress)) throw new Error(`Refusing to fetch private or metadata URL: ${url}`);
+		return { address: literalAddress, family: ipFamily(literalAddress), pinned: false };
+	}
+	const addresses = await lookup(hostname, { all: true }).catch((error: unknown) => {
+		throw new Error(
+			`Could not resolve URL host ${hostname}: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	});
 	if (addresses.length === 0) throw new Error(`Could not resolve URL host ${hostname}: no addresses returned`);
-	for (const address of addresses) if (isPrivateIpAddress(address.address)) throw new Error(`Refusing to fetch private or metadata URL: ${url}`);
+	for (const address of addresses)
+		if (isPrivateIpAddress(address.address)) throw new Error(`Refusing to fetch private or metadata URL: ${url}`);
 	const first = addresses[0]!;
 	return { address: first.address, family: first.family === 6 ? 6 : 4, pinned: true };
 }
 
 async function readResponseTextWithLimit(response: Response): Promise<string> {
-	if (!response.body) { const buffer = Buffer.from(await response.arrayBuffer()); if (buffer.length > MAX_URL_RESPONSE_BYTES) throw new Error(`URL response exceeds ${MAX_URL_RESPONSE_BYTES} byte limit`); return buffer.toString("utf8"); }
+	if (!response.body) {
+		const buffer = Buffer.from(await response.arrayBuffer());
+		if (buffer.length > MAX_URL_RESPONSE_BYTES)
+			throw new Error(`URL response exceeds ${MAX_URL_RESPONSE_BYTES} byte limit`);
+		return buffer.toString("utf8");
+	}
 	const reader = response.body.getReader();
 	const decoder = new TextDecoder();
 	const chunks: string[] = [];
@@ -234,13 +309,21 @@ async function readResponseTextWithLimit(response: Response): Promise<string> {
 		const { done, value } = await reader.read();
 		if (done) break;
 		totalBytes += value.byteLength;
-		if (totalBytes > MAX_URL_RESPONSE_BYTES) { await reader.cancel(); throw new Error(`URL response exceeds ${MAX_URL_RESPONSE_BYTES} byte limit`); }
+		if (totalBytes > MAX_URL_RESPONSE_BYTES) {
+			await reader.cancel();
+			throw new Error(`URL response exceeds ${MAX_URL_RESPONSE_BYTES} byte limit`);
+		}
 		chunks.push(decoder.decode(value, { stream: true }));
 	}
 	chunks.push(decoder.decode());
 	return chunks.join("");
 }
-export async function loadPage(url: string, timeoutMs: number, signal?: AbortSignal, accept?: string): Promise<LoadedPage> {
+export async function loadPage(
+	url: string,
+	timeoutMs: number,
+	signal?: AbortSignal,
+	accept?: string,
+): Promise<LoadedPage> {
 	url = normalizeUrlForCache(url);
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), Math.min(timeoutMs, REMOTE_FETCH_TIMEOUT_MS));
@@ -262,12 +345,23 @@ export async function loadPage(url: string, timeoutMs: number, signal?: AbortSig
 				const response = dispatcher
 					? await pinnedFetch(currentUrl, dispatcher, { signal: controller.signal, headers })
 					: await fetch(currentUrl, { signal: controller.signal, headers, redirect: "manual" });
-				if (response.status >= 300 && response.status < 400 && response.headers.get("location")) { await response.body?.cancel().catch(() => {}); currentUrl = new URL(response.headers.get("location")!, currentUrl).href; continue; }
+				if (response.status >= 300 && response.status < 400 && response.headers.get("location")) {
+					await response.body?.cancel().catch(() => {});
+					currentUrl = new URL(response.headers.get("location")!, currentUrl).href;
+					continue;
+				}
 				const contentLength = Number.parseInt(response.headers.get("content-length") ?? "0", 10);
-				if (contentLength > MAX_URL_RESPONSE_BYTES) throw new Error(`URL response exceeds ${MAX_URL_RESPONSE_BYTES} byte limit: ${currentUrl}`);
+				if (contentLength > MAX_URL_RESPONSE_BYTES)
+					throw new Error(`URL response exceeds ${MAX_URL_RESPONSE_BYTES} byte limit: ${currentUrl}`);
 				const contentType = response.headers.get("content-type") ?? "";
 				const content = await readResponseTextWithLimit(response);
-				return { ok: response.ok, status: response.status, content, contentType, finalUrl: response.url || currentUrl };
+				return {
+					ok: response.ok,
+					status: response.status,
+					content,
+					contentType,
+					finalUrl: response.url || currentUrl,
+				};
 			} finally {
 				await closePinnedDispatcher(dispatcher).catch(() => undefined);
 			}
@@ -281,17 +375,31 @@ export async function loadPage(url: string, timeoutMs: number, signal?: AbortSig
 
 function isLowQuality(content: string): boolean {
 	const lower = content.toLowerCase();
-	if (/(enable javascript|javascript required|turn on javascript|please enable javascript|browser not supported)/.test(lower) && content.trim().length < 2000) return true;
+	if (
+		/(enable javascript|javascript required|turn on javascript|please enable javascript|browser not supported)/.test(
+			lower,
+		) &&
+		content.trim().length < 2000
+	)
+		return true;
 	const nonblank = content.split("\n").filter((line) => line.trim().length > 0);
-	if (nonblank.length > 10 && nonblank.filter((line) => line.trim().length < 40).length / nonblank.length > 0.7) return true;
+	if (nonblank.length > 10 && nonblank.filter((line) => line.trim().length < 40).length / nonblank.length > 0.7)
+		return true;
 	return false;
 }
 
 function buildLlmEndpointCandidates(url: string): string[] {
-	const parsed = (() => { try { return new URL(url); } catch { return undefined; } })();
+	const parsed = (() => {
+		try {
+			return new URL(url);
+		} catch {
+			return undefined;
+		}
+	})();
 	if (!parsed) return [];
 	const origin = parsed.origin;
-	if (parsed.pathname === "/" || parsed.pathname === "") return [`${origin}/.well-known/llms.txt`, `${origin}/llms.txt`, `${origin}/llms.md`];
+	if (parsed.pathname === "/" || parsed.pathname === "")
+		return [`${origin}/.well-known/llms.txt`, `${origin}/llms.txt`, `${origin}/llms.md`];
 	const trimmed = parsed.pathname.replace(/\/+$/, "");
 	const segments = trimmed.split("/").filter(Boolean);
 	const candidates: string[] = [];
@@ -304,11 +412,15 @@ function buildLlmEndpointCandidates(url: string): string[] {
 	return [...new Set(candidates)];
 }
 
-async function tryLlmEndpoints(url: string, signal?: AbortSignal): Promise<{ content: string; endpoint: string } | null> {
+async function tryLlmEndpoints(
+	url: string,
+	signal?: AbortSignal,
+): Promise<{ content: string; endpoint: string } | null> {
 	for (const endpoint of buildLlmEndpointCandidates(url)) {
 		try {
 			const page = await loadPage(endpoint, 5000, signal);
-			if (page.ok && page.content.trim().length > MIN_CONTENT_LENGTH && !looksLikeHtml(page.content)) return { content: page.content, endpoint };
+			if (page.ok && page.content.trim().length > MIN_CONTENT_LENGTH && !looksLikeHtml(page.content))
+				return { content: page.content, endpoint };
 		} catch {}
 	}
 	return null;
@@ -325,7 +437,9 @@ function parseAlternateMarkdownLink(html: string, pageUrl: string): string | und
 		if (!/alternate/i.test(rel) || !href) continue;
 		if (/RecentChanges|Special:|\/feed\/|action=feed/i.test(href)) continue;
 		if (type.includes("markdown") || href.endsWith(".md")) {
-			try { return new URL(href, pageUrl).href; } catch {}
+			try {
+				return new URL(href, pageUrl).href;
+			} catch {}
 		}
 	}
 	return undefined;
@@ -339,7 +453,8 @@ async function tryMdSuffix(url: string, signal?: AbortSignal): Promise<string | 
 	for (const candidate of candidates) {
 		try {
 			const page = await loadPage(candidate, 5000, signal);
-			if (page.ok && page.content.trim().length > MIN_CONTENT_LENGTH && !looksLikeHtml(page.content)) return page.content;
+			if (page.ok && page.content.trim().length > MIN_CONTENT_LENGTH && !looksLikeHtml(page.content))
+				return page.content;
 		} catch {}
 	}
 	return null;
@@ -349,7 +464,13 @@ async function tryContentNegotiation(url: string, signal?: AbortSignal): Promise
 	try {
 		const page = await loadPage(url, 5000, signal, "text/markdown, text/plain;q=0.9, text/html;q=0.8");
 		const mime = page.contentType.toLowerCase();
-		if (page.ok && page.content.trim().length > MIN_CONTENT_LENGTH && !looksLikeHtml(page.content) && (mime.includes("markdown") || mime.includes("text/plain"))) return page.content;
+		if (
+			page.ok &&
+			page.content.trim().length > MIN_CONTENT_LENGTH &&
+			!looksLikeHtml(page.content) &&
+			(mime.includes("markdown") || mime.includes("text/plain"))
+		)
+			return page.content;
 	} catch {}
 	return null;
 }
@@ -372,26 +493,76 @@ export async function renderUrl(url: string, raw: boolean, signal?: AbortSignal)
 	const page = await loadPage(url, REMOTE_FETCH_TIMEOUT_MS, signal);
 	finalUrl = page.finalUrl;
 	contentType = page.contentType;
-	if (!page.ok) return { content: page.content || `(request failed with status ${page.status})`, finalUrl, contentType, method: "failed", notes, truncated: false };
+	if (!page.ok)
+		return {
+			content: page.content || `(request failed with status ${page.status})`,
+			finalUrl,
+			contentType,
+			method: "failed",
+			notes,
+			truncated: false,
+		};
 	if (raw) return { content: page.content, finalUrl, contentType, method: "raw", notes, truncated: false };
 	const buffer = Buffer.from(page.content, "utf8");
-	const docExt = documentExtensionFromContentType(contentType) ?? (isDocumentPath(finalUrl) ? (finalUrl.match(/\.\w+(?:$|[?#])/)?.[0] ?? "") : "");
+	const docExt =
+		documentExtensionFromContentType(contentType) ??
+		(isDocumentPath(finalUrl) ? (finalUrl.match(/\.\w+(?:$|[?#])/)?.[0] ?? "") : "");
 	if (docExt) {
-		try { body = await extractDocumentMarkdown(buffer, `${finalUrl}${docExt}`); method = "document"; }
-		catch (error) { body = `[Cannot read ${docExt} file: ${error instanceof Error ? error.message : "conversion failed"}]`; method = "document-error"; }
+		try {
+			body = await extractDocumentMarkdown(buffer, `${finalUrl}${docExt}`);
+			method = "document";
+		} catch (error) {
+			body = `[Cannot read ${docExt} file: ${error instanceof Error ? error.message : "conversion failed"}]`;
+			method = "document-error";
+		}
 		return { content: body, finalUrl, contentType, method, notes, truncated: false };
 	}
 	const isHtml = /html/i.test(contentType) || looksLikeHtml(page.content);
 	if (isHtml) {
 		const altMd = parseAlternateMarkdownLink(page.content, finalUrl);
-		if (altMd) { try { const alt = await loadPage(altMd, 5000, signal); if (alt.ok && alt.content.trim().length > MIN_CONTENT_LENGTH && !looksLikeHtml(alt.content)) { return { content: alt.content, finalUrl: alt.finalUrl, contentType: alt.contentType, method: "alternate-markdown", notes, truncated: false }; } } catch {} notes.push("alternate markdown link unusable"); }
-		const md = await tryMdSuffix(finalUrl, signal); if (md) return { content: md, finalUrl, contentType: "text/markdown", method: "md-suffix", notes, truncated: false };
-		const neg = await tryContentNegotiation(finalUrl, signal); if (neg) return { content: neg, finalUrl, contentType: "text/markdown", method: "content-negotiation", notes, truncated: false };
-		let rendered = getTurndown().turndown(page.content).trim();
+		if (altMd) {
+			try {
+				const alt = await loadPage(altMd, 5000, signal);
+				if (alt.ok && alt.content.trim().length > MIN_CONTENT_LENGTH && !looksLikeHtml(alt.content)) {
+					return {
+						content: alt.content,
+						finalUrl: alt.finalUrl,
+						contentType: alt.contentType,
+						method: "alternate-markdown",
+						notes,
+						truncated: false,
+					};
+				}
+			} catch {}
+			notes.push("alternate markdown link unusable");
+		}
+		const md = await tryMdSuffix(finalUrl, signal);
+		if (md)
+			return { content: md, finalUrl, contentType: "text/markdown", method: "md-suffix", notes, truncated: false };
+		const neg = await tryContentNegotiation(finalUrl, signal);
+		if (neg)
+			return {
+				content: neg,
+				finalUrl,
+				contentType: "text/markdown",
+				method: "content-negotiation",
+				notes,
+				truncated: false,
+			};
+		const rendered = getTurndown().turndown(page.content).trim();
 		method = "native";
 		if (rendered.length <= MIN_CONTENT_LENGTH || isLowQuality(rendered)) {
 			const llms = await tryLlmEndpoints(finalUrl, signal);
-			if (llms) { return { content: llms.content, finalUrl, contentType: "text/plain", method: `llms-txt (${llms.endpoint})`, notes, truncated: false }; }
+			if (llms) {
+				return {
+					content: llms.content,
+					finalUrl,
+					contentType: "text/plain",
+					method: `llms-txt (${llms.endpoint})`,
+					notes,
+					truncated: false,
+				};
+			}
 			notes.push("rendered content low quality; no markdown source discovered");
 		}
 		body = rendered;
@@ -402,7 +573,12 @@ export async function renderUrl(url: string, raw: boolean, signal?: AbortSignal)
 }
 
 export function buildUrlReadOutput(result: RenderedUrl): string {
-	const header = [`URL: ${result.finalUrl}`, `Content-Type: ${result.contentType}`, `Method: ${result.method}`, ...(result.notes.length ? [`Notes: ${result.notes.join("; ")}`] : [])].join("\n");
+	const header = [
+		`URL: ${result.finalUrl}`,
+		`Content-Type: ${result.contentType}`,
+		`Method: ${result.method}`,
+		...(result.notes.length ? [`Notes: ${result.notes.join("; ")}`] : []),
+	].join("\n");
 	return `${header}\n\n---\n\n${result.content}`;
 }
 
@@ -429,7 +605,12 @@ export interface LoadedReadUrl {
  * cache and persisting the rendered body as a `read` artifact. Returns the
  * complete untruncated output so callers can apply their own line selection.
  */
-export async function loadReadUrlOutput(scope: string, params: { path: string; raw?: boolean }, artifactsDir: string | undefined, signal?: AbortSignal): Promise<LoadedReadUrl> {
+export async function loadReadUrlOutput(
+	scope: string,
+	params: { path: string; raw?: boolean },
+	artifactsDir: string | undefined,
+	signal?: AbortSignal,
+): Promise<LoadedReadUrl> {
 	const parsed = parseReadUrlTarget(params.path);
 	if (!parsed) throw new Error(`Not a readable URL: ${params.path}`);
 	const raw = params.raw ?? parsed.raw;
@@ -439,7 +620,15 @@ export async function loadReadUrlOutput(scope: string, params: { path: string; r
 		const rendered = await renderUrl(parsed.url, raw, signal);
 		const output = raw ? rendered.content : buildUrlReadOutput(rendered);
 		const artifactId = persistReadUrlArtifact(artifactsDir, output);
-		const details: ReadUrlToolDetails = { url: parsed.url, finalUrl: rendered.finalUrl, contentType: rendered.contentType, method: rendered.method, truncated: rendered.truncated, notes: rendered.notes, meta: artifactId ? { artifactId } : undefined };
+		const details: ReadUrlToolDetails = {
+			url: parsed.url,
+			finalUrl: rendered.finalUrl,
+			contentType: rendered.contentType,
+			method: rendered.method,
+			truncated: rendered.truncated,
+			notes: rendered.notes,
+			meta: artifactId ? { artifactId } : undefined,
+		};
 		entry = { artifactId, details, output };
 		readUrlCache.set(key, entry);
 		readUrlCache.set(getReadUrlCacheKey(scope, rendered.finalUrl, raw), entry);
@@ -447,7 +636,12 @@ export async function loadReadUrlOutput(scope: string, params: { path: string; r
 	return { output: entry.output, details: entry.details, artifactId: entry.artifactId, raw };
 }
 
-export async function executeReadUrl(scope: string, params: { path: string; raw?: boolean }, artifactsDir: string | undefined, signal?: AbortSignal): Promise<ExecuteReadUrlResult> {
+export async function executeReadUrl(
+	scope: string,
+	params: { path: string; raw?: boolean },
+	artifactsDir: string | undefined,
+	signal?: AbortSignal,
+): Promise<ExecuteReadUrlResult> {
 	const loaded = await loadReadUrlOutput(scope, params, artifactsDir, signal);
 	const entry = { output: loaded.output, details: loaded.details, artifactId: loaded.artifactId };
 	const fetchDefaultBytes = 50 * 1024;
@@ -462,21 +656,32 @@ export async function executeReadUrl(scope: string, params: { path: string; raw?
 	let artifactId = entry.artifactId;
 	if (truncated && !artifactId) artifactId = persistReadUrlArtifact(artifactsDir, entry.output);
 	const outputLines = content.length === 0 ? 0 : content.split("\n").length;
-	const truncation: TruncationResult | undefined = truncated ? {
-		content,
-		truncated: true,
-		truncatedBy: byteTruncated ? "bytes" : "lines",
-		totalLines: lines.length,
-		totalBytes: Buffer.byteLength(entry.output, "utf8"),
-		outputLines,
-		outputBytes: Buffer.byteLength(content, "utf8"),
-		lastLinePartial: byteTruncated,
-		firstLineExceedsLimit: false,
-		maxLines: FETCH_DEFAULT_MAX_LINES,
-		maxBytes: fetchDefaultBytes,
-	} : undefined;
-	const details: ReadUrlToolDetails = { ...entry.details, truncated, meta: { ...(entry.details.meta ?? {}), ...(artifactId ? { artifactId } : {}), ...(truncation ? { truncation } : {}) } };
-	if (truncated) content += `\n\n[Showing first ${visibleLines.length} of ${lines.length} lines.${artifactId ? ` Full output: artifact://${artifactId}` : ""}]`;
+	const truncation: TruncationResult | undefined = truncated
+		? {
+				content,
+				truncated: true,
+				truncatedBy: byteTruncated ? "bytes" : "lines",
+				totalLines: lines.length,
+				totalBytes: Buffer.byteLength(entry.output, "utf8"),
+				outputLines,
+				outputBytes: Buffer.byteLength(content, "utf8"),
+				lastLinePartial: byteTruncated,
+				firstLineExceedsLimit: false,
+				maxLines: FETCH_DEFAULT_MAX_LINES,
+				maxBytes: fetchDefaultBytes,
+			}
+		: undefined;
+	const details: ReadUrlToolDetails = {
+		...entry.details,
+		truncated,
+		meta: {
+			...(entry.details.meta ?? {}),
+			...(artifactId ? { artifactId } : {}),
+			...(truncation ? { truncation } : {}),
+		},
+	};
+	if (truncated)
+		content += `\n\n[Showing first ${visibleLines.length} of ${lines.length} lines.${artifactId ? ` Full output: artifact://${artifactId}` : ""}]`;
 	return { content, details, artifactId };
 }
 

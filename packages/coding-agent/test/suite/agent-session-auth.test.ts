@@ -1,10 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-	AgentSessionRuntime,
-	type CreateAgentSessionRuntimeFactory,
-} from "../../src/core/agent-session-runtime.ts";
-import { createHarness, type Harness } from "./harness.ts";
+import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../../src/core/agent-session-runtime.ts";
 import { createRpcCommandHandler } from "../../src/modes/rpc/rpc-command-handler.ts";
+import { createHarness, type Harness } from "./harness.ts";
 
 const createRuntime = (async () => {
 	throw new Error("not used");

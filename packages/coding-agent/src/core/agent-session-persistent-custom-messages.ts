@@ -1,8 +1,8 @@
-import type { DrainedAgentQueues } from "./agent-session-types.ts";
+import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import type { DrainedAgentQueues } from "./agent-session-types.ts";
 import { customMessageExcludesContext } from "./agent-session-types.ts";
 import type { CustomMessage } from "./messages.ts";
-import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
 
 type ProtectedDelivery = "steer" | "followUp";
 type ProtectedPhase = "queued" | "consumed-unpersisted" | "persistence-failed";
@@ -20,7 +20,7 @@ export interface ProtectedStreamingCustomMessage {
 }
 
 function protectedMessages(session: AgentSession): ProtectedStreamingCustomMessage[] {
-	return session._protectedStreamingCustomMessages ??= [];
+	return (session._protectedStreamingCustomMessages ??= []);
 }
 
 function appendDurableDisplayCard(
@@ -81,15 +81,19 @@ function protectedDelivery(marker: unknown): ProtectedDelivery | undefined {
 /** Requeue each durable card intent that has no persisted hidden completion. */
 export function recoverProtectedStreamingCustomMessages(session: AgentSession): number {
 	const branch = session.sessionManager.getBranch();
-	const completed = new Set(branch.flatMap((entry) =>
-		entry.type === "custom_message" && entry.customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE
-			? [completedReconciliationIntent(entry.details)].filter((intent): intent is string => intent !== undefined)
-			: []
-	));
-	const scheduled = new Set(protectedMessages(session).flatMap((entry) => {
-		const intent = completedReconciliationIntent(entry.message.details);
-		return intent === undefined ? [] : [intent];
-	}));
+	const completed = new Set(
+		branch.flatMap((entry) =>
+			entry.type === "custom_message" && entry.customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE
+				? [completedReconciliationIntent(entry.details)].filter((intent): intent is string => intent !== undefined)
+				: [],
+		),
+	);
+	const scheduled = new Set(
+		protectedMessages(session).flatMap((entry) => {
+			const intent = completedReconciliationIntent(entry.message.details);
+			return intent === undefined ? [] : [intent];
+		}),
+	);
 	let recovered = 0;
 	for (const entry of branch) {
 		if (entry.type !== "custom_message") continue;
@@ -135,7 +139,9 @@ async function prepareProtectedAdmission(
 	});
 	const cards = prepared.map((entry) => entry.card);
 	const reconciliations = prepared.map((entry) => entry.reconciliation);
-	protectedMessages(owner).push(...reconciliations.map((message) => ({ message, delivery, phase: "queued" as const })));
+	protectedMessages(owner).push(
+		...reconciliations.map((message) => ({ message, delivery, phase: "queued" as const })),
+	);
 	return { owner, cards, reconciliations };
 }
 
@@ -203,10 +209,7 @@ export async function triggerProtectedStreamingCustomMessages(
 }
 
 /** Record that agent-core drained and consumed the hidden reconciliation. */
-export function markProtectedStreamingCustomMessageConsumed(
-	session: AgentSession,
-	message: CustomMessage,
-): boolean {
+export function markProtectedStreamingCustomMessageConsumed(session: AgentSession, message: CustomMessage): boolean {
 	const entry = protectedMessages(session).find((candidate) => candidate.message === message);
 	if (!entry) return false;
 	entry.phase = "consumed-unpersisted";
@@ -230,10 +233,7 @@ export function isProtectedStreamingCustomMessage(session: AgentSession, message
  * already committed at admission, so a transient failure never re-adds a card
  * or re-injects another provider message.
  */
-export function persistProtectedStreamingCustomMessage(
-	session: AgentSession,
-	message: CustomMessage,
-): boolean {
+export function persistProtectedStreamingCustomMessage(session: AgentSession, message: CustomMessage): boolean {
 	const pending = protectedMessages(session);
 	const index = pending.findIndex((entry) => entry.message === message);
 	if (index === -1) return false;
@@ -296,8 +296,11 @@ function removeQueuedProtectedReference(session: AgentSession, message: CustomMe
 
 function isPausedHeldProtectedReference(session: AgentSession, message: CustomMessage): boolean {
 	const hold = session._activeInterruptQueueHold;
-	return session._queuedMessagesPaused && hold !== undefined &&
-		(hold.steering.includes(message) || hold.followUp.includes(message));
+	return (
+		session._queuedMessagesPaused &&
+		hold !== undefined &&
+		(hold.steering.includes(message) || hold.followUp.includes(message))
+	);
 }
 
 /**
@@ -327,10 +330,7 @@ export function prepareProtectedStreamingCustomMessagesForDisposal(session: Agen
 }
 
 /** Restore only protected references actually removed from native queues/hold. */
-export function restoreProtectedStreamingCustomMessages(
-	session: AgentSession,
-	removed: DrainedAgentQueues,
-): void {
+export function restoreProtectedStreamingCustomMessages(session: AgentSession, removed: DrainedAgentQueues): void {
 	const removedReferences = new Set([...removed.steering, ...removed.followUp]);
 	for (const entry of protectedMessages(session)) {
 		if (entry.phase === "queued" && removedReferences.has(entry.message)) {

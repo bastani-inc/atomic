@@ -90,14 +90,23 @@ function isMigratableHeadersPath(parentPath: string[]): boolean {
 	return false;
 }
 
-function migrationReplacementForKey(key: string, value: string, parentPath: string[], migrations: ConfigValueMigration[]): string | undefined {
+function migrationReplacementForKey(
+	key: string,
+	value: string,
+	parentPath: string[],
+	migrations: ConfigValueMigration[],
+): string | undefined {
 	if (key !== "apiKey" && !isMigratableHeadersPath(parentPath)) return undefined;
 	if (key === "apiKey" && !isProviderConfigPath(parentPath)) return undefined;
 
 	for (const migration of migrations) {
 		if (migration.from !== value) continue;
 		if (key === "apiKey" && migration.location.endsWith(".apiKey")) return migration.to;
-		if (isMigratableHeadersPath(parentPath) && migration.location.includes(".headers[") && migration.location.endsWith(`[${JSON.stringify(key)}]`)) {
+		if (
+			isMigratableHeadersPath(parentPath) &&
+			migration.location.includes(".headers[") &&
+			migration.location.endsWith(`[${JSON.stringify(key)}]`)
+		) {
 			return migration.to;
 		}
 	}
@@ -315,4 +324,3 @@ export function migrateModelsJsonConfigValues(agentDir: string): ConfigValueMigr
 		return [];
 	}
 }
-

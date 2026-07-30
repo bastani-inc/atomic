@@ -17,7 +17,15 @@ const compactionMocks = vi.hoisted(() => ({
 	runVerbatimCompaction: vi.fn(async (..._args: unknown[]) => ({
 		text: "[User]: retained test context\n(filtered 1 lines)",
 		ranges: [{ start: 2, end: 2 }],
-		stats: { linesBefore: 2, linesDeleted: 1, linesKept: 1, rangeCount: 1, tokensBefore: 100, tokensAfter: 50, percentReduction: 50 },
+		stats: {
+			linesBefore: 2,
+			linesDeleted: 1,
+			linesKept: 1,
+			rangeCount: 1,
+			tokensBefore: 100,
+			tokensAfter: 50,
+			percentReduction: 50,
+		},
 		rung: "planned" as const,
 		keptTail: true,
 	})),
@@ -55,13 +63,24 @@ vi.mock("../src/core/compaction/index.js", () => ({
 	},
 	generateBranchSummary: async () => ({ summary: "", aborted: false, readFiles: [], modifiedFiles: [] }),
 	MIN_COMPACTABLE_REGION_LINES: 20,
-	prepareCompactionBoundary: (entries: Array<{ id: string }>) => entries[0] ? ({
-		firstKeptEntryId: entries[0].id,
-		region: { __brand: "NumberedRegion", lines: ["[User]: test", ...Array.from({ length: 24 }, (_, index) => `body ${index + 1}`)], headerLineNumbers: new Set([1]), priorMarkerNs: new Map(), tokenEstimate: 10 },
-		regionEntryIds: [entries[0].id], keptTailMessageCount: 1, tokensBefore: 100,
-		parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
-		settings: { enabled: true, reserveTokens: 16384, compression_ratio: 0.5, preserve_recent: 2 },
-	}) : undefined,
+	prepareCompactionBoundary: (entries: Array<{ id: string }>) =>
+		entries[0]
+			? {
+					firstKeptEntryId: entries[0].id,
+					region: {
+						__brand: "NumberedRegion",
+						lines: ["[User]: test", ...Array.from({ length: 24 }, (_, index) => `body ${index + 1}`)],
+						headerLineNumbers: new Set([1]),
+						priorMarkerNs: new Map(),
+						tokenEstimate: 10,
+					},
+					regionEntryIds: [entries[0].id],
+					keptTailMessageCount: 1,
+					tokensBefore: 100,
+					parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
+					settings: { enabled: true, reserveTokens: 16384, compression_ratio: 0.5, preserve_recent: 2 },
+				}
+			: undefined,
 	shouldCompact: (
 		contextTokens: number,
 		contextWindow: number,
@@ -88,11 +107,19 @@ describe("AgentSession auto-compaction queue resume", () => {
 			streamFn: createFauxStreamFn(["Queued response"]).streamFn,
 		});
 		sessionManager = SessionManager.inMemory();
-		sessionManager.appendMessage({ role: "user", content: [{ type: "text", text: "existing compactable context" }], timestamp: Date.now() });
+		sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "existing compactable context" }],
+			timestamp: Date.now(),
+		});
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
-		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null, allowModelNetwork: false });
+		const modelRuntime = await ModelRuntime.create({
+			credentials: authStorage,
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
 
 		session = new AgentSession({
 			agent,
@@ -135,33 +162,46 @@ describe("AgentSession auto-compaction queue resume", () => {
 
 		await runAutoCompaction("threshold", false);
 		expect(compactionMocks.runVerbatimCompaction.mock.calls[0]?.[1]).toBe(session.model);
-		expect(compactionMocks.runVerbatimCompaction.mock.calls[0]?.[2]).toMatchObject({ streamFn: session.agent.streamFunction, urgency: "recoverable" });
+		expect(compactionMocks.runVerbatimCompaction.mock.calls[0]?.[2]).toMatchObject({
+			streamFn: session.agent.streamFunction,
+			urgency: "recoverable",
+		});
 
 		compactionMocks.runVerbatimCompaction.mockClear();
 		await runAutoCompaction("overflow", false);
-		expect(compactionMocks.runVerbatimCompaction.mock.calls[0]?.[2]).toMatchObject({ streamFn: session.agent.streamFunction, urgency: "load_bearing" });
-	});
-	it.each(["threshold", "overflow"] as const)("does not persist or schedule continuation when %s planning fails", async (reason) => {
-		compactionMocks.runVerbatimCompaction.mockRejectedValueOnce(new Error("malformed planner response"));
-		const events: Array<{ type: string; willRetry?: boolean; errorMessage?: string }> = [];
-		session.subscribe((event) => {
-			if (event.type === "compaction_end") events.push(event);
+		expect(compactionMocks.runVerbatimCompaction.mock.calls[0]?.[2]).toMatchObject({
+			streamFn: session.agent.streamFunction,
+			urgency: "load_bearing",
 		});
-		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
-		const runAutoCompaction = (
-			session as unknown as {
-				_runAutoCompaction: (candidate: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
-			}
-		)._runAutoCompaction.bind(session);
-
-		await runAutoCompaction(reason, true);
-		await vi.advanceTimersByTimeAsync(100);
-
-		expect(compactionMocks.runVerbatimCompaction).toHaveBeenCalledTimes(1);
-		expect(session.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
-		expect(continueSpy).not.toHaveBeenCalled();
-		expect(events.at(-1)).toMatchObject({ type: "compaction_end", willRetry: false, errorMessage: expect.stringContaining("malformed planner response") });
 	});
+	it.each(["threshold", "overflow"] as const)(
+		"does not persist or schedule continuation when %s planning fails",
+		async (reason) => {
+			compactionMocks.runVerbatimCompaction.mockRejectedValueOnce(new Error("malformed planner response"));
+			const events: Array<{ type: string; willRetry?: boolean; errorMessage?: string }> = [];
+			session.subscribe((event) => {
+				if (event.type === "compaction_end") events.push(event);
+			});
+			const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
+			const runAutoCompaction = (
+				session as unknown as {
+					_runAutoCompaction: (candidate: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+				}
+			)._runAutoCompaction.bind(session);
+
+			await runAutoCompaction(reason, true);
+			await vi.advanceTimersByTimeAsync(100);
+
+			expect(compactionMocks.runVerbatimCompaction).toHaveBeenCalledTimes(1);
+			expect(session.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
+			expect(continueSpy).not.toHaveBeenCalled();
+			expect(events.at(-1)).toMatchObject({
+				type: "compaction_end",
+				willRetry: false,
+				errorMessage: expect.stringContaining("malformed planner response"),
+			});
+		},
+	);
 	it("should resume after threshold compaction when only agent-level queued messages exist", async () => {
 		session.agent.followUp({
 			role: "custom",
@@ -175,7 +215,12 @@ describe("AgentSession auto-compaction queue resume", () => {
 		expect(session.agent.hasQueuedMessages()).toBe(true);
 
 		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
-		const drainSpy = vi.spyOn(session as unknown as { _continueQueuedAgentMessages: () => Promise<void> }, "_continueQueuedAgentMessages").mockResolvedValue();
+		const drainSpy = vi
+			.spyOn(
+				session as unknown as { _continueQueuedAgentMessages: () => Promise<void> },
+				"_continueQueuedAgentMessages",
+			)
+			.mockResolvedValue();
 
 		const runAutoCompaction = (
 			session as unknown as {
@@ -211,7 +256,12 @@ describe("AgentSession auto-compaction queue resume", () => {
 		expect(session.agent.hasQueuedMessages()).toBe(false);
 
 		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
-		const drainSpy = vi.spyOn(session as unknown as { _continueQueuedAgentMessages: () => Promise<void> }, "_continueQueuedAgentMessages").mockResolvedValue();
+		const drainSpy = vi
+			.spyOn(
+				session as unknown as { _continueQueuedAgentMessages: () => Promise<void> },
+				"_continueQueuedAgentMessages",
+			)
+			.mockResolvedValue();
 
 		const runAutoCompaction = (
 			session as unknown as {
@@ -238,7 +288,9 @@ describe("AgentSession auto-compaction queue resume", () => {
 		expect(session.agent.hasQueuedMessages()).toBe(true);
 
 		let releaseIdle: () => void = () => {};
-		const idle = new Promise<void>((resolve) => { releaseIdle = resolve; });
+		const idle = new Promise<void>((resolve) => {
+			releaseIdle = resolve;
+		});
 		const waitForIdleSpy = vi.spyOn(session.agent, "waitForIdle").mockReturnValue(idle);
 		const isStreamingSpy = vi.spyOn(session, "isStreaming", "get").mockReturnValue(true);
 		const clearQueueSpy = vi.spyOn(session, "clearQueue");

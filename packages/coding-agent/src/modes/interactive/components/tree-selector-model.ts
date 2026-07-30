@@ -398,15 +398,7 @@ function recalculateVisualStructure(state: TreeListState): void {
 		// Add children in reverse order (to process in forward order via stack)
 		for (let i = children.length - 1; i >= 0; i--) {
 			const childIsLast = i === children.length - 1;
-			stack.push([
-				children[i],
-				childIndent,
-				multipleChildren,
-				multipleChildren,
-				childIsLast,
-				childGutters,
-				false,
-			]);
+			stack.push([children[i], childIndent, multipleChildren, multipleChildren, childIsLast, childGutters, false]);
 		}
 	}
 

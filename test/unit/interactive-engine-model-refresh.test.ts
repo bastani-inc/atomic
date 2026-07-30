@@ -1,15 +1,15 @@
-import { test } from "vitest";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
+import { test } from "vitest";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.ts";
 import {
 	AgentSessionRuntime,
+	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionFromServices,
 	createAgentSessionServices,
-	type CreateAgentSessionRuntimeFactory,
 } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.ts";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.ts";
@@ -52,7 +52,8 @@ test("isolated host treats an engine-published extension model as configured aft
 			pendingMessageCount: 0,
 		}),
 		requestInternal: async () => ({
-			models: [], scopedModels: [],
+			models: [],
+			scopedModels: [],
 			customAuthProviders: [{ id: "extension-provider", name: "Extension Provider" }],
 		}),
 		refreshModels: async (options: { timeoutMs?: number; force?: boolean; allowNetwork?: boolean }) => {
@@ -63,7 +64,9 @@ test("isolated host treats an engine-published extension model as configured aft
 			provider: "extension-provider",
 			cancelled: false as const,
 			credential: { type: "api_key" as const, key: "remote-key" },
-			models: [], scopedModels: [], customAuthProviders: [],
+			models: [],
+			scopedModels: [],
+			customAuthProviders: [],
 		}),
 		cancelLoginProvider: async () => {},
 		getCommands: async () => [],
@@ -80,16 +83,24 @@ test("isolated host treats an engine-published extension model as configured aft
 		},
 	} as unknown as AgentSession;
 	const services = { cwd: process.cwd(), agentDir: process.cwd() };
-	const createRuntime = (async () => { throw new Error("not used"); }) as CreateAgentSessionRuntimeFactory;
+	const createRuntime = (async () => {
+		throw new Error("not used");
+	}) as CreateAgentSessionRuntimeFactory;
 	const localRuntime = new AgentSessionRuntime(session, services as never, createRuntime);
 	const runtime = new IsolatedInteractiveRuntime(localRuntime, createRuntime, client);
 	await runtime.initializeFromEngine();
 
 	assert.deepEqual(modelRuntime.getAvailableSnapshot(), []);
 	assert.equal(modelRuntime.hasConfiguredAuth(model.provider), false);
-	const result = await (modelRuntime as unknown as {
-		refresh(options: { allowNetwork?: boolean; force?: boolean; timeoutMs?: number }): ReturnType<ModelRuntime["refresh"]>;
-	}).refresh({ allowNetwork: false, force: true, timeoutMs: 321 });
+	const result = await (
+		modelRuntime as unknown as {
+			refresh(options: {
+				allowNetwork?: boolean;
+				force?: boolean;
+				timeoutMs?: number;
+			}): ReturnType<ModelRuntime["refresh"]>;
+		}
+	).refresh({ allowNetwork: false, force: true, timeoutMs: 321 });
 
 	assert.deepEqual(observedOptions, { allowNetwork: false, force: true, timeoutMs: 321 });
 	assert.deepEqual(modelRuntime.getAvailableSnapshot(), [model]);
@@ -104,13 +115,21 @@ test("isolated host treats an engine-published extension model as configured aft
 test("an aborted isolated refresh does not replace the current model catalog", async () => {
 	const model = await kimiModel();
 	let resolveRefresh!: (result: RpcModelRefreshResult) => void;
-	const pending = new Promise<RpcModelRefreshResult>((resolve) => { resolveRefresh = resolve; });
+	const pending = new Promise<RpcModelRefreshResult>((resolve) => {
+		resolveRefresh = resolve;
+	});
 	const client = {
 		onEvent: () => () => {},
 		getState: async () => ({
-			thinkingLevel: "off" as const, isStreaming: false, isCompacting: false,
-			steeringMode: "all" as const, followUpMode: "all" as const,
-			sessionId: "test-session", autoCompactionEnabled: true, messageCount: 0, pendingMessageCount: 0,
+			thinkingLevel: "off" as const,
+			isStreaming: false,
+			isCompacting: false,
+			steeringMode: "all" as const,
+			followUpMode: "all" as const,
+			sessionId: "test-session",
+			autoCompactionEnabled: true,
+			messageCount: 0,
+			pendingMessageCount: 0,
 		}),
 		requestInternal: async () => ({ models: [], scopedModels: [], customAuthProviders: [] }),
 		refreshModels: async () => pending,
@@ -118,11 +137,23 @@ test("an aborted isolated refresh does not replace the current model catalog", a
 	} as unknown as RpcClient;
 	const modelRuntime = await ModelRuntime.create({ modelsPath: null });
 	const session = {
-		modelRuntime, scopedModels: [], sessionFile: undefined,
-		agent: { state: { model: undefined, thinkingLevel: "off", messages: [] }, steeringMode: "all", followUpMode: "all" },
+		modelRuntime,
+		scopedModels: [],
+		sessionFile: undefined,
+		agent: {
+			state: { model: undefined, thinkingLevel: "off", messages: [] },
+			steeringMode: "all",
+			followUpMode: "all",
+		},
 	} as unknown as AgentSession;
-	const createRuntime = (async () => { throw new Error("not used"); }) as CreateAgentSessionRuntimeFactory;
-	const localRuntime = new AgentSessionRuntime(session, { cwd: process.cwd(), agentDir: process.cwd() } as never, createRuntime);
+	const createRuntime = (async () => {
+		throw new Error("not used");
+	}) as CreateAgentSessionRuntimeFactory;
+	const localRuntime = new AgentSessionRuntime(
+		session,
+		{ cwd: process.cwd(), agentDir: process.cwd() } as never,
+		createRuntime,
+	);
 	const runtime = new IsolatedInteractiveRuntime(localRuntime, createRuntime, client);
 	await runtime.initializeFromEngine();
 	const controller = new AbortController();
@@ -171,7 +202,9 @@ test("isolated host synchronizes authoritative engine fallback state and clears 
 			followUpMode: "all",
 		},
 	} as unknown as AgentSession;
-	const createRuntime = (async () => { throw new Error("not used"); }) as CreateAgentSessionRuntimeFactory;
+	const createRuntime = (async () => {
+		throw new Error("not used");
+	}) as CreateAgentSessionRuntimeFactory;
 	const localRuntime = new AgentSessionRuntime(
 		session,
 		{ cwd: process.cwd(), agentDir: process.cwd() } as never,
@@ -225,7 +258,7 @@ test("isolated explicit cycle clears fallback only for a changed model despite a
 			if (behavior === "null") return null;
 			const model = behavior === "same" ? { ...session.model! } : selected;
 			if (behavior === "changed") session.agent.state.model = model;
-			return { model, thinkingLevel: behavior === "same" ? "high" as const : "off" as const, isScoped: false };
+			return { model, thinkingLevel: behavior === "same" ? ("high" as const) : ("off" as const), isScoped: false };
 		},
 		getCommands: async () => [],
 	} as unknown as RpcClient;
@@ -243,7 +276,9 @@ test("isolated explicit cycle clears fallback only for a changed model despite a
 	};
 	Object.defineProperty(sessionFixture, "model", { get: () => sessionFixture.agent.state.model });
 	session = sessionFixture as unknown as AgentSession;
-	const createRuntime = (async () => { throw new Error("not used"); }) as CreateAgentSessionRuntimeFactory;
+	const createRuntime = (async () => {
+		throw new Error("not used");
+	}) as CreateAgentSessionRuntimeFactory;
 	const localRuntime = new AgentSessionRuntime(
 		session,
 		{ cwd: process.cwd(), agentDir: process.cwd() } as never,
@@ -325,14 +360,19 @@ test("isolated session synchronization replaces each engine-selected session exa
 			pendingMessageCount: 0,
 		}),
 		requestInternal: async () => ({ models: [], scopedModels: [], customAuthProviders: [] }),
-		switchSession: async (path: string) => { engineSessionFile = path; return { cancelled: false }; },
+		switchSession: async (path: string) => {
+			engineSessionFile = path;
+			return { cancelled: false };
+		},
 		getCommands: async () => [],
 		stop: async () => {},
 	} as unknown as RpcClient;
 	const local = new AgentSessionRuntime(initial.session, initial.services, createRuntime, initial.diagnostics);
 	const runtime = new IsolatedInteractiveRuntime(local, createRuntime, client);
 	let rebinds = 0;
-	runtime.setRebindSession(async () => { rebinds += 1; });
+	runtime.setRebindSession(async () => {
+		rebinds += 1;
+	});
 	try {
 		await runtime.initializeFromEngine();
 		assert.equal(runtime.session.sessionManager.getSessionFile(), firstSession);
@@ -353,15 +393,23 @@ test("isolated session synchronization replaces each engine-selected session exa
 
 test("isolated queue pause reaches the engine before abort and resumes remotely", async () => {
 	let releasePause!: () => void;
-	const pauseCommitted = new Promise<void>((resolve) => { releasePause = resolve; });
+	const pauseCommitted = new Promise<void>((resolve) => {
+		releasePause = resolve;
+	});
 	const calls: string[] = [];
 	const client = {
 		onEvent: () => () => {},
 		getState: async () => ({
-			thinkingLevel: "off" as const, isStreaming: true, isCompacting: false,
-			steeringMode: "all" as const, followUpMode: "all" as const,
-			sessionId: "test-session", autoCompactionEnabled: true, messageCount: 0,
-			pendingMessageCount: 1, queuedMessagesPaused: false,
+			thinkingLevel: "off" as const,
+			isStreaming: true,
+			isCompacting: false,
+			steeringMode: "all" as const,
+			followUpMode: "all" as const,
+			sessionId: "test-session",
+			autoCompactionEnabled: true,
+			messageCount: 0,
+			pendingMessageCount: 1,
+			queuedMessagesPaused: false,
 		}),
 		requestInternal: async (command: { type: string }) => {
 			if (command.type === "get_available_models") return { models: [], scopedModels: [], customAuthProviders: [] };
@@ -370,16 +418,31 @@ test("isolated queue pause reaches the engine before abort and resumes remotely"
 			if (command.type === "resume_queued_messages") return { released: true };
 			return undefined;
 		},
-		abort: async () => { calls.push("abort"); },
+		abort: async () => {
+			calls.push("abort");
+		},
 		getCommands: async () => [],
 	} as unknown as RpcClient;
 	const modelRuntime = await ModelRuntime.create({ modelsPath: null });
 	const session = {
-		modelRuntime, scopedModels: [], sessionFile: undefined, sessionManager: {},
-		agent: { state: { model: undefined, thinkingLevel: "off", messages: [] }, steeringMode: "all", followUpMode: "all" },
+		modelRuntime,
+		scopedModels: [],
+		sessionFile: undefined,
+		sessionManager: {},
+		agent: {
+			state: { model: undefined, thinkingLevel: "off", messages: [] },
+			steeringMode: "all",
+			followUpMode: "all",
+		},
 	} as unknown as AgentSession;
-	const createRuntime = (async () => { throw new Error("not used"); }) as CreateAgentSessionRuntimeFactory;
-	const localRuntime = new AgentSessionRuntime(session, { cwd: process.cwd(), agentDir: process.cwd() } as never, createRuntime);
+	const createRuntime = (async () => {
+		throw new Error("not used");
+	}) as CreateAgentSessionRuntimeFactory;
+	const localRuntime = new AgentSessionRuntime(
+		session,
+		{ cwd: process.cwd(), agentDir: process.cwd() } as never,
+		createRuntime,
+	);
 	const runtime = new IsolatedInteractiveRuntime(localRuntime, createRuntime, client);
 	await runtime.initializeFromEngine();
 

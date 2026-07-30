@@ -279,6 +279,5 @@ describe("DefaultPackageManager", () => {
 			);
 			expect(runCommandSpy).toHaveBeenCalledTimes(1);
 		});
-
 	});
 });

@@ -364,5 +364,4 @@ describe("DefaultPackageManager", () => {
 			expect(result.skills.some((r) => r.path === skillPath && r.enabled)).toBe(true);
 		});
 	});
-
 });

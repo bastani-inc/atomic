@@ -66,7 +66,9 @@ describe("OAuthSelectorComponent", () => {
 	it("offers a stored API key for logout even when the provider advertises OAuth only", () => {
 		const getLogoutProviderOptions = (
 			InteractiveMode as unknown as {
-				prototype: { getLogoutProviderOptions(this: object): Array<{ id: string; name: string; authType: string }> };
+				prototype: {
+					getLogoutProviderOptions(this: object): Array<{ id: string; name: string; authType: string }>;
+				};
 			}
 		).prototype.getLogoutProviderOptions;
 		const fakeThis = {
@@ -89,7 +91,9 @@ describe("OAuthSelectorComponent", () => {
 	it("labels an engine-published provider by its stored API-key credential", () => {
 		const getLogoutProviderOptions = (
 			InteractiveMode as unknown as {
-				prototype: { getLogoutProviderOptions(this: object): Array<{ id: string; name: string; authType: string }> };
+				prototype: {
+					getLogoutProviderOptions(this: object): Array<{ id: string; name: string; authType: string }>;
+				};
 			}
 		).prototype.getLogoutProviderOptions;
 		const fakeThis = {

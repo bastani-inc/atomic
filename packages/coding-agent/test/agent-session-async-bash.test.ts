@@ -2,7 +2,13 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent, type AgentMessage } from "@earendil-works/pi-agent-core";
-import { EventStream, getModel, type AssistantMessage, type AssistantMessageEvent, type TextContent } from "@earendil-works/pi-ai/compat";
+import {
+	type AssistantMessage,
+	type AssistantMessageEvent,
+	EventStream,
+	getModel,
+	type TextContent,
+} from "@earendil-works/pi-ai/compat";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AsyncJobManager } from "../src/core/async/job-manager.ts";
@@ -33,7 +39,14 @@ function createAssistantMessage(text: string): AssistantMessage {
 		api: "anthropic-messages",
 		provider: "anthropic",
 		model: "mock",
-		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
 		stopReason: "stop",
 		timestamp: Date.now(),
 	};
@@ -55,7 +68,10 @@ function messageText(message: AgentMessage): string {
 		.join("\n");
 }
 
-async function createSession(tempDir: string, onTurn: (userTexts: string[], stream: MockAssistantStream) => void): AgentSession {
+async function createSession(
+	tempDir: string,
+	onTurn: (userTexts: string[], stream: MockAssistantStream) => void,
+): AgentSession {
 	const model = getModel("anthropic", "claude-sonnet-4-5")!;
 	const agent = new Agent({
 		convertToLlm,
@@ -63,7 +79,9 @@ async function createSession(tempDir: string, onTurn: (userTexts: string[], stre
 		initialState: { model, systemPrompt: "Test", tools: [] },
 		streamFn: (_model, context) => {
 			const stream = new MockAssistantStream();
-			queueMicrotask(() => onTurn(context.messages.filter((message) => message.role === "user").map(messageText), stream));
+			queueMicrotask(() =>
+				onTurn(context.messages.filter((message) => message.role === "user").map(messageText), stream),
+			);
 			return stream;
 		},
 	});
@@ -118,7 +136,8 @@ describe("AgentSession async bash auto-delivery", () => {
 				stream.push({ type: "done", reason: "stop", message: createAssistantMessage("follow-up") });
 				return;
 			}
-			finishFirstTurn = () => stream.push({ type: "done", reason: "stop", message: createAssistantMessage("first") });
+			finishFirstTurn = () =>
+				stream.push({ type: "done", reason: "stop", message: createAssistantMessage("first") });
 		});
 		const firstPrompt = session.prompt("First message");
 		await waitFor(() => session?.isStreaming === true);

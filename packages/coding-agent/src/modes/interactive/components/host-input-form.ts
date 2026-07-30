@@ -1,19 +1,16 @@
 import {
+	type Component,
 	Editor,
+	type Focusable,
 	Input,
 	Key,
 	matchesKey,
+	type TUI,
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
-	type Component,
-	type Focusable,
-	type TUI,
 } from "@earendil-works/pi-tui";
-import type {
-	HostInputFormField,
-	HostInputFormRequest,
-} from "../../../core/extensions/ui-types.ts";
+import type { HostInputFormField, HostInputFormRequest } from "../../../core/extensions/ui-types.ts";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { Theme } from "../theme/theme.ts";
 import { getEditorTheme } from "../theme/theme.ts";
@@ -62,7 +59,10 @@ export class HostInputFormComponent implements Component, Focusable {
 		this.theme = theme;
 		this.keybindings = keybindings;
 		this.delegate = delegate;
-		this.fields = request.fields.map((field) => ({ ...field, choices: field.choices ? [...field.choices] : undefined }));
+		this.fields = request.fields.map((field) => ({
+			...field,
+			choices: field.choices ? [...field.choices] : undefined,
+		}));
 		this.values = this.fields.map((field) => field.initialValue);
 		this.editors = this.fields.map((field, index) => {
 			if (!isEditable(field)) return undefined;
@@ -72,7 +72,9 @@ export class HostInputFormComponent implements Component, Focusable {
 				const editorTheme = { ...getEditorTheme(), borderColor: (segment: string) => theme.fg("border", segment) };
 				const editor = new Editor(tui, editorTheme, { paddingX: 0 });
 				editor.setText(field.initialValue);
-				editor.onChange = (text) => { this.values[index] = text; };
+				editor.onChange = (text) => {
+					this.values[index] = text;
+				};
 				editor.disableSubmit = true;
 				return editor;
 			}
@@ -83,13 +85,20 @@ export class HostInputFormComponent implements Component, Focusable {
 			input.onEscape = () => this.delegate.onCancel();
 			return input;
 		});
-		const firstInvalid = this.fields.findIndex((field, index) => this.invalidReason(field, this.values[index]!) !== undefined);
+		const firstInvalid = this.fields.findIndex(
+			(field, index) => this.invalidReason(field, this.values[index]!) !== undefined,
+		);
 		this.focusedIndex = firstInvalid >= 0 ? firstInvalid : 0;
 		this.syncFocus();
 	}
 
-	get focused(): boolean { return this._focused; }
-	set focused(value: boolean) { this._focused = value; this.syncFocus(); }
+	get focused(): boolean {
+		return this._focused;
+	}
+	set focused(value: boolean) {
+		this._focused = value;
+		this.syncFocus();
+	}
 
 	handleInput(data: string): void {
 		if (
@@ -100,9 +109,18 @@ export class HostInputFormComponent implements Component, Focusable {
 			this.delegate.onCancel();
 			return;
 		}
-		if (matchesKey(data, Key.shift("tab"))) { this.moveFocus(-1); return; }
-		if (matchesKey(data, Key.tab) || this.keybindings.matches(data, "tui.input.tab")) { this.moveFocus(1); return; }
-		if (this.focusedIndex === this.fields.length) { this.handleSubmitRow(data); return; }
+		if (matchesKey(data, Key.shift("tab"))) {
+			this.moveFocus(-1);
+			return;
+		}
+		if (matchesKey(data, Key.tab) || this.keybindings.matches(data, "tui.input.tab")) {
+			this.moveFocus(1);
+			return;
+		}
+		if (this.focusedIndex === this.fields.length) {
+			this.handleSubmitRow(data);
+			return;
+		}
 		const field = this.fields[this.focusedIndex];
 		if (!field) return;
 		if (field.type === "select") this.handleSelect(data, field);
@@ -133,12 +151,17 @@ export class HostInputFormComponent implements Component, Focusable {
 			body.push(this.labelRow(field, active, cw));
 			for (const line of this.renderField(field, index, controlWidth)) body.push(`${indent}${line}`);
 			if (field.description) {
-				for (const line of wrapTextWithAnsi(this.theme.fg("muted", field.description), Math.max(1, cw - LABEL_INDENT))) {
+				for (const line of wrapTextWithAnsi(
+					this.theme.fg("muted", field.description),
+					Math.max(1, cw - LABEL_INDENT),
+				)) {
 					body.push(`${indent}${line}`);
 				}
 			}
 			if (this.invalid.has(index)) {
-				body.push(`${indent}${this.theme.fg("error", `✗ ${this.invalidReason(field, this.currentValue(index)) ?? "invalid"}`)}`);
+				body.push(
+					`${indent}${this.theme.fg("error", `✗ ${this.invalidReason(field, this.currentValue(index)) ?? "invalid"}`)}`,
+				);
 			}
 			body.push("");
 		}
@@ -150,20 +173,28 @@ export class HostInputFormComponent implements Component, Focusable {
 		return this.frame(body, inner, cw);
 	}
 
-	invalidate(): void { for (const editor of this.editors) editor?.invalidate(); }
+	invalidate(): void {
+		for (const editor of this.editors) editor?.invalidate();
+	}
 
 	private renderField(field: HostInputFormField, index: number, width: number): string[] {
 		if (field.type === "select") {
 			const current = this.values[index];
-			return (field.choices ?? []).map((choice) => `${choice === current ? this.theme.fg("accent", "●") : this.theme.fg("dim", "○")} ${choice}`);
+			return (field.choices ?? []).map(
+				(choice) => `${choice === current ? this.theme.fg("accent", "●") : this.theme.fg("dim", "○")} ${choice}`,
+			);
 		}
 		if (field.type === "boolean") {
-			return [this.values[index] === "true" ? this.theme.fg("accent", "● on") : "○ on", this.values[index] === "false" ? this.theme.fg("accent", "● off") : "○ off"];
+			return [
+				this.values[index] === "true" ? this.theme.fg("accent", "● on") : "○ on",
+				this.values[index] === "false" ? this.theme.fg("accent", "● off") : "○ off",
+			];
 		}
 		const editor = this.editors[index];
 		if (!editor) return [""];
 		const rendered = editor.render(width);
-		if (this.currentValue(index) === "" && field.placeholder && this.focusedIndex !== index) return [this.theme.fg("dim", field.placeholder)];
+		if (this.currentValue(index) === "" && field.placeholder && this.focusedIndex !== index)
+			return [this.theme.fg("dim", field.placeholder)];
 		return rendered.length > 0 ? rendered : [""];
 	}
 
@@ -187,8 +218,8 @@ export class HostInputFormComponent implements Component, Focusable {
 			if (after.line === before.line && after.col === before.col) this.moveFocus(verticalDirection);
 			return;
 		}
-		const continues = this.keybindings.matches(data, "tui.input.submit") ||
-			this.keybindings.matches(data, "tui.input.newLine");
+		const continues =
+			this.keybindings.matches(data, "tui.input.submit") || this.keybindings.matches(data, "tui.input.newLine");
 		if (continues) {
 			if (field.type === "text" && editor instanceof Editor) {
 				editor.insertTextAtCursor("\n");
@@ -206,26 +237,67 @@ export class HostInputFormComponent implements Component, Focusable {
 		const choices = field.choices ?? [];
 		if (choices.length === 0) return;
 		const current = Math.max(0, choices.indexOf(this.currentValue(this.focusedIndex)));
-		if (this.keybindings.matches(data, "tui.select.up") || this.keybindings.matches(data, "tui.editor.cursorLeft")) this.values[this.focusedIndex] = choices[(current - 1 + choices.length) % choices.length]!;
-		else if (this.keybindings.matches(data, "tui.select.down") || this.keybindings.matches(data, "tui.editor.cursorRight") || matchesKey(data, Key.space)) this.values[this.focusedIndex] = choices[(current + 1) % choices.length]!;
-		else if (this.keybindings.matches(data, "tui.select.confirm") || this.keybindings.matches(data, "tui.input.submit")) this.moveFocus(1);
+		if (this.keybindings.matches(data, "tui.select.up") || this.keybindings.matches(data, "tui.editor.cursorLeft"))
+			this.values[this.focusedIndex] = choices[(current - 1 + choices.length) % choices.length]!;
+		else if (
+			this.keybindings.matches(data, "tui.select.down") ||
+			this.keybindings.matches(data, "tui.editor.cursorRight") ||
+			matchesKey(data, Key.space)
+		)
+			this.values[this.focusedIndex] = choices[(current + 1) % choices.length]!;
+		else if (
+			this.keybindings.matches(data, "tui.select.confirm") ||
+			this.keybindings.matches(data, "tui.input.submit")
+		)
+			this.moveFocus(1);
 	}
 
 	private handleBoolean(data: string): void {
-		if (matchesKey(data, Key.space) || this.keybindings.matches(data, "tui.select.up") || this.keybindings.matches(data, "tui.select.down") || this.keybindings.matches(data, "tui.editor.cursorLeft") || this.keybindings.matches(data, "tui.editor.cursorRight")) this.values[this.focusedIndex] = this.currentValue(this.focusedIndex) === "true" ? "false" : "true";
-		else if (this.keybindings.matches(data, "tui.select.confirm") || this.keybindings.matches(data, "tui.input.submit")) this.moveFocus(1);
+		if (
+			matchesKey(data, Key.space) ||
+			this.keybindings.matches(data, "tui.select.up") ||
+			this.keybindings.matches(data, "tui.select.down") ||
+			this.keybindings.matches(data, "tui.editor.cursorLeft") ||
+			this.keybindings.matches(data, "tui.editor.cursorRight")
+		)
+			this.values[this.focusedIndex] = this.currentValue(this.focusedIndex) === "true" ? "false" : "true";
+		else if (
+			this.keybindings.matches(data, "tui.select.confirm") ||
+			this.keybindings.matches(data, "tui.input.submit")
+		)
+			this.moveFocus(1);
 	}
 
 	private handleSubmitRow(data: string): void {
-		if (this.keybindings.matches(data, "tui.select.up") || this.keybindings.matches(data, "tui.editor.cursorUp")) { this.moveFocus(-1); return; }
-		if (this.keybindings.matches(data, "tui.select.down") || this.keybindings.matches(data, "tui.editor.cursorDown")) { this.moveFocus(1); return; }
-		if (matchesKey(data, Key.enter) || this.keybindings.matches(data, "tui.select.confirm") || this.keybindings.matches(data, "tui.input.submit")) this.submit();
+		if (this.keybindings.matches(data, "tui.select.up") || this.keybindings.matches(data, "tui.editor.cursorUp")) {
+			this.moveFocus(-1);
+			return;
+		}
+		if (
+			this.keybindings.matches(data, "tui.select.down") ||
+			this.keybindings.matches(data, "tui.editor.cursorDown")
+		) {
+			this.moveFocus(1);
+			return;
+		}
+		if (
+			matchesKey(data, Key.enter) ||
+			this.keybindings.matches(data, "tui.select.confirm") ||
+			this.keybindings.matches(data, "tui.input.submit")
+		)
+			this.submit();
 	}
 
 	private submit(): void {
 		this.invalid = new Set<number>();
-		for (let index = 0; index < this.fields.length; index += 1) if (this.invalidReason(this.fields[index]!, this.currentValue(index))) this.invalid.add(index);
-		if (this.invalid.size > 0) { this.focusedIndex = this.invalid.values().next().value ?? 0; this.syncFocus(); this.tui.requestRender(); return; }
+		for (let index = 0; index < this.fields.length; index += 1)
+			if (this.invalidReason(this.fields[index]!, this.currentValue(index))) this.invalid.add(index);
+		if (this.invalid.size > 0) {
+			this.focusedIndex = this.invalid.values().next().value ?? 0;
+			this.syncFocus();
+			this.tui.requestRender();
+			return;
+		}
 		const values: Record<string, string> = Object.fromEntries(
 			this.fields.map((field, index) => [field.name, this.currentValue(index)]),
 		);
@@ -235,7 +307,8 @@ export class HostInputFormComponent implements Component, Focusable {
 	private invalidReason(field: HostInputFormField, value: string): string | undefined {
 		if (field.required && value.trim() === "") return "required";
 		if (field.type === "select" && value !== "" && !(field.choices ?? []).includes(value)) return "not in choices";
-		if ((field.type === "number" || field.type === "integer") && value !== "" && !Number.isFinite(Number(value))) return "must be a number";
+		if ((field.type === "number" || field.type === "integer") && value !== "" && !Number.isFinite(Number(value)))
+			return "must be a number";
 		return undefined;
 	}
 
@@ -246,8 +319,19 @@ export class HostInputFormComponent implements Component, Focusable {
 		this.syncFocus();
 		this.tui.requestRender();
 	}
-	private syncFocus(): void { this.editors.forEach((editor, index) => { if (editor) editor.focused = this._focused && index === this.focusedIndex; }); }
-	private currentValue(index: number): string { const editor = this.editors[index]; return editor instanceof Input ? editor.getValue() : editor instanceof Editor ? editor.getExpandedText() : this.values[index] ?? ""; }
+	private syncFocus(): void {
+		this.editors.forEach((editor, index) => {
+			if (editor) editor.focused = this._focused && index === this.focusedIndex;
+		});
+	}
+	private currentValue(index: number): string {
+		const editor = this.editors[index];
+		return editor instanceof Input
+			? editor.getValue()
+			: editor instanceof Editor
+				? editor.getExpandedText()
+				: (this.values[index] ?? "");
+	}
 	/** Field header: focus chevron + name (accent when active) with a right-aligned required/optional badge. */
 	private labelRow(field: HostInputFormField, active: boolean, cw: number): string {
 		const badgePlain = field.required ? "required" : "optional";
@@ -257,9 +341,7 @@ export class HostInputFormComponent implements Component, Focusable {
 		const nameStyled = active
 			? this.theme.fg("accent", this.theme.bold(nameShown))
 			: this.theme.fg("text", nameShown);
-		const badge = field.required
-			? this.theme.fg("warning", badgePlain)
-			: this.theme.fg("dim", badgePlain);
+		const badge = field.required ? this.theme.fg("warning", badgePlain) : this.theme.fg("dim", badgePlain);
 		const gap = Math.max(1, cw - 2 - visibleWidth(nameShown) - badgePlain.length);
 		return `${marker} ${nameStyled}${" ".repeat(gap)}${badge}`;
 	}

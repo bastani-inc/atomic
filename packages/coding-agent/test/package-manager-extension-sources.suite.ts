@@ -230,7 +230,10 @@ describe("DefaultPackageManager", () => {
 				join(repoDir, ".agents", "skills", "agents-skill", "SKILL.md"),
 				"---\nname: agents-skill\ndescription: Agents\n---\n",
 			);
-			writeFileSync(join(repoDir, ".agents", "skills", "root.md"), "---\nname: ignored\ndescription: Ignored\n---\n");
+			writeFileSync(
+				join(repoDir, ".agents", "skills", "root.md"),
+				"---\nname: ignored\ndescription: Ignored\n---\n",
+			);
 
 			const result = await packageManager.resolveExtensionSources([repoDir], {
 				temporary: true,
@@ -387,5 +390,4 @@ describe("DefaultPackageManager", () => {
 			expect(shouldUseWindowsShell("C:/Program Files/nodejs/npm.cmd")).toBe(true);
 		});
 	});
-
 });

@@ -20,67 +20,67 @@
  */
 
 export type StageDeliveryActivityEvent =
-  | { readonly type: "delivery_start"; readonly deliveryId: number }
-  | { readonly type: "delivery_settled"; readonly deliveryId: number };
+	| { readonly type: "delivery_start"; readonly deliveryId: number }
+	| { readonly type: "delivery_settled"; readonly deliveryId: number };
 
 export type StageDeliveryActivityListener = (event: StageDeliveryActivityEvent) => void;
 
 export class StageDeliveryActivity {
-  private readonly listeners = new Set<StageDeliveryActivityListener>();
-  private readonly active = new Set<number>();
-  private nextDeliveryId = 0;
+	private readonly listeners = new Set<StageDeliveryActivityListener>();
+	private readonly active = new Set<number>();
+	private nextDeliveryId = 0;
 
-  /**
-   * Register `listener`, then synchronously replay every currently-active
-   * delivery as `delivery_start`.
-   *
-   * A stage chat can attach after a delivery was admitted — a late `/workflow
-   * attach`, or a remount — and would otherwise see nothing until the public
-   * `agent_start` finally arrives. Registering before replaying matters:
-   * snapshotting first would drop a start or settlement that lands in between.
-   */
-  subscribe(listener: StageDeliveryActivityListener): () => void {
-    this.listeners.add(listener);
-    for (const deliveryId of [...this.active]) {
-      if (!this.listeners.has(listener)) break;
-      listener({ type: "delivery_start", deliveryId });
-    }
-    return () => {
-      this.listeners.delete(listener);
-    };
-  }
+	/**
+	 * Register `listener`, then synchronously replay every currently-active
+	 * delivery as `delivery_start`.
+	 *
+	 * A stage chat can attach after a delivery was admitted — a late `/workflow
+	 * attach`, or a remount — and would otherwise see nothing until the public
+	 * `agent_start` finally arrives. Registering before replaying matters:
+	 * snapshotting first would drop a start or settlement that lands in between.
+	 */
+	subscribe(listener: StageDeliveryActivityListener): () => void {
+		this.listeners.add(listener);
+		for (const deliveryId of [...this.active]) {
+			if (!this.listeners.has(listener)) break;
+			listener({ type: "delivery_start", deliveryId });
+		}
+		return () => {
+			this.listeners.delete(listener);
+		};
+	}
 
-  /** Report an admitted idle delivery that is about to start a turn. */
-  start(): number {
-    const deliveryId = ++this.nextDeliveryId;
-    this.active.add(deliveryId);
-    this.emit({ type: "delivery_start", deliveryId });
-    return deliveryId;
-  }
+	/** Report an admitted idle delivery that is about to start a turn. */
+	start(): number {
+		const deliveryId = ++this.nextDeliveryId;
+		this.active.add(deliveryId);
+		this.emit({ type: "delivery_start", deliveryId });
+		return deliveryId;
+	}
 
-  /** Keep one correlated delivery active for the full asynchronous operation. */
-  async runWithLease<T>(operation: () => Promise<T>): Promise<T> {
-    const deliveryId = this.start();
-    try {
-      return await operation();
-    } finally {
-      this.settle(deliveryId);
-    }
-  }
+	/** Keep one correlated delivery active for the full asynchronous operation. */
+	async runWithLease<T>(operation: () => Promise<T>): Promise<T> {
+		const deliveryId = this.start();
+		try {
+			return await operation();
+		} finally {
+			this.settle(deliveryId);
+		}
+	}
 
-  /** Report that a delivery finished, failed, or started no turn at all. */
-  settle(deliveryId: number | undefined): void {
-    if (deliveryId === undefined || !this.active.delete(deliveryId)) return;
-    this.emit({ type: "delivery_settled", deliveryId });
-  }
+	/** Report that a delivery finished, failed, or started no turn at all. */
+	settle(deliveryId: number | undefined): void {
+		if (deliveryId === undefined || !this.active.delete(deliveryId)) return;
+		this.emit({ type: "delivery_settled", deliveryId });
+	}
 
-  /** Settle every outstanding delivery, then drop listeners. */
-  dispose(): void {
-    for (const deliveryId of [...this.active]) this.settle(deliveryId);
-    this.listeners.clear();
-  }
+	/** Settle every outstanding delivery, then drop listeners. */
+	dispose(): void {
+		for (const deliveryId of [...this.active]) this.settle(deliveryId);
+		this.listeners.clear();
+	}
 
-  private emit(event: StageDeliveryActivityEvent): void {
-    for (const listener of [...this.listeners]) listener(event);
-  }
+	private emit(event: StageDeliveryActivityEvent): void {
+		for (const listener of [...this.listeners]) listener(event);
+	}
 }

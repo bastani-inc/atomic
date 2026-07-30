@@ -65,9 +65,7 @@ export function isUnsafeWindowsShortPath(path: string, platform: NodeJS.Platform
 		return false;
 	}
 
-	return path
-		.split(/[\\/]+/)
-		.some((component) => /~\d+(?:\.|$)/i.test(component));
+	return path.split(/[\\/]+/).some((component) => /~\d+(?:\.|$)/i.test(component));
 }
 
 export function isSafeFsWatchPathError(error: unknown): error is SafeFsWatchPathError {

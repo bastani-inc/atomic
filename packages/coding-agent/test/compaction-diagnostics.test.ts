@@ -7,11 +7,13 @@
  * 3. In-memory and write-failure fallback (original RangePlanError preserved).
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from "fs";
-import { basename, dirname, join } from "path";
-import { tmpdir } from "os";
 import type { Api, AssistantMessage, Model, Usage } from "@earendil-works/pi-ai/compat";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from "fs";
+import { tmpdir } from "os";
+import { basename, dirname, join } from "path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { NumberedRegion, VerbatimCompactionParameters } from "../src/core/compaction/compaction-types.ts";
+import { planDeletedLineRanges } from "../src/core/compaction/range-planner.ts";
 import {
 	buildDiagnosticPayload,
 	type CompactionDiagnostic,
@@ -19,9 +21,7 @@ import {
 	diagnosticSidecarPath,
 	writeDiagnosticSidecar,
 } from "../src/core/compaction/range-planner-diagnostics.ts";
-import { planDeletedLineRanges } from "../src/core/compaction/range-planner.ts";
 import { planner } from "./compaction-planner-fixtures.ts";
-import type { NumberedRegion, VerbatimCompactionParameters } from "../src/core/compaction/compaction-types.ts";
 
 const testPosixFileMode = process.platform === "win32" ? it.skip : it;
 
@@ -271,11 +271,14 @@ describe("compaction diagnostics: persisted sidecar", () => {
 		// Mock streamFn that returns malformed output
 		const mockStreamFn = async () => ({
 			result: async () => createMockResponse("This is not JSON at all", "stop"),
-			events: async function* () { yield { type: "done" as const, reason: "stop" as const, message: createMockResponse("") }; },
+			events: async function* () {
+				yield { type: "done" as const, reason: "stop" as const, message: createMockResponse("") };
+			},
 		});
 
 		const outcome = await planDeletedLineRanges(
-			region, params,
+			region,
+			params,
 			planner(model, undefined, { apiKey: "test-key" }),
 			25,
 			{ streamFn: mockStreamFn as never, sessionFilePath: sessionFile },
@@ -338,11 +341,14 @@ describe("compaction diagnostics: in-memory and write-failure fallback", () => {
 
 		const mockStreamFn = async () => ({
 			result: async () => createMockResponse("not json", "stop"),
-			events: async function* () { yield { type: "done" as const, reason: "stop" as const, message: createMockResponse("") }; },
+			events: async function* () {
+				yield { type: "done" as const, reason: "stop" as const, message: createMockResponse("") };
+			},
 		});
 
 		const outcome = await planDeletedLineRanges(
-			region, params,
+			region,
+			params,
 			planner(model, undefined, { apiKey: "key" }),
 			25,
 			// Non-existent path → write will fail → fallback
@@ -363,11 +369,14 @@ describe("compaction diagnostics: in-memory and write-failure fallback", () => {
 
 		const mockStreamFn = async () => ({
 			result: async () => createMockResponse("not json", "stop"),
-			events: async function* () { yield { type: "done" as const, reason: "stop" as const, message: createMockResponse("") }; },
+			events: async function* () {
+				yield { type: "done" as const, reason: "stop" as const, message: createMockResponse("") };
+			},
 		});
 
 		const outcome = await planDeletedLineRanges(
-			region, params,
+			region,
+			params,
 			planner(model, undefined, { apiKey: "key" }),
 			25,
 			// No sessionFilePath → in-memory
@@ -392,15 +401,14 @@ describe("compaction diagnostics: in-memory and write-failure fallback", () => {
 
 		const mockStreamFn = async () => ({
 			result: async () => errorResponse,
-			events: async function* () { yield { type: "error" as const, reason: "error" as const, error: errorResponse }; },
+			events: async function* () {
+				yield { type: "error" as const, reason: "error" as const, error: errorResponse };
+			},
 		});
 
-		const outcome = await planDeletedLineRanges(
-			region, params,
-			planner(model, undefined, { apiKey: "key" }),
-			25,
-			{ streamFn: mockStreamFn as never },
-		);
+		const outcome = await planDeletedLineRanges(region, params, planner(model, undefined, { apiKey: "key" }), 25, {
+			streamFn: mockStreamFn as never,
+		});
 
 		expect(outcome).toEqual({ kind: "overflowed" });
 	});

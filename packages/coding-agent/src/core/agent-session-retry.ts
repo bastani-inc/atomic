@@ -3,17 +3,19 @@ import { isRetryableAssistantError } from "@earendil-works/pi-ai";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai/compat";
 import { clampThinkingLevel, isContextOverflow, modelsAreEqual } from "@earendil-works/pi-ai/compat";
 import { sleep } from "../utils/sleep.ts";
+import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { isCodexTokenInvalidationError } from "./codex-errors.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import { fallbackKey, resolveFallbackModel as resolveConfiguredFallbackModel } from "./fallback-models.ts";
-import { isCodexTokenInvalidationError } from "./codex-errors.ts";
-import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
-
 
 function modelLabel(model: Model<Api> | undefined): string {
 	return model ? `${model.provider}/${model.id}` : "unknown model";
 }
 
-function resolveFallbackModel(this: AgentSession, value: string): { model: Model<Api>; thinkingLevel?: ThinkingLevel } | undefined {
+function resolveFallbackModel(
+	this: AgentSession,
+	value: string,
+): { model: Model<Api>; thinkingLevel?: ThinkingLevel } | undefined {
 	return resolveConfiguredFallbackModel(
 		value,
 		this._modelRuntime,
@@ -21,7 +23,11 @@ function resolveFallbackModel(this: AgentSession, value: string): { model: Model
 	);
 }
 
-function hasProviderTransportDiagnostic(value: unknown, seen = new Set<unknown>(), includeMessageFields = false): boolean {
+function hasProviderTransportDiagnostic(
+	value: unknown,
+	seen = new Set<unknown>(),
+	includeMessageFields = false,
+): boolean {
 	if (value === null || value === undefined || seen.has(value)) return false;
 	if (typeof value !== "object") {
 		return /provider_transport_failure|websocket.*error|sse.*404/i.test(String(value));
@@ -32,17 +38,25 @@ function hasProviderTransportDiagnostic(value: unknown, seen = new Set<unknown>(
 		? [record.type, record.code, record.name, record.message, record.errorMessage, record.status, record.statusCode]
 		: [record.type, record.code, record.name, record.status, record.statusCode];
 	for (const field of fields) {
-		 if (typeof field === "string" || typeof field === "number") {
+		if (typeof field === "string" || typeof field === "number") {
 			if (/provider_transport_failure|websocket.*error|sse.*404|\b404\b/i.test(String(field))) return true;
 		}
 	}
-	for (const nested of [record.error, record.cause, ...(Array.isArray(record.diagnostics) ? record.diagnostics : [])]) {
+	for (const nested of [
+		record.error,
+		record.cause,
+		...(Array.isArray(record.diagnostics) ? record.diagnostics : []),
+	]) {
 		if (hasProviderTransportDiagnostic(nested, seen, true)) return true;
 	}
 	return false;
 }
 
-function hasProviderModelUnavailableDiagnostic(value: unknown, seen = new Set<unknown>(), includeMessageFields = false): boolean {
+function hasProviderModelUnavailableDiagnostic(
+	value: unknown,
+	seen = new Set<unknown>(),
+	includeMessageFields = false,
+): boolean {
 	if (value === null || value === undefined || seen.has(value)) return false;
 	if (typeof value !== "object") return false;
 	seen.add(value);
@@ -51,9 +65,17 @@ function hasProviderModelUnavailableDiagnostic(value: unknown, seen = new Set<un
 		? [record.type, record.code, record.name, record.message, record.errorMessage]
 		: [record.type, record.code, record.name, record.errorMessage];
 	for (const field of fields) {
-		if (typeof field === "string" && /model(?:[_\s-].*)?(?:not[_\s-]?found|unavailable|unknown|disabled)|model[_-]?not[_-]?found/i.test(field)) return true;
+		if (
+			typeof field === "string" &&
+			/model(?:[_\s-].*)?(?:not[_\s-]?found|unavailable|unknown|disabled)|model[_-]?not[_-]?found/i.test(field)
+		)
+			return true;
 	}
-	for (const nested of [record.error, record.cause, ...(Array.isArray(record.diagnostics) ? record.diagnostics : [])]) {
+	for (const nested of [
+		record.error,
+		record.cause,
+		...(Array.isArray(record.diagnostics) ? record.diagnostics : []),
+	]) {
 		if (hasProviderModelUnavailableDiagnostic(nested, seen, true)) return true;
 	}
 	return false;
@@ -212,7 +234,10 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 		const nextModel = candidate.model;
 		const nextLevel = clampThinkingLevel(
 			nextModel,
-			candidate.thinkingLevel ?? this.settingsManager.getDefaultThinkingLevel() ?? this.thinkingLevel ?? DEFAULT_THINKING_LEVEL,
+			candidate.thinkingLevel ??
+				this.settingsManager.getDefaultThinkingLevel() ??
+				this.thinkingLevel ??
+				DEFAULT_THINKING_LEVEL,
 		) as ThinkingLevel;
 		if (modelsAreEqual(candidate.model, fromModel) && nextLevel === this.thinkingLevel) continue;
 		if (this._retryAttempt > 0) {
@@ -255,7 +280,13 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 				},
 				(error: unknown) => {
 					const finalError = error instanceof Error ? error.message : String(error);
-					this._emit({ type: "model_fallback_end", success: false, from: modelLabel(fromModel), to: modelLabel(nextModel), finalError });
+					this._emit({
+						type: "model_fallback_end",
+						success: false,
+						from: modelLabel(fromModel),
+						to: modelLabel(nextModel),
+						finalError,
+					});
 					this._retryAttempt = 0;
 					this._resolveRetry();
 				},
@@ -263,7 +294,12 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 		}, 0);
 		return true;
 	}
-	this._emit({ type: "model_fallback_end", success: false, from: modelLabel(fromModel), finalError: message.errorMessage });
+	this._emit({
+		type: "model_fallback_end",
+		success: false,
+		from: modelLabel(fromModel),
+		finalError: message.errorMessage,
+	});
 	return false;
 }
 

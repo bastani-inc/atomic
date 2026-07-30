@@ -15,14 +15,17 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	startActivityTimer(state);
 	const onInterrupt = () => interruptRunner(state);
 	process.on(ASYNC_INTERRUPT_SIGNAL, onInterrupt);
-	appendJsonl(state.eventsPath, JSON.stringify({
-		type: "subagent.run.started",
-		ts: state.overallStartTime,
-		runId: state.id,
-		mode: state.statusPayload.mode,
-		cwd: state.cwd,
-		pid: process.pid,
-	}));
+	appendJsonl(
+		state.eventsPath,
+		JSON.stringify({
+			type: "subagent.run.started",
+			ts: state.overallStartTime,
+			runId: state.id,
+			mode: state.statusPayload.mode,
+			cwd: state.cwd,
+			pid: process.pid,
+		}),
+	);
 
 	try {
 		for (let stepIndex = 0; stepIndex < state.steps.length; stepIndex++) {

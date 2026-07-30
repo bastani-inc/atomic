@@ -22,7 +22,7 @@
 const UNSAFE_KEY_SEGMENTS: ReadonlySet<string> = new Set(["__proto__", "constructor", "prototype"]);
 
 function isUnsafeSegment(segment: string | number): boolean {
-  return typeof segment === "string" && UNSAFE_KEY_SEGMENTS.has(segment);
+	return typeof segment === "string" && UNSAFE_KEY_SEGMENTS.has(segment);
 }
 
 /**
@@ -31,59 +31,59 @@ function isUnsafeSegment(segment: string | number): boolean {
  * for a malformed bracket expression (left untouched by the caller).
  */
 export function parseFlattenedKeyPath(key: string): Array<string | number> | undefined {
-  if (!/[.[]/.test(key)) return undefined;
-  const segments: Array<string | number> = [];
-  let current = "";
-  let index = 0;
-  const flush = () => {
-    if (current !== "") {
-      segments.push(current);
-      current = "";
-    }
-  };
-  while (index < key.length) {
-    const char = key[index];
-    if (char === ".") {
-      flush();
-      index += 1;
-    } else if (char === "[") {
-      flush();
-      const end = key.indexOf("]", index);
-      if (end === -1) return undefined; // malformed — leave key untouched
-      const inner = key.slice(index + 1, end);
-      const numeric = Number(inner);
-      if (inner.trim() !== "" && Number.isInteger(numeric) && numeric >= 0) {
-        segments.push(numeric);
-      } else {
-        segments.push(inner.replace(/^["']|["']$/g, ""));
-      }
-      index = end + 1;
-    } else {
-      current += char;
-      index += 1;
-    }
-  }
-  flush();
-  return segments.length > 0 ? segments : undefined;
+	if (!/[.[]/.test(key)) return undefined;
+	const segments: Array<string | number> = [];
+	let current = "";
+	let index = 0;
+	const flush = () => {
+		if (current !== "") {
+			segments.push(current);
+			current = "";
+		}
+	};
+	while (index < key.length) {
+		const char = key[index];
+		if (char === ".") {
+			flush();
+			index += 1;
+		} else if (char === "[") {
+			flush();
+			const end = key.indexOf("]", index);
+			if (end === -1) return undefined; // malformed — leave key untouched
+			const inner = key.slice(index + 1, end);
+			const numeric = Number(inner);
+			if (inner.trim() !== "" && Number.isInteger(numeric) && numeric >= 0) {
+				segments.push(numeric);
+			} else {
+				segments.push(inner.replace(/^["']|["']$/g, ""));
+			}
+			index = end + 1;
+		} else {
+			current += char;
+			index += 1;
+		}
+	}
+	flush();
+	return segments.length > 0 ? segments : undefined;
 }
 
 /** Assign `value` at the given path inside `root`, creating arrays/objects as needed. */
 function assignFlattenedKeyPath(
-  root: Record<string | number, unknown>,
-  segments: Array<string | number>,
-  value: unknown,
+	root: Record<string | number, unknown>,
+	segments: Array<string | number>,
+	value: unknown,
 ): void {
-  let node: Record<string | number, unknown> = root;
-  for (let i = 0; i < segments.length - 1; i += 1) {
-    const segment = segments[i];
-    const nextIsIndex = typeof segments[i + 1] === "number";
-    const existing = node[segment];
-    if (existing === null || existing === undefined || typeof existing !== "object") {
-      node[segment] = nextIsIndex ? [] : {};
-    }
-    node = node[segment] as Record<string | number, unknown>;
-  }
-  node[segments[segments.length - 1]] = value;
+	let node: Record<string | number, unknown> = root;
+	for (let i = 0; i < segments.length - 1; i += 1) {
+		const segment = segments[i];
+		const nextIsIndex = typeof segments[i + 1] === "number";
+		const existing = node[segment];
+		if (existing === null || existing === undefined || typeof existing !== "object") {
+			node[segment] = nextIsIndex ? [] : {};
+		}
+		node = node[segment] as Record<string | number, unknown>;
+	}
+	node[segments[segments.length - 1]] = value;
 }
 
 /**
@@ -96,15 +96,15 @@ function assignFlattenedKeyPath(
  * arrays that were meant to be index-paired.
  */
 function compactSparseArrays(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.filter((entry) => entry !== undefined).map((entry) => compactSparseArrays(entry));
-  }
-  if (value !== null && typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [key, entry] of Object.entries(value)) out[key] = compactSparseArrays(entry);
-    return out;
-  }
-  return value;
+	if (Array.isArray(value)) {
+		return value.filter((entry) => entry !== undefined).map((entry) => compactSparseArrays(entry));
+	}
+	if (value !== null && typeof value === "object") {
+		const out: Record<string, unknown> = {};
+		for (const [key, entry] of Object.entries(value)) out[key] = compactSparseArrays(entry);
+		return out;
+	}
+	return value;
 }
 
 /**
@@ -119,21 +119,21 @@ function compactSparseArrays(value: unknown): unknown {
  * plain key equal to one of those names.
  */
 export function reconstructFlattenedKeys(
-  args: Record<string, unknown>,
-  shouldSplit: (key: string) => boolean,
+	args: Record<string, unknown>,
+	shouldSplit: (key: string) => boolean,
 ): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(args)) {
-    const segments = shouldSplit(key) ? parseFlattenedKeyPath(key) : undefined;
-    if (!segments) {
-      // Plain passthrough — but never assign a literal prototype-polluting key.
-      if (!UNSAFE_KEY_SEGMENTS.has(key)) result[key] = value;
-      continue;
-    }
-    if (segments.some(isUnsafeSegment)) continue; // drop a polluting path entirely
-    assignFlattenedKeyPath(result, segments, value);
-  }
-  return compactSparseArrays(result) as Record<string, unknown>;
+	const result: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(args)) {
+		const segments = shouldSplit(key) ? parseFlattenedKeyPath(key) : undefined;
+		if (!segments) {
+			// Plain passthrough — but never assign a literal prototype-polluting key.
+			if (!UNSAFE_KEY_SEGMENTS.has(key)) result[key] = value;
+			continue;
+		}
+		if (segments.some(isUnsafeSegment)) continue; // drop a polluting path entirely
+		assignFlattenedKeyPath(result, segments, value);
+	}
+	return compactSparseArrays(result) as Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------------------
@@ -155,51 +155,51 @@ export function reconstructFlattenedKeys(
 type JsonRecord = Record<string, unknown>;
 
 function isPlainObject(value: unknown): value is JsonRecord {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** A flattened key contains a bracket index like `foo[0]`. */
 function hasBracketIndex(key: string): boolean {
-  return /\[\d+\]/.test(key);
+	return /\[\d+\]/.test(key);
 }
 
 /** A schema node that holds a nested object/array (so dotted keys are real paths). */
 function isContainerSchema(schema: unknown): boolean {
-  if (!isPlainObject(schema)) return false;
-  if (schema.type === "object" || schema.type === "array") return true;
-  if ("properties" in schema || "items" in schema) return true;
-  const union = schema.anyOf ?? schema.oneOf;
-  if (Array.isArray(union)) return union.some((branch) => isContainerSchema(branch));
-  return false;
+	if (!isPlainObject(schema)) return false;
+	if (schema.type === "object" || schema.type === "array") return true;
+	if ("properties" in schema || "items" in schema) return true;
+	const union = schema.anyOf ?? schema.oneOf;
+	if (Array.isArray(union)) return union.some((branch) => isContainerSchema(branch));
+	return false;
 }
 
 /** Exact top-level `schema.properties` names (literal property keys). */
 function literalPropertyNames(schema: unknown): Set<string> {
-  const names = new Set<string>();
-  if (!isPlainObject(schema)) return names;
-  const properties = schema.properties;
-  if (!isPlainObject(properties)) return names;
-  for (const name of Object.keys(properties)) names.add(name);
-  return names;
+	const names = new Set<string>();
+	if (!isPlainObject(schema)) return names;
+	const properties = schema.properties;
+	if (!isPlainObject(properties)) return names;
+	for (const name of Object.keys(properties)) names.add(name);
+	return names;
 }
 
 /** Top-level property names whose schema is an object/array container. */
 function containerPropertyNames(schema: unknown): Set<string> {
-  const names = new Set<string>();
-  if (!isPlainObject(schema)) return names;
-  const properties = schema.properties;
-  if (!isPlainObject(properties)) return names;
-  for (const [name, sub] of Object.entries(properties)) {
-    if (isContainerSchema(sub)) names.add(name);
-  }
-  return names;
+	const names = new Set<string>();
+	if (!isPlainObject(schema)) return names;
+	const properties = schema.properties;
+	if (!isPlainObject(properties)) return names;
+	for (const [name, sub] of Object.entries(properties)) {
+		if (isContainerSchema(sub)) names.add(name);
+	}
+	return names;
 }
 
 /** Whether `key` is a pure dotted path (`parent.child`) headed by a container prop. */
 function isDottedContainerKey(key: string, containers: Set<string>): boolean {
-  const dot = key.indexOf(".");
-  if (dot <= 0) return false;
-  return containers.has(key.slice(0, dot));
+	const dot = key.indexOf(".");
+	if (dot <= 0) return false;
+	return containers.has(key.slice(0, dot));
 }
 
 /**
@@ -218,9 +218,9 @@ function isDottedContainerKey(key: string, containers: Set<string>): boolean {
  *   verbatim even when a sibling like `ids[0]` is reconstructed.
  */
 function shouldSplitKey(key: string, containers: Set<string>, literals: Set<string>): boolean {
-  if (hasBracketIndex(key)) return true;
-  if (literals.has(key)) return false; // explicit literal property wins
-  return isDottedContainerKey(key, containers);
+	if (hasBracketIndex(key)) return true;
+	if (literals.has(key)) return false; // explicit literal property wins
+	return isDottedContainerKey(key, containers);
 }
 
 /**
@@ -240,19 +240,14 @@ function shouldSplitKey(key: string, containers: Set<string>, literals: Set<stri
  * reconstruct. Prototype-pollution safety is delegated to
  * {@link reconstructFlattenedKeys}.
  */
-export function unflattenArgumentsWithSchema(
-  args: Record<string, unknown>,
-  schema?: unknown,
-): Record<string, unknown> {
-  const keys = Object.keys(args);
-  const literals = literalPropertyNames(schema);
-  const containers = containerPropertyNames(schema);
-  const hasBracket = keys.some((key) => hasBracketIndex(key));
-  // A dotted key needs splitting only if it is not a literal property AND its
-  // head is a schema container. Literal dotted properties are always preserved.
-  const hasSplittableDotted = keys.some(
-    (key) => !literals.has(key) && isDottedContainerKey(key, containers),
-  );
-  if (!hasBracket && !hasSplittableDotted) return args;
-  return reconstructFlattenedKeys(args, (key) => shouldSplitKey(key, containers, literals));
+export function unflattenArgumentsWithSchema(args: Record<string, unknown>, schema?: unknown): Record<string, unknown> {
+	const keys = Object.keys(args);
+	const literals = literalPropertyNames(schema);
+	const containers = containerPropertyNames(schema);
+	const hasBracket = keys.some((key) => hasBracketIndex(key));
+	// A dotted key needs splitting only if it is not a literal property AND its
+	// head is a schema container. Literal dotted properties are always preserved.
+	const hasSplittableDotted = keys.some((key) => !literals.has(key) && isDottedContainerKey(key, containers));
+	if (!hasBracket && !hasSplittableDotted) return args;
+	return reconstructFlattenedKeys(args, (key) => shouldSplitKey(key, containers, literals));
 }

@@ -133,7 +133,6 @@ describe("AgentSession retry", () => {
 		return { session, getCallCount: () => callCount };
 	}
 
-
 	async function createSessionWithStream(streamFn: StreamFn): Promise<AgentSession> {
 		const model = getModel("anthropic", "claude-sonnet-4-5")!;
 		const agent = new Agent({
@@ -402,42 +401,62 @@ describe("AgentSession retry", () => {
 	it("retries structured safety-trigger errors for all providers", async () => {
 		const created = await createSession({ failCount: 0 });
 		const probe = created.session as unknown as { _isRetryableError(message: AssistantMessage): boolean };
-		expect(probe._isRetryableError(createAssistantMessage("", {
-			stopReason: "error",
-			errorMessage: "Provider finish_reason: content_filter",
-		}))).toBe(true);
-		expect(probe._isRetryableError(createAssistantMessage("", {
-			stopReason: "error",
-			errorMessage: "Provider finish_reason: content_filter",
-			provider: "github-copilot",
-			api: "openai-completions",
-			model: "gemini-3.1-pro-preview",
-		}))).toBe(true);
-		expect(probe._isRetryableError(createAssistantMessage("", {
-			stopReason: "error",
-			errorMessage: "The model refused to complete the request",
-		}))).toBe(true);
-		expect(probe._isRetryableError(createAssistantMessage("", {
-			stopReason: "error",
-			errorMessage: "Invalid request: unknown parameter",
-		}))).toBe(false);
+		expect(
+			probe._isRetryableError(
+				createAssistantMessage("", {
+					stopReason: "error",
+					errorMessage: "Provider finish_reason: content_filter",
+				}),
+			),
+		).toBe(true);
+		expect(
+			probe._isRetryableError(
+				createAssistantMessage("", {
+					stopReason: "error",
+					errorMessage: "Provider finish_reason: content_filter",
+					provider: "github-copilot",
+					api: "openai-completions",
+					model: "gemini-3.1-pro-preview",
+				}),
+			),
+		).toBe(true);
+		expect(
+			probe._isRetryableError(
+				createAssistantMessage("", {
+					stopReason: "error",
+					errorMessage: "The model refused to complete the request",
+				}),
+			),
+		).toBe(true);
+		expect(
+			probe._isRetryableError(
+				createAssistantMessage("", {
+					stopReason: "error",
+					errorMessage: "Invalid request: unknown parameter",
+				}),
+			),
+		).toBe(false);
 	});
 
 	it("does not classify a reasoning-only turn with output tokens as empty", async () => {
 		const created = await createSession({ failCount: 0 });
 		const probe = created.session as unknown as { _isEmptyCompletion(message: AssistantMessage): boolean };
 		expect(probe._isEmptyCompletion(createAssistantMessage("", { content: [], stopReason: "stop" }))).toBe(true);
-		expect(probe._isEmptyCompletion(createAssistantMessage("", {
-			content: [],
-			stopReason: "stop",
-			usage: {
-				input: 10,
-				output: 5,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 15,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-		}))).toBe(false);
+		expect(
+			probe._isEmptyCompletion(
+				createAssistantMessage("", {
+					content: [],
+					stopReason: "stop",
+					usage: {
+						input: 10,
+						output: 5,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 15,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+				}),
+			),
+		).toBe(false);
 	});
 });

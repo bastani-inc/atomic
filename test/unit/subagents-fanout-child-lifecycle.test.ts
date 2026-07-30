@@ -1,14 +1,14 @@
-import { afterEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@bastani/atomic";
+import { afterEach, describe, test } from "vitest";
 import registerFanoutChildSubagentExtension from "../../packages/subagents/src/extension/fanout-child.js";
 import {
 	createNestedRoute,
+	type NestedRoute,
 	readNestedControlResults,
 	writeNestedControlRequest,
-	type NestedRoute,
 } from "../../packages/subagents/src/runs/shared/nested-events.js";
 import {
 	SUBAGENT_CHILD_ENV,

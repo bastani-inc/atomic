@@ -404,5 +404,4 @@ describe("DefaultPackageManager", () => {
 			expect(parsed2.ref).toBe("feature/branch");
 		});
 	});
-
 });

@@ -1,9 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { spawnSync } from "node:child_process";
+import { describe, expect, it } from "vitest";
 import { createRepositoryFixtureDir } from "./lazy-tool-fixtures.js";
 
 const repoRoot = resolve(__dirname, "../../../../..");
@@ -64,8 +64,13 @@ function assertWebAccessRetriesRejectedInitializer(): void {
 		writeFileSync(join(tempDir, "package.json"), JSON.stringify({ type: "module" }));
 		writeFileSync(join(tempDir, "index.ts"), readRepoFile("packages/web-access/index.ts"));
 		writeFileSync(join(tempDir, "lifecycle-lease.ts"), readRepoFile("packages/web-access/lifecycle-lease.ts"));
-		writeFileSync(join(tempDir, "result-renderers.ts"), "export function renderWebAccessToolResult() { return undefined; }\n");
-		writeFileSync(join(tempDir, "index-heavy.ts"), `
+		writeFileSync(
+			join(tempDir, "result-renderers.ts"),
+			"export function renderWebAccessToolResult() { return undefined; }\n",
+		);
+		writeFileSync(
+			join(tempDir, "index-heavy.ts"),
+			`
 let attempts = 0;
 export default async function webAccessHeavy(pi) {
 	attempts += 1;
@@ -74,7 +79,8 @@ export default async function webAccessHeavy(pi) {
 	pi.registerTool({ name: "web_search", execute: async () => ({ tool: "search", attempts }) });
 	pi.registerTool({ name: "fetch_content", execute: async () => ({ tool: "fetch", attempts }) });
 }
-`);
+`,
+		);
 		const extensionUrl = pathToFileURL(join(tempDir, "index.ts")).href;
 		const script = `
 const { default: webAccess } = await import(${JSON.stringify(extensionUrl)});
@@ -110,8 +116,10 @@ console.log(JSON.stringify(result));
 			timeout: subprocessTimeoutMs,
 		});
 		expect(result.status, result.stderr || result.stdout).toBe(0);
-		expect(JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1) ?? "{}"))
-			.toEqual([{ tool: "search", attempts: 2 }, { tool: "fetch", attempts: 2 }]);
+		expect(JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1) ?? "{}")).toEqual([
+			{ tool: "search", attempts: 2 },
+			{ tool: "fetch", attempts: 2 },
+		]);
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
 	}
@@ -122,16 +130,23 @@ function assertMcpColdStartupTools(options: { withCache: boolean; expectedTools:
 	const agentDir = join(tempDir, "agent");
 	try {
 		mkdirSync(agentDir, { recursive: true });
-		writeFileSync(join(agentDir, "mcp.json"), JSON.stringify({
-			settings: { disableProxyTool: true },
-			mcpServers: {
-				demo: {
-					command: "bun",
-					args: ["--version"],
-					directTools: true,
+		writeFileSync(
+			join(agentDir, "mcp.json"),
+			JSON.stringify(
+				{
+					settings: { disableProxyTool: true },
+					mcpServers: {
+						demo: {
+							command: "bun",
+							args: ["--version"],
+							directTools: true,
+						},
+					},
 				},
-			},
-		}, null, 2));
+				null,
+				2,
+			),
+		);
 
 		const mcpUrl = pathToFileURL(resolve(repoRoot, "packages/mcp/index.ts")).href;
 		const metadataUrl = pathToFileURL(resolve(repoRoot, "packages/mcp/metadata-cache.ts")).href;
@@ -220,9 +235,13 @@ describe("regression #1223 lazy built-in startup imports", () => {
 		expect(source).toContain('pi.on("session_tree"');
 		expect(source).toContain('pi.on("session_shutdown"');
 		expect(source).toContain('prop === "registerShortcut"');
-		expect(source).toContain('pi.registerShortcut(shortcut');
-		expect(source).toContain('renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "web_search", args)');
-		expect(source).not.toContain('prop === "registerShortcut" || prop === "on" || prop === "registerMessageRenderer"');
+		expect(source).toContain("pi.registerShortcut(shortcut");
+		expect(source).toContain(
+			'renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "web_search", args)',
+		);
+		expect(source).not.toContain(
+			'prop === "registerShortcut" || prop === "on" || prop === "registerMessageRenderer"',
+		);
 	});
 
 	it("does not statically import heavy intercom broker or overlay modules from the registration surface", () => {
@@ -242,10 +261,12 @@ describe("regression #1223 lazy built-in startup imports", () => {
 		expect(source).toContain('"model_select"');
 		expect(proxySource).toContain('prop === "registerShortcut"');
 		expect(source).toContain('pi.registerShortcut("alt+m"');
-		expect(source).toContain('SUBAGENT_CONTROL_INTERCOM_EVENT');
-		expect(source).toContain('dispatchEventHandlers(handle.heavy, eventName, payload)');
-		expect(source).toContain('renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "intercom", args)');
-		expect(proxySource).not.toContain('return () => undefined');
+		expect(source).toContain("SUBAGENT_CONTROL_INTERCOM_EVENT");
+		expect(source).toContain("dispatchEventHandlers(handle.heavy, eventName, payload)");
+		expect(source).toContain(
+			'renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "intercom", args)',
+		);
+		expect(proxySource).not.toContain("return () => undefined");
 	});
 
 	it("executes cold registration without importing heavy provider modules", () => {
@@ -258,8 +279,8 @@ describe("regression #1223 lazy built-in startup imports", () => {
 		expect(textBeforeLoadHeavy(intercomSource)).not.toContain('import("./index-heavy.js")');
 		expect(webSource).not.toMatch(/void\s+loadHeavy\(/);
 		expect(intercomSource).not.toMatch(/void\s+import\(["']\.\/index-heavy\.js["']\)/);
-		expect(webSource).toContain('handler: async (ctx) => {\n\t\t\t\tconst handle = await loadHeavy();');
-		expect(intercomSource).toContain('handler: async (ctx) => {\n\t\t\tconst handle = await loadHeavy(ctx);');
+		expect(webSource).toContain("handler: async (ctx) => {\n\t\t\t\tconst handle = await loadHeavy();");
+		expect(intercomSource).toContain("handler: async (ctx) => {\n\t\t\tconst handle = await loadHeavy(ctx);");
 
 		assertColdRegistrationDoesNotImportHeavy("packages/web-access/index.ts");
 		assertColdRegistrationDoesNotImportHeavy("packages/intercom/index.ts");

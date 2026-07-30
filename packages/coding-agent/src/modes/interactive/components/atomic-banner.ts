@@ -44,19 +44,17 @@ function noColorRequested(): boolean {
 	return process.env.NO_COLOR !== undefined;
 }
 
-export function renderAtomicAssemblyBanner(
-	gap: number,
-	activeTheme: Theme,
-	thinkingLevel: ThinkingLevel,
-): string[] {
+export function renderAtomicAssemblyBanner(gap: number, activeTheme: Theme, thinkingLevel: ThinkingLevel): string[] {
 	const colorize = activeTheme.getThinkingBorderColor(thinkingLevel);
 	const solid = (text: string) => activeTheme.bold(noColorRequested() ? text : colorize(text));
 	if (gap <= 0) {
-		return shadowGrid().map((line) => [...line].map((char) =>
-			char === SHADOW_CHAR
-				? (noColorRequested() ? char : activeTheme.fg("dim", char))
-				: solid(char),
-		).join(""));
+		return shadowGrid().map((line) =>
+			[...line]
+				.map((char) =>
+					char === SHADOW_CHAR ? (noColorRequested() ? char : activeTheme.fg("dim", char)) : solid(char),
+				)
+				.join(""),
+		);
 	}
 	const width = ATOMIC_FORALL_BANNER_LINES[0]!.length;
 	return [
@@ -73,10 +71,7 @@ export function renderAtomicAssemblyBanner(
 	];
 }
 
-export function renderAtomicAnsiBanner(
-	activeTheme: Theme,
-	thinkingLevel: ThinkingLevel,
-): string[] {
+export function renderAtomicAnsiBanner(activeTheme: Theme, thinkingLevel: ThinkingLevel): string[] {
 	return renderAtomicAssemblyBanner(0, activeTheme, thinkingLevel);
 }
 
@@ -101,10 +96,12 @@ export function composeStartupIdentity(
 	const asideWidth = Math.max(0, ...metaLines.map(visibleWidth), ...manifestoLines.map(visibleWidth));
 	const wide = maxWidth === undefined || (maxWidth >= 80 && maxWidth >= markWidth + 2 + asideWidth);
 	if (wide) {
-		return markLines.map((line, index) => {
-			const aside = index < 3 ? metaLines[index] : index >= 4 && index < 7 ? manifestoLines[index - 4] : "";
-			return `${line}${aside ? `  ${aside}` : ""}`.trimEnd();
-		}).join("\n");
+		return markLines
+			.map((line, index) => {
+				const aside = index < 3 ? metaLines[index] : index >= 4 && index < 7 ? manifestoLines[index - 4] : "";
+				return `${line}${aside ? `  ${aside}` : ""}`.trimEnd();
+			})
+			.join("\n");
 	}
 	const stacked = [...metaLines];
 	if (manifestoLines.length > 0) stacked.push("", ...manifestoLines);

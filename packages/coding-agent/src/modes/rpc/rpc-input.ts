@@ -1,8 +1,8 @@
 import { waitForRawStdoutBackpressure } from "../../core/output-guard.ts";
 import type { RpcCommandHandler } from "./rpc-command-handler.ts";
 import type { RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
-import { createRpcErrorResponse, formatRpcErrorMessage, type RpcOutput } from "./rpc-responses.ts";
 import { isRpcExtensionUIResponse } from "./rpc-input-scheduler.ts";
+import { createRpcErrorResponse, formatRpcErrorMessage, type RpcOutput } from "./rpc-responses.ts";
 import type { RpcCommand } from "./rpc-types.ts";
 
 interface RpcInputLineHandlerOptions {
@@ -40,7 +40,9 @@ export function createRpcInputLineHandler({
 		try {
 			parsed = JSON.parse(line);
 		} catch (parseError: unknown) {
-			output(createRpcErrorResponse(undefined, "parse", `Failed to parse command: ${formatRpcErrorMessage(parseError)}`));
+			output(
+				createRpcErrorResponse(undefined, "parse", `Failed to parse command: ${formatRpcErrorMessage(parseError)}`),
+			);
 			await waitForRawStdoutBackpressure();
 			return;
 		}

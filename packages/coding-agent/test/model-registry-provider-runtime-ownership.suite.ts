@@ -29,12 +29,16 @@ describeModelRegistry((context) => {
 				first.registerProvider("registry-isolation", {
 					api,
 					oauth: oauth("first"),
-					streamSimple: () => { throw new Error("first"); },
+					streamSimple: () => {
+						throw new Error("first");
+					},
 				});
 				second.registerProvider("registry-isolation", {
 					api,
 					oauth: oauth("second"),
-					streamSimple: () => { throw new Error("second"); },
+					streamSimple: () => {
+						throw new Error("second");
+					},
 				});
 				const secondApi = getApiProvider(api);
 				await getModelRuntime(first).refresh({ allowNetwork: false });
@@ -49,18 +53,21 @@ describeModelRegistry((context) => {
 				expect(getApiProvider(api)).toBeUndefined();
 			});
 
-
 			test("pi scopes extension streams to each runtime instead of stacking global API owners", async () => {
 				const first = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 				const second = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 				const api = "registry-fallback-api" as Api;
 				first.registerProvider("registry-first", {
 					api,
-					streamSimple: () => { throw new Error("first-owner"); },
+					streamSimple: () => {
+						throw new Error("first-owner");
+					},
 				});
 				second.registerProvider("registry-second", {
 					api,
-					streamSimple: () => { throw new Error("second-owner"); },
+					streamSimple: () => {
+						throw new Error("second-owner");
+					},
 				});
 
 				second.unregisterProvider("registry-second");
@@ -72,19 +79,30 @@ describeModelRegistry((context) => {
 			test("unregistering an Atomic override restores an external API owner", async () => {
 				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 				const api = "external-fallback-api" as Api;
-				registerApiProvider({
-					api,
-					stream: () => { throw new Error("external-owner"); },
-					streamSimple: () => { throw new Error("external-owner"); },
-				}, "external-owner");
+				registerApiProvider(
+					{
+						api,
+						stream: () => {
+							throw new Error("external-owner");
+						},
+						streamSimple: () => {
+							throw new Error("external-owner");
+						},
+					},
+					"external-owner",
+				);
 				registry.registerProvider("atomic-override", {
 					api,
-					streamSimple: () => { throw new Error("atomic-owner"); },
+					streamSimple: () => {
+						throw new Error("atomic-owner");
+					},
 				});
 
 				registry.unregisterProvider("atomic-override");
 
-				expect(() => getApiProvider(api)?.streamSimple({ ...openAiModel, api }, emptyContext)).toThrow("external-owner");
+				expect(() => getApiProvider(api)?.streamSimple({ ...openAiModel, api }, emptyContext)).toThrow(
+					"external-owner",
+				);
 				unregisterApiProviders(`atomic:restored-api:${api}`);
 				unregisterApiProviders("external-owner");
 			});
@@ -93,16 +111,27 @@ describeModelRegistry((context) => {
 				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 				const externalSource = "active-openai-override";
 				let customDispatches = 0;
-				registerApiProvider({
-					api: "openai-completions",
-					stream: () => { customDispatches += 1; throw new Error("active-override"); },
-					streamSimple: () => { customDispatches += 1; throw new Error("active-override"); },
-				}, externalSource);
+				registerApiProvider(
+					{
+						api: "openai-completions",
+						stream: () => {
+							customDispatches += 1;
+							throw new Error("active-override");
+						},
+						streamSimple: () => {
+							customDispatches += 1;
+							throw new Error("active-override");
+						},
+					},
+					externalSource,
+				);
 				const unrelatedApi = "unrelated-runtime-api" as Api;
 				try {
 					registry.registerProvider("unrelated-runtime", {
 						api: unrelatedApi,
-						streamSimple: () => { throw new Error("unrelated"); },
+						streamSimple: () => {
+							throw new Error("unrelated");
+						},
 					});
 					registry.unregisterProvider("unrelated-runtime");
 

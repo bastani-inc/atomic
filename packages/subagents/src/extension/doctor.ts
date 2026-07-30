@@ -1,16 +1,16 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { discoverAgentsAll, type AgentSource } from "../agents/agents.ts";
-import { isAsyncAvailable } from "../runs/background/async-execution.ts";
-import { diagnoseIntercomBridge, type IntercomBridgeDiagnostic } from "../intercom/intercom-bridge.ts";
+import { type AgentSource, discoverAgentsAll } from "../agents/agents.ts";
 import { discoverAvailableSkills, type SkillSource } from "../agents/skills.ts";
+import { diagnoseIntercomBridge, type IntercomBridgeDiagnostic } from "../intercom/intercom-bridge.ts";
+import { isAsyncAvailable } from "../runs/background/async-execution.ts";
 import {
 	ASYNC_DIR,
 	CHAIN_RUNS_DIR,
-	RESULTS_DIR,
-	TEMP_ROOT_DIR,
 	type ExtensionConfig,
+	RESULTS_DIR,
 	type SubagentState,
+	TEMP_ROOT_DIR,
 } from "../shared/types.ts";
 
 interface DoctorPaths {
@@ -98,9 +98,7 @@ function formatSkillSourceCounts(skills: Array<{ source: SkillSource }>): string
 		"builtin",
 		"unknown",
 	];
-	const parts = ordered
-		.map((source) => `${source} ${counts.get(source) ?? 0}`)
-		.filter((part) => !part.endsWith(" 0"));
+	const parts = ordered.map((source) => `${source} ${counts.get(source) ?? 0}`).filter((part) => !part.endsWith(" 0"));
 	return parts.length > 0 ? parts.join(", ") : "none";
 }
 
@@ -135,10 +133,13 @@ function formatDiscovery(input: DoctorReportInput, deps: DoctorDeps): string[] {
 				user: discovered.user.length,
 				project: discovered.project.length,
 			};
-			const chainCounts = discovered.chains.reduce<Record<AgentSource, number>>((counts, chain) => {
-				counts[chain.source] += 1;
-				return counts;
-			}, { builtin: 0, user: 0, project: 0 });
+			const chainCounts = discovered.chains.reduce<Record<AgentSource, number>>(
+				(counts, chain) => {
+					counts[chain.source] += 1;
+					return counts;
+				},
+				{ builtin: 0, user: 0, project: 0 },
+			);
 			return [
 				`- agents: total ${agentCounts.builtin + agentCounts.user + agentCounts.project} (${formatSourceCounts(agentCounts)})`,
 				`- chains: total ${discovered.chains.length} (${formatSourceCounts(chainCounts)})`,
@@ -151,7 +152,10 @@ function formatDiscovery(input: DoctorReportInput, deps: DoctorDeps): string[] {
 	];
 }
 
-function formatIntercomDiagnostic(diagnostic: IntercomBridgeDiagnostic, context: "fresh" | "fork" | undefined): string[] {
+function formatIntercomDiagnostic(
+	diagnostic: IntercomBridgeDiagnostic,
+	context: "fresh" | "fork" | undefined,
+): string[] {
 	const lines = [
 		`- bridge: ${diagnostic.active ? "active" : "inactive"}${diagnostic.reason ? ` (${diagnostic.reason})` : ""}`,
 		`- mode: ${diagnostic.mode}; context: ${context ?? "unspecified"}`,
@@ -159,7 +163,9 @@ function formatIntercomDiagnostic(diagnostic: IntercomBridgeDiagnostic, context:
 		`- pi-intercom: ${diagnostic.piIntercomAvailable ? "available" : "unavailable"} at ${diagnostic.extensionDir}`,
 	];
 	if (diagnostic.configPath && diagnostic.intercomConfigEnabled !== undefined) {
-		lines.push(`- intercom config: ${diagnostic.intercomConfigEnabled === false ? "disabled" : "enabled or absent"} (${diagnostic.configPath})`);
+		lines.push(
+			`- intercom config: ${diagnostic.intercomConfigEnabled === false ? "disabled" : "enabled or absent"} (${diagnostic.configPath})`,
+		);
 	}
 	if (diagnostic.intercomConfigError) {
 		lines.push(`- intercom config warning: ${diagnostic.intercomConfigError}; runtime assumes enabled`);
@@ -188,12 +194,17 @@ export function buildDoctorReport(input: DoctorReportInput): string {
 		...formatDiscovery(input, deps),
 		"",
 		"Intercom bridge",
-		...lineFromCheck("intercom bridge", () => formatIntercomDiagnostic(deps.diagnoseIntercomBridge({
-			config: input.config.intercomBridge,
-			context: input.context,
-			orchestratorTarget: input.orchestratorTarget,
-			cwd: input.cwd,
-		}), input.context).join("\n")).split("\n"),
+		...lineFromCheck("intercom bridge", () =>
+			formatIntercomDiagnostic(
+				deps.diagnoseIntercomBridge({
+					config: input.config.intercomBridge,
+					context: input.context,
+					orchestratorTarget: input.orchestratorTarget,
+					cwd: input.cwd,
+				}),
+				input.context,
+			).join("\n"),
+		).split("\n"),
 	];
 	return lines.join("\n");
 }

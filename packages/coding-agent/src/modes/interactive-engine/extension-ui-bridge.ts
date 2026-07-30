@@ -1,15 +1,20 @@
-import { matchesKey, type KeyId } from "@earendil-works/pi-tui";
+import { type KeyId, matchesKey } from "@earendil-works/pi-tui";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
-import type { KeybindingsManager } from "../../core/keybindings.ts";
 import type { ExtensionUIContext } from "../../core/extensions/index.ts";
+import type { KeybindingsManager } from "../../core/keybindings.ts";
+import type {
+	RpcAutocompleteItem,
+	RpcExtensionUIRequest,
+	RpcExtensionUIResponse,
+	RpcSlashCommand,
+} from "../rpc/rpc-types.ts";
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
-import type { EngineExtensionShortcut, EngineKeybindingState, InteractiveEngineMessage } from "./protocol.ts";
-import { IsolatedInteractiveRuntime } from "./isolated-runtime.ts";
-import { RemoteComponentController } from "./remote-component.ts";
 import { InputFormHostController } from "./input-form-host.ts";
+import { IsolatedInteractiveRuntime } from "./isolated-runtime.ts";
+import type { EngineExtensionShortcut, EngineKeybindingState, InteractiveEngineMessage } from "./protocol.ts";
+import { RemoteComponentController } from "./remote-component.ts";
 import { SessionPickerHostController } from "./session-picker-host.ts";
-import type { RpcAutocompleteItem, RpcExtensionUIRequest, RpcExtensionUIResponse, RpcSlashCommand } from "../rpc/rpc-types.ts";
 
 async function handleRequest(
 	ui: ExtensionUIContext,
@@ -90,8 +95,11 @@ export function attachInteractiveEngineHost(
 	const dispatchShortcut = (data: string): boolean => {
 		const shortcut = shortcuts.find(({ key }) => matchesKey(data, key as KeyId));
 		if (!shortcut) return false;
-		void runtime.invokeRemoteShortcut(shortcut.key).catch((error: Error) =>
-			onDiagnostic({ activity: undefined, elapsedMs: 0, level: "unresponsive", message: error.message }));
+		void runtime
+			.invokeRemoteShortcut(shortcut.key)
+			.catch((error: Error) =>
+				onDiagnostic({ activity: undefined, elapsedMs: 0, level: "unresponsive", message: error.message }),
+			);
 		return true;
 	};
 	let disposeShortcutHandler: (() => void) | undefined;
@@ -108,8 +116,8 @@ export function attachInteractiveEngineHost(
 	const disposeKeybindings = keybindings
 		? attachInteractiveEngineKeybindingSync(runtime, keybindings, applyState)
 		: runtime.onEngineMessage((message) => {
-			if (message.type === "engine_keybindings_reloaded") applyState(message.state);
-		});
+				if (message.type === "engine_keybindings_reloaded") applyState(message.state);
+			});
 	const remoteComponents = new RemoteComponentController(runtime, ui);
 	const sessionPicker = new SessionPickerHostController(runtime, ui);
 	const inputForm = new InputFormHostController(runtime, ui);

@@ -2,8 +2,8 @@
  * Result, progress, and core subagent public types.
  */
 
-import type { Message } from "@earendil-works/pi-ai/compat";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { Message } from "@earendil-works/pi-ai/compat";
 import type { NestedRunAddress, NestedRunSummary, NestedStepSummary } from "./types-async.ts";
 
 export interface MaxOutputConfig {
@@ -140,14 +140,57 @@ export type SubagentRunMode = "single" | "parallel" | "chain";
 
 export type PublicNestedStepSummary = Pick<
 	NestedStepSummary,
-	"agent" | "status" | "sessionFile" | "activityState" | "lastActivityAt" | "currentTool" | "currentToolStartedAt" | "currentPath" | "turnCount" | "toolCount" | "startedAt" | "endedAt" | "error"
+	| "agent"
+	| "status"
+	| "sessionFile"
+	| "activityState"
+	| "lastActivityAt"
+	| "currentTool"
+	| "currentToolStartedAt"
+	| "currentPath"
+	| "turnCount"
+	| "toolCount"
+	| "startedAt"
+	| "endedAt"
+	| "error"
 > & {
 	children?: PublicNestedRunSummary[];
 };
 
 export type PublicNestedRunSummary = Pick<
 	NestedRunSummary,
-	"id" | "parentRunId" | "parentStepIndex" | "parentAgent" | "depth" | "path" | "asyncDir" | "sessionId" | "sessionFile" | "intercomTarget" | "ownerIntercomTarget" | "leafIntercomTarget" | "ownerState" | "mode" | "state" | "agent" | "agents" | "currentStep" | "chainStepCount" | "parallelGroups" | "activityState" | "lastActivityAt" | "currentTool" | "currentToolStartedAt" | "currentPath" | "turnCount" | "toolCount" | "totalTokens" | "startedAt" | "endedAt" | "lastUpdate" | "error"
+	| "id"
+	| "parentRunId"
+	| "parentStepIndex"
+	| "parentAgent"
+	| "depth"
+	| "path"
+	| "asyncDir"
+	| "sessionId"
+	| "sessionFile"
+	| "intercomTarget"
+	| "ownerIntercomTarget"
+	| "leafIntercomTarget"
+	| "ownerState"
+	| "mode"
+	| "state"
+	| "agent"
+	| "agents"
+	| "currentStep"
+	| "chainStepCount"
+	| "parallelGroups"
+	| "activityState"
+	| "lastActivityAt"
+	| "currentTool"
+	| "currentToolStartedAt"
+	| "currentPath"
+	| "turnCount"
+	| "toolCount"
+	| "totalTokens"
+	| "startedAt"
+	| "endedAt"
+	| "lastUpdate"
+	| "error"
 > & {
 	steps?: PublicNestedStepSummary[];
 	children?: PublicNestedRunSummary[];
@@ -287,9 +330,9 @@ export interface Details {
 		artifactPath?: string;
 	};
 	// Chain metadata for observability
-	chainAgents?: string[];      // Agent names in order, e.g., ["scout", "planner"]
-	totalSteps?: number;         // Total steps in chain
-	currentStepIndex?: number;   // 0-indexed current step (for running chains)
+	chainAgents?: string[]; // Agent names in order, e.g., ["scout", "planner"]
+	totalSteps?: number; // Total steps in chain
+	currentStepIndex?: number; // 0-indexed current step (for running chains)
 	workflowGraph?: WorkflowGraphSnapshot;
 	outputs?: ChainOutputMap;
 }

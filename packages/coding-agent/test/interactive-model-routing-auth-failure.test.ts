@@ -17,14 +17,16 @@ describe("Anthropic subscription warning auth failures", () => {
 			showWarning: vi.fn(),
 		};
 
-		const maybeWarn = (InteractiveMode as never as {
-			prototype: {
-				maybeWarnAboutAnthropicSubscriptionAuth: (
-					this: typeof fakeThis,
-					model: { provider: string },
-				) => Promise<void>;
-			};
-		}).prototype.maybeWarnAboutAnthropicSubscriptionAuth;
+		const maybeWarn = (
+			InteractiveMode as never as {
+				prototype: {
+					maybeWarnAboutAnthropicSubscriptionAuth: (
+						this: typeof fakeThis,
+						model: { provider: string },
+					) => Promise<void>;
+				};
+			}
+		).prototype.maybeWarnAboutAnthropicSubscriptionAuth;
 		await expect(maybeWarn.call(fakeThis, { provider: "anthropic" })).resolves.toBeUndefined();
 
 		expect(fakeThis.session.modelRuntime.getAuth).toHaveBeenCalledTimes(1);

@@ -84,66 +84,69 @@ export function mountHostSessionPicker(
 	// the loader's resolution and the selector's write must re-assert itself
 	// BEHIND that write (continuations registered later run later).
 	let activeLoad: Promise<SessionInfo[]> | undefined;
-	void ui.custom<undefined>(
-		(_tui, _theme, _keybindings, done) => {
-			const settle = (notify: () => void): void => {
-				if (!record || record.settled) return;
-				record.settled = true;
-				notify();
-				done(undefined);
-			};
-			// Defer the row read by one microtask so the load resolves with the
-			// rows current at resolution time, not at invocation time.
-			const loadRows = (): Promise<SessionInfo[]> => {
-				const load = Promise.resolve().then(() => [...currentRows]);
-				activeLoad = load;
-				return load;
-			};
-			const selector = new SessionSelectorComponent(
-				loadRows,
-				loadRows,
-				(path) => settle(() => delegate.onSelect(path)),
-				() => settle(() => delegate.onCancel()),
-				() => settle(() => delegate.onCancel()),
-				() => ui.requestRender(),
-				{ showRenameHint, initialSessions: [...currentRows] },
-			);
-			// Owner-owned deletion: forward the confirmed request and keep the
-			// row until the owner replies with setRows (or showError).
-			selector.getSessionList().onDeleteSession = async (path) => {
-				delegate.onDelete(path);
-			};
-			selector.focused = true;
-			record = { selector, done, settled: false };
-			if (closedBeforeMount) {
-				record.settled = true;
-				done(undefined);
-			} else {
-				for (const message of pendingErrors.splice(0)) {
-					selector.getSessionList().onError?.(message);
+	void ui
+		.custom<undefined>(
+			(_tui, _theme, _keybindings, done) => {
+				const settle = (notify: () => void): void => {
+					if (!record || record.settled) return;
+					record.settled = true;
+					notify();
+					done(undefined);
+				};
+				// Defer the row read by one microtask so the load resolves with the
+				// rows current at resolution time, not at invocation time.
+				const loadRows = (): Promise<SessionInfo[]> => {
+					const load = Promise.resolve().then(() => [...currentRows]);
+					activeLoad = load;
+					return load;
+				};
+				const selector = new SessionSelectorComponent(
+					loadRows,
+					loadRows,
+					(path) => settle(() => delegate.onSelect(path)),
+					() => settle(() => delegate.onCancel()),
+					() => settle(() => delegate.onCancel()),
+					() => ui.requestRender(),
+					{ showRenameHint, initialSessions: [...currentRows] },
+				);
+				// Owner-owned deletion: forward the confirmed request and keep the
+				// row until the owner replies with setRows (or showError).
+				selector.getSessionList().onDeleteSession = async (path) => {
+					delegate.onDelete(path);
+				};
+				selector.focused = true;
+				record = { selector, done, settled: false };
+				if (closedBeforeMount) {
+					record.settled = true;
+					done(undefined);
+				} else {
+					for (const message of pendingErrors.splice(0)) {
+						selector.getSessionList().onError?.(message);
+					}
 				}
+				return selector;
+			},
+			{ overlay: false },
+		)
+		.catch(() => undefined)
+		.finally(() => {
+			if (!record) {
+				// The mount never materialized (factory threw or the host rejected
+				// the custom UI). Settle the owner so a child-side picker cannot
+				// hang forever waiting for a selection that can never happen.
+				if (!closedBeforeMount) {
+					closedBeforeMount = true;
+					delegate.onCancel();
+				}
+				return;
 			}
-			return selector;
-		},
-		{ overlay: false },
-	).catch(() => undefined).finally(() => {
-		if (!record) {
-			// The mount never materialized (factory threw or the host rejected
-			// the custom UI). Settle the owner so a child-side picker cannot
-			// hang forever waiting for a selection that can never happen.
-			if (!closedBeforeMount) {
-				closedBeforeMount = true;
+			record.selector.dispose();
+			if (!record.settled) {
+				// Host-initiated teardown (abort/unmount without a selection).
+				record.settled = true;
 				delegate.onCancel();
 			}
-			return;
-		}
-		record.selector.dispose();
-		if (!record.settled) {
-			// Host-initiated teardown (abort/unmount without a selection).
-			record.settled = true;
-			delegate.onCancel();
-		}
-	});
+		});
 	return {
 		setRows: (rows) => {
 			if (closedBeforeMount || record?.settled) return;
@@ -197,7 +200,9 @@ export function openLocalHostSessionPicker(
 	request: HostSessionPickerRequest,
 ): HostSessionPickerHandle {
 	let resolveResult!: (path: string | undefined) => void;
-	const result = new Promise<string | undefined>((resolve) => { resolveResult = resolve; });
+	const result = new Promise<string | undefined>((resolve) => {
+		resolveResult = resolve;
+	});
 	let settled = false;
 	const settle = (path: string | undefined): void => {
 		if (settled) return;

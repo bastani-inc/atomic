@@ -78,9 +78,8 @@ export function substituteArgs(content: string, args: string[]): string {
 		/\$\{(\d+|ARGUMENTS|@):-([^}]{0,1024})\}|\$\{@:(\d+)(?::(\d+))?\}|\$(ARGUMENTS|@|\d+)/g,
 		(_match, defaultTarget, defaultValue, sliceStart, sliceLength, simple) => {
 			if (defaultTarget) {
-				const value = defaultTarget === "@" || defaultTarget === "ARGUMENTS"
-					? allArgs
-					: args[parseInt(defaultTarget, 10) - 1];
+				const value =
+					defaultTarget === "@" || defaultTarget === "ARGUMENTS" ? allArgs : args[parseInt(defaultTarget, 10) - 1];
 				return value ? value : defaultValue;
 			}
 

@@ -1,24 +1,41 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Container, Spacer, Text } from "@earendil-works/pi-tui";
-import { Filesystem, Patch, Patcher, type PatchSectionResult, type PreparedSection, type WriteResult } from "./hashline-engine/index.ts";
 import { constants } from "fs";
 import { access as fsAccess, readFile as fsReadFile, writeFile as fsWriteFile } from "fs/promises";
 import { type Static, Type } from "typebox";
 import { renderDiff } from "../../modes/interactive/components/diff.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
+import { nativeBlockResolver } from "./block-resolver.ts";
 import { generateDiffString, generateUnifiedPatch, normalizeToLF, stripBom } from "./edit-diff.ts";
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
-import { createHashlineSnapshotStore, formatCompactHashlineEditResult, recordHashlineSnapshot, type HashlineSnapshotStore } from "./hashline.ts";
-import { invalidateNativeSearchCache } from "./search-native.ts";
+import {
+	createHashlineSnapshotStore,
+	formatCompactHashlineEditResult,
+	type HashlineSnapshotStore,
+	recordHashlineSnapshot,
+} from "./hashline.ts";
+import {
+	Filesystem,
+	Patch,
+	Patcher,
+	type PatchSectionResult,
+	type PreparedSection,
+	type WriteResult,
+} from "./hashline-engine/index.ts";
 import { isNotebookPath, readEditableNotebookText, serializeEditedNotebookText } from "./notebook.ts";
-import { nativeBlockResolver } from "./block-resolver.ts";
 import { resolveReadPath } from "./path-utils.ts";
 import { renderToolPath } from "./render-utils.ts";
+import { invalidateNativeSearchCache } from "./search-native.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
 const editSchema = Type.Object(
-	{ input: Type.String({ description: "One or more hashline file sections. Must start with [PATH#TAG]; tag comes from the latest read, search, write, or successful edit output." }) },
+	{
+		input: Type.String({
+			description:
+				"One or more hashline file sections. Must start with [PATH#TAG]; tag comes from the latest read, search, write, or successful edit output.",
+		}),
+	},
 	{ additionalProperties: false },
 );
 
@@ -55,14 +72,21 @@ type EditToolResultLike = {
 class EditFilesystem extends Filesystem {
 	private readonly cwd: string;
 	private readonly operations: EditOperations;
-	constructor(cwd: string, operations: EditOperations) { super(); this.cwd = cwd; this.operations = operations; }
+	constructor(cwd: string, operations: EditOperations) {
+		super();
+		this.cwd = cwd;
+		this.operations = operations;
+	}
 
-	canonicalPath(path: string): string { return resolveReadPath(path, this.cwd); }
+	canonicalPath(path: string): string {
+		return resolveReadPath(path, this.cwd);
+	}
 
 	async preflightWrite(path: string): Promise<void> {
 		const absolutePath = this.canonicalPath(path);
-		try { await this.operations.access(absolutePath); }
-		catch (error: unknown) {
+		try {
+			await this.operations.access(absolutePath);
+		} catch (error: unknown) {
 			const message = error instanceof Error && "code" in error ? `Error code: ${error.code}` : String(error);
 			throw new Error(`Could not edit file: ${path}. ${message}.`);
 		}
@@ -70,19 +94,28 @@ class EditFilesystem extends Filesystem {
 
 	async readText(path: string): Promise<string> {
 		const absolutePath = this.canonicalPath(path);
-		return isNotebookPath(absolutePath) ? readEditableNotebookText(absolutePath, path) : (await this.operations.readFile(absolutePath)).toString("utf-8");
+		return isNotebookPath(absolutePath)
+			? readEditableNotebookText(absolutePath, path)
+			: (await this.operations.readFile(absolutePath)).toString("utf-8");
 	}
 
 	async writeText(path: string, content: string): Promise<WriteResult> {
 		const absolutePath = this.canonicalPath(path);
-		const persisted = isNotebookPath(absolutePath) ? serializeEditedNotebookText(absolutePath, path, normalizeToLF(stripBom(content).text)) : content;
+		const persisted = isNotebookPath(absolutePath)
+			? serializeEditedNotebookText(absolutePath, path, normalizeToLF(stripBom(content).text))
+			: content;
 		await this.operations.writeFile(absolutePath, persisted);
 		return { text: persisted };
 	}
 }
 
 function isFourDigitHexTag(value: string): boolean {
-	return value.length === 4 && [...value].every((char) => (char >= "0" && char <= "9") || (char >= "a" && char <= "f") || (char >= "A" && char <= "F"));
+	return (
+		value.length === 4 &&
+		[...value].every(
+			(char) => (char >= "0" && char <= "9") || (char >= "a" && char <= "f") || (char >= "A" && char <= "F"),
+		)
+	);
 }
 
 function extractFirstHeaderPath(input: string | undefined): string | undefined {
@@ -101,13 +134,20 @@ function extractFirstHeaderPath(input: string | undefined): string | undefined {
 
 function formatEditCall(args: unknown, theme: Theme, cwd: string): string {
 	const input = args && typeof args === "object" && "input" in args ? (args as { input?: unknown }).input : undefined;
-	const pathDisplay = renderToolPath(extractFirstHeaderPath(typeof input === "string" ? input : undefined) ?? null, theme, cwd);
+	const pathDisplay = renderToolPath(
+		extractFirstHeaderPath(typeof input === "string" ? input : undefined) ?? null,
+		theme,
+		cwd,
+	);
 	return `${theme.fg("toolTitle", theme.bold("edit"))} ${pathDisplay}`;
 }
 
 function formatEditResult(result: EditToolResultLike, theme: Theme, isError: boolean): string | undefined {
 	if (isError) {
-		const errorText = result.content.filter((c) => c.type === "text").map((c) => c.text || "").join("\n");
+		const errorText = result.content
+			.filter((c) => c.type === "text")
+			.map((c) => c.text || "")
+			.join("\n");
 		return errorText ? theme.fg("error", errorText) : undefined;
 	}
 	return result.details?.diff ? renderDiff(result.details.diff) : undefined;
@@ -131,12 +171,14 @@ function formatNoopMessage(path: string, count: number): string {
 }
 
 function blockMessages(item: PreparedSection | PatchSectionResult): string[] {
-	const warnings = "parseWarnings" in item ? [...item.parseWarnings, ...(item.applyResult.warnings ?? [])] : item.warnings;
-	const resolutions = ("applyResult" in item ? item.applyResult.blockResolutions : item.blockResolutions)?.map((resolution) => {
-		const verb = resolution.op === "insert_after" ? "insert after block" : `${resolution.op} block`;
-		const lands = resolution.op === "insert_after" ? `; body lands after line ${resolution.end}` : "";
-		return `${verb} ${resolution.anchorLine} → resolved lines ${resolution.start}-${resolution.end} (${resolution.end - resolution.start + 1} lines)${lands}`;
-	}) ?? [];
+	const warnings =
+		"parseWarnings" in item ? [...item.parseWarnings, ...(item.applyResult.warnings ?? [])] : item.warnings;
+	const resolutions =
+		("applyResult" in item ? item.applyResult.blockResolutions : item.blockResolutions)?.map((resolution) => {
+			const verb = resolution.op === "insert_after" ? "insert after block" : `${resolution.op} block`;
+			const lands = resolution.op === "insert_after" ? `; body lands after line ${resolution.end}` : "";
+			return `${verb} ${resolution.anchorLine} → resolved lines ${resolution.start}-${resolution.end} (${resolution.end - resolution.start + 1} lines)${lands}`;
+		}) ?? [];
 	return [...warnings, ...resolutions];
 }
 
@@ -144,12 +186,18 @@ function assertUniquePreparedPaths(prepared: readonly PreparedSection[]): void {
 	const seen = new Map<string, string>();
 	for (const entry of prepared) {
 		const previous = seen.get(entry.canonicalPath);
-		if (previous) throw new Error(`Multiple hashline sections resolve to the same file (${previous} and ${entry.section.path}). Merge their ops under one header before applying.`);
+		if (previous)
+			throw new Error(
+				`Multiple hashline sections resolve to the same file (${previous} and ${entry.section.path}). Merge their ops under one header before applying.`,
+			);
 		seen.set(entry.canonicalPath, entry.section.path);
 	}
 }
 
-export function createEditToolDefinition(cwd: string, options?: EditToolOptions): ToolDefinition<typeof editSchema, EditToolDetails | undefined> {
+export function createEditToolDefinition(
+	cwd: string,
+	options?: EditToolOptions,
+): ToolDefinition<typeof editSchema, EditToolDetails | undefined> {
 	const ops = options?.operations ?? defaultEditOperations;
 	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
 	const fs = new EditFilesystem(cwd, ops);
@@ -158,7 +206,8 @@ export function createEditToolDefinition(cwd: string, options?: EditToolOptions)
 	return {
 		name: "edit",
 		label: "edit",
-		description: "Edit existing files with the hashline patch language: each section starts with [PATH#TAG] (TAG is the 4-hex snapshot tag from your latest read/search), then hunk headers (replace N..M:, replace block N:, delete N..M, delete block N, insert before|after N:, insert after block N:, insert head:, insert tail:) followed by +TEXT body rows. Numbers refer to the original file. Use the write tool to create new files.",
+		description:
+			"Edit existing files with the hashline patch language: each section starts with [PATH#TAG] (TAG is the 4-hex snapshot tag from your latest read/search), then hunk headers (replace N..M:, replace block N:, delete N..M, delete block N, insert before|after N:, insert after block N:, insert head:, insert tail:) followed by +TEXT body rows. Numbers refer to the original file. Use the write tool to create new files.",
 		promptSnippet: "Apply source edits with hashline patch input",
 		promptGuidelines: [
 			"hashline edit format: a header ending in ':' is followed by '+'TEXT body rows; 'delete' has no body. Every section starts with [PATH#TAG]; TAG is REQUIRED (the 4-hex snapshot tag from your latest read/search) — there is no hashless form. Use the write tool to create new files.",
@@ -169,38 +218,57 @@ export function createEditToolDefinition(cwd: string, options?: EditToolOptions)
 		],
 		parameters: editSchema,
 		async execute(_toolCallId, input: EditToolInput, signal?: AbortSignal) {
-			if (typeof input.input !== "string" || input.input.trim() === "") throw new Error("edit input must be a non-empty hashline script with [PATH#TAG] sections.");
+			if (typeof input.input !== "string" || input.input.trim() === "")
+				throw new Error("edit input must be a non-empty hashline script with [PATH#TAG] sections.");
 			const patch = Patch.parse(input.input, { cwd });
 			const prepared: PreparedSection[] = [];
-			for (const section of patch.sections) { throwIfAborted(signal); prepared.push(await patcher.prepare(section)); }
+			for (const section of patch.sections) {
+				throwIfAborted(signal);
+				prepared.push(await patcher.prepare(section));
+			}
 			assertUniquePreparedPaths(prepared);
 			const noops = prepared.filter((item) => item.isNoop);
 			if (noops.length > 0) {
-				if (noops.length !== prepared.length) throw new Error(`Hashline edit for ${noops[0]!.section.path} did not change the file.`);
+				if (noops.length !== prepared.length)
+					throw new Error(`Hashline edit for ${noops[0]!.section.path} did not change the file.`);
 				const key = prepared.map((item) => `${item.canonicalPath}\0${item.applyResult.text}`).join("\0\0");
 				const count = (noopCounts.get(key) ?? 0) + 1;
 				noopCounts.set(key, count);
 				if (count >= 3) throw new Error(`STOP. ${formatNoopMessage(prepared[0]!.section.path, count)}`);
-				return { content: [{ type: "text", text: formatNoopMessage(prepared[0]!.section.path, count) }], details: { diff: "", patch: "" } };
+				return {
+					content: [{ type: "text", text: formatNoopMessage(prepared[0]!.section.path, count) }],
+					details: { diff: "", patch: "" },
+				};
 			}
-			return withFileMutationQueues(prepared.map((item) => item.canonicalPath), async () => {
-				for (const item of prepared) if (normalizeToLF(stripBom(await fs.readText(item.section.path)).text) !== item.normalized) throw new Error(`Stale hashline tag for ${item.section.path}: file content changed before write. Re-read before editing.`);
-				const applyResult = await patcher.apply(patch);
-				const outputs: string[] = [];
-				let combinedDiff = "", combinedPatch = "";
-				let firstChangedLine: number | undefined;
-				for (const result of applyResult.sections) {
-					throwIfAborted(signal);
-					invalidateNativeSearchCache(result.canonicalPath);
-					const snapshot = recordHashlineSnapshot(result.canonicalPath, cwd, result.after, hashlineStore);
-					const diffResult = generateDiffString(result.before, result.after);
-					combinedDiff += `${combinedDiff ? "\n" : ""}${diffResult.diff}`;
-					combinedPatch += `${combinedPatch ? "\n" : ""}${generateUnifiedPatch(result.path, result.before, result.after)}`;
-					firstChangedLine ??= diffResult.firstChangedLine;
-					outputs.push(formatCompactHashlineEditResult(snapshot, diffResult, blockMessages(result)));
-				}
-				return { content: [{ type: "text", text: outputs.join("\n\n") }], details: { diff: combinedDiff, patch: combinedPatch, firstChangedLine } };
-			});
+			return withFileMutationQueues(
+				prepared.map((item) => item.canonicalPath),
+				async () => {
+					for (const item of prepared)
+						if (normalizeToLF(stripBom(await fs.readText(item.section.path)).text) !== item.normalized)
+							throw new Error(
+								`Stale hashline tag for ${item.section.path}: file content changed before write. Re-read before editing.`,
+							);
+					const applyResult = await patcher.apply(patch);
+					const outputs: string[] = [];
+					let combinedDiff = "",
+						combinedPatch = "";
+					let firstChangedLine: number | undefined;
+					for (const result of applyResult.sections) {
+						throwIfAborted(signal);
+						invalidateNativeSearchCache(result.canonicalPath);
+						const snapshot = recordHashlineSnapshot(result.canonicalPath, cwd, result.after, hashlineStore);
+						const diffResult = generateDiffString(result.before, result.after);
+						combinedDiff += `${combinedDiff ? "\n" : ""}${diffResult.diff}`;
+						combinedPatch += `${combinedPatch ? "\n" : ""}${generateUnifiedPatch(result.path, result.before, result.after)}`;
+						firstChangedLine ??= diffResult.firstChangedLine;
+						outputs.push(formatCompactHashlineEditResult(snapshot, diffResult, blockMessages(result)));
+					}
+					return {
+						content: [{ type: "text", text: outputs.join("\n\n") }],
+						details: { diff: combinedDiff, patch: combinedPatch, firstChangedLine },
+					};
+				},
+			);
 		},
 		renderCall(args, theme, context) {
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);

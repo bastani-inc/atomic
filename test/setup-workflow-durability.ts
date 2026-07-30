@@ -1,8 +1,5 @@
 import { beforeEach } from "vitest";
-import {
-  createInMemoryTestBackend,
-  setDurableBackend,
-} from "../packages/workflows/src/durable/factory.js";
+import { createInMemoryTestBackend, setDurableBackend } from "../packages/workflows/src/durable/factory.js";
 
 /**
  * Product runtime always uses DBOS. Unit and integration tests explicitly run
@@ -10,5 +7,5 @@ import {
  * DBOS adapter.
  */
 beforeEach(() => {
-  setDurableBackend(createInMemoryTestBackend());
+	setDurableBackend(createInMemoryTestBackend());
 });

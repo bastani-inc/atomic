@@ -1,7 +1,7 @@
 import { relative } from "node:path";
 import { valid, validRange } from "semver";
-import { isLocalPath } from "../utils/paths.ts";
 import { parseGitUrl } from "../utils/git.ts";
+import { isLocalPath } from "../utils/paths.ts";
 import { getBaseDirForScope, resolveManagerPath, resolvePathFromBase } from "./package-manager-paths.ts";
 import type { PackageManagerContext, ParsedSource, SourceScope } from "./package-manager-types.ts";
 import type { PackageSource } from "./settings-manager.ts";
@@ -66,11 +66,7 @@ function getSourceMatchKeyForInput(context: PackageManagerContext, source: strin
 	return `local:${resolveManagerPath(context, parsed.path)}`;
 }
 
-function getSourceMatchKeyForSettings(
-	context: PackageManagerContext,
-	source: string,
-	scope: SourceScope,
-): string {
+function getSourceMatchKeyForSettings(context: PackageManagerContext, source: string, scope: SourceScope): string {
 	const parsed = parseSource(source);
 	if (parsed.type === "npm") {
 		return `npm:${parsed.name}`;
@@ -193,4 +189,3 @@ export function assertProjectTrustedForScope(context: PackageManagerContext, sco
 		throw new Error("Project is not trusted; refusing to access project package storage");
 	}
 }
-

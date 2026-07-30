@@ -7,7 +7,9 @@ const { resolvedHost, setResolvedHost } = vi.hoisted(() => {
 	const state = { address: null as { address: string; family: number } | null };
 	return {
 		resolvedHost: state,
-		setResolvedHost: (value: { address: string; family: number } | null) => { state.address = value; },
+		setResolvedHost: (value: { address: string; family: number } | null) => {
+			state.address = value;
+		},
 	};
 });
 vi.mock("node:dns/promises", async (importActual) => {
@@ -15,11 +17,19 @@ vi.mock("node:dns/promises", async (importActual) => {
 	return {
 		...actual,
 		lookup: ((hostname: string, options?: object) =>
-			resolvedHost.address ? Promise.resolve([resolvedHost.address]) : actual.lookup(hostname, options as never)) as typeof actual.lookup,
+			resolvedHost.address
+				? Promise.resolve([resolvedHost.address])
+				: actual.lookup(hostname, options as never)) as typeof actual.lookup,
 	};
 });
 
-import { getReadUrlCacheKey, isReadableUrlPath, loadPage, parseReadUrlTarget, repairCollapsedScheme } from "../src/core/tools/fetch-url.ts";
+import {
+	getReadUrlCacheKey,
+	isReadableUrlPath,
+	loadPage,
+	parseReadUrlTarget,
+	repairCollapsedScheme,
+} from "../src/core/tools/fetch-url.ts";
 
 // Network rendering (HTML→markdown, caching, llms.txt discovery, artifact
 // persistence) is exercised through the read-tool integration path; these
@@ -67,7 +77,12 @@ test.sequential("blocks private URL reads by default", async () => {
 		for (const host of ["2130706433", "0x7f.0.0.1", "0177.0.0.1", "127.1"]) {
 			await expect(loadPage(`http://${host}:1/`, 100)).rejects.toThrow("Refusing to fetch private or metadata URL");
 		}
-		for (const host of ["[64:ff9b::a9fe:a9fe]", "[2002:a9fe:a9fe::]", "[0:0:0:0:0:ffff:169.254.169.254]", "[::ffff:7f00:1]"]) {
+		for (const host of [
+			"[64:ff9b::a9fe:a9fe]",
+			"[2002:a9fe:a9fe::]",
+			"[0:0:0:0:0:ffff:169.254.169.254]",
+			"[::ffff:7f00:1]",
+		]) {
 			await expect(loadPage(`http://${host}/`, 100)).rejects.toThrow("Refusing to fetch private or metadata URL");
 		}
 		process.env.ATOMIC_ALLOW_PRIVATE_URL_READS = "1";
@@ -84,7 +99,10 @@ test.sequential("revalidates redirect targets before fetching them", async () =>
 	const previousFetch = globalThis.fetch;
 	delete process.env.ATOMIC_ALLOW_PRIVATE_URL_READS;
 	let calls = 0;
-	globalThis.fetch = (async () => { calls++; return new Response("", { status: 302, headers: { Location: "http://127.0.0.1/secret" } }); }) as typeof fetch;
+	globalThis.fetch = (async () => {
+		calls++;
+		return new Response("", { status: 302, headers: { Location: "http://127.0.0.1/secret" } });
+	}) as typeof fetch;
 	try {
 		await expect(loadPage("http://93.184.216.34/", 100)).rejects.toThrow("Refusing to fetch private or metadata URL");
 		expect(calls).toBe(1);
@@ -113,7 +131,10 @@ test("pins the DNS-resolved address for hostname fetches (no rebinding at connec
 	const previousFetch = globalThis.fetch;
 	delete process.env.ATOMIC_ALLOW_PRIVATE_URL_READS;
 	let globalFetchCalls = 0;
-	globalThis.fetch = (async () => { globalFetchCalls++; return new Response("should-not-reach", { status: 200 }); }) as typeof fetch;
+	globalThis.fetch = (async () => {
+		globalFetchCalls++;
+		return new Response("should-not-reach", { status: 200 });
+	}) as typeof fetch;
 	// Resolve the hostname to a routable-but-unreachable public IP; undici's
 	// pinned client attempts the connect and fails — proving the request went
 	// through undici (the pinned path), not the mocked global fetch.

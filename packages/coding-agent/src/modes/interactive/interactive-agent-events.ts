@@ -1,380 +1,407 @@
-import { InteractiveModeBase } from "./interactive-mode-base.ts";
-import { type Message, type AgentSessionEvent, Loader, Spacer, Text, pickWhimsicalWorkingMessage, AssistantMessageComponent, CountdownTimer, keyText, ToolExecutionComponent, theme } from "./interactive-mode-deps.ts";
-import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
+import { CACHE_TTL_MS, detectCacheMiss } from "../../core/cache-stats.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.ts";
 import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
-import { handleSummarizationRetryEvent } from "./interactive-summarization-retry-events.ts";
-import { CACHE_TTL_MS, detectCacheMiss } from "../../core/cache-stats.ts";
-import { mountIdleStatus } from "./components/idle-status.ts";
 import { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
+import { mountIdleStatus } from "./components/idle-status.ts";
+import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
+import { InteractiveModeBase } from "./interactive-mode-base.ts";
+import {
+	type AgentSessionEvent,
+	AssistantMessageComponent,
+	CountdownTimer,
+	keyText,
+	Loader,
+	type Message,
+	pickWhimsicalWorkingMessage,
+	Spacer,
+	Text,
+	ToolExecutionComponent,
+	theme,
+} from "./interactive-mode-deps.ts";
+import { handleSummarizationRetryEvent } from "./interactive-summarization-retry-events.ts";
 
 function createToolComponent(
-  mode: InteractiveModeBase,
-  toolName: string,
-  toolCallId: string,
-  args: unknown,
+	mode: InteractiveModeBase,
+	toolName: string,
+	toolCallId: string,
+	args: unknown,
 ): ToolExecutionComponent | RemoteToolExecutionComponent {
-  const options = {
-    showImages: mode.settingsManager.getShowImages(),
-    imageWidthCells: mode.settingsManager.getImageWidthCells(),
-  };
-  return mode.runtimeHost instanceof IsolatedInteractiveRuntime
-    ? new RemoteToolExecutionComponent(toolName, toolCallId, args, options, mode.runtimeHost, () => mode.ui.requestRender())
-    : new ToolExecutionComponent(
-        toolName, toolCallId, args, options, mode.getRegisteredToolDefinition(toolName), mode.ui, mode.sessionManager.getCwd(),
-      );
+	const options = {
+		showImages: mode.settingsManager.getShowImages(),
+		imageWidthCells: mode.settingsManager.getImageWidthCells(),
+	};
+	return mode.runtimeHost instanceof IsolatedInteractiveRuntime
+		? new RemoteToolExecutionComponent(toolName, toolCallId, args, options, mode.runtimeHost, () =>
+				mode.ui.requestRender(),
+			)
+		: new ToolExecutionComponent(
+				toolName,
+				toolCallId,
+				args,
+				options,
+				mode.getRegisteredToolDefinition(toolName),
+				mode.ui,
+				mode.sessionManager.getCwd(),
+			);
 }
 
-InteractiveModeBase.prototype.subscribeToAgent = function(this: InteractiveModeBase): void {
-    this.unsubscribe = this.session.subscribe(async (event) => {
-      await this.handleEvent(event);
-    });
-  };
+InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveModeBase): void {
+	this.unsubscribe = this.session.subscribe(async (event) => {
+		await this.handleEvent(event);
+	});
+};
 
-InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveModeBase, event: AgentSessionEvent): Promise<void> {
-    if (!this.isInitialized) {
-      await this.init();
-    }
+InteractiveModeBase.prototype.handleEvent = async function (
+	this: InteractiveModeBase,
+	event: AgentSessionEvent,
+): Promise<void> {
+	if (!this.isInitialized) {
+		await this.init();
+	}
 
-    this.footer.invalidate();
+	this.footer.invalidate();
 
-    switch (event.type) {
-      case "agent_start":
-        this.pendingTools.clear();
-        if (this.settingsManager.getShowTerminalProgress()) {
-          this.ui.terminal.setProgress(true);
-        }
-        // Restore main escape handler if retry handler is still active
-        // (retry success event fires later, but we need main handler now)
-        if (this.retryEscapeHandler) {
-          this.defaultEditor.onEscape = this.retryEscapeHandler;
-          this.retryEscapeHandler = undefined;
-        }
-        if (this.retryCountdown) {
-          this.retryCountdown.dispose();
-          this.retryCountdown = undefined;
-        }
-        if (this.retryLoader) {
-          this.retryLoader.stop();
-          this.retryLoader = undefined;
-        }
-        if (this.fallbackLoader) {
-          this.fallbackLoader.stop();
-          this.fallbackLoader = undefined;
-        }
-        this.stopWorkingLoader();
-        if (this.workingVisible) {
-          this.loadingAnimation = this.createWorkingLoader();
-          this.statusContainer.addChild(this.loadingAnimation);
-        }
-        this.ui.requestRender();
-        break;
+	switch (event.type) {
+		case "agent_start":
+			this.pendingTools.clear();
+			if (this.settingsManager.getShowTerminalProgress()) {
+				this.ui.terminal.setProgress(true);
+			}
+			// Restore main escape handler if retry handler is still active
+			// (retry success event fires later, but we need main handler now)
+			if (this.retryEscapeHandler) {
+				this.defaultEditor.onEscape = this.retryEscapeHandler;
+				this.retryEscapeHandler = undefined;
+			}
+			if (this.retryCountdown) {
+				this.retryCountdown.dispose();
+				this.retryCountdown = undefined;
+			}
+			if (this.retryLoader) {
+				this.retryLoader.stop();
+				this.retryLoader = undefined;
+			}
+			if (this.fallbackLoader) {
+				this.fallbackLoader.stop();
+				this.fallbackLoader = undefined;
+			}
+			this.stopWorkingLoader();
+			if (this.workingVisible) {
+				this.loadingAnimation = this.createWorkingLoader();
+				this.statusContainer.addChild(this.loadingAnimation);
+			}
+			this.ui.requestRender();
+			break;
 
-      case "turn_start": {
-        this.workingMessage = pickWhimsicalWorkingMessage();
-        if (this.loadingAnimation) {
-          if ("resetForTurn" in this.loadingAnimation) this.loadingAnimation.resetForTurn(this.workingMessage);
-          else this.loadingAnimation.setMessage(this.workingMessage);
-        } else if (!this.autoCompactionLoader) {
-          // Post-tool compaction interposes this turn_start between
-          // compaction_start and compaction_end. Mounting generic Working here
-          // would evict the factual compaction status from the shared status
-          // container and leave a stale `loadingAnimation` that then blocks the
-          // restore at compaction_end, hiding all activity until the next run.
-          this.showWorkingLoaderNow();
-        }
-        break;
-      }
+		case "turn_start": {
+			this.workingMessage = pickWhimsicalWorkingMessage();
+			if (this.loadingAnimation) {
+				if ("resetForTurn" in this.loadingAnimation) this.loadingAnimation.resetForTurn(this.workingMessage);
+				else this.loadingAnimation.setMessage(this.workingMessage);
+			} else if (!this.autoCompactionLoader) {
+				// Post-tool compaction interposes this turn_start between
+				// compaction_start and compaction_end. Mounting generic Working here
+				// would evict the factual compaction status from the shared status
+				// container and leave a stale `loadingAnimation` that then blocks the
+				// restore at compaction_end, hiding all activity until the next run.
+				this.showWorkingLoaderNow();
+			}
+			break;
+		}
 
-      case "turn_end": {
-        this.workingMessage = undefined;
-        this.stopWorkingLoader();
-        this.ui.requestRender();
-        break;
-      }
+		case "turn_end": {
+			this.workingMessage = undefined;
+			this.stopWorkingLoader();
+			this.ui.requestRender();
+			break;
+		}
 
-      case "queue_update":
-        this.updatePendingMessagesDisplay();
-        this.ui.requestRender();
-        break;
+		case "queue_update":
+			this.updatePendingMessagesDisplay();
+			this.ui.requestRender();
+			break;
 
-      case "session_info_changed":
-        this.updateTerminalTitle();
-        this.footer.invalidate();
-        this.ui.requestRender();
-        break;
+		case "session_info_changed":
+			this.updateTerminalTitle();
+			this.footer.invalidate();
+			this.ui.requestRender();
+			break;
 
-      case "model_changed":
-        this.refreshBuiltInHeader();
-        this.updateEditorBorderColor();
-        break;
+		case "model_changed":
+			this.refreshBuiltInHeader();
+			this.updateEditorBorderColor();
+			break;
 
-      case "thinking_level_changed":
-        this.footer.invalidate();
-        this.refreshBuiltInHeader();
-        this.updateEditorBorderColor();
-        break;
+		case "thinking_level_changed":
+			this.footer.invalidate();
+			this.refreshBuiltInHeader();
+			this.updateEditorBorderColor();
+			break;
 
-      case "entry_appended":
-        if (event.entry.type === "custom") this.addCustomEntryToChat(event.entry);
-        this.ui.requestRender();
-        break;
+		case "entry_appended":
+			if (event.entry.type === "custom") this.addCustomEntryToChat(event.entry);
+			this.ui.requestRender();
+			break;
 
-      case "agent_settled":
-        await this.checkShutdownRequested();
-        break;
+		case "agent_settled":
+			await this.checkShutdownRequested();
+			break;
 
-      case "message_start":
-        if (event.message.role === "custom") {
-          appendNewChildrenBeforeAttachedChild(
-            this.chatContainer,
-            this.streamingComponent,
-            () => this.addMessageToChat(event.message),
-          );
-          this.ui.requestRender();
-        } else if (event.message.role === "user") {
-          if (!this.consumeDeferredRenderedUserInput(this.getUserMessageText(event.message))) {
-            this.addMessageToChat(event.message);
-          }
-          this.updatePendingMessagesDisplay();
-          this.ui.requestRender();
-        } else if (event.message.role === "assistant") {
-          this.streamingComponent = new AssistantMessageComponent(
-            undefined,
-            this.hideThinkingBlock,
-            this.getMarkdownThemeWithSettings(),
-            this.hiddenThinkingLabel,
-            this.outputPad,
-          );
-          this.streamingMessage = event.message;
-          this.chatContainer.addChild(this.streamingComponent);
-          this.streamingComponent.updateContent(this.streamingMessage);
-          this.ui.requestRender();
-        }
-        break;
+		case "message_start":
+			if (event.message.role === "custom") {
+				appendNewChildrenBeforeAttachedChild(this.chatContainer, this.streamingComponent, () =>
+					this.addMessageToChat(event.message),
+				);
+				this.ui.requestRender();
+			} else if (event.message.role === "user") {
+				if (!this.consumeDeferredRenderedUserInput(this.getUserMessageText(event.message))) {
+					this.addMessageToChat(event.message);
+				}
+				this.updatePendingMessagesDisplay();
+				this.ui.requestRender();
+			} else if (event.message.role === "assistant") {
+				this.streamingComponent = new AssistantMessageComponent(
+					undefined,
+					this.hideThinkingBlock,
+					this.getMarkdownThemeWithSettings(),
+					this.hiddenThinkingLabel,
+					this.outputPad,
+				);
+				this.streamingMessage = event.message;
+				this.chatContainer.addChild(this.streamingComponent);
+				this.streamingComponent.updateContent(this.streamingMessage);
+				this.ui.requestRender();
+			}
+			break;
 
-      case "message_update":
-        if (this.streamingComponent && event.message.role === "assistant") {
-          this.streamingMessage = event.message;
-          this.streamingComponent.updateContent(this.streamingMessage);
+		case "message_update":
+			if (this.streamingComponent && event.message.role === "assistant") {
+				this.streamingMessage = event.message;
+				this.streamingComponent.updateContent(this.streamingMessage);
 
-          for (const content of this.streamingMessage.content) {
-            if (content.type === "toolCall") {
-              if (!this.pendingTools.has(content.id)) {
-                const component = createToolComponent(this, content.name, content.id, content.arguments);
-                component.setExpanded(this.toolOutputExpanded);
-                this.chatContainer.addChild(component);
-                this.pendingTools.set(content.id, component);
-              } else {
-                const component = this.pendingTools.get(content.id);
-                if (component) {
-                  component.updateArgs(content.arguments);
-                }
-              }
-            }
-          }
-          this.ui.requestRender();
-        }
-        break;
+				for (const content of this.streamingMessage.content) {
+					if (content.type === "toolCall") {
+						if (!this.pendingTools.has(content.id)) {
+							const component = createToolComponent(this, content.name, content.id, content.arguments);
+							component.setExpanded(this.toolOutputExpanded);
+							this.chatContainer.addChild(component);
+							this.pendingTools.set(content.id, component);
+						} else {
+							const component = this.pendingTools.get(content.id);
+							if (component) {
+								component.updateArgs(content.arguments);
+							}
+						}
+					}
+				}
+				this.ui.requestRender();
+			}
+			break;
 
-      case "message_end":
-        if (event.message.role === "user") break;
-        if (this.streamingComponent && event.message.role === "assistant") {
-          this.streamingMessage = event.message;
-          let errorMessage: string | undefined;
-          if (this.streamingMessage.stopReason === "aborted") {
-            const existingAbortMessage =
-              this.streamingMessage.errorMessage && this.streamingMessage.errorMessage !== "Request was aborted"
-                ? this.streamingMessage.errorMessage
-                : undefined;
-            const retryAttempt = this.session.retryAttempt;
-            errorMessage = existingAbortMessage ?? (
-              retryAttempt > 0
-                ? `Aborted after ${retryAttempt} retry attempt${retryAttempt > 1 ? "s" : ""}`
-                : "Operation aborted"
-            );
-            this.streamingMessage.errorMessage = errorMessage;
-          }
-          this.streamingComponent.updateContent(this.streamingMessage);
+		case "message_end":
+			if (event.message.role === "user") break;
+			if (this.streamingComponent && event.message.role === "assistant") {
+				this.streamingMessage = event.message;
+				let errorMessage: string | undefined;
+				if (this.streamingMessage.stopReason === "aborted") {
+					const existingAbortMessage =
+						this.streamingMessage.errorMessage && this.streamingMessage.errorMessage !== "Request was aborted"
+							? this.streamingMessage.errorMessage
+							: undefined;
+					const retryAttempt = this.session.retryAttempt;
+					errorMessage =
+						existingAbortMessage ??
+						(retryAttempt > 0
+							? `Aborted after ${retryAttempt} retry attempt${retryAttempt > 1 ? "s" : ""}`
+							: "Operation aborted");
+					this.streamingMessage.errorMessage = errorMessage;
+				}
+				this.streamingComponent.updateContent(this.streamingMessage);
 
-          if (
-            this.streamingMessage.stopReason === "aborted" ||
-            this.streamingMessage.stopReason === "error"
-  ) {
-            if (!errorMessage) {
-              errorMessage = this.streamingMessage.errorMessage || "Error";
-            }
-            for (const [, component] of this.pendingTools.entries()) {
-              component.updateResult({
-                content: [{ type: "text", text: errorMessage }],
-                isError: true,
-              });
-            }
-            this.pendingTools.clear();
-          } else {
-            // Args are now complete - trigger diff computation for edit tools
-            for (const [, component] of this.pendingTools.entries()) {
-              component.setArgsComplete();
-            }
-          }
-          this.streamingComponent = undefined;
-          this.streamingMessage = undefined;
-          this.footer.invalidate();
-        }
-        if (event.message.role === "assistant" && this.settingsManager.getShowCacheMissNotices()) {
-          const miss = detectCacheMiss(this.sessionManager.getEntries(), event.message, { getModel: (provider, model) => this.session.modelRuntime.getModel(provider, model) });
-          if (miss) {
-            const cause = miss.modelChanged ? " after model switch" : miss.idleMs >= CACHE_TTL_MS ? " after cache TTL expiry" : "";
-            this.chatContainer.addChild(new Text(theme.fg("warning", `Prompt cache miss${cause}: ${miss.missedTokens.toLocaleString()} tokens re-billed ($${miss.missedCost.toFixed(3)})`), 1, 0));
-          }
-        }
-        this.ui.requestRender();
-        break;
+				if (this.streamingMessage.stopReason === "aborted" || this.streamingMessage.stopReason === "error") {
+					if (!errorMessage) {
+						errorMessage = this.streamingMessage.errorMessage || "Error";
+					}
+					for (const [, component] of this.pendingTools.entries()) {
+						component.updateResult({
+							content: [{ type: "text", text: errorMessage }],
+							isError: true,
+						});
+					}
+					this.pendingTools.clear();
+				} else {
+					// Args are now complete - trigger diff computation for edit tools
+					for (const [, component] of this.pendingTools.entries()) {
+						component.setArgsComplete();
+					}
+				}
+				this.streamingComponent = undefined;
+				this.streamingMessage = undefined;
+				this.footer.invalidate();
+			}
+			if (event.message.role === "assistant" && this.settingsManager.getShowCacheMissNotices()) {
+				const miss = detectCacheMiss(this.sessionManager.getEntries(), event.message, {
+					getModel: (provider, model) => this.session.modelRuntime.getModel(provider, model),
+				});
+				if (miss) {
+					const cause = miss.modelChanged
+						? " after model switch"
+						: miss.idleMs >= CACHE_TTL_MS
+							? " after cache TTL expiry"
+							: "";
+					this.chatContainer.addChild(
+						new Text(
+							theme.fg(
+								"warning",
+								`Prompt cache miss${cause}: ${miss.missedTokens.toLocaleString()} tokens re-billed ($${miss.missedCost.toFixed(3)})`,
+							),
+							1,
+							0,
+						),
+					);
+				}
+			}
+			this.ui.requestRender();
+			break;
 
-      case "tool_execution_start": {
-        let component = this.pendingTools.get(event.toolCallId);
-        if (!component) {
-          component = createToolComponent(this, event.toolName, event.toolCallId, event.args);
-          component.setExpanded(this.toolOutputExpanded);
-          this.chatContainer.addChild(component);
-          this.pendingTools.set(event.toolCallId, component);
-        }
-        component.markExecutionStarted();
-        this.ui.requestRender();
-        break;
-      }
+		case "tool_execution_start": {
+			let component = this.pendingTools.get(event.toolCallId);
+			if (!component) {
+				component = createToolComponent(this, event.toolName, event.toolCallId, event.args);
+				component.setExpanded(this.toolOutputExpanded);
+				this.chatContainer.addChild(component);
+				this.pendingTools.set(event.toolCallId, component);
+			}
+			component.markExecutionStarted();
+			this.ui.requestRender();
+			break;
+		}
 
-      case "tool_execution_update": {
-        const component = this.pendingTools.get(event.toolCallId);
-        if (component) {
-          component.updateResult(
-            { ...event.partialResult, isError: false },
-            true,
-          );
-          this.ui.requestRender();
-        }
-        break;
-      }
+		case "tool_execution_update": {
+			const component = this.pendingTools.get(event.toolCallId);
+			if (component) {
+				component.updateResult({ ...event.partialResult, isError: false }, true);
+				this.ui.requestRender();
+			}
+			break;
+		}
 
-      case "tool_execution_end": {
-        const component = this.pendingTools.get(event.toolCallId);
-        if (component) {
-          component.updateResult({ ...event.result, isError: event.isError });
-          this.pendingTools.delete(event.toolCallId);
-          this.ui.requestRender();
-        }
-        break;
-      }
+		case "tool_execution_end": {
+			const component = this.pendingTools.get(event.toolCallId);
+			if (component) {
+				component.updateResult({ ...event.result, isError: event.isError });
+				this.pendingTools.delete(event.toolCallId);
+				this.ui.requestRender();
+			}
+			break;
+		}
 
-      case "agent_end":
-        if (this.settingsManager.getShowTerminalProgress()) {
-          this.ui.terminal.setProgress(false);
-        }
-        if (this.loadingAnimation) {
-          this.loadingAnimation.stop();
-          this.loadingAnimation = undefined;
-          this.statusContainer.clear();
-          mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
-        }
-        if (this.streamingComponent) {
-          this.chatContainer.removeChild(this.streamingComponent);
-          this.streamingComponent = undefined;
-          this.streamingMessage = undefined;
-        }
-        this.pendingTools.clear();
-        if (this.compactionQueuedMessages.length > 0) {
-          void this.session.agent.waitForIdle().then(() => this.flushCompactionQueue({ willRetry: false }));
-        }
+		case "agent_end":
+			if (this.settingsManager.getShowTerminalProgress()) {
+				this.ui.terminal.setProgress(false);
+			}
+			if (this.loadingAnimation) {
+				this.loadingAnimation.stop();
+				this.loadingAnimation = undefined;
+				this.statusContainer.clear();
+				mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
+			}
+			if (this.streamingComponent) {
+				this.chatContainer.removeChild(this.streamingComponent);
+				this.streamingComponent = undefined;
+				this.streamingMessage = undefined;
+			}
+			this.pendingTools.clear();
+			if (this.compactionQueuedMessages.length > 0) {
+				void this.session.agent.waitForIdle().then(() => this.flushCompactionQueue({ willRetry: false }));
+			}
 
-        await this.checkShutdownRequested();
+			await this.checkShutdownRequested();
 
-        this.ui.requestRender();
-        break;
+			this.ui.requestRender();
+			break;
 
-      case "compaction_start": {
-        if (this.settingsManager.getShowTerminalProgress()) {
-          this.ui.terminal.setProgress(true);
-        }
-        // Release any loader left behind by an earlier start before mounting a
-        // new one; dropping the reference alone leaks its animation timer.
-        if (this.autoCompactionLoader) {
-          this.autoCompactionLoader.stop();
-          this.autoCompactionLoader = undefined;
-        }
-        // Keep editor active; submissions are queued during compaction.
-        // Never clobber an already-saved handler with our own abort closure.
-        if (!this.autoCompactionEscapeHandlerSaved) {
-          this.autoCompactionEscapeHandler = this.defaultEditor.onEscape;
-          this.autoCompactionEscapeHandlerSaved = true;
-        }
-        this.defaultEditor.onEscape = () => {
-          this.session.abortCompaction();
-        };
-        this.stopWorkingLoader();
-        const cancelHint = `(${keyText("app.interrupt")} Cancel)`;
-        const isOverflowAutoCompaction = event.reason === "overflow";
-        const label =
-          event.reason === "manual"
-            ? `Compacting context... ${cancelHint}`
-            : `${isOverflowAutoCompaction ? "Context overflow detected. " : ""}Auto-compacting... ${cancelHint}`;
-        this.autoCompactionLoader = new AtomicWorkingLoader(
-          this.ui,
-          undefined,
-          (text) => theme.fg(isOverflowAutoCompaction ? "warning" : "muted", text),
-          label,
-        );
-        this.statusContainer.addChild(this.autoCompactionLoader);
-        this.ui.requestRender();
-        break;
-      }
+		case "compaction_start": {
+			if (this.settingsManager.getShowTerminalProgress()) {
+				this.ui.terminal.setProgress(true);
+			}
+			// Release any loader left behind by an earlier start before mounting a
+			// new one; dropping the reference alone leaks its animation timer.
+			if (this.autoCompactionLoader) {
+				this.autoCompactionLoader.stop();
+				this.autoCompactionLoader = undefined;
+			}
+			// Keep editor active; submissions are queued during compaction.
+			// Never clobber an already-saved handler with our own abort closure.
+			if (!this.autoCompactionEscapeHandlerSaved) {
+				this.autoCompactionEscapeHandler = this.defaultEditor.onEscape;
+				this.autoCompactionEscapeHandlerSaved = true;
+			}
+			this.defaultEditor.onEscape = () => {
+				this.session.abortCompaction();
+			};
+			this.stopWorkingLoader();
+			const cancelHint = `(${keyText("app.interrupt")} Cancel)`;
+			const isOverflowAutoCompaction = event.reason === "overflow";
+			const label =
+				event.reason === "manual"
+					? `Compacting context... ${cancelHint}`
+					: `${isOverflowAutoCompaction ? "Context overflow detected. " : ""}Auto-compacting... ${cancelHint}`;
+			this.autoCompactionLoader = new AtomicWorkingLoader(
+				this.ui,
+				undefined,
+				(text) => theme.fg(isOverflowAutoCompaction ? "warning" : "muted", text),
+				label,
+			);
+			this.statusContainer.addChild(this.autoCompactionLoader);
+			this.ui.requestRender();
+			break;
+		}
 
-      case "compaction_end": {
-        if (this.settingsManager.getShowTerminalProgress()) {
-          this.ui.terminal.setProgress(false);
-        }
-        if (this.autoCompactionEscapeHandlerSaved) {
-          this.defaultEditor.onEscape = this.autoCompactionEscapeHandler;
-          this.autoCompactionEscapeHandler = undefined;
-          this.autoCompactionEscapeHandlerSaved = false;
-        }
-        if (this.autoCompactionLoader) {
-          this.autoCompactionLoader.stop();
-          this.autoCompactionLoader = undefined;
-          this.statusContainer.clear();
-          mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
-        }
-        if (event.aborted) {
-          if (event.reason === "manual") {
-            this.showError("Compaction cancelled");
-          } else {
-            this.showStatus("Auto-compaction cancelled");
-          }
-        } else if (event.result && !event.errorMessage) {
-          this.chatContainer.clear();
-          this.rebuildChatFromMessages({ suppressCompactionBoundary: event.result });
-          this.addCompactionBoundaryToChat(event.result);
-          this.footer.invalidate();
-        } else if (event.errorMessage) {
-          if (event.reason === "manual") {
-            this.showError(event.errorMessage);
-          } else {
-            this.chatContainer.addChild(new Spacer(1));
-            this.chatContainer.addChild(
-              new Text(theme.fg("error", event.errorMessage), 1, 0),
-            );
-          }
-        }
-        // Post-tool compaction resumes the same active run, so no new
-        // agent_start event will recreate the working loader. A successful
-        // no-op carries no `result` and still continues that stream.
-        if (event.midTurn && !event.aborted && !event.errorMessage) {
-          this.showWorkingLoaderNow();
-        }
-        if (!event.midTurn) void this.flushCompactionQueue({ willRetry: event.willRetry });
-        this.ui.requestRender();
-        break;
-      }
-
+		case "compaction_end": {
+			if (this.settingsManager.getShowTerminalProgress()) {
+				this.ui.terminal.setProgress(false);
+			}
+			if (this.autoCompactionEscapeHandlerSaved) {
+				this.defaultEditor.onEscape = this.autoCompactionEscapeHandler;
+				this.autoCompactionEscapeHandler = undefined;
+				this.autoCompactionEscapeHandlerSaved = false;
+			}
+			if (this.autoCompactionLoader) {
+				this.autoCompactionLoader.stop();
+				this.autoCompactionLoader = undefined;
+				this.statusContainer.clear();
+				mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
+			}
+			if (event.aborted) {
+				if (event.reason === "manual") {
+					this.showError("Compaction cancelled");
+				} else {
+					this.showStatus("Auto-compaction cancelled");
+				}
+			} else if (event.result && !event.errorMessage) {
+				this.chatContainer.clear();
+				this.rebuildChatFromMessages({ suppressCompactionBoundary: event.result });
+				this.addCompactionBoundaryToChat(event.result);
+				this.footer.invalidate();
+			} else if (event.errorMessage) {
+				if (event.reason === "manual") {
+					this.showError(event.errorMessage);
+				} else {
+					this.chatContainer.addChild(new Spacer(1));
+					this.chatContainer.addChild(new Text(theme.fg("error", event.errorMessage), 1, 0));
+				}
+			}
+			// Post-tool compaction resumes the same active run, so no new
+			// agent_start event will recreate the working loader. A successful
+			// no-op carries no `result` and still continues that stream.
+			if (event.midTurn && !event.aborted && !event.errorMessage) {
+				this.showWorkingLoaderNow();
+			}
+			if (!event.midTurn) void this.flushCompactionQueue({ willRetry: event.willRetry });
+			this.ui.requestRender();
+			break;
+		}
 
 		case "summarization_retry_scheduled":
 		case "summarization_retry_attempt_start":
@@ -382,107 +409,104 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
 			handleSummarizationRetryEvent(this, event);
 			break;
 
-      case "auto_retry_start": {
-        // Set up escape to abort retry
-        this.retryEscapeHandler = this.defaultEditor.onEscape;
-        this.defaultEditor.onEscape = () => {
-          this.session.abortRetry();
-        };
-        // Show retry indicator
-        this.statusContainer.clear();
-        this.retryCountdown?.dispose();
-        const retryMessage = (seconds: number) =>
-          `Retrying (${event.attempt}/${event.maxAttempts}) in ${seconds}s... (${keyText("app.interrupt")} Cancel)`;
-        this.retryLoader = new Loader(
-          this.ui,
-          (spinner) => theme.fg("warning", spinner),
-          (text) => theme.fg("muted", text),
-          retryMessage(Math.ceil(event.delayMs / 1000)),
-        );
-        this.retryCountdown = new CountdownTimer(
-          event.delayMs,
-          this.ui,
-          (seconds) => {
-            this.retryLoader?.setMessage(retryMessage(seconds));
-          },
-          () => {
-            this.retryCountdown = undefined;
-          },
-        );
-        this.statusContainer.addChild(this.retryLoader);
-        this.ui.requestRender();
-        break;
-      }
+		case "auto_retry_start": {
+			// Set up escape to abort retry
+			this.retryEscapeHandler = this.defaultEditor.onEscape;
+			this.defaultEditor.onEscape = () => {
+				this.session.abortRetry();
+			};
+			// Show retry indicator
+			this.statusContainer.clear();
+			this.retryCountdown?.dispose();
+			const retryMessage = (seconds: number) =>
+				`Retrying (${event.attempt}/${event.maxAttempts}) in ${seconds}s... (${keyText("app.interrupt")} Cancel)`;
+			this.retryLoader = new Loader(
+				this.ui,
+				(spinner) => theme.fg("warning", spinner),
+				(text) => theme.fg("muted", text),
+				retryMessage(Math.ceil(event.delayMs / 1000)),
+			);
+			this.retryCountdown = new CountdownTimer(
+				event.delayMs,
+				this.ui,
+				(seconds) => {
+					this.retryLoader?.setMessage(retryMessage(seconds));
+				},
+				() => {
+					this.retryCountdown = undefined;
+				},
+			);
+			this.statusContainer.addChild(this.retryLoader);
+			this.ui.requestRender();
+			break;
+		}
 
+		case "model_fallback_start": {
+			this.statusContainer.clear();
+			if (this.fallbackLoader) {
+				this.fallbackLoader.stop();
+				this.fallbackLoader = undefined;
+			}
+			this.fallbackLoader = new Loader(
+				this.ui,
+				(spinner) => theme.fg("warning", spinner),
+				(text) => theme.fg("muted", text),
+				`Falling back from ${event.from} to ${event.to}...`,
+			);
+			this.statusContainer.addChild(this.fallbackLoader);
+			this.ui.requestRender();
+			break;
+		}
 
-      case "model_fallback_start": {
-        this.statusContainer.clear();
-        if (this.fallbackLoader) {
-          this.fallbackLoader.stop();
-          this.fallbackLoader = undefined;
-        }
-        this.fallbackLoader = new Loader(
-          this.ui,
-          (spinner) => theme.fg("warning", spinner),
-          (text) => theme.fg("muted", text),
-          `Falling back from ${event.from} to ${event.to}...`,
-        );
-        this.statusContainer.addChild(this.fallbackLoader);
-        this.ui.requestRender();
-        break;
-      }
+		case "model_fallback_end": {
+			if (this.fallbackLoader) {
+				this.fallbackLoader.stop();
+				this.fallbackLoader = undefined;
+			}
+			this.statusContainer.clear();
+			mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
+			this.ui.requestRender();
+			break;
+		}
+		case "auto_retry_end": {
+			// Restore escape handler
+			if (this.retryEscapeHandler) {
+				this.defaultEditor.onEscape = this.retryEscapeHandler;
+				this.retryEscapeHandler = undefined;
+			}
+			if (this.retryCountdown) {
+				this.retryCountdown.dispose();
+				this.retryCountdown = undefined;
+			}
+			// Stop loader
+			if (this.retryLoader) {
+				this.retryLoader.stop();
+				this.retryLoader = undefined;
+				this.statusContainer.clear();
+				mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
+			}
+			// Show error only on final failure (success shows normal response)
+			if (!event.success) {
+				this.showError(`Retry failed after ${event.attempt} attempts: ${event.finalError || "Unknown error"}`);
+			}
+			this.ui.requestRender();
+			break;
+		}
 
-      case "model_fallback_end": {
-        if (this.fallbackLoader) {
-          this.fallbackLoader.stop();
-          this.fallbackLoader = undefined;
-        }
-        this.statusContainer.clear();
-        mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
-        this.ui.requestRender();
-        break;
-      }
-      case "auto_retry_end": {
-        // Restore escape handler
-        if (this.retryEscapeHandler) {
-          this.defaultEditor.onEscape = this.retryEscapeHandler;
-          this.retryEscapeHandler = undefined;
-        }
-        if (this.retryCountdown) {
-          this.retryCountdown.dispose();
-          this.retryCountdown = undefined;
-        }
-        // Stop loader
-        if (this.retryLoader) {
-          this.retryLoader.stop();
-          this.retryLoader = undefined;
-          this.statusContainer.clear();
-          mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
-        }
-        // Show error only on final failure (success shows normal response)
-        if (!event.success) {
-          this.showError(
-            `Retry failed after ${event.attempt} attempts: ${event.finalError || "Unknown error"}`,
-          );
-        }
-        this.ui.requestRender();
-        break;
-      }
+		case "agent_continue_error": {
+			this.stopWorkingLoader();
+			this.showError(event.errorMessage);
+			this.ui.requestRender();
+			break;
+		}
+	}
+};
 
-      case "agent_continue_error": {
-        this.stopWorkingLoader();
-        this.showError(event.errorMessage);
-        this.ui.requestRender();
-        break;
-      }
-    }
-  };
-
-InteractiveModeBase.prototype.getUserMessageText = function(this: InteractiveModeBase, message: Message): string {
-    if (message.role !== "user") return "";
-    const textBlocks =
-      typeof message.content === "string"
-        ? [{ type: "text", text: message.content }]
-        : message.content.filter((c: { type: string }) => c.type === "text");
-    return textBlocks.map((c) => (c as { text: string }).text).join("");
-  };
+InteractiveModeBase.prototype.getUserMessageText = function (this: InteractiveModeBase, message: Message): string {
+	if (message.role !== "user") return "";
+	const textBlocks =
+		typeof message.content === "string"
+			? [{ type: "text", text: message.content }]
+			: message.content.filter((c: { type: string }) => c.type === "text");
+	return textBlocks.map((c) => (c as { text: string }).text).join("");
+};

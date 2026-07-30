@@ -328,7 +328,7 @@ export class Executor {
 		this.#edits.push({
 			kind: "block",
 			anchor: { ...anchor },
-			payloads: payloads.map(payload => payload.text),
+			payloads: payloads.map((payload) => payload.text),
 			...(mode === undefined ? {} : { mode }),
 			lineNum,
 			index: this.#editIndex++,

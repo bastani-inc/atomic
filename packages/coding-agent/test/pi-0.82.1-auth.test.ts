@@ -2,11 +2,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { AuthStorage } from "../src/core/auth-storage.ts";
 import { findInitialModel, restoreModelFromSession } from "../src/core/model-resolver.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import { AuthStorage } from "../src/core/auth-storage.ts";
 import { getBuiltinApiKeyLoginOptions } from "../src/modes/interactive/interactive-auth-routing.ts";
 import { resolveLoginProviderReference } from "../src/modes/interactive/login-provider-options.ts";
 import { createInMemoryModelRegistry, createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
@@ -47,25 +47,19 @@ describe("Pi 0.82.1 authentication integration", () => {
 	it("routes direct /login references for both subscription providers", async () => {
 		const registry = await createInMemoryModelRegistry(AuthStorage.inMemory());
 		const runtime = getModelRuntime(registry);
-		const oauthOptions = runtime.getProviders()
+		const oauthOptions = runtime
+			.getProviders()
 			.filter((provider) => provider.auth.oauth)
 			.map((provider) => ({ id: provider.id, name: provider.name ?? provider.id, authType: "oauth" as const }));
-		const options = [
-			...oauthOptions,
-			...getBuiltinApiKeyLoginOptions((id) => registry.getProviderDisplayName(id)),
-		];
+		const options = [...oauthOptions, ...getBuiltinApiKeyLoginOptions((id) => registry.getProviderDisplayName(id))];
 
 		expect(resolveLoginProviderReference(options, "openrouter")).toMatchObject({
 			kind: "choose_method",
-			options: expect.arrayContaining([
-				expect.objectContaining({ id: "openrouter", authType: "oauth" }),
-			]),
+			options: expect.arrayContaining([expect.objectContaining({ id: "openrouter", authType: "oauth" })]),
 		});
 		expect(resolveLoginProviderReference(options, "kimi-coding")).toMatchObject({
 			kind: "choose_method",
-			options: expect.arrayContaining([
-				expect.objectContaining({ id: "kimi-coding", authType: "oauth" }),
-			]),
+			options: expect.arrayContaining([expect.objectContaining({ id: "kimi-coding", authType: "oauth" })]),
 		});
 	});
 
@@ -130,7 +124,10 @@ describe("Pi 0.82.1 authentication integration", () => {
 		const storage = AuthStorage.inMemory();
 		const registry = await createInMemoryModelRegistry(storage);
 		const runtime = getModelRuntime(registry);
-		const models = registry.getAll().filter(({ provider }) => provider === "anthropic").slice(0, 2);
+		const models = registry
+			.getAll()
+			.filter(({ provider }) => provider === "anthropic")
+			.slice(0, 2);
 		expect(models).toHaveLength(2);
 		const [first, second] = models;
 
@@ -184,11 +181,13 @@ describe("Pi 0.82.1 authentication integration", () => {
 		});
 		const registry = await createInMemoryModelRegistry(storage);
 		const runtime = getModelRuntime(registry);
-		vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({
-			access_token: "access-new",
-			refresh_token: "refresh-new",
-			expires_in: 3600,
-		}));
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			jsonResponse({
+				access_token: "access-new",
+				refresh_token: "refresh-new",
+				expires_in: 3600,
+			}),
+		);
 
 		await expect(runtime.getAuth("kimi-coding")).resolves.toMatchObject({
 			auth: { headers: { Authorization: "Bearer access-new" } },
@@ -205,10 +204,15 @@ describe("Pi 0.82.1 authentication integration", () => {
 			"kimi-coding": { type: "oauth", access: "old", refresh: "revoked", expires: 0 },
 		});
 		const registry = await createInMemoryModelRegistry(storage);
-		vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({
-			error: "invalid_grant",
-			error_description: "credential revoked by gateway",
-		}, 401));
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			jsonResponse(
+				{
+					error: "invalid_grant",
+					error_description: "credential revoked by gateway",
+				},
+				401,
+			),
+		);
 		const model = registry.getAll().find(({ provider }) => provider === "kimi-coding");
 		expect(model).toBeDefined();
 
@@ -221,25 +225,30 @@ describe("Pi 0.82.1 authentication integration", () => {
 	it("routes configured Radius refresh directly through the declared gateway", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "atomic-radius-auth-"));
 		try {
-			writeFileSync(join(directory, "models.json"), JSON.stringify({
-				providers: {
-					"corp-radius": {
-						name: "Corporate Radius",
-						baseUrl: "https://radius.example.test/v1",
-						oauth: "radius",
+			writeFileSync(
+				join(directory, "models.json"),
+				JSON.stringify({
+					providers: {
+						"corp-radius": {
+							name: "Corporate Radius",
+							baseUrl: "https://radius.example.test/v1",
+							oauth: "radius",
+						},
 					},
-				},
-			}));
+				}),
+			);
 			const storage = AuthStorage.inMemory({
 				"corp-radius": { type: "oauth", access: "old", refresh: "refresh", expires: 0 },
 			});
 			const registry = await createModelRegistry(storage, join(directory, "models.json"));
 			const runtime = getModelRuntime(registry);
-			const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({
-				access_token: "new-access",
-				refresh_token: "new-refresh",
-				expires_in: 3600,
-			}));
+			const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+				jsonResponse({
+					access_token: "new-access",
+					refresh_token: "new-refresh",
+					expires_in: 3600,
+				}),
+			);
 
 			await expect(runtime.getAuth("corp-radius")).resolves.toMatchObject({
 				auth: { apiKey: "new-access" },

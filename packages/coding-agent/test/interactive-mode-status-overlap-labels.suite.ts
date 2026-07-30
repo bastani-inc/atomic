@@ -143,8 +143,18 @@ describe("InteractiveMode overlap labels", () => {
 		const fakeThis = createShowLoadedResourcesThis({
 			quietStartup: true,
 			overlaps: [
-				{ resourceType: "tool", name: "alpha", inherited: inherited("/tmp/pi-home/extensions/plugin-a/index.ts"), bundled },
-				{ resourceType: "command", name: "beta", inherited: inherited("/tmp/pi-project/extensions/plugin-b/index.ts"), bundled },
+				{
+					resourceType: "tool",
+					name: "alpha",
+					inherited: inherited("/tmp/pi-home/extensions/plugin-a/index.ts"),
+					bundled,
+				},
+				{
+					resourceType: "command",
+					name: "beta",
+					inherited: inherited("/tmp/pi-project/extensions/plugin-b/index.ts"),
+					bundled,
+				},
 			],
 		});
 

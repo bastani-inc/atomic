@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ENV_AGENT_DIR } from "../src/config.ts";
-import { runCliProcess, removeTempDirs } from "./cli-test-helpers.ts";
+import { removeTempDirs, runCliProcess } from "./cli-test-helpers.ts";
 
 const tempDirs: string[] = [];
 
@@ -105,7 +105,14 @@ describe("--session-id read-only commands", () => {
 	});
 
 	it("warns when an exact session id is missing and a new session is created", async () => {
-		const result = await runCli((dirs) => ["--session-dir", dirs.sessionDir, "--session-id", "missing-id", "-p", "hi"]);
+		const result = await runCli((dirs) => [
+			"--session-dir",
+			dirs.sessionDir,
+			"--session-id",
+			"missing-id",
+			"-p",
+			"hi",
+		]);
 
 		expect(result.stderr).toContain("No session found with id 'missing-id'; creating a new session");
 	});

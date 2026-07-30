@@ -6,7 +6,7 @@ import type { ExtensionContext } from "../src/core/extensions/types.ts";
 import type { CustomMessage } from "../src/core/messages.ts";
 import { createStructuredOutputTool } from "../src/core/tools/structured-output.ts";
 import type { SessionShutdownEvent } from "../src/index.ts";
-import { runPrintMode, type PrintModeOptions } from "../src/modes/print-mode.ts";
+import { type PrintModeOptions, runPrintMode } from "../src/modes/print-mode.ts";
 
 type EmitEvent = SessionShutdownEvent;
 
@@ -67,10 +67,7 @@ function createAssistantMessage(options?: {
 	};
 }
 
-function createCustomMessage(options?: {
-	content?: CustomMessage["content"];
-	display?: boolean;
-}): CustomMessage {
+function createCustomMessage(options?: { content?: CustomMessage["content"]; display?: boolean }): CustomMessage {
 	return {
 		role: "custom",
 		customType: "test:custom",
@@ -128,9 +125,9 @@ function createRuntimeHost(
 		emitEvent: (event: AgentSessionEvent) => {
 			for (const listener of [...eventListeners]) listener(event);
 		},
-		getToolDefinition: vi.fn((name: string) => (
-			structuredOutputTools.has(name) ? { structuredOutput: true } : undefined
-		)),
+		getToolDefinition: vi.fn((name: string) =>
+			structuredOutputTools.has(name) ? { structuredOutput: true } : undefined,
+		),
 		prompt: vi.fn(async (_text: string, _options?: { images?: ImageContent[] }) => {}),
 		reload: vi.fn(async () => {}),
 	};
@@ -234,7 +231,10 @@ describe("runPrintMode", () => {
 
 		expect(exitCode).toBe(0);
 		expect(stdoutChunks.join("")).toBe("workflow completed\nresult: ok\n");
-		expect(runtimeHost.session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
+		expect(runtimeHost.session.extensionRunner.emit).toHaveBeenCalledWith({
+			type: "session_shutdown",
+			reason: "quit",
+		});
 	});
 
 	it("prints trailing terminating structured_output tool-result content in text mode", async () => {
@@ -243,7 +243,7 @@ describe("runPrintMode", () => {
 		});
 		const { session } = runtimeHost;
 		const stdoutChunks = captureStdout();
-		const finalJson = "{\n  \"ok\": true\n}";
+		const finalJson = '{\n  "ok": true\n}';
 		const structuredOutputTool = createStructuredOutputTool({
 			schema: Type.Object({ ok: Type.Boolean() }, { additionalProperties: false }),
 		});
@@ -266,12 +266,14 @@ describe("runPrintMode", () => {
 				result,
 				isError: false,
 			});
-			session.state.messages.push(createToolResultMessage({
-				toolCallId: "structured-call-1",
-				toolName: "structured_output",
-				content: result.content,
-				details: result.details,
-			}));
+			session.state.messages.push(
+				createToolResultMessage({
+					toolCallId: "structured-call-1",
+					toolName: "structured_output",
+					content: result.content,
+					details: result.details,
+				}),
+			);
 		});
 
 		const exitCode = await runPrintModeWithFakeHost(runtimeHost, {
@@ -290,7 +292,7 @@ describe("runPrintMode", () => {
 		});
 		const { session } = runtimeHost;
 		const stdoutChunks = captureStdout();
-		const finalJson = "{\n  \"approved\": true\n}";
+		const finalJson = '{\n  "approved": true\n}';
 		const structuredOutputTool = createStructuredOutputTool({
 			name: "final_decision",
 			schema: Type.Object({ approved: Type.Boolean() }, { additionalProperties: false }),
@@ -314,12 +316,14 @@ describe("runPrintMode", () => {
 				result,
 				isError: false,
 			});
-			session.state.messages.push(createToolResultMessage({
-				toolCallId: "custom-structured-call-1",
-				toolName: "final_decision",
-				content: result.content,
-				details: result.details,
-			}));
+			session.state.messages.push(
+				createToolResultMessage({
+					toolCallId: "custom-structured-call-1",
+					toolName: "final_decision",
+					content: result.content,
+					details: result.details,
+				}),
+			);
 		});
 
 		const exitCode = await runPrintModeWithFakeHost(runtimeHost, {
@@ -350,11 +354,13 @@ describe("runPrintMode", () => {
 				},
 				isError: false,
 			});
-			session.state.messages.push(createToolResultMessage({
-				toolCallId: "structured-call-2",
-				toolName: "structured_output",
-				text: "not final",
-			}));
+			session.state.messages.push(
+				createToolResultMessage({
+					toolCallId: "structured-call-2",
+					toolName: "structured_output",
+					text: "not final",
+				}),
+			);
 		});
 		const exitCode = await runPrintModeWithFakeHost(runtimeHost, {
 			mode: "text",
@@ -379,11 +385,13 @@ describe("runPrintMode", () => {
 				},
 				isError: false,
 			});
-			session.state.messages.push(createToolResultMessage({
-				toolCallId: "ask-call-1",
-				toolName: "ask_user_question",
-				text: "unrelated final",
-			}));
+			session.state.messages.push(
+				createToolResultMessage({
+					toolCallId: "ask-call-1",
+					toolName: "ask_user_question",
+					text: "unrelated final",
+				}),
+			);
 		});
 		const exitCode = await runPrintModeWithFakeHost(runtimeHost, {
 			mode: "text",

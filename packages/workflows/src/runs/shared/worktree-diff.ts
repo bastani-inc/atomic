@@ -10,7 +10,13 @@ function safePatchAgentName(agent: string): string {
 function removeSyntheticPath(worktree: WorktreeInfo, syntheticPath: string): void {
 	const resolved = path.resolve(worktree.path, syntheticPath);
 	const relative = path.relative(worktree.path, resolved);
-	if (!relative || relative === "." || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+	if (
+		!relative ||
+		relative === "." ||
+		relative === ".." ||
+		relative.startsWith(`..${path.sep}`) ||
+		path.isAbsolute(relative)
+	) {
 		return;
 	}
 
@@ -18,7 +24,8 @@ function removeSyntheticPath(worktree: WorktreeInfo, syntheticPath: string): voi
 	try {
 		stat = fs.lstatSync(resolved);
 	} catch (error) {
-		const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
+		const code =
+			error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
 		if (code === "ENOENT") return;
 		throw error;
 	}

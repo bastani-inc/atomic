@@ -1,8 +1,4 @@
-import type {
-	AgentToolResult,
-	AgentToolUpdateCallback,
-	ToolExecutionMode,
-} from "@earendil-works/pi-agent-core";
+import type { AgentToolResult, AgentToolUpdateCallback, ToolExecutionMode } from "@earendil-works/pi-agent-core";
 import type { ConstrainedSamplingConfig } from "@earendil-works/pi-ai/compat";
 import type { Component } from "@earendil-works/pi-tui";
 import type { Static, TSchema } from "typebox";
@@ -131,6 +127,9 @@ export function defineTool<TParams extends TSchema, TDetails = unknown, TState =
 export type { ConstrainedSamplingConfig } from "@earendil-works/pi-ai/compat";
 
 /** Tool info with name, description, parameter schema, constraint, and source metadata */
-export type ToolInfo = Pick<ToolDefinition, "name" | "description" | "parameters" | "constrainedSampling" | "promptGuidelines"> & {
+export type ToolInfo = Pick<
+	ToolDefinition,
+	"name" | "description" | "parameters" | "constrainedSampling" | "promptGuidelines"
+> & {
 	sourceInfo: SourceInfo;
 };

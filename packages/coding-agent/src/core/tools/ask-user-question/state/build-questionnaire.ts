@@ -1,5 +1,5 @@
-import { getMarkdownTheme, type Theme } from "../../../../modes/interactive/theme/theme.ts";
 import { Input } from "@earendil-works/pi-tui";
+import { getMarkdownTheme, type Theme } from "../../../../modes/interactive/theme/theme.ts";
 import type { QuestionData } from "../tool/types.ts";
 import {
 	type BoundGlobalBinding,

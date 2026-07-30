@@ -1,5 +1,5 @@
-import * as fs from "node:fs";
 import { randomUUID } from "node:crypto";
+import * as fs from "node:fs";
 import * as path from "node:path";
 import type { GroupedResultIntercomMessageInput } from "../../intercom/result-intercom.js";
 import type { ResultFileData } from "./result-watcher-data.js";
@@ -61,7 +61,11 @@ export function claimIdFromScheduleKey(key: string): string | undefined {
 	return key.startsWith(CLAIM_SCHEDULE_PREFIX) ? key.slice(CLAIM_SCHEDULE_PREFIX.length) : undefined;
 }
 
-export function loadResultClaim(resultsDir: string, id: string, fsApi: ResultClaimFs = fs): ResultFileClaim | undefined {
+export function loadResultClaim(
+	resultsDir: string,
+	id: string,
+	fsApi: ResultClaimFs = fs,
+): ResultFileClaim | undefined {
 	try {
 		const dir = path.join(resultsDir, CLAIMS_DIR, id);
 		const metaPath = path.join(dir, "claim.json");
@@ -107,7 +111,11 @@ export function claimPublicResult(
 		const metaPath = path.join(dir, "claim.json");
 		const payloadPath = path.join(dir, "result.json");
 		const meta: ResultFileClaimMeta = {
-			version: 1, id, originalFile: path.basename(file), state: "active", createdAt: Date.now(),
+			version: 1,
+			id,
+			originalFile: path.basename(file),
+			state: "active",
+			createdAt: Date.now(),
 		};
 		try {
 			f.writeFileSync(metaPath, `${JSON.stringify(meta)}\n`, "utf-8");
@@ -121,7 +129,10 @@ export function claimPublicResult(
 	throw new Error(`Unable to allocate a result claim for '${file}'`);
 }
 
-export function readClaimData(claim: ResultFileClaim, fsApi: ResultClaimFs = fs): { raw: string; data: ResultFileData } {
+export function readClaimData(
+	claim: ResultFileClaim,
+	fsApi: ResultClaimFs = fs,
+): { raw: string; data: ResultFileData } {
 	const raw = (fsApi.readFileSync ?? fs.readFileSync)(claim.payloadPath, "utf-8");
 	return { raw, data: JSON.parse(raw) as ResultFileData };
 }
@@ -141,7 +152,11 @@ export function updateResultClaim(
 export function removeResultClaim(claim: ResultFileClaim, fsApi: ResultClaimFs = fs): void {
 	const f = api(fsApi);
 	f.rmSync(claim.dir, { recursive: true, force: true });
-	try { f.rmdirSync(path.dirname(claim.dir)); } catch { /* another active claim keeps the shared directory */ }
+	try {
+		f.rmdirSync(path.dirname(claim.dir));
+	} catch {
+		/* another active claim keeps the shared directory */
+	}
 }
 
 export function recoverTerminalClaim(claim: ResultFileClaim, fsApi: ResultClaimFs = fs): "active" | "removed" {

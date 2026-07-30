@@ -94,7 +94,6 @@ type PromptTurnContext = {
 	startupNoticesContainer: TestNode;
 };
 
-
 type InteractiveModePrivate = {
 	getUserInput(this: InputContext): Promise<string>;
 	showStartupNoticesIfNeeded(this: StartupNoticesContext): void;
@@ -108,10 +107,9 @@ async function waitForImmediate(): Promise<void> {
 	await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
-function createPromptTurnContext(options: {
-	deferredStartupPending?: boolean;
-	deferredStartupPromise?: Promise<void>;
-} = {}): PromptTurnContext {
+function createPromptTurnContext(
+	options: { deferredStartupPending?: boolean; deferredStartupPromise?: Promise<void> } = {},
+): PromptTurnContext {
 	return {
 		deferredStartupPending: options.deferredStartupPending ?? false,
 		deferredStartupPromise: options.deferredStartupPromise,
@@ -283,7 +281,6 @@ describe("InteractiveMode startup latency hooks", () => {
 
 		expect(order).toEqual(["deferred", "prompt"]);
 	});
-
 
 	it("prepares startup notices only when notice rendering is requested", () => {
 		const context: StartupNoticesContext = {

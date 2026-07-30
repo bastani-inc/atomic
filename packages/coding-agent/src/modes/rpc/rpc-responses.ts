@@ -21,4 +21,3 @@ export function createRpcErrorResponse(id: string | undefined, command: string, 
 export function formatRpcErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
-

@@ -86,7 +86,9 @@ export interface ContextCompactionStats {
 export interface ContextCompactionEntry extends SessionEntryBase {
 	type: "context_compaction";
 	promptVersion: 1;
-	deletedTargets: Array<{ kind: "entry"; entryId: string } | { kind: "content_block"; entryId: string; blockIndex: number }>;
+	deletedTargets: Array<
+		{ kind: "entry"; entryId: string } | { kind: "content_block"; entryId: string; blockIndex: number }
+	>;
 	protectedEntryIds: string[];
 	stats: ContextCompactionStats;
 	backupPath?: string;
@@ -213,7 +215,6 @@ export interface SessionInfo {
 	/** Optional semantic color for synthetic selector rows. */
 	messageColor?: "success" | "warning" | "accent" | "error";
 }
-
 
 export type SessionListProgress = (loaded: number, total: number) => void;
 

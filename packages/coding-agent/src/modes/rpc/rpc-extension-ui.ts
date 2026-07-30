@@ -13,8 +13,8 @@ import { type Theme, theme } from "../interactive/theme/theme.ts";
 import type { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
 import type { EngineInputFormService } from "../interactive-engine/engine-input-form.ts";
 import type { EngineSessionPickerService } from "../interactive-engine/engine-session-picker.ts";
-import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "./rpc-types.ts";
 import type { RpcOutput } from "./rpc-responses.ts";
+import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "./rpc-types.ts";
 
 export interface RpcPendingExtensionRequest {
 	resolve: (value: RpcExtensionUIResponse) => void;
@@ -115,7 +115,11 @@ export function createRpcExtensionUIContext({
 				defaultValue: undefined,
 				request: { method: "select", title, options, timeout: opts?.timeout },
 				parseResponse: (response) =>
-					"cancelled" in response && response.cancelled ? undefined : "value" in response ? response.value : undefined,
+					"cancelled" in response && response.cancelled
+						? undefined
+						: "value" in response
+							? response.value
+							: undefined,
 			}),
 
 		confirm: (title, message, opts) =>
@@ -126,7 +130,11 @@ export function createRpcExtensionUIContext({
 				defaultValue: false,
 				request: { method: "confirm", title, message, timeout: opts?.timeout },
 				parseResponse: (response) =>
-					"cancelled" in response && response.cancelled ? false : "confirmed" in response ? response.confirmed : false,
+					"cancelled" in response && response.cancelled
+						? false
+						: "confirmed" in response
+							? response.confirmed
+							: false,
 			}),
 
 		input: (title, placeholder, opts) =>
@@ -137,19 +145,26 @@ export function createRpcExtensionUIContext({
 				defaultValue: undefined,
 				request: { method: "input", title, placeholder, timeout: opts?.timeout },
 				parseResponse: (response) =>
-					"cancelled" in response && response.cancelled ? undefined : "value" in response ? response.value : undefined,
+					"cancelled" in response && response.cancelled
+						? undefined
+						: "value" in response
+							? response.value
+							: undefined,
 			}),
 
 		notify(message: string, type?: "info" | "warning" | "error"): void {
 			emitExtensionUIRequest(output, { method: "notify", message, notifyType: type });
 		},
 
-		requestRender(): void { customUi?.requestRender(); },
-
-		getHostCustomUiState: () => customUi?.getHostCustomUiState() ?? {
-			blockingInlineCustomUiDepth: 0,
-			blockingInlineCustomUiActive: false,
+		requestRender(): void {
+			customUi?.requestRender();
 		},
+
+		getHostCustomUiState: () =>
+			customUi?.getHostCustomUiState() ?? {
+				blockingInlineCustomUiDepth: 0,
+				blockingInlineCustomUiActive: false,
+			},
 		onHostCustomUiStateChange: (listener) => customUi?.onHostCustomUiStateChange(listener) ?? (() => {}),
 		focusHostInlineCustomUi: () => customUi?.focusHostInlineCustomUi() ?? false,
 
@@ -187,40 +202,55 @@ export function createRpcExtensionUIContext({
 			if (content === undefined) {
 				customUi?.setWidget(key, undefined, options?.placement);
 				emitExtensionUIRequest(output, {
-					method: "setWidget", widgetKey: key, widgetLines: undefined, widgetPlacement: options?.placement,
+					method: "setWidget",
+					widgetKey: key,
+					widgetLines: undefined,
+					widgetPlacement: options?.placement,
 				});
 				return;
 			}
 			if (Array.isArray(content)) {
 				emitExtensionUIRequest(output, {
-					method: "setWidget", widgetKey: key, widgetLines: content as string[], widgetPlacement: options?.placement,
+					method: "setWidget",
+					widgetKey: key,
+					widgetLines: content as string[],
+					widgetPlacement: options?.placement,
 				});
 				return;
 			}
 			if (customUi && typeof content === "function") {
-				customUi.setWidget(key, content as (tui: TUI, theme: Theme) => Component & { dispose?(): void }, options?.placement);
+				customUi.setWidget(
+					key,
+					content as (tui: TUI, theme: Theme) => Component & { dispose?(): void },
+					options?.placement,
+				);
 				return;
 			}
 			warnUnsupported("component-factory widgets");
 		},
 
-		setFooter(): void { warnUnsupported("ctx.ui.setFooter"); },
+		setFooter(): void {
+			warnUnsupported("ctx.ui.setFooter");
+		},
 
-		setHeader(): void { warnUnsupported("ctx.ui.setHeader"); },
+		setHeader(): void {
+			warnUnsupported("ctx.ui.setHeader");
+		},
 
 		setTitle(title: string): void {
 			emitExtensionUIRequest(output, { method: "setTitle", title });
 		},
 
-		custom: (factory, options) => customUi
-			? customUi.custom(factory, options)
-			: Promise.resolve(undefined as never),
+		custom: (factory, options) =>
+			customUi ? customUi.custom(factory, options) : Promise.resolve(undefined as never),
 
 		// Exposed in the isolated engine child, where the terminal host mounts
 		// the real session selector natively so picker navigation never crosses
 		// the process boundary. Absent in plain headless RPC (no interactive
 		// host); callers must fail with an actionable error, not degrade.
-		...(sessionPicker ? { hostSessionPicker: (request: HostSessionPickerRequest) => sessionPicker.open(request) } : {}),
+		...(sessionPicker
+			? { hostSessionPicker: (request: HostSessionPickerRequest) => sessionPicker.open(request) }
+			: {}),
 		...(inputForm ? { hostInputForm: (request: HostInputFormRequest) => inputForm.open(request) } : {}),
 
 		pasteToEditor(text: string): void {
@@ -256,9 +286,13 @@ export function createRpcExtensionUIContext({
 			});
 		},
 
-		addAutocompleteProvider(): void { warnUnsupported("ctx.ui.addAutocompleteProvider"); },
+		addAutocompleteProvider(): void {
+			warnUnsupported("ctx.ui.addAutocompleteProvider");
+		},
 
-		setEditorComponent(): void { warnUnsupported("ctx.ui.setEditorComponent"); },
+		setEditorComponent(): void {
+			warnUnsupported("ctx.ui.setEditorComponent");
+		},
 
 		getEditorComponent() {
 			// Custom editor components not supported in RPC mode
@@ -266,12 +300,14 @@ export function createRpcExtensionUIContext({
 		},
 
 		getFooterDataProvider() {
-			return footerDataProvider ?? {
-				getGitBranch: () => null,
-				getExtensionStatuses: () => new Map(),
-				getAvailableProviderCount: () => 1,
-				onBranchChange: () => () => {},
-			};
+			return (
+				footerDataProvider ?? {
+					getGitBranch: () => null,
+					getExtensionStatuses: () => new Map(),
+					getAvailableProviderCount: () => 1,
+					onBranchChange: () => () => {},
+				}
+			);
 		},
 
 		get theme() {

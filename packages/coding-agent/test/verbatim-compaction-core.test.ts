@@ -1,5 +1,7 @@
 import type { Message } from "@earendil-works/pi-ai/compat";
 import { describe, expect, it } from "vitest";
+import type { RawLineRange } from "../src/core/compaction/compaction-types.js";
+import { reconstructCompactedTranscript, validateDeletedRanges } from "../src/core/compaction/deleted-ranges.js";
 import {
 	createNumberedRegion,
 	FILTERED_MARKER_RE,
@@ -8,10 +10,10 @@ import {
 	serializeConversationForCompaction,
 	serializeRetainedTranscript,
 } from "../src/core/compaction/transcript-serialization.js";
-import { reconstructCompactedTranscript, validateDeletedRanges } from "../src/core/compaction/deleted-ranges.js";
-import type { RawLineRange } from "../src/core/compaction/compaction-types.js";
 
-function assistant(content: Extract<Message, { role: "assistant" }>["content"]): Extract<Message, { role: "assistant" }> {
+function assistant(
+	content: Extract<Message, { role: "assistant" }>["content"],
+): Extract<Message, { role: "assistant" }> {
 	return {
 		role: "assistant",
 		content,
@@ -130,9 +132,7 @@ describe("verbatim transcript serialization", () => {
 
 	it("numbers lines and detects headers and prior markers", () => {
 		const region = createNumberedRegion("[User]: task\nbody\n(filtered 12 lines)\n[Assistant]: done");
-		expect(numberRegionLines(region)).toBe(
-			"1→[User]: task\n2→body\n3→(filtered 12 lines)\n4→[Assistant]: done",
-		);
+		expect(numberRegionLines(region)).toBe("1→[User]: task\n2→body\n3→(filtered 12 lines)\n4→[Assistant]: done");
 		expect([...region.headerLineNumbers]).toEqual([1, 4]);
 		expect([...region.priorMarkerNs]).toEqual([[3, 12]]);
 	});
@@ -219,11 +219,20 @@ describe("mechanical reconstruction", () => {
 	it("retains cumulative original-line accounting across three compactions", () => {
 		const original = "a\nb\nc\nd\ne\nf\ng\nh";
 		const firstRegion = createNumberedRegion(original);
-		const first = reconstructCompactedTranscript(firstRegion, validateDeletedRanges([{ start: 2, end: 4 }], firstRegion));
+		const first = reconstructCompactedTranscript(
+			firstRegion,
+			validateDeletedRanges([{ start: 2, end: 4 }], firstRegion),
+		);
 		const secondRegion = createNumberedRegion(first.text);
-		const second = reconstructCompactedTranscript(secondRegion, validateDeletedRanges([{ start: 3, end: 4 }], secondRegion));
+		const second = reconstructCompactedTranscript(
+			secondRegion,
+			validateDeletedRanges([{ start: 3, end: 4 }], secondRegion),
+		);
 		const thirdRegion = createNumberedRegion(second.text);
-		const third = reconstructCompactedTranscript(thirdRegion, validateDeletedRanges([{ start: 3, end: 3 }], thirdRegion));
+		const third = reconstructCompactedTranscript(
+			thirdRegion,
+			validateDeletedRanges([{ start: 3, end: 3 }], thirdRegion),
+		);
 		expect(expandLineCount(first.text)).toBe(8);
 		expect(expandLineCount(second.text)).toBe(8);
 		expect(expandLineCount(third.text)).toBe(8);

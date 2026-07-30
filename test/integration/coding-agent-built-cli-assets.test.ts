@@ -1,8 +1,8 @@
-import { afterAll, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { afterAll, describe, test } from "vitest";
 import { bunExecutable, moduleDir, readStreamText, spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
 
 const repoRoot = join(moduleDir(import.meta.url), "../..");

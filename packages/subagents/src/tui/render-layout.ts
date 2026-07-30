@@ -85,7 +85,12 @@ export const RUNNING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", 
  */
 export const RUNNING_ANIMATION_MS = 80;
 
-type ProgressSeedSource = Partial<Pick<AgentProgress, "index" | "toolCount" | "tokens" | "durationMs" | "lastActivityAt" | "currentToolStartedAt" | "turnCount">>;
+type ProgressSeedSource = Partial<
+	Pick<
+		AgentProgress,
+		"index" | "toolCount" | "tokens" | "durationMs" | "lastActivityAt" | "currentToolStartedAt" | "turnCount"
+	>
+>;
 
 /**
  * Wall-clock-derived animation frame counter. Advances exactly one step every

@@ -6,6 +6,7 @@
 
 import type { StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model, SimpleStreamOptions, Usage } from "@earendil-works/pi-ai/compat";
+import { DEFAULT_COMPACTION_SETTINGS } from "../../packages/coding-agent/src/core/compaction/compaction.js";
 import type { CompactionRunRequest } from "../../packages/coding-agent/src/core/compaction/compaction-runner.js";
 import type {
 	BorrowedPlanner,
@@ -15,7 +16,6 @@ import type {
 	VerbatimCompactionPreparation,
 } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
 import { resolvePlannerRequest } from "../../packages/coding-agent/src/core/compaction/range-planner.js";
-import { DEFAULT_COMPACTION_SETTINGS } from "../../packages/coding-agent/src/core/compaction/compaction.js";
 
 export const PARAMETERS: VerbatimCompactionParameters = {
 	compression_ratio: 0.5,
@@ -139,8 +139,10 @@ export function registryOf(models: Model<Api>[], unauthenticated: string[] = [])
 	const authenticated = (model: Model<Api>) => !unauthenticated.includes(model.id);
 	return {
 		getAvailableSnapshot: () => models.filter(authenticated),
-		getModel: (provider: string, id: string) => models.find((model) => model.provider === provider && model.id === id),
-		hasConfiguredAuth: (provider: string) => models.some((model) => model.provider === provider && authenticated(model)),
+		getModel: (provider: string, id: string) =>
+			models.find((model) => model.provider === provider && model.id === id),
+		hasConfiguredAuth: (provider: string) =>
+			models.some((model) => model.provider === provider && authenticated(model)),
 	};
 }
 export function runRequest(overrides: Partial<CompactionRunRequest> & { streamFn: StreamFn }): CompactionRunRequest {

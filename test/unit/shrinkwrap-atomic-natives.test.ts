@@ -1,9 +1,9 @@
-import { test } from "vitest";
+import assert from "node:assert/strict";
 import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import assert from "node:assert/strict";
+import { test } from "vitest";
 
 import type { CodingAgentShrinkwrap as Shrinkwrap } from "../../scripts/generate-coding-agent-shrinkwrap.mjs";
 import { readJson, writeFileEnsuringDir } from "../helpers/runtime.js";
@@ -78,7 +78,10 @@ async function createStampedShrinkwrapFixture(version: string): Promise<string> 
 	mkdirSync(join(fixtureRoot, "packages/coding-agent"), { recursive: true });
 	mkdirSync(join(fixtureRoot, "packages/natives"), { recursive: true });
 
-	copyFileSync("scripts/generate-coding-agent-shrinkwrap.mjs", join(fixtureRoot, "scripts/generate-coding-agent-shrinkwrap.mjs"));
+	copyFileSync(
+		"scripts/generate-coding-agent-shrinkwrap.mjs",
+		join(fixtureRoot, "scripts/generate-coding-agent-shrinkwrap.mjs"),
+	);
 	copyFileSync("package-lock.json", join(fixtureRoot, "package-lock.json"));
 
 	const codingAgentPackage = await readPackageJson("packages/coding-agent/package.json");

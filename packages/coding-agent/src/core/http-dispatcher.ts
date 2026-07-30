@@ -41,7 +41,9 @@ export function applyHttpProxySettings(httpProxy: string | undefined): void {
 	process.env.HTTPS_PROXY ??= proxy;
 }
 
-export function createHttpDispatcherOptions(timeoutMs: number): ConstructorParameters<typeof undici.EnvHttpProxyAgent>[0] {
+export function createHttpDispatcherOptions(
+	timeoutMs: number,
+): ConstructorParameters<typeof undici.EnvHttpProxyAgent>[0] {
 	return {
 		allowH2: false,
 		// Undici defaults to a 10s connect timeout; disable it so slow
@@ -109,9 +111,10 @@ export function configureHttpDispatcher(timeoutMs: number = DEFAULT_HTTP_IDLE_TI
 	// otherwise behave differently from the configured dispatcher used by SDKs.
 	// If a caller replaced fetch after module load, preserve that deliberate
 	// override.
-	const shouldInstallGlobals = installedGlobalFetch === undefined
-		? globalThis.fetch === originalGlobalFetch
-		: globalThis.fetch === installedGlobalFetch;
+	const shouldInstallGlobals =
+		installedGlobalFetch === undefined
+			? globalThis.fetch === originalGlobalFetch
+			: globalThis.fetch === installedGlobalFetch;
 	if (shouldInstallGlobals) {
 		undici.install?.();
 		installedGlobalFetch = globalThis.fetch;

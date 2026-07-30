@@ -70,10 +70,7 @@ async function acquireLock(
 					error: `Todo ${displayTodoId(id)} lock is stale; rerun in interactive mode to steal it.`,
 				};
 			}
-			const ok = await ctx.ui.confirm(
-				"Todo locked",
-				`Todo ${displayTodoId(id)} appears locked. Steal the lock?`,
-			);
+			const ok = await ctx.ui.confirm("Todo locked", `Todo ${displayTodoId(id)} appears locked. Steal the lock?`);
 			if (!ok) {
 				return { error: `Todo ${displayTodoId(id)} remains locked.` };
 			}

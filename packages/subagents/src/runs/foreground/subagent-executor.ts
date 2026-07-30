@@ -1,18 +1,15 @@
-import { type ExtensionContext } from "@bastani/atomic";
+import type { ExtensionContext } from "@bastani/atomic";
 import { handleManagementAction } from "../../agents/agent-management.ts";
-import { buildDoctorReport } from "../../extension/doctor.ts";
 import { clearPendingForegroundControlNotices } from "../../extension/control-notices.ts";
+import { buildDoctorReport } from "../../extension/doctor.ts";
 import { resolveIntercomSessionTarget } from "../../intercom/intercom-bridge.ts";
 import { SUBAGENT_ACTIONS, type SubagentToolResult } from "../../shared/types.ts";
+import { type ResolvedSubagentRunId, resolveSubagentRunId } from "../background/run-id-resolver.ts";
 import { inspectSubagentStatus } from "../background/run-status.ts";
-import { resolveSubagentRunId, type ResolvedSubagentRunId } from "../background/run-id-resolver.ts";
 import { runAsyncPath } from "./subagent-executor-async.ts";
 import { runChainPath } from "./subagent-executor-chain.ts";
 import { checkDepthForExecution, prepareExecutionContext } from "./subagent-executor-context.ts";
-import {
-	toExecutionErrorResult,
-	withForkContext,
-} from "./subagent-executor-input.ts";
+import { toExecutionErrorResult, withForkContext } from "./subagent-executor-input.ts";
 import { runParallelPath } from "./subagent-executor-parallel.ts";
 import {
 	interruptAsyncRun,
@@ -28,15 +25,11 @@ import {
 	getForegroundControl,
 	retainedForegroundStatusResult,
 } from "./subagent-executor-status.ts";
-import type {
-	ExecutorDeps,
-	ResolvedExecutorDeps,
-	SubagentParamsLike,
-} from "./subagent-executor-types.ts";
+import type { ExecutorDeps, ResolvedExecutorDeps, SubagentParamsLike } from "./subagent-executor-types.ts";
 
 const MUTATING_MANAGEMENT_ACTIONS = new Set(["create", "update", "delete"]);
 
-export type { SubagentParamsLike, SubagentExecutorRuntimeDeps } from "./subagent-executor-types.ts";
+export type { SubagentExecutorRuntimeDeps, SubagentParamsLike } from "./subagent-executor-types.ts";
 
 async function handleManagementRequest(input: {
 	params: SubagentParamsLike;
@@ -48,7 +41,11 @@ async function handleManagementRequest(input: {
 	const { params, paramsWithResolvedCwd, requestCwd, ctx, deps } = input;
 	const action = params.action;
 	if (!action) {
-		return { content: [{ type: "text", text: "Missing action." }], isError: true, details: { mode: "management", results: [] } };
+		return {
+			content: [{ type: "text", text: "Missing action." }],
+			isError: true,
+			details: { mode: "management", results: [] },
+		};
 	}
 	if (action === "doctor") {
 		let currentSessionFile: string | null = null;
@@ -65,21 +62,23 @@ async function handleManagementRequest(input: {
 			orchestratorTarget = resolveIntercomSessionTarget(deps.pi.getSessionName(), ctx.sessionManager.getSessionId());
 		} catch {}
 		return {
-			content: [{
-				type: "text",
-				text: buildDoctorReport({
-					cwd: requestCwd,
-					config: deps.config,
-					state: deps.state,
-					context: paramsWithResolvedCwd.context,
-					requestedSessionDir: paramsWithResolvedCwd.sessionDir,
-					currentSessionFile,
-					currentSessionId,
-					orchestratorTarget,
-					sessionError,
-					expandTilde: deps.expandTilde,
-				}),
-			}],
+			content: [
+				{
+					type: "text",
+					text: buildDoctorReport({
+						cwd: requestCwd,
+						config: deps.config,
+						state: deps.state,
+						context: paramsWithResolvedCwd.context,
+						requestedSessionDir: paramsWithResolvedCwd.sessionDir,
+						currentSessionFile,
+						currentSessionId,
+						orchestratorTarget,
+						sessionError,
+						expandTilde: deps.expandTilde,
+					}),
+				},
+			],
 			details: { mode: "management", results: [] },
 		};
 	}
@@ -97,18 +96,25 @@ async function handleManagementRequest(input: {
 				}
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
-				return { content: [{ type: "text", text: message }], isError: true, details: { mode: "management", results: [] } };
+				return {
+					content: [{ type: "text", text: message }],
+					isError: true,
+					details: { mode: "management", results: [] },
+				};
 			}
 		} else {
 			const foreground = getForegroundControl(deps.state, undefined);
 			if (foreground) return foregroundStatusResult(foreground);
 		}
-		return inspectSubagentStatus({
-			action: "status",
-			id: paramsWithResolvedCwd.id,
-			runId: paramsWithResolvedCwd.runId,
-			dir: paramsWithResolvedCwd.dir,
-		}, { state: deps.state, nested: nestedResolutionScopeForExecutor(deps) });
+		return inspectSubagentStatus(
+			{
+				action: "status",
+				id: paramsWithResolvedCwd.id,
+				runId: paramsWithResolvedCwd.runId,
+				dir: paramsWithResolvedCwd.dir,
+			},
+			{ state: deps.state, nested: nestedResolutionScopeForExecutor(deps) },
+		);
 	}
 	if (action === "resume") {
 		return resumeAsyncRun({ params: paramsWithResolvedCwd, requestCwd, ctx, deps });
@@ -142,10 +148,17 @@ async function handleInterruptRequest(input: {
 	let resolved: ResolvedSubagentRunId | undefined;
 	if (targetRunId) {
 		try {
-			resolved = resolveSubagentRunId(targetRunId, { state: deps.state, nested: nestedResolutionScopeForExecutor(deps) });
+			resolved = resolveSubagentRunId(targetRunId, {
+				state: deps.state,
+				nested: nestedResolutionScopeForExecutor(deps),
+			});
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			return { content: [{ type: "text", text: message }], isError: true, details: { mode: "management", results: [] } };
+			return {
+				content: [{ type: "text", text: message }],
+				isError: true,
+				details: { mode: "management", results: [] },
+			};
 		}
 	}
 	if (resolved?.kind === "nested") return interruptNestedRun(resolved);
@@ -183,10 +196,12 @@ function inferExecutionMode(params: SubagentParamsLike): "single" | "parallel" |
 
 function duplicateSubagentCallResult(params: SubagentParamsLike): SubagentToolResult {
 	return {
-		content: [{
-			type: "text",
-			text: "Rejected: a subagent call is already in progress. Issue exactly ONE subagent call per turn.",
-		}],
+		content: [
+			{
+				type: "text",
+				text: "Rejected: a subagent call is already in progress. Issue exactly ONE subagent call per turn.",
+			},
+		],
 		isError: true,
 		details: { mode: inferExecutionMode(params), results: [] },
 	};
@@ -262,11 +277,14 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 			}
 		}
 
-		return withForkContext({
-			content: [{ type: "text", text: "Invalid params" }],
-			isError: true,
-			details: { mode: "single" as const, results: [] },
-		}, prepared.effectiveParams.context);
+		return withForkContext(
+			{
+				content: [{ type: "text", text: "Invalid params" }],
+				isError: true,
+				details: { mode: "single" as const, results: [] },
+			},
+			prepared.effectiveParams.context,
+		);
 	};
 
 	const executeWithSingleDispatchGuard = async (

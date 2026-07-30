@@ -199,7 +199,9 @@ export function appendSessionEntries(filePath: string, entries: FileEntry[]): vo
 }
 
 export function hasAssistantMessage(entries: FileEntry[]): boolean {
-	return entries.some((entry): entry is SessionEntry => entry.type === "message" && entry.message.role === "assistant");
+	return entries.some(
+		(entry): entry is SessionEntry => entry.type === "message" && entry.message.role === "assistant",
+	);
 }
 
 /**
@@ -207,7 +209,12 @@ export function hasAssistantMessage(entries: FileEntry[]): boolean {
  * assistant message exists; the first write after that flushes them together.
  * Returns the new flushed state and throws without changing it on write failure.
  */
-export function persistAppendedEntry(filePath: string, entries: FileEntry[], entry: FileEntry, flushed: boolean): boolean {
+export function persistAppendedEntry(
+	filePath: string,
+	entries: FileEntry[],
+	entry: FileEntry,
+	flushed: boolean,
+): boolean {
 	if (!hasAssistantMessage(entries)) return false;
 	if (flushed) appendSessionEntry(filePath, entry);
 	else appendSessionEntries(filePath, entries);

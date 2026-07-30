@@ -27,7 +27,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 		this.input.focused = value;
 	}
 
-	declare private onComplete: (success: boolean, message?: string) => void;
+	private declare onComplete: (success: boolean, message?: string) => void;
 
 	constructor(
 		tui: TUI,
@@ -148,9 +148,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 
 	private removeAuthCancelHint(): void {
 		if (!this.authCancelHint) return;
-		this.contentContainer.children = this.contentContainer.children.filter(
-			(child) => child !== this.authCancelHint,
-		);
+		this.contentContainer.children = this.contentContainer.children.filter((child) => child !== this.authCancelHint);
 		this.authCancelHint = undefined;
 	}
 
@@ -192,11 +190,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 		}
 		this.contentContainer.addChild(this.input);
 		this.contentContainer.addChild(
-			new Text(
-				`(${keyHint("tui.select.cancel", "Cancel,")} ${keyHint("tui.select.confirm", "Submit")})`,
-				1,
-				0,
-			),
+			new Text(`(${keyHint("tui.select.cancel", "Cancel,")} ${keyHint("tui.select.confirm", "Submit")})`, 1, 0),
 		);
 
 		this.input.setValue("");

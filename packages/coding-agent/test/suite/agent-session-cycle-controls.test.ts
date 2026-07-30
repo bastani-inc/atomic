@@ -1,14 +1,12 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-	AgentSessionRuntime,
-	type CreateAgentSessionRuntimeFactory,
-} from "../../src/core/agent-session-runtime.ts";
+import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../../src/core/agent-session-runtime.ts";
 import { createRpcCommandHandler } from "../../src/modes/rpc/rpc-command-handler.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
-const warning = "Configured default model is unavailable or unsupported. Update defaultProvider/defaultModel or use /model.";
+const warning =
+	"Configured default model is unavailable or unsupported. Update defaultProvider/defaultModel or use /model.";
 const createRuntime = (async () => {
 	throw new Error("not used");
 }) as CreateAgentSessionRuntimeFactory;
@@ -77,10 +75,10 @@ describe("AgentSession cycle fallback controls", () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		const current = harness.getModel();
-		harness.session.setScopedModels([
-			{ model: current },
-			{ model: { ...current }, thinkingLevel: "high" },
-		] as Array<{ model: Model<string>; thinkingLevel?: ThinkingLevel }>);
+		harness.session.setScopedModels([{ model: current }, { model: { ...current }, thinkingLevel: "high" }] as Array<{
+			model: Model<string>;
+			thinkingLevel?: ThinkingLevel;
+		}>);
 		const runtime = lockedRuntime(harness);
 
 		const response = await cycleHandler(harness, runtime)({ id: "same", type: "cycle_model" });
@@ -103,7 +101,10 @@ describe("AgentSession cycle fallback controls", () => {
 		harnesses.push(harness);
 		const runtime = lockedRuntime(harness);
 
-		const response = await cycleHandler(harness, runtime)({
+		const response = await cycleHandler(
+			harness,
+			runtime,
+		)({
 			id: "backward",
 			type: "cycle_model",
 			direction: "backward",

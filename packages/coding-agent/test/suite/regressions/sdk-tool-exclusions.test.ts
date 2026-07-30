@@ -10,9 +10,9 @@ import {
 } from "../../../src/core/agent-session-services.ts";
 import { DefaultResourceLoader } from "../../../src/core/resource-loader.ts";
 import { createAgentSession } from "../../../src/core/sdk.ts";
-import { resolveExcludedToolsForAppMode } from "../../../src/main.ts";
 import { SessionManager } from "../../../src/core/session-manager.ts";
 import { SettingsManager } from "../../../src/core/settings-manager.ts";
+import { resolveExcludedToolsForAppMode } from "../../../src/main.ts";
 
 describe("SDK tool exclusions", () => {
 	let tempDir: string;
@@ -88,9 +88,7 @@ describe("SDK tool exclusions", () => {
 		});
 
 		expect(session.getAllTools().map((tool) => tool.name)).not.toContain("ask_user_question");
-		expect(session.getActiveToolNames()).toEqual(
-			expect.arrayContaining(["read", "bash", "edit", "write", "todo"]),
-		);
+		expect(session.getActiveToolNames()).toEqual(expect.arrayContaining(["read", "bash", "edit", "write", "todo"]));
 		expect(session.getActiveToolNames()).not.toContain("ask_user_question");
 		expect(session.agent.state.tools.map((tool) => tool.name)).not.toContain("ask_user_question");
 		expect(session.systemPrompt).not.toContain("ask_user_question");
@@ -103,7 +101,12 @@ describe("SDK tool exclusions", () => {
 			tools: ["read"],
 		});
 
-		expect(session.getAllTools().map((tool) => tool.name).sort()).toEqual(["read"]);
+		expect(
+			session
+				.getAllTools()
+				.map((tool) => tool.name)
+				.sort(),
+		).toEqual(["read"]);
 		expect(session.getActiveToolNames()).toEqual(["read"]);
 		expect(session.systemPrompt).toContain("- read: Read a path selector.");
 		expect(session.systemPrompt).not.toContain("- ask_user_question:");
@@ -118,7 +121,12 @@ describe("SDK tool exclusions", () => {
 			excludedTools: ["ask_user_question"],
 		});
 
-		expect(session.getAllTools().map((tool) => tool.name).sort()).toEqual(["bash", "read"]);
+		expect(
+			session
+				.getAllTools()
+				.map((tool) => tool.name)
+				.sort(),
+		).toEqual(["bash", "read"]);
 		expect(session.getActiveToolNames().sort()).toEqual(["bash", "read"]);
 		expect(session.systemPrompt).toContain("- read: Read a path selector.");
 		expect(session.systemPrompt).toContain("- bash:");
@@ -220,10 +228,7 @@ describe("SDK tool exclusions", () => {
 
 	it("main CLI app-mode exclusion adds ask_user_question only for print/json", () => {
 		expect(resolveExcludedToolsForAppMode("print", undefined)).toEqual(["ask_user_question"]);
-		expect(resolveExcludedToolsForAppMode("json", ["custom_tool"])).toEqual([
-			"custom_tool",
-			"ask_user_question",
-		]);
+		expect(resolveExcludedToolsForAppMode("json", ["custom_tool"])).toEqual(["custom_tool", "ask_user_question"]);
 		expect(resolveExcludedToolsForAppMode("rpc", ["workflow"])).toEqual(["workflow"]);
 		expect(resolveExcludedToolsForAppMode("interactive", ["workflow"])).toEqual(["workflow"]);
 		expect(resolveExcludedToolsForAppMode("interactive", undefined)).toBeUndefined();

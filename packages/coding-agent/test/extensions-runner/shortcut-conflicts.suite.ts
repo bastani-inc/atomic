@@ -87,7 +87,7 @@ describe("ExtensionRunner", () => {
 		getSystemPrompt: () => "",
 	};
 
-		describe("tool collection", () => {
+	describe("tool collection", () => {
 		it("collects tools from multiple extensions", async () => {
 			const toolCode = (name: string) => `
 				import { Type } from "typebox";
@@ -148,5 +148,4 @@ describe("ExtensionRunner", () => {
 			expect(tools[0]?.definition.description).toBe("first");
 		});
 	});
-
 });

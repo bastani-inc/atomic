@@ -6,7 +6,6 @@ interface PendingFrame {
 	reject?: (error: Error) => void;
 }
 
-
 /** A one-write-at-a-time stream writer with replaceable updates. */
 export class QueuedWriter {
 	private readonly critical: PendingFrame[] = [];
@@ -21,7 +20,9 @@ export class QueuedWriter {
 		this.stream = stream;
 	}
 
-	get pendingBytes(): number { return this.queuedBytes; }
+	get pendingBytes(): number {
+		return this.queuedBytes;
+	}
 
 	async write(text: string): Promise<void> {
 		const bytes = Buffer.from(text, "utf8");
@@ -52,7 +53,6 @@ export class QueuedWriter {
 		this.queuedBytes = 0;
 	}
 
-
 	private next(): PendingFrame | undefined {
 		const critical = this.critical.shift();
 		if (critical) return critical;
@@ -74,7 +74,7 @@ export class QueuedWriter {
 			while (!this.closedError && (frame = this.next())) {
 				this.queuedBytes -= frame.bytes.length;
 				await new Promise<void>((resolve, reject) => {
-					this.stream.write(frame!.bytes, (error) => error ? reject(error) : resolve());
+					this.stream.write(frame!.bytes, (error) => (error ? reject(error) : resolve()));
 				});
 				frame.resolve?.();
 			}

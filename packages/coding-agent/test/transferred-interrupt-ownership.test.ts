@@ -51,9 +51,18 @@ describe("transferred interrupt ownership", () => {
 			},
 		]);
 		replacement.setResponses([
-			() => { replacementProviderCalls += 1; return fauxAssistantMessage("interrupt handled once"); },
-			() => { replacementProviderCalls += 1; return fauxAssistantMessage("later prompt handled"); },
-			() => { replacementProviderCalls += 1; return fauxAssistantMessage("ordinary queue handled"); },
+			() => {
+				replacementProviderCalls += 1;
+				return fauxAssistantMessage("interrupt handled once");
+			},
+			() => {
+				replacementProviderCalls += 1;
+				return fauxAssistantMessage("later prompt handled");
+			},
+			() => {
+				replacementProviderCalls += 1;
+				return fauxAssistantMessage("ordinary queue handled");
+			},
 		]);
 		const exactOrdinary = "\tordinary transferred queue content  \n";
 
@@ -94,15 +103,25 @@ describe("transferred interrupt ownership", () => {
 		expect(replacement.session.agent.hasQueuedMessages()).toBe(false);
 		expect(replacement.session.pendingMessageCount).toBe(0);
 		expect(replacement.session.getSteeringMessages()).toEqual([]);
-		expect(replacement.session.messages.filter(
-			(message) => message.role === "custom" && message.customType === "transferred-interrupt",
-		)).toHaveLength(1);
-		expect(replacement.session.messages.filter(
-			(message) => message.role === "user" && getMessageText(message) === exactOrdinary,
-		)).toHaveLength(1);
-		expect(replacement.session.messages.filter(
-			(message) => message.role === "user" && ["later replacement prompt", exactOrdinary].includes(getMessageText(message)),
-		).map(getMessageText)).toEqual(["later replacement prompt", exactOrdinary]);
+		expect(
+			replacement.session.messages.filter(
+				(message) => message.role === "custom" && message.customType === "transferred-interrupt",
+			),
+		).toHaveLength(1);
+		expect(
+			replacement.session.messages.filter(
+				(message) => message.role === "user" && getMessageText(message) === exactOrdinary,
+			),
+		).toHaveLength(1);
+		expect(
+			replacement.session.messages
+				.filter(
+					(message) =>
+						message.role === "user" &&
+						["later replacement prompt", exactOrdinary].includes(getMessageText(message)),
+				)
+				.map(getMessageText),
+		).toEqual(["later replacement prompt", exactOrdinary]);
 		expect(replacementInternal._activeInterruptQueueHold).toBeUndefined();
 		expect(replacementInternal._pendingInterruptDeliveries).toBe(0);
 		expect(replacementInternal._protectedStreamingCustomMessages).toEqual([]);
@@ -129,7 +148,10 @@ describe("transferred interrupt ownership", () => {
 			},
 		]);
 		replacement.setResponses([
-			() => { replacementProviderCalls += 1; return fauxAssistantMessage("paused replacement resumed once"); },
+			() => {
+				replacementProviderCalls += 1;
+				return fauxAssistantMessage("paused replacement resumed once");
+			},
 		]);
 		const exactOrdinary = "\tordinary paused replacement content  \n";
 
@@ -154,7 +176,9 @@ describe("transferred interrupt ownership", () => {
 		expect(replacementInternal._activeInterruptQueueHold?.steering.map(getMessageText)).toEqual([exactOrdinary]);
 		const resume = replacement.session.resumeQueuedMessages();
 		let resumeSettled = false;
-		void resume.finally(() => { resumeSettled = true; });
+		void resume.finally(() => {
+			resumeSettled = true;
+		});
 		await new Promise<void>((resolve) => setTimeout(resolve, 0));
 		expect(resumeSettled).toBe(false);
 		expect(replacement.session.queuedMessagesPaused).toBe(true);
@@ -183,16 +207,28 @@ describe("transferred interrupt ownership", () => {
 		expect(replacementProviderCalls).toBe(1);
 		expect(replacement.session.agent.hasQueuedMessages()).toBe(false);
 		expect(replacement.session.pendingMessageCount).toBe(0);
-		expect(replacement.session.messages.filter(
-			(message) => message.role === "custom" && message.customType === "paused-transferred-interrupt",
-		)).toHaveLength(1);
-		expect(replacement.session.messages.filter(
-			(message) => message.role === "user" && getMessageText(message) === exactOrdinary,
-		)).toHaveLength(1);
-		expect(replacement.session.messages.filter((message) =>
-			(message.role === "user" && ["later paused replacement prompt", exactOrdinary].includes(getMessageText(message))) ||
-			(message.role === "custom" && message.customType === "paused-transferred-interrupt"),
-		).map((message) => message.role === "custom" ? `custom:${message.customType}` : `user:${getMessageText(message)}`)).toEqual([
+		expect(
+			replacement.session.messages.filter(
+				(message) => message.role === "custom" && message.customType === "paused-transferred-interrupt",
+			),
+		).toHaveLength(1);
+		expect(
+			replacement.session.messages.filter(
+				(message) => message.role === "user" && getMessageText(message) === exactOrdinary,
+			),
+		).toHaveLength(1);
+		expect(
+			replacement.session.messages
+				.filter(
+					(message) =>
+						(message.role === "user" &&
+							["later paused replacement prompt", exactOrdinary].includes(getMessageText(message))) ||
+						(message.role === "custom" && message.customType === "paused-transferred-interrupt"),
+				)
+				.map((message) =>
+					message.role === "custom" ? `custom:${message.customType}` : `user:${getMessageText(message)}`,
+				),
+		).toEqual([
 			"user:later paused replacement prompt",
 			`user:${exactOrdinary}`,
 			"custom:paused-transferred-interrupt",
@@ -216,13 +252,15 @@ describe("transferred interrupt ownership", () => {
 		const firstTargetInterruptStarted = Promise.withResolvers<void>();
 		const releaseFirstTargetInterrupt = Promise.withResolvers<void>();
 		let targetInterruptProviders = 0;
-		source.setResponses([async (_context, options) => {
-			sourceStarted.resolve();
-			if (options?.signal?.aborted) sourceAbortObserved.resolve();
-			else options?.signal?.addEventListener("abort", () => sourceAbortObserved.resolve(), { once: true });
-			await finishSource.promise;
-			return fauxAssistantMessage("source interrupted");
-		}]);
+		source.setResponses([
+			async (_context, options) => {
+				sourceStarted.resolve();
+				if (options?.signal?.aborted) sourceAbortObserved.resolve();
+				else options?.signal?.addEventListener("abort", () => sourceAbortObserved.resolve(), { once: true });
+				await finishSource.promise;
+				return fauxAssistantMessage("source interrupted");
+			},
+		]);
 		target.setResponses([
 			async (_context, options) => {
 				targetStarted.resolve();
@@ -266,9 +304,12 @@ describe("transferred interrupt ownership", () => {
 		await (target.session as InterruptOwnerSession)._interruptDeliveryQueue;
 
 		expect(targetInterruptProviders).toBe(2);
-		expect(target.session.messages.filter(
-			(message) => message.role === "custom" && ["source-interrupt", "target-interrupt"].includes(message.customType),
-		)).toHaveLength(2);
+		expect(
+			target.session.messages.filter(
+				(message) =>
+					message.role === "custom" && ["source-interrupt", "target-interrupt"].includes(message.customType),
+			),
+		).toHaveLength(2);
 		expect(targetAbort).toHaveBeenCalledTimes(1);
 		expect((target.session as InterruptOwnerSession)._activeInterruptQueueHold).toBeUndefined();
 		expect((target.session as InterruptOwnerSession)._pendingInterruptDeliveries).toBe(0);

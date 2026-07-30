@@ -1,6 +1,11 @@
 import { COMPLETED_JOB_TTL_MS, MAX_MANAGED_BASH_JOBS, type ManagedBashJob } from "../tools/bash-async-jobs.js";
 import { formatAsyncResultForFollowUp } from "./format.js";
-import type { AsyncJobDeliveryCallback, AsyncJobDeliveryHandler, AsyncJobDeliveryMessage, ManagedAsyncBashJob } from "./types.js";
+import type {
+	AsyncJobDeliveryCallback,
+	AsyncJobDeliveryHandler,
+	AsyncJobDeliveryMessage,
+	ManagedAsyncBashJob,
+} from "./types.js";
 
 const DEFAULT_MAX_RUNNING_JOBS = 15;
 const DELIVERY_RETRY_BASE_MS = 500;
@@ -75,7 +80,6 @@ export class AsyncJobManager {
 		return running >= this.#maxRunningJobs;
 	}
 
-
 	registerSession(): symbol {
 		if (this.#disposed) throw new Error("Async job manager is disposed");
 		const sessionId = Symbol("async-job-session");
@@ -92,7 +96,6 @@ export class AsyncJobManager {
 		if (this.#sessions.size === 0) this.#disposeWhenUnused = true;
 		this.#disposeIfUnused();
 	}
-
 
 	transferSessionDeliveries(sourceId: symbol, targetId: symbol, handler: AsyncJobDeliveryHandler): void {
 		const source = this.#sessions.get(sourceId);
@@ -112,8 +115,12 @@ export class AsyncJobManager {
 	registerBashJob(job: ManagedBashJob, onComplete?: AsyncJobDeliveryHandler, sessionId?: symbol): void {
 		if (this.#disposed) throw new Error("Async job manager is disposed");
 		this.#pruneRetention();
-		if (this.atCapacity) throw new Error(`Background job limit reached (${this.#maxRunningJobs}). Wait for running jobs to finish or cancel one.`);
-		if (sessionId !== undefined && this.isSessionDisposed(sessionId)) throw new Error("Async job session is disposed");
+		if (this.atCapacity)
+			throw new Error(
+				`Background job limit reached (${this.#maxRunningJobs}). Wait for running jobs to finish or cancel one.`,
+			);
+		if (sessionId !== undefined && this.isSessionDisposed(sessionId))
+			throw new Error("Async job session is disposed");
 		this.#suppressedDeliveries.delete(job.jobId);
 		if (onComplete) this.#deliveryHandlers.set(job.jobId, onComplete);
 		else this.#deliveryHandlers.delete(job.jobId);
@@ -160,7 +167,13 @@ export class AsyncJobManager {
 
 	retentionState(): { jobs: number; suppressions: number; handlers: number; queued: number; sessions: number } {
 		this.#pruneRetention();
-		return { jobs: this.#jobs.size, suppressions: this.#suppressedDeliveries.size, handlers: this.#deliveryHandlers.size, queued: this.#deliveries.length + this.#inFlightDeliveries.size, sessions: this.#sessions.size };
+		return {
+			jobs: this.#jobs.size,
+			suppressions: this.#suppressedDeliveries.size,
+			handlers: this.#deliveryHandlers.size,
+			queued: this.#deliveries.length + this.#inFlightDeliveries.size,
+			sessions: this.#sessions.size,
+		};
 	}
 
 	dispose(): void {
@@ -178,12 +191,17 @@ export class AsyncJobManager {
 
 	#enqueueDelivery(job: ManagedAsyncBashJob): void {
 		if (this.#inFlightDeliveries.has(job.jobId)) return;
-		for (let index = this.#deliveries.length - 1; index >= 0; index -= 1) if (this.#deliveries[index]?.jobId === job.jobId) this.#deliveries.splice(index, 1);
-		this.#deliveries.push({ jobId: job.jobId, message: formatAsyncResultForFollowUp(job), attempt: 0, nextAttemptAt: Date.now() });
+		for (let index = this.#deliveries.length - 1; index >= 0; index -= 1)
+			if (this.#deliveries[index]?.jobId === job.jobId) this.#deliveries.splice(index, 1);
+		this.#deliveries.push({
+			jobId: job.jobId,
+			message: formatAsyncResultForFollowUp(job),
+			attempt: 0,
+			nextAttemptAt: Date.now(),
+		});
 		this.#pruneRetention();
 		void this.#runDeliveryLoop();
 	}
-
 
 	#completeTrackedJob(jobId: string): void {
 		const sessionId = this.#jobSessions.get(jobId);
@@ -217,11 +235,18 @@ export class AsyncJobManager {
 		}
 		for (let index = this.#deliveries.length - 1; index >= 0; index -= 1) {
 			const delivery = this.#deliveries[index];
-			if (!delivery || !this.#jobs.has(delivery.jobId) || this.#suppressedDeliveries.has(delivery.jobId)) this.#deliveries.splice(index, 1);
+			if (!delivery || !this.#jobs.has(delivery.jobId) || this.#suppressedDeliveries.has(delivery.jobId))
+				this.#deliveries.splice(index, 1);
 		}
-		while (this.#deliveries.length + this.#inFlightDeliveries.size > this.#maxRetainedJobs && this.#deliveries.length > 0) this.#deliveries.shift();
-		for (const jobId of this.#deliveryHandlers.keys()) if (!this.#jobs.has(jobId) || this.#suppressedDeliveries.has(jobId)) this.#deliveryHandlers.delete(jobId);
-		for (const session of this.#sessions.values()) for (const jobId of session.activeJobIds) if (!this.#jobs.has(jobId)) session.activeJobIds.delete(jobId);
+		while (
+			this.#deliveries.length + this.#inFlightDeliveries.size > this.#maxRetainedJobs &&
+			this.#deliveries.length > 0
+		)
+			this.#deliveries.shift();
+		for (const jobId of this.#deliveryHandlers.keys())
+			if (!this.#jobs.has(jobId) || this.#suppressedDeliveries.has(jobId)) this.#deliveryHandlers.delete(jobId);
+		for (const session of this.#sessions.values())
+			for (const jobId of session.activeJobIds) if (!this.#jobs.has(jobId)) session.activeJobIds.delete(jobId);
 	}
 
 	#scheduleDeliveryLoop(delayMs: number): void {
@@ -252,7 +277,12 @@ export class AsyncJobManager {
 	}
 
 	#startDelivery(delivery: Delivery): void {
-		if (this.#suppressedDeliveries.has(delivery.jobId) || !this.#jobs.has(delivery.jobId) || this.#inFlightDeliveries.has(delivery.jobId)) return;
+		if (
+			this.#suppressedDeliveries.has(delivery.jobId) ||
+			!this.#jobs.has(delivery.jobId) ||
+			this.#inFlightDeliveries.has(delivery.jobId)
+		)
+			return;
 		const handler = this.#deliveryHandlers.get(delivery.jobId) ?? this.#onJobComplete;
 		this.#inFlightDeliveries.set(delivery.jobId, delivery);
 		delivery.promise = (async () => handler(delivery.message))()
@@ -263,10 +293,12 @@ export class AsyncJobManager {
 				}
 			})
 			.catch(() => {
-				if (this.#disposed || this.#suppressedDeliveries.has(delivery.jobId) || !this.#jobs.has(delivery.jobId)) return;
+				if (this.#disposed || this.#suppressedDeliveries.has(delivery.jobId) || !this.#jobs.has(delivery.jobId))
+					return;
 				delivery.attempt += 1;
 				const jitter = Math.floor(Math.random() * DELIVERY_RETRY_JITTER_MS);
-				delivery.nextAttemptAt = Date.now() + Math.min(DELIVERY_RETRY_MAX_MS, DELIVERY_RETRY_BASE_MS * 2 ** delivery.attempt) + jitter;
+				delivery.nextAttemptAt =
+					Date.now() + Math.min(DELIVERY_RETRY_MAX_MS, DELIVERY_RETRY_BASE_MS * 2 ** delivery.attempt) + jitter;
 				this.#deliveries.push(delivery);
 			})
 			.finally(() => {
@@ -278,7 +310,11 @@ export class AsyncJobManager {
 	}
 
 	#scheduleNextDelivery(): void {
-		const next = this.#deliveries.reduce<number | undefined>((soonest, delivery) => soonest === undefined ? delivery.nextAttemptAt : Math.min(soonest, delivery.nextAttemptAt), undefined);
+		const next = this.#deliveries.reduce<number | undefined>(
+			(soonest, delivery) =>
+				soonest === undefined ? delivery.nextAttemptAt : Math.min(soonest, delivery.nextAttemptAt),
+			undefined,
+		);
 		if (next !== undefined) this.#scheduleDeliveryLoop(Math.max(0, next - Date.now()));
 	}
 }

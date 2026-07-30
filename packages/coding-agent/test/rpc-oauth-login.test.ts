@@ -4,8 +4,8 @@ import type { AtomicOAuthLoginCallbacks } from "../src/core/oauth-login.ts";
 import { loginIsolatedOAuthProvider } from "../src/modes/interactive-engine/isolated-auth.ts";
 import { RemoteModelCatalog } from "../src/modes/interactive-engine/remote-model-catalog.ts";
 import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.ts";
-import { dispatchRpcOAuthRequest } from "../src/modes/rpc/rpc-oauth-client.ts";
 import type { RpcPendingExtensionRequests } from "../src/modes/rpc/rpc-extension-ui.ts";
+import { dispatchRpcOAuthRequest } from "../src/modes/rpc/rpc-oauth-client.ts";
 import type { RpcExtensionUIRequest } from "../src/modes/rpc/rpc-types.ts";
 import { createHarness, type Harness } from "./suite/harness.ts";
 
@@ -31,15 +31,17 @@ async function createRuntimeHarness() {
 			refreshToken: async (credential) => credential,
 			getApiKey: (credential) => credential.access,
 		},
-		models: [{
-			id: "corp-model",
-			name: "Corp Model",
-			reasoning: false,
-			input: ["text"],
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			contextWindow: 128000,
-			maxTokens: 4096,
-		}],
+		models: [
+			{
+				id: "corp-model",
+				name: "Corp Model",
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 128000,
+				maxTokens: 4096,
+			},
+		],
 	});
 	await harness.authStorage.modify("corp-oauth", async () => ({ type: "api_key", key: "previous" }));
 	const runtime = new AgentSessionRuntime(
@@ -120,16 +122,67 @@ describe("isolated OAuth frontend transport", () => {
 			onManualCodeInput: async () => "manual-value",
 			onManualCodeCancel: () => calls.push("manual-cancel"),
 		};
-		const respond = async (response: object) => { responses.push(response); };
+		const respond = async (response: object) => {
+			responses.push(response);
+		};
 		const requests = [
-			{ type: "extension_ui_request", id: "1", method: "oauth_auth", provider: "corp", loginId: "login-a", info: { url: "https://login" } },
-			{ type: "extension_ui_request", id: "2", method: "oauth_device_code", provider: "corp", loginId: "login-a", info: { userCode: "A", verificationUri: "https://device" } },
-			{ type: "extension_ui_request", id: "3", method: "oauth_progress", provider: "corp", loginId: "login-a", message: "wait" },
-			{ type: "extension_ui_request", id: "4", method: "oauth_info", provider: "corp", loginId: "login-a", message: "info", links: [] },
-			{ type: "extension_ui_request", id: "5", method: "oauth_prompt", provider: "corp", loginId: "login-a", prompt: { message: "Prompt" } },
-			{ type: "extension_ui_request", id: "6", method: "oauth_select", provider: "corp", loginId: "login-a", prompt: { message: "Pick", options: [] } },
+			{
+				type: "extension_ui_request",
+				id: "1",
+				method: "oauth_auth",
+				provider: "corp",
+				loginId: "login-a",
+				info: { url: "https://login" },
+			},
+			{
+				type: "extension_ui_request",
+				id: "2",
+				method: "oauth_device_code",
+				provider: "corp",
+				loginId: "login-a",
+				info: { userCode: "A", verificationUri: "https://device" },
+			},
+			{
+				type: "extension_ui_request",
+				id: "3",
+				method: "oauth_progress",
+				provider: "corp",
+				loginId: "login-a",
+				message: "wait",
+			},
+			{
+				type: "extension_ui_request",
+				id: "4",
+				method: "oauth_info",
+				provider: "corp",
+				loginId: "login-a",
+				message: "info",
+				links: [],
+			},
+			{
+				type: "extension_ui_request",
+				id: "5",
+				method: "oauth_prompt",
+				provider: "corp",
+				loginId: "login-a",
+				prompt: { message: "Prompt" },
+			},
+			{
+				type: "extension_ui_request",
+				id: "6",
+				method: "oauth_select",
+				provider: "corp",
+				loginId: "login-a",
+				prompt: { message: "Pick", options: [] },
+			},
 			{ type: "extension_ui_request", id: "7", method: "oauth_manual_code", provider: "corp", loginId: "login-a" },
-			{ type: "extension_ui_request", id: "8", method: "oauth_manual_code_cancel", provider: "corp", loginId: "login-a" },
+			{
+				type: "extension_ui_request",
+				id: "8",
+				method: "oauth_manual_code_cancel",
+				provider: "corp",
+				loginId: "login-a",
+			},
 		] as const;
 		await dispatchRpcOAuthRequest("corp", "login-a", callbacks, { ...requests[0], loginId: "stale" }, respond);
 		for (const request of requests) await dispatchRpcOAuthRequest("corp", "login-a", callbacks, request, respond);
@@ -157,9 +210,16 @@ describe("isolated OAuth frontend transport", () => {
 					callbacks.onProgress?.("waiting");
 					callbacks.onInfo?.("notice", [{ label: "Docs", url: "https://docs.invalid" }]);
 					const prompt = await callbacks.onPrompt({ message: "Tenant", placeholder: "acme" });
-					const selected = await callbacks.onSelect({ message: "Account", options: [{ id: "one", label: "One" }] });
+					const selected = await callbacks.onSelect({
+						message: "Account",
+						options: [{ id: "one", label: "One" }],
+					});
 					const manual = await callbacks.onManualCodeInput?.();
-					return { access: `engine-secret-${prompt}-${selected}-${manual}`, refresh: "engine-refresh", expires: Date.now() + 60_000 };
+					return {
+						access: `engine-secret-${prompt}-${selected}-${manual}`,
+						refresh: "engine-refresh",
+						expires: Date.now() + 60_000,
+					};
 				},
 				refreshToken: async (credential) => credential,
 				getApiKey: (credential) => credential.access,
@@ -182,19 +242,38 @@ describe("isolated OAuth frontend transport", () => {
 				observed.push(frame.method);
 				const record = pending.get(frame.id);
 				if (!record) return;
-				const value = frame.method === "oauth_prompt" ? "acme"
-					: frame.method === "oauth_select" ? "one"
-						: frame.method === "oauth_manual_code" ? "manual" : undefined;
-				if (value !== undefined) queueMicrotask(() => record.resolve({ type: "extension_ui_response", id: frame.id, value }));
+				const value =
+					frame.method === "oauth_prompt"
+						? "acme"
+						: frame.method === "oauth_select"
+							? "one"
+							: frame.method === "oauth_manual_code"
+								? "manual"
+								: undefined;
+				if (value !== undefined)
+					queueMicrotask(() => record.resolve({ type: "extension_ui_response", id: frame.id, value }));
 			},
 		});
 
-		const response = await handler({ id: "login", type: "login_provider", provider: "callback-oauth", authType: "oauth" });
+		const response = await handler({
+			id: "login",
+			type: "login_provider",
+			provider: "callback-oauth",
+			authType: "oauth",
+		});
 		expect(observed).toEqual([
-			"oauth_auth", "oauth_device_code", "oauth_progress", "oauth_info", "oauth_prompt", "oauth_select", "oauth_manual_code",
+			"oauth_auth",
+			"oauth_device_code",
+			"oauth_progress",
+			"oauth_info",
+			"oauth_prompt",
+			"oauth_select",
+			"oauth_manual_code",
 		]);
-		expect(await harness.authStorage.read("callback-oauth"))
-			.toMatchObject({ type: "oauth", access: "engine-secret-acme-one-manual" });
+		expect(await harness.authStorage.read("callback-oauth")).toMatchObject({
+			type: "oauth",
+			access: "engine-secret-acme-one-manual",
+		});
 		expect(response).toMatchObject({ success: true, data: { provider: "callback-oauth", cancelled: false } });
 		expect(JSON.stringify(response)).not.toContain("engine-secret");
 		expect(JSON.stringify(response)).not.toContain("engine-refresh");
@@ -210,16 +289,19 @@ describe("isolated OAuth frontend transport", () => {
 			onExtensionUIRequest: () => () => {},
 			respondExtensionUI: async () => {},
 			cancelLoginProvider: async () => {},
-			requestInternal: async (command: { provider: string }) => ({ provider: command.provider, cancelled: false, ...remoteCatalog }),
+			requestInternal: async (command: { provider: string }) => ({
+				provider: command.provider,
+				cancelled: false,
+				...remoteCatalog,
+			}),
 		};
 
-		await loginIsolatedOAuthProvider(
-			harness.session,
-			client as never,
-			{ apply } as never,
-			"corp",
-			{ onAuth() {}, onDeviceCode() {}, onPrompt: async () => "", onSelect: async () => undefined },
-		);
+		await loginIsolatedOAuthProvider(harness.session, client as never, { apply } as never, "corp", {
+			onAuth() {},
+			onDeviceCode() {},
+			onPrompt: async () => "",
+			onSelect: async () => undefined,
+		});
 		expect(apply).toHaveBeenCalledWith(expect.objectContaining({ provider: "corp", cancelled: false }));
 		expect(reload).toHaveBeenCalledTimes(1);
 	});
@@ -237,16 +319,24 @@ describe("isolated OAuth frontend transport", () => {
 		};
 		const callbacks = { onAuth() {}, onDeviceCode() {}, onPrompt: async () => "", onSelect: async () => undefined };
 
-		await expect(loginIsolatedOAuthProvider(harness.session, baseClient as never, { apply } as never, "corp", callbacks))
-			.rejects.toMatchObject({ message: "Login cancelled" });
+		await expect(
+			loginIsolatedOAuthProvider(harness.session, baseClient as never, { apply } as never, "corp", callbacks),
+		).rejects.toMatchObject({ message: "Login cancelled" });
 		const persistenceFailure = new Error("auth.json is read-only");
-		await expect(loginIsolatedOAuthProvider(
-			harness.session,
-			{ ...baseClient, requestInternal: async () => { throw persistenceFailure; } } as never,
-			{ apply } as never,
-			"corp",
-			callbacks,
-		)).rejects.toBe(persistenceFailure);
+		await expect(
+			loginIsolatedOAuthProvider(
+				harness.session,
+				{
+					...baseClient,
+					requestInternal: async () => {
+						throw persistenceFailure;
+					},
+				} as never,
+				{ apply } as never,
+				"corp",
+				callbacks,
+			),
+		).rejects.toBe(persistenceFailure);
 		expect(apply).not.toHaveBeenCalled();
 		expect(reload).not.toHaveBeenCalled();
 	});
@@ -259,27 +349,39 @@ describe("isolated OAuth frontend transport", () => {
 		const apply = vi.fn();
 		const reload = vi.spyOn(harness.session.modelRuntime, "reloadCredentials");
 		const client = {
-			onExtensionUIRequest: (next: (request: RpcExtensionUIRequest) => void) => { listener = next; return () => {}; },
+			onExtensionUIRequest: (next: (request: RpcExtensionUIRequest) => void) => {
+				listener = next;
+				return () => {};
+			},
 			respondExtensionUI: async () => {},
 			cancelLoginProvider: async () => {},
 			requestInternal: async (command: { provider: string; loginId: string }) => {
-				listener?.({ type: "extension_ui_request", id: "auth", method: "oauth_auth", provider: command.provider, loginId: command.loginId, info: { url: "https://login.invalid" } });
+				listener?.({
+					type: "extension_ui_request",
+					id: "auth",
+					method: "oauth_auth",
+					provider: command.provider,
+					loginId: command.loginId,
+					info: { url: "https://login.invalid" },
+				});
 				return { provider: command.provider, cancelled: true };
 			},
 		};
 
-		await expect(loginIsolatedOAuthProvider(
-			harness.session,
-			client as never,
-			{ apply } as never,
-			"corp",
-			{ onAuth: () => { throw abort; }, onDeviceCode() {}, onPrompt: async () => "", onSelect: async () => undefined },
-		)).rejects.toMatchObject({ message: "Login cancelled", cause: abort });
+		await expect(
+			loginIsolatedOAuthProvider(harness.session, client as never, { apply } as never, "corp", {
+				onAuth: () => {
+					throw abort;
+				},
+				onDeviceCode() {},
+				onPrompt: async () => "",
+				onSelect: async () => undefined,
+			}),
+		).rejects.toMatchObject({ message: "Login cancelled", cause: abort });
 		expect(apply).not.toHaveBeenCalled();
 		expect(reload).not.toHaveBeenCalled();
 	});
 });
-
 
 describe("RPC OAuth cancellation isolation", () => {
 	it("cancels one loginId without cancelling a concurrent login for another provider", async () => {
@@ -299,15 +401,17 @@ describe("RPC OAuth cancellation isolation", () => {
 					refreshToken: async (credential) => credential,
 					getApiKey: (credential) => credential.access,
 				},
-				models: [{
-					id: `${provider}-model`,
-					name: `${provider} model`,
-					reasoning: false,
-					input: ["text"],
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-					contextWindow: 128_000,
-					maxTokens: 4_096,
-				}],
+				models: [
+					{
+						id: `${provider}-model`,
+						name: `${provider} model`,
+						reasoning: false,
+						input: ["text"],
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+						contextWindow: 128_000,
+						maxTokens: 4_096,
+					},
+				],
 			});
 		}
 		const runtime = new AgentSessionRuntime(
@@ -327,10 +431,24 @@ describe("RPC OAuth cancellation isolation", () => {
 			},
 		});
 
-		const loginA = handler({ id: "a", type: "login_provider", provider: "corp-a", authType: "oauth", loginId: "login-a" });
+		const loginA = handler({
+			id: "a",
+			type: "login_provider",
+			provider: "corp-a",
+			authType: "oauth",
+			loginId: "login-a",
+		});
 		let bResolved = false;
-		const loginB = handler({ id: "b", type: "login_provider", provider: "corp-b", authType: "oauth", loginId: "login-b" })
-			.then((result) => { bResolved = true; return result; });
+		const loginB = handler({
+			id: "b",
+			type: "login_provider",
+			provider: "corp-b",
+			authType: "oauth",
+			loginId: "login-b",
+		}).then((result) => {
+			bResolved = true;
+			return result;
+		});
 		await vi.waitFor(() => expect(promptIds.size).toBe(2));
 
 		await handler({ id: "cancel-a", type: "cancel_login_provider", provider: "corp-a", loginId: "login-a" });
@@ -353,7 +471,9 @@ describe("RPC OAuth failed transaction isolation", () => {
 			api: "openai-completions",
 			oauth: {
 				name: "Corp OAuth",
-				login: async () => { throw new Error("provider denied login"); },
+				login: async () => {
+					throw new Error("provider denied login");
+				},
 				refreshToken: async (credential) => credential,
 				getApiKey: (credential) => credential.access,
 			},
@@ -361,12 +481,14 @@ describe("RPC OAuth failed transaction isolation", () => {
 		});
 		const refresh = vi.spyOn(harness.session.modelRuntime, "refresh");
 
-		await expect(handler({
-			id: "failed-login",
-			type: "login_provider",
-			provider: "corp-oauth",
-			authType: "oauth",
-		})).rejects.toThrow("provider denied login");
+		await expect(
+			handler({
+				id: "failed-login",
+				type: "login_provider",
+				provider: "corp-oauth",
+				authType: "oauth",
+			}),
+		).rejects.toThrow("provider denied login");
 		expect(await harness.authStorage.read("corp-oauth")).toEqual({ type: "api_key", key: "previous" });
 		expect(refresh).not.toHaveBeenCalled();
 	});
@@ -385,12 +507,14 @@ describe("RPC OAuth credential survival", () => {
 			new DOMException("refresh transport aborted", "AbortError"),
 		);
 
-		await expect(handler({
-			id: "login",
-			type: "login_provider",
-			provider: "corp-oauth",
-			authType: "oauth",
-		})).rejects.toThrow("refresh transport aborted");
+		await expect(
+			handler({
+				id: "login",
+				type: "login_provider",
+				provider: "corp-oauth",
+				authType: "oauth",
+			}),
+		).rejects.toThrow("refresh transport aborted");
 		expect(await harness.authStorage.read("corp-oauth")).toMatchObject({ type: "oauth", access: "new-secret" });
 	});
 

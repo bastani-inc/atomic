@@ -1,7 +1,12 @@
 import type { Transport } from "@earendil-works/pi-ai/compat";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, HTTP_IDLE_TIMEOUT_CHOICES } from "../../../core/http-dispatcher.ts";
 import { DEFAULT_PROJECT_TRUST_BY_LABEL } from "./settings-selector-options.ts";
-import type { DoubleEscapeAction, QueueDeliveryMode, SettingsCallbacks, TreeFilterMode } from "./settings-selector-types.ts";
+import type {
+	DoubleEscapeAction,
+	QueueDeliveryMode,
+	SettingsCallbacks,
+	TreeFilterMode,
+} from "./settings-selector-types.ts";
 
 export function createSettingsChangeHandler(callbacks: SettingsCallbacks): (id: string, newValue: string) => void {
 	return (id, newValue) => {

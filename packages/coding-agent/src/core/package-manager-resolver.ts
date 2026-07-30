@@ -1,18 +1,22 @@
 import { access, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { CONFIG_DIR_NAME } from "../config.ts";
-import { getGitInstallPath } from "./package-manager-paths.ts";
 import { addAutoDiscoveredResources, collectProjectLocalResources } from "./package-manager-auto-resources.ts";
-import { getExistingGitInstallPath, refreshTemporaryGitSource } from "./package-manager-git.ts";
 import { isOfflineModeEnabled } from "./package-manager-env.ts";
+import { getExistingGitInstallPath, refreshTemporaryGitSource } from "./package-manager-git.ts";
 import { getExistingNpmInstallPath, installedNpmMatchesConfiguredVersion } from "./package-manager-npm.ts";
-import { getBaseDirsForScope, resolvePathFromBase } from "./package-manager-paths.ts";
-import { createAccumulator, addResource, getTargetMap, toResolvedPaths } from "./package-manager-resource-accumulator.ts";
+import { installParsedSource } from "./package-manager-operations.ts";
+import { getBaseDirsForScope, getGitInstallPath, resolvePathFromBase } from "./package-manager-paths.ts";
+import {
+	addResource,
+	createAccumulator,
+	getTargetMap,
+	toResolvedPaths,
+} from "./package-manager-resource-accumulator.ts";
 import { collectPackageResources, resolveLocalEntries } from "./package-manager-resource-collector.ts";
 import { resolveExtensionEntries } from "./package-manager-resource-files.ts";
-import { dedupePackages, getPackageIdentity, getPackageSourceString, parseSource } from "./package-manager-source.ts";
 import { splitPatterns } from "./package-manager-resource-patterns.ts";
-import { installParsedSource } from "./package-manager-operations.ts";
+import { dedupePackages, getPackageIdentity, getPackageSourceString, parseSource } from "./package-manager-source.ts";
 import type {
 	MissingSourceAction,
 	PackageFilter,
@@ -26,9 +30,13 @@ import type {
 import type { PackageSource } from "./settings-manager.ts";
 
 async function exists(path: string): Promise<boolean> {
-	try { await access(path); return true; } catch { return false; }
+	try {
+		await access(path);
+		return true;
+	} catch {
+		return false;
+	}
 }
-
 
 export async function resolvePackages(
 	context: PackageManagerContext,
@@ -58,13 +66,29 @@ export async function resolvePackages(
 		const target = getTargetMap(accumulator, resourceType);
 		const globalEntries = (globalSettings[resourceType] ?? []) as string[];
 		const projectEntries = (projectSettings[resourceType] ?? []) as string[];
-		const projectOrigin = context.settingsManager.isFieldInherited("project", resourceType) ? "inherited-pi" : "atomic";
+		const projectOrigin = context.settingsManager.isFieldInherited("project", resourceType)
+			? "inherited-pi"
+			: "atomic";
 		const globalOrigin = context.settingsManager.isFieldInherited("global", resourceType) ? "inherited-pi" : "atomic";
-		await resolveConfiguredLocalEntries(projectEntries, resourceType, target, "project", projectBaseDirs, projectOrigin);
+		await resolveConfiguredLocalEntries(
+			projectEntries,
+			resourceType,
+			target,
+			"project",
+			projectBaseDirs,
+			projectOrigin,
+		);
 		await resolveConfiguredLocalEntries(globalEntries, resourceType, target, "user", globalBaseDirs, globalOrigin);
 	}
 
-	await addAutoDiscoveredResources(context, accumulator, globalSettings, projectSettings, globalBaseDir, projectBaseDir);
+	await addAutoDiscoveredResources(
+		context,
+		accumulator,
+		globalSettings,
+		projectSettings,
+		globalBaseDir,
+		projectBaseDir,
+	);
 	return toResolvedPaths(accumulator);
 }
 
@@ -88,10 +112,16 @@ async function resolveConfiguredLocalEntries(
 			configurationOrigin: baseIndex === 0 || fieldOrigin === "atomic" ? "atomic" : "inherited-pi",
 		};
 		await resolveLocalEntries([...relativeEntries, ...patterns], resourceType, target, metadata, baseDir);
-		await resolveLocalEntries([...fixedEntries, ...patterns], resourceType, target, {
-			...metadata,
-			configurationOrigin: fieldOrigin,
-		}, baseDir);
+		await resolveLocalEntries(
+			[...fixedEntries, ...patterns],
+			resourceType,
+			target,
+			{
+				...metadata,
+				configurationOrigin: fieldOrigin,
+			},
+			baseDir,
+		);
 	}
 }
 
@@ -123,21 +153,26 @@ async function resolvePackageSources(
 		const resolvedSource = deltaBase?.source ?? sourceStr;
 		const resolvedScope = deltaBase?.scope ?? scope;
 		const parsed = parseSource(resolvedSource);
-		const configurationOrigin = options?.settingsField && context.settingsManager.isFieldInherited(scope === "project" ? "project" : "global", options.settingsField)
-			? "inherited-pi"
-			: options?.settingsField ? "atomic" : undefined;
+		const configurationOrigin =
+			options?.settingsField &&
+			context.settingsManager.isFieldInherited(scope === "project" ? "project" : "global", options.settingsField)
+				? "inherited-pi"
+				: options?.settingsField
+					? "atomic"
+					: undefined;
 		const metadata: PathMetadata = { source: sourceStr, scope, origin: "package", configurationOrigin };
 
 		if (parsed.type === "local") {
 			for (const [baseIndex, baseDir] of getBaseDirsForScope(context, resolvedScope).entries()) {
-				const resolvesFromSettingsBase = options?.settingsField !== undefined
-					&& !isAbsolute(parsed.path)
-					&& !parsed.path.startsWith("~");
+				const resolvesFromSettingsBase =
+					options?.settingsField !== undefined && !isAbsolute(parsed.path) && !parsed.path.startsWith("~");
 				const localMetadata: PathMetadata = {
 					...metadata,
 					baseDir,
 					configurationOrigin: resolvesFromSettingsBase
-						? baseIndex === 0 || configurationOrigin === "atomic" ? "atomic" : "inherited-pi"
+						? baseIndex === 0 || configurationOrigin === "atomic"
+							? "atomic"
+							: "inherited-pi"
 						: configurationOrigin,
 				};
 				await resolveLocalExtensionSource(parsed, accumulator, filter, localMetadata, baseDir, {
@@ -180,7 +215,8 @@ async function resolvePackageSources(
 			continue;
 		}
 
-		let installedPath = getExistingGitInstallPath(context, parsed, resolvedScope) ?? getGitInstallPath(context, parsed, resolvedScope);
+		const installedPath =
+			getExistingGitInstallPath(context, parsed, resolvedScope) ?? getGitInstallPath(context, parsed, resolvedScope);
 		if (!(await exists(installedPath))) {
 			const installed = await installMissing();
 			if (!installed) continue;
@@ -201,8 +237,10 @@ function findAutoloadDeltaBase(
 ): { source: string; scope: SourceScope } | undefined {
 	if (scope !== "project" || typeof pkg !== "object" || pkg.autoload !== false) return undefined;
 	const identity = getPackageIdentity(context, pkg.source, scope);
-	const userEntry = sources.find((entry) => entry.scope === "user"
-		&& getPackageIdentity(context, getPackageSourceString(entry.pkg), "user") === identity);
+	const userEntry = sources.find(
+		(entry) =>
+			entry.scope === "user" && getPackageIdentity(context, getPackageSourceString(entry.pkg), "user") === identity,
+	);
 	return userEntry ? { source: getPackageSourceString(userEntry.pkg), scope: "user" } : undefined;
 }
 

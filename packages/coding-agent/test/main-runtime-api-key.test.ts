@@ -15,11 +15,9 @@ it("applies --api-key without a networked catalog refresh before reading availab
 
 	await applyCliRuntimeApiKey(modelRuntime, "custom-provider", "runtime-secret");
 
-	expect(modelRuntime.setRuntimeApiKey).toHaveBeenCalledWith(
-		"custom-provider",
-		"runtime-secret",
-		{ allowNetwork: false },
-	);
+	expect(modelRuntime.setRuntimeApiKey).toHaveBeenCalledWith("custom-provider", "runtime-secret", {
+		allowNetwork: false,
+	});
 	expect(modelRuntime.getAvailable).toHaveBeenCalledOnce();
 	expect(calls).toEqual(["set:false", "available"]);
 });

@@ -59,7 +59,9 @@ function mockWlCopyExit(code: number): void {
 			return child;
 		},
 		stdin: {
-			on() { return child.stdin; },
+			on() {
+				return child.stdin;
+			},
 			end: vi.fn(),
 		},
 	};

@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { APP_NAME, getProjectConfigDirs, getEnvValue } from "@bastani/atomic";
+import { APP_NAME, getEnvValue, getProjectConfigDirs } from "@bastani/atomic";
 import type { AgentConfig } from "../agents/agents.ts";
 import type { ExtensionConfig, IntercomBridgeConfig, IntercomBridgeMode } from "../shared/types.ts";
 import { getAgentDir } from "../shared/utils.ts";
@@ -87,7 +87,13 @@ export function resolveIntercomSessionTarget(sessionName: string | undefined, se
 }
 
 function sanitizeIntercomTargetPart(value: string): string {
-	return value.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "agent";
+	return (
+		value
+			.trim()
+			.toLowerCase()
+			.replace(/[^a-z0-9_-]+/g, "-")
+			.replace(/^-+|-+$/g, "") || "agent"
+	);
 }
 
 export function resolveSubagentIntercomTarget(runId: string, agent: string, index?: number): string {
@@ -127,7 +133,8 @@ function readJsonBestEffort(filePath: string): unknown {
 	try {
 		return JSON.parse(fs.readFileSync(filePath, "utf-8"));
 	} catch (error) {
-		const code = error && typeof error === "object" && "code" in error ? (error as NodeJS.ErrnoException).code : undefined;
+		const code =
+			error && typeof error === "object" && "code" in error ? (error as NodeJS.ErrnoException).code : undefined;
 		if (code !== "ENOENT") console.warn(`Failed to read JSON from '${filePath}'.`, error);
 		return null;
 	}
@@ -140,16 +147,20 @@ function packageHasPiExtension(packageRoot: string): boolean {
 		const pi = (pkg as { pi?: unknown }).pi;
 		if (pi && typeof pi === "object" && !Array.isArray(pi)) {
 			const extensions = (pi as { extensions?: unknown }).extensions;
-			return Array.isArray(extensions) && extensions.some((entry) => typeof entry === "string" && entry.trim() !== "");
+			return (
+				Array.isArray(extensions) && extensions.some((entry) => typeof entry === "string" && entry.trim() !== "")
+			);
 		}
 	}
 	return fs.existsSync(path.join(packageRoot, "extensions"));
 }
 
 function isSafePackagePath(value: string): boolean {
-	return value.length > 0
-		&& !path.isAbsolute(value)
-		&& value.split(/[\\/]/).every((part) => part.length > 0 && part !== "." && part !== "..");
+	return (
+		value.length > 0 &&
+		!path.isAbsolute(value) &&
+		value.split(/[\\/]/).every((part) => part.length > 0 && part !== "." && part !== "..")
+	);
 }
 
 function parseNpmPackageName(source: string): string | undefined {
@@ -162,7 +173,12 @@ function parseNpmPackageName(source: string): string | undefined {
 
 function packageEntrySource(entry: unknown): string | undefined {
 	if (typeof entry === "string") return entry;
-	if (entry && typeof entry === "object" && !Array.isArray(entry) && typeof (entry as { source?: unknown }).source === "string") {
+	if (
+		entry &&
+		typeof entry === "object" &&
+		!Array.isArray(entry) &&
+		typeof (entry as { source?: unknown }).source === "string"
+	) {
 		return (entry as { source: string }).source;
 	}
 	return undefined;
@@ -202,7 +218,15 @@ function getGlobalNpmRoot(): string | null {
 function configuredPiIntercomPackageDir(input: ResolveIntercomBridgeInput, agentDir: string): string | undefined {
 	const projectConfigDir = input.cwd ? findNearestProjectConfigDir(path.resolve(input.cwd)) : undefined;
 	const settingsFiles = [
-		...(projectConfigDir ? [{ file: path.join(projectConfigDir, "settings.json"), configDir: projectConfigDir, scope: "project" as const }] : []),
+		...(projectConfigDir
+			? [
+					{
+						file: path.join(projectConfigDir, "settings.json"),
+						configDir: projectConfigDir,
+						scope: "project" as const,
+					},
+				]
+			: []),
 		{ file: path.join(agentDir, "settings.json"), configDir: agentDir, scope: "user" as const },
 	];
 	let resolvedGlobalNpmRoot = input.globalNpmRoot;
@@ -225,12 +249,13 @@ function configuredPiIntercomPackageDir(input: ResolveIntercomBridgeInput, agent
 			const packageName = parseNpmPackageName(source);
 			if (packageName !== PI_INTERCOM_PACKAGE_NAME) continue;
 			const globalNpmRoot = scope === "user" ? resolveGlobalNpmRoot() : null;
-			const candidates = scope === "project"
-				? [path.join(configDir, "npm", "node_modules", packageName)]
-				: [
-					...(globalNpmRoot ? [path.join(globalNpmRoot, packageName)] : []),
-					path.join(agentDir, "npm", "node_modules", packageName),
-				];
+			const candidates =
+				scope === "project"
+					? [path.join(configDir, "npm", "node_modules", packageName)]
+					: [
+							...(globalNpmRoot ? [path.join(globalNpmRoot, packageName)] : []),
+							path.join(agentDir, "npm", "node_modules", packageName),
+						];
 			const packageRoot = candidates.find(packageHasPiExtension);
 			if (packageRoot) return path.resolve(packageRoot);
 		}
@@ -269,13 +294,14 @@ function expandTilde(filePath: string): string {
 function resolveInstructionTemplate(instructionFile: string, settingsDir: string): string {
 	if (!instructionFile) return DEFAULT_INTERCOM_BRIDGE_TEMPLATE;
 	const expandedPath = expandTilde(instructionFile);
-	const resolvedPath = path.isAbsolute(expandedPath)
-		? expandedPath
-		: path.resolve(settingsDir, expandedPath);
+	const resolvedPath = path.isAbsolute(expandedPath) ? expandedPath : path.resolve(settingsDir, expandedPath);
 	try {
 		return fs.readFileSync(resolvedPath, "utf-8");
 	} catch (error) {
-		console.warn(`Failed to read intercom bridge instructionFile at '${resolvedPath}'. Using default instructions.`, error);
+		console.warn(
+			`Failed to read intercom bridge instructionFile at '${resolvedPath}'. Using default instructions.`,
+			error,
+		);
 		return DEFAULT_INTERCOM_BRIDGE_TEMPLATE;
 	}
 }
@@ -299,7 +325,8 @@ export function diagnoseIntercomBridge(input: ResolveIntercomBridgeInput): Inter
 	let configStatus: ReturnType<typeof intercomConfigStatus> | undefined;
 	let reason: string | undefined;
 	if (mode === "off") reason = "bridge mode is off";
-	else if (mode === "fork-only" && input.context !== "fork") reason = "bridge mode is fork-only and context is not fork";
+	else if (mode === "fork-only" && input.context !== "fork")
+		reason = "bridge mode is fork-only and context is not fork";
 	else if (!orchestratorTarget) reason = "orchestrator target is not available";
 	else if (!piIntercomAvailable) reason = "pi-intercom extension was not found";
 	else {
@@ -353,7 +380,8 @@ export function resolveIntercomBridge(input: ResolveIntercomBridgeInput): Interc
 
 	const configPath = path.resolve(input.configPath ?? defaultIntercomConfigPath(agentDir));
 	const intercomStatus = intercomConfigStatus(configPath);
-	if (intercomStatus.error) console.warn(`Failed to parse intercom config at '${configPath}'. Assuming enabled.`, intercomStatus.error);
+	if (intercomStatus.error)
+		console.warn(`Failed to parse intercom config at '${configPath}'. Assuming enabled.`, intercomStatus.error);
 	if (!intercomStatus.enabled) {
 		return { active: false, mode, extensionDir, instruction: defaultInstruction };
 	}

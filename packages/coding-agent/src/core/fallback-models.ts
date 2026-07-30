@@ -10,7 +10,15 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 
-const THINKING_SUFFIXES = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ThinkingLevel[];
+const THINKING_SUFFIXES = [
+	"off",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+] as const satisfies readonly ThinkingLevel[];
 const THINKING_SUFFIX_SET: ReadonlySet<string> = new Set(THINKING_SUFFIXES);
 
 /** Minimal runtime surface needed to resolve a configured fallback entry. */
@@ -51,7 +59,9 @@ export function resolveFallbackModel(
 	const parsed = splitFallbackModel(value);
 	if (!parsed.modelId.includes("/")) {
 		const available = lookup.getAvailableSnapshot().filter((model) => model.id === parsed.modelId);
-		const model = available.find((candidate) => candidate.provider === preferredProvider) ?? (available.length === 1 ? available[0] : undefined);
+		const model =
+			available.find((candidate) => candidate.provider === preferredProvider) ??
+			(available.length === 1 ? available[0] : undefined);
 		return model ? { model, thinkingLevel: parsed.thinkingLevel } : undefined;
 	}
 	const slash = parsed.modelId.indexOf("/");

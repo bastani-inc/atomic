@@ -43,9 +43,10 @@ export function createForkContextResolver(
 		throw new Error("Forked subagent context requires a current leaf to fork from.");
 	}
 
-	const openSession = options.openSession
-		?? sessionManager.openSession
-		?? ((file: string, dir?: string) => SessionManager.open(file, dir));
+	const openSession =
+		options.openSession ??
+		sessionManager.openSession ??
+		((file: string, dir?: string) => SessionManager.open(file, dir));
 	const sessionDir = sessionManager.getSessionDir?.();
 	const cachedSessionFiles = new Map<number, string>();
 
@@ -55,7 +56,9 @@ export function createForkContextResolver(
 			if (cached) return cached;
 			try {
 				if (!fs.existsSync(parentSessionFile)) {
-					throw new Error(`Parent session file does not exist: ${parentSessionFile}. Pi has not persisted enough history to fork yet.`);
+					throw new Error(
+						`Parent session file does not exist: ${parentSessionFile}. Pi has not persisted enough history to fork yet.`,
+					);
 				}
 				const sourceManager = openSession(parentSessionFile, sessionDir);
 				const sessionFile = sourceManager.createBranchedSession(leafId);

@@ -62,6 +62,6 @@ export class RpcBashRequestOwners {
 	async dispose(): Promise<void> {
 		const pending = [...this.active];
 		this.abort();
-		await Promise.allSettled(pending.flatMap((owner) => owner.completion ? [owner.completion] : []));
+		await Promise.allSettled(pending.flatMap((owner) => (owner.completion ? [owner.completion] : [])));
 	}
 }

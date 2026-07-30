@@ -1,7 +1,7 @@
-import { test } from "vitest";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { test } from "vitest";
 import { assertPiRuntimeAssets } from "../../packages/coding-agent/scripts/assert-pi-runtime-assets.js";
 import { moduleDir, readJson, readText } from "../helpers/runtime.js";
 
@@ -18,7 +18,10 @@ interface Manifest {
 }
 
 interface Lockfile {
-	packages: Record<string, { version: string; resolved: string; integrity: string; dependencies?: Record<string, string> }>;
+	packages: Record<
+		string,
+		{ version: string; resolved: string; integrity: string; dependencies?: Record<string, string> }
+	>;
 }
 
 const root = join(moduleDir(import.meta.url), "../..");
@@ -61,12 +64,16 @@ const workspacePaths = [...declarations.keys(), "packages/natives"];
 
 const publishArtifactTest = existsSync(distBuiltinDir) ? test : test.skip;
 if (!existsSync(distBuiltinDir)) {
-	console.warn("[pi-0.82.1-artifacts] generated publish-artifact checks skipped: packages/coding-agent/dist/builtin is not built");
+	console.warn(
+		"[pi-0.82.1-artifacts] generated publish-artifact checks skipped: packages/coding-agent/dist/builtin is not built",
+	);
 }
 
 const binaryAppTest = existsSync(distAppPath) ? test : test.skip;
 if (!existsSync(distAppPath)) {
-	console.warn("[pi-0.82.1-artifacts] standalone app marker check skipped: packages/coding-agent/dist/app.js is not built");
+	console.warn(
+		"[pi-0.82.1-artifacts] standalone app marker check skipped: packages/coding-agent/dist/app.js is not built",
+	);
 }
 
 test("Pi v0.82.1 source declarations and lockfiles stay synchronized", async () => {
@@ -117,7 +124,10 @@ test("protobufjs 7.6.5 is pinned in source and every packaged lock", async () =>
 		const lock = await readJson<Lockfile>(join(root, path));
 		const entry = lock.packages["node_modules/protobufjs"];
 		assert.equal(entry.version, "7.6.5", path);
-		assert.equal(entry.integrity, "sha512-/FPD0nUc9jH6rfFjji9IBqOz4pcSE3CsT1m7Ep6Mdb0LxSUMj8hgl6GomOvZzpNpAqqGaXA0P3VSrZLFzIhQrw==");
+		assert.equal(
+			entry.integrity,
+			"sha512-/FPD0nUc9jH6rfFjji9IBqOz4pcSE3CsT1m7Ep6Mdb0LxSUMj8hgl6GomOvZzpNpAqqGaXA0P3VSrZLFzIhQrw==",
+		);
 	}
 	// The bun.lock half of this assertion went with the file; the two locks above
 	// already cover every published surface.

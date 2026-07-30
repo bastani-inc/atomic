@@ -25,21 +25,6 @@ import * as builtinProviderCatalog from "@earendil-works/pi-ai/providers/all";
 import { getAgentDir } from "../config.ts";
 import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";
 import { ModelConfig } from "./model-config.ts";
-import { FileModelsStore, InMemoryCodingAgentModelsStore } from "./models-store.ts";
-import {
-	type AuthStatus,
-	composeModelProvider,
-	configuredRequestAuthStatus,
-	type CompatibilityRequestConfig,
-	type ProviderConfigInput,
-	resolveCompatibilityRequestConfig,
-	validateExtensionProvider,
-} from "./provider-composer.ts";
-import { withRemoteCatalog } from "./remote-catalog-provider.ts";
-import { RuntimeCredentials } from "./runtime-credentials.ts";
-import { isOfflineModeEnabled } from "./package-manager-env.ts";
-import { collectOAuthProviderMetadata } from "./oauth-provider-metadata.ts";
-import { OAuthLoginTransactionError } from "./oauth-login.ts";
 import {
 	addRuntimeApiKeyProvider,
 	createEmptyModelRuntimeSnapshot,
@@ -48,12 +33,29 @@ import {
 	type ModelRuntimeSnapshot,
 	updateSnapshotModels,
 } from "./model-runtime-snapshot.ts";
+import { FileModelsStore, InMemoryCodingAgentModelsStore } from "./models-store.ts";
+import { OAuthLoginTransactionError } from "./oauth-login.ts";
+import { collectOAuthProviderMetadata } from "./oauth-provider-metadata.ts";
+import { isOfflineModeEnabled } from "./package-manager-env.ts";
+import {
+	type AuthStatus,
+	type CompatibilityRequestConfig,
+	composeModelProvider,
+	configuredRequestAuthStatus,
+	type ProviderConfigInput,
+	resolveCompatibilityRequestConfig,
+	validateExtensionProvider,
+} from "./provider-composer.ts";
+import { withRemoteCatalog } from "./remote-catalog-provider.ts";
+import { RuntimeCredentials } from "./runtime-credentials.ts";
+
 export type { CreateModelRuntimeOptions, ModelRuntimeAuthOverrides } from "./model-runtime-types.ts";
-import type { CreateModelRuntimeOptions, ModelRuntimeAuthOverrides } from "./model-runtime-types.ts";
-import { ModelRuntimeStreaming } from "./model-runtime-streaming.ts";
-import { canRestoreUnknownModel as canRestoreUnknownModelProvider } from "./model-runtime-restoration.ts";
+
 import { mergeConfiguredAuthHeaders } from "./model-runtime-auth.ts";
 import { configureBuiltinProviders } from "./model-runtime-providers.ts";
+import { canRestoreUnknownModel as canRestoreUnknownModelProvider } from "./model-runtime-restoration.ts";
+import { ModelRuntimeStreaming } from "./model-runtime-streaming.ts";
+import type { CreateModelRuntimeOptions, ModelRuntimeAuthOverrides } from "./model-runtime-types.ts";
 /** Configured pi-ai Models collection used by coding-agent and SDK consumers. */
 export class ModelRuntime implements Models {
 	private readonly models: MutableModels;
@@ -185,12 +187,7 @@ export class ModelRuntime implements Models {
 			),
 			this.credentials.list(),
 		]);
-		this.snapshot = createModelRuntimeSnapshot(
-			[...this.models.getModels()],
-			[...available],
-			checks,
-			credentials,
-		);
+		this.snapshot = createModelRuntimeSnapshot([...this.models.getModels()], [...available], checks, credentials);
 		this.availabilityError = undefined;
 	}
 	private queueAvailabilityRefresh(after: Promise<void> | undefined): Promise<void> {
@@ -279,7 +276,9 @@ export class ModelRuntime implements Models {
 	getRegisteredNativeProvider(providerId: string): Provider | undefined {
 		return this.nativeExtensionProviders.get(providerId);
 	}
-	getOAuthProviderMetadata() { return collectOAuthProviderMetadata(this.getProviders(), this.extensionProviders); }
+	getOAuthProviderMetadata() {
+		return collectOAuthProviderMetadata(this.getProviders(), this.extensionProviders);
+	}
 	/** @internal Compatibility fallback for ModelRegistry when provider auth is unconfigured. */
 	getCompatibilityRequestConfig(model: Model<Api>): CompatibilityRequestConfig {
 		return resolveCompatibilityRequestConfig(
@@ -352,10 +351,7 @@ export class ModelRuntime implements Models {
 			this.snapshot,
 			providerId,
 			this.credentials.hasRuntimeApiKey(providerId),
-			configuredRequestAuthStatus(
-				this.config.getProvider(providerId),
-				this.extensionProviders.get(providerId),
-			),
+			configuredRequestAuthStatus(this.config.getProvider(providerId), this.extensionProviders.get(providerId)),
 		);
 	}
 

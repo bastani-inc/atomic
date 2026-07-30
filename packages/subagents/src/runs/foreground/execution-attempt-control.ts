@@ -1,13 +1,13 @@
 import type { AgentConfig } from "../../agents/agents.ts";
 import type { AgentProgress, ControlEvent, RunSyncOptions, SingleResult } from "../../shared/types.ts";
+import { nextLongRunningTrigger } from "../shared/long-running-guard.ts";
 import {
-	DEFAULT_CONTROL_CONFIG,
 	buildControlEvent,
 	claimControlNotification,
+	DEFAULT_CONTROL_CONFIG,
 	deriveActivityState,
 	shouldNotifyControlEvent,
 } from "../shared/subagent-control.ts";
-import { nextLongRunningTrigger } from "../shared/long-running-guard.ts";
 
 export type NeedsAttentionInput = {
 	message?: string;
@@ -54,51 +54,56 @@ export function createAttemptControlRuntime(input: {
 		if (!controlConfig.enabled) return false;
 		const previous = input.progress.activityState;
 		input.progress.activityState = "needs_attention";
-		emitControlEvent(buildControlEvent({
-			type: "needs_attention",
-			from: previous,
-			to: "needs_attention",
-			runId: input.options.runId,
-			agent: input.agent.name,
-			index: input.options.index,
-			ts: now,
-			lastActivityAt: input.progress.lastActivityAt,
-			message: details.message,
-			reason: details.reason ?? "idle",
-			turns: input.result.usage.turns,
-			tokens: input.progress.tokens,
-			toolCount: input.progress.toolCount,
-			currentTool: details.currentTool ?? input.progress.currentTool,
-			currentToolDurationMs: details.currentToolDurationMs ?? currentToolDurationMs(now),
-			currentPath: details.currentPath ?? input.progress.currentPath,
-			recentFailureSummary: details.recentFailureSummary,
-		}));
+		emitControlEvent(
+			buildControlEvent({
+				type: "needs_attention",
+				from: previous,
+				to: "needs_attention",
+				runId: input.options.runId,
+				agent: input.agent.name,
+				index: input.options.index,
+				ts: now,
+				lastActivityAt: input.progress.lastActivityAt,
+				message: details.message,
+				reason: details.reason ?? "idle",
+				turns: input.result.usage.turns,
+				tokens: input.progress.tokens,
+				toolCount: input.progress.toolCount,
+				currentTool: details.currentTool ?? input.progress.currentTool,
+				currentToolDurationMs: details.currentToolDurationMs ?? currentToolDurationMs(now),
+				currentPath: details.currentPath ?? input.progress.currentPath,
+				recentFailureSummary: details.recentFailureSummary,
+			}),
+		);
 		return previous !== "needs_attention";
 	};
 
 	const emitActiveLongRunning = (now: number, reason: ControlEvent["reason"]): boolean => {
-		if (!controlConfig.enabled || activeLongRunningNotified || input.progress.activityState === "needs_attention") return false;
+		if (!controlConfig.enabled || activeLongRunningNotified || input.progress.activityState === "needs_attention")
+			return false;
 		activeLongRunningNotified = true;
 		const previous = input.progress.activityState;
 		input.progress.activityState = "active_long_running";
-		emitControlEvent(buildControlEvent({
-			type: "active_long_running",
-			from: previous,
-			to: "active_long_running",
-			runId: input.options.runId,
-			agent: input.agent.name,
-			index: input.options.index,
-			ts: now,
-			message: `${input.agent.name} is still active but long-running`,
-			reason,
-			turns: input.result.usage.turns,
-			tokens: input.progress.tokens,
-			toolCount: input.progress.toolCount,
-			currentTool: input.progress.currentTool,
-			currentToolDurationMs: currentToolDurationMs(now),
-			currentPath: input.progress.currentPath,
-			elapsedMs: now - input.startTime,
-		}));
+		emitControlEvent(
+			buildControlEvent({
+				type: "active_long_running",
+				from: previous,
+				to: "active_long_running",
+				runId: input.options.runId,
+				agent: input.agent.name,
+				index: input.options.index,
+				ts: now,
+				message: `${input.agent.name} is still active but long-running`,
+				reason,
+				turns: input.result.usage.turns,
+				tokens: input.progress.tokens,
+				toolCount: input.progress.toolCount,
+				currentTool: input.progress.currentTool,
+				currentToolDurationMs: currentToolDurationMs(now),
+				currentPath: input.progress.currentPath,
+				elapsedMs: now - input.startTime,
+			}),
+		);
 		return true;
 	};
 

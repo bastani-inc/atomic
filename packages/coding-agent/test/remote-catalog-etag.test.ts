@@ -26,15 +26,22 @@ function providerStore(store: InMemoryModelsStore) {
 }
 
 function testProvider() {
-	return withRemoteCatalog(createProvider({
-		id: "test-provider",
-		auth: { apiKey: { name: "Test", resolve: async () => ({ auth: {} }) } },
-		models: [model("static")],
-		api: {
-			stream: () => { throw new Error("not used"); },
-			streamSimple: () => { throw new Error("not used"); },
-		},
-	}), "https://catalog.example.test");
+	return withRemoteCatalog(
+		createProvider({
+			id: "test-provider",
+			auth: { apiKey: { name: "Test", resolve: async () => ({ auth: {} }) } },
+			models: [model("static")],
+			api: {
+				stream: () => {
+					throw new Error("not used");
+				},
+				streamSimple: () => {
+					throw new Error("not used");
+				},
+			},
+		}),
+		"https://catalog.example.test",
+	);
 }
 
 afterEach(() => vi.restoreAllMocks());
@@ -43,7 +50,7 @@ describe("remote catalog ETag revalidation", () => {
 	it("sends a stored ETag and keeps the cached body on an empty 304", async () => {
 		const responses = [
 			new Response(JSON.stringify({ dynamic: model("dynamic") }), {
-				headers: { "content-type": "application/json", etag: "\"catalog-1\"" },
+				headers: { "content-type": "application/json", etag: '"catalog-1"' },
 			}),
 			new Response(null, { status: 304 }),
 		];
@@ -55,26 +62,30 @@ describe("remote catalog ETag revalidation", () => {
 		await provider.refreshModels?.(refresh);
 		expect(fetchSpy.mock.calls[0]?.[1]?.headers).not.toHaveProperty("if-none-match");
 		const first = await store.read(provider.id);
-		expect(first?.etag).toBe("\"catalog-1\"");
+		expect(first?.etag).toBe('"catalog-1"');
 		await provider.refreshModels?.({ ...refresh, force: true });
 
-		expect(fetchSpy.mock.calls[1]?.[1]?.headers).toMatchObject({ "if-none-match": "\"catalog-1\"" });
+		expect(fetchSpy.mock.calls[1]?.[1]?.headers).toMatchObject({ "if-none-match": '"catalog-1"' });
 		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static", "dynamic"]);
 		const stored = await store.read(provider.id);
 		expect(stored?.models.map((entry) => entry.id)).toEqual(["dynamic"]);
-		expect(stored?.etag).toBe("\"catalog-1\"");
+		expect(stored?.etag).toBe('"catalog-1"');
 		expect(stored?.checkedAt).toBeGreaterThanOrEqual(first?.checkedAt ?? 0);
 	});
 
 	it("does not send a validator without a cached body", async () => {
-		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-			new Response(JSON.stringify({ dynamic: model("dynamic") }), { status: 200 }),
-		);
+		const fetchSpy = vi
+			.spyOn(globalThis, "fetch")
+			.mockResolvedValue(new Response(JSON.stringify({ dynamic: model("dynamic") }), { status: 200 }));
 		const provider = testProvider();
 		const store = new InMemoryModelsStore();
-		await store.write(provider.id, { models: [], checkedAt: 0, etag: "\"orphan\"" });
+		await store.write(provider.id, { models: [], checkedAt: 0, etag: '"orphan"' });
 
-		await provider.refreshModels?.({ credential: { type: "api_key" }, store: providerStore(store), allowNetwork: true });
+		await provider.refreshModels?.({
+			credential: { type: "api_key" },
+			store: providerStore(store),
+			allowNetwork: true,
+		});
 
 		expect(fetchSpy.mock.calls[0]?.[1]?.headers).not.toHaveProperty("if-none-match");
 	});
@@ -84,13 +95,18 @@ describe("remote catalog ETag revalidation", () => {
 		vi.spyOn(globalThis, "fetch").mockImplementation(async () => responses.shift()!);
 		const provider = testProvider();
 		const store = new InMemoryModelsStore();
-		await store.write(provider.id, { models: [model("cached")], checkedAt: 0, etag: "\"one\"" });
-		const refresh = { credential: { type: "api_key" as const }, store: providerStore(store), allowNetwork: true, force: true };
+		await store.write(provider.id, { models: [model("cached")], checkedAt: 0, etag: '"one"' });
+		const refresh = {
+			credential: { type: "api_key" as const },
+			store: providerStore(store),
+			allowNetwork: true,
+			force: true,
+		};
 
 		await provider.refreshModels?.(refresh);
 		expect((await store.read(provider.id))?.etag).toBeUndefined();
-		await store.write(provider.id, { models: [model("cached")], checkedAt: 0, etag: "\"two\"" });
+		await store.write(provider.id, { models: [model("cached")], checkedAt: 0, etag: '"two"' });
 		await expect(provider.refreshModels?.(refresh)).rejects.toThrow("503");
-		expect((await store.read(provider.id))?.etag).toBe("\"two\"");
+		expect((await store.read(provider.id))?.etag).toBe('"two"');
 	});
 });

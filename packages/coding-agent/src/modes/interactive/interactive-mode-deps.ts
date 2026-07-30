@@ -2,25 +2,98 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-export { fs, os, path };
-export { default as chalk } from "chalk";
 export type { AgentMessage } from "@earendil-works/pi-agent-core";
-export { getProviders, type Api, type AssistantMessage, type ImageContent, type Message, type Model, type OAuthSelectPrompt } from "@earendil-works/pi-ai/compat";
+export {
+	type Api,
+	type AssistantMessage,
+	getProviders,
+	type ImageContent,
+	type Message,
+	type Model,
+	type OAuthSelectPrompt,
+} from "@earendil-works/pi-ai/compat";
+export { default as chalk } from "chalk";
+export { fs, os, path };
 export type OAuthProviderId = string;
-export type { AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions, EditorComponent, Keybinding, KeyId, MarkdownTheme, OverlayHandle, OverlayOptions, SlashCommand } from "@earendil-works/pi-tui";
-export { CombinedAutocompleteProvider, type Component, Container, fuzzyFilter, getCapabilities, hyperlink, Loader, type LoaderIndicatorOptions, Markdown, matchesKey, ProcessTerminal, Spacer, setKeybindings, Text, TruncatedText, TUI, visibleWidth } from "@earendil-works/pi-tui";
+export type {
+	AutocompleteItem,
+	AutocompleteProvider,
+	AutocompleteSuggestions,
+	EditorComponent,
+	Keybinding,
+	KeyId,
+	MarkdownTheme,
+	OverlayHandle,
+	OverlayOptions,
+	SlashCommand,
+} from "@earendil-works/pi-tui";
+export {
+	CombinedAutocompleteProvider,
+	type Component,
+	Container,
+	fuzzyFilter,
+	getCapabilities,
+	hyperlink,
+	Loader,
+	type LoaderIndicatorOptions,
+	Markdown,
+	matchesKey,
+	ProcessTerminal,
+	Spacer,
+	setKeybindings,
+	Text,
+	TruncatedText,
+	TUI,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
 export { spawn, spawnSync } from "child_process";
-export { APP_NAME, APP_TITLE, CHANGELOG_URL, ENV_OFFLINE, getEnvValue, setCodexFastModeEnvironmentSettings, getAgentDir, getAuthPath, getDebugLogPath, getDocsPath, getShareViewerUrl, VERSION } from "../../config.ts";
+export {
+	APP_NAME,
+	APP_TITLE,
+	CHANGELOG_URL,
+	ENV_OFFLINE,
+	getAgentDir,
+	getAuthPath,
+	getDebugLogPath,
+	getDocsPath,
+	getEnvValue,
+	getShareViewerUrl,
+	setCodexFastModeEnvironmentSettings,
+	VERSION,
+} from "../../config.ts";
 export { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
 export { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
-export type { AutocompleteProviderFactory, EditorFactory, ExtensionCommandContext, ExtensionContext, ExtensionRunner, ExtensionUIContext, ExtensionUIDialogOptions, HostCustomUiState, HostCustomUiStateListener, ProjectTrustContext, ExtensionWidgetOptions } from "../../core/extensions/index.ts";
-export { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
-export { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
-export type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
-export { defaultModelPerProvider, findExactModelReferenceMatch, findInitialModel, resolveModelScope, resolveModelScopeWithDiagnostics, resolveRestoredModelReference } from "../../core/model-resolver.ts";
 export { formatNoModelsAvailableMessage } from "../../core/auth-guidance.ts";
-export { formatCodexFastModeModelLabel, hasSupportedCodexFastModeModel, shouldApplyCodexFastMode } from "../../core/codex-fast-mode.ts";
+export {
+	formatCodexFastModeModelLabel,
+	hasSupportedCodexFastModeModel,
+	shouldApplyCodexFastMode,
+} from "../../core/codex-fast-mode.ts";
+export type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
+export type {
+	AutocompleteProviderFactory,
+	EditorFactory,
+	ExtensionCommandContext,
+	ExtensionContext,
+	ExtensionRunner,
+	ExtensionUIContext,
+	ExtensionUIDialogOptions,
+	ExtensionWidgetOptions,
+	HostCustomUiState,
+	HostCustomUiStateListener,
+	ProjectTrustContext,
+} from "../../core/extensions/index.ts";
+export { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
 export { configureHttpDispatcher } from "../../core/http-dispatcher.ts";
+export { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
+export {
+	defaultModelPerProvider,
+	findExactModelReferenceMatch,
+	findInitialModel,
+	resolveModelScope,
+	resolveModelScopeWithDiagnostics,
+	resolveRestoredModelReference,
+} from "../../core/model-resolver.ts";
 export { DefaultPackageManager } from "../../core/package-manager.ts";
 export { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "../../core/provider-display-names.ts";
 export type { ResourceDiagnostic } from "../../core/resource-loader.ts";
@@ -29,31 +102,51 @@ export { type SessionContext, SessionManager } from "../../core/session-manager.
 export { BUILTIN_SLASH_COMMANDS, BUNDLED_EXTENSION_SLASH_COMMANDS } from "../../core/slash-commands.ts";
 export type { SourceInfo } from "../../core/source-info.ts";
 export { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
+export { recordTimeSinceReset } from "../../core/timings.ts";
 export type { TruncationResult } from "../../core/tools/truncate.ts";
-export { getChangelogPath, getEntriesForVersion, getNewEntries, normalizeChangelogLinks, parseChangelog } from "../../utils/changelog.ts";
+export {
+	hasProjectConfigDir,
+	hasProjectTrustInputs,
+	hasTrustRequiringProjectResources,
+	ProjectTrustStore,
+} from "../../core/trust-manager.ts";
+export {
+	getChangelogPath,
+	getEntriesForVersion,
+	getNewEntries,
+	normalizeChangelogLinks,
+	parseChangelog,
+} from "../../utils/changelog.ts";
 export { copyToClipboard } from "../../utils/clipboard.ts";
-export { combineQueuedMessagesForEditor, openExternalEditorForText, pasteClipboardImageToEditor } from "./chat-input-actions.ts";
 export { parseGitUrl } from "../../utils/git.ts";
 export { getCwdRelativePath } from "../../utils/paths.ts";
 export { getPiUserAgent } from "../../utils/pi-user-agent.ts";
 export { killTrackedDetachedChildren } from "../../utils/shell.ts";
-export { recordTimeSinceReset } from "../../core/timings.ts";
 export { ensureTool } from "../../utils/tools-manager.ts";
 export { checkForNewPiVersion } from "../../utils/version-check.ts";
-export { pickWhimsicalWorkingMessage } from "./whimsical-messages.ts";
+export {
+	combineQueuedMessagesForEditor,
+	openExternalEditorForText,
+	pasteClipboardImageToEditor,
+} from "./chat-input-actions.ts";
 export { ArminComponent } from "./components/armin.ts";
 export { AssistantMessageComponent } from "./components/assistant-message.ts";
+export { composeStartupIdentity, renderAtomicAnsiBanner } from "./components/atomic-banner.ts";
 export { BashExecutionComponent } from "./components/bash-execution.ts";
 export { BorderedLoader } from "./components/bordered-loader.ts";
 export { BranchSummaryMessageComponent } from "./components/branch-summary-message.ts";
-export { chatEntriesFromAgentMessages, renderChatMessageEntry, type ChatMessageEntry, type ChatMessageRenderOptions } from "./components/chat-message-renderer.ts";
+export {
+	type ChatMessageEntry,
+	type ChatMessageRenderOptions,
+	chatEntriesFromAgentMessages,
+	renderChatMessageEntry,
+} from "./components/chat-message-renderer.ts";
 export { addChatTranscriptEntry } from "./components/chat-transcript.ts";
 export { CompactionBoundaryMessageComponent } from "./components/compaction-boundary-message.ts";
 export { CountdownTimer } from "./components/countdown-timer.ts";
 export { CustomEditor } from "./components/custom-editor.ts";
 export { CustomMessageComponent } from "./components/custom-message.ts";
 export { DaxnutsComponent } from "./components/daxnuts.ts";
-export { composeStartupIdentity, renderAtomicAnsiBanner } from "./components/atomic-banner.ts";
 export { DynamicBorder } from "./components/dynamic-border.ts";
 export { EarendilAnnouncementComponent } from "./components/earendil-announcement.ts";
 export { ExtensionEditorComponent } from "./components/extension-editor.ts";
@@ -72,9 +165,20 @@ export { SkillInvocationMessageComponent } from "./components/skill-invocation-m
 export { ToolExecutionComponent } from "./components/tool-execution.ts";
 export { TreeSelectorComponent } from "./components/tree-selector.ts";
 export { TrustSelectorComponent } from "./components/trust-selector.ts";
-export { hasProjectConfigDir, hasProjectTrustInputs, hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/trust-manager.ts";
 export { UserMessageComponent } from "./components/user-message.ts";
 export { UserMessageSelectorComponent } from "./components/user-message-selector.ts";
 export { getModelSearchText } from "./model-search.ts";
-export { getAvailableThemes, getAvailableThemesWithPaths, getEditorTheme, getMarkdownTheme, getThemeByName, onThemeChange, setRegisteredThemes, stopThemeWatcher, Theme, theme } from "./theme/theme.ts";
+export {
+	getAvailableThemes,
+	getAvailableThemesWithPaths,
+	getEditorTheme,
+	getMarkdownTheme,
+	getThemeByName,
+	onThemeChange,
+	setRegisteredThemes,
+	stopThemeWatcher,
+	Theme,
+	theme,
+} from "./theme/theme.ts";
 export { InteractiveThemeController } from "./theme/theme-controller.ts";
+export { pickWhimsicalWorkingMessage } from "./whimsical-messages.ts";

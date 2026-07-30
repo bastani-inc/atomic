@@ -1,5 +1,5 @@
-import { afterAll, beforeAll, describe, test } from "vitest";
 import assert from "node:assert/strict";
+import { afterAll, beforeAll, describe, test } from "vitest";
 import { ReplyWaiterSlot } from "../../packages/intercom/reply-waiter.js";
 import type { Message } from "../../packages/intercom/types.js";
 import { sleep } from "../helpers/runtime.js";

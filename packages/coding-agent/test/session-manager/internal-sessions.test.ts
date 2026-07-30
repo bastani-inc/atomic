@@ -2,16 +2,9 @@ import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-	type SessionHeader,
-	SessionManager,
-	findMostRecentSession,
-} from "../../src/core/session-manager.ts";
+import { findMostRecentSession, type SessionHeader, SessionManager } from "../../src/core/session-manager.ts";
 import { WORKFLOW_SESSION_METADATA_ENV } from "../../src/core/session-manager-classification.ts";
-import {
-	isInternalHeader,
-	readSessionHeader,
-} from "../../src/core/session-manager-storage.ts";
+import { isInternalHeader, readSessionHeader } from "../../src/core/session-manager-storage.ts";
 import { applyInheritedWorkflowSessionClassification } from "../../src/main-session.ts";
 
 /**
@@ -20,11 +13,7 @@ import { applyInheritedWorkflowSessionClassification } from "../../src/main-sess
  * via the workflow-specific resume path and via explicit file/session access.
  */
 
-function writeSessionFile(
-	dir: string,
-	header: SessionHeader,
-	lines: string[] = [],
-): string {
+function writeSessionFile(dir: string, header: SessionHeader, lines: string[] = []): string {
 	const path = join(dir, `${header.timestamp.replace(/[:.]/g, "-")}_${header.id}.jsonl`);
 	writeFileSync(path, `${JSON.stringify(header)}\n${lines.join("\n")}${lines.length ? "\n" : ""}`);
 	return path;
@@ -288,7 +277,11 @@ describe("malformed internal session markers remain visible", () => {
 			provider: "openai",
 			model: "gpt-5.4",
 			usage: {
-				input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 			},
 			stopReason: "stop",

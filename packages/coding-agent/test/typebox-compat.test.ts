@@ -1,4 +1,4 @@
-import { Type, type Static } from "typebox";
+import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { describe, expect, test } from "vitest";
 import { StringEnum } from "../src/core/typebox-compat.ts";

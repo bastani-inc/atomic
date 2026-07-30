@@ -2,35 +2,83 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import {
+	APP_NAME,
+	type ExtensionAPI,
+	type ExtensionContext,
+	getEnvValue,
+	keyHintIfBound,
+	type ToolDefinition,
+} from "@bastani/atomic";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import { APP_NAME, getEnvValue, keyHintIfBound } from "@bastani/atomic";
-import { type ExtensionAPI, type ExtensionContext, type ToolDefinition } from "@bastani/atomic";
-import { Box, Container, Spacer, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
+import {
+	Box,
+	type Component,
+	Container,
+	Spacer,
+	Text,
+	truncateToWidth,
+	visibleWidth,
+	wrapTextWithAnsi,
+} from "@earendil-works/pi-tui";
 import { discoverAgents } from "../agents/agents.ts";
-import { getArtifactsDir } from "../shared/artifacts.ts";
-import { resolveCurrentSessionId } from "../shared/session-identity.ts";
-import { advanceResultPulseFrame, renderLiveSubagentResult, renderSubagentResult, stopResultAnimations, stopWidgetAnimation, type SubagentResultRenderState } from "../tui/render.ts";
-import { SubagentParams } from "./schemas.ts";
-import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
 import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
-import { registerSlashCommands } from "../slash/slash-commands.ts";
+import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/background/notify.ts";
+import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
+import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../runs/shared/pi-args.ts";
+import { getArtifactsDir } from "../shared/artifacts.ts";
+import { formatDuration, shortenPath } from "../shared/formatters.ts";
+import { resolveCurrentSessionId } from "../shared/session-identity.ts";
 import { registerPromptTemplateDelegationBridge } from "../slash/prompt-template-bridge.ts";
 import { registerSlashSubagentBridge } from "../slash/slash-bridge.ts";
-import { clearSlashSnapshots, getSlashRenderableSnapshot, resolveSlashMessageDetails, restoreSlashFinalSnapshots, type SlashMessageDetails } from "../slash/slash-live-state.ts";
-import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/background/notify.ts";
-import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../runs/shared/pi-args.ts";
-import registerFanoutChildSubagentExtension from "./fanout-child.ts";
-import { formatDuration, shortenPath } from "../shared/formatters.ts";
+import { registerSlashCommands } from "../slash/slash-commands.ts";
+import {
+	clearSlashSnapshots,
+	getSlashRenderableSnapshot,
+	resolveSlashMessageDetails,
+	restoreSlashFinalSnapshots,
+	type SlashMessageDetails,
+} from "../slash/slash-live-state.ts";
+import {
+	advanceResultPulseFrame,
+	renderLiveSubagentResult,
+	renderSubagentResult,
+	type SubagentResultRenderState,
+	stopResultAnimations,
+	stopWidgetAnimation,
+} from "../tui/render.ts";
 import { loadConfig } from "./config.ts";
-import { DEFAULT_PROMPT_GUIDANCE } from "./prompt-guidance.ts";
+import registerFanoutChildSubagentExtension from "./fanout-child.ts";
 import { parseSubagentNotifyContent } from "./notification-content.ts";
+import { DEFAULT_PROMPT_GUIDANCE } from "./prompt-guidance.ts";
+import { SubagentParams } from "./schemas.ts";
 import { SUBAGENT_TOOL_DESCRIPTION } from "./tool-description.ts";
+
 export { SUBAGENT_TOOL_DESCRIPTION } from "./tool-description.ts";
-import { type Details, type SubagentState, ASYNC_DIR, DEFAULT_ARTIFACT_CONFIG, RESULTS_DIR, SLASH_RESULT_TYPE, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT, SUBAGENT_CONTROL_EVENT } from "../shared/types.ts";
-import { clearPendingForegroundControlNotices, formatSubagentControlNotice, handleSubagentControlNotice, SUBAGENT_CONTROL_MESSAGE_TYPE, type SubagentControlMessageDetails } from "./control-notices.ts";
-import { createSubagentStartupMaintenance } from "./startup-maintenance.ts";
+
+import {
+	ASYNC_DIR,
+	DEFAULT_ARTIFACT_CONFIG,
+	type Details,
+	RESULTS_DIR,
+	SLASH_RESULT_TYPE,
+	SUBAGENT_ASYNC_COMPLETE_EVENT,
+	SUBAGENT_ASYNC_STARTED_EVENT,
+	SUBAGENT_CONTROL_EVENT,
+	type SubagentState,
+} from "../shared/types.ts";
 import { beginApiLifecycle, getApiScopedSet } from "./api-lifecycle.ts";
+import {
+	clearPendingForegroundControlNotices,
+	formatSubagentControlNotice,
+	handleSubagentControlNotice,
+	SUBAGENT_CONTROL_MESSAGE_TYPE,
+	type SubagentControlMessageDetails,
+} from "./control-notices.ts";
+import { createSubagentStartupMaintenance } from "./startup-maintenance.ts";
+
 export { loadConfig } from "./config.ts";
+
 function getSubagentSessionRoot(parentSessionFile: string | null): string {
 	if (parentSessionFile) {
 		const baseName = path.basename(parentSessionFile, ".jsonl");
@@ -49,19 +97,22 @@ function ensureAccessibleDir(dirPath: string): void {
 	} catch {
 		try {
 			fs.rmSync(dirPath, { recursive: true, force: true });
-		} catch {
-		}
+		} catch {}
 		fs.mkdirSync(dirPath, { recursive: true });
 		fs.accessSync(dirPath, fs.constants.R_OK | fs.constants.W_OK);
 	}
 }
 function isSlashResultRunning(result: { details?: Details }): boolean {
-	return result.details?.progress?.some((entry) => entry.status === "running")
-		|| result.details?.results.some((entry) => entry.progress?.status === "running")
-		|| false;
+	return (
+		result.details?.progress?.some((entry) => entry.status === "running") ||
+		result.details?.results.some((entry) => entry.progress?.status === "running") ||
+		false
+	);
 }
 function isSlashResultError(result: { details?: Details }): boolean {
-	return result.details?.results.some((entry) => entry.exitCode !== 0 && entry.progress?.status !== "running") || false;
+	return (
+		result.details?.results.some((entry) => entry.exitCode !== 0 && entry.progress?.status !== "running") || false
+	);
 }
 type SubagentToolRenderState = SubagentResultRenderState;
 function rebuildSlashResultContainer(
@@ -72,7 +123,11 @@ function rebuildSlashResultContainer(
 ): void {
 	container.clear();
 	container.addChild(new Spacer(1));
-	const boxTheme = isSlashResultRunning(result) ? "toolPendingBg" : isSlashResultError(result) ? "toolErrorBg" : "toolSuccessBg";
+	const boxTheme = isSlashResultRunning(result)
+		? "toolPendingBg"
+		: isSlashResultError(result)
+			? "toolErrorBg"
+			: "toolSuccessBg";
 	const box = new Box(1, 1, (text: string) => theme.bg(boxTheme, text));
 	box.addChild(renderSubagentResult(result, options, theme));
 	container.addChild(box);
@@ -93,7 +148,12 @@ function createSlashResultComponent(
 			lastVersion = snapshot.version;
 			lastSnapshotNow = Date.now();
 			pulseFrame = advanceResultPulseFrame(pulseFrame);
-			rebuildSlashResultContainer(container, snapshot.result, { ...options, now: lastSnapshotNow, pulseFrame }, theme);
+			rebuildSlashResultContainer(
+				container,
+				snapshot.result,
+				{ ...options, now: lastSnapshotNow, pulseFrame },
+				theme,
+			);
 		}
 		return Container.prototype.render.call(container, width);
 	};
@@ -107,16 +167,18 @@ export function renderSubagentNotification(
 	const content = typeof message.content === "string" ? message.content : "";
 	const details = (message.details as SubagentNotifyDetails | undefined) ?? parseSubagentNotifyContent(content);
 	if (!details) return new Text(content, 0, 0);
-	const icon = details.status === "completed"
-		? theme.fg("success", "✓")
-		: details.status === "paused"
-			? theme.fg("warning", "■")
-			: theme.fg("error", "✗");
+	const icon =
+		details.status === "completed"
+			? theme.fg("success", "✓")
+			: details.status === "paused"
+				? theme.fg("warning", "■")
+				: theme.fg("error", "✗");
 	const parts: string[] = [];
 	if (details.taskInfo) parts.push(details.taskInfo);
 	if (details.durationMs !== undefined) parts.push(formatDuration(details.durationMs));
 	let text = `${icon} ${theme.bold(details.agent)} ${theme.fg("dim", details.status)}`;
-	if (parts.length > 0) text += ` ${theme.fg("dim", "·")} ${parts.map((part) => theme.fg("dim", part)).join(` ${theme.fg("dim", "·")} `)}`;
+	if (parts.length > 0)
+		text += ` ${theme.fg("dim", "·")} ${parts.map((part) => theme.fg("dim", part)).join(` ${theme.fg("dim", "·")} `)}`;
 	const trimmedPreview = details.resultPreview.trim();
 	const previewLines = options.expanded
 		? trimmedPreview.split("\n").filter((line) => line.trim())
@@ -201,7 +263,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		registrationFailureCleanups.push(() => maintenance.stop());
 		maintenance.startResultWatcherDeferred();
 		maintenance.primeExistingResultsDeferred();
-		const { ensurePoller, handleStarted, handleComplete, resetJobs, hydrateActiveJobsDeferred } = createAsyncJobTracker(pi, state, ASYNC_DIR);
+		const { ensurePoller, handleStarted, handleComplete, resetJobs, hydrateActiveJobsDeferred } =
+			createAsyncJobTracker(pi, state, ASYNC_DIR);
 		const executor = createSubagentExecutor({
 			pi,
 			state,
@@ -218,13 +281,25 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			return createSlashResultComponent(details, options, theme, pi);
 		});
 		pi.registerMessageRenderer<SubagentNotifyDetails>("subagent-notify", renderSubagentNotification);
-		pi.registerMessageRenderer<SubagentControlMessageDetails>(SUBAGENT_CONTROL_MESSAGE_TYPE, (message, _options, theme) => {
-			const details = message.details as SubagentControlMessageDetails | undefined;
-			if (!details?.event) return undefined;
-			const content = typeof message.content === "string" ? message.content : undefined;
-			return new SubagentControlNoticeComponent({ ...details, noticeText: formatSubagentControlNotice(details, content) }, theme);
-		});
-		const executeSubagentCollapsed = (id: string, params: SubagentParamsLike, signal: AbortSignal, onUpdate: ((result: AgentToolResult<Details>) => void) | undefined, ctx: ExtensionContext) => {
+		pi.registerMessageRenderer<SubagentControlMessageDetails>(
+			SUBAGENT_CONTROL_MESSAGE_TYPE,
+			(message, _options, theme) => {
+				const details = message.details as SubagentControlMessageDetails | undefined;
+				if (!details?.event) return undefined;
+				const content = typeof message.content === "string" ? message.content : undefined;
+				return new SubagentControlNoticeComponent(
+					{ ...details, noticeText: formatSubagentControlNotice(details, content) },
+					theme,
+				);
+			},
+		);
+		const executeSubagentCollapsed = (
+			id: string,
+			params: SubagentParamsLike,
+			signal: AbortSignal,
+			onUpdate: ((result: AgentToolResult<Details>) => void) | undefined,
+			ctx: ExtensionContext,
+		) => {
 			if (ctx.hasUI) {
 				state.lastUiContext = ctx;
 				ctx.ui.setToolsExpanded(false);
@@ -234,8 +309,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		const slashBridge = registerSlashSubagentBridge({
 			events: pi.events,
 			getContext: () => state.lastUiContext,
-			execute: (id, params, signal, onUpdate, ctx) =>
-				executeSubagentCollapsed(id, params, signal, onUpdate, ctx),
+			execute: (id, params, signal, onUpdate, ctx) => executeSubagentCollapsed(id, params, signal, onUpdate, ctx),
 		});
 		registrationFailureCleanups.push(() => {
 			slashBridge.cancelAll();
@@ -283,7 +357,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		function effectiveParallelTaskCount(tasks: Array<{ count?: unknown }> | undefined): number {
 			if (!tasks || tasks.length === 0) return 0;
 			return tasks.reduce((total, task) => {
-				const count = typeof task.count === "number" && Number.isInteger(task.count) && task.count >= 1 ? task.count : 1;
+				const count =
+					typeof task.count === "number" && Number.isInteger(task.count) && task.count >= 1 ? task.count : 1;
 				return total + count;
 			}, 0);
 		}
@@ -302,7 +377,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 					const target = args.agent || args.chainName || "";
 					return new Text(
 						`${theme.fg("toolTitle", theme.bold("subagent "))}${args.action}${target ? ` ${theme.fg("accent", target)}` : ""}`,
-						0, 0,
+						0,
+						0,
 					);
 				}
 				const isParallel = (args.tasks?.length ?? 0) > 0;

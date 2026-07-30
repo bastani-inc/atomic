@@ -13,10 +13,7 @@ import { describe, expect, test } from "vitest";
 // regression fails fast in a focused unit test instead of only in CI.
 
 const SRC_ROOT = join(import.meta.dirname, "..", "..", "..", "src");
-const GUARDED_DIRS = [
-	join(SRC_ROOT, "modes", "interactive-engine"),
-	join(SRC_ROOT, "modes", "rpc"),
-];
+const GUARDED_DIRS = [join(SRC_ROOT, "modes", "interactive-engine"), join(SRC_ROOT, "modes", "rpc")];
 
 // Matches a constructor parameter carrying an accessibility/readonly modifier,
 // e.g. `constructor(private readonly foo: Bar)` across single or multi-line
@@ -40,9 +37,7 @@ function collectSourceFiles(dir: string): string[] {
 }
 
 function stripComments(source: string): string {
-	return source
-		.replace(/\/\*[\s\S]*?\*\//g, "")
-		.replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+	return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/[^\n]*/g, "$1");
 }
 
 describe("PR #1842 published build syntax contract", () => {

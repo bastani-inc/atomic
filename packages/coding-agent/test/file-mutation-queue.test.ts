@@ -263,7 +263,11 @@ describe("built-in edit and write tools", () => {
 		});
 
 		const controller = new AbortController();
-		const firstEdit = editTool.execute("call-1", { input: `[abort-edit.txt#${tag}]\nreplace 1..1:\n+ALPHA` }, controller.signal);
+		const firstEdit = editTool.execute(
+			"call-1",
+			{ input: `[abort-edit.txt#${tag}]\nreplace 1..1:\n+ALPHA` },
+			controller.signal,
+		);
 		await firstWriteStarted.promise;
 		controller.abort();
 

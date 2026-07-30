@@ -1,5 +1,5 @@
-import type { SendMessageOptions } from "./extensions/index.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import type { SendMessageOptions } from "./extensions/index.ts";
 
 /** Resolve a retired workflow-stage session to its single live delivery owner. */
 export function resolveWorkflowStageDeliveryTarget(session: AgentSession): AgentSession {

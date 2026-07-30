@@ -1,8 +1,8 @@
 import type { ExtensionUIContext, HostSessionPickerRow } from "../../core/extensions/index.ts";
 import {
+	type HostSessionPickerMount,
 	mountHostSessionPicker,
 	sessionInfoFromPickerRow,
-	type HostSessionPickerMount,
 } from "../interactive/components/host-session-picker.ts";
 import type { IsolatedInteractiveRuntime } from "./isolated-runtime.ts";
 import type { InteractiveEngineMessage } from "./protocol.ts";

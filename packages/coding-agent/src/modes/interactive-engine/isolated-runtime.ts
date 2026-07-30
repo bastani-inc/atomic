@@ -2,17 +2,24 @@ import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { AgentSession, AgentSessionEvent } from "../../core/agent-session.ts";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../../core/agent-session-runtime.ts";
 import type { PromptOptions } from "../../core/agent-session-types.ts";
-import { loginIsolatedOAuthProvider, type AtomicOAuthLoginCallbacks } from "./isolated-auth.ts";
-import { SessionManager } from "../../core/session-manager.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
+import { SessionManager } from "../../core/session-manager.ts";
+import { sleep } from "../../utils/sleep.ts";
 import type { RpcClient } from "../rpc/rpc-client.ts";
-import type { RpcAutocompleteItem, RpcExtensionUIRequest, RpcExtensionUIResponse, RpcModelCatalog, RpcEvent, RpcSlashCommand } from "../rpc/rpc-types.ts";
+import type {
+	RpcAutocompleteItem,
+	RpcEvent,
+	RpcExtensionUIRequest,
+	RpcExtensionUIResponse,
+	RpcModelCatalog,
+	RpcSlashCommand,
+} from "../rpc/rpc-types.ts";
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
+import { type AtomicOAuthLoginCallbacks, loginIsolatedOAuthProvider } from "./isolated-auth.ts";
 import type { EngineKeybindingState, InteractiveEngineCommand, InteractiveEngineMessage } from "./protocol.ts";
 import { RemoteCommandCatalog, type RemoteCommandsListener } from "./remote-command-catalog.ts";
 import { RemoteModelCatalog } from "./remote-model-catalog.ts";
 import { RemoteQueuePause } from "./remote-queue-pause.js";
-import { sleep } from "../../utils/sleep.ts";
 export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private readonly client: RpcClient;
 	private readonly patchedSessions = new WeakSet<AgentSession>();
@@ -35,11 +42,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private readonly remoteModelCatalog: RemoteModelCatalog;
 	private resourceOverlaps: ResourceOverlap[] = [];
 
-	constructor(
-		localRuntime: AgentSessionRuntime,
-		createRuntime: CreateAgentSessionRuntimeFactory,
-		client: RpcClient,
-	) {
+	constructor(localRuntime: AgentSessionRuntime, createRuntime: CreateAgentSessionRuntimeFactory, client: RpcClient) {
 		super(
 			localRuntime.session,
 			localRuntime.services,
@@ -117,22 +120,35 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.client.sendInteractiveEngineCommand(command);
 	}
 
-	getRemoteCommands(): readonly RpcSlashCommand[] { return this.remoteCommands.getCommands(); }
-	onRemoteCommandsChanged(listener: RemoteCommandsListener): () => void { return this.remoteCommands.onChange(listener); }
+	getRemoteCommands(): readonly RpcSlashCommand[] {
+		return this.remoteCommands.getCommands();
+	}
+	onRemoteCommandsChanged(listener: RemoteCommandsListener): () => void {
+		return this.remoteCommands.onChange(listener);
+	}
 	getRemoteCommandCompletions(commandName: string, argumentPrefix: string): Promise<RpcAutocompleteItem[] | null> {
 		return this.client.getCommandCompletions(commandName, argumentPrefix);
 	}
-
 
 	async invokeRemoteShortcut(key: string): Promise<void> {
 		await this.client.requestInternal<void>({ type: "invoke_shortcut", key });
 	}
 
-	waitUntilBound(): Promise<void> { return this.client.waitForInteractiveEngineBound(); }
-	getEnginePid(): number | undefined { return this.client.getEnginePid(); }
-	getEngineGeneration(): number { return this.client.getGeneration(); }
-	isRecovering(): boolean { return this.restartPromise !== undefined; }
-	getResourceOverlaps(): readonly ResourceOverlap[] { return this.resourceOverlaps; }
+	waitUntilBound(): Promise<void> {
+		return this.client.waitForInteractiveEngineBound();
+	}
+	getEnginePid(): number | undefined {
+		return this.client.getEnginePid();
+	}
+	getEngineGeneration(): number {
+		return this.client.getGeneration();
+	}
+	isRecovering(): boolean {
+		return this.restartPromise !== undefined;
+	}
+	getResourceOverlaps(): readonly ResourceOverlap[] {
+		return this.resourceOverlaps;
+	}
 	async synchronize(): Promise<void> {
 		const state = await this.client.getState();
 		this.remoteSessionFile = state.sessionFile;
@@ -140,7 +156,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.resourceOverlaps = state.resourceOverlaps ?? [];
 	}
 
-	setEngineCallbackActive(active: boolean): void { this.engineCallbackActive = active; }
+	setEngineCallbackActive(active: boolean): void {
+		this.engineCallbackActive = active;
+	}
 
 	interruptBlockedCallback(): boolean {
 		if (!this.engineCallbackActive) return false;
@@ -152,16 +170,18 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		handler: (request: RpcExtensionUIRequest) => Promise<RpcExtensionUIResponse | undefined>,
 	): () => void {
 		return this.client.onExtensionUIRequest((request) => {
-			void handler(request).then(async (response) => {
-				if (response) await this.client.respondExtensionUI(response);
-			}).catch((error: Error) => {
-				this.emitDiagnostic({
-					activity: undefined,
-					elapsedMs: 0,
-					level: "unresponsive",
-					message: `Interactive engine UI bridge failed: ${error.message}`,
+			void handler(request)
+				.then(async (response) => {
+					if (response) await this.client.respondExtensionUI(response);
+				})
+				.catch((error: Error) => {
+					this.emitDiagnostic({
+						activity: undefined,
+						elapsedMs: 0,
+						level: "unresponsive",
+						message: `Interactive engine UI bridge failed: ${error.message}`,
+					});
 				});
-			});
 		});
 	}
 
@@ -193,7 +213,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 
 	override async importFromJsonl(inputPath: string, cwdOverride?: string): Promise<{ cancelled: boolean }> {
 		const result = await this.client.requestInternal<{ cancelled: boolean }>({
-			type: "import_session", inputPath, cwdOverride,
+			type: "import_session",
+			inputPath,
+			cwdOverride,
 		});
 		if (result.cancelled) return result;
 		const state = await this.client.getState();
@@ -254,26 +276,55 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			steer: { configurable: true, value: (text: string) => this.client.steer(text) },
 			followUp: { configurable: true, value: (text: string) => this.client.followUp(text) },
 			abort: { configurable: true, value: () => this.abortAndRecover() },
-			executeBash: { configurable: true, value: async (command: string, onChunk?: Parameters<AgentSession["executeBash"]>[1], options?: Parameters<AgentSession["executeBash"]>[2]) => {
-				const key = options?.id ?? Symbol("isolated-bash-request");
-				try { return await this.client.userBashWithUpdates(command, (delta, channel) => onChunk?.(delta, channel), {
-						excludeFromContext: options?.excludeFromContext, onRequestId: (requestId) => this.activeBashRequestIds.set(key, requestId),
-					});
-				} finally { this.activeBashRequestIds.delete(key); }
-			} },
+			executeBash: {
+				configurable: true,
+				value: async (
+					command: string,
+					onChunk?: Parameters<AgentSession["executeBash"]>[1],
+					options?: Parameters<AgentSession["executeBash"]>[2],
+				) => {
+					const key = options?.id ?? Symbol("isolated-bash-request");
+					try {
+						return await this.client.userBashWithUpdates(command, (delta, channel) => onChunk?.(delta, channel), {
+							excludeFromContext: options?.excludeFromContext,
+							onRequestId: (requestId) => this.activeBashRequestIds.set(key, requestId),
+						});
+					} finally {
+						this.activeBashRequestIds.delete(key);
+					}
+				},
+			},
 			recordBashResult: { configurable: true, value: () => {} },
-			abortBash: { configurable: true, value: (id?: string) => {
-				if (id === undefined) this.dispatchBestEffort("abort bash", this.client.abortBash());
-				else { const requestId = this.activeBashRequestIds.get(id); if (requestId) this.dispatchBestEffort("abort bash", this.client.abortBash(requestId)); }
-			} },
+			abortBash: {
+				configurable: true,
+				value: (id?: string) => {
+					if (id === undefined) this.dispatchBestEffort("abort bash", this.client.abortBash());
+					else {
+						const requestId = this.activeBashRequestIds.get(id);
+						if (requestId) this.dispatchBestEffort("abort bash", this.client.abortBash(requestId));
+					}
+				},
+			},
 			compact: { configurable: true, value: () => this.client.compact() },
-			abortCompaction: { configurable: true, value: () => this.dispatchBestEffort("abort compaction", this.client.requestInternal<void>({ type: "abort_compaction" })) },
-			abortRetry: { configurable: true, value: () => this.dispatchBestEffort("abort retry", this.client.abortRetry()) },
+			abortCompaction: {
+				configurable: true,
+				value: () =>
+					this.dispatchBestEffort(
+						"abort compaction",
+						this.client.requestInternal<void>({ type: "abort_compaction" }),
+					),
+			},
+			abortRetry: {
+				configurable: true,
+				value: () => this.dispatchBestEffort("abort retry", this.client.abortRetry()),
+			},
 			navigateTree: {
 				configurable: true,
 				value: async (targetId: string, options?: Parameters<AgentSession["navigateTree"]>[1]) =>
 					this.client.requestInternal<Awaited<ReturnType<AgentSession["navigateTree"]>>>({
-						type: "navigate_tree", targetId, options,
+						type: "navigate_tree",
+						targetId,
+						options,
 					}),
 			},
 			reload: {
@@ -287,7 +338,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				configurable: true,
 				value: (name: string) => {
 					this.remoteSessionName = name;
-					this.dispatchBestEffort("set session name", this.client.setSessionName(name).then(() => this.refreshSessionView()));
+					this.dispatchBestEffort(
+						"set session name",
+						this.client.setSessionName(name).then(() => this.refreshSessionView()),
+					);
 				},
 			},
 			getSteeringMessages: { configurable: true, value: () => [...this.steeringMessages] },
@@ -381,7 +435,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private async abortAndRecover(): Promise<void> {
 		if (this.restartPromise) return this.restartPromise;
 		await this.queuePause.settleBeforeAbort();
-		const cooperativeAbort = this.client.abort().then(() => true, () => false);
+		const cooperativeAbort = this.client.abort().then(
+			() => true,
+			() => false,
+		);
 		if (await Promise.race([cooperativeAbort, sleep(250).then(() => false)])) {
 			this.engineCallbackActive = false;
 			return;
@@ -401,9 +458,16 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.restartPromise = (async () => {
 			await this.client.restart(this.remoteSessionFile);
 			await this.initializeFromEngine();
-		})().catch((error: Error) => {
-			this.emitDiagnostic({ ...diagnostic, message: `${diagnostic.message}; engine restart failed: ${error.message}` });
-		}).finally(() => { this.restartPromise = undefined; });
+		})()
+			.catch((error: Error) => {
+				this.emitDiagnostic({
+					...diagnostic,
+					message: `${diagnostic.message}; engine restart failed: ${error.message}`,
+				});
+			})
+			.finally(() => {
+				this.restartPromise = undefined;
+			});
 		await this.restartPromise;
 	}
 
@@ -433,7 +497,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			value: (entryId: string, label?: string) => {
 				this.dispatchBestEffort(
 					"set label",
-					this.client.requestInternal<void>({ type: "set_label", entryId, label }).then(() => this.refreshSessionView()),
+					this.client
+						.requestInternal<void>({ type: "set_label", entryId, label })
+						.then(() => this.refreshSessionView()),
 				);
 			},
 		});

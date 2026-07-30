@@ -2,8 +2,8 @@ import type { Component, OverlayHandle, OverlayOptions, TUI } from "@earendil-wo
 import type { ExtensionUIContext } from "../../core/extensions/index.ts";
 import type { IsolatedInteractiveRuntime } from "./isolated-runtime.ts";
 import type { InteractiveEngineMessage, JsonValue, SerializableOverlayOptions } from "./protocol.ts";
-import { TerminalModeController } from "./terminal-mode-controller.ts";
 import { RemoteFrameWidthClamp } from "./remote-frame-clamp.ts";
+import { TerminalModeController } from "./terminal-mode-controller.ts";
 
 interface MountedRemoteComponent {
 	component: RemoteComponent;
@@ -106,9 +106,7 @@ function overlayOptions(options: SerializableOverlayOptions | undefined): Overla
  */
 function hostTerminal(tui: TUI): { write(data: string): void } {
 	const terminal = (tui as { terminal?: { write?(data: string): void } }).terminal;
-	return typeof terminal?.write === "function"
-		? (terminal as { write(data: string): void })
-		: { write: () => {} };
+	return typeof terminal?.write === "function" ? (terminal as { write(data: string): void }) : { write: () => {} };
 }
 
 export class RemoteComponentController {
@@ -119,10 +117,7 @@ export class RemoteComponentController {
 	private readonly runtime: IsolatedInteractiveRuntime;
 	private readonly ui: ExtensionUIContext;
 
-	constructor(
-		runtime: IsolatedInteractiveRuntime,
-		ui: ExtensionUIContext,
-	) {
+	constructor(runtime: IsolatedInteractiveRuntime, ui: ExtensionUIContext) {
 		this.runtime = runtime;
 		this.ui = ui;
 		this.unsubscribe = runtime.onEngineMessage((message) => this.handleMessage(message));
@@ -148,7 +143,14 @@ export class RemoteComponentController {
 				this.terminalModes.resetAll();
 				break;
 			case "engine_custom_open":
-				this.open(message.componentId, message.overlay, message.deferInlineCustomUiFocus, message.overlayOptions, message.widgetKey, message.widgetPlacement);
+				this.open(
+					message.componentId,
+					message.overlay,
+					message.deferInlineCustomUiFocus,
+					message.overlayOptions,
+					message.widgetKey,
+					message.widgetPlacement,
+				);
 				break;
 			case "engine_custom_close":
 				this.close(message.componentId);
@@ -187,41 +189,58 @@ export class RemoteComponentController {
 		if (this.mounted.has(componentId)) return;
 		if (widgetKey) {
 			let rows = 24;
-			const component = new RemoteComponent(componentId, this.runtime, () => this.ui.requestRender(), () => rows);
+			const component = new RemoteComponent(
+				componentId,
+				this.runtime,
+				() => this.ui.requestRender(),
+				() => rows,
+			);
 			this.mounted.set(componentId, { component, done: () => {}, engineDone: false, widgetKey });
-			this.ui.setWidget(widgetKey, (tui) => {
-				rows = tui.terminal.rows;
-				return component;
-			}, { placement: widgetPlacement });
+			this.ui.setWidget(
+				widgetKey,
+				(tui) => {
+					rows = tui.terminal.rows;
+					return component;
+				},
+				{ placement: widgetPlacement },
+			);
 			return;
 		}
 		let mounted: MountedRemoteComponent | undefined;
-		void this.ui.custom<JsonValue | undefined>(
-			(tui, _theme, _keybindings, done) => {
-				const component = new RemoteComponent(
-					componentId, this.runtime, () => this.ui.requestRender(), () => tui.terminal.rows,
-				);
-				mounted = { component, done, engineDone: false };
-				this.mounted.set(componentId, mounted);
-				// Bind this component to the real host terminal so buffered/pending
-				// terminal-mode controls (e.g. mouse-scroll reporting the overlay
-				// enabled before the mount frame) apply to the host TTY.
-				this.terminalModes.onMount(componentId, hostTerminal(tui));
-				return component;
-			},
-			{
-				overlay,
-				deferInlineCustomUiFocus,
-				overlayOptions: overlayOptions(options),
-				onHandle: (handle) => { if (mounted) mounted.handle = handle; },
-			},
-		).catch(() => undefined).finally(() => {
-			this.terminalModes.onUnmount(componentId);
-			const record = this.mounted.get(componentId);
-			if (!record) return;
-			this.mounted.delete(componentId);
-			if (!record.engineDone) record.component.dispose();
-		});
+		void this.ui
+			.custom<JsonValue | undefined>(
+				(tui, _theme, _keybindings, done) => {
+					const component = new RemoteComponent(
+						componentId,
+						this.runtime,
+						() => this.ui.requestRender(),
+						() => tui.terminal.rows,
+					);
+					mounted = { component, done, engineDone: false };
+					this.mounted.set(componentId, mounted);
+					// Bind this component to the real host terminal so buffered/pending
+					// terminal-mode controls (e.g. mouse-scroll reporting the overlay
+					// enabled before the mount frame) apply to the host TTY.
+					this.terminalModes.onMount(componentId, hostTerminal(tui));
+					return component;
+				},
+				{
+					overlay,
+					deferInlineCustomUiFocus,
+					overlayOptions: overlayOptions(options),
+					onHandle: (handle) => {
+						if (mounted) mounted.handle = handle;
+					},
+				},
+			)
+			.catch(() => undefined)
+			.finally(() => {
+				this.terminalModes.onUnmount(componentId);
+				const record = this.mounted.get(componentId);
+				if (!record) return;
+				this.mounted.delete(componentId);
+				if (!record.engineDone) record.component.dispose();
+			});
 	}
 
 	private close(componentId: string): void {
@@ -237,10 +256,18 @@ export class RemoteComponentController {
 		const handle = this.mounted.get(componentId)?.handle;
 		if (!handle) return;
 		switch (action) {
-			case "focus": handle.focus(); break;
-			case "hide": handle.setHidden(true); break;
-			case "show": handle.setHidden(false); break;
-			case "unfocus": handle.unfocus(); break;
+			case "focus":
+				handle.focus();
+				break;
+			case "hide":
+				handle.setHidden(true);
+				break;
+			case "show":
+				handle.setHidden(false);
+				break;
+			case "unfocus":
+				handle.unfocus();
+				break;
 		}
 	}
 }

@@ -1,8 +1,8 @@
-import { afterAll, beforeEach, describe, test, vi } from "vitest";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { afterAll, beforeEach, describe, test, vi } from "vitest";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 import { WORKFLOW_STAGE_SUBAGENT_GUARD_ENV } from "../../packages/subagents/src/shared/types.js";
 
@@ -60,23 +60,25 @@ const asyncSingleCalls: CapturedAsyncSingleCall[] = [];
 
 const emptyUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
 
-const runSyncMock = vi.fn(async (
-	_cwd: string,
-	_agents: MinimalAgentConfig[],
-	agentName: string,
-	task: string,
-	options: MinimalRunSyncOptions,
-) => {
-	runSyncCalls.push({ agentName, options });
-	return {
-		agent: agentName,
-		task,
-		exitCode: 0,
-		messages: [],
-		usage: emptyUsage,
-		finalOutput: `${agentName} output`,
-	};
-});
+const runSyncMock = vi.fn(
+	async (
+		_cwd: string,
+		_agents: MinimalAgentConfig[],
+		agentName: string,
+		task: string,
+		options: MinimalRunSyncOptions,
+	) => {
+		runSyncCalls.push({ agentName, options });
+		return {
+			agent: agentName,
+			task,
+			exitCode: 0,
+			messages: [],
+			usage: emptyUsage,
+			finalOutput: `${agentName} output`,
+		};
+	},
+);
 
 const executeAsyncChainMock = vi.fn((id: string, params: MinimalAsyncChainParams) => {
 	asyncChainCalls.push({ id, params });
@@ -227,7 +229,10 @@ function assertNoErrorFlag(result: ExecutorResultForTest): void {
 }
 
 function assertGuardedRunSyncCalls(expectedAgentNames: string[]): void {
-	assert.deepEqual(runSyncCalls.map((call) => call.agentName), expectedAgentNames);
+	assert.deepEqual(
+		runSyncCalls.map((call) => call.agentName),
+		expectedAgentNames,
+	);
 	for (const call of runSyncCalls) {
 		assert.equal(call.options.maxSubagentDepth, 2);
 		assert.equal(call.options.workflowStageSubagentGuard, true);
@@ -252,7 +257,12 @@ describe("foreground workflow-stage subagent guard propagation", () => {
 			{
 				chain: [
 					{ agent: "alpha", task: "first" },
-					{ parallel: [{ agent: "beta", task: "second" }, { agent: "gamma", task: "third" }] },
+					{
+						parallel: [
+							{ agent: "beta", task: "second" },
+							{ agent: "gamma", task: "third" },
+						],
+					},
 				],
 			},
 			new AbortController().signal,
@@ -272,7 +282,10 @@ describe("foreground workflow-stage subagent guard propagation", () => {
 		const result = await executor.execute(
 			"subagent",
 			{
-				tasks: [{ agent: "alpha", task: "first" }, { agent: "beta", task: "second" }],
+				tasks: [
+					{ agent: "alpha", task: "first" },
+					{ agent: "beta", task: "second" },
+				],
 			},
 			new AbortController().signal,
 			undefined,
@@ -291,7 +304,10 @@ describe("foreground workflow-stage subagent guard propagation", () => {
 		const result = await executor.execute(
 			"subagent",
 			{
-				tasks: [{ agent: "alpha", task: "first" }, { agent: "beta", task: "second" }],
+				tasks: [
+					{ agent: "alpha", task: "first" },
+					{ agent: "beta", task: "second" },
+				],
 				async: true,
 			},
 			new AbortController().signal,

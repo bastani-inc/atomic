@@ -1,4 +1,4 @@
-import type { ManagedAsyncBashJob, AsyncJobDeliveryMessage } from "./types.js";
+import type { AsyncJobDeliveryMessage, ManagedAsyncBashJob } from "./types.js";
 
 const INLINE_OUTPUT_LIMIT = 12_000;
 const LARGE_OUTPUT_PREVIEW_LIMIT = 4_000;
@@ -27,7 +27,9 @@ export function formatAsyncResultForFollowUp(job: ManagedAsyncBashJob): AsyncJob
 	const header = `Async bash job ${job.jobId} ${job.status}: ${job.command}`;
 	const body = jobOutput(job);
 	const status = statusLine(job);
-	const inline = [header, body, status].filter((part): part is string => part !== undefined && part.length > 0).join("\n\n");
+	const inline = [header, body, status]
+		.filter((part): part is string => part !== undefined && part.length > 0)
+		.join("\n\n");
 	let content = inline;
 	if (inline.length > INLINE_OUTPUT_LIMIT && job.fullOutputPath) {
 		const preview = truncateText(body, LARGE_OUTPUT_PREVIEW_LIMIT);

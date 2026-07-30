@@ -38,7 +38,9 @@ function textTool(
 	};
 }
 
-function getFirstToolResultMessage(harness: Harness): Extract<(typeof harness.session.messages)[number], { role: "toolResult" }> {
+function getFirstToolResultMessage(
+	harness: Harness,
+): Extract<(typeof harness.session.messages)[number], { role: "toolResult" }> {
 	const message = harness.session.messages.find((candidate) => candidate.role === "toolResult");
 	if (!message || message.role !== "toolResult") {
 		throw new Error("Expected a toolResult message");
@@ -196,7 +198,10 @@ describe("AgentSession oversized tool output persistence", () => {
 			const replacement = await redirectOversizedToolResult({
 				toolName: "t",
 				toolCallId: "call-at-threshold",
-				result: { content: [{ type: "text", text: "y".repeat(DEFAULT_MAX_RESULT_SIZE_CHARS) }], details: undefined },
+				result: {
+					content: [{ type: "text", text: "y".repeat(DEFAULT_MAX_RESULT_SIZE_CHARS) }],
+					details: undefined,
+				},
 				isError: false,
 				sessionId: "session-1",
 				sessionDir: tempRoot,

@@ -8,7 +8,7 @@ import { deleteSessionFile } from "./session-selector-delete.ts";
 import { SessionSelectorHeader } from "./session-selector-header.ts";
 import { SessionList } from "./session-selector-list.ts";
 import type { NameFilter, SortMode } from "./session-selector-search.ts";
-import type { SessionsLoader, SessionScope } from "./session-selector-types.ts";
+import type { SessionScope, SessionsLoader } from "./session-selector-types.ts";
 
 /**
  * Component that renders a session selector

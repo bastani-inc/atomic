@@ -1,18 +1,13 @@
 import { test } from "vitest";
-import { closeWorkflowStageGeneration, sendCustomMessage } from "../../packages/coding-agent/src/core/agent-session-message-queue.js";
+import {
+	closeWorkflowStageGeneration,
+	sendCustomMessage,
+} from "../../packages/coding-agent/src/core/agent-session-message-queue.js";
 import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 import { admitWorkflowStageInbound } from "../../packages/intercom/workflow-stage-admission.js";
 import type { StageSessionCreateOptions } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
-import {
-	assert,
-	createStore,
-	mockSession,
-	run,
-	workflow,
-	type StageSessionRuntime,
-	Type,
-} from "./executor-shared.js";
 import { sleep } from "../helpers/runtime.js";
+import { assert, createStore, mockSession, run, type StageSessionRuntime, Type, workflow } from "./executor-shared.js";
 
 test("admitted queued delivery drains before stage finalization and supplies the terminal result", async () => {
 	const store = createStore();
@@ -42,11 +37,23 @@ test("admitted queued delivery drains before stage finalization and supplies the
 			return {};
 		},
 	});
-	const execution = run(definition, {}, {
-		store,
-		adapters: { agentSession: { async create() { return session; } } },
-		onStageEnd: () => { stageEnded = true; },
-	});
+	const execution = run(
+		definition,
+		{},
+		{
+			store,
+			adapters: {
+				agentSession: {
+					async create() {
+						return session;
+					},
+				},
+			},
+			onStageEnd: () => {
+				stageEnded = true;
+			},
+		},
+	);
 	await closeStarted.promise;
 	await sleep(0);
 	assert.equal(stageEnded, false, "terminal stage publication must wait for admitted delivery");
@@ -84,7 +91,10 @@ test("Intercom received inside structured_output crosses AgentSession admission 
 		async _runAgentPrompt() {},
 	};
 	const pi = {
-		sendMessage(message: { customType: string; content: string; display: boolean; details: object | undefined }, options?: { triggerTurn?: boolean; stageAdmissionKey?: string }) {
+		sendMessage(
+			message: { customType: string; content: string; display: boolean; details: object | undefined },
+			options?: { triggerTurn?: boolean; stageAdmissionKey?: string },
+		) {
 			return sendCustomMessage.call(surface as never, message, options);
 		},
 	};
@@ -107,7 +117,9 @@ test("Intercom received inside structured_output crosses AgentSession admission 
 			await admitted;
 		},
 		getLastAssistantText: () => lastAssistantText,
-		async closeWorkflowStageGeneration() { await closeWorkflowStageGeneration.call(surface as never); },
+		async closeWorkflowStageGeneration() {
+			await closeWorkflowStageGeneration.call(surface as never);
+		},
 	};
 	const definition = workflow({
 		name: "structured-intercom-admission",
@@ -115,17 +127,32 @@ test("Intercom received inside structured_output crosses AgentSession admission 
 		inputs: {},
 		outputs: {},
 		run: async (ctx) => {
-			await ctx.stage("structured", {
-				schema: Type.Object({ approved: Type.Boolean() }, { additionalProperties: false }),
-			}).prompt("review and call structured_output");
+			await ctx
+				.stage("structured", {
+					schema: Type.Object({ approved: Type.Boolean() }, { additionalProperties: false }),
+				})
+				.prompt("review and call structured_output");
 			return {};
 		},
 	});
-	const execution = run(definition, {}, {
-		store,
-		adapters: { agentSession: { async create(options) { createOptions = options; return session; } } },
-		onStageEnd: () => { stageEnded = true; },
-	});
+	const execution = run(
+		definition,
+		{},
+		{
+			store,
+			adapters: {
+				agentSession: {
+					async create(options) {
+						createOptions = options;
+						return session;
+					},
+				},
+			},
+			onStageEnd: () => {
+				stageEnded = true;
+			},
+		},
+	);
 
 	await closeStarted.promise;
 	assert.deepEqual(queued, ["reviewer arrived"]);
@@ -153,7 +180,8 @@ test("stage close waits for a busy Intercom admission barrier before draining it
 		agent: { async waitForIdle() {} },
 		_agentEventQueue: Promise.resolve(),
 	};
-	const delivery = sendCustomMessage.call(surface as never,
+	const delivery = sendCustomMessage.call(
+		surface as never,
 		{ customType: "intercom_message", content: "mid-turn ask", display: true, details: undefined },
 		{
 			triggerTurn: true,
@@ -162,7 +190,9 @@ test("stage close waits for a busy Intercom admission barrier before draining it
 		},
 	);
 	let closed = false;
-	const close = closeWorkflowStageGeneration.call(surface as never).then(() => { closed = true; });
+	const close = closeWorkflowStageGeneration.call(surface as never).then(() => {
+		closed = true;
+	});
 
 	await sleep(0);
 	assert.equal(closed, false, "terminal close must wait for the admitted handoff");

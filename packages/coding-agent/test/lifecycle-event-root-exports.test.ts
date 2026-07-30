@@ -1,3 +1,4 @@
+import { expectTypeOf, test } from "vitest";
 import type {
 	MessageEndEvent,
 	MessageStartEvent,
@@ -6,7 +7,6 @@ import type {
 	ToolExecutionStartEvent,
 	ToolExecutionUpdateEvent,
 } from "../src/index.ts";
-import { expectTypeOf, test } from "vitest";
 
 test("package root exports message and tool execution lifecycle event types", () => {
 	expectTypeOf<MessageStartEvent>().toHaveProperty("type");

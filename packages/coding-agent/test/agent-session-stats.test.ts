@@ -189,7 +189,6 @@ describe("AgentSession.getSessionStats", () => {
 		}
 	});
 
-
 	it("includes tool result usage in session totals", async () => {
 		const { session, sessionManager } = await createSession();
 
@@ -213,7 +212,6 @@ describe("AgentSession.getSessionStats", () => {
 			session.dispose();
 		}
 	});
-
 
 	it("does not double-count mirrored cache buckets in post-compaction context usage", async () => {
 		const { session, sessionManager } = await createSession();

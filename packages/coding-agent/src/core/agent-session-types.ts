@@ -1,11 +1,6 @@
-import type {
-	Agent,
-	AgentEvent,
-	AgentMessage,
-	AgentTool,
-	ThinkingLevel,
-} from "@earendil-works/pi-agent-core";
+import type { Agent, AgentEvent, AgentMessage, AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, ImageContent, Model, TextContent } from "@earendil-works/pi-ai/compat";
+import type { VerbatimCompactionResult } from "./compaction/index.ts";
 import type {
 	ContextUsage,
 	ExtensionCommandContextActions,
@@ -24,7 +19,6 @@ import type { ResourceLoader } from "./resource-loader.ts";
 import type { SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { SourceInfo } from "./source-info.ts";
-import type { VerbatimCompactionResult } from "./compaction/index.ts";
 
 export type AgentSessionEvent =
 	| AgentEvent
@@ -77,7 +71,6 @@ export type AgentSessionEvent =
 
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
 
-
 export interface PendingAgentMessageQueue {
 	hasItems(): boolean;
 	drain(): AgentMessage[];
@@ -113,7 +106,10 @@ export function normalizeInterruptAbortMessage(value: string | undefined): strin
 }
 
 export function isGenericAbortText(value: string): boolean {
-	const normalized = value.trim().toLowerCase().replace(/[.!]+$/, "");
+	const normalized = value
+		.trim()
+		.toLowerCase()
+		.replace(/[.!]+$/, "");
 	return (
 		normalized === "operation aborted" ||
 		normalized === "the operation was aborted" ||

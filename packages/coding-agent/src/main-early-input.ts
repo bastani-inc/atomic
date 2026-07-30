@@ -74,7 +74,7 @@ function takePendingEscape(state: EarlyInputState): string {
 
 export function applyEarlyInputChunk(state: EarlyInputState, chunk: string): void {
 	const chars = Array.from(`${takePendingEscape(state)}${chunk}`);
-	for (let index = 0; index < chars.length;) {
+	for (let index = 0; index < chars.length; ) {
 		const char = chars[index] ?? "";
 		if (char === "\x1b") {
 			const remaining = chars.slice(index).join("");

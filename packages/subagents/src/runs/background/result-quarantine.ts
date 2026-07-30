@@ -1,7 +1,12 @@
-import * as fs from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
+import * as fs from "node:fs";
 import * as path from "node:path";
-import { errorCode, publishFileExclusive, unlinkIfPresent, type ExclusivePublicationFs } from "../../shared/exclusive-file-publication.js";
+import {
+	type ExclusivePublicationFs,
+	errorCode,
+	publishFileExclusive,
+	unlinkIfPresent,
+} from "../../shared/exclusive-file-publication.js";
 
 interface QuarantineFs extends ExclusivePublicationFs {
 	mkdirSync: typeof fs.mkdirSync;

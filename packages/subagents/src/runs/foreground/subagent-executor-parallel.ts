@@ -1,40 +1,42 @@
-import { resolveModelCandidate } from "../shared/model-fallback.ts";
-import { collectKnownModelProviders, toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
+import type { AgentConfig } from "../../agents/agents.ts";
 import { normalizeSkillInput } from "../../agents/skills.ts";
-import { aggregateParallelOutputs } from "../shared/parallel-utils.ts";
-import { sharedAutoGroupForSet } from "../shared/intercom-group.ts";
-import { recordRun } from "../shared/run-history.ts";
+import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
+import { collectKnownModelProviders, type ModelInfo, toModelInfo } from "../../shared/model-info.ts";
 import {
 	resolveStepBehavior,
-	suppressProgressForReadOnlyTask,
 	type StepOverrides,
+	suppressProgressForReadOnlyTask,
+	writeInitialProgressFile,
 } from "../../shared/settings.ts";
 import {
-	compactForegroundDetails,
-	getSingleResultOutput,
-} from "../../shared/utils.ts";
-import {
-	cleanupWorktrees,
-	type WorktreeSetup,
-} from "../shared/worktree.ts";
-import {
+	type AgentProgress,
+	type ArtifactPaths,
 	resolveChildMaxSubagentDepth,
 	resolveSubagentDepthPolicy,
 	resolveTopLevelParallelConcurrency,
 	resolveTopLevelParallelMaxTasks,
-	wrapForkTask,
-	type AgentProgress,
-	type ArtifactPaths,
 	type SingleResult,
 	type SubagentToolResult,
+	wrapForkTask,
 } from "../../shared/types.ts";
-import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
-import { writeInitialProgressFile } from "../../shared/settings.ts";
+import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.ts";
+import { sharedAutoGroupForSet } from "../shared/intercom-group.ts";
+import { resolveModelCandidate } from "../shared/model-fallback.ts";
 import { updateForegroundNestedProjection } from "../shared/nested-events.ts";
+import { aggregateParallelOutputs } from "../shared/parallel-utils.ts";
+import { recordRun } from "../shared/run-history.ts";
 import { resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
-import type { AgentConfig } from "../../agents/agents.ts";
-import type { ExecutionContextData, ResolvedExecutorDeps, TaskParam } from "./subagent-executor-types.ts";
+import { cleanupWorktrees, type WorktreeSetup } from "../shared/worktree.ts";
+import { createDetachedCleanupBarrier } from "./detached-cleanup-barrier.ts";
 import { runForegroundParallelTasks } from "./subagent-executor-parallel-task.ts";
+import {
+	createForegroundControlNotifier,
+	maybeBuildForegroundIntercomReceipt,
+	notifyDetachedForegroundChildExit,
+	rememberForegroundRun,
+	replaceForegroundRunChild,
+} from "./subagent-executor-status.ts";
+import type { ExecutionContextData, ResolvedExecutorDeps, TaskParam } from "./subagent-executor-types.ts";
 import {
 	buildParallelModeError,
 	buildParallelWorktreeSuffix,
@@ -43,10 +45,11 @@ import {
 	findDuplicateParallelOutputPath,
 	resolveParallelTaskCwd,
 } from "./subagent-executor-worktree.ts";
-import { createForegroundControlNotifier, maybeBuildForegroundIntercomReceipt, notifyDetachedForegroundChildExit, rememberForegroundRun, replaceForegroundRunChild } from "./subagent-executor-status.ts";
-import { createDetachedCleanupBarrier } from "./detached-cleanup-barrier.ts";
 
-export async function runParallelPath(data: ExecutionContextData, deps: ResolvedExecutorDeps): Promise<SubagentToolResult> {
+export async function runParallelPath(
+	data: ExecutionContextData,
+	deps: ResolvedExecutorDeps,
+): Promise<SubagentToolResult> {
 	const {
 		params,
 		effectiveCwd,
@@ -68,7 +71,10 @@ export async function runParallelPath(data: ExecutionContextData, deps: Resolved
 	const allArtifactPaths: ArtifactPaths[] = [];
 	const tasks = params.tasks!;
 	const maxParallelTasks = resolveTopLevelParallelMaxTasks(deps.config.parallel?.maxTasks);
-	const parallelConcurrency = resolveTopLevelParallelConcurrency(params.concurrency, deps.config.parallel?.concurrency);
+	const parallelConcurrency = resolveTopLevelParallelConcurrency(
+		params.concurrency,
+		deps.config.parallel?.concurrency,
+	);
 
 	if (tasks.length > maxParallelTasks)
 		return {
@@ -105,12 +111,12 @@ export async function runParallelPath(data: ExecutionContextData, deps: Resolved
 	const currentProvider = ctx.model?.provider;
 	const availableModels: ModelInfo[] = ctx.modelRegistry.getAvailable().map(toModelInfo);
 	const knownModelProviders = collectKnownModelProviders(ctx.modelRegistry);
-	let taskTexts = tasks.map((t) => t.task);
-	const skillOverrides: (string[] | false | undefined)[] = tasks.map((t) =>
-		normalizeSkillInput(t.skill),
-	);
+	const taskTexts = tasks.map((t) => t.task);
+	const skillOverrides: (string[] | false | undefined)[] = tasks.map((t) => normalizeSkillInput(t.skill));
 	const behaviorOverrides: StepOverrides[] = tasks.map((task, index) => ({
-		...(task.output !== undefined ? { output: task.output === true ? agentConfigs[index]?.output ?? false : task.output } : {}),
+		...(task.output !== undefined
+			? { output: task.output === true ? (agentConfigs[index]?.output ?? false) : task.output }
+			: {}),
 		...(task.outputMode !== undefined ? { outputMode: task.outputMode } : {}),
 		...(task.reads !== undefined && task.reads !== true ? { reads: task.reads } : {}),
 		...(task.progress !== undefined ? { progress: task.progress } : {}),
@@ -121,7 +127,9 @@ export async function runParallelPath(data: ExecutionContextData, deps: Resolved
 		resolveModelCandidate(behaviorOverrides[i]?.model ?? agentConfigs[i]?.model, availableModels, currentProvider),
 	);
 
-	const behaviors = agentConfigs.map((config, index) => suppressProgressForReadOnlyTask(resolveStepBehavior(config, behaviorOverrides[index]!), taskTexts[index]));
+	const behaviors = agentConfigs.map((config, index) =>
+		suppressProgressForReadOnlyTask(resolveStepBehavior(config, behaviorOverrides[index]!), taskTexts[index]),
+	);
 	const firstProgressIndex = behaviors.findIndex((behavior) => behavior.progress);
 	const liveResults: (SingleResult | undefined)[] = new Array(tasks.length).fill(undefined);
 	const liveProgress: (AgentProgress | undefined)[] = new Array(tasks.length).fill(undefined);
@@ -154,7 +162,11 @@ export async function runParallelPath(data: ExecutionContextData, deps: Resolved
 		for (let index = 0; index < tasks.length; index++) {
 			const taskCwd = resolveParallelTaskCwd(tasks[index]!, effectiveCwd, worktreeSetup, index);
 			const outputPath = resolveSingleOutputPath(behaviors[index]?.output, ctx.cwd, taskCwd);
-			const validationError = validateFileOnlyOutputMode(behaviors[index]?.outputMode, outputPath, `Parallel task ${index + 1} (${tasks[index]!.agent})`);
+			const validationError = validateFileOnlyOutputMode(
+				behaviors[index]?.outputMode,
+				outputPath,
+				`Parallel task ${index + 1} (${tasks[index]!.agent})`,
+			);
 			if (validationError) return buildParallelModeError(validationError);
 		}
 
@@ -171,7 +183,14 @@ export async function runParallelPath(data: ExecutionContextData, deps: Resolved
 			onDetachedExit: (index, result) => {
 				try {
 					replaceForegroundRunChild(deps.state, runId, index, result);
-					notifyDetachedForegroundChildExit({ pi: deps.pi, runId, mode: "parallel", index, totalTasks: tasks.length, result });
+					notifyDetachedForegroundChildExit({
+						pi: deps.pi,
+						runId,
+						mode: "parallel",
+						index,
+						totalTasks: tasks.length,
+						result,
+					});
 				} finally {
 					detachedCleanup.recover(index);
 				}
@@ -198,7 +217,9 @@ export async function runParallelPath(data: ExecutionContextData, deps: Resolved
 			firstProgressIndex: parallelProgressPrecreated ? -1 : firstProgressIndex,
 			controlConfig,
 			onControlEvent,
-			childIntercomTarget: childIntercomTarget ? (agent, index) => childIntercomTarget(runId, agent, index) : undefined,
+			childIntercomTarget: childIntercomTarget
+				? (agent, index) => childIntercomTarget(runId, agent, index)
+				: undefined,
 			orchestratorIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
 			setIntercomGroup: params.group,
 			sharedAutoIntercomGroup: sharedAutoGroupForSet(params.group, tasks),
@@ -232,18 +253,28 @@ export async function runParallelPath(data: ExecutionContextData, deps: Resolved
 		rememberForegroundRun(deps.state, { runId, mode: "parallel", cwd: effectiveCwd, results: details.results });
 		if (interrupted) {
 			return {
-				content: [{ type: "text", text: `Parallel run paused after interrupt (${interrupted.agent}). Waiting for explicit next action.` }],
+				content: [
+					{
+						type: "text",
+						text: `Parallel run paused after interrupt (${interrupted.agent}). Waiting for explicit next action.`,
+					},
+				],
 				details,
 			};
 		}
 		const detachedIndex = results.findIndex((result) => result.detached);
 		const detached = detachedIndex >= 0 ? results[detachedIndex] : undefined;
 		worktreeCleanupDeferred = detachedCleanup.defer(
-			results.flatMap((result, index) => result.detached ? [index] : []),
+			results.flatMap((result, index) => (result.detached ? [index] : [])),
 		);
 		if (detached) {
 			return {
-				content: [{ type: "text", text: `Parallel run detached for intercom coordination (${detached.agent}). Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.` }],
+				content: [
+					{
+						type: "text",
+						text: `Parallel run detached for intercom coordination (${detached.agent}). Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.`,
+					},
+				],
 				details,
 			};
 		}

@@ -1,12 +1,12 @@
-import type { Theme } from "../../../../modes/interactive/theme/theme.ts";
 import { getKeybindings, type Input } from "@earendil-works/pi-tui";
+import type { Theme } from "../../../../modes/interactive/theme/theme.ts";
 import type { QuestionData, QuestionnaireResult, QuestionParams } from "../tool/types.ts";
 import type { WrappingSelectItem } from "../view/components/wrapping-select.ts";
 import type { QuestionnairePropsAdapter } from "../view/props-adapter.ts";
 import { buildQuestionnaire } from "./build-questionnaire.ts";
 import { readInlineCaret, readInlineDraft, withInlineDraft } from "./inline-input.ts";
-import { ROW_INTENT_META } from "./row-intent.ts";
 import { type QuestionnaireAction, routeKey } from "./key-router.ts";
+import { ROW_INTENT_META } from "./row-intent.ts";
 import { computeFocusedOptionHasPreview } from "./selectors/derivations.ts";
 import type { QuestionnaireRuntime, QuestionnaireState } from "./state.ts";
 import { type ApplyContext, type Effect, reduce } from "./state-reducer.ts";
@@ -14,9 +14,7 @@ import { type ApplyContext, type Effect, reduce } from "./state-reducer.ts";
 function readInputCursor(input: Input): number {
 	const value = input.getValue();
 	const raw = Reflect.get(input, "cursor");
-	return typeof raw === "number" && Number.isFinite(raw)
-		? Math.max(0, Math.min(raw, value.length))
-		: value.length;
+	return typeof raw === "number" && Number.isFinite(raw) ? Math.max(0, Math.min(raw, value.length)) : value.length;
 }
 
 function writeInputCursor(input: Input, cursor: number): void {

@@ -10,86 +10,88 @@ const envKeys = ["HOME", "ATOMIC_CODING_AGENT_DIR", "PI_CODING_AGENT_DIR"] as co
 const tempRoots: string[] = [];
 
 function rememberEnv(): void {
-  for (const key of envKeys) previousEnv.set(key, process.env[key]);
+	for (const key of envKeys) previousEnv.set(key, process.env[key]);
 }
 
 function restoreEnv(): void {
-  for (const key of envKeys) {
-    const value = previousEnv.get(key);
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
-  previousEnv.clear();
-  for (const root of tempRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+	for (const key of envKeys) {
+		const value = previousEnv.get(key);
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
+	}
+	previousEnv.clear();
+	for (const root of tempRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 }
 
 function setupIsolatedAgentDir(): { root: string; cwd: string; homeAgentDir: string; isolatedAgentDir: string } {
-  rememberEnv();
-  const root = mkdtempSync(join(tmpdir(), "atomic-workflow-agent-dir-isolation-"));
-  tempRoots.push(root);
-  const cwd = join(root, "repo");
-  const home = join(root, "home");
-  const homeAgentDir = join(home, ".atomic", "agent");
-  const isolatedAgentDir = join(root, "isolated-agent");
-  mkdirSync(cwd, { recursive: true });
-  mkdirSync(homeAgentDir, { recursive: true });
-  mkdirSync(isolatedAgentDir, { recursive: true });
-  process.env.HOME = home;
-  process.env.ATOMIC_CODING_AGENT_DIR = isolatedAgentDir;
-  delete process.env.PI_CODING_AGENT_DIR;
-  return { root, cwd, homeAgentDir, isolatedAgentDir };
+	rememberEnv();
+	const root = mkdtempSync(join(tmpdir(), "atomic-workflow-agent-dir-isolation-"));
+	tempRoots.push(root);
+	const cwd = join(root, "repo");
+	const home = join(root, "home");
+	const homeAgentDir = join(home, ".atomic", "agent");
+	const isolatedAgentDir = join(root, "isolated-agent");
+	mkdirSync(cwd, { recursive: true });
+	mkdirSync(homeAgentDir, { recursive: true });
+	mkdirSync(isolatedAgentDir, { recursive: true });
+	process.env.HOME = home;
+	process.env.ATOMIC_CODING_AGENT_DIR = isolatedAgentDir;
+	delete process.env.PI_CODING_AGENT_DIR;
+	return { root, cwd, homeAgentDir, isolatedAgentDir };
 }
 
 function writeShadowWorkflow(agentDir: string, name: "fan-out-and-synthesize" | "loop-until-done"): void {
-  const workflowsDir = join(agentDir, "workflows");
-  mkdirSync(workflowsDir, { recursive: true });
-  writeFileSync(
-    join(workflowsDir, `${name}.ts`),
-    [
-      'import { workflow } from "@bastani/workflows";',
-      "export default workflow({",
-      `  name: "${name}",`,
-      `  description: "stale home-global ${name}",`,
-      "  outputs: {},",
-      "  async run() { return {}; },",
-      "});",
-      "",
-    ].join("\n"),
-  );
+	const workflowsDir = join(agentDir, "workflows");
+	mkdirSync(workflowsDir, { recursive: true });
+	writeFileSync(
+		join(workflowsDir, `${name}.ts`),
+		[
+			'import { workflow } from "@bastani/workflows";',
+			"export default workflow({",
+			`  name: "${name}",`,
+			`  description: "stale home-global ${name}",`,
+			"  outputs: {},",
+			"  async run() { return {}; },",
+			"});",
+			"",
+		].join("\n"),
+	);
 }
 
 afterEach(restoreEnv);
 
 describe("workflow agent dir isolation", () => {
-  it("loads workflow config from ATOMIC_CODING_AGENT_DIR without reading home-global diagnostics", async () => {
-    const { cwd, homeAgentDir, isolatedAgentDir } = setupIsolatedAgentDir();
-    mkdirSync(join(homeAgentDir, "extensions", "workflow"), { recursive: true });
-    writeFileSync(join(homeAgentDir, "extensions", "workflow", "config.json"), "{ not json");
-    mkdirSync(join(isolatedAgentDir, "extensions", "workflow"), { recursive: true });
-    writeFileSync(
-      join(isolatedAgentDir, "extensions", "workflow", "config.json"),
-      JSON.stringify({ maxDepth: 7, workflows: { custom: { path: "workflows/custom.ts" } } }),
-    );
+	it("loads workflow config from ATOMIC_CODING_AGENT_DIR without reading home-global diagnostics", async () => {
+		const { cwd, homeAgentDir, isolatedAgentDir } = setupIsolatedAgentDir();
+		mkdirSync(join(homeAgentDir, "extensions", "workflow"), { recursive: true });
+		writeFileSync(join(homeAgentDir, "extensions", "workflow", "config.json"), "{ not json");
+		mkdirSync(join(isolatedAgentDir, "extensions", "workflow"), { recursive: true });
+		writeFileSync(
+			join(isolatedAgentDir, "extensions", "workflow", "config.json"),
+			JSON.stringify({ maxDepth: 7, workflows: { custom: { path: "workflows/custom.ts" } } }),
+		);
 
-    const result = await loadWorkflowConfig({ projectRoot: cwd });
-    const discoveryConfig = toScopedDiscoveryConfig(result.globalConfig ?? null, result.projectConfig ?? null, { projectRoot: cwd });
+		const result = await loadWorkflowConfig({ projectRoot: cwd });
+		const discoveryConfig = toScopedDiscoveryConfig(result.globalConfig ?? null, result.projectConfig ?? null, {
+			projectRoot: cwd,
+		});
 
-    expect(result.config?.maxDepth).toBe(7);
-    expect(discoveryConfig.globalWorkflows?.custom).toBe(join(isolatedAgentDir, "workflows", "custom.ts"));
-    expect(result.diagnostics.some((diagnostic) => diagnostic.source?.startsWith(homeAgentDir))).toBe(false);
-  });
+		expect(result.config?.maxDepth).toBe(7);
+		expect(discoveryConfig.globalWorkflows?.custom).toBe(join(isolatedAgentDir, "workflows", "custom.ts"));
+		expect(result.diagnostics.some((diagnostic) => diagnostic.source?.startsWith(homeAgentDir))).toBe(false);
+	});
 
-  it("does not let home-global workflows shadow bundled workflow targets", async () => {
-    const { cwd, homeAgentDir } = setupIsolatedAgentDir();
-    writeShadowWorkflow(homeAgentDir, "fan-out-and-synthesize");
-    writeShadowWorkflow(homeAgentDir, "loop-until-done");
+	it("does not let home-global workflows shadow bundled workflow targets", async () => {
+		const { cwd, homeAgentDir } = setupIsolatedAgentDir();
+		writeShadowWorkflow(homeAgentDir, "fan-out-and-synthesize");
+		writeShadowWorkflow(homeAgentDir, "loop-until-done");
 
-    const result = await discoverWorkflows({ cwd });
-    const fanOutSource = result.sources.find((source) => source.id === "fan-out-and-synthesize");
-    const loopSource = result.sources.find((source) => source.id === "loop-until-done");
+		const result = await discoverWorkflows({ cwd });
+		const fanOutSource = result.sources.find((source) => source.id === "fan-out-and-synthesize");
+		const loopSource = result.sources.find((source) => source.id === "loop-until-done");
 
-    expect(fanOutSource?.kind).toBe("bundled");
-    expect(loopSource?.kind).toBe("bundled");
-    expect(result.errors.some((diagnostic) => diagnostic.source?.startsWith(homeAgentDir))).toBe(false);
-  });
+		expect(fanOutSource?.kind).toBe("bundled");
+		expect(loopSource?.kind).toBe("bundled");
+		expect(result.errors.some((diagnostic) => diagnostic.source?.startsWith(homeAgentDir))).toBe(false);
+	});
 });

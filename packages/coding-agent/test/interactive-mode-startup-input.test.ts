@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { seedStartupInput } from "../src/modes/interactive/interactive-mode-base.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+import { seedStartupInput } from "../src/modes/interactive/interactive-mode-base.ts";
 
 type SubmitContext = {
 	defaultEditor: { onSubmit?: (text: string) => void | Promise<void> };
@@ -131,7 +131,8 @@ describe("InteractiveMode startup input", () => {
 	});
 
 	it("loads deferred startup before explicit extension slash submissions", async () => {
-		const order: string[] = [], context = createSubmitContext();
+		const order: string[] = [],
+			context = createSubmitContext();
 		context.deferredStartupPending = true;
 		context.ensureDeferredStartupComplete = vi.fn(async () => {
 			order.push("deferred");
@@ -386,7 +387,9 @@ describe("InteractiveMode startup input", () => {
 
 	it("recovers cooked immediate launch input as separate startup submissions", () => {
 		const context = createSubmitContext();
-		(context.editor.getText as ReturnType<typeof vi.fn>).mockReturnValue("!pwd\nordinary prompt after command\n/exit");
+		(context.editor.getText as ReturnType<typeof vi.fn>).mockReturnValue(
+			"!pwd\nordinary prompt after command\n/exit",
+		);
 
 		context.recoverCookedStartupInput();
 
@@ -421,7 +424,9 @@ describe("InteractiveMode startup input", () => {
 
 	it("preserves cooked draft text behind an active command-like submission", async () => {
 		const context = createSubmitContext();
-		(context.editor.getText as ReturnType<typeof vi.fn>).mockReturnValue("ordinary prompt after command\nunfinished draft");
+		(context.editor.getText as ReturnType<typeof vi.fn>).mockReturnValue(
+			"ordinary prompt after command\nunfinished draft",
+		);
 		context.startupReplayActiveInput = "!pwd";
 		interactiveModePrototype.setupEditorSubmitHandler.call(context);
 
@@ -468,7 +473,6 @@ describe("InteractiveMode startup input", () => {
 		expect(context.editor.setText).toHaveBeenCalledWith("");
 		expect(context.startupReplayActiveInput).toBeUndefined();
 	});
-
 
 	it("queues cooked submissions behind an active raw-captured command", async () => {
 		const context = createSubmitContext();

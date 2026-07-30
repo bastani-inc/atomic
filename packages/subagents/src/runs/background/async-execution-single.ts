@@ -2,34 +2,51 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { getEnvValue } from "@bastani/atomic";
 import { buildSkillInjection, resolveSkillsWithFallback } from "../../agents/skills.ts";
-import { getSubagentCodexFastModeSettings, resolveSubagentCodexFastModeScope, resolveSubagentModelFastModeMetadata } from "../../shared/fast-mode.ts";
+import {
+	getSubagentCodexFastModeSettings,
+	resolveSubagentCodexFastModeScope,
+	resolveSubagentModelFastModeMetadata,
+} from "../../shared/fast-mode.ts";
 import { resolveEffectiveThinking } from "../../shared/model-info.ts";
 import { injectSingleProgressInstruction, writeInitialProgressFile } from "../../shared/settings.ts";
-import { ASYNC_DIR, RESULTS_DIR, SUBAGENT_ASYNC_STARTED_EVENT, resolveChildMaxSubagentDepth } from "../../shared/types.ts";
+import {
+	ASYNC_DIR,
+	RESULTS_DIR,
+	resolveChildMaxSubagentDepth,
+	SUBAGENT_ASYNC_STARTED_EVENT,
+} from "../../shared/types.ts";
 import { workflowSessionEnv } from "../../shared/types-depth.ts";
 import { resolveChildCwd } from "../../shared/utils.ts";
-import { applyThinkingSuffix, SUBAGENT_INTERCOM_SESSION_NAME_ENV } from "../shared/pi-args.ts";
-import { injectSingleOutputInstruction, normalizeSingleOutputOverride, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
-import { buildModelCandidates, resolveModelCandidate } from "../shared/model-fallback.ts";
-import { filterSpawnableModelCandidates } from "../shared/model-candidate-filter.ts";
-import { NESTED_RUNS_DIR, nestedResultsPath, resolveInheritedNestedRouteFromEnv, resolveNestedParentAddressFromEnv, writeNestedEvent } from "../shared/nested-events.ts";
 import { resolveChildIntercomGroup } from "../shared/intercom-group.ts";
+import { filterSpawnableModelCandidates } from "../shared/model-candidate-filter.ts";
+import { buildModelCandidates, resolveModelCandidate } from "../shared/model-fallback.ts";
 import {
-	UNAVAILABLE_SUBAGENT_SKILL_ERROR,
-	formatAsyncStartedMessage,
-	formatAsyncStartError,
-	piPackageRoot,
+	NESTED_RUNS_DIR,
+	nestedResultsPath,
+	resolveInheritedNestedRouteFromEnv,
+	resolveNestedParentAddressFromEnv,
+	writeNestedEvent,
+} from "../shared/nested-events.ts";
+import { applyThinkingSuffix, SUBAGENT_INTERCOM_SESSION_NAME_ENV } from "../shared/pi-args.ts";
+import {
+	injectSingleOutputInstruction,
+	normalizeSingleOutputOverride,
+	resolveSingleOutputPath,
+	validateFileOnlyOutputMode,
+} from "../shared/single-output.ts";
+import {
 	spawnRunner as defaultSpawnRunner,
+	formatAsyncStartError,
+	formatAsyncStartedMessage,
+	piPackageRoot,
+	UNAVAILABLE_SUBAGENT_SKILL_ERROR,
 } from "./async-execution-common.ts";
 import type { AsyncExecutionResult, AsyncSingleParams, AsyncSpawnResult } from "./async-execution-types.ts";
 
 /**
  * Execute a single agent asynchronously
  */
-export function executeAsyncSingle(
-	id: string,
-	params: AsyncSingleParams,
-): AsyncExecutionResult {
+export function executeAsyncSingle(id: string, params: AsyncSingleParams): AsyncExecutionResult {
 	const {
 		agent,
 		agentConfig,
@@ -57,7 +74,11 @@ export function executeAsyncSingle(
 	const skillNames = params.skills ?? agentConfig.skills ?? [];
 	const availableModels = params.availableModels;
 	const knownModelProviders = params.knownModelProviders;
-	const { resolved: resolvedSkills, missing: missingSkills } = resolveSkillsWithFallback(skillNames, runnerCwd, ctx.cwd);
+	const { resolved: resolvedSkills, missing: missingSkills } = resolveSkillsWithFallback(
+		skillNames,
+		runnerCwd,
+		ctx.cwd,
+	);
 	if (missingSkills.includes("subagent")) return formatAsyncStartError("single", UNAVAILABLE_SUBAGENT_SKILL_ERROR);
 	let systemPrompt = agentConfig.systemPrompt?.trim() ?? "";
 	if (resolvedSkills.length > 0) {
@@ -90,9 +111,10 @@ export function executeAsyncSingle(
 	// Keep each child's progress contract outside its cwd and isolated by run;
 	// artifacts-disabled async runs use their already run-owned async directory.
 	if (params.progress) {
-		const progressDir = artifactConfig.enabled && artifactsDir
-			? path.join(artifactsDir, "progress", id)
-			: path.join(asyncDir, "progress");
+		const progressDir =
+			artifactConfig.enabled && artifactsDir
+				? path.join(artifactsDir, "progress", id)
+				: path.join(asyncDir, "progress");
 		writeInitialProgressFile(progressDir);
 		taskWithOutputInstruction = injectSingleProgressInstruction(taskWithOutputInstruction, progressDir);
 	}
@@ -100,7 +122,13 @@ export function executeAsyncSingle(
 		resolveModelCandidate(params.modelOverride ?? agentConfig.model, availableModels, ctx.currentModelProvider),
 		agentConfig.thinking,
 	);
-	const rawModelCandidates = buildModelCandidates(params.modelOverride ?? agentConfig.model, agentConfig.fallbackModels, availableModels, ctx.currentModelProvider, ctx.currentModel)
+	const rawModelCandidates = buildModelCandidates(
+		params.modelOverride ?? agentConfig.model,
+		agentConfig.fallbackModels,
+		availableModels,
+		ctx.currentModelProvider,
+		ctx.currentModel,
+	)
 		.map((candidate) => applyThinkingSuffix(candidate, agentConfig.thinking))
 		.filter((candidate): candidate is string => typeof candidate === "string");
 	const filteredCandidates = filterSpawnableModelCandidates({
@@ -125,7 +153,13 @@ export function executeAsyncSingle(
 						cwd: runnerCwd,
 						model,
 						thinking: resolveEffectiveThinking(model, agentConfig.thinking),
-						...resolveSubagentModelFastModeMetadata({ model, modelCandidates, cwd: runnerCwd, settings: fastModeSettings, scope: fastModeScope }),
+						...resolveSubagentModelFastModeMetadata({
+							model,
+							modelCandidates,
+							cwd: runnerCwd,
+							settings: fastModeSettings,
+							scope: fastModeScope,
+						}),
 						modelCandidates,
 						modelAttempts: filteredCandidates.skippedAttempts,
 						codexFastModeSettings: fastModeSettings,
@@ -145,7 +179,9 @@ export function executeAsyncSingle(
 						workflowStageSubagentGuard,
 					},
 				],
-				resultPath: inheritedNestedRoute ? nestedResultsPath(inheritedNestedRoute.rootRunId, id) : path.join(RESULTS_DIR, `${id}.json`),
+				resultPath: inheritedNestedRoute
+					? nestedResultsPath(inheritedNestedRoute.rootRunId, id)
+					: path.join(RESULTS_DIR, `${id}.json`),
 				cwd: runnerCwd,
 				placeholder: "{previous}",
 				maxOutput,
@@ -166,12 +202,15 @@ export function executeAsyncSingle(
 				resultMode: "single",
 				nestedRoute: nestedRoute ?? inheritedNestedRoute,
 				workflowStageSubagentGuard,
-				nestedSelf: inheritedNestedRoute && nestedAddress ? {
-					parentRunId: nestedAddress.parentRunId,
-					parentStepIndex: nestedAddress.parentStepIndex,
-					depth: nestedAddress.depth,
-					path: nestedAddress.path,
-				} : undefined,
+				nestedSelf:
+					inheritedNestedRoute && nestedAddress
+						? {
+								parentRunId: nestedAddress.parentRunId,
+								parentStepIndex: nestedAddress.parentStepIndex,
+								depth: nestedAddress.depth,
+								path: nestedAddress.path,
+							}
+						: undefined,
 			},
 			id,
 			runnerCwd,

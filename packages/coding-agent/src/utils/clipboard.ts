@@ -32,7 +32,9 @@ function emitOsc52(text: string): boolean {
 	return true;
 }
 
-export async function readClipboardText(source: { getText(): Promise<string> } | null = clipboard): Promise<string | null> {
+export async function readClipboardText(
+	source: { getText(): Promise<string> } | null = clipboard,
+): Promise<string | null> {
 	try {
 		if (!source) return null;
 		return await source.getText();

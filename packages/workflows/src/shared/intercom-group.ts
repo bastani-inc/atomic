@@ -6,21 +6,21 @@ export const DEFAULT_INTERCOM_GROUP = "default";
 
 /** Stable non-default home group for every stage in one top-level workflow invocation. */
 export function workflowInvocationIntercomGroup(rootRunId: string): string {
-  return `workflow:${rootRunId}`;
+	return `workflow:${rootRunId}`;
 }
 
 /** Normalize authored or agent-serialized auto-group sentinels without changing real group names. */
 export function normalizeAutoGroupSentinel(group: string | true): string | true {
-  if (group === true) return true;
-  const sentinel = group.trim().toLowerCase();
-  return sentinel === "true" || sentinel === "auto" ? true : group;
+	if (group === true) return true;
+	const sentinel = group.trim().toLowerCase();
+	return sentinel === "true" || sentinel === "auto" ? true : group;
 }
 
 /** Trim; empty/undefined collapses to the shared default group. */
 export function normalizeGroup(value?: string | null): string {
-  if (typeof value !== "string") return DEFAULT_INTERCOM_GROUP;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : DEFAULT_INTERCOM_GROUP;
+	if (typeof value !== "string") return DEFAULT_INTERCOM_GROUP;
+	const trimmed = value.trim();
+	return trimmed.length > 0 ? trimmed : DEFAULT_INTERCOM_GROUP;
 }
 
 /**
@@ -31,15 +31,15 @@ export function normalizeGroup(value?: string | null): string {
  * Without a workflow group, omission keeps the legacy env/config/default path.
  */
 export function resolveStageGroup(
-  stageOptions?: { group?: string | true },
-  workflowGroup?: string,
+	stageOptions?: { group?: string | true },
+	workflowGroup?: string,
 ): string | undefined {
-  if (!stageOptions) return workflowGroup;
-  const group = stageOptions.group;
-  if (group === undefined) return workflowGroup;
-  if (group === true) return randomUUID();
-  const trimmed = group.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
+	if (!stageOptions) return workflowGroup;
+	const group = stageOptions.group;
+	if (group === undefined) return workflowGroup;
+	if (group === true) return randomUUID();
+	const trimmed = group.trim();
+	return trimmed.length > 0 ? trimmed : undefined;
 }
 
 /**
@@ -48,11 +48,11 @@ export function resolveStageGroup(
  * placed into an isolated group it cannot use.
  */
 export function stageHasIntercomAccess(stageOptions?: StageOptions): boolean {
-  if (!stageOptions) return true;
-  if (stageOptions.noTools === "all") return false;
-  const tools = stageOptions.tools;
-  if (Array.isArray(tools) && !tools.includes("intercom")) return false;
-  const excluded = stageOptions.excludedTools;
-  if (Array.isArray(excluded) && excluded.includes("intercom")) return false;
-  return true;
+	if (!stageOptions) return true;
+	if (stageOptions.noTools === "all") return false;
+	const tools = stageOptions.tools;
+	if (Array.isArray(tools) && !tools.includes("intercom")) return false;
+	const excluded = stageOptions.excludedTools;
+	if (Array.isArray(excluded) && excluded.includes("intercom")) return false;
+	return true;
 }

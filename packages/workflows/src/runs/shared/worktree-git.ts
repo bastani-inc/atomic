@@ -1,15 +1,11 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { GitResult, GitWorktreeSetupOptions, GitWorktreeSetupResult } from "./worktree-types.js";
-import { openGitWorktreeGenerationAnchor, type GitWorktreeGenerationAnchor } from "./worktree-generation.js";
+import { type GitWorktreeGenerationAnchor, openGitWorktreeGenerationAnchor } from "./worktree-generation.js";
+import { gitFailureMessage, isGitTimeoutResult, runGit, runGitReadOnlyProbe } from "./worktree-git-runner.js";
 import { findCanonicalGitRoot } from "./worktree-root.js";
-import {
-	gitFailureMessage,
-	isGitTimeoutResult,
-	runGit,
-	runGitReadOnlyProbe,
-} from "./worktree-git-runner.js";
+import type { GitResult, GitWorktreeSetupOptions, GitWorktreeSetupResult } from "./worktree-types.js";
 
+export type { GitRunner } from "./worktree-git-runner.js";
 export {
 	gitFailureMessage,
 	isGitTimeoutResult,
@@ -18,7 +14,6 @@ export {
 	runGitPlain,
 	withGitRunnerForTest,
 } from "./worktree-git-runner.js";
-export type { GitRunner } from "./worktree-git-runner.js";
 
 export interface GitWorktreeSetupCache {
 	get(options: GitWorktreeSetupOptions): GitWorktreeSetupResult;
@@ -73,12 +68,15 @@ export function createGitWorktreeSetupCache(): GitWorktreeSetupCache {
 	};
 }
 
-export function setupGitWorktreeCached(options: GitWorktreeSetupOptions, cache?: GitWorktreeSetupCache): GitWorktreeSetupResult {
+export function setupGitWorktreeCached(
+	options: GitWorktreeSetupOptions,
+	cache?: GitWorktreeSetupCache,
+): GitWorktreeSetupResult {
 	return cache?.get(options) ?? setupGitWorktree(options);
 }
 
 function quoteShellArg(value: string): string {
-	if (process.platform === "win32") return `"${value.replace(/"/g, "\"\"")}"`;
+	if (process.platform === "win32") return `"${value.replace(/"/g, '""')}"`;
 	return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
@@ -157,10 +155,14 @@ function validateWorktreeOutsideInvokingCheckout(worktreeRoot: string, repoRoot:
 	const candidate = comparablePathThroughExistingAncestor(worktreeRoot);
 	const relativePath = path.relative(repository, candidate);
 	if (relativePath === "") {
-		throw new Error("gitWorktreeDir must not resolve to the invoking checkout; provide a separate same-repository worktree path.");
+		throw new Error(
+			"gitWorktreeDir must not resolve to the invoking checkout; provide a separate same-repository worktree path.",
+		);
 	}
 	if (!relativePath.startsWith(`..${path.sep}`) && relativePath !== ".." && !path.isAbsolute(relativePath)) {
-		throw new Error("gitWorktreeDir must be outside the invoking checkout; provide a separate same-repository worktree path.");
+		throw new Error(
+			"gitWorktreeDir must be outside the invoking checkout; provide a separate same-repository worktree path.",
+		);
 	}
 }
 
@@ -175,7 +177,8 @@ function pathExistsSync(value: string): boolean {
 		fs.statSync(value);
 		return true;
 	} catch (error) {
-		const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
+		const code =
+			error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
 		if (code === "ENOENT" || code === "ENOTDIR") return false;
 		throw error;
 	}
@@ -185,13 +188,19 @@ function repositoryRootForGitWorktree(cwd: string): string {
 	const result = runGitReadOnlyProbe(cwd, ["rev-parse", "--show-toplevel"]);
 	if (result.status !== 0) {
 		if (isGitTimeoutResult(result)) {
-			throw new Error(`Timed out while checking the Git repository for gitWorktreeDir from ${cwd}. Git reported: ${gitFailureMessage(result)}`);
+			throw new Error(
+				`Timed out while checking the Git repository for gitWorktreeDir from ${cwd}. Git reported: ${gitFailureMessage(result)}`,
+			);
 		}
-		throw new Error(`gitWorktreeDir requires the workflow to be invoked from inside a Git repository. Start from a Git checkout or omit gitWorktreeDir. Git reported: ${gitFailureMessage(result)}`);
+		throw new Error(
+			`gitWorktreeDir requires the workflow to be invoked from inside a Git repository. Start from a Git checkout or omit gitWorktreeDir. Git reported: ${gitFailureMessage(result)}`,
+		);
 	}
 	const normalized = gitPathFromOutput(result.stdout, cwd);
 	if (normalized === undefined) {
-		throw new Error(`gitWorktreeDir could not resolve the repository top level from ${cwd}: git returned an empty path.`);
+		throw new Error(
+			`gitWorktreeDir could not resolve the repository top level from ${cwd}: git returned an empty path.`,
+		);
 	}
 	return normalized;
 }
@@ -207,16 +216,24 @@ export function gitTopLevelFromResult(result: GitResult, cwd: string, descriptio
 }
 
 function gitTopLevel(cwd: string): string | undefined {
-	return gitTopLevelFromResult(runGitReadOnlyProbe(cwd, ["rev-parse", "--show-toplevel"]), cwd, `gitWorktreeDir ${cwd}`);
+	return gitTopLevelFromResult(
+		runGitReadOnlyProbe(cwd, ["rev-parse", "--show-toplevel"]),
+		cwd,
+		`gitWorktreeDir ${cwd}`,
+	);
 }
 
 function gitCommonDirForWorktree(cwd: string): string {
 	const result = runGitReadOnlyProbe(cwd, ["rev-parse", "--git-common-dir"]);
 	if (result.status !== 0) {
 		if (isGitTimeoutResult(result)) {
-			throw new Error(`Timed out while validating Git common directory for gitWorktreeDir ${cwd}. Git reported: ${gitFailureMessage(result)}`);
+			throw new Error(
+				`Timed out while validating Git common directory for gitWorktreeDir ${cwd}. Git reported: ${gitFailureMessage(result)}`,
+			);
 		}
-		throw new Error(`Failed to validate Git common directory for gitWorktreeDir ${cwd}. Git reported: ${gitFailureMessage(result)}`);
+		throw new Error(
+			`Failed to validate Git common directory for gitWorktreeDir ${cwd}. Git reported: ${gitFailureMessage(result)}`,
+		);
 	}
 	const gitPath = gitPathFromOutput(result.stdout, cwd);
 	if (gitPath === undefined) throw new Error("git rev-parse --git-common-dir returned an empty path");
@@ -238,7 +255,8 @@ function cwdWithinGitRepository(cwd: string, repoRoot: string): { relativeCwd: s
 	const sourceCwd = fs.realpathSync.native(cwd);
 	const sourceRepoRoot = fs.realpathSync.native(repoRoot);
 	const relativeCwd = path.relative(sourceRepoRoot, sourceCwd);
-	const safeRelativeCwd = relativeCwd === "" || relativeCwd.startsWith("..") || path.isAbsolute(relativeCwd) ? "" : relativeCwd;
+	const safeRelativeCwd =
+		relativeCwd === "" || relativeCwd.startsWith("..") || path.isAbsolute(relativeCwd) ? "" : relativeCwd;
 	const logicalCwd = canonicalizePreservingSymlinks(cwd);
 	return {
 		relativeCwd: safeRelativeCwd,
@@ -256,10 +274,16 @@ function validateExistingGitWorktreeRoot(worktreeRoot: string, repoRoot: string)
 		throw new Error(`gitWorktreeDir already exists but is not a Git worktree: ${worktreeRoot}`);
 	}
 	if (comparableRealPath(worktreeRoot) !== comparableRealPath(topLevel)) {
-		throw new Error(`gitWorktreeDir already exists but is not a Git worktree root: ${worktreeRoot}. Git top-level checkout is ${topLevel}`);
+		throw new Error(
+			`gitWorktreeDir already exists but is not a Git worktree root: ${worktreeRoot}. Git top-level checkout is ${topLevel}`,
+		);
 	}
-	if (comparableRealPath(gitCommonDirForWorktree(repoRoot)) !== comparableRealPath(gitCommonDirForWorktree(topLevel))) {
-		throw new Error(`gitWorktreeDir already exists but does not belong to the invoking Git repository: ${worktreeRoot}`);
+	if (
+		comparableRealPath(gitCommonDirForWorktree(repoRoot)) !== comparableRealPath(gitCommonDirForWorktree(topLevel))
+	) {
+		throw new Error(
+			`gitWorktreeDir already exists but does not belong to the invoking Git repository: ${worktreeRoot}`,
+		);
 	}
 }
 
@@ -279,7 +303,9 @@ interface GitWorktreeIdentity extends GitWorktreeIdentitySnapshot {
 function gitDirectoryForWorktree(cwd: string): string {
 	const result = runGitReadOnlyProbe(cwd, ["rev-parse", "--absolute-git-dir"]);
 	if (result.status !== 0) {
-		throw new Error(`Failed to validate Git directory for gitWorktreeDir ${cwd}. Git reported: ${gitFailureMessage(result)}`);
+		throw new Error(
+			`Failed to validate Git directory for gitWorktreeDir ${cwd}. Git reported: ${gitFailureMessage(result)}`,
+		);
 	}
 	const gitDir = gitPathFromOutput(result.stdout, cwd);
 	if (gitDir === undefined) throw new Error("git rev-parse --absolute-git-dir returned an empty path");
@@ -322,7 +348,9 @@ function assertCachedGitWorktreeIdentity(cached: CachedGitWorktreeSetup, options
 		current.device !== expected.device ||
 		current.inode !== expected.inode
 	) {
-		throw new Error(`Cached gitWorktreeDir changed before reuse: ${options.gitWorktreeDir}. Start a new run with the intended same-repository worktree.`);
+		throw new Error(
+			`Cached gitWorktreeDir changed before reuse: ${options.gitWorktreeDir}. Start a new run with the intended same-repository worktree.`,
+		);
 	}
 }
 
@@ -354,10 +382,12 @@ export function setupGitWorktree(options: GitWorktreeSetupOptions): GitWorktreeS
 	const baseRef = options.baseBranch?.trim() || "HEAD";
 	const result = runGit(mainRoot, ["worktree", "add", "--detach", worktreeRoot, baseRef]);
 	if (result.status !== 0) {
-		throw new Error([
-			`Failed to create git worktree at requested gitWorktreeDir ${worktreeRoot} from ${baseRef}. Git reported: ${gitFailureMessage(result)}`,
-			`If another process just created this same-repository worktree, rerun the workflow to resume it. If this is an orphaned worktree from an interrupted run, recover or remove it with: ${worktreeRecoveryCommand(mainRoot, worktreeRoot)}`,
-		].join("\n"));
+		throw new Error(
+			[
+				`Failed to create git worktree at requested gitWorktreeDir ${worktreeRoot} from ${baseRef}. Git reported: ${gitFailureMessage(result)}`,
+				`If another process just created this same-repository worktree, rerun the workflow to resume it. If this is an orphaned worktree from an interrupted run, recover or remove it with: ${worktreeRecoveryCommand(mainRoot, worktreeRoot)}`,
+			].join("\n"),
+		);
 	}
 	try {
 		validateWorktreeOutsideInvokingCheckout(worktreeRoot, repoRoot);

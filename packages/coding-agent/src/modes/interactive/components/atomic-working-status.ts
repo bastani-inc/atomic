@@ -1,10 +1,4 @@
-import {
-	Loader,
-	Text,
-	type Component,
-	type LoaderIndicatorOptions,
-	type TUI,
-} from "@earendil-works/pi-tui";
+import { type Component, Loader, type LoaderIndicatorOptions, Text, type TUI } from "@earendil-works/pi-tui";
 import { ansi256ToHex, fgAnsi, hexToRgb } from "../theme/color-utils.ts";
 import { theme } from "../theme/theme.ts";
 
@@ -25,8 +19,16 @@ export interface AtomicWorkingPalette {
 export type AtomicWorkingTone = keyof AtomicWorkingPalette;
 
 export const ATOMIC_WORKING_PHASES: readonly AtomicWorkingTone[] = [
-	"dark", "lift", "muted", "accent", "bright",
-	"peak", "bright", "accent", "muted", "lift",
+	"dark",
+	"lift",
+	"muted",
+	"accent",
+	"bright",
+	"peak",
+	"bright",
+	"accent",
+	"muted",
+	"lift",
 ];
 
 export interface AtomicWorkingStatusOptions {
@@ -49,7 +51,10 @@ function noColorRequested(): boolean {
 function ansiToHex(ansi: string): string | undefined {
 	const rgb = /\x1b\[(?:38|48);2;(\d{1,3});(\d{1,3});(\d{1,3})m/.exec(ansi);
 	if (rgb) {
-		return `#${rgb.slice(1).map((value) => Number(value).toString(16).padStart(2, "0")).join("")}`;
+		return `#${rgb
+			.slice(1)
+			.map((value) => Number(value).toString(16).padStart(2, "0"))
+			.join("")}`;
 	}
 	const indexed = /\x1b\[(?:38|48);5;(\d{1,3})m/.exec(ansi);
 	if (!indexed) return undefined;
@@ -60,8 +65,10 @@ function ansiToHex(ansi: string): string | undefined {
 function mixHex(from: string, to: string, amount: number): string {
 	const a = hexToRgb(from);
 	const b = hexToRgb(to);
-	const channel = (start: number, end: number) => Math.round(start + (end - start) * amount)
-		.toString(16).padStart(2, "0");
+	const channel = (start: number, end: number) =>
+		Math.round(start + (end - start) * amount)
+			.toString(16)
+			.padStart(2, "0");
 	return `#${channel(a.r, b.r)}${channel(a.g, b.g)}${channel(a.b, b.b)}`;
 }
 
@@ -114,11 +121,7 @@ function emphasize(text: string): string {
 	return `\x1b[1m${text}\x1b[22m`;
 }
 
-function styleLegacyFrame(
-	frame: string,
-	bold: boolean,
-	options: AtomicWorkingStatusOptions,
-): string | undefined {
+function styleLegacyFrame(frame: string, bold: boolean, options: AtomicWorkingStatusOptions): string | undefined {
 	if (!options.spinnerColor && !options.spinnerBoldColor) return undefined;
 	const regular = options.spinnerColor?.(frame) ?? theme.fg("accent", frame);
 	if (!bold) return regular;
@@ -138,8 +141,9 @@ export class AtomicWorkingStatusComponent implements Component {
 		const frame = ATOMIC_WORKING_FRAMES[frameIndex];
 		const message = this.options.message ?? "Working...";
 		const bold = !reducedMotion && ATOMIC_WORKING_BOLD_PHASES[frameIndex];
-		const icon = styleLegacyFrame(frame, bold, this.options)
-			?? (bold
+		const icon =
+			styleLegacyFrame(frame, bold, this.options) ??
+			(bold
 				? emphasize(colorizePhase(frameIndex, frame, this.options.palette))
 				: colorizePhase(frameIndex, frame, this.options.palette));
 		const styledMessage = noColorRequested()
@@ -177,12 +181,15 @@ export class AtomicWorkingLoader implements Component {
 	}
 
 	render(width: number): string[] {
-		return this.delegate?.render(width) ?? new AtomicWorkingStatusComponent({
-			frame: this.frame,
-			message: this.message,
-			spinnerColor: this.spinnerColor,
-			messageColor: this.messageColor,
-		}).render(width);
+		return (
+			this.delegate?.render(width) ??
+			new AtomicWorkingStatusComponent({
+				frame: this.frame,
+				message: this.message,
+				spinnerColor: this.spinnerColor,
+				messageColor: this.messageColor,
+			}).render(width)
+		);
 	}
 
 	start(): void {

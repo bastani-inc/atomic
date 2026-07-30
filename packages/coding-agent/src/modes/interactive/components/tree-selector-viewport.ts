@@ -1,11 +1,11 @@
 import { sliceByColumn, truncateToWidth } from "@earendil-works/pi-tui";
 import {
+	type HorizontalViewportRow,
 	MAX_ANCHOR_CONTEXT_WIDTH,
 	MAX_VISIBLE_ANCHOR_CONTENT_WIDTH,
 	MIN_ANCHOR_CONTEXT_WIDTH,
 	MIN_VISIBLE_ANCHOR_CONTENT_WIDTH,
 	TREE_GUTTER_WIDTH,
-	type HorizontalViewportRow,
 } from "./tree-selector-types.ts";
 
 /**

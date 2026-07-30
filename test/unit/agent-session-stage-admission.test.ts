@@ -1,6 +1,10 @@
-import { describe, test } from "vitest";
 import assert from "node:assert/strict";
-import { closeWorkflowStageGeneration, sendCustomMessage, transferWorkflowStageDeliveriesTo } from "../../packages/coding-agent/src/core/agent-session-message-queue.js";
+import { describe, test } from "vitest";
+import {
+	closeWorkflowStageGeneration,
+	sendCustomMessage,
+	transferWorkflowStageDeliveriesTo,
+} from "../../packages/coding-agent/src/core/agent-session-message-queue.js";
 import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 
 function harness(withRouter = true) {
@@ -8,13 +12,15 @@ function harness(withRouter = true) {
 	const external: string[] = [];
 	const surface = {
 		_workflowStageAdmission: new WorkflowStageAdmissionBoundary(),
-		_orchestrationContext: withRouter ? {
-			lateMessageRouter: {
-				routeMessage(message: { content?: string | object[] }) {
-					if (typeof message.content === "string") external.push(message.content);
-				},
-			},
-		} : {},
+		_orchestrationContext: withRouter
+			? {
+					lateMessageRouter: {
+						routeMessage(message: { content?: string | object[] }) {
+							if (typeof message.content === "string") external.push(message.content);
+						},
+					},
+				}
+			: {},
 		isStreaming: true,
 		_pendingNextTurnMessages: [],
 		_queueAgentMessage(message: { content: string | object[] }) {
@@ -26,11 +32,16 @@ function harness(withRouter = true) {
 		agent: { async waitForIdle() {} },
 		_agentEventQueue: Promise.resolve(),
 	};
-	const send = (content: string, key: string) => sendCustomMessage.call(surface as never, {
-		customType: "intercom_message",
-		content,
-		display: true,
-	}, { triggerTurn: true, deliverAs: "followUp", stageAdmissionKey: key });
+	const send = (content: string, key: string) =>
+		sendCustomMessage.call(
+			surface as never,
+			{
+				customType: "intercom_message",
+				content,
+				display: true,
+			},
+			{ triggerTurn: true, deliverAs: "followUp", stageAdmissionKey: key },
+		);
 	const close = () => closeWorkflowStageGeneration.call(surface as never);
 	return { stage, external, send, close };
 }
@@ -85,12 +96,20 @@ describe("AgentSession workflow-stage admission", () => {
 			_agentEventQueue: Promise.resolve(),
 		};
 
-		const delivery = sendCustomMessage.call(surface as never, {
-			customType: "async-job-result", content: "finished", display: true,
-		}, { triggerTurn: true, stageAdmissionKey: "async-job:job-1" });
+		const delivery = sendCustomMessage.call(
+			surface as never,
+			{
+				customType: "async-job-result",
+				content: "finished",
+				display: true,
+			},
+			{ triggerTurn: true, stageAdmissionKey: "async-job:job-1" },
+		);
 		await started.promise;
 		let closed = false;
-		const closing = closeWorkflowStageGeneration.call(surface as never).then(() => { closed = true; });
+		const closing = closeWorkflowStageGeneration.call(surface as never).then(() => {
+			closed = true;
+		});
 		await Promise.resolve();
 		assert.equal(closed, false);
 		release.resolve();
@@ -105,20 +124,38 @@ describe("AgentSession workflow-stage admission", () => {
 			_workflowStageAdmission: undefined,
 			isStreaming: false,
 			_pendingNextTurnMessages: [],
-			_queueAgentMessage() {}, _appendCustomMessage() {}, async _enqueueInterruptCustomMessage() {},
-			_runAgentPrompt(message: { content: string | object[] }, started?: () => void) { if (typeof message.content === "string") admitted.push(message.content); started?.(); return turn.promise; },
+			_queueAgentMessage() {},
+			_appendCustomMessage() {},
+			async _enqueueInterruptCustomMessage() {},
+			_runAgentPrompt(message: { content: string | object[] }, started?: () => void) {
+				if (typeof message.content === "string") admitted.push(message.content);
+				started?.();
+				return turn.promise;
+			},
 		};
 
-		await sendCustomMessage.call(surface as never, {
-			customType: "intercom_message", content: "accepted", display: true,
-		}, { triggerTurn: true });
+		await sendCustomMessage.call(
+			surface as never,
+			{
+				customType: "intercom_message",
+				content: "accepted",
+				display: true,
+			},
+			{ triggerTurn: true },
+		);
 		assert.deepEqual(admitted, ["accepted"]);
 		turn.reject(new Error("later model turn failure"));
 		await Promise.resolve();
 	});
 
 	test("fallback replacement transfers already-admitted native queue entries", () => {
-		const notification = { role: "custom", customType: "async-job-result", content: "done", display: true, timestamp: 1 };
+		const notification = {
+			role: "custom",
+			customType: "async-job-result",
+			content: "done",
+			display: true,
+			timestamp: 1,
+		};
 		const restored: object[] = [];
 		let managerTransferred = false;
 		const target = {
@@ -138,7 +175,11 @@ describe("AgentSession workflow-stage admission", () => {
 		};
 		const source = {
 			_asyncJobManagerSessionId: Symbol("source"),
-			_asyncJobManager: { transferSessionDeliveries() { managerTransferred = true; } },
+			_asyncJobManager: {
+				transferSessionDeliveries() {
+					managerTransferred = true;
+				},
+			},
 			_activeInterruptQueueHold: undefined,
 			_pendingNextTurnMessages: [notification],
 			_queuedMessagesPaused: false,

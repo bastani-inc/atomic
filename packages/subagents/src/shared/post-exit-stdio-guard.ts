@@ -23,10 +23,7 @@ export function trySignalChild(child: ChildWithKill, signal: NodeJS.Signals): bo
 	}
 }
 
-export function attachPostExitStdioGuard(
-	child: ChildWithPipedStdio,
-	options: PostExitStdioGuardOptions,
-): () => void {
+export function attachPostExitStdioGuard(child: ChildWithPipedStdio, options: PostExitStdioGuardOptions): () => void {
 	const { idleMs, hardMs } = options;
 	let exited = false;
 	let stdoutEnded = false;
@@ -36,10 +33,14 @@ export function attachPostExitStdioGuard(
 
 	const destroyUnendedStdio = () => {
 		if (!stdoutEnded) {
-			try { child.stdout?.destroy(); } catch {}
+			try {
+				child.stdout?.destroy();
+			} catch {}
 		}
 		if (!stderrEnded) {
-			try { child.stderr?.destroy(); } catch {}
+			try {
+				child.stderr?.destroy();
+			} catch {}
 		}
 	};
 

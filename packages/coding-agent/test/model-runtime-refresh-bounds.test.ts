@@ -13,7 +13,9 @@ describe("model refresh timeout boundaries", () => {
 		const refresh = vi.spyOn(ModelRuntime.prototype, "refresh").mockImplementation(async (options = {}) => {
 			createSignal = options.signal;
 			if (options.signal) {
-				await new Promise<void>((resolve) => options.signal?.addEventListener("abort", () => resolve(), { once: true }));
+				await new Promise<void>((resolve) =>
+					options.signal?.addEventListener("abort", () => resolve(), { once: true }),
+				);
 			}
 			return { aborted: options.signal?.aborted ?? false, errors: new Map() };
 		});

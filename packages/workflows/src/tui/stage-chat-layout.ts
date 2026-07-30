@@ -9,80 +9,73 @@
  */
 
 export interface StageChatFramePlanInput {
-  readonly viewportRows: number;
-  readonly headerRows: number;
-  readonly separatorRows: number;
-  readonly pendingRows: number;
-  readonly workingRows: number;
-  readonly usageRows: number;
-  readonly editorRows: number;
-  readonly footerRows: number;
+	readonly viewportRows: number;
+	readonly headerRows: number;
+	readonly separatorRows: number;
+	readonly pendingRows: number;
+	readonly workingRows: number;
+	readonly usageRows: number;
+	readonly editorRows: number;
+	readonly footerRows: number;
 }
 
 export interface StageChatFramePlan {
-  readonly bodyRows: number;
-  readonly pendingRows: number;
-  readonly workingRows: number;
-  readonly usageRows: number;
-  readonly editorRows: number;
-  readonly footerRows: number;
+	readonly bodyRows: number;
+	readonly pendingRows: number;
+	readonly workingRows: number;
+	readonly usageRows: number;
+	readonly editorRows: number;
+	readonly footerRows: number;
 }
 
-export function resolveStageChatViewportRows(
-  reported: number | undefined,
-  fallbackRows: number,
-): number {
-  if (typeof reported !== "number" || !Number.isFinite(reported)) {
-    return fallbackRows;
-  }
-  return Math.max(1, Math.floor(reported));
+export function resolveStageChatViewportRows(reported: number | undefined, fallbackRows: number): number {
+	if (typeof reported !== "number" || !Number.isFinite(reported)) {
+		return fallbackRows;
+	}
+	return Math.max(1, Math.floor(reported));
 }
 
 export function planStageChatFrame(input: StageChatFramePlanInput): StageChatFramePlan {
-  const viewportRows = Math.max(1, Math.floor(input.viewportRows));
-  const baseRows = Math.max(0, input.headerRows) + Math.max(0, input.separatorRows);
-  let remaining = Math.max(0, viewportRows - baseRows);
+	const viewportRows = Math.max(1, Math.floor(input.viewportRows));
+	const baseRows = Math.max(0, input.headerRows) + Math.max(0, input.separatorRows);
+	let remaining = Math.max(0, viewportRows - baseRows);
 
-  // The composer is the highest-priority interactive affordance. Reserve it
-  // before status/pending/body rows so it cannot be pushed below the overlay
-  // clipping boundary on terminal shrink.
-  const editorRows = Math.min(Math.max(0, input.editorRows), remaining);
-  remaining -= editorRows;
+	// The composer is the highest-priority interactive affordance. Reserve it
+	// before status/pending/body rows so it cannot be pushed below the overlay
+	// clipping boundary on terminal shrink.
+	const editorRows = Math.min(Math.max(0, input.editorRows), remaining);
+	remaining -= editorRows;
 
-  // Footer is useful but secondary to the actual input box.
-  const footerRows = Math.min(Math.max(0, input.footerRows), remaining);
-  remaining -= footerRows;
+	// Footer is useful but secondary to the actual input box.
+	const footerRows = Math.min(Math.max(0, input.footerRows), remaining);
+	remaining -= footerRows;
 
-  // Status rows are optional; preserve them in the same visual order as the
-  // normal chat surface after the body gives up its space.
-  const pendingRows = Math.min(Math.max(0, input.pendingRows), remaining);
-  remaining -= pendingRows;
-  const workingRows = Math.min(Math.max(0, input.workingRows), remaining);
-  remaining -= workingRows;
-  const usageRows = Math.min(Math.max(0, input.usageRows), remaining);
-  remaining -= usageRows;
+	// Status rows are optional; preserve them in the same visual order as the
+	// normal chat surface after the body gives up its space.
+	const pendingRows = Math.min(Math.max(0, input.pendingRows), remaining);
+	remaining -= pendingRows;
+	const workingRows = Math.min(Math.max(0, input.workingRows), remaining);
+	remaining -= workingRows;
+	const usageRows = Math.min(Math.max(0, input.usageRows), remaining);
+	remaining -= usageRows;
 
-  return {
-    bodyRows: remaining,
-    pendingRows,
-    workingRows,
-    usageRows,
-    editorRows,
-    footerRows,
-  };
+	return {
+		bodyRows: remaining,
+		pendingRows,
+		workingRows,
+		usageRows,
+		editorRows,
+		footerRows,
+	};
 }
 
-export function fitStageChatFrame(
-  lines: string[],
-  viewportRows: number,
-  blankLine: string,
-): string[] {
-  const rows = Math.max(1, Math.floor(viewportRows));
-  if (lines.length > rows) {
-    // Extreme fallback: mirror main chat's bottom-anchored behavior so the
-    // composer/footer survive even if mandatory chrome exceeds the viewport.
-    return lines.slice(lines.length - rows);
-  }
-  while (lines.length < rows) lines.push(blankLine);
-  return lines;
+export function fitStageChatFrame(lines: string[], viewportRows: number, blankLine: string): string[] {
+	const rows = Math.max(1, Math.floor(viewportRows));
+	if (lines.length > rows) {
+		// Extreme fallback: mirror main chat's bottom-anchored behavior so the
+		// composer/footer survive even if mandatory chrome exceeds the viewport.
+		return lines.slice(lines.length - rows);
+	}
+	while (lines.length < rows) lines.push(blankLine);
+	return lines;
 }

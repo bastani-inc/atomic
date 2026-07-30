@@ -1,148 +1,130 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import {
-  type Component,
-  truncateToWidth,
-  visibleWidth,
-} from "@earendil-works/pi-tui";
+import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { AgentSession } from "../../../core/agent-session.ts";
-import {
-  formatCodexFastModeModelLabel,
-  shouldApplyCodexFastMode,
-} from "../../../core/codex-fast-mode.ts";
-import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
+import { formatCodexFastModeModelLabel, shouldApplyCodexFastMode } from "../../../core/codex-fast-mode.ts";
 import { areExperimentalFeaturesEnabled } from "../../../core/experimental.ts";
+import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import { addUsageToTotals, createUsageTotals } from "../../../core/usage-totals.ts";
 import { theme } from "../theme/theme.ts";
 
 export interface FooterRenderStyle {
-  dim(text: string): string;
-  muted(text: string): string;
-  warning(text: string): string;
+	dim(text: string): string;
+	muted(text: string): string;
+	warning(text: string): string;
 }
 
 const defaultFooterRenderStyle: FooterRenderStyle = {
-  dim: (text) => theme.fg("dim", text),
-  muted: (text) => theme.fg("muted", text),
-  warning: (text) => theme.fg("warning", text),
+	dim: (text) => theme.fg("dim", text),
+	muted: (text) => theme.fg("muted", text),
+	warning: (text) => theme.fg("warning", text),
 };
 
 function sanitizeStatusText(text: string): string {
-  // Replace newlines, tabs, carriage returns with space, then collapse
-  // multiple spaces (pi parity). ANSI/SGR sequences must survive intact:
-  // extension statuses are frequently theme-colored, and stripping only the
-  // ESC byte would leave the rest of the sequence as visible literal text.
-  return text.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim();
+	// Replace newlines, tabs, carriage returns with space, then collapse
+	// multiple spaces (pi parity). ANSI/SGR sequences must survive intact:
+	// extension statuses are frequently theme-colored, and stripping only the
+	// ESC byte would leave the rest of the sequence as visible literal text.
+	return text
+		.replace(/[\r\n\t]/g, " ")
+		.replace(/ +/g, " ")
+		.trim();
 }
 
 /**
  * Format token counts (similar to web-ui)
  */
 function formatTokens(count: number): string {
-  if (count < 1000) return count.toString();
-  if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
-  if (count < 1000000) return `${Math.round(count / 1000)}k`;
-  if (count < 10000000) return `${(count / 1000000).toFixed(1)}M`;
-  return `${Math.round(count / 1000000)}M`;
+	if (count < 1000) return count.toString();
+	if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
+	if (count < 1000000) return `${Math.round(count / 1000)}k`;
+	if (count < 10000000) return `${(count / 1000000).toFixed(1)}M`;
+	return `${Math.round(count / 1000000)}M`;
 }
 
 function replaceHome(input: string): string {
-  return formatCwdForFooter(input, process.env.HOME || process.env.USERPROFILE);
+	return formatCwdForFooter(input, process.env.HOME || process.env.USERPROFILE);
 }
 
 function rightAlign(line: string, width: number): string {
-  const lineWidth = visibleWidth(line);
-  if (lineWidth >= width) {
-    return truncateToWidth(line, width, theme.fg("dim", "..."));
-  }
-  return `${" ".repeat(width - lineWidth)}${line}`;
+	const lineWidth = visibleWidth(line);
+	if (lineWidth >= width) {
+		return truncateToWidth(line, width, theme.fg("dim", "..."));
+	}
+	return `${" ".repeat(width - lineWidth)}${line}`;
 }
 
-function getUsageLine(
-  session: AgentSession,
-  autoCompactEnabled: boolean,
-  width: number,
-): string {
-  const state = session.state;
+function getUsageLine(session: AgentSession, autoCompactEnabled: boolean, width: number): string {
+	const state = session.state;
 
-  // Calculate cumulative usage from ALL session entries (not just post-compaction messages)
-  const totals = createUsageTotals();
-  let latestCacheHitRate: number | undefined;
+	// Calculate cumulative usage from ALL session entries (not just post-compaction messages)
+	const totals = createUsageTotals();
+	let latestCacheHitRate: number | undefined;
 
-  for (const entry of session.sessionManager.getEntries()) {
-    if (entry.type === "message" && entry.message.role === "assistant") {
-      addUsageToTotals(totals, entry.message.usage);
+	for (const entry of session.sessionManager.getEntries()) {
+		if (entry.type === "message" && entry.message.role === "assistant") {
+			addUsageToTotals(totals, entry.message.usage);
 
-      const latestPromptTokens =
-        entry.message.usage.input + entry.message.usage.cacheRead + entry.message.usage.cacheWrite;
-      latestCacheHitRate = latestPromptTokens > 0 ? (entry.message.usage.cacheRead / latestPromptTokens) * 100 : undefined;
-    } else if (entry.type === "branch_summary" && entry.usage) {
-      addUsageToTotals(totals, entry.usage);
-    } else if (entry.type === "message" && entry.message.role === "toolResult" && "usage" in entry.message && entry.message.usage) {
-      addUsageToTotals(totals, entry.message.usage);
-    }
-  }
+			const latestPromptTokens =
+				entry.message.usage.input + entry.message.usage.cacheRead + entry.message.usage.cacheWrite;
+			latestCacheHitRate =
+				latestPromptTokens > 0 ? (entry.message.usage.cacheRead / latestPromptTokens) * 100 : undefined;
+		} else if (entry.type === "branch_summary" && entry.usage) {
+			addUsageToTotals(totals, entry.usage);
+		} else if (
+			entry.type === "message" &&
+			entry.message.role === "toolResult" &&
+			"usage" in entry.message &&
+			entry.message.usage
+		) {
+			addUsageToTotals(totals, entry.message.usage);
+		}
+	}
 
-  // Calculate context usage from session (handles compaction correctly).
-  // After compaction, tokens are unknown until the next LLM response.
-  const contextUsage = session.getContextUsage();
-  const contextWindow =
-    contextUsage?.contextWindow ?? state.model?.contextWindow ?? 0;
-  const contextPercentValue = contextUsage?.percent ?? 0;
-  const contextPercent =
-    contextUsage?.percent !== null ? contextPercentValue.toFixed(1) : "?";
+	// Calculate context usage from session (handles compaction correctly).
+	// After compaction, tokens are unknown until the next LLM response.
+	const contextUsage = session.getContextUsage();
+	const contextWindow = contextUsage?.contextWindow ?? state.model?.contextWindow ?? 0;
+	const contextPercentValue = contextUsage?.percent ?? 0;
+	const contextPercent = contextUsage?.percent !== null ? contextPercentValue.toFixed(1) : "?";
 
-  const usageParts = [];
-  if (totals.input)
-    usageParts.push(
-      `${theme.fg("dim", "↑")}${theme.fg("muted", formatTokens(totals.input))}`,
-    );
-  if (totals.output)
-    usageParts.push(
-      `${theme.fg("dim", "↓")}${theme.fg("muted", formatTokens(totals.output))}`,
-    );
-  if (totals.cacheRead)
-    usageParts.push(
-      `${theme.fg("dim", "R")}${theme.fg("muted", formatTokens(totals.cacheRead))}`,
-    );
-  if (totals.cacheWrite)
-    usageParts.push(
-      `${theme.fg("dim", "W")}${theme.fg("muted", formatTokens(totals.cacheWrite))}`,
-    );
-  if ((totals.cacheRead > 0 || totals.cacheWrite > 0) && latestCacheHitRate !== undefined) {
-    usageParts.push(`${theme.fg("dim", "CH")}${theme.fg("muted", `${latestCacheHitRate.toFixed(1)}%`)}`);
-  }
+	const usageParts = [];
+	if (totals.input) usageParts.push(`${theme.fg("dim", "↑")}${theme.fg("muted", formatTokens(totals.input))}`);
+	if (totals.output) usageParts.push(`${theme.fg("dim", "↓")}${theme.fg("muted", formatTokens(totals.output))}`);
+	if (totals.cacheRead) usageParts.push(`${theme.fg("dim", "R")}${theme.fg("muted", formatTokens(totals.cacheRead))}`);
+	if (totals.cacheWrite)
+		usageParts.push(`${theme.fg("dim", "W")}${theme.fg("muted", formatTokens(totals.cacheWrite))}`);
+	if ((totals.cacheRead > 0 || totals.cacheWrite > 0) && latestCacheHitRate !== undefined) {
+		usageParts.push(`${theme.fg("dim", "CH")}${theme.fg("muted", `${latestCacheHitRate.toFixed(1)}%`)}`);
+	}
 
-  // Kimi Coding is subscription-backed despite using API-key authentication.
-  const usingSubscription = state.model
-    ? state.model.provider === "kimi-coding" || session.modelRuntime.isUsingOAuth(state.model.provider)
-    : false;
-  if (totals.cost || usingSubscription) {
-    usageParts.push(
-      `${theme.fg("muted", `$${totals.cost.toFixed(3)}`)}${usingSubscription ? ` ${theme.fg("dim", "(sub)")}` : ""}`,
-    );
-  }
+	// Kimi Coding is subscription-backed despite using API-key authentication.
+	const usingSubscription = state.model
+		? state.model.provider === "kimi-coding" || session.modelRuntime.isUsingOAuth(state.model.provider)
+		: false;
+	if (totals.cost || usingSubscription) {
+		usageParts.push(
+			`${theme.fg("muted", `$${totals.cost.toFixed(3)}`)}${usingSubscription ? ` ${theme.fg("dim", "(sub)")}` : ""}`,
+		);
+	}
 
-  const autoIndicator = autoCompactEnabled ? " (auto)" : "";
-  const contextPercentDisplay =
-    contextPercent === "?"
-      ? `?/${formatTokens(contextWindow)}${autoIndicator}`
-      : `${contextPercent}%/${formatTokens(contextWindow)}${autoIndicator}`;
-  if (autoCompactEnabled && contextPercentValue > 70) {
-    usageParts.push(theme.fg("warning", contextPercentDisplay));
-  } else if (contextPercentValue > 90) {
-    usageParts.push(theme.fg("error", contextPercentDisplay));
-  } else if (contextPercentValue > 70) {
-    usageParts.push(theme.fg("warning", contextPercentDisplay));
-  } else {
-    usageParts.push(theme.fg("muted", contextPercentDisplay));
-  }
+	const autoIndicator = autoCompactEnabled ? " (auto)" : "";
+	const contextPercentDisplay =
+		contextPercent === "?"
+			? `?/${formatTokens(contextWindow)}${autoIndicator}`
+			: `${contextPercent}%/${formatTokens(contextWindow)}${autoIndicator}`;
+	if (autoCompactEnabled && contextPercentValue > 70) {
+		usageParts.push(theme.fg("warning", contextPercentDisplay));
+	} else if (contextPercentValue > 90) {
+		usageParts.push(theme.fg("error", contextPercentDisplay));
+	} else if (contextPercentValue > 70) {
+		usageParts.push(theme.fg("warning", contextPercentDisplay));
+	} else {
+		usageParts.push(theme.fg("muted", contextPercentDisplay));
+	}
 
-  const separator = theme.fg("dim", " • ");
-  const usageText =
-    usageParts.length > 0
-      ? usageParts.join(separator)
-      : theme.fg("muted", contextPercentDisplay);
-  return rightAlign(usageText, width);
+	const separator = theme.fg("dim", " • ");
+	const usageText = usageParts.length > 0 ? usageParts.join(separator) : theme.fg("muted", contextPercentDisplay);
+	return rightAlign(usageText, width);
 }
 
 export function formatCwdForFooter(cwd: string, home: string | undefined): string {
@@ -164,29 +146,29 @@ export function formatCwdForFooter(cwd: string, home: string | undefined): strin
  * prototype's separate token/cost/context ribbon.
  */
 export class UsageMeterComponent implements Component {
-  private autoCompactEnabled = true;
+	private autoCompactEnabled = true;
 
-  declare private session: AgentSession;
+	private declare session: AgentSession;
 
-  constructor(session: AgentSession) {
-    this.session = session;
+	constructor(session: AgentSession) {
+		this.session = session;
 	}
 
-  setSession(session: AgentSession): void {
-    this.session = session;
-  }
+	setSession(session: AgentSession): void {
+		this.session = session;
+	}
 
-  setAutoCompactEnabled(enabled: boolean): void {
-    this.autoCompactEnabled = enabled;
-  }
+	setAutoCompactEnabled(enabled: boolean): void {
+		this.autoCompactEnabled = enabled;
+	}
 
-  invalidate(): void {
-    // Render pulls live session data.
-  }
+	invalidate(): void {
+		// Render pulls live session data.
+	}
 
-  render(width: number): string[] {
-    return [getUsageLine(this.session, this.autoCompactEnabled, width)];
-  }
+	render(width: number): string[] {
+		return [getUsageLine(this.session, this.autoCompactEnabled, width)];
+	}
 }
 
 /**
@@ -194,85 +176,85 @@ export class UsageMeterComponent implements Component {
  * when idle, or one semantic dot with short recovery copy while work is live.
  */
 export class FooterComponent implements Component {
-  declare private session: AgentSession;
-  declare private footerData: ReadonlyFooterDataProvider;
-  declare private readonly renderStyle: FooterRenderStyle;
+	private declare session: AgentSession;
+	private declare footerData: ReadonlyFooterDataProvider;
+	private declare readonly renderStyle: FooterRenderStyle;
 
-  constructor(
-    session: AgentSession,
-    footerData: ReadonlyFooterDataProvider,
-    renderStyle: FooterRenderStyle = defaultFooterRenderStyle,
-  ) {
-    this.session = session;
-    this.footerData = footerData;
-    this.renderStyle = renderStyle;
+	constructor(
+		session: AgentSession,
+		footerData: ReadonlyFooterDataProvider,
+		renderStyle: FooterRenderStyle = defaultFooterRenderStyle,
+	) {
+		this.session = session;
+		this.footerData = footerData;
+		this.renderStyle = renderStyle;
 	}
 
-  setSession(session: AgentSession): void {
-    this.session = session;
-  }
+	setSession(session: AgentSession): void {
+		this.session = session;
+	}
 
-  setAutoCompactEnabled(_enabled: boolean): void {
-    // Usage state lives in UsageMeterComponent. Kept for compatibility with existing call sites.
-  }
+	setAutoCompactEnabled(_enabled: boolean): void {
+		// Usage state lives in UsageMeterComponent. Kept for compatibility with existing call sites.
+	}
 
-  /**
-   * No-op: git branch caching now handled by provider.
-   * Kept for compatibility with existing call sites in interactive-mode.
-   */
-  invalidate(): void {
-    // No-op: git branch is cached/invalidated by provider
-  }
+	/**
+	 * No-op: git branch caching now handled by provider.
+	 * Kept for compatibility with existing call sites in interactive-mode.
+	 */
+	invalidate(): void {
+		// No-op: git branch is cached/invalidated by provider
+	}
 
-  /**
-   * Clean up resources.
-   * Git watcher cleanup now handled by provider.
-   */
-  dispose(): void {
-    // Git watcher cleanup handled by provider
-  }
+	/**
+	 * Clean up resources.
+	 * Git watcher cleanup now handled by provider.
+	 */
+	dispose(): void {
+		// Git watcher cleanup handled by provider
+	}
 
-  render(width: number): string[] {
-    const state = this.session.state;
-    let pwd = replaceHome(this.session.sessionManager.getCwd());
-    const branch = this.footerData.getGitBranch();
-    if (branch) pwd += ` (${branch})`;
-    const sessionName = typeof this.session.sessionManager.getSessionName === "function"
-      ? this.session.sessionManager.getSessionName()
-      : undefined;
-    if (sessionName) pwd += ` • ${sessionName}`;
+	render(width: number): string[] {
+		const state = this.session.state;
+		let pwd = replaceHome(this.session.sessionManager.getCwd());
+		const branch = this.footerData.getGitBranch();
+		if (branch) pwd += ` (${branch})`;
+		const sessionName =
+			typeof this.session.sessionManager.getSessionName === "function"
+				? this.session.sessionManager.getSessionName()
+				: undefined;
+		if (sessionName) pwd += ` • ${sessionName}`;
 
-    const modelName = state.model?.id || "no-model";
-    const fastModeSettings = this.session.settingsManager.getCodexFastModeSettings();
-    const fastModeEnabled = state.model
-      ? shouldApplyCodexFastMode(
-          state.model,
-          fastModeSettings,
-          this.session.orchestrationContext,
-        )
-      : false;
-    let modelLabel = modelName;
-    if (state.model?.reasoning) {
-      const thinkingLevel = state.thinkingLevel || "off";
-      modelLabel =
-        thinkingLevel === "off" ? modelLabel : `${modelLabel} ${thinkingLevel}`;
-    }
-    modelLabel = formatCodexFastModeModelLabel(modelLabel, fastModeEnabled);
-    if (this.footerData.getAvailableProviderCount() > 1 && state.model) {
-      modelLabel = `(${state.model.provider}) ${modelLabel}`;
-    }
+		const modelName = state.model?.id || "no-model";
+		const fastModeSettings = this.session.settingsManager.getCodexFastModeSettings();
+		const fastModeEnabled = state.model
+			? shouldApplyCodexFastMode(state.model, fastModeSettings, this.session.orchestrationContext)
+			: false;
+		let modelLabel = modelName;
+		if (state.model?.reasoning) {
+			const thinkingLevel = state.thinkingLevel || "off";
+			modelLabel = thinkingLevel === "off" ? modelLabel : `${modelLabel} ${thinkingLevel}`;
+		}
+		modelLabel = formatCodexFastModeModelLabel(modelLabel, fastModeEnabled);
+		if (this.footerData.getAvailableProviderCount() > 1 && state.model) {
+			modelLabel = `(${state.model.provider}) ${modelLabel}`;
+		}
 
-    const liveState = this.session.isStreaming
-      ? this.renderStyle.muted("esc to interrupt")
-      : undefined;
-    let statusText = liveState ??
-      `${this.renderStyle.dim(modelLabel)} ${this.renderStyle.dim("•")} ${this.renderStyle.muted(pwd)}`;
-    if (areExperimentalFeaturesEnabled()) statusText += ` ${this.renderStyle.warning("xp")}`;
-    const lines = [truncateToWidth(statusText, width, this.renderStyle.dim("..."))];
-    const statuses = [...this.footerData.getExtensionStatuses()].sort(([a], [b]) => a.localeCompare(b));
-    if (statuses.length > 0) {
-      lines.push(truncateToWidth(statuses.map(([, text]) => sanitizeStatusText(text)).join(" "), width, this.renderStyle.dim("...")));
-    }
-    return lines;
-  }
+		const liveState = this.session.isStreaming ? this.renderStyle.muted("esc to interrupt") : undefined;
+		let statusText =
+			liveState ?? `${this.renderStyle.dim(modelLabel)} ${this.renderStyle.dim("•")} ${this.renderStyle.muted(pwd)}`;
+		if (areExperimentalFeaturesEnabled()) statusText += ` ${this.renderStyle.warning("xp")}`;
+		const lines = [truncateToWidth(statusText, width, this.renderStyle.dim("..."))];
+		const statuses = [...this.footerData.getExtensionStatuses()].sort(([a], [b]) => a.localeCompare(b));
+		if (statuses.length > 0) {
+			lines.push(
+				truncateToWidth(
+					statuses.map(([, text]) => sanitizeStatusText(text)).join(" "),
+					width,
+					this.renderStyle.dim("..."),
+				),
+			);
+		}
+		return lines;
+	}
 }

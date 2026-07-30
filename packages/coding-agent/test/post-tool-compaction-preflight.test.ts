@@ -138,9 +138,11 @@ describe("post-tool compaction preflight", () => {
 			expect(toolResultIds).toEqual([...new Set(toolResultIds)]);
 			const toolCallIds = context.messages
 				.filter((message) => message.role === "assistant")
-				.flatMap((message) => (message.content as Array<{ type: string; id?: string }>)
-					.filter((block) => block.type === "toolCall")
-					.map((block) => block.id as string));
+				.flatMap((message) =>
+					(message.content as Array<{ type: string; id?: string }>)
+						.filter((block) => block.type === "toolCall")
+						.map((block) => block.id as string),
+				);
 			expect(toolCallIds).toEqual([...new Set(toolCallIds)]);
 		}
 		expect(harness.session.getLastAssistantText()).toBe("completed after compaction");
@@ -189,43 +191,47 @@ describe("post-tool compaction preflight", () => {
 		},
 		{
 			name: "failure",
-			extension: ((pi) => pi.on("session_before_compact", () => ({ compactedText: "  \n" }))) satisfies ExtensionFactory,
+			extension: ((pi) =>
+				pi.on("session_before_compact", () => ({ compactedText: "  \n" }))) satisfies ExtensionFactory,
 			aborted: false,
 			error: "No compacted text provided",
 		},
-	])("surfaces post-tool compaction $name without sending the follow-up request", async ({ extension, aborted, error }) => {
-		const harness = await createHarnessWithExtensions({
-			contextWindow: 1_000,
-			settings: {
-				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
-			},
-			responses: [
-				{
-					toolCalls: [{ id: "call-fail", name: "large_result", args: {} }],
-					usage: { input: 700, output: 20, totalTokens: 720 },
+	])(
+		"surfaces post-tool compaction $name without sending the follow-up request",
+		async ({ extension, aborted, error }) => {
+			const harness = await createHarnessWithExtensions({
+				contextWindow: 1_000,
+				settings: {
+					compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
 				},
-				"must not be requested",
-			],
-			baseToolsOverride: { large_result: largeResultTool },
-			extensionFactories: [extension],
-		});
-		harnesses.push(harness);
-		await wireHarness(harness);
+				responses: [
+					{
+						toolCalls: [{ id: "call-fail", name: "large_result", args: {} }],
+						usage: { input: 700, output: 20, totalTokens: 720 },
+					},
+					"must not be requested",
+				],
+				baseToolsOverride: { large_result: largeResultTool },
+				extensionFactories: [extension],
+			});
+			harnesses.push(harness);
+			await wireHarness(harness);
 
-		await harness.session.prompt(longPrompt);
+			await harness.session.prompt(longPrompt);
 
-		expect(harness.faux.callCount).toBe(1);
-		expect(harness.eventsOfType("compaction_start")).toHaveLength(1);
-		expect(harness.eventsOfType("compaction_end")).toEqual([
-			expect.objectContaining({ reason: "threshold", aborted, willRetry: false }),
-		]);
-		expect(harness.session.messages.at(-1)).toMatchObject({
-			role: "assistant",
-			stopReason: "error",
-			errorMessage: expect.stringContaining(error),
-		});
-		expect(harness.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
-	});
+			expect(harness.faux.callCount).toBe(1);
+			expect(harness.eventsOfType("compaction_start")).toHaveLength(1);
+			expect(harness.eventsOfType("compaction_end")).toEqual([
+				expect.objectContaining({ reason: "threshold", aborted, willRetry: false }),
+			]);
+			expect(harness.session.messages.at(-1)).toMatchObject({
+				role: "assistant",
+				stopReason: "error",
+				errorMessage: expect.stringContaining(error),
+			});
+			expect(harness.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
+		},
+	);
 
 	it("does not route a retryable preflight failure into retry, fallback, or continuation", async () => {
 		const harness = await createHarnessWithExtensions({
@@ -234,10 +240,12 @@ describe("post-tool compaction preflight", () => {
 				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
 				retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 },
 			},
-			responses: [{
-				toolCalls: [{ id: "call-retryable-failure", name: "large_result", args: {} }],
-				usage: { input: 700, output: 20, totalTokens: 720 },
-			}],
+			responses: [
+				{
+					toolCalls: [{ id: "call-retryable-failure", name: "large_result", args: {} }],
+					usage: { input: 700, output: 20, totalTokens: 720 },
+				},
+			],
 			baseToolsOverride: { large_result: largeResultTool },
 			extensionFactories: [compactOffline],
 		});
@@ -264,17 +272,18 @@ describe("post-tool compaction preflight", () => {
 		});
 	});
 
-
 	it("does not compact a terminating tool batch with no follow-up provider request", async () => {
 		const harness = await createHarnessWithExtensions({
 			contextWindow: 1_000,
 			settings: {
 				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
 			},
-			responses: [{
-				toolCalls: [{ id: "call-terminate", name: "large_result", args: {} }],
-				usage: { input: 700, output: 20, totalTokens: 720 },
-			}],
+			responses: [
+				{
+					toolCalls: [{ id: "call-terminate", name: "large_result", args: {} }],
+					usage: { input: 700, output: 20, totalTokens: 720 },
+				},
+			],
 			baseToolsOverride: { large_result: terminatingLargeResultTool },
 			extensionFactories: [compactOffline],
 		});
@@ -292,20 +301,31 @@ describe("post-tool compaction preflight", () => {
 		const expandingContext: ExtensionFactory = (pi) => {
 			let compacted = false;
 			pi.on("session_before_compact", () => ({ compactedText: "[User]: retained" }));
-			pi.on("session_compact", () => { compacted = true; });
-			pi.on("context", (event) => compacted
-				? { messages: [...event.messages, { role: "user", content: "expanded ".repeat(2_000), timestamp: Date.now() }] }
-				: undefined);
+			pi.on("session_compact", () => {
+				compacted = true;
+			});
+			pi.on("context", (event) =>
+				compacted
+					? {
+							messages: [
+								...event.messages,
+								{ role: "user", content: "expanded ".repeat(2_000), timestamp: Date.now() },
+							],
+						}
+					: undefined,
+			);
 		};
 		const harness = await createHarnessWithExtensions({
 			contextWindow: 1_000,
 			settings: {
 				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
 			},
-			responses: [{
-				toolCalls: [{ id: "call-context-expand", name: "large_result", args: {} }],
-				usage: { input: 700, output: 20, totalTokens: 720 },
-			}],
+			responses: [
+				{
+					toolCalls: [{ id: "call-context-expand", name: "large_result", args: {} }],
+					usage: { input: 700, output: 20, totalTokens: 720 },
+				},
+			],
 			baseToolsOverride: { large_result: largeResultTool },
 			extensionFactories: [expandingContext],
 		});
@@ -374,11 +394,15 @@ describe("post-tool compaction preflight", () => {
 
 	it("honors an explicit abort while the post-tool compaction hook is active", async () => {
 		let signalHookStarted: (() => void) | undefined;
-		const hookStarted = new Promise<void>((resolve) => { signalHookStarted = resolve; });
+		const hookStarted = new Promise<void>((resolve) => {
+			signalHookStarted = resolve;
+		});
 		const abortableCompaction: ExtensionFactory = (pi) => {
 			pi.on("session_before_compact", async (event) => {
 				signalHookStarted?.();
-				await new Promise<void>((resolve) => event.signal.addEventListener("abort", () => resolve(), { once: true }));
+				await new Promise<void>((resolve) =>
+					event.signal.addEventListener("abort", () => resolve(), { once: true }),
+				);
 				return { cancel: true };
 			});
 		};
@@ -387,10 +411,12 @@ describe("post-tool compaction preflight", () => {
 			settings: {
 				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
 			},
-			responses: [{
-				toolCalls: [{ id: "call-abort", name: "large_result", args: {} }],
-				usage: { input: 700, output: 20, totalTokens: 720 },
-			}],
+			responses: [
+				{
+					toolCalls: [{ id: "call-abort", name: "large_result", args: {} }],
+					usage: { input: 700, output: 20, totalTokens: 720 },
+				},
+			],
 			baseToolsOverride: { large_result: largeResultTool },
 			extensionFactories: [abortableCompaction],
 		});

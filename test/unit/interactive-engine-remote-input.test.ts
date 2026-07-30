@@ -13,28 +13,23 @@
  * `RemoteComponentController` through an in-process message pump (no spawned
  * process).
  */
-import { test } from "vitest";
+
 import assert from "node:assert/strict";
 import type { Component } from "@earendil-works/pi-tui";
+import { test } from "vitest";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.ts";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { EngineCustomUiService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-custom-ui.ts";
 import type { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
 import {
-	parseInteractiveEngineMessage,
-	serializeInteractiveEngineFrame,
 	type InteractiveEngineCommand,
 	type InteractiveEngineMessage,
+	parseInteractiveEngineMessage,
+	serializeInteractiveEngineFrame,
 } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
 import { RemoteComponentController } from "../../packages/coding-agent/src/modes/interactive-engine/remote-component.ts";
-import {
-	createStore,
-	deriveGraphTheme,
-	makeHandle,
-	setupRun,
-	StageChatView,
-} from "./stage-chat-view-helpers.ts";
 import { sleep } from "../helpers/runtime.js";
+import { createStore, deriveGraphTheme, makeHandle, StageChatView, setupRun } from "./stage-chat-view-helpers.ts";
 
 type HostComponent = Component & { handleInput?: (data: string) => void };
 
@@ -69,7 +64,9 @@ function makeBridge(): Bridge {
 	const ui = {
 		requestRender: () => {},
 		setWidget: () => {},
-		custom: (factory: (tui: unknown, theme: unknown, keys: unknown, done: (result: unknown) => void) => HostComponent) =>
+		custom: (
+			factory: (tui: unknown, theme: unknown, keys: unknown, done: (result: unknown) => void) => HostComponent,
+		) =>
 			new Promise(() => {
 				const tui = { terminal: { rows: 40, columns: 100 }, requestRender: () => {} };
 				bridge.hostComponent = factory(tui, {}, {}, () => {});
@@ -109,7 +106,9 @@ test("a forwarded keypress pipelines a fresh frame request behind the input", as
 	// Keypress: input is forwarded and the component is marked dirty, so the
 	// next host render pass requests a frame that reflects the applied input —
 	// no child-side invalidate is required.
-	const renderRequestsBefore = bridge.childCommands.filter((command) => command.type === "engine_custom_render").length;
+	const renderRequestsBefore = bridge.childCommands.filter(
+		(command) => command.type === "engine_custom_render",
+	).length;
 	host.handleInput?.("\x1b[B");
 	await flush();
 	host.render(80);
@@ -126,19 +125,24 @@ test("one Kitty Ctrl+O press/release cycle toggles an isolated stage chat once",
 	setupRun(store, "run-1", "stage-a");
 	const { handle } = makeHandle();
 	let toolsExpanded = false;
-	void bridge.child.custom((_tui, _theme, keybindings) => new StageChatView({
-		store,
-		graphTheme: deriveGraphTheme({}),
-		runId: "run-1",
-		stageId: "stage-a",
-		workflowName: "test-wf",
-		handle,
-		onDetach: () => {},
-		onClose: () => {},
-		piKeybindings: keybindings,
-		getToolsExpanded: () => toolsExpanded,
-		setToolsExpanded: (expanded) => { toolsExpanded = expanded; },
-	}));
+	void bridge.child.custom(
+		(_tui, _theme, keybindings) =>
+			new StageChatView({
+				store,
+				graphTheme: deriveGraphTheme({}),
+				runId: "run-1",
+				stageId: "stage-a",
+				workflowName: "test-wf",
+				handle,
+				onDetach: () => {},
+				onClose: () => {},
+				piKeybindings: keybindings,
+				getToolsExpanded: () => toolsExpanded,
+				setToolsExpanded: (expanded) => {
+					toolsExpanded = expanded;
+				},
+			}),
+	);
 	await flush();
 	const host = bridge.hostComponent;
 	assert.ok(host, "remote component did not mount on the host");

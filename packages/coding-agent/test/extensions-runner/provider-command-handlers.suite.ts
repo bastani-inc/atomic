@@ -57,9 +57,7 @@ describe("ExtensionRunner", () => {
 					output: 2,
 					cacheRead: 0.5,
 					cacheWrite: 0.75,
-					tiers: [
-						{ inputTokensAbove: 100_000, input: 20, output: 30, cacheRead: 4, cacheWrite: 5 },
-					],
+					tiers: [{ inputTokensAbove: 100_000, input: 20, output: 30, cacheRead: 4, cacheWrite: 5 }],
 				},
 				contextWindow: 128000,
 				maxTokens: 4096,
@@ -97,7 +95,7 @@ describe("ExtensionRunner", () => {
 		getSystemPrompt: () => "",
 	};
 
-		describe("provider registration", () => {
+	describe("provider registration", () => {
 		it("bindCore ignores invalid queued registrations and reports extension error", async () => {
 			const runtime = createExtensionRuntime();
 			runtime.registerProvider(
@@ -204,5 +202,4 @@ describe("ExtensionRunner", () => {
 			expect(runner.hasHandlers("agent_end")).toBe(false);
 		});
 	});
-
 });

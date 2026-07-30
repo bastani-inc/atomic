@@ -1,17 +1,28 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { currentModelFullId, resolveModelCandidate } from "../shared/model-fallback.ts";
-import { collectKnownModelProviders, toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
 import { normalizeSkillInput } from "../../agents/skills.ts";
-import { injectSingleProgressInstruction, resolveSingleProgress, writeInitialProgressFile } from "../../shared/settings.ts";
-import { recordRun } from "../shared/run-history.ts";
-import { getSingleResultOutput, compactForegroundDetails } from "../../shared/utils.ts";
-import { updateForegroundNestedProjection } from "../shared/nested-events.ts";
-import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/intercom-group.ts";
+import { INTERCOM_BRIDGE_MARKER, resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
+import { collectKnownModelProviders, type ModelInfo, toModelInfo } from "../../shared/model-info.ts";
 import {
-	INTERCOM_BRIDGE_MARKER,
-	resolveSubagentIntercomTarget,
-} from "../../intercom/intercom-bridge.ts";
+	injectSingleProgressInstruction,
+	resolveSingleProgress,
+	writeInitialProgressFile,
+} from "../../shared/settings.ts";
+import {
+	type AgentProgress,
+	type ArtifactPaths,
+	resolveChildMaxSubagentDepth,
+	resolveSubagentDepthPolicy,
+	type SingleResult,
+	type SubagentToolResult,
+	workflowSessionMetadataFromContext,
+	wrapForkTask,
+} from "../../shared/types.ts";
+import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.ts";
+import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/intercom-group.ts";
+import { currentModelFullId, resolveModelCandidate } from "../shared/model-fallback.ts";
+import { updateForegroundNestedProjection } from "../shared/nested-events.ts";
+import { recordRun } from "../shared/run-history.ts";
 import {
 	finalizeSingleOutput,
 	injectSingleOutputInstruction,
@@ -20,17 +31,13 @@ import {
 	validateFileOnlyOutputMode,
 } from "../shared/single-output.ts";
 import {
-	resolveChildMaxSubagentDepth,
-	resolveSubagentDepthPolicy,
-	workflowSessionMetadataFromContext,
-	wrapForkTask,
-	type AgentProgress,
-	type ArtifactPaths,
-	type SingleResult,
-	type SubagentToolResult,
-} from "../../shared/types.ts";
+	createForegroundControlNotifier,
+	maybeBuildForegroundIntercomReceipt,
+	notifyDetachedForegroundChildExit,
+	rememberForegroundRun,
+	replaceForegroundRunChild,
+} from "./subagent-executor-status.ts";
 import type { ExecutionContextData, ResolvedExecutorDeps } from "./subagent-executor-types.ts";
-import { createForegroundControlNotifier, maybeBuildForegroundIntercomReceipt, notifyDetachedForegroundChildExit, rememberForegroundRun, replaceForegroundRunChild } from "./subagent-executor-status.ts";
 
 function formatFailedSingleRunOutput(result: SingleResult, displayOutput: string): string {
 	const error = result.error || "Failed";
@@ -54,7 +61,10 @@ function cleanupTransientProgress(progressDir: string | undefined, artifactsEnab
 	}
 }
 
-export async function runSinglePath(data: ExecutionContextData, deps: ResolvedExecutorDeps): Promise<SubagentToolResult> {
+export async function runSinglePath(
+	data: ExecutionContextData,
+	deps: ResolvedExecutorDeps,
+): Promise<SubagentToolResult> {
 	const {
 		params,
 		effectiveCwd,
@@ -71,7 +81,9 @@ export async function runSinglePath(data: ExecutionContextData, deps: ResolvedEx
 		controlConfig,
 	} = data;
 	const onControlEvent = createForegroundControlNotifier(data, deps);
-	const childIntercomTarget = data.intercomBridge.active ? resolveSubagentIntercomTarget(runId, params.agent!, 0) : undefined;
+	const childIntercomTarget = data.intercomBridge.active
+		? resolveSubagentIntercomTarget(runId, params.agent!, 0)
+		: undefined;
 	const allProgress: AgentProgress[] = [];
 	const allArtifactPaths: ArtifactPaths[] = [];
 	const agentConfig = agents.find((a) => a.name === params.agent);
@@ -109,7 +121,11 @@ export async function runSinglePath(data: ExecutionContextData, deps: ResolvedEx
 	const outputPath = resolveSingleOutputPath(effectiveOutput, ctx.cwd, effectiveCwd);
 	const validationError = validateFileOnlyOutputMode(effectiveOutputMode, outputPath, `Single run (${params.agent})`);
 	if (validationError) {
-		return { content: [{ type: "text", text: validationError }], isError: true, details: { mode: "single", results: [] } };
+		return {
+			content: [{ type: "text", text: validationError }],
+			isError: true,
+			details: { mode: "single", results: [] },
+		};
 	}
 	// Single-agent progress is isolated by run so the injected contract cannot
 	// overwrite a project's own progress.md or collide with another child.
@@ -144,22 +160,22 @@ export async function runSinglePath(data: ExecutionContextData, deps: ResolvedEx
 
 	const forwardSingleUpdate = onUpdate
 		? (update: SubagentToolResult) => {
-			if (foregroundControl) {
-				const firstProgress = update.details?.progress?.[0];
-				foregroundControl.currentAgent = params.agent;
-				foregroundControl.currentIndex = firstProgress?.index ?? 0;
-				foregroundControl.currentActivityState = firstProgress?.activityState;
-				foregroundControl.lastActivityAt = firstProgress?.lastActivityAt;
-				foregroundControl.currentTool = firstProgress?.currentTool;
-				foregroundControl.currentToolStartedAt = firstProgress?.currentToolStartedAt;
-				foregroundControl.currentPath = firstProgress?.currentPath;
-				foregroundControl.turnCount = firstProgress?.turnCount;
-				foregroundControl.tokens = firstProgress?.tokens;
-				foregroundControl.toolCount = firstProgress?.toolCount;
-				foregroundControl.updatedAt = Date.now();
+				if (foregroundControl) {
+					const firstProgress = update.details?.progress?.[0];
+					foregroundControl.currentAgent = params.agent;
+					foregroundControl.currentIndex = firstProgress?.index ?? 0;
+					foregroundControl.currentActivityState = firstProgress?.activityState;
+					foregroundControl.lastActivityAt = firstProgress?.lastActivityAt;
+					foregroundControl.currentTool = firstProgress?.currentTool;
+					foregroundControl.currentToolStartedAt = firstProgress?.currentToolStartedAt;
+					foregroundControl.currentPath = firstProgress?.currentPath;
+					foregroundControl.turnCount = firstProgress?.turnCount;
+					foregroundControl.tokens = firstProgress?.tokens;
+					foregroundControl.toolCount = firstProgress?.toolCount;
+					foregroundControl.updatedAt = Date.now();
+				}
+				onUpdate(update);
 			}
-			onUpdate(update);
-		}
 		: undefined;
 
 	let r: SingleResult;
@@ -269,14 +285,21 @@ export async function runSinglePath(data: ExecutionContextData, deps: ResolvedEx
 
 	if (r.detached) {
 		return {
-			content: [{ type: "text", text: `Detached for intercom coordination: ${params.agent}. Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.` }],
+			content: [
+				{
+					type: "text",
+					text: `Detached for intercom coordination: ${params.agent}. Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.`,
+				},
+			],
 			details,
 		};
 	}
 
 	if (r.interrupted) {
 		return {
-			content: [{ type: "text", text: `Run paused after interrupt (${params.agent}). Waiting for explicit next action.` }],
+			content: [
+				{ type: "text", text: `Run paused after interrupt (${params.agent}). Waiting for explicit next action.` },
+			],
 			details,
 		};
 	}

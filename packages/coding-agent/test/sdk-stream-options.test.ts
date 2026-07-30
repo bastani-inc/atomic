@@ -203,18 +203,12 @@ describe("createAgentSession stream options", () => {
 	});
 
 	it("preserves null credential headers through extension-provider dispatch", async () => {
-		const options = await captureStreamOptions(
-			"openai-completions",
-			{},
-			{},
-			undefined,
-			{
-				auth: {
-					apiKey: "credential-key",
-					headers: { Authorization: null, "x-api-key": null, "x-credential": "present" },
-				},
+		const options = await captureStreamOptions("openai-completions", {}, {}, undefined, {
+			auth: {
+				apiKey: "credential-key",
+				headers: { Authorization: null, "x-api-key": null, "x-credential": "present" },
 			},
-		);
+		});
 
 		expect(options?.apiKey).toBe("credential-key");
 		expect(options?.headers).toMatchObject({

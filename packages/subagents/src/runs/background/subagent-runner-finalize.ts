@@ -1,11 +1,11 @@
 import * as path from "node:path";
-import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { appendJsonl } from "../../shared/artifacts.ts";
+import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { DEFAULT_MAX_OUTPUT, truncateOutput } from "../../shared/types.ts";
 import { createShareLink, exportSessionHtml, writeRunLog } from "./subagent-runner-output.ts";
-import { findLatestSessionFile } from "./subagent-runner-utils.ts";
 import { cleanupActivityTimer, writeStatusPayload } from "./subagent-runner-state.ts";
 import type { RunnerExecutionState } from "./subagent-runner-types.ts";
+import { findLatestSessionFile } from "./subagent-runner-utils.ts";
 
 export async function finalizeRun(state: RunnerExecutionState): Promise<void> {
 	const { config, results, maxOutput, flatSteps, statusPayload, artifactsDir, cwd, asyncDir, id } = state;
@@ -23,11 +23,12 @@ export async function finalizeRun(state: RunnerExecutionState): Promise<void> {
 	}
 
 	const resultMode = config.resultMode ?? statusPayload.mode;
-	const agentName = flatSteps.length === 1
-		? flatSteps[0].agent
-		: resultMode === "parallel"
-			? `parallel:${flatSteps.map((s) => s.agent).join("+")}`
-			: `chain:${flatSteps.map((s) => s.agent).join("->")}`;
+	const agentName =
+		flatSteps.length === 1
+			? flatSteps[0].agent
+			: resultMode === "parallel"
+				? `parallel:${flatSteps.map((s) => s.agent).join("+")}`
+				: `chain:${flatSteps.map((s) => s.agent).join("->")}`;
 	let sessionFile: string | undefined;
 	let shareUrl: string | undefined;
 	let gistUrl: string | undefined;
@@ -70,14 +71,27 @@ export async function finalizeRun(state: RunnerExecutionState): Promise<void> {
 		if (failedStep?.agent) statusPayload.error = `Step failed: ${failedStep.agent}`;
 	}
 	writeStatusPayload(state);
-	appendJsonl(state.eventsPath, JSON.stringify({ type: "subagent.run.completed", ts: runEndedAt, runId: id, status: statusPayload.state, durationMs: runEndedAt - state.overallStartTime }));
+	appendJsonl(
+		state.eventsPath,
+		JSON.stringify({
+			type: "subagent.run.completed",
+			ts: runEndedAt,
+			runId: id,
+			status: statusPayload.state,
+			durationMs: runEndedAt - state.overallStartTime,
+		}),
+	);
 	writeRunLog(state.logPath, {
 		id,
 		mode: statusPayload.mode,
 		cwd,
 		startedAt: state.overallStartTime,
 		endedAt: runEndedAt,
-		steps: statusPayload.steps.map((step) => ({ agent: step.agent, status: step.status, durationMs: step.durationMs })),
+		steps: statusPayload.steps.map((step) => ({
+			agent: step.agent,
+			status: step.status,
+			durationMs: step.durationMs,
+		})),
 		summary,
 		truncated,
 		artifactsDir,

@@ -13,11 +13,7 @@ import { getMarkdownTheme, theme } from "../theme/theme.ts";
  * "child.render is not a function".
  */
 function isRenderableComponent(value: unknown): value is Component {
-	return (
-		typeof value === "object" &&
-		value !== null &&
-		typeof (value as { render?: unknown }).render === "function"
-	);
+	return typeof value === "object" && value !== null && typeof (value as { render?: unknown }).render === "function";
 }
 
 /**

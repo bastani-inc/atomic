@@ -354,5 +354,4 @@ Content`,
 			expect(result.workflows.every((r) => r.metadata.origin === "package")).toBe(true);
 		});
 	});
-
 });

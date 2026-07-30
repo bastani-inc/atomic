@@ -5,9 +5,9 @@ import type { CustomMessage } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ReadonlySessionManager, SessionManager } from "../session-manager.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
+import type { WorkflowStageAdmissionBoundary } from "../workflow-stage-admission.ts";
 import type { SendMessageOptions, SendMessagesOptions } from "./message-types.ts";
 import type { ExtensionUIContext } from "./ui-types.ts";
-import type { WorkflowStageAdmissionBoundary } from "../workflow-stage-admission.ts";
 
 export interface ContextUsage {
 	/** Estimated context tokens, or null if unknown (e.g. right after compaction, before next LLM response). */

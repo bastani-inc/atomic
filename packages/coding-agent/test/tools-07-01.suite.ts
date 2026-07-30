@@ -6,15 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeBashWithOperations } from "../src/core/bash-executor.ts";
 import { type BashOperations, createBashTool, createLocalBashOperations } from "../src/core/tools/bash.ts";
 import { computeEditsDiff } from "../src/core/tools/edit-diff.ts";
-import {
-	createEditTool,
-	createFindTool,
-	createLsTool,
-	createReadTool,
-	createWriteTool,
-} from "../src/index.ts";
 import { createGrepTool } from "../src/core/tools/grep.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
+import { createEditTool, createFindTool, createLsTool, createReadTool, createWriteTool } from "../src/index.ts";
 import * as shellModule from "../src/utils/shell.ts";
 
 const readTool = createReadTool(process.cwd());

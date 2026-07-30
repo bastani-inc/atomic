@@ -39,8 +39,8 @@ export function assertToolPairingInvariant(messages: readonly AgentMessage[]): v
 	if (duplicates.length === 0) return;
 	const plural = duplicates.length > 1;
 	throw new Error(
-		`Context is structurally invalid for the provider: tool call ${plural ? "ids" : "id"} `
-			+ `${duplicates.join(", ")} ${plural ? "appear" : "appears"} in more than one assistant message. `
-			+ "The request was not sent.",
+		`Context is structurally invalid for the provider: tool call ${plural ? "ids" : "id"} ` +
+			`${duplicates.join(", ")} ${plural ? "appear" : "appears"} in more than one assistant message. ` +
+			"The request was not sent.",
 	);
 }
