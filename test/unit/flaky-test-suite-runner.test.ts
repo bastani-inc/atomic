@@ -117,26 +117,26 @@ test("a passing retry cannot hide the failed attempt's exhausted headroom", asyn
   assert.match(result.summary, /Detected flake/);
 });
 
-/**
- * The gate is only as good as the output it reads, so this exercises the real
- * Bun test runner through the real wrapper, in the two conditions that had
- * silently emptied it: Bun's agent-quiet reporter (which prints no per-test
- * records at all) and the Actions reporter (which wraps each file header in a
- * log group). A populated table with the explicit budget attached is the proof.
- */
-test("the wrapper scores real Bun output under the agent-quiet and Actions reporters", async () => {
+/** Source of a real two-test Bun suite: one default budget, one explicit. */
+const REAL_SUITE = [
+  'import { test, expect } from "bun:test";',
+  'test("inherits the suite budget", () => { expect(1).toBe(1); });',
+  'test("declares its own budget", async () => {',
+  "  await new Promise((resolve) => setTimeout(resolve, 30));",
+  "}, 2_000);",
+].join("\n");
+
+/** Drive the real wrapper over a real Bun run in a scratch directory. */
+async function realBunSuite(
+  files: Record<string, string>,
+  command: string[],
+): Promise<{ code: number; output: string; durations: string }> {
   const dir = mkdtempSync(join(tmpdir(), "atomic-flake-real-"));
   const diagnostics = join(dir, "diagnostics");
-  writeFileSync(join(dir, "suite.test.ts"), [
-    'import { test, expect } from "bun:test";',
-    'test("inherits the suite budget", () => { expect(1).toBe(1); });',
-    'test("declares its own budget", async () => {',
-    "  await new Promise((resolve) => setTimeout(resolve, 30));",
-    "}, 2_000);",
-  ].join("\n"));
+  for (const [name, contents] of Object.entries(files)) writeFileSync(join(dir, name), contents);
   try {
     const spawned = Bun.spawn(
-      ["bun", runner, "--label", "real suite", "--diagnostics-dir", diagnostics, "--", "bun", "test", "--timeout", "30000", "suite.test.ts"],
+      ["bun", runner, "--label", "real suite", "--diagnostics-dir", diagnostics, "--", ...command],
       {
         cwd: dir,
         // Both reporter conditions at once: agent-quiet must be neutralised for
@@ -151,15 +151,54 @@ test("the wrapper scores real Bun output under the agent-quiet and Actions repor
       new Response(spawned.stderr).text(),
       spawned.exited,
     ]);
-    const durations = await Bun.file(join(diagnostics, "real-suite-durations.md")).text();
-    assert.equal(code, 0, `${stdout}${stderr}`);
-    assert.doesNotMatch(stdout + stderr, /Duration guard blind/);
-    assert.match(durations, /Samples: 2 of 2 test\(s\) run/);
-    assert.match(durations, /\| 30000 ms \| suite\.test\.ts \| inherits the suite budget \|/);
-    assert.match(durations, /\| 2000 ms \(explicit\) \| suite\.test\.ts \| declares its own budget \|/);
+    return {
+      code,
+      output: stdout + stderr,
+      durations: await Bun.file(join(diagnostics, "real-suite-durations.md")).text(),
+    };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/** Every real-Bun sample must carry the budget it was actually scored against. */
+function assertScoredRealSuite(result: { code: number; output: string; durations: string }): void {
+  assert.equal(result.code, 0, result.output);
+  assert.doesNotMatch(result.output, /Duration guard blind/);
+  assert.match(result.durations, /Samples: 2 of 2 test\(s\) run/);
+  assert.match(result.durations, /\| 30000 ms \| suite\.test\.ts \| inherits the suite budget \|/);
+  assert.match(result.durations, /\| 2000 ms \(explicit\) \| suite\.test\.ts \| declares its own budget \|/);
+}
+
+/**
+ * The gate is only as good as the output it reads, so this exercises the real
+ * Bun test runner through the real wrapper, in the two conditions that had
+ * silently emptied it: Bun's agent-quiet reporter (which prints no per-test
+ * records at all) and the Actions reporter (which wraps each file header in a
+ * log group). A populated table with the explicit budget attached is the proof.
+ */
+test("the wrapper scores real Bun output under the agent-quiet and Actions reporters", async () => {
+  assertScoredRealSuite(
+    await realBunSuite({ "suite.test.ts": REAL_SUITE }, ["bun", "test", "--timeout", "30000", "suite.test.ts"]),
+  );
+});
+
+/**
+ * CI never invokes `bun test` directly -- every suite goes through `bun run
+ * <script>`, where the budget lives in package.json and must be read back out
+ * of it. Scoring that form against real Bun output closes the gap between what
+ * the guard is unit-tested on and the command it is actually pointed at.
+ */
+test("the wrapper scores real Bun output behind the `bun run <script>` form CI uses", async () => {
+  assertScoredRealSuite(
+    await realBunSuite(
+      {
+        "suite.test.ts": REAL_SUITE,
+        "package.json": JSON.stringify({ name: "real-suite", scripts: { "test:unit": "bun test --timeout 30000" } }),
+      },
+      ["bun", "run", "test:unit"],
+    ),
+  );
 });
 
 test("a suite whose tests ran without printing durations fails instead of passing blind", async () => {
