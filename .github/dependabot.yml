@@ -4,7 +4,7 @@
 # https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
 #
 # Every ecosystem below declares `cooldown`. `npm ci` installs package-lock.json
-# verbatim, so the `min-release-age=3` gate in the committed .npmrc only binds
+# verbatim, so the `min-release-age=2` gate in the committed .npmrc only binds
 # when the lockfile is *updated*. Without a matching cooldown here an automated
 # bump could open a PR against a release younger than the local gate would ever
 # install, and merging it would write that version into the lockfile. The two
@@ -18,7 +18,7 @@ updates:
       schedule:
           interval: "weekly"
       cooldown:
-          default-days: 3
+          default-days: 2
       commit-message:
           prefix: "ci"
       labels:
@@ -31,7 +31,7 @@ updates:
       schedule:
           interval: "weekly"
       cooldown:
-          default-days: 3
+          default-days: 2
       commit-message:
           prefix: "deps"
       labels:
@@ -48,7 +48,7 @@ updates:
       schedule:
           interval: "weekly"
       cooldown:
-          default-days: 3
+          default-days: 2
       commit-message:
           prefix: "deps"
       labels:

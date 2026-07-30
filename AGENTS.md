@@ -22,7 +22,7 @@ everywhere. Where the split differs from pi, the reason is written down.
 | Task | Tool | Why |
 | --- | --- | --- |
 | Dependency install | `npm ci --ignore-scripts` | `package-lock.json` is the single verified lockfile. `npm ci` refuses to install when it and `package.json` disagree; nothing enforced that while two lockfiles coexisted |
-| Supply-chain gate | committed `.npmrc` | `min-release-age=3` and `min-release-age-exclude` replace bunfig's `minimumReleaseAge`/`minimumReleaseAgeExcludes` one-for-one, and bind every contributor's install, not just CI. `.github/dependabot.yml` carries the matching `cooldown` |
+| Supply-chain gate | committed `.npmrc` | Byte-identical to pi's: `save-exact=true` and `min-release-age=2`. Binds every contributor's install, not just CI. `.github/dependabot.yml` carries the matching `cooldown` |
 | Build | `npm run build` | tsgo, not Bun; no behaviour change |
 | Lint / format | `biome check` (`npm run check`, `npm run format`) | pi's rule set exactly: recommended preset plus the same six overrides. Tab indent width 3, line width 120 |
 | Typecheck / check | `npm run check` (biome + `tsc --noEmit` + shrinkwrap check) | pi runs biome + tsgo here |
@@ -31,7 +31,7 @@ everywhere. Where the split differs from pi, the reason is written down.
 | Script tests | `node --test scripts/*.test.mjs` | pi parity. Scripts Node can run are tested with Node's own runner |
 | Repository scripts | `bun run scripts/*.ts` | Bun executes `.ts` directly and resolves `.js` specifiers to `.ts` source with no loader hook. Bare `node` cannot; scripts meant for `node --test` are `.mjs` |
 | Binary compilation | `bun build --compile` | Cross-compiles the single-file executables; upstream pi uses Bun for exactly this step too. Bun pinned to 1.3.14 |
-| npm-package smoke tests | Node (`node-version: 24` in CI) | `test/integration/installed-package-node-extensions.test.ts` verifies the shipped `atomic` bin under `#!/usr/bin/env node`, which is how npm installs run it |
+| npm-package smoke tests | Node (`node-version: 22` in CI, matching pi) | `test/integration/installed-package-node-extensions.test.ts` verifies the shipped `atomic` bin under `#!/usr/bin/env node`, which is how npm installs run it |
 | Registry publish | `npm publish --provenance` | npm's OIDC-signed provenance lives in the npm CLI, and npm trusted publishing requires a GitHub-hosted runner |
 
 **Where this repository deliberately declines pi's shape:** pi's CI is one `ubuntu-latest`
