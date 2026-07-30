@@ -5,7 +5,7 @@ import "../../packages/coding-agent/src/modes/interactive/interactive-input-hand
 import "../../packages/coding-agent/src/modes/interactive/interactive-process-lifecycle.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-bash-compact.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-prompt-turn.ts";
-import { rpcTransportError } from "../../packages/coding-agent/src/modes/rpc/rpc-transport-error.ts";
+import { asAcceptedRequestFailure, rpcTransportError } from "../../packages/coding-agent/src/modes/rpc/rpc-transport-error.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 
 // handleBashCommand builds themed components; the theme is process-global.
@@ -329,16 +329,34 @@ test("bash rethrows a send the engine never accepted and renders every other fai
 	assert.deepEqual(runtimeFailure.errors, ["Bash command failed: spawn ENOENT"]);
 });
 
-test("bash keeps a transport failure local once the command has produced output", async () => {
-	const started = makeBashStub({
-		executeBash: async (_command, onChunk) => {
-			onChunk("partial output");
-			throw new Error(SEND_FAILURE);
-		},
+/**
+ * Output is not ownership. A command can create files, change git state, and
+ * print nothing, so the child's admission frame — not the first chunk — decides
+ * whether the `!` text may be offered back for a second run.
+ */
+test("bash keeps an accepted transport failure local, with or without output", async () => {
+	for (const emitOutput of [false, true]) {
+		const accepted = makeBashStub({
+			executeBash: async (_command, onChunk) => {
+				if (emitOutput) onChunk("partial output");
+				throw asAcceptedRequestFailure(rpcTransportError(SEND_FAILURE));
+			},
+		});
+		await InteractiveModeBase.prototype.handleBashCommand.call(accepted.mode, "touch marker && sleep 400");
+		assert.equal(accepted.errors.length, 1, `accepted work was resurrected (output=${emitOutput})`);
+		assert.match(accepted.errors[0]!, /Bash command failed: Agent process exited/);
+	}
+});
+
+test("bash still rethrows a quiet unaccepted send so the draft is restored", async () => {
+	const unaccepted = makeBashStub({
+		executeBash: async () => { throw rpcTransportError(SEND_FAILURE); },
 	});
-	await InteractiveModeBase.prototype.handleBashCommand.call(started.mode, "echo hi");
-	assert.equal(started.errors.length, 1, "an acknowledged command must not resurrect the submission");
-	assert.match(started.errors[0]!, /Bash command failed: Agent process exited/);
+	await assert.rejects(
+		() => InteractiveModeBase.prototype.handleBashCommand.call(unaccepted.mode, "echo hi"),
+		/Agent process exited/,
+	);
+	assert.deepEqual(unaccepted.errors, []);
 });
 
 test("/compact rethrows a send the engine never accepted and ignores other failures", async () => {

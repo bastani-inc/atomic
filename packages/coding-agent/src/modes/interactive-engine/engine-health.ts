@@ -57,6 +57,8 @@ export class EngineHealthController {
 	 */
 	private replacementNeeded = false;
 	private termination: Promise<void> | undefined;
+	/** Set once disposal begins; joins the in-flight attempt and termination. */
+	private shutdownPromise: Promise<void> | undefined;
 	private stopped = false;
 
 	constructor(deps: EngineHealthDeps, options?: EngineHealthOptions) {
@@ -117,9 +119,25 @@ export class EngineHealthController {
 		return this.attempt !== undefined || this.termination !== undefined;
 	}
 
-	/** Stop accepting recovery work (host shutdown / runtime disposal). */
-	shutdown(): void {
+	/**
+	 * Stop accepting recovery work and join whatever is still running.
+	 *
+	 * Disposal must not return while a replacement is between its own stop and
+	 * its spawn: the client's restart permit is voided by `deps.stop()`, and the
+	 * attempt is then awaited so no child, and no host initialization, outlives
+	 * teardown. Idempotent, and bounded by the client's own stop deadlines.
+	 */
+	shutdown(): Promise<void> {
+		if (this.shutdownPromise) return this.shutdownPromise;
 		this.stopped = true;
+		this.rescueRequested = false;
+		this.replacementNeeded = false;
+		this.shutdownPromise = (async () => {
+			await this.stopQuietly();
+			await this.attempt?.catch(() => {});
+			await this.termination?.catch(() => {});
+		})();
+		return this.shutdownPromise;
 	}
 
 	handleGenerationEnded(event: InteractiveEngineGenerationEnded): void {
@@ -191,8 +209,10 @@ export class EngineHealthController {
 	}
 
 	private recover(notice: string | undefined): Promise<void> {
-		if (this.attempt) return this.attempt;
+		// Order matters: after shutdown no caller may join, or revive, an attempt
+		// that still happens to occupy the slot.
 		if (this.stopped) return Promise.resolve();
+		if (this.attempt) return this.attempt;
 		if (notice) this.notice(notice);
 		const id = (this.attemptId += 1);
 		this.attemptStartedAt = this.now();
@@ -202,8 +222,9 @@ export class EngineHealthController {
 		this.replacementNeeded = false;
 		const run = this.deps.restart()
 			.catch((error: Error) => {
-				// An attempt the user deliberately stopped did not fail on its own.
-				if (this.forceStoppedAttemptId === id) return;
+				// An attempt the user deliberately stopped, or one cancelled by
+				// disposal, did not fail on its own.
+				if (this.forceStoppedAttemptId === id || this.stopped) return;
 				// Keep Ctrl+C armed: automatic recovery is single-shot, but the user
 				// must be able to ask for another attempt after a real failure.
 				this.replacementNeeded = true;

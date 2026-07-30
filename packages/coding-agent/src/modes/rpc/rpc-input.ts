@@ -11,6 +11,12 @@ interface RpcInputLineHandlerOptions {
 	handleCommand: RpcCommandHandler;
 	checkShutdownRequested: () => Promise<void>;
 	handleInteractiveEngineLine?: (line: string) => boolean;
+	/**
+	 * Announce that this child owns a correlated request, before any handler
+	 * work runs. Interactive-engine children only; plain RPC has no host that
+	 * needs the ownership boundary.
+	 */
+	announceRequestAccepted?: (requestId: string, command: string) => void;
 }
 
 interface CommandIdentity {
@@ -33,6 +39,7 @@ export function createRpcInputLineHandler({
 	handleCommand,
 	checkShutdownRequested,
 	handleInteractiveEngineLine,
+	announceRequestAccepted,
 }: RpcInputLineHandlerOptions): (line: string) => Promise<void> {
 	return async (line: string): Promise<void> => {
 		if (handleInteractiveEngineLine?.(line)) return;
@@ -58,6 +65,16 @@ export function createRpcInputLineHandler({
 
 		const command = parsed as RpcCommand;
 		try {
+			// Ownership boundary: flush the admission frame BEFORE the handler can
+			// touch the shell, an extension, or the queue. A command that runs to
+			// completion without output would otherwise be indistinguishable from
+			// one the child never received, and the host would offer the user's
+			// text back for a second run.
+			const identity = getCommandIdentity(command);
+			if (announceRequestAccepted && identity.id !== undefined) {
+				announceRequestAccepted(identity.id, identity.type);
+				await waitForRawStdoutBackpressure();
+			}
 			const response = await handleCommand(command);
 			if (response) {
 				output(response);
@@ -65,8 +82,8 @@ export function createRpcInputLineHandler({
 			}
 			await checkShutdownRequested();
 		} catch (commandError: unknown) {
-			const identity = getCommandIdentity(command);
-			output(createRpcErrorResponse(identity.id, identity.type, formatRpcErrorMessage(commandError)));
+			const failed = getCommandIdentity(command);
+			output(createRpcErrorResponse(failed.id, failed.type, formatRpcErrorMessage(commandError)));
 			await waitForRawStdoutBackpressure();
 		}
 	};

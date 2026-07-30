@@ -42,3 +42,13 @@ export const LONG_LIVED_COMMANDS: ReadonlySet<string> = new Set<string>([
 ]);
 
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * How long to wait for a dead child's stdout to drain before failing the
+ * requests it never answered. `'close'` normally arrives first; this only
+ * bounds the case where a descendant inherited stdout and keeps it open.
+ */
+export const EXIT_DRAIN_TIMEOUT_MS = 500;
+
+/** Rejection message for a restart superseded by an explicit stop or disposal. */
+export const RESTART_CANCELLED_MESSAGE = "Interactive engine restart cancelled";

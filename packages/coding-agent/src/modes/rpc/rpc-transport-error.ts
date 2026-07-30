@@ -54,3 +54,44 @@ export function markRpcTransportFailure(error: unknown): RpcTransportFailure {
 export function rpcTransportError(message: string): RpcTransportFailure {
 	return markRpcTransportFailure(new Error(message));
 }
+
+const RPC_REQUEST_ACCEPTED = "rpcRequestAccepted";
+
+/**
+ * A transport failure for a request the child had already taken ownership of.
+ *
+ * The frame reached the engine and its handler started, so side effects may
+ * already have happened: the submission is no longer the user's to retype, and
+ * restoring it would invite a duplicate run.
+ */
+export interface RpcAcceptedRequestFailure extends RpcTransportFailure {
+	readonly rpcRequestAccepted: true;
+}
+
+export function isRpcRequestAcceptedFailure(error: unknown): error is RpcAcceptedRequestFailure {
+	return isRpcTransportFailure(error)
+		&& (error as { rpcRequestAccepted?: unknown }).rpcRequestAccepted === true;
+}
+
+/**
+ * Per-request copy of a transport failure, marked as accepted.
+ *
+ * A copy rather than a mutation: one engine exit rejects every pending request
+ * at once and only some of them were accepted. Native `code`, `errno`, and
+ * `syscall` are carried over and the original is kept as `cause`.
+ */
+export function asAcceptedRequestFailure(error: Error): RpcAcceptedRequestFailure {
+	if (isRpcRequestAcceptedFailure(error)) return error;
+	const copy = markRpcTransportFailure(new Error(error.message, { cause: error }));
+	for (const field of ["code", "errno", "syscall"] as const) {
+		const value = (error as unknown as Record<string, unknown>)[field];
+		if (value !== undefined) Object.assign(copy, { [field]: value });
+	}
+	Object.defineProperty(copy, RPC_REQUEST_ACCEPTED, {
+		value: true,
+		enumerable: false,
+		configurable: true,
+		writable: false,
+	});
+	return copy as RpcAcceptedRequestFailure;
+}

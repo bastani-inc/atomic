@@ -2,7 +2,13 @@ import type { CallbackActivity, CallbackActivityKind } from "../../core/callback
 import type { HostInputFormField, HostSessionPickerRow } from "../../core/extensions/ui-types.ts";
 import type { KeyId } from "../../core/keybindings.ts";
 
-export const INTERACTIVE_ENGINE_PROTOCOL_VERSION = 1;
+/**
+ * Version 2 added `engine_request_accepted`. The host uses that frame to decide
+ * whether a submission may be returned to the editor after a transport failure,
+ * so a child that cannot send it must not be treated as compatible: without the
+ * frame the host would restore work the child had already started.
+ */
+export const INTERACTIVE_ENGINE_PROTOCOL_VERSION = 2;
 
 export interface JsonObject {
 	[key: string]: JsonValue;
@@ -54,6 +60,14 @@ export type InteractiveEngineMessage =
 	| { type: "engine_heartbeat"; at: number }
 	| { type: "engine_activity_started"; activity: CallbackActivity }
 	| { type: "engine_activity_finished"; activityId: string }
+	/**
+	 * The child took ownership of a correlated RPC request: it has parsed the
+	 * command and is about to run it. Emitted and flushed BEFORE any handler
+	 * work, so a later transport failure can be told apart from a send that
+	 * never landed. Output is not a substitute: a command can run to completion
+	 * with side effects and produce nothing.
+	 */
+	| { type: "engine_request_accepted"; requestId: string; command: string }
 	| {
 			type: "engine_custom_open";
 			componentId: string;
@@ -318,6 +332,10 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 			return isCallbackActivity(value.activity) ? { type: value.type, activity: value.activity } : undefined;
 		case "engine_activity_finished":
 			return typeof value.activityId === "string" ? { type: value.type, activityId: value.activityId } : undefined;
+		case "engine_request_accepted":
+			return typeof value.requestId === "string" && typeof value.command === "string"
+				? { type: value.type, requestId: value.requestId, command: value.command }
+				: undefined;
 		case "engine_custom_open":
 			return typeof value.componentId === "string" && typeof value.overlay === "boolean"
 				? {

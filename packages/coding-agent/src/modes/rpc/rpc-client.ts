@@ -20,16 +20,18 @@ import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import { QueuedWriter } from "./queued-writer.ts";
 import { RpcClientApi, type RpcCommandBody } from "./rpc-client-api.ts";
 import {
+	appendBoundedStderr,
 	createInteractiveJsonlOptions,
 	restartCliArgs,
 	spawnRpcClientProcess,
 	terminateRpcClientProcess,
 } from "./rpc-client-process.ts";
 import { collectRpcEvents, waitForRpcIdle } from "./rpc-client-waits.ts";
-import { DEFAULT_REQUEST_TIMEOUT_MS, LONG_LIVED_COMMANDS } from "./rpc-command-timeouts.ts";
+import { DEFAULT_REQUEST_TIMEOUT_MS, LONG_LIVED_COMMANDS, RESTART_CANCELLED_MESSAGE } from "./rpc-command-timeouts.ts";
 import { RpcEventBuffer } from "./rpc-event-buffer.ts";
-import { markRpcTransportFailure, rpcTransportError } from "./rpc-transport-error.ts";
 import { GenerationBuffer } from "./rpc-generation-buffer.ts";
+import { RpcPendingRequests } from "./rpc-pending-requests.ts";
+import { markRpcTransportFailure, rpcTransportError } from "./rpc-transport-error.ts";
 import type { RpcCommand, RpcEvent, RpcExtensionUIRequest, RpcExtensionUIResponse, RpcResponse } from "./rpc-types.ts";
 
 export type { ModelInfo, RpcCommandBody } from "./rpc-client-api.ts";
@@ -77,8 +79,9 @@ export class RpcClient extends RpcClientApi {
 	private engineMessageListeners: Array<(message: InteractiveEngineMessage) => void> = [];
 	private latestEngineKeybindingState: EngineKeybindingState | undefined;
 	private readonly pendingEngineMessages = new GenerationBuffer<InteractiveEngineMessage>();
-	private pendingRequests: Map<string, { resolve: (response: RpcResponse) => void; reject: (error: Error) => void }> =
-		new Map();
+	private readonly pendingRequests = new RpcPendingRequests();
+	/** Bumped by every explicit stop; a restart holds a permit across its own stop. */
+	private restartRevision = 0;
 	private requestId = 0;
 	private stderr = "";
 	private exitError: Error | null = null;
@@ -156,45 +159,31 @@ export class RpcClient extends RpcClientApi {
 			this.engineMonitor?.fail(error);
 			this.activeActivityIds.clear();
 			this.options.interactiveEngine?.onActivityChange?.(false);
-			this.rejectPendingRequests(error);
+			// Not rejected inline: queued stdout is parsed asynchronously, so an
+			// admission frame still in the pipe would land after its request had
+			// been classified as never accepted. Generation death still publishes
+			// immediately.
+			this.pendingRequests.rejectAllAfterDrain(stdoutDrained, error, () => generation === this.generation);
 			this.publishGenerationEnded(generation, error, "exit", false);
 		});
-		childProcess.once("error", (rawError) => {
-			if (generation !== this.generation) return;
-			const error = markRpcTransportFailure(rawError);
-			this.exitError = error;
-			this.stdinWriter?.close(error);
-			this.engineMonitor?.fail(error);
-			this.rejectPendingRequests(error);
-			this.publishGenerationEnded(generation, error, "process-error", false);
-		});
-		childProcess.stdin?.on("error", (rawError) => {
-			if (generation !== this.generation) return;
-			const error = markRpcTransportFailure(rawError);
-			this.exitError = error;
-			this.stdinWriter?.close(error);
-			this.engineMonitor?.fail(error);
-			this.rejectPendingRequests(error);
-			this.publishGenerationEnded(generation, error, "stdin-error", false);
-		});
+		childProcess.once("error", (rawError) => this.failGeneration(rawError, generation, "process-error"));
+		childProcess.stdin?.on("error", (rawError) => this.failGeneration(rawError, generation, "stdin-error"));
 		childProcess.stderr?.on("data", (data) => {
 			if (generation !== this.generation) return;
-			const next = this.stderr + data.toString();
-			this.stderr =
-				Buffer.byteLength(next, "utf8") <= 256 * 1024
-					? next
-					: `${Buffer.from(next)
-							.subarray(-256 * 1024)
-							.toString("utf8")}\n[stderr truncated]`;
+			this.stderr = appendBoundedStderr(this.stderr, data.toString());
 			process.stderr.write(data);
 		});
 		const readerOptions = createInteractiveJsonlOptions(this.engineMonitor !== undefined);
+		let markStdoutDrained!: () => void;
+		const stdoutDrained = new Promise<void>((resolve) => {
+			markStdoutDrained = resolve;
+		});
 		this.stopReadingStdout = attachJsonlLineReader(
 			childProcess.stdout!,
 			(line) => {
 				if (generation === this.generation) this.handleLine(line, generation);
 			},
-			readerOptions,
+			{ ...readerOptions, onDrained: () => markStdoutDrained() },
 		);
 		if (this.engineMonitor) await this.engineMonitor.waitUntilReady();
 		else await sleep(100);
@@ -204,7 +193,17 @@ export class RpcClient extends RpcClientApi {
 		}
 	}
 
+	/**
+	 * Explicit stop. Voids any in-flight restart permit, so a replacement caught
+	 * between its own stop and start can never spawn after this returns.
+	 */
 	async stop(): Promise<void> {
+		this.restartRevision += 1;
+		await this.stopCurrentGeneration();
+	}
+
+	/** Tear down the current child without touching the restart permit. */
+	private async stopCurrentGeneration(): Promise<void> {
 		const child = this.process;
 		if (!child) return;
 		const endedGeneration = this.generation;
@@ -322,8 +321,16 @@ export class RpcClient extends RpcClientApi {
 		return this.generation;
 	}
 
+	/**
+	 * Replace the engine child, unless an explicit stop supersedes this attempt.
+	 * The permit is checked immediately before spawning, so a `stop()` landing in
+	 * that window is always observed. Cancellation throws rather than returning
+	 * quietly: callers continue with host initialization against the new child.
+	 */
 	async restart(sessionFile: string | undefined): Promise<void> {
-		await this.stop();
+		const permit = this.restartRevision;
+		await this.stopCurrentGeneration();
+		if (permit !== this.restartRevision) throw rpcTransportError(RESTART_CANCELLED_MESSAGE);
 		this.options = { ...this.options, args: restartCliArgs(this.options.args, sessionFile) };
 		await this.start();
 		await this.waitForInteractiveEngineBound();
@@ -380,12 +387,7 @@ export class RpcClient extends RpcClientApi {
 				for (const listener of this.extensionUIListeners) listener(request);
 				return;
 			}
-			if (data.type === "response" && data.id && this.pendingRequests.has(data.id)) {
-				const pending = this.pendingRequests.get(data.id)!;
-				this.pendingRequests.delete(data.id);
-				pending.resolve(data as RpcResponse);
-				return;
-			}
+			if (data.type === "response" && data.id && this.pendingRequests.resolve(data.id, data as RpcResponse)) return;
 			const event = data as RpcEvent;
 			if (this.eventBuffer) this.eventBuffer.enqueue(event);
 			else this.emitEvent(event);
@@ -420,12 +422,22 @@ export class RpcClient extends RpcClientApi {
 		if (message.type === "engine_keybindings_reloaded") this.latestEngineKeybindingState = message.state;
 		if (message.type === "engine_activity_started") this.activeActivityIds.add(message.activity.id);
 		else if (message.type === "engine_activity_finished") this.activeActivityIds.delete(message.activityId);
+		if (message.type === "engine_request_accepted") this.pendingRequests.markAccepted(message.requestId);
 		this.options.interactiveEngine?.onActivityChange?.(this.activeActivityIds.size > 0);
 		this.emitInteractiveEngineMessage(message, generation);
 	}
+	/** Shared teardown for a child-level transport failure of `generation`. */
+	private failGeneration(rawError: Error, generation: number, kind: InteractiveEngineGenerationEndKind): void {
+		if (generation !== this.generation) return;
+		const error = markRpcTransportFailure(rawError);
+		this.exitError = error;
+		this.stdinWriter?.close(error);
+		this.engineMonitor?.fail(error);
+		this.rejectPendingRequests(error);
+		this.publishGenerationEnded(generation, error, kind, false);
+	}
 	private rejectPendingRequests(error: Error): void {
-		for (const { reject } of this.pendingRequests.values()) reject(error);
-		this.pendingRequests.clear();
+		this.pendingRequests.rejectAll(error);
 	}
 	private publishGenerationEnded(
 		generation: number,
@@ -490,7 +502,7 @@ export class RpcClient extends RpcClientApi {
 		let rejectResponse!: (error: Error) => void;
 		const response = new Promise<RpcResponse>((resolve, reject) => {
 			rejectResponse = reject;
-			this.pendingRequests.set(id, {
+			this.pendingRequests.add(id, {
 				resolve: (value) => {
 					if (timeout) clearTimeout(timeout);
 					resolve(value);

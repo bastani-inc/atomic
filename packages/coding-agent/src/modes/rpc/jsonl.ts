@@ -8,6 +8,13 @@ export function serializeJsonLine(value: object | boolean | null | number | stri
 export interface JsonlReaderOptions {
 	maxBytesPerTurn?: number;
 	maxLinesPerTurn?: number;
+	/**
+	 * Called once the stream has ended AND every buffered frame has been parsed.
+	 * A reader that yields between turns can still hold unparsed frames long
+	 * after the process exited, so callers that must not act before the last
+	 * frame is delivered wait for this instead of the exit event.
+	 */
+	onDrained?: () => void;
 }
 
 /**
@@ -82,6 +89,7 @@ export function attachJsonlLineReader(
 			if (frameBytes > 0) finishFrame();
 			frameParts = [];
 			frameBytes = 0;
+			options.onDrained?.();
 		} else stream.resume();
 	};
 	const onData = (chunk: string | Buffer): void => {

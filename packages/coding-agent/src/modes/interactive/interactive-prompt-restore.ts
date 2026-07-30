@@ -1,4 +1,4 @@
-import { isRpcTransportFailure } from "../rpc/rpc-transport-error.ts";
+import { isRpcRequestAcceptedFailure, isRpcTransportFailure } from "../rpc/rpc-transport-error.ts";
 import type { InteractiveModeBase } from "./interactive-mode-base.ts";
 
 /**
@@ -24,7 +24,10 @@ const ENGINE_SEND_FAILURE_MARKERS = [
  * rejected it, so the typed text is still user-owned.
  */
 export function isEngineSendFailure(error: unknown): boolean {
-	if (isRpcTransportFailure(error)) return true;
+	// Decisive: a classified transport failure already knows whether the child
+	// took the request, and the legacy message list must not reclassify an
+	// accepted failure as unsent.
+	if (isRpcTransportFailure(error)) return !isRpcRequestAcceptedFailure(error);
 	const message = error instanceof Error ? error.message : String(error);
 	return ENGINE_SEND_FAILURE_MARKERS.some((marker) => message.includes(marker));
 }

@@ -66,14 +66,10 @@ InteractiveModeBase.prototype.handleBashCommand = async function (
 	}
 	this.ui.requestRender();
 
-	let acknowledged = false;
 	try {
 		const result = await this.session.executeBash(
 			command,
 			(chunk) => {
-				// Any output proves the engine accepted and started the command, so a
-				// later transport failure must not resurrect the submission.
-				acknowledged = true;
 				if (this.bashComponent) {
 					this.bashComponent.appendOutput(chunk);
 					this.ui.requestRender();
@@ -97,8 +93,10 @@ InteractiveModeBase.prototype.handleBashCommand = async function (
 		this.bashComponent = undefined;
 		this.ui.requestRender();
 		// A send the engine never accepted belongs to the submit handler, which
-		// restores the `!` draft. Everything else stays a rendered bash failure.
-		if (!acknowledged && isEngineSendFailure(error)) throw error;
+		// restores the `!` draft. Ownership comes from the child's admission
+		// frame, not from output: a command can create files and print nothing,
+		// and offering that text back invites a second run.
+		if (isEngineSendFailure(error)) throw error;
 		this.showError(`Bash command failed: ${error instanceof Error ? error.message : "Unknown error"}`);
 		return;
 	}

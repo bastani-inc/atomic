@@ -276,7 +276,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	}
 
 	override async dispose(): Promise<void> {
-		this.health.shutdown();
+		// Joins any in-flight replacement: shutdown voids the client's restart
+		// permit and waits for the attempt, so nothing spawns after this returns.
+		await this.health.shutdown();
 		await this.client.stop();
 		await super.dispose();
 	}

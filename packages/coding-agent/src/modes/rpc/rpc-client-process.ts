@@ -129,3 +129,12 @@ export function restartCliArgs(args: readonly string[] | undefined, sessionFile:
 	if (sessionFile) result.push(sessionFile);
 	return result;
 }
+
+const MAX_STDERR_BYTES = 256 * 1024;
+
+/** Keep only the tail of a child's stderr, so a noisy child cannot grow the host. */
+export function appendBoundedStderr(existing: string, chunk: string): string {
+	const next = existing + chunk;
+	if (Buffer.byteLength(next, "utf8") <= MAX_STDERR_BYTES) return next;
+	return `${Buffer.from(next).subarray(-MAX_STDERR_BYTES).toString("utf8")}\n[stderr truncated]`;
+}

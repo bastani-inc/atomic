@@ -93,13 +93,10 @@ serialTest("engine death tears down a mounted inline remote custom UI and restor
 		);
 		assert.equal(recovered.blockingInlineDepth, 0);
 
-		// The submission the engine never accepted comes back as an editor draft
-		// rather than being discarded (see interactive-prompt-restore.ts).
-		await driver.waitForNext(
-			killIndex,
-			(report) => report.type === "heartbeat" && report.editorText === "/freeze-inline",
-			10_000,
-		);
+		// The command was accepted and had already mounted its UI, so it is NOT
+		// returned as an unsent draft: offering it back would invite a second run
+		// of work the child already did (see rpc-pending-requests.ts).
+		assert.equal(recovered.editorText, "");
 		// The host stays usable: typing lands and one replacement generation binds.
 		driver.send({ type: "input", data: "typing after engine death" });
 		const typed = await driver.waitForNext(
@@ -107,7 +104,7 @@ serialTest("engine death tears down a mounted inline remote custom UI and restor
 			(report) => report.type === "heartbeat" && report.editorText?.endsWith("typing after engine death") === true,
 			10_000,
 		);
-		assert.equal(typed.editorText, "/freeze-inlinetyping after engine death");
+		assert.equal(typed.editorText, "typing after engine death");
 		const replaced = await driver.waitForNext(
 			killIndex,
 			(report) => report.type === "heartbeat" && typeof report.enginePid === "number"
@@ -149,18 +146,15 @@ serialTest("engine death hides a mounted overlay remote custom UI and returns fo
 			10_000,
 		);
 		assert.equal(recovered.hasOverlay, false);
-		await driver.waitForNext(
-			killIndex,
-			(report) => report.type === "heartbeat" && report.editorText === "/freeze-overlay",
-			10_000,
-		);
+		// Accepted before it died, so the command is not offered back for a rerun.
+		assert.equal(recovered.editorText, "");
 		driver.send({ type: "input", data: "overlay recovered" });
 		const typed = await driver.waitForNext(
 			driver.reports.length,
 			(report) => report.type === "heartbeat" && report.editorText?.endsWith("overlay recovered") === true,
 			10_000,
 		);
-		assert.equal(typed.editorText, "/freeze-overlayoverlay recovered");
+		assert.equal(typed.editorText, "overlay recovered");
 		assertNoForbiddenText(driver.reports);
 	} finally {
 		await driver.stop();

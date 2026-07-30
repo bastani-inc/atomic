@@ -161,6 +161,13 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		pendingExtensionRequests,
 		handleCommand,
 		checkShutdownRequested,
+		// Only the interactive engine host consults this ownership boundary.
+		announceRequestAccepted: interactiveEngineChild
+			? (requestId, command) =>
+					writeRawStdout(
+						serializeInteractiveEngineMessage({ type: "engine_request_accepted", requestId, command }),
+					)
+			: undefined,
 		handleInteractiveEngineLine:
 			customUi || renderService || sessionPicker || inputForm
 				? (line) =>
