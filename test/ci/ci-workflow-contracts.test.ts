@@ -14,6 +14,18 @@ const publishPath = join(root, ".github/workflows/publish.yml");
 const testPath = join(root, ".github/workflows/test.yml");
 const warmPath = join(root, ".github/workflows/warm-toolchain-cache.yml");
 
+/**
+ * File text with platform-neutral newlines.
+ *
+ * These contracts assert on what the repository stores, which is LF. But
+ * `.gitattributes` marks `*.yml` as `text` without `eol=lf`, so the Windows
+ * runner checks the workflows out as CRLF, and any pattern here containing a
+ * literal `\n` would then pass on Linux and fail on Windows.
+ */
+async function readText(path: string): Promise<string> {
+  return (await Bun.file(path).text()).replaceAll("\r\n", "\n");
+}
+
 function jobBlock(workflow: string, name: string, next?: string): string {
   const start = workflow.indexOf(`  ${name}:`);
   assert.notEqual(start, -1, `missing job: ${name}`);
@@ -47,7 +59,7 @@ function jobBlocks(workflow: string): [string, string][] {
 }
 
 test("test workflow preserves its two-platform matrix and deterministic contracts", async () => {
-  const workflow = await Bun.file(join(root, ".github/workflows/test.yml")).text();
+  const workflow = await readText(join(root, ".github/workflows/test.yml"));
   const testJob = jobBlock(workflow, "test");
   assert.match(testJob, /^[ \t]+name: test \(\$\{\{ matrix\.os \}\}, \$\{\{ matrix\.binary_platform \}\}\)$/mu);
   const matrixContexts = [...testJob.matchAll(/^[ \t]+- os: (\S+)\s+binary_platform: (\S+)$/gmu)]
@@ -92,24 +104,24 @@ test("every Bun test suite entry point declares one shared per-test timeout", as
     budgets.add(timeout[1] as string);
   }
   assert.equal(budgets.size, 1, `suite timeouts diverged: ${[...budgets].join(", ")}`);
-  assert.doesNotMatch(await Bun.file(join(root, "bunfig.toml")).text(), /^\s*timeout\s*=/mu);
+  assert.doesNotMatch(await readText(join(root, "bunfig.toml")), /^\s*timeout\s*=/mu);
   assert.match(
-    await Bun.file(join(root, ".github/workflows/test.yml")).text(),
+    await readText(join(root, ".github/workflows/test.yml")),
     /run-flaky-test-suite\.ts/u,
   );
 });
 
 test("active CI workflows contain no removed Cursor builtin smoke checks", async () => {
   for (const path of [join(root, ".github/workflows/test.yml"), publishPath]) {
-    assert.doesNotMatch(await Bun.file(path).text(), /builtin\/cursor/iu, path);
+    assert.doesNotMatch(await readText(path), /builtin\/cursor/iu, path);
   }
 });
 
 test("binary staging and every release smoke verify the exact builtin directory set", async () => {
   const checker = /scripts\/assert-builtin-set\.ts/u;
-  const testWorkflow = await Bun.file(join(root, ".github/workflows/test.yml")).text();
-  const publishWorkflow = await Bun.file(publishPath).text();
-  const buildScript = await Bun.file(join(root, "scripts/build-binaries.sh")).text();
+  const testWorkflow = await readText(join(root, ".github/workflows/test.yml"));
+  const publishWorkflow = await readText(publishPath);
+  const buildScript = await readText(join(root, "scripts/build-binaries.sh"));
 
   assert.match(stepBlock(testWorkflow, "Smoke test Linux release archive", "Smoke test Windows release archive"), checker);
   assert.match(stepBlock(testWorkflow, "Smoke test Windows release archive", "Upload flaky-test diagnostics"), checker);
@@ -122,7 +134,7 @@ test("binary staging and every release smoke verify the exact builtin directory 
 });
 
 test("publish workflow has direct tag and recovery triggers", async () => {
-  const workflow = await Bun.file(publishPath).text();
+  const workflow = await readText(publishPath);
   assert.match(workflow, /push:\s*\n\s*tags:/);
   assert.match(workflow, /"\[0-9\]\*\.\[0-9\]\*\.\[0-9\]\*"/);
   assert.match(workflow, /workflow_dispatch:\s*\n\s*inputs:\s*\n\s*tag:[\s\S]*required: true[\s\S]*source_ref:[\s\S]*required: false/);
@@ -131,7 +143,7 @@ test("publish workflow has direct tag and recovery triggers", async () => {
 });
 
 test("publish workflow uses one lightweight integrity gate", async () => {
-  const workflow = await Bun.file(publishPath).text();
+  const workflow = await readText(publishPath);
   const integrity = jobBlock(workflow, "integrity", "native-artifacts");
   assert.equal([...workflow.matchAll(/^  integrity:$/gmu)].length, 1);
   assert.match(integrity, /ref: \$\{\{ env\.RELEASE_TAG \}\}/);
@@ -143,7 +155,7 @@ test("publish workflow uses one lightweight integrity gate", async () => {
 });
 
 test("publish graph stages a draft before npm and undrafts last", async () => {
-  const workflow = await Bun.file(publishPath).text();
+  const workflow = await readText(publishPath);
   for (const job of ["integrity", "native-artifacts", "linux-binary-smoke", "windows-binary-smoke", "build", "stage-github-release", "publish-npm", "publish-github-release", "cleanup-draft-github-release"]) {
     assert.match(workflow, new RegExp(`^  ${job}:$`, "mu"));
   }
@@ -157,7 +169,7 @@ test("publish graph stages a draft before npm and undrafts last", async () => {
 });
 
 test("publish permissions, timeouts, runners, and OIDC are least privilege", async () => {
-  const workflow = await Bun.file(publishPath).text();
+  const workflow = await readText(publishPath);
   assert.match(workflow.slice(0, workflow.indexOf("jobs:")), /permissions:\s*\n\s*contents: read/);
   const npm = jobBlock(workflow, "publish-npm", "publish-github-release");
   assert.match(npm, /environment: npm-publish/);
@@ -178,7 +190,7 @@ test("publish permissions, timeouts, runners, and OIDC are least privilege", asy
 });
 
 test("native release matrix pins all shipped targets and the Linux glibc floor", async () => {
-  const workflow = await Bun.file(publishPath).text();
+  const workflow = await readText(publishPath);
   const native = jobBlock(workflow, "native-artifacts", "linux-binary-smoke");
   for (const target of [
     "x86_64-unknown-linux-gnu",
@@ -212,7 +224,7 @@ test("native release matrix pins all shipped targets and the Linux glibc floor",
 });
 
 test("release build retains Atomic native, smoke, shrinkwrap, metadata, and asset contracts", async () => {
-  const workflow = await Bun.file(publishPath).text();
+  const workflow = await readText(publishPath);
   assert.match(workflow, /"win32-arm64-msvc"/);
   assert.match(workflow, /atomic-windows-arm64\.zip/);
   assert.match(workflow, /bun run check:shrinkwrap/);
@@ -235,7 +247,7 @@ test("obsolete release workflow files and publisher-only verifiers are absent", 
 
 
 test("developer release setup documents only the direct publish workflow", async () => {
-  const setup = await Bun.file(join(root, "DEV_SETUP.md")).text();
+  const setup = await readText(join(root, "DEV_SETUP.md"));
   assert.match(setup, /tag push starts `\.github\/workflows\/publish\.yml` directly/u);
   assert.match(setup, /trusted publishers with workflow filename `publish\.yml` and environment `npm-publish`/u);
   for (const forbidden of [
@@ -257,7 +269,7 @@ test("release-base metadata remains available to the versionless cut flow", () =
 });
 
 test("cut-release still creates the detached version-stamped tag", async () => {
-  const script = await Bun.file(join(root, "scripts/cut-release.ts")).text();
+  const script = await readText(join(root, "scripts/cut-release.ts"));
   assert.match(script, /canonicalReleaseBaseRef\(baseBranch\)/);
   assert.match(script, /Release-base-ref: \$\{baseRef\}\\nRelease-base-sha: \$\{baseSha\}/);
   assert.match(script, /git -C \$\{ROOT\} push origin \$\{version\}/);
@@ -272,7 +284,7 @@ test("cut-release still creates the detached version-stamped tag", async () => {
  * cannot detect that; only a bound on the acquisition step itself can.
  */
 test("native-artifacts bounds every dependency acquisition step", async () => {
-  const native = jobBlock(await Bun.file(publishPath).text(), "native-artifacts", "linux-binary-smoke");
+  const native = jobBlock(await readText(publishPath), "native-artifacts", "linux-binary-smoke");
   const steps = jobSteps(native);
   const budget = (needle: string): number => {
     const matches = steps.filter((step) => step.includes(needle));
@@ -314,7 +326,7 @@ test("native-artifacts bounds every dependency acquisition step", async () => {
  */
 test("sticky-disk checkout stays on Blacksmith Linux runners", async () => {
   for (const path of [publishPath, testPath, warmPath]) {
-    const workflow = await Bun.file(path).text();
+    const workflow = await readText(path);
     for (const [name, block] of jobBlocks(workflow)) {
       const runsOn = /^\s+runs-on: (\S+)$/mu.exec(block)?.[1] ?? "";
       for (const step of jobSteps(block)) {
@@ -327,11 +339,11 @@ test("sticky-disk checkout stays on Blacksmith Linux runners", async () => {
       }
     }
   }
-  const publish = await Bun.file(publishPath).text();
+  const publish = await readText(publishPath);
   assert.doesNotMatch(jobBlock(publish, "windows-binary-smoke", "build"), /useblacksmith/u);
   for (const block of [
     jobBlock(publish, "native-artifacts", "linux-binary-smoke"),
-    jobBlock(await Bun.file(testPath).text(), "test"),
+    jobBlock(await readText(testPath), "test"),
   ]) {
     assert.match(block, /uses: useblacksmith\/checkout@[0-9a-f]{40}[^\n]*\n\s+if: runner\.os == 'Linux'/u);
     assert.match(block, /uses: actions\/checkout@[0-9a-f]{40}[^\n]*\n\s+if: runner\.os != 'Linux'/u);
@@ -340,7 +352,7 @@ test("sticky-disk checkout stays on Blacksmith Linux runners", async () => {
 
 test("every third-party action is pinned to a full commit SHA with a version comment", async () => {
   for (const path of [publishPath, testPath, warmPath]) {
-    const workflow = await Bun.file(path).text();
+    const workflow = await readText(path);
     const uses = [...workflow.matchAll(/^\s*(?:- )?uses: (\S+)(.*)$/gmu)];
     assert.ok(uses.length > 0, `${path} declares no actions`);
     for (const [, action, trailer] of uses) {
@@ -351,21 +363,21 @@ test("every third-party action is pinned to a full commit SHA with a version com
 });
 
 test("the shipped build toolchain and Bun do not float", async () => {
-  const publish = await Bun.file(publishPath).text();
-  const warm = await Bun.file(warmPath).text();
+  const publish = await readText(publishPath);
+  const warm = await readText(warmPath);
   for (const workflow of [publish, warm]) {
     for (const [, tool] of workflow.matchAll(/^\s+tool: (\S+)$/gmu)) {
       assert.match(tool as string, /^cargo-(zigbuild|xwin)@\d+\.\d+\.\d+$/u, `floating build tool: ${tool}`);
     }
   }
   const bunVersions = new Set(
-    [...`${publish}\n${await Bun.file(testPath).text()}`.matchAll(/bun-version: (\S+)/gu)].map(([, value]) => value as string),
+    [...`${publish}\n${await readText(testPath)}`.matchAll(/bun-version: (\S+)/gu)].map(([, value]) => value as string),
   );
   assert.deepEqual([...bunVersions], ["1.3.14"], "test.yml and publish.yml must exercise one pinned Bun");
 });
 
 test("each native leg declares its own measured job and compile budget", async () => {
-  const native = jobBlock(await Bun.file(publishPath).text(), "native-artifacts", "linux-binary-smoke");
+  const native = jobBlock(await readText(publishPath), "native-artifacts", "linux-binary-smoke");
   assert.match(native, /^    timeout-minutes: \$\{\{ matrix\.timeout_minutes \}\}$/mu);
   assert.match(native, /- name: Build native binding\n\s+timeout-minutes: \$\{\{ matrix\.build_timeout_minutes \}\}/u);
   const legs = [...native.matchAll(/platform: (\w+), arch: (\w+),[^}]*timeout_minutes: (\d+), build_timeout_minutes: (\d+)/gu)]
@@ -384,8 +396,8 @@ test("each native leg declares its own measured job and compile budget", async (
 });
 
 test("the toolchain warm workflow stays read-only, gated, and key-compatible", async () => {
-  const warm = await Bun.file(warmPath).text();
-  const publish = await Bun.file(publishPath).text();
+  const warm = await readText(warmPath);
+  const publish = await readText(publishPath);
   assert.match(warm, /permissions:\s*\n\s*contents: read/u);
   assert.doesNotMatch(warm, /contents: write|id-token: write|npm publish|gh release|upload-artifact/u);
   // Gated: whether a refs/tags/* run reads a refs/heads/main cache entry on
@@ -397,5 +409,5 @@ test("the toolchain warm workflow stays read-only, gated, and key-compatible", a
   assert.equal(key.exec(warm)?.[1], key.exec(publish)?.[1], "warm and release CRT cache keys must match");
   const zigVersion = /uses: mlugg\/setup-zig@[^\n]*\n\s+with:\n\s+version: (\S+)/u;
   assert.equal(zigVersion.exec(warm)?.[1], zigVersion.exec(publish)?.[1], "warm and release Zig versions must match");
-  assert.match(await Bun.file(join(root, "docs/ci.md")).text(), /xwin-v1/u);
+  assert.match(await readText(join(root, "docs/ci.md")), /xwin-v1/u);
 });
