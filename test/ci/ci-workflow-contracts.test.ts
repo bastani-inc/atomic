@@ -11,6 +11,8 @@ import {
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const publishPath = join(root, ".github/workflows/publish.yml");
+const testPath = join(root, ".github/workflows/test.yml");
+const warmPath = join(root, ".github/workflows/warm-toolchain-cache.yml");
 
 function jobBlock(workflow: string, name: string, next?: string): string {
   const start = workflow.indexOf(`  ${name}:`);
@@ -25,6 +27,23 @@ function stepBlock(workflow: string, name: string, next: string): string {
   const end = workflow.indexOf(`- name: ${next}`, start + 1);
   assert.notEqual(end, -1, `missing next step: ${next}`);
   return workflow.slice(start, end);
+}
+
+/** Split a job block into its individual steps, indentation-agnostically. */
+function jobSteps(block: string): string[] {
+  const header = /^(\s*)steps:$/mu.exec(block);
+  assert.ok(header, "job declares no steps");
+  const body = block.slice(header.index + header[0].length);
+  const first = /^([ \t]+)- /mu.exec(body);
+  assert.ok(first, "job declares no steps");
+  return body.split(new RegExp(`^${first[1] as string}- `, "gmu")).slice(1);
+}
+
+/** Every job in a workflow, paired with its own block. */
+function jobBlocks(workflow: string): [string, string][] {
+  const jobs = workflow.slice(workflow.indexOf("\njobs:\n"));
+  const names = [...jobs.matchAll(/^  ([a-z][a-z0-9-]*):$/gmu)].map(([, name]) => name as string);
+  return names.map((name, index) => [name, jobBlock(jobs, name, names[index + 1])]);
 }
 
 test("test workflow preserves its two-platform matrix and deterministic contracts", async () => {
@@ -181,7 +200,15 @@ test("native release matrix pins all shipped targets and the Linux glibc floor",
   assert.match(native, /name: atomic-natives-\$\{\{ matrix\.platform \}\}-\$\{\{ matrix\.arch \}\}/);
   assert.match(native, /macos-26-intel/);
   assert.match(native, /blacksmith-6vcpu-macos-26/);
-  assert.doesNotMatch(native, /run-id:|github-token:|artifact_lookup|cache/iu);
+  assert.doesNotMatch(native, /run-id:|github-token:|artifact_lookup/iu);
+  // The job may cache third-party toolchain acquisitions and nothing else.
+  // Caching Cargo build output would make a provenance-signed artifact depend
+  // on restored build state.
+  assert.doesNotMatch(native, /rust-cache|sccache|CARGO_TARGET_DIR/iu);
+  assert.deepEqual(
+    [...native.matchAll(/^\s+path: (\S+)$/gmu)].map(([, value]) => value),
+    ["~/.cache/cargo-xwin", "packages/natives/native/*.node"],
+  );
 });
 
 test("release build retains Atomic native, smoke, shrinkwrap, metadata, and asset contracts", async () => {
@@ -235,4 +262,140 @@ test("cut-release still creates the detached version-stamped tag", async () => {
   assert.match(script, /Release-base-ref: \$\{baseRef\}\\nRelease-base-sha: \$\{baseSha\}/);
   assert.match(script, /git -C \$\{ROOT\} push origin \$\{version\}/);
   assert.doesNotMatch(script, /Bun\.sleep|setTimeout/);
+});
+
+/**
+ * Run 30517879019 (`Publish 0.9.11-alpha.8`) spent 13m27s inside one stalled
+ * Zig mirror, was cancelled by the blanket 15-minute job cap 8s after its
+ * artifact upload had already succeeded, and the cancelled `needs` dependency
+ * then skipped the payload build, the draft, npm, and the release. A job cap
+ * cannot detect that; only a bound on the acquisition step itself can.
+ */
+test("native-artifacts bounds every dependency acquisition step", async () => {
+  const native = jobBlock(await Bun.file(publishPath).text(), "native-artifacts", "linux-binary-smoke");
+  const steps = jobSteps(native);
+  const budget = (needle: string): number => {
+    const matches = steps.filter((step) => step.includes(needle));
+    assert.equal(matches.length, 1, `expected exactly one step containing: ${needle}`);
+    const bound = /^\s*timeout-minutes: (\d+)$/mu.exec(matches[0] as string);
+    assert.ok(bound, `unbounded acquisition step: ${needle}`);
+    return Number(bound[1]);
+  };
+  assert.equal(budget("uses: dtolnay/rust-toolchain@"), 4);
+  assert.equal(budget("tool: cargo-zigbuild@"), 3);
+  assert.equal(budget("tool: cargo-xwin@"), 3);
+  assert.equal(budget("apt-get install"), 5);
+  assert.equal(budget("cargo-xwin xwin cache xwin"), 8);
+
+  const zigSteps = steps.filter((step) => step.includes("mlugg/setup-zig@"));
+  assert.equal(zigSteps.length, 2, "the Zig acquisition must keep exactly one bounded retry");
+  const [zig, retry] = zigSteps as [string, string];
+  assert.match(zig, /id: zig\n\s+if: matrix\.platform == 'linux'\n\s+continue-on-error: true\n\s+timeout-minutes: 2\n/u);
+  assert.match(retry, /if: matrix\.platform == 'linux' && steps\.zig\.outcome == 'failure'\n\s+timeout-minutes: 2\n/u);
+  for (const step of zigSteps) {
+    // The tool cache is copied into an ephemeral VM, and the global Zig cache
+    // has never been read back on a release tag. Disabling both also keeps a
+    // killed attempt's post step inert so the retry adds no failure mode.
+    assert.match(step, /use-tool-cache: false/u);
+    assert.match(step, /use-cache: false/u);
+  }
+
+  for (const step of steps) {
+    if (!/uses: (dtolnay|mlugg|taiki-e)\//u.test(step)) continue;
+    assert.match(step, /timeout-minutes: \d+/u, `unbounded acquisition step:\n${step}`);
+  }
+});
+
+/**
+ * `useblacksmith/checkout` consumes a Blacksmith sticky disk. Sticky disks are
+ * ext4 block devices, so they exist only on Blacksmith Linux runners; the
+ * Windows leg warns and falls back, and the macOS ARM leg blocked 78s on a
+ * gRPC connect timeout in 8 of 8 releases before falling back.
+ */
+test("sticky-disk checkout stays on Blacksmith Linux runners", async () => {
+  for (const path of [publishPath, testPath, warmPath]) {
+    const workflow = await Bun.file(path).text();
+    for (const [name, block] of jobBlocks(workflow)) {
+      const runsOn = /^\s+runs-on: (\S+)$/mu.exec(block)?.[1] ?? "";
+      for (const step of jobSteps(block)) {
+        if (!step.includes("useblacksmith/")) continue;
+        const guarded = /if: runner\.os == 'Linux'/u.test(step);
+        assert.ok(
+          guarded || /^blacksmith-\dvcpu-ubuntu/u.test(runsOn),
+          `${path}: job ${name} requests a sticky disk on ${runsOn || "a matrix runner"}`,
+        );
+      }
+    }
+  }
+  const publish = await Bun.file(publishPath).text();
+  assert.doesNotMatch(jobBlock(publish, "windows-binary-smoke", "build"), /useblacksmith/u);
+  for (const block of [
+    jobBlock(publish, "native-artifacts", "linux-binary-smoke"),
+    jobBlock(await Bun.file(testPath).text(), "test"),
+  ]) {
+    assert.match(block, /uses: useblacksmith\/checkout@[0-9a-f]{40}[^\n]*\n\s+if: runner\.os == 'Linux'/u);
+    assert.match(block, /uses: actions\/checkout@[0-9a-f]{40}[^\n]*\n\s+if: runner\.os != 'Linux'/u);
+  }
+});
+
+test("every third-party action is pinned to a full commit SHA with a version comment", async () => {
+  for (const path of [publishPath, testPath, warmPath]) {
+    const workflow = await Bun.file(path).text();
+    const uses = [...workflow.matchAll(/^\s*(?:- )?uses: (\S+)(.*)$/gmu)];
+    assert.ok(uses.length > 0, `${path} declares no actions`);
+    for (const [, action, trailer] of uses) {
+      assert.match(action as string, /^[\w.-]+\/[\w.-]+@[0-9a-f]{40}$/u, `${path}: ${action} is not SHA-pinned`);
+      assert.match(trailer as string, /^ # v?[\w.-]+$/u, `${path}: ${action} needs a version comment`);
+    }
+  }
+});
+
+test("the shipped build toolchain and Bun do not float", async () => {
+  const publish = await Bun.file(publishPath).text();
+  const warm = await Bun.file(warmPath).text();
+  for (const workflow of [publish, warm]) {
+    for (const [, tool] of workflow.matchAll(/^\s+tool: (\S+)$/gmu)) {
+      assert.match(tool as string, /^cargo-(zigbuild|xwin)@\d+\.\d+\.\d+$/u, `floating build tool: ${tool}`);
+    }
+  }
+  const bunVersions = new Set(
+    [...`${publish}\n${await Bun.file(testPath).text()}`.matchAll(/bun-version: (\S+)/gu)].map(([, value]) => value as string),
+  );
+  assert.deepEqual([...bunVersions], ["1.3.14"], "test.yml and publish.yml must exercise one pinned Bun");
+});
+
+test("each native leg declares its own measured job and compile budget", async () => {
+  const native = jobBlock(await Bun.file(publishPath).text(), "native-artifacts", "linux-binary-smoke");
+  assert.match(native, /^    timeout-minutes: \$\{\{ matrix\.timeout_minutes \}\}$/mu);
+  assert.match(native, /- name: Build native binding\n\s+timeout-minutes: \$\{\{ matrix\.build_timeout_minutes \}\}/u);
+  const legs = [...native.matchAll(/platform: (\w+), arch: (\w+),[^}]*timeout_minutes: (\d+), build_timeout_minutes: (\d+)/gu)]
+    .map(([, platform, arch, job, build]) => `${platform} ${arch} ${job}/${build}`);
+  assert.deepEqual(legs, [
+    "linux x64 7/5",
+    "linux arm64 8/5",
+    "darwin x64 9/8",
+    "darwin arm64 5/5",
+    "win32 x64 10/5",
+    "win32 arm64 10/5",
+  ]);
+  // The single blanket cap that covered six legs spanning 55s to 443s of real
+  // work must not come back.
+  assert.doesNotMatch(native, /timeout-minutes: 15/u);
+});
+
+test("the toolchain warm workflow stays read-only, gated, and key-compatible", async () => {
+  const warm = await Bun.file(warmPath).text();
+  const publish = await Bun.file(publishPath).text();
+  assert.match(warm, /permissions:\s*\n\s*contents: read/u);
+  assert.doesNotMatch(warm, /contents: write|id-token: write|npm publish|gh release|upload-artifact/u);
+  // Gated: whether a refs/tags/* run reads a refs/heads/main cache entry on
+  // Blacksmith's colocated cache is documented but unverified here, so the
+  // daily schedule lands only after the docs/ci.md experiment observes a hit.
+  assert.match(warm, /^on:\n  workflow_dispatch:\n/mu);
+  assert.doesNotMatch(warm, /\n\s+schedule:/u);
+  const key = /key: (xwin-v\d+-\$\{\{ matrix\.arch \}\}-\d+)/u;
+  assert.equal(key.exec(warm)?.[1], key.exec(publish)?.[1], "warm and release CRT cache keys must match");
+  const zigVersion = /uses: mlugg\/setup-zig@[^\n]*\n\s+with:\n\s+version: (\S+)/u;
+  assert.equal(zigVersion.exec(warm)?.[1], zigVersion.exec(publish)?.[1], "warm and release Zig versions must match");
+  assert.match(await Bun.file(join(root, "docs/ci.md")).text(), /xwin-v1/u);
 });
