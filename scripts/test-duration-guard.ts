@@ -344,7 +344,7 @@ export async function resolveDefaultTimeoutMs(command: string[], rootDir: string
 		head = args[0] ?? "";
 	}
 	// `bun --bun vitest ...` is still a vitest invocation, and the one the
-	// Bun-hosted `agent-bun` project is launched with. Dropping the runtime
+	// Bun runtime a suite may be launched with. Dropping the runtime
 	// prefix keeps the gate on for it; without this the guard would read `bun`,
 	// find no budget, and silently stop scoring the suite that needs Bun most.
 	//

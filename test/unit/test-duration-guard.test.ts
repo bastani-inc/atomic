@@ -291,14 +291,14 @@ test("the suite budget is read from the command or the package script it runs", 
   assert.equal(await resolveDefaultTimeoutMs(["bun", "test", "--timeout", "30000", "test/unit"], root), undefined);
   assert.equal(await resolveDefaultTimeoutMs(["npm", "run", "does-not-exist"], root), undefined);
 
-  // The Bun-hosted coding-agent project is launched through the Bun runtime,
-  // and it is the suite the gate can least afford to lose: it is the only one
-  // that exercises the bun:sqlite paths of the shipped binary. A leading
-  // `bun`/`bunx` is the runtime, not the command.
+  // A leading `bun`/`bunx` is the runtime, not the command, and stripping it
+  // must still resolve the budget. The coding-agent suite is the one the gate
+  // can least afford to lose: it exercises the SQLite selector paths of the
+  // shipped binary on whichever runtime it is launched with.
   const agent = join(root, "packages/coding-agent");
   const agentBudget = process.platform === "win32" ? 90_000 : 30_000;
-  assert.equal(await resolveDefaultTimeoutMs(["npm", "run", "test:bun", "--workspace=@bastani/atomic"], root), agentBudget);
-  assert.equal(await resolveDefaultTimeoutMs(["bun", "--bun", "vitest", "--run", "--project", "agent-bun"], agent), agentBudget);
+  assert.equal(await resolveDefaultTimeoutMs(["npm", "run", "test", "--workspace=@bastani/atomic"], root), agentBudget);
+  assert.equal(await resolveDefaultTimeoutMs(["bun", "--bun", "vitest", "--run"], agent), agentBudget);
   assert.equal(await resolveDefaultTimeoutMs(["bun", "--bun", "run", "vitest", "--run", "--project", "agent"], agent), agentBudget);
   assert.equal(await resolveDefaultTimeoutMs(["bunx", "--bun", "vitest", "--run", "--project", "agent"], agent), agentBudget);
   // Stripping the runtime must not swallow the `--project` that selects the

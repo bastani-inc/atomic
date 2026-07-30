@@ -22,7 +22,7 @@
  *     moved from a Node-hosted project to a Bun-hosted one has not lost a test
  *     -- but a file dropped from both has. Pointing this at one half only is how
  *     a split hides a loss, so the coding-agent suite must be compared as
- *     `--candidate agent.json --candidate agent-bun.json`.
+ *     `--candidate agent.json --candidate more.json`.
  *
  * `--baseline` accepts either Bun's `bun test` stdout or a vitest JSON report,
  * detected by content. The pre-migration baseline is Bun stdout for the three

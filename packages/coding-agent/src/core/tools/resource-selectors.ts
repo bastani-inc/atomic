@@ -16,9 +16,70 @@ type SqliteValue = string | number | boolean | null;
 interface SqliteQuery { all(...params: SqliteValue[]): Record<string, SqliteValue>[]; get?(...params: SqliteValue[]): Record<string, SqliteValue> | undefined; iterate?(): Iterable<Record<string, SqliteValue>>; run(...params: SqliteValue[]): { changes?: number; lastInsertRowid?: number | bigint } }
 interface SqliteDatabase { query(sql: string): SqliteQuery; close(): void }
 type SqliteDatabaseConstructor = new (path: string, options?: { readonly?: boolean }) => SqliteDatabase;
+/**
+ * SQLite from whichever builtin the current runtime provides.
+ *
+ * `node:sqlite` is preferred: it is unflagged from Node v22.13.0, it is the
+ * module upstream pi uses, and it lets these selectors and their tests run on
+ * Node. It is absent from Bun 1.3.14, so `bun:sqlite` remains the fallback that
+ * keeps the shipped Bun-compiled binary working. Bun implements `node:sqlite`
+ * on main (oven-sh/bun#32498) but has not released it; once it ships, both
+ * runtimes take the first branch and the fallback can be deleted.
+ *
+ * `better-sqlite3` was evaluated and rejected: it segfaults Bun 1.3.14 on
+ * construction, which is worse than a catchable missing-module error.
+ *
+ * The adapter normalizes the two deltas that would otherwise be visible to
+ * callers: `node:sqlite` spells the option `readOnly` and rejects it when
+ * passed explicitly as `undefined`, and it refuses to bind booleans that
+ * `bun:sqlite` stores as integer 1/0.
+ */
+interface NodeSqliteStatement {
+	all(...params: unknown[]): Record<string, SqliteValue>[];
+	get(...params: unknown[]): Record<string, SqliteValue> | undefined;
+	iterate(...params: unknown[]): Iterable<Record<string, SqliteValue>>;
+	run(...params: unknown[]): { changes?: number | bigint; lastInsertRowid?: number | bigint };
+}
+interface NodeSqliteDatabase { prepare(sql: string): NodeSqliteStatement; close(): void }
+type NodeSqliteConstructor = new (path: string, options?: { readOnly?: boolean }) => NodeSqliteDatabase;
+
+/** `bun:sqlite` accepts booleans and stores integer 1/0; `node:sqlite` throws on them. */
+export function toSqliteBindValues(params: readonly SqliteValue[]): unknown[] {
+	return params.map((param) => (typeof param === "boolean" ? (param ? 1 : 0) : param));
+}
+
+function nodeSqliteAdapter(DatabaseSync: NodeSqliteConstructor): SqliteDatabaseConstructor {
+	return class NodeSqliteAdapter implements SqliteDatabase {
+		private readonly db: NodeSqliteDatabase;
+		constructor(path: string, options?: { readonly?: boolean }) {
+			// Passing `undefined` explicitly fails node:sqlite's arity validation.
+			this.db = options?.readonly === true ? new DatabaseSync(path, { readOnly: true }) : new DatabaseSync(path);
+		}
+		query(sql: string): SqliteQuery {
+			const statement = this.db.prepare(sql);
+			return {
+				all: (...params: SqliteValue[]) => statement.all(...toSqliteBindValues(params)),
+				get: (...params: SqliteValue[]) => statement.get(...toSqliteBindValues(params)),
+				iterate: () => statement.iterate(),
+				run: (...params: SqliteValue[]) => {
+					const result = statement.run(...toSqliteBindValues(params));
+					return { changes: Number(result.changes ?? 0), lastInsertRowid: result.lastInsertRowid };
+				},
+			};
+		}
+		close(): void { this.db.close(); }
+	};
+}
+
 function sqliteDatabase(): SqliteDatabaseConstructor {
-	try { return (createRequire(import.meta.url)("bun:sqlite") as { Database: SqliteDatabaseConstructor }).Database; }
-	catch { throw new Error("SQLite selectors require Atomic's Bun runtime with bun:sqlite support."); }
+	const requireModule = createRequire(import.meta.url);
+	try {
+		const { DatabaseSync } = requireModule("node:sqlite") as { DatabaseSync: NodeSqliteConstructor };
+		return nodeSqliteAdapter(DatabaseSync);
+	} catch {
+		try { return (requireModule("bun:sqlite") as { Database: SqliteDatabaseConstructor }).Database; }
+		catch { throw new Error("SQLite selectors need node:sqlite (Node >= 22.13) or bun:sqlite; this runtime provides neither."); }
+	}
 }
 function existingSqliteFile(path: string): boolean | undefined { if (!existsSync(path)) return undefined; return readFileSync(path).subarray(0, 16).toString("binary") === "SQLite format 3\0"; }
 export function sqliteSelectorForPath(value: string, cwd: string): SqliteSelector | undefined { const selector = parseSqliteSelector(value); if (!selector) return undefined; const absolute = resolveContainedLocalPath(cwd, selector.databasePath, "SQLite selector"); if (existingSqliteFile(absolute) !== true) return undefined; return { ...selector, databasePath: absolute }; }

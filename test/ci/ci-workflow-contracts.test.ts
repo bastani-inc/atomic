@@ -71,59 +71,53 @@ test("every test suite entry point resolves to one shared per-test timeout", asy
 });
 
 /**
- * The coding-agent suite is split by *runtime*, and the split is the only thing
- * standing between `bun:sqlite` coverage and a green run that measures nothing.
+ * SQLite selectors must keep working on both runtimes, and their tests must
+ * keep asserting on both.
  *
- * `src/core/tools/resource-selectors.ts` requires `bun:sqlite` and throws
- * without it. When the whole suite moved to Node, one SQLite test silently
+ * `src/core/tools/resource-selectors.ts` used to require `bun:sqlite`, which
+ * exists only under Bun. When the suite moved to Node, one SQLite test silently
  * became `it.skip` and eleven more kept their names, kept passing, and executed
  * no assertions behind `if (!sqlite) return`. Neither shows up in a pass/fail
- * count or in a test-name diff, so the guard has to be structural: every file
- * that reaches for `bun:sqlite` is collected by the Bun-hosted project and by
- * no other, CI runs that project, and no file is collected twice.
+ * count or a test-name diff, so the guard is structural: the loader must try
+ * `node:sqlite` first and fall back to `bun:sqlite`, and no test may reintroduce
+ * a soft guard that turns an unavailable module into a green no-op.
  */
-test("every bun:sqlite suite is collected by the Bun-hosted project and run in CI", async () => {
-  const config = (await import("../../packages/coding-agent/vitest.config.js")) as {
-    default: { test?: { projects?: { test?: { name?: string; include?: string[]; exclude?: string[]; testTimeout?: number } }[] } };
-    BUN_HOSTED_TESTS: string[];
-  };
-  const projects = new Map((config.default.test?.projects ?? []).map((entry) => [entry.test?.name ?? "", entry.test]));
-  assert.deepEqual([...projects.keys()], ["agent", "agent-bun"]);
-  const node = projects.get("agent");
-  const bun = projects.get("agent-bun");
-  assert.ok(node && bun);
-  // One budget for both halves of one suite; a runtime split must not become a
-  // budget split.
-  assert.equal(node.testTimeout, bun.testTimeout);
+test("SQLite selectors resolve on either runtime and their tests cannot silently empty", async () => {
+  const selectors = await readText(join(root, "packages/coding-agent/src/core/tools/resource-selectors.ts"));
+  // node:sqlite first: it is the portable module and the one upstream pi uses.
+  // bun:sqlite second: Bun 1.3.14 has no node:sqlite (oven-sh/bun#32498 is
+  // merged but unreleased), and the shipped binary is Bun-compiled.
+  const nodeFirst = selectors.indexOf('requireModule("node:sqlite")');
+  const bunSecond = selectors.indexOf('requireModule("bun:sqlite")');
+  assert.ok(nodeFirst > 0, "resource-selectors must load node:sqlite");
+  assert.ok(bunSecond > nodeFirst, "bun:sqlite must remain the fallback, after node:sqlite");
 
-  // Every file naming bun:sqlite -- directly or through the shared loader --
-  // must be in the Bun-hosted list, so a new one cannot be added to the Node
-  // project and quietly do nothing.
+  // A single project: the runtime split existed only because the loader was
+  // Bun-only, so reintroducing it would mean the fallback was lost.
+  const config = (await import("../../packages/coding-agent/vitest.config.js")) as {
+    default: { test?: { projects?: { test?: { name?: string; include?: string[]; exclude?: string[] } }[] } };
+  };
+  const projects = (config.default.test?.projects ?? []).map((entry) => entry.test?.name ?? "");
+  assert.deepEqual(projects, ["agent"]);
+
+  // No SQLite test may be excluded from collection, and none may carry a soft
+  // guard that skips or returns early when a module is missing.
   const testDir = join(root, "packages/coding-agent/test");
-  const sqliteFiles: string[] = [];
+  const excluded = new Set((config.default.test?.projects ?? [])[0]?.test?.exclude ?? []);
   for (const entry of await readdir(testDir, { recursive: true })) {
     if (!entry.endsWith(".test.ts")) continue;
+    const relative = `test/${entry.replaceAll("\\", "/")}`;
     const source = await readText(join(testDir, entry));
-    if (/bun:sqlite|requireBunSqlite/u.test(source)) sqliteFiles.push(`test/${entry.replaceAll("\\", "/")}`);
-  }
-  assert.deepEqual(sqliteFiles.sort(), [...config.BUN_HOSTED_TESTS].sort());
-
-  assert.deepEqual([...(bun.include ?? [])].sort(), [...config.BUN_HOSTED_TESTS].sort());
-  for (const file of config.BUN_HOSTED_TESTS) {
-    assert.ok(node.exclude?.includes(file), `${file} would be collected twice`);
-  }
-  // The guards inside those files must stay hard: a restored `if (!sqlite)
-  // return` or `it.skip` would re-open the hole the split closed.
-  for (const file of config.BUN_HOSTED_TESTS) {
-    const source = await readText(join(root, "packages/coding-agent", file));
-    assert.doesNotMatch(source, /if\s*\(!\s*(?:mod|sqlite|sqliteMod)\s*\)\s*return/u, file);
-    assert.doesNotMatch(source, /\?\s*it\s*:\s*it\.skip/u, file);
+    if (!/sqlite/iu.test(source)) continue;
+    assert.ok(!excluded.has(relative), `${relative} is excluded from collection`);
+    assert.doesNotMatch(source, /if\s*\(!\s*(?:mod|sqlite|sqliteMod)\s*\)\s*return/u, relative);
+    assert.doesNotMatch(source, /\?\s*it\s*:\s*it\.skip/u, relative);
   }
 
   const manifest = (await readJson(join(root, "packages/coding-agent/package.json"))) as { scripts: Record<string, string> };
-  assert.equal(manifest.scripts.test, "vitest --run --project agent");
-  assert.equal(manifest.scripts["test:bun"], "bun --bun vitest --run --project agent-bun");
-  assert.match(await readText(join(root, ".github/workflows/test.yml")), /npm run test:bun --workspace=@bastani\/atomic/u);
+  assert.equal(manifest.scripts.test, "vitest --run");
+  assert.ok(manifest.scripts["test:bun"] === undefined, "the Bun-hosted half must not come back");
+  assert.doesNotMatch(await readText(join(root, ".github/workflows/test.yml")), /test:bun/u);
 });
 
 test("active CI workflows contain no removed Cursor builtin smoke checks", async () => {

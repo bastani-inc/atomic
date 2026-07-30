@@ -9,13 +9,11 @@ import { createSearchToolDefinition } from "../src/core/tools/search.ts";
 import { createWriteToolDefinition } from "../src/core/tools/write.ts";
 import type { InternalResourceContext } from "../src/core/tools/resource-selectors.ts";
 import { isDocumentPath } from "../src/core/tools/read-document-extract.ts";
-import { requireBunSqlite } from "./helpers/bun-sqlite.ts";
+import { TestSqliteDatabase } from "./helpers/sqlite.ts";
 
 function textOutput(result: { content?: Array<{ type: string; text?: string }> }): string {
 	return result.content?.filter((item) => item.type === "text").map((item) => item.text ?? "").join("\n") ?? "";
 }
-interface BunSqliteModule { Database: new (path: string) => { run(sql: string, ...params: string[]): void; close(): void } }
-function loadBunSqlite(): BunSqliteModule { return requireBunSqlite<BunSqliteModule>(import.meta.url); }
 
 function listen(server: Server): Promise<number> {
 	return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve((server.address() as { port: number }).port)));
@@ -277,8 +275,7 @@ describe("resource selector tools", () => {
 		writeFileSync(join(testDir, "notes.db"), "one\ntwo\n");
 		expect(textOutput(await createReadToolDefinition(testDir).execute("plain-db-read", { path: "notes.db" }, undefined, undefined, {} as never))).toContain("one");
 		expect(textOutput(await createReadToolDefinition(testDir).execute("plain-db-read-line", { path: "notes.db:2-2" }, undefined, undefined, {} as never))).toContain("two");
-		const sqlite = loadBunSqlite();
-		const rawDb = new sqlite.Database(join(testDir, "tokens.sqlite"));
+				const rawDb = new TestSqliteDatabase(join(testDir, "tokens.sqlite"));
 		rawDb.run("create table raw (id integer primary key, name text)");
 		rawDb.run("create table conflicts (id integer primary key, name text)");
 		rawDb.run("insert into raw values (1, 'Raw Table')");
@@ -355,7 +352,7 @@ describe("resource selector tools", () => {
 	it("reads writes and searches SQLite selectors", async () => {
 		writeFileSync(join(testDir, ".keep"), "");
 		const dbPath = join(testDir, "data.sqlite");
-		const Database = loadBunSqlite().Database;
+		const Database = TestSqliteDatabase;
 		const db = new Database(dbPath);
 		db.run("create table users (uuid text primary key, name text)");
 		db.run("create table numbers (id integer primary key, flags integer, score integer)");

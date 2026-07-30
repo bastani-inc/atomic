@@ -73,8 +73,7 @@
     "assert-binary-assets": "bun run scripts/assert-pi-runtime-assets.ts --app dist/app.js",
     "docs:check": "bun run scripts/validate-docs-links.ts",
     "verify:workflow-types": "bun run scripts/verify-workflow-sdk-types.ts",
-    "test": "vitest --run --project agent",
-    "test:bun": "bun --bun vitest --run --project agent-bun",
+    "test": "vitest --run",
     "shrinkwrap": "bun run ../../scripts/generate-coding-agent-shrinkwrap.mjs",
     "prepublishOnly": "bun run clean && bun run build && bun run shrinkwrap"
   },

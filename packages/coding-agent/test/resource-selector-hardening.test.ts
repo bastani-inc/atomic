@@ -4,11 +4,9 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
 import { createWriteToolDefinition } from "../src/core/tools/write.ts";
-import { requireBunSqlite } from "./helpers/bun-sqlite.ts";
+import { sqlite } from "./helpers/sqlite.ts";
 
 interface SqliteDb { run(sql: string): void; close(): void }
-interface BunSqliteModule { Database: new (path: string) => SqliteDb }
-function sqlite(): BunSqliteModule { return requireBunSqlite<BunSqliteModule>(import.meta.url); }
 
 const tempDirs: string[] = [];
 async function tempDir(): Promise<string> { const dir = await mkdtemp(join(tmpdir(), "atomic-resource-hardening-")); tempDirs.push(dir); return dir; }

@@ -7,13 +7,11 @@ import { createHashlineSnapshotStore } from "../src/core/tools/hashline.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
 import { readZipEntriesFromBuffer } from "../src/core/tools/resource-selectors.ts";
 import { createWriteToolDefinition } from "../src/core/tools/write.ts";
-import { requireBunSqlite } from "./helpers/bun-sqlite.ts";
+import { sqlite } from "./helpers/sqlite.ts";
 
 interface SqliteQuery { get(): Record<string, string | number | null> | undefined }
 interface SqliteDb { run(sql: string): void; query(sql: string): SqliteQuery; close(): void }
-interface BunSqliteModule { Database: new (path: string) => SqliteDb }
 const text = (result: { content: Array<{ type: string; text?: string }> }): string => result.content.map((item) => item.text ?? "").join("\n");
-function sqlite(): BunSqliteModule { return requireBunSqlite<BunSqliteModule>(import.meta.url); }
 
 describe("resource write parity edges", () => {
 	let testDir: string;

@@ -69,7 +69,6 @@ npm run test:scripts              # Run the repository script tests under node -
 npm run test --workspace=@bastani/atomic -- test/specific.test.ts
 # Run its Bun-hosted half. Required: the SQLite selector tests load bun:sqlite,
 # which the shipped binary has and Node does not.
-npm run test:bun --workspace=@bastani/atomic
 ```
 
 ## Deterministic installs

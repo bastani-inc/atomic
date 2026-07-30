@@ -108,7 +108,6 @@ test("build-consuming steps stay in the job that produced the build", async () =
 
   const agent = jobSteps(blocks.get("agent-suite") as string);
   assert.ok(stepIndex(agent, "Build native bindings for package tests") < stepIndex(agent, "coding-agent vitest suite"));
-  assert.ok(stepIndex(agent, "coding-agent vitest suite") < stepIndex(agent, "coding-agent Bun-hosted suite"));
   assert.match(namedStep(agent, "coding-agent vitest suite"), /ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE: "1"/u);
   assert.match(blocks.get("agent-suite") as string, /uses: dtolnay\/rust-toolchain@/u);
 
@@ -191,7 +190,6 @@ test("every retried suite still runs through the duration guard unmodified", asy
     "npm run test:unit",
     "npm run test:integration",
     "npm run test --workspace=@bastani/atomic",
-    "npm run test:bun --workspace=@bastani/atomic",
   ]);
   assert.equal(workflow.split("run-flaky-test-suite.ts").length - 1, invocations.length);
   assert.doesNotMatch(workflow, /--parallel|--shard|--concurrent|--max-concurrency/u);
