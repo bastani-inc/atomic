@@ -255,10 +255,14 @@ InteractiveModeBase.prototype.handleFollowUp = async function (this: Interactive
 			this.ui.requestRender();
 		});
 	}
-	// If not streaming, Alt+Enter acts like regular Enter (trigger onSubmit)
+	// If not streaming, Alt+Enter acts like regular Enter (trigger onSubmit).
+	// Hand over the raw expanded buffer, not the trimmed text: Alt+Enter is an
+	// app action, so CustomEditor returns before its own pre-trim snapshot runs
+	// and the submit handler's only draft is this argument. It trims the value
+	// itself for delivery, so the agent still receives the normalized prompt.
 	else if (this.editor.onSubmit) {
 		this.editor.setText("");
-		this.editor.onSubmit(text);
+		this.editor.onSubmit(rawText);
 	}
 };
 

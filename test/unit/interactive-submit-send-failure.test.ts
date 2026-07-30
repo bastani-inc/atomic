@@ -4,6 +4,8 @@ import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/inter
 import "../../packages/coding-agent/src/modes/interactive/interactive-input-handling.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-process-lifecycle.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-bash-compact.ts";
+import "../../packages/coding-agent/src/modes/interactive/interactive-prompt-turn.ts";
+import { rpcTransportError } from "../../packages/coding-agent/src/modes/rpc/rpc-transport-error.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 
 // handleBashCommand builds themed components; the theme is process-global.
@@ -198,6 +200,85 @@ test("Alt+Enter clears the editor when the send is accepted", async () => {
 	await stub.followUp();
 	assert.equal(stub.editorText, "");
 	assert.deepEqual(stub.prompted, [{ text: "accepted follow up", streamingBehavior: "followUp" }]);
+});
+
+/**
+ * Idle Alt+Enter is an app action, so `CustomEditor` returns before its own
+ * pre-trim snapshot runs and the submit handler's only draft is the value this
+ * call site hands over. Passing the trimmed text discarded the user's outer
+ * whitespace before the carrier was even built, so a failed send restored a
+ * different string than was typed.
+ *
+ * Drives the real path: handleFollowUp → setupEditorSubmitHandler →
+ * InteractiveSubmission → runUserPromptTurn → restore.
+ */
+test("idle Alt+Enter restores the exact expanded buffer when the send fails", async () => {
+	const raw = "  draft with outer spaces  ";
+	const state = { editorText: raw, errors: [] as string[], prompted: [] as string[], startupCookedInputRecovered: false, renders: 0 };
+	const editor = {
+		getText: () => state.editorText,
+		getExpandedText: () => state.editorText,
+		setText: (text: string) => { state.editorText = text; },
+		addToHistory: () => {},
+		onSubmit: undefined as ((text: string) => Promise<void> | void) | undefined,
+	};
+	let turn: Promise<void> | undefined;
+	const host = {
+		firstSubmitRecorded: true,
+		startupReplayActiveInput: undefined,
+		startupReplayInputs: [],
+		deferredStartupPending: false,
+		deferredStartupPromise: undefined,
+		promptTurnWorkingLoaderActive: false,
+		isBashMode: false,
+		defaultEditor: editor,
+		editor,
+		editorContainer: { children: [editor] },
+		ui: { setFocus: () => {}, requestRender: () => { state.renders += 1; } },
+		pendingUserInputs: [],
+		get startupCookedInputRecovered(): boolean { return state.startupCookedInputRecovered; },
+		set startupCookedInputRecovered(value: boolean) { state.startupCookedInputRecovered = value; },
+		session: {
+			isCompacting: false,
+			isStreaming: false,
+			isBashRunning: false,
+			queuedMessagesPaused: false,
+			subscribe: () => () => {},
+			resumeQueuedMessages: async () => {},
+			prompt: async (text: string) => {
+				state.prompted.push(text);
+				throw rpcTransportError("Agent process stopped");
+			},
+			_tryExecuteBuiltinSlashCommand: async () => false,
+			_tryExecuteExtensionCommand: async () => false,
+		},
+		isExtensionCommand: () => false,
+		queueCompactionMessage: () => {},
+		updatePendingMessagesDisplay: () => {},
+		updateEditorBorderColor: () => {},
+		flushPendingBashComponents: () => {},
+		renderDeferredUserInput: () => {},
+		discardDeferredRenderedUserInput: () => {},
+		showWorkingLoaderNow: () => {},
+		stopWorkingLoader: () => {},
+		ensureDeferredStartupComplete: async () => {},
+		showError: (message: string) => { state.errors.push(message); },
+		showWarning: () => {},
+		advanceStartupInputReplay: () => {},
+	};
+	const mode = host as unknown as InteractiveModeBase;
+	InteractiveModeBase.prototype.setupEditorSubmitHandler.call(mode);
+	// The prompt loop is what consumes a normal submission.
+	mode.onInputCallback = (submission) => { turn = InteractiveModeBase.prototype.runUserPromptTurn.call(mode, submission); };
+
+	await InteractiveModeBase.prototype.handleFollowUp.call(mode);
+	await turn;
+
+	assert.deepEqual(state.prompted, ["draft with outer spaces"], "the agent must still receive normalized text");
+	assert.equal(state.editorText, raw, "the restored draft lost the whitespace the user typed");
+	assert.deepEqual(state.errors, [], "a restored draft must not also raise a red transport error");
+	assert.equal(state.startupCookedInputRecovered, true);
+	assert.ok(state.renders > 0);
 });
 
 /**

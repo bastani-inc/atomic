@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Declared `handlesCtrlC` on the `/mcp` panel, the `/mcp setup` panel, and the MCP OAuth panel. In isolated interactive sessions the terminal host now closes an undeclared remote `ctx.ui.custom()` component on the first Ctrl+C, which would have bypassed each panel's own Ctrl+C handler along with its cancel and cleanup work. The declaration keeps that handler running.
+
 ## [0.9.11-alpha.6] - 2026-07-28
 
 ### Removed

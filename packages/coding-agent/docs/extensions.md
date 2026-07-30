@@ -75,7 +75,7 @@ The first is a remote custom UI. While an engine-owned `ctx.ui.custom()` compone
 - A component mounted with `handlesCtrlC: true` receives the press and keeps its own Skip, Close, or cancel binding. If that same component is still holding input on the next press, that press closes it, so a declared component cannot trap the keyboard either.
 - A component that did not declare it is closed by the first press, through the ordinary close path: its `ctx.ui.custom()` promise resolves with `undefined`, the child is told the component closed, the editor comes back, and the engine keeps running — including any other component that generation has mounted below or above this one.
 
-Declare `handlesCtrlC` whenever your component's hint row offers `ctrl+c` for anything; the bundled workflow surfaces do. Native host selectors, dialogs, input forms, session pickers, and unrelated native overlays are unaffected: they keep Ctrl+C as their own cancel.
+Declare `handlesCtrlC` whenever your component's hint row offers `ctrl+c` for anything. This is a migration for existing components: an extension that already bound Ctrl+C keeps that binding only by adding the option. The bundled workflow surfaces and the `/mcp`, `/mcp setup`, and MCP OAuth panels declare it. Native host selectors, dialogs, input forms, session pickers, and unrelated native overlays are unaffected: they keep Ctrl+C as their own cancel.
 
 ```typescript
 await ctx.ui.custom<string | undefined>(
