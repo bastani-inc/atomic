@@ -68,6 +68,8 @@ function makeBridge(keybindings = new KeybindingsManager()) {
 		for (const listener of [...listeners]) listener(message);
 	});
 	const runtime = {
+		// Engine death is not exercised here; the controllers only need the subscription.
+		onGenerationEnded: () => () => {},
 		onEngineMessage: (listener: (message: InteractiveEngineMessage) => void) => {
 			listeners.push(listener);
 			return () => {};

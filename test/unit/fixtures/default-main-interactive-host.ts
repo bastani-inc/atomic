@@ -2,11 +2,28 @@ import type { Terminal } from "@earendil-works/pi-tui";
 import { main } from "../../../packages/coding-agent/src/main.ts";
 import type { InteractiveMode } from "../../../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { IsolatedInteractiveRuntime } from "../../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
+import { hasInteractiveEngineBootstrapArg } from "../../../packages/coding-agent/src/utils/interactive-engine-bootstrap.ts";
 
 const CONTROL_PREFIX = "@@ATOMIC_TEST@@";
 
 function report(value: Record<string, object | boolean | null | number | string | undefined>): void {
 	process.stdout.write(`${CONTROL_PREFIX}${JSON.stringify(value)}\n`);
+}
+
+/**
+ * Host UI ownership snapshot. Engine-death recovery has to put the editor back
+ * into `editorContainer`, give it focus, drop any overlay, and unwind the
+ * blocking inline custom-UI depth, so each of those is reported directly.
+ */
+function hostUiState(mode: InteractiveMode | undefined): Record<string, boolean | number | undefined> {
+	if (!mode) return {};
+	const focused = (mode.ui as unknown as { focusedComponent?: unknown }).focusedComponent;
+	return {
+		editorMounted: mode.editorContainer.children.includes(mode.editor),
+		focusIsEditor: focused === mode.editor,
+		blockingInlineDepth: mode.blockingInlineCustomUiDepth,
+		hasOverlay: mode.ui.hasOverlay(),
+	};
 }
 
 class RecordingTerminal implements Terminal {
@@ -57,6 +74,7 @@ class RecordingTerminal implements Terminal {
 			expandKeys: mode?.keybindings.getKeys("app.tools.expand"),
 			expandDisplay: mode?.getAppKeyDisplay("app.tools.expand"),
 			toolsExpanded: mode?.toolOutputExpanded,
+			...hostUiState(mode),
 		});
 	}
 }
@@ -128,6 +146,7 @@ async function runHost(): Promise<void> {
 			recovering: runtime instanceof IsolatedInteractiveRuntime ? runtime.isRecovering() : undefined,
 			editorText: mode?.editor.getText(),
 			streaming: mode?.session.isStreaming,
+			...hostUiState(mode),
 		});
 	}, 10);
 	try {
@@ -178,5 +197,7 @@ async function runHost(): Promise<void> {
 	}
 }
 
-if (process.env.ATOMIC_INTERACTIVE_ENGINE_CHILD === "1") await main(process.argv.slice(2));
+// The engine child is identified by its private bootstrap argument now that no
+// engine-only environment variable ever reaches it.
+if (hasInteractiveEngineBootstrapArg(process.argv.slice(2))) await main(process.argv.slice(2));
 else await runHost();

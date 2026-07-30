@@ -71,13 +71,28 @@ import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts"
 import { createRuntimeForMode } from "./modes/interactive-engine/create-isolated-runtime.ts";
 import { startInteractiveEngineLiveness } from "./modes/interactive-engine/engine-child-liveness.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
+import {
+	readInteractiveEngineBootstrap,
+	takeInteractiveEngineBootstrapArg,
+} from "./utils/interactive-engine-bootstrap.ts";
+import { captureInteractiveEngineStartupEnv } from "./utils/interactive-engine-env.ts";
 import { normalizePath } from "./utils/paths.ts";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
 
 export type { AppMode } from "./main-app-mode.ts";
 export { resolveExcludedToolsForAppMode } from "./main-app-mode.ts";
 export type { MainOptions } from "./main-types.ts";
-export async function main(args: string[], options?: MainOptions) {
+export async function main(argv: string[], options?: MainOptions) {
+	// Consume the private engine handshake before anything else: the bootstrap
+	// file carries engine role, host PID, guardian path, and any API key, is read
+	// once, and is unlinked immediately. Nothing engine-only ever reaches the
+	// child's environment, so no descendant of the engine can inherit it — which
+	// deleting variables from `process.env` cannot achieve under Bun.
+	const bootstrap = takeInteractiveEngineBootstrapArg(argv);
+	const args = bootstrap.args;
+	const engineEnv = captureInteractiveEngineStartupEnv(
+		bootstrap.path === undefined ? undefined : readInteractiveEngineBootstrap(bootstrap.path),
+	);
 	resetTimings();
 	const extensionFactories = [...builtInExtensions, ...(options?.extensionFactories ?? [])];
 	const offlineMode = args.includes("--offline") || isTruthyEnvFlag(getEnvValue(ENV_OFFLINE));
@@ -101,8 +116,7 @@ export async function main(args: string[], options?: MainOptions) {
 		return;
 	}
 	const parsed = parseArgs(args);
-	if (process.env.ATOMIC_INTERACTIVE_ENGINE_CHILD === "1" && process.env.ATOMIC_INTERACTIVE_ENGINE_API_KEY)
-		parsed.apiKey = process.env.ATOMIC_INTERACTIVE_ENGINE_API_KEY;
+	if (engineEnv.child === "1" && engineEnv.apiKey) parsed.apiKey = engineEnv.apiKey;
 	if (parsed.diagnostics.length > 0) {
 		for (const d of parsed.diagnostics) {
 			const color = d.type === "error" ? chalk.red : chalk.yellow;
@@ -137,15 +151,13 @@ export async function main(args: string[], options?: MainOptions) {
 		? "interactive"
 		: resolveAppMode(parsed, process.stdin.isTTY, process.stdout.isTTY);
 	const isolateInteractiveHost =
-		appMode === "interactive" &&
-		!isPlainRuntimeMetadataCommand(parsed) &&
-		process.env.ATOMIC_INTERACTIVE_ENGINE_CHILD !== "1";
+		appMode === "interactive" && !isPlainRuntimeMetadataCommand(parsed) && engineEnv.child !== "1";
 	const shouldTakeOverStdout = appMode !== "interactive";
 	const shouldRestoreStdoutForMetadata = isPlainRuntimeMetadataCommand(parsed);
 	if (shouldTakeOverStdout) {
 		takeOverStdout();
 	}
-	if (process.env.ATOMIC_INTERACTIVE_ENGINE_CHILD === "1") startInteractiveEngineLiveness(writeRawStdout).ready();
+	if (engineEnv.child === "1") startInteractiveEngineLiveness(writeRawStdout).ready();
 	if (parsed.mode === "rpc" && parsed.fileArgs.length > 0) {
 		console.error(chalk.red("Error: @file arguments are not supported in RPC mode"));
 		process.exit(1);

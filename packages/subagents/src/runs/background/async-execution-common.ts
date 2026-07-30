@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { APP_NAME } from "@bastani/atomic";
 import { getAsyncConfigPath, type SubagentRunMode, TEMP_ROOT_DIR } from "../../shared/types.ts";
 import { formatPiSpawnError, resolvePiPackageRoot, validatePiSpawnCwd } from "../shared/pi-spawn.ts";
+import { buildSubagentSpawnEnv } from "../shared/spawn-env.ts";
 import type { AsyncExecutionResult, AsyncSpawnResult } from "./async-execution-types.ts";
 
 const require = createRequire(import.meta.url);
@@ -102,7 +103,7 @@ export function spawnRunner(cfg: object, suffix: string, cwd: string, env?: Reco
 	try {
 		proc = spawn(spawnSpec.command, spawnSpec.args, {
 			cwd,
-			env: { ...process.env, ...env },
+			env: buildSubagentSpawnEnv(process.env, env),
 			detached: true,
 			stdio: "ignore",
 			windowsHide: true,

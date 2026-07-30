@@ -2,6 +2,7 @@ import type { AgentSessionInternalSurface } from "../../core/agent-session-metho
 import { tryExecuteSessionSlashCommand } from "../../core/agent-session-prompt.ts";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
+import { restoreFailedSubmissionDraft } from "./interactive-prompt-restore.ts";
 
 InteractiveModeBase.prototype.runUserPromptTurn = async function (
 	this: InteractiveModeBase,
@@ -16,6 +17,12 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 	// Yield once so the freshly-mounted spinner paints before synchronous
 	// preflight work can block the event loop.
 	await yieldToEventLoop();
+	// A submission that never reaches an agent turn stays user-owned, so track
+	// whether the turn actually started before deciding to restore the draft.
+	let turnStarted = false;
+	const unsubscribeTurnStart = this.session.subscribe((event) => {
+		if (event.type === "agent_start") turnStarted = true;
+	});
 	try {
 		if (deferredStartupNeedsPromptGate) {
 			await this.ensureDeferredStartupComplete();
@@ -33,9 +40,17 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 		}
 	} catch (error) {
 		this.discardDeferredRenderedUserInput(userInput);
+		restoreFailedSubmissionDraft(
+			this,
+			error,
+			this.submittedDraftText?.trim() === userInput ? this.submittedDraftText : userInput,
+			{ turnStarted },
+		);
 		const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
 		this.showError(errorMessage);
 	} finally {
+		unsubscribeTurnStart();
+		this.submittedDraftText = undefined;
 		this.promptTurnWorkingLoaderActive = false;
 		// A submission that resolves without starting an agent turn (e.g. a
 		// handled slash command) never emits `agent_end`, so clear the pre-shown

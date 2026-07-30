@@ -88,10 +88,16 @@ class RemoteComponent implements Component {
 		this.requestRender();
 	}
 
-	dispose(): void {
+	/**
+	 * Tear the proxy down. `notifyEngine` must be false once the writer no longer
+	 * points at the generation that owns this component: component IDs restart at
+	 * `remote_component_1` for every child, so a late dispose would address an
+	 * unrelated component in the replacement engine.
+	 */
+	dispose(notifyEngine = true): void {
 		if (this.disposed) return;
 		this.disposed = true;
-		this.runtime.sendEngineCommand({ type: "engine_custom_dispose", componentId: this.componentId });
+		if (notifyEngine) this.runtime.sendEngineCommand({ type: "engine_custom_dispose", componentId: this.componentId });
 	}
 }
 
@@ -112,6 +118,7 @@ function hostTerminal(tui: TUI): { write(data: string): void } {
 export class RemoteComponentController {
 	private readonly mounted = new Map<string, MountedRemoteComponent>();
 	private readonly unsubscribe: () => void;
+	private readonly unsubscribeGenerationEnded: () => void;
 	private readonly terminalModes = new TerminalModeController();
 
 	private readonly runtime: IsolatedInteractiveRuntime;
@@ -121,26 +128,53 @@ export class RemoteComponentController {
 		this.runtime = runtime;
 		this.ui = ui;
 		this.unsubscribe = runtime.onEngineMessage((message) => this.handleMessage(message));
+		// Teardown is driven by engine death rather than the NEXT generation's
+		// `engine_ready`, so a crash with no restart, or a hung/failed restart,
+		// still releases the host editor, focus, and inline-custom-UI depth.
+		this.unsubscribeGenerationEnded = runtime.onGenerationEnded(() => this.disposeAll("generation-lost"));
 	}
 
 	dispose(): void {
 		this.unsubscribe();
-		this.terminalModes.resetAll();
-		for (const record of this.mounted.values()) {
-			if (record.widgetKey) this.ui.setWidget(record.widgetKey, undefined);
-			record.component.dispose();
-		}
+		this.unsubscribeGenerationEnded();
+		this.disposeAll("host-shutdown");
+	}
+
+	/**
+	 * Close every mounted component.
+	 *
+	 * `"generation-lost"` closes through the real host close path: it hides the
+	 * overlay or remounts the editor into `editorContainer`, restores the saved
+	 * draft and focus, releases `blockingInlineCustomUiDepth`, and resolves the
+	 * extension's `ui.custom()` promise. Records are removed BEFORE each `done`
+	 * runs so the settlement path cannot re-enter the controller, and proxy
+	 * disposal is local-only because the writer already points at a replacement
+	 * child whose component IDs restart at `remote_component_1`.
+	 *
+	 * `"host-shutdown"` notifies the still-live engine child instead and leaves
+	 * host mounts alone: the TUI is already stopping and must not repaint.
+	 */
+	private disposeAll(reason: "generation-lost" | "host-shutdown"): void {
+		const records = [...this.mounted.entries()];
 		this.mounted.clear();
+		for (const [componentId, record] of records) {
+			this.terminalModes.onUnmount(componentId);
+			record.component.dispose(reason === "host-shutdown" && !record.engineDone);
+			if (record.widgetKey) this.ui.setWidget(record.widgetKey, undefined);
+			else if (reason === "generation-lost") record.done(undefined);
+		}
+		this.terminalModes.resetAll();
+		if (reason === "generation-lost" && records.length > 0) this.ui.requestRender();
 	}
 
 	private handleMessage(message: InteractiveEngineMessage): void {
 		switch (message.type) {
 			case "engine_ready":
-				// A fresh engine generation replaced the child: any terminal modes
-				// the dead generation left on are stale. Reset them so a crashed or
-				// restarted overlay never strands the host TTY in mouse-reporting
-				// or autowrap-off mode; the new generation re-asserts on remount.
-				this.terminalModes.resetAll();
+				// Idempotent fallback for a generation replacement whose death event
+				// was already handled: stale records must be gone before the new child
+				// can reuse `remote_component_1`, and any terminal modes the dead
+				// generation left on are reset here too.
+				this.disposeAll("generation-lost");
 				break;
 			case "engine_custom_open":
 				this.open(

@@ -27,6 +27,7 @@ import {
 import { modelFailureMessage } from "../shared/model-fallback.ts";
 import { applyThinkingSuffix, buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
 import { formatPiSpawnError, getPiSpawnCommand, validatePiSpawnCwd } from "../shared/pi-spawn.ts";
+import { buildSubagentSpawnEnv } from "../shared/spawn-env.ts";
 import { createAttemptControlRuntime } from "./execution-attempt-control.ts";
 import { finalizeSingleAttempt } from "./execution-attempt-finalize.ts";
 import type { RunSingleAttemptShared } from "./execution-attempt-types.ts";
@@ -131,13 +132,13 @@ export async function runSingleAttempt(
 	};
 	result.progress = progress;
 	const controlRuntime = createAttemptControlRuntime({ options, agent, result, progress, startTime });
-	const spawnEnv = {
-		...process.env,
-		...sharedEnv,
-		...getSubagentDepthEnv(options.maxSubagentDepth, {
+	const spawnEnv = buildSubagentSpawnEnv(
+		process.env,
+		sharedEnv,
+		getSubagentDepthEnv(options.maxSubagentDepth, {
 			workflowStageSubagentGuard: options.workflowStageSubagentGuard,
 		}),
-	};
+	);
 	const cwdValidation = validatePiSpawnCwd(runCwd);
 	if (!cwdValidation.ok) {
 		cleanupTempDir(tempDir);

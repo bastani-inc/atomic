@@ -1,11 +1,16 @@
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
-import { interruptBlockedInteractiveEngine } from "../interactive-engine/extension-ui-bridge.ts";
+import {
+	interactiveEngineNeedsExplicitTermination,
+	interruptBlockedInteractiveEngine,
+	terminateInteractiveEngine,
+} from "../interactive-engine/extension-ui-bridge.ts";
 import { StartupIdentityComponent } from "./components/startup-identity.ts";
 import { COMPACTION_ALREADY_IN_PROGRESS_WARNING } from "./interactive-bash-compact.ts";
 import { routeGlobalClearInput } from "./interactive-global-clear.ts";
 import { InteractiveModeBase, seedStartupInput } from "./interactive-mode-base.ts";
 import { pasteClipboardImageToEditor, recordTimeSinceReset } from "./interactive-mode-deps.ts";
 import { pauseAndAbortInteractiveSession } from "./interactive-pause.ts";
+import { restoreFailedSubmissionDraft } from "./interactive-prompt-restore.ts";
 export function registerStartupInputListeners(mode: InteractiveModeBase): void {
 	mode.ui.addInputListener(() =>
 		mode.builtInHeader instanceof StartupIdentityComponent ? void mode.builtInHeader.settle() : undefined,
@@ -16,6 +21,10 @@ export function registerStartupInputListeners(mode: InteractiveModeBase): void {
 			hasOverlay: () => mode.ui.hasOverlay(),
 			blockingInlineCustomUiActive: () => mode.blockingInlineCustomUiDepth > 0,
 			editorOwnsInput: () => mode.editorContainer.children.includes(mode.editor),
+			engineNeedsExplicitTermination: () => interactiveEngineNeedsExplicitTermination(mode.runtimeHost),
+			onEngineTerminate: () => {
+				terminateInteractiveEngine(mode.runtimeHost);
+			},
 			onClear: () => mode.handleCtrlC(),
 			requestRender: () => mode.ui.requestRender(),
 		}),
@@ -230,6 +239,10 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 			this.firstSubmitRecorded = true;
 			recordTimeSinceReset("interactive-first-submit");
 		}
+		// The prompt loop only ever sees the trimmed text, so keep the exact draft
+		// for the failure path: a send the engine never accepted must return to
+		// the editor byte-for-byte rather than reflowed.
+		const submittedDraft = text;
 		text = text.trim();
 		if (!text) return;
 
@@ -444,6 +457,7 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 			// Normal message submission
 			// First, move any pending bash components to chat
 			this.flushPendingBashComponents();
+			this.submittedDraftText = submittedDraft;
 
 			if (this.onInputCallback) {
 				if (!text.startsWith("/")) {
@@ -454,6 +468,12 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 				this.pendingUserInputs.push(text);
 			}
 			this.editor.addToHistory?.(text);
+		} catch (error) {
+			// Direct dispatch branches above hand text straight to the engine and
+			// never reach runUserPromptTurn(), so this is the only place their send
+			// failures can put the draft back. Anything else is not ours to absorb.
+			if (!restoreFailedSubmissionDraft(this, error, submittedDraft)) throw error;
+			this.showError(error instanceof Error ? error.message : "Unknown error occurred");
 		} finally {
 			this.advanceStartupInputReplay?.(text);
 		}

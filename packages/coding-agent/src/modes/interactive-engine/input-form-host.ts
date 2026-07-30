@@ -9,14 +9,20 @@ export class InputFormHostController {
 	private readonly runtime: IsolatedInteractiveRuntime;
 	private readonly ui: ExtensionUIContext;
 	private readonly unsubscribe: () => void;
+	private readonly unsubscribeGenerationEnded: () => void;
 	constructor(runtime: IsolatedInteractiveRuntime, ui: ExtensionUIContext) {
 		this.runtime = runtime;
 		this.ui = ui;
 		this.unsubscribe = runtime.onEngineMessage((message) => this.handleMessage(message));
+		// A dead generation cannot answer a form, and its componentIds mean nothing
+		// to a replacement child, so unmount on death rather than waiting for the
+		// next `engine_ready` (which never arrives if the restart hangs or fails).
+		this.unsubscribeGenerationEnded = runtime.onGenerationEnded(() => this.disposeAll());
 	}
 
 	dispose(): void {
 		this.unsubscribe();
+		this.unsubscribeGenerationEnded();
 		this.disposeAll();
 	}
 

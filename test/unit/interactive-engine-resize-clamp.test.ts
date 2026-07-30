@@ -45,6 +45,8 @@ function makeFakeRuntime(): FakeRuntime {
 	const listeners: Array<(message: InteractiveEngineMessage) => void> = [];
 	const commands: InteractiveEngineCommand[] = [];
 	const runtime = {
+		// Engine death is not exercised here; the controllers only need the subscription.
+		onGenerationEnded: () => () => {},
 		onEngineMessage: (listener: (message: InteractiveEngineMessage) => void) => {
 			listeners.push(listener);
 			return () => {};

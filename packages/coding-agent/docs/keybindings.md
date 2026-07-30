@@ -83,7 +83,7 @@ Modifier combinations: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+1
 | Keybinding id | Default | Description |
 |--------|---------|-------------|
 | `app.interrupt` | `escape` | Abort active work and hold queued messages; repeated Escape does not dequeue the hold |
-| `app.clear` | `ctrl+c` | Interrupt active or queued work; once idle, clear the editor (press twice while idle to exit) |
+| `app.clear` | `ctrl+c` | Interrupt active or queued work, or terminate an unresponsive interactive engine; once idle, clear the editor (press twice while idle to exit) |
 | `app.exit` | `ctrl+d` | Exit (when editor empty) |
 | `app.suspend` | `ctrl+z` (none on Windows) | Suspend to background |
 | `app.editor.external` | `ctrl+g` | Open in external editor (`$VISUAL` or `$EDITOR`) |
@@ -93,6 +93,8 @@ Modifier combinations: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+1
 When `app.clipboard.pasteImage` finds text rather than an image, Atomic inserts that clipboard text into the editor instead of reporting an image-paste failure.
 
 A held paused queue by itself is idle for Ctrl+C handling. After an interruption settles, the next Ctrl+C clears the editor without releasing or dequeuing the hold, and a second quick idle press exits normally.
+
+In interactive sessions the agent runs in a supervised engine child (see [Extensions](/extensions#interactive-callback-isolation)). Escape there requests the engine's cooperative cancellation and waits for it; it never terminates or replaces the engine. Ctrl+C is the escape hatch for an engine that is provably not answering: it stops that engine child and starts one replacement. That covers three cases — the heartbeat watchdog has declared the engine unresponsive, a cooperative abort has gone unanswered past the same one-second threshold, or a replacement engine has been waiting for readiness past it. The last case is the only route out of a replacement that hangs before it is ready, because such a child produces no heartbeat and no watchdog report. Because the escape hatch has to be reachable, Ctrl+C is still delivered to the host while an engine-owned `ctx.ui.custom()` component or overlay holds input. While the engine is healthy, `tui.select.cancel` keeps Ctrl+C as cancel inside host-native selectors, dialogs, and forms.
 
 ### Sessions
 

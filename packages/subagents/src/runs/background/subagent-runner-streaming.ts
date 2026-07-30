@@ -17,6 +17,7 @@ import {
 } from "../shared/final-drain.ts";
 import { modelFailureMessage } from "../shared/model-fallback.ts";
 import { formatPiSpawnError, getPiSpawnCommand, validatePiSpawnCwd } from "../shared/pi-spawn.ts";
+import { buildSubagentSpawnEnv } from "../shared/spawn-env.ts";
 import { createChildEventJournal } from "./async-event-journal.ts";
 import type { ChildEvent, ChildEventContext, RunPiStreamingResult } from "./subagent-runner-types.ts";
 import { emptyUsage } from "./subagent-runner-utils.ts";
@@ -57,11 +58,11 @@ export function runPiStreaming(
 				`Failed to write the subagent transcript to '${outputFile}'; continuing without it: ${String(streamError)}`,
 			);
 		});
-		const spawnEnv = {
-			...process.env,
-			...(env ?? {}),
-			...getSubagentDepthEnv(maxSubagentDepth, { workflowStageSubagentGuard }),
-		};
+		const spawnEnv = buildSubagentSpawnEnv(
+			process.env,
+			env,
+			getSubagentDepthEnv(maxSubagentDepth, { workflowStageSubagentGuard }),
+		);
 		const spawnSpec = getPiSpawnCommand(args, {
 			...(piPackageRoot ? { piPackageRoot } : {}),
 			...(piArgv1 ? { argv1: piArgv1 } : {}),

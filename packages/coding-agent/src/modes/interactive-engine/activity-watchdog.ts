@@ -11,18 +11,22 @@ export interface ActivityWatchdogDiagnostic {
 	elapsedMs: number;
 	level: "blocking" | "unresponsive";
 	message: string;
-	/** Set when the diagnostic came from the heartbeat watchdog rather than a concrete engine failure. */
-	source?: "watchdog";
+	/**
+	 * Set when the diagnostic is operational rather than a concrete engine
+	 * failure: `"watchdog"` for heartbeat-gap reports, `"recovery"` for calm
+	 * engine replacement status.
+	 */
+	source?: "watchdog" | "recovery";
 }
 
 /**
- * Chat-surface policy for engine diagnostics. Heartbeat-watchdog gaps stay
- * internal regardless of callback attribution: the TUI remains responsive and
- * the diagnostic is operational noise rather than a concrete engine failure.
- * Concrete engine failures (termination, RPC errors) always surface.
+ * Chat-surface policy for engine diagnostics. Heartbeat-watchdog gaps and
+ * engine-recovery status stay internal: the TUI remains responsive and both are
+ * operational noise rather than a concrete engine failure. Concrete engine
+ * failures (RPC errors, a restart that could not complete) always surface.
  */
 export function shouldRenderEngineDiagnosticAsChatError(diagnostic: ActivityWatchdogDiagnostic): boolean {
-	return diagnostic.level === "unresponsive" && diagnostic.source !== "watchdog";
+	return diagnostic.level === "unresponsive" && diagnostic.source === undefined;
 }
 
 export interface ActivityWatchdogOptions {
@@ -31,9 +35,16 @@ export interface ActivityWatchdogOptions {
 	thresholds?: Partial<ActivityWatchdogThresholds>;
 }
 
+/**
+ * How long the engine may go without a heartbeat before it counts as
+ * unresponsive. Shared with EngineHealthController so the watchdog's verdict and
+ * the explicit Ctrl+C escape hatch use one seconds-scale threshold, not two.
+ */
+export const ENGINE_UNRESPONSIVE_MS = 1_000;
+
 const DEFAULT_THRESHOLDS: ActivityWatchdogThresholds = {
 	diagnosticMs: 250,
-	unresponsiveMs: 1_000,
+	unresponsiveMs: ENGINE_UNRESPONSIVE_MS,
 	pollMs: 25,
 };
 

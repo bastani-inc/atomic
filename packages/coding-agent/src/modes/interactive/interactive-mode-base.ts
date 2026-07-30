@@ -5,7 +5,7 @@
 
 import type { AgentSessionQueuePauseControl } from "../../core/agent-session-methods.ts";
 import type { EarlyInputSnapshot } from "../../main-early-input.ts";
-import { shouldRenderEngineDiagnosticAsChatError } from "../interactive-engine/activity-watchdog.ts";
+import { renderEngineDiagnostic } from "../interactive-engine/engine-diagnostic-view.ts";
 import { attachInteractiveEngineHost } from "../interactive-engine/extension-ui-bridge.ts";
 import type { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import { KeybindingsReloadCoordinator } from "../rpc/rpc-keybindings-reload.ts";
@@ -246,6 +246,9 @@ export class InteractiveModeBase {
 
 	firstSubmitRecorded = false;
 
+	/** Exact untrimmed text of the submission the prompt loop is currently sending. */
+	submittedDraftText: string | undefined = undefined;
+
 	// Shutdown state
 	shutdownRequested = false;
 
@@ -372,14 +375,12 @@ export class InteractiveModeBase {
 		this.disposeInteractiveEngineHost = attachInteractiveEngineHost(
 			runtimeHost,
 			this.createExtensionUIContext(),
-			(diagnostic) => {
-				if (diagnostic.message.startsWith("Engine terminated;")) {
-					this.stopWorkingLoader();
-					this.ui.setFocus(this.editor);
-					this.ui.requestRender();
-				}
-				if (shouldRenderEngineDiagnosticAsChatError(diagnostic)) this.showError(diagnostic.message);
-			},
+			(diagnostic) =>
+				renderEngineDiagnostic(diagnostic, {
+					stopWorkingLoader: () => this.stopWorkingLoader(),
+					showStatus: (message) => this.showStatus(message),
+					showError: (message) => this.showError(message),
+				}),
 			(handler) => {
 				this.interactiveEngineShortcutHandler = handler;
 				this.defaultEditor.onExtensionShortcut = handler;

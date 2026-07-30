@@ -125,12 +125,25 @@ test("chat-error policy: watchdog diagnostics stay internal while concrete failu
 		shouldRenderEngineDiagnosticAsChatError(diagnostic({ source: "watchdog", activity, level: "blocking" })),
 		false,
 	);
-	// Concrete termination and RPC failures are not watchdog-sourced and always surface.
+	// Engine recovery status is operational, not a failure: the death teardown has
+	// already restored the editor, so it must never render as a chat error.
+	assert.equal(
+		shouldRenderEngineDiagnosticAsChatError(
+			diagnostic({
+				source: "recovery",
+				level: "blocking",
+				elapsedMs: 0,
+				message: "Interactive engine stopped unexpectedly; restarting.",
+			}),
+		),
+		false,
+	);
+	// Concrete failures carry no operational source and always surface.
 	assert.equal(
 		shouldRenderEngineDiagnosticAsChatError(
 			diagnostic({
 				elapsedMs: 0,
-				message: "Engine terminated; engine callback result unknown; inspect side effects before retrying",
+				message: "Interactive engine restart failed: Agent process exited (code=1 signal=null). Stderr: ",
 			}),
 		),
 		true,

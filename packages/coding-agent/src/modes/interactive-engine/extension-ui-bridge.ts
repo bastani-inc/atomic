@@ -146,6 +146,25 @@ export function interruptBlockedInteractiveEngine(runtime: AgentSessionRuntime):
 }
 
 /**
+ * True when the interactive engine still owes a cooperative abort or the
+ * heartbeat watchdog has declared it unresponsive, i.e. when the explicit
+ * Ctrl+C escape hatch promised by the watchdog copy applies.
+ */
+export function interactiveEngineNeedsExplicitTermination(runtime: AgentSessionRuntime): boolean {
+	return runtime instanceof IsolatedInteractiveRuntime && runtime.needsExplicitTermination();
+}
+
+/**
+ * Explicitly terminate an unresponsive interactive engine and start recovery.
+ * Only ever reached from a deliberate user action (Ctrl+C) — never from Escape.
+ */
+export function terminateInteractiveEngine(runtime: AgentSessionRuntime): boolean {
+	if (!interactiveEngineNeedsExplicitTermination(runtime)) return false;
+	void (runtime as IsolatedInteractiveRuntime).terminateAndRecover();
+	return true;
+}
+
+/**
  * Command catalog the engine child exposes to the isolated host. Returns an
  * empty list for non-isolated runtimes so callers can merge unconditionally.
  */

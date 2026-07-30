@@ -4,6 +4,11 @@ import type { BashResult } from "../../core/bash-executor.ts";
 import type { BashOutputChannel } from "../../core/tools/bash.ts";
 import { sleep } from "../../utils/sleep.ts";
 import type { ActivityWatchdogDiagnostic } from "../interactive-engine/activity-watchdog.ts";
+import type {
+	InteractiveEngineGenerationEnded,
+	InteractiveEngineGenerationEndedListener,
+	InteractiveEngineGenerationEndKind,
+} from "../interactive-engine/engine-generation.ts";
 import { InteractiveEngineMonitor } from "../interactive-engine/engine-monitor.ts";
 import {
 	type EngineKeybindingState,
@@ -58,6 +63,11 @@ export interface RpcClientOptions {
 	interactiveEngine?: {
 		onDiagnostic: (diagnostic: ActivityWatchdogDiagnostic) => void;
 		onActivityChange?: (active: boolean) => void;
+		/**
+		 * Credential for the engine child. Delivered through the protected
+		 * bootstrap file, never through the child's environment or argv.
+		 */
+		apiKey?: string;
 	};
 }
 
@@ -111,6 +121,8 @@ export class RpcClient extends RpcClientApi {
 	private eventBuffer: RpcEventBuffer | undefined;
 	private stdinWriter: QueuedWriter | undefined;
 	private generation = 0;
+	private lastEndedGeneration = 0;
+	private generationEndedListeners: InteractiveEngineGenerationEndedListener[] = [];
 	private readonly activeActivityIds = new Set<string>();
 	private enginePid: number | undefined;
 
@@ -158,6 +170,9 @@ export class RpcClient extends RpcClientApi {
 			runtimeExecutable: this.options.runtimeExecutable,
 			runtimeArgs: this.options.runtimeArgs,
 			interactiveEngine: this.engineMonitor !== undefined,
+			...(this.options.interactiveEngine?.apiKey
+				? { interactiveEngineApiKey: this.options.interactiveEngine.apiKey }
+				: {}),
 		});
 		this.process = childProcess;
 		this.stdinWriter = new QueuedWriter(childProcess.stdin!);
@@ -171,6 +186,7 @@ export class RpcClient extends RpcClientApi {
 			this.activeActivityIds.clear();
 			this.options.interactiveEngine?.onActivityChange?.(false);
 			this.rejectPendingRequests(error);
+			this.publishGenerationEnded(generation, error, "exit", false);
 		});
 		childProcess.once("error", (error) => {
 			if (generation !== this.generation) return;
@@ -178,6 +194,7 @@ export class RpcClient extends RpcClientApi {
 			this.stdinWriter?.close(error);
 			this.engineMonitor?.fail(error);
 			this.rejectPendingRequests(error);
+			this.publishGenerationEnded(generation, error, "process-error", false);
 		});
 		childProcess.stdin?.on("error", (error) => {
 			if (generation !== this.generation) return;
@@ -185,6 +202,7 @@ export class RpcClient extends RpcClientApi {
 			this.stdinWriter?.close(error);
 			this.engineMonitor?.fail(error);
 			this.rejectPendingRequests(error);
+			this.publishGenerationEnded(generation, error, "stdin-error", false);
 		});
 		childProcess.stderr?.on("data", (data) => {
 			if (generation !== this.generation) return;
@@ -216,18 +234,28 @@ export class RpcClient extends RpcClientApi {
 	async stop(): Promise<void> {
 		const child = this.process;
 		if (!child) return;
+		const endedGeneration = this.generation;
+		const stopError = new Error("Agent process stopped");
 		this.invalidateEngineShortcuts();
 		const terminateTree = this.engineMonitor !== undefined;
 		this.stopReadingStdout?.();
 		this.engineMonitor?.stop();
-		this.stdinWriter?.close(new Error("Agent process stopped"));
+		this.stdinWriter?.close(stopError);
+		// Unblock an in-flight start()/waitUntilBound() for the generation being
+		// replaced. Readiness has no deadline by design, so without this an
+		// explicit stop of a hung replacement child could never be observed.
+		this.engineMonitor?.fail(stopError);
 		this.engineMonitor = undefined;
 		this.stopReadingStdout = null;
 		this.stdinWriter = undefined;
 		this.process = null;
 		this.generation += 1;
+		// Publish before terminating so host controllers tear down this
+		// generation's UI while the writer is already detached: local-only
+		// disposal can never write into the replacement child.
+		this.publishGenerationEnded(endedGeneration, stopError, "explicit-stop", true);
 		await terminateRpcClientProcess(child, terminateTree);
-		this.rejectPendingRequests(new Error("Agent process stopped"));
+		this.rejectPendingRequests(stopError);
 		this.eventBuffer?.dispose();
 		this.eventBuffer = undefined;
 		this.activeActivityIds.clear();
@@ -276,6 +304,18 @@ export class RpcClient extends RpcClientApi {
 		return () => {
 			const index = this.engineMessageListeners.indexOf(messageListener);
 			if (index !== -1) this.engineMessageListeners.splice(index, 1);
+		};
+	}
+
+	/**
+	 * Subscribe to host-local generation death. Fires at most once per
+	 * generation, synchronously, before any restart work.
+	 */
+	onGenerationEnded(listener: InteractiveEngineGenerationEndedListener): () => void {
+		this.generationEndedListeners.push(listener);
+		return () => {
+			const index = this.generationEndedListeners.indexOf(listener);
+			if (index !== -1) this.generationEndedListeners.splice(index, 1);
 		};
 	}
 
@@ -404,7 +444,19 @@ export class RpcClient extends RpcClientApi {
 		for (const { reject } of this.pendingRequests.values()) reject(error);
 		this.pendingRequests.clear();
 	}
+	private publishGenerationEnded(
+		generation: number,
+		error: Error,
+		kind: InteractiveEngineGenerationEndKind,
+		expected: boolean,
+	): void {
+		if (generation <= this.lastEndedGeneration) return;
+		this.lastEndedGeneration = generation;
+		const event: InteractiveEngineGenerationEnded = { generation, error, kind, expected };
+		for (const listener of [...this.generationEndedListeners]) listener(event);
+	}
 	private failTransport(error: Error): void {
+		const generation = this.generation;
 		this.exitError = error;
 		this.stdinWriter?.close(error);
 		this.engineMonitor?.fail(error);
@@ -415,6 +467,7 @@ export class RpcClient extends RpcClientApi {
 			level: "unresponsive",
 			message: error.message,
 		});
+		this.publishGenerationEnded(generation, error, "transport-error", false);
 	}
 	private requireWriter(): QueuedWriter {
 		if (!this.stdinWriter) throw new Error("Agent process stdin is not writable");

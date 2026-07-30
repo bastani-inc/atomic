@@ -35,7 +35,6 @@ export async function createIsolatedInteractiveRuntime(options: {
 		args: buildInteractiveEngineArgs(options.parsed, options.sessionManager, options.resources),
 		env: {
 			...(explicitAgentDir !== undefined ? { [ENV_AGENT_DIR]: explicitAgentDir } : {}),
-			...(options.parsed.apiKey ? { ATOMIC_INTERACTIVE_ENGINE_API_KEY: options.parsed.apiKey } : {}),
 		},
 		interactiveEngine: {
 			onDiagnostic: (diagnostic) =>
@@ -44,6 +43,9 @@ export async function createIsolatedInteractiveRuntime(options: {
 				callbackActive = active;
 				isolatedRuntime?.setEngineCallbackActive(active);
 			},
+			// Handed to the child through the protected bootstrap file so it never
+			// enters an environment the child's own subprocesses can inherit.
+			...(options.parsed.apiKey ? { apiKey: options.parsed.apiKey } : {}),
 		},
 	});
 	try {

@@ -450,13 +450,28 @@ serialTest(
 				8_000,
 				"host streaming interrupt readiness",
 			);
-			driver.send({ type: "input", data: "\u001b" });
-			const terminated = await driver.waitFor(
-				(report) => report.type === "diagnostic" && report.message?.startsWith("Engine terminated;") === true,
+			// Escape only requests a cooperative abort now; the explicit Ctrl+C escape
+			// hatch is what replaces a wedged generation. Wait for THIS tool's stall to
+			// cross the watchdog's unresponsive threshold, not an earlier startup stall.
+			await driver.waitForNext(
+				interruptReadyIndex,
+				(report) =>
+					report.type === "diagnostic" &&
+					report.message?.includes("tool.execute busy_loop") === true &&
+					report.message.includes("Esc interrupt · Ctrl+C terminate"),
 				8_000,
-				"engine termination diagnostic",
+				"engine unresponsive watchdog diagnostic",
 			);
-			assert.ok(terminated);
+			const terminateIndex = driver.reports.length;
+			driver.send({ type: "input", data: "\x03" });
+			const recovering = await driver.waitForNext(
+				terminateIndex,
+				(report) =>
+					report.type === "diagnostic" && report.message === "Interactive engine is not responding; restarting.",
+				8_000,
+				"explicit engine termination notice",
+			);
+			assert.ok(recovering);
 			const probeIndex = driver.reports.length;
 			driver.send({ type: "shortcut", data: "\x19" });
 			const unavailableProbe = await driver.waitForNext(

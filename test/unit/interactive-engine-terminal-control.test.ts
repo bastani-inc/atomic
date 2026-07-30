@@ -23,9 +23,11 @@ import { describe, test } from "vitest";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.ts";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { EngineCustomUiService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-custom-ui.ts";
+import type { InteractiveEngineGenerationEnded } from "../../packages/coding-agent/src/modes/interactive-engine/engine-generation.ts";
 import type { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
 import {
 	INTERACTIVE_ENGINE_PROTOCOL_VERSION,
+	type InteractiveEngineCommand,
 	type InteractiveEngineMessage,
 	parseInteractiveEngineMessage,
 	serializeInteractiveEngineFrame,
@@ -64,9 +66,12 @@ interface Bridge {
 	readonly controller: RemoteComponentController;
 	readonly hostWrites: string[];
 	readonly hostMessages: InteractiveEngineMessage[];
+	readonly childCommands: InteractiveEngineCommand[];
 	readonly mounts: HostMount[];
 	focus: "editor" | "inline" | "overlay";
 	emitEngineReady(pid: number): void;
+	/** Publish the host-local generation-death event (see engine-generation.ts). */
+	emitGenerationEnded(generation: number): void;
 }
 
 function makeBridge(): Bridge {
@@ -74,6 +79,8 @@ function makeBridge(): Bridge {
 	const hostWrites: string[] = [];
 	const hostMessages: InteractiveEngineMessage[] = [];
 	const mounts: HostMount[] = [];
+	const childCommands: InteractiveEngineCommand[] = [];
+	const generationEndedListeners: Array<(event: InteractiveEngineGenerationEnded) => void> = [];
 	const bridge = { focus: "editor" } as Bridge;
 
 	const hostTerminal = { rows: 40, columns: 100, write: (data: string) => hostWrites.push(data) };
@@ -86,11 +93,16 @@ function makeBridge(): Bridge {
 	}, new KeybindingsManager());
 
 	const runtime = {
+		onGenerationEnded: (listener: (event: InteractiveEngineGenerationEnded) => void) => {
+			generationEndedListeners.push(listener);
+			return () => {};
+		},
 		onEngineMessage: (listener: (m: InteractiveEngineMessage) => void) => {
 			engineListeners.push(listener);
 			return () => {};
 		},
 		sendEngineCommand: (command: unknown) => {
+			childCommands.push(command as InteractiveEngineCommand);
 			child.handleLine(serializeInteractiveEngineFrame(command as never));
 		},
 	} as unknown as IsolatedInteractiveRuntime;
@@ -161,7 +173,17 @@ function makeBridge(): Bridge {
 			listener({ type: "engine_ready", protocolVersion: INTERACTIVE_ENGINE_PROTOCOL_VERSION, pid });
 		}
 	};
-	return Object.assign(bridge, { child, controller, hostWrites, hostMessages, mounts });
+	bridge.emitGenerationEnded = (generation: number) => {
+		for (const listener of [...generationEndedListeners]) {
+			listener({
+				generation,
+				error: new Error("Agent process exited (code=null signal=SIGKILL). Stderr: "),
+				kind: "exit",
+				expected: false,
+			});
+		}
+	};
+	return Object.assign(bridge, { child, controller, hostWrites, hostMessages, mounts, childCommands });
 }
 
 /** Simulate the workflow graph overlay factory: enable mouse on mount, record input. */
@@ -390,6 +412,63 @@ describe("isolated overlay mouse bridge (source-path)", () => {
 		await sleep(0);
 		assert.deepEqual(bridge.hostWrites, [HOST_TERMINAL_AUTOWRAP_OFF, HOST_TERMINAL_AUTOWRAP_ON]);
 
+		bridge.controller.dispose();
+	});
+});
+
+describe("engine-death teardown of remote custom UI", () => {
+	test("generation death settles the host promise, restores focus, and resets modes locally", async () => {
+		const bridge = makeBridge();
+		const settled: Array<{ resolved: boolean }> = [];
+		void bridge.child
+			.custom(
+				(_tui, _t, _k, _done) => {
+					remoteTerm(_tui).setMouseScrollTracking?.(true);
+					return { render: () => ["graph"], handleInput: () => {}, invalidate: () => {} };
+				},
+				{ overlay: true },
+			)
+			.then(() => settled.push({ resolved: true }));
+		await Bun.sleep(0);
+		assert.equal(bridge.focus, "overlay");
+		assert.deepEqual(bridge.hostWrites, [HOST_MOUSE_SCROLL_TRACKING_ON]);
+		const commandsBeforeDeath = bridge.childCommands.length;
+
+		bridge.emitGenerationEnded(1);
+		await Bun.sleep(0);
+
+		assert.equal(bridge.focus, "editor", "the dead overlay kept input ownership");
+		assert.deepEqual(bridge.hostWrites, [HOST_MOUSE_SCROLL_TRACKING_ON, HOST_MOUSE_SCROLL_TRACKING_OFF]);
+		// Disposal must be local: the writer already points at a replacement child
+		// whose component IDs restart at remote_component_1, so an engine_custom_dispose
+		// here would address an unrelated component in the new generation.
+		assert.deepEqual(
+			bridge.childCommands.slice(commandsBeforeDeath).map((command) => command.type),
+			[],
+			"death teardown sent a command to the replacement generation",
+		);
+
+		// A later engine_ready from the replacement child is an idempotent no-op.
+		bridge.emitEngineReady(4242);
+		assert.deepEqual(bridge.hostWrites, [HOST_MOUSE_SCROLL_TRACKING_ON, HOST_MOUSE_SCROLL_TRACKING_OFF]);
+		bridge.controller.dispose();
+	});
+
+	test("generation death releases a remote widget key without notifying the new engine", async () => {
+		const bridge = makeBridge();
+		bridge.child.setWidget("remote-widget", () => ({
+			render: () => ["widget"],
+			handleInput: () => {},
+			invalidate: () => {},
+		}));
+		await Bun.sleep(0);
+		const commandsBeforeDeath = bridge.childCommands.length;
+		bridge.emitGenerationEnded(1);
+		await Bun.sleep(0);
+		assert.deepEqual(
+			bridge.childCommands.slice(commandsBeforeDeath).map((command) => command.type),
+			[],
+		);
 		bridge.controller.dispose();
 	});
 });

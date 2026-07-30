@@ -41,6 +41,11 @@ export async function execCommand(
 		const proc = spawn(command, args, {
 			cwd,
 			shell: false,
+			// Pass the environment explicitly. Bun snapshots the process environment
+			// at startup for spawns that omit `env`, so an inherited default would
+			// still carry values this process deleted from `process.env` — including
+			// the interactive-engine control variables and their --api-key.
+			env: { ...process.env },
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 

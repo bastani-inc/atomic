@@ -24,6 +24,8 @@ test("interactive engine host attachment disposes every listener and its editor 
 			extensionUiListeners.add(listener);
 			return () => extensionUiListeners.delete(listener);
 		},
+		// Engine death is not exercised here; the controllers only need the subscription.
+		onGenerationEnded: () => () => {},
 		onEngineMessage: (listener: (message: InteractiveEngineMessage) => void) => {
 			engineListeners.add(listener);
 			return () => engineListeners.delete(listener);

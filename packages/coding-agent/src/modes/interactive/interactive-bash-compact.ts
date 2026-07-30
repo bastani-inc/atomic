@@ -1,5 +1,6 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { BashExecutionComponent, type TruncationResult } from "./interactive-mode-deps.ts";
+import { isEngineSendFailure } from "./interactive-prompt-restore.ts";
 
 /** Warning shown when `/compact` is submitted while a compaction is already running. */
 export const COMPACTION_ALREADY_IN_PROGRESS_WARNING =
@@ -65,10 +66,14 @@ InteractiveModeBase.prototype.handleBashCommand = async function (
 	}
 	this.ui.requestRender();
 
+	let acknowledged = false;
 	try {
 		const result = await this.session.executeBash(
 			command,
 			(chunk) => {
+				// Any output proves the engine accepted and started the command, so a
+				// later transport failure must not resurrect the submission.
+				acknowledged = true;
 				if (this.bashComponent) {
 					this.bashComponent.appendOutput(chunk);
 					this.ui.requestRender();
@@ -89,7 +94,13 @@ InteractiveModeBase.prototype.handleBashCommand = async function (
 		if (this.bashComponent) {
 			this.bashComponent.setComplete(undefined, false);
 		}
+		this.bashComponent = undefined;
+		this.ui.requestRender();
+		// A send the engine never accepted belongs to the submit handler, which
+		// restores the `!` draft. Everything else stays a rendered bash failure.
+		if (!acknowledged && isEngineSendFailure(error)) throw error;
 		this.showError(`Bash command failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+		return;
 	}
 
 	this.bashComponent = undefined;
@@ -120,8 +131,11 @@ InteractiveModeBase.prototype.handleCompactCommand = async function (this: Inter
 
 	try {
 		await this.session.compact();
-	} catch {
-		// Ignore, will be emitted as an event
+	} catch (error) {
+		// Compaction failures arrive as events, so they stay ignored here — except
+		// a send the engine never accepted, which the submit handler turns back
+		// into an editor draft.
+		if (isEngineSendFailure(error)) throw error;
 	}
 };
 

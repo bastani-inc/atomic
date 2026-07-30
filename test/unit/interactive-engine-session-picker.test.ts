@@ -71,6 +71,8 @@ function makeBridge(): Bridge {
 	});
 
 	const runtime = {
+		// Engine death is not exercised here; the controllers only need the subscription.
+		onGenerationEnded: () => () => {},
 		onEngineMessage: (listener: (message: InteractiveEngineMessage) => void) => {
 			engineListeners.push(listener);
 			return () => {};

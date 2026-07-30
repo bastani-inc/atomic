@@ -40,6 +40,9 @@ test("isolated host treats an engine-published extension model as configured aft
 	};
 	const client = {
 		onEvent: () => () => {},
+		// Host-local engine lifecycle surface required by IsolatedInteractiveRuntime.
+		onGenerationEnded: () => () => {},
+		onInteractiveEngineMessage: () => () => {},
 		getState: async () => ({
 			thinkingLevel: "off" as const,
 			isStreaming: false,
@@ -120,6 +123,9 @@ test("an aborted isolated refresh does not replace the current model catalog", a
 	});
 	const client = {
 		onEvent: () => () => {},
+		// Host-local engine lifecycle surface required by IsolatedInteractiveRuntime.
+		onGenerationEnded: () => () => {},
+		onInteractiveEngineMessage: () => () => {},
 		getState: async () => ({
 			thinkingLevel: "off" as const,
 			isStreaming: false,
@@ -185,6 +191,9 @@ test("isolated host synchronizes authoritative engine fallback state and clears 
 	};
 	const client = {
 		onEvent: () => () => {},
+		// Host-local engine lifecycle surface required by IsolatedInteractiveRuntime.
+		onGenerationEnded: () => () => {},
+		onInteractiveEngineMessage: () => () => {},
 		getState: async () => state,
 		requestInternal: async () => ({ models: [model], scopedModels: [], customAuthProviders: [] }),
 		setModel: async () => model,
@@ -253,6 +262,9 @@ test("isolated explicit cycle clears fallback only for a changed model despite a
 	let session!: AgentSession;
 	const client = {
 		onEvent: () => () => {},
+		// Host-local engine lifecycle surface required by IsolatedInteractiveRuntime.
+		onGenerationEnded: () => () => {},
+		onInteractiveEngineMessage: () => () => {},
 		cycleModel: async () => {
 			if (behavior === "throw") throw new Error("remote cycle failed");
 			if (behavior === "null") return null;
@@ -347,6 +359,9 @@ test("isolated session synchronization replaces each engine-selected session exa
 	let engineSessionFile = firstSession;
 	const client = {
 		onEvent: () => () => {},
+		// Host-local engine lifecycle surface required by IsolatedInteractiveRuntime.
+		onGenerationEnded: () => () => {},
+		onInteractiveEngineMessage: () => () => {},
 		getState: async () => ({
 			thinkingLevel: "off" as const,
 			isStreaming: false,
@@ -399,6 +414,9 @@ test("isolated queue pause reaches the engine before abort and resumes remotely"
 	const calls: string[] = [];
 	const client = {
 		onEvent: () => () => {},
+		// Host-local engine lifecycle surface required by IsolatedInteractiveRuntime.
+		onGenerationEnded: () => () => {},
+		onInteractiveEngineMessage: () => () => {},
 		getState: async () => ({
 			thinkingLevel: "off" as const,
 			isStreaming: true,

@@ -3,6 +3,12 @@ import { rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { flushPersistentCompileCache } from "../../utils/compile-cache.ts";
+import {
+	INTERACTIVE_ENGINE_BOOTSTRAP_FLAG,
+	removeInteractiveEngineBootstrap,
+	writeInteractiveEngineBootstrap,
+} from "../../utils/interactive-engine-bootstrap.ts";
+import { scrubInteractiveEngineEnv } from "../../utils/interactive-engine-env.ts";
 import { killProcessTree, trackDetachedChildPid, untrackDetachedChildPid } from "../../utils/shell.ts";
 import { sleep } from "../../utils/sleep.ts";
 
@@ -14,36 +20,57 @@ export interface RpcClientProcessOptions {
 	runtimeExecutable?: string;
 	runtimeArgs?: string[];
 	interactiveEngine: boolean;
+	/** Credential handed to the engine child through the bootstrap file, never argv or env. */
+	interactiveEngineApiKey?: string;
 }
 
 const guardianFiles = new WeakMap<ChildProcess, string>();
+const bootstrapFiles = new WeakMap<ChildProcess, string>();
 
 export function spawnRpcClientProcess(options: RpcClientProcessOptions): ChildProcess {
 	const guardianFile = options.interactiveEngine
 		? join(tmpdir(), `atomic-engine-guardian-${process.pid}-${crypto.randomUUID()}`)
 		: undefined;
+	// The engine's startup metadata travels in a 0600 file rather than the
+	// environment: a Bun child spawned without an explicit `env` inherits the
+	// runtime's launch-time environment, so anything placed here would remain
+	// reachable by every descendant of the engine no matter what the engine
+	// deletes from its own `process.env` afterwards.
+	const bootstrapFile = options.interactiveEngine
+		? writeInteractiveEngineBootstrap({
+				hostPid: process.pid,
+				guardFile: guardianFile!,
+				...(options.interactiveEngineApiKey ? { apiKey: options.interactiveEngineApiKey } : {}),
+			})
+		: undefined;
 	if (options.interactiveEngine) flushPersistentCompileCache();
-	const child = spawn(
-		options.runtimeExecutable ?? "bun",
-		[...(options.runtimeArgs ?? []), ...(options.cliPath ? [options.cliPath] : []), ...options.cliArgs],
-		{
-			cwd: options.cwd,
-			env: {
-				...process.env,
-				...options.env,
-				...(options.interactiveEngine
-					? {
-							ATOMIC_INTERACTIVE_ENGINE_CHILD: "1",
-							ATOMIC_INTERACTIVE_ENGINE_HOST_PID: String(process.pid),
-							ATOMIC_INTERACTIVE_ENGINE_GUARD_FILE: guardianFile!,
-						}
-					: {}),
+	const cliArgs = bootstrapFile
+		? [...options.cliArgs, INTERACTIVE_ENGINE_BOOTSTRAP_FLAG, bootstrapFile]
+		: options.cliArgs;
+	let child: ChildProcess;
+	try {
+		child = spawn(
+			options.runtimeExecutable ?? "bun",
+			[...(options.runtimeArgs ?? []), ...(options.cliPath ? [options.cliPath] : []), ...cliArgs],
+			{
+				cwd: options.cwd,
+				env: scrubInteractiveEngineEnv({ ...process.env, ...options.env }),
+				detached: options.interactiveEngine && process.platform !== "win32",
+				stdio: ["pipe", "pipe", "pipe"],
 			},
-			detached: options.interactiveEngine && process.platform !== "win32",
-			stdio: ["pipe", "pipe", "pipe"],
-		},
-	);
+		);
+	} catch (error) {
+		removeInteractiveEngineBootstrap(bootstrapFile);
+		throw error;
+	}
 	if (guardianFile) guardianFiles.set(child, guardianFile);
+	if (bootstrapFile) {
+		bootstrapFiles.set(child, bootstrapFile);
+		// The child unlinks the file after reading it; this only covers a child
+		// that died before the handshake.
+		child.once("error", () => removeInteractiveEngineBootstrap(bootstrapFile));
+		child.once("exit", () => removeInteractiveEngineBootstrap(bootstrapFile));
+	}
 	if (options.interactiveEngine && child.pid) {
 		trackDetachedChildPid(child.pid);
 		child.once("exit", () => untrackDetachedChildPid(child.pid!));
@@ -52,6 +79,7 @@ export function spawnRpcClientProcess(options: RpcClientProcessOptions): ChildPr
 }
 
 export async function terminateRpcClientProcess(child: ChildProcess, processTree: boolean): Promise<void> {
+	removeInteractiveEngineBootstrap(bootstrapFiles.get(child));
 	if (child.exitCode !== null || child.signalCode !== null) return;
 	let resolveExit!: () => void;
 	const exited = new Promise<void>((resolve) => {

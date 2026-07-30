@@ -21,6 +21,7 @@ import type { InteractiveEngineMessage } from "./protocol.ts";
 export class SessionPickerHostController {
 	private readonly mounted = new Map<string, HostSessionPickerMount>();
 	private readonly unsubscribe: () => void;
+	private readonly unsubscribeGenerationEnded: () => void;
 
 	private readonly runtime: IsolatedInteractiveRuntime;
 	private readonly ui: ExtensionUIContext;
@@ -29,10 +30,14 @@ export class SessionPickerHostController {
 		this.runtime = runtime;
 		this.ui = ui;
 		this.unsubscribe = runtime.onEngineMessage((message) => this.handleMessage(message));
+		// Unmount on engine death instead of waiting for the next `engine_ready`,
+		// which never arrives when a restart hangs or fails.
+		this.unsubscribeGenerationEnded = runtime.onGenerationEnded(() => this.disposeAll());
 	}
 
 	dispose(): void {
 		this.unsubscribe();
+		this.unsubscribeGenerationEnded();
 		this.disposeAll();
 	}
 

@@ -342,6 +342,9 @@ describe("logout credential invalidation (#1919)", () => {
 		};
 		const client = {
 			onEvent: () => () => {},
+		// Host-local engine lifecycle surface required by IsolatedInteractiveRuntime.
+		onGenerationEnded: () => () => {},
+		onInteractiveEngineMessage: () => () => {},
 			getCommands: async () => [],
 			getState: async () => ({
 				model,

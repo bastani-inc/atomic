@@ -1,7 +1,9 @@
+import { terminateInteractiveEngine } from "../interactive-engine/extension-ui-bridge.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { APP_TITLE, chalk, killTrackedDetachedChildren } from "./interactive-mode-deps.ts";
 import { formatResumeCommand, isDeadTerminalError } from "./interactive-mode-helpers.ts";
 import { pauseAndAbortInteractiveSession } from "./interactive-pause.ts";
+import { restoreFailedSubmissionDraft } from "./interactive-prompt-restore.ts";
 
 const SHUTDOWN_INPUT_DRAIN_MAX_MS = 250;
 const SHUTDOWN_INPUT_DRAIN_IDLE_MS = 50;
@@ -28,6 +30,15 @@ InteractiveModeBase.prototype.handleCtrlC = function (this: InteractiveModeBase)
 InteractiveModeBase.prototype.interruptActiveOperation = function (this: InteractiveModeBase): boolean {
 	// Mirror the Escape interrupt paths so Ctrl+C aborts whichever operation is
 	// currently running. Returns true when something was aborted.
+	//
+	// Escalate first when the interactive engine owes a cooperative abort or the
+	// heartbeat watchdog calls it unresponsive: that is the explicit termination
+	// the watchdog advertises with "Esc interrupt · Ctrl+C terminate". Every
+	// cooperative route below would otherwise queue another request for a child
+	// that cannot answer.
+	if (terminateInteractiveEngine(this.runtimeHost)) {
+		return true;
+	}
 	if (this.session.isStreaming || this.session.agent.hasQueuedMessages()) {
 		pauseAndAbortInteractiveSession(this);
 		return true;
@@ -206,15 +217,28 @@ InteractiveModeBase.prototype.handleCtrlZ = function (this: InteractiveModeBase)
 };
 
 InteractiveModeBase.prototype.handleFollowUp = async function (this: InteractiveModeBase): Promise<void> {
-	const text = (this.editor.getExpandedText?.() ?? this.editor.getText()).trim();
+	const rawText = this.editor.getExpandedText?.() ?? this.editor.getText();
+	const text = rawText.trim();
 	if (!text) return;
+
+	// Alt+Enter dispatches straight to the engine, exactly like the direct
+	// branches of the Enter handler, so it needs the same send-failure restore:
+	// otherwise a queued follow-up submitted while the engine is gone is lost.
+	const dispatch = async (send: () => Promise<void>): Promise<void> => {
+		try {
+			await send();
+		} catch (error) {
+			if (!restoreFailedSubmissionDraft(this, error, rawText)) throw error;
+			this.showError(error instanceof Error ? error.message : "Unknown error occurred");
+		}
+	};
 
 	// Queue input during compaction (extension commands execute immediately)
 	if (this.session.isCompacting) {
 		if (this.isExtensionCommand(text)) {
 			this.editor.addToHistory?.(text);
 			this.editor.setText("");
-			await this.session.prompt(text);
+			await dispatch(() => this.session.prompt(text));
 		} else {
 			this.queueCompactionMessage(text, "followUp");
 		}
@@ -226,9 +250,11 @@ InteractiveModeBase.prototype.handleFollowUp = async function (this: Interactive
 	if (this.session.isStreaming) {
 		this.editor.addToHistory?.(text);
 		this.editor.setText("");
-		await this.session.prompt(text, { streamingBehavior: "followUp" });
-		this.updatePendingMessagesDisplay();
-		this.ui.requestRender();
+		await dispatch(async () => {
+			await this.session.prompt(text, { streamingBehavior: "followUp" });
+			this.updatePendingMessagesDisplay();
+			this.ui.requestRender();
+		});
 	}
 	// If not streaming, Alt+Enter acts like regular Enter (trigger onSubmit)
 	else if (this.editor.onSubmit) {
