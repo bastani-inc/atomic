@@ -15,9 +15,20 @@ Companion packages under `packages/*` ship as **raw TypeScript** (no compile ste
 
 ## Tech Stack
 
-- **[Bun](https://bun.sh) ≥ 1.3.14** for the runtime, package manager, and test runner
+This repo runs a **hybrid toolchain**, like upstream pi. Each tool is used where it is
+actually better, rather than one runtime being mandated everywhere.
+
+| Task | Tool | Why |
+| --- | --- | --- |
+| Dependency install | `bun install` | `bun.lock` is the lockfile, and `bunfig.toml` carries the `minimumReleaseAge` supply-chain gate and `linker = "hoisted"` |
+| Scripts, dev runtime, TS execution | `bun run`, `bun <file.ts>` | Runs `.ts` directly and resolves `.js` specifiers to `.ts` source with no loader hook |
+| Root test suites | `bun test` (`test/unit`, `test/integration`, `test/ci`) | `bun:test` + `node:assert/strict` |
+| `packages/coding-agent` suite | `vitest --run` | Inherited from upstream pi, which uses vitest for its workspace tests |
+| npm-package smoke tests | Node (`node-version: 24` in CI) | `test/integration/installed-package-node-extensions.test.ts` verifies the shipped `atomic` bin under `#!/usr/bin/env node`, which is how npm/bun installs run it |
+| Binary compilation | `bun build --compile` | Cross-compiles the single-file executables; upstream pi uses Bun for exactly this step too |
+| Registry publish | `npm publish --provenance` | npm's OIDC-signed provenance lives in the npm CLI, and npm trusted publishing requires a GitHub-hosted runner |
+
 - TypeScript ≥ 5.x (strict, `noUnusedLocals`, `noUnusedParameters`)
-- `bun:test` + `node:assert/strict` for tests
 - `@sinclair/typebox` for schema definitions
 - `jiti` for runtime TS loading where needed
 
@@ -25,18 +36,17 @@ Companion packages under `packages/*` ship as **raw TypeScript** (no compile ste
 
 ### Commands
 
-Default to using **Bun**, not Node/npm/yarn/pnpm.
-
-- Use `bun <file.ts>` instead of `node --experimental-strip-types <file.ts>` or `ts-node <file>`
-- Use `bun test <path>` instead of `node --test` or Jest/Vitest CLIs
-- Use `bun run typecheck` to run TypeScript type checks (`tsc --noEmit`)
-- Use `bun install` instead of `npm install`, `yarn install`, or `pnpm install`
-- Use `bun run <script>` instead of `npm run <script>`
-- Use `bunx <package> <command>` instead of `npx <package> <command>`
-- Repo commands: `bun run test:unit`, `bun run test:integration`, `bun run test:all`, `bun run typecheck`, `bun run check:file-length`, `bun run lint`, `bun run hooks:install`, `bun run hooks:run`
+- `bun install` — install dependencies (writes `bun.lock`)
+- `bun run typecheck` / `bun run lint` — `tsc --noEmit`
+- `bun run test:unit`, `bun run test:integration`, `bun run test:ci-contracts`, `bun run test:all`
+- `bun run --cwd packages/coding-agent test` — the vitest suite
+- `bun run hooks:install`, `bun run hooks:run`
+- `bunx <package> <command>` for one-off tools
 - Git hooks are configured in `prek.toml`; `bun install` runs the root `prepare` script to install hooks with `prek install --prepare-hooks` using `default_install_hook_types`.
 
-**Exception — publishing:** `npm publish --provenance` is still the registry publish tool because npm's OIDC-signed provenance lives in the npm CLI. Everything else is Bun.
+**One hard rule remains:** do not run `npm install`, `yarn install`, or `pnpm install` in this
+workspace. They write a competing lockfile, desync `bun.lock`, and bypass the `minimumReleaseAge`
+gate in `bunfig.toml`. Every other npm/Node use above is deliberate.
 
 ## Best Practices
 
@@ -93,8 +103,7 @@ Set any of the following environment variables to enable AI-friendly output:
 
 ### Code Quality
 
-- Frequently run linters and type checks using `bun run typecheck` and `bun run lint` (both `tsc --noEmit`), and run `bun run check:file-length` to enforce the 500-line file-length gate.
-- Keep tracked TypeScript, JavaScript, and Rust source-like files at or below 500 physical lines. `bun run check:file-length` enforces `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, and `.rs` files with only the documented generated/vendored glob exclusions (`node_modules`, `dist`, `target`, `binaries`, `.git`, `vendor`, `*.min.js`, `*.min.mjs`, `packages/workflows/skills/impeccable/**`) and first-five-line generated markers (`@generated`, `auto-generated`, `DO NOT EDIT`, `GENERATED -- do not edit`). Do not add grandfather or baseline allowlists for oversized authored files.
+- Frequently run linters and type checks using `bun run typecheck` and `bun run lint` (both `tsc --noEmit`).
 - Avoid `any` and `unknown` types.
 - Modularize code and avoid re-inventing the wheel. Use functionality of libraries and SDKs whenever possible.
 
@@ -229,7 +238,10 @@ Note: npm provenance publishing uses GitHub OIDC trusted publishing and must not
 4. When modifying this extension, follow pi's extension and SDK conventions.
 
 <EXTREMELY_IMPORTANT>
-This repo uses **Bun (≥ 1.3.14)** for development, scripts, and tests. Do NOT use `node`, `npm`, `npx`, `yarn`, or `pnpm` for development commands. Always use `bun`, `bunx`, and `bun run`. The only acceptable exception is `npm publish --provenance` for the release flow (OIDC provenance is npm-CLI-specific).
+`@bastani/workflows` ships raw `.ts` files with no build step — do NOT introduce `dist/`, `tsconfig.build.json`, `outDir`, or any bundling.
 
-`@bastani/workflows` ships raw `.ts` files with no build step — do NOT introduce `dist/`, `tsconfig.build.json`, `outDir`, or any bundling. Tests run via Bun's built-in `bun:test` runner.
+Never run `npm install`, `yarn install`, or `pnpm install` here. This is a Bun workspace: a
+competing lockfile desyncs `bun.lock` and bypasses the `minimumReleaseAge` supply-chain gate in
+`bunfig.toml`. Use `bun install`. See the Tech Stack table for where Node, vitest, and npm are
+used deliberately.
 </EXTREMELY_IMPORTANT>

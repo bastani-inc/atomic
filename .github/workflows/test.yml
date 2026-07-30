@@ -18,7 +18,7 @@ on:
 #   suites          build package -> unit -> integration
 #   agent-suite     build native bindings -> coding-agent vitest
 #   release-archive build package -> build-binaries.sh -> archive smoke
-#   static-checks   typecheck, file length, docs, Mintlify, CI contracts (Linux)
+#   static-checks   typecheck, docs, Mintlify, CI contracts (Linux)
 #   test            result gate; carries the two required check contexts
 #
 # Nothing is passed between jobs as an artifact: rebuilding in parallel is
@@ -326,8 +326,6 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Typecheck
         run: bun run typecheck
-      - name: File length check
-        run: bun run check:file-length
       - name: Docs link validation
         working-directory: packages/coding-agent
         run: bun run docs:check

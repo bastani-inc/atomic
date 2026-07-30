@@ -3,7 +3,7 @@
  *
  * Extracted from `status.ts` (which stays focused on lifecycle status,
  * cancellation, and resume helpers) so both files respect the repository
- * file-length gate.
+ * focused modules.
  *
  * cross-ref: spec §5.5
  */

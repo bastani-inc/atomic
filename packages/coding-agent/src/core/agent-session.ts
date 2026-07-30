@@ -3,7 +3,7 @@
  *
  * The historical import path is preserved here as a facade. Responsibilities are
  * implemented in sibling modules by lifecycle area so each authored source file
- * stays below the repository file-length gate.
+ * stays focused.
  */
 
 import type {

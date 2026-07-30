@@ -2,7 +2,7 @@
  * Interactive argument picker for /workflow invocations.
  *
  * Public facade kept for existing imports; implementation lives in sibling
- * modules so each source file stays within the repository file-length gate.
+ * modules so each source file stays focused.
  */
 
 export {

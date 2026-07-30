@@ -23,7 +23,6 @@
     "test:ci-contracts": "bun test --timeout 30000 test/ci",
     "test:all": "bun run test:unit && bun run test:integration",
     "typecheck": "tsc --noEmit",
-    "check:file-length": "bun scripts/check-file-length.ts",
     "check:shrinkwrap": "bun run scripts/generate-coding-agent-shrinkwrap.mjs --check",
     "shrinkwrap:coding-agent": "bun run scripts/generate-coding-agent-shrinkwrap.mjs",
     "lint": "tsc --noEmit"

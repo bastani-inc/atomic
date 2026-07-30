@@ -1,6 +1,6 @@
 /**
  * Fan-in entrypoint for historical targeted overlay graph test commands.
- * The behavioral coverage lives in split shards to satisfy the file-length gate.
+ * The behavioral coverage lives in split shards.
  */
 import "./overlay-graph-animation.test.js";
 import "./overlay-graph-expanded.test.js";

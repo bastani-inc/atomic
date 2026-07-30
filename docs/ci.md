@@ -10,7 +10,7 @@ Pull request / selected branch push
    ├─ suites (Linux, Windows): build package -> unit -> integration
    ├─ agent-suite (Linux, Windows): native bindings -> coding-agent vitest
    ├─ release-archive (Linux, Windows): build package -> binaries -> smoke
-   ├─ static-checks (Linux): typecheck, file length, docs, Mintlify, contracts
+   ├─ static-checks (Linux): typecheck, docs, Mintlify, contracts
    └─ test (2 legs): result gate carrying both required contexts
 
 Release tag push (`0.9.10` or `0.9.10-alpha.1`)
@@ -43,7 +43,7 @@ The test workflow runs on pushes to `main`, `release/**`, and `prerelease/**`, a
 | `suites` | both | build `@bastani/atomic` -> unit -> integration | 121 s | 195 s |
 | `agent-suite` | both | build native bindings -> coding-agent vitest | 126 s | 232 s |
 | `release-archive` | both | build package -> `scripts/build-binaries.sh` -> archive smoke | 74 s | 149 s |
-| `static-checks` | Linux only | typecheck, file length, docs links, Mintlify, CI contracts | 30 s | – |
+| `static-checks` | Linux only | typecheck, docs links, Mintlify, CI contracts | 30 s | – |
 | `test` | 2 gate legs | assert every work-job result is `success` | 15 s | – |
 
 Those are the per-step costs sampled from four sequential-job runs, which put the critical path on the Windows `agent-suite` chain at about 247 s against the 452 s (434–483 s, n=3 healthy) the single sequential job measured. Runner-seconds rise about 35 % (709 s to roughly 957 s); that is the price of the wall-clock cut.
@@ -61,7 +61,7 @@ Those are the per-step costs sampled from four sequential-job runs, which put th
 
 Read this carefully before planning further work, because it says two different things.
 
-The topology behaves exactly as designed. All seven work jobs started within 68 s of run creation, so Blacksmith does not cap concurrency below seven and the queueing risk did not materialize. `static-checks` was green in 32–50 s, giving feedback on typecheck and file length that used to arrive only at the end of a 257 s job. The gate costs 3–5 s. Both required contexts appear with byte-identical names.
+The topology behaves exactly as designed. All seven work jobs started within 68 s of run creation, so Blacksmith does not cap concurrency below seven and the queueing risk did not materialize. `static-checks` was green in 32–50 s, giving feedback on typecheck that used to arrive only at the end of a 257 s job. The gate costs 3–5 s. Both required contexts appear with byte-identical names.
 
 The saving is nevertheless about 15 s, not the estimated 205 s, because the sequential-job sampling that produced the table above understated the Windows steps by roughly 1.5x:
 

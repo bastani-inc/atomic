@@ -3,7 +3,7 @@
  *
  * Capabilities that delegate to the accessible `impeccable` skill
  * (`/skill:impeccable …`), factored into this module so the runner and phases
- * files stay under the 500-line file-length gate:
+ * files stay focused:
  *
  *   1. Discovery + init front door: one `discovery` stage runs
  *      `/skill:impeccable shape` and `/skill:impeccable init`, interviews the

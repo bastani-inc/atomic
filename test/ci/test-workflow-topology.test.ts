@@ -122,7 +122,7 @@ test("build-consuming steps stay in the job that produced the build", async () =
   const staticChecks = blocks.get("static-checks") as string;
   assert.match(staticChecks, /^[ \t]+runs-on: blacksmith-4vcpu-ubuntu-2404$/mu);
   assert.doesNotMatch(staticChecks, /rust-toolchain|setup-node/u);
-  for (const step of ["Typecheck", "File length check", "Docs link validation", "Mintlify docs validation", "Deterministic CI and release contracts"]) {
+  for (const step of ["Typecheck", "Docs link validation", "Mintlify docs validation", "Deterministic CI and release contracts"]) {
     namedStep(jobSteps(staticChecks), step);
   }
   assert.match(namedStep(jobSteps(staticChecks), "Deterministic CI and release contracts"), /run: bun run test:ci-contracts/u);

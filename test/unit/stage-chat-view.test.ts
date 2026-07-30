@@ -1,6 +1,6 @@
 /**
  * Fan-in entrypoint for historical targeted StageChatView test commands.
- * The behavioral coverage lives in split shards to satisfy the file-length gate.
+ * The behavioral coverage lives in split shards.
  */
 import "./stage-chat-view-01.test.js";
 import "./stage-chat-view-02.test.js";

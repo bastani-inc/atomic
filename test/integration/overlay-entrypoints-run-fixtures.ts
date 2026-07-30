@@ -1,7 +1,7 @@
 /**
  * Run/stage store fixtures shared by the overlay entrypoint integration
  * tests. Split from overlay-entrypoints-helpers.ts (re-exported there) to
- * keep both files under the repository file-length gate.
+ * keep both files focused.
  */
 import type { createStore } from "../../packages/workflows/src/shared/store.js";
 

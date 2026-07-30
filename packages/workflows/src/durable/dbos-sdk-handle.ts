@@ -3,7 +3,7 @@
  *
  * Wraps the DBOS static executor into the {@link DbosSdkHandle} seam used by
  * {@link DbosDurableBackend}. Kept separate from the backend adapter so both
- * files stay within the repository file-length gate.
+ * files stay focused.
  */
 
 import type { WorkflowSerializableValue } from "../shared/types.js";

@@ -1,4 +1,4 @@
-// Executor tests were split by feature to satisfy the 500-line file limit.
+// Executor tests are split by feature to keep each file focused.
 import "./executor-abort-kill-wiring.test.js";
 import "./executor-concurrency-limiter.test.js";
 import "./executor-hil-adapter-injection.test.js";

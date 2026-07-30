@@ -9,7 +9,6 @@ git clone https://github.com/bastani-inc/atomic
 cd atomic
 bun install
 bun run typecheck
-bun run check:file-length
 ```
 
 This monorepo uses Bun for development commands; avoid npm/yarn/pnpm except for npm registry publishing. Run package scripts from the monorepo root or package directory with Bun, for example:
@@ -62,7 +61,6 @@ Set `ATOMIC_TIMING=1` when profiling startup. Normal interactive launches print 
 
 ```bash
 bun run typecheck                 # Type-check the monorepo
-bun run check:file-length         # Enforce the tracked TS/JS/Rust 500-line limit
 bun run test:unit                 # Run unit tests
 bun run test:integration          # Run integration tests
 bun run test:all                  # Run all tests

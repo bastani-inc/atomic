@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js";
 
 /** Shared fixtures for the subagent attempt-watchdog and model-candidate
- * filtering test suites (split to satisfy the 500-line file gate). */
+ * filtering test suites. */
 
 const transientRemovalCodes = new Set(["EBUSY", "EMFILE", "ENFILE", "ENOTEMPTY", "EPERM"]);
 
