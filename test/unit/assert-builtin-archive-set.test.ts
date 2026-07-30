@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { buffer } from "node:stream/consumers";
 import JSZip from "jszip";
 import { extract as tarExtract, pack as tarPack } from "tar-stream";
@@ -55,7 +55,15 @@ async function unpackTar(bytes: Uint8Array, root: string): Promise<void> {
 		extractor.on("error", reject);
 	});
 	extractor.on("entry", (header, stream, next) => {
-		const target = join(root, header.name);
+		// A tar entry name is attacker-controlled and may contain `..`, so joining
+		// it onto the root can write outside the extraction directory ("Zip Slip").
+		// Refuse any entry that does not resolve inside root.
+		const target = resolve(root, header.name);
+		const containedRoot = resolve(root);
+		if (target !== containedRoot && !target.startsWith(containedRoot + sep)) {
+			next(new Error(`Refusing archive entry outside the extraction root: ${header.name}`));
+			return;
+		}
 		void buffer(stream).then((contents) => {
 			if (header.type === "directory") mkdirSync(target, { recursive: true });
 			else {

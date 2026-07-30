@@ -15,6 +15,7 @@
 import * as path from "node:path";
 import type { ExtensionAPI } from "@bastani/atomic";
 import { CONFIG_DIR_NAME, getAgentDir } from "@bastani/atomic";
+import { Text } from "@earendil-works/pi-tui";
 import type { AgentScope } from "./agents.ts";
 import { discoverAgents } from "./agents.ts";
 import { getFinalOutput } from "./display.js";

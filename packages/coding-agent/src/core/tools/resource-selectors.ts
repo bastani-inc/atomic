@@ -679,7 +679,7 @@ function resolveContainedLocalPath(cwd: string, pathValue: string, label = "loca
 }
 
 function fallbackInternalPath(value: string, cwd: string): string | undefined {
-	const skill = value.match(/^skill:\/\/([^/]+)\/?(.*)$/);
+	const skill = value.match(/^skill:\/\/([^/]+)(?:\/(.*))?$/);
 	if (skill) {
 		const name = skill[1] ?? "",
 			rest = skill[2] || "SKILL.md";
@@ -760,7 +760,7 @@ export async function expandShellInternalUrls(
 	quote = false,
 ): Promise<string> {
 	let output = text;
-	const matches = [...new Set(text.match(/[a-z][a-z0-9+.-]*:\/\/[^\s'"`$)]+/gi) ?? [])];
+	const matches = [...new Set(text.match(/(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*:\/\/[^\s'"`$)]+/gi) ?? [])];
 	for (const match of matches) {
 		const resolved = await resolveViaRouter(match, cwd, context);
 		if (resolved) output = output.split(match).join(quote ? shellQuote(resolved) : resolved);
