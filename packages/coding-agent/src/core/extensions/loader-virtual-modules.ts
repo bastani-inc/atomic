@@ -255,6 +255,14 @@ export async function loadExtensionModule(
   // Windows first-load fast path: native import() (jiti's default tryNative)
   // skips per-launch transpilation of the extension module graph. Re-loads of
   // the same path fall back to transformed imports for fresh evaluation.
+  //
+  // That fallback is not free. Measured on Windows CI, a transformed re-import
+  // costs ~15 ms per module file in the extension's transitive graph, so a
+  // reload of all five builtin packages (621 files) takes ~10.7 s cold and
+  // ~2.5 s against a warm jiti fsCache, against ~40 ms on Linux and macOS. The
+  // cost is correctness-driven and is paid interactively on every Windows
+  // `/reload`; removing it needs a content-hash-keyed evaluation cache or a
+  // narrower trigger, not a larger timeout.
   const forceTransformedImports = isSingleFileBuild || (isWindows && nativelyImportedPaths.has(extensionPath));
   const jiti = createJiti(resolutionBaseUrl(import.meta.url), {
     moduleCache: false,

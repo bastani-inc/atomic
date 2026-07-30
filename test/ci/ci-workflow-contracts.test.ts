@@ -51,6 +51,35 @@ test("test workflow preserves its two-platform matrix and deterministic contract
   );
 });
 
+/**
+ * The per-test timeout budget lives in package.json and nowhere else.
+ *
+ * Bun 1.3.14 silently ignores `[test] timeout` in bunfig.toml, and CI reaches
+ * every suite through `bun run <script>`, so the scripts are the one choke point
+ * where the local and CI budgets cannot drift apart. A single platform-neutral
+ * value keeps Windows regressions enforced against the same contract as Linux.
+ */
+test("every Bun test suite entry point declares one shared per-test timeout", async () => {
+  const manifest = (await Bun.file(join(root, "package.json")).json()) as { scripts: Record<string, string> };
+  const budgets = new Set<string>();
+  for (const script of ["test:unit", "test:integration", "test:ci-contracts"]) {
+    const command = manifest.scripts[script];
+    assert.ok(command, `missing script: ${script}`);
+    const timeout = /--timeout[= ](\d+)/u.exec(command as string);
+    assert.ok(timeout, `${script} must pass --timeout (bunfig [test] timeout is ignored by Bun)`);
+    const value = Number(timeout[1]);
+    assert.ok(value >= 30_000, `${script} timeout ${value} is below the 30000 ms floor`);
+    assert.ok(value <= 120_000, `${script} timeout ${value} would outlive the Windows job budget`);
+    budgets.add(timeout[1] as string);
+  }
+  assert.equal(budgets.size, 1, `suite timeouts diverged: ${[...budgets].join(", ")}`);
+  assert.doesNotMatch(await Bun.file(join(root, "bunfig.toml")).text(), /^\s*timeout\s*=/mu);
+  assert.match(
+    await Bun.file(join(root, ".github/workflows/test.yml")).text(),
+    /run-flaky-test-suite\.ts/u,
+  );
+});
+
 test("active CI workflows contain no removed Cursor builtin smoke checks", async () => {
   for (const path of [join(root, ".github/workflows/test.yml"), publishPath]) {
     assert.doesNotMatch(await Bun.file(path).text(), /builtin\/cursor/iu, path);

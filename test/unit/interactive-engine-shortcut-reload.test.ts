@@ -318,6 +318,11 @@ serialTest("startup shortcut dispatch waits for extension binding", async () => 
 	}
 }, 12_000);
 
+// This scenario deliberately delays extension session startup by 9 s, so its
+// floor is ~9.7 s of unavoidable waiting. It inherits the shared 30 s suite
+// default rather than carrying an explicit budget: the former explicit 20 s was
+// below that default and left the duration-headroom guard permanently warning
+// on a cost the fixture chose on purpose.
 serialTest("post-bind shortcut readiness survives delayed extension session startup", async () => {
 	const temp = mkdtempSync(join(tmpdir(), "atomic-shortcut-delayed-bind-"));
 	const agentDir = join(temp, "custom-agent");
@@ -351,7 +356,7 @@ serialTest("post-bind shortcut readiness survives delayed extension session star
 		await driver.stop();
 		rmSync(temp, { recursive: true, force: true });
 	}
-}, 20_000);
+});
 
 serialTest("real engine restart republishes bindings and replaces the remote shortcut catalog", async () => {
 	const temp = mkdtempSync(join(tmpdir(), "atomic-shortcut-restart-parity-"));

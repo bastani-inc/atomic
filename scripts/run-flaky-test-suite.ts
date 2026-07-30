@@ -3,6 +3,13 @@
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { cpus, freemem, loadavg, platform, release, totalmem } from "node:os";
 import { basename, resolve } from "node:path";
+import {
+  evaluateDurations,
+  FAIL_RATIO,
+  renderDurationTable,
+  WARN_RATIO,
+  type BudgetedSample,
+} from "./test-duration-guard.js";
 
 interface Options {
   label: string;
@@ -104,6 +111,41 @@ function findFailedDeterministicFile(output: string, files: string[]): string | 
   return undefined;
 }
 
+/**
+ * Duration-headroom gate.
+ *
+ * Raising the suite-wide `--timeout` removes the flake but would otherwise let
+ * tests drift silently toward the new ceiling until the class returns. The gate
+ * scores every duration Bun printed against that test's effective timeout, so a
+ * regression is reported on the slow test itself rather than on whichever
+ * neighbour happened to lose the coin flip. The full table is always written as
+ * an artifact, including on green runs, so cross-platform ratios need one
+ * download instead of a log scrape.
+ */
+function reportDurations(output: string, options: Options, name: string): number {
+  const report = evaluateDurations(output, options.command);
+  mkdirSync(options.diagnosticsDir, { recursive: true });
+  const table = renderDurationTable(report);
+  writeFileSync(
+    resolve(options.diagnosticsDir, `${name}-durations.md`),
+    `# ${options.label}: per-test duration headroom\n\n${table}\n`,
+  );
+  if (!report.enabled) return 0;
+  const describe = (sample: BudgetedSample): string =>
+    `${sample.file} > ${sample.fullName} took ${sample.durationMs.toFixed(0)}ms of its ${sample.timeoutMs}ms budget (${(sample.ratio * 100).toFixed(0)}%).`;
+  for (const sample of report.warnings.slice(0, 10)) {
+    console.error(`::warning title=Slow test: ${options.label}::${describe(sample)}`);
+  }
+  if (report.failures.length === 0) return 0;
+  for (const sample of report.failures.slice(0, 10)) {
+    console.error(`::error title=Timeout headroom exhausted: ${options.label}::${describe(sample)}`);
+  }
+  appendSummary(
+    `### ❌ Timeout headroom exhausted: ${options.label}\n${report.failures.length} test(s) used at least ${FAIL_RATIO * 100} % of their per-test timeout (warning threshold ${WARN_RATIO * 100} %). Raise the specific test's explicit timeout only if the cost is structural, and make it fast otherwise.\n\n${table}`,
+  );
+  return 1;
+}
+
 const options = parseArgs();
 const name = safeName(options.label);
 const firstLog = resolve(options.diagnosticsDir, `${name}-attempt-1.log`);
@@ -112,7 +154,7 @@ rmSync(firstLog, { force: true });
 rmSync(secondLog, { force: true });
 
 const first = await runAttempt(options.command, firstLog, false);
-if (first.code === 0) process.exit(0);
+if (first.code === 0) process.exit(reportDurations(first.output, options, name));
 
 mkdirSync(options.diagnosticsDir, { recursive: true });
 writeFileSync(firstLog, first.output);
@@ -123,6 +165,7 @@ console.error(`\n${debug}\n`);
 
 const deterministicHit = findFailedDeterministicFile(first.output, options.deterministicFiles);
 if (deterministicHit) {
+  reportDurations(first.output, options, name);
   appendSummary(`### ❌ ${options.label}\nNo retry: deterministic test file failed (\`${deterministicHit}\`). First-attempt diagnostics were preserved.`);
   console.error(`No retry: deterministic test file failed (${deterministicHit}).`);
   process.exit(first.code);
@@ -131,10 +174,12 @@ if (deterministicHit) {
 console.error(`Retrying ${options.label} once (smallest safe suite)...`);
 const second = await runAttempt(options.command, secondLog, true);
 if (second.code === 0) {
+  const guard = reportDurations(second.output, options, name);
   appendSummary(`### ⚠️ Detected flake: ${options.label}\nAttempt 1 failed and the single bounded retry passed. Diagnostic logs are retained as CI artifacts.`);
   console.error(`::warning title=Detected flake: ${options.label}::Attempt 1 failed; bounded retry passed. See diagnostic artifact.`);
-  process.exit(0);
+  process.exit(guard);
 }
+reportDurations(second.output, options, name);
 appendSummary(`### ❌ Persistent failure: ${options.label}\nBoth the first attempt and the single bounded retry failed. Both logs are retained.`);
 console.error(`::error title=Persistent failure: ${options.label}::Both attempts failed; see both diagnostic logs.`);
 process.exit(second.code);

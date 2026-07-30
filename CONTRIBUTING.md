@@ -47,6 +47,14 @@ For broader changes, use:
 bun run test:all
 ```
 
+### Per-test timeouts
+
+Every Bun suite runs with a shared **30000 ms** per-test budget, declared as `--timeout 30000` in the `test:unit`, `test:integration`, and `test:ci-contracts` scripts in the root `package.json`. That single value is the whole policy:
+
+- Do not put the budget in `bunfig.toml` (Bun ignores `[test] timeout`) or only in the CI workflow (CI and local runs would drift apart), and do not make it platform-specific.
+- Pass an explicit third-argument timeout only when a test is structurally heavy — it reloads the full builtin package graph, spawns a real CLI child, runs `tsc`, or installs a built package. Otherwise rely on the shared default; never restate it.
+- CI scores every test against its effective timeout and fails the step at 70 % of budget, with the full duration table uploaded as a `.ci-diagnostics/` artifact. If your test trips that gate, make it faster rather than raising the shared default.
+
 ## Pull requests
 
 When opening a PR:

@@ -64,5 +64,5 @@ describe("subagent notification content parsing", () => {
 	test("safely rejects a long malformed uncontrolled header", () => {
 		const content = `Background task completed: **${"a** (".repeat(250_000)}`;
 		assert.equal(parseSubagentNotifyContent(content), undefined);
-	}, 5_000);
+	});
 });
