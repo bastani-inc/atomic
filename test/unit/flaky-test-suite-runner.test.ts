@@ -121,6 +121,11 @@ async function fixture(mode: Mode, options: { declareBudget?: boolean } = {}): P
 				"--no-retry-file",
 				"ci-workflow-contracts.test.ts",
 				"--",
+				// Run the fake suite through Bun rather than relying on the shebang in
+				// an extensionless file: Windows has no shebang support, so Node cannot
+				// exec it. The duration guard steps over a leading Bun runtime and then
+				// matches `basename` against `vitest`, so the budget still resolves.
+				bunExecutable(),
 				"./vitest",
 				"--run",
 				"--project",
