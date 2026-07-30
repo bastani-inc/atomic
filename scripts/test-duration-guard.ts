@@ -269,9 +269,13 @@ interface VitestConfigShape {
 	test?: { name?: string; testTimeout?: number; projects?: VitestConfigShape[] };
 }
 
-const NPM_BINARY = /^(?:npm|npx)(?:\.cmd|\.exe)?$/u;
-const VITEST_BINARY = /^vitest(?:\.cmd|\.exe)?$/u;
-const BUN_BINARY = /^bunx?(?:\.exe)?$/u;
+// Windows resolves executables through PATHEXT, which is conventionally
+// uppercase (`.EXE;.CMD`), and its filesystems match names case-insensitively.
+// The binary checks must match the same way, or a resolved `bun.EXE` head is
+// not recognised as the runtime and the gate silently disables on Windows.
+const NPM_BINARY = /^(?:npm|npx)(?:\.cmd|\.exe)?$/iu;
+const VITEST_BINARY = /^vitest(?:\.cmd|\.exe)?$/iu;
+const BUN_BINARY = /^bunx?(?:\.exe)?$/iu;
 
 function flag(args: string[], name: string): string | undefined {
 	for (let index = 0; index < args.length; index++) {

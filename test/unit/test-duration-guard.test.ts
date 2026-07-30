@@ -325,6 +325,14 @@ test("the suite budget is read from the command or the package script it runs", 
 	);
 	// Bun running something that is not vitest is still not a budget.
 	assert.equal(await resolveDefaultTimeoutMs(["bun", "run", "scripts/cut-release.ts"], root), undefined);
+	// Windows resolves executables through uppercase PATHEXT entries, so the
+	// command head arrives as `...\bun.EXE` or `npm.CMD`. Its filesystems match
+	// case-insensitively; the binary checks must too, or the gate goes dark.
+	assert.equal(
+		await resolveDefaultTimeoutMs(["/tools/bun.EXE", "./vitest", "--run", "--project", "unit"], root),
+		30_000,
+	);
+	assert.equal(await resolveDefaultTimeoutMs(["npm.CMD", "run", "test:unit"], root), 30_000);
 });
 
 test("headroom is scored against the effective timeout, not a fixed ceiling", () => {

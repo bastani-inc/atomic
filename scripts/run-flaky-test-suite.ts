@@ -63,7 +63,7 @@ function safeName(value: string): string {
  */
 function withJsonReporter(command: string[], outputFile: string): string[] {
 	const flags = ["--reporter=default", "--reporter=json", `--outputFile.json=${outputFile}`];
-	const isNpmRun = /^(?:npm|npx)(?:\.cmd|\.exe)?$/u.test(basename(command[0] ?? "")) && command[1] === "run";
+	const isNpmRun = /^(?:npm|npx)(?:\.cmd|\.exe)?$/iu.test(basename(command[0] ?? "")) && command[1] === "run";
 	return isNpmRun ? [...command, "--", ...flags] : [...command, ...flags];
 }
 
