@@ -185,8 +185,7 @@ Run these from the workspace root:
 | `npm run hooks:run`         | Run all `prek.toml` hooks across the repository                  |
 
 `check` runs `tsc --noEmit` and then verifies `packages/coding-agent/npm-shrinkwrap.json` is
-still derivable from `package-lock.json`; `lint` is an alias for `check`. There is no separate
-ESLint pipeline yet — adopting Biome for lint and format, as pi does, is a planned follow-up.
+still derivable from `package-lock.json`; `lint` is an alias for `check`.
 Git hook configuration lives in [`prek.toml`](./prek.toml), not `.pre-commit-config.yaml`.
 
 ---
