@@ -198,7 +198,12 @@ function timeoutTail(lines: string[], index: number): { raw: string; indent: str
 }
 
 /**
- * Map declared test names to their explicit timeout argument.
+ * Map each declared test to its explicit timeout argument, keyed by the fully
+ * qualified `scope > name` Bun reports it under.
+ *
+ * The key is always qualified. Recording a scoped declaration under its bare
+ * terminal name too would lend that budget to a same-named test in a sibling
+ * scope that declared none, scoring it against a timeout Bun never gave it.
  *
  * The scan is line-based rather than AST-based on purpose: it must never throw
  * on syntax it does not model, and an unresolved declaration degrades to the
@@ -226,20 +231,22 @@ export function declaredTimeouts(source: string): Map<string, number> {
       if (!opener || opener[1] !== tail.indent) continue;
       const head = lines.slice(back, back + 3).join(" ").slice((opener[0] as string).length);
       const name = NAME_LITERAL.exec(head)?.[2];
-      if (name) {
-        const qualified = [...describeScopes(lines, back, tail.indent), name].join(" > ");
-        record(qualified, value);
-        if (qualified !== name) record(name, value);
-      }
+      if (name) record([...describeScopes(lines, back, tail.indent), name].join(" > "), value);
       break;
     }
   }
   return declared;
 }
 
-function timeoutIndex(rootDir: string): (file: string, name: string, fullName: string) => number | undefined {
+/**
+ * Look a sample's explicit budget up by the qualified name Bun printed. There
+ * is deliberately no bare-name fallback: a declaration this scan could not
+ * qualify degrades to the suite default rather than borrowing the budget of a
+ * same-named test declared elsewhere in the file.
+ */
+function timeoutIndex(rootDir: string): (file: string, fullName: string) => number | undefined {
   const cache = new Map<string, Map<string, number>>();
-  return (file, name, fullName) => {
+  return (file, fullName) => {
     if (!file) return undefined;
     let declared = cache.get(file);
     if (!declared) {
@@ -247,7 +254,7 @@ function timeoutIndex(rootDir: string): (file: string, name: string, fullName: s
       declared = existsSync(path) ? declaredTimeouts(readFileSync(path, "utf8")) : new Map<string, number>();
       cache.set(file, declared);
     }
-    return declared.get(fullName) ?? declared.get(name);
+    return declared.get(fullName);
   };
 }
 
@@ -256,14 +263,15 @@ function timeoutIndex(rootDir: string): (file: string, name: string, fullName: s
  * `bun run <script>` indirection into package.json. Returns undefined when the
  * command declares no budget, which disables the gate rather than inventing one.
  *
- * Only a Bun test invocation is read for a budget. `--timeout` means something
- * else to every other runner, so accepting it from an arbitrary wrapped command
- * would score unrelated output against a budget Bun never applied.
+ * Only a Bun *test* invocation is read for a budget. `--timeout` means something
+ * else to every other runner -- and to Bun's own non-test subcommands -- so
+ * accepting it from `bunx vitest --timeout 10000` or `bun script.ts --timeout
+ * 10000` would score unrelated output against a budget Bun never applied.
  */
 export function resolveDefaultTimeoutMs(command: string[], rootDir: string): number | undefined {
   if (!isBunInvocation(command)) return undefined;
   const script = scriptInvocation(command);
-  if (!script) return timeoutFromArgs(command);
+  if (!script) return subcommand(command) === "test" ? timeoutFromArgs(command) : undefined;
   const manifestPath = resolve(rootDir, script.cwd, "package.json");
   if (!existsSync(manifestPath)) return undefined;
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { scripts?: Record<string, string> };
@@ -320,7 +328,7 @@ export function evaluateDurations(
   const lookup = timeoutIndex(rootDir);
   const samples: BudgetedSample[] = [];
   for (const sample of parseTestDurations(output)) {
-    const explicitTimeout = lookup(sample.file, sample.name, sample.fullName);
+    const explicitTimeout = lookup(sample.file, sample.fullName);
     const timeoutMs = explicitTimeout ?? defaultTimeoutMs ?? BUN_DEFAULT_TIMEOUT_MS;
     samples.push({
       ...sample,

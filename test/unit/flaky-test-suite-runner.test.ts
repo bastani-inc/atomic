@@ -10,38 +10,50 @@ const runner = join(root, "scripts/run-flaky-test-suite.ts");
 
 type Mode = "success" | "flake" | "persistent" | "deterministic" | "headroom" | "retry-headroom" | "quiet";
 
+/**
+ * Drive the wrapper over a scripted transcript.
+ *
+ * The scenarios need output no real suite could produce -- a 25 s sample, a
+ * reporter that prints no durations at all -- but the guard reads a budget only
+ * from a real `bun test` command. So the script that prints them is itself a Bun
+ * test file run by `bun test`, and it exits once its transcript is written so
+ * Bun appends none of its own records to it.
+ */
 async function fixture(mode: Mode, extraArgs: string[] = []): Promise<{ code: number; output: string; files: string[]; summary: string; durations: string }> {
   const dir = mkdtempSync(join(tmpdir(), "atomic-flake-runner-"));
-  const command = join(dir, "fixture.ts");
   const counter = join(dir, "counter");
   const diagnostics = join(dir, "diagnostics");
   const summary = join(dir, "summary.md");
-  writeFileSync(command, `
+  writeFileSync(join(dir, "fixture.test.ts"), `
+    import { test } from "bun:test";
     import { existsSync, readFileSync, writeFileSync } from "node:fs";
-    const counter = ${JSON.stringify(counter)};
-    const attempt = existsSync(counter) ? Number(readFileSync(counter, "utf8")) + 1 : 1;
-    writeFileSync(counter, String(attempt));
-    console.log("fixture attempt " + attempt);
-    const mode = ${JSON.stringify(mode)};
-    if (mode === "flake") console.log("test/unit/ci-workflow-contracts.test.ts:\\n(pass) deterministic contract");
-    if (mode === "headroom") console.log("test/unit/drift.test.ts:\\n(pass) drifting test [25000.00ms]\\n(pass) healthy test [120.00ms]");
-    if (mode === "quiet") console.log(" 2 pass\\n 0 fail\\nRan 2 tests across 1 file. [134.00ms]");
-    if (mode === "retry-headroom") {
-      if (attempt === 1) {
-        console.log("test/unit/drift.test.ts:\\n(pass) drifting test [25000.00ms]");
-        console.error("test/unit/unrelated.test.ts:\\n(fail) unrelated failure");
-        process.exit(7);
+    test("fixture", () => {
+      const counter = ${JSON.stringify(counter)};
+      const attempt = existsSync(counter) ? Number(readFileSync(counter, "utf8")) + 1 : 1;
+      writeFileSync(counter, String(attempt));
+      console.log("fixture attempt " + attempt);
+      const mode = ${JSON.stringify(mode)};
+      if (mode === "flake") console.log("test/unit/ci-workflow-contracts.test.ts:\\n(pass) deterministic contract");
+      if (mode === "headroom") console.log("test/unit/drift.test.ts:\\n(pass) drifting test [25000.00ms]\\n(pass) healthy test [120.00ms]");
+      if (mode === "quiet") console.log(" 2 pass\\n 0 fail\\nRan 2 tests across 1 file. [134.00ms]");
+      if (mode === "retry-headroom") {
+        if (attempt === 1) {
+          console.log("test/unit/drift.test.ts:\\n(pass) drifting test [25000.00ms]");
+          console.error("test/unit/unrelated.test.ts:\\n(fail) unrelated failure");
+          process.exit(7);
+        }
+        console.log("test/unit/drift.test.ts:\\n(pass) drifting test [120.00ms]");
       }
-      console.log("test/unit/drift.test.ts:\\n(pass) drifting test [120.00ms]");
-    }
-    if (mode === "persistent" || (mode === "flake" && attempt === 1)) { console.error("test/unit/unrelated.test.ts:\\n(fail) unrelated failure"); process.exit(7); }
-    if (mode === "deterministic") { console.error("test/ci/ci-workflow-contracts.test.ts:\\n(fail) deterministic contract"); process.exit(8); }
+      if (mode === "persistent" || (mode === "flake" && attempt === 1)) { console.error("test/unit/unrelated.test.ts:\\n(fail) unrelated failure"); process.exit(7); }
+      if (mode === "deterministic") { console.error("test/ci/ci-workflow-contracts.test.ts:\\n(fail) deterministic contract"); process.exit(8); }
+      process.exit(0);
+    });
   `);
   try {
     const processResult = Bun.spawn([
       "bun", runner, "--label", "fixture suite", "--diagnostics-dir", diagnostics,
-      "--no-retry-file", "ci-workflow-contracts.test.ts", "--", "bun", command, ...extraArgs,
-    ], { cwd: root, env: { ...process.env, GITHUB_STEP_SUMMARY: summary }, stdout: "pipe", stderr: "pipe" });
+      "--no-retry-file", "ci-workflow-contracts.test.ts", "--", "bun", "test", ...extraArgs, "fixture.test.ts",
+    ], { cwd: dir, env: { ...process.env, GITHUB_STEP_SUMMARY: summary }, stdout: "pipe", stderr: "pipe" });
     const [stdout, stderr, code] = await Promise.all([
       new Response(processResult.stdout).text(),
       new Response(processResult.stderr).text(),

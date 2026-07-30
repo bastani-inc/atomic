@@ -142,7 +142,7 @@ test("explicit timeouts are resolved from both declaration shapes and never from
   );
 });
 
-test("same-named tests in different describe scopes keep their own explicit budgets", () => {
+test("a scoped explicit budget stays in its own scope and never leaks to a same name", () => {
   const source = [
     'describe("outer", () => {',
     '  test("shared", async () => {',
@@ -155,21 +155,36 @@ test("same-named tests in different describe scopes keep their own explicit budg
     "    }, 10_000);",
     "  });",
     "});",
+    "",
+    'describe("undeclared", () => {',
+    '  test("shared", async () => {',
+    "  });",
+    "});",
   ].join("\n");
   const declared = declaredTimeouts(source);
   assert.equal(declared.get("outer > shared"), 1_000);
   assert.equal(declared.get("other > nested > shared"), 10_000);
+  // A scoped declaration filed under its bare terminal name too would hand that
+  // budget to the sibling scope that declared none, inventing a failure there.
+  assert.equal(declared.get("shared"), undefined);
+  assert.equal(declared.get("undeclared > shared"), undefined);
 
   const directory = mkdtempSync(join(tmpdir(), "atomic-duration-scope-"));
   try {
     writeFileSync(join(directory, "package.json"), JSON.stringify({ scripts: { "test:unit": "bun test --timeout 30000 test/unit" } }));
     writeFileSync(join(directory, "scoped.test.ts"), source);
     const report = evaluateDurations(
-      ["scoped.test.ts:", "(pass) outer > shared [900.00ms]", "(pass) other > nested > shared [900.00ms]"].join("\n"),
+      [
+        "scoped.test.ts:",
+        "(pass) outer > shared [900.00ms]",
+        "(pass) other > nested > shared [900.00ms]",
+        "(pass) undeclared > shared [900.00ms]",
+      ].join("\n"),
       ["bun", "run", "test:unit"],
       directory,
     );
-    assert.deepEqual(report.samples.map((sample) => sample.timeoutMs), [1_000, 10_000]);
+    assert.deepEqual(report.samples.map((sample) => sample.timeoutMs), [1_000, 10_000, 30_000]);
+    assert.deepEqual(report.samples.map((sample) => sample.explicit), [true, true, false]);
     assert.deepEqual(report.failures.map((sample) => sample.fullName), ["outer > shared"]);
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -178,7 +193,9 @@ test("same-named tests in different describe scopes keep their own explicit budg
 
 test("repository declarations resolve to their real budgets", async () => {
   const builtins = declaredTimeouts(await Bun.file(join(root, "test/unit/coding-agent-builtin-workflows.test.ts")).text());
-  assert.equal(builtins.get("loads builtin pi package resources"), 60_000);
+  // Keyed by the qualified name Bun prints, never by the bare terminal name.
+  assert.equal(builtins.get("coding-agent builtin resources > loads builtin pi package resources"), 60_000);
+  assert.equal(builtins.get("loads builtin pi package resources"), undefined);
   const installed = declaredTimeouts(await Bun.file(join(root, "test/integration/installed-package-node-extensions.test.ts")).text());
   assert.equal(installed.get("installed @bastani/atomic loads builtin extensions under Node"), 240_000);
   const notification = declaredTimeouts(await Bun.file(join(root, "test/unit/subagents-notification-content.test.ts")).text());
@@ -196,6 +213,10 @@ test("the suite budget is read from the command or the package script it runs", 
   assert.equal(resolveDefaultTimeoutMs(["bun", "fixture.ts"], root), undefined);
   assert.equal(resolveDefaultTimeoutMs(["node", "scripts/migrate.mjs", "--timeout", "10000"], root), undefined);
   assert.equal(resolveDefaultTimeoutMs(["vitest", "run", "--timeout=10000"], root), undefined);
+  // `--timeout` belongs to some other runner unless the command is `bun test`.
+  assert.equal(resolveDefaultTimeoutMs(["bun", "fixture.ts", "--timeout", "10000"], root), undefined);
+  assert.equal(resolveDefaultTimeoutMs(["bunx", "vitest", "--timeout", "10000"], root), undefined);
+  assert.equal(resolveDefaultTimeoutMs(["bun", "--bun", "test", "--timeout", "20000"], root), 20_000);
 });
 
 test("headroom is scored against the effective timeout, not a fixed ceiling", () => {
