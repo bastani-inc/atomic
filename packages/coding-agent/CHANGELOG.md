@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.11-alpha.8] - 2026-07-29
+
 ### Breaking Changes
 
 - Replaced Atomic's legacy extension OAuth registration bridge with provider-owned authentication from `@earendil-works/pi-ai`. Extensions must declare OAuth or API-key authentication on their provider registration. The package root no longer exports the bridge functions `registerOAuthProvider`, `resetOAuthProviders`, `getOAuthApiKey`, `getOAuthProvider`, or `getOAuthProviders`, nor the bridge and credential/status types `LegacyOAuthProvider`, `OAuthProviderDescriptor`, `ApiKeyCredential`, `AuthCredential`, `AuthStatus`, or `OAuthCredential`; import current credential types from `@earendil-works/pi-ai` and use provider-owned authentication instead. The internal legacy registration/refresh machinery and custom API-key login hooks beyond pi's provider contract were also removed.
