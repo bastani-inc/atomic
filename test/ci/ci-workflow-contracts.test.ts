@@ -1,6 +1,7 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
+import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -414,9 +415,17 @@ test("the toolchain warm workflow stays read-only, gated, and key-compatible", a
 
 test("Blacksmith runners are used everywhere they are supported", async () => {
   const publish = await readText(publishPath);
-  const test = await readText(testPath);
-  const warm = await readText(warmPath);
-  const hosted = [...`${publish}\n${test}\n${warm}`.matchAll(/(?:runs-on|runner): (?!\$\{\{)([^\s,}]+)/gu)]
+  // Enumerate the directory rather than a fixed list: a workflow added later
+  // must not be able to introduce an unapproved GitHub-hosted runner unnoticed.
+  const workflowDir = join(root, ".github/workflows");
+  const workflowFiles = (await readdir(workflowDir))
+    .filter((name) => name.endsWith(".yml") || name.endsWith(".yaml"))
+    .sort();
+  assert.ok(workflowFiles.length >= 3, "expected the workflows directory to be enumerable");
+  const allWorkflows = (await Promise.all(
+    workflowFiles.map(async (name) => readText(join(workflowDir, name))),
+  )).join("\n");
+  const hosted = [...allWorkflows.matchAll(/(?:runs-on|runner): (?!\$\{\{)([^\s,}]+)/gu)]
     .map(([, runner]) => runner)
     .filter((runner) => !runner.startsWith("blacksmith-"));
   // Only two jobs may stay GitHub-hosted, and each for a reason that a future
