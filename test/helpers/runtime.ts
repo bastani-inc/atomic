@@ -258,7 +258,8 @@ export function spawnProcess(first: readonly string[] | BunSpawnOptions, second?
 	const { command, args, options } = normalize(first, second);
 	// Bun refuses a missing binary synchronously; reproduce that so a caller's
 	// try/catch around the spawn still sees an ENOENT it can classify.
-	if (resolveExecutable(command) === undefined) {
+	const executable = resolveExecutable(command);
+	if (executable === undefined) {
 		throw Object.assign(new Error(`spawn ${command} ENOENT`), {
 			code: "ENOENT",
 			errno: -2,
@@ -266,11 +267,17 @@ export function spawnProcess(first: readonly string[] | BunSpawnOptions, second?
 			path: command,
 		});
 	}
-	const child = nodeSpawn(command, args, {
+	// Windows ships `npm`, `npx` and friends as `.cmd` shims. Bun resolved and ran
+	// those itself; Node will not -- a bare name is not on its search path, and
+	// since Node 20.12 (CVE-2024-27980) it refuses to exec a `.cmd` or `.bat`
+	// without a shell. Spawn the resolved path, through a shell only for shims.
+	const isShim = /\.(?:cmd|bat)$/iu.test(executable);
+	const child = nodeSpawn(executable, args, {
 		cwd: options.cwd,
 		env: environment(options.env),
 		timeout: options.timeout,
 		detached: (options as { detached?: boolean }).detached,
+		shell: isShim,
 		stdio: [
 			stdio(options.stdin as StdioOption, "ignore"),
 			stdio(options.stdout, "pipe"),

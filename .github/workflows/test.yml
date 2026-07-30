@@ -354,10 +354,14 @@ jobs:
         working-directory: packages/coding-agent/docs
         # Pinned: mintlify@4.2.732 pulls a package missing from the registry.
         # Unpin once upstream publishes a resolvable release.
+        #
+        # Run through `bunx --bun`, not npx: mintlify refuses to start on Node 25+
+        # and this job installs no Node toolchain, so npx picks up whatever the
+        # runner ships. Bun hosts it regardless of the runner's Node version.
         timeout-minutes: 5
         run: |
-          npx --yes mintlify@4.2.731 validate
-          npx --yes mintlify@4.2.731 broken-links
+          bunx --bun mintlify@4.2.731 validate
+          bunx --bun mintlify@4.2.731 broken-links
       # pi parity: repository scripts that Node can run are tested with Node's
       # own runner rather than through the workspace suites.
       - name: Script tests

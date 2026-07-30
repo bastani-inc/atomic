@@ -100,8 +100,19 @@ if [[ "$SKIP_DEPS" == "false" ]]; then
     for natives_platform in darwin-arm64 darwin-x64 linux-x64-gnu linux-arm64-gnu win32-x64-msvc win32-arm64-msvc; do
         natives_targets+=("@bastani/atomic-natives-${natives_platform}@${natives_version}")
     done
-    npm install --include=optional --no-save --package-lock=false --force --ignore-scripts \
-        "${natives_targets[@]}" || echo "==> Cross-platform bindings unavailable; the host build below covers this platform"
+    # A versionless release base pins every manifest at the 0.0.0 placeholder, and
+    # nothing is published under it, so the fetch can only fail. Skip it rather
+    # than let npm prune the installed tree on its way to ETARGET.
+    if [[ "$natives_version" == "0.0.0" ]]; then
+        echo "==> Skipping cross-platform bindings: packages/natives is at the 0.0.0 placeholder"
+    elif ! npm install --include=optional --no-save --package-lock=false --force --ignore-scripts \
+        "${natives_targets[@]}"; then
+        # `--no-save --force` mutates node_modules before it fails, and it prunes
+        # real runtime dependencies on the way out (this removed css-select and
+        # broke the release binary). Put the tree back before continuing.
+        echo "==> Cross-platform bindings unavailable; restoring the dependency tree"
+        npm ci --ignore-scripts
+    fi
 
     echo "==> Staging cross-platform native bindings for clipboard..."
     # Stage in a disposable package so release preparation never mutates the
