@@ -143,31 +143,6 @@ skipped and eleven kept passing with every assertion dead. `test/ci/ci-workflow-
 enforces the loader order and rejects those guards.
 
 
-### Proving a runner or runtime change shed no coverage
-
-`scripts/compare-test-inventory.mjs` diffs the *set of test names* between a baseline and a
-candidate, in both directions, and separately diffs the *skip* set — because a test that ran
-before and skips now keeps its name, keeps the suite green, and is invisible to a pass/fail
-count. Its rules are unit-tested by `scripts/compare-test-inventory.test.mjs`, which CI runs
-in the static-checks job via `npm run test:scripts`.
-
-Run it against **all four** suites, never a subset, and union every candidate report for a suite — pointing it at one half of a split suite is exactly how a loss hides:
-
-```sh
-# baseline: capture from the runner/runtime being replaced (bun stdout or a vitest report)
-node scripts/compare-test-inventory.mjs --baseline unit-baseline.log  --candidate unit.json
-node scripts/compare-test-inventory.mjs --baseline integ-baseline.log --candidate integration.json
-node scripts/compare-test-inventory.mjs --baseline ci-baseline.log    --candidate ci.json
-node scripts/compare-test-inventory.mjs --baseline agent-baseline.json \
-  --candidate agent.json
-```
-
-The comparison itself is a migration-time gate, not a CI step: it needs a baseline captured
-from the runner being replaced, and once the change lands there is no such runner to capture
-from. Freeze the floor with `--min`, cap regressions with `--max-skipped`, and declare every
-rename with `--allow-renamed "old => new"` — comparing counts would let two compensating
-errors pass.
-
 ### Per-test timeout policy
 
 - The suite-wide per-test budget is **30000 ms**, declared once as `TEST_TIMEOUT_MS` in `test/helpers/test-timeout.ts` and applied by the root `vitest.config.ts` to all three projects. `test/ci/ci-workflow-contracts.test.ts` enforces that the three `test:*` scripts each select a project and that all three resolve to that one value. It lives in a leaf module because `test/helpers/bun-test-shim.ts` also clamps `setDefaultTimeout` against it, and reaching into the config from there would pull `vitest/config` into every test worker.
