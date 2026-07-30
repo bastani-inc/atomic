@@ -10,8 +10,17 @@ if (installDisabled || isCi) {
 	process.exit(0);
 }
 
-const result = spawnSync(process.execPath, ["x", "--bun", "--no-install", "prek", "install", "--prepare-hooks"], {
-	shell: false,
+// npm runs lifecycle scripts under Node, so process.execPath is only Bun when
+// invoked via `bun run`. Pick the matching launcher; both resolve the local or
+// PATH-installed prek without fetching anything (mirrors the hooks:install script).
+const prekArgs = ["--no-install", "prek", "install", "--prepare-hooks"];
+const isBun = Boolean(process.versions.bun);
+const isWindows = process.platform === "win32";
+const [command, args] = isBun ? [process.execPath, ["x", "--bun", ...prekArgs]] : ["npx", prekArgs];
+
+const result = spawnSync(command, args, {
+	// npx is a .cmd shim on Windows and needs a shell to spawn.
+	shell: !isBun && isWindows,
 	stdio: "inherit",
 });
 
