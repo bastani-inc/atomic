@@ -41,7 +41,7 @@ jobs:
       version: ${{ steps.verify.outputs.version }}
       npm-tag: ${{ steps.verify.outputs.npm-tag }}
     steps:
-      - uses: useblacksmith/checkout@01ab2a058dd0d41e292217b76582a6f9867c02ce # v1.0.0-beta
+      - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.0.0-beta
         with:
           ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
@@ -95,7 +95,7 @@ jobs:
     steps:
       # Sticky disks are Blacksmith-Linux-only; elsewhere this action stalls ~78s
       # before falling back to a normal clone.
-      - uses: useblacksmith/checkout@01ab2a058dd0d41e292217b76582a6f9867c02ce # v1.0.0-beta
+      - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.0.0-beta
         if: runner.os == 'Linux'
         with:
           ref: ${{ env.SOURCE_REF }}
@@ -229,7 +229,7 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
-      - uses: useblacksmith/checkout@01ab2a058dd0d41e292217b76582a6f9867c02ce # v1.0.0-beta
+      - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.0.0-beta
         with:
           ref: ${{ env.SOURCE_REF }}
           persist-credentials: false
@@ -320,7 +320,7 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
-      - uses: useblacksmith/checkout@01ab2a058dd0d41e292217b76582a6f9867c02ce # v1.0.0-beta
+      - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.0.0-beta
         with:
           ref: ${{ env.SOURCE_REF }}
           persist-credentials: false
