@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { buffer } from "node:stream/consumers";
 import JSZip from "jszip";
 import { extract as tarExtract, pack as tarPack } from "tar-stream";
@@ -55,12 +55,15 @@ async function unpackTar(bytes: Uint8Array, root: string): Promise<void> {
 		extractor.on("error", reject);
 	});
 	extractor.on("entry", (header, stream, next) => {
-		// A tar entry name is attacker-controlled and may contain `..`, so joining
-		// it onto the root can write outside the extraction directory ("Zip Slip").
-		// Reject anything whose path relative to the root escapes it.
+		// A tar entry name is attacker-controlled and may contain `..`, so resolving
+		// it against the root can escape the extraction directory ("Zip Slip").
+		// This is the barrier shape CodeQL's js/zipslip remediation documents: a
+		// single startsWith against the resolved root plus a separator. An earlier
+		// revision added a `target !== root` disjunct and CodeQL stopped
+		// recognising it, so keep this one condition.
+		const containedRoot = resolve(root) + sep;
 		const target = resolve(root, header.name);
-		const relativeToRoot = relative(root, target);
-		if (relativeToRoot === "" || relativeToRoot.startsWith("..") || isAbsolute(relativeToRoot)) {
+		if (!target.startsWith(containedRoot)) {
 			next(new Error(`Refusing archive entry outside the extraction root: ${header.name}`));
 			return;
 		}
