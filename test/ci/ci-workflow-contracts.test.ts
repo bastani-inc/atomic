@@ -413,6 +413,41 @@ test("the toolchain warm workflow stays read-only, gated, and key-compatible", a
   assert.match(await readText(join(root, "docs/ci.md")), /xwin-v1/u);
 });
 
+type MatrixEntry = Record<string, string | number | boolean>;
+
+interface WorkflowMatrix {
+  include?: MatrixEntry[];
+  [key: string]: string[] | MatrixEntry[] | undefined;
+}
+
+interface Workflow {
+  jobs?: Record<string, { "runs-on"?: string | string[]; strategy?: { matrix?: WorkflowMatrix } }>;
+}
+
+/**
+ * Every runner a job can select.
+ *
+ * `runs-on: ${{ matrix.<key> }}` is resolved through the job's own matrix. Reading
+ * the literal alone would let `matrix: { os: [ubuntu-24.04] }` pick an unapproved
+ * GitHub-hosted runner that no contract here ever sees.
+ */
+function jobRunners(label: string, job: NonNullable<Workflow["jobs"]>[string]): string[] {
+  const runsOn = job["runs-on"] ?? [];
+  return (typeof runsOn === "string" ? [runsOn] : runsOn).flatMap((value) => {
+    const key = /^\$\{\{\s*matrix\.([\w-]+)\s*\}\}$/u.exec(value)?.[1];
+    if (key === undefined) {
+      // An expression this cannot resolve must not pass as a literal runner name.
+      assert.doesNotMatch(value, /\$\{\{/u, `${label}: unresolvable runs-on ${value}`);
+      return [value];
+    }
+    const matrix = job.strategy?.matrix ?? {};
+    const values = [...(matrix[key] ?? []), ...(matrix.include ?? []).map((entry) => entry[key])]
+      .filter((entry): entry is string => typeof entry === "string");
+    assert.ok(values.length > 0, `${label}: matrix.${key} names no runner`);
+    return values;
+  });
+}
+
 test("Blacksmith runners are used everywhere they are supported", async () => {
   const publish = await readText(publishPath);
   // Enumerate the directory rather than a fixed list: a workflow added later
@@ -422,12 +457,13 @@ test("Blacksmith runners are used everywhere they are supported", async () => {
     .filter((name) => name.endsWith(".yml") || name.endsWith(".yaml"))
     .sort();
   assert.ok(workflowFiles.length >= 3, "expected the workflows directory to be enumerable");
-  const allWorkflows = (await Promise.all(
-    workflowFiles.map(async (name) => readText(join(workflowDir, name))),
-  )).join("\n");
-  const hosted = [...allWorkflows.matchAll(/(?:runs-on|runner): (?!\$\{\{)([^\s,}]+)/gu)]
-    .map(([, runner]) => runner)
-    .filter((runner) => !runner.startsWith("blacksmith-"));
+  const hosted: string[] = [];
+  for (const file of workflowFiles) {
+    const workflow = Bun.YAML.parse(await readText(join(workflowDir, file))) as Workflow;
+    for (const [name, job] of Object.entries(workflow.jobs ?? {})) {
+      hosted.push(...jobRunners(`${file} ${name}`, job).filter((runner) => !runner.startsWith("blacksmith-")));
+    }
+  }
   // Only two jobs may stay GitHub-hosted, and each for a reason that a future
   // "move everything to Blacksmith" pass must not quietly undo:
   //   macos-26-intel - Blacksmith macOS is Apple Silicon only, so this is the
