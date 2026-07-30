@@ -167,7 +167,7 @@ InteractiveModeBase.prototype.createExtensionUIContext = function (this: Interac
 		pasteToEditor: (text) => this.editor.handleInput(`\x1b[200~${text}\x1b[201~`),
 		setEditorText: (text) => this.editor.setText(text),
 		getEditorText: () => this.editor.getExpandedText?.() ?? this.editor.getText(),
-		editor: (title, prefill) => this.showExtensionEditor(title, prefill),
+		editor: (title, prefill, opts) => this.showExtensionEditor(title, prefill, opts),
 		addAutocompleteProvider: (factory) => {
 			this.autocompleteProviderWrappers.push(factory);
 			this.setupAutocompleteProvider();

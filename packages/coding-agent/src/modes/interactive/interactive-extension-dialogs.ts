@@ -24,22 +24,22 @@ InteractiveModeBase.prototype.showExtensionSelector = function (
 		}
 
 		const onAbort = () => {
-			this.hideExtensionSelector();
+			this.hideExtensionSelector(selector);
 			resolve(undefined);
 		};
 		opts?.signal?.addEventListener("abort", onAbort, { once: true });
 
-		this.extensionSelector = new ExtensionSelectorComponent(
+		const selector = new ExtensionSelectorComponent(
 			title,
 			options,
 			(option) => {
 				opts?.signal?.removeEventListener("abort", onAbort);
-				this.hideExtensionSelector();
+				this.hideExtensionSelector(selector);
 				resolve(option);
 			},
 			() => {
 				opts?.signal?.removeEventListener("abort", onAbort);
-				this.hideExtensionSelector();
+				this.hideExtensionSelector(selector);
 				resolve(undefined);
 			},
 			{
@@ -48,15 +48,25 @@ InteractiveModeBase.prototype.showExtensionSelector = function (
 				onToggleToolsExpanded: () => this.toggleToolOutputExpansion(),
 			},
 		);
+		this.extensionSelector = selector;
 
 		this.editorContainer.clear();
-		this.editorContainer.addChild(this.extensionSelector);
-		this.ui.setFocus(this.extensionSelector);
+		this.editorContainer.addChild(selector);
+		this.ui.setFocus(selector);
 		this.ui.requestRender();
 	});
 };
 
-InteractiveModeBase.prototype.hideExtensionSelector = function (this: InteractiveModeBase): void {
+/**
+ * Close the selector. Pass the instance that is closing: a late abort from a
+ * dead engine generation must never dismiss a newer dialog that has since taken
+ * over `editorContainer`.
+ */
+InteractiveModeBase.prototype.hideExtensionSelector = function (
+	this: InteractiveModeBase,
+	instance?: ExtensionSelectorComponent,
+): void {
+	if (instance !== undefined && this.extensionSelector !== instance) return;
 	this.extensionSelector?.dispose();
 	this.editorContainer.clear();
 	this.editorContainer.addChild(this.editor);
@@ -99,35 +109,41 @@ InteractiveModeBase.prototype.showExtensionInput = function (
 		}
 
 		const onAbort = () => {
-			this.hideExtensionInput();
+			this.hideExtensionInput(input);
 			resolve(undefined);
 		};
 		opts?.signal?.addEventListener("abort", onAbort, { once: true });
 
-		this.extensionInput = new ExtensionInputComponent(
+		const input = new ExtensionInputComponent(
 			title,
 			placeholder,
 			(value) => {
 				opts?.signal?.removeEventListener("abort", onAbort);
-				this.hideExtensionInput();
+				this.hideExtensionInput(input);
 				resolve(value);
 			},
 			() => {
 				opts?.signal?.removeEventListener("abort", onAbort);
-				this.hideExtensionInput();
+				this.hideExtensionInput(input);
 				resolve(undefined);
 			},
 			{ tui: this.ui, timeout: opts?.timeout },
 		);
+		this.extensionInput = input;
 
 		this.editorContainer.clear();
-		this.editorContainer.addChild(this.extensionInput);
-		this.ui.setFocus(this.extensionInput);
+		this.editorContainer.addChild(input);
+		this.ui.setFocus(input);
 		this.ui.requestRender();
 	});
 };
 
-InteractiveModeBase.prototype.hideExtensionInput = function (this: InteractiveModeBase): void {
+/** Instance-scoped: see hideExtensionSelector. */
+InteractiveModeBase.prototype.hideExtensionInput = function (
+	this: InteractiveModeBase,
+	instance?: ExtensionInputComponent,
+): void {
+	if (instance !== undefined && this.extensionInput !== instance) return;
 	this.extensionInput?.dispose();
 	this.editorContainer.clear();
 	this.editorContainer.addChild(this.editor);
@@ -140,33 +156,53 @@ InteractiveModeBase.prototype.showExtensionEditor = function (
 	this: InteractiveModeBase,
 	title: string,
 	prefill?: string,
+	opts?: ExtensionUIDialogOptions,
 ): Promise<string | undefined> {
 	return new Promise((resolve) => {
-		this.extensionEditor = new ExtensionEditorComponent(
+		if (opts?.signal?.aborted) {
+			resolve(undefined);
+			return;
+		}
+
+		const onAbort = () => {
+			this.hideExtensionEditor(editor);
+			resolve(undefined);
+		};
+		opts?.signal?.addEventListener("abort", onAbort, { once: true });
+
+		const editor = new ExtensionEditorComponent(
 			this.ui,
 			this.keybindings,
 			title,
 			prefill,
 			(value) => {
-				this.hideExtensionEditor();
+				opts?.signal?.removeEventListener("abort", onAbort);
+				this.hideExtensionEditor(editor);
 				resolve(value);
 			},
 			() => {
-				this.hideExtensionEditor();
+				opts?.signal?.removeEventListener("abort", onAbort);
+				this.hideExtensionEditor(editor);
 				resolve(undefined);
 			},
 			undefined,
 			this.settingsManager.getExternalEditorCommand(),
 		);
+		this.extensionEditor = editor;
 
 		this.editorContainer.clear();
-		this.editorContainer.addChild(this.extensionEditor);
-		this.ui.setFocus(this.extensionEditor);
+		this.editorContainer.addChild(editor);
+		this.ui.setFocus(editor);
 		this.ui.requestRender();
 	});
 };
 
-InteractiveModeBase.prototype.hideExtensionEditor = function (this: InteractiveModeBase): void {
+/** Instance-scoped: see hideExtensionSelector. */
+InteractiveModeBase.prototype.hideExtensionEditor = function (
+	this: InteractiveModeBase,
+	instance?: ExtensionEditorComponent,
+): void {
+	if (instance !== undefined && this.extensionEditor !== instance) return;
 	this.editorContainer.clear();
 	this.editorContainer.addChild(this.editor);
 	this.extensionEditor = undefined;

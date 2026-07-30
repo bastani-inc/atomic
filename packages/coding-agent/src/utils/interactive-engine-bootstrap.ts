@@ -17,6 +17,11 @@ import { join } from "node:path";
  * values, and the values travel in a 0600 file whose path is passed as a private
  * CLI argument. The child reads it once, freezes the snapshot, and unlinks it.
  * The filename carries no secret material.
+ *
+ * Cleanup is ownership-scoped. The path is untrusted child input — anyone can
+ * pass the private flag — so a reader may unlink only that exact file. Only the
+ * writer, which holds an {@link InteractiveEngineBootstrapHandle} for the
+ * directory it created, may remove that directory recursively.
  */
 export const INTERACTIVE_ENGINE_BOOTSTRAP_FLAG = "--internal-engine-bootstrap";
 export const INTERACTIVE_ENGINE_BOOTSTRAP_VERSION = 1;
@@ -28,21 +33,46 @@ export interface InteractiveEngineBootstrap {
 	apiKey?: string;
 }
 
-/** Publish a bootstrap record atomically so a reader never sees a partial file. */
-export function writeInteractiveEngineBootstrap(record: Omit<InteractiveEngineBootstrap, "version">): string {
-	const directory = mkdtempSync(join(tmpdir(), "atomic-engine-bootstrap-"));
-	const finalPath = join(directory, "bootstrap.json");
-	const tempPath = `${finalPath}.tmp`;
-	const payload: InteractiveEngineBootstrap = { version: INTERACTIVE_ENGINE_BOOTSTRAP_VERSION, ...record };
-	writeFileSync(tempPath, JSON.stringify(payload), { encoding: "utf8", mode: 0o600 });
-	renameSync(tempPath, finalPath);
-	return finalPath;
+/**
+ * Proof that this process created a bootstrap record. A bare path — in
+ * particular one taken from argv — is never sufficient for recursive removal.
+ */
+export interface InteractiveEngineBootstrapHandle {
+	readonly path: string;
+	readonly directory: string;
 }
 
-/** Remove a bootstrap file and its private directory; safe to call repeatedly. */
-export function removeInteractiveEngineBootstrap(path: string | undefined): void {
-	if (!path) return;
-	rmSync(join(path, ".."), { recursive: true, force: true });
+/**
+ * Publish a bootstrap record atomically so a reader never sees a partial file.
+ *
+ * On any failure the exact temporary file and the directory this call created
+ * are removed before the original error propagates, so a `0600` file holding a
+ * credential is never left behind.
+ */
+export function writeInteractiveEngineBootstrap(
+	record: Omit<InteractiveEngineBootstrap, "version">,
+): InteractiveEngineBootstrapHandle {
+	const directory = mkdtempSync(join(tmpdir(), "atomic-engine-bootstrap-"));
+	const path = join(directory, "bootstrap.json");
+	const tempPath = `${path}.tmp`;
+	const payload: InteractiveEngineBootstrap = { version: INTERACTIVE_ENGINE_BOOTSTRAP_VERSION, ...record };
+	try {
+		writeFileSync(tempPath, JSON.stringify(payload), { encoding: "utf8", mode: 0o600 });
+		renameSync(tempPath, path);
+	} catch (error) {
+		rmSync(tempPath, { force: true });
+		rmSync(directory, { recursive: true, force: true });
+		throw error;
+	}
+	return { path, directory };
+}
+
+/** Remove a bootstrap record and the directory whose creation this handle proves. */
+export function removeOwnedInteractiveEngineBootstrap(
+	handle: InteractiveEngineBootstrapHandle | undefined,
+): void {
+	if (!handle) return;
+	rmSync(handle.directory, { recursive: true, force: true });
 }
 
 /**
@@ -77,8 +107,11 @@ export function hasInteractiveEngineBootstrapArg(args: readonly string[]): boole
 }
 
 /**
- * Read and consume a bootstrap record. The file is always unlinked, including
- * on malformed content, so a stale API key never outlives the handshake.
+ * Read and consume a bootstrap record.
+ *
+ * The named file is always unlinked, including on malformed content, so a stale
+ * API key never outlives the handshake. The path came from argv, so nothing
+ * around it is touched: no parent directory, no sibling.
  */
 export function readInteractiveEngineBootstrap(path: string): InteractiveEngineBootstrap | undefined {
 	let raw: string;
@@ -87,7 +120,7 @@ export function readInteractiveEngineBootstrap(path: string): InteractiveEngineB
 	} catch {
 		return undefined;
 	} finally {
-		removeInteractiveEngineBootstrap(path);
+		rmSync(path, { force: true });
 	}
 	try {
 		const parsed = JSON.parse(raw) as Partial<InteractiveEngineBootstrap>;

@@ -94,7 +94,11 @@ When `app.clipboard.pasteImage` finds text rather than an image, Atomic inserts 
 
 A held paused queue by itself is idle for Ctrl+C handling. After an interruption settles, the next Ctrl+C clears the editor without releasing or dequeuing the hold, and a second quick idle press exits normally.
 
-In interactive sessions the agent runs in a supervised engine child (see [Extensions](/extensions#interactive-callback-isolation)). Escape there requests the engine's cooperative cancellation and waits for it; it never terminates or replaces the engine. Ctrl+C is the escape hatch for an engine that is provably not answering: it stops that engine child and starts one replacement. That covers three cases — the heartbeat watchdog has declared the engine unresponsive, a cooperative abort has gone unanswered past the same one-second threshold, or a replacement engine has been waiting for readiness past it. The last case is the only route out of a replacement that hangs before it is ready, because such a child produces no heartbeat and no watchdog report. Because the escape hatch has to be reachable, Ctrl+C is still delivered to the host while an engine-owned `ctx.ui.custom()` component or overlay holds input. While the engine is healthy, `tui.select.cancel` keeps Ctrl+C as cancel inside host-native selectors, dialogs, and forms.
+In interactive sessions the agent runs in a supervised engine child (see [Extensions](/extensions#interactive-callback-isolation)). Escape there requests the engine's cooperative cancellation and waits for it with no deadline; it never terminates or replaces the engine.
+
+Ctrl+C is the host's escape hatch in two cases. First, whenever an engine-owned `ctx.ui.custom()` component or overlay holds input: those forward every key to the engine, so Ctrl+C is always handled by the host there and replaces the engine, even while the engine is healthy. Second, when the engine is provably not answering — the watchdog has declared it unresponsive, a cooperative abort has gone unanswered past the same one-second threshold, a replacement has been waiting for readiness past it, or a replacement failed. A failed replacement keeps Ctrl+C armed so another press can try again; Atomic never retries on its own.
+
+`tui.select.cancel` still keeps Ctrl+C as local cancel inside host-native selectors, dialogs, input forms, and session pickers.
 
 ### Sessions
 

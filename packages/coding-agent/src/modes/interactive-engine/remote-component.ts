@@ -140,6 +140,23 @@ export class RemoteComponentController {
 		this.disposeAll("host-shutdown");
 	}
 
+	/** True when a remote overlay proxy currently holds focus (see remote-input-ownership.ts). */
+	hasFocusedRemoteOverlay(): boolean {
+		for (const record of this.mounted.values()) {
+			if (record.handle?.isFocused() === true) return true;
+		}
+		return false;
+	}
+
+	/** True when `component` is one of this generation's live remote proxies. */
+	isRemoteProxy(component: unknown): boolean {
+		if (!(component instanceof RemoteComponent)) return false;
+		for (const record of this.mounted.values()) {
+			if (record.component === component) return record.widgetKey === undefined;
+		}
+		return false;
+	}
+
 	/**
 	 * Close every mounted component.
 	 *
@@ -151,11 +168,15 @@ export class RemoteComponentController {
 	 * disposal is local-only because the writer already points at a replacement
 	 * child whose component IDs restart at `remote_component_1`.
 	 *
+	 * Order is newest-first, matching the TUI's overlay stack. Closing oldest
+	 * first would let an overlay mounted above an inline proxy restore focus to
+	 * that inline proxy after it had already been disposed.
+	 *
 	 * `"host-shutdown"` notifies the still-live engine child instead and leaves
 	 * host mounts alone: the TUI is already stopping and must not repaint.
 	 */
 	private disposeAll(reason: "generation-lost" | "host-shutdown"): void {
-		const records = [...this.mounted.entries()];
+		const records = [...this.mounted.entries()].reverse();
 		this.mounted.clear();
 		for (const [componentId, record] of records) {
 			this.terminalModes.onUnmount(componentId);

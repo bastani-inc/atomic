@@ -11,10 +11,18 @@ interface GlobalClearInputOptions {
 	 */
 	editorOwnsInput(): boolean;
 	/**
-	 * True only when the interactive engine still owes a cooperative abort or the
-	 * heartbeat watchdog has declared it unresponsive. A focused component can
-	 * then be an engine-owned remote proxy (or a host form whose cancel would
-	 * travel to a wedged child), so Ctrl+C would otherwise reach nothing at all.
+	 * True when the focused component is an engine-owned remote proxy. Such a
+	 * component forwards every key to the engine child, so deferring would send
+	 * Ctrl+C to the very thing the user is escaping — including when the engine
+	 * is perfectly healthy and the custom UI simply never resolves.
+	 */
+	remoteEngineProxyOwnsInput?(): boolean;
+	/** Replace the engine because a remote proxy has trapped input. */
+	onRemoteEngineRestart?(): void;
+	/**
+	 * True only when the interactive engine still owes a cooperative abort, is
+	 * watchdog-unresponsive, or left a failed replacement behind. A host-native
+	 * modal then cannot answer either, so Ctrl+C escalates instead of vanishing.
 	 */
 	engineNeedsExplicitTermination?(): boolean;
 	/** Explicit engine termination and recovery (the Ctrl+C escape hatch). */
@@ -26,13 +34,18 @@ interface GlobalClearInputOptions {
 /**
  * Keep app.clear global unless a focused modal/inline component owns input.
  *
- * The one exception is an unresponsive interactive engine: deferring there would
- * hand Ctrl+C to a component that cannot answer, so the route escalates to
- * explicit engine termination instead of dropping the key. Native host forms and
- * selectors keep Ctrl+C-as-cancel whenever the engine is healthy.
+ * Two exceptions, both of which would otherwise swallow the key entirely:
+ * an engine-owned remote proxy holding input, and an engine that cannot answer.
+ * Native host forms, selectors, dialogs, and overlays keep Ctrl+C-as-cancel
+ * whenever the engine is healthy.
  */
 export function routeGlobalClearInput(data: string, options: GlobalClearInputOptions): { consume: true } | undefined {
 	if (!options.matchesClear(data)) return undefined;
+	if (options.onRemoteEngineRestart && options.remoteEngineProxyOwnsInput?.() === true) {
+		options.onRemoteEngineRestart();
+		options.requestRender();
+		return { consume: true };
+	}
 	const deferToFocusedComponent =
 		options.hasOverlay() || options.blockingInlineCustomUiActive() || !options.editorOwnsInput();
 	if (deferToFocusedComponent) {

@@ -82,7 +82,11 @@ export function restoreFailedSubmissionDraft(
 	const restored = restoreUnsentPromptDraft(error, {
 		turnStarted: options?.turnStarted === true,
 		draft,
-		getEditorText: () => mode.editor.getText(),
+		// Expand first: a large paste lives in the editor's private paste registry
+		// and shows only a `[paste #1 … chars]` marker in the visible buffer, and
+		// setText() clears that registry. Reading the marker would round-trip dead
+		// text and destroy the payload.
+		getEditorText: () => mode.editor.getExpandedText?.() ?? mode.editor.getText(),
 		setEditorText: (text) => mode.editor.setText(text),
 		editorOwnsInput: () => mode.editorContainer.children.includes(mode.editor),
 		focusEditor: () => mode.ui.setFocus(mode.editor),

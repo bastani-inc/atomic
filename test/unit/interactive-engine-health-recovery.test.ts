@@ -81,15 +81,16 @@ test("an unexpected generation loss runs exactly one automatic restart with a ca
 	assert.equal(h.controller.isRecovering(), false);
 });
 
-test("a failed restart surfaces a concrete failure and stops recovering", async () => {
+test("a failed restart surfaces a concrete failure, stops retrying, and stays user-recoverable", async () => {
 	const h = harness(async () => { throw new Error("Agent process exited immediately. Stderr: boom"); });
 	h.controller.handleGenerationEnded(ended());
 	await Bun.sleep(10);
-	assert.equal(h.controller.isRecovering(), false);
+	assert.equal(h.controller.isRecovering(), false, "no attempt keeps running");
 	const failure = h.diagnostics.at(-1)!;
 	assert.equal(failure.message, "Interactive engine restart failed: Agent process exited immediately. Stderr: boom");
 	assert.equal(failure.source, undefined, "a real failure must surface as a chat error");
 	assert.equal(failure.level, "unresponsive");
+	assert.equal(h.controller.needsExplicitTermination(), true, "the user must still be able to ask for another engine");
 });
 
 test("a hung restart keeps the host in recovery without terminating anything else", async () => {
@@ -299,4 +300,45 @@ test("a replacement that genuinely fails on its own is still reported", async ()
 		h.diagnostics.at(-1)?.message,
 		"Interactive engine restart failed: Agent process exited immediately. Stderr: boom",
 	);
+});
+
+/**
+ * A replacement that fails on its own used to leave nothing armed: no pending
+ * attempt, no overdue abort, no watchdog flag. Ctrl+C could not ask for another
+ * engine, so the host stayed permanently engine-less.
+ */
+test("a failed replacement keeps Ctrl+C armed and each press starts exactly one attempt", async () => {
+	const outcomes: Array<() => void> = [];
+	const restarts: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
+	const h = harness(() => new Promise<void>((resolve, reject) => { restarts.push({ resolve, reject }); }));
+
+	h.controller.handleGenerationEnded(ended());
+	await Bun.sleep(0);
+	restarts[0]!.reject(new Error("Agent process exited immediately. Stderr: boom"));
+	await Bun.sleep(5);
+	assert.equal(h.controller.isRecovering(), false, "the automatic attempt is finished");
+	assert.equal(h.controller.needsExplicitTermination(), true, "a failed replacement must arm Ctrl+C");
+	assert.equal(h.restarts, 1, "automatic recovery stays single-shot");
+
+	// Nothing may retry on its own while the user has not pressed anything.
+	h.advance(ENGINE_UNRESPONSIVE_MS * 5);
+	await Bun.sleep(10);
+	assert.equal(h.restarts, 1, "no automatic retry loop");
+
+	const first = h.controller.terminate();
+	await Bun.sleep(5);   // terminate() stops before it restarts
+	assert.equal(h.restarts, 2, "Ctrl+C starts exactly one new attempt");
+	restarts[1]!.reject(new Error("Agent process exited immediately. Stderr: again"));
+	await first;
+	assert.equal(h.controller.needsExplicitTermination(), true, "a second failure re-arms Ctrl+C");
+	assert.equal(h.restarts, 2, "still no automatic retry");
+
+	const second = h.controller.terminate();
+	await Bun.sleep(5);
+	assert.equal(h.restarts, 3);
+	restarts[2]!.resolve();
+	await second;
+	assert.equal(h.controller.needsExplicitTermination(), false, "success disarms the latch");
+	assert.equal(h.controller.isRecovering(), false);
+	assert.deepEqual(outcomes, []);
 });

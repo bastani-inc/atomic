@@ -14,6 +14,11 @@ export interface EngineHealthDeps {
 
 export const UNEXPECTED_ENGINE_LOSS_NOTICE = "Interactive engine stopped unexpectedly; restarting.";
 export const UNRESPONSIVE_ENGINE_NOTICE = "Interactive engine is not responding; restarting.";
+/** Used when the engine is healthy but a remote custom UI has trapped input. */
+export const REMOTE_UI_RESTART_NOTICE = "Restarting interactive engine.";
+
+/** Why the user asked for a replacement; decides only the status wording. */
+export type EngineTerminationReason = "unresponsive" | "remote-ui";
 
 export interface EngineHealthOptions {
 	/** Injectable clock so tests can cross the unresponsive threshold instantly. */
@@ -48,6 +53,13 @@ export class EngineHealthController {
 	private attemptId = 0;
 	private forceStoppedAttemptId: number | undefined;
 	private rescueRequested = false;
+	/**
+	 * Latched when a replacement failed on its own. Automatic recovery stays
+	 * single-shot, but the user's Ctrl+C must remain able to try again: without
+	 * this the host would be left with no engine, no pending attempt, no overdue
+	 * abort, and no watchdog flag, so nothing could arm the escape hatch.
+	 */
+	private replacementNeeded = false;
 	private termination: Promise<void> | undefined;
 	private stopped = false;
 
@@ -85,18 +97,19 @@ export class EngineHealthController {
 	 * True only when the engine is provably not answering:
 	 *
 	 *  - the heartbeat watchdog declared it unresponsive;
-	 *  - a cooperative abort has been outstanding past that same threshold (a
-	 *    child whose loop still turns but is deadlocked);
+	 *  - a replacement failed on its own and the host has no engine;
+	 *  - a cooperative abort has been outstanding past the unresponsive threshold
+	 *    (a child whose loop still turns but is deadlocked);
 	 *  - a replacement has been waiting for `engine_ready` past that threshold.
 	 *
-	 * The last case has no watchdog coverage at all: a child stopped before
+	 * The readiness case has no watchdog coverage at all: a child stopped before
 	 * readiness emits no heartbeat and no diagnostic, and `start()` waits without
-	 * a deadline by design. Crossing the threshold arms nothing on its own — it
-	 * only decides whether a deliberate Ctrl+C escalates — and it stays false for
-	 * a healthy engine so a stray second Ctrl+C cannot replace one.
+	 * a deadline by design. Crossing a threshold arms nothing on its own — it
+	 * only decides whether a deliberate Ctrl+C escalates — and all of this stays
+	 * false for a healthy engine so a stray second Ctrl+C cannot replace one.
 	 */
 	needsExplicitTermination(): boolean {
-		if (this.unresponsive) return true;
+		if (this.unresponsive || this.replacementNeeded) return true;
 		return this.isOverdue(this.abortStartedAt) || this.isOverdue(this.attemptStartedAt);
 	}
 
@@ -119,7 +132,8 @@ export class EngineHealthController {
 		void this.recover(UNEXPECTED_ENGINE_LOSS_NOTICE).catch(() => {});
 	}
 
-	terminate(): Promise<void> {
+	terminate(options?: { reason?: EngineTerminationReason }): Promise<void> {
+		const notice = options?.reason === "remote-ui" ? REMOTE_UI_RESTART_NOTICE : UNRESPONSIVE_ENGINE_NOTICE;
 		// A repeat Ctrl+C must be able to rescue a replacement that is itself
 		// overdue, instead of joining the in-flight termination forever. The stop
 		// is fenced by attempt id so repeated presses cannot stack restarts onto a
@@ -134,7 +148,7 @@ export class EngineHealthController {
 		if (inFlight) this.forceStoppedAttemptId = this.attemptId;
 		const run = (async () => {
 			this.deps.clearActivity();
-			this.notice(UNRESPONSIVE_ENGINE_NOTICE);
+			this.notice(notice);
 			await this.stopQuietly();
 			// An automatic attempt swallows its own errors, so this only waits for it
 			// to release the single-flight slot.
@@ -144,7 +158,7 @@ export class EngineHealthController {
 			// replacement attempt, so the escape hatch stays usable indefinitely.
 			while (this.rescueRequested && !this.stopped) {
 				this.rescueRequested = false;
-				this.notice(UNRESPONSIVE_ENGINE_NOTICE);
+				this.notice(notice);
 				await this.recover(undefined);
 			}
 		})().finally(() => {
@@ -180,10 +194,16 @@ export class EngineHealthController {
 		const id = (this.attemptId += 1);
 		this.attemptStartedAt = this.now();
 		this.rescueRequested = false;
+		// A new attempt is under way, so the previous failure is no longer the
+		// reason to arm Ctrl+C. It re-arms below only if this attempt fails too.
+		this.replacementNeeded = false;
 		const run = this.deps.restart()
 			.catch((error: Error) => {
 				// An attempt the user deliberately stopped did not fail on its own.
 				if (this.forceStoppedAttemptId === id) return;
+				// Keep Ctrl+C armed: automatic recovery is single-shot, but the user
+				// must be able to ask for another attempt after a real failure.
+				this.replacementNeeded = true;
 				// A concrete failure, so no operational source: this one surfaces.
 				this.deliver({
 					activity: undefined,

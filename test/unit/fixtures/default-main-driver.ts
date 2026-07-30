@@ -30,6 +30,7 @@ export interface HarnessReport {
 	/** Host UI ownership, reported on every heartbeat and state snapshot. */
 	editorMounted?: boolean;
 	focusIsEditor?: boolean;
+	focusIsStaleInline?: boolean;
 	blockingInlineDepth?: number;
 	hasOverlay?: boolean;
 }

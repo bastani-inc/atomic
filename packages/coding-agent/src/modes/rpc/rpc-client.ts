@@ -76,13 +76,16 @@ export interface RpcClientOptions {
  * turn boundary and therefore must not be subject to the generic request
  * timeout: interactive prompts and custom-UI pickers (routed through `prompt`),
  * queued turn-boundary sends (`steer`/`follow_up`), long-running shell and
- * compaction work, and session-tree navigation/mutation that can open pickers.
+ * compaction work, session-tree navigation/mutation that can open pickers, and
+ * `abort`, whose whole contract is that Escape waits for the engine's own
+ * cooperative cancellation for as long as it takes.
  *
  * Failure detection is unaffected: engine exit, transport violations, aborts,
  * generation replacement, and explicit stop all reject pending requests via
  * rejectPendingRequests/failTransport independently of any timer.
  */
 const LONG_LIVED_COMMANDS: ReadonlySet<string> = new Set<string>([
+	"abort",
 	"prompt",
 	"login_provider",
 	"steer",

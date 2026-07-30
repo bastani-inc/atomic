@@ -47,7 +47,9 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 		this.editorContainer.clear();
 		this.editorContainer.addChild(this.editor);
 		this.editor.setText(savedText);
-		if (focusEditor) this.ui.setFocus(this.editor);
+		// Focus fence: a surviving overlay owns input, and taking it away to
+		// "restore" the editor would dismiss a newer native dialog.
+		if (focusEditor && !this.ui.hasOverlay()) this.ui.setFocus(this.editor);
 		this.ui.requestRender();
 	};
 
@@ -55,6 +57,7 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 		let component: (Component & { dispose?(): void }) | undefined;
 		let closed = false;
 		let mounted = false;
+		let overlayHandle: OverlayHandle | undefined;
 		let releaseHostInlineCustomUi: (() => void) | undefined;
 		let releaseOverlayInlineCustomUiFocusDeferral: (() => void) | undefined;
 
@@ -83,7 +86,11 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 			if (isOverlay) {
 				releaseOverlayInlineCustomUiFocusDeferral?.();
 				releaseOverlayInlineCustomUiFocusDeferral = undefined;
-				this.ui.hideOverlay();
+				// Hide THIS overlay, not whatever is on top: during engine-death
+				// teardown an unrelated native overlay can be above this one, and the
+				// generic top-overlay call would close that instead.
+				if (overlayHandle) overlayHandle.hide();
+				else this.ui.hideOverlay();
 			} else {
 				restoreEditor(!this.shouldDeferInlineCustomUiFocus() && this.pendingInlineCustomUiFocus !== component);
 			}
@@ -158,6 +165,7 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 						return w ? { width: w } : undefined;
 					};
 					const handle = this.ui.showOverlay(component, resolveOptions());
+					overlayHandle = handle;
 					mounted = true;
 					if (options?.deferInlineCustomUiFocus) {
 						let releaseDeferral: (() => void) | undefined = this.beginInlineCustomUiFocusDeferral();

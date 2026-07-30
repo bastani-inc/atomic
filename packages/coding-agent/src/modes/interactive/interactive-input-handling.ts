@@ -2,8 +2,10 @@ import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import {
 	interactiveEngineNeedsExplicitTermination,
 	interruptBlockedInteractiveEngine,
+	restartInteractiveEngineForRemoteUi,
 	terminateInteractiveEngine,
 } from "../interactive-engine/extension-ui-bridge.ts";
+import { remoteEngineProxyOwnsInput } from "../interactive-engine/remote-input-ownership.ts";
 import { StartupIdentityComponent } from "./components/startup-identity.ts";
 import { COMPACTION_ALREADY_IN_PROGRESS_WARNING } from "./interactive-bash-compact.ts";
 import { routeGlobalClearInput } from "./interactive-global-clear.ts";
@@ -21,6 +23,14 @@ export function registerStartupInputListeners(mode: InteractiveModeBase): void {
 			hasOverlay: () => mode.ui.hasOverlay(),
 			blockingInlineCustomUiActive: () => mode.blockingInlineCustomUiDepth > 0,
 			editorOwnsInput: () => mode.editorContainer.children.includes(mode.editor),
+			remoteEngineProxyOwnsInput: () =>
+				remoteEngineProxyOwnsInput(mode.runtimeHost, {
+					hasOverlay: () => mode.ui.hasOverlay(),
+					inlineComponents: () => mode.editorContainer.children,
+				}),
+			onRemoteEngineRestart: () => {
+				restartInteractiveEngineForRemoteUi(mode.runtimeHost);
+			},
 			engineNeedsExplicitTermination: () => interactiveEngineNeedsExplicitTermination(mode.runtimeHost),
 			onEngineTerminate: () => {
 				terminateInteractiveEngine(mode.runtimeHost);

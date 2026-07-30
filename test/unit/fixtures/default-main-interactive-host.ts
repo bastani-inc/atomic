@@ -10,17 +10,30 @@ function report(value: Record<string, object | boolean | null | number | string 
 	process.stdout.write(`${CONTROL_PREFIX}${JSON.stringify(value)}\n`);
 }
 
+/** Components that have been mounted where the editor lives, for staleness checks. */
+const seenInlineComponents = new Set<unknown>();
+
 /**
  * Host UI ownership snapshot. Engine-death recovery has to put the editor back
  * into `editorContainer`, give it focus, drop any overlay, and unwind the
  * blocking inline custom-UI depth, so each of those is reported directly.
+ *
+ * `focusIsStaleInline` catches the nested-teardown defect specifically: an
+ * overlay closing after the inline layer restored focus to the inline proxy it
+ * had captured, which by then was disposed and detached.
  */
 function hostUiState(mode: InteractiveMode | undefined): Record<string, boolean | number | undefined> {
 	if (!mode) return {};
 	const focused = (mode.ui as unknown as { focusedComponent?: unknown }).focusedComponent;
+	const inline = mode.editorContainer.children as readonly unknown[];
+	for (const child of inline) if (child !== mode.editor) seenInlineComponents.add(child);
 	return {
-		editorMounted: mode.editorContainer.children.includes(mode.editor),
+		editorMounted: inline.includes(mode.editor),
 		focusIsEditor: focused === mode.editor,
+		focusIsStaleInline: focused !== undefined && focused !== null
+			&& focused !== mode.editor
+			&& seenInlineComponents.has(focused)
+			&& !inline.includes(focused),
 		blockingInlineDepth: mode.blockingInlineCustomUiDepth,
 		hasOverlay: mode.ui.hasOverlay(),
 	};

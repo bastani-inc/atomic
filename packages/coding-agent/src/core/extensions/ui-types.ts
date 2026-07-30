@@ -277,8 +277,13 @@ export interface ExtensionUIContext {
 	/** Get the current text from the core input editor. */
 	getEditorText(): string;
 
-	/** Show a multi-line editor for text editing. */
-	editor(title: string, prefill?: string): Promise<string | undefined>;
+	/**
+	 * Show a multi-line editor for text editing.
+	 *
+	 * `opts.signal` lets a host cancel the mount it owns — the isolated engine
+	 * bridge uses it to close dialogs belonging to a dead engine generation.
+	 */
+	editor(title: string, prefill?: string, opts?: ExtensionUIDialogOptions): Promise<string | undefined>;
 
 	/** Stack additional autocomplete behavior on top of the built-in provider. */
 	addAutocompleteProvider(factory: AutocompleteProviderFactory): void;

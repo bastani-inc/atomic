@@ -5,8 +5,9 @@ import { join } from "node:path";
 import { flushPersistentCompileCache } from "../../utils/compile-cache.ts";
 import {
 	INTERACTIVE_ENGINE_BOOTSTRAP_FLAG,
-	removeInteractiveEngineBootstrap,
+	removeOwnedInteractiveEngineBootstrap,
 	writeInteractiveEngineBootstrap,
+	type InteractiveEngineBootstrapHandle,
 } from "../../utils/interactive-engine-bootstrap.ts";
 import { scrubInteractiveEngineEnv } from "../../utils/interactive-engine-env.ts";
 import { killProcessTree, trackDetachedChildPid, untrackDetachedChildPid } from "../../utils/shell.ts";
@@ -25,7 +26,7 @@ export interface RpcClientProcessOptions {
 }
 
 const guardianFiles = new WeakMap<ChildProcess, string>();
-const bootstrapFiles = new WeakMap<ChildProcess, string>();
+const bootstrapHandles = new WeakMap<ChildProcess, InteractiveEngineBootstrapHandle>();
 
 export function spawnRpcClientProcess(options: RpcClientProcessOptions): ChildProcess {
 	const guardianFile = options.interactiveEngine
@@ -36,7 +37,7 @@ export function spawnRpcClientProcess(options: RpcClientProcessOptions): ChildPr
 	// runtime's launch-time environment, so anything placed here would remain
 	// reachable by every descendant of the engine no matter what the engine
 	// deletes from its own `process.env` afterwards.
-	const bootstrapFile = options.interactiveEngine
+	const bootstrap = options.interactiveEngine
 		? writeInteractiveEngineBootstrap({
 				hostPid: process.pid,
 				guardFile: guardianFile!,
@@ -44,8 +45,8 @@ export function spawnRpcClientProcess(options: RpcClientProcessOptions): ChildPr
 			})
 		: undefined;
 	if (options.interactiveEngine) flushPersistentCompileCache();
-	const cliArgs = bootstrapFile
-		? [...options.cliArgs, INTERACTIVE_ENGINE_BOOTSTRAP_FLAG, bootstrapFile]
+	const cliArgs = bootstrap
+		? [...options.cliArgs, INTERACTIVE_ENGINE_BOOTSTRAP_FLAG, bootstrap.path]
 		: options.cliArgs;
 	let child: ChildProcess;
 	try {
@@ -60,16 +61,16 @@ export function spawnRpcClientProcess(options: RpcClientProcessOptions): ChildPr
 			},
 		);
 	} catch (error) {
-		removeInteractiveEngineBootstrap(bootstrapFile);
+		removeOwnedInteractiveEngineBootstrap(bootstrap);
 		throw error;
 	}
 	if (guardianFile) guardianFiles.set(child, guardianFile);
-	if (bootstrapFile) {
-		bootstrapFiles.set(child, bootstrapFile);
-		// The child unlinks the file after reading it; this only covers a child
-		// that died before the handshake.
-		child.once("error", () => removeInteractiveEngineBootstrap(bootstrapFile));
-		child.once("exit", () => removeInteractiveEngineBootstrap(bootstrapFile));
+	if (bootstrap) {
+		bootstrapHandles.set(child, bootstrap);
+		// The child unlinks the record after reading it; this handle-scoped cleanup
+		// removes the directory this process created, and only that directory.
+		child.once("error", () => removeOwnedInteractiveEngineBootstrap(bootstrap));
+		child.once("exit", () => removeOwnedInteractiveEngineBootstrap(bootstrap));
 	}
 	if (options.interactiveEngine && child.pid) {
 		trackDetachedChildPid(child.pid);
@@ -79,7 +80,7 @@ export function spawnRpcClientProcess(options: RpcClientProcessOptions): ChildPr
 }
 
 export async function terminateRpcClientProcess(child: ChildProcess, processTree: boolean): Promise<void> {
-	removeInteractiveEngineBootstrap(bootstrapFiles.get(child));
+	removeOwnedInteractiveEngineBootstrap(bootstrapHandles.get(child));
 	if (child.exitCode !== null || child.signalCode !== null) return;
 	let resolveExit!: () => void;
 	const exited = new Promise<void>((resolve) => {

@@ -15,7 +15,11 @@ import type {
 } from "../rpc/rpc-types.ts";
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
 import type { InteractiveEngineGenerationEndedListener } from "./engine-generation.ts";
-import { type EngineDiagnosticListener, EngineHealthController } from "./engine-health.ts";
+import {
+	type EngineDiagnosticListener,
+	EngineHealthController,
+	type EngineTerminationReason,
+} from "./engine-health.ts";
 import { type AtomicOAuthLoginCallbacks, loginIsolatedOAuthProvider } from "./isolated-auth.ts";
 import type { EngineKeybindingState, InteractiveEngineCommand, InteractiveEngineMessage } from "./protocol.ts";
 import { RemoteCommandCatalog, type RemoteCommandsListener } from "./remote-command-catalog.ts";
@@ -172,8 +176,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		return this.health.needsExplicitTermination();
 	}
 	/** Explicit user-driven engine termination and recovery (Ctrl+C escape hatch). */
-	terminateAndRecover(): Promise<void> {
-		return this.health.terminate();
+	terminateAndRecover(options?: { reason?: EngineTerminationReason }): Promise<void> {
+		return this.health.terminate(options);
 	}
 	getResourceOverlaps(): readonly ResourceOverlap[] {
 		return this.resourceOverlaps;

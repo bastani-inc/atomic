@@ -66,4 +66,14 @@ export default function engineDeathFixture(api: ExtensionAPI): void {
 		description: "Mount an overlay custom UI that never resolves",
 		handler: async (_args, ctx) => mountFreeze(true, ctx),
 	});
+	api.registerCommand("freeze-nested", {
+		description: "Mount an inline custom UI and then an overlay above it; neither resolves",
+		handler: async (_args, ctx) => {
+			// Deliberately not awaited: the overlay must mount on top of the live
+			// inline proxy so teardown has to unwind newest-first.
+			void mountFreeze(false, ctx);
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			await mountFreeze(true, ctx);
+		},
+	});
 }

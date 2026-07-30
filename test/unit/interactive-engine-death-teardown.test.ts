@@ -206,3 +206,63 @@ serialTest("engine-death teardown lands before any replacement engine_ready", as
 		rmSync(temp, { recursive: true, force: true });
 	}
 }, 45_000);
+
+/**
+ * Nested mounts: an overlay above an inline proxy. Closing oldest-first made the
+ * inline layer restore the editor and then let the overlay hand focus back to
+ * the inline proxy it had captured as `preFocus` — a component that was already
+ * disposed. Teardown must unwind newest-first.
+ */
+serialTest("nested remote mounts unwind newest-first and leave focus on the editor", async () => {
+	const temp = mkdtempSync(join(tmpdir(), "atomic-engine-death-nested-"));
+	const mountFile = join(temp, "mounted.pid");
+	const driver = new DefaultMainDriver(fixtureArgs(temp), {
+		ATOMIC_CODING_AGENT_DIR: join(temp, "agent"),
+		ATOMIC_FREEZE_MOUNT_FILE: mountFile,
+		ATOMIC_NONBLOCKING_TOOL: "1",
+	});
+	try {
+		const enginePid = await mountFrozenCustomUi(driver, "/freeze-nested", mountFile);
+		// Both layers are live: the editor is displaced by the inline mount and an
+		// overlay sits above it.
+		const nested = await driver.waitFor((report) =>
+			report.type === "heartbeat"
+			&& report.hasOverlay === true
+			&& report.editorMounted === false
+			&& (report.blockingInlineDepth ?? 0) > 0,
+			15_000,
+		);
+		assert.equal(nested.hasOverlay, true);
+
+		const killIndex = driver.reports.length;
+		process.kill(enginePid, "SIGKILL");
+		await waitForExit(enginePid);
+
+		const recovered = await driver.waitForNext(
+			killIndex,
+			(report) => report.type === "heartbeat"
+				&& report.hasOverlay === false
+				&& report.editorMounted === true
+				&& report.focusIsEditor === true
+				&& report.blockingInlineDepth === 0,
+			15_000,
+		);
+		assert.equal(recovered.focusIsEditor, true, "focus must land on the editor, never on a disposed proxy");
+		assert.equal(recovered.focusIsStaleInline, false, "focus must never land on a detached inline proxy");
+		// No heartbeat after the kill may ever show focus on a disposed proxy.
+		for (const report of driver.reports.slice(killIndex)) {
+			assert.notEqual(report.focusIsStaleInline, true, "teardown focused a disposed inline proxy");
+		}
+		driver.send({ type: "input", data: "usable after nested teardown" });
+		const typed = await driver.waitForNext(
+			driver.reports.length,
+			(report) => report.type === "heartbeat" && report.editorText?.endsWith("usable after nested teardown") === true,
+			10_000,
+		);
+		assert.ok(typed.editorText?.includes("usable after nested teardown"));
+		assertNoForbiddenText(driver.reports);
+	} finally {
+		await driver.stop();
+		rmSync(temp, { recursive: true, force: true });
+	}
+}, 60_000);
