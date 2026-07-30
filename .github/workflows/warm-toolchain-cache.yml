@@ -1,26 +1,16 @@
 name: Warm toolchain cache
 
-# Every release tag pays a cold Zig and MSVC CRT fetch. `actions/cache` entries
-# are scoped per branch or tag, with a read fallback to the default branch;
-# `publish.yml` only ever runs on `refs/tags/*` and nothing on `main` writes
-# these keys, so the fallback scope is empty and every release is a guaranteed
-# cold download from a community mirror and from Microsoft.
+# `publish.yml` only runs on `refs/tags/*` and nothing on `main` writes the Zig
+# or MSVC CRT cache keys, so every release pays a cold download. This workflow
+# performs only those two acquisitions on `main` to populate the default-branch
+# scope. It builds nothing and writes nothing else.
 #
-# This workflow performs only those two acquisitions on `main` so the
-# default-branch scope holds fresh entries. It writes nothing and builds
-# nothing.
-#
-# GATE: this is deliberately dispatch-only. Whether a `refs/tags/*` run can
-# read a `refs/heads/main` cache entry on Blacksmith's colocated cache is
-# documented but unverified for this repository. Run the experiment in
-# docs/ci.md ("Warming the release toolchain caches") first: dispatch this
-# workflow on `main`, then dispatch `publish.yml` against an existing tag and
-# check whether the Linux legs log `Cache hit for: setup-zig-tarball-...`. Add
-# a daily `schedule:` trigger here only after that hit is observed; entries
-# evict after 7 days of inactivity, so a daily run is what keeps them alive.
-# If the fallback does not apply, delete this file: the per-step bounds in
-# `publish.yml` are what actually hold the line, and this is only an
-# optimisation.
+# GATE: dispatch-only on purpose. Whether a `refs/tags/*` run can read a
+# `refs/heads/main` cache entry on Blacksmith's colocated cache is unverified
+# here. Run the experiment in docs/ci.md ("Warming the release toolchain
+# caches") first, then add a daily `schedule:` only if the hit is observed
+# (entries evict after 7 days). If the fallback does not apply, delete this
+# file: the per-step bounds in `publish.yml` are what hold the line.
 on:
   workflow_dispatch:
 
@@ -43,10 +33,8 @@ jobs:
           - { runner: blacksmith-4vcpu-ubuntu-2404, arch: x64 }
           - { runner: blacksmith-4vcpu-ubuntu-2404-arm, arch: arm64 }
     steps:
-      # setup-zig writes `setup-zig-tarball-zig-<host arch>-linux-0.16.0`, so
-      # the aarch64 key needs an arm64 runner. Keep the version, the tool-cache
-      # setting, and the global-cache setting identical to `publish.yml`, or
-      # this warms a key that job never reads.
+      # Keep version and cache settings identical to `publish.yml`, or this warms
+      # a key that job never reads. The aarch64 key needs an arm64 runner.
       - name: Fetch and cache the Zig tarball
         timeout-minutes: 4
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
@@ -57,8 +45,7 @@ jobs:
 
   msvc-crt:
     name: Warm MSVC CRT ${{ matrix.arch }}
-    # Both Windows legs of `native-artifacts` cross-compile on this Linux
-    # runner spec, so both CRT keys are written here.
+    # Both Windows legs cross-compile on this Linux runner spec.
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     strategy:
@@ -76,8 +63,7 @@ jobs:
       - name: Resolve MSVC CRT cache directory
         shell: bash
         run: echo "XWIN_CACHE_DIR=$HOME/.cache/cargo-xwin" >> "$GITHUB_ENV"
-      # The key epoch must match `publish.yml`. Bumping it there without
-      # bumping it here leaves the release paying a cold download again.
+      # The key epoch must match `publish.yml`.
       - name: Restore MSVC CRT and Windows SDK
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:

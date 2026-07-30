@@ -25,25 +25,16 @@ jobs:
                       timeout_minutes: 15
             fail-fast: false
         runs-on: ${{ matrix.os }}
-        # Strict per-platform wall-clock budgets prevent a hung process from
-        # consuming GitHub's 360-minute default. Linux stays bounded at 10m;
-        # Windows gets 15m because two healthy runs passed every test but crossed
-        # 10m while building or smoke-testing the release archive.
+        # Bounded so a hung process cannot consume GitHub's 360-minute default.
         timeout-minutes: ${{ matrix.timeout_minutes }}
         steps:
-            # useblacksmith/checkout consumes a Blacksmith sticky disk. Sticky
-            # disks are ext4 block devices and exist only on Blacksmith Linux
-            # runners, so on blacksmith-4vcpu-windows-2025 the action warns
-            # ("sticky disks are not supported on Windows runners") and falls
-            # back to a standard clone. Ask Windows for the clone directly.
+            # Sticky disks are Blacksmith-Linux-only; Windows takes a standard clone.
             - uses: useblacksmith/checkout@01ab2a058dd0d41e292217b76582a6f9867c02ce # v1.0.0-beta
               if: runner.os == 'Linux'
               with:
                   # LFS fixtures are required by the coding-agent test suite.
                   lfs: true
-                  # Full history and tags support CI contract fixtures and local
-                  # release tooling. Blacksmith's git mirror keeps this checkout
-                  # inexpensive while preserving those repository-wide checks.
+                  # Full history and tags support CI contract fixtures and release tooling.
                   fetch-depth: 0
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               if: runner.os != 'Linux'
@@ -52,22 +43,17 @@ jobs:
                   fetch-depth: 0
             - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
               with:
-                  # Pinned to match publish.yml. `latest` cannot be cached by
-                  # setup-bun, so every job on every run re-downloaded Bun from
-                  # GitHub releases, and the suite tested a different Bun from
-                  # the one that builds the shipped artifact.
+                  # Pinned to match publish.yml; `latest` cannot be cached by setup-bun.
                   bun-version: 1.3.14
-            # Node is required by test/integration/installed-package-node-extensions.test.ts,
-            # which smoke-tests the built npm package under the Node runtime (the
-            # `atomic` bin runs via `#!/usr/bin/env node` for npm/bun installs).
+            # Node is required by installed-package-node-extensions.test.ts, which
+            # smoke-tests the built npm package under the Node runtime.
             - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
               with:
                   node-version: 24
             - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
               timeout-minutes: 4
               with:
-                  # Required once the action is pinned by SHA: the version is
-                  # otherwise taken from the branch name in the `uses:` ref.
+                  # Required once pinned by SHA: the version otherwise comes from the ref.
                   toolchain: stable
             - name: Install dependencies
               run: bun install --frozen-lockfile
@@ -84,10 +70,8 @@ jobs:
             - name: Mintlify docs validation
               if: runner.os == 'Linux' && github.event_name == 'pull_request'
               working-directory: packages/coding-agent/docs
-              # Pinned: mintlify@4.2.732 depends on @mintlify/editor@0.0.246,
-              # which is missing from the npm registry (404) and breaks
-              # `bunx mintlify@latest` for every PR. Unpin once upstream
-              # publishes a resolvable release.
+              # Pinned: mintlify@4.2.732 pulls a package missing from the registry.
+              # Unpin once upstream publishes a resolvable release.
               timeout-minutes: 5
               run: |
                   bunx --bun mintlify@4.2.731 validate

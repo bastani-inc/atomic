@@ -411,3 +411,23 @@ test("the toolchain warm workflow stays read-only, gated, and key-compatible", a
   assert.equal(zigVersion.exec(warm)?.[1], zigVersion.exec(publish)?.[1], "warm and release Zig versions must match");
   assert.match(await readText(join(root, "docs/ci.md")), /xwin-v1/u);
 });
+
+test("Blacksmith runners are used everywhere they are supported", async () => {
+  const publish = await readText(publishPath);
+  const test = await readText(testPath);
+  const warm = await readText(warmPath);
+  const hosted = [...`${publish}\n${test}\n${warm}`.matchAll(/(?:runs-on|runner): (?!\$\{\{)([^\s,}]+)/gu)]
+    .map(([, runner]) => runner)
+    .filter((runner) => !runner.startsWith("blacksmith-"));
+  // Only two jobs may stay GitHub-hosted, and each for a reason that a future
+  // "move everything to Blacksmith" pass must not quietly undo:
+  //   macos-26-intel - Blacksmith macOS is Apple Silicon only, so this is the
+  //     only runner that can produce the darwin x64 native binding.
+  //   ubuntu-latest  - npm trusted publishing rejects self-hosted runners, and
+  //     Blacksmith registers through GitHub's org-level registration API.
+  assert.deepEqual(hosted.sort(), ["macos-26-intel", "ubuntu-latest"]);
+  assert.match(publish, /# Blacksmith macOS is Apple Silicon only[^\n]*\n\s+- \{ runner: macos-26-intel/u);
+  assert.match(publish, /npm trusted publishing rejects self-hosted runners[\s\S]{0,160}?runs-on: ubuntu-latest/u);
+  // ubuntu-latest is only ever acceptable on the OIDC publish job.
+  assert.equal(jobBlock(publish, "publish-npm", "publish-github-release").includes("runs-on: ubuntu-latest"), true);
+});
