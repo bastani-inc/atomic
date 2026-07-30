@@ -772,7 +772,10 @@ function extractOriginal(lines, block) {
  */
 function extractVariant(lines, block, variantNum) {
   const text = stripStyleAndJoin(lines, block);
-  const inner = extractInnerByAttr(text, 'data-impeccable-variant="' + variantNum + '"');
+  // `variantNum` is digit-validated at the CLI boundary, but escape it anyway:
+  // it originates from a command-line argument, and an inert fragment is what
+  // CodeQL's js/regex-injection remediation asks for.
+  const inner = extractInnerByAttr(text, 'data-impeccable-variant="' + escapeRegExp(String(variantNum)) + '"');
   if (inner === null) return null;
   const result = inner.split('\n');
   // Collapse a lone empty leading/trailing line (common after string splice).

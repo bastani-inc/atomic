@@ -354,13 +354,16 @@ function normalizeText(value) {
 }
 
 function decodeBasicHtml(value) {
+  // `&amp;` must decode last: decoding it first can manufacture entities such
+  // as `&lt;` out of `&amp;lt;` that the later replacements then decode again
+  // (CodeQL js/double-escaping).
   return value
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
     .replace(/&apos;/g, "'")
-    .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>');
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
 }
 
 function escapeRegExp(value) {

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Hardened the bundled `impeccable` live-mode scripts against four CodeQL security findings, preserving behavior for all valid inputs: live-edit session ids now fall back to `crypto.getRandomValues` instead of `Math.random` outside secure contexts (`js/insecure-randomness`); the live server clamps the client-supplied poll timeout to the 10-minute default ceiling (`js/resource-exhaustion`); `live-accept` escapes the `--variant` value before splicing it into a `RegExp` (`js/regex-injection`); and manual-edit evidence decodes `&amp;` last so crafted input cannot be double-unescaped (`js/double-escaping`).
+
 ## [0.9.11-alpha.6] - 2026-07-28
 
 ### Added

@@ -11,7 +11,13 @@
   function createLiveBrowserSessionState({ prefix, storage, idFactory }) {
     if (!prefix) throw new Error('prefix required');
     const store = storage || root.localStorage;
-    const makeId = idFactory || function () { return Math.random().toString(16).slice(2, 10); };
+    const makeId = idFactory || function () {
+      // CSPRNG default: session owner ids gate recovery handoff, and the
+      // Math.random default was the same insecure-randomness class CodeQL
+      // flagged in the id8 helper.
+      const bytes = (root.crypto || crypto).getRandomValues(new Uint8Array(4));
+      return Array.from(bytes, function (byte) { return byte.toString(16).padStart(2, '0'); }).join('');
+    };
     const sessionKey = prefix + '-session';
     const handledKey = sessionKey + '-handled';
     const scrollKey = sessionKey + '-scroll';
