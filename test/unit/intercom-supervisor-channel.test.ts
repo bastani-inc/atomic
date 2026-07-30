@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { SupervisorChannelCache } from "../../packages/intercom/broker/supervisor-channel.js";
 import { isVerticalBypass, sameGroup } from "../../packages/intercom/broker/group-isolation.js";
@@ -59,7 +59,6 @@ test("dynamic child slots accept child names but remain fixed to the issuing sup
     /invalid supervisor capability owner/i,
   );
 });
-
 
 test("isVerticalBypass only honors exact recorded-crossing replies", () => {
   const cache = new SupervisorChannelCache();

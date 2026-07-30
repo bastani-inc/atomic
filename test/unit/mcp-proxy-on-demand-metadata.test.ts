@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, test } from "bun:test";
+import { afterEach, beforeEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -98,7 +98,6 @@ function resultText(result: Awaited<ReturnType<typeof executeSearch>>): string {
   const first = result.content[0];
   return first.type === "text" ? first.text : "";
 }
-
 
 describe("MCP proxy on-demand metadata hydration", () => {
   test("cold-cache search hydrates lazy servers without direct tools", async () => {

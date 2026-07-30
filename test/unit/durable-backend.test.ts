@@ -1,7 +1,7 @@
 /**
  * Tests the current in-memory injection backend and durable primitives.
  */
-import { describe, test, beforeEach } from "bun:test";
+import { beforeEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { InMemoryDurableBackend, durableHash } from "../../packages/workflows/src/durable/backend.js";
 import { finalizeDurableTerminalStatus } from "../../packages/workflows/src/engine/run-durable-finalize.js";
@@ -22,7 +22,6 @@ function makeUiCheckpoint(workflowId: string, promptHash: string, response: stri
 function makeStageCheckpoint(workflowId: string, replayKey: string, output: string, checkpointId = "cp-3"): DurableCheckpoint {
   return { kind: "stage", workflowId, checkpointId, name: "stage1", replayKey, output, completedAt: Date.now() };
 }
-
 
 describe("InMemoryDurableBackend", () => {
   let backend: InMemoryDurableBackend;
@@ -173,8 +172,6 @@ describe("InMemoryDurableBackend", () => {
     assert.equal(backend.listResumableWorkflows().length, 0);
   });
 });
-
-
 
 describe("ctx.tool primitive (durable caching)", () => {
   let backend: InMemoryDurableBackend;

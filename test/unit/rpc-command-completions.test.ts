@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { AgentSession } from "../../packages/coding-agent/src/core/agent-session.ts";
 import { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";

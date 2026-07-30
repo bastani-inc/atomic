@@ -1,4 +1,4 @@
-import { describe } from "bun:test";
+import { describe } from "vitest";
 import {
     assert, createStageControlRegistry, createStore, deferred, workflow,
     makeSmartSession, mockSession, RESUME_CONTINUATION_PROMPT, run, test, waitForPromptCall,

@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { afterEach, beforeEach } from "bun:test";
+import { afterEach, beforeEach } from "vitest";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";

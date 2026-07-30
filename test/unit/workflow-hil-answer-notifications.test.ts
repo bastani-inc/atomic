@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import {
   HIL_ANSWER_NOTICE_CUSTOM_TYPE,

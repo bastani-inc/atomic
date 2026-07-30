@@ -3,7 +3,7 @@
  * and programmatic SDK dispatch paths before starting a run.
  */
 
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { validateInputs } from "../../packages/workflows/src/runs/shared/validate-inputs.js";

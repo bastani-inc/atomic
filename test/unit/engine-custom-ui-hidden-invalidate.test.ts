@@ -9,7 +9,7 @@
  * is hidden, and include them again once they are shown.
  */
 
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import type { OverlayHandle } from "@earendil-works/pi-tui";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";

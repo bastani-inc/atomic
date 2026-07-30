@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { Value } from "typebox/value";
 import { WorkflowParametersSchema } from "../../packages/workflows/src/extension/workflow-schema.js";

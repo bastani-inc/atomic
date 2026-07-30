@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import {
   buildGraphOverlayAdapter,
@@ -27,7 +27,6 @@ import {
   waitForStagePendingPrompt,
 } from "./overlay-entrypoints-helpers.js";
 void [buildGraphOverlayAdapter, buildInteractiveHostCustomUi, buildMockPi, buildMockUi, buildOverlayHandle, buildPrintCtx, buildPrintCtxWithRealCustom, attachHostCustomUiState, createCancellationRegistry, createJobTracker, createStore, workflow, delay, factory, runDetached, setupBranchingRun, setupSequentialRun, setupWideFanoutRun, singletonStore, Type, visibleText, waitForRenderCount, waitForRunEnded, waitForStagePendingPrompt];
-
 
 describe("buildGraphOverlayAdapter — absent pi.ui.custom", () => {
   test("returns noopOverlay when pi.ui is absent", () => {

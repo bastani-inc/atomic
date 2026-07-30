@@ -1,4 +1,4 @@
-import { afterAll, describe, test } from "bun:test";
+import { afterAll, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -150,7 +150,6 @@ describe("lazy relay lifecycle-context fallback", () => {
 		assert.equal(current.inboundMessages.filter((message) => message.customType === "intercom_message").length, 1);
 		assert.deepEqual(current.entries, [], "no delivery-error entries are recorded");
 	});
-
 
 	test("lazy-loads parent Intercom before accepting a late stage route", async () => {
 		const current = fixture();

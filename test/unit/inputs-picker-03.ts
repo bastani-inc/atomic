@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { createInputsPickerState, renderInputsPicker } from "../../packages/workflows/src/tui/inputs-picker.ts";
 import { renderInputsSchema } from "../../packages/workflows/src/shared/render-inputs-schema.ts";

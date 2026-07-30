@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { renderResult, type WorkflowToolResult } from "../../packages/workflows/src/extension/render-result.js";
 import { formatWorkflowReloadReport } from "../../packages/workflows/src/extension/workflow-command-surfaces.js";

@@ -1,5 +1,5 @@
 // @ts-nocheck -- intentional white-box GraphView input coverage
-import { afterEach, beforeEach, describe, test } from "bun:test";
+import { afterEach, beforeEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { workflowInterruptAction, workflowPauseAction, workflowResumeAction } from "../../packages/workflows/src/extension/workflow-tool-control.js";
 import { handleRunControlCommand } from "../../packages/workflows/src/extension/workflow-run-control-command.js";

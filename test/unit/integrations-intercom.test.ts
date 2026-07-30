@@ -1,7 +1,7 @@
 /**
  * Unit tests — intercom/intercom-bridge.ts + result-intercom.ts
  */
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import {
   deriveCwdHash,

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, test } from "bun:test";
+import { afterEach, beforeEach, describe, test } from "vitest";
 import { Key } from "@earendil-works/pi-tui";
 import assert from "node:assert/strict";
 import { aggregateWorkflowRootRunId } from "../../packages/workflows/src/runs/background/workflow-lifecycle-aggregate.js";

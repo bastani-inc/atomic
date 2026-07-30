@@ -11,7 +11,7 @@
  *            src/integrations/mcp.ts (setMcpScope, clearMcpScope)
  */
 
-import { beforeEach, describe, test } from "bun:test";
+import { beforeEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import {
   makeMcpPort,
@@ -131,7 +131,6 @@ function assertScopeEmitSequence(emits: ScopeEmit[]): void {
   const clearIdx = emits.indexOf(clearEmit!);
   assert.ok(setIdx < clearIdx);
 }
-
 
 /**
  * Extract the runId from a workflow tool result and wait for the

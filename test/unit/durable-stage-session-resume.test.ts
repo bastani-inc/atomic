@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, mock, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
@@ -8,7 +8,7 @@ import { RESUME_CONTINUATION_PROMPT } from "../../packages/workflows/src/runs/fo
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { elapsedStageMs, rebasedStageStartedAt } from "../../packages/workflows/src/shared/timing.js";
 
-afterEach(() => mock.restore());
+afterEach(() => vi.restoreAllMocks());
 const WORKFLOW_ID = "wf-stage-session-resume";
 
 function makeStage(overrides: Partial<StageSnapshot> = {}): StageSnapshot {
@@ -257,7 +257,6 @@ describe("durable stage session resume", () => {
     });
   });
 
-
   test("completed output wins over later session metadata", async () => {
     const replayKey = "stage:analyze:1";
     await recordStageCheckpoint(deps(), makeStage({ status: "completed", replayKey, result: "done", endedAt: 2000 }));
@@ -284,7 +283,7 @@ describe("durable stage session resume", () => {
   test("hydrates schema-backed replay from the latest timing metadata", async () => {
     const replayKey = "stage:analyze:1";
     let clock = 1300;
-    spyOn(Date, "now").mockImplementation(() => clock);
+    vi.spyOn(Date, "now").mockImplementation(() => clock);
     // startedAt straddles a 30 s debounce bucket boundary between the two
     // checkpoints so the second (latest) duration is durably refreshed.
     const active = makeStage({ replayKey, sessionFile: "/tmp/schema-stage.jsonl", startedAt: -28_839 });

@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import {
   createWorkflowLifecycleNotificationState,
@@ -168,7 +168,6 @@ describe("active recoverable blocked lifecycle notices", () => {
     assert.equal(effectiveRunStatus(source), "killed");
   });
 
-
   test("retries a rejected chat admission and marks delivery only after acceptance", async () => {
     const store = createStore();
     const state = createWorkflowLifecycleNotificationState();
@@ -307,7 +306,6 @@ describe("active recoverable blocked lifecycle notices", () => {
     assert.equal(state.retryableTerminalNotices.has(`blocked:pending-reinstall:${pendingBlockedAt}`), false);
     reinstalled();
   });
-
 
   test("drops a pending admission when its invoking session is replaced", async () => {
     const store = createStore();

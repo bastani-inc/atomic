@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { openInputsPicker } from "../../packages/workflows/src/tui/inputs-overlay.ts";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.ts";

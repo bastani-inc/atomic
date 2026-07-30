@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { StageSessionReplacement } from "../../packages/workflows/src/runs/foreground/stage-runner-replacement.js";
 import { makeMockSession } from "./stage-runner-helpers.js";

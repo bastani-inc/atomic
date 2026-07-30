@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { admitWorkflowStageInbound } from "../../packages/intercom/workflow-stage-admission.js";
 import { sleep } from "../helpers/runtime.js";

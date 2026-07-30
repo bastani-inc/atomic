@@ -9,7 +9,7 @@
  *   - node_modules/@bastani/atomic/src/modes/theme/theme.ts
  */
 
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import {
     deriveGraphTheme,

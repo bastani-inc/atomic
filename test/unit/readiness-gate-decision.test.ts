@@ -1,4 +1,4 @@
-import { test, describe } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import {

@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { ForegroundDetachHandoff, handleForegroundInboundDelivery, INTERCOM_DETACH_REQUEST_EVENT, INTERCOM_DETACH_RESPONSE_EVENT } from "../../packages/intercom/foreground-detach-handoff.js";
@@ -254,7 +254,6 @@ describe("broker foreground delivery handshake", () => {
     assert.equal(await retry, "delivered");
     assert.equal(probes, 2);
   });
-
 
   test("reset permits a new generation to deliver the same message identity", async () => {
     const { emitter, handoff } = fixture();

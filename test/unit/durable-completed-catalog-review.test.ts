@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { durableHash, InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import {

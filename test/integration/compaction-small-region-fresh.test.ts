@@ -9,7 +9,7 @@
  * the follow-up request.
  */
 
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { runVerbatimCompaction } from "../../packages/coding-agent/src/core/compaction/compaction-runner.js";
 import { RangePlanError } from "../../packages/coding-agent/src/core/compaction/range-planner.js";

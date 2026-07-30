@@ -15,7 +15,7 @@
  * prompt overlay remains unused for normal detached workflow ctx.ui calls.
  */
 
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { runDetached } from "../../packages/workflows/src/runs/background/runner.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";

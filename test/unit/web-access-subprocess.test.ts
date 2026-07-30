@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -72,7 +72,7 @@ test("Bun subprocess execution maps spawn ENOENT and non-zero exits with stderr"
 	);
 });
 
-test.serial("video and YouTube command paths use asynchronous Bun subprocesses", async () => {
+test.sequential("video and YouTube command paths use asynchronous Bun subprocesses", async () => {
 	if (process.platform === "win32") return;
 	const bin = mkdtempSync(join(tmpdir(), "atomic-web-bin-"));
 	const previousPath = process.env.PATH;

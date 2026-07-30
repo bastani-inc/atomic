@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import type { CreateAgentSessionOptions } from "@bastani/atomic";
 import { buildRuntimeAdapters } from "../../packages/workflows/src/extension/wiring.js";

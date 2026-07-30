@@ -1,4 +1,4 @@
-import { afterEach, describe, test } from "bun:test";
+import { afterEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import type { AgentSession } from "@bastani/atomic";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -178,7 +178,7 @@ describe("post-commit quit and nested resume coherence", () => {
     assert.equal(backend.getWorkflow("root-primitive")?.status, "running");
   });
 
-  test.serial("slash-targeted nested progress then tool root retry does not duplicate resumed descendants", async () => {
+  test.sequential("slash-targeted nested progress then tool root retry does not duplicate resumed descendants", async () => {
     const backend = new InMemoryDurableBackend();
     setDurableBackend(backend);
     const rootId = "root-reverse-surface-retry";
@@ -210,7 +210,7 @@ describe("post-commit quit and nested resume coherence", () => {
     assert.equal(backend.getWorkflow(rootId)?.status, "running");
   });
 
-  test.serial("tool-targeted nested progress then slash root retry resumes only the remaining descendant", async () => {
+  test.sequential("tool-targeted nested progress then slash root retry resumes only the remaining descendant", async () => {
     const backend = new InMemoryDurableBackend();
     setDurableBackend(backend);
     const rootId = "root-surface-retry";
@@ -245,7 +245,7 @@ describe("post-commit quit and nested resume coherence", () => {
     assert.equal(backend.getWorkflow(rootId)?.status, "running");
     assert.match(messages.join("\n"), /Resumed 1 stage/);
   });
-  test.serial("slash resume reports synthetic prompt acknowledgement as info while the root completes", async () => {
+  test.sequential("slash resume reports synthetic prompt acknowledgement as info while the root completes", async () => {
     const runId = "resume-terminal-synthetic-slash";
     const backend = await startAnsweredQuitSyntheticPrompt(runId);
     const { workflowCmd } = await registerWorkflowCommand();
@@ -269,7 +269,7 @@ describe("post-commit quit and nested resume coherence", () => {
     assert.equal(backend.getWorkflow(runId)?.status, "completed");
   });
 
-  test.serial("tool resume reports synthetic prompt acknowledgement as ok while the root completes", async () => {
+  test.sequential("tool resume reports synthetic prompt acknowledgement as ok while the root completes", async () => {
     const runId = "resume-terminal-synthetic-tool";
     const backend = await startAnsweredQuitSyntheticPrompt(runId);
 
@@ -287,7 +287,7 @@ describe("post-commit quit and nested resume coherence", () => {
     assert.equal(backend.getWorkflow(runId)?.status, "completed");
   });
 
-  test.serial("slash resume reports terminal completion acknowledged by a paused control", async () => {
+  test.sequential("slash resume reports terminal completion acknowledged by a paused control", async () => {
     const backend = new InMemoryDurableBackend();
     setDurableBackend(backend);
     const runId = "resume-terminal-slash";
@@ -327,7 +327,7 @@ describe("post-commit quit and nested resume coherence", () => {
     assert.equal(backend.getWorkflow(runId)?.status, "completed");
   });
 
-  test.serial("tool resume reports async terminal completion as successful progress", async () => {
+  test.sequential("tool resume reports async terminal completion as successful progress", async () => {
     const backend = new InMemoryDurableBackend();
     setDurableBackend(backend);
     const runId = "resume-terminal-tool";
@@ -365,7 +365,7 @@ describe("post-commit quit and nested resume coherence", () => {
     assert.equal(backend.getWorkflow(runId)?.status, "completed");
   });
 
-  test.serial("tool resume retains noop for a pre-existing paused snapshot with no paused control", async () => {
+  test.sequential("tool resume retains noop for a pre-existing paused snapshot with no paused control", async () => {
     const backend = new InMemoryDurableBackend();
     setDurableBackend(backend);
     const runId = "resume-no-paused-control";
@@ -402,7 +402,7 @@ describe("post-commit quit and nested resume coherence", () => {
     assert.deepEqual(errors, [`No paused stages on run ${runId.slice(0, 8)}.`]);
   });
 
-  test.serial("slash quit, held synthetic prompt answer, and resume reports one truthful acknowledgment", async () => {
+  test.sequential("slash quit, held synthetic prompt answer, and resume reports one truthful acknowledgment", async () => {
     const backend = new InMemoryDurableBackend();
     setDurableBackend(backend);
     const runId = "resume-synthetic-prompt-command";

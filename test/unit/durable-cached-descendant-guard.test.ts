@@ -1,4 +1,4 @@
-import { afterEach, test } from "bun:test";
+import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -201,7 +201,7 @@ function markHandledStageSkipped(sdk: ReturnType<typeof createMockSdk>): void {
   throw new Error("handled failed stage checkpoint not found");
 }
 
-test.serial("cached completed boundary republishes a child that handled a failed stage and completed downstream", async () => {
+test.sequential("cached completed boundary republishes a child that handled a failed stage and completed downstream", async () => {
   const rootId = "cached-descendant-valid-root";
   const fixture = await prepareFixture(rootId);
   const fresh = new DbosDurableBackend(fixture.persisted, { executorId: "cached-descendant-valid-fresh" });
@@ -265,7 +265,7 @@ test.serial("cached completed boundary republishes a child that handled a failed
   assert.equal(workflowStore.runs().filter((candidate) => candidate.id === fixture.pending.runId).length, 1);
 });
 
-test.serial("cached completed boundary accepts a fully timed skipped child stage without rerunning", async () => {
+test.sequential("cached completed boundary accepts a fully timed skipped child stage without rerunning", async () => {
   const rootId = "cached-descendant-skipped-root";
   const fixture = await prepareFixture(rootId);
   markHandledStageSkipped(fixture.persisted);
@@ -302,7 +302,7 @@ test.serial("cached completed boundary accepts a fully timed skipped child stage
   await fresh.flush();
 });
 
-test.serial("cached completed boundary rejects an active descendant before publication or later dispatch", async () => {
+test.sequential("cached completed boundary rejects an active descendant before publication or later dispatch", async () => {
   const rootId = "cached-descendant-malformed-root";
   const fixture = await prepareFixture(rootId);
   const malformed = copySdk(fixture.persisted);

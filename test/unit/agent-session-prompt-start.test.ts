@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { _runAgentPrompt, prompt } from "../../packages/coding-agent/src/core/agent-session-prompt.js";
 

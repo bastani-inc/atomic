@@ -9,7 +9,7 @@
  *
  * cross-ref: packages/workflows/src/tui/stage-chat-view-delivery-activity.ts
  */
-import { test } from "bun:test";
+import { test } from "vitest";
 import {
   assert,
   createStore,

@@ -1,4 +1,4 @@
-import { afterEach, test } from "bun:test";
+import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";

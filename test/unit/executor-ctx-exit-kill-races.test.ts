@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { killRun } from "../../packages/workflows/src/runs/background/status.js";

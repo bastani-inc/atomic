@@ -23,18 +23,6 @@ export const atomicSrcIndex = fileURLToPath(
 	new URL("./packages/coding-agent/src/index.ts", import.meta.url),
 );
 
-/**
- * `bun:test` is served from a local re-export of vitest's API.
- *
- * The repository has 629 test files importing `bun:test`. Aliasing the specifier
- * migrates all of them unedited, so this diff carries behavioural change only.
- * Phase 2 codemods the imports to `vitest` and deletes this alias; keeping the
- * two apart is what makes either half reviewable.
- */
-export const bunTestShim = fileURLToPath(
-	new URL("./test/helpers/bun-test-shim.ts", import.meta.url),
-);
-
 const aiSrcIndex = fileURLToPath(new URL("./packages/ai/src/index.ts", import.meta.url));
 const aiSrcOAuth = fileURLToPath(new URL("./packages/ai/src/oauth.ts", import.meta.url));
 const agentSrcIndex = fileURLToPath(new URL("./packages/agent/src/index.ts", import.meta.url));
@@ -61,7 +49,6 @@ const workspaceSourceAliases: readonly Alias[] =
 
 /** Every alias each vitest project shares. */
 export const sharedAliases: readonly Alias[] = [
-	{ find: /^bun:test$/, replacement: bunTestShim },
 	{ find: /^@bastani\/atomic$/, replacement: atomicSrcIndex },
 	...workspaceSourceAliases,
 ];

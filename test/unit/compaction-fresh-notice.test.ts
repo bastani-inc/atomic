@@ -2,7 +2,7 @@
  * RFC §5.4 — the fresh rung is loud, borrowed planning stays quiet.
  */
 
-import { beforeAll, test } from "bun:test";
+import { beforeAll, test } from "vitest";
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";

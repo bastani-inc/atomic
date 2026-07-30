@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { registerIntercomLifecycle } from "../../packages/intercom/lifecycle.js";
 import { InboundIdleQueue } from "../../packages/intercom/inbound-idle-queue.js";

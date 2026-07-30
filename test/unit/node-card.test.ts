@@ -15,7 +15,7 @@
  *   - src/tui/graph-theme.ts
  */
 
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import type { StageSnapshot, StageStatus } from "../../packages/workflows/src/shared/store-types.js";
 import { renderNodeCard } from "../../packages/workflows/src/tui/node-card.js";

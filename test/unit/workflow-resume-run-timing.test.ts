@@ -1,4 +1,4 @@
-import { describe } from "bun:test";
+import { describe } from "vitest";
 import { assert, createStore, run, test, Type, workflow } from "./executor-shared.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import {
@@ -135,7 +135,6 @@ describe("durable run-timing checkpoints", () => {
     assert.equal(inheritedRunElapsedMs({ backend, runId: RUN_ID }), 5_000);
   });
 });
-
 
 describe("stage timing durability boundaries", () => {
   test("forced sub-30-second checkpoint records exact elapsed and topology", async () => {

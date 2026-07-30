@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
 import { formatCodexProviderError } from "../../packages/coding-agent/src/core/codex-errors.js";

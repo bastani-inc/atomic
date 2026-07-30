@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { createRetryScheduler } from "../../packages/subagents/src/runs/background/result-retry-scheduler.js";
 

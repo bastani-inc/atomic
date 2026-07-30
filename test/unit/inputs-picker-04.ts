@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { createInputsPickerState, handleInputsPickerInput } from "../../packages/workflows/src/tui/inputs-picker.ts";
 import { makeFakeKeybindings } from "../support/fake-keybindings.ts";

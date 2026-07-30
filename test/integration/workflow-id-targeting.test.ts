@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, test } from "bun:test";
+import { afterEach, beforeEach, test } from "vitest";
 import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";

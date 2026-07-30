@@ -1,4 +1,4 @@
-import { afterEach, describe, test } from "bun:test";
+import { afterEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { buildWidgetLines, currentRunningFrame, pulseGlyph, RUNNING_ANIMATION_MS, stopResultAnimations } from "../../packages/subagents/src/tui/render.js";
 import { firstSpinnerChar, type AsyncJobState, theme, withMockedNow } from "./subagents-render-stability-helpers.js";

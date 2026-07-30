@@ -3,7 +3,7 @@
  * and the urgency refusal that keeps `/compact` away from context destruction.
  */
 
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import {
 	runVerbatimCompaction,

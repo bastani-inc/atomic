@@ -1,4 +1,4 @@
-import { describe } from "bun:test";
+import { describe } from "vitest";
 import {
     assert, createStore, deferred, workflow, mockSession, run, sleep, test, Type,
     WORKFLOW_UNKNOWN_MODEL_MESSAGE, type AgentSession, type CreateAgentSessionOptions,

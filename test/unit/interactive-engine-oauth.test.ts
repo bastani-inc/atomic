@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,7 +9,7 @@ import { loginRpcOAuthProvider } from "../../packages/coding-agent/src/modes/rpc
 import type { RpcModelCatalog } from "../../packages/coding-agent/src/modes/rpc/rpc-types.ts";
 import { bunExecutable, moduleDir } from "../helpers/runtime.js";
 
-test.serial("real isolated child discovers and acquires engine-only custom OAuth", async () => {
+test.sequential("real isolated child discovers and acquires engine-only custom OAuth", async () => {
 	const temp = mkdtempSync(join(tmpdir(), "atomic-engine-oauth-"));
 	const agentDir = join(temp, "agent");
 	const logFile = join(temp, "oauth.log");

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, test } from "bun:test";
+import { afterEach, beforeEach, test } from "vitest";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";

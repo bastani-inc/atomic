@@ -1,4 +1,4 @@
-import { afterEach, test } from "bun:test";
+import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -125,7 +125,7 @@ async function releasePromptOwners(
   await backend.flush();
 }
 
-test.serial("fresh DBOS replay coalesces an omitted occurrenceKey prompt with current metadata", async () => {
+test.sequential("fresh DBOS replay coalesces an omitted occurrenceKey prompt with current metadata", async () => {
   const sdk = createMockSdk();
   const writer = new DbosDurableBackend(sdk, { executorId: "prompt-upgrade-writer" });
   const writerStore = createStore();

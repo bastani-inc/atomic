@@ -12,7 +12,7 @@
  * cross-ref: src/tui/stage-chat-view.ts
  */
 
-import { beforeAll } from "bun:test";
+import { beforeAll } from "vitest";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";

@@ -12,7 +12,7 @@
  * cross-ref: src/extension/status-writer.ts
  */
 
-import { afterEach, beforeEach, describe, test } from "bun:test";
+import { afterEach, beforeEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";

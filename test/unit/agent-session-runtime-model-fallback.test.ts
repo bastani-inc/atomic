@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.ts";

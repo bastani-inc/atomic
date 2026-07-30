@@ -1,4 +1,4 @@
-import { beforeEach, afterEach, describe, test } from "bun:test";
+import { afterEach, beforeEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
@@ -124,7 +124,6 @@ describe("/workflow resume — durable regression coverage", () => {
     assert.match(joined, /Workflow definition not found/);
     assert.doesNotMatch(joined, /Resumable workflows/);
   });
-
 
   test("no-arg resume with no resumable workflows opens empty /resume-style selector", async () => {
     const { pi, commands } = buildMockPi();

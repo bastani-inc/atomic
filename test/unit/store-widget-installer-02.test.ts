@@ -5,7 +5,7 @@
  * cross-ref: spec §5.4.4, §5.4.6, §5.5, §8.1 Phase E
  */
 
-import { beforeEach, describe, test } from "bun:test";
+import { beforeEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import {
   installStoreWidget,

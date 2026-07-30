@@ -1,4 +1,4 @@
-import { afterEach, describe, mock, test } from "bun:test";
+import { afterEach, describe, test, vi } from "vitest";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -82,7 +82,6 @@ type StartupContainerContext = {
   ui: { requestRender: () => void };
 };
 
-
 type InteractivePrototype = {
   setupEditorSubmitHandler(this: SubmitContext): void;
   completeDeferredStartup(this: DeferredModeContext): Promise<void>;
@@ -160,13 +159,13 @@ describe("coding-agent deferred startup input", () => {
   test("preserves editor text and cursor while deferred startup completes", async () => {
     let text = "";
     const cursor = { line: 0, col: 0 };
-    const maybeSaveImplicitProjectTrustAfterReload = mock(() => {});
+    const maybeSaveImplicitProjectTrustAfterReload = vi.fn(() => {});
     const mode: DeferredModeContext = {
-      chatContainer: { addChild: mock(() => {}), removeChild: mock(() => {}) },
+      chatContainer: { addChild: vi.fn(() => {}), removeChild: vi.fn(() => {}) },
       startupNoticesContainer: new Container(),
-      ui: { requestRender: mock(() => {}) },
+      ui: { requestRender: vi.fn(() => {}) },
       session: {
-        reload: mock(async () => {
+        reload: vi.fn(async () => {
           text = "typed during loading";
           cursor.col = text.length;
         }),
@@ -176,21 +175,21 @@ describe("coding-agent deferred startup input", () => {
       },
       editor: { getText: () => text, setText: (nextText) => { text = nextText; }, getCursor: () => cursor },
       options: {},
-      themeController: { applyFromSettings: mock(async () => {}) },
+      themeController: { applyFromSettings: vi.fn(async () => {}) },
       deferredStartupPending: true,
-      bindCurrentSessionExtensions: mock(async () => {}),
+      bindCurrentSessionExtensions: vi.fn(async () => {}),
       maybeSaveImplicitProjectTrustAfterReload,
-      setupAutocompleteProvider: mock(() => {}),
-      setupExtensionShortcuts: mock(() => {}),
-      retryDeferredModelRestore: mock(async () => {}),
-      stopWorkingLoader: mock(() => {}),
-      showLoadedResources: mock(() => {}),
-      showStartupNoticesIfNeeded: mock(() => {}),
-      maybeWarnAboutAnthropicSubscriptionAuth: mock(async () => {}),
-      updateAvailableProviderCount: mock(async () => {}),
-      updateEditorBorderColor: mock(() => {}),
-      showError: mock(() => {}),
-      showWarning: mock(() => {}),
+      setupAutocompleteProvider: vi.fn(() => {}),
+      setupExtensionShortcuts: vi.fn(() => {}),
+      retryDeferredModelRestore: vi.fn(async () => {}),
+      stopWorkingLoader: vi.fn(() => {}),
+      showLoadedResources: vi.fn(() => {}),
+      showStartupNoticesIfNeeded: vi.fn(() => {}),
+      maybeWarnAboutAnthropicSubscriptionAuth: vi.fn(async () => {}),
+      updateAvailableProviderCount: vi.fn(async () => {}),
+      updateEditorBorderColor: vi.fn(() => {}),
+      showError: vi.fn(() => {}),
+      showWarning: vi.fn(() => {}),
       sessionManager: { buildSessionContext: () => ({ messages: [] }) },
       settingsManager: { getDefaultProvider: () => undefined, getDefaultModel: () => undefined },
     };
@@ -204,13 +203,13 @@ describe("coding-agent deferred startup input", () => {
   });
 
   test("queues Enter submissions made before deferred startup is ready", async () => {
-    const prompt = mock(async () => {});
-    const renderDeferredUserInput = mock(() => {});
+    const prompt = vi.fn(async () => {});
+    const renderDeferredUserInput = vi.fn(() => {});
     const context: SubmitContext = {
       defaultEditor: {},
-      editor: { addToHistory: mock(() => {}), setText: mock(() => {}) },
+      editor: { addToHistory: vi.fn(() => {}), setText: vi.fn(() => {}) },
       session: { isCompacting: false, isStreaming: false, isBashRunning: false, prompt },
-      flushPendingBashComponents: mock(() => {}),
+      flushPendingBashComponents: vi.fn(() => {}),
       renderDeferredUserInput,
       pendingUserInputs: [],
     };
@@ -224,12 +223,12 @@ describe("coding-agent deferred startup input", () => {
   });
 
   test("queued deferred-startup inputs render in request order from message events", async () => {
-    const renderDeferredUserInput = mock(() => {});
+    const renderDeferredUserInput = vi.fn(() => {});
     const submitContext: SubmitContext = {
       defaultEditor: {},
-      editor: { addToHistory: mock(() => {}), setText: mock(() => {}) },
-      session: { isCompacting: false, isStreaming: false, isBashRunning: false, prompt: mock(async () => {}) },
-      flushPendingBashComponents: mock(() => {}),
+      editor: { addToHistory: vi.fn(() => {}), setText: vi.fn(() => {}) },
+      session: { isCompacting: false, isStreaming: false, isBashRunning: false, prompt: vi.fn(async () => {}) },
+      flushPendingBashComponents: vi.fn(() => {}),
       renderDeferredUserInput,
       pendingUserInputs: [],
     };
@@ -238,13 +237,13 @@ describe("coding-agent deferred startup input", () => {
     chatContainer.addChild(new Text("resp1", 0, 0));
     const eventContext: HandleEventContext = {
       isInitialized: true,
-      footer: { invalidate: mock(() => {}) },
+      footer: { invalidate: vi.fn(() => {}) },
       chatContainer,
       getUserMessageText: (message) => message.content,
       consumeDeferredRenderedUserInput: () => false,
       addMessageToChat: (message) => chatContainer.addChild(new Text(message.content, 0, 0)),
-      updatePendingMessagesDisplay: mock(() => {}),
-      ui: { requestRender: mock(() => {}) },
+      updatePendingMessagesDisplay: vi.fn(() => {}),
+      ui: { requestRender: vi.fn(() => {}) },
     };
 
     interactivePrototype.setupEditorSubmitHandler.call(submitContext);
@@ -273,7 +272,7 @@ describe("coding-agent deferred startup input", () => {
     chatContainer.addChild(userMessage);
     const mode: StartupNoticeContext = {
       chatContainer,
-      settingsManager: { getCollapseChangelog: () => true, setOnboardedVersion: mock(() => {}) },
+      settingsManager: { getCollapseChangelog: () => true, setOnboardedVersion: vi.fn(() => {}) },
       getMarkdownThemeWithSettings: () => getMarkdownTheme(),
       getStartupExpansionState: () => false,
       startupNoticesShown: false,
@@ -281,7 +280,7 @@ describe("coding-agent deferred startup input", () => {
       firstRunNoticeVisible: false,
       firstRunOnboardingNoticeComponents: [],
       version: "1.2.3",
-      ui: { requestRender: mock(() => {}) },
+      ui: { requestRender: vi.fn(() => {}) },
     };
 
     interactivePrototype.showStartupNoticesIfNeeded.call(mode, startupContainer);
@@ -304,7 +303,7 @@ describe("coding-agent deferred startup input", () => {
       startupNoticesContainer,
       firstRunNoticeVisible: false,
       firstRunOnboardingNoticeComponents: [],
-      ui: { requestRender: mock(() => {}) },
+      ui: { requestRender: vi.fn(() => {}) },
     };
 
     interactivePrototype.attachStartupNoticesContainer.call(mode, { resetDetached: true });
@@ -327,7 +326,7 @@ describe("coding-agent deferred startup input", () => {
       startupNoticesContainer,
       firstRunNoticeVisible: true,
       firstRunOnboardingNoticeComponents: [onboarding],
-      ui: { requestRender: mock(() => {}) },
+      ui: { requestRender: vi.fn(() => {}) },
     };
 
     interactivePrototype.clearFirstRunOnboardingUi.call(mode);
@@ -346,8 +345,8 @@ describe("coding-agent deferred startup input", () => {
       addMessageToChat: (message) => {
         chatContainer.addChild(new Text(`user:${message.content}`, 0, 0));
       },
-      updatePendingMessagesDisplay: mock(() => {}),
-      ui: { requestRender: mock(() => {}) },
+      updatePendingMessagesDisplay: vi.fn(() => {}),
+      ui: { requestRender: vi.fn(() => {}) },
     };
 
     interactivePrototype.renderDeferredUserInput.call(mode, "prompt that fails");

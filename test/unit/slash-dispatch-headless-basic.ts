@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import {
     installSlashDispatchTestHooks,
     assert,
@@ -210,7 +210,7 @@ describe("/workflow command in non-interactive (-p) mode (#1156 regressions)", (
         };
     }
 
-    test.serial("session_start defers package workflow module evaluation until /workflow list needs discovery", async () => {
+    test.sequential("session_start defers package workflow module evaluation until /workflow list needs discovery", async () => {
         const marker = `__atomicLazyWorkflowEval_${Date.now()}`;
         globalThis[marker] = 0;
         const source = `import { workflow } from "@bastani/workflows";
@@ -238,7 +238,7 @@ export default workflow({
         }
     });
 
-    test.serial("workflowPolicyFromContext derives non-interactive policy from hasUI false", () => {
+    test.sequential("workflowPolicyFromContext derives non-interactive policy from hasUI false", () => {
         assert.equal(
             workflowPolicyFromContext({ hasUI: false }).mode,
             "non_interactive",
@@ -254,7 +254,7 @@ export default workflow({
         assert.equal(workflowPolicyFromContext({}).mode, "interactive");
     });
 
-    test.serial("/workflow list proceeds when no UI is available and emits printable content", async () => {
+    test.sequential("/workflow list proceeds when no UI is available and emits printable content", async () => {
         const { handler, sent } = await registerWorkflowCommand();
         const { ctx, messages } = commandCtx(false);
 
@@ -280,7 +280,7 @@ export default workflow({
         );
     });
 
-    test.serial("/workflow status emits printable list and detail content when no UI is available", async () => {
+    test.sequential("/workflow status emits printable list and detail content when no UI is available", async () => {
         const { handler, sent } = await registerWorkflowCommand();
         const runId = `headless-printable-status-${Date.now()}`;
         recordTerminalRun(runId, "completed", {
@@ -320,7 +320,7 @@ export default workflow({
         assert.doesNotMatch(detailMessage.content ?? "", /^run detail · /);
     });
 
-    test.serial("/workflow inputs <known> emits displayable command output in headless mode", async () => {
+    test.sequential("/workflow inputs <known> emits displayable command output in headless mode", async () => {
         const { handler, sent } = await registerWorkflowCommand();
         const { ctx, messages } = commandCtx(false);
 
@@ -347,7 +347,7 @@ export default workflow({
         });
     });
 
-    test.serial("/workflow <known> --help emits displayable command output and skips dispatch headlessly", async () => {
+    test.sequential("/workflow <known> --help emits displayable command output and skips dispatch headlessly", async () => {
         const { handler, sent } = await registerWorkflowCommand();
         const { ctx, messages } = commandCtx(false);
 
@@ -377,7 +377,7 @@ export default workflow({
         });
     });
 
-    test.serial("/workflow rejects missing required input in headless mode without relying on notify", async () => {
+    test.sequential("/workflow rejects missing required input in headless mode without relying on notify", async () => {
         const { handler } = await registerWorkflowCommand();
         const { ctx, messages, pickerCalls } = commandCtx(false);
 
@@ -390,7 +390,7 @@ export default workflow({
         assert.deepEqual(messages, []);
     });
 
-    test.serial("/workflow rejects unknown workflow in headless mode with a visible command error", async () => {
+    test.sequential("/workflow rejects unknown workflow in headless mode with a visible command error", async () => {
         const { handler } = await registerWorkflowCommand();
 
         await assertRejectsHeadlessCommand(
@@ -399,7 +399,7 @@ export default workflow({
         );
     });
 
-    test.serial("/workflow status <missing> rejects visibly in headless mode", async () => {
+    test.sequential("/workflow status <missing> rejects visibly in headless mode", async () => {
         const { handler } = await registerWorkflowCommand();
 
         await assertRejectsHeadlessCommand(
@@ -408,7 +408,7 @@ export default workflow({
         );
     });
 
-    test.serial("/workflow connect <missing> rejects visibly in headless mode", async () => {
+    test.sequential("/workflow connect <missing> rejects visibly in headless mode", async () => {
         const { handler } = await registerWorkflowCommand();
 
         await assertRejectsHeadlessCommand(
@@ -417,7 +417,7 @@ export default workflow({
         );
     });
 
-    test.serial("/workflow connect without a run id rejects visibly in headless mode", async () => {
+    test.sequential("/workflow connect without a run id rejects visibly in headless mode", async () => {
         const { handler } = await registerWorkflowCommand();
 
         await assertRejectsHeadlessCommand(
@@ -426,7 +426,7 @@ export default workflow({
         );
     });
 
-    test.serial("/workflow connect <valid> rejects visibly in headless mode", async () => {
+    test.sequential("/workflow connect <valid> rejects visibly in headless mode", async () => {
         const { handler } = await registerWorkflowCommand();
         const runId = `headless-connect-valid-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
@@ -437,7 +437,7 @@ export default workflow({
         );
     });
 
-    test.serial("/workflow attach <valid> rejects visibly in headless mode", async () => {
+    test.sequential("/workflow attach <valid> rejects visibly in headless mode", async () => {
         const { handler } = await registerWorkflowCommand();
         const runId = `headless-attach-valid-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
@@ -448,7 +448,7 @@ export default workflow({
         );
     });
 
-    test.serial("/workflow attach <valid> <stage> rejects visibly in headless mode", async () => {
+    test.sequential("/workflow attach <valid> <stage> rejects visibly in headless mode", async () => {
         const { handler } = await registerWorkflowCommand();
         const runId = `headless-attach-stage-${Date.now()}`;
         const stageId = "stage-headless-attach";

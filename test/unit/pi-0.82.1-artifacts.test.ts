@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -20,7 +20,6 @@ interface Manifest {
 interface Lockfile {
 	packages: Record<string, { version: string; resolved: string; integrity: string; dependencies?: Record<string, string> }>;
 }
-
 
 const root = join(moduleDir(import.meta.url), "../..");
 const distBuiltinDir = join(root, "packages/coding-agent/dist/builtin");

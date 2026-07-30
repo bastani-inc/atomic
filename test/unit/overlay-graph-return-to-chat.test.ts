@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { describe, it, mock } from "bun:test";
+import { describe, it, vi } from "vitest";
 import assert from "node:assert/strict";
 import * as h from "./overlay-graph-helpers.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
@@ -50,7 +50,7 @@ describe("GraphView return to main chat", () => {
       makeRunPromptSnap([makeStage("prompt-owner")], makePendingPrompt({ id: "legacy-prompt" })),
     );
     const resolved: h.PromptResolution[] = [];
-    const onDetach = mock(() => {});
+    const onDetach = vi.fn(() => {});
     const view = new GraphView({
       mode: "overlay",
       runId: "run-1",
@@ -72,7 +72,7 @@ describe("GraphView return to main chat", () => {
   it("Ctrl+X variants return to main chat while the stage switcher is open", () => {
     for (const key of CTRL_X_VARIANTS) {
       const store = makeStore(makeSnap([makeStage("A"), makeStage("B")]));
-      const onDetach = mock(() => {});
+      const onDetach = vi.fn(() => {});
       const before = structuredClone(store.runs());
       const view = new GraphView({
         mode: "overlay",
@@ -93,7 +93,7 @@ describe("GraphView return to main chat", () => {
   });
 
   it("q remains printable in the stage switcher instead of navigating or quitting", () => {
-    const onDetach = mock(() => {});
+    const onDetach = vi.fn(() => {});
     const view = new GraphView({
       mode: "overlay",
       runId: "run-1",
@@ -112,7 +112,7 @@ describe("GraphView return to main chat", () => {
   });
 
   it("q remains printable in a visible legacy prompt", () => {
-    const onDetach = mock(() => {});
+    const onDetach = vi.fn(() => {});
     const view = new GraphView({
       mode: "overlay",
       runId: "run-1",
@@ -130,7 +130,7 @@ describe("GraphView return to main chat", () => {
   });
 
   it("Ctrl+D no longer returns from the graph", () => {
-    const onDetach = mock(() => {});
+    const onDetach = vi.fn(() => {});
     const view = new GraphView({
       mode: "overlay",
       runId: "run-1",

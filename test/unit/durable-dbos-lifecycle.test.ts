@@ -1,4 +1,4 @@
-import { afterEach, describe, test } from "bun:test";
+import { afterEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import {
   DbosDurableBackend,
@@ -42,7 +42,7 @@ function configured(
 afterEach(() => resetDbosLifecycleForTests());
 
 describe("mandatory DBOS lifecycle", () => {
-  test.serial("configures and launches exactly once for concurrent callers", async () => {
+  test.sequential("configures and launches exactly once for concurrent callers", async () => {
     const events: string[] = [];
     let configurationCalls = 0;
     const durability = configured(events);
@@ -63,7 +63,7 @@ describe("mandatory DBOS lifecycle", () => {
     assert.equal(dbosLifecycleState(), "ready");
   });
 
-  test.serial("starts local DBOS Postgres once after a default connection refusal", async () => {
+  test.sequential("starts local DBOS Postgres once after a default connection refusal", async () => {
     const originalUrl = process.env.DBOS_SYSTEM_DATABASE_URL;
     delete process.env.DBOS_SYSTEM_DATABASE_URL;
     let launchCalls = 0;
@@ -86,7 +86,7 @@ describe("mandatory DBOS lifecycle", () => {
     }
   });
 
-  test.serial("memoizes launch failure without selecting another backend", async () => {
+  test.sequential("memoizes launch failure without selecting another backend", async () => {
     let launchCalls = 0;
     resetDbosLifecycleForTests(async () => configured([], async () => {
       launchCalls += 1;
@@ -99,7 +99,7 @@ describe("mandatory DBOS lifecycle", () => {
     assert.equal(dbosLifecycleState(), "failed");
   });
 
-  test.serial("flushes queued writes before shutting DBOS down once", async () => {
+  test.sequential("flushes queued writes before shutting DBOS down once", async () => {
     const events: string[] = [];
     resetDbosLifecycleForTests(async () => configured(events));
     const backend = await getReadyDbosBackend();
@@ -120,7 +120,7 @@ describe("mandatory DBOS lifecycle", () => {
     assert.equal(events.filter((event) => event === "shutdown").length, 1);
   });
 
-  test.serial("shutdown after a configuration failure resolves without rethrowing", async () => {
+  test.sequential("shutdown after a configuration failure resolves without rethrowing", async () => {
     resetDbosLifecycleForTests(async () => {
       throw new Error("initdb: error: cannot be run as root");
     });
@@ -134,7 +134,7 @@ describe("mandatory DBOS lifecycle", () => {
     assert.equal(dbosLifecycleState(), "failed");
   });
 
-  test.serial("shutdown after a launch failure resolves without rethrowing", async () => {
+  test.sequential("shutdown after a launch failure resolves without rethrowing", async () => {
     const events: string[] = [];
     resetDbosLifecycleForTests(async () => configured(events, async () => {
       throw new Error("postgres unavailable");

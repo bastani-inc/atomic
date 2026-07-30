@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
@@ -257,7 +257,6 @@ test("obsolete release workflow files and publisher-only verifiers are absent", 
     "scripts/verify" + "-release-integrity.ts",
   ]) assert.equal(existsSync(join(root, path)), false, path);
 });
-
 
 test("developer release setup documents only the direct publish workflow", async () => {
   const setup = await readText(join(root, "DEV_SETUP.md"));

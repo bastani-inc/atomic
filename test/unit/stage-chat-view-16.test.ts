@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import type { AgentSessionEvent } from "@bastani/atomic";
 import {
   assert,

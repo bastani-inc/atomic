@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { beforeAll, test } from "bun:test";
+import { beforeAll, test } from "vitest";
 import assert from "node:assert/strict";
 import {
   ChatSessionHost,
@@ -99,8 +99,6 @@ test("ChatSessionHost keeps the Atomic identity static without a workflow animat
     else process.env.ATOMIC_REDUCED_MOTION = previousReducedMotion;
   }
 });
-
-
 
 test("ChatSessionHost gives factual retry, fallback, error, cancellation, and compaction copy precedence", () => {
   const cases = [

@@ -1,7 +1,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { DEFAULT_PROMPT_GUIDANCE as workflowGuidance, WORKFLOW_TOOL_DESCRIPTION } from "../../packages/workflows/src/extension/workflow-prompts.js";
 import { WorkflowParametersSchema } from "../../packages/workflows/src/extension/workflow-schema.js";
 import { DEFAULT_PROMPT_GUIDANCE as subagentGuidance } from "../../packages/subagents/src/extension/prompt-guidance.js";
@@ -443,7 +443,6 @@ describe("workflow-first execution routing", () => {
       expect(guidance).toContain(phrase);
     }
   });
-
 
   test("synchronizes workflow-first docs with custom workflow authoring", async () => {
     const documentation = (await Promise.all(workflowDocumentationPaths.map(readRepositoryFile))).join("\n");

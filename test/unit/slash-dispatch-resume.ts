@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import {
     installSlashDispatchTestHooks,
     assert,
@@ -71,7 +71,7 @@ import { setDurableBackend } from "../../packages/workflows/src/durable/factory.
 installSlashDispatchTestHooks();
 
 describe("/workflow resume <runId> — active run is refused", () => {
-    test.serial("resuming an already-running run refuses and points at /workflow connect", async () => {
+    test.sequential("resuming an already-running run refuses and points at /workflow connect", async () => {
         const runId = `resume-slash-overlay-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
 
@@ -120,7 +120,7 @@ describe("/workflow resume <runId> — active run is refused", () => {
         assert.equal(refreshCalls, 0, "exact active runs must bypass durable preparation and discovery");
     });
 
-    test.serial("active run resume output does NOT include 'still active — no resume needed'", async () => {
+    test.sequential("active run resume output does NOT include 'still active — no resume needed'", async () => {
         const runId = `resume-nomsg-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
 
@@ -175,7 +175,7 @@ describe("/workflow resume <runId> — active run is refused", () => {
 });
 
 describe("/workflow resume <runId> — exact live fast path", () => {
-    test.serial("exact paused live target bypasses completed durable catalog in headless mode", async () => {
+    test.sequential("exact paused live target bypasses completed durable catalog in headless mode", async () => {
         class CatalogTrapBackend extends InMemoryDurableBackend {
             completedCatalogCalls = 0;
 
@@ -229,7 +229,7 @@ describe("/workflow resume <runId> — exact live fast path", () => {
             .join("\n");
         assert.match(content, /Resumed 1 stage\(s\)/);
     });
-    test.serial("exact paused nested child remains excluded from top-level resume targets", async () => {
+    test.sequential("exact paused nested child remains excluded from top-level resume targets", async () => {
         class CatalogCountingBackend extends InMemoryDurableBackend {
             completedCatalogCalls = 0;
 
@@ -274,7 +274,7 @@ describe("/workflow resume <runId> — exact live fast path", () => {
 });
 
 describe("/workflow attach <rootRunId> <nestedStageId>", () => {
-    test.serial("routes an explicit nested stage through the root graph overlay", async () => {
+    test.sequential("routes an explicit nested stage through the root graph overlay", async () => {
         let overlayOpens = 0;
         let attachedOwner: string | undefined;
         const notifications: string[] = [];
@@ -350,7 +350,7 @@ describe("/workflow attach <rootRunId> <nestedStageId>", () => {
         assert.doesNotMatch(content, /Stage not found/);
     });
 
-    test.serial("routes /workflow attach through an actually hydrated durable child owner", async () => {
+    test.sequential("routes /workflow attach through an actually hydrated durable child owner", async () => {
         const rootRunId = `attach-hydrated-root-${Date.now()}`;
         const childRunId = `attach-hydrated-child-${Date.now()}`;
         const boundaryId = "hydrated-boundary";

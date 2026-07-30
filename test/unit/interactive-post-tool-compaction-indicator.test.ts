@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { afterAll, beforeAll, test } from "bun:test";
+import { afterAll, beforeAll, test } from "vitest";
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { Container, getKeybindings, setKeybindings } from "@earendil-works/pi-tui";

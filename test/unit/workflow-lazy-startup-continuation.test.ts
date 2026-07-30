@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, test } from "bun:test";
+import { afterEach, beforeEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -245,9 +245,6 @@ describe("workflow lazy-startup continuation fixes", () => {
     assert.equal(store.runs().find((run) => run.id === runId)?.status, "running");
   });
 
-
-
-
   test("workflow tool paused resume bypasses workflow discovery", async () => {
     let ensureCalls = 0;
     const runId = "paused-tool-resume-source";
@@ -312,7 +309,6 @@ describe("workflow lazy-startup continuation fixes", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
-
 
   test("workflow tool resume lazy-loads resources before failed-run registry lookup", async () => {
     delete process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];

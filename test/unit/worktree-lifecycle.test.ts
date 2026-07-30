@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 
 // The setup-hook failure contract executes a bash-shebang script directly,
 // which Windows cannot spawn; the error-path contract runs on unix jobs.
@@ -66,7 +66,6 @@ test("temporary worktree uses main-root path, flattened branch, and post-creatio
 		rmSync(root, { recursive: true, force: true });
 	}
 });
-
 
 test("non-ignored local settings propagate without leaking into patches and repeated creation stays usable", () => {
 	const { root, repo } = createRepository(false);

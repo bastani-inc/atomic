@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import {
     installSlashDispatchTestHooks,
     assert,
@@ -78,7 +78,7 @@ describe("factory command registration (real factory)", () => {
         return commands;
     }
 
-    test.serial("per-workflow slash aliases are not registered", async () => {
+    test.sequential("per-workflow slash aliases are not registered", async () => {
         const commands = await runFactoryWithMock();
         const names = commands.map((c) => c.name);
         assert.equal(
@@ -87,7 +87,7 @@ describe("factory command registration (real factory)", () => {
         );
     });
 
-    test.serial("base /workflow command registers quit without kill help", async () => {
+    test.sequential("base /workflow command registers quit without kill help", async () => {
         const commands = await runFactoryWithMock();
         const workflowCommand = commands.find((command) => command.name === "workflow");
         assert.notEqual(workflowCommand, undefined);
@@ -101,7 +101,7 @@ describe("factory command registration (real factory)", () => {
 // ---------------------------------------------------------------------------
 
 describe("getArgumentCompletions includes workflow names", () => {
-    test.serial("completions include admin subcommands and workflow names from registry", async () => {
+    test.sequential("completions include admin subcommands and workflow names from registry", async () => {
         const { pi, commands } = buildMockPi();
         await runFactory(pi);
 
@@ -128,7 +128,7 @@ describe("getArgumentCompletions includes workflow names", () => {
         assert.ok(labels.includes("open-claude-design"));
     });
 
-    test.serial("completions filter by partial prefix", async () => {
+    test.sequential("completions filter by partial prefix", async () => {
         const { pi, commands } = buildMockPi();
         await runFactory(pi);
 
@@ -142,7 +142,7 @@ describe("getArgumentCompletions includes workflow names", () => {
         assert.ok(completions.map((c) => c.label).includes("list"));
     });
 
-    test.serial("completions cover subcommand arguments without shadowing submit", async () => {
+    test.sequential("completions cover subcommand arguments without shadowing submit", async () => {
         const { pi, commands } = buildMockPi();
         await runFactory(pi);
 
@@ -175,7 +175,7 @@ describe("getArgumentCompletions includes workflow names", () => {
         assert.doesNotMatch(workflowCommand?.description ?? "", /kill/);
     });
 
-    test.serial("trailing-space completion does not throw on empty subcommand", async () => {
+    test.sequential("trailing-space completion does not throw on empty subcommand", async () => {
         // Regression: typing `/workflow ` (just the slash command + space)
         // forwards `partial = " "` to getArgumentCompletions, which used to
         // fall through to `registry.get("")`, throwing
@@ -204,7 +204,7 @@ describe("getArgumentCompletions includes workflow names", () => {
 // ---------------------------------------------------------------------------
 
 describe("/workflow session namespace removed", () => {
-    test.serial("/workflow session ... is not treated as a control namespace", async () => {
+    test.sequential("/workflow session ... is not treated as a control namespace", async () => {
         const { pi, commands } = buildMockPi();
         await runFactory(pi);
 
@@ -223,7 +223,7 @@ describe("/workflow session namespace removed", () => {
 // ---------------------------------------------------------------------------
 
 describe("inputs subcommand", () => {
-    test.serial("/workflow inputs with no name prints usage", async () => {
+    test.sequential("/workflow inputs with no name prints usage", async () => {
         const { pi, commands } = buildMockPi();
         await runFactory(pi);
 
@@ -235,7 +235,7 @@ describe("inputs subcommand", () => {
         assert.ok(messages[0].includes("inputs"));
     });
 
-    test.serial("/workflow inputs <unknown> prints workflow not found plus available", async () => {
+    test.sequential("/workflow inputs <unknown> prints workflow not found plus available", async () => {
         const { pi, commands } = buildMockPi();
         await runFactory(pi);
 
@@ -247,7 +247,7 @@ describe("inputs subcommand", () => {
         assert.ok(messages[0].includes("Available:"));
     });
 
-    test.serial("/workflow inputs <known> shows schema", async () => {
+    test.sequential("/workflow inputs <known> shows schema", async () => {
         const { pi, commands, sent } = buildMockPi();
         await runFactory(pi);
 
@@ -273,7 +273,7 @@ describe("inputs subcommand", () => {
 // ---------------------------------------------------------------------------
 
 describe("/workflow <name> prompt=test dispatches run via factory", () => {
-    test.serial("/workflow fan-out-and-synthesize dispatches run action (not unknown subcommand)", async () => {
+    test.sequential("/workflow fan-out-and-synthesize dispatches run action (not unknown subcommand)", async () => {
         const { pi, commands, sent } = buildMockPi();
         await runFactory(pi);
 

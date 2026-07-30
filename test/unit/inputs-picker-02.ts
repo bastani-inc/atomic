@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { coerceValues, createInputsPickerState, handleInputsPickerInput } from "../../packages/workflows/src/tui/inputs-picker.ts";
 import type { WorkflowInputEntry } from "../../packages/workflows/src/extension/render-result.ts";

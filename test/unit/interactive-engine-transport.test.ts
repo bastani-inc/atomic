@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { Readable, Writable } from "node:stream";
 import { runSynchronousCallback, setCallbackActivityReporter } from "../../packages/coding-agent/src/core/callback-activity.ts";
@@ -118,7 +118,7 @@ test("chat-error policy: watchdog diagnostics stay internal while concrete failu
 	);
 });
 
-test.serial("synchronous callback publishes activity before entering user code", () => {
+test.sequential("synchronous callback publishes activity before entering user code", () => {
 	let started = false;
 	setCallbackActivityReporter({ started: () => { started = true; }, finished: () => {} });
 	try {

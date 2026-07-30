@@ -16,7 +16,7 @@
  * cross-ref: packages/workflows/src/runs/foreground/stage-runner.ts
  *            packages/coding-agent/src/core/agent-session-runtime.ts (teardownCurrent)
  */
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { createStageContext } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import type {

@@ -16,7 +16,7 @@
  *   src/shared/types.ts            — WorkflowRuntimeConfig
  */
 
-import { afterEach, beforeEach, describe, test } from "bun:test";
+import { afterEach, beforeEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -61,11 +61,9 @@ async function flushMicrotasks(): Promise<void> {
 // 1. maxDepth exceeded → precise error
 // ---------------------------------------------------------------------------
 
-
 // ---------------------------------------------------------------------------
 // 2. defaultConcurrency:1 → parallel stage methods serialized
 // ---------------------------------------------------------------------------
-
 
 // ---------------------------------------------------------------------------
 // 3. statusFile:true → atomic status.json on store updates

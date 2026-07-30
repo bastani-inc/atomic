@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import {
     installSlashDispatchTestHooks,
     assert,
@@ -122,7 +122,7 @@ describe("tool run-control actions", () => {
             /workflows cannot invoke workflows/,
         );
     }
-    test.serial("makeExecuteWorkflowTool resume surfaces workflow_not_found for failed resumable run without registry definition", async () => {
+    test.sequential("makeExecuteWorkflowTool resume surfaces workflow_not_found for failed resumable run without registry definition", async () => {
         const runId = `resume-tool-failed-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {

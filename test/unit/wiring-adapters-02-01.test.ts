@@ -7,7 +7,7 @@
  * store-backed background adapter (see `background-ui-adapter.test.ts`).
  */
 
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import {
@@ -302,7 +302,6 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
         await orchestration?.lateMessageRouter?.routeMessage({ customType: "async-job-result", content: "late result", display: true });
         assert.deepEqual(externallyRouted, ["late result"]);
     });
-
 
     test("late Intercom traffic is handed to the parent extension event before generic routing", async () => {
         let orchestration: CreateAgentSessionOptions["orchestrationContext"];

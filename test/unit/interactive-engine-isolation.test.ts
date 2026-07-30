@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,8 +20,7 @@ function maximumGap(timestamps: readonly number[]): number {
 	return maximum;
 }
 
-
-test.serial("the real agent path isolates a blocking extension tool and reports its child PID", async () => {
+test.sequential("the real agent path isolates a blocking extension tool and reports its child PID", async () => {
 	const tempDir = mkdtempSync(join(tmpdir(), "atomic-engine-isolation-"));
 	const pidFile = join(tempDir, "tool.pid");
 	const heartbeatTimes: number[] = [performance.now()];
@@ -100,7 +99,7 @@ test("remote custom components render and receive input through the engine proto
 	service.dispose();
 });
 
-test.serial("startup custom UI can unblock engine binding after transport readiness", async () => {
+test.sequential("startup custom UI can unblock engine binding after transport readiness", async () => {
 	const client = new RpcClient({
 		cliPath: join(moduleDir(import.meta.url), "../../packages/coding-agent/src/cli.ts"),
 		cwd: join(moduleDir(import.meta.url), "../.."),
@@ -132,7 +131,7 @@ test.serial("startup custom UI can unblock engine binding after transport readin
 	}
 });
 
-test.serial("blocking extension initialization cannot delay creation of the interactive host", async () => {
+test.sequential("blocking extension initialization cannot delay creation of the interactive host", async () => {
 	const ticks: number[] = [performance.now()];
 	const heartbeat = setInterval(() => ticks.push(performance.now()), 10);
 	let resolveDiagnostic!: (diagnostic: ActivityWatchdogDiagnostic) => void;

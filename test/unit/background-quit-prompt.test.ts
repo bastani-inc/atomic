@@ -1,4 +1,4 @@
-import { afterEach, describe, test } from "bun:test";
+import { afterEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import type { AgentSession } from "@bastani/atomic";
 import { Type } from "typebox";

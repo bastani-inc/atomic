@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { IntercomClient } from "../../packages/intercom/broker/client.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";

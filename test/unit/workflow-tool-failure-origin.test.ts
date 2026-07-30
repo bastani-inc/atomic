@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
@@ -91,7 +91,6 @@ async function runSimultaneousSameValueFailures(shared: unknown) {
   return { result, sent, store };
 }
 
-
 async function runCaughtThenThrowSameValue(shared: unknown) {
   const store = createStore();
   const { sent, unsubscribe } = installFailureNotices(store);
@@ -107,7 +106,6 @@ async function runCaughtThenThrowSameValue(shared: unknown) {
   unsubscribe();
   return { result, sent, store };
 }
-
 
 describe("ctx.tool failure origin", () => {
   test("multiple failures attribute the first observed failure independent of admission order", async () => {
@@ -178,7 +176,6 @@ describe("ctx.tool failure origin", () => {
     assert.equal(sent[0]?.details?.toolName, "first-ambiguous");
     assert.match(sent[0]?.content ?? "", /tool first-ambiguous.*raw rejection/);
   });
-
 
   test("reused Error failures retain the first selected tool origin", async () => {
     const shared = new Error("shared awaited rejection");
@@ -261,7 +258,6 @@ describe("ctx.tool failure origin", () => {
     assert.equal(result.failedToolNodeId, selectedNode?.id);
     assert.equal(store.runs()[0]?.failedToolNodeId, selectedNode?.id);
   });
-
 
   test("already-observed same-value failures retain the first observed tool origin", async () => {
     const shared = new Error("shared observation order");
@@ -431,7 +427,6 @@ describe("ctx.tool failure origin", () => {
     assert.equal(result.failedToolNodeId, undefined);
     assert.equal(store.runs()[0]?.failedToolNodeId, undefined);
   });
-
 
   test("child ordinary tool rejection stays visible while the parent uses its failed boundary", async () => {
     const store = createStore();

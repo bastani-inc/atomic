@@ -7,7 +7,7 @@
  *
  * cross-ref: issue #1498 — /workflow resume by top-level workflow id.
  */
-import { describe, test, beforeEach, afterEach } from "bun:test";
+import { afterEach, beforeEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -225,8 +225,6 @@ describe("resumeDurableWorkflow", () => {
     // Backend status flipped back to running.
     assert.equal(backend.getWorkflow("wf-resume-target")!.status, "running");
   });
-
-
 
   test("resume succeeds when the backend has durable checkpoint state for the workflow", async () => {
     backend.registerWorkflow({ workflowId: "wf-has-state", name: "resumable-pipeline", inputs: { topic: "data" }, createdAt: 1, status: "paused", completedCheckpoints: 1 });

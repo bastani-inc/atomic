@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { beforeAll, test } from "bun:test";
+import { beforeAll, test } from "vitest";
 import assert from "node:assert/strict";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import {

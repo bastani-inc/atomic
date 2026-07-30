@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import type {
     AgentSessionAdapter,
     InternalStageContext,
@@ -76,7 +76,6 @@ describe("createStageContext — inherited session directories", () => {
             await rm(stageDir, { recursive: true, force: true });
         }
     });
-
 
     test("does not force a sessionManager when defaultSessionDir is absent", async () => {
         const dir = await mkdtemp(join(tmpdir(), "pi-workflows-default-session-dir-"));

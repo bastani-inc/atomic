@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import type { AgentSessionAdapter, InternalStageContext } from "./stage-runner-helpers.js";
 import { assert, createStageContext, flushMicrotasks, makeMockSession, makeOpts } from "./stage-runner-helpers.js";
 
@@ -41,7 +41,6 @@ describe("createStageContext — overflow fallback", () => {
         assert.deepEqual(disposed, ["anthropic/primary"]);
         assert.deepEqual(ctx.__modelFallbackMeta().modelAttempts?.map((attempt) => attempt.success), [false, true]);
     });
-
 
     test("deferred unresolved overflow advances to the next fallback tier instead of success", async () => {
         const calls: string[] = [];

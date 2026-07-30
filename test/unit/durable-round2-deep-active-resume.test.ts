@@ -1,4 +1,4 @@
-import { afterEach, test } from "bun:test";
+import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -30,7 +30,7 @@ function immutableRunShape(store: ReturnType<typeof createStore>, runId: string)
   }));
 }
 
-test.serial("fresh DBOS restores a cache-hit twig through arbitrarily stacked child scopes", async () => {
+test.sequential("fresh DBOS restores a cache-hit twig through arbitrarily stacked child scopes", async () => {
   const sdk = createMockSdk();
   const writer = new DbosDurableBackend(sdk, { executorId: "round2-deep-writer" });
   const writerStore = createStore();

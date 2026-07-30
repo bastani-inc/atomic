@@ -13,7 +13,7 @@
  * `RemoteComponentController` through an in-process message pump (no spawned
  * process).
  */
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import type { Component } from "@earendil-works/pi-tui";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.ts";

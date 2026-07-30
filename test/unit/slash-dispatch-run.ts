@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import {
     installSlashDispatchTestHooks,
     assert,
@@ -67,7 +67,7 @@ import type {
 installSlashDispatchTestHooks();
 
 describe("slash /workflow <name> dispatch", () => {
-    test.serial("/workflow <known-name> dispatches run, not unknown subcommand", async () => {
+    test.sequential("/workflow <known-name> dispatches run, not unknown subcommand", async () => {
         const wf = workflow({
           name: "test-wf",
           description: "",
@@ -169,7 +169,7 @@ describe("slash /workflow <name> dispatch", () => {
         );
     });
 
-    test.serial("/workflow <unknown-name> prints 'Workflow not found: <name>'", async () => {
+    test.sequential("/workflow <unknown-name> prints 'Workflow not found: <name>'", async () => {
         const registry = createRegistry([]);
         const runtime = createExtensionRuntime({ registry });
         const { ctx, messages } = buildCtx();

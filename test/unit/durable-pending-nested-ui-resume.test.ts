@@ -1,4 +1,4 @@
-import { afterEach, test } from "bun:test";
+import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -74,7 +74,7 @@ function stageByName(run: { readonly stages: readonly StageSnapshot[] }, name: s
   return stage;
 }
 
-test.serial("fresh root resume republishes and answers a pending depth-2 durable ctx.ui node", async () => {
+test.sequential("fresh root resume republishes and answers a pending depth-2 durable ctx.ui node", async () => {
   workflowStore.clear();
   const sdk = createMockSdk();
   const writer = new DbosDurableBackend(sdk, { executorId: "pending-ui-writer" });

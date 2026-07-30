@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import {
     installSlashDispatchTestHooks,
     assert,
@@ -122,7 +122,7 @@ describe("tool run-control actions", () => {
             /workflows cannot invoke workflows/,
         );
     }
-    test.serial("makeExecuteWorkflowTool blocks workflow tool execution from workflow-stage context", async () => {
+    test.sequential("makeExecuteWorkflowTool blocks workflow tool execution from workflow-stage context", async () => {
         const { handler, wasDispatched } =
             makeDispatchTrackingWorkflowHandler();
 
@@ -145,7 +145,7 @@ describe("tool run-control actions", () => {
         assertWorkflowToolBlocked(result, wasDispatched);
     });
 
-    test.serial("makeExecuteWorkflowTool blocks workflow tool execution from env workflow-stage guard", async () => {
+    test.sequential("makeExecuteWorkflowTool blocks workflow tool execution from env workflow-stage guard", async () => {
         const previousGuard = process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
         const { handler, wasDispatched } =
             makeDispatchTrackingWorkflowHandler();
@@ -163,7 +163,7 @@ describe("tool run-control actions", () => {
         }
     });
 
-    test.serial("registered workflow tool suppresses lifecycle notices while awaiting a headless run", async () => {
+    test.sequential("registered workflow tool suppresses lifecycle notices while awaiting a headless run", async () => {
         const resource = await makeRegisteredWorkflowToolWithResource(
             "tool-headless-lifecycle.ts",
             `import { workflow } from "@bastani/workflows";

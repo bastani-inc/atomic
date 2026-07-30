@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,7 +13,7 @@ import { type SpawnedProcess, bunExecutable, decodeStream, moduleDir, readStream
  * hanging until the 6h timeout), so the suite is POSIX-only until a
  * Windows-safe harness exists.
  */
-const serialTest = process.platform === "win32" ? test.serial.skip : test.serial;
+const serialTest = process.platform === "win32" ? test.sequential.skip : test.sequential;
 
 interface HarnessReport {
 	type?: string;
@@ -115,7 +115,6 @@ class DefaultMainDriver {
 		});
 	}
 
-
 	async stop(): Promise<void> {
 		if (this.process.exitCode === null) this.process.kill("SIGKILL");
 		await this.process.exited;
@@ -214,7 +213,6 @@ function settingsEntryCounts(path: string): Record<"model_change" | "session_inf
 	}
 	return counts;
 }
-
 
 serialTest("default main InteractiveMode survives Escape, restarts, and kills the full blocked process tree", async () => {
 	const temp = mkdtempSync(join(tmpdir(), "atomic-default-main-"));

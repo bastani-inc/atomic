@@ -1,4 +1,4 @@
-import { afterEach, describe, test } from "bun:test";
+import { afterEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { renderWidget, stopWidgetAnimation } from "../../packages/subagents/src/tui/render.js";
 import { type AsyncJobState, type Component, type ExtensionContext, type RenderTheme, theme, withMockedNow } from "./subagents-render-stability-helpers.js";
@@ -331,7 +331,6 @@ describe("async widget animation ticker lifecycle", () => {
             "no periodic widget ticker should run after the status update",
         );
     });
-
 
     test("compact large parallel widgets preserve running output paths", () => {
         type WidgetFactory = (

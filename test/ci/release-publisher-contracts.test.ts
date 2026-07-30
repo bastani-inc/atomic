@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,7 +6,6 @@ import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readText } from "./workflow-text.js";
 import { bunExecutable, readJson, spawnSyncCollect } from "../helpers/runtime.js";
-
 
 type NativeManifest = {
   name: string;
@@ -33,7 +32,6 @@ const nativeBinaryNames = [
   "atomic_natives.win32-arm64-msvc.node",
   "atomic_natives.win32-x64-msvc.node",
 ] as const;
-
 
 test("prepared native root tarball contains all six exact-version optional dependencies", async () => {
   const stage = mkdtempSync(join(tmpdir(), "atomic-native-release-contract-"));

@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import {
     installSlashDispatchTestHooks,
     assert,
@@ -122,7 +122,7 @@ describe("tool run-control actions", () => {
             /workflows cannot invoke workflows/,
         );
     }
-    test.serial("makeExecuteWorkflowTool applies limit and lets tail override limit", async () => {
+    test.sequential("makeExecuteWorkflowTool applies limit and lets tail override limit", async () => {
         const runId = `stage-tool-transcript-limit-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {
@@ -187,7 +187,7 @@ describe("tool run-control actions", () => {
         ]);
     });
 
-    test.serial("makeExecuteWorkflowTool falls back to bounded preview when transcript path is unavailable", async () => {
+    test.sequential("makeExecuteWorkflowTool falls back to bounded preview when transcript path is unavailable", async () => {
         const runId = `stage-tool-transcript-no-path-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {
@@ -251,7 +251,7 @@ describe("tool run-control actions", () => {
         );
     });
 
-    test.serial("makeExecuteWorkflowTool labels empty live handles as live transcript source", async () => {
+    test.sequential("makeExecuteWorkflowTool labels empty live handles as live transcript source", async () => {
         const runId = `stage-tool-live-empty-handle-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {
@@ -296,7 +296,7 @@ describe("tool run-control actions", () => {
         }
     });
 
-    test.serial("makeExecuteWorkflowTool uses error transcript source for target errors", async () => {
+    test.sequential("makeExecuteWorkflowTool uses error transcript source for target errors", async () => {
         const handler = makeToolHandler();
 
         const result = await handler(
@@ -314,7 +314,7 @@ describe("tool run-control actions", () => {
         assert.equal(transcript.entries[0]?.role, "notice");
     });
 
-    test.serial("makeExecuteWorkflowTool preserves empty live transcript text blocks", async () => {
+    test.sequential("makeExecuteWorkflowTool preserves empty live transcript text blocks", async () => {
         const runId = `stage-tool-live-empty-block-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {
@@ -361,7 +361,7 @@ describe("tool run-control actions", () => {
         }
     });
 
-    test.serial("makeExecuteWorkflowTool omits text for live non-text content blocks", async () => {
+    test.sequential("makeExecuteWorkflowTool omits text for live non-text content blocks", async () => {
         const runId = `stage-tool-live-non-text-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {

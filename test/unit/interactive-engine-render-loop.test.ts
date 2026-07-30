@@ -20,7 +20,7 @@
  * image conversion) still propagate.
  */
 
-import { beforeAll, describe, test } from "bun:test";
+import { beforeAll, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.ts";
 import { EngineRenderService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-render-service.ts";

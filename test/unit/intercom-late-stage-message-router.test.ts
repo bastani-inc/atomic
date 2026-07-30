@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { InboundMessageAdmission } from "../../packages/intercom/inbound-message-admission.js";
 import { registerLateStageMessageRouter } from "../../packages/intercom/late-stage-message-router.js";
@@ -59,7 +59,6 @@ test("completed-stage asks are left for the workflow post-mortem router regardle
   assert.equal(parentDeliveries, 0);
 });
 
-
 test("late relay suppresses isolated peer chatter to a differently grouped parent", async () => {
   let handler: ((payload: unknown) => void | Promise<void>) | undefined;
   const delivered: string[] = [];
@@ -86,7 +85,6 @@ test("late relay suppresses isolated peer chatter to a differently grouped paren
   assert.equal(payload.handled, true);
   assert.deepEqual(delivered, []);
 });
-
 
 test("late relay still forwards supervisor-channel messages across groups", async () => {
   let handler: ((payload: unknown) => void | Promise<void>) | undefined;

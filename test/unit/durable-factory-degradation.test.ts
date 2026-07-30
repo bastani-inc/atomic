@@ -1,4 +1,4 @@
-import { afterEach, describe, spyOn, test } from "bun:test";
+import { afterEach, describe, test, vi } from "vitest";
 import assert from "node:assert/strict";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { resetDbosLifecycleForTests } from "../../packages/workflows/src/durable/dbos-lifecycle.js";
@@ -14,13 +14,13 @@ afterEach(() => {
 });
 
 describe("durable factory non-durable degradation", () => {
-  test.serial("falls back to one in-memory backend with a loud warning when DBOS cannot be provisioned", async () => {
+  test.sequential("falls back to one in-memory backend with a loud warning when DBOS cannot be provisioned", async () => {
     setDurableBackend(undefined); // clear the preload-injected test backend
     resetDbosLifecycleForTests(async () => {
       throw new Error("initdb: error: cannot be run as root");
     });
     const warnings: string[] = [];
-    const consoleSpy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
       warnings.push(args.map(String).join(" "));
     });
     try {
@@ -46,10 +46,10 @@ describe("durable factory non-durable degradation", () => {
     }
   });
 
-  test.serial("a provisionable DBOS backend is preferred and produces no degradation warning", async () => {
+  test.sequential("a provisionable DBOS backend is preferred and produces no degradation warning", async () => {
     const warnings: string[] = [];
     setDurableBackend(undefined); // clear the preload-injected test backend
-    const consoleSpy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
       warnings.push(args.map(String).join(" "));
     });
     try {

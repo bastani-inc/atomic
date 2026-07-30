@@ -13,7 +13,7 @@
  * Uses temp directories created per test to exercise discoverWorkflows().
  */
 
-import { afterEach, beforeEach } from "bun:test";
+import { afterEach, beforeEach } from "vitest";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";

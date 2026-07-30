@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import {
     installSlashDispatchTestHooks,
     assert,
@@ -122,7 +122,7 @@ describe("tool run-control actions", () => {
             /workflows cannot invoke workflows/,
         );
     }
-    test.serial("makeExecuteWorkflowTool sends explicit prompt delivery to live handles", async () => {
+    test.sequential("makeExecuteWorkflowTool sends explicit prompt delivery to live handles", async () => {
         const runId = `stage-tool-send-prompt-live-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {
@@ -166,7 +166,7 @@ describe("tool run-control actions", () => {
         }
     });
 
-    test.serial("makeExecuteWorkflowTool sends explicit steer delivery to live handles", async () => {
+    test.sequential("makeExecuteWorkflowTool sends explicit steer delivery to live handles", async () => {
         const runId = `stage-tool-send-steer-live-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {
@@ -211,7 +211,7 @@ describe("tool run-control actions", () => {
         }
     });
 
-    test.serial("makeExecuteWorkflowTool promptId mismatch does not fall through to live followUp", async () => {
+    test.sequential("makeExecuteWorkflowTool promptId mismatch does not fall through to live followUp", async () => {
         const runId = `stage-tool-send-prompt-mismatch-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {
@@ -269,7 +269,7 @@ describe("tool run-control actions", () => {
         }
     });
 
-    test.serial("makeExecuteWorkflowTool treats explicit empty text prompt payload as an answer", async () => {
+    test.sequential("makeExecuteWorkflowTool treats explicit empty text prompt payload as an answer", async () => {
         const runId = `stage-tool-send-empty-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {
@@ -309,7 +309,7 @@ describe("tool run-control actions", () => {
         assert.equal(stage?.pendingPrompt, undefined);
     });
 
-    test.serial("makeExecuteWorkflowTool treats explicit empty response prompt payload as an answer", async () => {
+    test.sequential("makeExecuteWorkflowTool treats explicit empty response prompt payload as an answer", async () => {
         const runId = `stage-tool-send-empty-response-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {
@@ -354,7 +354,7 @@ describe("tool run-control actions", () => {
         assert.equal(stage?.pendingPrompt, undefined);
     });
 
-    test.serial("makeExecuteWorkflowTool ignores explicit undefined prompt payloads", async () => {
+    test.sequential("makeExecuteWorkflowTool ignores explicit undefined prompt payloads", async () => {
         const runId = `stage-tool-send-undefined-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {

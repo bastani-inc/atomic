@@ -1,4 +1,4 @@
-import { afterEach, describe, test } from "bun:test";
+import { afterEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { WORKFLOW_STAGE_SUBAGENT_GUARD_ENV } from "@bastani/atomic";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
@@ -112,7 +112,7 @@ describe("durable-running asynchronous flush retry", () => {
     assert.equal(backend.durableStatus, "paused");
   });
 
-  test.serial("workflow tool retries a pending durable transition instead of reporting snapshot success", async () => {
+  test.sequential("workflow tool retries a pending durable transition instead of reporting snapshot success", async () => {
     const runId = "flush-retry";
     const backend = new FlushTrackingBackend(1);
     setDurableBackend(backend);
@@ -129,7 +129,7 @@ describe("durable-running asynchronous flush retry", () => {
     assert.equal(backend.durableStatus, "running");
   });
 
-  test.serial("slash resume retries a pending durable transition instead of saying already running", async () => {
+  test.sequential("slash resume retries a pending durable transition instead of saying already running", async () => {
     const runId = "flush-retry";
     const backend = new FlushTrackingBackend(1);
     setDurableBackend(backend);

@@ -1,4 +1,4 @@
-import { afterEach, test } from "bun:test";
+import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -132,7 +132,6 @@ test("message_start never duplicates finalized content retained by message_end",
 	assert.equal("message" in records.find((record) => record.type === "message_start")!, false);
 });
 
-
 test("run-level telemetry cap is shared across journals and nested terminal updates bypass it", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-shared-event-budget-"));
 	tempRoots.push(root);
@@ -206,7 +205,6 @@ test("journal acquired during delayed close hands off without losing or reorderi
 	assert.equal(streamCount, 2);
 	assert.deepEqual(writes.map((line) => JSON.parse(line).sequence), [1, 2]);
 });
-
 
 test("writer reacquisition detects externally appended truncation markers and resets after shrink", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-event-hydration-"));

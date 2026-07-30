@@ -6,7 +6,7 @@
  *  - Missing prompt adapter error.
  *  - Missing complete adapter error.
  */
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { run, resolveInputs } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
@@ -380,7 +380,6 @@ describe("executor adapter errors — Phase C", () => {
       ),
     );
   });
-
 
   test("stage snapshot has failed status when adapter is absent", async () => {
     const def = workflow({

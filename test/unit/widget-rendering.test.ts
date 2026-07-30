@@ -13,7 +13,7 @@
  * cross-ref: src/tui/widget.ts · orchestrator-panel-ui.png · DESIGN.md §5
  */
 
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import {
   renderWidgetLines,
@@ -183,7 +183,6 @@ describe("renderWidgetLines — standard form", () => {
     assert.match(text, /blocked · resumable via \/workflow resume/u);
     assert.equal(nextWidgetRefreshDelayMs(snapshot), undefined);
   });
-
 
   test("multiple active runs → header subtitle pluralises, entries stacked with blank separators", () => {
     const t = Date.now();

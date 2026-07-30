@@ -1,4 +1,4 @@
-import { afterEach, describe, test } from "bun:test";
+import { afterEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -100,7 +100,6 @@ const tempRoots: string[] = [];
 afterEach(() => {
 	for (const root of tempRoots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
-
 
 test("full extension wiring keeps parent handlers alive across stage shutdown and reload", () => {
 	const priorChild = process.env[SUBAGENT_CHILD_ENV];
@@ -230,7 +229,6 @@ describe("subagent ExtensionAPI lifecycle ownership", () => {
 		assert.equal(fs.existsSync(resultPath), true, "stopped watcher must not rescan or consume results");
 		notifyCleanup();
 	});
-
 
 	test("notification dedupe is reload-stable per API rather than process-global", () => {
 		const parent = makeApi();

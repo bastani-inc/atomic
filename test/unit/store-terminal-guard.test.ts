@@ -8,7 +8,7 @@
  *  - StoreSnapshot includes notices
  */
 
-import { beforeEach, describe, test } from "bun:test";
+import { beforeEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { Store } from "../../packages/workflows/src/shared/store.js";

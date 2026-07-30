@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { reviewApproved } from "../../packages/workflows/builtin/goal-review.js";
 import type { ReviewDecision, ReviewFinding } from "../../packages/workflows/builtin/goal-types.js";

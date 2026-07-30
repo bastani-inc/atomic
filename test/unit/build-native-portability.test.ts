@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 
 // These contracts drive the build script through bash-shebang stub executables
 // (fake cargo/bunx on PATH), which Windows cannot execute; the same arg

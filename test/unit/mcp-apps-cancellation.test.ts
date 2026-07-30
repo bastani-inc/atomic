@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { createDirectToolExecutor } from "../../packages/mcp/direct-tools.js";
@@ -229,7 +229,6 @@ test("reused UI sessions emit tool-cancelled rather than an error-shaped tool re
   assert.equal(harness.resultCount(), 0);
 });
 
-
 test("ordinary direct UI failures remain result-shaped and emit the existing cancellation terminal event", async () => {
   const failure = new Error("server rejected ordinary UI call");
   const harness = createUiHarness({ callFailure: failure });
@@ -260,7 +259,6 @@ test("browser host observes the asynchronous AppBridge cancellation notification
 
   assert.match(html, /void bridge\.sendToolCancelled\(JSON\.parse\(event\.data\)\)\.catch/);
 });
-
 
 test("host abort during an asynchronous cancellation notification remains authoritative", async () => {
   const failure = new Error("ordinary SDK rejection before host abort");

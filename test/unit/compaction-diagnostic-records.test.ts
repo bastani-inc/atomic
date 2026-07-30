@@ -8,7 +8,7 @@
  * chose the same path and the second write replaced the first.
  */
 
-import { afterEach, beforeEach, test } from "bun:test";
+import { afterEach, beforeEach, test } from "vitest";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";

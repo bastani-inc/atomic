@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/compat";
-import { describe } from "bun:test";
+import { describe } from "vitest";
 import { createHarness, getMessageText, type Harness } from "../../packages/coding-agent/test/suite/harness.ts";
 import {
     assert,
@@ -26,7 +26,6 @@ type PauseAwareSession = Harness["session"] & {
     readonly queuedMessagesPaused?: boolean;
     readonly _activeInterruptQueueHold?: QueueHold;
 };
-
 
 function assertExactHeldQueue(session: Harness["session"]): void {
     const hold = (session as PauseAwareSession)._activeInterruptQueueHold;

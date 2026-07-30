@@ -13,7 +13,7 @@
  * These tests pin the invariant: whatever frames have (or have not) arrived,
  * a remote component's render(width) never returns a line wider than width.
  */
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { Container, visibleWidth } from "@earendil-works/pi-tui";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.ts";

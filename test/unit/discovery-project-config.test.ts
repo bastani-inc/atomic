@@ -1,10 +1,9 @@
-import { afterAll, describe, test } from "bun:test";
+import { afterAll, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { discoverWorkflows } from "../../packages/workflows/src/extension/discovery.js";
 import { cleanupDiscoveryTempDirs, join, makeTempDir, mkdirSync, writeFileSync, writeWorkflowJs } from "./discovery-helpers.js";
 
 afterAll(cleanupDiscoveryTempDirs);
-
 
 // ---------------------------------------------------------------------------
 // project-local: {cwd}/.atomic/workflows/

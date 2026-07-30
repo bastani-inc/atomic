@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, test } from "bun:test";
+import { afterEach, beforeEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -60,7 +60,6 @@ describe("MCP tool result rendering", () => {
     assert.doesNotMatch(rendered, new RegExp(`${keyText("app.tools.expand")} Expand`));
     assert.match(rendered, /four/);
   });
-
 
   test("omits the unavailable expand affordance when the binding is empty", () => {
     setKeybindings(new KeybindingsManager({ "app.tools.expand": [] }));

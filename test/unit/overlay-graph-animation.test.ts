@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { describe, it, mock } from "bun:test";
+import { describe, it, vi } from "vitest";
 import assert from "node:assert/strict";
 import * as h from "./overlay-graph-helpers.js";
 import { computeLayout, NODE_W } from "../../packages/workflows/src/tui/layout.js";
@@ -21,7 +21,7 @@ describe("GraphView animation timer", () => {
     const stages = [makeStage("A")];
     const snap = makeSnap(stages);
     const store = makeStore(snap);
-    const requestRender = mock(() => {});
+    const requestRender = vi.fn(() => {});
     const view = new GraphView({
       mode: "overlay",
       runId: "run-1",
@@ -47,7 +47,7 @@ describe("GraphView animation timer", () => {
     const stages = [makeStage("A")];
     const snap = makeSnap(stages);
     const store = makeStore(snap);
-    const requestRender = mock(() => {});
+    const requestRender = vi.fn(() => {});
     const view = new GraphView({
       mode: "widget",
       runId: "run-1",
@@ -81,7 +81,7 @@ describe("GraphView animation timer", () => {
     const stages = [makeStage("A")];
     const snap = makeSnap(stages);
     const store = makeStore(snap);
-    const requestRender = mock(() => {});
+    const requestRender = vi.fn(() => {});
     const view = new GraphView({
       mode: "overlay",
       runId: "run-1",

@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import type { TUI } from "@earendil-works/pi-tui";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";

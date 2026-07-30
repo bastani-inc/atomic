@@ -1,4 +1,4 @@
-import { afterEach, test } from "bun:test";
+import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -49,7 +49,6 @@ function makeWatcher(resultsDir: string, sessionId: string, options: {
 	const watcher = createResultWatcher({ events }, state(sessionId), resultsDir, 60_000, options);
 	return { watcher, delivered };
 }
-
 
 function manualTimers() {
 	type Timer = { callback: () => void; delay: number; cleared: boolean; unref(): void };
@@ -307,8 +306,6 @@ test("failed intercom acknowledgement remains retryable and is delivered once af
 	watcher.stopResultWatcher();
 });
 
-
-
 test("definitive delivery failures use exponential backoff instead of status polling cadence", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-result-backoff-"));
 	roots.push(root);
@@ -401,7 +398,6 @@ test("alias files and replacement watchers share one claim through an acknowledg
 	assert.deepEqual(fs.readdirSync(resultsDir), []);
 	replacement.stopResultWatcher();
 });
-
 
 test("pending status polling stops when result ownership changes", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-result-owner-change-"));

@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import type { AgentSessionEvent } from "@bastani/atomic";
 import { createQueuedUserMessageConsumptionWatcher } from "../../packages/workflows/src/runs/foreground/executor-queued-user-message.js";

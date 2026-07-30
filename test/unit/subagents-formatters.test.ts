@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { formatDuration, formatModelThinking } from "../../packages/subagents/src/shared/formatters.js";
 

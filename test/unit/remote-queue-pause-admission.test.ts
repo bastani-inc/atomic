@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { RemoteQueuePause } from "../../packages/coding-agent/src/modes/interactive-engine/remote-queue-pause.js";
 

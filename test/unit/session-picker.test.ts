@@ -2,7 +2,7 @@
  * Unit tests for src/tui/session-picker.ts — selection logic, key handling,
  * and a render-smoke test (no thrown errors, expected content present).
  */
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import {
   createSessionPickerState,

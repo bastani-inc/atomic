@@ -8,7 +8,7 @@
  * `commandHints`, or `toolHints` counts as installed.
  */
 
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import {
   COMPANIONS,

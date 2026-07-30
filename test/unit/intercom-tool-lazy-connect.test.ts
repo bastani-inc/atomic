@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { Type, type Static } from "typebox";
 import type { ExtensionAPI, ToolDefinition } from "@bastani/atomic";

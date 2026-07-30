@@ -5,7 +5,7 @@
  * exclusively through the host session-picker capability; there is no
  * remote-rendered path.
  */
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { workflowResumeSelectorItems } from "../../packages/workflows/src/tui/workflow-resume-selector.js";
 import type { ResumableWorkflowEntry } from "../../packages/workflows/src/durable/types.js";

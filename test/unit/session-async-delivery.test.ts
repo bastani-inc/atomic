@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { createSessionAsyncDeliveryHandler } from "../../packages/coding-agent/src/core/async/session-manager.js";
 import type { AsyncJobDeliveryMessage } from "../../packages/coding-agent/src/core/async/types.js";

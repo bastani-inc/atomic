@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { setCallbackActivityReporter, type CallbackActivity } from "../../packages/coding-agent/src/core/callback-activity.ts";
@@ -7,7 +7,7 @@ import { workflow } from "../../packages/workflows/src/authoring/workflow.ts";
 import { run } from "../../packages/workflows/src/engine/run.ts";
 import { createStore } from "../../packages/workflows/src/shared/store.ts";
 
-test.serial("real workflow author, ctx.tool, and stage adapter callbacks report activity", async () => {
+test.sequential("real workflow author, ctx.tool, and stage adapter callbacks report activity", async () => {
 	const started: CallbackActivity[] = [];
 	setCallbackActivityReporter({ started: (activity) => started.push(activity), finished: () => {} });
 	try {

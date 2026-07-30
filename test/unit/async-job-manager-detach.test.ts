@@ -1,8 +1,7 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { AsyncJobManager } from "../../packages/coding-agent/src/core/async/job-manager.js";
 import type { ManagedBashJob } from "../../packages/coding-agent/src/core/tools/bash-async-jobs.js";
-
 
 test("completed jobs enter their registered delivery handler synchronously at receipt", () => {
 	const delivered: string[] = [];

@@ -20,7 +20,7 @@
  *   - pi packages/coding-agent/src/extensibility/extensions/runner.ts
  *     `emitInput`
  */
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import factory from "../../packages/workflows/src/extension/index.js";
 import type {

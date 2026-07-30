@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import {
     installSlashDispatchTestHooks,
     assert,
@@ -124,7 +124,7 @@ describe("tool run-control actions", () => {
             /workflows cannot invoke workflows/,
         );
     }
-    test.serial("registered workflow tool content elides empty send targets", async () => {
+    test.sequential("registered workflow tool content elides empty send targets", async () => {
         const tool = await makeRegisteredWorkflowTool();
 
         const result = await tool.execute(
@@ -143,7 +143,7 @@ describe("tool run-control actions", () => {
         assert.doesNotMatch(textContent, /^send:\s{2,}noop/);
     });
 
-    test.serial("makeExecuteWorkflowTool quit without runId pauses the active run resumably", async () => {
+    test.sequential("makeExecuteWorkflowTool quit without runId pauses the active run resumably", async () => {
         const runId = `quit-tool-active-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         registerTestStageHandle(runId, "quit-stage");
@@ -170,7 +170,7 @@ describe("tool run-control actions", () => {
         assert.equal(store.runs().find((run) => run.id === runId)?.status, "running");
     });
 
-    test.serial("makeExecuteWorkflowTool quit reports a live run with no controllable stage as unchanged", async () => {
+    test.sequential("makeExecuteWorkflowTool quit reports a live run with no controllable stage as unchanged", async () => {
         const runId = `quit-tool-no-control-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         const result = await makeToolHandler()({ action: "quit", runId }, {} as never);
@@ -182,7 +182,7 @@ describe("tool run-control actions", () => {
         assert.equal(store.runs().find((run) => run.id === runId)?.status, "running");
     });
 
-    test.serial("makeExecuteWorkflowTool quit supports unique run id prefixes", async () => {
+    test.sequential("makeExecuteWorkflowTool quit supports unique run id prefixes", async () => {
         const runId = `quit-tool-prefix-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         registerTestStageHandle(runId, "quit-stage");
@@ -200,7 +200,7 @@ describe("tool run-control actions", () => {
         assert.equal(store.runs().find((run) => run.id === runId)?.resumable, true);
     });
 
-    test.serial("makeExecuteWorkflowTool quit supports all:true without ending runs", async () => {
+    test.sequential("makeExecuteWorkflowTool quit supports all:true without ending runs", async () => {
         const r1 = `quit-tool-all-1-${Date.now()}`;
         const r2 = `quit-tool-all-2-${Date.now()}`;
         const ended = `quit-tool-all-ended-${Date.now()}`;
@@ -230,7 +230,7 @@ describe("tool run-control actions", () => {
         assert.equal(store.runs().find((run) => run.id === ended)?.status, "completed");
     });
 
-    test.serial("makeExecuteWorkflowTool quit all reports mixed no-controller failure instead of clean success", async () => {
+    test.sequential("makeExecuteWorkflowTool quit all reports mixed no-controller failure instead of clean success", async () => {
         const controllable = `quit-tool-mixed-ok-${Date.now()}`;
         const noController = `quit-tool-mixed-no-controller-${Date.now()}`;
         store.recordRunStart(makeInflightRun(controllable));
@@ -254,7 +254,7 @@ describe("tool run-control actions", () => {
         assert.equal(controller.signal.aborted, false);
     });
 
-    test.serial("makeExecuteWorkflowTool mixed quit preserves requested order when failure comes first", async () => {
+    test.sequential("makeExecuteWorkflowTool mixed quit preserves requested order when failure comes first", async () => {
         const noController = `quit-tool-order-failure-${Date.now()}`;
         const controllable = `quit-tool-order-success-${Date.now()}`;
         store.recordRunStart(makeInflightRun(noController));
@@ -270,7 +270,7 @@ describe("tool run-control actions", () => {
         assert.match(quit.message, /failed to quit 1 run\(s\)/);
     });
 
-    test.serial("makeExecuteWorkflowTool quit all reports rejected pause details", async () => {
+    test.sequential("makeExecuteWorkflowTool quit all reports rejected pause details", async () => {
         const runId = `quit-tool-rejected-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         registerTestStageHandle(runId, "quit-stage", "running", {
@@ -287,7 +287,7 @@ describe("tool run-control actions", () => {
         assert.equal(store.runs().find((run) => run.id === runId)?.status, "running");
     });
 
-    test.serial("makeExecuteWorkflowTool rejected resume returns noop and keeps the run paused", async () => {
+    test.sequential("makeExecuteWorkflowTool rejected resume returns noop and keeps the run paused", async () => {
         const runId = `resume-tool-rejected-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         store.recordRunPaused(runId);
@@ -304,7 +304,7 @@ describe("tool run-control actions", () => {
         assert.equal(store.runs().find((run) => run.id === runId)?.status, "paused");
     });
 
-    test.serial("makeExecuteWorkflowTool pause all reports noop when no runs are in flight", async () => {
+    test.sequential("makeExecuteWorkflowTool pause all reports noop when no runs are in flight", async () => {
         const handler = makeToolHandler();
 
         const result = await handler(
@@ -324,7 +324,7 @@ describe("tool run-control actions", () => {
         assert.match(r.message, /No in-flight runs to pause/);
     });
 
-    test.serial("makeExecuteWorkflowTool rejects all run-control with stageId", async () => {
+    test.sequential("makeExecuteWorkflowTool rejects all run-control with stageId", async () => {
         const runId = `pause-tool-all-stage-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         const handler = makeToolHandler();
@@ -350,7 +350,7 @@ describe("tool run-control actions", () => {
         );
     });
 
-    test.serial("makeExecuteWorkflowTool interrupt without runId defaults to the active run", async () => {
+    test.sequential("makeExecuteWorkflowTool interrupt without runId defaults to the active run", async () => {
         const runId = `interrupt-tool-active-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         const handler = makeToolHandler();
@@ -373,7 +373,7 @@ describe("tool run-control actions", () => {
         );
     });
 
-    test.serial("makeExecuteWorkflowTool pause reports pause wording for inactive stages", async () => {
+    test.sequential("makeExecuteWorkflowTool pause reports pause wording for inactive stages", async () => {
         const runId = `pause-tool-inactive-stage-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {
@@ -408,7 +408,7 @@ describe("tool run-control actions", () => {
         }
     });
 
-    test.serial("makeExecuteWorkflowTool lists and inspects workflow stages", async () => {
+    test.sequential("makeExecuteWorkflowTool lists and inspects workflow stages", async () => {
         const runId = `stage-tool-list-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {

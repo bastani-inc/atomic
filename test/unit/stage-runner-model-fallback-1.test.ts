@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import type {
     AgentSession,
     AgentSessionAdapter,
@@ -259,6 +259,5 @@ describe("createStageContext — model fallback", () => {
         );
         assert.equal(meta.warnings, undefined);
     });
-
 
 });

@@ -5,7 +5,7 @@
  * backend must never be handed out or admit new workflow runs.
  */
 
-import { afterEach, describe, test } from "bun:test";
+import { afterEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import {
   DbosDurableBackend,
@@ -106,7 +106,7 @@ afterEach(() => {
 
 describe("issue #1957 — DBOS survives host-session replacement", () => {
   for (const reason of ["new", "resume", "fork", "reload"] as const) {
-    test.serial(`session_shutdown(${reason}) flushes but keeps DBOS launched for the next session`, async () => {
+    test.sequential(`session_shutdown(${reason}) flushes but keeps DBOS launched for the next session`, async () => {
       const { events, durability, isLaunched } = launchEnforcingHarness();
       setDurableBackend(undefined);
       resetDbosLifecycleForTests(async () => durability);
@@ -134,7 +134,7 @@ describe("issue #1957 — DBOS survives host-session replacement", () => {
     });
   }
 
-  test.serial("session_shutdown(quit) flushes and shuts DBOS down exactly once", async () => {
+  test.sequential("session_shutdown(quit) flushes and shuts DBOS down exactly once", async () => {
     const { events, durability, isLaunched } = launchEnforcingHarness();
     setDurableBackend(undefined);
     resetDbosLifecycleForTests(async () => durability);
@@ -152,7 +152,7 @@ describe("issue #1957 — DBOS survives host-session replacement", () => {
     assert.equal(dbosLifecycleState(), "shut_down");
   });
 
-  test.serial("post-shutdown initialization never returns a stopped backend", async () => {
+  test.sequential("post-shutdown initialization never returns a stopped backend", async () => {
     const { durability } = launchEnforcingHarness();
     setDurableBackend(undefined);
     resetDbosLifecycleForTests(async () => durability);
@@ -174,7 +174,7 @@ describe("issue #1957 — startup admission requires durable root persistence", 
     }
   }
 
-  test.serial("a backend that cannot persist the root blocks admission before workflow code runs", async () => {
+  test.sequential("a backend that cannot persist the root blocks admission before workflow code runs", async () => {
     setDurableBackend(new StoppedFlushBackend());
     let workflowBodyRan = false;
     const def = workflow({

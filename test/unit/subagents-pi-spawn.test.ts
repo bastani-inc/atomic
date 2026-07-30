@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { bunExecutable } from "../helpers/runtime.js";
 import { spawnSync } from "node:child_process";

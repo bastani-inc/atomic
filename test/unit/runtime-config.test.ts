@@ -9,7 +9,7 @@
  * - Composition root default config contains required fields from WORKFLOW_CONFIG_DEFAULTS
  */
 
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import type { WorkflowRuntimeConfig } from "../../packages/workflows/src/shared/types.js";
 import type { ExtensionRuntimeOpts } from "../../packages/workflows/src/extension/runtime.js";

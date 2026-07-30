@@ -9,7 +9,7 @@
  *
  * cross-ref: packages/workflows/src/runs/foreground/stage-delivery-activity.ts
  */
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import { StageDeliveryActivity, type StageDeliveryActivityEvent } from "../../packages/workflows/src/runs/foreground/stage-delivery-activity.js";
 import type { AgentSessionAdapter, InternalStageContext, StageSessionRuntime } from "./stage-runner-helpers.js";
 import { assert, createStageContext, makeMockSession, makeOpts } from "./stage-runner-helpers.js";

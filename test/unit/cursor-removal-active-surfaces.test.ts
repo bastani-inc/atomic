@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -107,7 +107,6 @@ describe("removed provider active surfaces", () => {
       rmSync(tempRoot, { recursive: true, force: true });
     }
   });
-
 
   test("published Atomic dependency metadata omits the removed provider's protobuf runtime", () => {
     const dependency = "@bufbuild/" + "protobuf";

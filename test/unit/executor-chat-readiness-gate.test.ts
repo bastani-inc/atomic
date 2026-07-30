@@ -1,4 +1,4 @@
-import { afterEach, describe } from "bun:test";
+import { afterEach, describe } from "vitest";
 import {
   assert,
   createStageControlRegistry,
@@ -174,7 +174,6 @@ describe("executor — chat answer readiness integration", () => {
     ]);
     assert.equal(stages[0]?.inputRequest, undefined);
   });
-
 
   test("a follow-up-turn chat answer keeps re-brokering after Not ready", async () => {
     const localStore = createStore();

@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { getKeybindings, Key, type KeyId, parseKey, setKeybindings } from "@earendil-works/pi-tui";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";

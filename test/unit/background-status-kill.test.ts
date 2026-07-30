@@ -4,7 +4,7 @@
  * cross-ref: spec §8.1 Phase D — persist-kill-controls, resume-helper
  */
 
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { killRun, killAllRuns, resumeRun, inspectRun } from "../../packages/workflows/src/runs/background/status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";

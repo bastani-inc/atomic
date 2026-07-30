@@ -1,4 +1,4 @@
-import { afterEach, describe, test } from "bun:test";
+import { afterEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import type { AgentSessionEvent } from "@bastani/atomic";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -20,7 +20,6 @@ afterEach(async () => {
 function deferred<T = void>(): PromiseWithResolvers<T> {
   return Promise.withResolvers<T>();
 }
-
 
 function baseSession(overrides: Partial<StageSessionRuntime>): StageSessionRuntime {
   return {

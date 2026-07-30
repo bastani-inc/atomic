@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import * as fs from "node:fs";
@@ -141,7 +141,6 @@ const timer = setInterval(() => {
       assert.equal(emitter.listenerCount(INTERCOM_DETACH_REQUEST_EVENT), 0);
     }, DETACH_TIMEOUTS);
   });
-
 
   test("a parallel detach commit releases active sibling supervision while retaining both children", async () => {
     const gateName = "release-parallel-detached-children";

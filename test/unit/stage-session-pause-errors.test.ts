@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import { StageSessionPause } from "../../packages/workflows/src/runs/foreground/stage-runner-pause.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner-types.js";
 import { assert, makeMockSession } from "./stage-runner-helpers.js";

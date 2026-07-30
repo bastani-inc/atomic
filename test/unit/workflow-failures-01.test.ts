@@ -3,7 +3,7 @@
  * Unit tests for workflow-local failure classification.
  */
 
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import {
   WORKFLOW_AUTH_FAILURE_MESSAGE,

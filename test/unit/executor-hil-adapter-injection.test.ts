@@ -1,4 +1,4 @@
-import { describe } from "bun:test";
+import { describe } from "vitest";
 import {
     assert, createStore, workflow, run, test, Type, type WorkflowCustomUiFactory,
     type WorkflowCustomUiOptions, type WorkflowUIAdapter,

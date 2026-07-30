@@ -12,7 +12,7 @@
  * sendMessage + setEditorComponent calls — same pattern as the existing
  * extension test suite.
  */
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import {
   _resetForms,
@@ -63,10 +63,6 @@ export function makeState(overrides: Partial<Parameters<typeof createForm>[0]> =
 
 // ── store ────────────────────────────────────────────────────────────────
 
-
-
-
-
 // ── card renderer ────────────────────────────────────────────────────────
 
 export function plain(lines: string[]): string {
@@ -78,19 +74,6 @@ export function ansi(lines: string[]): string {
   return lines.join("\n");
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 export function assertLinesWithinWidth(lines: string[], width: number): void {
   for (const line of lines) {
     assert.ok(
@@ -99,9 +82,6 @@ export function assertLinesWithinWidth(lines: string[], width: number): void {
     );
   }
 }
-
-
-
 
 // ── editor ───────────────────────────────────────────────────────────────
 
@@ -117,22 +97,6 @@ export function makeEditor(state = makeState()) {
   });
   return { editor, state, renders, getExited: () => exited, dispose: () => editor.dispose?.() };
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 // ── overlay (orchestration) ───────────────────────────────────────────────
 
@@ -191,62 +155,11 @@ export function makeFakeCtx(): FakeCtx {
   };
 }
 
-
-
-
-
-
-
-
-
-
-
-
 // ── multi-line text field (rich-text prompt box) ──────────────────────────
 
 import { layoutTextField } from "../../packages/workflows/src/tui/inline-form-card.ts";
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 // ── paste handling (bracketed + fallback) ────────────────────────────────
 
-
-
-
-
-
-
-
-
-
-
-
-
 // ── injected keybindings: word / line / char editing ──────────────────────
-
-
-
-
-
-
-
-
-
-
 

@@ -1,4 +1,4 @@
-import { afterEach, test } from "bun:test";
+import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -184,7 +184,7 @@ async function answerFresh(rootId: string, childRunId: string, stage: StageSnaps
   assert.equal(duplicate.status, "noop");
 }
 
-test.serial("fresh nested resume keeps sequential identical same-callsite prompt occurrences distinct", async () => {
+test.sequential("fresh nested resume keeps sequential identical same-callsite prompt occurrences distinct", async () => {
   const rootId = "repeated-sequential-root";
   const sdk = createMockSdk();
   const writer = new DbosDurableBackend(sdk, { executorId: "repeated-sequential-writer" });
@@ -277,7 +277,7 @@ test.serial("fresh nested resume keeps sequential identical same-callsite prompt
   assert.deepEqual(inspectedPrompts.map((stage) => stage.parentIds), original.map((stage) => stage.parentIds));
 });
 
-test.serial("fresh nested resume restores and independently answers two concurrent identical prompts", async () => {
+test.sequential("fresh nested resume restores and independently answers two concurrent identical prompts", async () => {
   const rootId = "repeated-concurrent-root";
   const sdk = createMockSdk();
   const writer = new DbosDurableBackend(sdk, { executorId: "repeated-concurrent-writer" });

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, test } from "bun:test";
+import { afterAll, beforeAll, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { registerIntercomTool } from "../../packages/intercom/intercom-tool.js";
 import { registerContactSupervisorTool } from "../../packages/intercom/contact-supervisor-tool.js";

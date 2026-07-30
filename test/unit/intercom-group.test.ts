@@ -1,4 +1,4 @@
-import { test, afterEach } from "bun:test";
+import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
 import { DEFAULT_GROUP, normalizeGroup, resolveHomeGroup } from "../../packages/intercom/group.js";
 

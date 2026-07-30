@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { afterEach, beforeEach, describe, test } from "bun:test";
+import { afterEach, beforeEach, describe, test } from "vitest";
 import {
     installSlashDispatchTestHooks,
     assert,
@@ -215,7 +215,7 @@ describe("/workflow command in non-interactive (-p) mode (#1156 regressions)", (
         };
     }
 
-    test.serial("/workflow quit <missing> rejects visibly in headless mode", async () => {
+    test.sequential("/workflow quit <missing> rejects visibly in headless mode", async () => {
         const { handler } = await registerWorkflowCommand();
 
         await assertRejectsHeadlessCommand(
@@ -224,7 +224,7 @@ describe("/workflow command in non-interactive (-p) mode (#1156 regressions)", (
         );
     });
 
-    test.serial.each([
+    test.sequential.each([
         ["reload", "reload", /Reloaded workflow resources\./],
         ["interrupt", "interrupt", /interrupted and can be resumed/],
         ["quit", "quit", /quit.*resume|resume.*quit/i],
@@ -272,7 +272,7 @@ describe("/workflow command in non-interactive (-p) mode (#1156 regressions)", (
         },
     );
 
-    test.serial("/workflow interrupt --all emits displayable success output in headless mode", async () => {
+    test.sequential("/workflow interrupt --all emits displayable success output in headless mode", async () => {
         const { handler, sent } = await registerWorkflowCommand();
         const runId = `headless-interrupt-all-${Date.now()}`;
         const stageId = "stage-interrupt-all";
@@ -299,7 +299,7 @@ describe("/workflow command in non-interactive (-p) mode (#1156 regressions)", (
         assert.match(content, /Interrupted 1 run\(s\)\./);
     });
 
-    test.serial("/workflow quit --all emits displayable resumable success output in headless mode", async () => {
+    test.sequential("/workflow quit --all emits displayable resumable success output in headless mode", async () => {
         const { handler, sent } = await registerWorkflowCommand();
         const runId = `headless-quit-all-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
@@ -313,7 +313,7 @@ describe("/workflow command in non-interactive (-p) mode (#1156 regressions)", (
         assert.match(content, /quit.*resume|resume.*quit/i);
     });
 
-    test.serial("issue #1156: headless terminal workflow failure throws a command-visible error", async () => {
+    test.sequential("issue #1156: headless terminal workflow failure throws a command-visible error", async () => {
         const resource = await registerWorkflowCommandWithResource(
             "terminal-failure.ts",
             `import { workflow } from "@bastani/workflows";
@@ -340,7 +340,7 @@ export default workflow({
         }
     }, 15_000);
 
-    test.serial("issue #1156: headless /workflow success emits a printable terminal detail summary", async () => {
+    test.sequential("issue #1156: headless /workflow success emits a printable terminal detail summary", async () => {
         const resource = await registerWorkflowCommandWithResource(
             "headless-terminal-success.ts",
             `import { workflow } from "@bastani/workflows";
@@ -430,7 +430,7 @@ export default workflow({
         }
     }, 15_000);
 
-    test.serial("/workflow unknown workflow remains notify-and-handled with an interactive UI", async () => {
+    test.sequential("/workflow unknown workflow remains notify-and-handled with an interactive UI", async () => {
         const { handler } = await registerWorkflowCommand();
         const { ctx, notifications } = commandCtx(true);
 
@@ -446,7 +446,7 @@ export default workflow({
         assert.match(error.message, /Workflow not found: ghost-workflow/);
     });
 
-    test.serial("/workflow still uses picker-capable path when a UI is available", async () => {
+    test.sequential("/workflow still uses picker-capable path when a UI is available", async () => {
         const { handler } = await registerWorkflowCommand();
         const { ctx, pickerCalls } = commandCtx(true);
 
@@ -458,7 +458,7 @@ export default workflow({
         );
     });
 
-    test.serial("/workflow prefers host-native input form over callable isolated editor stub and Escape cancellation does not dispatch", async () => {
+    test.sequential("/workflow prefers host-native input form over callable isolated editor stub and Escape cancellation does not dispatch", async () => {
         const { handler, sent } = await registerWorkflowCommand();
         const calls: string[] = [];
         const ctx = {
@@ -482,7 +482,7 @@ export default workflow({
         );
     });
 
-    test.serial("/workflow proceeds when hasUI is unset (degraded runtimes)", async () => {
+    test.sequential("/workflow proceeds when hasUI is unset (degraded runtimes)", async () => {
         const { handler, sent } = await registerWorkflowCommand();
         const { ctx, messages } = commandCtx(undefined);
 

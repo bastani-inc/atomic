@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import type { AgentSessionAdapter, StageSessionCreateOptions } from "./stage-runner-helpers.js";
 import {
     Type,

@@ -11,7 +11,7 @@
  *   - packages/workflows/src/runs/foreground/postmortem-stage-chat.ts
  *   - packages/workflows/src/runs/foreground/stage-runner-controller.ts
  */
-import { afterEach, beforeEach, test } from "bun:test";
+import { afterEach, beforeEach, test } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

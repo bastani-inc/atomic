@@ -1,7 +1,7 @@
 /**
  * Durable hashing, scoped child checkpoints, cancellation, and replay tests.
  */
-import { describe, test, beforeEach } from "bun:test";
+import { beforeEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { InMemoryDurableBackend, durableHash } from "../../packages/workflows/src/durable/backend.js";
@@ -18,7 +18,6 @@ const CHILD = "child-wf-002";
 function toolCheckpoint(workflowId: string, argsHash: string, output: string): DurableCheckpoint {
   return { kind: "tool", workflowId, checkpointId: `tool:${argsHash}`, name: "t", argsHash, output, completedAt: 1 };
 }
-
 
 // ---------------------------------------------------------------------------
 // #3 collision-resistant digest
@@ -237,7 +236,6 @@ describe("ctx.tool cancellation after side-effect resolves", () => {
 // ---------------------------------------------------------------------------
 // #5 file-backed stale lock recovery
 // ---------------------------------------------------------------------------
-
 
 // ---------------------------------------------------------------------------
 // #1b run()-level: child ctx.tool side effects land under the root workflow id

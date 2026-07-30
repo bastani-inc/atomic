@@ -1,4 +1,4 @@
-import { describe } from "bun:test";
+import { describe } from "vitest";
 import {
     assert, createCancellationRegistry, createStageControlRegistry, createStore, deferred,
     workflow, killRun, mockSession, pauseRun, resumeRun, run, sleep, test, Type,

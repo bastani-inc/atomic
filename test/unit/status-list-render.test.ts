@@ -13,7 +13,7 @@
  * cross-ref: src/tui/status-list.ts · src/tui/chat-surface.ts
  */
 
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { renderStatusList } from "../../packages/workflows/src/tui/status-list.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";

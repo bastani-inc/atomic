@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, test } from "bun:test";
+import { afterEach, beforeEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -44,7 +44,7 @@ afterEach(async () => {
 });
 
 describe("workflow tool durable-only checkpoint replay", () => {
-  test.serial("resume keeps the original id and does not repeat a completed ctx.tool side effect", async () => {
+  test.sequential("resume keeps the original id and does not repeat a completed ctx.tool side effect", async () => {
     const workflowId = "tool-durable-replay-original-id";
     const backend = new InMemoryDurableBackend();
     setDurableBackend(backend);
@@ -116,7 +116,7 @@ describe("workflow tool durable-only checkpoint replay", () => {
     await resumedJob.promise;
     assert.equal(store.runs().find((run) => run.id === workflowId)?.status, "completed");
   });
-  test.serial("unknown resume hydrates durability while ordinary status remains local", async () => {
+  test.sequential("unknown resume hydrates durability while ordinary status remains local", async () => {
     const backend = new TrackingHydrationBackend();
     setDurableBackend(backend);
     const definition = workflow({ name: "lookup", description: "", inputs: {}, outputs: {}, run: () => ({}) });
@@ -138,7 +138,7 @@ describe("workflow tool durable-only checkpoint replay", () => {
     assert.ok(backend.hydrationCalls > 0, "not-found must follow authoritative hydration");
   });
 
-  test.serial("resume surfaces durable hydration failures and keeps --all unsupported", async () => {
+  test.sequential("resume surfaces durable hydration failures and keeps --all unsupported", async () => {
     const backend = new FailingHydrationBackend();
     setDurableBackend(backend);
     const definition = workflow({

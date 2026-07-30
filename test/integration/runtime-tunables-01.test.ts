@@ -15,7 +15,7 @@
  *   src/extension/status-writer.ts — createStatusWriter, atomicWriteJson
  *   src/shared/types.ts            — WorkflowRuntimeConfig
  */
-import { afterEach, beforeEach, describe, test } from "bun:test";
+import { afterEach, beforeEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";

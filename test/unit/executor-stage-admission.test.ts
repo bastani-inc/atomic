@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import { closeWorkflowStageGeneration, sendCustomMessage } from "../../packages/coding-agent/src/core/agent-session-message-queue.js";
 import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 import { admitWorkflowStageInbound } from "../../packages/intercom/workflow-stage-admission.js";

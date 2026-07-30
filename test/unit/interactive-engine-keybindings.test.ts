@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -133,7 +133,6 @@ function writeExpandBinding(agentDir: string, binding: string | string[]): void 
 	writeFileSync(join(agentDir, "keybindings.json"), JSON.stringify({ "app.tools.expand": binding }));
 }
 
-
 test("host applies the committed engine payload without rereading a later filesystem value", () => {
 	const tempDir = mkdtempSync(join(tmpdir(), "atomic-engine-keybinding-payload-"));
 	try {
@@ -159,7 +158,6 @@ test("host applies the committed engine payload without rereading a later filesy
 	}
 });
 
-
 test("keybinding state protocol preserves raw ordered arrays", () => {
 	const message = parseInteractiveEngineMessage(JSON.stringify({
 		type: "engine_keybindings_reloaded",
@@ -176,7 +174,7 @@ test("keybinding state protocol preserves raw ordered arrays", () => {
 	assert.deepEqual(message.state.shortcuts, [{ key: "ctrl+y", description: "fixture" }]);
 });
 
-test.serial("late host attachment receives the latest committed child state", async () => {
+test.sequential("late host attachment receives the latest committed child state", async () => {
 	const tempDir = mkdtempSync(join(tmpdir(), "atomic-engine-keybindings-late-attach-"));
 	writeExpandBinding(tempDir, "ctrl+x");
 	const client = createClient(tempDir);
@@ -198,8 +196,7 @@ test.serial("late host attachment receives the latest committed child state", as
 	}
 });
 
-
-test.serial("isolated child renders Atomic's default expand key on collapsed skill reads", async () => {
+test.sequential("isolated child renders Atomic's default expand key on collapsed skill reads", async () => {
 	const tempDir = mkdtempSync(join(tmpdir(), "atomic-engine-keybindings-"));
 	const client = createClient(tempDir);
 	try {
@@ -214,7 +211,7 @@ test.serial("isolated child renders Atomic's default expand key on collapsed ski
 	}
 });
 
-test.serial("isolated child renders the host-effective custom expand key and preserves expansion", async () => {
+test.sequential("isolated child renders the host-effective custom expand key and preserves expansion", async () => {
 	const tempDir = mkdtempSync(join(tmpdir(), "atomic-engine-keybindings-remap-"));
 	writeExpandBinding(tempDir, "ctrl+x");
 	const hostKeybindings = KeybindingsManager.create(tempDir);
@@ -237,7 +234,7 @@ test.serial("isolated child renders the host-effective custom expand key and pre
 	}
 });
 
-test.serial("direct RPC reload updates one shared global and injected manager in place", async () => {
+test.sequential("direct RPC reload updates one shared global and injected manager in place", async () => {
 	const tempDir = mkdtempSync(join(tmpdir(), "atomic-engine-keybindings-reload-"));
 	writeExpandBinding(tempDir, "ctrl+x");
 	const sessionStartFile = join(tempDir, "session-start-bindings.txt");
@@ -290,7 +287,7 @@ test.serial("direct RPC reload updates one shared global and injected manager in
 	}
 });
 
-test.serial("extension command-context reload updates the existing shared manager", async () => {
+test.sequential("extension command-context reload updates the existing shared manager", async () => {
 	const tempDir = mkdtempSync(join(tmpdir(), "atomic-engine-keybindings-context-reload-"));
 	writeExpandBinding(tempDir, "ctrl+x");
 	const sessionStartFile = join(tempDir, "session-start-bindings.txt");

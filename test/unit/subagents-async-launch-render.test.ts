@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { formatAsyncStartedMessage } from "../../packages/subagents/src/runs/background/async-execution-common.js";
 import { renderSubagentResult } from "../../packages/subagents/src/tui/render.js";

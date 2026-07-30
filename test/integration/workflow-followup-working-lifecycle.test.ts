@@ -12,7 +12,7 @@
  *   - packages/workflows/src/runs/foreground/stage-runner-send-user-message.ts
  *   - packages/workflows/src/tui/stage-chat-view-delivery-activity.ts
  */
-import { afterEach, beforeAll, test } from "bun:test";
+import { afterEach, beforeAll, test } from "vitest";
 import assert from "node:assert/strict";
 import { initTheme, type AgentSessionEvent } from "@bastani/atomic";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";

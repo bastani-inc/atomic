@@ -2,7 +2,7 @@
  * Runtime wiring tests for SDK-backed workflow stages.
  */
 
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { buildRuntimeAdapters } from "../../packages/workflows/src/extension/wiring.js";
 import { createStageContext } from "../../packages/workflows/src/runs/foreground/stage-runner.js";

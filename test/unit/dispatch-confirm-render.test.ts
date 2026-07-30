@@ -18,7 +18,7 @@
  *            · ui/dispatch-mockup.html
  */
 
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { renderDispatchConfirm } from "../../packages/workflows/src/tui/dispatch-confirm.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";

@@ -15,7 +15,7 @@
  *
  * cross-ref: packages/workflows/src/runs/foreground/stage-runner.ts
  */
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { createStageContext } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import type {
@@ -270,7 +270,6 @@ describe("reattached context overflow resumes fallback after the restored tier",
     ]);
   });
 });
-
 
 describe("live (retained-session) follow-up resumes on the settled model (#1431 follow-up)", () => {
   function liveOpts(

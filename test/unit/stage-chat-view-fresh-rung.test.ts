@@ -9,7 +9,7 @@
  * test combined a live stage view with a successful `rung: "fresh"` event.
  */
 
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import type { AgentSession, AgentSessionEvent } from "@bastani/atomic";
 import {
 	assert,

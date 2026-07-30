@@ -1,4 +1,4 @@
-import { beforeEach, describe, test } from "bun:test";
+import { beforeEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import {
   expectRegisteredCommand,
@@ -228,7 +228,6 @@ describe("renderCall — all action branches", () => {
   test("defaults to 'run' when action omitted", () => {
     assert.ok(renderCall({ workflow: "wf-c" }).includes("run"));
   });
-
 
   test("respects host render width", () => {
     const out = renderCall(

@@ -1,4 +1,4 @@
-import { beforeEach, describe, test } from "bun:test";
+import { beforeEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import {
   defaultStore,

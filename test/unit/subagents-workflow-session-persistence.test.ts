@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import { WORKFLOW_SESSION_METADATA_ENV } from "../../packages/coding-agent/src/core/session-manager-classification.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js";

@@ -10,7 +10,7 @@
  * cross-ref: packages/workflows/src/tui/graph-view-render-helpers.ts
  */
 
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import type { ReadonlyFooterDataProvider } from "@bastani/atomic";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";

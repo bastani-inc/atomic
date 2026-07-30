@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { test } from "bun:test";
+import { test } from "vitest";
 import { createJiti } from "jiti/static";
 import assert from "node:assert/strict";
 

@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { calculateCost, type Api, type Model, type Usage } from "@earendil-works/pi-ai";
 import { getModels } from "@earendil-works/pi-ai/compat";

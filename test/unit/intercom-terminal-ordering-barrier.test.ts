@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { InboundIdleQueue } from "../../packages/intercom/inbound-idle-queue.js";
 import { registerSubagentRelay } from "../../packages/intercom/subagent-relay.js";
@@ -422,7 +422,6 @@ describe("per-child terminal ordering barrier", () => {
 
     assert.deepEqual(harness.deliveries, ["accepted-before-terminal"]);
   });
-
 
   test("marks claimed messages as an ordered terminal prelude", () => {
     const harness = eventHarness();

@@ -12,7 +12,7 @@
  * cross-ref: packages/workflows/src/runs/foreground/executor.ts raceAbort
  */
 
-import { afterEach, beforeEach, test } from "bun:test";
+import { afterEach, beforeEach, test } from "vitest";
 import assert from "node:assert/strict";
 import { raceAbort } from "../../packages/workflows/src/runs/foreground/executor.js";
 

@@ -6,7 +6,7 @@
  * `maxTokens` key at all, and reasoning is inherited without per-attempt variation.
  */
 
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { generateBranchSummary } from "../../packages/coding-agent/src/core/compaction/branch-summarization.js";

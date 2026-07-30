@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, test } from "bun:test";
+import { afterEach, beforeEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -70,7 +70,6 @@ function lifecycleRestoration(store: ReturnType<typeof createStore>) {
     },
   };
 }
-
 
 describe("completed workflow inspection", () => {
   test("opens immutable detail and appends follow-up chat without durable re-dispatch", async () => {
@@ -324,7 +323,6 @@ describe("completed workflow inspection", () => {
     assert.deepEqual(registry.forRun("completed-tool-only"), []);
     assert.deepEqual(store.runs()[0]?.toolNodes?.map((tool) => tool.name), ["publish"]);
   });
-
 
   test("restores nested completed snapshots without lifecycle delivery", () => {
     const backend = new InMemoryDurableBackend();

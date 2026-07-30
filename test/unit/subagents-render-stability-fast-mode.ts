@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { buildWidgetLines, renderSubagentResult } from "../../packages/subagents/src/tui/render.js";
 import { type AgentToolResult, type AsyncJobState, type Details, theme, withMockedNow } from "./subagents-render-stability-helpers.js";

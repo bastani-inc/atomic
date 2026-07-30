@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import { CONFIG_DIR_NAME, ENV_AGENT_DIR } from "../../packages/coding-agent/src/config.js";
 import { discoverAgentsAll, type ChainConfig } from "../../packages/subagents/src/agents/agents.js";
 import { mapSavedChainSteps } from "../../packages/subagents/src/slash/saved-chain-mapping.js";

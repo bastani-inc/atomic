@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
 import { type SpawnedProcess, bunExecutable, decodeStream, moduleDir, readStreamText, sleep, spawnProcess } from "../helpers/runtime.js";
 
-const serialTest = process.platform === "win32" ? test.serial.skip : test.serial;
+const serialTest = process.platform === "win32" ? test.sequential.skip : test.sequential;
 const prefix = "@@ATOMIC_TEST@@";
 const warning = "Configured default model is unavailable or unsupported. Update defaultProvider/defaultModel or use /model.";
 

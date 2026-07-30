@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { createStageContext } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { makeMockSession, makeOpts } from "./stage-runner-helpers.js";

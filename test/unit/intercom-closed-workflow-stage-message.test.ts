@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { routeClosedWorkflowStageMessage } from "../../packages/intercom/closed-workflow-stage-message.js";

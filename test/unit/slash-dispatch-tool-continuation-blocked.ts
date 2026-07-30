@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import {
     installSlashDispatchTestHooks,
     assert,
@@ -310,7 +310,6 @@ describe("tool run-control actions", () => {
         await new Promise((resolve) => setTimeout(resolve, 10));
         assert.equal(backend.getWorkflow(sourceRunId)?.status, "blocked");
     });
-
 
     test("makeExecuteWorkflowTool resume finalizes restored blocked source run", async () => {
         const sourceRunId = `resume-tool-restored-blocked-${Date.now()}`;

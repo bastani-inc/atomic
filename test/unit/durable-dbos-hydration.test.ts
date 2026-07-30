@@ -7,7 +7,7 @@
  *
  * cross-ref: issue #1498 — DBOS read-side hydration.
  */
-import { describe, test, beforeEach } from "bun:test";
+import { beforeEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { durableHash } from "../../packages/workflows/src/durable/backend.js";
@@ -282,7 +282,6 @@ describe("DbosDurableBackend hydration (fresh process)", () => {
     assert.equal(entry.status, "paused");
     assert.deepEqual(entry.inputs, { x: 1 });
   });
-
 
   test("hydrateResumableWorkflows discovers all workflows and checkpoints", async () => {
     const hash = durableHash({ name: "t", args: {} });

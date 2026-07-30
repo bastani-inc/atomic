@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, test } from "bun:test";
+import { afterEach, beforeEach, describe, test } from "vitest";
 import { getKeybindings, setKeybindings } from "@earendil-works/pi-tui";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";

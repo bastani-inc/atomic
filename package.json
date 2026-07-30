@@ -17,7 +17,7 @@
     "prepare": "node scripts/install-hooks.mjs",
     "hooks:install": "npx --no-install prek install --prepare-hooks",
     "hooks:run": "npx --no-install prek run --all-files",
-    "test": "npm run test:unit",
+    "test": "npm run test:scripts && vitest --run && npm run test --workspaces --if-present",
     "test:unit": "vitest --run --project unit",
     "test:integration": "vitest --run --project integration",
     "test:ci-contracts": "vitest --run --project ci",

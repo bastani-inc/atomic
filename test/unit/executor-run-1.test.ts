@@ -1,4 +1,4 @@
-import { describe } from "bun:test";
+import { describe } from "vitest";
 import {
     assert, createCancellationRegistry, createRegistry, createStore, workflow, killRun,
     run, test, Type, type StageSnapshot, type WorkflowDefinition,

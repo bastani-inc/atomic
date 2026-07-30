@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { afterEach, beforeAll, test } from "bun:test";
+import { afterEach, beforeAll, test } from "vitest";
 import assert from "node:assert/strict";
 import { ChatSessionHost } from "../../packages/coding-agent/src/index.ts";
 import { setThemeInstance } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";

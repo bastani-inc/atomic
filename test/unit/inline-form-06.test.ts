@@ -12,7 +12,7 @@
  * sendMessage + setEditorComponent calls — same pattern as the existing
  * extension test suite.
  */
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import {
   _resetForms,

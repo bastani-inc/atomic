@@ -8,7 +8,7 @@
  * notice, exactly one follow-up chat request, and no `agent.continue()`.
  */
 
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { Agent, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";

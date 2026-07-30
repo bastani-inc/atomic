@@ -1,4 +1,4 @@
-import { describe } from "bun:test";
+import { describe } from "vitest";
 import {
     assert, callThroughStack, createStore, workflow, resolveExecutorCustomPrompt, run,
     test, Type, waitForExecutorCustomPromptStage, waitForExecutorStagePendingPrompt,

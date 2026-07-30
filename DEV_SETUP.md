@@ -193,10 +193,7 @@ Git hook configuration lives in [`prek.toml`](./prek.toml), not `.pre-commit-con
 
 ## Testing patterns
 
-All suites run under **vitest** with `node:assert/strict` assertions. Existing files still
-import from `"bun:test"`: `vitest.base.ts` aliases that specifier to
-`test/helpers/bun-test-shim.ts`, which re-exports vitest's API, so the migration needed no
-import edits. New files may use either; prefer `"vitest"`.
+All suites run under **vitest** with `node:assert/strict` assertions.
 
 Because the suites run under Node, `Bun.*` and `import.meta.dir` are unavailable in tests.
 `test/helpers/runtime.ts` provides the replacements (`sleep`, `readText`, `readJson`,

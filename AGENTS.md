@@ -84,18 +84,13 @@ Follow [`CONTRIBUTING.md`](CONTRIBUTING.md) for external-contributor coordinatio
 Use `npm run test:unit` (or `test:integration`, `test:all`) and make use of your tdd skill to write high quality tests. The suites run under **vitest**; the assertion style stays `node:assert/strict`:
 
 ```ts#test/unit/index.test.ts
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 
 test("hello world", () => {
   assert.equal(1, 1);
 });
 ```
-
-The `bun:test` specifier above is not a mistake. `vitest.base.ts` aliases it to
-`test/helpers/bun-test-shim.ts`, which re-exports vitest's API, so 629 existing files
-migrated without an import edit. Codemodding those imports to `from "vitest"` and deleting
-the shim is a follow-up. **New files may import from either;** prefer `"vitest"`.
 
 ### Replacing Bun globals in tests
 
@@ -145,7 +140,7 @@ enforces the loader order and rejects those guards.
 
 ### Per-test timeout policy
 
-- The suite-wide per-test budget is **30000 ms**, declared once as `TEST_TIMEOUT_MS` in `test/helpers/test-timeout.ts` and applied by the root `vitest.config.ts` to all three projects. `test/ci/ci-workflow-contracts.test.ts` enforces that the three `test:*` scripts each select a project and that all three resolve to that one value. It lives in a leaf module because `test/helpers/bun-test-shim.ts` also clamps `setDefaultTimeout` against it, and reaching into the config from there would pull `vitest/config` into every test worker.
+- The suite-wide per-test budget is **30000 ms**, declared once as `TEST_TIMEOUT_MS` in `test/helpers/test-timeout.ts` and applied by the root `vitest.config.ts` to all three projects. `test/ci/ci-workflow-contracts.test.ts` enforces that the three `test:*` scripts each select a project and that all three resolve to that one value.
 - Do **not** restate the budget in a package script, in `.github/workflows/test.yml`, or in `bunfig.toml`. The contract test rejects a `--timeout` flag in any script, and Bun ignores `[test] timeout` in bunfig anyway — it looks correct and does nothing.
 - One platform-neutral value, never a Windows-only branch. A Windows-only bump would leave Linux as the only place the budget is enforced and hide Windows regressions until they were far worse. (`packages/coding-agent/vitest.config.ts` keeps its own pre-existing 90 s Windows branch, local to that project.)
 - Add an explicit third-argument timeout only for a test whose cost is *structural* (a full builtin-package loader reload, a real CLI child process, a real `vitest` child, a `tsc` invocation, a built-package install). **Name the constant and keep it at the call site** — `REAL_VITEST_SUITE_TIMEOUT_MS` in `test/unit/flaky-test-suite-runner.test.ts` is the pattern; a bare `120_000` says nothing about why the cost is structural rather than a slow test nobody fixed. Never restate the default value — an explicit timeout that merely repeats it silently lowers that test's budget when the default rises.

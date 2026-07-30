@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import type net from "node:net";
 import type { CreateAgentSessionOptions } from "@bastani/atomic";

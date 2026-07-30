@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai/compat";
 import { _isRetryableError } from "../../packages/coding-agent/src/core/agent-session-retry.js";

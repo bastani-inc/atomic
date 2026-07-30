@@ -8,7 +8,7 @@
  * `ui.custom` seam and assert the identical handle semantics: select/cancel
  * resolution, row updates, header errors, owner-owned deletion, and close.
  */
-import { afterAll, beforeAll, describe, test } from "bun:test";
+import { afterAll, beforeAll, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { getKeybindings, setKeybindings } from "@earendil-works/pi-tui";
 import type { HostSessionPickerRow } from "../../packages/coding-agent/src/core/extensions/index.ts";

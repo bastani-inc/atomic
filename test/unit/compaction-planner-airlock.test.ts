@@ -4,7 +4,7 @@
  * to hold on the returned value, not merely be re-established downstream.
  */
 
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { planDeletedLineRanges } from "../../packages/coding-agent/src/core/compaction/range-planner.js";
 import type { LineRange } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";

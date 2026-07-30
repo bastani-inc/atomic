@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import {
     installSlashDispatchTestHooks,
     assert,
@@ -67,7 +67,7 @@ import type {
 installSlashDispatchTestHooks();
 
 describe("/workflow <name> --help prints schema without dispatching", () => {
-    test.serial("--help token short-circuits to the schema printer", async () => {
+    test.sequential("--help token short-circuits to the schema printer", async () => {
         const { pi, commands, sent } = buildMockPi();
         await runFactory(pi);
 
@@ -143,13 +143,13 @@ describe("canonical registerCommand — opts.handler shape", () => {
         return { commands, sent };
     }
 
-    test.serial("registerCommand receives string name 'workflow'", async () => {
+    test.sequential("registerCommand receives string name 'workflow'", async () => {
         const { commands } = await runFactoryRaw();
         const names = commands.map((c) => c.name);
         assert.ok(names.includes("workflow"));
     });
 
-    test.serial("registerCommand does not receive per-workflow alias names", async () => {
+    test.sequential("registerCommand does not receive per-workflow alias names", async () => {
         const { commands } = await runFactoryRaw();
         const names = commands.map((c) => c.name);
         assert.equal(
@@ -158,7 +158,7 @@ describe("canonical registerCommand — opts.handler shape", () => {
         );
     });
 
-    test.serial("opts passed to registerCommand have 'handler' (function)", async () => {
+    test.sequential("opts passed to registerCommand have 'handler' (function)", async () => {
         const { commands } = await runFactoryRaw();
         for (const { name, options } of commands) {
             assert.equal(
@@ -169,7 +169,7 @@ describe("canonical registerCommand — opts.handler shape", () => {
         }
     });
 
-    test.serial("opts passed to registerCommand do NOT have 'execute' property", async () => {
+    test.sequential("opts passed to registerCommand do NOT have 'execute' property", async () => {
         const { commands } = await runFactoryRaw();
         for (const { name, options } of commands) {
             assert.equal(
@@ -180,7 +180,7 @@ describe("canonical registerCommand — opts.handler shape", () => {
         }
     });
 
-    test.serial("opts have 'description' string", async () => {
+    test.sequential("opts have 'description' string", async () => {
         const { commands } = await runFactoryRaw();
         for (const { name, options } of commands) {
             assert.equal(
@@ -191,7 +191,7 @@ describe("canonical registerCommand — opts.handler shape", () => {
         }
     });
 
-    test.serial("handler for 'workflow' is callable — does not throw synchronously", async () => {
+    test.sequential("handler for 'workflow' is callable — does not throw synchronously", async () => {
         const { commands, sent } = await runFactoryRaw();
         const workflowCmd = commands.find((c) => c.name === "workflow");
         assert.notEqual(workflowCmd, undefined);

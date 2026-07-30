@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { Value } from "typebox/value";
 import type { WorkflowDefinition } from "../../packages/workflows/src/types.js";

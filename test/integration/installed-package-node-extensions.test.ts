@@ -12,7 +12,7 @@
  * (lenient exports-map resolution) stayed green — so only a Node-runtime
  * smoke over the installed layout can catch this class of regression.
  */
-import { afterAll, test } from "bun:test";
+import { afterAll, test } from "vitest";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";

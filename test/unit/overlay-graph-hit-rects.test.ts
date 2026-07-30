@@ -1,4 +1,4 @@
-import { describe, it } from "bun:test";
+import { describe, it } from "vitest";
 import assert from "node:assert/strict";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { ANSI_RE, defaultTheme, makeSnap, makeStage, makeStore } from "./overlay-graph-helpers.js";

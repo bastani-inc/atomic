@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import { parseJsonChain, serializeJsonChain } from "../../packages/subagents/src/agents/chain-serializer.js";
 import { ChainOutputValidationError, validateChainOutputBindings } from "../../packages/subagents/src/runs/shared/chain-outputs.js";
 import {

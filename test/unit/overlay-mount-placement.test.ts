@@ -15,7 +15,7 @@
  *  - src/tui/inputs-overlay.ts
  *  - pi packages/coding-agent/src/modes/controllers/extension-ui-controller.ts
  */
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import {
   openSessionPicker,

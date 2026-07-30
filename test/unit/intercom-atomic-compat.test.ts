@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -262,7 +262,6 @@ describe("intercom default broker runtime", () => {
     assert.equal(commandLine.includes('"npx"'), false);
     assert.equal(commandLine.includes('"bun"'), false);
   });
-
 
   test("preserves Windows custom broker override command line", () => {
     const extensionDir = tempDir("atomic-intercom-extension-");

@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { escapeHtmlAttribute } from "../../packages/mcp/host-html-template.ts";

@@ -1,4 +1,4 @@
-import { beforeEach, afterEach, describe, test } from "bun:test";
+import { afterEach, beforeEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -32,7 +32,6 @@ import {
   waitForStagePendingPrompt,
 } from "./overlay-entrypoints-helpers.js";
 void [buildGraphOverlayAdapter, buildInteractiveHostCustomUi, buildMockPi, buildMockUi, buildOverlayHandle, buildPrintCtx, buildPrintCtxWithRealCustom, attachHostCustomUiState, createCancellationRegistry, createJobTracker, createStore, workflow, delay, factory, runDetached, setupBranchingRun, setupSequentialRun, setupWideFanoutRun, singletonStore, Type, visibleText, waitForRenderCount, waitForRunEnded, waitForStagePendingPrompt];
-
 
 function registerInspectableCompleted(backend: InMemoryDurableBackend, workflowId: string, name: string): () => void {
   const dir = mkdtempSync(join(tmpdir(), "atomic-completed-overlay-"));
@@ -81,7 +80,6 @@ describe("/workflow resume — overlay integration", () => {
       true,
     );
   });
-
 
   test("resume with no runId opens durable picker when only durable entries exist", async () => {
     singletonStore.clear();
@@ -464,7 +462,6 @@ describe("/workflow attach — top-level command", () => {
       setDurableBackend(undefined);
     }
   });
-
 
   test("no-arg resume with live runs includes asynchronously hydrated durable entries", async () => {
     singletonStore.clear();

@@ -5,7 +5,7 @@
  * narrow reasoning-starvation fingerprint and the quota-vs-throttle split.
  */
 
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

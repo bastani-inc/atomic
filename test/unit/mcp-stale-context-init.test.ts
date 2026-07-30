@@ -16,7 +16,7 @@
  * handler, then flips the captured context to "stale" while the deferred init is
  * suspended at its async boundary, and asserts no failure is logged.
  */
-import { afterEach, beforeEach, test } from "bun:test";
+import { afterEach, beforeEach, test } from "vitest";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

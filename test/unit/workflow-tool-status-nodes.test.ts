@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { renderWorkflowToolContent } from "../../packages/workflows/src/extension/workflow-tool-content.js";
 import { summarizeRunSnapshot } from "../../packages/workflows/src/extension/workflow-status-summary.js";
@@ -79,7 +79,6 @@ describe("workflow tool status nodes", () => {
     assert.deepEqual(json.runs[0]?.tools.map(({ name, status }) => ({ name, status })),
       (run.toolNodes ?? []).map(({ name, status }) => ({ name, status })));
   });
-
 
   test("mixed compact status keeps the stage hint and ordered tools", () => {
     const run: RunSnapshot = {

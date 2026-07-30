@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, test } from "bun:test";
+import { afterEach, beforeEach, test } from "vitest";
 import { Type } from "typebox";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync } from "node:fs";
@@ -216,7 +216,6 @@ function mockSession(): StageSessionRuntime {
     };
 }
 
-
 function makeSmartSession(events: string[]): () => StageSessionRuntime {
     return (): StageSessionRuntime => {
         const listeners = new Set<
@@ -326,7 +325,6 @@ function structuredOutputMockSession(
         },
     };
 }
-
 
 export {
     afterEach,

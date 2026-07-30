@@ -1,5 +1,5 @@
 /** Durable ctx.stage/ctx.task checkpoint recorder tests. */
-import { describe, test, beforeEach } from "bun:test";
+import { beforeEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { createCheckpointIdGenerator } from "../../packages/workflows/src/durable/tool-primitive.js";

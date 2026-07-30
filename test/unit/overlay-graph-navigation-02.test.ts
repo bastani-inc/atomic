@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { describe, it, mock } from "bun:test";
+import { describe, it, vi } from "vitest";
 import assert from "node:assert/strict";
 import * as h from "./overlay-graph-helpers.js";
 import { computeLayout, NODE_W } from "../../packages/workflows/src/tui/layout.js";
@@ -259,7 +259,7 @@ describe("GraphView keyboard navigation", () => {
     }];
     const snap = makeSnap(stages);
     const store = makeStore(snap);
-    const onStageAttach = mock(() => {});
+    const onStageAttach = vi.fn(() => {});
     const view = new GraphView({
       mode: "overlay",
       runId: "run-1",
@@ -333,7 +333,7 @@ describe("GraphView keyboard navigation", () => {
       parentIds: [],
       toolEvents: [],
     });
-    const onStageAttach = mock(() => {});
+    const onStageAttach = vi.fn(() => {});
     const view = new GraphView({
       mode: "overlay",
       runId: "run-1",
@@ -405,7 +405,7 @@ describe("GraphView keyboard navigation", () => {
     ];
     const snap = makeSnap(stages);
     const store = makeStore(snap);
-    const onStageAttach = mock(() => {});
+    const onStageAttach = vi.fn(() => {});
     let detached = 0;
     const view = new GraphView({
       mode: "overlay",

@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -129,7 +129,7 @@ test("fresh DBOS backend resumes an active nested child with stable identity and
   assert.deepEqual(resumedChildFirst.parentIds, firstChildStage.parentIds);
 });
 
-test.serial("colliding child-local stage IDs and names require an exact virtual target", () => {
+test.sequential("colliding child-local stage IDs and names require an exact virtual target", () => {
   const rootId = "collision-root";
   const firstRunId = "collision-child-first";
   const secondRunId = "collision-child-second";

@@ -14,7 +14,7 @@
  * not have to defensively try/catch every ctx.ui.* call.
  */
 
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { buildBackgroundUIAdapter } from "../../packages/workflows/src/extension/background-ui-adapter.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";

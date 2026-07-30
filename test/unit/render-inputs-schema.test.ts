@@ -6,7 +6,7 @@
  *   - programmatic SDK validation failures
  */
 
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { renderInputsSchema } from "../../packages/workflows/src/shared/render-inputs-schema.js";
 

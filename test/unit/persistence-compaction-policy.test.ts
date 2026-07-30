@@ -3,7 +3,7 @@
  * cross-ref: spec §5.6, §8.1 Phase D
  */
 
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { installCompactionHook } from "../../packages/workflows/src/shared/persistence-compaction-policy.js";
 import type { CompactionAPI } from "../../packages/workflows/src/shared/persistence-compaction-policy.js";

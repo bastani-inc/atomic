@@ -1,4 +1,4 @@
-import { test, describe } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { StageUiBroker, type StageCustomUiRequest, type StagePromptResolvedEvent } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { buildStagePromptAdapter } from "../../packages/workflows/src/shared/stage-prompt.js";

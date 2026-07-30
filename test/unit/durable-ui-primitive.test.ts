@@ -6,7 +6,7 @@
  *
  * cross-ref: issue #1498 — durable ctx.ui response/pending prompt state.
  */
-import { describe, test, beforeEach } from "bun:test";
+import { beforeEach, describe, test } from "vitest";
 import { tmpdir } from "node:os";
 import assert from "node:assert/strict";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
@@ -207,7 +207,7 @@ describe("wrapUiWithDurable", () => {
     assert.equal(baseB.calls.custom, 0);
   });
 
-  test.serial("replays one checkpoint when process cwd changes", async () => {
+  test.sequential("replays one checkpoint when process cwd changes", async () => {
     const originalCwd = process.cwd();
     const firstBase = makeBaseUi({ async input() { firstBase.calls.input++; return "stable-answer"; } });
     assert.equal(await promptInputAtStableCallsite(wrap(firstBase), "same prompt across cwd"), "stable-answer");

@@ -1,4 +1,4 @@
-import { describe } from "bun:test";
+import { describe } from "vitest";
 import {
     assert, resolveInputs, test, Type,
 } from "./executor-shared.js";

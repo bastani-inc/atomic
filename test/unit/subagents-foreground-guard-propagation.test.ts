@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, mock, test } from "bun:test";
+import { afterAll, beforeEach, describe, test, vi } from "vitest";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -60,7 +60,7 @@ const asyncSingleCalls: CapturedAsyncSingleCall[] = [];
 
 const emptyUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
 
-const runSyncMock = mock(async (
+const runSyncMock = vi.fn(async (
 	_cwd: string,
 	_agents: MinimalAgentConfig[],
 	agentName: string,
@@ -78,7 +78,7 @@ const runSyncMock = mock(async (
 	};
 });
 
-const executeAsyncChainMock = mock((id: string, params: MinimalAsyncChainParams) => {
+const executeAsyncChainMock = vi.fn((id: string, params: MinimalAsyncChainParams) => {
 	asyncChainCalls.push({ id, params });
 	return {
 		content: [{ type: "text" as const, text: "Launching in background..." }],
@@ -86,7 +86,7 @@ const executeAsyncChainMock = mock((id: string, params: MinimalAsyncChainParams)
 	};
 });
 
-const executeAsyncSingleMock = mock((id: string, params: MinimalAsyncSingleParams) => {
+const executeAsyncSingleMock = vi.fn((id: string, params: MinimalAsyncSingleParams) => {
 	asyncSingleCalls.push({ id, params });
 	return {
 		content: [{ type: "text" as const, text: "Launching in background..." }],

@@ -17,7 +17,7 @@
  *   done/close/dispose/crash, with stale-generation safety.
  */
 
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.ts";

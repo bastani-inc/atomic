@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, test } from "bun:test";
+import { afterAll, beforeAll, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { getKeybindings, setKeybindings, TUI, type Terminal } from "@earendil-works/pi-tui";
 import type { ExtensionUIContext, HostInputFormField } from "../../packages/coding-agent/src/core/extensions/index.ts";
@@ -90,7 +90,6 @@ function makeBridge(keybindings = new KeybindingsManager()) {
 		emitReady: () => listeners.forEach((listener) => listener({ type: "engine_ready", protocolVersion: INTERACTIVE_ENGINE_PROTOCOL_VERSION, pid: 7 })),
 	};
 }
-
 
 function stripAnsi(value: string): string {
 	return value.replace(/\u001b\[[0-9;]*m/g, "");
@@ -260,7 +259,6 @@ describe("host-native input form", () => {
 		assert.equal(values.__proto__, "kept");
 		bridge.controller.dispose();
 	});
-
 
 	test("multiline arrow navigation stays in the text field until its boundary", async () => {
 		const bridge = makeBridge();

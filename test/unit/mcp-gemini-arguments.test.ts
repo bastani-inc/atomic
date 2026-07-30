@@ -5,7 +5,7 @@
  * flattened `name[index]` keys on the wire. The MCP package normalizes them at
  * the `callTool` boundary so MCP servers receive well-formed arguments.
  */
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { unflattenToolArguments } from "../../packages/mcp/utils.js";
 

@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";

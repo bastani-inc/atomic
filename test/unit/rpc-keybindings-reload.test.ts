@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -65,7 +65,6 @@ describe("RPC effective-keybinding reload transaction", () => {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
 	});
-
 
 	test("serializes overlapping success/failure transactions without rolling back the committed state", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "atomic-rpc-keybinding-overlap-"));

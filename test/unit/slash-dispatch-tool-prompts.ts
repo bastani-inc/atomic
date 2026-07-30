@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import {
     installSlashDispatchTestHooks,
     assert,
@@ -122,7 +122,7 @@ describe("tool run-control actions", () => {
             /workflows cannot invoke workflows/,
         );
     }
-    test.serial("makeExecuteWorkflowTool answers stage pending prompts", async () => {
+    test.sequential("makeExecuteWorkflowTool answers stage pending prompts", async () => {
         const runId = `stage-tool-send-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {
@@ -166,7 +166,7 @@ describe("tool run-control actions", () => {
         );
     });
 
-    test.serial("makeExecuteWorkflowTool refuses workflow send answers for custom prompt nodes", async () => {
+    test.sequential("makeExecuteWorkflowTool refuses workflow send answers for custom prompt nodes", async () => {
         const runId = `stage-tool-send-custom-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {
@@ -212,7 +212,7 @@ describe("tool run-control actions", () => {
         assert.equal(store.getStagePromptAnswer(runId, "stage-custom-prompt"), undefined);
     });
 
-    test.serial("makeExecuteWorkflowTool tags brokered prompt answers as workflow-tool sourced", async () => {
+    test.sequential("makeExecuteWorkflowTool tags brokered prompt answers as workflow-tool sourced", async () => {
         const runId = `stage-tool-send-broker-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {
@@ -278,7 +278,7 @@ describe("tool run-control actions", () => {
         }
     });
 
-    test.serial("makeExecuteWorkflowTool leaves pending prompts untouched when payload is omitted", async () => {
+    test.sequential("makeExecuteWorkflowTool leaves pending prompts untouched when payload is omitted", async () => {
         const runId = `stage-tool-send-omitted-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {
@@ -318,7 +318,7 @@ describe("tool run-control actions", () => {
         assert.equal(stage?.pendingPrompt?.id, "prompt-omitted");
     });
 
-    test.serial("makeExecuteWorkflowTool delivery answer without a pending prompt does not fall through to live followUp", async () => {
+    test.sequential("makeExecuteWorkflowTool delivery answer without a pending prompt does not fall through to live followUp", async () => {
         const runId = `stage-tool-send-answer-no-prompt-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {
@@ -362,7 +362,7 @@ describe("tool run-control actions", () => {
         }
     });
 
-    test.serial("makeExecuteWorkflowTool auto delivery without a targeted prompt starts an idle live prompt", async () => {
+    test.sequential("makeExecuteWorkflowTool auto delivery without a targeted prompt starts an idle live prompt", async () => {
         const runId = `stage-tool-send-auto-live-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {

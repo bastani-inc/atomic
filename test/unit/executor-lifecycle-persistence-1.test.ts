@@ -1,4 +1,4 @@
-import { describe, beforeAll, afterAll } from "bun:test";
+import { afterAll, beforeAll, describe } from "vitest";
 import {
     assert, createStore, workflow, run, test, Type,
 } from "./executor-shared.js";

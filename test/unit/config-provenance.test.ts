@@ -8,7 +8,7 @@
  *   4. discoverWorkflows distinguishes settings-project vs settings-global source kinds
  */
 
-import { afterAll, describe, test } from "bun:test";
+import { afterAll, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";

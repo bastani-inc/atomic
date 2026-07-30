@@ -11,7 +11,7 @@
  * cross-ref: src/tui/workflow-attach-pane.ts, src/runs/foreground/postmortem-stage-chat.ts
  */
 
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { createStore, store as globalStore } from "../../packages/workflows/src/shared/store.js";
 import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
@@ -151,7 +151,7 @@ describe("WorkflowAttachPane post-mortem revival", () => {
     pane.dispose();
   });
 
-  test.serial("the extension resolver preserves invalid-session reasons", () => {
+  test.sequential("the extension resolver preserves invalid-session reasons", () => {
     globalStore.clear();
     try {
       setupCompletedRun(globalStore, "resolver-run");

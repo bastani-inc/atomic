@@ -1,4 +1,4 @@
-import { afterEach, test } from "bun:test";
+import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -97,7 +97,7 @@ async function createMode(agentDir: string, extensionFactory?: ExtensionFactory)
 	return mode;
 }
 
-test.serial("exported InteractiveMode uses services.agentDir for display and editor input", async () => {
+test.sequential("exported InteractiveMode uses services.agentDir for display and editor input", async () => {
 	const agentDir = mkdtempSync(join(tmpdir(), "atomic-explicit-agent-dir-"));
 	writeExpandBinding(agentDir, "ctrl+x");
 	const ambientDir = mkdtempSync(join(tmpdir(), "atomic-ambient-agent-dir-"));
@@ -117,7 +117,7 @@ test.serial("exported InteractiveMode uses services.agentDir for display and edi
 	assert.equal(hostDisposals, 1, "mode stop must dispose its interactive-engine host attachment");
 });
 
-test.serial("local slash and extension-context reloads stage keybindings before session_start and roll back in place", async () => {
+test.sequential("local slash and extension-context reloads stage keybindings before session_start and roll back in place", async () => {
 	const agentDir = mkdtempSync(join(tmpdir(), "atomic-local-reload-agent-dir-"));
 	process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
 	writeExpandBinding(agentDir, "ctrl+x");

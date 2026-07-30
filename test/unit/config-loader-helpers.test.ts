@@ -4,7 +4,7 @@
  *   - withWorkflowDefaults — fills absent fields with RFC-specified defaults
  */
 
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import {

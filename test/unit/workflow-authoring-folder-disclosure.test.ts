@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import {
   DEFAULT_PROMPT_GUIDANCE,
   WORKFLOW_TOOL_DESCRIPTION,

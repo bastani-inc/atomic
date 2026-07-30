@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import {
     installSlashDispatchTestHooks,
     assert,
@@ -122,7 +122,7 @@ describe("tool run-control actions", () => {
             /workflows cannot invoke workflows/,
         );
     }
-    test.serial("makeExecuteWorkflowTool stages clones pending prompts", async () => {
+    test.sequential("makeExecuteWorkflowTool stages clones pending prompts", async () => {
         const runId = `stage-tool-prompt-clone-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {
@@ -159,7 +159,7 @@ describe("tool run-control actions", () => {
         assert.deepEqual(storedPrompt?.choices, ["yes"]);
     });
 
-    test.serial("makeExecuteWorkflowTool stage rejects all-run inspection", async () => {
+    test.sequential("makeExecuteWorkflowTool stage rejects all-run inspection", async () => {
         const handler = makeToolHandler();
 
         const result = await handler(
@@ -177,7 +177,7 @@ describe("tool run-control actions", () => {
         assert.match(stage.error ?? "", /requires a single run/);
     });
 
-    test.serial("makeExecuteWorkflowTool stages supports all stage status filters", async () => {
+    test.sequential("makeExecuteWorkflowTool stages supports all stage status filters", async () => {
         const runId = `stage-tool-status-filters-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         for (const status of [
@@ -216,7 +216,7 @@ describe("tool run-control actions", () => {
         );
     });
 
-    test.serial("makeExecuteWorkflowTool stages reports missing and ambiguous run targets", async () => {
+    test.sequential("makeExecuteWorkflowTool stages reports missing and ambiguous run targets", async () => {
         const handler = makeToolHandler();
 
         const missing = await handler({ action: "stages" }, {} as never);
@@ -257,7 +257,7 @@ describe("tool run-control actions", () => {
         );
     });
 
-    test.serial("workflow status rejects an ambiguous run ID exactly as abbreviated in its list", async () => {
+    test.sequential("workflow status rejects an ambiguous run ID exactly as abbreviated in its list", async () => {
         const firstId = "abc123-first-full-run-id";
         const secondId = "abc123-second-full-run-id";
         store.recordRunStart(makeInflightRun(firstId));
@@ -280,7 +280,7 @@ describe("tool run-control actions", () => {
         assert.match(statusDetail.error ?? "", new RegExp(secondId.slice(0, 12)));
     });
 
-    test.serial("makeExecuteWorkflowTool returns chronologically final snapshot result after tools", async () => {
+    test.sequential("makeExecuteWorkflowTool returns chronologically final snapshot result after tools", async () => {
         const runId = `stage-tool-transcript-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {

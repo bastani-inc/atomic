@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { createToolPrimitive } from "../../packages/workflows/src/durable/tool-primitive.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -35,7 +35,6 @@ describe("ctx.tool admitted execution barrier", () => {
     assert.equal(returned, admitted);
     assert.equal(await returned, exactValue);
   });
-
 
   test("refused tracking rejects the exact native execution promise before invocation", async () => {
     const backend = new InMemoryDurableBackend();
@@ -275,7 +274,6 @@ describe("ctx.tool admitted execution barrier", () => {
       ["second-failure", "failed"],
     ]);
   });
-
 
   test("unawaited pre-node validation rejection fails the root", async () => {
     let callbackCalls = 0;

@@ -13,7 +13,7 @@
  * host `SessionPickerHostController` through an in-process message pump (no
  * spawned process).
  */
-import { afterAll, beforeAll, describe, test } from "bun:test";
+import { afterAll, beforeAll, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { getKeybindings, setKeybindings } from "@earendil-works/pi-tui";
 import type { ExtensionUIContext, HostSessionPickerRow } from "../../packages/coding-agent/src/core/extensions/index.ts";

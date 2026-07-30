@@ -6,7 +6,7 @@
  *
  * cross-ref: issue #1498 — stage checkpoint and graph lineage robustness.
  */
-import { describe, test, beforeEach } from "bun:test";
+import { beforeEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { recordStageCheckpoint, recordCachedStageIntoStore, recordCachedStageWithTracker, cachedStageId, type DurableCompletedStageCheckpoint } from "../../packages/workflows/src/durable/stage-primitive.js";
@@ -159,7 +159,6 @@ describe("replayed durable stage graph lineage (issue #1498)", () => {
     assert.equal(reviewers.length, 2);
     for (const reviewer of reviewers) assert.deepEqual([...reviewer.parentIds], [setupId]);
   });
-
 
   function cpStageId(name: string): string { return `checkpoint-only:${name}`; }
   test("cached replay hydrates persisted stage timing, result, session, and model metadata", () => {

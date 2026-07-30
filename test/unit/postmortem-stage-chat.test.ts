@@ -11,7 +11,7 @@
  *
  * cross-ref: src/runs/foreground/postmortem-stage-chat.ts
  */
-import { afterEach, beforeEach, describe, test } from "bun:test";
+import { afterEach, beforeEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

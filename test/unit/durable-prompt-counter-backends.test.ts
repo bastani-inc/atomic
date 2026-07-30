@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { DbosDurableBackend, type DbosSdkHandle, type DbosStepRecord, type DbosWorkflowInfo } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { createCheckpointIdGenerator } from "../../packages/workflows/src/durable/tool-primitive.js";
@@ -47,9 +47,7 @@ function pendingInputUi(answer: Promise<string>): WorkflowUIContext {
   };
 }
 
-
 describe("durable pending-prompt counter backends", () => {
-
 
   test("DBOS separately hydrated instances preserve both prompt reservations", async () => {
     const sdk = mockDbos();
@@ -86,9 +84,6 @@ describe("durable pending-prompt counter backends", () => {
     assert.equal(settled.getWorkflow(workflowId)?.pendingPrompts, 0);
   });
 
-
-
-
   test("two stale DBOS decrements cannot hide a negative balance from a later increment", async () => {
     const sdk = mockDbos();
     const workflowId = "dbos-concurrent-underflow";
@@ -112,7 +107,6 @@ describe("durable pending-prompt counter backends", () => {
     await afterIncrement.hydrateWorkflow(workflowId);
     assert.equal(afterIncrement.getWorkflow(workflowId)?.pendingPrompts, 1);
   });
-
 
   test("DBOS updates persist for fresh hydration and never underflow", async () => {
     const sdk = mockDbos();

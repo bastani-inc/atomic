@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { afterEach, beforeAll, test } from "bun:test";
+import { afterEach, beforeAll, test } from "vitest";
 import assert from "node:assert/strict";
 import { ChatSessionHost } from "../../packages/coding-agent/src/index.ts";
 import {
@@ -46,7 +46,6 @@ afterEach(() => {
   if (originalReducedMotion === undefined) delete process.env.ATOMIC_REDUCED_MOTION;
   else process.env.ATOMIC_REDUCED_MOTION = originalReducedMotion;
 });
-
 
 test("ChatSessionHost advances the exact luminous ramp every lifecycle-relative 88ms", () => {
   delete process.env.ATOMIC_REDUCED_MOTION;
@@ -115,7 +114,6 @@ test("ChatSessionHost preserves caller-owned accent styling without a palette", 
   }
 });
 
-
 test("ChatSessionHost resets luminous phase and cadence on every turn start", () => {
   delete process.env.ATOMIC_REDUCED_MOTION;
   const previousRandom = Math.random;
@@ -159,7 +157,6 @@ test("ChatSessionHost resets luminous phase and cadence on every turn start", ()
     Math.random = previousRandom;
   }
 });
-
 
 test("ChatSessionHost ignores callbacks from replaced timers and after disposal", () => {
   delete process.env.ATOMIC_REDUCED_MOTION;
@@ -208,7 +205,6 @@ test("ChatSessionHost ignores callbacks from replaced timers and after disposal"
     timers.restore();
   }
 });
-
 
 test("ChatSessionHost terminal cleanup stops ordinary and compaction animation while preserving factual copy", () => {
   delete process.env.ATOMIC_REDUCED_MOTION;

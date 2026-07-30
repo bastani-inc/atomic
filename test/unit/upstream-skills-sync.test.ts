@@ -1,6 +1,6 @@
 /// <reference path="../../packages/coding-agent/src/utils/highlight-js-lib-index.d.ts" />
 
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -295,7 +295,6 @@ describe("synced upstream skill trees", () => {
       }
     }
   });
-
 
   test("keeps synced live-preview selector and CSS-property hardening", () => {
     const browser = readFileSync(join(workflowSkills, "impeccable/scripts/live-browser.js"), "utf8");

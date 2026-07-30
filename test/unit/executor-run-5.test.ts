@@ -1,4 +1,4 @@
-import { describe } from "bun:test";
+import { describe } from "vitest";
 import {
     assert, createRegistry, createStore, workflow, run, test, Type,
     WORKFLOW_AUTH_FAILURE_MESSAGE, WORKFLOW_INVALID_PROVIDER_CREDENTIALS_MESSAGE,

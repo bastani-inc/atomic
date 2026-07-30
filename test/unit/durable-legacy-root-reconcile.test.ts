@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { reconcileCachedDirectChildParentStage } from "../../packages/workflows/src/engine/run-durable-topology.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";

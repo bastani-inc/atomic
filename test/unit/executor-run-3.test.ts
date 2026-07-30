@@ -1,4 +1,4 @@
-import { describe } from "bun:test";
+import { describe } from "vitest";
 import {
     assert, createRegistry, createStore, workflow, join, mkdtempSync, mockSession,
     readFileSync, run, structuredOutputMockSession, test, tmpdir, Type,

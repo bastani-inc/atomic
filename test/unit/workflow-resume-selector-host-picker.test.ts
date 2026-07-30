@@ -10,7 +10,7 @@
  * actionable error. Row building/sorting is covered by
  * workflow-resume-selector.test.ts.
  */
-import { afterAll, beforeAll, describe, test } from "bun:test";
+import { afterAll, beforeAll, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { getKeybindings, setKeybindings } from "@earendil-works/pi-tui";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";

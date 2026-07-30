@@ -4,7 +4,7 @@
  * is `SuccessDiagnostic` written to `<session>-compaction-success-<ts>.json`.
  */
 
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";

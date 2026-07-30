@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { buildModelCandidates, resolveModelCandidate } from "../../packages/subagents/src/runs/shared/model-fallback.js";
 import { applyThinkingSuffix, buildPiArgs } from "../../packages/subagents/src/runs/shared/pi-args.js";
@@ -59,7 +59,6 @@ describe("subagent suffix-first reasoning helpers", () => {
     assert.notEqual(modelIndex, -1);
     assert.equal(result.args[modelIndex + 1], `${model}:max`);
   });
-
 
   test("offers max only when a model explicitly maps the new extended level", () => {
     assert.equal(getSupportedThinkingLevels({
@@ -148,7 +147,6 @@ describe("subagent suffix-first reasoning helpers", () => {
     );
   });
 });
-
 
 describe("subagent retry metadata reasoning seams", () => {
   test("foreground retry candidates resolve per-attempt model and reasoning with suffix precedence", () => {

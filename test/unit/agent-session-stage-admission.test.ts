@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { closeWorkflowStageGeneration, sendCustomMessage, transferWorkflowStageDeliveriesTo } from "../../packages/coding-agent/src/core/agent-session-message-queue.js";
 import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
@@ -116,7 +116,6 @@ describe("AgentSession workflow-stage admission", () => {
 		turn.reject(new Error("later model turn failure"));
 		await Promise.resolve();
 	});
-
 
 	test("fallback replacement transfers already-admitted native queue entries", () => {
 		const notification = { role: "custom", customType: "async-job-result", content: "done", display: true, timestamp: 1 };

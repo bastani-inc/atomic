@@ -2,7 +2,7 @@
  * RFC §8 — Integration: the rung ladder end to end through a real AgentSession.
  */
 
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import type { CompactionEntry } from "../../packages/coding-agent/src/core/session-manager.js";
 import type { VerbatimCompactionDetails } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";

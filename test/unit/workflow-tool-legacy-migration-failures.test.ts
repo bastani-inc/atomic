@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
@@ -123,7 +123,6 @@ describe("best-effort legacy child topology migration", () => {
     assert.equal(backend.getToolCheckpoint("dbos-best-effort", "legacy-hash")?.output, "cached");
     await backend.flush();
   });
-
 
   test("cancellation during additive migration is not swallowed as a cache hit", async () => {
     class GatedMigrationBackend extends InMemoryDurableBackend {

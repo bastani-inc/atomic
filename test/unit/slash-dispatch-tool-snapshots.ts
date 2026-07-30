@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import {
     installSlashDispatchTestHooks,
     assert,
@@ -122,7 +122,7 @@ describe("tool run-control actions", () => {
             /workflows cannot invoke workflows/,
         );
     }
-    test.serial("makeExecuteWorkflowTool returns no truncation marker for tail zero", async () => {
+    test.sequential("makeExecuteWorkflowTool returns no truncation marker for tail zero", async () => {
         const runId = `stage-tool-transcript-tail-zero-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {
@@ -163,7 +163,7 @@ describe("tool run-control actions", () => {
         assert.deepEqual(transcript.entries, []);
     });
 
-    test.serial("makeExecuteWorkflowTool returns final snapshot error after timestamped tools", async () => {
+    test.sequential("makeExecuteWorkflowTool returns final snapshot error after timestamped tools", async () => {
         const runId = `stage-tool-transcript-error-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {
@@ -202,7 +202,7 @@ describe("tool run-control actions", () => {
         ]);
     });
 
-    test.serial("makeExecuteWorkflowTool keeps terminal snapshot entries after tools for tied timestamps", async () => {
+    test.sequential("makeExecuteWorkflowTool keeps terminal snapshot entries after tools for tied timestamps", async () => {
         const runId = `stage-tool-transcript-tie-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {
@@ -246,7 +246,7 @@ describe("tool run-control actions", () => {
         ]);
     });
 
-    test.serial("makeExecuteWorkflowTool preserves empty final snapshot result after tools", async () => {
+    test.sequential("makeExecuteWorkflowTool preserves empty final snapshot result after tools", async () => {
         const runId = `stage-tool-transcript-empty-result-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {
@@ -287,7 +287,7 @@ describe("tool run-control actions", () => {
         assert.deepEqual(transcript.entries, [{ role: "assistant", text: "" }]);
     });
 
-    test.serial("makeExecuteWorkflowTool preserves empty final snapshot error after tools", async () => {
+    test.sequential("makeExecuteWorkflowTool preserves empty final snapshot error after tools", async () => {
         const runId = `stage-tool-transcript-empty-error-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {

@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import {
     installSlashDispatchTestHooks,
     assert,
@@ -68,7 +68,7 @@ import type {
 installSlashDispatchTestHooks();
 
 describe("/workflow run-control chat commands", () => {
-    test.serial.each([["completed"], ["failed"], ["killed"]] as const)(
+    test.sequential.each([["completed"], ["failed"], ["killed"]] as const)(
         "top-level /workflow quit <id> leaves %s terminal runs unchanged",
         async (status) => {
             const runId = `slash-quit-${status}-${Date.now()}`;
@@ -93,8 +93,7 @@ describe("/workflow run-control chat commands", () => {
         },
     );
 
-
-    test.serial("/workflow connect no-custom-UI fallback includes older retained terminal runs", async () => {
+    test.sequential("/workflow connect no-custom-UI fallback includes older retained terminal runs", async () => {
         const oldEndedAt = Date.now() - 2 * 60 * 60 * 1000;
         recordTerminalRun("old-connect-terminal-run", "completed", {
             name: "old-connect-terminal",
@@ -112,7 +111,7 @@ describe("/workflow run-control chat commands", () => {
         assert.match(joined, /Picker requires an interactive UI surface/);
     });
 
-    test.serial("/workflow attach no-custom-UI fallback includes older retained terminal runs", async () => {
+    test.sequential("/workflow attach no-custom-UI fallback includes older retained terminal runs", async () => {
         const oldEndedAt = Date.now() - 2 * 60 * 60 * 1000;
         recordTerminalRun("old-attach-terminal-run", "failed", {
             name: "old-attach-terminal",
@@ -130,7 +129,7 @@ describe("/workflow run-control chat commands", () => {
         assert.match(joined, /Picker requires an interactive UI surface/);
     });
 
-    test.serial("top-level /workflow quit <id> pauses and preserves resumability without confirmation", async () => {
+    test.sequential("top-level /workflow quit <id> pauses and preserves resumability without confirmation", async () => {
         const runId = `quit-chat-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         registerTestStageHandle(runId, "quit-stage");
@@ -177,7 +176,7 @@ describe("/workflow run-control chat commands", () => {
         );
     });
 
-    test.serial("top-level /workflow quit without a controllable stage reports that the run remains active", async () => {
+    test.sequential("top-level /workflow quit without a controllable stage reports that the run remains active", async () => {
         const runId = `quit-no-control-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         const { workflowCmd } = await registerWorkflowCommand();
@@ -190,7 +189,7 @@ describe("/workflow run-control chat commands", () => {
         assert.doesNotMatch(messages.join("\n"), /Run not found/i);
     });
 
-    test.serial("top-level /workflow quit --all reports mixed no-controller failures", async () => {
+    test.sequential("top-level /workflow quit --all reports mixed no-controller failures", async () => {
         const controllable = `quit-slash-mixed-ok-${Date.now()}`;
         const noController = `quit-slash-mixed-no-controller-${Date.now()}`;
         store.recordRunStart(makeInflightRun(controllable));
@@ -213,7 +212,7 @@ describe("/workflow run-control chat commands", () => {
         assert.equal(store.runs().find((run) => run.id === noController)?.status, "running");
     });
 
-    test.serial.each([
+    test.sequential.each([
         ["-y <id>", "-y"],
         ["--yes <id>", "--yes"],
         ["<id> -y", "-y"],
@@ -237,7 +236,7 @@ describe("/workflow run-control chat commands", () => {
         assert.match(messages.join("\n"), new RegExp(`Run not found: ${unsupportedToken}`));
     });
 
-    test.serial("top-level /workflow quit without an id defaults to the active run", async () => {
+    test.sequential("top-level /workflow quit without an id defaults to the active run", async () => {
         const runId = `quit-active-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         registerTestStageHandle(runId, "quit-stage");
@@ -253,7 +252,7 @@ describe("/workflow run-control chat commands", () => {
         assert.equal(messages.some((message) => /resume/i.test(message)), true);
     });
 
-    test.serial("removed /workflow kill is not a compatibility alias for quit", async () => {
+    test.sequential("removed /workflow kill is not a compatibility alias for quit", async () => {
         const runId = `removed-kill-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         const { workflowCmd } = await registerWorkflowCommand();
@@ -268,7 +267,7 @@ describe("/workflow run-control chat commands", () => {
         assert.equal(messages.some((message) => /killed and retained/i.test(message)), false);
     });
 
-    test.serial("top-level /workflow interrupt defaults to the active run", async () => {
+    test.sequential("top-level /workflow interrupt defaults to the active run", async () => {
         const runId = `interrupt-active-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
 
@@ -300,7 +299,7 @@ describe("/workflow run-control chat commands", () => {
         );
     });
 
-    test.serial("top-level /workflow interrupt <id> reports no active stages without confirmation", async () => {
+    test.sequential("top-level /workflow interrupt <id> reports no active stages without confirmation", async () => {
         const runId = `interrupt-chat-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
 
@@ -337,7 +336,7 @@ describe("/workflow run-control chat commands", () => {
         );
     });
 
-    test.serial("top-level /workflow reload stays available while workflows are in flight", async () => {
+    test.sequential("top-level /workflow reload stays available while workflows are in flight", async () => {
         const runId = `reload-slash-inflight-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
 
@@ -362,7 +361,7 @@ describe("/workflow run-control chat commands", () => {
         assert.equal(store.runs().find((run) => run.id === runId)?.endedAt, undefined);
     });
 
-    test.serial("top-level /workflow reload reports reload failures", async () => {
+    test.sequential("top-level /workflow reload reports reload failures", async () => {
         const { pi, commands } = buildMockPi();
         addFactoryStubs(pi);
         pi.getWorkflowResources = () => {
@@ -386,7 +385,7 @@ describe("/workflow run-control chat commands", () => {
         );
     });
 
-    test.serial("top-level /workflow reload refreshes package workflow resources before discovery", async () => {
+    test.sequential("top-level /workflow reload refreshes package workflow resources before discovery", async () => {
         const dir = await mkdtemp(join(tmpdir(), "atomic-workflow-refresh-"));
         try {
             const existingWorkflow = join(dir, "existing.ts");
@@ -439,7 +438,7 @@ describe("/workflow run-control chat commands", () => {
         }
     });
 
-    test.serial("top-level /workflow reload falls back to getWorkflowResources when refresh is unavailable", async () => {
+    test.sequential("top-level /workflow reload falls back to getWorkflowResources when refresh is unavailable", async () => {
         const dir = await mkdtemp(
             join(tmpdir(), "atomic-workflow-refresh-fallback-"),
         );

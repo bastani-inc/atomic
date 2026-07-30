@@ -10,7 +10,7 @@
  * (ask_user_question / readiness gate); regressions break headless answering.
  */
 
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { StageInputRequest } from "../../packages/workflows/src/shared/store-types.js";

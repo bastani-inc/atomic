@@ -4,7 +4,7 @@
  *   WorkflowOverlayAdapter (store-types), and RunOpts port fields.
  */
 
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import type {
   StageOptions,

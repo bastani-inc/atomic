@@ -5,7 +5,7 @@
  * cross-ref: src/tui/chat-surface.ts · ui/mockups.html
  */
 
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import {
   renderFlatBand,

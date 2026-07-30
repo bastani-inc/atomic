@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageNotice, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";

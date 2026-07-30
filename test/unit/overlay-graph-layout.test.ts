@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { describe, it, mock } from "bun:test";
+import { describe, it, vi } from "vitest";
 import assert from "node:assert/strict";
 import * as h from "./overlay-graph-helpers.js";
 import { computeLayout, NODE_W } from "../../packages/workflows/src/tui/layout.js";

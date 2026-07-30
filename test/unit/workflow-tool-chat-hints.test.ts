@@ -1,5 +1,5 @@
 // @ts-nocheck -- focused GraphView rendering/input contract coverage
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { StageSnapshot, ToolNodeSnapshot } from "../../packages/workflows/src/shared/store-types.js";

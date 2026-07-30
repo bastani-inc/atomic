@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { GraphFrontierTracker } from "../../packages/workflows/src/runs/shared/graph-inference.js";
 

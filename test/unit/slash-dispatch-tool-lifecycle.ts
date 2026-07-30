@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import {
     installSlashDispatchTestHooks,
     assert,
@@ -122,7 +122,7 @@ describe("tool run-control actions", () => {
             /workflows cannot invoke workflows/,
         );
     }
-    test.serial("workflow tool answers ctx.ui.input prompts on running workflows", async () => {
+    test.sequential("workflow tool answers ctx.ui.input prompts on running workflows", async () => {
         const def = workflow({
           name: "tool-answers-ctx-ui-input",
           description: "",
@@ -197,7 +197,7 @@ describe("tool run-control actions", () => {
         assert.deepEqual(completed?.result, { answer: "from workflow tool" });
     });
 
-    test.serial("registered workflow tool content defaults to path-only transcripts and supports explicit previews", async () => {
+    test.sequential("registered workflow tool content defaults to path-only transcripts and supports explicit previews", async () => {
         const runId = `tool-content-transcript-${Date.now()}`;
         const longText = `start-${"x".repeat(180)}-sentinel-end`;
         const toolOutput = `tool-output-${"y".repeat(120)}-sentinel-end`;

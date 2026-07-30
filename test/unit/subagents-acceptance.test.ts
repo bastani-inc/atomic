@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js";
 import { SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
 import { serializeAgent } from "../../packages/subagents/src/agents/agent-serializer.js";

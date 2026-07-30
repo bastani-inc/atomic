@@ -12,7 +12,7 @@
  * cross-ref: src/tui/workflow-attach-pane.ts
  */
 
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import {
     Key,
@@ -266,7 +266,6 @@ describe("WorkflowAttachPane", () => {
         assert.deepEqual(store.runs(), before);
         pane.dispose();
     });
-
 
     test("initialAttachStageId opens directly on stage-chat", () => {
         const store = createStore();

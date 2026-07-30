@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import {
     installSlashDispatchTestHooks,
     assert,
@@ -121,7 +121,7 @@ describe("tool run-control actions", () => {
             /workflows cannot invoke workflows/,
         );
     }
-    test.serial("makeExecuteWorkflowTool reloads directly without sending a literal slash command", async () => {
+    test.sequential("makeExecuteWorkflowTool reloads directly without sending a literal slash command", async () => {
         const registry = createRegistry([]);
         const runtime = createExtensionRuntime({ registry });
         let reloads = 0;
@@ -152,7 +152,7 @@ describe("tool run-control actions", () => {
         assert.deepEqual(sent, []);
     });
 
-    test.serial("registered workflow tool reload refreshes package workflow resources before discovery", async () => {
+    test.sequential("registered workflow tool reload refreshes package workflow resources before discovery", async () => {
         const dir = await mkdtemp(
             join(tmpdir(), "atomic-workflow-tool-refresh-"),
         );
@@ -218,7 +218,7 @@ describe("tool run-control actions", () => {
         }
     });
 
-    test.serial("makeExecuteWorkflowTool treats explicit empty reload reason as omitted", async () => {
+    test.sequential("makeExecuteWorkflowTool treats explicit empty reload reason as omitted", async () => {
         const registry = createRegistry([]);
         const runtime = createExtensionRuntime({ registry });
         const handler = makeExecuteWorkflowTool(
@@ -241,7 +241,7 @@ describe("tool run-control actions", () => {
         assert.equal(reload.message, "Reloaded workflow resources.");
     });
 
-    test.serial("makeExecuteWorkflowTool reload stays available while workflows are in flight", async () => {
+    test.sequential("makeExecuteWorkflowTool reload stays available while workflows are in flight", async () => {
         const registry = createRegistry([]);
         const runtime = createExtensionRuntime({ registry });
         let reloads = 0;
@@ -271,7 +271,7 @@ describe("tool run-control actions", () => {
         assert.equal(store.runs().find((run) => run.id === runId)?.endedAt, undefined);
     });
 
-    test.serial("makeExecuteWorkflowTool reload surfaces callback failures as noop", async () => {
+    test.sequential("makeExecuteWorkflowTool reload surfaces callback failures as noop", async () => {
         const registry = createRegistry([]);
         const runtime = createExtensionRuntime({ registry });
         const handler = makeExecuteWorkflowTool(
@@ -296,7 +296,7 @@ describe("tool run-control actions", () => {
         assert.match(reload.message, /Reload failed: bad workflow config/);
     });
 
-    test.serial("makeExecuteWorkflowTool returns ambiguous run-prefix messages", async () => {
+    test.sequential("makeExecuteWorkflowTool returns ambiguous run-prefix messages", async () => {
         store.recordRunStart(makeInflightRun("ambiguous-run-a"));
         store.recordRunStart(makeInflightRun("ambiguous-run-b"));
         const handler = makeToolHandler();
@@ -320,7 +320,7 @@ describe("tool run-control actions", () => {
         );
     });
 
-    test.serial("makeExecuteWorkflowTool resume accepts run prefixes, stage names, and messages", async () => {
+    test.sequential("makeExecuteWorkflowTool resume accepts run prefixes, stage names, and messages", async () => {
         const runId = `resume-tool-stage-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {
@@ -354,7 +354,7 @@ describe("tool run-control actions", () => {
         assert.match(r.message, /Snapshot available/);
     });
 
-    test.serial("makeExecuteWorkflowTool resume against in-flight run returns status:'ok'", async () => {
+    test.sequential("makeExecuteWorkflowTool resume against in-flight run returns status:'ok'", async () => {
         const runId = `resume-tool-ok-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
 
@@ -368,8 +368,7 @@ describe("tool run-control actions", () => {
         assert.equal(r.runId, runId);
     });
 
-
-    test.serial("makeExecuteWorkflowTool resume rejects ambiguous stage prefixes", async () => {
+    test.sequential("makeExecuteWorkflowTool resume rejects ambiguous stage prefixes", async () => {
         const runId = `resume-tool-ambiguous-stage-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         for (const stageId of ["ambiguous-stage-aaa", "ambiguous-stage-bbb"]) {

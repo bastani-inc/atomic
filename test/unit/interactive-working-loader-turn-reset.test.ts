@@ -1,4 +1,4 @@
-import { beforeAll, test } from "bun:test";
+import { beforeAll, test } from "vitest";
 import assert from "node:assert/strict";
 import { AtomicWorkingLoader } from "../../packages/coding-agent/src/modes/interactive/components/atomic-working-status.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-agent-events.ts";

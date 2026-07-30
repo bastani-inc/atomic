@@ -1,4 +1,4 @@
-import { beforeAll } from "bun:test";
+import { beforeAll } from "vitest";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 
 beforeAll(() => {

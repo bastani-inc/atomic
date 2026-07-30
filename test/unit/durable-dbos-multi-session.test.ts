@@ -3,7 +3,7 @@
  * database. Covers per-process executor identity, foreign-live visibility,
  * and the first-writer-wins resume claim.
  */
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import {
   DbosDurableBackend,
@@ -279,8 +279,6 @@ describe("cross-process resume claim", () => {
 
     assert.deepEqual([...outcomes].sort(), [false, true]);
   });
-
-
 
   test("the losing session reconciles to the authoritative running state", async () => {
     const state = await pausedWorkflowState();

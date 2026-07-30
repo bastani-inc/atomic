@@ -2,7 +2,7 @@
  * Local DBOS database resolution: explicit env URL, embedded Postgres from
  * npm binaries, Docker as the final fallback.
  */
-import { afterEach, describe, test } from "bun:test";
+import { afterEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { EMBEDDED_DBOS_SYSTEM_DATABASE_URL } from "../../packages/workflows/src/durable/dbos-embedded-postgres.js";
 import { effectiveSystemDatabaseUrl } from "../../packages/workflows/src/durable/dbos-backend.js";
@@ -22,7 +22,7 @@ afterEach(() => {
 });
 
 describe("resolveDbosSystemDatabaseUrl", () => {
-  test.serial("defers to an explicit DBOS_SYSTEM_DATABASE_URL without provisioning", async () => {
+  test.sequential("defers to an explicit DBOS_SYSTEM_DATABASE_URL without provisioning", async () => {
     process.env.DBOS_SYSTEM_DATABASE_URL = "postgresql://user:pw@db.example:5432/dbos";
     let provisioned = 0;
     resetLocalDbosProvisioningForTests(
@@ -34,7 +34,7 @@ describe("resolveDbosSystemDatabaseUrl", () => {
     assert.equal(provisioned, 0);
   });
 
-  test.serial("prefers the embedded instance and memoizes one resolution", async () => {
+  test.sequential("prefers the embedded instance and memoizes one resolution", async () => {
     delete process.env.DBOS_SYSTEM_DATABASE_URL;
     let embeddedCalls = 0;
     resetLocalDbosProvisioningForTests(
@@ -52,7 +52,7 @@ describe("resolveDbosSystemDatabaseUrl", () => {
     assert.equal(embeddedCalls, 1);
   });
 
-  test.serial("falls back to Docker only when embedded binaries are unavailable", async () => {
+  test.sequential("falls back to Docker only when embedded binaries are unavailable", async () => {
     delete process.env.DBOS_SYSTEM_DATABASE_URL;
     let dockerCalls = 0;
     resetLocalDbosProvisioningForTests(
@@ -64,7 +64,7 @@ describe("resolveDbosSystemDatabaseUrl", () => {
     assert.equal(dockerCalls, 1);
   });
 
-  test.serial("combines both failures into one actionable error and allows retry", async () => {
+  test.sequential("combines both failures into one actionable error and allows retry", async () => {
     delete process.env.DBOS_SYSTEM_DATABASE_URL;
     let attempts = 0;
     resetLocalDbosProvisioningForTests(
@@ -77,7 +77,7 @@ describe("resolveDbosSystemDatabaseUrl", () => {
     assert.equal(attempts, 2, "a failed resolution must not be memoized");
   });
 
-  test.serial("launch-retry reprovisions the provider that was actually resolved", async () => {
+  test.sequential("launch-retry reprovisions the provider that was actually resolved", async () => {
     delete process.env.DBOS_SYSTEM_DATABASE_URL;
     const calls: string[] = [];
     resetLocalDbosProvisioningForTests(
@@ -93,7 +93,7 @@ describe("resolveDbosSystemDatabaseUrl", () => {
 });
 
 describe("shouldProvisionLocalDbos", () => {
-  test.serial("matches connection-refused failures only without an explicit URL", () => {
+  test.sequential("matches connection-refused failures only without an explicit URL", () => {
     delete process.env.DBOS_SYSTEM_DATABASE_URL;
     assert.equal(shouldProvisionLocalDbos(new Error("connect ECONNREFUSED 127.0.0.1:5439")), true);
     assert.equal(shouldProvisionLocalDbos(new Error("Unable to connect to system database at postgresql://...")), true);

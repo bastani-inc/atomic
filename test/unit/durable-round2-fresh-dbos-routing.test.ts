@@ -1,4 +1,4 @@
-import { afterEach, test } from "bun:test";
+import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -140,7 +140,7 @@ async function persistRepeatedChildren(
   await backend.flush();
 }
 
-test.serial("fresh completed DBOS graphs keep exact attach routing while terminal sends fail at the root", async () => {
+test.sequential("fresh completed DBOS graphs keep exact attach routing while terminal sends fail at the root", async () => {
   const directory = mkdtempSync(join(tmpdir(), "atomic-round2-routing-"));
   const sessionFiles = [transcript(directory, "child-a"), transcript(directory, "child-b")] as const;
   try {

@@ -38,7 +38,7 @@ const skippedSuites = [
  *
  * `resolve.alias` is repeated per project deliberately: vitest builds each
  * project as its own vite config, so a root-level `resolve` would not reach
- * them. The base supplies the `bun:test`, `@bastani/atomic` and sibling
+ * them. The base supplies the `@bastani/atomic` and sibling
  * pi-source aliases.
  */
 const project = (name: string, include: string[], exclude: string[]) => ({

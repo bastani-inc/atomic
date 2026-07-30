@@ -1,5 +1,5 @@
 /** Unit tests for src/tui/session-list.ts. */
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { renderSessionList } from "../../packages/workflows/src/tui/session-list.ts";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.ts";

@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import type { PiCustomComponent, PiCustomOverlayFunction, PiCustomOverlayFactoryTui, PiOverlayHandle } from "./overlay-entrypoints-helpers.js";
 import {
@@ -28,7 +28,6 @@ import {
   waitForStagePendingPrompt,
 } from "./overlay-entrypoints-helpers.js";
 void [buildGraphOverlayAdapter, buildInteractiveHostCustomUi, buildMockPi, buildMockUi, buildOverlayHandle, buildPrintCtx, buildPrintCtxWithRealCustom, attachHostCustomUiState, createCancellationRegistry, createJobTracker, createStore, workflow, delay, factory, runDetached, setupBranchingRun, setupSequentialRun, setupWideFanoutRun, singletonStore, Type, visibleText, waitForRenderCount, waitForRunEnded, waitForStagePendingPrompt];
-
 
 describe("buildGraphOverlayAdapter — animation tick visibility gating", () => {
   test("requestRender from the view fires tui.requestRender while visible", async () => {

@@ -13,7 +13,7 @@
  * cross-ref: pi-workflows RFC §5.2, §5.3, §5.7, §5.13
  */
 
-import { afterAll, beforeAll, describe, test } from "bun:test";
+import { afterAll, beforeAll, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";

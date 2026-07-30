@@ -1,4 +1,4 @@
-import { beforeEach, describe, test } from "bun:test";
+import { beforeEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -122,7 +122,6 @@ describe("MockExtensionAPI — tool registration", () => {
     const result = await runTool(execute, { workflow: "my-workflow", inputs: {} });
     assert.equal(result.action, "run");
   });
-
 
   test("tool execute returns list stub for action='list'", async () => {
     const execute = mock.tools[0]!.opts.execute;

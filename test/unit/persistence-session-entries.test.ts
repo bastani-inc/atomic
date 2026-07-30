@@ -2,7 +2,7 @@
  * Unit tests for shared/persistence-session-entries.ts
  * cross-ref: spec §5.6
  */
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import {
   appendRunStart,

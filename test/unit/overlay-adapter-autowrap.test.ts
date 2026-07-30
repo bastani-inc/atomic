@@ -1,4 +1,4 @@
-import { describe, mock, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -15,6 +15,9 @@ import { bunExecutable } from "../helpers/runtime.js";
 const ISOLATED_PROCESS_ENV = "ATOMIC_OVERLAY_AUTOWRAP_ISOLATED";
 
 async function registerIsolatedTests(): Promise<void> {
+  // Only ever reached inside the `bun test` child spawned below, where
+  // `bun:test`'s module registry is the real one. vitest has no equivalent.
+  const { mock } = await import("bun:test");
   class TestComponent {
     constructor(..._args: never[]) {}
   }

@@ -4,7 +4,7 @@
  * Tests the buildIntercomCallbacks factory in isolation.
  * No full pi surface needed — only mock store + emit + confirm deps.
  */
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { buildIntercomCallbacks } from "../../packages/workflows/src/intercom/intercom-routing.js";

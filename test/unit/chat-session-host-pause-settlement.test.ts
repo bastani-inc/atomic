@@ -1,4 +1,4 @@
-import { beforeAll, test } from "bun:test";
+import { beforeAll, test } from "vitest";
 import assert from "node:assert/strict";
 import { fauxAssistantMessage, type FauxResponseFactory } from "@earendil-works/pi-ai/compat";
 import type { EditorTheme } from "@earendil-works/pi-tui";

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, test } from "bun:test";
+import { afterEach, beforeEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { WORKFLOW_STAGE_SUBAGENT_GUARD_ENV, type AgentSession } from "@bastani/atomic";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
@@ -76,7 +76,7 @@ afterEach(() => {
 });
 
 describe("partial resume command surfaces", () => {
-  test.serial("workflow tool preserves result identity and reports partial failure", async () => {
+  test.sequential("workflow tool preserves result identity and reports partial failure", async () => {
     const runId = "tool-partial-resume";
     const backend = seedPartialRun(runId);
     const runtime = createExtensionRuntime({ definitions: [], store });
@@ -94,7 +94,7 @@ describe("partial resume command surfaces", () => {
     assert.equal(backend.getWorkflow(runId)?.status, "running");
   });
 
-  test.serial("workflow tool reports durable resume failure as partial when a stage is running", async () => {
+  test.sequential("workflow tool reports durable resume failure as partial when a stage is running", async () => {
     class ThrowRunningBackend extends InMemoryDurableBackend {
       override setWorkflowStatus(
         workflowId: string,
@@ -135,7 +135,7 @@ describe("partial resume command surfaces", () => {
     assert.equal(store.runs().find((run) => run.id === runId)?.stages[0]?.status, "running");
   });
 
-  test.serial("workflow tool retries transient durable reconciliation on a later resume request", async () => {
+  test.sequential("workflow tool retries transient durable reconciliation on a later resume request", async () => {
     class TransientRunningBackend extends InMemoryDurableBackend {
       runningAttempts = 0;
       override setWorkflowStatus(
@@ -183,7 +183,7 @@ describe("partial resume command surfaces", () => {
     assert.equal(backend.getWorkflow(runId)?.status, "running");
   });
 
-  test.serial("no-target slash selector reports resume rejection through the reporter", async () => {
+  test.sequential("no-target slash selector reports resume rejection through the reporter", async () => {
     const runId = "slash-picker-resume-failure";
     const backend = new InMemoryDurableBackend();
     setDurableBackend(backend);
@@ -228,7 +228,7 @@ describe("partial resume command surfaces", () => {
     assert.match(errors.join("\n"), /Failed to resume run.*picker resume rejected/);
   });
 
-  test.serial("slash resume reports the same partial failure instead of success or noop", async () => {
+  test.sequential("slash resume reports the same partial failure instead of success or noop", async () => {
     const runId = "slash-partial-resume";
     const backend = seedPartialRun(runId);
     const runtime = createExtensionRuntime({ definitions: [], store });

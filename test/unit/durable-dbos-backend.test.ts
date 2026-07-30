@@ -6,14 +6,13 @@
  *
  * cross-ref: issue #1498 — DBOS read-side hydration.
  */
-import { describe, test, beforeEach } from "bun:test";
+import { beforeEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { DbosDurableBackend, type DbosSdkHandle } from "../../packages/workflows/src/durable/dbos-backend.js";
 import { durableHash } from "../../packages/workflows/src/durable/backend.js";
 import { encodeCheckpoint, decodeToCheckpoint, isCheckpointEnvelope, type DbosCheckpointEnvelope } from "../../packages/workflows/src/durable/dbos-envelope.js";
 import type { DurableToolCheckpoint, DurableUiCheckpoint, DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { createMockSdk } from "./durable-dbos-backend-helpers.js";
-
 
 // ---------------------------------------------------------------------------
 // DBOS adapter delegation tests (existing behavior)
@@ -203,7 +202,6 @@ describe("DbosDurableBackend (mock SDK)", () => {
   });
 });
 
-
 // ---------------------------------------------------------------------------
 // Envelope encode/decode tests
 // ---------------------------------------------------------------------------
@@ -244,7 +242,6 @@ describe("DBOS checkpoint envelope", () => {
     assert.equal(s.output, "ok");
     assert.equal(s.checkpointId, "cp3");
   });
-
 
   test("rejects marked return-mode tool checkpoints with a malformed outcome", () => {
     const cp: DurableToolCheckpoint = {

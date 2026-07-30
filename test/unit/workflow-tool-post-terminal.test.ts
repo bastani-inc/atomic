@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -112,7 +112,6 @@ describe("ctx.tool terminal admission", () => {
     await assertClosedBeforeEffects(retainedTool, store, backend, result.runId);
   });
 
-
   test("parent cancellation closes a retained child tool admission", async () => {
     const store = createStore();
     const backend = new InMemoryDurableBackend();
@@ -194,7 +193,6 @@ describe("ctx.tool terminal admission", () => {
     assert.match(result.error ?? "", /without creating any workflow stages or durable tool nodes/i);
     await assertClosedBeforeEffects(retainedTool, store, backend, result.runId);
   });
-
 
   test("authoritative durable failure closes admission", async () => {
     class RejectToolCheckpointBackend extends InMemoryDurableBackend {

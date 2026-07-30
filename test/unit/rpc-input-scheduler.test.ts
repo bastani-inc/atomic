@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { createRpcInputLineHandler } from "../../packages/coding-agent/src/modes/rpc/rpc-input.ts";
 import { createRpcInputScheduler, isConcurrentRpcControlLine } from "../../packages/coding-agent/src/modes/rpc/rpc-input-scheduler.ts";

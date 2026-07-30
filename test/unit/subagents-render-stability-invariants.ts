@@ -1,4 +1,4 @@
-import { afterEach, describe, test } from "bun:test";
+import { afterEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { clearLegacyResultAnimationTimer, stopResultAnimations, widgetRenderKey } from "../../packages/subagents/src/tui/render.js";
 import { type AsyncJobState, withMockedNow } from "./subagents-render-stability-helpers.js";

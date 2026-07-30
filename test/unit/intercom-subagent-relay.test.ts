@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import type { ExtensionContext } from "@bastani/atomic";
 import {
@@ -152,7 +152,6 @@ describe("subagent result relay lifecycle acknowledgements", () => {
 			{ requestId: "request-1", delivered: true },
 		]);
 	});
-
 
 	test("rejects conflicting local request-id reuse without forwarding the new payload", async () => {
 		const harness = createRelayHarness({ liveChecks: [true, true], local: true });

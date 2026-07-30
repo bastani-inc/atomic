@@ -18,7 +18,7 @@
  *            src/runs/foreground/stage-runner.ts, RFC runtime-wiring task
  */
 
-import { beforeEach, describe, test } from "bun:test";
+import { beforeEach, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import factory, {
   type ExtensionAPI,

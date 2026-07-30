@@ -1,10 +1,9 @@
-import { afterAll, describe, test } from "bun:test";
+import { afterAll, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { discoverWorkflows } from "../../packages/workflows/src/extension/discovery.js";
 import { cleanupDiscoveryTempDirs, existsSync, join, makeTempDir, mkdirSync, writeFileSync, writeInvalidWorkflowJs, writeMissingSentinelWorkflowJs, writeNoStageWorkflowJs, writeWorkflowJs } from "./discovery-helpers.js";
 
 afterAll(cleanupDiscoveryTempDirs);
-
 
 // ---------------------------------------------------------------------------
 // Invalid exports → diagnostics

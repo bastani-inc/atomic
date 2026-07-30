@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import type { Message } from "@earendil-works/pi-ai/compat";
 import { getFinalOutput } from "../../packages/subagents/src/shared/utils.js";

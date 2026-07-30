@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import type { WorkflowDefinition } from "../../packages/workflows/src/types.js";

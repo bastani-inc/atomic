@@ -1,4 +1,4 @@
-import { beforeEach, test } from "bun:test";
+import { beforeEach, test } from "vitest";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";

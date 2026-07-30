@@ -5,7 +5,7 @@
  * (status, timing, active stages, awaiting-input prompts), statusFilter
  * support for the run listing, and the agent-visible text/json output.
  */
-import { beforeEach, describe, test } from "bun:test";
+import { beforeEach, describe, test } from "vitest";
 import {
     installSlashDispatchTestHooks,
     assert,
@@ -71,7 +71,7 @@ function recordRunningRunWithStages(runId: string): void {
 }
 
 describe("workflow tool status run listing", () => {
-    test.serial("status without runId lists session runs with concise summaries, in-flight first", async () => {
+    test.sequential("status without runId lists session runs with concise summaries, in-flight first", async () => {
         const activeId = `status-listing-active-${Date.now()}`;
         recordRunningRunWithStages(activeId);
         recordTerminalRun(`status-listing-done-${Date.now()}`, "completed", {
@@ -117,7 +117,7 @@ describe("workflow tool status run listing", () => {
         );
     });
 
-    test.serial("statusFilter filters the run listing by run status", async () => {
+    test.sequential("statusFilter filters the run listing by run status", async () => {
         const activeId = `status-filter-active-${Date.now()}`;
         const doneId = `status-filter-done-${Date.now()}`;
         recordRunningRunWithStages(activeId);
@@ -147,7 +147,7 @@ describe("workflow tool status run listing", () => {
         assert.deepEqual(failed.snapshots, []);
     });
 
-    test.serial("statusFilter awaiting_input selects runs with a pending stage prompt", async () => {
+    test.sequential("statusFilter awaiting_input selects runs with a pending stage prompt", async () => {
         const awaitingId = `status-filter-awaiting-${Date.now()}`;
         const plainId = `status-filter-plain-${Date.now()}`;
         recordRunningRunWithStages(awaitingId);
@@ -164,7 +164,7 @@ describe("workflow tool status run listing", () => {
         assert.equal(result.runs[0]!.awaitingInputCount, 1);
     });
 
-    test.serial("status text output is a concise per-run listing; json format returns structured data", async () => {
+    test.sequential("status text output is a concise per-run listing; json format returns structured data", async () => {
         const activeId = `status-content-active-${Date.now()}`;
         recordRunningRunWithStages(activeId);
         const handler = makeToolHandler();
@@ -201,7 +201,7 @@ describe("workflow tool status run listing", () => {
         assert.equal(parsed.snapshots.length, 1);
     });
 
-    test.serial("status text output reports an empty filtered listing", async () => {
+    test.sequential("status text output reports an empty filtered listing", async () => {
         const handler = makeToolHandler();
         const result = await handler(
             { action: "status", statusFilter: "paused" },
