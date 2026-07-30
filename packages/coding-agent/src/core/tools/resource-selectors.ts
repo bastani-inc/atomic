@@ -133,32 +133,59 @@ const MAX_TAR_ARCHIVE_BYTES = 256 * 1024 * 1024;
 const MAX_ARCHIVE_MEMBER_BYTES = 64 * 1024 * 1024;
 const MAX_ARCHIVE_DIRECTORY_ENTRIES = 500;
 
+const ARCHIVE_EXTENSIONS = ["zip", "jar", "tar", "tgz", "tar.gz", "gz"] as const;
+const SQLITE_EXTENSIONS = ["sqlite", "sqlite3", "db", "db3"] as const;
+
+/** Whether `value[0..end)` ends with `.<extension>` preceded by at least one character. */
+function endsWithExtension(lower: string, end: number, extensions: readonly string[]): boolean {
+	return extensions.some((extension) => end > extension.length + 1 && lower.endsWith(`.${extension}`, end));
+}
+
 export function parseArchiveSelector(value: string): ArchiveSelector | undefined {
-	const match = value.match(/^(.+\.(?:zip|jar|tar|tgz|tar\.gz|gz)):(.*)$/i);
-	return match ? { archivePath: match[1] ?? "", memberPath: match[2] ?? "" } : undefined;
+	// Scan colons right to left so the longest archive path wins, exactly as the
+	// previous greedy `(.+\.ext):(.*)` regex did. That regex's ambiguous `.+`
+	// prefix was flagged as polynomial ReDoS (js/polynomial-redos); this scan is
+	// linear in the input.
+	const lower = value.toLowerCase();
+	for (let index = value.lastIndexOf(":"); index > 0; index = value.lastIndexOf(":", index - 1)) {
+		if (endsWithExtension(lower, index, ARCHIVE_EXTENSIONS)) {
+			return { archivePath: value.slice(0, index), memberPath: value.slice(index + 1) };
+		}
+	}
+	return undefined;
 }
 export function resolveArchiveSelector(selector: ArchiveSelector, cwd: string): ArchiveSelector {
 	return { ...selector, archivePath: resolveContainedLocalPath(cwd, selector.archivePath, "Archive selector") };
 }
+const SQLITE_SELECTOR_SUFFIX = /^(?:\?q=(.+)|:([^:?]+)(?:\?(.+))?(?::([^:?]+))?)?$/i;
 export function parseSqliteSelector(value: string): SqliteSelector | undefined {
-	const match = value.match(/^(.+\.(?:sqlite3?|db3?))(?:\?q=(.+)|:([^:?]+)(?:\?(.+))?(?::([^:?]+))?)?$/i);
-	if (!match) return undefined;
-	const params = new URLSearchParams(match[4] ?? "");
-	const limit = Number.parseInt(params.get("limit") ?? "", 10);
-	const offset = Number.parseInt(params.get("offset") ?? "", 10);
-	const sampleRows = Number.parseInt(params.get("sampleRows") ?? params.get("sample_rows") ?? "", 10);
-	return {
-		databasePath: match[1] ?? "",
-		query: match[2] ? decodeURIComponent(match[2]) : undefined,
-		table: match[3],
-		rowId: match[5] ?? params.get("id") ?? undefined,
-		limit: Number.isFinite(limit) ? Math.max(0, Math.min(500, limit)) : undefined,
-		offset: Number.isFinite(offset) ? Math.max(0, offset) : undefined,
-		where: params.get("where") ?? undefined,
-		order: params.get("order") ?? undefined,
-		schema: params.get("schema") === "true" || params.get("schema") === "1",
-		sampleRows: Number.isFinite(sampleRows) ? Math.max(0, Math.min(100, sampleRows)) : undefined,
-	};
+	// Try each candidate database path from longest to shortest, mirroring the
+	// previous greedy `(.+\.ext)` regex prefix without its ambiguity, which was
+	// flagged as polynomial ReDoS (js/polynomial-redos). The suffix grammar is
+	// unchanged and unambiguous.
+	const lower = value.toLowerCase();
+	for (let end = value.length; end > 0; end--) {
+		if (!endsWithExtension(lower, end, SQLITE_EXTENSIONS)) continue;
+		const match = value.slice(end).match(SQLITE_SELECTOR_SUFFIX);
+		if (!match) continue;
+		const params = new URLSearchParams(match[3] ?? "");
+		const limit = Number.parseInt(params.get("limit") ?? "", 10);
+		const offset = Number.parseInt(params.get("offset") ?? "", 10);
+		const sampleRows = Number.parseInt(params.get("sampleRows") ?? params.get("sample_rows") ?? "", 10);
+		return {
+			databasePath: value.slice(0, end),
+			query: match[1] ? decodeURIComponent(match[1]) : undefined,
+			table: match[2],
+			rowId: match[4] ?? params.get("id") ?? undefined,
+			limit: Number.isFinite(limit) ? Math.max(0, Math.min(500, limit)) : undefined,
+			offset: Number.isFinite(offset) ? Math.max(0, offset) : undefined,
+			where: params.get("where") ?? undefined,
+			order: params.get("order") ?? undefined,
+			schema: params.get("schema") === "true" || params.get("schema") === "1",
+			sampleRows: Number.isFinite(sampleRows) ? Math.max(0, Math.min(100, sampleRows)) : undefined,
+		};
+	}
+	return undefined;
 }
 
 function isZipArchive(path: string): boolean {

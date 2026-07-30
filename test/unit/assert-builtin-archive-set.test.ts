@@ -50,31 +50,31 @@ async function packTar(payload: Record<string, string>): Promise<Uint8Array> {
 
 async function unpackTar(bytes: Uint8Array, root: string): Promise<void> {
 	const extractor = tarExtract();
+	const containedRoot = resolve(root) + sep;
 	const done = new Promise<void>((resolve, reject) => {
 		extractor.on("finish", resolve);
 		extractor.on("error", reject);
 	});
 	extractor.on("entry", (header, stream, next) => {
-		// A tar entry name is attacker-controlled and may contain `..`, so resolving
-		// it against the root can escape the extraction directory ("Zip Slip").
-		// This is the barrier shape CodeQL's js/zipslip remediation documents: a
-		// single startsWith against the resolved root plus a separator. An earlier
-		// revision added a `target !== root` disjunct and CodeQL stopped
-		// recognising it, so keep this one condition.
-		const containedRoot = resolve(root) + sep;
-		const target = resolve(root, header.name);
-		if (!target.startsWith(containedRoot)) {
-			next(new Error(`Refusing archive entry outside the extraction root: ${header.name}`));
-			return;
-		}
-		void buffer(stream).then((contents) => {
+		// A tar entry name is attacker-controlled and may contain `..`, so
+		// resolving it against the root can escape the extraction directory
+		// ("Zip Slip"). The guard and the writes deliberately live in the same
+		// function: CodeQL's js/zipslip barrier recognition does not follow a
+		// guarded variable into a separate callback, which kept the alert open
+		// across two earlier revisions of this handler.
+		const handleEntry = async (): Promise<void> => {
+			const contents = await buffer(stream);
+			const target = resolve(root, header.name);
+			if (!target.startsWith(containedRoot)) {
+				throw new Error(`Refusing archive entry outside the extraction root: ${header.name}`);
+			}
 			if (header.type === "directory") mkdirSync(target, { recursive: true });
 			else {
 				mkdirSync(dirname(target), { recursive: true });
 				writeFileSync(target, contents);
 			}
-			next();
-		}, next);
+		};
+		handleEntry().then(() => next(), next);
 	});
 	extractor.end(Buffer.from(bytes));
 	await done;

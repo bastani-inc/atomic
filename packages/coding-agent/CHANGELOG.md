@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Hardened the archive and SQLite path-selector parsers used by the read, search, and write tools against polynomial-time regex backtracking (CodeQL `js/polynomial-redos`). The ambiguous greedy `(.+\.ext)` prefixes were replaced with linear right-to-left scans; accepted selector syntax and parsing results are unchanged.
+
 ## [0.9.11-alpha.8] - 2026-07-29
 
 ### Breaking Changes
