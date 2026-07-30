@@ -179,6 +179,8 @@ Run these from the workspace root:
 | `npm run test:ci-contracts` | Run the CI and release contract suite                            |
 | `npm run test:all`          | Run both unit + integration                                      |
 | `npm run test:scripts`      | `node --test scripts/*.test.mjs`                                 |
+| `npm run test --workspace=@bastani/atomic`     | The coding-agent suite, under Node              |
+| `npm run test:bun --workspace=@bastani/atomic` | Its Bun-hosted half; both are required          |
 | `npm run hooks:install`     | Install `prek.toml` Git hooks using `default_install_hook_types` |
 | `npm run hooks:run`         | Run all `prek.toml` hooks across the repository                  |
 
@@ -201,6 +203,13 @@ Because the suites run under Node, `Bun.*` and `import.meta.dir` are unavailable
 `fileExists`, `writeFileEnsuringDir`, `spawnSyncCollect`, `spawnProcess`, `moduleDir`,
 `bunExecutable`); several close traps a direct port would not, so use them rather than
 reaching for `node:fs` or `node:child_process`. See `AGENTS.md` for the table.
+
+One exception: four files in `packages/coding-agent/test` are collected by a **Bun-hosted**
+vitest project (`agent-bun`) and run by `npm run test:bun --workspace=@bastani/atomic`. They
+test `src/core/tools/resource-selectors.ts`, which loads `bun:sqlite` and throws without it,
+so under Node they do not fail — they stop asserting. Do not add a runtime guard that returns
+early; add the file to `BUN_HOSTED_TESTS` in `packages/coding-agent/vitest.config.ts`
+instead. `test/ci/ci-workflow-contracts.test.ts` enforces both halves.
 
 ### Unit tests (`test/unit/*.test.ts`)
 

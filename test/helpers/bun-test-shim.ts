@@ -11,6 +11,7 @@
  * test into a silent no-op.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it as vitestIt, vi } from "vitest";
+import { TEST_TIMEOUT_MS } from "./test-timeout.js";
 
 export { afterAll, afterEach, beforeAll, beforeEach, describe, expect };
 
@@ -63,12 +64,20 @@ mockFn.clearAllMocks = () => vi.clearAllMocks();
 export const mock = mockFn;
 
 /**
- * Bun's suite-wide default-timeout setter. vitest resolves the per-test budget
- * from config, and a file that raises its own default is asking for a budget
- * this repository declares once (vitest.config.ts `testTimeout`). Applying it
- * per-file keeps the single declared value authoritative while preserving the
- * caller's intent where the config value is lower.
+ * Bun's suite-wide default-timeout setter, clamped to the one declared budget.
+ *
+ * vitest resolves the per-test budget from config, and this repository declares
+ * it once (`TEST_TIMEOUT_MS`, applied by vitest.config.ts) for every project
+ * whose files import through this shim. A file may therefore only ever *lower*
+ * its own default: passing a larger value would let one file raise its ceiling
+ * above the value CI enforces everywhere else, which is precisely what the
+ * single declaration exists to prevent. An unconditional `vi.setConfig` used to
+ * allow that, and the only caller passing exactly the declared value hid it.
  */
+export function clampDefaultTimeout(milliseconds: number): number {
+	return Math.min(milliseconds, TEST_TIMEOUT_MS);
+}
+
 export function setDefaultTimeout(milliseconds: number): void {
-	vi.setConfig({ testTimeout: milliseconds });
+	vi.setConfig({ testTimeout: clampDefaultTimeout(milliseconds) });
 }

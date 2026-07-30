@@ -64,11 +64,13 @@ npm run typecheck                 # Type-check the monorepo
 npm run test:unit                 # Run unit tests
 npm run test:integration          # Run integration tests
 npm run test:all                  # Run all tests
-# Run package Vitest tests
+npm run test:scripts              # Run the repository script tests under node --test
+# Run the package Vitest suite (Node-hosted)
 npm run test --workspace=@bastani/atomic -- test/specific.test.ts
+# Run its Bun-hosted half. Required: the SQLite selector tests load bun:sqlite,
+# which the shipped binary has and Node does not.
+npm run test:bun --workspace=@bastani/atomic
 ```
-
-The file-length gate scans tracked `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, and `.rs` files via `git ls-files`, falls back to a recursive walk outside Git, and counts physical lines with a no-final-newline correction. Only generated/vendored path globs (`node_modules`, `dist`, `target`, `binaries`, `.git`, `vendor`, minified bundles, and the bundled third-party `packages/workflows/skills/impeccable/**` skill) plus first-five-line generated markers are excluded.
 
 ## Deterministic installs
 

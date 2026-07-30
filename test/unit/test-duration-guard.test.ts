@@ -172,6 +172,47 @@ test("explicit timeouts are resolved from both declaration shapes and never from
   assert.equal(declared.size, 3);
 });
 
+/**
+ * A declaration bound to a local alias is still a declaration.
+ *
+ * `declarationPattern` reads local `const <name> = ... test` bindings for
+ * exactly this shape, which several suites use to make a whole file conditional.
+ * Missing it does not fail anything: the alias's tests silently fall back to the
+ * suite default, so an explicit structural budget stops being honoured and the
+ * gate starts scoring those tests against a ceiling they never had. Both
+ * argument shapes are covered because the alias path and the tail parser are
+ * independent.
+ */
+test("a test declared through a local alias keeps its explicit budget", () => {
+  const source = [
+    "const built = existsSync(dist);",
+    "const runTest = built ? test : test.skip;",
+    "const describeIf = built ? describe : describe.skip;",
+    "",
+    'runTest("aliased one line", async () => {',
+    "}, 60_000);",
+    "",
+    'runTest("aliased multi line", async () => {',
+    "  await build();",
+    "},",
+    "  240_000,",
+    ");",
+    "",
+    'const runIt = built ? it : it.skip;',
+    'runIt("aliased it", async () => {',
+    "}, 90_000);",
+    "",
+    'runTest("aliased without a budget", async () => {',
+    "});",
+  ].join("\n");
+  const declared = declaredTimeouts(source);
+  assert.equal(declared.get("aliased one line"), 60_000);
+  assert.equal(declared.get("aliased multi line"), 240_000);
+  assert.equal(declared.get("aliased it"), 90_000);
+  assert.equal(declared.get("aliased without a budget"), undefined);
+  assert.equal(declared.size, 3);
+});
+
 test("a scoped explicit budget stays in its own scope and never leaks to a same name", () => {
   const source = [
     'describe("slow group", () => {',
@@ -249,6 +290,23 @@ test("the suite budget is read from the command or the package script it runs", 
   assert.equal(await resolveDefaultTimeoutMs(["node", "--test", "scripts/x.test.mjs"], root), undefined);
   assert.equal(await resolveDefaultTimeoutMs(["bun", "test", "--timeout", "30000", "test/unit"], root), undefined);
   assert.equal(await resolveDefaultTimeoutMs(["npm", "run", "does-not-exist"], root), undefined);
+
+  // The Bun-hosted coding-agent project is launched through the Bun runtime,
+  // and it is the suite the gate can least afford to lose: it is the only one
+  // that exercises the bun:sqlite paths of the shipped binary. A leading
+  // `bun`/`bunx` is the runtime, not the command.
+  const agent = join(root, "packages/coding-agent");
+  const agentBudget = process.platform === "win32" ? 90_000 : 30_000;
+  assert.equal(await resolveDefaultTimeoutMs(["npm", "run", "test:bun", "--workspace=@bastani/atomic"], root), agentBudget);
+  assert.equal(await resolveDefaultTimeoutMs(["bun", "--bun", "vitest", "--run", "--project", "agent-bun"], agent), agentBudget);
+  assert.equal(await resolveDefaultTimeoutMs(["bun", "--bun", "run", "vitest", "--run", "--project", "agent"], agent), agentBudget);
+  assert.equal(await resolveDefaultTimeoutMs(["bunx", "--bun", "vitest", "--run", "--project", "agent"], agent), agentBudget);
+  // Stripping the runtime must not swallow the `--project` that selects the
+  // budget: an unknown project has none, and the gate must stay off rather than
+  // fall back to whichever projects happen to agree.
+  assert.equal(await resolveDefaultTimeoutMs(["bun", "--bun", "vitest", "--run", "--project", "nope"], root), undefined);
+  // Bun running something that is not vitest is still not a budget.
+  assert.equal(await resolveDefaultTimeoutMs(["bun", "run", "scripts/cut-release.ts"], root), undefined);
 });
 
 test("headroom is scored against the effective timeout, not a fixed ceiling", () => {

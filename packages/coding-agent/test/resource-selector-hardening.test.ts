@@ -1,14 +1,14 @@
-import { createRequire } from "node:module";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
 import { createWriteToolDefinition } from "../src/core/tools/write.ts";
+import { requireBunSqlite } from "./helpers/bun-sqlite.ts";
 
 interface SqliteDb { run(sql: string): void; close(): void }
 interface BunSqliteModule { Database: new (path: string) => SqliteDb }
-function sqlite(): BunSqliteModule | undefined { try { return createRequire(import.meta.url)("bun:sqlite") as BunSqliteModule; } catch { return undefined; } }
+function sqlite(): BunSqliteModule { return requireBunSqlite<BunSqliteModule>(import.meta.url); }
 
 const tempDirs: string[] = [];
 async function tempDir(): Promise<string> { const dir = await mkdtemp(join(tmpdir(), "atomic-resource-hardening-")); tempDirs.push(dir); return dir; }
@@ -28,7 +28,7 @@ function zipWithDataDescriptor(): Buffer {
 
 describe("resource selector hardening", () => {
 	it("rejects raw SQLite pragma table-valued functions and quoted sqlite internals", async () => {
-		const mod = sqlite(); if (!mod) return;
+		const mod = sqlite();
 		const dir = await tempDir(); const dbPath = join(dir, "data.sqlite"); const db = new mod.Database(dbPath);
 		try { db.run("create table t (id integer primary key)"); } finally { db.close(); }
 		const read = createReadToolDefinition(dir);
@@ -37,7 +37,7 @@ describe("resource selector hardening", () => {
 	});
 
 	it("rejects SQLite where filters that contain subqueries or internal functions", async () => {
-		const mod = sqlite(); if (!mod) return;
+		const mod = sqlite();
 		const dir = await tempDir(); const dbPath = join(dir, "data.sqlite"); const db = new mod.Database(dbPath);
 		try { db.run("create table t (id integer primary key, name text)"); } finally { db.close(); }
 		const read = createReadToolDefinition(dir);

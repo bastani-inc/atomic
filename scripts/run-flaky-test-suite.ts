@@ -155,6 +155,24 @@ interface Attempt {
 }
 
 /**
+ * The report text only if it is readable.
+ *
+ * A report the guard cannot parse measures exactly as much as a report that was
+ * never written, and treating the two differently is how a gate goes quiet: the
+ * parse would throw inside the scorer, or worse, be swallowed into an empty
+ * sample set indistinguishable from a healthy run. Both collapse to "blind".
+ */
+function readableReport(report: string | undefined): string | undefined {
+  if (report === undefined) return undefined;
+  try {
+    JSON.parse(report);
+    return report;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Duration-headroom gate.
  *
  * Raising the per-test budget removes a flake but would otherwise let tests
@@ -171,16 +189,19 @@ interface Attempt {
  * that actually shows the drift.
  *
  * A gate that cannot see is reported, never assumed green: an attempt that ran
- * tests without producing a report fails the step, because an empty sample set
- * otherwise looks exactly like a suite with nothing to report.
+ * tests without producing a readable report fails the step, because an empty
+ * sample set otherwise looks exactly like a suite with nothing to report.
  */
 async function reportDurations(attempts: Attempt[], options: Options, name: string): Promise<number> {
   const budget = await resolveDefaultTimeoutMs(options.command, process.cwd());
-  const scored = attempts.map((attempt) => ({
-    label: attempt.label,
-    missing: attempt.result.report === undefined,
-    report: evaluateDurations(attempt.result.report ?? '{"numTotalTests":0,"testResults":[]}', budget),
-  }));
+  const scored = attempts.map((attempt) => {
+    const report = readableReport(attempt.result.report);
+    return {
+      label: attempt.label,
+      missing: report === undefined,
+      report: evaluateDurations(report ?? '{"numTotalTests":0,"testResults":[]}', budget),
+    };
+  });
   mkdirSync(options.diagnosticsDir, { recursive: true });
   const table = scored.map(({ label, report }) => `## ${label}\n\n${renderDurationTable(report)}`).join("\n\n");
   writeFileSync(
@@ -193,7 +214,7 @@ async function reportDurations(attempts: Attempt[], options: Options, name: stri
   if (blind.length > 0) {
     for (const { label, report, missing } of blind) {
       console.error(
-        `::error title=Duration guard blind: ${options.label}::${label}: ${missing ? "the suite wrote no JSON report" : `${report.ranTests} test(s) ran but the report carried no durations`}, so no headroom could be measured.`,
+        `::error title=Duration guard blind: ${options.label}::${label}: ${missing ? "the suite wrote no readable JSON report" : `${report.ranTests} test(s) ran but the report carried no durations`}, so no headroom could be measured.`,
       );
     }
     appendSummary(

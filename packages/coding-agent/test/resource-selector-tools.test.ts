@@ -1,7 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { spawnSync } from "node:child_process";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -10,14 +9,13 @@ import { createSearchToolDefinition } from "../src/core/tools/search.ts";
 import { createWriteToolDefinition } from "../src/core/tools/write.ts";
 import type { InternalResourceContext } from "../src/core/tools/resource-selectors.ts";
 import { isDocumentPath } from "../src/core/tools/read-document-extract.ts";
+import { requireBunSqlite } from "./helpers/bun-sqlite.ts";
 
 function textOutput(result: { content?: Array<{ type: string; text?: string }> }): string {
 	return result.content?.filter((item) => item.type === "text").map((item) => item.text ?? "").join("\n") ?? "";
 }
 interface BunSqliteModule { Database: new (path: string) => { run(sql: string, ...params: string[]): void; close(): void } }
-function loadBunSqlite(): BunSqliteModule | undefined {
-	try { return createRequire(import.meta.url)("bun:sqlite") as BunSqliteModule; } catch { return undefined; }
-}
+function loadBunSqlite(): BunSqliteModule { return requireBunSqlite<BunSqliteModule>(import.meta.url); }
 
 function listen(server: Server): Promise<number> {
 	return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve((server.address() as { port: number }).port)));
@@ -280,16 +278,14 @@ describe("resource selector tools", () => {
 		expect(textOutput(await createReadToolDefinition(testDir).execute("plain-db-read", { path: "notes.db" }, undefined, undefined, {} as never))).toContain("one");
 		expect(textOutput(await createReadToolDefinition(testDir).execute("plain-db-read-line", { path: "notes.db:2-2" }, undefined, undefined, {} as never))).toContain("two");
 		const sqlite = loadBunSqlite();
-		if (sqlite) {
-			const rawDb = new sqlite.Database(join(testDir, "tokens.sqlite"));
-			rawDb.run("create table raw (id integer primary key, name text)");
-			rawDb.run("create table conflicts (id integer primary key, name text)");
-			rawDb.run("insert into raw values (1, 'Raw Table')");
-			rawDb.run("insert into conflicts values (1, 'Conflict Table')");
-			rawDb.close();
-			expect(textOutput(await createReadToolDefinition(testDir).execute("sqlite-raw-table", { path: "tokens.sqlite:raw" }, undefined, undefined, {} as never))).toContain("Raw Table");
-			expect(textOutput(await createReadToolDefinition(testDir).execute("sqlite-conflicts-table", { path: "tokens.sqlite:conflicts" }, undefined, undefined, {} as never))).toContain("Conflict Table");
-		}
+		const rawDb = new sqlite.Database(join(testDir, "tokens.sqlite"));
+		rawDb.run("create table raw (id integer primary key, name text)");
+		rawDb.run("create table conflicts (id integer primary key, name text)");
+		rawDb.run("insert into raw values (1, 'Raw Table')");
+		rawDb.run("insert into conflicts values (1, 'Conflict Table')");
+		rawDb.close();
+		expect(textOutput(await createReadToolDefinition(testDir).execute("sqlite-raw-table", { path: "tokens.sqlite:raw" }, undefined, undefined, {} as never))).toContain("Raw Table");
+		expect(textOutput(await createReadToolDefinition(testDir).execute("sqlite-conflicts-table", { path: "tokens.sqlite:conflicts" }, undefined, undefined, {} as never))).toContain("Conflict Table");
 		expect(textOutput(await createSearchToolDefinition(testDir).execute("plain-db-search-line", { pattern: "two", paths: "notes.db:2-2" }, undefined, undefined, {} as never))).toContain("two");
 		await createWriteToolDefinition(testDir).execute("plain-db-write", { path: "notes.db", content: "plain\n" }, undefined, undefined, {} as never);
 		expect(readFileSync(join(testDir, "notes.db"), "utf8")).toBe("plain\n");
@@ -356,10 +352,10 @@ describe("resource selector tools", () => {
 		expect(result.status, result.stderr || result.stdout).toBe(0);
 	});
 
-	(loadBunSqlite() ? it : it.skip)("reads writes and searches SQLite selectors", async () => {
+	it("reads writes and searches SQLite selectors", async () => {
 		writeFileSync(join(testDir, ".keep"), "");
 		const dbPath = join(testDir, "data.sqlite");
-		const Database = loadBunSqlite()!.Database;
+		const Database = loadBunSqlite().Database;
 		const db = new Database(dbPath);
 		db.run("create table users (uuid text primary key, name text)");
 		db.run("create table numbers (id integer primary key, flags integer, score integer)");

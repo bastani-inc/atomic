@@ -265,6 +265,7 @@ interface VitestConfigShape {
 
 const NPM_BINARY = /^(?:npm|npx)(?:\.cmd|\.exe)?$/u;
 const VITEST_BINARY = /^vitest(?:\.cmd|\.exe)?$/u;
+const BUN_BINARY = /^bunx?(?:\.exe)?$/u;
 
 function flag(args: string[], name: string): string | undefined {
 	for (let index = 0; index < args.length; index++) {
@@ -318,9 +319,11 @@ async function readConfiguredTimeout(rootDir: string, cwd: string, project: stri
  * config that script selects. Returns undefined when the command declares no
  * budget, which disables the gate rather than inventing one.
  *
- * Only a vitest invocation is read for a budget. A command that is not vitest
- * has no `testTimeout`, and scoring its output against one would report drift
- * against a ceiling nothing enforces.
+ * Only a vitest invocation is read for a budget, whichever runtime hosts it: a
+ * leading `bun`/`bunx` (with its own flags, and an optional `run`/`x`) is the
+ * runtime, not the command. A command that is not vitest has no `testTimeout`,
+ * and scoring its output against one would report drift against a ceiling
+ * nothing enforces.
  */
 export async function resolveDefaultTimeoutMs(command: string[], rootDir: string = process.cwd()): Promise<number | undefined> {
 	let args = command;
@@ -338,6 +341,20 @@ export async function resolveDefaultTimeoutMs(command: string[], rootDir: string
 	let head = args[0] ?? "";
 	if (NPM_BINARY.test(basename(head)) && basename(head).startsWith("npx")) {
 		args = args.slice(1).filter((arg) => arg !== "--no-install" && arg !== "-y");
+		head = args[0] ?? "";
+	}
+	// `bun --bun vitest ...` is still a vitest invocation, and the one the
+	// Bun-hosted `agent-bun` project is launched with. Dropping the runtime
+	// prefix keeps the gate on for it; without this the guard would read `bun`,
+	// find no budget, and silently stop scoring the suite that needs Bun most.
+	//
+	// Only the runtime's *own* leading flags are dropped. Filtering every `-`
+	// argument would also swallow the `--project` that selects the budget, and
+	// the gate would then average whichever projects happened to agree.
+	if (BUN_BINARY.test(basename(head))) {
+		args = args.slice(1);
+		while (args[0]?.startsWith("-")) args = args.slice(1);
+		if (args[0] === "run" || args[0] === "x") args = args.slice(1);
 		head = args[0] ?? "";
 	}
 	if (!VITEST_BINARY.test(basename(head))) return undefined;

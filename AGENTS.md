@@ -26,7 +26,8 @@ everywhere. Where the split differs from pi, the reason is written down.
 | Build | `npm run build` | tsgo, not Bun; no behaviour change |
 | Typecheck / check | `npm run check` (`tsc --noEmit` + shrinkwrap check) | pi runs biome + tsgo here; Biome adoption is a follow-up (see below) |
 | Root test suites | `vitest --run --project {unit,integration,ci}` | pi uses vitest for its workspace tests, with a shared `vitest.base.ts` setting only `resolve.alias` |
-| `packages/coding-agent` suite | `vitest --run`, re-based on `vitest.base.ts` | already parity; it now runs under Node rather than `bun --bun` |
+| `packages/coding-agent` suite | `vitest --run --project agent` | already parity; it now runs under Node rather than `bun --bun` |
+| `packages/coding-agent` SQLite selectors | `bun --bun vitest --run --project agent-bun` | `src/core/tools/resource-selectors.ts` loads `bun:sqlite` and throws without it, so these four files test the shipped binary's runtime. See "The Bun-hosted project" below |
 | Script tests | `node --test scripts/*.test.mjs` | pi parity. Scripts Node can run are tested with Node's own runner |
 | Repository scripts | `bun run scripts/*.ts` | Bun executes `.ts` directly and resolves `.js` specifiers to `.ts` source with no loader hook. Bare `node` cannot; scripts meant for `node --test` are `.mjs` |
 | Binary compilation | `bun build --compile` | Cross-compiles the single-file executables; upstream pi uses Bun for exactly this step too. Bun pinned to 1.3.14 |
@@ -52,7 +53,8 @@ a *toolchain* goal, not a CI-topology goal.
 - `npm install <pkg>` — add a dependency; `.npmrc` applies the 3-day release-age gate and `save-exact`
 - `npm run check` — `tsc --noEmit` plus the published-shrinkwrap check. `npm run typecheck` is the typecheck alone
 - `npm run test:unit`, `npm run test:integration`, `npm run test:ci-contracts`, `npm run test:all`
-- `npm run test --workspace=@bastani/atomic` — the coding-agent vitest suite
+- `npm run test --workspace=@bastani/atomic` — the coding-agent vitest suite, under Node
+- `npm run test:bun --workspace=@bastani/atomic` — its Bun-hosted half; **both are required** to cover that package
 - `npm run test:scripts` — `node --test scripts/*.test.mjs`
 - `npm run hooks:install`, `npm run hooks:run`
 - `bun run scripts/<name>.ts` — repository scripts stay on Bun; see the Tech Stack table
@@ -114,17 +116,84 @@ several of the replacements differ in ways that fail silently:
 | `process.execPath` **when spawning Bun** | `bunExecutable()` | Under vitest `process.execPath` is Node, so a `.ts` child, `bun run`, or a Bun-specific `-e` script silently runs under the wrong runtime |
 
 Shipped `packages/` code that uses `Bun.*` behind `isBunBinary`/`isBundledBuild` is **out of
-scope** and must not be edited to suit the test runner.
+scope** and must not be edited to suit the test runner. One shipped module —
+`packages/web-access/subprocess.ts` — calls `Bun.spawn`/`Bun.sleep` *unguarded*, because it
+only ever runs inside the Bun-compiled binary. `test/unit/web-access-subprocess.test.ts`
+therefore calls `installBunGlobal()`, which substitutes the helpers above for those two
+globals. All five test names and their assertions survive, and what they cover — bounded
+draining, the byte cap, the timeout, the kill path — is unchanged. **What they no longer
+cover is Bun's own spawn implementation, which is what the shipped binary runs on.** The
+alternative, re-execing the file under Bun, would collapse five names into one wrapper
+assertion; that is a worse trade, but the gap is real and is stated here rather than only in
+the helper.
+
+### The Bun-hosted project (`agent-bun`)
+
+Four files in `packages/coding-agent/test` are collected by a **Bun-hosted vitest project**
+rather than the Node one, and are run by their own CI step:
+
+```sh
+npm run test:bun --workspace=@bastani/atomic   # bun --bun vitest --run --project agent-bun
+```
+
+They test `src/core/tools/resource-selectors.ts`, which loads `bun:sqlite` through
+`createRequire` and throws `"SQLite selectors require Atomic's Bun runtime"` without it. Under
+Node these files did not fail — they **emptied**: one declaration became `it.skip`, and
+eleven more kept their names, kept passing, and executed no assertions at all behind
+`if (!sqlite) return`. A green suite cannot see that, and neither can a test-name diff.
+
+The rules, all enforced by `test/ci/ci-workflow-contracts.test.ts`:
+
+- Every test file naming `bun:sqlite` (directly or through `test/helpers/bun-sqlite.ts`) is in
+  `BUN_HOSTED_TESTS` in `packages/coding-agent/vitest.config.ts`, is collected by `agent-bun`,
+  and is **excluded** from `agent`. No file is collected twice.
+- Both projects share one `testTimeout`. A runtime split must not become a budget split.
+- The guards inside those files are hard requires. `requireBunSqlite()` throws and names the
+  right command; a restored `if (!sqlite) return` or `? it : it.skip` fails the contract test.
+- The duration guard reads a budget through the Bun runtime prefix too
+  (`scripts/test-duration-guard.ts`), so this step is scored like every other suite rather
+  than silently ungated.
+
+If you add a SQLite selector test, add the file to `BUN_HOSTED_TESTS`. If you find yourself
+writing a runtime guard that returns early, you are writing the bug this project exists to
+prevent: let it throw, and put the file where it can run.
+
+### Proving a runner or runtime change shed no coverage
+
+`scripts/compare-test-inventory.mjs` diffs the *set of test names* between a baseline and a
+candidate, in both directions, and separately diffs the *skip* set — because a test that ran
+before and skips now keeps its name, keeps the suite green, and is invisible to a pass/fail
+count. Its rules are unit-tested by `scripts/compare-test-inventory.test.mjs`, which CI runs
+in the static-checks job via `npm run test:scripts`.
+
+Run it against **all four** suites, never a subset, and union a suite that is split across
+runtimes — pointing it at one half of `packages/coding-agent` is exactly how a loss hides:
+
+```sh
+# baseline: capture from the runner/runtime being replaced (bun stdout or a vitest report)
+node scripts/compare-test-inventory.mjs --baseline unit-baseline.log  --candidate unit.json
+node scripts/compare-test-inventory.mjs --baseline integ-baseline.log --candidate integration.json
+node scripts/compare-test-inventory.mjs --baseline ci-baseline.log    --candidate ci.json
+node scripts/compare-test-inventory.mjs --baseline agent-baseline.json \
+  --candidate agent.json --candidate agent-bun.json
+```
+
+The comparison itself is a migration-time gate, not a CI step: it needs a baseline captured
+from the runner being replaced, and once the change lands there is no such runner to capture
+from. Freeze the floor with `--min`, cap regressions with `--max-skipped`, and declare every
+rename with `--allow-renamed "old => new"` — comparing counts would let two compensating
+errors pass.
 
 ### Per-test timeout policy
 
-- The suite-wide per-test budget is **30000 ms**, declared once as `TEST_TIMEOUT_MS` in the root `vitest.config.ts` and applied to all three projects. `test/ci/ci-workflow-contracts.test.ts` enforces that the three `test:*` scripts each select a project and that all three resolve to that one value.
+- The suite-wide per-test budget is **30000 ms**, declared once as `TEST_TIMEOUT_MS` in `test/helpers/test-timeout.ts` and applied by the root `vitest.config.ts` to all three projects. `test/ci/ci-workflow-contracts.test.ts` enforces that the three `test:*` scripts each select a project and that all three resolve to that one value. It lives in a leaf module because `test/helpers/bun-test-shim.ts` also clamps `setDefaultTimeout` against it, and reaching into the config from there would pull `vitest/config` into every test worker.
 - Do **not** restate the budget in a package script, in `.github/workflows/test.yml`, or in `bunfig.toml`. The contract test rejects a `--timeout` flag in any script, and Bun ignores `[test] timeout` in bunfig anyway — it looks correct and does nothing.
 - One platform-neutral value, never a Windows-only branch. A Windows-only bump would leave Linux as the only place the budget is enforced and hide Windows regressions until they were far worse. (`packages/coding-agent/vitest.config.ts` keeps its own pre-existing 90 s Windows branch, local to that project.)
-- Add an explicit third-argument timeout only for a test whose cost is *structural* (a full builtin-package loader reload, a real CLI child process, a `tsc` invocation, a built-package install). Name the constant and keep it at the call site. Never restate the default value — an explicit timeout that merely repeats it silently lowers that test's budget when the default rises.
+- Add an explicit third-argument timeout only for a test whose cost is *structural* (a full builtin-package loader reload, a real CLI child process, a real `vitest` child, a `tsc` invocation, a built-package install). **Name the constant and keep it at the call site** — `REAL_VITEST_SUITE_TIMEOUT_MS` in `test/unit/flaky-test-suite-runner.test.ts` is the pattern; a bare `120_000` says nothing about why the cost is structural rather than a slow test nobody fixed. Never restate the default value — an explicit timeout that merely repeats it silently lowers that test's budget when the default rises.
 - `scripts/run-flaky-test-suite.ts` scores every duration against that test's effective timeout: warn at 40 % of budget, fail the step at 70 %. Every attempt is scored, so a fast bounded retry cannot hide a first attempt that burned a test's headroom. It always writes the per-test duration table to `.ci-diagnostics/<suite>-durations.md`, on green runs too. If it fails your test, make the test faster or justify a structural explicit timeout — do not raise the shared default.
-- The gate reads **vitest's JSON reporter**, which the wrapper requests alongside the default one so the step log stays readable. The reporter emits a record per test, so the gate now scores the whole suite rather than the 97 % that printed a duration under Bun's stdout, and `blind` — tests ran, no durations — finally means the harness broke.
-- The gate reads a budget only from a *vitest* invocation, following one `npm run <script>` indirection into `package.json` and then into the config that script selects. Any other wrapped command leaves it disabled rather than scoring output against a budget nothing enforced. Explicit per-test budgets are matched by the fully qualified `scope > name`, so a declaration inside `describe` never lends its budget to a same-named test in another scope.
+- The gate reads **vitest's JSON reporter**, which the wrapper requests alongside the default one so the step log stays readable. The reporter emits a record per test, so the gate now scores the whole suite rather than the 97 % that printed a duration under Bun's stdout, and `blind` — tests ran, no durations — finally means the harness broke. A report that is missing *or unreadable* counts as blind too: an unparsable report measures exactly as much as one that was never written.
+- The gate reads a budget only from a *vitest* invocation, following one `npm run <script>` indirection into `package.json` and then into the config that script selects. A leading `bun`/`bunx` is the runtime rather than the command and is stepped over, so the Bun-hosted `agent-bun` project is scored like every other suite. Any other wrapped command leaves the gate disabled rather than scoring output against a budget nothing enforced. Explicit per-test budgets are matched by the fully qualified `scope > name`, so a declaration inside `describe` never lends its budget to a same-named test in another scope.
+- **Do not raise `WARN_RATIO`.** The move to vitest made the heaviest tests materially slower (vite transform cost: `coding-agent builtin resources > loads builtin pi package resources` went 622 ms → ~10 s), and the slowest unit test now sits just under the 40 % warn line. A loaded or Windows runner may start warning. That is the gate working as designed — make the test faster or justify a structural explicit timeout.
 
 ### Load sensitivity
 

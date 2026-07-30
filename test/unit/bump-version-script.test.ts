@@ -12,18 +12,38 @@ interface VersionedPackageJson {
   dependencies?: Record<string, string>;
 }
 
+interface NpmLockEntry {
+  name?: string;
+  version?: string;
+  link?: boolean;
+  resolved?: string;
+  dependencies?: Record<string, string>;
+  optionalDependencies?: Record<string, string>;
+}
+
+interface NpmLock {
+  name: string;
+  lockfileVersion: number;
+  requires: boolean;
+  packages: Record<string, NpmLockEntry>;
+}
+
 interface BumpResult {
   exitCode: number | null;
   stdout: string;
   stderr: string;
 }
 
-function writeJson(path: string, value: VersionedPackageJson): void {
+function writeJson(path: string, value: VersionedPackageJson | NpmLock): void {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
 function readJson(path: string): VersionedPackageJson {
   return JSON.parse(readFileSync(path, "utf8")) as VersionedPackageJson;
+}
+
+function readLock(path: string): NpmLock {
+  return JSON.parse(readFileSync(path, "utf8")) as NpmLock;
 }
 
 function createFixtureRoot(): string {
@@ -78,6 +98,38 @@ if (bindingPackageVersion !== '0.1.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHE
 }
 `,
   );
+  // The lockfile is not optional decoration in this fixture.
+  //
+  // `npm ci` refuses to install when package-lock.json and a package.json
+  // disagree -- unlike `bun install --frozen-lockfile`, which tolerated exactly
+  // that and is why the lock used to be left at its placeholder. publish.yml
+  // installs from the tagged release commit, so a lock the stamp misses breaks
+  // the release rather than a test. Without this file `npmLockTargets()`
+  // returns [] and `bumpNpmLock` is never entered by any test.
+  writeJson(join(root, "package-lock.json"), {
+    name: "fixture-monorepo",
+    lockfileVersion: 3,
+    requires: true,
+    packages: {
+      "": {
+        name: "fixture-monorepo",
+        version: "0.1.0",
+        dependencies: { "@bastani/atomic-natives": "0.1.0" },
+      },
+      "node_modules/@bastani/atomic-natives": { resolved: "packages/natives", link: true },
+      "node_modules/@fixture/alpha": { resolved: "packages/alpha", link: true },
+      "node_modules/third-party": { version: "9.9.9", resolved: "https://registry.npmjs.org/third-party/-/third-party-9.9.9.tgz" },
+      "packages/alpha": {
+        name: "@fixture/alpha",
+        version: "0.1.0",
+        dependencies: { "@bastani/atomic-natives": "0.1.0", "third-party": "9.9.9" },
+        optionalDependencies: { "@bastani/atomic-natives-linux-x64-gnu": "0.1.0" },
+      },
+      "packages/beta": { name: "@fixture/beta", version: "0.1.0" },
+      "packages/natives": { name: "@bastani/atomic-natives", version: "0.1.0" },
+    },
+  });
+
 
   return root;
 }
@@ -122,6 +174,27 @@ describe("scripts/bump-version.ts", () => {
       assert.match(nativeIndex, /bindingPackageVersion !== '1\.2\.3-alpha\.1'/);
       assert.match(nativeIndex, /expected 1\.2\.3-alpha\.1 but got \$\{bindingPackageVersion\}/);
       assert.doesNotMatch(nativeIndex, /0\.1\.0/);
+
+      // The npm lockfile is stamped in place, or `npm ci` on the tagged release
+      // commit refuses the tree the stamp just produced.
+      const lock = readLock(join(root, "package-lock.json"));
+      assert.equal(lock.packages["packages/alpha"]?.version, "1.2.3-alpha.1");
+      assert.equal(lock.packages["packages/beta"]?.version, "1.2.3-alpha.1");
+      assert.equal(lock.packages["packages/natives"]?.version, "1.2.3-alpha.1");
+      // First-party ranges inside a workspace entry move with it, in every
+      // section, including the platform-suffixed native packages.
+      assert.equal(lock.packages["packages/alpha"]?.dependencies?.["@bastani/atomic-natives"], "1.2.3-alpha.1");
+      assert.equal(
+        lock.packages["packages/alpha"]?.optionalDependencies?.["@bastani/atomic-natives-linux-x64-gnu"],
+        "1.2.3-alpha.1",
+      );
+      // Third-party pins and the resolved link entries are left exactly alone:
+      // rewriting either would invalidate the lock rather than stamp it.
+      assert.equal(lock.packages["packages/alpha"]?.dependencies?.["third-party"], "9.9.9");
+      assert.equal(lock.packages["node_modules/third-party"]?.version, "9.9.9");
+      assert.equal(lock.packages["node_modules/@fixture/alpha"]?.link, true);
+      assert.equal(lock.packages["node_modules/@fixture/alpha"]?.version, undefined);
+      assert.match(result.stdout, /package-lock\.json: 3 workspace entries → 1\.2\.3-alpha\.1/u);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -149,9 +222,31 @@ describe("scripts/bump-version.ts", () => {
         assert.match(result.stderr, /Expected MAJOR\.MINOR\.PATCH or MAJOR\.MINOR\.PATCH-alpha\.REVISION/);
         assert.equal(readJson(join(root, "package.json")).version, "0.1.0");
         assert.equal(readJson(join(root, "packages", "alpha", "package.json")).version, "0.1.0");
+        assert.equal(readLock(join(root, "package-lock.json")).packages["packages/alpha"]?.version, "0.1.0");
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
+    }
+  });
+
+  /**
+   * A repository with no npm lockfile is still stampable.
+   *
+   * `npmLockTargets()` is conditional on the file existing, and this is the
+   * shape every other test used to run in -- which is exactly why the stamping
+   * branch went untested. Keeping one explicit case here means the absence is a
+   * decision rather than the default.
+   */
+  test("a root without an npm lockfile is stamped without one", () => {
+    const root = createFixtureRoot();
+    try {
+      rmSync(join(root, "package-lock.json"));
+      const result = runBump(root, "1.2.3");
+      assert.equal(result.exitCode, 0, result.stderr);
+      assert.equal(readJson(join(root, "package.json")).version, "1.2.3");
+      assert.doesNotMatch(result.stdout, /package-lock\.json/u);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

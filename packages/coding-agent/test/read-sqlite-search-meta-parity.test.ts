@@ -1,4 +1,3 @@
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,11 +6,12 @@ import { createFindToolDefinition } from "../src/core/tools/find.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
 import { createSearchToolDefinition } from "../src/core/tools/search.ts";
 import { createWriteToolDefinition } from "../src/core/tools/write.ts";
+import { requireBunSqlite } from "./helpers/bun-sqlite.ts";
 
 interface SqliteQuery { all(...params: Array<string | number>): Record<string, string | number | null>[]; run(...params: Array<string | number>): void }
 interface SqliteDb { run(sql: string, ...params: Array<string | number>): void; query(sql: string): SqliteQuery; close(): void }
 interface BunSqliteModule { Database: new (path: string) => SqliteDb }
-function sqlite(): BunSqliteModule | undefined { try { return createRequire(import.meta.url)("bun:sqlite") as BunSqliteModule; } catch { return undefined; } }
+function sqlite(): BunSqliteModule { return requireBunSqlite<BunSqliteModule>(import.meta.url); }
 const text = (result: { content: Array<{ type: string; text?: string }> }): string => result.content.map((item) => item.text ?? "").join("\n");
 const tempDirs: string[] = [];
 async function tempDir(): Promise<string> { const dir = await mkdtemp(join(tmpdir(), "atomic-read-sqlite-parity-")); tempDirs.push(dir); return dir; }
@@ -19,7 +19,7 @@ afterEach(async () => { await Promise.all(tempDirs.splice(0).map((dir) => rm(dir
 
 describe("sqlite and metadata parity", () => {
 	it("uses query default limit 20 and caps to 500", async () => {
-		const mod = sqlite(); if (!mod) return;
+		const mod = sqlite();
 		const dir = await tempDir(); const dbPath = join(dir, "data.sqlite"); const db = new mod.Database(dbPath);
 		try { db.run("create table t (id integer primary key, body text)"); for (let i = 1; i <= 600; i++) db.run("insert into t values (?, ?)", i, `row${i}`); } finally { db.close(); }
 		const read = createReadToolDefinition(dir);
@@ -30,7 +30,7 @@ describe("sqlite and metadata parity", () => {
 	});
 
 	it("lists tables with row counts", async () => {
-		const mod = sqlite(); if (!mod) return;
+		const mod = sqlite();
 		const dir = await tempDir(); const dbPath = join(dir, "data.sqlite"); const db = new mod.Database(dbPath);
 		try { db.run("create table alpha (id integer primary key)"); db.run("create table beta (id integer primary key)"); } finally { db.close(); }
 		const listing = text(await createReadToolDefinition(dir).execute("list-tables", { path: "data.sqlite" }, undefined, undefined, {} as never));
@@ -39,7 +39,7 @@ describe("sqlite and metadata parity", () => {
 	});
 
 	it("caps raw q rows and exposes read metadata", async () => {
-		const mod = sqlite(); if (!mod) return;
+		const mod = sqlite();
 		const dir = await tempDir(); const dbPath = join(dir, "data.sqlite"); const db = new mod.Database(dbPath);
 		try { db.run("create table t (id integer primary key)"); for (let i = 1; i <= 1500; i++) db.run("insert into t values (?)", i); } finally { db.close(); }
 		const raw = text(await createReadToolDefinition(dir).execute("raw-q", { path: "data.sqlite?q=select * from t" }, undefined, undefined, {} as never));
@@ -53,7 +53,7 @@ describe("sqlite and metadata parity", () => {
 	});
 
 	it("validates SQLite where clauses and write columns like oh-my-pi", async () => {
-		const mod = sqlite(); if (!mod) return;
+		const mod = sqlite();
 		const dir = await tempDir(); const dbPath = join(dir, "data.sqlite"); const db = new mod.Database(dbPath);
 		try { db.run("create table users (id integer primary key, name text)"); db.run("insert into users values (1, 'Ada')"); } finally { db.close(); }
 		const read = createReadToolDefinition(dir);
@@ -63,7 +63,7 @@ describe("sqlite and metadata parity", () => {
 	});
 
 	it("propagates read/search/find meta details", async () => {
-		const mod = sqlite(); if (!mod) return;
+		const mod = sqlite();
 		const dir = await tempDir(); const dbPath = join(dir, "data.sqlite"); const db = new mod.Database(dbPath);
 		try { db.run("create table t (id integer primary key, body text)"); db.run("insert into t values (1, 'needle')"); } finally { db.close(); }
 		const sqliteRead = await createReadToolDefinition(dir).execute("read-sqlite-meta", { path: "data.sqlite:t" }, undefined, undefined, {} as never);

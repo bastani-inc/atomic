@@ -162,6 +162,16 @@ jobs:
           -- npm run test --workspace=@bastani/atomic
         env:
           ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE: "1"
+      # The four SQLite selector files stay on Bun, because the code they test
+      # (src/core/tools/resource-selectors.ts) loads `bun:sqlite` and throws
+      # without it. Under Node they did not fail, they emptied: one test skipped
+      # and eleven kept passing with every assertion behind a dead guard. This
+      # step is the runtime those tests need, not a duplicate of the one above --
+      # the `agent` project excludes exactly the files `agent-bun` collects.
+      - name: coding-agent Bun-hosted suite (one bounded flake retry)
+        run: >-
+          bun run scripts/run-flaky-test-suite.ts --label "coding-agent bun tests (${{ matrix.binary_platform }})"
+          -- npm run test:bun --workspace=@bastani/atomic
       - name: Upload flaky-test diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

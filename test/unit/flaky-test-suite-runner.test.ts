@@ -10,7 +10,16 @@ import { bunExecutable, fileExists, readStreamText, readText, spawnProcess } fro
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const runner = join(root, "scripts/run-flaky-test-suite.ts");
 
-type Mode = "success" | "flake" | "persistent" | "deterministic" | "headroom" | "retry-headroom" | "blind";
+type Mode =
+  | "success"
+  | "flake"
+  | "persistent"
+  | "deterministic"
+  | "deterministic-log-only"
+  | "headroom"
+  | "retry-headroom"
+  | "blind"
+  | "no-report";
 
 /**
  * A stand-in for vitest that the wrapper cannot tell from the real thing.
@@ -45,6 +54,16 @@ if (mode === "headroom") {
 } else if (mode === "blind") {
   // Tests ran, yet the report carries none of them: the harness broke.
   report = { numTotalTests: 2, testResults: [] };
+} else if (mode === "no-report") {
+  // The suite exits green having written nothing at all. A gate that cannot
+  // see must say so rather than score an empty sample set as healthy.
+  report = undefined;
+} else if (mode === "deterministic-log-only") {
+  // A corrupt report is worth exactly as much as no report, and the wrapper's
+  // last resort for naming the failing file is the step log it already teed.
+  report = "{ this is not json";
+  console.log("FAIL test/ci/ci-workflow-contracts.test.ts > deterministic contract");
+  code = 8;
 } else if (mode === "retry-headroom") {
   if (attempt === 1) {
     report = { numTotalTests: 2, testResults: [testFile("test/unit/drift.test.ts", [passed("drifting test", 25000)]), testFile("test/unit/unrelated.test.ts", [failed("unrelated failure")])] };
@@ -64,7 +83,7 @@ if (mode === "headroom") {
   code = 8;
 }
 
-if (outputFile) writeFileSync(outputFile, JSON.stringify(report));
+if (outputFile && report !== undefined) writeFileSync(outputFile, typeof report === "string" ? report : JSON.stringify(report));
 process.exit(code);
 `;
 
@@ -159,6 +178,25 @@ test("deterministic workflow contract failures are never retried", async () => {
   assert.ok(!result.files.includes("fixture-suite-attempt-2.log"));
 });
 
+/**
+ * The report is the only structured record the wrapper gets, so its absence has
+ * to be survivable *and* loud. `findFailedDeterministicFile` keeps a log scan
+ * precisely for a suite that died before writing one, and the retry decision
+ * must still be made correctly from the step log alone -- otherwise a broken
+ * reporter silently converts a no-retry file into a retried one.
+ */
+test("a corrupt report still blocks the retry, using the step log to name the file", async () => {
+  const result = await fixture("deterministic-log-only");
+  // The wrapper's own exit code, not the guard's: a deterministic failure is
+  // reported as itself.
+  assert.equal(result.code, 8);
+  assert.match(result.output, /No retry: deterministic test file failed \(ci-workflow-contracts\.test\.ts\)/);
+  assert.doesNotMatch(result.output, /fixture attempt 2/);
+  // And the unreadable report is reported as blindness, never as a clean sheet.
+  assert.match(result.output, /::error title=Duration guard blind[^\n]*the suite wrote no readable JSON report/);
+  assert.match(result.durations, /no duration samples parsed/);
+});
+
 test("a green suite still fails when one test exhausts its timeout headroom", async () => {
   const gated = await fixture("headroom");
   assert.equal(gated.code, 1);
@@ -193,6 +231,33 @@ test("a suite whose tests ran without printing durations fails instead of passin
   assert.match(result.summary, /Duration guard blind/);
   assert.match(result.durations, /Samples: 0 of 2 test\(s\) run/);
 });
+
+/**
+ * The other half of blindness: not an empty report, but no report at all.
+ *
+ * A suite that exits green having written nothing is the shape a reporter
+ * misconfiguration takes -- the step passes, the table is empty, and nobody
+ * learns the gate stopped measuring. `missing` exists for this, and until now
+ * only the empty-but-present report was covered.
+ */
+test("a suite that writes no report at all fails instead of passing unmeasured", async () => {
+  const result = await fixture("no-report");
+  assert.equal(result.code, 1);
+  assert.match(result.output, /::error title=Duration guard blind[^\n]*the suite wrote no readable JSON report/);
+  assert.match(result.summary, /Duration guard blind/);
+  assert.match(result.durations, /no duration samples parsed/);
+  // A missing report must not be mistaken for a suite that ran nothing.
+  assert.doesNotMatch(result.output, /Retrying/);
+});
+
+/**
+ * Structural: each of the two tests below starts a real vitest process, which
+ * transforms and imports the runner, its guard and a scratch suite before a
+ * single assertion runs. Named and kept at the call site, per the per-test
+ * timeout policy in AGENTS.md -- a bare literal there says nothing about why
+ * the cost is structural rather than a slow test nobody fixed.
+ */
+const REAL_VITEST_SUITE_TIMEOUT_MS = 120_000;
 
 /** A real two-test vitest suite: one on the project budget, one explicit. */
 const REAL_SUITE = [
@@ -270,7 +335,7 @@ test("the wrapper scores a real vitest run through the JSON reporter it requests
   // The default reporter must survive alongside the JSON one, or a cancelled
   // step loses every clue about which test stalled.
   assert.match(result.output, /suite\.test\.ts/);
-}, 120_000);
+}, REAL_VITEST_SUITE_TIMEOUT_MS);
 
 /**
  * CI never invokes `vitest` directly -- every suite goes through `npm run
@@ -290,4 +355,4 @@ test("the wrapper scores a real vitest run behind the `npm run <script>` form CI
       ["npm", "run", "test:unit"],
     ),
   );
-}, 120_000);
+}, REAL_VITEST_SUITE_TIMEOUT_MS);

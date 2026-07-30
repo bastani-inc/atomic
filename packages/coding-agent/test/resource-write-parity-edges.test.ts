@@ -1,4 +1,3 @@
-import { createRequire } from "node:module";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,12 +7,13 @@ import { createHashlineSnapshotStore } from "../src/core/tools/hashline.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
 import { readZipEntriesFromBuffer } from "../src/core/tools/resource-selectors.ts";
 import { createWriteToolDefinition } from "../src/core/tools/write.ts";
+import { requireBunSqlite } from "./helpers/bun-sqlite.ts";
 
 interface SqliteQuery { get(): Record<string, string | number | null> | undefined }
 interface SqliteDb { run(sql: string): void; query(sql: string): SqliteQuery; close(): void }
 interface BunSqliteModule { Database: new (path: string) => SqliteDb }
 const text = (result: { content: Array<{ type: string; text?: string }> }): string => result.content.map((item) => item.text ?? "").join("\n");
-function sqlite(): BunSqliteModule | undefined { try { return createRequire(import.meta.url)("bun:sqlite") as BunSqliteModule; } catch { return undefined; } }
+function sqlite(): BunSqliteModule { return requireBunSqlite<BunSqliteModule>(import.meta.url); }
 
 describe("resource write parity edges", () => {
 	let testDir: string;
@@ -43,7 +43,7 @@ describe("resource write parity edges", () => {
 	});
 
 	it("inserts SQLite default values for empty table-write objects", async () => {
-		const sqliteMod = sqlite(); if (!sqliteMod) return;
+		const sqliteMod = sqlite();
 		const dbPath = join(testDir, "data.sqlite"), db = new sqliteMod.Database(dbPath);
 		try { db.run("create table t (id integer primary key, name text default 'anon')"); } finally { db.close(); }
 		await createWriteToolDefinition(testDir).execute("sqlite-default", { path: "data.sqlite:t", content: "{}" }, undefined, undefined, {} as never);
@@ -62,7 +62,7 @@ describe("resource write parity edges", () => {
 	});
 
 	it("reports SQLite no-op row updates and deletes", async () => {
-		const sqliteMod = sqlite(); if (!sqliteMod) return;
+		const sqliteMod = sqlite();
 		const dbPath = join(testDir, "data.sqlite"), db = new sqliteMod.Database(dbPath);
 		try { db.run("create table users (id text primary key, name text)"); } finally { db.close(); }
 		let output = text(await createWriteToolDefinition(testDir).execute("sqlite-miss-update", { path: "data.sqlite:users:missing", content: "{name:'Ada'}" }, undefined, undefined, {} as never));
