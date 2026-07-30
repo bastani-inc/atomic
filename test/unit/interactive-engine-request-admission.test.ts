@@ -11,7 +11,7 @@
 
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isEngineSendFailure } from "../../packages/coding-agent/src/modes/interactive/interactive-prompt-restore.ts";
@@ -120,6 +120,91 @@ serialTest("a queued admission frame is parsed before the exit rejection", async
 			"the exit rejection outran the queued admission frame",
 		);
 		assert.equal(isEngineSendFailure(error), false);
+	} finally {
+		await client.stop();
+	}
+}, 60_000);
+
+/**
+ * The round-nine race: the admission frame sits behind several reader turns and
+ * a descendant holds stdout open, while automatic recovery starts in the same
+ * turn as the death event. Recovery used to detach the reader, retire the
+ * generation, and re-reject with `Agent process stopped`, so the queued
+ * admission never landed and already-running work was offered back to the user.
+ */
+serialTest("an admitted command is never restored when automatic recovery starts before dead stdout drains", async () => {
+	const temp = mkdtempSync(join(tmpdir(), "atomic-admission-backlog-"));
+	const marker = join(temp, "side-effect");
+	const generations = join(temp, "generations");
+	const client = new RpcClient({
+		cliPath: join(import.meta.dir, "fixtures", "admission-backlog-engine.ts"),
+		cwd: join(import.meta.dir, "../.."),
+		runtimeExecutable: process.execPath,
+		env: { ATOMIC_ADMISSION_MARKER: marker, ATOMIC_ADMISSION_GENERATION: generations },
+		interactiveEngine: { onDiagnostic: () => {} },
+	});
+	// Exactly the runtime's shape: recovery begins synchronously on death.
+	let recovery: Promise<unknown> | undefined;
+	client.onGenerationEnded((event) => {
+		if (event.expected || recovery) return;
+		recovery = client.restart(undefined).then(() => undefined, (error: unknown) => error);
+	});
+	try {
+		await client.start();
+		const failure = await client.prompt("quiet command with side effects")
+			.then(() => undefined, (error: unknown) => error);
+
+		assert.equal(existsSync(marker), true, "the child never ran the work this test is about");
+		assert.ok(isRpcTransportFailure(failure), "engine death must still be a transport failure");
+		assert.ok(isRpcRequestAcceptedFailure(failure), "recovery discarded the queued admission frame");
+		assert.match(
+			(failure as Error).message,
+			/Agent process exited/,
+			"the stop performed by recovery must not relabel the original exit",
+		);
+		assert.equal(isEngineSendFailure(failure), false, "already-running work must not be restorable");
+
+		assert.equal(await recovery, undefined, "automatic recovery did not complete");
+		assert.ok(client.getEnginePid(), "the replacement generation never became ready");
+		assert.equal(
+			readFileSync(generations, "utf8").trim().split("\n").length,
+			2,
+			"expected exactly one replacement generation",
+		);
+	} finally {
+		await client.stop();
+		rmSync(temp, { recursive: true, force: true });
+	}
+}, 60_000);
+
+/**
+ * Explicit stop is a terminal cause like any other: a request the child had
+ * already taken must not become restorable just because the user, a recovery
+ * replacement, or disposal was the one that ended the generation.
+ */
+serialTest("an explicit stop preserves ownership of a request the child had taken", async () => {
+	// A fixture that admits and then stays silent: only the host can end this
+	// request, so the stop path is the one under test rather than a race with a
+	// real child's shutdown response.
+	const client = new RpcClient({
+		cliPath: join(import.meta.dir, "fixtures", "admission-race-engine.ts"),
+		cwd: join(import.meta.dir, "../.."),
+		runtimeExecutable: process.execPath,
+		env: { ATOMIC_ADMISSION_HOLD: "1" },
+		interactiveEngine: { onDiagnostic: () => {} },
+	});
+	try {
+		await client.start();
+		const pending = client.prompt("taken but never answered").then(() => undefined, (error: unknown) => error);
+		await Bun.sleep(100);
+
+		await client.stop();
+		const failure = await pending;
+
+		assert.ok(isRpcTransportFailure(failure), "a stop is still a transport failure");
+		assert.ok(isRpcRequestAcceptedFailure(failure), "the stop discarded the admission the child had sent");
+		assert.match((failure as Error).message, /Agent process stopped/, "a deliberate stop keeps its own wording");
+		assert.equal(isEngineSendFailure(failure), false, "work the child had taken must not be restorable");
 	} finally {
 		await client.stop();
 	}

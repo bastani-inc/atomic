@@ -10,6 +10,7 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { RpcPendingRequests } from "../../packages/coding-agent/src/modes/rpc/rpc-pending-requests.ts";
+import { RpcTerminalDrain } from "../../packages/coding-agent/src/modes/rpc/rpc-terminal-drain.ts";
 import { EXIT_DRAIN_TIMEOUT_MS } from "../../packages/coding-agent/src/modes/rpc/rpc-command-timeouts.ts";
 import {
 	isRpcRequestAcceptedFailure,
@@ -56,7 +57,8 @@ test("a request accepted while the exit rejection waits for the drain is not rep
 	let markDrained!: () => void;
 	const drained = new Promise<void>((resolve) => { markDrained = resolve; });
 
-	pending.rejectAllAfterDrain(drained, EXIT(), () => true);
+	const drain = new RpcTerminalDrain();
+	void drain.begin(1, drained, EXIT(), (error) => pending.rejectAll(error));
 	assert.equal(settled.rejected, undefined, "the request must not fail before the reader has drained");
 
 	// The admission frame was still in the pipe when the child exited.
@@ -70,20 +72,50 @@ test("a request accepted while the exit rejection waits for the drain is not rep
 test("a drain that never completes still fails pending requests", async () => {
 	const pending = new RpcPendingRequests();
 	const settled = track(pending, "req_1");
-	pending.rejectAllAfterDrain(new Promise<void>(() => {}), EXIT(), () => true);
+	void new RpcTerminalDrain().begin(1, new Promise<void>(() => {}), EXIT(), (error) => pending.rejectAll(error));
 
 	await Bun.sleep(EXIT_DRAIN_TIMEOUT_MS + 50);
 	assert.ok(isRpcTransportFailure(settled.rejected), "a descendant holding stdout must not strand the caller");
 	assert.equal(isRpcRequestAcceptedFailure(settled.rejected), false);
 });
 
-test("a drain that lands after a replacement generation started touches nothing", async () => {
+test("the first terminal cause owns the error, and settlement happens once", async () => {
 	const pending = new RpcPendingRequests();
 	const settled = track(pending, "req_1");
-	pending.rejectAllAfterDrain(Promise.resolve(), EXIT(), () => false);
-	await Bun.sleep(0);
-	assert.equal(settled.rejected, undefined, "a stale drain rejected the replacement's own request");
-	assert.equal(pending.size, 1);
+	const drain = new RpcTerminalDrain();
+	const exit = EXIT();
+	let markDrained!: () => void;
+	const drained = new Promise<void>((resolve) => { markDrained = resolve; });
+
+	const first = drain.begin(2, drained, exit, (error) => pending.rejectAll(error));
+	// A recovery stop joins the same phase; its own error must not take over.
+	const joined = drain.begin(2, Promise.resolve(), rpcTransportError("Agent process stopped"), () => {
+		throw new Error("a second settle ran for one generation");
+	});
+	assert.equal(joined, first, "the second caller must join, not start another phase");
+	assert.equal(drain.isDraining(2), true);
+
+	markDrained();
+	await first;
+	assert.equal((settled.rejected as Error).message, exit.message, "the stop relabelled the original exit");
+	assert.equal(await drain.settled(2), undefined);
+	assert.equal(await drain.settled(3), undefined, "an untouched generation settles immediately");
+});
+
+test("only ownership frames survive a dead generation", () => {
+	const drain = new RpcTerminalDrain();
+	const accepted: string[] = [];
+	const observe = (line: string) => drain.observe(1, line, (id) => accepted.push(id));
+	assert.equal(observe(JSON.stringify({ type: "engine_request_accepted", requestId: "req_1", command: "prompt" })), false,
+		"a generation that never died has nothing to drain");
+
+	void drain.begin(1, new Promise<void>(() => {}), EXIT(), () => {});
+	assert.equal(observe(JSON.stringify({ type: "engine_request_accepted", requestId: "req_1", command: "prompt" })), true);
+	assert.deepEqual(accepted, ["req_1"]);
+	// Every other frame from the dead generation is swallowed, not applied.
+	assert.equal(observe(JSON.stringify({ type: "engine_heartbeat", at: 1 })), true);
+	assert.equal(observe(JSON.stringify({ type: "response", id: "req_1", success: true })), false);
+	assert.deepEqual(accepted, ["req_1"]);
 });
 
 test("a response settles its request and admission for an unknown id is ignored", () => {

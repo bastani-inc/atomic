@@ -1,5 +1,4 @@
 import type { RpcResponse } from "./rpc-types.ts";
-import { EXIT_DRAIN_TIMEOUT_MS } from "./rpc-command-timeouts.ts";
 import { asAcceptedRequestFailure } from "./rpc-transport-error.ts";
 
 interface PendingRequest {
@@ -67,25 +66,4 @@ export class RpcPendingRequests {
 		}
 	}
 
-	/**
-	 * Fail in-flight requests once the dead child's stdout has been fully parsed.
-	 *
-	 * `drained` resolves when the reader has delivered its last queued frame, so
-	 * an admission frame still in the pipe is seen first and its request is not
-	 * misclassified as never accepted. The timer bounds a descendant that
-	 * inherited stdout and keeps it open: pending callers must fail, not hang.
-	 * `stillCurrent` keeps a late drain from touching a replacement generation.
-	 */
-	rejectAllAfterDrain(drained: Promise<void>, error: Error, stillCurrent: () => boolean): void {
-		let settled = false;
-		const finish = (): void => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timer);
-			if (stillCurrent()) this.rejectAll(error);
-		};
-		const timer = setTimeout(finish, EXIT_DRAIN_TIMEOUT_MS);
-		timer.unref?.();
-		void drained.then(finish, finish);
-	}
 }

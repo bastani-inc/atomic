@@ -26,11 +26,12 @@ import {
 	spawnRpcClientProcess,
 	terminateRpcClientProcess,
 } from "./rpc-client-process.ts";
-import { collectRpcEvents, waitForRpcIdle } from "./rpc-client-waits.ts";
+import { collectRpcEvents, runUserBashWithUpdates, waitForRpcIdle } from "./rpc-client-waits.ts";
 import { DEFAULT_REQUEST_TIMEOUT_MS, LONG_LIVED_COMMANDS, RESTART_CANCELLED_MESSAGE } from "./rpc-command-timeouts.ts";
 import { RpcEventBuffer } from "./rpc-event-buffer.ts";
 import { GenerationBuffer } from "./rpc-generation-buffer.ts";
 import { RpcPendingRequests } from "./rpc-pending-requests.ts";
+import { RpcTerminalDrain } from "./rpc-terminal-drain.ts";
 import { markRpcTransportFailure, rpcTransportError } from "./rpc-transport-error.ts";
 import type { RpcCommand, RpcEvent, RpcExtensionUIRequest, RpcExtensionUIResponse, RpcResponse } from "./rpc-types.ts";
 
@@ -82,6 +83,8 @@ export class RpcClient extends RpcClientApi {
 	private readonly pendingRequests = new RpcPendingRequests();
 	/** Bumped by every explicit stop; a restart holds a permit across its own stop. */
 	private restartRevision = 0;
+	private readonly terminalDrain = new RpcTerminalDrain();
+	private stdoutDrained: Promise<void> = Promise.resolve();
 	private requestId = 0;
 	private stderr = "";
 	private exitError: Error | null = null;
@@ -151,21 +154,9 @@ export class RpcClient extends RpcClientApi {
 		this.process = childProcess;
 		this.stdinWriter = new QueuedWriter(childProcess.stdin!);
 
-		childProcess.once("exit", (code, signal) => {
-			if (generation !== this.generation) return;
-			const error = this.createProcessExitError(code, signal);
-			this.exitError = error;
-			this.stdinWriter?.close(error);
-			this.engineMonitor?.fail(error);
-			this.activeActivityIds.clear();
-			this.options.interactiveEngine?.onActivityChange?.(false);
-			// Not rejected inline: queued stdout is parsed asynchronously, so an
-			// admission frame still in the pipe would land after its request had
-			// been classified as never accepted. Generation death still publishes
-			// immediately.
-			this.pendingRequests.rejectAllAfterDrain(stdoutDrained, error, () => generation === this.generation);
-			this.publishGenerationEnded(generation, error, "exit", false);
-		});
+		childProcess.once("exit", (code, signal) =>
+			this.failGeneration(this.createProcessExitError(code, signal), generation, "exit"),
+		);
 		childProcess.once("error", (rawError) => this.failGeneration(rawError, generation, "process-error"));
 		childProcess.stdin?.on("error", (rawError) => this.failGeneration(rawError, generation, "stdin-error"));
 		childProcess.stderr?.on("data", (data) => {
@@ -175,7 +166,7 @@ export class RpcClient extends RpcClientApi {
 		});
 		const readerOptions = createInteractiveJsonlOptions(this.engineMonitor !== undefined);
 		let markStdoutDrained!: () => void;
-		const stdoutDrained = new Promise<void>((resolve) => {
+		this.stdoutDrained = new Promise<void>((resolve) => {
 			markStdoutDrained = resolve;
 		});
 		this.stopReadingStdout = attachJsonlLineReader(
@@ -202,7 +193,12 @@ export class RpcClient extends RpcClientApi {
 		await this.stopCurrentGeneration();
 	}
 
-	/** Tear down the current child without touching the restart permit. */
+	/**
+	 * Tear down the current child without touching the restart permit. The reader
+	 * stays attached and the generation stays current until the dead child's
+	 * stdout settles, so an ownership frame it already sent still reaches its
+	 * request; only then is the generation retired (see RpcTerminalDrain).
+	 */
 	private async stopCurrentGeneration(): Promise<void> {
 		const child = this.process;
 		if (!child) return;
@@ -210,7 +206,6 @@ export class RpcClient extends RpcClientApi {
 		const stopError = rpcTransportError("Agent process stopped");
 		this.invalidateEngineShortcuts();
 		const terminateTree = this.engineMonitor !== undefined;
-		this.stopReadingStdout?.();
 		this.engineMonitor?.stop();
 		this.stdinWriter?.close(stopError);
 		// Unblock an in-flight start()/waitUntilBound() for the generation being
@@ -218,16 +213,20 @@ export class RpcClient extends RpcClientApi {
 		// explicit stop of a hung replacement child could never be observed.
 		this.engineMonitor?.fail(stopError);
 		this.engineMonitor = undefined;
-		this.stopReadingStdout = null;
 		this.stdinWriter = undefined;
 		this.process = null;
-		this.generation += 1;
-		// Publish before terminating so host controllers tear down this
-		// generation's UI while the writer is already detached: local-only
-		// disposal can never write into the replacement child.
+		// Publish before terminating so host controllers tear down this generation's
+		// UI while the writer is detached: disposal cannot write into a replacement.
 		this.publishGenerationEnded(endedGeneration, stopError, "explicit-stop", true);
+		// Claim before terminating so the exit this provokes does not relabel a
+		// deliberate stop; an exit that already claimed keeps its own error.
+		this.terminalDrain.claim(endedGeneration, stopError);
 		await terminateRpcClientProcess(child, terminateTree);
-		this.rejectPendingRequests(stopError);
+		await this.beginTerminalDrain(endedGeneration, stopError);
+		this.stopReadingStdout?.();
+		this.stopReadingStdout = null;
+		this.generation += 1;
+		this.pendingRequests.rejectAll(stopError);
 		this.eventBuffer?.dispose();
 		this.eventBuffer = undefined;
 		this.activeActivityIds.clear();
@@ -323,9 +322,9 @@ export class RpcClient extends RpcClientApi {
 
 	/**
 	 * Replace the engine child, unless an explicit stop supersedes this attempt.
-	 * The permit is checked immediately before spawning, so a `stop()` landing in
-	 * that window is always observed. Cancellation throws rather than returning
-	 * quietly: callers continue with host initialization against the new child.
+	 * The permit is checked immediately before spawning, so a `stop()` in that
+	 * window is always observed; cancellation throws rather than returning
+	 * quietly, because callers go on to initialize against the new child.
 	 */
 	async restart(sessionFile: string | undefined): Promise<void> {
 		const permit = this.restartRevision;
@@ -339,28 +338,12 @@ export class RpcClient extends RpcClientApi {
 	async requestInternal<T>(command: RpcCommandBody): Promise<T> {
 		return this.data<T>(await this.request(command));
 	}
-	async userBashWithUpdates(
+	userBashWithUpdates(
 		command: string,
 		onUpdate: (delta: string, channel: BashOutputChannel) => void,
 		options?: { excludeFromContext?: boolean; onRequestId?: (id: string) => void },
 	): Promise<BashResult> {
-		let requestId: string | undefined;
-		const unsubscribe = this.onEvent((event) => {
-			if (event.type === "bash_execution_update" && event.id === requestId) onUpdate(event.delta, event.channel);
-		});
-		try {
-			return this.data(
-				await this.request(
-					{ type: "user_bash", command, excludeFromContext: options?.excludeFromContext },
-					(id) => {
-						requestId = id;
-						options?.onRequestId?.(id);
-					},
-				),
-			);
-		} finally {
-			unsubscribe();
-		}
+		return runUserBashWithUpdates(this, command, onUpdate, options, (body, onId) => this.request(body, onId));
 	}
 	getStderr(): string {
 		return this.stderr;
@@ -378,6 +361,7 @@ export class RpcClient extends RpcClientApi {
 		return eventsPromise;
 	}
 	private handleLine(line: string, generation: number): void {
+		if (this.terminalDrain.observe(generation, line, (id) => this.pendingRequests.markAccepted(id))) return;
 		if (this.engineMonitor?.handleLine(line)) return;
 		try {
 			const data = JSON.parse(line) as { type?: string; id?: string };
@@ -414,30 +398,45 @@ export class RpcClient extends RpcClientApi {
 		this.emitInteractiveEngineMessage({ type: "engine_keybindings_reloaded", state }, this.generation);
 	}
 	private observeInteractiveEngineMessage(message: InteractiveEngineMessage, generation: number): void {
-		// A frame from a replaced or already-dead generation must not touch host
-		// state: it would revive a PID, an activity, or a mount that is gone.
+		// Ownership is the one thing a dead generation may still report: request
+		// ids never repeat, and the alternative is classifying work it already
+		// started as never sent. Nothing else from it may touch host state — a
+		// stale frame would revive a PID, an activity, or a mount that is gone.
+		if (message.type === "engine_request_accepted") {
+			if (generation === this.generation) this.pendingRequests.markAccepted(message.requestId);
+			return;
+		}
 		if (generation !== this.generation || generation <= this.lastEndedGeneration) return;
 		if (message.type === "engine_heartbeat") this.options.interactiveEngine?.onHeartbeat?.();
 		if (message.type === "engine_ready") this.enginePid = message.pid;
 		if (message.type === "engine_keybindings_reloaded") this.latestEngineKeybindingState = message.state;
 		if (message.type === "engine_activity_started") this.activeActivityIds.add(message.activity.id);
 		else if (message.type === "engine_activity_finished") this.activeActivityIds.delete(message.activityId);
-		if (message.type === "engine_request_accepted") this.pendingRequests.markAccepted(message.requestId);
 		this.options.interactiveEngine?.onActivityChange?.(this.activeActivityIds.size > 0);
 		this.emitInteractiveEngineMessage(message, generation);
 	}
-	/** Shared teardown for a child-level transport failure of `generation`. */
+	/**
+	 * Shared teardown for every unexpected end of `generation`. Death publishes
+	 * at once for the host UI; its requests wait for stdout (RpcTerminalDrain).
+	 */
 	private failGeneration(rawError: Error, generation: number, kind: InteractiveEngineGenerationEndKind): void {
 		if (generation !== this.generation) return;
 		const error = markRpcTransportFailure(rawError);
 		this.exitError = error;
 		this.stdinWriter?.close(error);
 		this.engineMonitor?.fail(error);
-		this.rejectPendingRequests(error);
+		if (kind === "exit") {
+			this.activeActivityIds.clear();
+			this.options.interactiveEngine?.onActivityChange?.(false);
+		}
+		this.beginTerminalDrain(generation, error);
 		this.publishGenerationEnded(generation, error, kind, false);
 	}
-	private rejectPendingRequests(error: Error): void {
-		this.pendingRequests.rejectAll(error);
+	/** Hold this generation's requests until its stdout drains (RpcTerminalDrain). */
+	private beginTerminalDrain(generation: number, error: Error): Promise<void> {
+		return this.terminalDrain.begin(generation, this.stdoutDrained, error, (settled) => {
+			if (generation === this.generation) this.pendingRequests.rejectAll(settled);
+		});
 	}
 	private publishGenerationEnded(
 		generation: number,
@@ -457,19 +456,13 @@ export class RpcClient extends RpcClientApi {
 		for (const listener of [...this.generationEndedListeners]) listener(event);
 	}
 	private failTransport(rawError: Error): void {
-		const generation = this.generation;
-		const error = markRpcTransportFailure(rawError);
-		this.exitError = error;
-		this.stdinWriter?.close(error);
-		this.engineMonitor?.fail(error);
-		this.rejectPendingRequests(error);
 		this.options.interactiveEngine?.onDiagnostic({
 			activity: undefined,
 			elapsedMs: 0,
 			level: "unresponsive",
-			message: error.message,
+			message: rawError.message,
 		});
-		this.publishGenerationEnded(generation, error, "transport-error", false);
+		this.failGeneration(rawError, this.generation, "transport-error");
 	}
 	private requireWriter(): QueuedWriter {
 		if (!this.stdinWriter) throw rpcTransportError("Agent process stdin is not writable");

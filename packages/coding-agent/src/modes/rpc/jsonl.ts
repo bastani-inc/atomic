@@ -66,6 +66,12 @@ export function attachJsonlLineReader(
 		return { offset, lines };
 	};
 
+	let drainedNotified = false;
+	const notifyDrained = (): void => {
+		if (drainedNotified) return;
+		drainedNotified = true;
+		options.onDrained?.();
+	};
 	const schedule = (): void => {
 		if (!scheduled && !detached) scheduled = setImmediate(drain);
 	};
@@ -89,7 +95,7 @@ export function attachJsonlLineReader(
 			if (frameBytes > 0) finishFrame();
 			frameParts = [];
 			frameBytes = 0;
-			options.onDrained?.();
+			notifyDrained();
 		} else stream.resume();
 	};
 	const onData = (chunk: string | Buffer): void => {
@@ -103,7 +109,16 @@ export function attachJsonlLineReader(
 			clearImmediate(scheduled);
 			scheduled = undefined;
 			drain();
-		} else if (chunks.length === 0 && frameBytes > 0) finishFrame();
+			return;
+		}
+		if (chunks.length > 0) {
+			drain();
+			return;
+		}
+		// Nothing queued: completion still has to be announced exactly once, or a
+		// caller waiting for the last frame of an empty stream waits forever.
+		if (frameBytes > 0) finishFrame();
+		notifyDrained();
 	};
 	stream.on("data", onData);
 	stream.on("end", onEnd);
