@@ -1039,7 +1039,7 @@ Access to models and API keys.
 
 The value is resolved at access time, so it tracks session replacement. Under the isolated interactive engine it reflects the engine's catalogue rather than a stale host snapshot.
 
-It reports the scope and cannot change it. `ctx.scopedModels` is a getter with no setter, typed `readonly ScopedModel[]`, so assigning to it or pushing an entry is a compile error. The guarantee also holds at runtime, where the type does not reach: each read returns a fresh copy rather than the session's own array, so a JavaScript extension — or one that asserts the `readonly` away — mutates a throwaway and cannot widen the set of models the session may use. Read it, and change scope through the commands and settings that own it.
+It reports the scope and cannot change it. `ctx.scopedModels` is a getter with no setter, typed `readonly ScopedModel[]`, so assigning to it or pushing an entry is a compile error. The guarantee also holds at runtime, where the type does not reach: each read returns a fresh copy — of the array, of every `{ model, thinkingLevel }` entry in it, and of each entry's model — and all three are frozen. A JavaScript extension, or one that asserts the `readonly` away, therefore cannot widen the set of models the session may use by pushing an entry, nor change which model it selects by swapping one in place; the attempt throws rather than quietly working. Read it, and change scope through the commands and settings that own it.
 
 ```typescript
 for (const { model, thinkingLevel } of ctx.scopedModels) {
