@@ -145,9 +145,10 @@ async function runCredentialPrintCommand(args: string[]): Promise<boolean> {
 			// The Secret arrives unreadable here; emitCredential owns the only take().
 			await emitCredential(secret);
 		} catch (error) {
-			// toCredentialPrintError keeps a dedicated code for a failure raised
-			// after the credential reached stdout; only a genuinely unclassified
-			// error is reported as a credential-resolution failure.
+			// Every code toCredentialPrintError can produce belongs to a failure
+			// that emitted nothing, so the exit code set here never contradicts
+			// an empty stdout; a genuinely unclassified error is reported as a
+			// credential-resolution failure.
 			const failure = toCredentialPrintError(error);
 			console.error(chalk.red(`Error: ${failure.message}`));
 			process.exitCode = failure.exitCode;

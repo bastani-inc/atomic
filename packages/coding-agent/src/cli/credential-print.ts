@@ -45,10 +45,14 @@ export type CredentialPrintErrorCode =
 	| "RefreshFailed"
 	| "MinValidityUnreachable"
 	| "OAuthUnavailable"
-	| "CredentialNotEmitted"
-	| "CredentialEmitIncomplete";
+	| "CredentialNotEmitted";
 
-const EXIT_CODES: Record<CredentialPrintErrorCode, number> = {
+/**
+ * Exported so a test can walk the whole taxonomy: every declared code has to
+ * name an exercised path that leaves stdout empty, and the record type makes a
+ * new member without an exit code a compile error rather than a review miss.
+ */
+export const EXIT_CODES: Record<CredentialPrintErrorCode, number> = {
 	Usage: 1,
 	NoCredentialConfigured: 2,
 	ProviderAmbiguous: 3,
@@ -57,7 +61,6 @@ const EXIT_CODES: Record<CredentialPrintErrorCode, number> = {
 	MinValidityUnreachable: 6,
 	OAuthUnavailable: 7,
 	CredentialNotEmitted: 8,
-	CredentialEmitIncomplete: 9,
 };
 
 export class CredentialPrintError extends Error {
@@ -126,14 +129,18 @@ export class Secret {
  * receives a `Secret` it cannot read, print, or serialize, so a second export
  * path cannot be grafted on without moving this function.
  *
- * The two ways this can fail are reported separately, because they promise
- * different things about stdout. `writeRawStdoutOnce` hands the payload to the
- * stream exactly once and never re-sends it, so its rejection means the
- * credential was not emitted (`CredentialNotEmitted`, exit 8). A failure of the
- * trailing drain happens after the bytes are already on stdout
- * (`CredentialEmitIncomplete`, exit 9). Neither may fall through to the
- * caller's credential-resolution catch, which would report exit 2 and claim an
- * empty stream it cannot guarantee.
+ * The one failure that can still be reported is a failure of the payload write
+ * itself. `writeRawStdoutOnce` hands the payload to the stream exactly once and
+ * never re-sends it, so its rejection means the credential was not emitted
+ * (`CredentialNotEmitted`, exit 8) and stdout is empty, which is what every
+ * non-zero exit from this door promises. It must not fall through to the
+ * caller's credential-resolution catch, which would report exit 2.
+ *
+ * Once that write resolves the credential is on stdout and the command has
+ * succeeded. A failure of the trailing drain is therefore reported on stderr
+ * and the exit code is left at 0: a non-zero exit carrying bytes on stdout is
+ * the single thing this door must never produce, and a broken reader is not a
+ * reason to break that.
  *
  * `test/credential-print.test.ts` asserts that chokepoint against the whole of
  * `packages/coding-agent/src`.
@@ -153,10 +160,10 @@ export async function emitCredential(secret: Secret): Promise<void> {
 	try {
 		await flushRawStdout();
 	} catch (error) {
-		throw new CredentialPrintError(
-			"CredentialEmitIncomplete",
-			"The credential was written to stdout but the stream did not drain cleanly",
-			{ cause: error },
+		console.error(
+			`Warning: the credential was written to stdout but the stream did not drain cleanly: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
 		);
 	}
 }
@@ -164,8 +171,8 @@ export async function emitCredential(secret: Secret): Promise<void> {
 /**
  * The single place a thrown value becomes an exit code for this door.
  *
- * `main.ts` routes every failure through here so a post-write failure keeps its
- * own code instead of being reported as a credential-resolution error.
+ * `main.ts` routes every failure through here. Every code it can produce leaves
+ * stdout empty, so an exit code from this door never contradicts the stream.
  */
 export function toCredentialPrintError(error: unknown): CredentialPrintError {
 	if (error instanceof CredentialPrintError) return error;
@@ -216,8 +223,7 @@ Exit codes:
   5  refresh failed (the stored credential is left untouched)
   6  provider cannot mint a token that lives long enough
   7  the provider's OAuth credential could not be used
-  8  the credential could not be written (nothing was emitted)
-  9  the credential was written but stdout did not drain cleanly`);
+  8  the credential could not be written (nothing was emitted)`);
 }
 
 function parseDuration(value: string | undefined): number {

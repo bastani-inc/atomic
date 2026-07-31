@@ -6,7 +6,7 @@
  * carries the credential or nothing at all.
  */
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
@@ -16,8 +16,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { Args } from "../src/cli/args.ts";
 import {
 	CredentialPrintError,
+	type CredentialPrintErrorCode,
 	classifyOAuthFailure,
 	DEFAULT_BEARER_TOKEN_MIN_EXPIRY_MS,
+	EXIT_CODES,
 	emitCredential,
 	isCredentialPrintHelp,
 	OAUTH_EXPIRES_TOO_SOON_PHRASE,
@@ -31,7 +33,7 @@ import {
 import type { AgentSession } from "../src/core/agent-session.ts";
 import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import { RpcProviderAuth } from "../src/modes/rpc/rpc-provider-auth.ts";
-import { bunExecutable, removeTempDirs, runCliProcess } from "./cli-test-helpers.ts";
+import { bunExecutable, cliPath, removeTempDirs, runCliProcess } from "./cli-test-helpers.ts";
 
 /**
  * Structural: each case starts a real `atomic` child, so the cost is a process
@@ -62,6 +64,50 @@ function cliEnv(agentDir: string): NodeJS.ProcessEnv {
 		ATOMIC_INTERACTIVE_ENGINE_API_KEY: undefined,
 		NO_COLOR: "1",
 	};
+}
+
+/** How long a child gets before the pipe-close race is called a hang. */
+const CLOSED_PIPE_CHILD_TIMEOUT_MS = 60_000;
+
+/**
+ * Start a real `atomic` child and close the read end of its stdout pipe at
+ * once.
+ *
+ * This is the EPIPE race a stubbed `process.stdout.write` cannot reach: the
+ * failure comes from the OS, at whatever point the child has actually got to,
+ * and it is the only way to observe what a real caller's stdout holds when the
+ * process exits.
+ */
+function runCliWithClosedStdout(
+	argv: string[],
+	options: { cwd: string; env: NodeJS.ProcessEnv },
+): Promise<{ code: number | null; signal: NodeJS.Signals | null; stdout: string }> {
+	const child = spawn(bunExecutable(), [cliPath, ...argv], {
+		cwd: options.cwd,
+		env: options.env,
+		stdio: ["ignore", "pipe", "pipe"],
+		windowsHide: true,
+	});
+	let stdout = "";
+	child.stdout.on("data", (chunk: Buffer) => {
+		stdout += chunk.toString();
+	});
+	// Anything the child already managed to write is captured above; from here
+	// the pipe has no reader at all.
+	child.stdout.destroy();
+	child.stderr.resume();
+
+	return new Promise((resolvePromise, reject) => {
+		const timeout = setTimeout(() => child.kill("SIGKILL"), CLOSED_PIPE_CHILD_TIMEOUT_MS);
+		child.once("error", (error) => {
+			clearTimeout(timeout);
+			reject(error);
+		});
+		child.once("close", (code, signal) => {
+			clearTimeout(timeout);
+			resolvePromise({ code, signal, stdout });
+		});
+	});
 }
 
 function args(overrides: Partial<Args> = {}): Args {
@@ -243,28 +289,166 @@ describe("emitCredential", () => {
 		});
 	}
 
-	it("a failure after the write is never reported as a credential-resolution error", async () => {
-		await withStubbedStdout(
-			// The payload write succeeds; the trailing drain rejects, which is the
-			// EPIPE-on-close shape the guard's separate flush operation exposes.
-			(text) => (text.length === 0 ? new Error("EPIPE on the trailing flush") : undefined),
-			async (written) => {
-				const failure = await emitCredential(new Secret("sk-x")).then(
-					() => undefined,
-					(error: unknown) => error as CredentialPrintError,
-				);
+	it("a post-write drain failure still exits zero with the credential on stdout", async () => {
+		const reported: string[] = [];
+		const originalConsoleError = console.error;
+		console.error = ((...parts: unknown[]) => {
+			reported.push(parts.map(String).join(" "));
+		}) as typeof console.error;
+		const originalExitCode = process.exitCode;
+		process.exitCode = undefined;
 
-				expect(written).toEqual(["sk-x\n"]);
-				expect(failure).toBeInstanceOf(CredentialPrintError);
-				expect(failure?.code).toBe("CredentialEmitIncomplete");
+		try {
+			await withStubbedStdout(
+				// The payload write succeeds; the trailing drain rejects, which is
+				// the EPIPE-on-close shape the guard's separate flush operation
+				// exposes.
+				(text) => (text.length === 0 ? new Error("EPIPE on the trailing flush") : undefined),
+				async (written) => {
+					await expect(emitCredential(new Secret("sk-x"))).resolves.toBeUndefined();
 
-				// main.ts routes every failure through this mapper; exit 2 would name
-				// credential resolution as the cause and imply an empty stdout.
-				const mappedExitCode = toCredentialPrintError(failure).exitCode;
-				expect(mappedExitCode).toBe(9);
-				expect(mappedExitCode).not.toBe(2);
+					expect(written).toEqual(["sk-x\n"]);
+					// Once those bytes are on stdout the command has succeeded. A
+					// non-zero exit here would be a non-zero exit with a credential
+					// on the stream, which is the one thing this door never does.
+					expect(process.exitCode ?? 0).toBe(0);
+					// The broken reader is still reported — on stderr.
+					expect(reported.join("\n")).toContain("did not drain cleanly");
+					expect(reported.join("\n")).not.toContain("sk-x");
+				},
+			);
+		} finally {
+			console.error = originalConsoleError;
+			process.exitCode = originalExitCode;
+		}
+	});
+
+	/**
+	 * The taxonomy, walked rather than sampled. Adding a code to `EXIT_CODES`
+	 * without an exercised path here fails the first assertion; adding one whose
+	 * path puts bytes on stdout fails the second.
+	 */
+	it("every declared exit code leaves stdout empty", async () => {
+		const oauthFailure = (message: string) =>
+			runtimeStub({
+				credentials: [{ providerId: "anthropic", type: "oauth" }],
+				getAuth: async () => {
+					throw new ModelsError("oauth", message);
+				},
+			});
+		const anthropic = args({ model: "claude-sonnet-4-5", provider: "anthropic" });
+
+		const cases: Array<{
+			code: CredentialPrintErrorCode;
+			onWrite?: (text: string) => Error | undefined;
+			run: () => Promise<unknown>;
+		}> = [
+			{
+				code: "Usage",
+				run: async () => parseCredentialPrintCommand(["auth", "print-everything"]),
 			},
-		);
+			{
+				code: "NoCredentialConfigured",
+				run: () =>
+					resolveCredentialForPrint(
+						args({ model: "not-a-configured-model" }),
+						runtimeStub({
+							credentials: [{ providerId: "anthropic", type: "api_key" }],
+							getAuth: async () => ({ auth: { apiKey: "sk-ant-value" } }),
+						}),
+						"api_key",
+					),
+			},
+			{
+				code: "ProviderAmbiguous",
+				run: () =>
+					resolveCredentialForPrint(
+						args({ model: "claude-sonnet-4-5" }),
+						runtimeStub({
+							credentials: [
+								{ providerId: "anthropic", type: "api_key" },
+								{ providerId: "openai", type: "api_key" },
+							],
+							getAuth: async () => ({ auth: { apiKey: "sk-ambiguous" } }),
+						}),
+						"api_key",
+					),
+			},
+			{
+				code: "KindUnsupportedForProvider",
+				run: () =>
+					resolveCredentialForPrint(
+						anthropic,
+						runtimeStub({
+							credentials: [{ providerId: "anthropic", type: "oauth" }],
+							getAuth: async () => ({ auth: { apiKey: "token-value" } }),
+						}),
+						"api_key",
+					),
+			},
+			{
+				code: "RefreshFailed",
+				run: () =>
+					resolveCredentialForPrint(anthropic, oauthFailure("OAuth refresh failed for anthropic"), "bearer_token"),
+			},
+			{
+				code: "MinValidityUnreachable",
+				run: () =>
+					resolveCredentialForPrint(
+						anthropic,
+						oauthFailure("OAuth refresh returned a token that expires too soon for anthropic"),
+						"bearer_token",
+					),
+			},
+			{
+				code: "OAuthUnavailable",
+				run: () =>
+					resolveCredentialForPrint(
+						anthropic,
+						oauthFailure("OAuth auth derivation failed for anthropic"),
+						"bearer_token",
+					),
+			},
+			{
+				code: "CredentialNotEmitted",
+				// The write itself fails, so the credential never reaches stdout.
+				onWrite: (text) => (text.length > 0 ? new Error("EPIPE before the credential was written") : undefined),
+				run: () => emitCredential(new Secret("sk-not-emitted")),
+			},
+		];
+
+		// The reviewed taxonomy, restated so a new member is a failure here
+		// rather than an unexamined exit code.
+		expect(EXIT_CODES).toEqual({
+			Usage: 1,
+			NoCredentialConfigured: 2,
+			ProviderAmbiguous: 3,
+			KindUnsupportedForProvider: 4,
+			RefreshFailed: 5,
+			MinValidityUnreachable: 6,
+			OAuthUnavailable: 7,
+			CredentialNotEmitted: 8,
+		});
+
+		const nonZero = Object.entries(EXIT_CODES).filter(([, exitCode]) => exitCode !== 0);
+		expect(cases.map(({ code }) => code).sort()).toEqual(nonZero.map(([code]) => code).sort());
+
+		for (const { code, onWrite, run } of cases) {
+			await withStubbedStdout(onWrite ?? (() => undefined), async (written) => {
+				const failure = await Promise.resolve()
+					.then(run)
+					.then(
+						() => undefined,
+						(error: unknown) => error as CredentialPrintError,
+					);
+
+				expect(failure, `${code} did not fail`).toBeInstanceOf(CredentialPrintError);
+				expect(failure?.code).toBe(code);
+				expect(failure?.exitCode).toBe(EXIT_CODES[code]);
+				// The invariant: a non-zero exit means nothing reached stdout.
+				expect(written, `${code} wrote to stdout`).toEqual([]);
+			});
+		}
 	});
 
 	it("reports a failed payload write as its own code, with nothing emitted", async () => {
@@ -825,6 +1009,37 @@ describe("atomic auth on the wire", () => {
 			expect(result.code).toBe(0);
 			expect(result.stdout).toBe("sk-ant-print-me\n");
 			expect(result.stderr).toBe("");
+		},
+		REAL_CLI_SUITE_TIMEOUT_MS,
+	);
+
+	it(
+		"a reader that closes the pipe never yields a non-zero exit with a credential on stdout",
+		async () => {
+			const key = "sk-ant-print-me";
+			const agentDir = agentDirWith({ anthropic: { type: "api_key", key } });
+
+			// A genuine race, so run it more than once: the child can lose the
+			// pipe before its write, during it, or after the bytes are already
+			// buffered, and the invariant has to hold on every outcome.
+			for (let attempt = 0; attempt < 3; attempt++) {
+				const result = await runCliWithClosedStdout(
+					["auth", "print-api-key", "--model", "claude-sonnet-4-5", "--provider", "anthropic"],
+					{ cwd: agentDir, env: cliEnv(agentDir) },
+				);
+
+				// Bytes on stdout mean the command succeeded.
+				if (result.stdout.length > 0) expect(result.code).toBe(0);
+
+				// And the other direction: a non-zero exit carries no part of the
+				// configured key, not even its first character.
+				if (result.code !== 0) {
+					expect(result.stdout).toBe("");
+					for (let length = 1; length <= key.length; length++) {
+						expect(result.stdout).not.toContain(key.slice(0, length));
+					}
+				}
+			}
 		},
 		REAL_CLI_SUITE_TIMEOUT_MS,
 	);
