@@ -140,6 +140,42 @@ export function writeRawStdout(text: string): void {
 	});
 }
 
+/**
+ * Write one chunk to the real stdout as a single awaited operation.
+ *
+ * Differs from `writeRawStdout` in the two ways the credential egress needs.
+ * The rejection reaches the caller instead of exiting the process, so the
+ * caller can report a cause of its own. And the chunk is handed to stdout
+ * exactly once — the ENOBUFS/EAGAIN retry in `writeRawStdoutChunk` would
+ * re-send the whole payload, which for a secret risks emitting it twice — so a
+ * rejection here means those bytes were not written.
+ */
+export function writeRawStdoutOnce(text: string): Promise<void> {
+	if (text.length === 0) {
+		return Promise.resolve();
+	}
+	const write = rawStdoutWriteTail.then(
+		() =>
+			new Promise<void>((resolve, reject) => {
+				try {
+					getRawStdoutWrite()(text, (error) => {
+						if (error) reject(error);
+						else resolve();
+					});
+				} catch (error) {
+					reject(error instanceof Error ? error : new Error(String(error)));
+				}
+			}),
+	);
+	// The failure belongs to this caller alone; the shared tail stays settled so
+	// a later writer is not handed someone else's rejection.
+	rawStdoutWriteTail = write.then(
+		() => {},
+		() => {},
+	);
+	return write;
+}
+
 export async function waitForRawStdoutBackpressure(): Promise<void> {
 	while (true) {
 		const tail = rawStdoutWriteTail;

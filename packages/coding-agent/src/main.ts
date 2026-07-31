@@ -8,6 +8,7 @@ import {
 	parseCredentialPrintCommand,
 	printCredentialPrintHelp,
 	resolveCredentialForPrint,
+	toCredentialPrintError,
 	validateCredentialPrintArgs,
 } from "./cli/credential-print.ts";
 import { listModels } from "./cli/list-models.ts";
@@ -144,13 +145,10 @@ async function runCredentialPrintCommand(args: string[]): Promise<boolean> {
 			// The Secret arrives unreadable here; emitCredential owns the only take().
 			await emitCredential(secret);
 		} catch (error) {
-			const failure =
-				error instanceof CredentialPrintError
-					? error
-					: new CredentialPrintError(
-							"NoCredentialConfigured",
-							error instanceof Error ? error.message : "Failed to resolve credential",
-						);
+			// toCredentialPrintError keeps a dedicated code for a failure raised
+			// after the credential reached stdout; only a genuinely unclassified
+			// error is reported as a credential-resolution failure.
+			const failure = toCredentialPrintError(error);
 			console.error(chalk.red(`Error: ${failure.message}`));
 			process.exitCode = failure.exitCode;
 		}

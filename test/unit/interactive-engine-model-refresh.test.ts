@@ -66,7 +66,7 @@ test("isolated host treats an engine-published extension model as configured aft
 		loginProvider: async () => ({
 			provider: "extension-provider",
 			cancelled: false as const,
-			credential: { type: "api_key" as const, key: "remote-key" },
+			type: "api_key" as const,
 			models: [],
 			scopedModels: [],
 			customAuthProviders: [],

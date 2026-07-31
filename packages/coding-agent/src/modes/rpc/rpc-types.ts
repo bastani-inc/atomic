@@ -40,11 +40,16 @@ export interface RpcModelRefreshResult extends RpcModelCatalog {
 	aborted: boolean;
 	errors: Array<{ provider: string; message: string }>;
 }
+/**
+ * The host supplied the API key through the login input form, so echoing it
+ * back over the stdout pipe would make this response a second credential
+ * egress. Only the metadata a caller needs to confirm the login travels.
+ */
 export type RpcLoginProviderResult =
 	| (RpcModelCatalog & {
 			provider: string;
 			cancelled: false;
-			credential: Extract<Credential, { type: "api_key" }>;
+			type: "api_key";
 	  })
 	| { provider: string; cancelled: true };
 

@@ -56,7 +56,9 @@ export class RpcProviderAuth {
 			if (controller.signal.aborted) return { provider, cancelled: true };
 			if (credential.type !== "api_key")
 				throw new Error(`Provider returned an unexpected ${credential.type} credential`);
-			return { provider, cancelled: false, credential, ...this.catalog(session) };
+			// The key came from the host's own input form; it is confirmed by type
+			// and never sent back down the stdout pipe.
+			return { provider, cancelled: false, type: "api_key", ...this.catalog(session) };
 		} catch (error) {
 			if (controller.signal.aborted || (error instanceof Error && error.message === "Login cancelled"))
 				return { provider, cancelled: true };

@@ -6,24 +6,32 @@
  * carries the credential or nothing at all.
  */
 
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { inspect } from "node:util";
 import { ModelsError } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Args } from "../src/cli/args.ts";
 import {
 	CredentialPrintError,
+	classifyOAuthFailure,
 	DEFAULT_BEARER_TOKEN_MIN_EXPIRY_MS,
+	emitCredential,
 	isCredentialPrintHelp,
+	OAUTH_EXPIRES_TOO_SOON_PHRASE,
+	OAUTH_REFRESH_FAILED_PHRASE,
 	parseCredentialPrintCommand,
 	resolveCredentialForPrint,
 	Secret,
+	toCredentialPrintError,
 	validateCredentialPrintArgs,
 } from "../src/cli/credential-print.ts";
+import type { AgentSession } from "../src/core/agent-session.ts";
 import type { ModelRuntime } from "../src/core/model-runtime.ts";
-import { removeTempDirs, runCliProcess } from "./cli-test-helpers.ts";
+import { RpcProviderAuth } from "../src/modes/rpc/rpc-provider-auth.ts";
+import { bunExecutable, removeTempDirs, runCliProcess } from "./cli-test-helpers.ts";
 
 /**
  * Structural: each case starts a real `atomic` child, so the cost is a process
@@ -104,6 +112,59 @@ function runtimeStub(options: {
 	} as unknown as ModelRuntime;
 }
 
+/** The `@earendil-works/pi-ai` build this checkout actually resolves. */
+function installedPiAiResolveJs(): string {
+	for (let dir = import.meta.dirname; ; dir = dirname(dir)) {
+		const candidate = join(dir, "node_modules", "@earendil-works", "pi-ai", "dist", "auth", "resolve.js");
+		if (existsSync(candidate)) return candidate;
+		if (dirname(dir) === dir) throw new Error("installed @earendil-works/pi-ai not found");
+	}
+}
+
+interface SecretRuntimeProbe {
+	inspect: string;
+	bunInspect: string;
+	clone: string;
+	cloneKeys: string[];
+	hidden: string;
+}
+
+/**
+ * Re-run the Secret refusals under Bun, the runtime the published binary is
+ * compiled on. Bun.inspect is unreachable from this Node-hosted suite, so the
+ * probe is a real child rather than a shim.
+ */
+function runSecretProbeUnderBun(value: string): SecretRuntimeProbe {
+	const root = mkdtempSync(join(tmpdir(), "atomic-secret-probe-"));
+	tempDirs.push(root);
+	const modulePath = resolve(import.meta.dirname, "..", "src", "cli", "credential-print.ts");
+	const probePath = join(root, "secret-probe.ts");
+	writeFileSync(
+		probePath,
+		`import { inspect } from "node:util";
+import { Secret } from ${JSON.stringify(modulePath)};
+
+const secret = new Secret(${JSON.stringify(value)});
+const clone: object = structuredClone(secret);
+process.stdout.write(
+	JSON.stringify({
+		inspect: inspect(secret),
+		bunInspect: Bun.inspect(secret),
+		clone: inspect(clone),
+		cloneKeys: Object.keys(clone),
+		hidden: inspect(secret, { showHidden: true, customInspect: false }),
+	}),
+);
+`,
+	);
+
+	const child = spawnSync(bunExecutable(), [probePath], { encoding: "utf8" });
+	if (child.status !== 0) {
+		throw new Error(`Secret probe failed under Bun (${child.status}): ${child.stderr}`);
+	}
+	return JSON.parse(child.stdout) as SecretRuntimeProbe;
+}
+
 describe("Secret", () => {
 	it("refuses every path that would copy the value into a string", () => {
 		const secret = new Secret("sk-live-value");
@@ -123,6 +184,103 @@ describe("Secret", () => {
 
 		expect(secret.take()).toBe("sk-live-value");
 		expect(() => secret.take()).toThrow("already been consumed");
+	});
+
+	/**
+	 * The published binary is Bun-compiled while this suite runs under Node, so
+	 * every refusal above is checked on both runtimes. Bun.inspect is a separate
+	 * formatter from node:util inspect, and it is the one a stray `console.log`
+	 * inside the shipped binary would reach.
+	 */
+	it(
+		"survives the runtime the binary ships on",
+		() => {
+			const secret = new Secret("sk-live-value");
+			const clone: object = structuredClone(secret);
+
+			expect(inspect(secret)).toBe("[Secret]");
+			expect(Object.keys(clone)).toEqual([]);
+			expect(inspect(clone)).not.toContain("sk-live-value");
+			expect(inspect(secret, { showHidden: true, customInspect: false })).not.toContain("sk-live-value");
+
+			const probe = runSecretProbeUnderBun("sk-live-value");
+			expect(probe.inspect).toBe("[Secret]");
+			expect(probe.bunInspect).toBe("[Secret]");
+			expect(probe.cloneKeys).toEqual([]);
+			expect(probe.clone).not.toContain("sk-live-value");
+			expect(probe.hidden).not.toContain("sk-live-value");
+		},
+		REAL_CLI_SUITE_TIMEOUT_MS,
+	);
+});
+
+describe("emitCredential", () => {
+	/**
+	 * `writeRawStdoutOnce` and the trailing drain both resolve against the real
+	 * stdout writer, so stubbing `process.stdout.write` is what puts each of the
+	 * two failure points under test.
+	 */
+	function withStubbedStdout<T>(
+		onWrite: (text: string) => Error | undefined,
+		body: (written: string[]) => Promise<T>,
+	): Promise<T> {
+		const original = process.stdout.write;
+		const written: string[] = [];
+		process.stdout.write = ((
+			chunk: string | Uint8Array,
+			encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
+			callback?: (error?: Error | null) => void,
+		): boolean => {
+			const done = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
+			const text = String(chunk);
+			const failure = onWrite(text);
+			if (!failure) written.push(text);
+			done?.(failure ?? null);
+			return true;
+		}) as typeof process.stdout.write;
+		return body(written).finally(() => {
+			process.stdout.write = original;
+		});
+	}
+
+	it("a failure after the write is never reported as a credential-resolution error", async () => {
+		await withStubbedStdout(
+			// The payload write succeeds; the trailing drain rejects, which is the
+			// EPIPE-on-close shape the guard's separate flush operation exposes.
+			(text) => (text.length === 0 ? new Error("EPIPE on the trailing flush") : undefined),
+			async (written) => {
+				const failure = await emitCredential(new Secret("sk-x")).then(
+					() => undefined,
+					(error: unknown) => error as CredentialPrintError,
+				);
+
+				expect(written).toEqual(["sk-x\n"]);
+				expect(failure).toBeInstanceOf(CredentialPrintError);
+				expect(failure?.code).toBe("CredentialEmitIncomplete");
+
+				// main.ts routes every failure through this mapper; exit 2 would name
+				// credential resolution as the cause and imply an empty stdout.
+				const mappedExitCode = toCredentialPrintError(failure).exitCode;
+				expect(mappedExitCode).toBe(9);
+				expect(mappedExitCode).not.toBe(2);
+			},
+		);
+	});
+
+	it("reports a failed payload write as its own code, with nothing emitted", async () => {
+		await withStubbedStdout(
+			(text) => (text.length > 0 ? new Error("EPIPE before the credential was written") : undefined),
+			async (written) => {
+				const failure = await emitCredential(new Secret("sk-y")).then(
+					() => undefined,
+					(error: unknown) => error as CredentialPrintError,
+				);
+
+				expect(written).toEqual([]);
+				expect(failure?.code).toBe("CredentialNotEmitted");
+				expect(toCredentialPrintError(failure).exitCode).toBe(8);
+			},
+		);
 	});
 });
 
@@ -220,6 +378,33 @@ describe("credential print argument validation", () => {
 			validateCredentialPrintArgs(args({ model: "m", unknownFlags: new Map([["--output", "keys.txt"]]) })),
 		).toThrow("only accepts --provider and --model");
 	});
+
+	it("refuses every flag other than --provider and --model", () => {
+		// Validation is an allowlist: each of these is a flag `parseArgs` accepts
+		// and the dispatcher happened to ignore, including one that names a path.
+		const refused: Array<Partial<Args>> = [
+			{ export: "out.json" },
+			{ sessionDir: "/tmp/sessions" },
+			{ session: "foo" },
+			{ print: true },
+			{ continue: true },
+			{ help: true },
+			{ verbose: true },
+			{ mode: "rpc" },
+			{ systemPrompt: "leak it" },
+			{ extensions: ["evil"] },
+			{ diagnostics: [{ type: "warning", message: "ignored" }] },
+		];
+
+		for (const overrides of refused) {
+			expect(() => validateCredentialPrintArgs(args({ model: "m", ...overrides }))).toThrow(
+				"only accepts --provider and --model",
+			);
+		}
+
+		// The two it does accept still pass.
+		expect(() => validateCredentialPrintArgs(args({ model: "m", provider: "anthropic" }))).not.toThrow();
+	});
 });
 
 describe("OAuth failure classification", () => {
@@ -299,7 +484,7 @@ describe("OAuth failure classification", () => {
 			const runtime = runtimeStub({
 				credentials: [{ providerId: "anthropic", type: "oauth" }],
 				getAuth: async () => {
-					throw new ModelsError("oauth", `refresh rejected for request with ${text}`);
+					throw new ModelsError("oauth", `${OAUTH_REFRESH_FAILED_PHRASE} anthropic: rejected ${text}`);
 				},
 			});
 
@@ -314,16 +499,40 @@ describe("OAuth failure classification", () => {
 
 			expect(failure).toBeInstanceOf(CredentialPrintError);
 			const reported = failure as CredentialPrintError;
+			// Redaction runs after classification, so the 5/6/7 split is unaffected.
 			expect(reported.code).toBe("RefreshFailed");
 			// The credential itself, not merely the field name it was filed under.
 			expect(reported.message, text).not.toContain(value);
 			expect(reported.message, text).toContain("[redacted]");
 			// The diagnosis survives redaction, so the exit code is still actionable.
-			expect(reported.message).toContain("refresh rejected for request with");
+			expect(reported.message).toContain(`${OAUTH_REFRESH_FAILED_PHRASE} anthropic`);
 			// The unredacted error is still reachable for a debugger, as `cause`,
 			// which this door never logs.
 			expect((reported.cause as Error).message).toContain(value);
 		}
+	});
+
+	it("exit 5 claims a rollback only for a real refresh failure", () => {
+		const derivationFailed = classifyOAuthFailure(
+			new ModelsError("oauth", "OAuth auth derivation failed for anthropic"),
+		);
+
+		// Derivation fails after credentials.modify may already have persisted a
+		// rotated credential, so it cannot claim the stored one was left alone.
+		expect(derivationFailed.message).not.toContain("left untouched");
+		expect(derivationFailed.code).toBe("OAuthUnavailable");
+		expect(derivationFailed.exitCode).toBe(7);
+
+		const refreshFailed = classifyOAuthFailure(new ModelsError("oauth", "OAuth refresh failed for anthropic"));
+		expect(refreshFailed.exitCode).toBe(5);
+		expect(refreshFailed.message).toContain("left untouched");
+
+		// The 5/6 split rests on upstream prose. Pin both phrases against the
+		// installed build so a rewording fails here instead of collapsing exit 6
+		// into exit 5 with a rollback claim nobody verified.
+		const resolveSource = readFileSync(installedPiAiResolveJs(), "utf8");
+		expect(resolveSource).toContain(OAUTH_REFRESH_FAILED_PHRASE);
+		expect(resolveSource).toContain(OAUTH_EXPIRES_TOO_SOON_PHRASE);
 	});
 });
 
@@ -705,17 +914,140 @@ describe("atomic auth on the wire", () => {
 		},
 		REAL_CLI_SUITE_TIMEOUT_MS,
 	);
+
+	it(
+		"both subcommands refuse to run without --model",
+		async () => {
+			const agentDir = agentDirWith({ anthropic: { type: "api_key", key: "sk-ant-print-me" } });
+
+			for (const subcommand of ["print-api-key", "print-bearer-token"]) {
+				const result = await runCliProcess(["auth", subcommand, "--provider", "anthropic"], {
+					cwd: agentDir,
+					env: cliEnv(agentDir),
+				});
+
+				expect(result.code).toBe(1);
+				expect(result.stdout).toBe("");
+				expect(result.stderr).toContain("requires --model");
+			}
+		},
+		REAL_CLI_SUITE_TIMEOUT_MS,
+	);
+
+	it(
+		"--min-expiry is a usage error for print-api-key in every spelling",
+		async () => {
+			const agentDir = agentDirWith({ anthropic: { type: "api_key", key: "sk-ant-print-me" } });
+
+			for (const spelling of [["--min-expiry", "30m"], ["--min-expiry=30m"]]) {
+				const result = await runCliProcess(
+					["auth", "print-api-key", "--model", "claude-sonnet-4-5", "--provider", "anthropic", ...spelling],
+					{ cwd: agentDir, env: cliEnv(agentDir) },
+				);
+
+				expect(result.code).toBe(1);
+				expect(result.stdout).toBe("");
+			}
+
+			// The same two spellings must actually reach the provider on the
+			// subcommand that owns the option, rather than being dropped as an
+			// unknown flag.
+			const requested: Array<number | undefined> = [];
+			const runtime = runtimeStub({
+				credentials: [{ providerId: "anthropic", type: "oauth" }],
+				getAuth: async (_model, overrides) => {
+					requested.push(overrides?.minOAuthValidityMs);
+					return { auth: { apiKey: "token-value" } };
+				},
+			});
+			for (const spelling of [["--min-expiry", "30m"], ["--min-expiry=30m"]]) {
+				const command = parseCredentialPrintCommand(["auth", "print-bearer-token", ...spelling]);
+				await resolveCredentialForPrint(
+					args({ model: "claude-sonnet-4-5", provider: "anthropic" }),
+					runtime,
+					"bearer_token",
+					command?.minExpiryMs,
+				);
+			}
+
+			expect(requested).toEqual([1_800_000, 1_800_000]);
+		},
+		REAL_CLI_SUITE_TIMEOUT_MS,
+	);
+
+	it(
+		"stdout stays empty on the ambiguity and minimum-validity exits",
+		async () => {
+			const agentDir = agentDirWith({
+				anthropic: { type: "api_key", key: "sk-ant-print-me" },
+				opencode: { type: "api_key", key: "sk-oc-print-me" },
+			});
+
+			const ambiguous = await runCliProcess(["auth", "print-api-key", "--model", "claude-sonnet-4-5"], {
+				cwd: agentDir,
+				env: cliEnv(agentDir),
+			});
+
+			expect(ambiguous.code).toBe(3);
+			expect(ambiguous.stdout).toBe("");
+			expect(ambiguous.stderr).toContain("anthropic");
+			expect(ambiguous.stderr).toContain("opencode");
+
+			// Exit 6 needs a provider that refreshes and still mints a short token.
+			// No builtin provider can be driven into that state without a live
+			// OAuth server, so it is stubbed — but stdout is still the process's
+			// own fd 1, captured around the call.
+			const runtime = runtimeStub({
+				credentials: [{ providerId: "anthropic", type: "oauth" }],
+				getAuth: async () => {
+					throw new ModelsError("oauth", "OAuth refresh returned a token that expires too soon for anthropic");
+				},
+			});
+			const original = process.stdout.write;
+			const stdout: string[] = [];
+			process.stdout.write = ((chunk: string | Uint8Array): boolean => {
+				stdout.push(String(chunk));
+				return true;
+			}) as typeof process.stdout.write;
+			let failure: CredentialPrintError | undefined;
+			try {
+				failure = await resolveCredentialForPrint(
+					args({ model: "claude-sonnet-4-5", provider: "anthropic" }),
+					runtime,
+					"bearer_token",
+					45 * 60_000,
+				).then(
+					() => undefined,
+					(error: unknown) => error as CredentialPrintError,
+				);
+			} finally {
+				process.stdout.write = original;
+			}
+
+			expect(failure?.exitCode).toBe(6);
+			expect(stdout.join("")).toBe("");
+		},
+		REAL_CLI_SUITE_TIMEOUT_MS,
+	);
 });
 
 /**
  * The chokepoint claim, checked against the whole source tree rather than
  * asserted in a comment: `src/cli/credential-print.ts` is the only module in
- * `packages/coding-agent/src` that writes a credential to stdout. A second
- * egress added later fails here.
+ * `packages/coding-agent/src` that writes a credential to stdout.
+ *
+ * The scan enumerates what reaches the real stdout rather than searching for
+ * words that look like credentials. A name-based filter measured spelling, not
+ * data flow: it was blind to `writeRawStdout(serializeRpcOutputRecord(record))`,
+ * whose payload is a helper call, so `writeRawStdout(\`${key}\n\`)` could have
+ * been added with the suite still green. Every data-bearing write to the real
+ * stdout is listed below, and `the scan reports a planted second egress` is the
+ * negative control that fails if the scanner goes blind again.
  */
 describe("credential egress chokepoint", () => {
 	const SRC_ROOT = resolve(import.meta.dirname, "..", "src");
-	const EGRESS_MODULE = join("cli", "credential-print.ts");
+	const RPC_TYPES_MODULE = "modes/rpc/rpc-types.ts";
+	const EGRESS_MODULE = "cli/credential-print.ts";
 
 	function sourceFiles(dir: string): string[] {
 		return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -732,7 +1064,7 @@ describe("credential egress chokepoint", () => {
 	/**
 	 * Keep code, drop prose: quoted strings disappear and a template literal
 	 * keeps only its `${…}` substitutions. Help text that merely *mentions*
-	 * `print-api-key` is prose; `${secret.take()}` is an egress.
+	 * `print-api-key` is prose; `${secret.take()}` is data.
 	 */
 	function codeOnly(text: string): string {
 		const stack: string[] = [];
@@ -768,16 +1100,23 @@ describe("credential egress chokepoint", () => {
 		return out;
 	}
 
-	const STDOUT_WRITER =
-		/(?:writeRawStdout|writeRawStdoutControl|process\.stdout\.write|console\.(?:log|info|debug|dir))\s*\(/gu;
+	/** Every function that reaches the real stdout the guard protects. */
+	const RAW_STDOUT_WRITER =
+		/(?:writeRawStdoutOnce|writeRawStdoutControl|writeRawStdout|process\.stdout\.write)\s*\(/gu;
+
+	/** Console methods that reach stdout when the guard has not taken it over. */
+	const CONSOLE_WRITER = /console\.(?:log|info|debug|dir)\s*\(/gu;
 
 	/** Names a credential in code, not a word that appears in help text. */
 	const CREDENTIAL_MATERIAL = /secret|credential|api[-_]?key|bearer|access[-_]?token|refresh[-_]?token|\.take\(\)/iu;
 
-	function stdoutWrites(source: string): string[] {
+	function callsTo(writer: RegExp, source: string): string[] {
 		const calls: string[] = [];
-		STDOUT_WRITER.lastIndex = 0;
-		for (let match = STDOUT_WRITER.exec(source); match; match = STDOUT_WRITER.exec(source)) {
+		writer.lastIndex = 0;
+		for (let match = writer.exec(source); match; match = writer.exec(source)) {
+			// `export function writeRawStdout(text: string)` declares the writer;
+			// it does not call it.
+			if (source.slice(0, match.index).trimEnd().endsWith("function")) continue;
 			let depth = 1;
 			let index = match.index + match[0].length;
 			while (index < source.length && depth > 0) {
@@ -786,29 +1125,160 @@ describe("credential egress chokepoint", () => {
 				else if (char === ")") depth--;
 				index++;
 			}
-			calls.push(source.slice(match.index, index));
+			calls.push(source.slice(match.index, index).replace(/\s+/gu, " "));
 		}
 		return calls;
 	}
 
+	const stdoutWrites = (source: string): string[] => callsTo(RAW_STDOUT_WRITER, source);
+
+	/**
+	 * True when anything other than a literal reaches stdout. This is the test
+	 * the identifier regex could not make: `serializeRpcOutputRecord(record)`
+	 * names nothing suspicious and carried a live API key.
+	 */
+	function carriesData(call: string): boolean {
+		const code = codeOnly(call);
+		return /[A-Za-z_$]/u.test(code.slice(code.indexOf("(")));
+	}
+
+	/**
+	 * Every data-bearing write to the real stdout in `src`. A new entry is a new
+	 * way for a value to leave the process on the stream a caller captures, and
+	 * has to be reviewed here before it ships.
+	 */
+	const RAW_STDOUT_EGRESS = [
+		`cli/credential-print.ts: writeRawStdoutOnce(payload)`,
+		`modes/interactive-engine/engine-child-liveness.ts: writeRawStdoutControl(serializeInteractiveEngineMessage({ type: "engine_activity_started", activity }))`,
+		`modes/interactive/external-editor.ts: process.stdout.write( \`Launching external editor: \${request.command}\\n\${APP_NAME} will resume when the editor exits.\\n\`, )`,
+		`modes/interactive/interactive-process-lifecycle.ts: process.stdout.write(\`\${chalk.dim("To resume this session:")} \${resumeCommand}\\n\`)`,
+		`modes/print-mode.ts: writeRawStdout(\`\${JSON.stringify(event)}\\n\`)`,
+		`modes/print-mode.ts: writeRawStdout(\`\${JSON.stringify(header)}\\n\`)`,
+		`modes/print-mode.ts: writeRawStdout(\`\${content.text}\\n\`)`,
+		`modes/print-mode.ts: writeRawStdout(\`\${text}\\n\`)`,
+		`modes/print-mode.ts: writeRawStdout(\`\${text}\\n\`)`,
+		`modes/rpc/rpc-mode.ts: writeRawStdout( serializeInteractiveEngineMessage({ type: "engine_request_accepted", requestId, command }), )`,
+		`modes/rpc/rpc-mode.ts: writeRawStdout(serializeInteractiveEngineMessage({ type: "engine_keybindings_reloaded", state }))`,
+		`modes/rpc/rpc-output-buffer.ts: writeRawStdout(serializeRpcOutputRecord(record))`,
+		`modes/rpc/rpc-output-buffer.ts: writeRawStdout(serializeRpcOutputRecord(record))`,
+		`package-manager-cli.ts: process.stdout.write(chalk.dim(\`\${event.message}\\n\`))`,
+		`utils/clipboard.ts: process.stdout.write(\`\\x1b]52;c;\${encoded}\\x07\`)`,
+	];
+
 	const modules = sourceFiles(SRC_ROOT).map((path) => ({
-		path: relative(SRC_ROOT, path),
+		path: relative(SRC_ROOT, path).split(/[\\/]/u).join("/"),
 		source: withoutComments(readFileSync(path, "utf8")),
 	}));
+
+	function scan(candidates: ReadonlyArray<{ path: string; source: string }>): string[] {
+		return candidates
+			.flatMap(({ path, source }) =>
+				stdoutWrites(source)
+					.filter(carriesData)
+					.map((call) => `${path}: ${call}`),
+			)
+			.sort();
+	}
 
 	it("finds the door it is guarding", () => {
 		expect(modules.length).toBeGreaterThan(100);
 		expect(modules.map(({ path }) => path)).toContain(EGRESS_MODULE);
+		expect(modules.map(({ path }) => path)).toContain(RPC_TYPES_MODULE);
 	});
 
-	it("is the only module in src that writes credential material to stdout", () => {
-		const egress = modules.flatMap(({ path, source }) =>
-			stdoutWrites(source)
+	it("writes nothing to the real stdout beyond the enumerated set", () => {
+		expect(scan(modules)).toEqual([...RAW_STDOUT_EGRESS].sort());
+	});
+
+	it("the scan reports a planted second egress", () => {
+		// Two shapes the previous identifier-based filter missed. The first spells
+		// no credential word; the second hides its payload behind a helper call —
+		// which is exactly how a live API key reached stdout through the RPC
+		// login response.
+		const planted = [
+			{ path: "modes/planted-interpolated.ts", source: `writeRawStdout(\`\${key}\\n\`);` },
+			{ path: "modes/planted-helper.ts", source: `writeRawStdout(serializeRpcOutputRecord(record));` },
+		];
+
+		const reported = scan(planted);
+
+		expect(reported).toHaveLength(2);
+		expect(reported).toEqual([
+			`modes/planted-helper.ts: writeRawStdout(serializeRpcOutputRecord(record))`,
+			`modes/planted-interpolated.ts: writeRawStdout(\`\${key}\\n\`)`,
+		]);
+		// And neither is in the enumerated set, so planting one in `src` fails the
+		// assertion above.
+		for (const entry of reported) expect(RAW_STDOUT_EGRESS).not.toContain(entry);
+	});
+
+	it("no console path names credential material either", () => {
+		// A secondary net over the stdout-capable console methods, which reach the
+		// real stream whenever the guard has not taken it over. Name-based, and
+		// labelled as such: the enumerated scan above is the structural check.
+		const named = modules.flatMap(({ path, source }) =>
+			callsTo(CONSOLE_WRITER, source)
 				.filter((call) => CREDENTIAL_MATERIAL.test(codeOnly(call)))
-				.map((call) => `${path}: ${call.replace(/\s+/gu, " ")}`),
+				.map((call) => `${path}: ${call}`),
 		);
 
-		expect(egress).toEqual([`${EGRESS_MODULE}: writeRawStdout(\`\${secret.take()}\\n\`)`]);
+		expect(named).toEqual([]);
+	});
+
+	it("no RPC login response carries a credential to stdout", async () => {
+		const inputForm = { open: async () => ({ value: "sk-canary" }) };
+		const session = {
+			scopedModels: [],
+			modelRuntime: {
+				getProvider: () => ({ auth: { apiKey: {} } }),
+				login: async (
+					_provider: string,
+					_type: string,
+					options: { prompt: (prompt: { message: string }) => Promise<string> },
+				) => ({ type: "api_key", key: await options.prompt({ message: "API key" }) }),
+				getAvailableSnapshot: () => [],
+				getOAuthProviderMetadata: () => [],
+			},
+		} as unknown as AgentSession;
+
+		const result = await new RpcProviderAuth(inputForm).login(session, "anthropic");
+
+		// The host typed the key into its own input form; echoing it back down the
+		// stdout pipe would make this response a second egress.
+		expect(JSON.stringify(result)).not.toContain("sk-canary");
+		expect("credential" in result).toBe(false);
+		expect(result).toMatchObject({ provider: "anthropic", cancelled: false, type: "api_key" });
+	});
+
+	it("no type reachable from an RPC output record names a credential", () => {
+		const source = withoutComments(readFileSync(join(SRC_ROOT, "modes", "rpc", "rpc-types.ts"), "utf8"));
+		const declaration = /^export (?:type|interface) (\w+)/gmu;
+		const starts: Array<{ name: string; index: number }> = [];
+		for (let match = declaration.exec(source); match; match = declaration.exec(source)) {
+			starts.push({ name: match[1], index: match.index });
+		}
+
+		// Commands and UI responses travel *in* on stdin; a credential member
+		// there is the caller handing one over, not this process emitting one.
+		const INBOUND = new Set(["RpcCommand", "RpcCommandType", "RpcExtensionUIResponse"]);
+		const declared = new Map(
+			starts.map(({ name, index }, position) => [
+				name,
+				source.slice(index, starts[position + 1]?.index ?? source.length),
+			]),
+		);
+
+		// Guard the guard: a rename must not quietly empty either side.
+		for (const name of INBOUND) expect(declared.has(name)).toBe(true);
+		expect(declared.has("RpcLoginProviderResult")).toBe(true);
+		expect(declared.has("RpcResponse")).toBe(true);
+
+		const responseTypeSource = [...declared]
+			.filter(([name]) => !INBOUND.has(name))
+			.map(([, body]) => body)
+			.join("\n");
+
+		expect(responseTypeSource).not.toMatch(/credential\s*:/u);
 	});
 
 	it("is the only module in src that can read a Secret", () => {
