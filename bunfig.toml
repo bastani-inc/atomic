@@ -3,7 +3,10 @@ telemetry = false
 # Everything else that used to live here moved when the toolchain took pi's
 # split (npm for install/build/check, vitest for tests, Bun for binaries):
 #
-#   [install]  -> .npmrc          min-release-age, min-release-age-exclude, save-exact
+#   [install]  -> .npmrc          min-release-age, save-exact
+#                                 the old per-package exemption list did not
+#                                 move with them: the age gate now covers every
+#                                 dependency, pi's own packages included
 #   [test]     -> vitest.config.ts  setupFiles: ["./test/setup-workflow-durability.ts"]
 #   [run] bun  -> deleted           it put a node->bun shim on PATH, which
 #                                   test/integration/installed-package-node-extensions.test.ts
