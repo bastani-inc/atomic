@@ -107,6 +107,35 @@ export default function () {
 		expect(Object.keys(after?.files ?? {}).some((filePath) => filePath.endsWith("chain-d.ts"))).toBe(true);
 	});
 
+	it("invalidates reuse when a dependency loaded during factory execution changes", async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-graph-reuse-deferred-"));
+		roots.push(root);
+		const entry = path.join(root, "extension.ts");
+		const deferred = path.join(root, "deferred.ts");
+		fs.writeFileSync(
+			entry,
+			`const testState = ((globalThis as { __graphManifestReuseTest?: { evaluations?: number } }).__graphManifestReuseTest ??= {});
+testState.evaluations = (testState.evaluations ?? 0) + 1;
+export default function () {
+	return (require("./deferred.ts") as { value: string }).value;
+}
+`,
+		);
+		fs.writeFileSync(deferred, `export const value = "before";\n`);
+
+		const first = await loadGated(entry);
+		expect(first()).toBe("before");
+		const manifest = extensionLoaderTestHooks.readExtensionGraphManifest(entry);
+		expect(Object.keys(manifest?.files ?? {}).some((filePath) => filePath.endsWith("deferred.ts"))).toBe(true);
+
+		fs.writeFileSync(deferred, `export const value = "after";\n`);
+		const second = await loadGated(entry);
+
+		expect(state().evaluations).toBe(2);
+		expect(second).not.toBe(first);
+		expect(second()).toBe("after");
+	});
+
 	it("falls back to fresh evaluation when the manifest is missing or corrupt", async () => {
 		const { entry } = writeChainFixture();
 

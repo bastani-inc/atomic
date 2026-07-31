@@ -274,6 +274,51 @@ function graphUnchangedSince(manifest: ExtensionGraphManifest): boolean {
 	return true;
 }
 
+/**
+ * A factory can defer loading local code until it is invoked (e.g. a
+ * `require()` inside the factory body). Those reads are invisible to the
+ * import-time recording, so retained factories are wrapped to record reads
+ * that happen while the factory executes and merge them into the retained and
+ * persisted manifest — editing a deferred dependency then invalidates reuse
+ * like any other graph file.
+ */
+function withDeferredGraphRecording(extensionPath: string, factory: ExtensionFactory): ExtensionFactory {
+	return (pi) => {
+		const files = new Map<string, string>();
+		activeGraphRecorders.add(files);
+		installReadFileSyncObserver();
+		const finish = () => {
+			activeGraphRecorders.delete(files);
+			uninstallReadFileSyncObserver();
+			if (files.size > 0) mergeDeferredGraphReads(extensionPath, files);
+		};
+		try {
+			const result = factory(pi);
+			if (result instanceof Promise) {
+				return result.finally(finish);
+			}
+			finish();
+			return result;
+		} catch (error) {
+			finish();
+			throw error;
+		}
+	};
+}
+
+function mergeDeferredGraphReads(extensionPath: string, files: Map<string, string>): void {
+	const retained = retainedTransformedLoads.get(extensionPath);
+	if (!retained) return;
+	let changed = false;
+	for (const [filePath, hash] of files) {
+		if (retained.manifest.files[filePath] !== hash) {
+			retained.manifest.files[filePath] = hash;
+			changed = true;
+		}
+	}
+	if (changed) writeGraphManifest(retained.manifest);
+}
+
 let extensionCacheCwd: string | undefined;
 let extensionCacheGeneration = 0;
 const extensionCache = new Map<string, ExtensionFactory>();
@@ -449,9 +494,10 @@ async function importExtensionModule(
 	if (isWindows && !forceTransformedImports) {
 		nativelyImportedPaths.add(extensionPath);
 	}
-	const factory = module as ExtensionFactory;
+	let factory = module as ExtensionFactory;
 	if (typeof factory !== "function") return undefined;
 	if (recordedManifest) {
+		factory = withDeferredGraphRecording(extensionPath, factory);
 		retainedTransformedLoads.set(extensionPath, { factory, manifest: recordedManifest });
 	}
 	if (isCurrentCacheToken(cacheToken)) {
@@ -466,6 +512,11 @@ async function importExtensionModule(
  * entire transitive file graph is byte-identical. This lets the
  * unchanged-graph case survive the /reload generation bump instead of
  * re-evaluating hundreds of files; anything else re-evaluates as before.
+ *
+ * Note: when the graph is byte-identical, the previously evaluated module
+ * instance (including any mutable module-scoped state it closed over) is
+ * reused. An extension that requires clean module state on every reload must
+ * change a file in its graph to force re-evaluation.
  */
 async function loadTransformedExtensionModule(
 	extensionPath: string,
