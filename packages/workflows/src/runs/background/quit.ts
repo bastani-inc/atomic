@@ -69,6 +69,13 @@ type QuitAllRunResult =
  *    nodes as cancelled;
  * 5. only then record the durable paused transition and the resumable run.
  *
+ * Step 4 is the point of no return: an aborted callback cannot be un-aborted,
+ * and the executor that observed the abort suspends without writing any
+ * terminal record. So once it has run, step 5 publishes the local paused record
+ * whatever the durable transition does — a durable failure that skipped it left
+ * a run reported as running with nothing running it, and no live handle for a
+ * retry to rediscover. Only `resumable` follows the durable outcome.
+ *
  * A callback that ignores its signal is abandoned rather than pinning quit; its
  * `{runId, nodeId}` identity is reported in `abandonedTools`.
  *
@@ -157,17 +164,66 @@ export async function quitRun(
 	const current = activeStore.runs().find((candidate) => candidate.id === runId);
 	if (current === undefined) return { ok: false, runId, reason: "not_found" };
 	if (current.endedAt !== undefined) return { ok: false, runId, reason: "already_ended" };
-	const durableTransition = await markDurableQuit(runId, current);
-	if (durableTransition === "refused") return { ok: false, runId, reason: "already_ended" };
-	for (const pausedRunId of pausedRunIds) activeStore.recordRunPaused(pausedRunId);
-	activeStore.recordRunPaused(runId, undefined, { exitReason: "quit", resumable: true });
-	// An abandoned callback keeps its executor alive, but that executor is no
-	// longer authoritative for this run id: detach it so `/workflow resume`
-	// relaunches a fresh executor instead of adopting the stale job and
-	// reporting a running run nothing is actually running. Cooperative quits
-	// settle on their own and unregister themselves.
-	if (abandonedTools.length > 0) jobs.detach(runId, jobs.get(runId));
+	// A quit that aborted a call is committed: each of those callbacks observed a
+	// whole-run quit, so its executor suspends without writing any terminal
+	// record, and only the publication below can report that the run stopped.
+	const suspendedByAbort = toolHandles.length > 0;
+	const publish = (resumable: boolean): void => {
+		publishLocalQuit(activeStore, runId, pausedRunIds, resumable);
+		// An abandoned callback keeps its executor alive, but that executor is no
+		// longer authoritative for this run id: detach it so `/workflow resume`
+		// relaunches a fresh executor instead of adopting the stale job and
+		// reporting a running run nothing is actually running. Cooperative quits
+		// settle on their own and unregister themselves.
+		if (abandonedTools.length > 0) jobs.detach(runId, jobs.get(runId));
+	};
+	let durableTransition: DurableQuitOutcome;
+	try {
+		durableTransition = await markDurableQuit(runId, current);
+	} catch (error) {
+		if (!suspendedByAbort) throw error;
+		publish(false);
+		throw new Error(unrecordedDurableQuitMessage(error), { cause: error });
+	}
+	if (durableTransition === "refused") {
+		if (suspendedByAbort) publish(false);
+		return { ok: false, runId, reason: "already_ended" };
+	}
+	publish(true);
 	return { ok: true, runId, paused, cancelledTools, abandonedTools };
+}
+
+/**
+ * Publish the local paused record for this workflow boundary.
+ *
+ * `resumable` follows the durable outcome rather than the local one: a pause the
+ * durable backend never accepted is still real — the run stopped — but no future
+ * process could resume from it, so it is not advertised as resumable. Recording
+ * it keeps the run controllable, so a later `/workflow quit` re-attempts the
+ * transition and upgrades the record.
+ */
+function publishLocalQuit(
+	activeStore: Store,
+	runId: string,
+	pausedRunIds: ReadonlySet<string>,
+	resumable: boolean,
+): void {
+	for (const pausedRunId of pausedRunIds) activeStore.recordRunPaused(pausedRunId);
+	activeStore.recordRunPaused(runId, undefined, { exitReason: "quit", resumable });
+}
+
+/**
+ * Report what the failed durable write left behind, not merely that it failed.
+ *
+ * Every caller already names the run ("Failed to quit run …: "), so this reads
+ * as the rest of that sentence.
+ */
+function unrecordedDurableQuitMessage(error: unknown): string {
+	const detail = error instanceof Error ? error.message : String(error);
+	return (
+		`the in-flight ctx.tool work was cancelled but the durable paused transition failed: ${detail}.` +
+		" The run is paused locally and is not resumable until a retried quit records it durably."
+	);
 }
 
 /** Distinct admission boundaries owned by this workflow boundary's runs. */
@@ -265,12 +321,16 @@ function controllableHandles(
 	);
 }
 
-async function markDurableQuit(runId: string, run: RunSnapshot): Promise<"transitioned" | "not_needed" | "refused"> {
+type DurableQuitOutcome = "transitioned" | "not_needed" | "refused";
+
+async function markDurableQuit(runId: string, run: RunSnapshot): Promise<DurableQuitOutcome> {
 	const backend = discoverDurableQuitBackend(runId);
 	if (backend === undefined) return "not_needed";
 	// The workflow is durably tracked, so a failure to persist the paused
-	// transition or flush it must surface. Swallowing it here would let quitRun
-	// record a resumable pause that no future process could actually resume from.
+	// transition or flush it must surface: swallowing it here would let quitRun
+	// advertise a resumable pause no future process could resume from. The caller
+	// still reconciles an already-suspended executor into a pause that is not
+	// advertised as resumable, so the failure costs the promise, not the record.
 	const transitioned = await transitionDurableWorkflowStatus(
 		backend,
 		runId,

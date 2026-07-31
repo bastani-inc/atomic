@@ -5,6 +5,7 @@ import { afterEach, describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import type { DurableWorkflowStatus } from "../../packages/workflows/src/durable/types.js";
 import {
 	createToolControlRegistry,
 	TOOL_QUIT_SETTLEMENT_TIMEOUT_MS,
@@ -1227,5 +1228,180 @@ describe("graceful workflow quit of in-flight ctx.tool nodes", () => {
 			"running",
 			"a quit that only paused stages stays completable after resume",
 		);
+	});
+
+	/**
+	 * Aborting an in-flight callback is not undoable: the executor observed a
+	 * whole-run quit and suspends without writing any terminal record, so the
+	 * local paused publication is the only thing left that can report the run as
+	 * stopped. These three cover the durable outcomes that used to skip it.
+	 */
+	test("a durable transition failure after the tool abort still reports the suspended run as paused", async () => {
+		class TransitionFailingBackend extends InMemoryDurableBackend {
+			override async transitionWorkflowStatus(): Promise<boolean> {
+				throw new Error("durable transition write failed");
+			}
+		}
+		const backend = new TransitionFailingBackend();
+		setDurableBackend(backend);
+		const store = createStore();
+		const registry = createStageControlRegistry();
+		const toolControls = createToolControlRegistry();
+		const runId = "quit-tool-durable-transition-fails";
+		const entered = Promise.withResolvers<void>();
+		const definition = workflow({
+			name: "quit-tool-durable-transition-fails",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.tool("hang", {}, async ({ signal }) => {
+					entered.resolve();
+					await abortObserved(signal);
+					return "late";
+				});
+				return {};
+			},
+		});
+
+		const execution = run(
+			definition,
+			{},
+			{ runId, store, stageControlRegistry: registry, toolControlRegistry: toolControls, durableBackend: backend },
+		);
+		await entered.promise;
+
+		const failure = await quitRun(runId, {
+			store,
+			stageControlRegistry: registry,
+			toolControlRegistry: toolControls,
+		}).then(
+			(result) => result,
+			(error: unknown) => error,
+		);
+
+		const message = failure instanceof Error ? failure.message : String(failure);
+		assert.match(message, /durable transition write failed/, "the underlying durable failure must still surface");
+		assert.match(message, /paused locally and is not resumable/, "and it must say what it left behind");
+		assert.equal((await execution).status, "paused", "the aborted call really did suspend the executor");
+		const snapshot = store.runs().find((candidate) => candidate.id === runId);
+		assert.equal(snapshot?.status, "paused", "a run nothing is running must never stay reported as running");
+		assert.equal(snapshot?.exitReason, "quit");
+		assert.equal(snapshot?.resumable, false, "no durable record backs this pause, so nothing promises a resume");
+		assert.equal(snapshot?.endedAt, undefined);
+		assert.equal(snapshot?.toolNodes?.[0]?.status, "cancelled");
+	});
+
+	test("quit retried after a durable failure upgrades the pause to resumable", async () => {
+		class FlakyTransitionBackend extends InMemoryDurableBackend {
+			attempts = 0;
+			override async transitionWorkflowStatus(
+				workflowId: string,
+				expected: readonly DurableWorkflowStatus[],
+				status: DurableWorkflowStatus,
+				pendingPrompts?: number,
+				resumable?: boolean,
+			): Promise<boolean> {
+				this.attempts += 1;
+				if (this.attempts === 1) throw new Error("durable transition write failed");
+				return await super.transitionWorkflowStatus(workflowId, expected, status, pendingPrompts, resumable);
+			}
+		}
+		const backend = new FlakyTransitionBackend();
+		setDurableBackend(backend);
+		const store = createStore();
+		const registry = createStageControlRegistry();
+		const toolControls = createToolControlRegistry();
+		const runId = "quit-tool-durable-retry";
+		const entered = Promise.withResolvers<void>();
+		const definition = workflow({
+			name: "quit-tool-durable-retry",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.tool("hang", {}, async ({ signal }) => {
+					entered.resolve();
+					await abortObserved(signal);
+					return "late";
+				});
+				return {};
+			},
+		});
+
+		const execution = run(
+			definition,
+			{},
+			{ runId, store, stageControlRegistry: registry, toolControlRegistry: toolControls, durableBackend: backend },
+		);
+		await entered.promise;
+		await quitRun(runId, { store, stageControlRegistry: registry, toolControlRegistry: toolControls }).catch(
+			() => undefined,
+		);
+		await execution;
+
+		// The failed attempt left a run the operator can still act on: paused, so
+		// the retry finds it instead of answering "no controllable stages".
+		const retry = await quitRun(runId, {
+			store,
+			stageControlRegistry: registry,
+			toolControlRegistry: toolControls,
+		});
+
+		assert.equal(retry.ok, true);
+		const snapshot = store.runs().find((candidate) => candidate.id === runId);
+		assert.equal(snapshot?.status, "paused");
+		assert.equal(snapshot?.resumable, true);
+		assert.equal(backend.getWorkflow(runId)?.status, "paused");
+	});
+
+	test("a refused durable transition after the tool abort does not leave the run reported as running", async () => {
+		class RefusingBackend extends InMemoryDurableBackend {
+			override async transitionWorkflowStatus(): Promise<boolean> {
+				return false;
+			}
+		}
+		const backend = new RefusingBackend();
+		setDurableBackend(backend);
+		const store = createStore();
+		const registry = createStageControlRegistry();
+		const toolControls = createToolControlRegistry();
+		const runId = "quit-tool-durable-refused";
+		const entered = Promise.withResolvers<void>();
+		const definition = workflow({
+			name: "quit-tool-durable-refused",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.tool("hang", {}, async ({ signal }) => {
+					entered.resolve();
+					await abortObserved(signal);
+					return "late";
+				});
+				return {};
+			},
+		});
+
+		const execution = run(
+			definition,
+			{},
+			{ runId, store, stageControlRegistry: registry, toolControlRegistry: toolControls, durableBackend: backend },
+		);
+		await entered.promise;
+
+		const result = await quitRun(runId, {
+			store,
+			stageControlRegistry: registry,
+			toolControlRegistry: toolControls,
+		});
+
+		assert.deepEqual(result, { ok: false, runId, reason: "already_ended" });
+		assert.equal((await execution).status, "paused");
+		const snapshot = store.runs().find((candidate) => candidate.id === runId);
+		assert.equal(snapshot?.status, "paused", "the refused transition must not leave a zombie running run");
+		assert.equal(snapshot?.exitReason, "quit");
+		assert.equal(snapshot?.resumable, false);
+		assert.equal(snapshot?.toolNodes?.[0]?.status, "cancelled");
 	});
 });
