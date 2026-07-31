@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
 import { afterEach, describe, test, vi } from "vitest";
 import { createSubagentStartupMaintenance } from "../../packages/subagents/src/extension/startup-maintenance.ts";
@@ -84,8 +84,12 @@ function pi(): ExtensionAPI {
 	} as unknown as ExtensionAPI;
 }
 
+const CWD = process.cwd();
+const SAFE_CWD = `--${CWD.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
+
 function isolatedContext(sessionDir: string): ExtensionContext {
 	return {
+		cwd: CWD,
 		sessionManager: {
 			usesDefaultSessionDir: () => false,
 			getSessionDir: () => sessionDir,
@@ -140,8 +144,8 @@ describe("agentDir isolation of the global artifact scan", () => {
 	test("scans only the context-provided sessions root, never the global roots", () => {
 		const globalDir = makeAgentDirWithStaleArtifacts("atomic-isolation-global-", "session-g");
 		process.env[AGENT_DIR_ENV] = globalDir.agentDir;
-		const isolated = makeAgentDirWithStaleArtifacts("atomic-isolation-agent-", "session-i");
-		const sessionDir = join(isolated.agentDir, "sessions", "session-i");
+		const isolated = makeAgentDirWithStaleArtifacts("atomic-isolation-agent-", SAFE_CWD);
+		const sessionDir = join(isolated.agentDir, "sessions", SAFE_CWD);
 
 		const { maintenance, runStartupScan } = makeMaintenance(join(isolated.agentDir, "results"));
 		try {
@@ -164,27 +168,36 @@ describe("agentDir isolation of the global artifact scan", () => {
 		process.env[AGENT_DIR_ENV] = globalDir.agentDir;
 		const parent = fs.mkdtempSync(join(tmpdir(), "atomic-isolation-custom-"));
 		roots.push(parent);
-		const customSessionDir = join(parent, "my-sessions");
-		fs.mkdirSync(customSessionDir, { recursive: true });
-		const siblingArtifacts = join(parent, "sibling", "subagent-artifacts");
-		fs.mkdirSync(siblingArtifacts, { recursive: true });
-		const siblingStale = join(siblingArtifacts, "run_worker_output.md");
-		fs.writeFileSync(siblingStale, "stale\n");
-		const old = new Date(Date.now() - 10 * DAY_MS);
-		fs.utimesSync(siblingStale, old, old);
+		// An arbitrary parent deliberately named "sessions" must not be trusted either:
+		// only the full <agentDir>/sessions/<safe-cwd> layout counts.
+		for (const customName of ["my-sessions", join("sessions", "custom-dir")]) {
+			const customSessionDir = join(parent, customName);
+			fs.mkdirSync(customSessionDir, { recursive: true });
+			const siblingRoot = dirname(customSessionDir);
+			const siblingArtifacts = join(siblingRoot, `sibling-${basename(customName)}`, "subagent-artifacts");
+			fs.mkdirSync(siblingArtifacts, { recursive: true });
+			const siblingStale = join(siblingArtifacts, "run_worker_output.md");
+			fs.writeFileSync(siblingStale, "stale\n");
+			const old = new Date(Date.now() - 10 * DAY_MS);
+			fs.utimesSync(siblingStale, old, old);
 
-		const { maintenance, runStartupScan } = makeMaintenance(join(parent, "results"));
-		try {
-			maintenance.scheduleStartupCleanup();
-			maintenance.cleanupSessionArtifactsDeferred(isolatedContext(customSessionDir));
-			runStartupScan();
-		} finally {
-			maintenance.stop();
+			const { maintenance, runStartupScan } = makeMaintenance(join(parent, "results"));
+			try {
+				maintenance.scheduleStartupCleanup();
+				maintenance.cleanupSessionArtifactsDeferred(isolatedContext(customSessionDir));
+				runStartupScan();
+			} finally {
+				maintenance.stop();
+			}
+
+			assert.equal(fs.existsSync(siblingStale), true, "siblings of a custom session dir must stay untouched");
+			assert.equal(
+				fs.existsSync(join(siblingRoot, ".last-cleanup")),
+				false,
+				"no marker may be written into the parent",
+			);
+			assert.equal(fs.existsSync(globalDir.staleFile), true, "the global sessions root must stay untouched");
 		}
-
-		assert.equal(fs.existsSync(siblingStale), true, "siblings of a custom session dir must stay untouched");
-		assert.equal(fs.existsSync(join(parent, ".last-cleanup")), false, "no marker may be written into the parent");
-		assert.equal(fs.existsSync(globalDir.staleFile), true, "the global sessions root must stay untouched");
 	});
 
 	test("falls back to the env/global derivation when the context supplies no isolated root", () => {

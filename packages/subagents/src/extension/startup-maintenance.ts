@@ -69,8 +69,9 @@ export function createSubagentStartupMaintenance(
 	// programmatic agentDir) session directory. When set, the global artifact scan
 	// stays inside it instead of touching the real global/legacy sessions roots.
 	// A custom session dir that does not follow the <agentDir>/sessions/<safe-cwd>
-	// layout yields no roots at all, so cleanup never broadens into an arbitrary
-	// directory's siblings.
+	// layout (the default layout the SDK derives for a programmatic agentDir, with
+	// <safe-cwd> encoding the current working directory) yields no roots at all, so
+	// cleanup never broadens into an arbitrary directory's siblings.
 	let contextSessionsRoots: readonly string[] | undefined;
 	const noteSessionContext = (ctx: ExtensionContext): void => {
 		try {
@@ -78,7 +79,12 @@ export function createSubagentStartupMaintenance(
 			const sessionDir = ctx.sessionManager.getSessionDir();
 			if (!sessionDir) return;
 			const parent = path.dirname(sessionDir);
-			contextSessionsRoots = path.basename(parent) === "sessions" ? [parent] : [];
+			const safeCwd = `--${path
+				.resolve(ctx.cwd)
+				.replace(/^[/\\]/, "")
+				.replace(/[/\\:]/g, "-")}--`;
+			const followsAgentDirLayout = path.basename(parent) === "sessions" && path.basename(sessionDir) === safeCwd;
+			contextSessionsRoots = followsAgentDirLayout ? [parent] : [];
 		} catch {
 			// A stale or partial context leaves cleanup on the env/global fallback.
 		}
