@@ -57,6 +57,26 @@ export interface ExtensionCommandContextSource extends ExtensionContextSource {
 }
 
 /**
+ * A defensive copy of the model scope, entries included.
+ *
+ * `readonly ScopedModel[]` is a compile-time claim only, so the array is
+ * copied: a JavaScript extension, or one asserting the `readonly` away, could
+ * otherwise push onto the session's own array and have `cycleModel()` treat the
+ * entry as in scope.
+ *
+ * Copying the array alone is not enough. The entries are the session's objects,
+ * so mutating `entry.model` or `entry.thinkingLevel` in place reaches the very
+ * array `cycleModel()` reads, and swaps the model it selects without ever
+ * touching the array. Each entry and its model are copied too, and the result
+ * is frozen so an attempt fails loudly under strict mode instead of silently.
+ *
+ * The accessor reports the scope; it must not be a way to change it.
+ */
+export function copyScopedModels(scoped: readonly ScopedModel[]): readonly ScopedModel[] {
+	return Object.freeze(scoped.map((entry) => Object.freeze({ ...entry, model: Object.freeze({ ...entry.model }) })));
+}
+
+/**
  * Create an ExtensionContext for use in event handlers and tool execution.
  * Context values are resolved at call time, so host changes are reflected.
  */
@@ -92,12 +112,7 @@ export function createExtensionContext(source: ExtensionContextSource): Extensio
 		},
 		get scopedModels() {
 			source.assertActive();
-			// A copy, not the session's backing array. `readonly ScopedModel[]` only
-			// stops a TypeScript caller; a JavaScript extension — or one using a
-			// mutable assertion — could otherwise push onto the array this returns
-			// and have `cycleModel()` treat the entry as in scope. The accessor
-			// reports the scope, so it must not be a way to widen it.
-			return [...source.getScopedModels()];
+			return copyScopedModels(source.getScopedModels());
 		},
 		get thinkingLevel() {
 			source.assertActive();

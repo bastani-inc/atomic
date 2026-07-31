@@ -269,17 +269,29 @@ describe("OAuth failure classification", () => {
 		// text. Some echo the request they sent or the body they got back, either
 		// of which can carry the very value this door keeps off every stream but
 		// stdout — so it must not travel in the message a caller prints.
-		const secrets = [
-			"Bearer ya29.a0AfB_bykLongLivedAccessTokenValue",
-			"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk",
-			"sk-live-0123456789abcdefghij",
+		const OPAQUE = "7f3a91c2d4e6b8a0";
+		const quoted: ReadonlyArray<{ readonly text: string; readonly value: string }> = [
+			// Shapes that announce themselves, recognised wherever they appear.
+			{ text: "Bearer ya29.a0AfB_bykLongLivedAccessTokenValue", value: "ya29.a0AfB_bykLongLivedAccessTokenValue" },
+			{
+				text: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+				value: "dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+			},
+			{ text: "sk-live-0123456789abcdefghij", value: "sk-live-0123456789abcdefghij" },
+			// Opaque values, which no shape can recognise: reached by the field name
+			// they are filed under, in the header, JSON, and query spellings a quoted
+			// request or response body uses.
+			{ text: `x-api-key: ${OPAQUE}`, value: OPAQUE },
+			{ text: `"api_key": "${OPAQUE}"`, value: OPAQUE },
+			{ text: `?access_token=${OPAQUE}`, value: OPAQUE },
+			{ text: `Authorization: ${OPAQUE}`, value: OPAQUE },
 		];
 
-		for (const secret of secrets) {
+		for (const { text, value } of quoted) {
 			const runtime = runtimeStub({
 				credentials: [{ providerId: "anthropic", type: "oauth" }],
 				getAuth: async () => {
-					throw new ModelsError("oauth", `refresh rejected for request with ${secret}`);
+					throw new ModelsError("oauth", `refresh rejected for request with ${text}`);
 				},
 			});
 
@@ -295,13 +307,14 @@ describe("OAuth failure classification", () => {
 			expect(failure).toBeInstanceOf(CredentialPrintError);
 			const reported = failure as CredentialPrintError;
 			expect(reported.code).toBe("RefreshFailed");
-			expect(reported.message).not.toContain(secret);
-			expect(reported.message).toContain("[redacted]");
+			// The credential itself, not merely the field name it was filed under.
+			expect(reported.message, text).not.toContain(value);
+			expect(reported.message, text).toContain("[redacted]");
 			// The diagnosis survives redaction, so the exit code is still actionable.
 			expect(reported.message).toContain("refresh rejected for request with");
 			// The unredacted error is still reachable for a debugger, as `cause`,
 			// which this door never logs.
-			expect((reported.cause as Error).message).toContain(secret);
+			expect((reported.cause as Error).message).toContain(value);
 		}
 	});
 });

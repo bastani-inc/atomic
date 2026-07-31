@@ -184,16 +184,50 @@ describe("Pi 0.83.0 direct coding-agent parity", () => {
 		// `readonly ScopedModel[]` is a compile-time claim only. A JavaScript
 		// extension, or one asserting the readonly away as below, reaches the same
 		// object; if that object were the session's backing array the pushed entry
-		// would become an in-scope model that `cycleModel()` would switch to.
-		(ctx.scopedModels as ScopedModel[]).push({
-			model: { id: "out-of-scope", provider: "openai" } as never,
-		});
+		// would become an in-scope model that `cycleModel()` would switch to. The
+		// returned array is a frozen copy, so the attempt throws instead.
+		expect(() =>
+			(ctx.scopedModels as ScopedModel[]).push({
+				model: { id: "out-of-scope", provider: "openai" } as never,
+			}),
+		).toThrow();
 
 		expect(scopedModels).toHaveLength(1);
 		expect(ctx.scopedModels).toHaveLength(1);
 		expect(ctx.scopedModels.map(({ model }) => model.id)).toEqual(["gpt-5.5"]);
 		// Each read is its own copy, so one reader cannot poison the next.
 		expect(ctx.scopedModels).not.toBe(ctx.scopedModels);
+	});
+
+	it("04b15259/b6fb91e5: mutating an entry in place cannot change the scope either", () => {
+		// Copying only the array leaves the entries shared, and `cycleModel()` reads
+		// those same objects — so swapping `entry.model` or `entry.thinkingLevel` in
+		// place changes which model the session selects without ever touching the
+		// array the copy protects.
+		const scopedModels: ScopedModel[] = [
+			{ model: { id: "gpt-5.5", provider: "openai" } as never, thinkingLevel: "high" },
+		];
+		const source = {
+			assertActive: () => {},
+			getScopedModels: () => scopedModels,
+		} as unknown as ExtensionContextSource;
+
+		const ctx = createExtensionContext(source);
+		const [entry] = ctx.scopedModels as ScopedModel[];
+
+		expect(entry).not.toBe(scopedModels[0]);
+		expect(entry.model).not.toBe(scopedModels[0].model);
+
+		// Frozen, so the attempt throws here rather than silently succeeding.
+		expect(() => {
+			(entry as { thinkingLevel?: string }).thinkingLevel = "low";
+		}).toThrow();
+		expect(() => {
+			(entry.model as { id: string }).id = "out-of-scope";
+		}).toThrow();
+
+		expect(scopedModels[0].thinkingLevel).toBe("high");
+		expect(scopedModels[0].model.id).toBe("gpt-5.5");
 	});
 
 	it("04b15259/b6fb91e5: the shortcut context copies the scope too, not just the runner's", () => {
@@ -262,10 +296,17 @@ describe("Pi 0.83.0 direct coding-agent parity", () => {
 		const received = handlerContext as { scopedModels: readonly ScopedModel[] };
 		expect(received.scopedModels).toEqual(scopedModels);
 		expect(received.scopedModels).not.toBe(scopedModels);
-		(received.scopedModels as ScopedModel[]).push({
-			model: { id: "out-of-scope", provider: "openai" } as never,
-		});
+		expect(() =>
+			(received.scopedModels as ScopedModel[]).push({
+				model: { id: "out-of-scope", provider: "openai" } as never,
+			}),
+		).toThrow();
+		// The entries are copies too, so an in-place swap cannot reach the session.
+		expect(() => {
+			(received.scopedModels[0] as { thinkingLevel?: string }).thinkingLevel = "low";
+		}).toThrow();
 		expect(scopedModels).toHaveLength(1);
+		expect(scopedModels[0].thinkingLevel).toBe("high");
 	});
 
 	it("cced6a21: loads a nested linked worktree's context file once, not twice", () => {

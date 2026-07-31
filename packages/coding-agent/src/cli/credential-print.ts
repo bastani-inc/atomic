@@ -202,14 +202,20 @@ export function validateCredentialPrintArgs(args: Args): void {
 }
 
 /**
- * Provider-supplied text with anything credential-shaped masked.
+ * Provider-supplied text with anything credential-bearing masked.
  *
  * A failed refresh is reported on stderr, and the provider composes that
  * message. Most describe the failure; some quote the request they sent or the
  * body they got back, either of which can carry the very value this door exists
- * to keep off every stream except stdout. Masking the shapes a secret takes
- * keeps the diagnosis — which is what makes the exit code actionable — without
- * putting the secret in a log, a terminal scrollback, or a CI transcript.
+ * to keep off every stream except stdout. Masking keeps the diagnosis — which
+ * is what makes the exit code actionable — without putting the secret in a log,
+ * a terminal scrollback, or a CI transcript.
+ *
+ * Two passes, because either alone leaves a gap. Shape catches a value wherever
+ * it appears, but only for the formats that announce themselves. Context
+ * catches an opaque value — an `x-api-key`, which is just bytes — by the name it
+ * is filed under, in the header, JSON, and query spellings a quoted request or
+ * response body uses.
  */
 const CREDENTIAL_SHAPES: readonly RegExp[] = [
 	// `Authorization: Bearer <token>`, the form an echoed request header takes.
@@ -220,8 +226,33 @@ const CREDENTIAL_SHAPES: readonly RegExp[] = [
 	/\b(?:sk|pk|rk|api|key|tok|token|secret)[-_][\w-]{12,}/giu,
 ];
 
+/**
+ * Field names whose value is the credential, however opaque that value looks.
+ * `x-api-key` is the case shape-matching cannot reach: the value is just bytes.
+ */
+const CREDENTIAL_FIELD_NAME = String.raw`(?:x-)?(?:api[-_]?key|apikey|auth(?:orization)?|access[-_]?token|refresh[-_]?token|id[-_]?token|client[-_]?secret|secret[-_]?key|private[-_]?key|session[-_]?key|password|passwd|token|secret|key)`;
+
+const CREDENTIAL_CONTEXTS: readonly RegExp[] = [
+	// Header or YAML-ish: `x-api-key: abc123`, to end of line.
+	new RegExp(String.raw`\b${CREDENTIAL_FIELD_NAME}\s*:\s*[^\s,;}"']+`, "giu"),
+	// JSON: `"api_key": "abc123"` / `'token':'abc123'`, quoted value.
+	new RegExp(String.raw`(["']?)${CREDENTIAL_FIELD_NAME}\1\s*:\s*(["'])(?:(?!\2).)*\2`, "giu"),
+	// Query string or form body: `?api_key=abc123&…`.
+	new RegExp(String.raw`\b${CREDENTIAL_FIELD_NAME}\s*=\s*[^\s&,;}"']+`, "giu"),
+];
+
 export function redactCredentialShapes(text: string): string {
-	return CREDENTIAL_SHAPES.reduce((masked, shape) => masked.replace(shape, "[redacted]"), text);
+	const byContext = CREDENTIAL_CONTEXTS.reduce(
+		(masked, context) =>
+			masked.replace(context, (match) => {
+				// Keep the field name so the diagnosis still says which one failed;
+				// replace only what follows the separator.
+				const separator = /[:=]/u.exec(match);
+				return separator ? `${match.slice(0, separator.index + 1)} [redacted]` : "[redacted]";
+			}),
+		text,
+	);
+	return CREDENTIAL_SHAPES.reduce((masked, shape) => masked.replace(shape, "[redacted]"), byContext);
 }
 
 /**
