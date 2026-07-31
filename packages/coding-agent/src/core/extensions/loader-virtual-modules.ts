@@ -242,6 +242,38 @@ async function recordExtensionGraph<T>(
 	return { result, manifest };
 }
 
+/**
+ * Factories from transformed evaluations, retained across extension cache
+ * generation bumps and paired with the graph manifest recorded by the
+ * evaluation that produced them. A retained factory is reused on a reload only
+ * when the persisted manifest still equals the paired one and every file in it
+ * rehashes to its recorded digest; any doubt (missing or corrupt manifest,
+ * missing file, hash mismatch, changed graph shape) falls back to a fresh
+ * transformed re-evaluation, which re-records the manifest.
+ */
+const retainedTransformedLoads = new Map<string, { factory: ExtensionFactory; manifest: ExtensionGraphManifest }>();
+
+function manifestFilesEqual(a: Record<string, string>, b: Record<string, string>): boolean {
+	const aEntries = Object.entries(a);
+	if (aEntries.length !== Object.keys(b).length) return false;
+	return aEntries.every(([filePath, hash]) => b[filePath] === hash);
+}
+
+function graphUnchangedSince(manifest: ExtensionGraphManifest): boolean {
+	const stored = readExtensionGraphManifest(manifest.extensionPath);
+	if (!stored || !manifestFilesEqual(stored.files, manifest.files)) return false;
+	const entries = Object.entries(manifest.files);
+	if (entries.length === 0) return false;
+	for (const [filePath, hash] of entries) {
+		try {
+			if (sha256Hex(fs.readFileSync(filePath)) !== hash) return false;
+		} catch {
+			return false;
+		}
+	}
+	return true;
+}
+
 let extensionCacheCwd: string | undefined;
 let extensionCacheGeneration = 0;
 const extensionCache = new Map<string, ExtensionFactory>();
@@ -373,6 +405,8 @@ export const extensionLoaderTestHooks = {
 	readExtensionGraphManifest,
 	loadExtensionModuleTransformed: (extensionPath: string, cacheToken?: ExtensionCacheToken) =>
 		importExtensionModule(extensionPath, cacheToken, true),
+	loadTransformedExtensionModule: (extensionPath: string, cacheToken?: ExtensionCacheToken) =>
+		loadTransformedExtensionModule(extensionPath, cacheToken),
 };
 
 /**
@@ -403,18 +437,48 @@ async function importExtensionModule(
 	// Transformed evaluations are the loads whose repeat cost is the Windows
 	// /reload regression, so they are also the loads whose file graph is
 	// recorded into a content-hash manifest.
-	const module = forceTransformedImports
-		? (await recordExtensionGraph(extensionPath, () => jiti.import(specifier, { default: true }))).result
-		: await jiti.import(specifier, { default: true });
+	let module: unknown;
+	let recordedManifest: ExtensionGraphManifest | undefined;
+	if (forceTransformedImports) {
+		const recorded = await recordExtensionGraph(extensionPath, () => jiti.import(specifier, { default: true }));
+		module = recorded.result;
+		recordedManifest = recorded.manifest;
+	} else {
+		module = await jiti.import(specifier, { default: true });
+	}
 	if (isWindows && !forceTransformedImports) {
 		nativelyImportedPaths.add(extensionPath);
 	}
 	const factory = module as ExtensionFactory;
 	if (typeof factory !== "function") return undefined;
+	if (recordedManifest) {
+		retainedTransformedLoads.set(extensionPath, { factory, manifest: recordedManifest });
+	}
 	if (isCurrentCacheToken(cacheToken)) {
 		extensionCache.set(extensionPath, factory);
 	}
 	return factory;
+}
+
+/**
+ * Load an extension through jiti's transformed-import path, reusing the
+ * previously evaluated factory when the recorded graph manifest proves the
+ * entire transitive file graph is byte-identical. This lets the
+ * unchanged-graph case survive the /reload generation bump instead of
+ * re-evaluating hundreds of files; anything else re-evaluates as before.
+ */
+async function loadTransformedExtensionModule(
+	extensionPath: string,
+	cacheToken: ExtensionCacheToken | undefined,
+): Promise<ExtensionFactory | undefined> {
+	const retained = retainedTransformedLoads.get(extensionPath);
+	if (retained && graphUnchangedSince(retained.manifest)) {
+		if (isCurrentCacheToken(cacheToken)) {
+			extensionCache.set(extensionPath, retained.factory);
+		}
+		return retained.factory;
+	}
+	return importExtensionModule(extensionPath, cacheToken, true);
 }
 
 export async function loadExtensionModule(
@@ -444,5 +508,8 @@ export async function loadExtensionModule(
 	// `/reload`; removing it needs a content-hash-keyed evaluation cache or a
 	// narrower trigger, not a larger timeout.
 	const forceTransformedImports = isSingleFileBuild || (isWindows && nativelyImportedPaths.has(extensionPath));
-	return importExtensionModule(extensionPath, cacheToken, forceTransformedImports);
+	if (forceTransformedImports) {
+		return loadTransformedExtensionModule(extensionPath, cacheToken);
+	}
+	return importExtensionModule(extensionPath, cacheToken, false);
 }
