@@ -62,6 +62,7 @@ What the commands guarantee:
 - **No ambient model.** `--model` is required, so the command cannot emit a credential for a model you did not name.
 - **A failed refresh never strands you.** If an OAuth refresh fails, the command exits `5` and leaves the stored credential exactly as it was.
 - **The value is not loggable in transit.** Internally the credential is carried in a wrapper that throws if anything tries to interpolate, serialize, or inspect it, so it cannot reach a log line, a session transcript, or an error message.
+- **One egress, not a policy.** A single function in `src/cli/credential-print.ts` opens the wrapper and writes to stdout; nothing else in the source tree can read a credential out of it. A test walks every file under `packages/coding-agent/src` and fails if a second path to stdout appears, so this stays true as the code grows.
 
 What they do **not** do: once the credential is on stdout it is ordinary text in your shell, your pipeline, and possibly your shell history and process listing. Prefer `print-bearer-token`, whose output expires, over a long-lived API key. Do not embed either command in a script that logs its own output.
 

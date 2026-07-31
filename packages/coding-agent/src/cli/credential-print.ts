@@ -25,6 +25,7 @@ import { ModelsError } from "@earendil-works/pi-ai";
 import { APP_NAME } from "../config.ts";
 import { resolveCliModel } from "../core/model-resolver.ts";
 import type { ModelRuntime } from "../core/model-runtime.ts";
+import { flushRawStdout, writeRawStdout } from "../core/output-guard.ts";
 import type { Args } from "./args.ts";
 
 export type CredentialPrintKind = "api_key" | "bearer_token";
@@ -108,6 +109,24 @@ export class Secret {
 	[inspect.custom](): string {
 		return "[Secret]";
 	}
+}
+
+/**
+ * The single credential egress in `src`.
+ *
+ * `Secret.take()` is called here and nowhere else in the source tree, so this
+ * is the one statement that can turn a configured credential back into a string
+ * and the one that hands it to the real stdout. A caller — `main.ts` included —
+ * receives a `Secret` it cannot read, print, or serialize, so a second export
+ * path cannot be grafted on without moving this function.
+ *
+ * `test/credential-print.test.ts` asserts that chokepoint against the whole of
+ * `packages/coding-agent/src`.
+ */
+export async function emitCredential(secret: Secret): Promise<void> {
+	// take() returns a plain string; the Secret itself is never interpolated.
+	writeRawStdout(`${secret.take()}\n`);
+	await flushRawStdout();
 }
 
 export interface CredentialPrintCommand {

@@ -6,15 +6,16 @@
  * carries the credential or nothing at all.
  */
 
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { inspect } from "node:util";
 import { ModelsError } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Args } from "../src/cli/args.ts";
 import {
 	CredentialPrintError,
+	DEFAULT_BEARER_TOKEN_MIN_EXPIRY_MS,
 	isCredentialPrintHelp,
 	parseCredentialPrintCommand,
 	resolveCredentialForPrint,
@@ -533,6 +534,74 @@ describe("provider inference", () => {
 	});
 });
 
+describe("provider selection", () => {
+	it("refuses to guess between configured providers and names the candidates (exit 3)", async () => {
+		const runtime = runtimeStub({
+			credentials: [
+				{ providerId: "anthropic", type: "api_key" },
+				{ providerId: "openai", type: "api_key" },
+			],
+			getAuth: async () => ({ auth: { apiKey: "sk-ambiguous" } }),
+		});
+
+		const failure = await resolveCredentialForPrint(args({ model: "claude-sonnet-4-5" }), runtime, "api_key").then(
+			() => undefined,
+			(error: unknown) => error as CredentialPrintError,
+		);
+
+		expect(failure?.code).toBe("ProviderAmbiguous");
+		expect(failure?.exitCode).toBe(3);
+		// Listing the candidates is the point: the caller has to be told which
+		// --provider values would resolve.
+		expect(failure?.message).toContain("anthropic");
+		expect(failure?.message).toContain("openai");
+		expect(failure?.message).not.toContain("sk-ambiguous");
+
+		// Naming one of them resolves it.
+		const secret = await resolveCredentialForPrint(
+			args({ model: "claude-sonnet-4-5", provider: "openai" }),
+			runtime,
+			"api_key",
+		);
+		expect(secret.take()).toBe("sk-ambiguous");
+	});
+});
+
+describe("bearer token minimum validity", () => {
+	it("requests 30m of remaining life by default and passes --min-expiry through", async () => {
+		const requested: Array<number | undefined> = [];
+		const runtime = runtimeStub({
+			credentials: [{ providerId: "anthropic", type: "oauth" }],
+			getAuth: async (_model, overrides) => {
+				requested.push(overrides?.minOAuthValidityMs);
+				return { auth: { apiKey: "token-value" } };
+			},
+		});
+		const request = args({ model: "claude-sonnet-4-5", provider: "anthropic" });
+
+		expect(DEFAULT_BEARER_TOKEN_MIN_EXPIRY_MS).toBe(30 * 60_000);
+		await resolveCredentialForPrint(request, runtime, "bearer_token");
+		await resolveCredentialForPrint(request, runtime, "bearer_token", 60_000);
+
+		expect(requested).toEqual([DEFAULT_BEARER_TOKEN_MIN_EXPIRY_MS, 60_000]);
+	});
+
+	it("never asks an API key for a validity window it cannot have", async () => {
+		const requested: Array<{ minOAuthValidityMs?: number } | undefined> = [];
+		const runtime = runtimeStub({
+			credentials: [{ providerId: "anthropic", type: "api_key" }],
+			getAuth: async (_model, overrides) => {
+				requested.push(overrides);
+				return { auth: { apiKey: "sk-ant-value" } };
+			},
+		});
+
+		await resolveCredentialForPrint(args({ model: "claude-sonnet-4-5", provider: "anthropic" }), runtime, "api_key");
+
+		expect(requested).toEqual([{}]);
+	});
+});
+
 describe("atomic auth on the wire", () => {
 	it(
 		"writes the API key alone on stdout with one trailing newline",
@@ -623,15 +692,137 @@ describe("atomic auth on the wire", () => {
 		async () => {
 			const agentDir = agentDirWith({});
 
-			const result = await runCliProcess(["auth"], { cwd: agentDir, env: cliEnv(agentDir) });
+			for (const argv of [["auth"], ["auth", "--help"]]) {
+				const result = await runCliProcess(argv, { cwd: agentDir, env: cliEnv(agentDir) });
 
-			expect(result.code).toBe(0);
-			expect(result.stderr).toContain("atomic auth print-api-key");
-			expect(result.stderr).toContain("atomic auth print-bearer-token");
-			expect(result.stderr).not.toContain("pi auth");
-			// stdout for this command family is a credential or nothing.
-			expect(result.stdout).toBe("");
+				expect(result.code).toBe(0);
+				expect(result.stderr).toContain("atomic auth print-api-key");
+				expect(result.stderr).toContain("atomic auth print-bearer-token");
+				expect(result.stderr).not.toContain("pi auth");
+				// stdout for this command family is a credential or nothing.
+				expect(result.stdout).toBe("");
+			}
 		},
 		REAL_CLI_SUITE_TIMEOUT_MS,
 	);
+});
+
+/**
+ * The chokepoint claim, checked against the whole source tree rather than
+ * asserted in a comment: `src/cli/credential-print.ts` is the only module in
+ * `packages/coding-agent/src` that writes a credential to stdout. A second
+ * egress added later fails here.
+ */
+describe("credential egress chokepoint", () => {
+	const SRC_ROOT = resolve(import.meta.dirname, "..", "src");
+	const EGRESS_MODULE = join("cli", "credential-print.ts");
+
+	function sourceFiles(dir: string): string[] {
+		return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+			const path = join(dir, entry.name);
+			if (entry.isDirectory()) return sourceFiles(path);
+			return entry.isFile() && path.endsWith(".ts") ? [path] : [];
+		});
+	}
+
+	function withoutComments(source: string): string {
+		return source.replace(/\/\*[\s\S]*?\*\//gu, "").replace(/(^|[^:])\/\/[^\n]*/gu, "$1");
+	}
+
+	/**
+	 * Keep code, drop prose: quoted strings disappear and a template literal
+	 * keeps only its `${…}` substitutions. Help text that merely *mentions*
+	 * `print-api-key` is prose; `${secret.take()}` is an egress.
+	 */
+	function codeOnly(text: string): string {
+		const stack: string[] = [];
+		let out = "";
+		for (let index = 0; index < text.length; index++) {
+			const char = text[index];
+			const state = stack[stack.length - 1];
+			const inString = state === "'" || state === '"' || state === "`";
+			if (inString && char === "\\") {
+				index++;
+				continue;
+			}
+			if (state === "'" || state === '"') {
+				if (char === state) stack.pop();
+				continue;
+			}
+			if (state === "`") {
+				if (char === "`") stack.pop();
+				else if (char === "$" && text[index + 1] === "{") {
+					stack.push("$");
+					index++;
+				}
+				continue;
+			}
+			if (char === "'" || char === '"' || char === "`") {
+				stack.push(char);
+				continue;
+			}
+			if (char === "{") stack.push("{");
+			else if (char === "}" && (state === "{" || state === "$")) stack.pop();
+			out += char;
+		}
+		return out;
+	}
+
+	const STDOUT_WRITER =
+		/(?:writeRawStdout|writeRawStdoutControl|process\.stdout\.write|console\.(?:log|info|debug|dir))\s*\(/gu;
+
+	/** Names a credential in code, not a word that appears in help text. */
+	const CREDENTIAL_MATERIAL = /secret|credential|api[-_]?key|bearer|access[-_]?token|refresh[-_]?token|\.take\(\)/iu;
+
+	function stdoutWrites(source: string): string[] {
+		const calls: string[] = [];
+		STDOUT_WRITER.lastIndex = 0;
+		for (let match = STDOUT_WRITER.exec(source); match; match = STDOUT_WRITER.exec(source)) {
+			let depth = 1;
+			let index = match.index + match[0].length;
+			while (index < source.length && depth > 0) {
+				const char = source[index];
+				if (char === "(") depth++;
+				else if (char === ")") depth--;
+				index++;
+			}
+			calls.push(source.slice(match.index, index));
+		}
+		return calls;
+	}
+
+	const modules = sourceFiles(SRC_ROOT).map((path) => ({
+		path: relative(SRC_ROOT, path),
+		source: withoutComments(readFileSync(path, "utf8")),
+	}));
+
+	it("finds the door it is guarding", () => {
+		expect(modules.length).toBeGreaterThan(100);
+		expect(modules.map(({ path }) => path)).toContain(EGRESS_MODULE);
+	});
+
+	it("is the only module in src that writes credential material to stdout", () => {
+		const egress = modules.flatMap(({ path, source }) =>
+			stdoutWrites(source)
+				.filter((call) => CREDENTIAL_MATERIAL.test(codeOnly(call)))
+				.map((call) => `${path}: ${call.replace(/\s+/gu, " ")}`),
+		);
+
+		expect(egress).toEqual([`${EGRESS_MODULE}: writeRawStdout(\`\${secret.take()}\\n\`)`]);
+	});
+
+	it("is the only module in src that can read a Secret", () => {
+		const readers = modules.filter(({ source }) => /\.take\s*\(/u.test(source)).map(({ path }) => path);
+
+		// main.ts holds the Secret and hands it to emitCredential; it cannot open it.
+		expect(readers).toEqual([EGRESS_MODULE]);
+	});
+
+	it("has no sink other than stdout", () => {
+		const source = modules.find(({ path }) => path === EGRESS_MODULE)?.source ?? "";
+
+		for (const sink of ["node:fs", "node:child_process", "clipboard", "--output", "writeFileSync"]) {
+			expect(source).not.toContain(sink);
+		}
+	});
 });
