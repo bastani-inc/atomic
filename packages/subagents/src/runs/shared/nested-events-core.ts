@@ -124,19 +124,25 @@ export function createNestedRoute(rootRunId: string): NestedRoute {
 
 /** Whether any entry in the tree rooted at filePath has an mtime at or after cutoff, stopping at the first hit. */
 export function hasEntryNewerThan(filePath: string, cutoff: number): boolean {
-	if (fs.statSync(filePath).mtimeMs >= cutoff) return true;
+	const stat = fs.statSync(filePath);
+	if (stat.mtimeMs >= cutoff) return true;
+	if (!stat.isDirectory()) return false;
+	return directoryHasEntryNewerThan(filePath, cutoff);
+}
+
+function directoryHasEntryNewerThan(dirPath: string, cutoff: number): boolean {
 	let entries: string[];
 	try {
-		entries = fs.readdirSync(filePath);
+		entries = fs.readdirSync(dirPath);
 	} catch {
 		return false;
 	}
 	for (const entry of entries) {
-		const childPath = path.join(filePath, entry);
+		const childPath = path.join(dirPath, entry);
 		try {
 			const stat = fs.statSync(childPath);
 			if (stat.mtimeMs >= cutoff) return true;
-			if (stat.isDirectory() && hasEntryNewerThan(childPath, cutoff)) return true;
+			if (stat.isDirectory() && directoryHasEntryNewerThan(childPath, cutoff)) return true;
 		} catch {
 			// Nested runtime cleanup is best-effort housekeeping.
 		}
