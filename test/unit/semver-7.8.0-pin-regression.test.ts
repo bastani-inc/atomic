@@ -3,7 +3,18 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { compare, maxSatisfying, rcompare, satisfies, valid, validRange } from "semver";
+import {
+	Comparator,
+	compare,
+	maxSatisfying,
+	minVersion,
+	Range,
+	rcompare,
+	satisfies,
+	subset,
+	valid,
+	validRange,
+} from "semver";
 import { afterEach, describe, test } from "vitest";
 import {
 	getLatestNpmVersion,
@@ -70,6 +81,82 @@ interface SemverApi {
 
 /** The instance the shipped code links against, imported the way the shipped code imports it. */
 const pinned: SemverApi = { compare, maxSatisfying, rcompare, satisfies, valid, validRange };
+
+/**
+ * `@napi-rs/cli` 3.7.4 declares `semver@^7.8.2`, which the pin does not satisfy,
+ * so `npm ls` reports that edge as invalid. It is the one dependency in the tree
+ * the override holds below its declared range, and the exception is measured
+ * here rather than assumed.
+ *
+ * The CLI imports exactly `Comparator`, `Range`, `minVersion` and `subset`, and
+ * reaches all four from one function — `restrictWasiNodeEngine`, which narrows a
+ * package's `engines.node` to the WASI target's floor. `NAPI_WASI_NODE_FLOOR`
+ * and the body below are transcribed from `node_modules/@napi-rs/cli/dist/index.js`.
+ *
+ * Both of the 7.8.0 -> 7.8.2 changes land in code this function runs — `subset`
+ * switched to `c.test(...)` from `satisfies(..., String(c))`, and `Range` gained
+ * build-metadata stripping — so this is where a real difference would appear.
+ */
+const NAPI_WASI_NODE_FLOOR = ">=14.0.0";
+
+function normalizeComparatorSet(comparators: readonly Comparator[]): string | undefined {
+	const exactMatch = comparators.find(({ operator }) => operator === "");
+	if (exactMatch) {
+		return comparators.every((comparator) => comparator.test(exactMatch.semver)) ? exactMatch.value : undefined;
+	}
+	let lowerBound: Comparator | undefined;
+	let upperBound: Comparator | undefined;
+	for (const comparator of comparators) {
+		if (comparator.operator === ">" || comparator.operator === ">=") {
+			if (
+				!lowerBound ||
+				comparator.semver.compare(lowerBound.semver) > 0 ||
+				(comparator.semver.compare(lowerBound.semver) === 0 && comparator.operator === ">")
+			) {
+				lowerBound = comparator;
+			}
+		} else if (comparator.operator === "<" || comparator.operator === "<=") {
+			if (
+				!upperBound ||
+				comparator.semver.compare(upperBound.semver) < 0 ||
+				(comparator.semver.compare(upperBound.semver) === 0 && comparator.operator === "<")
+			) {
+				upperBound = comparator;
+			}
+		}
+	}
+	return [lowerBound?.value, upperBound?.value].filter(Boolean).join(" ");
+}
+
+function restrictWasiNodeEngine(nodeRange: string): string {
+	try {
+		if (subset(nodeRange, NAPI_WASI_NODE_FLOOR)) return nodeRange;
+		if (subset(NAPI_WASI_NODE_FLOOR, nodeRange)) return NAPI_WASI_NODE_FLOOR;
+		const minimumComparator = new Comparator(NAPI_WASI_NODE_FLOOR);
+		const restricted = new Range(nodeRange).set
+			.map((comparators) => normalizeComparatorSet([...comparators, minimumComparator]))
+			.filter((candidate) => candidate !== undefined && minVersion(candidate) !== null);
+		if (restricted.length > 0) return restricted.join(" || ");
+	} catch {
+		/* the CLI swallows this too, falling through to the floor */
+	}
+	return NAPI_WASI_NODE_FLOOR;
+}
+
+/**
+ * `restrictWasiNodeEngine(range)` at 7.8.5, for every `engines.node` this
+ * repository declares plus the floor itself. 7.8.2 was measured alongside and
+ * agrees with both, so the invalid edge costs this repository nothing.
+ */
+const BASELINE_NAPI_WASI_ENGINE = new Map<string, string>([
+	[
+		">= 12.22.0 < 13 || >= 14.17.0 < 15 || >= 15.12.0 < 16 || >= 16.0.0",
+		">=14.17.0 <15.0.0-0 || >=15.12.0 <16.0.0-0 || >=16.0.0",
+	],
+	[">=22.19.0", ">=22.19.0"],
+	[">=14.0.0", ">=14.0.0"],
+	[">=18", ">=18"],
+]);
 
 /** Versions in this project's own release shape, prereleases included. */
 const PROJECT_SHAPED_VERSIONS = [
@@ -392,5 +479,39 @@ describe("semver pinned at 7.8.0", () => {
 			assert.equal(pinned.validRange(form), normalized, form);
 			assert.equal(BASELINE_RANGE_VALID_RANGE.has(form), false, `${form} must not be a form this repository emits`);
 		}
+	});
+
+	test("the one dependency held below its declared range is unaffected at every call it makes", async () => {
+		// @napi-rs/cli asks for ^7.8.2 and gets 7.8.0. Its whole semver surface is
+		// restrictWasiNodeEngine, and the pin reproduces the recorded 7.8.5 answer
+		// for every engines.node this repository declares — including the
+		// four-clause range packages/natives actually ships.
+		for (const [nodeRange, restricted] of BASELINE_NAPI_WASI_ENGINE) {
+			assert.equal(restrictWasiNodeEngine(nodeRange), restricted, nodeRange);
+		}
+
+		const natives = await readJson<{
+			devDependencies: Record<string, string>;
+			engines: { node: string };
+			napi: { targets: string[] };
+		}>(join(root, "packages/natives/package.json"));
+
+		// The declared range this exception is about. If @napi-rs/cli moves off
+		// 3.7.4 its semver surface has to be re-measured, so pin the version the
+		// table above was taken against.
+		assert.equal(natives.devDependencies["@napi-rs/cli"], "3.7.4");
+		assert.ok(
+			BASELINE_NAPI_WASI_ENGINE.has(natives.engines.node),
+			`packages/natives engines.node ${natives.engines.node} is not in BASELINE_NAPI_WASI_ENGINE`,
+		);
+
+		// And the belt to that braces: restrictWasiNodeEngine only runs for a WASI
+		// target, which this repository does not build. Every target is a native
+		// triple, so the measured-equal path is not even reached today.
+		assert.deepEqual(
+			natives.napi.targets.filter((target) => target.includes("wasi") || target.includes("wasm")),
+			[],
+			"a WASI target would make @napi-rs/cli's semver surface live; re-measure before adding one",
+		);
 	});
 });
