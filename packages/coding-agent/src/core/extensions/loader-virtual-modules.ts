@@ -296,7 +296,7 @@ function withDeferredGraphRecording(extensionPath: string, factory: ExtensionFac
 			const result = factory(pi);
 			if (
 				result !== null &&
-				typeof result === "object" &&
+				(typeof result === "object" || typeof result === "function") &&
 				typeof (result as PromiseLike<void>).then === "function"
 			) {
 				return Promise.resolve(result).finally(finish);

@@ -169,6 +169,39 @@ export default function () {
 		await expect(Promise.resolve(second() as unknown as PromiseLike<string>)).resolves.toBe("after");
 	});
 
+	it("invalidates reuse when a dependency is loaded from a callable thenable returned by the factory", async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-graph-reuse-callable-thenable-"));
+		roots.push(root);
+		const entry = path.join(root, "extension.ts");
+		const deferred = path.join(root, "deferred.ts");
+		fs.writeFileSync(
+			entry,
+			`const testState = ((globalThis as { __graphManifestReuseTest?: { evaluations?: number } }).__graphManifestReuseTest ??= {});
+testState.evaluations = (testState.evaluations ?? 0) + 1;
+export default function () {
+	const thenable = () => {};
+	(thenable as unknown as { then: (resolve: (value: string) => void) => void }).then = (resolve) => {
+		resolve((require("./deferred.ts") as { value: string }).value);
+	};
+	return thenable;
+}
+`,
+		);
+		fs.writeFileSync(deferred, `export const value = "before";\n`);
+
+		const first = await loadGated(entry);
+		await expect(Promise.resolve(first() as unknown as PromiseLike<string>)).resolves.toBe("before");
+		const manifest = extensionLoaderTestHooks.readExtensionGraphManifest(entry);
+		expect(Object.keys(manifest?.files ?? {}).some((filePath) => filePath.endsWith("deferred.ts"))).toBe(true);
+
+		fs.writeFileSync(deferred, `export const value = "after";\n`);
+		const second = await loadGated(entry);
+
+		expect(state().evaluations).toBe(2);
+		expect(second).not.toBe(first);
+		await expect(Promise.resolve(second() as unknown as PromiseLike<string>)).resolves.toBe("after");
+	});
+
 	it("falls back to fresh evaluation when the manifest is missing or corrupt", async () => {
 		const { entry } = writeChainFixture();
 
