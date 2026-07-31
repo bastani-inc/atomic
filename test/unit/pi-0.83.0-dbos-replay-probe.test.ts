@@ -18,12 +18,21 @@
  * which is precisely what a new process sees. A re-executed side effect here is
  * a failure, not a flake — every callback counter is exact.
  *
- * Not covered, deliberately: a parent killed *after* one nested child boundary
- * completed and while a later one is in flight. Resuming that shape from a fresh
- * DBOS mirror fails to reconstruct the completed child subtree. It is unrelated
- * to this bump — the same shape resumes cleanly on `InMemoryDurableBackend`, and
- * this sync changes nothing under `packages/workflows/src` — so it belongs to
- * the durable layer that owns it rather than to a dependency gate.
+ * The kill boundary is also a serialization boundary. A DBOS checkpoint is
+ * written to Postgres and read back by the next process, so `committedState`
+ * carries step outputs across it by JSON round trip and asserts the value
+ * survives one. `structuredClone` would have carried a `Date`, a `Map` or an
+ * `undefined` property into the resumed run that real persistence drops or
+ * rewrites, which is the shape of SDK serialization regression a mirror-based
+ * gate would otherwise sleep through.
+ *
+ * Still not covered, and out of scope for a dependency gate: a live
+ * Postgres-backed replay across two real processes, and a parent killed *after*
+ * one nested child boundary completed while a later one is in flight. Resuming
+ * that second shape from a fresh DBOS mirror fails to reconstruct the completed
+ * child subtree. It is unrelated to this bump — the same shape resumes cleanly
+ * on `InMemoryDurableBackend`, and this sync changes nothing under
+ * `packages/workflows/src` — so it belongs to the durable layer that owns it.
  */
 
 import assert from "node:assert/strict";
@@ -43,11 +52,22 @@ import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 
 type MockSdk = ReturnType<typeof createMockSdk>;
 
-/** Everything the SDK had committed at the moment of the kill, and nothing else. */
+/**
+ * Everything the SDK had committed at the moment of the kill, and nothing else.
+ *
+ * Step outputs cross by JSON round trip because that is what DBOS does with
+ * them. The equality assertion makes a payload the SDK could not actually
+ * persist a failure here rather than a value that silently changes shape in a
+ * new process.
+ */
 function committedState(sdk: MockSdk): MockSdk {
 	const persisted = createMockSdk();
 	for (const [key, value] of sdk.state.workflows) persisted.state.workflows.set(key, { ...value });
-	for (const [key, value] of sdk.state.steps) persisted.state.steps.set(key, structuredClone(value));
+	for (const [key, value] of sdk.state.steps) {
+		const serialized: unknown = JSON.parse(JSON.stringify(value ?? null));
+		assert.deepEqual(serialized, value ?? null, `checkpoint ${key} does not survive a DBOS serialization round trip`);
+		persisted.state.steps.set(key, serialized);
+	}
 	return persisted;
 }
 
