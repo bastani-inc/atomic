@@ -183,15 +183,19 @@ function writeGraphManifest(manifest: ExtensionGraphManifest): void {
 		// Manifest persistence is best-effort: a missing manifest only means the
 		// next reload cannot prove the graph unchanged and re-evaluates. A failed
 		// replacement must not leave an older manifest behind describing a graph
-		// that no longer matches this evaluation, so remove it along with the
-		// temporary file.
+		// that no longer matches this evaluation, so invalidate the destination
+		// first, independently of removing the temporary file.
 		try {
-			if (tempFile) fs.rmSync(tempFile, { force: true });
 			fs.rmSync(manifestFile, { force: true });
 		} catch {
-			// Cleanup is best-effort too; a leftover stale manifest cannot be
-			// reused without also matching the in-memory manifest of the same
-			// evaluation, and readers tolerate missing or corrupt files.
+			// A leftover stale manifest cannot be reused without also matching
+			// the in-memory manifest of the same evaluation, and readers
+			// tolerate missing or corrupt files.
+		}
+		try {
+			if (tempFile) fs.rmSync(tempFile, { force: true });
+		} catch {
+			// Temporary files carry a unique suffix and are never read back.
 		}
 	}
 }
