@@ -110,6 +110,16 @@ function assertFiles(base: string, paths: readonly string[]): void {
 	for (const path of paths) assert.ok(existsSync(join(base, path)), `missing bundled resource: ${path}`);
 }
 
+/**
+ * Structural: the test below performs a full builtin-package loader reload,
+ * which discovers, transforms and imports every bundled package resource before
+ * a single assertion runs. That cost is the work under test, not a slow test
+ * nobody fixed, and on a loaded Windows runner it used 87 % of the shared
+ * per-test budget. Named and kept at the call site, per the per-test timeout
+ * policy in AGENTS.md.
+ */
+const BUILTIN_LOADER_RELOAD_TIMEOUT_MS = 120_000;
+
 describe("synced upstream skill trees", () => {
 	test("discovers the renamed subagent skills and removes the old name", () => {
 		clearSkillCache();
@@ -120,21 +130,25 @@ describe("synced upstream skill trees", () => {
 		assert.equal(existsSync(join(subagentSkills, "effective-liteparse")), false);
 	});
 
-	test("discovers Impeccable through the coding-agent package loader", async () => {
-		const agentDir = mkdtempSync(join(tmpdir(), "atomic-impeccable-discovery-"));
-		try {
-			const loader = new DefaultResourceLoader({
-				cwd: root,
-				agentDir,
-				settingsManager: SettingsManager.inMemory(),
-				builtinPackagePaths: [join(root, "packages/workflows")],
-			});
-			await loader.reload();
-			assert.ok(loader.getSkills().skills.some((skill) => skill.name === "impeccable"));
-		} finally {
-			rmSync(agentDir, { recursive: true, force: true });
-		}
-	});
+	test(
+		"discovers Impeccable through the coding-agent package loader",
+		async () => {
+			const agentDir = mkdtempSync(join(tmpdir(), "atomic-impeccable-discovery-"));
+			try {
+				const loader = new DefaultResourceLoader({
+					cwd: root,
+					agentDir,
+					settingsManager: SettingsManager.inMemory(),
+					builtinPackagePaths: [join(root, "packages/workflows")],
+				});
+				await loader.reload();
+				assert.ok(loader.getSkills().skills.some((skill) => skill.name === "impeccable"));
+			} finally {
+				rmSync(agentDir, { recursive: true, force: true });
+			}
+		},
+		BUILTIN_LOADER_RELOAD_TIMEOUT_MS,
+	);
 
 	test("bundles meaningful upstream skill content without Atomic scaffolding", () => {
 		assertFiles(join(subagentSkills, "playwright-cli"), [

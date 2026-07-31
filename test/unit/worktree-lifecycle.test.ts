@@ -21,10 +21,15 @@ import { join } from "node:path";
 import {
 	cleanupWorktrees as cleanupSubagentWorktrees,
 	createWorktrees as createSubagentWorktrees,
+	isSpuriousHookStdinWriteFailure as isSpuriousSubagentStdinWriteFailure,
 } from "../../packages/subagents/src/runs/shared/worktree.js";
 import { diffWorktrees } from "../../packages/workflows/src/runs/shared/worktree-diff.js";
 import { runGit, runGitChecked, runGitPlain } from "../../packages/workflows/src/runs/shared/worktree-git.js";
-import { cleanupWorktrees, createWorktrees } from "../../packages/workflows/src/runs/shared/worktree-setup.js";
+import {
+	cleanupWorktrees,
+	createWorktrees,
+	isSpuriousHookStdinWriteFailure as isSpuriousWorkflowStdinWriteFailure,
+} from "../../packages/workflows/src/runs/shared/worktree-setup.js";
 
 function createRepository(ignoreSettings = true): { root: string; repo: string } {
 	const root = realpathSync.native(mkdtempSync(join(tmpdir(), "atomic-worktree-lifecycle-")));
@@ -262,6 +267,59 @@ unixTest("post-creation setup failure removes the worktree and branch", () => {
 		assert.equal(existsSync(join(repo, ".atomic", "worktrees", "failed+setup-0")), false);
 		assert.equal(runGitChecked(repo, ["branch", "--list", "worktree-failed+setup-0"]).trim(), "");
 	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+/**
+ * The stdin-write race that made "post-creation setup failure" above fail on a
+ * loaded CI runner: the hook exits before the parent finishes writing its JSON
+ * input, so `spawnSync` reports EPIPE even though the hook ran and its stdout
+ * was captured in full. Whether the race is lost depends on machine load, so it
+ * is the decision that gets asserted here rather than a timing-dependent spawn.
+ * Both worktree implementations carry their own copy and must agree.
+ */
+for (const [pkg, isSpurious] of [
+	["workflows", isSpuriousWorkflowStdinWriteFailure],
+	["subagents", isSpuriousSubagentStdinWriteFailure],
+] as const) {
+	test(`${pkg}: a hook that ignored stdin stays authoritative through its exit status`, () => {
+		// The hook ran to completion; only the parent's unread write failed.
+		assert.equal(isSpurious("EPIPE", 0), true);
+		assert.equal(isSpurious("EPIPE", 1), true, "a real non-zero exit must still reach the exit-code branch");
+		// No status means the child never ran, so EPIPE is all the evidence there is.
+		assert.equal(isSpurious("EPIPE", null), false);
+		// Every other spawn failure stays fatal.
+		assert.equal(isSpurious("ENOENT", null), false);
+		assert.equal(isSpurious("EACCES", 0), false);
+		assert.equal(isSpurious(undefined, 0), false);
+	});
+}
+
+/**
+ * End to end: a hook that never reads its stdin must still have its work and its
+ * stdout honored, in either ordering of that race.
+ */
+unixTest("a setup hook that never reads stdin still has its output honored", () => {
+	const { root, repo } = createRepository();
+	const hook = join(root, "deaf-hook.sh");
+	// Closes stdin outright, so the parent's write has no reader at all.
+	writeFileSync(hook, '#!/bin/sh\nexec 0<&-\nmkdir -p generated\nprintf \'{"syntheticPaths":["generated"]}\'\n');
+	chmodSync(hook, 0o755);
+	let setup: ReturnType<typeof createWorktrees> | undefined;
+	try {
+		setup = createWorktrees(repo, "deaf/hook", 1, {
+			baseBranch: "main",
+			setupHook: { hookPath: hook },
+		});
+		const worktree = setup.worktrees[0]!;
+		assert.equal(existsSync(join(worktree.path, "generated")), true, "the hook's real work was discarded");
+		assert.ok(
+			worktree.syntheticPaths?.includes("generated"),
+			"the hook's stdout must still be parsed when only the stdin write failed",
+		);
+	} finally {
+		if (setup) cleanupWorktrees(setup);
 		rmSync(root, { recursive: true, force: true });
 	}
 });

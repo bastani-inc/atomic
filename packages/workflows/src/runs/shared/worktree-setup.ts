@@ -199,6 +199,21 @@ function parseWorktreeSetupHookOutput(rawStdout: string): WorktreeSetupHookOutpu
 	return parsed as WorktreeSetupHookOutput;
 }
 
+/**
+ * Whether a `spawnSync` error is only the parent's stdin write losing its reader.
+ *
+ * A setup hook is handed its JSON input on stdin, but nothing requires a hook to
+ * read it and most do not. When such a hook exits before that write is flushed,
+ * the write fails with EPIPE even though the hook itself ran to completion — a
+ * race a loaded machine loses far more often than an idle one. Node still
+ * reports the child's real exit status and full stdout in that case, so the
+ * spawn result stays authoritative and only a spawn that never produced a status
+ * is a genuine failure.
+ */
+export function isSpuriousHookStdinWriteFailure(code: string | undefined, status: number | null): boolean {
+	return code === "EPIPE" && status !== null;
+}
+
 function runWorktreeSetupHook(hook: ResolvedWorktreeSetupHook, input: WorktreeSetupHookInput): string[] {
 	const result = spawnSync(hook.hookPath, [], {
 		cwd: input.worktreePath,
@@ -209,11 +224,13 @@ function runWorktreeSetupHook(hook: ResolvedWorktreeSetupHook, input: WorktreeSe
 	});
 
 	if (result.error) {
-		const code = "code" in result.error ? result.error.code : undefined;
+		const code = "code" in result.error && typeof result.error.code === "string" ? result.error.code : undefined;
 		if (code === "ETIMEDOUT") {
 			throw new Error(`worktree setup hook timed out after ${hook.timeoutMs}ms`);
 		}
-		throw new Error(`worktree setup hook failed: ${result.error.message}`);
+		if (!isSpuriousHookStdinWriteFailure(code, result.status)) {
+			throw new Error(`worktree setup hook failed: ${result.error.message}`);
+		}
 	}
 
 	if (result.status !== 0) {

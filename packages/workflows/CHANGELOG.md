@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Hardened the bundled `impeccable` live-mode scripts against four CodeQL security findings, preserving behavior for all valid inputs: live-edit session ids now fall back to `crypto.getRandomValues` instead of `Math.random` outside secure contexts (`js/insecure-randomness`); the live server clamps the client-supplied poll timeout to the 10-minute default ceiling (`js/resource-exhaustion`); `live-accept` escapes the `--variant` value before splicing it into a `RegExp` (`js/regex-injection`); and manual-edit evidence decodes `&amp;` last so crafted input cannot be double-unescaped (`js/double-escaping`).
+- Fixed worktree setup hooks being reported as failed when they never read their stdin. The hook's JSON input is written to its stdin, but nothing requires a hook to consume it; a hook that exited before that write flushed made `spawnSync` report `EPIPE` and the whole worktree creation was torn down, even though the hook had run to completion and its stdout was captured in full. The child's exit status and output are now authoritative, so only a spawn that never produced a status is treated as a hook failure. Timeouts and every other spawn error stay fatal as before. This race was lost far more often on loaded machines, making it look intermittent.
 
 ## [0.9.11-alpha.6] - 2026-07-28
 
