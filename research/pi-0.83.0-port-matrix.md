@@ -46,22 +46,26 @@ packages.
 
 ## Scope boundary of this change
 
-Upstream `99e34013` (`feat: auth print`) adds a door that emits a live credential to stdout. It
-is **deliberately not implemented in this change** and is classified below as **not applicable
-(to this layer)** with its own row, because it is delivered as a separate layer with its own
-security review (`pi-0.83.0/credential-export`). No credential-printing command, flag, help
-text, or credential resolver is added here. That is verifiable:
+Upstream `99e34013` (`feat: auth print`) adds a door that emits a live credential to stdout. The
+design (§5.6) carved it into its own layer, `pi-0.83.0/credential-export`, so that a reviewer
+would see the secret-emitting door on its own rather than inside a large upstream port.
 
-```
-$ grep -rn "print-api-key\|print-bearer-token\|credential-print" packages/coding-agent/src
-(no matches)
-```
+**That split was overridden by the repository owner, and the door is implemented on this
+branch.** It lands as its own commit rather than its own branch, so the diff a security reviewer
+needs is still one self-contained changeset. The earlier commit on this branch recorded the
+opposite scope; this section is the current state, and the row for `99e34013` below is
+classified **ported** accordingly.
 
-One name upstream's commit also touches, `ModelRuntimeAuthOverrides.minOAuthValidityMs`, is
-already declared in Atomic and is **not** introduced by this branch: it arrived with the
-`ModelRuntime` adoption (`5ef323e3f`) at `packages/coding-agent/src/core/model-runtime-types.ts:21`
-and has no reader today. `git diff` for this branch does not touch that file. The credential-export
-layer is where it acquires a consumer.
+The door is the negotiated contract from design §5.1–5.2 and §7.1, which is stricter than
+upstream's implementation, not a copy of it. Upstream raises one undifferentiated
+`CredentialPrintError` and always exits `1`; the negotiated door adds a typed `Secret`, one exit
+code per failure, and an enforced stdout discipline. See the `99e34013` row for the file and
+line evidence, and "Credential-export deviations from upstream" below for each difference.
+
+`ModelRuntimeAuthOverrides.minOAuthValidityMs` was already declared in Atomic before this
+branch — it arrived with the `ModelRuntime` adoption (`5ef323e3f`) at
+`packages/coding-agent/src/core/model-runtime-types.ts:21` and had no reader. This change is
+what gives it one; the declaration itself is untouched.
 
 ## Commit matrix (63/63)
 
@@ -111,7 +115,7 @@ layer is where it acquires a consumer.
 | 42 | `a597371b` | Merge pull request #7117 (coding-agent evals) | **not applicable** | Merge bookkeeping (`…commit-paths.txt:215`). Its content is rows 43, 44, 46–49. |
 | 43 | `b0864a66` | fix(coding-agent): preserve eval run diagnostics | **not applicable** | `packages/evals/src/{extensions.eval,pi-harness}.ts` (`…commit-paths.txt:216-219`). Atomic's eval suite is the independent Python Harbor/Pier suite under root `evals/`, not upstream's Vitest `packages/evals`. |
 | 44 | `b56a35f9` | fix(coding-agent): project typed eval outputs | **not applicable** | `packages/evals/{README.md,src/extensions.eval.ts,src/pi-harness.ts}` (`…commit-paths.txt:220-224`). |
-| 45 | `99e34013` | feat: auth print (#7168) | **not applicable (to this layer)** | Adds `packages/coding-agent/src/cli/credential-print.ts`, `cli/args.ts` help text, a `main.ts` dispatch branch, `core/model-runtime.ts` `minOAuthValidityMs`, and `test/credential-print.test.ts` (`…commit-paths.txt:225-234`; `…coding-agent.diff:593-777,969-981,1224-1305,1443-1552`). This is the only door in the range that emits a live secret, and it is delivered as its own reviewed layer (`pi-0.83.0/credential-export`), not here. Verified absent from this branch: `grep -rn "print-api-key\|print-bearer-token\|credential-print" packages/coding-agent/src` returns nothing. `minOAuthValidityMs` is pre-existing and unread — see "Scope boundary of this change" above. |
+| 45 | `99e34013` | feat: auth print (#7168) | **ported** | Upstream adds `cli/credential-print.ts`, `cli/args.ts` help text, a `main.ts` dispatch branch, and `core/model-runtime.ts` `minOAuthValidityMs` (`…commit-paths.txt:225-234`; `…coding-agent.diff:593-777,969-981,1224-1305,1443-1552`). Atomic implements the **negotiated** door, which is stricter than upstream's: `packages/coding-agent/src/cli/credential-print.ts` — typed `Secret` whose `toString`/`toJSON`/`Symbol.toPrimitive` throw and whose `inspect.custom` redacts (`:73-104`), consumed once by `take()` (`:81-88`); one exit code per failure via `EXIT_CODES` (`:41-48`) and `CredentialPrintError.exitCode` (`:50-60`); `--min-expiry` rejected for `print-api-key` at parse time (`:172-176`); `--model` required and `--api-key`/prompts/files refused (`:189-203`); OAuth failure split into `RefreshFailed` and `MinValidityUnreachable` (`:205-221`). Dispatch and stdout discipline are in `src/main.ts:87-152,195-200`, which routes all chatter to stderr through `takeOverStdout()` and hands only the secret to `writeRawStdout` (`:127,144`). Help is branded through `APP_NAME` (`cli/credential-print.ts:120-146`; `cli/args.ts:262-263,311-315`). `minOAuthValidityMs` gains its first reader at `cli/credential-print.ts:283-286`. Tests: `test/credential-print.test.ts` (17 cases, including a real CLI child asserting byte-exact stdout, every exit code, and an unchanged `auth.json` after a failed refresh). Docs: `docs/usage.md:176-199`, `docs/security.md:54-66`. |
 | 46 | `af19a9ee` | fix(coding-agent): simplify extension eval prompt | **not applicable** | `packages/evals/src/extensions.eval.ts` (`…commit-paths.txt:235-237`). |
 | 47 | `95d1c60f` | fix(coding-agent): simplify multi-step eval input | **not applicable** | `packages/evals/src/{extensions.eval,pi-harness}.ts` (`…commit-paths.txt:238-241`). |
 | 48 | `9423204c` | fix(coding-agent): clarify eval harness errors | **not applicable** | `packages/evals/src/pi-harness.ts` (`…commit-paths.txt:242-244`). |
@@ -135,15 +139,14 @@ layer is where it acquires a consumer.
 
 | Classification | Commits | Count |
 | --- | --- | ---: |
-| **ported** | `0c32e83a`, `0d008b74`, `0563a7c0`, `f1ea6c0d`, `b6fb91e5`, `04b15259`, `c2275d67` | 7 |
+| **ported** | `0c32e83a`, `0d008b74`, `0563a7c0`, `f1ea6c0d`, `b6fb91e5`, `04b15259`, `c2275d67`, `99e34013` | 8 |
 | **intentionally adapted** | `bff5ab71`, `cced6a21`, `cefa40ed`, `5d548ae9`, `66eead65`, `2efa728d` | 6 |
 | **inherited dependency** | `44b26c9b`, `34239180`, `5a2539a7`, `4c1a0b92`, `5a53f086`, `e5ef8d06`, `fe1c9b6d`, `637737ca`, `926eb15c`, `23cb385b`, `f9476a61`, `fb4ecd63`, `027a5847`, `2fe21b40`, `b63403a5`, `61da9e2f`, `f9a49869`, `60f6a803` | 18 |
 | **equivalent** | — | 0 |
 | **not applicable** | rows 1, 3, 5, 6, 10, 20, 21, 22, 25, 26, 28, 36, 39–44, 46–49, 55–63 | 31 |
-| **not applicable (to this layer)** | `99e34013` (row 45) — credential export, delivered on `pi-0.83.0/credential-export` | 1 |
 | **total** | every SHA in `upstream-v0.82.1-v0.83.0-commits.txt`, exactly once | **63** |
 
-`7 + 6 + 18 + 0 + 31 + 1 = 63`. `04b15259` and `b6fb91e5` are two commits delivering one
+`8 + 6 + 18 + 0 + 31 = 63`. `04b15259` and `b6fb91e5` are two commits delivering one
 feature (`ctx.scopedModels`) and are counted as the two commits they are.
 
 ## File matrix — the fifteen upstream `coding-agent/src` files (15/15)
@@ -155,21 +158,42 @@ governance, and is covered by its commit row above.
 
 | Upstream file | Atomic counterpart | Classification |
 | --- | --- | --- |
-| `src/cli/args.ts` | — | **not applicable (to this layer)** — help text for `auth print-*` only; ships with `pi-0.83.0/credential-export`. |
-| `src/cli/credential-print.ts` (new) | — | **not applicable (to this layer)** — see row 45. |
+| `src/cli/args.ts` | `src/cli/args.ts:262-263,311-315` | **ported** (`99e34013`) — `auth` in the command list and two examples, rendered through `APP_NAME`. |
+| `src/cli/credential-print.ts` (new) | `src/cli/credential-print.ts` (new, 300 lines) | **ported** (`99e34013`) — the negotiated door; see row 45 and the deviation table below. |
 | `src/core/agent-session-runtime.ts` | `src/core/agent-session-runtime.ts:232-249` | **intentionally adapted** (`cefa40ed`) — overridable settle instead of an unconditional abort. |
 | `src/core/agent-session.ts` | `src/core/agent-session-tree.ts:35-39`; `src/core/agent-session-bash.ts:22-24,53,95-102`; `src/core/agent-session-extension-bindings.ts:221-225` | **ported** + **intentionally adapted** — Atomic splits `AgentSession` across the `agent-session-*.ts` modules. |
 | `src/core/extensions/runner.ts` | `src/core/extensions/runner.ts:12,128,193,401`; `runner-context.ts:5,35,93-96` | **ported** (`04b15259`). |
 | `src/core/extensions/types.ts` | `src/core/extensions/types.ts:20,25` (barrel) → `context-types.ts:97-101`, `runtime-types.ts:172` | **ported** (`04b15259`). |
 | `src/core/footer-data-provider.ts` | `src/core/footer-data-provider.ts:12,22` | **ported** (`cced6a21`) — `GitPaths`/`findGitPaths` exported verbatim. |
-| `src/core/model-runtime.ts` | `src/core/model-runtime-types.ts:21` | **equivalent** — `ModelRuntimeAuthOverrides.minOAuthValidityMs` is already declared in Atomic (`5ef323e3f`); this branch does not touch the file. Its reader ships with `pi-0.83.0/credential-export`. |
+| `src/core/model-runtime.ts` | `src/core/model-runtime-types.ts:21` | **equivalent** — `ModelRuntimeAuthOverrides.minOAuthValidityMs` was already declared in Atomic (`5ef323e3f`) and the declaration is untouched; `cli/credential-print.ts:283-286` gives it its first reader. |
 | `src/core/package-manager.ts` | `src/core/package-manager-git.ts:105-121` | **ported** (`0563a7c0`). |
 | `src/core/resource-loader.ts` | `resource-loader-types.ts`, `-internals.ts`, `-core.ts`, `-context-files.ts`, `-reload.ts` | **intentionally adapted** (`bff5ab71`, `cced6a21`, `66eead65`) — thirteen-module split. |
 | `src/extensions/llama/provider.ts` | `src/extensions/llama/provider.ts:46` | **ported** (`0c32e83a`). |
-| `src/main.ts` | — | **not applicable (to this layer)** — the `runCredentialPrintCommand` dispatch. |
+| `src/main.ts` | `src/main.ts:87-152,195-200` | **ported** (`99e34013`) — dispatch plus the stdout takeover that keeps the secret alone on the stream. |
 | `src/modes/interactive/components/model-selector.ts` | same path, `:241-244` | **ported** (`f1ea6c0d`). |
 | `src/modes/interactive/interactive-mode.ts` | `interactive-resource-rendering.ts:148-155`; `interactive-session-runtime.ts:110-127`; `interactive-extension-runtime.ts:38`; `interactive-editor-actions.ts:80`; `interactive-session-routing.ts:113-118,177-183` | **ported** + **intentionally adapted** — Atomic splits `InteractiveMode` across `interactive-*.ts` prototype modules. |
 | `src/modes/rpc/rpc-mode.ts` | `src/modes/rpc/rpc-command-handler.ts:258-289` (with `rpc-client-waits.ts:48-75`, `rpc-bash-request-owners.ts:35-60`) | **intentionally adapted** (`5d548ae9`). |
+
+## Credential-export deviations from upstream
+
+`99e34013` is classified **ported**, but Atomic's door is deliberately stricter. Each row is a
+refusal the design negotiated (§5.1 rubric, §5.2 wire surface, §7.1 security) that upstream does
+not make. A reviewer should read this table as the security surface of the change.
+
+| Concern | Upstream `99e34013` | Atomic | Evidence |
+| --- | --- | --- | --- |
+| Secret in transit | a plain `string` returned from `resolveCredentialForPrint` | `Secret`; `toString`, `toJSON`, and `Symbol.toPrimitive` throw, `inspect.custom` yields `[Secret]`, and `take()` works once | `cli/credential-print.ts:62-104`; `test/credential-print.test.ts:74-92` |
+| Failure reporting | one `CredentialPrintError`, always `process.exitCode = 1` | six codes: usage `1`, `NoCredentialConfigured` `2`, `ProviderAmbiguous` `3`, `KindUnsupportedForProvider` `4`, `RefreshFailed` `5`, `MinValidityUnreachable` `6` | `cli/credential-print.ts:29-60`; `test/credential-print.test.ts:246-283` |
+| Refresh vs. validity | both surface as the same generic failure | pi-ai's post-refresh validity error is separated from a failed refresh, the only available discriminator being its message | `cli/credential-print.ts:205-221`; `test/credential-print.test.ts:186-213` |
+| stdout discipline | `process.stdout.write` on success; diagnostics rely on `console.error` | `takeOverStdout()` for the whole resolution — which also catches native `console.log` under Bun — and only the secret reaches `writeRawStdout` | `main.ts:96-152`; `test/credential-print.test.ts:246-283` |
+| Help stream | `console.log` (stdout) | stderr, so stdout from `atomic auth` is a credential or empty | `cli/credential-print.ts:120-146`; `test/credential-print.test.ts:326-341` |
+| Branding | help renders `pi auth …` | `APP_NAME`, so help and errors render `atomic auth …` | `cli/credential-print.ts:122-124,164-167`; `test/credential-print.test.ts:106-120` |
+
+Two guarantees are inherited rather than added, and are verified rather than assumed:
+`resolveStoredOAuth` in pi-ai `0.83.0` performs the refresh inside `credentials.modify`, so a
+failed refresh never writes — `test/credential-print.test.ts:295-318` asserts an unchanged
+`auth.json` after a real `invalid_grant` response — and it enforces the requested minimum only
+when `minOAuthValidityMs` is set, which is what makes exit `6` reachable at all.
 
 ## Atomic-owned risks carried forward (P4)
 

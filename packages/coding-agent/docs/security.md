@@ -51,6 +51,20 @@ Common patterns are documented in [Containerization](/containerization):
 
 If you bind-mount a host workspace read/write, writes from inside the container or VM can still modify host files. Use read-only mounts or copy files into and out of the sandbox when you need stronger protection from unintended writes.
 
+## Credential Export
+
+`atomic auth print-api-key` and `atomic auth print-bearer-token` are the only commands that emit a stored credential. They exist so an external client can reuse the credential you already configured, rather than making you copy it out of `auth.json` by hand.
+
+What the commands guarantee:
+
+- **stdout carries the credential or nothing.** Warnings, provider selection, refresh notices, and even `atomic auth --help` go to stderr, and stdout is empty on every non-zero exit. `KEY=$(atomic auth print-api-key --model gpt-5.5)` cannot capture a diagnostic instead of a key.
+- **No file or clipboard sink.** There is no `--output` flag. If you want the value in a file, you redirect it yourself and own that decision.
+- **No ambient model.** `--model` is required, so the command cannot emit a credential for a model you did not name.
+- **A failed refresh never strands you.** If an OAuth refresh fails, the command exits `5` and leaves the stored credential exactly as it was.
+- **The value is not loggable in transit.** Internally the credential is carried in a wrapper that throws if anything tries to interpolate, serialize, or inspect it, so it cannot reach a log line, a session transcript, or an error message.
+
+What they do **not** do: once the credential is on stdout it is ordinary text in your shell, your pipeline, and possibly your shell history and process listing. Prefer `print-bearer-token`, whose output expires, over a long-lived API key. Do not embed either command in a script that logs its own output.
+
 ## Reporting Security Issues
 
 To report a security issue, follow the repository [Security Policy](https://github.com/bastani-inc/atomic/blob/main/SECURITY.md). Do not open a public issue for security-sensitive reports.

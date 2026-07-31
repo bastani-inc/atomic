@@ -1,5 +1,14 @@
 import chalk from "chalk";
 import { parseArgs, printHelp } from "./cli/args.ts";
+import {
+	type CredentialPrintCommand,
+	CredentialPrintError,
+	isCredentialPrintHelp,
+	parseCredentialPrintCommand,
+	printCredentialPrintHelp,
+	resolveCredentialForPrint,
+	validateCredentialPrintArgs,
+} from "./cli/credential-print.ts";
 import { listModels } from "./cli/list-models.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
 import {
@@ -24,7 +33,8 @@ import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { getBuiltinPackagePaths } from "./core/builtin-packages.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { resolveModelScope, resolveModelScopeWithDiagnostics } from "./core/model-resolver.ts";
-import { restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
+import { ModelRuntime } from "./core/model-runtime.ts";
+import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
 import { resolveProjectTrusted } from "./core/project-trust.ts";
 import { getMissingSessionCwdIssue, MissingSessionCwdError } from "./core/session-cwd.ts";
 import { SessionManager } from "./core/session-manager.ts";
@@ -82,6 +92,73 @@ import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.
 export type { AppMode } from "./main-app-mode.ts";
 export { resolveExcludedToolsForAppMode } from "./main-app-mode.ts";
 export type { MainOptions } from "./main-types.ts";
+
+/**
+ * `atomic auth …` — the credential-export door. Returns true when it owned the
+ * argv, having already set `process.exitCode`.
+ *
+ * Stdout discipline is enforced here rather than trusted: `takeOverStdout()`
+ * routes every ordinary write — including native `console.log` under Bun, which
+ * bypasses a patched `process.stdout.write` — to stderr for the whole
+ * resolution, and the secret is the only thing ever handed to the real stdout,
+ * through `writeRawStdout`. A failing run therefore cannot leave a partial line
+ * or a warning on the stream a caller is capturing.
+ */
+async function runCredentialPrintCommand(args: string[]): Promise<boolean> {
+	if (isCredentialPrintHelp(args)) {
+		printCredentialPrintHelp();
+		return true;
+	}
+
+	let command: CredentialPrintCommand | undefined;
+	try {
+		command = parseCredentialPrintCommand(args);
+	} catch (error) {
+		const failure =
+			error instanceof CredentialPrintError
+				? error
+				: new CredentialPrintError("Usage", "Failed to parse auth command");
+		console.error(chalk.red(`Error: ${failure.message}`));
+		process.exitCode = failure.exitCode;
+		return true;
+	}
+	if (!command) return false;
+
+	takeOverStdout();
+	try {
+		const parsed = parseArgs(command.args);
+		if (parsed.diagnostics.some((diagnostic) => diagnostic.type === "error")) {
+			for (const diagnostic of parsed.diagnostics) {
+				console.error(chalk.red(`Error: ${diagnostic.message}`));
+			}
+			process.exitCode = 1;
+			return true;
+		}
+
+		try {
+			validateCredentialPrintArgs(parsed);
+			const modelRuntime = await ModelRuntime.create({ allowModelNetwork: false });
+			const secret = await resolveCredentialForPrint(parsed, modelRuntime, command.kind, command.minExpiryMs);
+			// take() is the single read, and the template below interpolates the
+			// plain string it returns — never the Secret itself.
+			writeRawStdout(`${secret.take()}\n`);
+			await flushRawStdout();
+		} catch (error) {
+			const failure =
+				error instanceof CredentialPrintError
+					? error
+					: new CredentialPrintError(
+							"NoCredentialConfigured",
+							error instanceof Error ? error.message : "Failed to resolve credential",
+						);
+			console.error(chalk.red(`Error: ${failure.message}`));
+			process.exitCode = failure.exitCode;
+		}
+	} finally {
+		restoreStdout();
+	}
+	return true;
+}
 export async function main(argv: string[], options?: MainOptions) {
 	// Consume the private engine handshake before anything else: the bootstrap
 	// file carries engine role, host PID, guardian path, and any API key, is read
@@ -113,6 +190,12 @@ export async function main(argv: string[], options?: MainOptions) {
 		return;
 	}
 	if (await handleConfigCommand(args, { extensionFactories })) {
+		return;
+	}
+	if (await runCredentialPrintCommand(args)) {
+		const exitCode = process.exitCode ?? 0;
+		await drainProcessStdio();
+		process.exit(exitCode);
 		return;
 	}
 	const parsed = parseArgs(args);

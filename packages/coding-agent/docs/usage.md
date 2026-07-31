@@ -173,6 +173,31 @@ These commands manage Atomic packages and `atomic update` can update the Atomic 
 
 See [Atomic Packages](/packages) for package sources and security notes.
 
+### Credential Commands
+
+```bash
+atomic auth print-api-key --model <model> [--provider <p>]
+atomic auth print-bearer-token --model <model> [--provider <p>] [--min-expiry <dur>]
+```
+
+Print one configured credential for an external client — a proxy, a script, or another tool that needs the same key Atomic already holds. The credential goes to **stdout and nothing else**; warnings, provider selection, refresh notices, and help all go to stderr, so `KEY=$(atomic auth print-api-key --model gpt-5.5)` can never capture a diagnostic.
+
+`--model` is required. There is no ambient "current model", so the command cannot emit a credential you did not name. When several configured providers offer the model, pass `--provider` to choose one.
+
+`print-bearer-token` works only on OAuth providers and `print-api-key` only on API-key providers; asking for the wrong kind is an error rather than a silent fallback. A bearer token with less than `--min-expiry` remaining (default `30m`, accepting `ms`, `s`, `m`, or `h`) is refreshed first. `--min-expiry` with `print-api-key` is a usage error — an API key has no expiry. A failed refresh leaves your stored credential untouched.
+
+| Exit | Meaning |
+|------|---------|
+| `0` | Credential written to stdout, one trailing newline |
+| `1` | Usage error |
+| `2` | No credential configured for that model/provider |
+| `3` | Several configured providers match — pass `--provider` |
+| `4` | That credential kind is unsupported for the provider |
+| `5` | OAuth refresh failed; the stored credential is unchanged |
+| `6` | The provider cannot mint a token that lives as long as `--min-expiry` |
+
+On every non-zero exit stdout is empty. See [Security](/security#credential-export) before wiring this into a script.
+
 ### Modes
 
 | Flag | Description |
