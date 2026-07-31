@@ -1,3 +1,4 @@
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
@@ -98,6 +99,131 @@ function pruneStaleTranspileCaches(currentDir: string): void {
 			),
 		)
 		.catch(() => {});
+}
+
+/**
+ * Per-extension-path record of the complete file graph a transformed (jiti)
+ * evaluation read, mapping each absolute file path to the SHA256 hex digest of
+ * its content at evaluation time. Persisted under the versioned transpile
+ * cache directory so pruneStaleTranspileCaches handles version cleanup.
+ */
+export interface ExtensionGraphManifest {
+	version: 1;
+	extensionPath: string;
+	files: Record<string, string>;
+}
+
+const GRAPH_MANIFEST_VERSION = 1;
+const GRAPH_MANIFEST_DIR_NAME = "graph-manifests";
+
+const graphManifestFileExtensions = new Set([".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs", ".jsx", ".json"]);
+
+function graphManifestDir(): string {
+	return path.join(getTranspileCacheDir(), GRAPH_MANIFEST_DIR_NAME);
+}
+
+function graphManifestPath(extensionPath: string): string {
+	const key = crypto.createHash("sha256").update(extensionPath).digest("hex").slice(0, 32);
+	return path.join(graphManifestDir(), `${key}.json`);
+}
+
+function sha256Hex(content: string | NodeJS.ArrayBufferView): string {
+	return crypto.createHash("sha256").update(content).digest("hex");
+}
+
+// jiti's CJS bundle reads every module source in the require graph through
+// fs.readFileSync (even on fsCache hits, since the cache key is a hash of the
+// source), so observing readFileSync while a transformed import is in flight
+// sees the complete transitive graph. The observer records into every active
+// recorder; unrelated reads that interleave only over-record, which at worst
+// forces a redundant re-evaluation later — never a stale one.
+const fsExports = require("node:fs") as typeof fs;
+const activeGraphRecorders = new Set<Map<string, string>>();
+let observedReadFileSync: typeof fs.readFileSync | null = null;
+
+function recordObservedRead(target: Parameters<typeof fs.readFileSync>[0], content: string | Buffer): void {
+	if (typeof target !== "string" || !path.isAbsolute(target)) return;
+	if (!graphManifestFileExtensions.has(path.extname(target).toLowerCase())) return;
+	const normalizedTarget = path.normalize(target);
+	const cachePrefix = path.normalize(getTranspileCacheDir()) + path.sep;
+	if (normalizedTarget.toLowerCase().startsWith(cachePrefix.toLowerCase())) return;
+	const hash = sha256Hex(content);
+	for (const recorder of activeGraphRecorders) {
+		recorder.set(normalizedTarget, hash);
+	}
+}
+
+function installReadFileSyncObserver(): void {
+	if (observedReadFileSync) return;
+	const original = fsExports.readFileSync;
+	observedReadFileSync = original;
+	const wrapped = ((...args: Parameters<typeof fs.readFileSync>) => {
+		const content = original(...args);
+		recordObservedRead(args[0], content);
+		return content;
+	}) as typeof fs.readFileSync;
+	fsExports.readFileSync = wrapped;
+}
+
+function uninstallReadFileSyncObserver(): void {
+	if (!observedReadFileSync || activeGraphRecorders.size > 0) return;
+	fsExports.readFileSync = observedReadFileSync;
+	observedReadFileSync = null;
+}
+
+function writeGraphManifest(manifest: ExtensionGraphManifest): void {
+	try {
+		const manifestFile = graphManifestPath(manifest.extensionPath);
+		fs.mkdirSync(path.dirname(manifestFile), { recursive: true });
+		const tempFile = `${manifestFile}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+		fs.writeFileSync(tempFile, JSON.stringify(manifest));
+		fs.renameSync(tempFile, manifestFile);
+	} catch {
+		// Manifest persistence is best-effort: a missing manifest only means the
+		// next reload cannot prove the graph unchanged and re-evaluates.
+	}
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	return Object.values(value).every((entry) => typeof entry === "string");
+}
+
+export function readExtensionGraphManifest(extensionPath: string): ExtensionGraphManifest | undefined {
+	try {
+		const parsed = JSON.parse(
+			fs.readFileSync(graphManifestPath(extensionPath), "utf-8"),
+		) as Partial<ExtensionGraphManifest>;
+		if (parsed.version !== GRAPH_MANIFEST_VERSION) return undefined;
+		if (parsed.extensionPath !== extensionPath) return undefined;
+		if (!isStringRecord(parsed.files)) return undefined;
+		return { version: GRAPH_MANIFEST_VERSION, extensionPath, files: parsed.files };
+	} catch {
+		return undefined;
+	}
+}
+
+async function recordExtensionGraph<T>(
+	extensionPath: string,
+	load: () => Promise<T>,
+): Promise<{ result: T; manifest: ExtensionGraphManifest }> {
+	const files = new Map<string, string>();
+	activeGraphRecorders.add(files);
+	installReadFileSyncObserver();
+	let result: T;
+	try {
+		result = await load();
+	} finally {
+		activeGraphRecorders.delete(files);
+		uninstallReadFileSyncObserver();
+	}
+	const manifest: ExtensionGraphManifest = {
+		version: GRAPH_MANIFEST_VERSION,
+		extensionPath,
+		files: Object.fromEntries([...files.entries()].sort(([a], [b]) => a.localeCompare(b))),
+	};
+	writeGraphManifest(manifest);
+	return { result, manifest };
 }
 
 let extensionCacheCwd: string | undefined;
@@ -227,6 +353,10 @@ export const extensionLoaderTestHooks = {
 	getAliases,
 	findPackageRoot,
 	getTranspileCacheDir,
+	graphManifestPath,
+	readExtensionGraphManifest,
+	loadExtensionModuleTransformed: (extensionPath: string, cacheToken?: ExtensionCacheToken) =>
+		importExtensionModule(extensionPath, cacheToken, true),
 };
 
 /**
@@ -236,6 +366,40 @@ export const extensionLoaderTestHooks = {
  * fresh module evaluation.
  */
 const nativelyImportedPaths = new Set<string>();
+
+async function importExtensionModule(
+	extensionPath: string,
+	cacheToken: ExtensionCacheToken | undefined,
+	forceTransformedImports: boolean,
+): Promise<ExtensionFactory | undefined> {
+	const isWindows = process.platform === "win32";
+	const isSingleFileBuild = isBunBinary || isBundledBuild;
+	const jiti = createJiti(resolutionBaseUrl(import.meta.url), {
+		moduleCache: false,
+		...(forceTransformedImports
+			? { fsCache: getTranspileCacheDir(), tryNative: false }
+			: isWindows
+				? { fsCache: getTranspileCacheDir() }
+				: {}),
+		...(isSingleFileBuild ? { virtualModules: await getVirtualModules() } : { alias: getAliases() }),
+	});
+	const specifier = extensionImportSpecifier(extensionPath, cacheToken);
+	// Transformed evaluations are the loads whose repeat cost is the Windows
+	// /reload regression, so they are also the loads whose file graph is
+	// recorded into a content-hash manifest.
+	const module = forceTransformedImports
+		? (await recordExtensionGraph(extensionPath, () => jiti.import(specifier, { default: true }))).result
+		: await jiti.import(specifier, { default: true });
+	if (isWindows && !forceTransformedImports) {
+		nativelyImportedPaths.add(extensionPath);
+	}
+	const factory = module as ExtensionFactory;
+	if (typeof factory !== "function") return undefined;
+	if (isCurrentCacheToken(cacheToken)) {
+		extensionCache.set(extensionPath, factory);
+	}
+	return factory;
+}
 
 export async function loadExtensionModule(
 	extensionPath: string,
@@ -264,23 +428,5 @@ export async function loadExtensionModule(
 	// `/reload`; removing it needs a content-hash-keyed evaluation cache or a
 	// narrower trigger, not a larger timeout.
 	const forceTransformedImports = isSingleFileBuild || (isWindows && nativelyImportedPaths.has(extensionPath));
-	const jiti = createJiti(resolutionBaseUrl(import.meta.url), {
-		moduleCache: false,
-		...(forceTransformedImports
-			? { fsCache: getTranspileCacheDir(), tryNative: false }
-			: isWindows
-				? { fsCache: getTranspileCacheDir() }
-				: {}),
-		...(isSingleFileBuild ? { virtualModules: await getVirtualModules() } : { alias: getAliases() }),
-	});
-	const module = await jiti.import(extensionImportSpecifier(extensionPath, cacheToken), { default: true });
-	if (isWindows && !forceTransformedImports) {
-		nativelyImportedPaths.add(extensionPath);
-	}
-	const factory = module as ExtensionFactory;
-	if (typeof factory !== "function") return undefined;
-	if (isCurrentCacheToken(cacheToken)) {
-		extensionCache.set(extensionPath, factory);
-	}
-	return factory;
+	return importExtensionModule(extensionPath, cacheToken, forceTransformedImports);
 }
