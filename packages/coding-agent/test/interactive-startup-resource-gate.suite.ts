@@ -42,6 +42,7 @@ function configureDeferredGateMode(mode: InteractiveMode): void {
 			configurable: true,
 			value: {
 				reload: async () => {},
+				subscribe: () => () => {},
 				resourceLoader: { getThemes: () => ({ themes: [] }) },
 				extensionRunner: {},
 				modelRuntime: { getError: () => undefined },
@@ -51,6 +52,7 @@ function configureDeferredGateMode(mode: InteractiveMode): void {
 	});
 	Object.assign(mode, {
 		bindCurrentSessionExtensions: async () => {},
+		pendingUserInputs: [],
 		promptTurnWorkingLoaderActive: false,
 		stopWorkingLoader() {},
 		themeController: { applyFromSettings: async () => {} },

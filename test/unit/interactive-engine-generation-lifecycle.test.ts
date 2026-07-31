@@ -93,7 +93,14 @@ test.sequential("a dead generation's buffered custom-UI frames are never deliver
 		// The fixture opens a custom UI during startup; with no host controller
 		// attached yet it is buffered. That buffer belongs to this generation.
 		await sleep(150);
-		process.kill(pid, "SIGKILL");
+		try {
+			process.kill(pid, "SIGKILL");
+		} catch (error) {
+			// Under full-suite load the engine child can already be gone by the
+			// time the kill lands; an early death is still this generation dying,
+			// which is exactly the state the assertions below examine.
+			if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+		}
 		await sleep(150);
 
 		const messages: InteractiveEngineMessage[] = [];

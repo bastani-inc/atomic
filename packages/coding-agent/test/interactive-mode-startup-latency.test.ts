@@ -81,6 +81,7 @@ type PromptTurnContext = {
 	deferredStartupPromise?: Promise<void>;
 	session: {
 		isStreaming: boolean;
+		subscribe: (listener: (event: { type: string }) => void) => () => void;
 		resumeQueuedMessages: () => Promise<boolean>;
 		prompt: (text: string) => Promise<void>;
 	};
@@ -115,6 +116,7 @@ function createPromptTurnContext(
 		deferredStartupPromise: options.deferredStartupPromise,
 		session: {
 			isStreaming: false,
+			subscribe: vi.fn(() => () => {}),
 			resumeQueuedMessages: vi.fn(async () => false),
 			prompt: vi.fn(async () => {}),
 		},

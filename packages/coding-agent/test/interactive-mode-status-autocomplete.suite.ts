@@ -118,7 +118,7 @@ describe("InteractiveMode submit routing", () => {
 		await submit("/exit now");
 
 		expect(fakeThis.shutdown).not.toHaveBeenCalled();
-		expect(onInput).toHaveBeenCalledWith("/exit now");
+		expect(onInput).toHaveBeenCalledWith({ text: "/exit now", draft: "/exit now" });
 		expect(fakeThis.editor.addToHistory).toHaveBeenCalledWith("/exit now");
 	});
 });

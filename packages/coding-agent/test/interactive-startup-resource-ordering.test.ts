@@ -270,6 +270,7 @@ test("isolated interactive-engine notify lands below RESOURCES", async () => {
 	const runtime = Object.create(IsolatedInteractiveRuntime.prototype) as IsolatedInteractiveRuntime;
 	Object.assign(runtime, {
 		onDiagnostic: () => () => {},
+		onGenerationEnded: () => () => {},
 		onEngineMessage: () => () => {},
 		setExtensionUIHandler: (handler: typeof extensionUiHandler) => {
 			extensionUiHandler = handler;

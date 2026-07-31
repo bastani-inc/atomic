@@ -19,7 +19,12 @@ import { withBunRuntime } from "../helpers/runtime.js";
 const tempRoots: string[] = [];
 afterEach(() => {
 	resetEventWriterHydrationCacheForTests();
-	for (const root of tempRoots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+	// Tests here deliberately race close against journal drain, so a final async
+	// append can land while the recursive removal walks the directory, which
+	// surfaces as ENOTEMPTY. rm's own bounded retry covers exactly this class.
+	for (const root of tempRoots.splice(0)) {
+		fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+	}
 });
 
 test("child event persistence strips cumulative delta snapshots and retains incremental metadata", () => {

@@ -257,6 +257,7 @@ export function buildInteractiveHostCustomUi(): {
 				return overlayHandle.handle;
 			},
 			hideOverlay: () => undefined,
+			hasOverlay: () => false,
 		},
 		blockingInlineCustomUiDepth: 0,
 		deferredInlineCustomUiFocusDepth: 0,

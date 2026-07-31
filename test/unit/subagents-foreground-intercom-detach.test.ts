@@ -103,9 +103,22 @@ const timer = setInterval(() => {
 		);
 	});
 	test("a broker-routed handoff detaches the exact child even before tool-start observation", async () => {
-		await withFakeCliEvent(
-			successEvent("eventual result"),
-			100,
+		// Gate the fake children on a file the test writes only after the commit
+		// has been processed. With a fixed output delay instead, a loaded event
+		// loop can stretch the pre-commit sleep past the child's whole lifetime;
+		// the commit then finds the attempt already closed, nothing detaches, and
+		// the detached-exit wait below hangs until the suite timeout.
+		const gateName = "release-routed-children";
+		const fakeScript = `import { existsSync } from "node:fs";
+import { join } from "node:path";
+const gate = join(process.cwd(), ${JSON.stringify(gateName)});
+const timer = setInterval(() => {
+  if (!existsSync(gate)) return;
+  clearInterval(timer);
+  console.log(${JSON.stringify(successEvent("eventual result"))});
+}, 5);`;
+		await withFakeCli(
+			fakeScript,
 			async (dir) => {
 				const emitter = new EventEmitter();
 				const bus = eventBus(emitter);
@@ -144,6 +157,9 @@ const timer = setInterval(() => {
 				assert.equal(acknowledged, 1);
 				bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { ...route, phase: "commit" });
 				const a = await first;
+				// Only now may the children finish: the detach placeholder proves
+				// the commit landed while both were still running.
+				fs.writeFileSync(join(dir, gateName), "release", "utf8");
 				const b = await second;
 				await firstExit;
 				assert.equal(a.detached, true);
@@ -294,9 +310,20 @@ const timer = setInterval(() => {
 	});
 
 	test("duplicate targeted delivery detaches and recovers the child only once", async () => {
-		await withFakeCliEvent(
-			successEvent("once"),
-			90,
+		// Same gating as the broker-routed test above: the child must still be
+		// alive when the duplicate commits land, and a fixed delay cannot
+		// guarantee that on a loaded machine.
+		const gateName = "release-duplicate-child";
+		const fakeScript = `import { existsSync } from "node:fs";
+import { join } from "node:path";
+const gate = join(process.cwd(), ${JSON.stringify(gateName)});
+const timer = setInterval(() => {
+  if (!existsSync(gate)) return;
+  clearInterval(timer);
+  console.log(${JSON.stringify(successEvent("once"))});
+}, 5);`;
+		await withFakeCli(
+			fakeScript,
 			async (dir) => {
 				const emitter = new EventEmitter();
 				const bus = eventBus(emitter);
@@ -327,6 +354,7 @@ const timer = setInterval(() => {
 				bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { ...request, phase: "commit" });
 				bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { ...request, phase: "commit" });
 				assert.equal((await pending).detached, true);
+				fs.writeFileSync(join(dir, gateName), "release", "utf8");
 				await recoveredExit.promise;
 				await sleep(0);
 				assert.equal(recovered.length, 1);

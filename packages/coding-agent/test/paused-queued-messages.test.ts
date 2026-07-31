@@ -301,7 +301,9 @@ describe("regular chat paused queued messages", () => {
 		const resumeDriver = host.pendingUserInputs.shift() ?? "cleanup resume driver";
 		await runUserPromptTurn.call(host, resumeDriver);
 
-		expect(pendingBeforeAbortSettled).toEqual(["immediate next submission"]);
+		expect(pendingBeforeAbortSettled).toEqual([
+			{ text: "immediate next submission", draft: "immediate next submission" },
+		]);
 		expect(heldBeforeAbortSettled).not.toContain("immediate next submission");
 		expect(getUserTexts(harness).filter((text) => text === "immediate next submission")).toHaveLength(1);
 		expect(harness.session.queuedMessagesPaused).toBe(false);

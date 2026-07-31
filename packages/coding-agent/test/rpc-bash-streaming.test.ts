@@ -233,6 +233,7 @@ describe("correlated RPC bash streaming", () => {
 		const aborted: Array<string | undefined> = [];
 		const client = {
 			onEvent: () => () => {},
+			onGenerationEnded: () => () => {},
 			userBashWithUpdates: async (
 				_command: string,
 				onUpdate: (delta: string, channel: "stdout" | "stderr") => void,

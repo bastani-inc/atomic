@@ -16,6 +16,7 @@ type PromptTurnContext = {
 	options: { deferredModelScopePatterns?: string[] };
 	session: {
 		isStreaming: boolean;
+		subscribe: (listener: (event: { type: string }) => void) => () => void;
 		reload: (options: { reason: string }) => Promise<void>;
 		resumeQueuedMessages: () => Promise<boolean>;
 		prompt: (text: string) => Promise<void>;
@@ -76,6 +77,7 @@ function createContext(overrides: {
 		options: {},
 		session: {
 			isStreaming: false,
+			subscribe: vi.fn(() => () => {}),
 			reload: vi.fn(async () => {}),
 			resumeQueuedMessages: vi.fn(async () => false),
 			prompt: vi.fn(async () => {

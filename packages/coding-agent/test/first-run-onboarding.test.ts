@@ -423,7 +423,7 @@ describe("first-run onboarding", () => {
 
 		await submit("Implement ticket ABC");
 
-		expect(onInputCallback).toHaveBeenCalledWith("Implement ticket ABC");
+		expect(onInputCallback).toHaveBeenCalledWith({ text: "Implement ticket ABC", draft: "Implement ticket ABC" });
 		expect(host.session.prompt).not.toHaveBeenCalled();
 		expect(host.editor.addToHistory).toHaveBeenCalledWith("Implement ticket ABC");
 		expect(host.renderDeferredUserInput).toHaveBeenCalledWith("Implement ticket ABC");
@@ -445,6 +445,9 @@ describe("first-run onboarding", () => {
 		await submit("/chat please explain the repo");
 
 		expect(host.session.prompt).not.toHaveBeenCalled();
-		expect(host.onInputCallback).toHaveBeenCalledWith("/chat please explain the repo");
+		expect(host.onInputCallback).toHaveBeenCalledWith({
+			text: "/chat please explain the repo",
+			draft: "/chat please explain the repo",
+		});
 	});
 });
